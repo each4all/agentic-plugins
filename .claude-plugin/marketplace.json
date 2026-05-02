@@ -1,0 +1,10 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "schemaVersion": 1,
+  "name": "agentic-plugins",
+  "description": "Cross-host AI agent collaboration framework — Claude Code & Codex CLI",
+  "owner": {
+    "name": "each4all"
+  },
+  "plugins": []
+}

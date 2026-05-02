@@ -1,0 +1,56 @@
+# Node
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp.*
+
+# Lockfiles from non-pnpm package managers (we use pnpm)
+package-lock.json
+yarn.lock
+bun.lock
+bun.lockb
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Test / coverage
+coverage/
+*.lcov
+.nyc_output/
+
+# Claude Code state and local config
+.claude/
+
+# Codex CLI local state
+.codex/
+
+# Plugin output (artifacts generated during local testing)
+output/
+
+# Temp / scratch
+*.tmp
+*.bak
+.scratch/
