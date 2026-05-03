@@ -9,6 +9,7 @@ on:
       - 'scripts/validate-marketplace.mjs'
       - '.github/workflows/marketplace-validate.yml'
       - 'package.json'
+      - 'plugins/**'
   pull_request:
     paths:
       - '.claude-plugin/marketplace.json'
@@ -16,6 +17,7 @@ on:
       - 'scripts/validate-marketplace.mjs'
       - '.github/workflows/marketplace-validate.yml'
       - 'package.json'
+      - 'plugins/**'
   workflow_dispatch:
 
 permissions:

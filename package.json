@@ -14,9 +14,12 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test companions/tests/claude-companion.test.mjs companions/tests/codex-companion.test.mjs",
+    "test": "node --test companions/tests/claude-companion.test.mjs companions/tests/codex-companion.test.mjs tests/plugin-shape/test-companions-plugin.mjs kit/lint/tests/test-check-plugin-shape.mjs",
+    "test:plugin-shape": "node --test tests/plugin-shape/test-companions-plugin.mjs kit/lint/tests/test-check-plugin-shape.mjs",
+    "lint:plugin-shape": "node kit/lint/check-plugin-shape.mjs plugins/companions",
     "test:smoke": "COMPANIONS_SMOKE=1 node --test companions/tests/claude-companion.smoke.test.mjs companions/tests/codex-companion.smoke.test.mjs",
-    "validate:marketplace": "node scripts/validate-marketplace.mjs"
+    "validate:marketplace": "node scripts/validate-marketplace.mjs",
+    "sync:companions": "node scripts/sync-companion-bundles.mjs"
   },
   "bin": {
     "claude-companion": "./companions/claude-companion.mjs",
