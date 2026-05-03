@@ -319,6 +319,21 @@ export function formatStderrSummary(classification) {
   return `${oneLine.slice(0, STDERR_MAX - 3)}...`;
 }
 
+function emitMisuseEnvelope(stdout, message, model) {
+  // § 4.2 — when --output-format json was successfully parsed but a misuse
+  // occurs before peer invocation, emit a minimal envelope so the JSON
+  // contract holds. Metadata is omitted since peer never ran.
+  const envelope = {
+    status: STATUS.COMPANION_ERROR,
+    peer_host: PEER_HOST,
+    peer_model: model ?? null,
+    stdout: '',
+    exit_code: EXIT_COMPANION_MISUSE,
+    error: { kind: ERROR_KIND.MISUSE, message, detail: null },
+  };
+  stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
+}
+
 export async function main(
   argv = process.argv.slice(2),
   {
@@ -328,30 +343,9 @@ export async function main(
     spawnImpl = spawn,
   } = {},
 ) {
-  let parsed;
-  try {
-    parsed = parseArguments(argv);
-  } catch (err) {
-    if (err instanceof CompanionMisuseError) {
-      stderr.write(`${err.message}\n`);
-      return EXIT_COMPANION_MISUSE;
-    }
-    stderr.write(`unexpected error: ${err.message}\n`);
-    return EXIT_COMPANION_MISUSE;
-  }
-
-  let prompt;
-  try {
-    prompt = await resolvePromptInput({ parsed, stdin });
-  } catch (err) {
-    if (err instanceof CompanionMisuseError) {
-      stderr.write(`${err.message}\n`);
-      return EXIT_COMPANION_MISUSE;
-    }
-    stderr.write(`unexpected error reading prompt: ${err.message}\n`);
-    return EXIT_COMPANION_MISUSE;
-  }
-
+  // Signal handlers go up front so Ctrl-C during stdin read or arg parsing
+  // produces 130 (the user-visible signal exit), not 1 (which collides with
+  // contract § 5.1 EXIT_PEER_RUN_ERROR).
   let peerChild = null;
   const onSignalExit = (signame, code) => {
     if (peerChild) {
@@ -364,29 +358,55 @@ export async function main(
   process.on('SIGINT', onSigInt);
   process.on('SIGTERM', onSigTerm);
 
-  let invocation;
   try {
-    invocation = await invokePeer(
+    let parsed;
+    try {
+      parsed = parseArguments(argv);
+    } catch (err) {
+      // parseArguments failure → outputFormat unparseable → cannot honor JSON
+      // mode reliably. Emit text-only stderr summary; documented limitation.
+      const message = err instanceof CompanionMisuseError
+        ? err.message
+        : `unexpected error: ${err.message}`;
+      stderr.write(`${message}\n`);
+      return EXIT_COMPANION_MISUSE;
+    }
+
+    let prompt;
+    try {
+      prompt = await resolvePromptInput({ parsed, stdin });
+    } catch (err) {
+      const message = err instanceof CompanionMisuseError
+        ? err.message
+        : `unexpected error reading prompt: ${err.message}`;
+      stderr.write(`${message}\n`);
+      if (parsed.options.outputFormat === 'json') {
+        emitMisuseEnvelope(stdout, message, parsed.options.model);
+      }
+      return EXIT_COMPANION_MISUSE;
+    }
+
+    const invocation = await invokePeer(
       { prompt, options: parsed.options },
       { spawnImpl, onPeerStart: (c) => { peerChild = c; } },
     );
+
+    const classification = classifyResult(invocation);
+    const summary = formatStderrSummary(classification);
+    if (summary) stderr.write(`${summary}\n`);
+
+    if (parsed.options.outputFormat === 'json') {
+      const envelope = buildEnvelope({ invocation, classification, options: parsed.options });
+      stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
+    } else {
+      stdout.write(invocation.stdout);
+    }
+
+    return classification.exit_code;
   } finally {
     process.removeListener('SIGINT', onSigInt);
     process.removeListener('SIGTERM', onSigTerm);
   }
-
-  const classification = classifyResult(invocation);
-  const summary = formatStderrSummary(classification);
-  if (summary) stderr.write(`${summary}\n`);
-
-  if (parsed.options.outputFormat === 'json') {
-    const envelope = buildEnvelope({ invocation, classification, options: parsed.options });
-    stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
-  } else {
-    stdout.write(invocation.stdout);
-  }
-
-  return classification.exit_code;
 }
 
 const isMainModule = !!(

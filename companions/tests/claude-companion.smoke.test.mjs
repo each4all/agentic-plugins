@@ -27,17 +27,21 @@ Reply with the single word OK and nothing else.
 </grounding_rules>`;
 
 describe('claude-companion smoke (real `claude` CLI)', { skip: !SMOKE }, () => {
-  it('text mode round trip', () => {
+  it('text mode round trip — peer responds with "OK"', () => {
     const result = spawnSync(process.execPath, [SCRIPT, 'task'], {
       input: PROMPT,
       encoding: 'utf8',
       timeout: 120_000,
     });
     assert.equal(result.status, 0, `exit ${result.status}; stderr=${result.stderr}`);
-    assert.ok(result.stdout.trim().length > 0, 'peer stdout should be non-empty');
+    assert.match(
+      result.stdout,
+      /OK/,
+      `peer stdout should include "OK" per prompt instruction; got: ${JSON.stringify(result.stdout)}`,
+    );
   });
 
-  it('json envelope round trip', () => {
+  it('json envelope round trip — peer responds with "OK"', () => {
     const result = spawnSync(
       process.execPath,
       [SCRIPT, 'task', '--output-format', 'json'],
@@ -48,7 +52,10 @@ describe('claude-companion smoke (real `claude` CLI)', { skip: !SMOKE }, () => {
     assert.equal(env.status, 'success');
     assert.equal(env.peer_host, 'claude');
     assert.equal(env.exit_code, 0);
-    assert.ok(typeof env.stdout === 'string' && env.stdout.length > 0);
+    assert.ok(typeof env.stdout === 'string', 'envelope.stdout is a string');
+    assert.match(env.stdout, /OK/, 'envelope.stdout includes peer "OK" reply');
     assert.ok(env.metadata && typeof env.metadata.duration_ms === 'number');
+    assert.match(env.metadata.started_at, /Z$/);
+    assert.match(env.metadata.completed_at, /Z$/);
   });
 });

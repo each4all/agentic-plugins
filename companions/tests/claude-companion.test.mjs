@@ -41,7 +41,9 @@ class FakeStdin extends Readable {
   constructor(content, { isTTY } = { isTTY: false }) {
     super();
     this.isTTY = isTTY;
-    this._chunks = content == null ? [] : [content];
+    if (content == null) this._chunks = [];
+    else if (Array.isArray(content)) this._chunks = [...content];
+    else this._chunks = [content];
   }
   _read() {
     const chunk = this._chunks.shift();
@@ -252,6 +254,31 @@ describe('§ 2.3 — resolvePromptInput', () => {
       /malformed UTF-8/,
     );
   });
+
+  it('decodes a UTF-8 codepoint split across stdin chunks', async () => {
+    const parsed = parseArguments(['task']);
+    // U+20AC EURO SIGN = 0xE2 0x82 0xAC; split into two chunks across the codepoint.
+    const stdin = new FakeStdin(
+      [Buffer.from([0xe2, 0x82]), Buffer.from([0xac])],
+      { isTTY: false },
+    );
+    const r = await resolvePromptInput({ parsed, stdin });
+    assert.equal(r, '€');
+  });
+
+  it('throws on --prompt-file pointing to a directory (§ 2.2)', async () => {
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'claude-companion-'));
+    try {
+      const parsed = parseArguments(['task', '--prompt-file', tmp]);
+      const stdin = new FakeStdin(null, { isTTY: true });
+      await assert.rejects(
+        () => resolvePromptInput({ parsed, stdin }),
+        /--prompt-file read error/,
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 // --- buildClaudeArgs (peer CLI mapping) -----------------------------------
@@ -308,6 +335,16 @@ describe('§ 5.3 — classifyResult', () => {
     assert.equal(r.error.kind, ERROR_KIND.UNAUTH);
   });
 
+  it('exit non-zero + auth-pattern in stdout (stderr empty) → peer_unauthenticated', () => {
+    const r = classifyResult({
+      ...baseInvocation,
+      exitCode: 1,
+      stderr: '',
+      stdout: 'You are not authenticated. Please log in.',
+    });
+    assert.equal(r.error.kind, ERROR_KIND.UNAUTH);
+  });
+
   it('spawnError ENOENT → companion_error / 3 / peer_cli_not_found', () => {
     const err = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     const r = classifyResult({ ...baseInvocation, spawnError: err });
@@ -359,24 +396,39 @@ describe('§ 4.2 — buildEnvelope', () => {
     completedAt: '2026-05-03T01:00:00Z',
   };
 
-  it('success envelope has required keys, no error object', () => {
+  it('success envelope has required keys (presence) with peer_model present even if null', () => {
     const cls = { status: STATUS.SUCCESS, exit_code: EXIT_SUCCESS, error: null };
     const env = buildEnvelope({
       invocation,
       classification: cls,
       options: { model: null, outputFormat: 'json' },
     });
+    // § 4.2 — peer_model REQUIRED, value MAY be null. Assert key existence.
+    for (const k of ['status', 'peer_host', 'peer_model', 'stdout', 'exit_code']) {
+      assert.ok(k in env, `envelope must contain key "${k}"`);
+    }
     assert.equal(env.status, STATUS.SUCCESS);
     assert.equal(env.peer_host, PEER_HOST);
     assert.equal(env.peer_model, null);
     assert.equal(env.stdout, 'peer text');
     assert.equal(env.exit_code, EXIT_SUCCESS);
-    assert.ok(env.metadata);
-    assert.equal(env.metadata.duration_ms, 42);
     assert.ok(!('error' in env), 'success envelope MUST NOT include error');
   });
 
-  it('error envelope includes error object with kind/message', () => {
+  it('metadata sub-fields are emitted together with ISO-8601 Z-suffix timestamps', () => {
+    const cls = { status: STATUS.SUCCESS, exit_code: EXIT_SUCCESS, error: null };
+    const env = buildEnvelope({
+      invocation,
+      classification: cls,
+      options: { model: null, outputFormat: 'json' },
+    });
+    assert.ok(env.metadata, 'metadata object present');
+    assert.equal(typeof env.metadata.duration_ms, 'number');
+    assert.match(env.metadata.started_at,   /Z$/, 'started_at is ISO-8601 Z-suffix');
+    assert.match(env.metadata.completed_at, /Z$/, 'completed_at is ISO-8601 Z-suffix');
+  });
+
+  it('error envelope includes error object with kind/message (presence + value)', () => {
     const cls = {
       status: STATUS.PEER_ERROR,
       exit_code: EXIT_PEER_RUN_ERROR,
@@ -387,6 +439,7 @@ describe('§ 4.2 — buildEnvelope', () => {
       classification: cls,
       options: { model: null, outputFormat: 'json' },
     });
+    assert.ok('error' in env, 'error envelope MUST include error key');
     assert.equal(env.error.kind, ERROR_KIND.PEER_RUN);
     assert.equal(env.error.message, 'peer exited 5');
   });
@@ -449,7 +502,7 @@ describe('invokePeer (mocked spawn)', () => {
     assert.equal(child.stdin.lastWrite, 'PROMPT_BODY');
   });
 
-  it('passes peer args from buildClaudeArgs', async () => {
+  it('passes peer args from buildClaudeArgs (with positional pinning)', async () => {
     const spawnFn = fakeSpawnReturning(makeFakeChild({ exitCode: 0 }));
     await invokePeer(
       { prompt: 'x', options: { model: 'opus', effort: 'high' } },
@@ -457,10 +510,12 @@ describe('invokePeer (mocked spawn)', () => {
     );
     const { bin, args } = fakeSpawnReturning.lastCall;
     assert.equal(bin, PEER_CLI_BIN);
-    assert.ok(args.includes('--model'));
-    assert.ok(args.includes('opus'));
-    assert.ok(args.includes('--effort'));
-    assert.ok(args.includes('high'));
+    const modelIdx = args.indexOf('--model');
+    assert.notEqual(modelIdx, -1, '--model present');
+    assert.equal(args[modelIdx + 1], 'opus', '--model value follows immediately');
+    const effortIdx = args.indexOf('--effort');
+    assert.notEqual(effortIdx, -1, '--effort present');
+    assert.equal(args[effortIdx + 1], 'high', '--effort value follows immediately');
   });
 
   it('sets spawn cwd from options.cwd', async () => {
@@ -508,7 +563,7 @@ describe('main() integration', () => {
     assert.equal(stderr.value, '');
   });
 
-  it('happy path json mode → envelope written to stdout', async () => {
+  it('happy path json mode → envelope written to stdout, stderr empty', async () => {
     const spawnFn = fakeSpawnReturning(makeFakeChild({ stdout: 'PEER', exitCode: 0 }));
     const stdout = new CapturedStream();
     const stderr = new CapturedStream();
@@ -518,11 +573,76 @@ describe('main() integration', () => {
       { stdin, stdout, stderr, spawnImpl: spawnFn },
     );
     assert.equal(code, EXIT_SUCCESS);
+    assert.equal(stderr.value, '', '§ 5.2 — stderr empty on exit 0 (JSON mode too)');
     const env = JSON.parse(stdout.value);
     assert.equal(env.status, STATUS.SUCCESS);
     assert.equal(env.peer_host, PEER_HOST);
     assert.equal(env.stdout, 'PEER');
     assert.equal(env.exit_code, EXIT_SUCCESS);
+  });
+
+  it('text mode preserves peer stdout verbatim — trailing newline kept', async () => {
+    const spawnFn = fakeSpawnReturning(makeFakeChild({ stdout: 'A\n', exitCode: 0 }));
+    const stdout = new CapturedStream();
+    const stdin = new FakeStdin('<task>x</task>', { isTTY: false });
+    await main(['task'], { stdin, stdout, stderr: new CapturedStream(), spawnImpl: spawnFn });
+    assert.equal(stdout.value, 'A\n', '§ 4.1 — companion does not strip trailing newline');
+  });
+
+  it('text mode preserves peer stdout verbatim — absent newline not added', async () => {
+    const spawnFn = fakeSpawnReturning(makeFakeChild({ stdout: 'A', exitCode: 0 }));
+    const stdout = new CapturedStream();
+    const stdin = new FakeStdin('<task>x</task>', { isTTY: false });
+    await main(['task'], { stdin, stdout, stderr: new CapturedStream(), spawnImpl: spawnFn });
+    assert.equal(stdout.value, 'A', '§ 4.1 — companion does not append trailing newline');
+  });
+
+  it('text mode preserves peer stdout verbatim even on peer error exit', async () => {
+    const spawnFn = fakeSpawnReturning(makeFakeChild({
+      stdout: 'partial output', stderr: 'oops', exitCode: 5,
+    }));
+    const stdout = new CapturedStream();
+    const stdin = new FakeStdin('<task>x</task>', { isTTY: false });
+    const code = await main(['task'], {
+      stdin, stdout, stderr: new CapturedStream(), spawnImpl: spawnFn,
+    });
+    assert.equal(code, EXIT_PEER_RUN_ERROR);
+    assert.equal(stdout.value, 'partial output', '§ 4.1 — verbatim even when exit != 0');
+  });
+
+  it('emits JSON envelope with companion_misuse on resolvePromptInput failure', async () => {
+    const spawnFn = fakeSpawnReturning(makeFakeChild({ exitCode: 0 }));
+    const stdout = new CapturedStream();
+    const stderr = new CapturedStream();
+    const stdin = new FakeStdin(null, { isTTY: true });
+    const code = await main(
+      ['task', '--output-format', 'json'],
+      { stdin, stdout, stderr, spawnImpl: spawnFn },
+    );
+    assert.equal(code, EXIT_COMPANION_MISUSE);
+    const env = JSON.parse(stdout.value);
+    assert.equal(env.status, STATUS.COMPANION_ERROR);
+    assert.equal(env.peer_host, PEER_HOST);
+    assert.equal(env.peer_model, null);
+    assert.equal(env.exit_code, EXIT_COMPANION_MISUSE);
+    assert.equal(env.error.kind, ERROR_KIND.MISUSE);
+    assert.ok(stderr.value.includes('no prompt input'), 'stderr summary mirrors envelope');
+  });
+
+  it('parseArguments failure → text fallback (envelope omitted; documented limitation)', async () => {
+    const stdout = new CapturedStream();
+    const stderr = new CapturedStream();
+    const code = await main(
+      ['unknown-cmd', '--output-format', 'json'],
+      {
+        stdin: new FakeStdin(null, { isTTY: true }),
+        stdout, stderr,
+        spawnImpl: fakeSpawnReturning(makeFakeChild({ exitCode: 0 })),
+      },
+    );
+    assert.equal(code, EXIT_COMPANION_MISUSE);
+    assert.equal(stdout.value, '', 'no JSON envelope emitted when arg parse fails');
+    assert.ok(stderr.value.length > 0);
   });
 
   it('missing input → exit 2, stderr 1-line summary', async () => {
@@ -564,7 +684,7 @@ describe('main() integration', () => {
     assert.equal(env.error.kind, ERROR_KIND.CLI_NOT_FOUND);
   });
 
-  it('removes signal handlers after invocation completes', async () => {
+  it('removes signal handlers after invocation completes (happy path)', async () => {
     const beforeInt  = process.listenerCount('SIGINT');
     const beforeTerm = process.listenerCount('SIGTERM');
     const spawnFn = fakeSpawnReturning(makeFakeChild({ exitCode: 0 }));
@@ -577,6 +697,33 @@ describe('main() integration', () => {
     });
     assert.equal(process.listenerCount('SIGINT'),  beforeInt,  'SIGINT listener leaked');
     assert.equal(process.listenerCount('SIGTERM'), beforeTerm, 'SIGTERM listener leaked');
+  });
+
+  it('removes signal handlers when parseArguments throws', async () => {
+    const beforeInt  = process.listenerCount('SIGINT');
+    const beforeTerm = process.listenerCount('SIGTERM');
+    await main(['unknown-cmd'], {
+      stdin: new FakeStdin(null, { isTTY: true }),
+      stdout: new CapturedStream(),
+      stderr: new CapturedStream(),
+      spawnImpl: fakeSpawnReturning(makeFakeChild({ exitCode: 0 })),
+    });
+    assert.equal(process.listenerCount('SIGINT'),  beforeInt);
+    assert.equal(process.listenerCount('SIGTERM'), beforeTerm);
+  });
+
+  it('removes signal handlers when peer ENOENT', async () => {
+    const beforeInt  = process.listenerCount('SIGINT');
+    const beforeTerm = process.listenerCount('SIGTERM');
+    const err = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    await main(['task'], {
+      stdin: new FakeStdin('<task>hi</task>', { isTTY: false }),
+      stdout: new CapturedStream(),
+      stderr: new CapturedStream(),
+      spawnImpl: fakeSpawnReturning(makeFakeChild({ spawnError: err })),
+    });
+    assert.equal(process.listenerCount('SIGINT'),  beforeInt);
+    assert.equal(process.listenerCount('SIGTERM'), beforeTerm);
   });
 });
 
