@@ -383,6 +383,17 @@ describe('AUTH_REGEX', () => {
     assert.equal(AUTH_REGEX.test('rate limit exceeded'), false);
     assert.equal(AUTH_REGEX.test('connection reset by peer'), false);
   });
+
+  it('does not match codex-only auth wordings (copy-paste regression guard)', () => {
+    // codex-companion's AUTH_REGEX matches `not signed in`, `please run codex
+    // login`, etc. The claude regex MUST be host-specific and NOT pick up
+    // these codex-only phrases — if a refactor accidentally restored the
+    // codex regex here, this test catches it before merge. Mirror of the
+    // symmetric guard in companions/tests/codex-companion.test.mjs.
+    assert.equal(AUTH_REGEX.test('You are not signed in.'), false);
+    assert.equal(AUTH_REGEX.test('Please run `codex login` to authenticate.'), false);
+    assert.equal(AUTH_REGEX.test('Please use codex auth before continuing'), false);
+  });
 });
 
 // --- § 4 Output Convention -------------------------------------------------

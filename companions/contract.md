@@ -550,12 +550,14 @@ Architecture & decisions:
   — redesign stance: omcc patterns are experiential input only, not a
   port target.
 
-Implementation files (forthcoming, in this same directory):
+Implementation files (in this same directory):
 
-- `companions/claude-companion.mjs` — Codex → Claude direction.
-- `companions/codex-companion.mjs` — Claude → Codex direction.
-- `companions/tests/` — round-trip smoke tests against real peer-host
-  CLIs.
+- [`companions/claude-companion.mjs`](claude-companion.mjs) — Codex → Claude
+  direction. Shells out to `claude -p`.
+- [`companions/codex-companion.mjs`](codex-companion.mjs) — Claude → Codex
+  direction. Shells out to `codex exec`.
+- [`companions/tests/`](tests/) — hermetic unit tests (mocked spawn) plus
+  env-gated smoke tests (`COMPANIONS_SMOKE=1`) against real peer-host CLIs.
 
 ### 8.2 External references
 
