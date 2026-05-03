@@ -298,14 +298,14 @@ describe('buildCodexArgs (peer CLI mapping)', () => {
     assert.equal(args[idx + 1], 'gpt-5-codex');
   });
 
-  it('appends -c model_reasoning_effort=<X> when --effort given (decision 4)', () => {
+  it('appends -c model_reasoning_effort=<X> when --effort given (Decision 4)', () => {
     const args = buildCodexArgs({ effort: 'high' });
     const idx = args.indexOf('-c');
     assert.notEqual(idx, -1);
     assert.equal(args[idx + 1], 'model_reasoning_effort=high');
   });
 
-  it('appends --cd <DIR> when --cwd given (decision 5)', () => {
+  it('appends --cd <DIR> when --cwd given (Decision 5)', () => {
     const args = buildCodexArgs({ cwd: '/work' });
     const idx = args.indexOf('--cd');
     assert.notEqual(idx, -1);
@@ -346,16 +346,19 @@ describe('invokePeer (mocked spawn)', () => {
     assert.notEqual(modelIdx, -1, '--model present');
     assert.equal(args[modelIdx + 1], 'gpt-5-codex', '--model value follows immediately');
     const effortIdx = args.indexOf('-c');
-    assert.notEqual(effortIdx, -1, '-c present (effort override per decision 4)');
+    assert.notEqual(effortIdx, -1, '-c present (effort override per Decision 4)');
     assert.equal(args[effortIdx + 1], 'model_reasoning_effort=high', '-c value follows immediately');
   });
 
-  it('conveys cwd via --cd in args, NOT via spawn cwd: (decision 5)', async () => {
+  it('conveys cwd via --cd in args, NOT via spawn cwd: (Decision 5)', async () => {
     const spawnFn = fakeSpawnReturning(makeFakeChild({ exitCode: 0 }));
     await invokePeer({ prompt: 'x', options: { cwd: '/work' } }, { spawnImpl: spawnFn });
-    // codex --cd handles its own internal cwd resolution for sandbox/log paths
-    assert.notEqual(fakeSpawnReturning.lastCall.opts.cwd, '/work',
-      'spawn cwd: must NOT carry options.cwd; codex --cd does the work');
+    // codex --cd handles its own internal cwd resolution for sandbox/log paths.
+    // Stricter than notEqual('/work'): the implementation pins spawn cwd: to
+    // process.cwd() so codex's sandbox/log paths anchor to the companion's
+    // own cwd. Asserting equality catches any drift, not just the '/work' case.
+    assert.equal(fakeSpawnReturning.lastCall.opts.cwd, process.cwd(),
+      'spawn cwd: must equal process.cwd(); codex --cd does the user-cwd work');
     const cdIdx = fakeSpawnReturning.lastCall.args.indexOf('--cd');
     assert.notEqual(cdIdx, -1, '--cd present in args');
     assert.equal(fakeSpawnReturning.lastCall.args[cdIdx + 1], '/work');
@@ -466,6 +469,17 @@ describe('AUTH_REGEX', () => {
   it('does not match unrelated stderr', () => {
     assert.equal(AUTH_REGEX.test('rate limit exceeded'), false);
     assert.equal(AUTH_REGEX.test('connection reset by peer'), false);
+  });
+
+  it('does not match claude-only auth wordings (copy-paste regression guard)', () => {
+    // claude-companion's AUTH_REGEX matches `not authenticated`, `please run
+    // claude login`, etc. The codex regex MUST be host-specific and NOT pick
+    // up these claude-only phrases — if a refactor accidentally restored the
+    // claude regex here, this test catches it before merge.
+    assert.equal(AUTH_REGEX.test('Please run `claude login` to authenticate.'), false);
+    assert.equal(AUTH_REGEX.test('Please use claude auth before continuing'), false);
+    assert.equal(AUTH_REGEX.test('You are not authenticated.'), false);
+    assert.equal(AUTH_REGEX.test('Sign in via not authentication failure'), false);
   });
 });
 
