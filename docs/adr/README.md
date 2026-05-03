@@ -42,3 +42,4 @@ old one, and change the old one's status to `Superseded by ADR-NNNN`.
 | [0005](0005-separate-repo-from-omcc.md) | Separate repo from omcc | Accepted |
 | [0006](0006-directory-layout-install-pattern.md) | Directory layout + install pattern | Accepted |
 | [0007](0007-migration-cutover-plan.md) | Migration cutover plan from omcc to agentic-plugins | Accepted |
+| [0008](0008-companion-distribution-model.md) | Companion distribution model — `companions` plugin + cache-glob discovery + env override | Accepted |
