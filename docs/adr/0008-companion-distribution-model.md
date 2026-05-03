@@ -134,18 +134,25 @@ the consumer's required range — typically the same major version per
 [`companions/contract.md`](../../companions/contract.md) § 8.3 SemVer
 policy).
 
-**Codex CLI**:
+**Codex CLI** (verified against codex-cli 0.128.0; see Amendment 2026-05-04):
 
 ```
-~/.codex/plugins/cache/agentic-plugins/*/*/scripts/<companion>.mjs
+~/.codex/.tmp/marketplaces/agentic-plugins/plugins/companions/scripts/<companion>.mjs
 ```
 
-Codex's cache layout is `<marketplace>/<segment>/<short-sha>/<repo-tree>/`,
-where the second segment may be the source-type (`github`, `local`)
-or the plugin name (when multiple plugins share the marketplace) —
-exact behavior is determined empirically when the first plugin from
-this marketplace is installed (Deliverable B Phase 4, B.13). The
-two-wildcard glob covers both interpretations.
+Codex CLI 0.128.0 stores marketplace artifacts as a **full repository
+git clone** at `~/.codex/.tmp/marketplaces/<marketplace>/`, regardless
+of whether the source is `marketplace add ./local/path` or
+`marketplace add github:owner/repo` — both produce identical install
+metadata `{source_type: "git", source: <git_url>, revision: <sha>}` in
+`.codex-marketplace-install.json`. The `~/.codex/plugins/cache/`
+hierarchy that earlier drafts of this ADR assumed is **not used** in
+0.128.0. The glob therefore has zero wildcards: marketplace name and
+plugin name are both pinned, and the repository's per-plugin layout
+(`plugins/<plugin>/scripts/`) is the canonical sub-path inside the
+clone. Plugin enable is a `~/.codex/config.toml` flag
+(`[plugins."<plugin>@<marketplace>"] enabled = true`) with no path
+effect — the marketplace clone is the storage; enable is independent.
 
 **Discovery algorithm** (mandatory, applies to both hosts):
 
@@ -163,12 +170,16 @@ two-wildcard glob covers both interpretations.
 4. If no manifest-verified match resolves, fall through to the
    graceful-degradation behavior in (e).
 
-**B.13 contingency**: if Deliverable B's local-install verification
-reveals a Codex cache layout that the two-wildcard + manifest-verify
-algorithm cannot handle (e.g., a third interpretation of the second
-segment, or a deeply nested layout), this ADR requires an amendment
-before Deliverable C may proceed. The consumer plugin SHOULD NOT ship
-discovery code that papers over an unresolved layout.
+**B.13 contingency (resolved by Amendment 2026-05-04)**: B.13.1
+verification on 2026-05-04 against codex-cli 0.128.0 triggered this
+contingency — the assumed `<marketplace>/<segment>/<short-sha>/`
+cache layout does not exist in 0.128.0. The Codex glob above is the
+empirically verified path; this ADR's Amendment 2026-05-04 records
+the resolution. Future Codex CLI versions that introduce a true
+`~/.codex/plugins/cache/` layout (or alter `.tmp/marketplaces/`
+semantics) require a follow-up amendment. The consumer plugin
+SHOULD NOT ship discovery code that papers over an unresolved layout
+in any future contingency.
 
 ### (b.1) Discovery script ownership
 
@@ -356,11 +367,21 @@ ADR process in [`AGENTS.md`](../../AGENTS.md).
   without `--prompt-file` (skip per CONTRACT_VERSION check),
   cross-plugin false matches (resolved by manifest-name verification
   in the (b) Discovery algorithm).
-- Codex CLI's cache layout has an unresolved ambiguity (segment 2nd
-  is source-type vs plugin-name) that is determined empirically
-  during the first install. The two-wildcard glob plus manifest-verify
-  covers both interpretations, but the ambiguity is a known fragility
-  tracked outside this ADR's control.
+- Codex CLI 0.128.0 stores marketplace clones at
+  `~/.codex/.tmp/marketplaces/<marketplace>/`. The `.tmp/` naming
+  suggests ephemerality, but in 0.128.0 there is no cleanup policy
+  and the directory persists across `codex` invocations (verified:
+  marker files dating from 2026-03-27 still resident as of
+  2026-05-04 verification). Future Codex CLI versions may add
+  cleanup policies (TTL, GC on `marketplace upgrade`, etc.) that
+  would invalidate this ADR's discovery contract; in that case, an
+  ADR amendment is required.
+- `marketplace add` for both local paths and GitHub URLs produces a
+  git clone with identical install metadata in 0.128.0 (`source_type:
+  "git"`, `source: <git_url>`, `revision: <sha>`). If a future Codex
+  version diverges (e.g., local paths get a different storage shape,
+  or path resolution rejects non-git local directories), this ADR
+  must amend the Codex glob accordingly.
 - Install-order discipline is required: users must install
   `companions` before (or alongside) any consumer plugin to get the
   ensemble enhancement. Graceful degradation softens this but doesn't
@@ -468,3 +489,48 @@ ADR process in [`AGENTS.md`](../../AGENTS.md).
   source, not a 1:1 port target
 - [`companions/contract.md`](../../companions/contract.md) v0.1.0 —
   the wire-spec contract this ADR's distribution model serves
+
+## Amendments
+
+### 2026-05-04 — Codex cache layout corrected for codex-cli 0.128.0
+
+**Trigger**: B.13.1 verification follow-up after Deliverable B merged
+(PR #9, commit 56ae15c). Verified the actual codex-cli 0.128.0
+behavior of `marketplace add` and plugin enable to determine the
+empirical cache layout.
+
+**Finding**: `~/.codex/plugins/cache/` is unused in 0.128.0;
+marketplace clones live at `~/.codex/.tmp/marketplaces/<marketplace>/`
+as a full git clone (regardless of `local` vs `github` source — both
+produce identical install metadata at `.codex-marketplace-install.json`
+with `source_type: "git"`). Plugin enable is a `~/.codex/config.toml`
+flag (`[plugins."<plugin>@<marketplace>"] enabled = true`) with no
+path effect; the marketplace clone is the storage and exists
+independently of plugin enable state. The `<marketplace>/<segment>/<short-sha>/`
+cache layout assumed in the original § (b) does not exist in 0.128.0.
+
+**Changes (this PR)**:
+
+- § (b) "Codex CLI" subsection: glob updated to
+  `~/.codex/.tmp/marketplaces/agentic-plugins/plugins/companions/scripts/<companion>.mjs`
+  (zero wildcards; marketplace + plugin both pinned). Original
+  `<segment>/<short-sha>/` interpretation discarded.
+- § (b) "B.13 contingency": marked **resolved**; noted that future
+  Codex CLI versions altering this layout require a new amendment.
+- Negative consequences: replaced "cache layout ambiguity" risk with
+  two new risks — `.tmp/` naming cleanup-policy fragility (Codex
+  0.128.0 has no cleanup, but future versions may), and divergent
+  local vs github source handling (currently identical, future may
+  diverge).
+
+**Verified against**: codex-cli 0.128.0 (`/Users/lmuffin/.bun/bin/codex
+--version`); install metadata at
+`~/.codex/.tmp/marketplaces/agentic-plugins/.codex-marketplace-install.json`;
+marker file `~/.codex/.tmp/app-server-remote-plugin-sync-v1` resident
+since 2026-03-27 (40 days at verification time) confirming `.tmp/`
+treated as durable storage in 0.128.0.
+
+**Out of scope (follow-up may amend)**: behavior of `marketplace
+upgrade` (in-place git pull vs replace), behavior of `marketplace add`
+for non-git local directories (no `.git/`), behavior across Codex CLI
+upgrades that introduce a true `~/.codex/plugins/cache/` activation.
