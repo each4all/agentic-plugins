@@ -9,9 +9,29 @@ bridges owned by agentic-plugins.
 
 ## Status
 
-Early scaffolding. No published plugins yet. The architecture and
-foundational decisions are captured in [`docs/adr/`](docs/adr/) and the
-overall design in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Stage 1 in progress. The companion layer ships now; reference plugins
+follow. The architecture and foundational decisions are captured in
+[`docs/adr/`](docs/adr/) and the overall design in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Stage roadmap lives in
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+
+### Available now
+
+The `companions/` layer is wire-spec complete (`v0.1.0`) with both
+bridges implemented and tested:
+
+- [`companions/contract.md`](companions/contract.md) — wire contract
+- [`companions/claude-companion.mjs`](companions/claude-companion.mjs) — Codex → Claude bridge
+- [`companions/codex-companion.mjs`](companions/codex-companion.mjs) — Claude → Codex bridge
+
+See [`companions/README.md`](companions/README.md) for invocation
+quickstart and the directional table.
+
+### Coming next
+
+- Top-level `package.json` + `bin` entries so companions install on PATH
+- GitHub Actions CI (per-host test gates + marketplace JSON validation)
+- First reference plugin (Stage 1 exit criterion per DEVELOPMENT.md)
 
 ## Concepts
 
@@ -22,7 +42,8 @@ overall design in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## For consumers
 
-Install paths will be documented once the first plugin ships:
+Install paths for plugins will be documented once the first reference
+plugin ships:
 
 ```
 # Claude Code (planned)
