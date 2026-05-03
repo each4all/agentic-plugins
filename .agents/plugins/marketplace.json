@@ -1,5 +1,21 @@
 {
   "name": "agentic-plugins",
   "description": "Cross-host AI agent collaboration framework — Claude Code & Codex CLI",
-  "plugins": []
+  "interface": {
+    "displayName": "agentic-plugins"
+  },
+  "plugins": [
+    {
+      "name": "companions",
+      "source": {
+        "source": "local",
+        "path": "./plugins/companions"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    }
+  ]
 }
