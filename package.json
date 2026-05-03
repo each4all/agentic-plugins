@@ -1,0 +1,24 @@
+{
+  "name": "agentic-plugins",
+  "version": "0.1.0",
+  "description": "Cross-host AI agent collaboration framework — Claude Code & Codex CLI",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/each4all/agentic-plugins.git"
+  },
+  "homepage": "https://github.com/each4all/agentic-plugins",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test companions/tests/claude-companion.test.mjs companions/tests/codex-companion.test.mjs",
+    "test:smoke": "COMPANIONS_SMOKE=1 node --test companions/tests/claude-companion.smoke.test.mjs companions/tests/codex-companion.smoke.test.mjs"
+  },
+  "bin": {
+    "claude-companion": "./companions/claude-companion.mjs",
+    "codex-companion": "./companions/codex-companion.mjs"
+  }
+}
