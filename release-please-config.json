@@ -9,14 +9,12 @@
     "companions": {
       "package-name": "companions",
       "component": "companions",
-      "changelog-path": "CHANGELOG.md",
-      "release-as": "0.1.0"
+      "changelog-path": "CHANGELOG.md"
     },
     "plugins/companions": {
       "package-name": "plugin-companions",
       "component": "plugin-companions",
-      "changelog-path": "CHANGELOG.md",
-      "release-as": "0.1.0"
+      "changelog-path": "CHANGELOG.md"
     }
   }
 }
