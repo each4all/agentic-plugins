@@ -37,16 +37,23 @@ After install, the cache directory is at:
 codex plugin marketplace add each4all/agentic-plugins
 ```
 
-Then enable `companions` from the in-app `/plugins` UI or `config.toml`.
-Cache directory layout:
+Then enable `companions` by adding the following to `~/.codex/config.toml`
+(codex-cli 0.128.0 does not expose an in-app enable command):
+
+```toml
+[plugins."companions@agentic-plugins"]
+enabled = true
+```
+
+Marketplace clone location (per ADR-0008 § (b), Amendment 2026-05-04
+verified against codex-cli 0.128.0):
 
 ```
-~/.codex/plugins/cache/agentic-plugins/<segment>/<short-sha>/scripts/
+~/.codex/.tmp/marketplaces/agentic-plugins/plugins/companions/scripts/
 ```
 
-The exact `<segment>` interpretation (source-type `github`/`local` vs
-plugin name) is determined empirically per ADR-0008 § (b); the
-discovery glob pattern (below) handles both shapes.
+The clone is a full git mirror of the marketplace repo and exists
+independently of the plugin's enable state.
 
 ## Discovery for consumer plugins
 
@@ -76,10 +83,10 @@ host's plugin cache for the bundled script:
 ~/.claude/plugins/cache/agentic-plugins/companions/*/scripts/<companion>.mjs
 ```
 
-**Codex CLI**:
+**Codex CLI** (per ADR-0008 § (b), Amendment 2026-05-04):
 
 ```
-~/.codex/plugins/cache/agentic-plugins/*/*/scripts/<companion>.mjs
+~/.codex/.tmp/marketplaces/agentic-plugins/plugins/companions/scripts/<companion>.mjs
 ```
 
 The discovery algorithm (mandatory, applies to both hosts; see ADR-0008
