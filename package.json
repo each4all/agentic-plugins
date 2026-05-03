@@ -15,7 +15,8 @@
   },
   "scripts": {
     "test": "node --test companions/tests/claude-companion.test.mjs companions/tests/codex-companion.test.mjs",
-    "test:smoke": "COMPANIONS_SMOKE=1 node --test companions/tests/claude-companion.smoke.test.mjs companions/tests/codex-companion.smoke.test.mjs"
+    "test:smoke": "COMPANIONS_SMOKE=1 node --test companions/tests/claude-companion.smoke.test.mjs companions/tests/codex-companion.smoke.test.mjs",
+    "validate:marketplace": "node scripts/validate-marketplace.mjs"
   },
   "bin": {
     "claude-companion": "./companions/claude-companion.mjs",

@@ -29,9 +29,9 @@ quickstart and the directional table.
 
 ### Coming next
 
-- Top-level `package.json` + `bin` entries so companions install on PATH
-- GitHub Actions CI (per-host test gates + marketplace JSON validation)
 - First reference plugin (Stage 1 exit criterion per DEVELOPMENT.md)
+- Marketplace catalog schema docs and `kit/lint/` adapter conformance
+- Non-interactive auth story for CI smoke tests (DEVELOPMENT.md Risk #4)
 
 ## Concepts
 

@@ -1,0 +1,38 @@
+name: marketplace-validate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.claude-plugin/marketplace.json'
+      - '.agents/plugins/marketplace.json'
+      - 'scripts/validate-marketplace.mjs'
+      - '.github/workflows/marketplace-validate.yml'
+      - 'package.json'
+  pull_request:
+    paths:
+      - '.claude-plugin/marketplace.json'
+      - '.agents/plugins/marketplace.json'
+      - 'scripts/validate-marketplace.mjs'
+      - '.github/workflows/marketplace-validate.yml'
+      - 'package.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate marketplace catalogs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate both catalogs
+        run: npm run validate:marketplace
