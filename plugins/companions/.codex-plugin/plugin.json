@@ -1,7 +1,7 @@
 {
   "name": "companions",
-  "version": "0.1.0",
-  "description": "First-party Claude/Codex companion bridges per companions/contract.md v0.1.0",
+  "version": "0.1.1",
+  "description": "First-party Claude/Codex companion bridges per companions/contract.md v0.1.1",
   "author": {
     "name": "each4all",
     "url": "https://github.com/each4all"
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Companions",
     "shortDescription": "Cross-host companion bridges (Claude ↔ Codex)",
-    "longDescription": "Script-only library plugin that bundles the canonical claude-companion and codex-companion CLIs. Consumer plugins discover the bundled scripts via cache-glob and invoke them per companions/contract.md v0.1.0 to run cross-host peer-agent ensembles.",
+    "longDescription": "Script-only library plugin that bundles the canonical claude-companion and codex-companion CLIs. Consumer plugins discover the bundled scripts via cache-glob and invoke them per companions/contract.md v0.1.1 to run cross-host peer-agent ensembles.",
     "developerName": "each4all",
     "category": "Productivity",
     "capabilities": ["Read"],

@@ -1,7 +1,7 @@
 {
-  "name": "companions",
-  "version": "0.1.1",
-  "description": "First-party Claude/Codex companion bridges (claude-companion, codex-companion) per companions/contract.md v0.1.1",
+  "name": "research",
+  "version": "0.1.0",
+  "description": "Topic-bound research producing a durable cited brief with bidirectional companion ensemble (Claude ↔ Codex)",
   "author": {
     "name": "each4all"
   },
@@ -9,8 +9,10 @@
   "repository": "https://github.com/each4all/agentic-plugins",
   "license": "MIT",
   "keywords": [
-    "companion",
-    "bridge",
+    "research",
+    "evidence",
+    "citation",
+    "brief",
     "claude",
     "codex",
     "agentic-plugins"

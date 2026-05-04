@@ -1,0 +1,5 @@
+display_name: "Research"
+short_description: "Topic-bound research producing cited brief"
+default_prompt: "Use $research to investigate a topic and produce a cited brief"
+policy:
+  allow_implicit_invocation: false

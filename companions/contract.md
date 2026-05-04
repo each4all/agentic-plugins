@@ -8,7 +8,7 @@
 
 ## Status
 
-- **Version**: `v0.1.0`
+- **Version**: `v0.1.1` (amended from v0.1.0; see ADR-0009 in § 8.1)
 - **Stage**: 1 (first cut, alongside the first reference plugin)
 - **Stance**: wire-spec only — see § 1 Overview & Stance
 - **Change procedure**: this contract changes only via ADR. See § 8
@@ -115,8 +115,11 @@ Exactly one input mode is selected per invocation. Precedence (highest
 priority first):
 
 1. `--prompt-file <path>` — read prompt from the given file (UTF-8).
-2. `PROMPT_ARG` — positional argument, used when `--prompt-file` is not
-   given.
+   When given, **stdin is ignored** regardless of whether stdin is a
+   TTY or a pipe.
+2. `PROMPT_ARG` — positional argument, used when `--prompt-file` is
+   not given. When given, **stdin is ignored** regardless of TTY/pipe
+   state.
 3. **stdin** — used when neither `--prompt-file` nor `PROMPT_ARG` is
    given AND stdin is a pipe (not a TTY).
 
@@ -124,16 +127,19 @@ Conflict and missing-input rules (companion MUST exit with
 `companion_misuse`, exit code `2`, in every case below):
 
 - Both `--prompt-file` and `PROMPT_ARG` are given.
-- `--prompt-file` is given AND stdin is a pipe (not a TTY).
-- `PROMPT_ARG` is given AND stdin is a pipe (not a TTY).
 - No flag, no positional argument, AND stdin is a TTY (no input
   source available).
 
-A piped stdin combined with a higher-precedence flag is treated as a
-**conflict**, not as silently-discarded input. This is deliberate —
-silently discarding stdin would hide caller mistakes (e.g., a pipe
-that was meant to be the prompt). Callers wanting to use stdin MUST
-omit `--prompt-file` and `PROMPT_ARG`.
+Strict precedence semantics: when an explicit input source is given
+(`--prompt-file` or `PROMPT_ARG`), stdin is silently ignored — adapters
+that spawn the companion through `Bash run_in_background` (or any
+mechanism that inherits a non-TTY stdin from the parent shell) cannot
+arrange for stdin to be a TTY at the companion's level, but they have
+provided an explicit input source. Earlier contract version v0.1.0
+treated `--prompt-file + stdin pipe` and `PROMPT_ARG + stdin pipe` as
+conflicts and rejected them; v0.1.1 ignores stdin when an explicit
+source is given. See [ADR-0009](../docs/adr/0009-companion-contract-v0-1-1-prompt-file-stdin-precedence.md)
+for the full rationale.
 
 On any conflict or missing-input case, the companion emits a one-line
 stderr summary describing which rule was violated, in addition to
@@ -549,6 +555,10 @@ Architecture & decisions:
 - [`docs/adr/0007-migration-cutover-plan.md`](../docs/adr/0007-migration-cutover-plan.md)
   — redesign stance: omcc patterns are experiential input only, not a
   port target.
+- [`docs/adr/0009-companion-contract-v0-1-1-prompt-file-stdin-precedence.md`](../docs/adr/0009-companion-contract-v0-1-1-prompt-file-stdin-precedence.md)
+  — v0.1.1 amendment: `--prompt-file` and PROMPT_ARG silently take
+  precedence over stdin; the two `… + piped stdin` conflict cases
+  from v0.1.0 are removed.
 
 Implementation files (in this same directory):
 
@@ -577,14 +587,20 @@ That is the encapsulation guarantee.
 
 ### 8.3 Versioning
 
-- **Current version**: `v0.1.0` — Stage 1 baseline (see Status block
-  at the top of this document).
-- **Compatibility policy**: any change that adds an optional element,
-  optional flag, optional envelope field, or new `error.kind` value
-  *without* removing or renaming existing items is a **minor** bump
-  (e.g., `v0.1.0` → `v0.2.0`). Removing or renaming any pinned name,
-  changing semantics of an existing field, or changing exit-code /
-  `error.kind` mappings is a **major** bump.
+- **Current version**: `v0.1.1` — Stage 1 baseline (see Status block
+  at the top of this document); v0.1.1 amends v0.1.0 per ADR-0009.
+- **Compatibility policy**:
+  - **Patch** bump (e.g., `v0.1.0` → `v0.1.1`): backward-compatible
+    relaxations or bug fixes — every call valid under the prior
+    version remains valid; the patch only widens the accepted-input
+    surface or fixes a defect that does not change pinned names,
+    exit codes, `error.kind` values, or envelope fields.
+  - **Minor** bump (e.g., `v0.1.x` → `v0.2.0`): adds an optional
+    element, optional flag, optional envelope field, or new
+    `error.kind` value *without* removing or renaming existing items.
+  - **Major** bump: removing or renaming any pinned name, changing
+    semantics of an existing field, or changing exit-code /
+    `error.kind` mappings.
 - Pre-1.0 SemVer applies: while below 1.0, anything MAY change at any
   version bump per SemVer 2.0.0; agentic-plugins additionally requires
   every breaking change be ADR-driven (next item).

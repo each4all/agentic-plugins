@@ -15,6 +15,11 @@
       "package-name": "plugin-companions",
       "component": "plugin-companions",
       "changelog-path": "CHANGELOG.md"
+    },
+    "plugins/research": {
+      "package-name": "plugin-research",
+      "component": "plugin-research",
+      "changelog-path": "CHANGELOG.md"
     }
   }
 }
