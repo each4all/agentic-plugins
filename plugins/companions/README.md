@@ -14,7 +14,7 @@ and [`companions/codex-companion.mjs`](../../companions/codex-companion.mjs),
 synced via `npm run sync:companions` and drift-detected in CI.
 
 The wire-spec contract honored by both companions is
-[`companions/contract.md`](../../companions/contract.md) v0.1.0.
+[`companions/contract.md`](../../companions/contract.md) v0.1.1.
 
 ## Install
 
@@ -130,7 +130,7 @@ committing. The sync command preserves the executable bit.
   companion distribution model (this plugin + cache-glob discovery +
   env override)
 - [`companions/contract.md`](../../companions/contract.md) — wire-spec
-  contract v0.1.0
+  contract v0.1.1
 - [ADR-0001](../../docs/adr/0001-hexagonal-architecture.md) — layered
   separation (CORE / ADAPTER / COMPANION)
 - [ADR-0004](../../docs/adr/0004-companion-ownership.md) — first-party

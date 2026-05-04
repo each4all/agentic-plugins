@@ -196,22 +196,25 @@ describe('§ 2.3 — resolvePromptInput', () => {
     );
   });
 
-  it('throws on --prompt-file + piped stdin', async () => {
-    const parsed = parseArguments(['task', '--prompt-file', '/x']);
-    const stdin = new FakeStdin('extra', { isTTY: false });
-    await assert.rejects(
-      () => resolvePromptInput({ parsed, stdin }),
-      /--prompt-file conflicts with piped stdin/,
-    );
+  it('ignores piped stdin when --prompt-file is given (v0.1.1 strict precedence)', async () => {
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'codex-companion-'));
+    const file = path.join(tmp, 'prompt.xml');
+    writeFileSync(file, '<task>file</task>', 'utf8');
+    try {
+      const parsed = parseArguments(['task', '--prompt-file', file]);
+      const stdin = new FakeStdin('<task>extra</task>', { isTTY: false });
+      const r = await resolvePromptInput({ parsed, stdin });
+      assert.equal(r, '<task>file</task>');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
-  it('throws on PROMPT_ARG + piped stdin', async () => {
-    const parsed = parseArguments(['task', 'inline']);
-    const stdin = new FakeStdin('extra', { isTTY: false });
-    await assert.rejects(
-      () => resolvePromptInput({ parsed, stdin }),
-      /PROMPT_ARG conflicts with piped stdin/,
-    );
+  it('ignores piped stdin when PROMPT_ARG is given (v0.1.1 strict precedence)', async () => {
+    const parsed = parseArguments(['task', '<task>arg</task>']);
+    const stdin = new FakeStdin('<task>extra</task>', { isTTY: false });
+    const r = await resolvePromptInput({ parsed, stdin });
+    assert.equal(r, '<task>arg</task>');
   });
 
   it('throws when no input source is given (stdin TTY)', async () => {
@@ -759,6 +762,6 @@ describe('main() integration', () => {
 
 describe('contract version export', () => {
   it('exports CONTRACT_VERSION matching contract.md', () => {
-    assert.equal(CONTRACT_VERSION, '0.1.0');
+    assert.equal(CONTRACT_VERSION, '0.1.1');
   });
 });

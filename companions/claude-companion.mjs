@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Codex → Claude companion bridge.
-// Implements companions/contract.md v0.1.0 against the public `claude` CLI
+// Implements companions/contract.md v0.1.1 against the public `claude` CLI
 // (claude -p, non-interactive). See contract.md for the wire surface this
 // script must honor; this file deliberately stays close to that vocabulary.
 
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 export const PEER_HOST = 'claude';
 export const PEER_CLI_BIN = 'claude';
-export const CONTRACT_VERSION = '0.1.0';
+export const CONTRACT_VERSION = '0.1.1';
 
 export const EXIT_SUCCESS = 0;
 export const EXIT_PEER_RUN_ERROR = 1;
@@ -113,15 +113,11 @@ export async function resolvePromptInput({ parsed, stdin = process.stdin }) {
   const { promptArg, options: { promptFile } } = parsed;
   const stdinIsPipe = !stdin.isTTY;
 
-  // § 2.3 conflict detection — every dual-input combination is a misuse.
+  // § 2.3 strict precedence (v0.1.1): --prompt-file > PROMPT_ARG > stdin.
+  // The two explicit input sources silently win over stdin regardless of
+  // TTY/pipe state. Conflict only when two explicit sources are given.
   if (promptFile && promptArg !== null) {
     throw new CompanionMisuseError('--prompt-file and PROMPT_ARG are mutually exclusive');
-  }
-  if (promptFile && stdinIsPipe) {
-    throw new CompanionMisuseError('--prompt-file conflicts with piped stdin');
-  }
-  if (promptArg !== null && stdinIsPipe) {
-    throw new CompanionMisuseError('PROMPT_ARG conflicts with piped stdin');
   }
   if (!promptFile && promptArg === null && !stdinIsPipe) {
     throw new CompanionMisuseError('no prompt input given (use --prompt-file, PROMPT_ARG, or piped stdin)');

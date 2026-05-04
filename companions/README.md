@@ -4,9 +4,10 @@ Bidirectional companion bridges between Claude Code and OpenAI Codex CLI.
 
 ## Status
 
-Stage 1 companion layer complete: contract `v0.1.0` plus both implementations
-shipped (PRs #1, #2, #3 merged on main). See `docs/DEVELOPMENT.md` § Stage 1
-for the broader Stage 1 scope.
+Stage 1 companion layer complete: contract `v0.1.1` (amended from
+v0.1.0 per ADR-0009) plus both implementations shipped (PRs #1, #2,
+#3 merged on main). See `docs/DEVELOPMENT.md` § Stage 1 for the
+broader Stage 1 scope.
 
 ## Contents
 
@@ -14,7 +15,7 @@ for the broader Stage 1 scope.
   implement. Pin-point reference for: invocation surface (CLI subcommand +
   flags), prompt structure (XML vocabulary), output convention (text +
   optional JSON envelope), error semantics (exit codes + named error
-  kinds). Versioned independently (current: `v0.1.0`).
+  kinds). Versioned independently (current: `v0.1.1`).
 - **[`claude-companion.mjs`](claude-companion.mjs)** — Codex → Claude peer-agent
   invocation. Shells out to the public `claude -p` CLI.
 - **[`codex-companion.mjs`](codex-companion.mjs)** — Claude → Codex peer-agent
