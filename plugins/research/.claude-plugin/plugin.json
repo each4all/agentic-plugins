@@ -1,0 +1,20 @@
+{
+  "name": "research",
+  "version": "0.1.0",
+  "description": "Topic-bound research producing a durable cited brief with bidirectional companion ensemble (Claude ↔ Codex)",
+  "author": {
+    "name": "each4all"
+  },
+  "homepage": "https://github.com/each4all/agentic-plugins",
+  "repository": "https://github.com/each4all/agentic-plugins",
+  "license": "MIT",
+  "keywords": [
+    "research",
+    "evidence",
+    "citation",
+    "brief",
+    "claude",
+    "codex",
+    "agentic-plugins"
+  ]
+}
