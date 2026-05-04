@@ -2,8 +2,13 @@
 // kit/lint/check-plugin-shape.mjs — generic plugin-shape validator
 //
 // Validates that a directory has the canonical agentic-plugins plugin
-// shape: a Claude manifest, a Codex manifest, consistent names, and any
-// shipped scripts/ files have the executable bit set.
+// shape: a Claude manifest, a Codex manifest, consistent names, any
+// shipped script files have the executable bit set, and the Codex
+// manifest's `skills` path (if declared) resolves to a real directory.
+//
+// Script-bearing directories scanned for executable bit:
+//   <plugin-dir>/scripts/                            (script-only library plugins)
+//   <plugin-dir>/adapters/<host>/scripts/            (per-host adapter scripts)
 //
 //   node kit/lint/check-plugin-shape.mjs <plugin-dir>
 //
@@ -12,11 +17,11 @@
 //   1 — plugin-shape errors found
 //   2 — misuse (bad arguments, plugin-dir not a directory)
 //
-// This is the "minimal" Stage 1 lint per Deliverable B.10. Additional
-// checks (e.g. drift detection between bundled and canonical scripts,
-// SemVer cross-version constraints, marketplace registration coverage)
-// remain in their own scripts/tests and may be folded in here as the
-// kit/lint surface matures.
+// This is the "minimal" Stage 1 lint per Deliverable B.10, generalized
+// in C.2 to handle adapter-bearing plugins (e.g., plugins/research/).
+// Additional checks (drift detection, SemVer cross-version constraints,
+// marketplace registration coverage) remain in their own scripts/tests
+// and may be folded in here as the kit/lint surface matures.
 
 import { readFile, stat, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -100,25 +105,59 @@ if (claudeManifest && codexManifest && claudeManifest.name !== codexManifest.nam
   errors.push(`manifest name mismatch — claude="${claudeManifest.name}" vs codex="${codexManifest.name}"`);
 }
 
-const scriptsDir = resolve(PLUGIN_DIR, 'scripts');
-if (await exists(scriptsDir)) {
+async function checkScriptsDir(label, dir) {
+  if (!(await exists(dir))) return;
   let entries = [];
   try {
-    entries = await readdir(scriptsDir, { withFileTypes: true });
+    entries = await readdir(dir, { withFileTypes: true });
   } catch (err) {
-    errors.push(`scripts/: ${err.message}`);
+    errors.push(`${label}: ${err.message}`);
+    return;
   }
   for (const entry of entries) {
     if (!entry.isFile()) continue;
     if (!entry.name.endsWith('.mjs') && !entry.name.endsWith('.js') && !entry.name.endsWith('.sh')) continue;
-    const filePath = resolve(scriptsDir, entry.name);
+    const filePath = resolve(dir, entry.name);
     try {
       const st = await stat(filePath);
       if ((st.mode & 0o111) === 0) {
-        errors.push(`scripts/${entry.name}: executable bit not set`);
+        errors.push(`${label}/${entry.name}: executable bit not set`);
       }
     } catch (err) {
-      errors.push(`scripts/${entry.name}: ${err.message}`);
+      errors.push(`${label}/${entry.name}: ${err.message}`);
+    }
+  }
+}
+
+await checkScriptsDir('scripts', resolve(PLUGIN_DIR, 'scripts'));
+
+const adaptersDir = resolve(PLUGIN_DIR, 'adapters');
+if (await exists(adaptersDir)) {
+  let hostEntries = [];
+  try {
+    hostEntries = await readdir(adaptersDir, { withFileTypes: true });
+  } catch (err) {
+    errors.push(`adapters/: ${err.message}`);
+  }
+  for (const host of hostEntries) {
+    if (!host.isDirectory()) continue;
+    const hostScripts = resolve(adaptersDir, host.name, 'scripts');
+    await checkScriptsDir(`adapters/${host.name}/scripts`, hostScripts);
+  }
+}
+
+if (codexManifest && typeof codexManifest.skills === 'string' && codexManifest.skills.length > 0) {
+  const skillsPath = resolve(PLUGIN_DIR, codexManifest.skills);
+  if (!(await exists(skillsPath))) {
+    errors.push(`.codex-plugin/plugin.json: skills path "${codexManifest.skills}" does not resolve to an existing directory`);
+  } else {
+    try {
+      const st = await stat(skillsPath);
+      if (!st.isDirectory()) {
+        errors.push(`.codex-plugin/plugin.json: skills path "${codexManifest.skills}" is not a directory`);
+      }
+    } catch (err) {
+      errors.push(`.codex-plugin/plugin.json: skills path "${codexManifest.skills}" stat failed: ${err.message}`);
     }
   }
 }

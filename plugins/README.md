@@ -8,12 +8,23 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
 
 - **`companions/`** — first-party Claude/Codex companion bridges
   (claude-companion, codex-companion) per `companions/contract.md`
-  v0.1.0. Script-only library plugin per
+  v0.1.1. Script-only library plugin per
   [ADR-0008](../docs/adr/0008-companion-distribution-model.md). Consumer
   plugins discover the bundled scripts via cache-glob (or
   `AGENTIC_COMPANIONS_ROOT` env override). See
   [`plugins/companions/README.md`](companions/README.md) for install,
   discovery, and drift-protection details.
+- **`research/`** — Stage 1 reference plugin: topic-bound research
+  producing a durable cited brief, with bidirectional companion
+  ensemble (Claude → Codex via `codex-companion`, Codex → Claude via
+  `claude-companion`). Per
+  [ADR-0007](../docs/adr/0007-migration-cutover-plan.md), this plugin
+  references omcc-research as a lesson source, not a 1:1 port; the
+  redesign moves to host-neutral `LOCAL-ONLY/PEER-ONLY` synthesis,
+  drops the cross-plugin backtick-prohibition workaround, and adds
+  `RESEARCH_OUTPUT_ROOT` sandboxing. See
+  [`plugins/research/README.md`](research/README.md) for install,
+  invocation, and environment details.
 
 ## Planned plugins (tentative)
 
@@ -21,11 +32,6 @@ Per `docs/adr/0007-migration-cutover-plan.md`, plugin names and
 structures are agentic-plugins' own design — not 1:1 ports of omcc.
 omcc plugins serve as **experiential reference**, not porting targets.
 
-- **Stage 1 (in progress)**: `research/` — reference plugin that uses
-  the companions bridge for cross-host peer-agent ensembles. Domain,
-  skill structure, and command surface are agentic-plugins' own design,
-  drawing on omcc-research's experience. Tracked as Deliverable C of
-  the Stage 1 exit workflow
 - **Stage 2**: self-development plugin (name TBD) — references
   omcc-dev's workflow experience (`/start`, `/fix`, `/audit`, brainstorm,
   continuity, ensemble, etc.). Keep what works, redesign what doesn't,

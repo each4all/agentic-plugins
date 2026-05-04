@@ -9,28 +9,42 @@ bridges owned by agentic-plugins.
 
 ## Status
 
-Stage 1 in progress. The companion layer ships now; reference plugins
-follow. The architecture and foundational decisions are captured in
+Stage 1: companion layer + first reference plugin shipped. The
+architecture and foundational decisions are captured in
 [`docs/adr/`](docs/adr/) and the overall design in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Stage roadmap lives in
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ### Available now
 
-The `companions/` layer is wire-spec complete (`v0.1.0`) with both
+The `companions/` layer is wire-spec complete (`v0.1.1`) with both
 bridges implemented and tested:
 
 - [`companions/contract.md`](companions/contract.md) — wire contract
 - [`companions/claude-companion.mjs`](companions/claude-companion.mjs) — Codex → Claude bridge
 - [`companions/codex-companion.mjs`](companions/codex-companion.mjs) — Claude → Codex bridge
 
-See [`companions/README.md`](companions/README.md) for invocation
-quickstart and the directional table.
+Two installable plugins ship in this repository:
+
+- [`plugins/companions/`](plugins/companions/) — script-only library
+  plugin that bundles the canonical companion CLIs for cache-glob
+  discovery by consumer plugins (per
+  [ADR-0008](docs/adr/0008-companion-distribution-model.md))
+- [`plugins/research/`](plugins/research/) — Stage 1 reference plugin:
+  topic-bound research producing a durable cited brief, with
+  bidirectional companion ensemble. References omcc-research as
+  lesson source, not a 1:1 port (per
+  [ADR-0007](docs/adr/0007-migration-cutover-plan.md))
+
+See each plugin's README for install commands, invocation, and
+environment details.
 
 ### Coming next
 
-- First reference plugin (Stage 1 exit criterion per DEVELOPMENT.md)
-- Marketplace catalog schema docs and `kit/lint/` adapter conformance
+- Stage 2: self-development plugin (omcc-dev workflow patterns
+  redesigned for dual-host)
+- Marketplace catalog schema docs and broader `kit/lint/` adapter
+  conformance checks
 - Non-interactive auth story for CI smoke tests (DEVELOPMENT.md Risk #4)
 
 ## Concepts
@@ -42,16 +56,19 @@ quickstart and the directional table.
 
 ## For consumers
 
-Install paths for plugins will be documented once the first reference
-plugin ships:
-
-```
-# Claude Code (planned)
+```sh
+# Claude Code
 /plugin marketplace add each4all/agentic-plugins
+/plugin install companions@agentic-plugins
+/plugin install research@agentic-plugins
 
-# OpenAI Codex CLI (planned)
+# OpenAI Codex CLI
 codex plugin marketplace add each4all/agentic-plugins
+# then enable plugins in ~/.codex/config.toml — see plugins/companions/README.md
 ```
+
+Each plugin's README documents its invocation surface and environment
+variables.
 
 ## For developers
 
