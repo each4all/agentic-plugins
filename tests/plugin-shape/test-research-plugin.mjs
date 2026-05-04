@@ -175,14 +175,16 @@ describe('plugins/research — Codex agents YAML (skills/research/agents/openai.
     ok(await exists(path), 'agents/openai.yaml missing');
   });
 
-  it('declares display_name and a default_prompt mentioning $research', async () => {
+  it('has interface block with display_name=Research and default_prompt mentioning $research (Codex agents/openai.yaml schema)', async () => {
     const yaml = await readFile(path, 'utf8');
-    ok(/^display_name:\s*["']?Research/m.test(yaml), 'display_name missing or != Research');
+    ok(/^interface:\s*$/m.test(yaml), 'interface block missing — Codex skill loader requires display_name etc. nested under interface:');
+    ok(/^\s+display_name:\s*["']?Research/m.test(yaml), 'interface.display_name missing or != Research');
     ok(/\$research/.test(yaml), 'default_prompt does not mention $research');
   });
 
   it('policy.allow_implicit_invocation is false (D.1 — explicit $research only)', async () => {
     const yaml = await readFile(path, 'utf8');
+    ok(/^policy:\s*$/m.test(yaml), 'policy block missing');
     ok(/allow_implicit_invocation:\s*false/m.test(yaml), 'allow_implicit_invocation should be false');
   });
 });
