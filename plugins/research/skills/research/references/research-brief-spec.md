@@ -107,7 +107,7 @@ weight in confidence ratings than secondary sources.
 When the research skill runs in command-invoked mode, the bidirectional
 research-scan ensemble (per
 `skills/research/references/ensemble-protocol.md`, which calls peer-host
-CLIs through `companions/contract.md` v0.1.0) may contribute claims and
+CLIs through `companions/contract.md` v0.1.1) may contribute claims and
 sources. The brief artifact does NOT carry any source-of-discovery
 labels:
 
