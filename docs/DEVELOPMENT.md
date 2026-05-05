@@ -95,12 +95,44 @@ verification path.
 
 ### Stage 2 — Self-development plugin
 
-- A new agentic-plugins plugin ships (name TBD — not constrained to mirror omcc-dev):
-  - References omcc-dev's workflow experience (`/start`, `/fix`, `/audit`, brainstorm, continuity, ensemble, etc.) — keep what works, redesign what doesn't, scope to what genuinely benefits from dual-host
-  - Uses agentic-plugins' own framework (skills + adapters + companions)
-  - Implements orchestration natively per host (Claude auto-delegation, Codex explicit-dispatch)
-- agentic-plugins development workflows switch from `omcc-dev` to this plugin
+- New plugin ships: **`plugins/engineer`** (canonical L3 persona name per ADR-0010). Plugin-name level aliases (e.g., `/dev:` as marketplace alias) are NOT supported in Stage 2 — marketplace contract requires plugin name = catalog name = folder name = manifest name. Verb-level aliases within `engineer` (e.g., `/engineer:audit` ≡ `/engineer:critique --profile=full-codebase`) are permitted (ADR-0010 §3)
+- Implements 4-layer composition (ADR-0010): L3 engineer plugin composes L2 research capability and L1 companions framework
+- 6 universal cognitive verb skills (Investigate / Frame / Decide / Compose / Critique / Refine), naming `<persona>:<verb>` + profile arg
+- References omcc-dev workflow experience (start, fix, audit, brainstorm, continuity, ensemble) but redesigned per ADR-0007 — keep what works (privacy gate, ensemble, structured workflow), drop accumulated structural debt (sharded layout, drift classification, multi-active workflows are Stage 2.5+ concerns per ADR-0011)
+- Minimal continuity Option III per ADR-0011: workflow state file (markdown + YAML frontmatter) + four hooks (Claude `PreCompact` mid-session, Claude `Stop` end-of-session, Claude `SessionStart` for new-session summary injection, Codex `Stop` end-of-session) for automatic snapshot and resume awareness. Single-active workflow constraint enforced by directory-level creation lock
+- Always-max bidirectional ensemble policy: every phase boundary auto-dispatches the **other host's** peer-agent via companions (Claude session dispatches to Codex via `codex-companion`; Codex session dispatches to Claude via `claude-companion`). User does not choose
+- agentic-plugins development workflows switch from `omcc-dev` to `plugins/engineer`
 - The omcc-dev dependency for agentic-plugins development is dropped
+
+#### Stage 2 deliverable plan (5 sharded deliverables)
+
+| # | Deliverable | Summary |
+|---|-------------|---------|
+| A | Foundation | ADR-0010 + ADR-0011 + AGENTS/ARCHITECTURE/DEVELOPMENT updates + plugin name `engineer` confirmed + Stage 2 non-goals (9 items per ADR-0011) + command surface path contract |
+| B | kit/discovery extraction | Promote `discover-companion.mjs` from per-plugin duplicate to `kit/discovery/` shared helper. research migration + regression smoke (Stage 1 behavior preserved). Trigger: engineer is the 2nd consumer per ADR-0008 §b.1 |
+| C | engineer plugin core | `plugins/engineer/{.claude-plugin, .codex-plugin, README, CHANGELOG}` + `skills/{investigate,frame,decide,compose,critique,refine}/SKILL.md` × 6 + `skills/_shared/references/` + `skills/<verb>/agents/openai.yaml` × 6 + marketplace catalog updates |
+| D | Adapters + minimal continuity | `commands/<verb>.md` × 6 + verb-level sugar aliases (e.g., `audit` → `critique --profile=full-codebase`) + `adapters/{claude,codex}/{hooks, scripts, agents}` + workflow state I/O + four hooks per ADR-0011 §4 (Claude `PreCompact` + Claude `Stop` + Claude `SessionStart` + Codex `Stop`). Risk mitigation: 1 verb (`investigate`) end-to-end first |
+| E | Validation + dogfood | `tests/plugin-shape/test-engineer-plugin.mjs` (multi-skill variant) + unit tests + remaining 5 verbs activation (after the `investigate` end-to-end proof in D, E completes the other 5 so all 6 verbs are validated end-to-end before Stage 2 exit) + omcc-dev disabled dogfood + DEVELOPMENT.md Stage 2 exit evidence |
+
+#### Stage 2 non-goals (explicit, ADR-0011 §Non-Goals)
+
+These are intentionally **out of scope**:
+
+1. Sharded workflow layout
+2. Drift classification
+3. Cross-host workflow id portability
+4. omcc-dev → engineer data migration script (clean start per ADR-0007)
+5. Multi-active workflows
+6. `/engineer:resume`, `/engineer:checkpoint`, `/engineer:audit` as separate commands (resume implicit; audit ≈ `critique --profile=full-codebase` verb-level alias)
+7. Active registry file (directory listing IS the registry in Stage 2)
+8. Per-step state mutation lock-ordering across multiple files or shards (single-file = trivial lock-order)
+9. Plugin-name level marketplace aliases (e.g., `/dev:` as alias for `/engineer:`) — marketplace contract constraint; verb-level aliases inside a plugin are permitted
+
+Composition / non-continuity scope (ADR-0010 separation triggers):
+
+10. Companions runtime absorption — separate `runtime` plugin only when 2+ consumers prove need (per ADR-0010 §6 trigger #1)
+
+Out-of-scope items become Stage 2.5+ ADR follow-ups if the dogfood phase reveals genuine need.
 
 ### Stage 3 — Design domain and remaining workflows
 

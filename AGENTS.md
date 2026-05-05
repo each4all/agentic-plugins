@@ -43,22 +43,33 @@ agentic-plugins/
 ├── .agents/
 │   └── plugins/
 │       └── marketplace.json        # Codex CLI marketplace catalog
-├── companions/                     # Bidirectional bridges (first-party)
+├── companions/                     # Bidirectional bridges (first-party, source of truth)
 │   ├── README.md
-│   └── (claude-companion.mjs, codex-companion.mjs, contract.md — TBD)
+│   ├── contract.md                 # Wire-spec v0.1.1 (ADR-0009)
+│   ├── claude-companion.mjs        # Codex → Claude bridge
+│   ├── codex-companion.mjs         # Claude → Codex bridge
+│   └── tests/                      # unit + smoke (COMPANIONS_SMOKE=1)
 ├── kit/                            # Plugin authoring toolkit
 │   ├── README.md
-│   └── (adapter-generator/, manifest-templates/, lint/ — TBD)
-├── plugins/                        # Reference dual-host plugins
+│   ├── lint/                       # Plugin shape conformance checks
+│   └── (discovery/ — Stage 2 Deliverable B)
+├── plugins/                        # Reference dual-host plugins (4-layer per ADR-0010)
 │   ├── README.md
-│   └── (per-plugin directories — TBD)
+│   ├── companions/                 # L1 framework primitive — script-only library plugin (ADR-0008)
+│   ├── research/                   # L2 capability — topic-bound research, Stage 1 reference plugin
+│   └── (engineer/ — L3 persona, Stage 2 Deliverable C)
+├── scripts/
+│   ├── sync-companion-bundles.mjs  # drift-checked companion script copy
+│   └── validate-marketplace.mjs    # marketplace catalog validation
+├── tests/
+│   └── plugin-shape/               # per-plugin shape conformance tests
 └── docs/
-    ├── ARCHITECTURE.md             # Overall design overview
+    ├── ARCHITECTURE.md             # Overall design overview (4-layer per ADR-0010)
     ├── DEVELOPMENT.md              # How agentic-plugins is itself developed
     └── adr/                        # Architecture Decision Records
         ├── README.md               # ADR index
         ├── template.md             # Standard ADR template
-        └── 0001..0007-*.md         # Decisions
+        └── 0001..0011-*.md         # Decisions
 ```
 
 ---
@@ -66,14 +77,43 @@ agentic-plugins/
 ## Architecture in one paragraph
 
 agentic-plugins uses **Hexagonal architecture (ports and adapters)** applied to
-AI agent plugins. The **core** layer holds host-neutral, standards-aligned
-assets (Agent Skills SKILL.md, MCP servers, persona descriptions, prompt
-templates). The **adapter** layer per host implements the host's runtime
+AI agent plugins (ADR-0001), extended with a **4-layer composition model**
+per ADR-0010:
+
+1. **Layer 1 — Framework primitive** (`plugins/companions`): cross-host
+   peer-agent invocation infrastructure
+2. **Layer 2 — Capability** (`plugins/research`): persona-agnostic
+   activities reusable by multiple personas
+3. **Layer 3 — Persona / workbench** (`plugins/engineer` Stage 2,
+   `plugins/designer` Stage 3): user-facing install unit, composes
+   capabilities through profiles
+4. **Layer 4 — Profile** (sub-discipline within persona, e.g.,
+   `engineer:backend`, `designer:ui`): configuration data carrying
+   discipline-specific context
+
+Skills inside each L3/L2 plugin follow the **6 universal cognitive
+verbs**: Investigate / Frame / Decide / Compose / Critique / Refine
+(ADR-0010). Canonical names per layer:
+
+- **L3 persona plugins** use `<persona>:<verb>` (e.g.,
+  `/engineer:investigate`, `/designer:critique`)
+- **L2 capability plugins** use `<capability>:<verb>` (e.g.,
+  future `/decision:decide`, `/decision:critique`)
+- **Single-verb capability plugins** are a special case where
+  plugin name and verb collide: `<capability>:<capability>`. The
+  shipped Stage 1 `plugins/research` is exactly this case — its
+  one command is `/research:research` (Investigate is implicit
+  in the plugin name). See ADR-0010 §3 for the special-case rule
+
+Profile and topic flow as arguments. Verb-level sugar aliases
+within a plugin are permitted (ADR-0010 §3); plugin-name level
+marketplace aliases are not (ADR-0011 §Non-Goals item 9).
+
+The **adapter** sub-layer per host implements the host's runtime
 model (manifest schemas, hook event/payload mapping, orchestration
-patterns, continuity protocols). The **companion** layer holds two
-bridges — one in each direction — that allow either host to invoke the
-other as a peer agent for open-ended turns. See ADRs 0001–0006 for the
-specifics.
+patterns, continuity protocols). The **companion** layer (Layer 1)
+holds two bridges — one in each direction — for peer-agent
+invocation. See ADRs 0001–0011 for the specifics.
 
 ---
 
@@ -180,21 +220,20 @@ shape:
 
 ## Current state and next session
 
-Stage 0 (Scaffolding) is complete:
+**Stage 0 (Scaffolding)** — complete (2026-04 to 2026-05-02). All 7 ADRs accepted (0001–0007), tooling decided, LICENSE in place.
 
-- All 7 ADRs accepted (0001–0007). See `docs/adr/`
-- Tooling decided (Node + pnpm + vitest + prettier + GitHub Actions + release-please + MIT). See `docs/DEVELOPMENT.md` § Tooling
-- LICENSE in place (MIT)
-- No plugins or companions implemented yet
+**Stage 1 (Reference plugin + companion contract)** — complete (2026-05-05). Shipped `plugins/companions` (script-only library) and `plugins/research` (single-skill capability with bidirectional companion ensemble). Round-trip verification: bidirectional companion calls succeed in both directions; per-host CI gates (`claude-tests.yml`, `codex-tests.yml`) green on every push. The two reference brief artifacts (`output/` directory, gitignored locally) demonstrate the protocol but are not committed evidence — exit verification is the green CI runs and the protocol acceptance documented in `docs/DEVELOPMENT.md` §Stage 1 exit evidence.
 
-Next session — Stage 1 (see `docs/DEVELOPMENT.md` § Stage 1):
+**Stage 2 (Self-development plugin)** — in progress. ADRs 0010 (plugin boundary policy + 4-layer composition + 6 universal verbs) and 0011 (workflow continuity Option III storage) drafted. Building `plugins/engineer` (canonical L3 persona name; plugin-name level marketplace aliases like `/dev:` are a Stage 2 non-goal per ADR-0011 §9). Verb-level aliases inside the plugin (e.g., `/engineer:audit` ≡ `/engineer:critique --profile=full-codebase`) are permitted (ADR-0010 §3). 5 deliverables (A foundation → B kit/discovery → C plugin core + 6 verb skills → D adapters + minimal continuity → E validation + dogfood). Stage 2 exit gate: `plugins/engineer` can drive its own development without omcc-dev.
 
-1. Read this `AGENTS.md`, then `docs/ARCHITECTURE.md`, then ADRs 0001–0007 (especially 0007 for the redesign stance — agentic-plugins is not a 1:1 omcc port)
-2. Draft `companions/contract.md` — XML prompt structure, output parsing rules, error semantics
-3. Implement both companion CLIs (`claude-companion.mjs`, `codex-companion.mjs`)
-4. Design the Stage 1 reference plugin (research-domain) — name, structure, and command surface are agentic-plugins' own design, referencing omcc-research's experience (see ADR-0007 redesign stance)
-5. Wire up per-host CI gates and marketplace JSON validation per `docs/DEVELOPMENT.md` § CI
-6. Push to GitHub when ready (`each4all/agentic-plugins`)
+**Stage 3 (Design domain)** — planned. Will ship `plugins/designer` referencing omcc-designer experience under same 4-layer composition.
+
+Next steps within Stage 2:
+
+1. Read this `AGENTS.md`, then `docs/ARCHITECTURE.md`, then ADRs 0001–0011 (especially 0010 for plugin boundary policy and 0011 for continuity scope)
+2. Continue Stage 2 Deliverables B → E per `docs/DEVELOPMENT.md` §Stage 2
+3. Stage 2 dogfood verification = Stage 2 exit
+4. Stage 3 (designer plugin) brainstorm + plan
 
 ---
 
