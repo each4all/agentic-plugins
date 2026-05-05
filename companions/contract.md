@@ -80,8 +80,10 @@ The contract defines exactly **one mandatory subcommand**: `task`.
 ```
 
 `PROMPT_ARG` is a positional argument carrying the XML-structured
-prompt as a single string. It is mutually exclusive with `--prompt-file`
-and stdin (see § 2.3 Prompt input precedence).
+prompt as a single string. It is mutually exclusive with `--prompt-file`;
+when given, stdin is silently ignored regardless of TTY state.
+See § 2.3 Prompt input precedence for the full rule (and ADR-0009 for
+the v0.1.1 amendment that introduced strict precedence).
 
 Adding new subcommands is a contract change and requires an ADR
 (see § 6 Out of Scope on subcommand sprawl).
