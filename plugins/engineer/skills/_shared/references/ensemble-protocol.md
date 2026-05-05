@@ -97,9 +97,13 @@ Every ensemble point follows three steps: **Launch**, **Collect**,
    companions `task --prompt-file <path>` subcommand; the
    ensemble's intent is encoded entirely in the XML prompt body.
 4. Invoke the companion as a background task with the prompt
-   written to a tempfile. The orchestrator host's adapter
-   (`plugins/engineer/adapters/<host>/scripts/dispatch-peer.mjs`,
-   added in Deliverable D) implements this dispatch.
+   written to a tempfile. The host-shared canonical wrapper
+   (`plugins/engineer/scripts/dispatch-peer.mjs`, added in
+   Deliverable D) implements this dispatch — both Claude and Codex
+   sides import it. The orchestrator's slash command (Claude) or
+   skill agent (Codex) is responsible for arranging background
+   execution per its own host primitives (Bash `run_in_background`
+   on Claude; Codex `task` subcommand on Codex side).
 5. The orchestrator proceeds immediately to its own parallel
    analysis.
 
@@ -144,19 +148,24 @@ Synthesis output replaces the standard single-model output. Follow
 the Presentation Mode Protocol (`presentation-protocol.md`) for the
 synthesized result.
 
-### State Bookkeeping (Deliverable D)
+### State Bookkeeping (Stage 2)
 
-Workflow file frontmatter records (`pending_ensemble`,
-`ensemble_results`) are defined by `continuity-protocol.md` in
-Deliverable D. This Stage 2 ensemble protocol focuses on dispatch +
-synthesis; the persistence contract is added when the
-continuity-protocol is finalized.
+Stage 2 records ensemble dispatch and synthesis results in the
+workflow file's **Markdown body** as phase notes — not in frontmatter.
+ADR-0011 §2 schema 1 is closed; the frontmatter set is fixed and
+extending it requires a follow-up ADR (out of Stage 2 scope).
 
-When continuity is added, every ensemble dispatch SHALL record an
-in-flight entry at Step 1 Launch and clear it at Step 2 Collect (or
-in the same atomic mutation that appends the synthesized
-`ensemble_results` row at Step 3), per `continuity-protocol.md`
-schema.
+Each phase note appended via `state.mjs append --phase-note ...`
+captures the ensemble in human-readable form:
+- in-flight markers: `### Ensemble launched: <type> at <iso-utc>`
+  near the phase boundary
+- synthesis results: `### Ensemble synthesis: <type> verdict=<...>`
+  followed by the AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown
+
+This satisfies the "every dispatch is recorded" principle without
+amending ADR-0011 schema 1. Frontmatter promotion of
+`pending_ensemble` / `ensemble_results` is explicitly deferred to a
+future ADR (post-Stage 2).
 
 ---
 
