@@ -43,3 +43,4 @@ old one, and change the old one's status to `Superseded by ADR-NNNN`.
 | [0006](0006-directory-layout-install-pattern.md) | Directory layout + install pattern | Accepted |
 | [0007](0007-migration-cutover-plan.md) | Migration cutover plan from omcc to agentic-plugins | Accepted |
 | [0008](0008-companion-distribution-model.md) | Companion distribution model — `companions` plugin + cache-glob discovery + env override | Accepted |
+| [0009](0009-companion-contract-v0-1-1-prompt-file-stdin-precedence.md) | Companion contract v0.1.1 — `--prompt-file` and `PROMPT_ARG` precedence over stdin | Accepted |
