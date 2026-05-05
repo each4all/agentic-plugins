@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../..');
 const CANONICAL_DIR = resolve(REPO_ROOT, 'companions');
 const BUNDLE_DIR = resolve(REPO_ROOT, 'plugins/companions/scripts');
-const SCRIPTS = ['claude-companion.mjs', 'codex-companion.mjs'];
+const SCRIPTS = ['claude-companion.mjs', 'codex-companion.mjs', 'discover-peer.mjs'];
 
 const args = process.argv.slice(2);
 const writeMode = args.includes('--write');
