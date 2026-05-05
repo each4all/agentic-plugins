@@ -1,0 +1,7 @@
+interface:
+  display_name: "Engineer — Frame"
+  short_description: "Turn evidence into a structured problem model"
+  default_prompt: "Use $engineer:frame to articulate goals, constraints, success criteria"
+
+policy:
+  allow_implicit_invocation: false

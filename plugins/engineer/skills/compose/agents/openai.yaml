@@ -1,0 +1,7 @@
+interface:
+  display_name: "Engineer — Compose"
+  short_description: "Produce code, plans, briefs, specs"
+  default_prompt: "Use $engineer:compose --profile=plan to plan, --profile=code to implement"
+
+policy:
+  allow_implicit_invocation: false

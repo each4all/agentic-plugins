@@ -28,6 +28,18 @@
         "authentication": "ON_USE"
       },
       "category": "Research"
+    },
+    {
+      "name": "engineer",
+      "source": {
+        "source": "local",
+        "path": "./plugins/engineer"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Development"
     }
   ]
 }
