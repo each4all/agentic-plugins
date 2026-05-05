@@ -1,6 +1,6 @@
 {
   "name": "research",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Topic-bound research producing a durable cited brief with bidirectional companion ensemble (Claude ↔ Codex)",
   "author": {
     "name": "each4all"

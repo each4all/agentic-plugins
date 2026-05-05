@@ -1,6 +1,6 @@
 {
   "name": "companions",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "First-party Claude/Codex companion bridges (claude-companion, codex-companion) and companion discovery library (discover-peer.mjs) per companions/contract.md v0.1.1",
   "author": {
     "name": "each4all"

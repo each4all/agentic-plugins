@@ -18,17 +18,17 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "plugins/companions/.claude-plugin/plugin.json",
+          "path": ".claude-plugin/plugin.json",
           "jsonpath": "$.version"
         },
         {
           "type": "json",
-          "path": "plugins/companions/.codex-plugin/plugin.json",
+          "path": ".codex-plugin/plugin.json",
           "jsonpath": "$.version"
         },
         {
           "type": "json",
-          "path": ".claude-plugin/marketplace.json",
+          "path": "/.claude-plugin/marketplace.json",
           "jsonpath": "$.plugins[?(@.name=='companions')].version"
         }
       ]
@@ -40,17 +40,17 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "plugins/research/.claude-plugin/plugin.json",
+          "path": ".claude-plugin/plugin.json",
           "jsonpath": "$.version"
         },
         {
           "type": "json",
-          "path": "plugins/research/.codex-plugin/plugin.json",
+          "path": ".codex-plugin/plugin.json",
           "jsonpath": "$.version"
         },
         {
           "type": "json",
-          "path": ".claude-plugin/marketplace.json",
+          "path": "/.claude-plugin/marketplace.json",
           "jsonpath": "$.plugins[?(@.name=='research')].version"
         }
       ]
