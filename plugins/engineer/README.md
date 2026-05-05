@@ -186,17 +186,33 @@ Each `agents/openai.yaml` sets
 research plugin pattern), which deliberately disables
 trigger-phrase auto-activation on Codex side — explicit mention
 is required, even when the user's prompt contains words that match
-trigger phrases. When the user invokes through SKILL command-mode
-(`$engineer:<verb>` with full task context), the SKILL runs full
-command-mode behavior including peer ensemble dispatch via
-`scripts/dispatch-peer.mjs` (which calls `claude-companion` for
-the peer perspective). The skill's final step manually invokes
-`adapters/codex/hooks/stop.mjs` for the snapshot write per
-ADR-0011 §4 (Codex CLI lacks a native hook surface).
+trigger phrases.
 
-Both hosts produce structurally indistinguishable output —
-synthesis returns AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT-
-classified findings regardless of which host is the orchestrator.
+**Codex-side scope (Stage 2, honest)**:
+
+- **What works**: explicit `$engineer:<verb>` mention runs the SKILL's
+  command-invoked mode, including peer ensemble dispatch via
+  `scripts/dispatch-peer.mjs` (which calls `claude-companion` for the
+  Claude peer perspective and synthesizes AGREED / LOCAL-ONLY /
+  PEER-ONLY / CONFLICT findings).
+- **What is NOT yet wired**: workflow continuity on Codex side
+  (Phase 0 directory-lock + create-or-append, Phase 2 state finalize)
+  is *not* automatic — Codex CLI does not expose a slash-command surface
+  equivalent to Claude Code's `/engineer:<verb>`, and the Codex
+  command-adapter that would call `state.mjs` create/append wrappers
+  ships in a follow-up. Until then, Codex-side invocations either run
+  state-less, or the user invokes `state.mjs` CLI subcommands manually
+  (`node "$ENGINEER_ROOT/scripts/state.mjs" find-active|create|append|snapshot ...`).
+- **Stop snapshot**: Codex CLI lacks a native session-end hook surface;
+  the helper `adapters/codex/hooks/stop.mjs` exists for manual
+  invocation but is not auto-triggered.
+
+Claude side ships full command-mode (Phase 0/1/2 + automatic
+PreCompact/Stop/SessionStart hooks). The output structure is
+host-agnostic — when Phase 1 ensemble dispatches on Codex, the
+synthesis follows the same AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT
+categories as on Claude; only the surrounding state-write semantics
+differ.
 
 ### Profile arguments
 

@@ -35,7 +35,7 @@ import {
   mkdir,
   open,
 } from 'node:fs/promises';
-import { join, dirname, isAbsolute } from 'node:path';
+import { join, dirname, basename, isAbsolute } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { hrtime, pid } from 'node:process';
 
@@ -116,23 +116,32 @@ async function pathStat(path) {
 }
 
 /**
- * Acquire a lock with O_EXCL. On acquire success, writes the owner token
- * and returns it. On acquire failure, applies stale detection per
- * ADR-0011 §3 — retries with exponential backoff up to 5s if mtime is
- * fresh, or after one full staleness window re-checks the token to
- * confirm no progress before reclaiming.
+ * Acquire a lock with O_EXCL fresh path, falling through to atomic
+ * rename-based stale reclaim per ADR-0011 §3 (revised). Returns the
+ * owner token written to the lock file on success.
+ *
+ * Stale reclaim: when the existing lock is confirmed stale (token
+ * unchanged across a full STALE_THRESHOLD_MS window), the reclaimer
+ * writes its own token to a uniquely-named tmp file in the same
+ * directory and POSIX-renames it onto the lock path. POSIX rename(2)
+ * atomically replaces the destination, so two concurrent reclaimers
+ * are sequenced by the kernel — the last rename's token is what's on
+ * disk. Each reclaimer reads back the lock contents: the winner sees
+ * its own token and returns; the loser sees a different token and
+ * loops to retry-wait. This avoids the unlink-then-acquire race where
+ * a paused reclaimer would unlink the new owner's lock.
  *
  * @returns {Promise<string>} owner token written into the lock file
  */
 async function acquireLock(lockPath, opts = {}) {
   const { now = Date.now, sleep = sleepMs, randomSource = randomBytes } = opts;
-  const token = generateOwnerToken({ randomSource });
+  const myToken = generateOwnerToken({ randomSource });
 
-  // Attempt loop — at most one stale-detection cycle, otherwise exponential backoff.
   const startedAt = now();
   let backoffMs = 50;
 
   while (true) {
+    // 1. Fresh acquire path — O_EXCL on a non-existent lock.
     let handle;
     try {
       handle = await open(lockPath, 'wx', 0o600);
@@ -142,17 +151,23 @@ async function acquireLock(lockPath, opts = {}) {
     }
     if (handle) {
       try {
-        await handle.writeFile(token, { encoding: 'utf8' });
+        await handle.writeFile(myToken, { encoding: 'utf8' });
         await handle.sync();
       } finally {
         await handle.close();
       }
-      return token;
+      return myToken;
     }
 
-    // Acquire failed — stale detection
-    const stalled = await maybeReclaimStaleLock(lockPath, { sleep, now });
-    if (stalled === 'reclaimed') continue;
+    // 2. Lock exists — classify it.
+    const status = await checkLockStaleness(lockPath, { now, sleep });
+    if (status === 'gone') continue;                              // disappeared, retry fresh path
+    if (status === 'stale') {
+      // 3. Stale confirmed — atomic reclaim via tmpfile + rename.
+      const reclaimed = await tryReclaimByRename(lockPath, myToken, { randomSource });
+      if (reclaimed) return myToken;
+      // Lost the rename race; treat as contention and back off.
+    }
 
     if (now() - startedAt > RETRY_BACKOFF_MAX_MS) {
       throw new Error(
@@ -165,29 +180,61 @@ async function acquireLock(lockPath, opts = {}) {
 }
 
 /**
- * Attempt to reclaim a stale lock. Returns 'reclaimed' if the lock was
- * unlinked (caller should retry acquire), 'fresh' if the lock holder is
- * still alive, or 'progress' if T₁ != T₂ (someone else made progress).
+ * Classify an existing lock as 'fresh' (recent mtime), 'stale' (token
+ * unchanged across a full STALE_THRESHOLD_MS window — holder genuinely
+ * crashed), 'progress' (token mutated mid-window — someone is alive),
+ * or 'gone' (lock vanished while inspecting).
  */
-async function maybeReclaimStaleLock(lockPath, { sleep, now }) {
-  const st1 = await pathStat(lockPath);
-  if (!st1) return 'reclaimed';                                  // disappeared on its own
-  const ageMs = now() - st1.mtimeMs;
+async function checkLockStaleness(lockPath, { now, sleep }) {
+  const st = await pathStat(lockPath);
+  if (!st) return 'gone';
+  const ageMs = now() - st.mtimeMs;
   if (ageMs < STALE_THRESHOLD_MS) return 'fresh';
-
-  // Old enough to consider stale — compare token across one window.
   const t1 = await readFile(lockPath, 'utf8').catch(() => null);
+  if (t1 === null) return 'gone';
   await sleep(STALE_THRESHOLD_MS);
   const t2 = await readFile(lockPath, 'utf8').catch(() => null);
-  if (t1 === null || t2 === null) return 'reclaimed';            // disappeared mid-cycle
-  if (t1 !== t2) return 'progress';                              // holder is alive
-  // T₁ == T₂ — genuinely stale. Reclaim.
+  if (t2 === null) return 'gone';
+  if (t1 !== t2) return 'progress';
+  return 'stale';
+}
+
+/**
+ * Try to atomically reclaim a stale lock by tmpfile + rename. Returns
+ * true if the rename's resulting on-disk token matches our token (we
+ * are now the lock holder); false if another reclaimer beat us in the
+ * kernel's rename sequencing.
+ *
+ * Concurrent reclaimers are safe: rename(2) atomically replaces the
+ * destination so neither unlinks the other's lock; the rename ordering
+ * picks one winner deterministically.
+ */
+async function tryReclaimByRename(lockPath, myToken, { randomSource }) {
+  const dir = dirname(lockPath);
+  const reclaimTmp = join(
+    dir,
+    `.${basename(lockPath)}.${pid}.${randomSource(4).toString('hex')}.reclaim`,
+  );
   try {
-    await unlink(lockPath);
+    await writeFile(reclaimTmp, myToken, { encoding: 'utf8', mode: 0o600 });
   } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
+    process.stderr.write(`tryReclaimByRename: write tmp failed: ${err.message}\n`);
+    return false;
   }
-  return 'reclaimed';
+  try {
+    await rename(reclaimTmp, lockPath);
+  } catch (err) {
+    try { await unlink(reclaimTmp); } catch {}
+    process.stderr.write(`tryReclaimByRename: rename failed: ${err.message}\n`);
+    return false;
+  }
+  let onDisk;
+  try {
+    onDisk = await readFile(lockPath, 'utf8');
+  } catch {
+    return false;
+  }
+  return onDisk === myToken;
 }
 
 /**
@@ -226,15 +273,38 @@ function sleepMs(ms) {
 
 // -----------------------------------------------------------------------------
 // Atomic write — temp file + fsync + rename per ADR-0011 §3 step 3-5
+//
+// Uses a uniquely-named tmp file (per-PID + random) opened with O_EXCL
+// to defeat both stale-tmp reuse and a crafted-symlink redirect through
+// a fixed `<target>.tmp` slot.
+//
+// When `ownership` ({ lockPath, token }) is provided, re-verifies the
+// on-disk lock token immediately before commit. A mismatch means the
+// lock we acquired was reclaimed mid-write by another writer; we discard
+// our tmp file and abort rather than overwrite the new owner's state.
+// This closes the race where a paused writer's atomicWrite would otherwise
+// rename in stale contents (CRITICAL #2 from Codex review of Stage 2 D).
 
-async function atomicWrite(targetPath, contents) {
-  const tmpPath = `${targetPath}.tmp`;
-  const handle = await open(tmpPath, 'w', 0o600);
+async function atomicWrite(targetPath, contents, ownership = null) {
+  const tmpPath = `${targetPath}.${pid}.${randomBytes(4).toString('hex')}.tmp`;
+  const handle = await open(tmpPath, 'wx', 0o600);
   try {
     await handle.writeFile(contents, { encoding: 'utf8' });
     await handle.sync();
   } finally {
     await handle.close();
+  }
+  if (ownership) {
+    const { lockPath, token } = ownership;
+    const onDisk = await readFile(lockPath, 'utf8').catch(() => null);
+    if (onDisk !== token) {
+      try { await unlink(tmpPath); } catch {}
+      throw new Error(
+        `atomicWrite: ownership mismatch on ${lockPath} immediately before commit ` +
+        `(expected token "${token.slice(0, 16)}...", found "${(onDisk ?? 'NONE').slice(0, 16)}..."). ` +
+        `In-flight write to ${targetPath} discarded — another writer reclaimed the lock as stale.`,
+      );
+    }
   }
   await rename(tmpPath, targetPath);
 }
@@ -248,40 +318,48 @@ async function ensureDir(path, mode) {
 
 /**
  * Run `fn` while holding the directory-level creation lock per ADR-0011 §3.
- * Caller passes a function that receives the open workflows directory
- * and may create a new workflow via createWorkflowUnderLock(). The
- * release path is in finally — runs on every exit, including throws.
+ * `fn` receives `{ lockPath, token }` so callers can pass ownership
+ * info into `atomicWrite()` for the pre-commit recheck. The release
+ * path is in finally — runs on every exit, including throws.
  */
 export async function withDirectoryLock(repoRoot, fn) {
   await ensureDir(workflowDir(repoRoot), 0o700);
   await ensureDir(dirname(creationLockPath(repoRoot)), 0o700);
   const lockPath = creationLockPath(repoRoot);
   const token = await acquireLock(lockPath);
+  let releaseOk = false;
   try {
-    return await fn();
+    const result = await fn({ lockPath, token });
+    releaseOk = true;
+    return result;
   } finally {
-    await releaseLock(lockPath, token);
+    const ownershipOk = await releaseLock(lockPath, token);
+    if (releaseOk && !ownershipOk) {
+      throw new Error(
+        `withDirectoryLock: in-flight directory operation suspect — ` +
+        `creation-lock was reclaimed as stale by another writer.`,
+      );
+    }
   }
 }
 
 /**
- * Run `fn` while holding the per-file lock for a workflow. Used for
- * appends / snapshot updates / frontmatter edits to an existing
- * workflow file.
+ * Run `fn` while holding the per-file lock for a workflow. `fn` receives
+ * `{ lockPath, token }` so it can pass ownership into `atomicWrite()`
+ * for pre-commit recheck. Used for appends / snapshot updates /
+ * frontmatter edits to an existing workflow file.
  */
 export async function withFileLock(workflowPath, fn) {
   const lockPath = fileLockPath(workflowPath);
   const token = await acquireLock(lockPath);
   let releaseOk = false;
   try {
-    const result = await fn();
+    const result = await fn({ lockPath, token });
     releaseOk = true;
     return result;
   } finally {
     const ownershipOk = await releaseLock(lockPath, token);
     if (releaseOk && !ownershipOk) {
-      // The fn completed but the lock was reclaimed mid-write.
-      // ADR-0011 §3 says the in-flight write is suspect — surface a hard error.
       throw new Error(
         `withFileLock: in-flight write to ${workflowPath} is suspect — ` +
           `lock was reclaimed as stale by another writer.`,
@@ -568,7 +646,102 @@ export function parseWorkflowFile(text) {
     }
   }
 
+  // Schema + required-field + nested-key validation per ADR-0011 §2.
+  // Without this, future-schema or hand-edited workflow files could be
+  // mutated and rewritten as if they were valid schema=1 (Codex Round 1
+  // MAJOR #9 + #10).
+  validateFrontmatter(fm);
+
   return { frontmatter: fm, body };
+}
+
+/**
+ * Strict ADR-0011 §2 schema=1 validation. Called at parse-before-mutate
+ * boundaries. Throws on any deviation from the closed schema set.
+ */
+function validateFrontmatter(fm) {
+  if (fm.schema !== SCHEMA_VERSION) {
+    throw new Error(
+      `Unsupported schema version: ${fm.schema} (expected ${SCHEMA_VERSION}). ` +
+      `ADR-0011 §2 schema=1 is closed; cross-schema mutation is rejected.`,
+    );
+  }
+  const REQUIRED = [
+    'schema', 'workflow_id', 'persona', 'verb', 'profile',
+    'original_request', 'started_at', 'updated_at', 'repo_root',
+    'git_baseline', 'current_phase', 'next_action', 'tasks', 'host_history',
+  ];
+  for (const k of REQUIRED) {
+    if (!(k in fm)) {
+      throw new Error(`Missing required frontmatter field: ${k}`);
+    }
+  }
+  if (typeof fm.workflow_id !== 'string' || fm.workflow_id.length === 0) {
+    throw new Error('workflow_id must be a non-empty string');
+  }
+  validateVerb(fm.verb);
+  if (typeof fm.persona !== 'string') {
+    throw new Error('persona must be a string');
+  }
+
+  // git_baseline nested keys
+  validateNestedShape(fm, 'git_baseline', ['branch', 'head', 'status_digest']);
+
+  // tasks
+  if (!Array.isArray(fm.tasks)) {
+    throw new Error('tasks must be an array');
+  }
+
+  // host_history list-of-objects
+  if (!Array.isArray(fm.host_history)) {
+    throw new Error('host_history must be an array');
+  }
+  const HH_KEYS = ['host', 'at', 'event'];
+  for (let i = 0; i < fm.host_history.length; i++) {
+    const entry = fm.host_history[i];
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      throw new Error(`host_history[${i}] must be an object`);
+    }
+    for (const k of Object.keys(entry)) {
+      if (!HH_KEYS.includes(k)) {
+        throw new Error(
+          `Unknown nested key host_history[${i}].${k}. Expected: ${HH_KEYS.join(', ')}.`,
+        );
+      }
+    }
+    for (const k of HH_KEYS) {
+      if (!(k in entry)) {
+        throw new Error(`Missing nested key host_history[${i}].${k}`);
+      }
+    }
+    validateHost(entry.host);
+    validateHookEvent(entry.event);
+  }
+
+  // last_snapshot (optional)
+  if ('last_snapshot' in fm) {
+    validateNestedShape(fm, 'last_snapshot', ['at', 'trigger', 'status_digest']);
+    validateSnapshotTrigger(fm.last_snapshot.trigger);
+  }
+}
+
+function validateNestedShape(fm, key, expectedKeys) {
+  const value = fm[key];
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${key} must be an object`);
+  }
+  for (const k of Object.keys(value)) {
+    if (!expectedKeys.includes(k)) {
+      throw new Error(
+        `Unknown nested key ${key}.${k}. Expected: ${expectedKeys.join(', ')}.`,
+      );
+    }
+  }
+  for (const k of expectedKeys) {
+    if (!(k in value)) {
+      throw new Error(`Missing nested key ${key}.${k}`);
+    }
+  }
 }
 
 function parseScalar(text) {
@@ -629,10 +802,17 @@ function isoUtc(now = new Date()) {
 // Secret scrubbing per ADR-0011 §2 field rules
 
 const SECRET_PATTERNS = [
-  // AWS access keys (AKIA + 16 alphanum)
+  // AWS access keys (AKIA / ASIA + 16 alphanum)
   /\bAKIA[0-9A-Z]{16}\b/g,
-  // GitHub tokens (ghp_ / gho_ / ghu_ / ghs_ / ghr_ + 36+ alphanum)
+  /\bASIA[0-9A-Z]{16}\b/g,
+  // GitHub classic tokens (ghp_ / gho_ / ghu_ / ghs_ / ghr_ + 36+ alphanum)
   /\bgh[poushr]_[A-Za-z0-9]{36,}\b/g,
+  // GitHub fine-grained PAT (github_pat_ + 22 + _ + 59 chars)
+  /\bgithub_pat_[A-Za-z0-9_]{22,}\b/g,
+  // OpenAI / Anthropic / generic prefixed API keys (sk-, sk-ant-, sk-proj-)
+  /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}\b/g,
+  // Slack tokens (xoxb-, xoxp-, xoxa-, xoxr-)
+  /\bxox[bpar]-[A-Za-z0-9-]{10,}\b/g,
   // Generic 32+ hex bearer tokens (heuristic — long pure-hex strings)
   /\b[a-fA-F0-9]{32,}\b/g,
 ];
@@ -657,7 +837,9 @@ export function singleLine(text) {
  * Throws if any workflow already exists (single-active invariant).
  *
  * Caller is expected to hold the directory lock. Use createWorkflow()
- * for the lock-wrapped variant.
+ * for the lock-wrapped variant. The `ownership` object (when provided)
+ * carries the directory-lock token and is forwarded to `atomicWrite()`
+ * for pre-commit recheck.
  */
 export async function createWorkflowUnderLock({
   repoRoot,
@@ -671,7 +853,7 @@ export async function createWorkflowUnderLock({
   nextAction = '',
   bodyTitle,
   now = new Date(),
-}) {
+}, ownership = null) {
   validateVerb(verb);
   validateHost(host);
   if (!gitBaseline || !gitBaseline.branch || !gitBaseline.head) {
@@ -722,13 +904,15 @@ export async function createWorkflowUnderLock({
 
   const filePath = workflowFilePath(repoRoot, workflowId);
   await ensureDir(workflowDir(repoRoot), 0o700);
-  await atomicWrite(filePath, assembleWorkflowFile(frontmatter, body));
+  await atomicWrite(filePath, assembleWorkflowFile(frontmatter, body), ownership);
 
   return { workflowId, filePath, frontmatter, body };
 }
 
 export async function createWorkflow(args) {
-  return withDirectoryLock(args.repoRoot, () => createWorkflowUnderLock(args));
+  return withDirectoryLock(args.repoRoot, ({ lockPath, token }) =>
+    createWorkflowUnderLock(args, { lockPath, token }),
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -754,7 +938,7 @@ export async function appendPhase({
   validateHookEvent(event);
   if (verb !== undefined) validateVerb(verb);
 
-  return withFileLock(workflowPath, async () => {
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
@@ -773,7 +957,11 @@ export async function appendPhase({
     const note = phaseNote ? `${phaseNote}\n\n` : '';
     const newBody = `${body}${heading}${note}`;
 
-    await atomicWrite(workflowPath, assembleWorkflowFile(frontmatter, newBody));
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, newBody),
+      { lockPath, token },
+    );
     return { frontmatter, workflowPath };
   });
 }
@@ -791,7 +979,7 @@ export async function snapshot({
   validateHost(host);
   validateSnapshotTrigger(trigger);
 
-  return withFileLock(workflowPath, async () => {
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
@@ -807,7 +995,11 @@ export async function snapshot({
       { host, at: nowIso, event: 'snapshot' },
     ];
 
-    await atomicWrite(workflowPath, assembleWorkflowFile(frontmatter, body));
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
     return { frontmatter, workflowPath };
   });
 }

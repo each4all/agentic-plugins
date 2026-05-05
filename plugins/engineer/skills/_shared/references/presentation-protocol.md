@@ -59,9 +59,13 @@ At the first major presentation point in a command or skill workflow, ask:
   the conversation, apply it without re-asking. Re-ask only when a new
   command or skill is invoked.
 - **Persistence**: When invoked from `/engineer:*` commands that own a
-  workflow file, the chosen mode is persisted as
-  `presentation_mode: batch | interview` in the workflow frontmatter.
-  Resume re-applies this without re-asking.
+  workflow file, the chosen mode is recorded in the workflow's Markdown
+  body as a phase note (`### Presentation mode: batch | interview`)
+  rather than in frontmatter. ADR-0011 §2 schema=1 is closed; the
+  body-note approach keeps the chosen mode discoverable on resume
+  without forcing a frontmatter extension. A future ADR may promote
+  `presentation_mode` into frontmatter if dogfood reveals a strong
+  need for machine-queryable persistence.
 
 ---
 
