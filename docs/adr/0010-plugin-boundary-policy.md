@@ -1,0 +1,403 @@
+# ADR-0010: Plugin boundary policy — 4-layer composition + universal cognitive verbs + naming convention
+
+## Status
+
+Proposed
+
+## Context
+
+agentic-plugins shipped Stage 1 with two plugins:
+[`plugins/companions`](../../plugins/companions/) (framework primitive
+per ADR-0008) and [`plugins/research`](../../plugins/research/) (single
+capability skill). Stage 2 introduces the self-development plugin
+([`docs/DEVELOPMENT.md`](../DEVELOPMENT.md) §Stage 2) and Stage 3 will
+introduce the design-domain plugin ([ADR-0007](0007-migration-cutover-plan.md)
+§Stage 3). With three or more plugins on the horizon, the framework
+needs an explicit policy answering five questions:
+
+1. **What axis divides plugins?** persona (engineer/designer), domain
+   (dev/design/research), activity (build/critique), artifact
+   (poster/code), or hybrid?
+2. **What axis divides skills inside a plugin?**
+3. **How do plugins use their skills** — command-driven, auto-delegated,
+   or chained?
+4. **How do plugins hand off to each other** when one plugin's output
+   feeds another's input?
+5. **When does a capability warrant its own plugin** vs being absorbed
+   into an existing plugin?
+
+These decisions cannot be evaluated independently. Choosing only
+*persona* as the axis (e.g., `engineer` plugin owning its own research
+machinery) duplicates capabilities across personas. Choosing only
+*domain* (`research`, `dev`, `design`) hides the fact that the *same*
+research activity differs by persona context (an engineer reading
+RFCs vs a designer reading design systems). Choosing *activity*
+(`build`, `critique`) fragments install UX since a workflow crosses
+multiple verbs. The persona × domain dimensions are orthogonal — any
+single-axis division folds the other dimension awkwardly inside.
+
+A second tension: skill granularity. A plugin like
+[omcc-designer](https://github.com/e16tae/omcc) has accumulated 25+
+skills over time. ADR-0007 mandates redesign over 1:1 port, so the
+question is whether to preserve that growth pattern or impose a
+naming/structural discipline that prevents skill explosion. But
+disciplines (UI/UX, print, brand, frontend, image-gen for design;
+backend, frontend, devops, SRE for engineering) are themselves
+unbounded — a hard cap on skills would push expertise out of the
+plugin, and a free-for-all repeats the omcc-designer pattern.
+
+These questions were resolved through Phase 1 brainstorming with Codex
+peer-agent ensemble (5 rounds, AGREED on 4-layer composition + 6
+universal cognitive verbs after Round 5 added Frame to the verb set).
+Six independent industry/cognitive-science frameworks converge on a
+small recurrent control loop (gather → frame → choose → make → judge →
+iterate): Bloom's Taxonomy 1956, Miller's Law 1956 (channel capacity,
+not ontological cap), OODA Loop (Boyd), PDCA (Deming), Double Diamond
+(UK Design Council), Design Thinking (IDEO). Three industry plugin
+ecosystems converge on capability + composer separation: Eclipse/OSGi
+(plug-in runtime + extension points), VS Code (extension dependencies
+vs extension packs), MCP (model-callable tools as separate from
+agents). Two AI agent framework families demonstrate composition
+explicitly: LangChain (tools + agents), OpenAI/Anthropic Tool Use
+(tools as parameters into model invocation).
+
+The pattern is **composition over inheritance** (Gamma et al. 1994):
+small reusable capabilities composed into higher-level scenarios, with
+configuration data carrying the difference between similar use cases.
+
+## Decision
+
+### 1. Plugin division — 4-layer composition
+
+agentic-plugins extends the [ADR-0001](0001-hexagonal-architecture.md)
+3-layer hexagonal model (CORE / ADAPTER / COMPANION) with an explicit
+**composition axis** layered above. The 4 layers, top-down by
+dependency direction:
+
+| Layer | Role | Examples (current + planned) |
+|-------|------|------------------------------|
+| **L4 — Profile (sub-discipline within persona)** | Configuration data describing context-specific knowledge: source priorities, evaluation criteria, output contract, citation style, vocabulary, methodology. Unbounded — new sub-disciplines extend existing personas without adding plugins. | `engineer:{backend, frontend, devops, sre, ml, data, ...}`, `designer:{ui, print, brand, frontend, image, motion, ...}` |
+| **L3 — Persona / Workbench plugin** | User-facing install unit. The user wears one persona "hat" at a time. Owns workflow orchestration. Composes capabilities through profiles. | `engineer` (Stage 2), `designer` (Stage 3) |
+| **L2 — Capability plugin** | Persona-agnostic skills providing reusable activities: gather/frame/decide/compose/critique/refine on a particular kind of material. Self-serve via own commands too. | `research` (Stage 1, current), planned: `decision`, `image` |
+| **L1 — Framework primitive plugin** | Cross-plugin infrastructure: peer-host invocation, workflow runtime, host adapters. Other plugins depend on these. | `companions` (Stage 1, current per ADR-0008), planned: `runtime` (workflow state, hooks, broker) — only when 2+ plugins prove they need it |
+
+Dependency direction: `L4 (data) → L3 (workbench) → L2 (capabilities)
+→ L1 (primitives)`. Higher layers depend on lower; lower layers have
+no knowledge of higher.
+
+### 2. Skill division — 6 universal cognitive verbs
+
+Each persona/workbench plugin (L3) and capability plugin (L2) exposes
+skills named by **canonical cognitive verb**. The verb set is fixed at
+six (necessity + sufficiency demonstrated by mapping every observed
+omcc-dev/omcc-designer skill into them):
+
+| Verb | What it does | Maps from omcc-* |
+|------|--------------|------------------|
+| **Investigate** | Gather evidence, inspect context, scan codebase, probe references | research, omcc-dev/explore, omcc-dev/investigate |
+| **Frame** | Turn evidence into a problem model: goals, constraints, audience, success criteria, risks | (implicit gap in omcc-dev — explicit fixes a real failure mode) |
+| **Decide** | Select a direction under constraints, reject alternatives, commit to next action | omcc-dev/brainstorm |
+| **Compose** | Produce the artifact: code, plan, brief, interface, prompt, spec, poster | omcc-dev/plan, design briefs, omcc-designer poster/social/frontend output |
+| **Critique** | Evaluate an existing artifact against evidence, standards, goals, failure modes | omcc-dev/parallel-review, omcc-dev/audit, omcc-designer/design-evaluation |
+| **Refine** | Apply feedback, repair defects, improve fit, iterate after critique | omcc-dev/fix |
+
+These six are necessary (each maps to an observed activity), sufficient
+(every omcc-* skill maps in), and independent (no verb is reducible to
+another). Frame is included specifically because omitting it pushes
+agents into a documented failure mode where evidence gathered by
+Investigate is consumed by Decide without an explicit problem model
+("the key thing generic research alone does not do" — Codex Round 5).
+
+The verb count is **fixed for cognitive activities** but unrelated to
+*expertise breadth* — Layer 4 profiles carry the unbounded discipline
+expansion.
+
+### 3. Naming convention
+
+**Canonical skill name**: `<persona>:<verb>` for L3 plugins,
+`<capability>:<verb>` for L2 plugins. Profile and topic flow as
+arguments.
+
+```text
+/engineer:investigate --profile=backend --topic="auth token rotation"
+/engineer:critique --profile=architecture --topic="payment service refactor"
+/designer:compose --profile=ui --topic="onboarding flow"
+/designer:critique --profile=print --topic="poster v3"
+/research:research --topic="Node 24 child_process API surface"
+```
+
+**Single-verb capability plugins** (special case): when a capability
+plugin's domain is naturally exactly one verb, the plugin name and
+verb may collide and the canonical command becomes
+`<capability>:<capability>`. The Stage 1 `plugins/research` plugin
+ships exactly this case: its only command is `/research:research`
+(see `plugins/research/commands/research.md`), and `Investigate`
+is the implicit verb absorbed by the plugin name. Future capability
+plugins may ship multiple verbs (`/decision:decide`,
+`/decision:critique`); single-verb is a precedent, not a default.
+
+**Verb-level sugar aliases** (within the same plugin): a plugin MAY
+publish verb-level aliases that expand to a canonical verb plus a
+profile/argument set at dispatch time. These are not new skills;
+they expand internally inside the plugin's own command files.
+
+Example:
+
+```text
+/engineer:audit ≡ /engineer:critique --profile=full-codebase
+```
+
+Verb-level aliases live entirely within the plugin's own namespace
+and require no marketplace, validator, or manifest support.
+
+**Plugin-name level aliases** (e.g., `/dev:investigate` ≡
+`/engineer:investigate`) are NOT supported in Stage 2. The
+marketplace contract on both Claude Code and Codex CLI requires
+plugin name = catalog name = install-folder name = manifest name
+(validator-enforced). Alternative plugin-name namespaces would
+require either (a) catalog-level alias schema support added to
+both host marketplaces, or (b) duplicating the plugin under a
+second install. Both options are out of scope for Stage 2; see
+[ADR-0011](0011-workflow-continuity-storage.md) §Stage 2 Non-Goals
+item 9 for the deferral rationale.
+
+**Forbidden naming patterns**:
+- Activity nouns at plugin level (`build`, `evaluate`, `compose` as
+  plugin names) — fragments install UX.
+- Artifact nouns at plugin level (`poster`, `frontend`, `image-gen`
+  as plugin names *unless* truly cross-persona infrastructure) —
+  multiplies plugin count.
+- Encoding ensemble count, model count, or perspective count in a
+  skill name — those are dynamic per-call, not stable identity.
+- Hyphenated noun-noun skill names that are really
+  `<verb>-<artifact>` — write `<verb> --artifact <name>` instead, or
+  publish as a sugar alias.
+
+### 4. Plugin-internal skill use
+
+Plugins follow this orchestration pattern:
+
+- **Command-driven entry** — slash command (Claude) or `$skill`
+  mention (Codex) is the visible user/host invocation surface. Each
+  canonical verb has one command file at
+  `plugins/<plugin>/commands/<verb>.md`.
+- **Auto-delegating internals** — the skill's body may invoke peer
+  models via [`companions`](../../companions/contract.md), invoke
+  other capability plugins (per §5 handoff), or chain its own
+  sub-steps (Investigate → Frame → Decide internally) without
+  surfacing each step.
+- **Explicit chains when stateful** — when sub-steps need durable
+  state across host context boundaries, the chain becomes a
+  workflow (per [ADR-0011](0011-workflow-continuity-storage.md), to
+  be filed in the same Stage 2 deliverable as this ADR).
+
+### 5. Cross-plugin handoff
+
+Plugins hand off through **typed artifact files**, not through
+in-process imports or runtime coupling. An artifact handoff carries:
+
+- Source context (which plugin/skill produced it, when, with what
+  inputs)
+- Requested next action (the receiving plugin's verb + profile)
+- Constraints (deadlines, scope, prior decisions to honor)
+- Confidence and unresolved questions
+
+The Stage 1 [`research_brief.md`](../../plugins/research/skills/research/references/research-brief-spec.md)
+is the prototype — a durable cited artifact that downstream plugins
+(or future invocations of the same plugin) can consume.
+
+Runtime auto-handoff is permitted when both plugins are installed and
+adapters can invoke the target cleanly. When the target plugin is not
+installed, the producing plugin emits the artifact with a
+"suggested next plugin" pointer instead of failing — graceful
+degradation per the Stage 1 ADR-0008 precedent.
+
+Plugin imports across plugin boundaries are **forbidden** (would
+break SemVer independence). All cross-plugin contact is via artifact
+files or via the `companions` peer-host invocation primitive.
+
+### 6. Plugin separation triggers (when to add a new plugin)
+
+A capability or workflow earns its own plugin when **any** of these
+hold:
+
+1. **Infrastructure used by 2+ other plugins** — promotes a helper
+   from internal-to-one-plugin to a framework primitive (L1).
+   Example: `kit/discovery/` extraction in Stage 2 Deliverable B
+   when `engineer` becomes the second consumer of
+   `discover-companion.mjs`. Future example: shared workflow runtime
+   if Stage 3 `designer` needs the same hooks `engineer` ships.
+2. **Distinct cost/quota/auth profile** — when a capability has
+   meaningfully different operational concerns (e.g., image
+   generation has external-API quotas, billing implications, and
+   prompt-engineering complexity that engineering tooling doesn't),
+   isolate so users opt in explicitly. Future example: `image`
+   plugin separated from `designer` after design ships.
+3. **Mental model discontinuity at install time** — when the user's
+   intent at install ("I'm doing X") differs sharply from existing
+   plugins' intents, the new plugin earns its place. Example:
+   `research` (a researcher's gathering activity) installed
+   independently from `engineer` (a developer's workflow), even
+   though both involve gathering evidence — the install-time intent
+   is different.
+
+Triggers 1, 2, 3 are independently sufficient; ANY one promotes
+extraction. Conversely, **none** of the three holding means the
+capability stays internal to its current plugin.
+
+### 7. Plugin name policy
+
+Plugin names follow **Layer-appropriate axis**:
+
+| Layer | Naming axis | Pattern | Examples |
+|-------|-------------|---------|----------|
+| L1 framework | infrastructure noun | concrete primitive concept | `companions`, future `runtime` |
+| L2 capability | activity/domain noun | what-it-does | `research`, future `image` |
+| L3 persona | persona noun (`-er` suffix preferred for English consistency) | who-uses-this | `engineer`, future `designer` |
+| L4 profile | sub-discipline noun | hyphen-separated when needed | `backend`, `frontend`, `ui`, `print` |
+
+Stage 2 plugin name: **`engineer`** (canonical, L3 persona axis,
+no plugin-name level aliases per §3 — marketplace contract
+constraint). Stage 3 plugin name (planned): `designer`. Pairing
+`engineer + designer` keeps L3 axis consistent across stages and
+matches the user's mental vocabulary ("엔지니어 모자/디자이너 모자",
+"engineer hat / designer hat").
+
+## Consequences
+
+**Positive**:
+
+- One axis policy resolves five tightly coupled questions (plugin
+  axis, skill axis, plugin-internal use, plugin handoff, separation
+  trigger), replacing ad-hoc per-plugin choices with framework-level
+  consistency.
+- 6 universal cognitive verbs anchor all plugins in the same
+  vocabulary; cross-persona collaboration (engineer asking designer
+  to critique a UI mock) becomes natural because both use
+  `<persona>:critique`.
+- Capability plugins (research) avoid duplication: engineer and
+  designer both consume research without each shipping a research
+  fork.
+- Profile axis carries unbounded discipline expansion without skill
+  explosion or plugin sprawl.
+- Plugin separation triggers are explicit and testable, replacing
+  judgment calls about whether to spin up a new plugin.
+- Verb-level sugar aliases inside a plugin (e.g.,
+  `/engineer:audit` ≡ `/engineer:critique --profile=full-codebase`)
+  preserve familiar workflow names from omcc-dev where useful, all
+  within the plugin's own namespace and free of marketplace
+  contract concerns.
+- Stage 3 design-domain plugin work has a pre-decided naming and
+  composition policy — no Stage-3 axis brainstorm needed.
+
+**Negative**:
+
+- 4-layer model is one layer deeper than ADR-0001's 3-layer; mental
+  model load increases for new contributors.
+- Profile mechanism is new and unprototyped — Stage 2 will be the
+  first proof; if profiles fail to carry sub-discipline differences
+  cleanly, the policy may need ADR-0010-supersedure.
+- Sugar alias adds one indirection at command dispatch; CLI users
+  may see two paths to the same skill in `--help` output.
+- 6-verb canonical naming may feel abstract for users familiar with
+  omcc's `/start /fix /audit` workflow names — canonical
+  `/engineer:fix` does not exist (the equivalent is
+  `/engineer:refine`, optionally with a verb-level sugar alias
+  `/engineer:fix` ≡ `/engineer:refine` published inside the plugin).
+  Migration documentation needed at Stage 2 dogfood time.
+
+**Neutral**:
+
+- Capability plugins like `research` may publish a single verb
+  (`/research:research`) when their domain is naturally one verb;
+  this is permitted as a special case of `<capability>:<verb>` where
+  capability and verb collide.
+- The 6 verbs may grow if a future activity is found that none of
+  the six absorbs cleanly (the verb set is fixed for *currently
+  observed* cognitive activity, not eternally). Adding a 7th verb
+  would be a non-breaking schema-minor change; renaming any of the
+  six is breaking and requires ADR supersedure.
+
+## Alternatives Considered
+
+1. **Persona-only axis** (`engineer`, `designer`, `researcher`):
+   rejected because researcher is a poorly-defined persona (the
+   domain is bounded but the role is nebulous), and because each
+   persona would duplicate research/decision/critique machinery.
+   Maintenance burden compounds across personas.
+
+2. **Domain-only axis** (`research`, `dev`, `design`): rejected
+   because *the same* research activity differs by persona — an
+   engineer reading RFCs vs a designer reading design systems is
+   the same `Investigate` verb but a different *profile*. A pure
+   domain axis would either fold persona variation inside each
+   plugin (hidden complexity) or duplicate skills per persona
+   (defeats the axis).
+
+3. **Activity-only axis** (`build`, `critique`, `evaluate` as
+   plugin names): rejected because workflows cross verbs naturally
+   (Investigate → Frame → Decide → Compose → Critique → Refine in
+   one task). Splitting plugin install per verb fragments install
+   UX badly and creates handoff overhead at every verb boundary.
+
+4. **Artifact-only axis** (`poster`, `frontend`, `code-review`):
+   rejected because artifacts proliferate (poster, brochure,
+   leaflet, social-post, banner, …) with high overlap; this is the
+   omcc-designer pattern and its ~25-skill end state is the
+   anti-example.
+
+5. **Matrix plugins** (`engineer-research`, `designer-research`,
+   `engineer-build`, `designer-build`, …): rejected because plugin
+   count grows polynomially (n personas × m domains) with no
+   reuse — each cell duplicates capability machinery.
+
+6. **Namespace + tags** (one mega-plugin tagging skills with
+   persona+domain metadata, dispatched at runtime): rejected
+   because install UX is awkward (one plugin with everything = no
+   meaningful install choice), names cease to express structure
+   (the tag does), and the dispatch layer is implementation
+   complexity that buys no clarity.
+
+7. **Skill count hard cap** (e.g., max 5 skills per plugin):
+   rejected because it confuses cognitive activity (bounded) with
+   discipline expertise (unbounded). The verb set is fixed at 6 by
+   cognitive necessity; the *profile* axis carries the unbounded
+   expert breadth.
+
+8. **`dev` as canonical L3 plugin name** (instead of `engineer`):
+   rejected on six axes vs `engineer` (Layer semantic alignment,
+   Stage 3 pairing, user vocabulary, noun-pattern consistency with
+   `companions`/`research`, AI-agent-framework naming trends in
+   CrewAI/AutoGen/Claude subagents). Plugin-name level aliases
+   (e.g., `/dev:` as alias for `/engineer:`) were considered but
+   rejected for Stage 2 because the marketplace contract on both
+   hosts requires plugin name = catalog name = folder name =
+   manifest name (validator-enforced). See ADR-0011 §Stage 2
+   Non-Goals item 9 for the deferral rationale; if dogfood phase
+   surfaces real demand, raise a Stage 2.5+ ADR for catalog-level
+   alias support.
+
+9. **Single ADR for plugin policy + continuity storage**: rejected
+   in favor of splitting continuity Option III storage format into
+   [ADR-0011](0011-workflow-continuity-storage.md). Continuity is a
+   distinct decision per ADR-0007's "Stage 2 storage format
+   finalization" mandate; mixing it with plugin boundary policy
+   would obscure both decisions.
+
+## References
+
+- [ADR-0001](0001-hexagonal-architecture.md) — hexagonal layered model that this ADR extends to 4 layers
+- [ADR-0003](0003-mcp-vs-companion.md) — separation of MCP tools from peer-agent companion turns; informs L1/L2 boundary
+- [ADR-0006](0006-directory-layout-install-pattern.md) — per-plugin layout this ADR references
+- [ADR-0007](0007-migration-cutover-plan.md) — redesign-over-port mandate for Stage 2/3
+- [ADR-0008](0008-companion-distribution-model.md) — companion script distribution; provides the cross-plugin discovery precedent
+- [ADR-0011](0011-workflow-continuity-storage.md) — continuity Option III storage format (companion ADR filed alongside this one)
+- Bloom 1956 — cognitive taxonomy (6 levels)
+- Miller 1956 — channel capacity (clarification: not ontological cap on activity types) — https://www.musanim.com/miller1956/
+- OODA Loop (Boyd) — https://www.skmurphy.com/blog/2011/06/13/boyds110727/
+- PDCA (Deming, Lean Enterprise Institute) — https://www.lean.org/lexicon-terms/pdca/
+- NOAA Scientific Method — https://www.nesdis.noaa.gov/about/k-12-education/resources-teachers/what-the-scientific-method
+- Double Diamond (UK Design Council) — https://www.designcouncil.org.uk/our-resources/the-double-diamond/
+- Design Thinking (IDEO) — https://designthinking.ideo.com/faq/isnt-design-thinking-a-set-step-by-step-process
+- Composition over inheritance (Gamma, Helm, Johnson, Vlissides 1994 — *Design Patterns*)
+- Plugin ecosystem precedents: Eclipse/OSGi, VS Code (extension dependencies vs extension packs — https://code.visualstudio.com/api/references/extension-manifest), MCP (https://modelcontextprotocol.wiki/en/docs/concepts/tools)

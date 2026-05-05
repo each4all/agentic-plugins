@@ -10,14 +10,17 @@ it points to an ADR rather than restating the rationale.
 
 ---
 
-## The three layers
+## The architecture: hexagonal core + 4-layer composition
 
 agentic-plugins applies **Hexagonal architecture** (ports and adapters) to AI
-agent plugins:
+agent plugins (ADR-0001), and extends it with a **4-layer composition
+model** for plugin organization (ADR-0010).
+
+### Hexagonal layers (per-plugin internal structure)
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ COMPANION (bidirectional bridges, first-party)        │
+│ COMPANION (bidirectional bridges, first-party)           │
 │  - claude-companion : Codex → Claude peer-agent call     │
 │  - codex-companion  : Claude → Codex peer-agent call     │
 │  - contract.md      : XML prompt + parsing spec (shared) │
@@ -43,7 +46,55 @@ agent plugins:
 └──────────────────────────────────────────────────────────┘
 ```
 
-See [`adr/0001-hexagonal-architecture.md`](adr/0001-hexagonal-architecture.md).
+### 4-layer plugin composition (cross-plugin organization)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ L4 — Profile (sub-discipline within persona, unbounded)     │
+│   engineer: backend, frontend, devops, sre, ml, data, ...   │
+│   designer: ui, print, brand, frontend, image, motion, ...  │
+│   (configuration data, not plugins; carried as args)        │
+├─────────────────────────────────────────────────────────────┤
+│ L3 — Persona / Workbench plugins (user install unit)        │
+│   plugins/engineer  ← Stage 2                               │
+│   plugins/designer  ← Stage 3                               │
+│   skills: <persona>:<verb> for each of 6 verbs              │
+│   verb-level sugar aliases inside plugin allowed (ADR-0010) │
+├─────────────────────────────────────────────────────────────┤
+│ L2 — Capability plugins (persona-agnostic activities)       │
+│   plugins/research  ← Stage 1 (current)                     │
+│   future: plugins/decision, plugins/image                   │
+│   skills: <capability>:<verb> for relevant verbs            │
+├─────────────────────────────────────────────────────────────┤
+│ L1 — Framework primitive plugins (infrastructure)           │
+│   plugins/companions  ← Stage 1 (current, ADR-0008)         │
+│   future: plugins/runtime (only when 2+ consumers)          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Dependency direction: L4 (data) → L3 → L2 → L1.
+
+### Six universal cognitive verbs (ADR-0010 §2)
+
+Every L3 persona plugin and L2 capability plugin exposes skills named
+by canonical verb:
+
+| Verb | What |
+|------|------|
+| **Investigate** | gather evidence, scan, probe |
+| **Frame** | turn evidence into problem model (goals/constraints/risks) |
+| **Decide** | select direction, reject alternatives |
+| **Compose** | produce artifact (code, plan, brief, ...) |
+| **Critique** | evaluate against evidence/standards/goals |
+| **Refine** | apply feedback, repair, iterate |
+
+Convergence basis: 6 cognitive/process frameworks (Bloom, Miller,
+OODA, PDCA, Double Diamond, Design Thinking) reduce to a small
+recurrent control loop matching this verb set. Profile axis carries
+unbounded discipline expansion without skill explosion.
+
+See [`adr/0001-hexagonal-architecture.md`](adr/0001-hexagonal-architecture.md)
+and [`adr/0010-plugin-boundary-policy.md`](adr/0010-plugin-boundary-policy.md).
 
 ---
 
@@ -169,7 +220,17 @@ This avoids the Electron-style "feels off in both" failure mode.
 
 ## Migration from omcc
 
-agentic-plugins replaces omcc. omcc remains operational (Claude-only) until
-agentic-plugins reaches feature parity. See
-[`adr/0007-migration-cutover-plan.md`](adr/0007-migration-cutover-plan.md)
-for the cutover plan (stub — to be filled in the next development session).
+agentic-plugins replaces omcc. omcc remains operational (Claude-only)
+until agentic-plugins reaches the cutover criteria.
+
+See [`adr/0007-migration-cutover-plan.md`](adr/0007-migration-cutover-plan.md)
+for the full cutover plan: redesign-over-port stance, Stage 1–3
+milestones, cutover trigger conditions, data migration policy
+(clean start, no automated import), and the omcc archive procedure.
+
+Stage progression:
+
+- **Stage 1** (complete) — `plugins/companions` + `plugins/research`. Bidirectional companion contract verified.
+- **Stage 2** (in progress) — `plugins/engineer` self-development plugin. See [`adr/0010-plugin-boundary-policy.md`](adr/0010-plugin-boundary-policy.md) and [`adr/0011-workflow-continuity-storage.md`](adr/0011-workflow-continuity-storage.md). Stage 2 exit drops omcc-dev dependency for agentic-plugins development.
+- **Stage 3** (planned) — `plugins/designer` design-domain plugin. Same 4-layer composition.
+- **Cutover** — declared by user when Stage 1–3 milestones met, ≥1 week sustained use without regression, and ≥1 clear improvement over omcc.
