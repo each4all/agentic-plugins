@@ -67,14 +67,45 @@ override taking precedence when set. Both mechanisms are owned by the
 consumer plugin's adapter (`adapters/<host>/scripts/discover-companion.mjs`)
 per ADR-0008 § (b.1).
 
+**Since v0.3.0**, the canonical discovery algorithm itself lives inside
+this plugin at [`scripts/discover-peer.mjs`](scripts/discover-peer.mjs).
+Consumer adapter scripts bootstrap the companions cache root (small
+~25-line cache-glob to find the companions plugin install), then import
+`discover-peer.mjs` and call `discoverPeerCompanion({ peer })` for the
+canonical resolution. This eliminates duplicated discovery code across
+consumer plugins (plugin-boundary policy ADR-0010 §6 trigger evaluation:
+discovery has high cohesion with companion invocation and is absorbed
+into this plugin rather than spun out as a separate framework primitive).
+
 ### `AGENTIC_COMPANIONS_ROOT` (env override)
 
 When set to an absolute path, the discovery script uses that path
 directly and skips cache-glob. The path points to a directory
-containing `claude-companion.mjs` and `codex-companion.mjs` (the
-script-pair, not a bundle root). Useful for development workflows
-(point at the source-tree `companions/` without installing) and CI
-smoke flows.
+containing `claude-companion.mjs`, `codex-companion.mjs`, AND
+`discover-peer.mjs` (the script-pair plus the discovery library).
+
+**Breaking change in v0.3.0**: prior to v0.3.0 the discovery library
+lived inline inside each consumer plugin's adapter script, and the
+env-override directory only needed the script pair. As of v0.3.0
+the canonical discovery library was extracted into the companions
+plugin (`scripts/discover-peer.mjs`), so the env-override directory
+must include `discover-peer.mjs` alongside the script pair.
+
+The canonical source-tree `companions/` directory now ships all
+three files and remains the documented dev/CI override target —
+existing workflows that set `AGENTIC_COMPANIONS_ROOT=$REPO/companions`
+continue to work after pulling v0.3.0. Users with custom override
+directories that include only the script pair must add
+`discover-peer.mjs` (drop in a copy from `companions/discover-peer.mjs`
+or from any installed `companions` plugin v0.3.0+ cache directory).
+
+If the directory lacks `discover-peer.mjs`, the wrapper fails fast
+with a clear diagnostic (no silent fall-through to cache-glob —
+that would surprise users who set the env override expecting cache
+to be bypassed).
+
+Useful for development workflows (point at source-tree `companions/`
+without installing) and CI smoke flows.
 
 ### Cache-glob (auto-discovery fallback)
 

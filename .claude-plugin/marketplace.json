@@ -11,7 +11,7 @@
       "name": "companions",
       "source": "./plugins/companions",
       "version": "0.2.0",
-      "description": "First-party Claude/Codex companion bridges per companions/contract.md v0.1.1",
+      "description": "First-party Claude/Codex companion bridges and companion discovery library per companions/contract.md v0.1.1",
       "category": "Productivity"
     },
     {

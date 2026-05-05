@@ -51,11 +51,14 @@ agentic-plugins/
 │   └── tests/                      # unit + smoke (COMPANIONS_SMOKE=1)
 ├── kit/                            # Plugin authoring toolkit
 │   ├── README.md
-│   ├── lint/                       # Plugin shape conformance checks
-│   └── (discovery/ — Stage 2 Deliverable B)
+│   └── lint/                       # Plugin shape conformance checks
 ├── plugins/                        # Reference dual-host plugins (4-layer per ADR-0010)
 │   ├── README.md
-│   ├── companions/                 # L1 framework primitive — script-only library plugin (ADR-0008)
+│   ├── companions/                 # L1 framework primitive — script-only library plugin (ADR-0008).
+│   │                               # As of v0.3.0 also bundles canonical companion discovery
+│   │                               # library (scripts/discover-peer.mjs); Stage 2 Deliverable B
+│   │                               # absorbed discovery into this plugin per ADR-0010 §6 trigger
+│   │                               # evaluation (high cohesion, no separate plugin spawned)
 │   ├── research/                   # L2 capability — topic-bound research, Stage 1 reference plugin
 │   └── (engineer/ — L3 persona, Stage 2 Deliverable C)
 ├── scripts/
