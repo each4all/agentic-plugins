@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/each4all/agentic-plugins/compare/plugin-companions-v0.3.0...plugin-companions-v0.3.1) (2026-05-05)
+
+
+### Bug Fixes
+
+* **release-please:** correct extra-files path scope (package-relative + root-absolute) ([#28](https://github.com/each4all/agentic-plugins/issues/28)) ([117d737](https://github.com/each4all/agentic-plugins/commit/117d7379417401db3707c8e8bc75bfc58d868fcc))
+
 ## [0.3.0](https://github.com/each4all/agentic-plugins/compare/plugin-companions-v0.2.0...plugin-companions-v0.3.0) (2026-05-05)
 
 
