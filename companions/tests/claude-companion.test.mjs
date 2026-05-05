@@ -382,6 +382,15 @@ describe('AUTH_REGEX', () => {
     assert.ok(AUTH_REGEX.test('Please log in to continue'));
   });
 
+  it('matches Claude Code CLI 2.1.128+ wording (Not logged in · Please run /login)', () => {
+    // Empirically observed when codex spawns `claude -p` without inheriting
+    // the parent shell's keychain access — Claude CLI 2.1.128 emits this
+    // exact stderr instead of the older "claude login" / "log in" forms.
+    assert.ok(AUTH_REGEX.test('Not logged in · Please run /login'));
+    assert.ok(AUTH_REGEX.test('not logged in'));
+    assert.ok(AUTH_REGEX.test('Please run /login'));
+  });
+
   it('does not match unrelated stderr', () => {
     assert.equal(AUTH_REGEX.test('rate limit exceeded'), false);
     assert.equal(AUTH_REGEX.test('connection reset by peer'), false);
