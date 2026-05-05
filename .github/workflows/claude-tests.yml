@@ -32,14 +32,11 @@ jobs:
       - name: Syntax check claude-companion.mjs
         run: node --check companions/claude-companion.mjs
 
-      - name: Run plugin-shape conformance tests
-        run: node --test tests/plugin-shape/test-companions-plugin.mjs
+      - name: Run plugin-shape + research conformance tests
+        run: npm run test:plugin-shape
 
-      - name: Run kit/lint conformance tests
-        run: node --test kit/lint/tests/test-check-plugin-shape.mjs
-
-      - name: Run kit/lint on companions plugin
-        run: node kit/lint/check-plugin-shape.mjs plugins/companions
+      - name: Run kit/lint on all plugins
+        run: npm run lint:plugin-shape
 
       - name: Verify companion bundle has no drift
         run: node scripts/sync-companion-bundles.mjs
