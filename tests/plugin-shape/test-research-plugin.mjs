@@ -13,7 +13,7 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
-import { readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -153,11 +153,22 @@ describe('plugins/research — skill (skills/research/SKILL.md)', () => {
 
   it('passes stale-token audit (no omcc references, no host source-of-discovery labels)', async () => {
     const text = await readFile(path, 'utf8');
-    for (const stale of ['omcc-research', '/omcc-research', 'CODEX_HOME', 'CLAUDE-ONLY', 'CODEX-ONLY']) {
+    for (const stale of STALE_TOKENS) {
       ok(!text.includes(stale), `SKILL.md leaks stale token: ${stale}`);
     }
   });
 });
+
+const STALE_TOKENS = [
+  'omcc-research',
+  '/omcc-research',
+  'omcc-dev',
+  'CODEX_HOME',
+  'CLAUDE-ONLY',
+  'CODEX-ONLY',
+  '[Claude]',
+  '[Codex]',
+];
 
 describe('plugins/research — references (skills/research/references/*.md)', () => {
   for (const name of ['research-brief-spec.md', 'output-file-rules.md', 'ensemble-protocol.md']) {
@@ -165,7 +176,44 @@ describe('plugins/research — references (skills/research/references/*.md)', ()
       const path = resolve(PLUGIN_ROOT, 'skills/research/references', name);
       ok(await exists(path), `${name} missing`);
     });
+
+    it(`${name} passes stale-token audit (no omcc/host-source-of-discovery leaks)`, async () => {
+      const path = resolve(PLUGIN_ROOT, 'skills/research/references', name);
+      const text = await readFile(path, 'utf8');
+      for (const stale of STALE_TOKENS) {
+        ok(!text.includes(stale), `${name} leaks stale token: ${stale}`);
+      }
+    });
   }
+});
+
+describe('plugins/research — contract version freshness (D.12)', () => {
+  it('all references to companions/contract.md cite the current version', async () => {
+    // Extract current version from contract Status block.
+    const contract = await readFile(resolve(REPO_ROOT, 'companions/contract.md'), 'utf8');
+    const m = contract.match(/^- \*\*Version\*\*:\s*`v(\d+\.\d+\.\d+)`/m);
+    ok(m, 'cannot extract Version line from companions/contract.md Status block');
+    const currentVersion = m[1];
+
+    // Scan all .md files under plugins/research/skills/research/.
+    const skillRoot = resolve(PLUGIN_ROOT, 'skills/research');
+    const entries = await readdir(skillRoot, { recursive: true, withFileTypes: true });
+    const files = entries
+      .filter((e) => e.isFile() && e.name.endsWith('.md'))
+      .map((e) => resolve(e.parentPath, e.name));
+
+    for (const file of files) {
+      const text = await readFile(file, 'utf8');
+      const versionMatches = [...text.matchAll(/contract\.md`?\s+v(\d+\.\d+\.\d+)/g)];
+      for (const vm of versionMatches) {
+        strictEqual(
+          vm[1],
+          currentVersion,
+          `${file}: stale contract version reference v${vm[1]} (current: v${currentVersion})`,
+        );
+      }
+    }
+  });
 });
 
 describe('plugins/research — Codex agents YAML (skills/research/agents/openai.yaml)', () => {

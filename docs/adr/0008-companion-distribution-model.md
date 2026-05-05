@@ -90,12 +90,22 @@ the canonical `companions/{claude,codex}-companion.mjs` scripts
 user-facing slash commands, hooks, or subagents.
 
 **Formal qualifier**: a plugin qualifies as **script-only library**
-iff it ships no `commands/`, `hooks/`, `agents/`, `personas/`,
-`skills/`, or `mcp-servers/` content — only `scripts/` and the two
-host manifests (`.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`).
-This is a deliberately narrow definition: a plugin that ships even one
-slash command or skill must follow the full ADR-0006 layout including
-`adapters/`.
+iff it ships no `commands/`, `hooks/`, `agents/`, `personas/`, or
+`mcp-servers/` content — only `scripts/` and the two host manifests
+(`.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`). This is
+a deliberately narrow definition: a plugin that ships even one slash
+command or functional skill must follow the full ADR-0006 layout
+including `adapters/`.
+
+**Codex spec compliance carve-out**: the Codex vendored plugin spec
+(`~/.codex/skills/.system/plugin-creator/references/plugin-json-spec.md`)
+requires the `skills` field in `.codex-plugin/plugin.json` to point
+at a real directory. A script-only library plugin MAY ship an empty
+`skills/` directory containing **only** a placeholder README that cites
+this carve-out. The placeholder does NOT disqualify the plugin from
+the script-only category — the formal qualifier prohibits **functional**
+skills content (a `SKILL.md` directory under `skills/<name>/`), not
+the empty directory required by Codex's manifest schema.
 
 ADR-0006 specifies the per-plugin directory layout including
 `adapters/{claude,codex}/` for host-specific adapter assets.
@@ -240,7 +250,8 @@ does not yet exist, so there is nothing to drift from.
 
 1. **Sync script** (`scripts/sync-companion-bundles.mjs`, created in
    B.2) — reads canonical, writes copies. Run via
-   `npm run sync:companions`.
+   `npm run sync:companions -- --write` (the npm script defaults to
+   drift-check; `-- --write` performs the sync action).
 2. **Drift-detection test** (initially in `tests/plugin-shape/`,
    created in B.1; later integrated into
    `kit/lint/check-plugin-shape.mjs` per B.10) — fails CI if the

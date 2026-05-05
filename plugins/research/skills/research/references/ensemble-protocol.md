@@ -9,7 +9,7 @@ the peer host.
 
 The user never invokes the peer host directly. The skill orchestrates
 dispatch, collection, and synthesis transparently through
-`companions/contract.md` v0.1.0 (Claude → Codex via `codex-companion`,
+`companions/contract.md` v0.1.1 (Claude → Codex via `codex-companion`,
 Codex → Claude via `claude-companion`). When the peer host is not
 installed or returns no usable output, the ensemble degrades silently
 to local-only.
@@ -449,9 +449,8 @@ the ensemble ran at all.
 
 ## State and Recovery
 
-The research skill has no workflow file analogous to omcc-dev's
-`/start` / `/fix` / `/audit` state. The research-scan ensemble is
-therefore **in-session only**:
+The research skill has no persistent workflow state. The research-scan
+ensemble is therefore **in-session only**:
 
 - If the session compacts or terminates while a peer dispatch is in
   flight, that dispatch becomes uncollectable. The next research
@@ -473,7 +472,7 @@ research; users choosing between options reach for the appropriate
 decision-bound skill.
 
 The shared bidirectional ensemble surface
-(`companions/contract.md` v0.1.0) does not blur this boundary — each
+(`companions/contract.md` v0.1.1) does not blur this boundary — each
 skill owns its prompt template and artifact contract.
 
 ---
@@ -491,7 +490,7 @@ skill owns its prompt template and artifact contract.
   `adapters/codex/scripts/discover-companion.mjs` — host-side
   mechanics that resolve and invoke the peer companion. This
   protocol describes intent only; mechanics live there.
-- `companions/contract.md` v0.1.0 — wire-spec contract for both
+- `companions/contract.md` v0.1.1 — wire-spec contract for both
   companion bridges (`claude-companion`, `codex-companion`).
 - `docs/adr/0008-companion-distribution-model.md` — companion
   distribution model (cache-glob discovery + env override) that the

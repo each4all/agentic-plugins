@@ -61,6 +61,38 @@ The strategic intent is for agentic-plugins to develop agentic-plugins. The path
 - Smoke tests pass in both hosts via `kit/lint/` and `companions/tests/`
 - Both companion CLIs (`claude-companion`, `codex-companion`) implemented
 
+#### Stage 1 exit evidence
+
+Stage 1 exit was reached on 2026-05-05 with `plugins/research` shipped
+(PR #17, main `f1c398f`) plus the companion contract patches (PRs #19,
+#20) and the Phase 5b cleanup (this PR). Round-trip is demonstrated
+empirically by the canonical brief artifacts under `output/`:
+
+- **Claude direction** — `output/2026-05-04_node_24_child_p_1145/research_brief.md`
+  - Topic: "Node 24 child_process API surface"
+  - Round-trip: ~5.5 min Codex peer turn via `codex-companion`
+  - Synthesis: 7 cited sources, HIGH confidence; 4 PEER-ONLY claims all
+    Path-A verified
+
+- **Codex direction** — `output/2026-05-05_current_tls_13_1124/research_brief.md`
+  - Topic: "current TLS 1.3 deployment guidance"
+  - Round-trip: 5+ min Claude peer turn via `claude-companion`; gracefully
+    degraded after the Codex background-terminal timeout (per
+    `plugins/research/skills/research/references/ensemble-protocol.md`
+    Failure Handling)
+  - Synthesis: 12 cited sources HIGH confidence (5 standards: RFC 8446 /
+    8470 / 9001 / 9110 / 9325 + NIST SP 800-52r2; 7 official-docs:
+    Cloudflare / Fastly / GCP / Akamai / nginx / OpenSSL)
+
+Per-host CI workflows (`claude-tests.yml`, `codex-tests.yml`) gate
+plugin-shape conformance + `kit/lint` + unit tests on every push.
+Automated CI smoke that drives the companion CLIs end-to-end with real
+peer-host credentials is **deferred to Stage 2** (see Risks #4 — bidirectional
+companion auth in CI). Until then, the two artifacts above are the
+canonical Stage 1 exit evidence for "round-trip companion call passes",
+and `COMPANIONS_SMOKE=1 npm run test:smoke` is the opt-in local
+verification path.
+
 ### Stage 2 — Self-development plugin
 
 - A new agentic-plugins plugin ships (name TBD — not constrained to mirror omcc-dev):

@@ -16,6 +16,8 @@
 //     the marketplace entry's `name`
 //   - per-entry (Claude): `plugins/<entry.name>/.claude-plugin/plugin.json`
 //     exists and parses, with `name` matching the marketplace entry's `name`
+//     AND with `version` matching the entry's `version` when both are present
+//     (Codex schema has no per-entry version, so this asymmetry is by-design)
 //
 // What this does NOT check:
 //   - schema-by-host beyond the shared minimal subset (each host validates
@@ -104,6 +106,11 @@ if (Array.isArray(claude.plugins) && Array.isArray(codex.plugins)) {
     const manifest = loadJSON(manifestPath, `${CLAUDE_PATH}.plugins[${i}] (${entry.name}): .claude-plugin/plugin.json`);
     if (manifest && manifest.name !== entry.name) {
       errors.push(`${CLAUDE_PATH}.plugins[${i}]: catalog name "${entry.name}" != manifest name "${manifest.name}"`);
+    }
+    // Claude per-entry version check (Codex schema lacks per-entry version,
+    // so the asymmetry below is by-design — see Codex validation block)
+    if (manifest && typeof entry.version === 'string' && typeof manifest.version === 'string' && manifest.version !== entry.version) {
+      errors.push(`${CLAUDE_PATH}.plugins[${i}] (${entry.name}): catalog version "${entry.version}" != manifest version "${manifest.version}"`);
     }
   }
 

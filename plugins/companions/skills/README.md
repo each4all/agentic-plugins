@@ -9,8 +9,12 @@ hooks, or subagents.
 The Codex plugin manifest declares `skills: "./skills/"` so the directory
 shape matches the vendored spec at
 `~/.codex/skills/.system/plugin-creator/references/plugin-json-spec.md`.
-This file exists so the directory is non-empty and survives git
-checkpointing.
+This README exists per the **Codex spec compliance carve-out** in
+ADR-0008 § (a) — script-only library plugins may ship an empty
+`skills/` placeholder containing only a documenting README without
+losing the script-only category. No `SKILL.md` directory is permitted
+under this placeholder; the formal qualifier still prohibits functional
+skills content.
 
 Consumer plugins (e.g. `plugins/research/`) reach the bundled companion
 scripts via cache-glob discovery — see ADR-0008 § (b) and the

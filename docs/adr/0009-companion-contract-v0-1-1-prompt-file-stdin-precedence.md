@@ -118,8 +118,8 @@ amended to make this explicit.
    - `resolvePromptInput()` — remove the two conflict checks
      (`promptFile && stdinIsPipe`, `promptArg && stdinIsPipe`).
 3. `plugins/companions/scripts/{claude,codex}-companion.mjs` — synced
-   via `npm run sync:companions`; the drift-detection test continues
-   to enforce byte equality.
+   via `npm run sync:companions -- --write`; the drift-detection test
+   continues to enforce byte equality.
 4. `companions/tests/{claude,codex}-companion.test.mjs`:
    - Remove the two `--prompt-file + piped stdin` and
      `PROMPT_ARG + piped stdin` "throws" cases.

@@ -6,12 +6,16 @@ plugins) can reach them via cache-glob discovery.
 
 This is a **script-only library plugin** per
 [ADR-0008 § (a)](../../docs/adr/0008-companion-distribution-model.md):
-it ships only `scripts/` and the two host manifests; it does not
-define user-facing slash commands, hooks, or subagents. The bundled
-scripts are byte-identical copies of the canonical
+it ships `scripts/` and the two host manifests, plus an empty
+`skills/` placeholder required by the Codex vendored plugin spec
+(see [ADR-0008 § (a) Codex spec compliance carve-out](../../docs/adr/0008-companion-distribution-model.md)).
+It does not define user-facing slash commands, hooks, subagents, or
+any functional skills content. The bundled scripts are byte-identical
+copies of the canonical
 [`companions/claude-companion.mjs`](../../companions/claude-companion.mjs)
 and [`companions/codex-companion.mjs`](../../companions/codex-companion.mjs),
-synced via `npm run sync:companions` and drift-detected in CI.
+synced via `npm run sync:companions -- --write` and drift-detected in
+CI.
 
 The wire-spec contract honored by both companions is
 [`companions/contract.md`](../../companions/contract.md) v0.1.1.
