@@ -1,0 +1,7 @@
+interface:
+  display_name: "Engineer — Critique"
+  short_description: "Multi-perspective code/design review"
+  default_prompt: "Use $engineer:critique to review changes, --profile=full-codebase for audit"
+
+policy:
+  allow_implicit_invocation: false

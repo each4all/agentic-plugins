@@ -1,0 +1,39 @@
+{
+  "name": "engineer",
+  "version": "0.1.0",
+  "description": "Engineer workbench — 6 cognitive verbs (investigate / frame / decide / compose / critique / refine) for AI-assisted engineering across Claude Code & Codex CLI",
+  "author": {
+    "name": "each4all",
+    "url": "https://github.com/each4all"
+  },
+  "homepage": "https://github.com/each4all/agentic-plugins",
+  "repository": "https://github.com/each4all/agentic-plugins",
+  "license": "MIT",
+  "keywords": [
+    "engineer",
+    "development",
+    "investigate",
+    "frame",
+    "decide",
+    "compose",
+    "critique",
+    "refine",
+    "claude",
+    "codex",
+    "agentic-plugins"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Engineer",
+    "shortDescription": "AI-assisted engineering across 6 cognitive verbs",
+    "longDescription": "L3 persona plugin exposing six universal cognitive verbs as canonical skills (investigate, frame, decide, compose, critique, refine). Each verb is invokable as /engineer:<verb> with optional --profile and --topic arguments. Sub-discipline expansion (backend, frontend, devops, ...) flows through the L4 profile axis. Bidirectional companion ensembles (Claude ↔ Codex) dispatch automatically at every command-mode phase boundary under an always-max policy.",
+    "developerName": "each4all",
+    "category": "Development",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": [
+      "$engineer:investigate How is the auth token rotation flow implemented?",
+      "$engineer:frame Define the problem from these symptoms",
+      "$engineer:decide Compare two state-store options before I implement"
+    ]
+  }
+}

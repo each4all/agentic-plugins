@@ -1,0 +1,7 @@
+interface:
+  display_name: "Engineer — Refine"
+  short_description: "Apply feedback, fix bugs, iterate"
+  default_prompt: "Use $engineer:refine to apply review findings or fix a confirmed bug"
+
+policy:
+  allow_implicit_invocation: false

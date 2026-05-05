@@ -20,6 +20,13 @@
       "version": "0.3.0",
       "description": "Topic-bound research producing a durable cited brief with bidirectional companion ensemble (Claude ↔ Codex)",
       "category": "Research"
+    },
+    {
+      "name": "engineer",
+      "source": "./plugins/engineer",
+      "version": "0.1.0",
+      "description": "Engineer workbench — 6 cognitive verbs (investigate / frame / decide / compose / critique / refine) for AI-assisted engineering across Claude Code & Codex CLI",
+      "category": "Development"
     }
   ]
 }

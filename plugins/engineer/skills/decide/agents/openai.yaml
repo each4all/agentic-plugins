@@ -1,0 +1,7 @@
+interface:
+  display_name: "Engineer — Decide"
+  short_description: "Compare alternatives, recommend a direction"
+  default_prompt: "Use $engineer:decide to evaluate options before implementing"
+
+policy:
+  allow_implicit_invocation: false

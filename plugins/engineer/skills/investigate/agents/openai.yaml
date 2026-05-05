@@ -1,0 +1,7 @@
+interface:
+  display_name: "Engineer — Investigate"
+  short_description: "Gather evidence, inspect context, scan codebase, diagnose bugs"
+  default_prompt: "Use $engineer:investigate to gather evidence on a topic or diagnose a bug"
+
+policy:
+  allow_implicit_invocation: false
