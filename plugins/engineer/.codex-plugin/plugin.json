@@ -1,6 +1,6 @@
 {
   "name": "engineer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Engineer workbench — 6 cognitive verbs (investigate / frame / decide / compose / critique / refine) for AI-assisted engineering across Claude Code & Codex CLI",
   "author": {
     "name": "each4all",
@@ -29,7 +29,11 @@
     "longDescription": "L3 persona plugin exposing six universal cognitive verbs as canonical skills (investigate, frame, decide, compose, critique, refine). Each verb is invokable as /engineer:<verb> with optional --profile and --topic arguments. Sub-discipline expansion (backend, frontend, devops, ...) flows through the L4 profile axis. Bidirectional companion ensembles (Claude ↔ Codex) dispatch automatically at every command-mode phase boundary under an always-max policy.",
     "developerName": "each4all",
     "category": "Development",
-    "capabilities": ["Interactive", "Read", "Write"],
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
     "defaultPrompt": [
       "$engineer:investigate How is the auth token rotation flow implemented?",
       "$engineer:frame Define the problem from these symptoms",

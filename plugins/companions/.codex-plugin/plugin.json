@@ -1,6 +1,6 @@
 {
   "name": "companions",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "First-party Claude/Codex companion bridges and companion discovery library per companions/contract.md v0.1.1",
   "author": {
     "name": "each4all",
@@ -23,7 +23,9 @@
     "longDescription": "Script-only library plugin that bundles the canonical claude-companion and codex-companion CLIs along with the canonical companion discovery library (discover-peer.mjs). Consumer plugins discover the bundled scripts via cache-glob and invoke them per companions/contract.md v0.1.1 to run cross-host peer-agent ensembles.",
     "developerName": "each4all",
     "category": "Productivity",
-    "capabilities": ["Read"],
+    "capabilities": [
+      "Read"
+    ],
     "defaultPrompt": []
   }
 }
