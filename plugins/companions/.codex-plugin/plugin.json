@@ -1,6 +1,6 @@
 {
   "name": "companions",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "First-party Claude/Codex companion bridges per companions/contract.md v0.1.1",
   "author": {
     "name": "each4all",
