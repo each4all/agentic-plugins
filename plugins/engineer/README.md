@@ -40,43 +40,52 @@ plugin model.
 
 This plugin is in Stage 2 of agentic-plugins development (per
 [`docs/DEVELOPMENT.md`](../../docs/DEVELOPMENT.md) §Stage 2). The
-0.1.0 release ships:
+current release ships:
 
 - 4 manifest + marketplace entries (Claude Code + Codex CLI)
 - 6 SKILL.md bodies (cognitive verb skills)
 - 4 shared protocol references (presentation / ensemble /
   orchestration / agent-taxonomy)
 - 6 Codex agent definitions (`agents/openai.yaml` per skill)
+- **Claude slash command surface** — 6 canonical verbs
+  (`/engineer:investigate|frame|decide|compose|critique|refine`)
+  + 1 sugar alias (`/engineer:audit` ≡
+  `/engineer:critique --profile=full-codebase` per ADR-0010 §3)
+- **Host-shared canonical scripts** — `scripts/state.mjs`
+  (workflow I/O per ADR-0011) + `scripts/dispatch-peer.mjs`
+  (companion task wrapper per `companions/contract.md` v0.1.1)
+- **Claude Code hooks** (`hooks/hooks.json` + `adapters/claude/hooks/{pre-compact,stop,session-start}.mjs`) — automatic
+  state snapshot per ADR-0011 §4 (PreCompact + Stop + SessionStart)
+- **Codex stop helper** (`adapters/codex/hooks/stop.mjs`) —
+  manual-invoke; Codex CLI does not expose a host hook surface
+  (as of 0.128.0), so SKILL command-invoked mode triggers this
+  script as its final step
+- **Workflow state persistence** under
+  `<cwd>/.claude/agentic-engineer/workflows/<workflow_id>.md` per
+  [ADR-0011](../../docs/adr/0011-workflow-continuity-storage.md) §1
 
-Slash command surface (`/engineer:<verb>`), Codex skill mention
-dispatch wiring (`$engineer:<verb>`), host adapters
-(Claude PreCompact / Codex Stop hooks), peer ensemble dispatch
-(`adapters/<host>/scripts/dispatch-peer.mjs`), and workflow state
-I/O all ship in Stage 2 **Deliverable D** as a follow-up. Until
-then, the 0.1.0 release is a documentation-and-skill-bodies
-scaffold; the plugin is invokable only through:
+Both hosts can invoke engineer verbs in full command mode (local
+subagent dispatch + peer ensemble dispatch + workflow state
+writes). The engineer Stage 2 non-goals (sharded workflow / drift
+classification / cross-host transition guarantees /
+`/engineer:resume` / multi-active workflows) remain explicitly out
+of scope per ADR-0011 §Stage 2 Non-Goals.
 
-- **Claude Code**: skill auto-activation. The Claude skill router
-  matches trigger phrases in each SKILL frontmatter `description`
-  and runs the skill in lightweight in-context mode (no subagent
-  spawning, no peer ensemble dispatch).
+The plugin is invokable through:
+
+- **Claude Code**: explicit slash command (`/engineer:<verb>`)
+  for full command-mode behavior (Phase 0 continuity → SKILL
+  command-invoked mode → state finalize), OR skill
+  auto-activation for lightweight in-context mode (no subagent
+  spawning, no peer dispatch).
 - **Codex CLI**: explicit skill mention via `$engineer:<verb>`.
   Each `agents/openai.yaml` ships
   `policy.allow_implicit_invocation: false` (matching the Stage 1
   research plugin pattern), so trigger-phrase auto-activation does
   NOT fire on Codex — the user must invoke skills explicitly.
-  Once invoked, the skill runs in the same lightweight in-context
-  mode as Claude side.
-
-Full command-mode behavior — local subagent dispatch + peer
-ensemble synthesis + workflow state writes — is **not yet wired**
-in 0.1.0. The SKILL.md "When invoked by command" sections describe
-the contract that Deliverable D's adapters implement.
-
-Workflow state persistence under
-`<cwd>/.claude/agentic-engineer/workflows/` (per
-[ADR-0011](../../docs/adr/0011-workflow-continuity-storage.md)
-§Storage layout) is added in Deliverable D.
+  When invoked through SKILL command-invoked mode, the skill runs
+  full command-mode behavior; in lightweight context, it runs the
+  reduced in-context mode.
 
 ## Install
 
@@ -112,14 +121,46 @@ enabled = true
 enabled = true
 ```
 
-## Invocation (0.1.0 — pre-Deliverable D)
+## Invocation
 
-### Claude Code (skill auto-activation)
+### Claude Code — slash command (full command-mode)
 
-Each SKILL frontmatter `description` contains trigger phrases (English +
-Korean). When the user's prompt matches, the skill auto-activates in
-lightweight in-context mode (no subagent spawning, no peer ensemble
-dispatch). Examples:
+```text
+/engineer:investigate <topic>
+/engineer:frame <problem context>
+/engineer:decide <decision question>
+/engineer:compose <task description>
+/engineer:critique <change description or area>
+/engineer:refine <feedback or bug context>
+
+# Sugar alias (ADR-0010 §3 verb-level alias):
+/engineer:audit <area>     # ≡ /engineer:critique --profile=full-codebase
+```
+
+Each slash command runs:
+1. **Phase 0** — workflow continuity check per ADR-0011 §5 implicit
+   resume. Either creates a new workflow under the directory-level
+   lock or appends a phase note to the existing single-active
+   workflow.
+2. **Phase 1** — SKILL.md command-invoked mode: local subagents
+   dispatched in parallel, peer ensemble dispatched in background
+   per `skills/_shared/references/ensemble-protocol.md`,
+   synthesized into AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT.
+3. **Phase 2** — state finalize: phase note appended to the
+   workflow body recording ensemble launch, synthesis verdict, and
+   recommended next verb.
+
+Hooks (PreCompact / Stop / SessionStart on Claude Code) snapshot
+the workflow's `last_snapshot` field automatically without user
+action.
+
+### Claude Code — skill auto-activation (lightweight)
+
+When the user's prompt matches trigger phrases in a SKILL's
+frontmatter `description` AND no slash command was issued, the
+skill auto-activates in lightweight in-context mode — no subagent
+spawning, no peer ensemble dispatch, no workflow state writes.
+Examples:
 
 - *"explain this codebase"* → `investigate` (analysis profile)
 - *"why isn't this working"* → `investigate` (root-cause profile)
@@ -127,11 +168,9 @@ dispatch). Examples:
 - *"review my changes"* → `critique`
 - *"fix the bug we found"* → `refine`
 
-For full command-mode behavior (full subagent dispatch + peer
-ensemble), use the Codex side until Deliverable D ships
-`/engineer:<verb>` slash commands.
+For full command-mode behavior, use the slash command form above.
 
-### Codex CLI (explicit skill mention)
+### Codex CLI — explicit skill mention
 
 ```text
 $engineer:investigate <topic>
@@ -142,24 +181,22 @@ $engineer:critique <change description or area>
 $engineer:refine <feedback or bug context>
 ```
 
-In 0.1.0 the user invokes engineer skills via explicit
-`$engineer:<verb>` mention. The skills run in **lightweight
-in-context mode**. Each `agents/openai.yaml` sets
+Each `agents/openai.yaml` sets
 `policy.allow_implicit_invocation: false` (matching the Stage 1
 research plugin pattern), which deliberately disables
 trigger-phrase auto-activation on Codex side — explicit mention
-is required to invoke a skill, even when the user's prompt
-contains words that match the skill's frontmatter trigger phrases.
-Full command-mode behavior (local agent dispatch + peer ensemble +
-synthesis) requires Deliverable D's
-`adapters/codex/scripts/dispatch-peer.mjs` and is not yet
-operational.
+is required, even when the user's prompt contains words that match
+trigger phrases. When the user invokes through SKILL command-mode
+(`$engineer:<verb>` with full task context), the SKILL runs full
+command-mode behavior including peer ensemble dispatch via
+`scripts/dispatch-peer.mjs` (which calls `claude-companion` for
+the peer perspective). The skill's final step manually invokes
+`adapters/codex/hooks/stop.mjs` for the snapshot write per
+ADR-0011 §4 (Codex CLI lacks a native hook surface).
 
-Once Deliverable D ships, both hosts dispatch the peer companion
-(Claude side calls `codex-companion`, Codex side calls
-`claude-companion`) via the canonical `companions` plugin, and
+Both hosts produce structurally indistinguishable output —
 synthesis returns AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT-
-classified findings in a single unified output.
+classified findings regardless of which host is the orchestrator.
 
 ### Profile arguments
 
@@ -206,9 +243,9 @@ cache-glob bootstrap, not from the env-var-resolved directory.
   not consumed by engineer; users migrate by starting fresh (item 4).
 - **Plugin-name-level aliases** (`/dev:`, `/eng:`) — not supported
   in Stage 2 (item 9). Verb-level sugar aliases inside the plugin
-  are permitted (e.g., `/engineer:audit` ≡
-  `/engineer:critique --profile=full-codebase` once
-  Deliverable D ships slash commands).
+  are permitted; `/engineer:audit` (≡
+  `/engineer:critique --profile=full-codebase`) ships in this
+  release as the sole sugar alias.
 
 ## References
 
@@ -228,8 +265,8 @@ cache-glob bootstrap, not from the env-var-resolved directory.
   composition + 6 cognitive verbs + naming convention + sugar alias
   policy this plugin instantiates
 - [ADR-0011](../../docs/adr/0011-workflow-continuity-storage.md) —
-  workflow continuity Option III storage format (full implementation
-  in Deliverable D)
+  workflow continuity Option III storage format implemented by
+  `scripts/state.mjs` + the Claude Code hooks in this release
 - [`companions/contract.md`](../../companions/contract.md) —
   wire-spec contract v0.1.1
 - [`plugins/companions/`](../companions/) — L1 framework primitive

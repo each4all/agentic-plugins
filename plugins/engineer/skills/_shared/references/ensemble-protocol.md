@@ -229,6 +229,44 @@ these point types. The verb→type mapping is in each command's body.
 All types use the companions `task --prompt-file <path>` subcommand
 per the Bidirectional invocation pattern above.
 
+### Frame (frame phase)
+
+- **Purpose**: Independent problem-model framing
+- **Subcommand**: `task`
+- **Prompt template**:
+
+  ```xml
+  <task>
+  Given this evidence and user request, independently propose a problem
+  model: problem statement, goals, audience, constraints, success
+  criteria, risks, and explicit out-of-scope items.
+  Evidence: {investigate findings or user-supplied context}
+  Request: {user's framing trigger}
+  </task>
+
+  <structured_output_contract>
+  Return:
+  1. Problem statement (1-2 sentences)
+  2. Goals (concrete description of success)
+  3. Audience (consumer of the result)
+  4. Constraints (tech / time / scope / compatibility limits)
+  5. Success criteria (measurable)
+  6. Risks (with detection signal)
+  7. Out of scope (deliberately deferred)
+  </structured_output_contract>
+
+  <grounding_rules>
+  Frame the problem from observable evidence; do not propose
+  approaches (deciding belongs to /engineer:decide). Where a goal or
+  constraint is inferred rather than observed, label it explicitly.
+  </grounding_rules>
+  ```
+
+- **Synthesis**: Compare problem models. AGREED items elevate
+  confidence in the framing. CONFLICT items surface to the user as
+  an ambiguous problem boundary that must be reconciled before
+  decide / compose.
+
 ### Brainstorm (decide phase)
 
 - **Purpose**: Independent approach generation
@@ -298,9 +336,16 @@ per the Bidirectional invocation pattern above.
   analysis; the peer provides a holistic cross-cutting view. Flag
   files/patterns found by only one side.
 
-### Plan-verify (compose phase, plan profile)
+### Plan-verify (compose phase)
+
+Applies to both `compose --profile=plan` (verifying a draft plan) and
+`compose --profile=code` (verifying a freshly-written implementation).
+The prompt below is for the plan profile; the code profile reuses the
+same template but substitutes the draft plan with the diff or list of
+written files.
 
 - **Purpose**: Find gaps in the orchestrator's implementation plan
+  (or in the freshly-written code, in `code` profile)
 - **Subcommand**: `task`
 - **Independence exception**: Receives the orchestrator's draft plan
   as input
