@@ -24,7 +24,7 @@
     {
       "name": "engineer",
       "source": "./plugins/engineer",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "description": "Engineer workbench — 6 cognitive verbs (investigate / frame / decide / compose / critique / refine) for AI-assisted engineering across Claude Code & Codex CLI",
       "category": "Development"
     }
