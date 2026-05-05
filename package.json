@@ -19,6 +19,7 @@
     "lint:plugin-shape": "for d in plugins/*/; do node kit/lint/check-plugin-shape.mjs \"$d\" || exit 1; done",
     "test:smoke": "COMPANIONS_SMOKE=1 node --test companions/tests/claude-companion.smoke.test.mjs companions/tests/codex-companion.smoke.test.mjs",
     "validate:marketplace": "node scripts/validate-marketplace.mjs",
+    "validate:versions": "node scripts/validate-versions.mjs",
     "sync:companions": "node scripts/sync-companion-bundles.mjs"
   },
   "bin": {

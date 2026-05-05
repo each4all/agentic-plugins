@@ -6,7 +6,9 @@ on:
     paths:
       - '.claude-plugin/marketplace.json'
       - '.agents/plugins/marketplace.json'
+      - '.release-please-manifest.json'
       - 'scripts/validate-marketplace.mjs'
+      - 'scripts/validate-versions.mjs'
       - '.github/workflows/marketplace-validate.yml'
       - 'package.json'
       - 'plugins/**'
@@ -14,7 +16,9 @@ on:
     paths:
       - '.claude-plugin/marketplace.json'
       - '.agents/plugins/marketplace.json'
+      - '.release-please-manifest.json'
       - 'scripts/validate-marketplace.mjs'
+      - 'scripts/validate-versions.mjs'
       - '.github/workflows/marketplace-validate.yml'
       - 'package.json'
       - 'plugins/**'
@@ -38,3 +42,6 @@ jobs:
 
       - name: Validate both catalogs
         run: npm run validate:marketplace
+
+      - name: Cross-check versions (release-please-manifest <-> plugin manifests <-> Claude marketplace)
+        run: npm run validate:versions
