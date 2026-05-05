@@ -235,6 +235,14 @@ record the degradation in the user-facing completion summary AFTER
 the brief is saved. Never insert ensemble-status labels into the
 brief artifact itself.
 
+The completion summary's degradation note MUST include a one-line
+install pointer (per `docs/adr/0008-companion-distribution-model.md`
+§ (e) "SHOULD"): e.g., *"Peer ensemble unavailable — to enable
+peer-host findings on future runs, run `/plugin install
+companions@agentic-plugins` on Claude Code, or set
+`[plugins."companions@agentic-plugins"] enabled = true` in
+`~/.codex/config.toml` on Codex CLI."*
+
 ### Step 4 audit (command mode only) — PEER-ONLY claim handling
 
 The audit checklist (canonical in
