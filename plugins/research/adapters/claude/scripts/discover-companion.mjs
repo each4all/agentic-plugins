@@ -2,98 +2,67 @@
 // adapters/claude/scripts/discover-companion.mjs
 //
 // Resolves the codex-companion path for the research skill running on
-// Claude Code. The peer host for Claude is Codex, so this script
-// discovers ~/.claude/plugins/cache/agentic-plugins/companions/*/scripts/codex-companion.mjs.
+// Claude Code. The peer host for Claude is Codex.
 //
-// Resolution order (per ADR-0008):
-//   1. AGENTIC_COMPANIONS_ROOT env override — absolute path treated as
-//      <root>/codex-companion.mjs.
-//   2. Cache-glob with manifest verification:
-//        ~/.claude/plugins/cache/agentic-plugins/companions/*/scripts/codex-companion.mjs
-//      Each candidate's .claude-plugin/plugin.json must declare
-//      name == "companions"; SemVer-descending selection of valid
-//      manifest matches.
-//   3. Preflight: companion source must reference --prompt-file and
-//      declare a CONTRACT_VERSION whose major matches this script's
-//      compatibility expectation (currently 0).
+// Implementation: bootstraps the companions plugin cache root (multi-version
+// SemVer scan), then imports plugins/companions/scripts/discover-peer.mjs
+// for the canonical discovery algorithm. See plugins/companions/scripts/
+// discover-peer.mjs for the resolution order, env override, manifest
+// verification, and preflight contract.
+//
+// Per ADR-0010 §6 trigger evaluation, the discovery algorithm lives inside
+// the companions plugin (high cohesion with companion invocation; not spun
+// out as a separate framework primitive).
 //
 // Exit codes:
 //   0 — discovered; stdout is the absolute companion path (one line).
 //   1 — not found / graceful degradation; stderr summarizes why.
 //   2 — misuse (bad arguments).
-//
-// The discover() function is exported for unit tests; the CLI tail
-// only runs when this module is the entrypoint.
 
-import { readFile, stat, readdir } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 
-const PEER_COMPANION = 'codex-companion.mjs';
+const PEER = 'codex';
 const ENV_VAR = 'AGENTIC_COMPANIONS_ROOT';
-const COMPATIBLE_MAJOR = 0;
-const DEFAULT_CACHE_BASE = join(homedir(), '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions');
+const COMPANIONS_BASE = join(homedir(), '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions');
 
-export async function discover({ env = process.env, cacheBase = DEFAULT_CACHE_BASE } = {}) {
-  const envRoot = env[ENV_VAR];
-  if (envRoot && envRoot.length > 0) {
-    if (!isAbsolute(envRoot)) {
-      return { ok: false, reason: `${ENV_VAR} must be an absolute path: ${envRoot}` };
-    }
-    const candidate = join(envRoot, PEER_COMPANION);
-    if (!(await fileExists(candidate))) {
-      return { ok: false, reason: `${ENV_VAR}=${envRoot} but ${candidate} not found` };
-    }
-    if (!(await preflight(candidate))) {
-      return {
-        ok: false,
-        reason: `${candidate} failed preflight (missing --prompt-file or incompatible CONTRACT_VERSION)`,
-      };
-    }
-    return { ok: true, path: candidate, source: 'env' };
-  }
+async function bootstrapCompanionsRoot(cacheBase = COMPANIONS_BASE) {
+  // Cache-glob bootstrap (env-override is handled separately in discover()
+  // because env-override layout is script-pair root, not plugin root).
 
-  if (!(await dirExists(cacheBase))) {
-    return { ok: false, reason: `companions plugin not installed (${cacheBase} not found)` };
-  }
+  if (!(await dirExists(cacheBase))) return null;
 
   let entries = [];
   try {
     entries = await readdir(cacheBase, { withFileTypes: true });
-  } catch (err) {
-    return { ok: false, reason: `failed to scan ${cacheBase}: ${err.message}` };
+  } catch {
+    return null;
   }
 
   const candidates = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const versionDir = join(cacheBase, entry.name);
-    const manifestPath = join(versionDir, '.claude-plugin', 'plugin.json');
+    const manifestFile = join(versionDir, '.claude-plugin', 'plugin.json');
     let manifest;
     try {
-      manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+      manifest = JSON.parse(await readFile(manifestFile, 'utf8'));
     } catch {
       continue;
     }
     if (manifest.name !== 'companions') continue;
-    const companionPath = join(versionDir, 'scripts', PEER_COMPANION);
-    if (!(await fileExists(companionPath))) continue;
-    candidates.push({ version: typeof manifest.version === 'string' ? manifest.version : '0.0.0', path: companionPath });
+    const discoverPath = join(versionDir, 'scripts', 'discover-peer.mjs');
+    if (!(await fileExists(discoverPath))) continue;
+    candidates.push({
+      version: typeof manifest.version === 'string' ? manifest.version : '0.0.0',
+      versionDir,
+    });
   }
 
-  if (candidates.length === 0) {
-    return { ok: false, reason: `no manifest-verified companions plugin in ${cacheBase}` };
-  }
-
+  if (candidates.length === 0) return null;
   candidates.sort((a, b) => semverCompare(b.version, a.version));
-
-  for (const c of candidates) {
-    if (await preflight(c.path)) {
-      return { ok: true, path: c.path, source: 'cache-glob', version: c.version };
-    }
-  }
-
-  return { ok: false, reason: `no companions plugin in ${cacheBase} passed preflight (${PEER_COMPANION})` };
+  return candidates[0].versionDir;
 }
 
 async function fileExists(path) {
@@ -114,20 +83,6 @@ async function dirExists(path) {
   }
 }
 
-async function preflight(companionPath) {
-  let text;
-  try {
-    text = await readFile(companionPath, 'utf8');
-  } catch {
-    return false;
-  }
-  if (!/['"]prompt-file['"]/.test(text)) return false;
-  const m = text.match(/CONTRACT_VERSION\s*=\s*['"]([0-9]+)\.([0-9]+)\.([0-9]+)['"]/);
-  if (!m) return false;
-  const major = Number.parseInt(m[1], 10);
-  return major === COMPATIBLE_MAJOR;
-}
-
 function semverCompare(a, b) {
   const pa = a.split('.').map((x) => Number.parseInt(x, 10) || 0);
   const pb = b.split('.').map((x) => Number.parseInt(x, 10) || 0);
@@ -137,6 +92,44 @@ function semverCompare(a, b) {
     if (av !== bv) return av - bv;
   }
   return 0;
+}
+
+export async function discover({ env = process.env, cacheBase } = {}) {
+  // Env-override: AGENTIC_COMPANIONS_ROOT points to a script-pair directory
+  // that MUST contain both companion .mjs files AND discover-peer.mjs
+  // (companions v0.3.0+ contract — the discovery library lives alongside
+  // the script pair). If discover-peer.mjs is missing, fail with a clear
+  // diagnostic rather than silently falling back to cache-glob (which
+  // would surprise users who set the env override expecting cache to be
+  // bypassed).
+  const envRoot = env[ENV_VAR];
+  if (envRoot && envRoot.length > 0) {
+    if (!isAbsolute(envRoot)) {
+      return { ok: false, reason: `${ENV_VAR} must be an absolute path: ${envRoot}` };
+    }
+    const bundled = join(envRoot, 'discover-peer.mjs');
+    if (!(await fileExists(bundled))) {
+      return {
+        ok: false,
+        reason: `${ENV_VAR}=${envRoot} but discover-peer.mjs not found in that directory (companions v0.3.0+ requires the discovery library alongside the script pair). Install plugins/companions or update ${ENV_VAR} to a directory containing both companion scripts and discover-peer.mjs.`,
+      };
+    }
+    const { discoverPeerCompanion } = await import(bundled);
+    return discoverPeerCompanion({ peer: PEER, env, cacheBase });
+  }
+
+  // Cache-glob: bootstrap the companions plugin root, then import.
+  const companionsRoot = await bootstrapCompanionsRoot(cacheBase);
+  if (!companionsRoot) {
+    const usedBase = cacheBase ?? COMPANIONS_BASE;
+    return {
+      ok: false,
+      reason: `companions plugin not installed (${usedBase} not found or empty)`,
+    };
+  }
+  const discoverPeerPath = join(companionsRoot, 'scripts', 'discover-peer.mjs');
+  const { discoverPeerCompanion } = await import(discoverPeerPath);
+  return discoverPeerCompanion({ peer: PEER, env, cacheBase });
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

@@ -2,40 +2,31 @@
 // adapters/codex/scripts/discover-companion.mjs
 //
 // Resolves the claude-companion path for the research skill running on
-// Codex CLI. The peer host for Codex is Claude, so this script
-// discovers the bundled claude-companion.mjs inside the agentic-plugins
-// marketplace clone.
+// Codex CLI. The peer host for Codex is Claude.
 //
-// Resolution order (per ADR-0008 § (b) Amendment 2026-05-04, verified
-// against codex-cli 0.128.0):
-//   1. AGENTIC_COMPANIONS_ROOT env override — absolute path treated as
-//      <root>/claude-companion.mjs.
-//   2. Zero-wildcard cache lookup at
-//        ~/.codex/.tmp/marketplaces/agentic-plugins/plugins/companions/
-//      The marketplace clone is fully pinned (marketplace + plugin both
-//      named); the only verification is the bundled manifest's name.
-//   3. Manifest verification: .codex-plugin/plugin.json must declare
-//      name == "companions".
-//   4. Preflight: companion source must reference --prompt-file and
-//      declare a CONTRACT_VERSION whose major matches this script's
-//      compatibility expectation (currently 0).
+// Implementation: bootstraps the companions plugin cache root (single
+// fixed marketplace path per codex-cli 0.128.0), then imports
+// plugins/companions/scripts/discover-peer.mjs for the canonical
+// discovery algorithm. See plugins/companions/scripts/discover-peer.mjs
+// for the resolution order, env override, manifest verification, and
+// preflight contract.
+//
+// Per ADR-0010 §6 trigger evaluation, the discovery algorithm lives inside
+// the companions plugin (high cohesion with companion invocation; not spun
+// out as a separate framework primitive).
 //
 // Exit codes:
 //   0 — discovered; stdout is the absolute companion path (one line).
 //   1 — not found / graceful degradation; stderr summarizes why.
 //   2 — misuse (bad arguments).
-//
-// The discover() function is exported for unit tests; the CLI tail
-// only runs when this module is the entrypoint.
 
 import { readFile, stat } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 
-const PEER_COMPANION = 'claude-companion.mjs';
+const PEER = 'claude';
 const ENV_VAR = 'AGENTIC_COMPANIONS_ROOT';
-const COMPATIBLE_MAJOR = 0;
-const DEFAULT_CACHE_BASE = join(
+const COMPANIONS_ROOT = join(
   homedir(),
   '.codex',
   '.tmp',
@@ -45,56 +36,24 @@ const DEFAULT_CACHE_BASE = join(
   'companions',
 );
 
-export async function discover({ env = process.env, cacheBase = DEFAULT_CACHE_BASE } = {}) {
-  const envRoot = env[ENV_VAR];
-  if (envRoot && envRoot.length > 0) {
-    if (!isAbsolute(envRoot)) {
-      return { ok: false, reason: `${ENV_VAR} must be an absolute path: ${envRoot}` };
-    }
-    const candidate = join(envRoot, PEER_COMPANION);
-    if (!(await fileExists(candidate))) {
-      return { ok: false, reason: `${ENV_VAR}=${envRoot} but ${candidate} not found` };
-    }
-    if (!(await preflight(candidate))) {
-      return {
-        ok: false,
-        reason: `${candidate} failed preflight (missing --prompt-file or incompatible CONTRACT_VERSION)`,
-      };
-    }
-    return { ok: true, path: candidate, source: 'env' };
-  }
+async function bootstrapCompanionsRoot(cacheBase = COMPANIONS_ROOT) {
+  // Cache-only bootstrap (env-override handled separately in discover()).
 
-  if (!(await dirExists(cacheBase))) {
-    return { ok: false, reason: `companions plugin not installed (${cacheBase} not found)` };
-  }
+  if (!(await dirExists(cacheBase))) return null;
 
-  const manifestPath = join(cacheBase, '.codex-plugin', 'plugin.json');
+  const manifestFile = join(cacheBase, '.codex-plugin', 'plugin.json');
   let manifest;
   try {
-    manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  } catch (err) {
-    return { ok: false, reason: `companions manifest unreadable at ${manifestPath}: ${err.message}` };
+    manifest = JSON.parse(await readFile(manifestFile, 'utf8'));
+  } catch {
+    return null;
   }
-  if (manifest.name !== 'companions') {
-    return { ok: false, reason: `manifest name "${manifest.name}" != "companions" at ${manifestPath}` };
-  }
+  if (manifest.name !== 'companions') return null;
 
-  const candidate = join(cacheBase, 'scripts', PEER_COMPANION);
-  if (!(await fileExists(candidate))) {
-    return { ok: false, reason: `${candidate} not found` };
-  }
-  if (!(await preflight(candidate))) {
-    return {
-      ok: false,
-      reason: `${candidate} failed preflight (missing --prompt-file or incompatible CONTRACT_VERSION)`,
-    };
-  }
-  return {
-    ok: true,
-    path: candidate,
-    source: 'cache',
-    version: typeof manifest.version === 'string' ? manifest.version : '?',
-  };
+  const discoverPath = join(cacheBase, 'scripts', 'discover-peer.mjs');
+  if (!(await fileExists(discoverPath))) return null;
+
+  return cacheBase;
 }
 
 async function fileExists(path) {
@@ -115,18 +74,37 @@ async function dirExists(path) {
   }
 }
 
-async function preflight(companionPath) {
-  let text;
-  try {
-    text = await readFile(companionPath, 'utf8');
-  } catch {
-    return false;
+export async function discover({ env = process.env, cacheBase } = {}) {
+  // Env-override: AGENTIC_COMPANIONS_ROOT points to a script-pair directory
+  // that MUST contain both companion .mjs files AND discover-peer.mjs
+  // (companions v0.3.0+ contract). Missing discover-peer.mjs → explicit fail.
+  const envRoot = env[ENV_VAR];
+  if (envRoot && envRoot.length > 0) {
+    if (!isAbsolute(envRoot)) {
+      return { ok: false, reason: `${ENV_VAR} must be an absolute path: ${envRoot}` };
+    }
+    const bundled = join(envRoot, 'discover-peer.mjs');
+    if (!(await fileExists(bundled))) {
+      return {
+        ok: false,
+        reason: `${ENV_VAR}=${envRoot} but discover-peer.mjs not found in that directory (companions v0.3.0+ requires the discovery library alongside the script pair). Install plugins/companions or update ${ENV_VAR} to a directory containing both companion scripts and discover-peer.mjs.`,
+      };
+    }
+    const { discoverPeerCompanion } = await import(bundled);
+    return discoverPeerCompanion({ peer: PEER, env, cacheBase });
   }
-  if (!/['"]prompt-file['"]/.test(text)) return false;
-  const m = text.match(/CONTRACT_VERSION\s*=\s*['"]([0-9]+)\.([0-9]+)\.([0-9]+)['"]/);
-  if (!m) return false;
-  const major = Number.parseInt(m[1], 10);
-  return major === COMPATIBLE_MAJOR;
+
+  const companionsRoot = await bootstrapCompanionsRoot(cacheBase);
+  if (!companionsRoot) {
+    const usedBase = cacheBase ?? COMPANIONS_ROOT;
+    return {
+      ok: false,
+      reason: `companions plugin not installed at ${usedBase} or discover-peer.mjs missing`,
+    };
+  }
+  const discoverPeerPath = join(companionsRoot, 'scripts', 'discover-peer.mjs');
+  const { discoverPeerCompanion } = await import(discoverPeerPath);
+  return discoverPeerCompanion({ peer: PEER, env, cacheBase });
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

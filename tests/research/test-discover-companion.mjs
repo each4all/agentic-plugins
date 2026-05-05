@@ -11,11 +11,20 @@
 
 import { describe, it, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
-import { mkdir, writeFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, writeFile, rm, copyFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { discover as discoverClaude } from '../../plugins/research/adapters/claude/scripts/discover-companion.mjs';
 import { discover as discoverCodex } from '../../plugins/research/adapters/codex/scripts/discover-companion.mjs';
+
+// Real discover-peer.mjs source path — copied into env-roots and cache
+// version dirs so the wrappers can import it (companions v0.3.0+ contract:
+// the discovery library lives alongside the script pair).
+const REAL_DISCOVER_PEER = resolve(
+  fileURLToPath(import.meta.url),
+  '../../../plugins/companions/scripts/discover-peer.mjs',
+);
 
 const FAUX_VALID_COMPANION = `#!/usr/bin/env node
 // faux companion for tests
@@ -47,10 +56,14 @@ after(async () => {
   await rm(TMP, { recursive: true, force: true });
 });
 
-async function makeEnvRoot(label, companionName, body = FAUX_VALID_COMPANION) {
+async function makeEnvRoot(label, companionName, body = FAUX_VALID_COMPANION, opts = {}) {
+  const { includeDiscoverPeer = true } = opts;
   const root = join(TMP, label);
   await mkdir(root, { recursive: true });
   await writeFile(join(root, companionName), body);
+  if (includeDiscoverPeer) {
+    await copyFile(REAL_DISCOVER_PEER, join(root, 'discover-peer.mjs'));
+  }
   return root;
 }
 
@@ -60,6 +73,7 @@ async function makeClaudeCachedVersion(base, version, opts = {}) {
     companionBody = FAUX_VALID_COMPANION,
     companionName = 'codex-companion.mjs',
     includeCompanion = true,
+    includeDiscoverPeer = true,
   } = opts;
   const versionDir = join(base, version);
   const claudePluginDir = join(versionDir, '.claude-plugin');
@@ -68,10 +82,15 @@ async function makeClaudeCachedVersion(base, version, opts = {}) {
     join(claudePluginDir, 'plugin.json'),
     JSON.stringify({ name: manifestName, version }),
   );
-  if (includeCompanion) {
-    const scriptsDir = join(versionDir, 'scripts');
+  const scriptsDir = join(versionDir, 'scripts');
+  if (includeCompanion || includeDiscoverPeer) {
     await mkdir(scriptsDir, { recursive: true });
+  }
+  if (includeCompanion) {
     await writeFile(join(scriptsDir, companionName), companionBody);
+  }
+  if (includeDiscoverPeer) {
+    await copyFile(REAL_DISCOVER_PEER, join(scriptsDir, 'discover-peer.mjs'));
   }
 }
 
@@ -81,6 +100,7 @@ async function makeCodexCache(base, opts = {}) {
     companionBody = FAUX_VALID_COMPANION,
     companionName = 'claude-companion.mjs',
     includeCompanion = true,
+    includeDiscoverPeer = true,
     manifestVersion = '0.1.0',
     manifestText, // raw override
   } = opts;
@@ -90,10 +110,15 @@ async function makeCodexCache(base, opts = {}) {
     join(codexPluginDir, 'plugin.json'),
     manifestText ?? JSON.stringify({ name: manifestName, version: manifestVersion }),
   );
-  if (includeCompanion) {
-    const scriptsDir = join(base, 'scripts');
+  const scriptsDir = join(base, 'scripts');
+  if (includeCompanion || includeDiscoverPeer) {
     await mkdir(scriptsDir, { recursive: true });
+  }
+  if (includeCompanion) {
     await writeFile(join(scriptsDir, companionName), companionBody);
+  }
+  if (includeDiscoverPeer) {
+    await copyFile(REAL_DISCOVER_PEER, join(scriptsDir, 'discover-peer.mjs'));
   }
 }
 
@@ -158,6 +183,22 @@ describe('claude/discover-companion — env override (AGENTIC_COMPANIONS_ROOT)',
     ok(result.ok);
     strictEqual(result.source, 'cache-glob');
   });
+
+  it('fails with clear diagnostic when env root has companion but lacks discover-peer.mjs (v0.3.0+ contract)', async () => {
+    const root = await makeEnvRoot(
+      'claude-env-no-discover-peer',
+      'codex-companion.mjs',
+      FAUX_VALID_COMPANION,
+      { includeDiscoverPeer: false },
+    );
+    const result = await discoverClaude({
+      env: { AGENTIC_COMPANIONS_ROOT: root },
+      cacheBase: '/nonexistent',
+    });
+    ok(!result.ok);
+    ok(/discover-peer\.mjs not found/.test(result.reason), `expected "discover-peer.mjs not found" hint, got: ${result.reason}`);
+    ok(/companions v0\.3\.0\+/.test(result.reason), `expected "companions v0.3.0+" hint, got: ${result.reason}`);
+  });
 });
 
 describe('claude/discover-companion — cache-glob fallback', () => {
@@ -170,12 +211,15 @@ describe('claude/discover-companion — cache-glob fallback', () => {
     ok(/not installed/.test(result.reason));
   });
 
-  it('reports no-manifest when cache contains version dirs without plugin.json', async () => {
+  it('reports not-installed when cache contains version dirs without plugin.json', async () => {
+    // The wrapper's bootstrap requires a manifest-verified version dir
+    // with discover-peer.mjs; missing manifest → no candidates → bootstrap
+    // returns null → unified "not installed" reason.
     const base = join(TMP, 'claude-no-manifests');
     await mkdir(join(base, '0.1.0'), { recursive: true });
     const result = await discoverClaude({ env: {}, cacheBase: base });
     ok(!result.ok);
-    ok(/no manifest-verified/.test(result.reason));
+    ok(/not installed/.test(result.reason));
   });
 
   it('discovers a single valid version', async () => {
@@ -265,6 +309,22 @@ describe('codex/discover-companion — env override (AGENTIC_COMPANIONS_ROOT)', 
     ok(!result.ok);
     ok(/preflight/.test(result.reason));
   });
+
+  it('fails with clear diagnostic when env root has companion but lacks discover-peer.mjs (v0.3.0+ contract)', async () => {
+    const root = await makeEnvRoot(
+      'codex-env-no-discover-peer',
+      'claude-companion.mjs',
+      FAUX_VALID_COMPANION,
+      { includeDiscoverPeer: false },
+    );
+    const result = await discoverCodex({
+      env: { AGENTIC_COMPANIONS_ROOT: root },
+      cacheBase: '/nonexistent',
+    });
+    ok(!result.ok);
+    ok(/discover-peer\.mjs not found/.test(result.reason), `expected "discover-peer.mjs not found" hint, got: ${result.reason}`);
+    ok(/companions v0\.3\.0\+/.test(result.reason), `expected "companions v0.3.0+" hint, got: ${result.reason}`);
+  });
 });
 
 describe('codex/discover-companion — zero-wildcard cache', () => {
@@ -286,20 +346,22 @@ describe('codex/discover-companion — zero-wildcard cache', () => {
     strictEqual(result.version, '0.1.0');
   });
 
-  it('reports manifest unreadable when plugin.json is malformed JSON', async () => {
+  it('reports not-installed when plugin.json is malformed JSON', async () => {
+    // Wrapper bootstrap silently treats unparseable manifest as missing →
+    // unified "not installed or discover-peer.mjs missing" reason.
     const base = join(TMP, 'codex-cache-bad-json');
     await makeCodexCache(base, { manifestText: '{not valid json' });
     const result = await discoverCodex({ env: {}, cacheBase: base });
     ok(!result.ok);
-    ok(/unreadable/.test(result.reason));
+    ok(/not installed|discover-peer\.mjs missing/.test(result.reason));
   });
 
-  it('reports manifest mismatch when name != "companions"', async () => {
+  it('reports not-installed when manifest name != "companions"', async () => {
     const base = join(TMP, 'codex-cache-wrong-name');
     await makeCodexCache(base, { manifestName: 'imposter' });
     const result = await discoverCodex({ env: {}, cacheBase: base });
     ok(!result.ok);
-    ok(/!=.*companions|"imposter"/.test(result.reason));
+    ok(/not installed|discover-peer\.mjs missing/.test(result.reason));
   });
 
   it('reports companion-file missing when only the manifest is present', async () => {
