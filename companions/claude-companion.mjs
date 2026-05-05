@@ -39,8 +39,15 @@ export const STDERR_MAX = 200;
 // Narrow auth-error wording match. False positives are worse than false
 // negatives here (a misclassified peer_run_error still surfaces the same
 // stderr summary), so the regex stays conservative. Known fragility per
-// contract § 5.4 — peer CLI version drift may shift wording.
-export const AUTH_REGEX = /please\s+(?:run|use)\s+`?claude\s+(?:login|auth)|not\s+authenticat(?:ed|ion)|please\s+log\s+in/i;
+// contract § 5.4 — peer CLI version drift may shift wording. Each
+// alternative is narrow enough to only trigger on auth-related output.
+//
+// Observed wordings (extend as Claude CLI drifts):
+// - "please run claude login" / "please use claude auth ..."
+// - "not authenticated" / "not authentication"
+// - "please log in"
+// - "Not logged in" + "Please run /login"  (Claude Code CLI 2.1.128+)
+export const AUTH_REGEX = /please\s+(?:run|use)\s+`?claude\s+(?:login|auth)|not\s+authenticat(?:ed|ion)|please\s+log\s+in|not\s+logged\s+in|please\s+run\s+\/login/i;
 
 export class CompanionMisuseError extends Error {
   constructor(message) {
