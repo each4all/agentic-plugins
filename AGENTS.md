@@ -74,7 +74,7 @@ agentic-plugins/
     └── adr/                        # Architecture Decision Records
         ├── README.md               # ADR index
         ├── template.md             # Standard ADR template
-        └── 0001..0017-*.md         # Decisions (0013 reserved, 0014 superseded by 0015 timeline portion, 0017 Proposed)
+        └── 0001..0017-*.md         # Decisions (0013 reserved, 0014 superseded by 0015 timeline portion)
 ```
 
 ---
@@ -127,9 +127,10 @@ holds two bridges — one in each direction — for peer-agent
 invocation. See ADRs 0001–0017 for the specifics (0013 reserved
 pending Codex CLI commands integration trigger; 0014 superseded by
 0015 for the `plugins/research` archive timeline only — the
-capability decision in 0014 is operative; 0017 Proposed — Stage
+capability decision in 0014 is operative; 0017 covers the Stage
 2.5+ continuity + schema roadmap surfaced by the 2026-05-06
-exit-validation audit).
+exit-validation audit, with sub-decision implementations gated by
+per-trigger acceptance criteria).
 
 ---
 
