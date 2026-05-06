@@ -80,3 +80,4 @@ operatively accurate?* If no, write a new ADR (Supersede).
 | [0014](0014-plugins-research-deprecation.md) | plugins/research deprecation — capability folded into engineer:investigate cited-brief profile | Superseded by [ADR-0015](0015-research-archive-timeline-collapse.md) (timeline portion only) |
 | [0015](0015-research-archive-timeline-collapse.md) | Research archive timeline collapse — supersedes ADR-0014 timeline portion | Accepted |
 | [0016](0016-cross-package-commit-splitting.md) | Cross-package commit splitting for release-please routing | Accepted |
+| [0017](0017-stage25-continuity-and-schema-roadmap.md) | Stage 2.5+ continuity and schema roadmap (meta commands + `ensemble_results` frontmatter + Stop auto-archive) | Proposed |

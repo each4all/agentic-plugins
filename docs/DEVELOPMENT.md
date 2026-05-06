@@ -283,15 +283,22 @@ subsequent stages and updated here.
 
 | # | Condition | Stage 2 status | Notes |
 |---|-----------|----------------|-------|
-| 1 | engineer reaches omcc-dev parity | partial | Infrastructure complete (lock ownership protocol / atomic-write token verify / frontmatter validation schema closed / extended secret patterns / SessionStart hardening / envelope strict + structuredOutputContract emit). Sustained dogfood through Stage 3 completes the parity claim. |
-| 2 | engineer guarantees bidirectional companion round-trip | partial | Claude direction on engineer's own code: ✓ (D Phase 5 dispatch-peer parallel-review). Codex direction: pending — Codex CLI commands schema absence (see Honest scope above) blocks the auto-trigger path; manual or upstream-resolved path is Stage 2.5+ work (ADR-0013 candidate). |
-| 3 | engineer alone is sufficient for agentic-plugins development | partial | Stage 2 itself was developed using `omcc-dev`, not engineer. The first single-verb engineer dogfood (Codex-side `investigate`, chess design landscape) showed the SKILL substance is usable end-user. Full sufficiency accumulates as Stage 3 (designer plugin) is developed using engineer. |
-| 4 | self-contained development scaffolding | partial | The development surface (AGENTS.md / CLAUDE.md / 12 ADRs / `test:plugin-shape` / `lint:plugin-shape` / per-host CI / `release-please` / `scripts/` / `kit/` / `plugins/companions`) is in place, but a per-item omcc-dependency audit has not yet been performed. Targeted at Stage 3 cushion or a dedicated Stage 2.5 review. |
+| 1 | engineer reaches omcc-dev parity | partial | Infrastructure complete (lock ownership protocol / atomic-write token verify / frontmatter validation schema closed / extended secret patterns / SessionStart hardening / envelope strict + structuredOutputContract emit). Sustained dogfood through Stage 3 completes the parity claim. **2026-05-06 Stage 2.5+ exit audit ([docs/audits/2026-05-06-stage25-exit-validation.md](audits/2026-05-06-stage25-exit-validation.md)) Q6 PARTIAL with 10 gap (G-1..G-10). [ADR-0017](adr/0017-stage25-continuity-and-schema-roadmap.md) consolidates the meta-command + `ensemble_results` frontmatter + Stop auto-archive items into a roadmap with per-trigger acceptance criteria.** |
+| 2 | engineer guarantees bidirectional companion round-trip | partial | Claude direction on engineer's own code: ✓ (D Phase 5 dispatch-peer parallel-review). Codex direction: pending — Codex CLI commands schema absence (see Honest scope above) blocks the auto-trigger path; manual or upstream-resolved path is Stage 2.5+ work (ADR-0013 candidate). **2026-05-06 Stage 2.5+ exit audit Q4 PASS adds substantial evidence (128 unit + 4 smoke 양방향 실 LLM round-trip + JSON envelope wire validation per `companions/contract.md` §4.2); satisfied label still requires Codex auto-trigger path (ADR-0013).** |
+| 3 | engineer alone is sufficient for agentic-plugins development | partial | Stage 2 itself was developed using `omcc-dev`, not engineer. The first single-verb engineer dogfood (Codex-side `investigate`, chess design landscape) showed the SKILL substance is usable end-user. Full sufficiency accumulates as Stage 3 (designer plugin) is developed using engineer. **2026-05-06 Stage 2.5+ exit audit records second engineer dogfood evidence (4 parallel agent + Codex plan-verify ensemble via `companions/codex-companion.mjs`).** |
+| 4 | self-contained development scaffolding | partial | The development surface (AGENTS.md / CLAUDE.md / 12 ADRs / `test:plugin-shape` / `lint:plugin-shape` / per-host CI / `release-please` / `scripts/` / `kit/` / `plugins/companions`) is in place, but a per-item omcc-dependency audit has not yet been performed. Targeted at Stage 3 cushion or a dedicated Stage 2.5 review. **2026-05-06 Stage 2.5+ exit audit Q3 PASS confirms infrastructure (release-please cascade + 3-way validate-versions + drift detection + 16 ADR + ADR-0016 cross-package commit splitting). per-item omcc-dependency lens audit remains pending — targeted at Stage 3 cushion.** |
 
 ##### Stage 2.5+ ADR candidates surfaced
 
 - **ADR-0013** — Codex CLI commands integration mechanism (Honest scope
   above; condition 2 Codex-direction enabler).
+- **[ADR-0017](adr/0017-stage25-continuity-and-schema-roadmap.md)** — Stage 2.5+
+  continuity and schema roadmap (meta commands `/engineer:resume`, `/engineer:checkpoint`,
+  `/engineer:peer-now` + `ensemble_results` frontmatter persistence + Stop auto-archive
+  semantics). Status: Proposed (2026-05-06). Consolidates audit findings from
+  [docs/audits/2026-05-06-stage25-exit-validation.md](audits/2026-05-06-stage25-exit-validation.md)
+  Q6 gap list. Each sub-decision has its own acceptance trigger / implementation owner PR /
+  validation command — adoption does not imply implementation.
 - Verb-level alias expansion based on dogfood usage signal (deferred
   from Deliverable D, Phase 6 SUGGESTION #15).
 - Larger per-deliverable scope criterion (Phase 6 SUGGESTION #16) — to
