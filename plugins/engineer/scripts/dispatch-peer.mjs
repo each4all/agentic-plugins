@@ -285,7 +285,7 @@ const VALID_KINDS = new Set([
   'peer_invocation_error',
 ]);
 
-function validateEnvelopeShape(env) {
+export function validateEnvelopeShape(env) {
   if (env === null || typeof env !== 'object' || Array.isArray(env)) {
     return { ok: false, reason: 'envelope is not a JSON object' };
   }
@@ -322,11 +322,24 @@ function validateEnvelopeShape(env) {
   }
 
   // peer_error or companion_error
-  if (typeof env.error !== 'object' || env.error === null) {
+  if (typeof env.error !== 'object' || env.error === null || Array.isArray(env.error)) {
     return { ok: false, reason: `${env.status} status requires error object` };
   }
   if (!VALID_KINDS.has(env.error.kind)) {
     return { ok: false, reason: `invalid error.kind: ${JSON.stringify(env.error.kind)}` };
+  }
+  // §4.2: error.message is REQUIRED single-line non-empty string
+  if (typeof env.error.message !== 'string' || env.error.message.length === 0) {
+    return { ok: false, reason: 'error.message must be non-empty string' };
+  }
+  if (/[\r\n]/.test(env.error.message)) {
+    return { ok: false, reason: 'error.message must be single-line (no CR/LF)' };
+  }
+  // §4.2: error.detail MAY be string or null (omitting is rejected — the field is part of the schema)
+  if ('detail' in env.error) {
+    if (env.error.detail !== null && typeof env.error.detail !== 'string') {
+      return { ok: false, reason: 'error.detail must be string or null when present' };
+    }
   }
   if (env.status === 'peer_error') {
     if (env.exit_code !== 1 || env.error.kind !== 'peer_run_error') {

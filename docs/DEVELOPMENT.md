@@ -134,6 +134,170 @@ Composition / non-continuity scope (ADR-0010 separation triggers):
 
 Out-of-scope items become Stage 2.5+ ADR follow-ups if the dogfood phase reveals genuine need.
 
+#### Stage 2 exit evidence
+
+Stage 2 exit was reached on 2026-05-06 with all five deliverables
+merged onto main:
+
+| # | Deliverable | PR | Merge commit |
+|---|---|---|---|
+| A | Foundation (ADR-0010 + ADR-0011 + AGENTS/ARCHITECTURE/DEVELOPMENT updates + plugin name `engineer`) | [#23](https://github.com/each4all/agentic-plugins/pull/23) | `a3afba3` |
+| B | companions discovery library absorbed (canonical `discover-peer.mjs` in `plugins/companions/scripts/`) | [#25](https://github.com/each4all/agentic-plugins/pull/25) | `a0e8f6a` |
+| C | engineer plugin core (manifests + 6 verb skills + 4 shared refs + 6 agents YAML + marketplace catalogs) | [#27](https://github.com/each4all/agentic-plugins/pull/27) | `3040a13` |
+| D | Adapters + minimal continuity (6 commands + audit alias + state.mjs + dispatch-peer.mjs + 4 Claude hooks + Codex stop helper) | [#30](https://github.com/each4all/agentic-plugins/pull/30) | `af12326` |
+| E | Validation + dogfood + Stage 2 exit evidence (`test-engineer-plugin.mjs` + `tests/engineer/*` unit tests + ADR-0012 + this section) | [#32](https://github.com/each4all/agentic-plugins/pull/32) | (this PR) |
+
+##### Test green per host
+
+Per-host CI workflows (`claude-tests.yml`, `codex-tests.yml`) gate the
+plugin-shape and unit-test surface on every push:
+
+- Plugin-shape conformance — companions / research (existing) +
+  **engineer** (added in Deliverable E, multi-skill variant, 97 tests
+  covering manifests / 6 skills / 4 shared refs / 2 host-shared scripts /
+  7 commands / 5 hooks / verb-name consistency / verb→ensemble mapping
+  cross-check / contract version freshness / stale-token audit).
+- Unit tests for engineer Phase 6 fixes (added in Deliverable E):
+  - `tests/engineer/test-state.mjs` — lock ownership protocol
+    (serialization + ownership-object delivery; atomic-rename internals
+    are public-API-tested rather than directly probed since a
+    mid-lock-process kill is out of scope for in-process unit tests),
+    `validateFrontmatter` schema=1 closed with nested key sets,
+    extended secret patterns (AWS ASIA / GitHub fine-grained / sk-* /
+    Slack / 32+ hex), single-active invariant, `withFileLock`
+    serialization under concurrent acquirers.
+  - `tests/engineer/test-dispatch-peer.mjs` — envelope strict
+    validation per `companions/contract.md` §4.2 + §5.3 joint triple
+    (`status` / `peer_host` enums, `success` exit_code=0 + no error,
+    joint triple for `peer_error` and `companion_error`,
+    `error.message` non-empty single-line, `error.detail` string-or-null),
+    `AGENTIC_COMPANIONS_ROOT` env override (single root, not per-peer),
+    optional `<structured_output_contract>` emission, XML escape rules.
+  - `tests/engineer/test-session-start.mjs` — JSON-quoted
+    `[engineer-active-metadata]` marker pair, profile-field
+    separation, `next_action` exclusion as imperative-injection
+    vector block, field length caps verified end-to-end with oversized
+    inputs, control-char sanitization in payload.
+- Existing tests (`research-discover-companion`, `kit/lint`,
+  `companions` round-trip).
+
+The plugin-shape + unit-test surface (`npm run test:plugin-shape`)
+runs **243 tests** green on `feat/plugin-engineer-validation`
+(HEAD of PR #32). The wider `npm test` runs **371 tests** green
+(adds the `companions` round-trip unit suite). `npm run lint:plugin-shape`
+reports `shape OK` for all three plugins (companions / engineer /
+research).
+
+##### Round-trip dogfood evidence
+
+The round-trip companion-call guarantee is established in two empirical
+datapoints — one per direction — plus a structural caveat captured in
+the next subsection.
+
+- **Claude direction (`claude→codex` on engineer's own
+  `dispatch-peer.mjs`)** — Stage 2 Deliverable D Phase 5 review invoked
+  `codex-companion` directly through `plugins/engineer/scripts/dispatch-peer.mjs`
+  to obtain a parallel review of the D working tree. Companion auto-
+  discovery (Claude cache 0.1.1 path) succeeded; the JSON envelope
+  returned `status: success` with `exit_code: 0` and a 9482-byte
+  stdout; the resulting 16-finding review (CRITICAL 2 + MAJOR 10 +
+  MINOR 2 + SUGGESTION 2) drove the Phase 6 resolve commit `36b7ab1`.
+  This is the canonical Claude-direction round-trip evidence on
+  engineer's own code path — distinct from the Stage 1
+  `plugins/research` round-trip because engineer's own
+  `state.mjs` / `dispatch-peer.mjs` / four hooks did not yet exist
+  at Stage 1 exit.
+
+- **Codex direction (`codex→claude`)** — Stage 2 Deliverable E
+  attempted a six-verb chain dogfood from a Codex CLI 0.128.0 session
+  on a separate machine, with chess-game design as the task surface.
+  The first verb (`/engineer:investigate`) demonstrated that
+  engineer's SKILL substance is correctly invoked by Codex CLI and
+  produces high-quality output: web-grounded landscape mapping for
+  chess implementation options with citations to `chess.js`,
+  Stockfish UCI, Vite, `react-chessboard`, Socket.IO, Firebase
+  Realtime Database, `python-chess`, and a pragmatic 1–2 week MVP
+  recommendation. The structural caveat below blocked the
+  `commands/<verb>.md` Phase 0 / 1 / 2 contract from triggering on
+  the Codex side, so engineer's `dispatch-peer.mjs` was not
+  auto-invoked from Codex; the full `codex→claude` round-trip on
+  engineer's *own* code path is therefore deferred to a Stage 2.5+
+  follow-up. The Stage 1 `plugins/research` bidirectional artifacts
+  (Node 24 brief, TLS 1.3 brief) continue to demonstrate the
+  protocol-level guarantee for `codex-companion` ↔ `claude-companion`
+  itself, but ADR-0012 condition (2) explicitly requires re-establishment
+  on engineer's code, which becomes part of the same Stage 2.5+
+  follow-up.
+
+##### Honest scope: Codex CLI plugin commands schema absence
+
+Codex CLI 0.128.0 does not expose a plugin-commands schema equivalent
+to Claude Code's `commands/<verb>.md` thin shim. The engineer plugin's
+seven commands (six canonical verbs + `audit` sugar alias per ADR-0010
+§3) trigger their full Phase 0 / 1 / 2 contract (`state.mjs`
+`find-active` → SKILL command-invoked mode → state finalize) **only
+on the Claude side**. On the Codex side, the same plugin install
+exposes the SKILL substance through `agents/openai.yaml` — verbs are
+invokable by name, the substance runs, but workflow state files do
+not auto-create and `dispatch-peer.mjs` is not auto-spawned at phase
+boundaries.
+
+This is a host-runtime asymmetry consistent with
+[ADR-0001](adr/0001-hexagonal-architecture.md) §"What is host-neutral
+vs host-specific" and [ADR-0011](adr/0011-workflow-continuity-storage.md)
+§4 "Hook absence is non-fatal." Until upstream Codex CLI exposes a
+plugin-commands schema or this project ships an alternate Codex-side
+trigger mechanism (a candidate ADR-0013), the canonical Codex-side
+pattern for bidirectional ensemble dispatch is either (a) manual
+invocation of `dispatch-peer.mjs` from within the Codex session
+(functionally equivalent to the Claude-side automatic path, lower
+ergonomics) or (b) waiting for upstream Codex evolution. Both options
+are deferred — not blocking Stage 2 exit per ADR-0012's
+Stage-2-partial framework.
+
+##### Opt-in local verification
+
+`COMPANIONS_SMOKE=1 npm run test:smoke` runs the bidirectional
+companion smoke tests with real peer-host invocations (Stage 1 pattern
+mirrored unchanged in Stage 2). Per-CI real-auth smoke remains
+deferred to Stage 2.5+, identical to the Stage 1 exit-evidence
+statement.
+
+##### ADR-0012 condition progress matrix at Stage 2 exit
+
+[ADR-0012](adr/0012-omcc-removal-preconditions.md) defines a
+four-condition rubric for when the legacy `omcc` and
+`codex-plugin-cc` dependencies may be removed from the agentic-plugins
+development environment. Stage 2 exit establishes the following
+partial status; remaining condition progress is tracked in
+subsequent stages and updated here.
+
+| # | Condition | Stage 2 status | Notes |
+|---|-----------|----------------|-------|
+| 1 | engineer reaches omcc-dev parity | partial | Infrastructure complete (lock ownership protocol / atomic-write token verify / frontmatter validation schema closed / extended secret patterns / SessionStart hardening / envelope strict + structuredOutputContract emit). Sustained dogfood through Stage 3 completes the parity claim. |
+| 2 | engineer guarantees bidirectional companion round-trip | partial | Claude direction on engineer's own code: ✓ (D Phase 5 dispatch-peer parallel-review). Codex direction: pending — Codex CLI commands schema absence (see Honest scope above) blocks the auto-trigger path; manual or upstream-resolved path is Stage 2.5+ work (ADR-0013 candidate). |
+| 3 | engineer alone is sufficient for agentic-plugins development | partial | Stage 2 itself was developed using `omcc-dev`, not engineer. The first single-verb engineer dogfood (Codex-side `investigate`, chess design landscape) showed the SKILL substance is usable end-user. Full sufficiency accumulates as Stage 3 (designer plugin) is developed using engineer. |
+| 4 | self-contained development scaffolding | partial | The development surface (AGENTS.md / CLAUDE.md / 12 ADRs / `test:plugin-shape` / `lint:plugin-shape` / per-host CI / `release-please` / `scripts/` / `kit/` / `plugins/companions`) is in place, but a per-item omcc-dependency audit has not yet been performed. Targeted at Stage 3 cushion or a dedicated Stage 2.5 review. |
+
+##### Stage 2.5+ ADR candidates surfaced
+
+- **ADR-0013** — Codex CLI commands integration mechanism (Honest scope
+  above; condition 2 Codex-direction enabler).
+- Verb-level alias expansion based on dogfood usage signal (deferred
+  from Deliverable D, Phase 6 SUGGESTION #15).
+- Larger per-deliverable scope criterion (Phase 6 SUGGESTION #16) — to
+  be re-evaluated when a deliverable's review surfaces actionable
+  segmentation rules.
+- `plugins/research` naming review at the time of Stage 3 designer
+  plugin naming (Stage 2 user-articulated concern that `research`
+  retains an `omcc-research` 1:1-port shape; the same `<persona>:<verb>`
+  axis from ADR-0010 should re-examine the L2 capability name in
+  light of Stage 3 evidence).
+
+These items are explicitly out of scope for Stage 2; they become
+first-class Stage 2.5+ ADR follow-ups when accumulated dogfood usage
+or Stage 3 work makes the design choice tractable.
+
 ### Stage 3 — Design domain and remaining workflows
 
 - A design-domain plugin ships, referencing omcc-designer's experience (poster, social-graphics, frontend, brief, evaluation, etc.) with the same redesign stance
