@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.4.0...plugin-engineer-v0.5.0) (2026-05-06)
+
+
+### Features
+
+* **engineer:** static Claude subagents + Tier α docs truth fixes ([51d7dbd](https://github.com/each4all/agentic-plugins/commit/51d7dbdedfe9aebeab38d5cc034aa501d9952dc9))
+* **plugins/engineer:** static Claude adapter subagent definitions ([2401da6](https://github.com/each4all/agentic-plugins/commit/2401da62d5bb730d2671a8e962b54106c1cbeee9))
+
 ## [0.4.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.3.0...plugin-engineer-v0.4.0) (2026-05-06)
 
 
