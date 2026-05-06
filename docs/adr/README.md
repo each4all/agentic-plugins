@@ -44,6 +44,7 @@ old one, and change the old one's status to `Superseded by ADR-NNNN`.
 | [0007](0007-migration-cutover-plan.md) | Migration cutover plan from omcc to agentic-plugins | Accepted |
 | [0008](0008-companion-distribution-model.md) | Companion distribution model — `companions` plugin + cache-glob discovery + env override | Accepted |
 | [0009](0009-companion-contract-v0-1-1-prompt-file-stdin-precedence.md) | Companion contract v0.1.1 — `--prompt-file` and `PROMPT_ARG` precedence over stdin | Accepted |
-| [0010](0010-plugin-boundary-policy.md) | Plugin boundary policy — 4-layer composition + universal cognitive verbs + naming convention | Proposed |
-| [0011](0011-workflow-continuity-storage.md) | Workflow continuity storage — minimal Option III for Stage 2 | Proposed |
-| [0012](0012-omcc-removal-preconditions.md) | omcc + codex-plugin-cc removal preconditions | Proposed |
+| [0010](0010-plugin-boundary-policy.md) | Plugin boundary policy — 4-layer composition + universal cognitive verbs + naming convention | Accepted |
+| [0011](0011-workflow-continuity-storage.md) | Workflow continuity storage — minimal Option III for Stage 2 | Accepted |
+| [0012](0012-omcc-removal-preconditions.md) | omcc + codex-plugin-cc removal preconditions | Accepted |
+| 0013 | Codex CLI commands integration mechanism (file pending — Stage 3+ trigger) | Reserved |
