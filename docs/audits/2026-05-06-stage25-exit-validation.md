@@ -241,13 +241,19 @@ agentic-plugins/{companions, plugins/engineer, scripts, tests, CI}는 **omcc/cod
 
 ### 사용자 환경 권고
 
-ADR-0012 4-condition matrix:
+> **표기법 참고 (Phase 5 self-review F2 명시)**: 아래의 `C1`~`C4`는 본 audit의 **audit-internal sub-condition** framing이며, [ADR-0012](../adr/0012-omcc-removal-preconditions.md)의 official 4-condition matrix(condition 1~4, 모두 `partial` 상태로 [docs/DEVELOPMENT.md](../DEVELOPMENT.md) §"ADR-0012 condition progress matrix at Stage 2 exit"에서 추적)와는 다른 layer를 가진다. 매핑:
+>
+> - audit `C1` ("산출물 omcc 의존 부재") = ADR-0012 condition 1 ("engineer reaches omcc-dev parity")의 산출물 sub-element. audit "C1 satisfied"는 "ADR-0012 condition 1 overall partial이지만 산출물 sub-element는 satisfied" 의미.
+> - audit `C2` ("companions parity") = ADR-0012 condition 2 ("engineer guarantees bidirectional companion round-trip")의 wire-spec sub-element. audit "C2 satisfied"는 "ADR-0012 condition 2 overall partial이지만 wire-spec parity sub-element는 satisfied" 의미. ADR-0012 condition 2 overall satisfied는 Codex auto-trigger path(ADR-0013) 충족 후.
+> - audit `C3` / `C4` (partial) = ADR-0012 condition 3 / 4와 매칭 (둘 다 partial 유지).
+
+ADR-0012 4-condition matrix (audit-internal sub-condition framing):
 - **C1** (산출물 omcc 의존 부재): **satisfied** (본 audit evidence)
 - **C2** (companions parity): **satisfied** (Q5 PASS, agentic-plugins가 우월)
 - **C3** (engineer 단독 자체 개발 가능): **partial** — Stage 2 자체가 omcc-dev로 개발됨. Stage 3 designer 첫 non-trivial workflow가 engineer 단독 완료 시 satisfied 처리 (이번 audit이 evidence 1회)
-- **C4** (self-contained scaffolding per-item audit): **partial** — Stage 3 cushion 진입 후 dev infra per-item lens audit 수행 후 갱신
+- **C4** (self-contained scaffolding per-item audit): **partial** — Stage 3 cushion 진입 전 per-item dev infra omcc-dependency lens audit 수행 후 갱신
 
-**4-condition 모두 satisfied 시 user 환경에서 omcc/codex@omcc uninstall 권고**. 현 시점은 Stage 3 cushion 진입 전이라 보류. DEVELOPMENT.md progress matrix에 본 audit으로 C1·C2 evidence 갱신.
+**ADR-0012 4-condition (overall) 모두 satisfied 시 user 환경에서 omcc/codex@omcc uninstall 권고**. 현 시점은 Stage 3 cushion 진입 전이라 보류. DEVELOPMENT.md progress matrix는 본 audit으로 condition 1/2의 sub-element evidence 갱신 (overall status는 partial 유지).
 
 ### 권고 시기 결정 매트릭스
 
