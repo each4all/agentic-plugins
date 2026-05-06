@@ -115,6 +115,42 @@ weight in confidence ratings than secondary sources.
 
 ---
 
+## Conflict Handling
+
+When two or more cited sources directly conflict on the same factual
+claim, the brief presents the disagreement with citations rather than
+silently choosing one source. Three resolution patterns:
+
+- **Equal-tier conflict** (both sources at the same source-type tier
+  or otherwise comparable rigor): present both with citations
+  side-by-side and state the disagreement explicitly. Do not pick a
+  winner. Example: *"Specification A states X [N1]; the published
+  errata at [N2] revises this to Y."*
+- **Tier-asymmetric conflict** (one source at a significantly higher
+  tier — official-docs over secondary, standards over a blog post,
+  current spec over an outdated revision): cite the higher-tier
+  source as authoritative; record the lower-tier source as a
+  contradictory data point with its citation, and signal in the
+  narrative that the higher-tier source supersedes the lower-tier
+  reading.
+- **Unresolvable conflict** (no clear tier asymmetry, and the
+  conflict materially affects a sub-question's answer): move the
+  conflict into "Open Questions / Gaps" as an unresolved evidence
+  pointer. Both citations remain in Sources.
+
+Do NOT silently drop a source from the brief to make a conflict go
+away. The audit checklist's "No orphan sources" rule retains both
+citations as part of the audit trail; the only legitimate way to
+remove a source is when it carried zero load on any finding.
+
+The bidirectional ensemble's `cited-brief-ensemble.md` §"CONFLICT
+handling" cross-references this rule for peer-vs-local claim
+divergence; the rule above governs both intra-corpus conflicts
+(two sources the local host found) and cross-corpus conflicts
+(local source vs peer source after Path A verification).
+
+---
+
 ## Ensemble Label Policy
 
 When `engineer:investigate --profile=cited-brief` runs in command-mode,

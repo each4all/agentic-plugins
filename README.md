@@ -67,7 +67,7 @@ cited-brief contract is now folded into `engineer:investigate`.
 # Claude Code
 /plugin marketplace add each4all/agentic-plugins
 /plugin install companions@agentic-plugins
-/plugin install research@agentic-plugins
+/plugin install engineer@agentic-plugins
 
 # OpenAI Codex CLI
 codex plugin marketplace add each4all/agentic-plugins

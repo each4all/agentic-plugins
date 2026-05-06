@@ -145,8 +145,10 @@ inherits the full research contract:
 
 - **Artifact spec** — adapted from `research-brief-spec.md` (4-tier
   source taxonomy, numeric `[N]` citation system, three-marker
-  sentinel discipline, 11-item audit checklist, Ensemble Label
-  Policy).
+  sentinel discipline, 11-item audit checklist absorbed; cited-brief
+  profile extends to 12 items via the new PEER-ONLY claim resolution
+  rule that the Path A / Path B Independence Rule introduces,
+  Ensemble Label Policy).
 - **File and sandbox rules** — adapted from `output-file-rules.md`
   (slug sanitization 7-step, output-root environment override,
   existing-directory prompt, sandbox enforcement).
@@ -341,11 +343,12 @@ intact and adds deprecation signals only.
   engineer's standard ensemble synthesis vocabulary.
 - Engineer:investigate gains 13 contract elements from the
   research absorption (4-tier source taxonomy, numeric citation
-  system, three-marker sentinel, 11-item audit checklist, brief
-  save artifact, slug sanitization, output-root override,
-  existing-directory prompt, Citation Remapping, sub-question
-  derivation 1–7, output language separation, web-tool
-  degradation handling, stale-evidence caveat). Each addition is
+  system, three-marker sentinel, 12-item audit checklist [11
+  absorbed + 1 PEER-ONLY routing addition], brief save artifact,
+  slug sanitization, output-root override, existing-directory
+  prompt, Citation Remapping, sub-question derivation 1–7, output
+  language separation, web-tool degradation handling, stale-evidence
+  caveat). Each addition is
   small but the aggregate increases engineer:investigate's surface
   area.
 

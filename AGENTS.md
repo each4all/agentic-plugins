@@ -59,8 +59,10 @@ agentic-plugins/
 │   │                               # library (scripts/discover-peer.mjs); Stage 2 Deliverable B
 │   │                               # absorbed discovery into this plugin per ADR-0010 §6 trigger
 │   │                               # evaluation (high cohesion, no separate plugin spawned)
-│   ├── research/                   # L2 capability — topic-bound research, Stage 1 reference plugin
-│   └── (engineer/ — L3 persona, Stage 2 Deliverable C)
+│   └── engineer/                   # L3 persona — 6-verb workbench (Stage 2 complete 2026-05-06).
+│                                   # research capability folded in via investigate's cited-brief
+│                                   # profile per ADR-0014 + ADR-0015 (Stage 2.5+); plugins/research
+│                                   # archived at commit 28b5eb8
 ├── scripts/
 │   ├── sync-companion-bundles.mjs  # drift-checked companion script copy
 │   └── validate-marketplace.mjs    # marketplace catalog validation
@@ -72,7 +74,7 @@ agentic-plugins/
     └── adr/                        # Architecture Decision Records
         ├── README.md               # ADR index
         ├── template.md             # Standard ADR template
-        └── 0001..0011-*.md         # Decisions
+        └── 0001..0015-*.md         # Decisions (0013 reserved, 0014 superseded by 0015 timeline portion)
 ```
 
 ---
@@ -122,7 +124,10 @@ The **adapter** sub-layer per host implements the host's runtime
 model (manifest schemas, hook event/payload mapping, orchestration
 patterns, continuity protocols). The **companion** layer (Layer 1)
 holds two bridges — one in each direction — for peer-agent
-invocation. See ADRs 0001–0011 for the specifics.
+invocation. See ADRs 0001–0015 for the specifics (0013 reserved
+pending Codex CLI commands integration trigger; 0014 superseded by
+0015 for the `plugins/research` archive timeline only — the
+capability decision in 0014 is operative).
 
 ---
 
@@ -233,16 +238,17 @@ shape:
 
 **Stage 1 (Reference plugin + companion contract)** — complete (2026-05-05). Shipped `plugins/companions` (script-only library) and `plugins/research` (single-skill capability with bidirectional companion ensemble; retired at Stage 2.5+ per [ADR-0014](docs/adr/0014-plugins-research-deprecation.md), cited-brief contract absorbed into `engineer:investigate`). Round-trip verification at the time: bidirectional companion calls succeeded in both directions; per-host CI gates (`claude-tests.yml`, `codex-tests.yml`) green on every push. The two reference brief artifacts (`output/` directory, gitignored locally) demonstrated the protocol but were not committed evidence — exit verification was the green CI runs and the protocol acceptance documented in `docs/DEVELOPMENT.md` §Stage 1 exit evidence.
 
-**Stage 2 (Self-development plugin)** — in progress. ADRs 0010 (plugin boundary policy + 4-layer composition + 6 universal verbs) and 0011 (workflow continuity Option III storage) drafted. Building `plugins/engineer` (canonical L3 persona name; plugin-name level marketplace aliases like `/dev:` are a Stage 2 non-goal per ADR-0011 §9). Verb-level aliases inside the plugin (e.g., `/engineer:audit` ≡ `/engineer:critique --profile=full-codebase`) are permitted (ADR-0010 §3). 5 deliverables (A foundation → B kit/discovery → C plugin core + 6 verb skills → D adapters + minimal continuity → E validation + dogfood). Stage 2 exit gate: `plugins/engineer` can drive its own development without omcc-dev.
+**Stage 2 (Self-development plugin)** — complete (2026-05-06). ADRs 0010 (plugin boundary policy + 4-layer composition + 6 universal verbs), 0011 (workflow continuity Option III storage), and 0012 (omcc + codex-plugin-cc removal preconditions) accepted. Shipped `plugins/engineer` (canonical L3 persona name; plugin-name level marketplace aliases like `/dev:` are a Stage 2 non-goal per ADR-0011 §9). Verb-level aliases inside the plugin (e.g., `/engineer:audit` ≡ `/engineer:critique --profile=full-codebase`) are permitted (ADR-0010 §3). All five deliverables (A foundation → B kit/discovery absorbed into `plugins/companions` per ADR-0010 §6 high-cohesion evaluation → C plugin core + 6 verb skills → D adapters + minimal continuity → E validation + dogfood) merged. Stage 2 exit gate met: `plugins/engineer` drives its own development without omcc-dev (see `docs/DEVELOPMENT.md` §Stage 2 exit evidence).
 
-**Stage 3 (Design domain)** — planned. Will ship `plugins/designer` referencing omcc-designer experience under same 4-layer composition.
+**Stage 2.5+ (Research deprecation cascade)** — in progress. ADR-0014 deprecates `plugins/research` and folds the cited-brief contract into `engineer:investigate`'s new `cited-brief` profile (capability decision); ADR-0015 supersedes ADR-0014's deprecation-period timeline with immediate Stage 2.5+ archive (no installed-user audience to require the deprecation period). ADR-0010 amended as cascade. Implementation commits: `dc49ef0` (Stage 2 ADR finalization + ADR-0013 reservation), `2034877` (ADR-0014), `4077552` (`engineer:investigate --profile=cited-brief` absorption), `28b5eb8` (`plugins/research` archive), `944fd4e` (ADR-0010 cascade), `3ee7100` (ADR-0015 supersede + audit shape). Other Stage 2.5+ candidates: ADR-0013 (Codex CLI commands integration mechanism, file pending — Stage 3+ trigger).
 
-Next steps within Stage 2:
+**Stage 3 (Design domain)** — planned. Will ship `plugins/designer` referencing omcc-designer experience under the same 4-layer composition. The cited-brief precedent (research → `engineer:investigate` absorption per ADR-0014/0015) is the reference pattern for designer's domain-specific evidence-gathering — `designer:investigate` will likely follow the same in-persona pattern rather than depend on a separate L2 research plugin.
 
-1. Read this `AGENTS.md`, then `docs/ARCHITECTURE.md`, then ADRs 0001–0011 (especially 0010 for plugin boundary policy and 0011 for continuity scope)
-2. Continue Stage 2 Deliverables B → E per `docs/DEVELOPMENT.md` §Stage 2
-3. Stage 2 dogfood verification = Stage 2 exit
-4. Stage 3 (designer plugin) brainstorm + plan
+Next steps:
+
+1. Read this `AGENTS.md`, then `docs/ARCHITECTURE.md`, then ADRs 0001–0015 (especially 0010 for plugin boundary policy, 0011 for continuity scope, and 0014/0015 for the research deprecation cascade)
+2. Stage 2.5+ continuation: ADR-0013 authoring when its trigger fires (Codex CLI plugin-commands schema lands or alternative mechanism designed)
+3. Stage 3 (designer plugin) brainstorm + plan
 
 ---
 

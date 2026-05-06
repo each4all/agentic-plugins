@@ -99,14 +99,17 @@ Generate 2+ hypotheses from distinct failure categories
 ### Step 3'': Source-tier scan (cited-brief profile)
 
 For each confirmed sub-question, run external evidence gathering
-prioritized by source tier (per
-`references/cited-brief-spec.md` § Source Type Taxonomy):
+using the 4 source-type taxonomy from
+`references/cited-brief-spec.md` § Source Type Taxonomy:
+`official-docs`, `standards`, `academic`, and `secondary`.
 
-1. **Tier 1** — official-docs, standards, academic.
-2. **Tier 2** — well-attributed secondary (vendor docs, recognized
-   technical blogs).
-3. **Tier 3** — community/anecdotal, used only to fill gaps and
-   marked accordingly.
+Collection priority: prefer the three higher-tier types
+(`official-docs`, `standards`, `academic`) first; fall back to
+`secondary` (vendor docs, recognized technical blogs,
+community/anecdotal references) when the higher-tier search is
+incomplete. Mark community/anecdotal sources accordingly. Higher-tier
+sources also carry more weight in the brief's confidence rating per
+the spec.
 
 Use WebSearch + WebFetch. Capture sources in **research-execution
 order** — the first source becomes `[1]`, the next new source `[2]`,

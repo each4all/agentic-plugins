@@ -472,28 +472,37 @@ the ensemble ran at all.
 ## State and Recovery
 
 Unlike the Stage 1 `plugins/research` plugin (which had no persistent
-workflow state), the cited-brief profile inherits engineer's
-persistent workflow state via `state.mjs`. Concretely:
+workflow state), the cited-brief profile writes phase notes through
+engineer's persistent workflow `.md` via `state.mjs`. Concretely:
 
-- The cited-brief profile's command-mode flow writes phase notes to
-  the workflow `.md` (via `state.mjs append`) at each protocol step
-  (Launch, Collect, Synthesize). If the session compacts mid-flight,
-  `/omcc-dev:resume`-equivalent re-entry restores the recorded state
-  and resumes from the last checkpoint.
-- An in-flight peer dispatch survives compaction as long as the
-  background Bash task ID is recorded in the workflow `.md`'s
-  `pending_ensemble:` frontmatter (per the workflow's continuity
-  protocol). Resume re-collects the dispatch by job ID.
+- The cited-brief profile's command-mode flow appends phase notes
+  through `state.mjs append` at each protocol step (Launch, Collect,
+  Synthesize). The notes preserve a body-level audit trail of which
+  ensemble was launched at what time and what its synthesis verdict
+  was, in human-readable form.
 - The brief artifact itself (the saved `research_brief.md`) remains
   the durable artifact; even if the workflow `.md` is archived later,
   the brief is preserved at its `<root>/YYYY-MM-DD_<topic-slug>/`
   location.
 
-This is a strict superset of research v1's in-session-only behavior.
-Per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md)
-§ Consequences (Positive), the upgrade is automatic — no
-profile-specific wiring is required to enable resume; the existing
-engineer workflow continuity covers it.
+In-flight peer dispatches do NOT survive session compaction in the
+current schema. Per [`_shared/references/ensemble-protocol.md`](../../_shared/references/ensemble-protocol.md)
+§"Result Bookkeeping," frontmatter promotion of `pending_ensemble:` /
+`ensemble_results:` is explicitly deferred to a post-Stage 2 ADR
+(see [ADR-0011](../../../../../docs/adr/0011-workflow-continuity-storage.md)
+§5 schema-1 closure). If a peer dispatch is in flight when the
+session compacts, the recovered session sees the in-flight phase
+note (`### Ensemble launched: <type> at <iso-utc>`) but cannot
+collect the background task by ID — the next session must
+re-dispatch the ensemble. The phase notes preserve enough audit
+trail for the user to recognise this state and decide whether to
+re-dispatch.
+
+Workflow re-entry uses engineer's own continuity — `scripts/state.mjs`
+restores the workflow `.md`'s tasks frontmatter and current_phase per
+ADR-0011 §5; the cited-brief profile inherits that without
+profile-specific wiring. The body-level phase notes (above) plus the
+saved brief artifact together give the user the recovery surface.
 
 ---
 

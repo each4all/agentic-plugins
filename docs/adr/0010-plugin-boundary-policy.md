@@ -448,8 +448,9 @@ with HIGH confidence):
 2. **Does the typed handoff prototype (§5) survive the retirement
    of its prototype implementation?** — Yes. The cited-brief
    contract — `research_brief.md` shape, capture-order numeric
-   citations, 4-tier source taxonomy, 11-item audit checklist,
-   ensemble label policy — is absorbed into
+   citations, 4-tier source taxonomy, 12-item audit checklist
+   (11 absorbed + 1 PEER-ONLY routing addition), ensemble label
+   policy — is absorbed into
    `engineer:investigate`'s cited-brief profile. The prototype
    demonstrated the shape; the shape now lives in-persona at
    `plugins/engineer/skills/investigate/references/cited-brief-spec.md`
