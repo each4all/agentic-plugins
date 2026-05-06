@@ -135,10 +135,14 @@ pattern.
 
 **Neutral**:
 
-- Cluster-3 ground rules in the Stage 2 deliverable E plan absorb
-  condition (2): the dogfood now covers both directions (Claude
-  direction on a Stage 3 designer brainstorm, Codex direction on a
-  dev-infra evaluation), with a corresponding ~2× session-time cost.
+- Cluster-3 ground rules in the Stage 2 deliverable E plan target
+  bidirectional dogfood as the canonical condition (2) evidence path.
+  At Stage 2 exit only the Claude direction is established (D Phase 5
+  `dispatch-peer` parallel-review on engineer's own code path). The
+  Codex direction is deferred — Codex CLI 0.128.0 plugin commands
+  schema absence blocks the engineer-side auto-trigger for
+  `dispatch-peer.mjs`, recorded as a Stage 2.5+ ADR-0013 candidate in
+  `docs/DEVELOPMENT.md` "Stage 2 exit evidence" subsection.
 - Responsibility split between ADR-0007 and ADR-0012 is now explicit:
   0007 owns the cutover plan (archive, communication, switch
   procedure); 0012 owns the precondition rubric that gates entry into

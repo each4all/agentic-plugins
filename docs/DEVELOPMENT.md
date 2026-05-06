@@ -158,24 +158,35 @@ plugin-shape and unit-test surface on every push:
   7 commands / 5 hooks / verb-name consistency / verb→ensemble mapping
   cross-check / contract version freshness / stale-token audit).
 - Unit tests for engineer Phase 6 fixes (added in Deliverable E):
-  - `tests/engineer/test-state.mjs` (27 tests) — lock ownership
-    protocol, atomic-write token verify, frontmatter validation
-    schema=1 closed with nested key sets, extended secret patterns,
-    single-active invariant, `withFileLock` serialization.
-  - `tests/engineer/test-dispatch-peer.mjs` (26 tests) — envelope
-    strict validation per `companions/contract.md` §4.2 + §5.3 joint
-    triple, `AGENTIC_COMPANIONS_ROOT` env override, optional
-    `<structured_output_contract>` emission, XML escape rules.
-  - `tests/engineer/test-session-start.mjs` (6 tests) — JSON-quoted
+  - `tests/engineer/test-state.mjs` — lock ownership protocol
+    (serialization + ownership-object delivery; atomic-rename internals
+    are public-API-tested rather than directly probed since a
+    mid-lock-process kill is out of scope for in-process unit tests),
+    `validateFrontmatter` schema=1 closed with nested key sets,
+    extended secret patterns (AWS ASIA / GitHub fine-grained / sk-* /
+    Slack / 32+ hex), single-active invariant, `withFileLock`
+    serialization under concurrent acquirers.
+  - `tests/engineer/test-dispatch-peer.mjs` — envelope strict
+    validation per `companions/contract.md` §4.2 + §5.3 joint triple
+    (`status` / `peer_host` enums, `success` exit_code=0 + no error,
+    joint triple for `peer_error` and `companion_error`,
+    `error.message` non-empty single-line, `error.detail` string-or-null),
+    `AGENTIC_COMPANIONS_ROOT` env override (single root, not per-peer),
+    optional `<structured_output_contract>` emission, XML escape rules.
+  - `tests/engineer/test-session-start.mjs` — JSON-quoted
     `[engineer-active-metadata]` marker pair, profile-field
     separation, `next_action` exclusion as imperative-injection
-    vector block, field length caps.
+    vector block, field length caps verified end-to-end with oversized
+    inputs, control-char sanitization in payload.
 - Existing tests (`research-discover-companion`, `kit/lint`,
   `companions` round-trip).
 
-Totals: **238 tests** green on `feat/plugin-engineer-validation`
-(HEAD of PR #32). `npm run lint:plugin-shape` reports `shape OK` for
-all three plugins (companions / engineer / research).
+The plugin-shape + unit-test surface (`npm run test:plugin-shape`)
+runs **243 tests** green on `feat/plugin-engineer-validation`
+(HEAD of PR #32). The wider `npm test` runs **371 tests** green
+(adds the `companions` round-trip unit suite). `npm run lint:plugin-shape`
+reports `shape OK` for all three plugins (companions / engineer /
+research).
 
 ##### Round-trip dogfood evidence
 

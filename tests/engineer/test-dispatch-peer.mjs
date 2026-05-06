@@ -19,7 +19,9 @@
 //       * peer_error joint triple (exit_code=1, kind=peer_run_error)
 //       * companion_error exit_code 2 ↔ companion_misuse, 3 ↔ peer_*
 //   - resolveCompanionPath (Phase 6 fix #4 — env override path):
-//       * AGENTIC_COMPANIONS_<PEER>_PATH env var honored
+//       * AGENTIC_COMPANIONS_ROOT env var honored (single root, not per-peer)
+//       * relative path rejected
+//       * env override missing discover-peer.mjs rejected
 //       * unknown peer rejected
 //
 // Live spawn flows (companion not installed, peer CLI missing, etc.)
@@ -201,6 +203,76 @@ describe('dispatch-peer.mjs — validateEnvelopeShape (Phase 6 fix #3 — strict
       error: { kind: 'companion_misuse', message: 'x' },
     });
     strictEqual(wrongKind.ok, false);
+  });
+
+  it('error.message is required, non-empty, single-line (§4.2)', () => {
+    const baseError = {
+      status: 'peer_error',
+      peer_host: 'claude',
+      peer_model: 'claude-opus',
+      stdout: '',
+      exit_code: 1,
+    };
+
+    const noMessage = validateEnvelopeShape({ ...baseError, error: { kind: 'peer_run_error' } });
+    strictEqual(noMessage.ok, false);
+    ok(/error\.message/.test(noMessage.reason));
+
+    const emptyMessage = validateEnvelopeShape({
+      ...baseError, error: { kind: 'peer_run_error', message: '' },
+    });
+    strictEqual(emptyMessage.ok, false);
+
+    const nonStringMessage = validateEnvelopeShape({
+      ...baseError, error: { kind: 'peer_run_error', message: 42 },
+    });
+    strictEqual(nonStringMessage.ok, false);
+
+    const multilineMessage = validateEnvelopeShape({
+      ...baseError, error: { kind: 'peer_run_error', message: 'line1\nline2' },
+    });
+    strictEqual(multilineMessage.ok, false);
+    ok(/single-line/.test(multilineMessage.reason));
+  });
+
+  it('error.detail accepts string or null when present (§4.2)', () => {
+    const base = {
+      status: 'peer_error',
+      peer_host: 'claude',
+      peer_model: 'claude-opus',
+      stdout: '',
+      exit_code: 1,
+    };
+
+    const stringDetail = validateEnvelopeShape({
+      ...base,
+      error: { kind: 'peer_run_error', message: 'x', detail: 'multi\nline\ndetail' },
+    });
+    strictEqual(stringDetail.ok, true);
+
+    const nullDetail = validateEnvelopeShape({
+      ...base,
+      error: { kind: 'peer_run_error', message: 'x', detail: null },
+    });
+    strictEqual(nullDetail.ok, true);
+
+    const numberDetail = validateEnvelopeShape({
+      ...base,
+      error: { kind: 'peer_run_error', message: 'x', detail: 42 },
+    });
+    strictEqual(numberDetail.ok, false);
+  });
+
+  it('rejects array-shaped error', () => {
+    const r = validateEnvelopeShape({
+      status: 'peer_error',
+      peer_host: 'claude',
+      peer_model: 'claude-opus',
+      stdout: '',
+      exit_code: 1,
+      error: ['kind', 'peer_run_error'],
+    });
+    strictEqual(r.ok, false);
   });
 
   it('companion_error exit_code=2 must pair with kind=companion_misuse', () => {
