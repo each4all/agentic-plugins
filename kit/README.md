@@ -5,23 +5,44 @@ Plugin authoring toolkit — utilities for agentic-plugins plugin developers
 
 ## Status
 
-**Stub.** No implementation yet. To be built as plugins emerge and
-demand patterns crystallize.
+**Active.** `lint/` ships the plugin-shape conformance check that runs
+in CI on every push (per-host `claude-tests.yml` and `codex-tests.yml`).
+The other sub-directories listed under "Planned" below are not built —
+they are trigger-driven futures.
 
-## Planned contents
+## Current contents
 
-- `adapter-generator/` — Generate per-host adapter scaffolding from
-  CORE plugin spec. Saves authors from hand-writing manifest files,
-  hook configurations, and persona-to-TOML conversions
-- `manifest-templates/` — Boilerplate `.claude-plugin/plugin.json` and
-  `.codex-plugin/plugin.json` templates with required fields and
-  documented optional ones
-- `lint/` — Adapter-contract conformance checks per
-  `docs/adr/0002-adapter-contract.md`. Verifies a plugin's adapter
-  implements all four required items (manifest mapping, event mapping,
-  companion invocation, path resolution)
+- **`lint/`** — Plugin-shape conformance checks.
+  - `check-plugin-shape.mjs` — verifies manifest required fields,
+    name match across `.claude-plugin/plugin.json` and
+    `.codex-plugin/plugin.json`, skills path resolution, scripts
+    executable bit, and adapters/hosts/scripts traversal.
+  - Run locally via `npm run lint:plugin-shape`.
+  - CI-gated on both host workflows in `.github/workflows/`.
+
+## Planned (trigger-driven, not yet built)
+
+- **Adapter-contract conformance lint** — verifies a plugin's adapter
+  implements all four required items per
+  [ADR-0002](../docs/adr/0002-adapter-contract.md) (manifest mapping,
+  event mapping, companion invocation, path resolution). Trigger:
+  third-party adapter author submits a PR, or a third in-tree adapter
+  pattern emerges (currently 2 in tree: companions Stage 1 pattern,
+  engineer Stage 2 pattern). Surfaced as a follow-up by the 2026-05-06
+  Stage 2.5+ exit audit (Q3 G-5).
+- **`adapter-generator/`** — generate per-host adapter scaffolding
+  from a CORE plugin spec, saving authors from hand-writing manifests,
+  hook configurations, and persona-to-TOML conversions. Trigger:
+  3+ plugins in tree (currently 2 — `companions`, `engineer`;
+  `designer` pending Stage 3).
+- **`manifest-templates/`** — boilerplate `.claude-plugin/plugin.json`
+  and `.codex-plugin/plugin.json` templates with required fields
+  documented. Trigger: external contributor onboarding pain. Manual
+  authoring remains fine for the small initial plugin set.
 
 ## When to build kit features
 
-When a pattern is observed in 2+ plugins, extract it into kit. Until
-then, manual authoring is fine for the small initial plugin set.
+When a pattern is observed in 2+ plugins and the manual authoring cost
+exceeds the maintenance cost of the kit feature, extract it. Until
+then, manual authoring is preferred — `kit/` accumulates only
+sustained patterns, not speculative ones.

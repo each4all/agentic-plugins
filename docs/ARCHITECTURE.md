@@ -132,10 +132,21 @@ Tools for plugin authors (internal and external):
 ```
 kit/
 ├── README.md
-├── adapter-generator/      # Generate per-host adapter scaffolding from core spec
-├── manifest-templates/     # Boilerplate plugin.json for each host
-└── lint/                   # Adapter-contract conformance checks
+└── lint/                   # Plugin-shape conformance (active, CI-gated)
+                            #   - check-plugin-shape.mjs:
+                            #       manifest required fields / name match across
+                            #       .claude-plugin and .codex-plugin / skills path /
+                            #       scripts executable bit / adapter traversal
+                            #   - run via `npm run lint:plugin-shape`
+                            #   - planned (not yet built): adapter-contract
+                            #     conformance per ADR-0002 four-item rubric
 ```
+
+Sub-directories `adapter-generator/` and `manifest-templates/` are
+planned futures listed in [`kit/README.md`](../kit/README.md) but not
+yet built — they are trigger-driven (3+ plugins in tree / external
+contributor onboarding pain). See `kit/README.md` §"When to build kit
+features".
 
 ### `plugins/` — reference dual-host plugins
 
