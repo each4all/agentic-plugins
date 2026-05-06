@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (2026-05-06; merged via [PR #40](https://github.com/each4all/agentic-plugins/pull/40), main commit `27fb308`). Adoption of this ADR records the *roadmap* — sub-decision implementations follow per-trigger acceptance criteria defined in §"Decision" and ship in their own PRs when triggers fire.
 
 ## Context
 
