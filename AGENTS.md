@@ -74,7 +74,7 @@ agentic-plugins/
     └── adr/                        # Architecture Decision Records
         ├── README.md               # ADR index
         ├── template.md             # Standard ADR template
-        └── 0001..0015-*.md         # Decisions (0013 reserved, 0014 superseded by 0015 timeline portion)
+        └── 0001..0016-*.md         # Decisions (0013 reserved, 0014 superseded by 0015 timeline portion)
 ```
 
 ---
@@ -124,7 +124,7 @@ The **adapter** sub-layer per host implements the host's runtime
 model (manifest schemas, hook event/payload mapping, orchestration
 patterns, continuity protocols). The **companion** layer (Layer 1)
 holds two bridges — one in each direction — for peer-agent
-invocation. See ADRs 0001–0015 for the specifics (0013 reserved
+invocation. See ADRs 0001–0016 for the specifics (0013 reserved
 pending Codex CLI commands integration trigger; 0014 superseded by
 0015 for the `plugins/research` archive timeline only — the
 capability decision in 0014 is operative).
@@ -181,6 +181,36 @@ unrelated plugins. Instead, the catalog is synced separately by
 release-please GitHub Action runs that sync as a follow-up step
 automatically, and `validate:versions` fails CI if catalog entries
 drift from the manifest.
+
+### Cross-package commit splitting
+
+release-please routes a commit's footer (`feat`, `fix`,
+BREAKING CHANGE, etc.) to **every** package whose tracked path the
+commit touches — Conventional Commits scope is a label, not a
+routing override. When a single commit modifies files in 2+
+release-please package paths, **split into per-package commits
+before pushing**. Per-package commits stage only that package's
+files (`git add <package-path> && git commit`).
+
+The package paths are the keys of `release-please-config.json`
+`packages` — currently `companions`, `plugins/companions`, and
+`plugins/engineer`. Files **outside** every package key prefix are
+exempt: root files (`AGENTS.md`, `README.md`, `package.json`, etc.),
+`docs/`, `scripts/`, `tests/`, `kit/`, `.claude-plugin/`,
+`.agents/`, `.github/`, and any other unlisted path. Root-level
+docs may be folded into any per-package commit or a separate
+docs-only commit at author's discretion. The exemption is
+structural — it is determined by `release-please-config.json` and
+shrinks automatically if a new package's path overlaps a previously
+exempt area.
+
+This is a convention enforced by reviewer attention, not a CI gate.
+A violation surfaces as an incorrect release-please PR (e.g., a
+BREAKING bump on a package the change did not target). See
+[ADR-0016](docs/adr/0016-cross-package-commit-splitting.md) for the
+full rationale, the originating `28b5eb8` incident, and rejected
+alternatives (pre-commit lint hook, monorepo decomposition, scope
+as routing override).
 
 ### ADR process
 
@@ -264,7 +294,7 @@ shape:
 
 Next steps:
 
-1. Read this `AGENTS.md`, then `docs/ARCHITECTURE.md`, then ADRs 0001–0015 (especially 0010 for plugin boundary policy, 0011 for continuity scope, and 0014/0015 for the research deprecation cascade)
+1. Read this `AGENTS.md`, then `docs/ARCHITECTURE.md`, then ADRs 0001–0016 (especially 0010 for plugin boundary policy, 0011 for continuity scope, 0014/0015 for the research deprecation cascade, and 0016 for cross-package commit splitting)
 2. Stage 2.5+ continuation: ADR-0013 authoring when its trigger fires (Codex CLI plugin-commands schema lands or alternative mechanism designed)
 3. Stage 3 (designer plugin) brainstorm + plan
 
