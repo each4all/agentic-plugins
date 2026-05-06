@@ -195,6 +195,11 @@ avoid the `ARG_MAX` ceiling.
 - **Refine-verify** (refine phase): add `<verification_loop>`
 - **Adversarial-scan** (critique phase, full-codebase profile):
   add `<dig_deeper_nudge>`, `<adversarial_mindset>`
+- **Research-scan** (investigate phase, cited-brief profile): add
+  `<citation_contract>`, `<privacy_contract>` (full prompt
+  construction in
+  `skills/investigate/references/cited-brief-ensemble.md` §
+  Prompt Construction)
 
 ### Do not pass --model or --effort
 
@@ -469,6 +474,68 @@ written files.
 - **Synthesis**: Cross-validate. AGREED → high confidence. PEER-ONLY →
   treat as additional hypothesis to verify with targeted check.
   CONFLICT → present both with evidence, ask user.
+
+### Research-scan (investigate phase, cited-brief profile)
+
+- **Purpose**: Independent topic-bound external research producing
+  cited evidence per sub-question
+- **Subcommand**: `task`
+- **Canonical contract**:
+  `skills/investigate/references/cited-brief-ensemble.md` (this entry
+  exists for parallelism with Explore / Investigate; the full
+  bidirectional protocol — privacy gate, citation remapping, Path A /
+  Path B Independence Rule, dispatch via
+  `plugins/engineer/scripts/dispatch-peer.mjs` — lives in the absorbed
+  contract per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md))
+- **Prompt template**:
+
+  ```xml
+  <task>
+  Independently research this topic. Run web searches and gather
+  primary-source evidence for each sub-question. Do not consult or
+  reference any draft brief from the orchestrator.
+  Topic: {confirmed topic}
+  Sub-questions:
+  {confirmed sub-questions list}
+  Scope: {covered/excluded scope}
+  </task>
+
+  <structured_output_contract>
+  Per sub-question, return:
+  1. Findings synthesis with inline citations [N]
+  2. Sources list — title, URL, access date, source type
+     (official-docs | standards | academic | secondary)
+  3. Open questions / gaps
+  4. Confidence (HIGH/MEDIUM/LOW) with caveats
+  </structured_output_contract>
+
+  <citation_contract>
+  Every substantive claim must trace to a [N]-cited source OR be
+  marked as the model's own synthesis ([uncited inference]). Do not
+  produce marketing claims without citations.
+  </citation_contract>
+
+  <privacy_contract>
+  Use only the topic, sub-questions, and scope provided. Do NOT
+  include host-side identifiers, file paths, or internal context that
+  did not arrive via this prompt.
+  </privacy_contract>
+
+  <grounding_rules>
+  Prefer Tier 1 sources (official-docs, standards, academic) over
+  Tier 2 (vendor docs, recognized technical secondary) over Tier 3
+  (community/anecdotal — fill gaps only).
+  </grounding_rules>
+  ```
+
+- **Synthesis**: Apply the bidirectional Independence Rule — Path A
+  locally verify and cite the PEER-ONLY claim, Path B move it to Open
+  Questions. Citation numbering is remapped to local capture order;
+  the peer's internal labels MUST NOT be copied verbatim. Source-of-
+  discovery labels (`[Local]` / `[Peer]`) live in workflow phase
+  notes only — the saved brief artifact strips them per
+  `skills/investigate/references/cited-brief-spec.md` § Ensemble
+  Label Policy.
 
 ### Refine-verify (refine phase)
 

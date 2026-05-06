@@ -1,6 +1,6 @@
 ---
-description: Gather evidence, scan codebases, diagnose root causes — the engineer persona's evidence-gathering verb
-argument-hint: --profile=analysis|root-cause | (or natural-language scope)
+description: Gather evidence, scan codebases, diagnose root causes, produce cited briefs — the engineer persona's evidence-gathering verb
+argument-hint: --profile=analysis|root-cause|cited-brief | (or natural-language scope or topic)
 ---
 
 # Engineer · Investigate
@@ -49,7 +49,7 @@ Determine workflow state via the host-shared canonical I/O module:
      --git-baseline-head "$GIT_HEAD" \
      --status-digest "$STATUS_DIGEST" \
      --persona engineer \
-     --profile "<profile from $ARGUMENTS or 'analysis'>" \
+     --profile "<profile from $ARGUMENTS — analysis|root-cause|cited-brief; default 'analysis'>" \
      --original-request "<one-line scrubbed user request>" \
      --current-phase phase-0-bootstrap \
      --next-action "Run investigate skill")"
@@ -89,16 +89,31 @@ Follow the investigate skill's "When invoked by command" mode at
 - **Step 2**: Spawn local agents in parallel (analysis profile →
   architecture-mapper / flow-tracer / dependency-analyzer; root-cause
   profile → hypothesis-tracer / regression-hunter / state-analyzer —
-  selected by scope per `skills/_shared/references/agent-taxonomy.md`).
-- **Step 3**: Dispatch the peer ensemble (Investigate or Explore point
-  type per `skills/_shared/references/ensemble-protocol.md`) via
+  selected by scope per `skills/_shared/references/agent-taxonomy.md`;
+  cited-brief profile → no subagent spawning, the orchestrator runs
+  WebSearch + WebFetch directly per-sub-question per the SKILL Step
+  3'').
+- **Step 3**: Dispatch the peer ensemble — Investigate or Explore
+  point type per `skills/_shared/references/ensemble-protocol.md` for
+  analysis/root-cause profiles, OR research-scan point type per
+  `skills/investigate/references/cited-brief-ensemble.md` for the
+  cited-brief profile — via
   `$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs`. The peer runs in
-  the background; the orchestrator continues its own analysis in
-  parallel.
+  the background; the orchestrator continues its own analysis (or
+  per-sub-question web search for cited-brief) in parallel.
 - **Step 4**: Collect both sources, classify findings per the
-  AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT base categories.
+  AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT base categories. For
+  cited-brief, apply the bidirectional Independence Rule (Path A
+  locally verify and cite, Path B move to Open Questions) and remap
+  citation numbers to local capture order per
+  `skills/investigate/references/cited-brief-ensemble.md`.
 - **Step 5**: Present synthesized result per
-  `skills/_shared/references/presentation-protocol.md`.
+  `skills/_shared/references/presentation-protocol.md`. For
+  cited-brief, run the Audit Checklist
+  (`skills/investigate/references/cited-brief-spec.md`) and save the
+  brief per `skills/investigate/references/output-file-rules.md`
+  (per-topic directory under the resolved output root, fixed filename
+  `research_brief.md`).
 
 ### Ensemble dispatch — concrete invocation
 
@@ -114,6 +129,13 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs" \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
   > "$PROMPT_FILE.out" 2> "$PROMPT_FILE.err" &
 ```
+
+For the **cited-brief** profile, the XML prompt additionally carries
+the `<citation_contract>` and `<privacy_contract>` blocks defined in
+`skills/investigate/references/cited-brief-ensemble.md` § Prompt
+Construction. The same `dispatch-peer.mjs` is used; `--prompt-file`
+keeps user-controlled material (topic, sub-questions) out of shell
+parsing and process argv per `companions/contract.md` § 2.2.
 
 (Use `run_in_background: true` on the Bash tool; collect output once
 the orchestrator's local analysis completes.)
@@ -131,7 +153,15 @@ per the protocol's *Failure Handling*.
 After Phase 1 returns synthesized findings, append a phase note that
 captures (a) the synthesis verdict, (b) ensemble launch + result
 markers per `ensemble-protocol.md` § State Bookkeeping (Stage 2), and
-(c) the recommended next verb:
+(c) the recommended next verb. For the cited-brief profile, also
+include the saved brief's absolute path under a `### Brief saved`
+heading so future workflow consumers can locate the artifact (the
+brief itself stays orthogonal to the workflow body — referenced by
+path only, never inlined). Workflow phase notes MAY carry
+source-of-discovery labels (`[Both]` / `[Local]` / `[Peer]`); the
+saved brief artifact MUST NOT, per
+`skills/investigate/references/cited-brief-spec.md` § Ensemble Label
+Policy.
 
 ```bash
 NOTE="### Ensemble launched: investigate at <iso-utc>
@@ -173,6 +203,20 @@ Output the synthesized findings and one of:
   `root-cause` profile. Surface the user-facing prompt for additional
   context per the SKILL's *Full strike rule* — do NOT speculate on a
   cause not grounded in observable evidence.
+- `✓ Cited brief saved.` — `cited-brief` profile, audit passed, file
+  written to `<resolved-root>/YYYY-MM-DD_<topic-slug>/research_brief.md`.
+  Show the saved path, sub-question coverage, source-tier breakdown,
+  overall confidence, and any degraded-ensemble note. Recommended next
+  verb depends on the user's intent — `/engineer:frame` to scope a
+  decision from the brief, `/engineer:decide` to choose between 2+
+  approaches surveyed in the brief, `/engineer:compose` to draft from
+  it.
+- `✗ Cited brief aborted at save.` — `cited-brief` profile, the user
+  declined at the existing-directory gate or final review. No file
+  written; the synthesized brief is shown inline only.
+- `✗ Cited brief aborted at scoping.` — `cited-brief` profile, the
+  user declined the topic, sub-questions, or privacy gate before
+  dispatch. No web search / peer dispatch ran.
 
 Always include the workflow path so the user can inspect or resume:
 

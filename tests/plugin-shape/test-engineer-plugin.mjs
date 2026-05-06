@@ -1,5 +1,6 @@
 // plugins/engineer plugin-shape conformance test (Stage 2 Deliverable E,
-// Cluster 1 Option B — content sanity).
+// Cluster 1 Option B — content sanity; Stage 2.5 ADR-0014 cited-brief
+// absorption tests appended).
 //
 // Mirrors tests/plugin-shape/test-research-plugin.mjs structure with
 // engineer-specific multi-skill shape:
@@ -12,8 +13,13 @@
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
 //   - 1 Codex adapter hook (stop helper)
 //   - 1 Claude hooks manifest (hooks/hooks.json)
+//   - 9 ensemble point types in skills/_shared/references/ensemble-protocol.md
+//     (added Research-scan for cited-brief profile per ADR-0014)
+//   - 3 references/ files under skills/investigate/ (cited-brief-spec,
+//     output-file-rules, cited-brief-ensemble) absorbing the Stage 1
+//     plugins/research contract per ADR-0014
 //
-// Plus content sanity (Cluster 1 Option B):
+// Plus content sanity (Cluster 1 Option B + ADR-0014 absorption):
 //   - verb-name consistency: commands frontmatter ↔ verb folder name,
 //     SKILL.md frontmatter `name` ↔ skill folder, agents/openai.yaml
 //     `interface.display_name` ↔ verb (case-insensitive substring)
@@ -25,6 +31,10 @@
 //   - 4 shared references pass stale-token audit (no omcc / [Claude] /
 //     [Codex] / CODEX_HOME / CLAUDE-ONLY / CODEX-ONLY leaks)
 //   - companion contract version freshness across all engineer .md files
+//   - cited-brief profile contract: SKILL.md profile table, references/
+//     directory presence, command-mode 3-outcome taxonomy, label
+//     suppression rule consistency across SKILL.md / cited-brief-spec.md
+//     / cited-brief-ensemble.md
 //
 // Slug sanitization unit tests, lock-ownership race, frontmatter
 // validation, secret scrubbing, envelope strict shape, and SessionStart
@@ -412,9 +422,10 @@ describe('plugins/engineer — Claude hooks manifest (hooks/hooks.json)', () => 
 });
 
 describe('plugins/engineer — verb→ensemble mapping cross-check (ensemble-protocol.md ↔ README)', () => {
-  // The 8 ensemble point types declared in ensemble-protocol.md
+  // The 9 ensemble point types declared in ensemble-protocol.md
   // (one per recognised verb/profile combination plus Adversarial-scan
-  // for full-codebase critique). Section heading text is checked
+  // for full-codebase critique and Research-scan for the investigate
+  // cited-brief profile per ADR-0014). Section heading text is checked
   // verbatim because verb→ensemble mapping must agree with the
   // workflow-state mapping table in the resume protocol.
   const EXPECTED_SECTIONS = [
@@ -424,11 +435,12 @@ describe('plugins/engineer — verb→ensemble mapping cross-check (ensemble-pro
     '### Plan-verify (compose phase)',
     '### Review (critique phase, default profile)',
     '### Investigate (investigate phase, root-cause profile)',
+    '### Research-scan (investigate phase, cited-brief profile)',
     '### Refine-verify (refine phase)',
     '### Adversarial-scan (critique phase, full-codebase profile)',
   ];
 
-  it('ensemble-protocol.md contains all 8 expected ensemble-point sections', async () => {
+  it('ensemble-protocol.md contains all 9 expected ensemble-point sections', async () => {
     const text = await readFile(
       resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'),
       'utf8',
@@ -440,6 +452,93 @@ describe('plugins/engineer — verb→ensemble mapping cross-check (ensemble-pro
           `If the verb→ensemble mapping changed, update this test AND the workflow-state mapping table.`,
       );
     }
+  });
+});
+
+describe('plugins/engineer — investigate cited-brief profile (ADR-0014 absorption)', () => {
+  // The cited-brief profile absorbs the Stage 1 plugins/research contract
+  // into engineer:investigate per ADR-0014. This block verifies the
+  // contract surfaces are wired consistently: profile table mention,
+  // references/ directory artifacts, command-mode 3-outcome taxonomy,
+  // and label-suppression rule presence in all three contract files.
+  const SKILL_PATH = resolve(PLUGIN_ROOT, 'skills/investigate/SKILL.md');
+  const COMMAND_PATH = resolve(PLUGIN_ROOT, 'commands/investigate.md');
+  const REFERENCES_DIR = resolve(PLUGIN_ROOT, 'skills/investigate/references');
+  const SPEC_PATH = resolve(REFERENCES_DIR, 'cited-brief-spec.md');
+  const RULES_PATH = resolve(REFERENCES_DIR, 'output-file-rules.md');
+  const ENSEMBLE_PATH = resolve(REFERENCES_DIR, 'cited-brief-ensemble.md');
+
+  it('investigate SKILL.md frontmatter description includes cited-brief trigger phrases', async () => {
+    const text = await readFile(SKILL_PATH, 'utf8');
+    const fm = frontmatter(text);
+    ok(fm, 'no YAML frontmatter');
+    ok(/cited brief/i.test(fm), 'frontmatter description missing "cited brief"');
+    ok(/literature review/i.test(fm), 'frontmatter description missing "literature review"');
+    ok(/리서치/.test(fm), 'frontmatter description missing "리서치"');
+  });
+
+  it('investigate SKILL.md profile table has all 3 profile rows (analysis / root-cause / cited-brief)', async () => {
+    const text = await readFile(SKILL_PATH, 'utf8');
+    ok(/\|\s*`analysis`\s*\(default\)/.test(text), 'profile table missing analysis row');
+    ok(/\|\s*`root-cause`/.test(text), 'profile table missing root-cause row');
+    ok(/\|\s*`cited-brief`/.test(text), 'profile table missing cited-brief row');
+  });
+
+  it('investigate references/ directory contains 3 absorbed contract files', async () => {
+    ok(await exists(SPEC_PATH), 'references/cited-brief-spec.md missing');
+    ok(await exists(RULES_PATH), 'references/output-file-rules.md missing');
+    ok(await exists(ENSEMBLE_PATH), 'references/cited-brief-ensemble.md missing');
+  });
+
+  it('commands/investigate.md argument-hint includes cited-brief profile', async () => {
+    const text = await readFile(COMMAND_PATH, 'utf8');
+    const fm = frontmatter(text);
+    ok(fm, 'no YAML frontmatter on commands/investigate.md');
+    ok(/cited-brief/.test(fm), 'argument-hint missing cited-brief');
+  });
+
+  it('commands/investigate.md Completion taxonomy has all 3 cited-brief outcomes', async () => {
+    const text = await readFile(COMMAND_PATH, 'utf8');
+    // Saved / aborted-at-save / aborted-at-scoping.
+    ok(/Cited brief saved/.test(text), 'Completion missing "Cited brief saved" outcome');
+    ok(/Cited brief aborted at save/.test(text), 'Completion missing "aborted at save" outcome');
+    ok(/Cited brief aborted at scoping/.test(text), 'Completion missing "aborted at scoping" outcome');
+  });
+
+  it('label suppression rule is consistent across SKILL.md, cited-brief-spec.md, and ensemble protocol', async () => {
+    // Workflow phase notes MAY carry [Local]/[Peer]/[Both] discovery
+    // labels for orchestration transparency, but the saved brief
+    // artifact MUST strip them. The rule must surface in 3 places:
+    //   1. SKILL.md anti-patterns (prose rule for the skill body)
+    //   2. cited-brief-spec.md Audit Checklist + Ensemble Label Policy
+    //   3. cited-brief-ensemble.md (mentioned in synthesis section)
+    const skill = await readFile(SKILL_PATH, 'utf8');
+    const spec = await readFile(SPEC_PATH, 'utf8');
+    const ensemble = await readFile(ENSEMBLE_PATH, 'utf8');
+
+    ok(
+      /Source-of-discovery labels in the cited-brief artifact/.test(skill),
+      'SKILL.md anti-patterns missing label suppression rule',
+    );
+    ok(
+      /No source-of-discovery labels/.test(spec),
+      'cited-brief-spec.md Audit Checklist missing "No source-of-discovery labels"',
+    );
+    ok(
+      /Ensemble Label Policy/.test(spec),
+      'cited-brief-spec.md missing "Ensemble Label Policy" section',
+    );
+    ok(
+      /\[Local\][\s\S]{0,200}\[Peer\]/.test(ensemble) || /label/i.test(ensemble),
+      'cited-brief-ensemble.md does not discuss label policy',
+    );
+  });
+
+  it('cited-brief-spec.md Audit Checklist enumerates all required sentinels', async () => {
+    const text = await readFile(SPEC_PATH, 'utf8');
+    // Permitted sentinels for un-cited claims.
+    ok(/\[uncited inference\]/.test(text), 'spec missing [uncited inference] sentinel');
+    ok(/research interrupted/.test(text), 'spec missing "research interrupted" sentinel');
   });
 });
 

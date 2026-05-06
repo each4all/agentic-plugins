@@ -1,18 +1,19 @@
 ---
 name: investigate
-description: "Gathers evidence, inspects context, scans codebases, and probes references — the engineer persona's evidence-gathering verb. Use when the user wants to understand structure, trace flows, diagnose bugs, find root causes, or build a mental model before acting. Trigger phrases include 'explain this codebase', 'how is this structured', 'map the architecture', 'project overview', 'why isn't this working', 'what's causing this', 'debug this', 'find the root cause', 'it's broken', 'unexpected behavior', '코드베이스 분석', '버그 진단', '원인 분석', '어떻게 되어있어'. Do NOT jump to fixing — investigate first."
+description: "Gathers evidence, inspects context, scans codebases, probes references, and produces durable cited briefs from external sources — the engineer persona's evidence-gathering verb. Use when the user wants to understand structure, trace flows, diagnose bugs, find root causes, build a mental model, or research a topic with citations before acting. Trigger phrases include 'explain this codebase', 'how is this structured', 'map the architecture', 'project overview', 'why isn't this working', 'what's causing this', 'debug this', 'find the root cause', 'it's broken', 'unexpected behavior', 'research X', 'cited brief', 'literature review', 'investigate <topic>', '코드베이스 분석', '버그 진단', '원인 분석', '어떻게 되어있어', '리서치', '조사해줘'. Do NOT jump to fixing — investigate first."
 ---
 
 # Investigate (engineer persona)
 
 The engineer plugin's evidence-gathering verb (per ADR-0010 §2). The
-verb covers two recurring engineer activities through profile
+verb covers three recurring engineer activities through profile
 sub-modes:
 
-| Profile | What it does | omcc-dev equivalent |
-|---------|--------------|---------------------|
+| Profile | What it does | omcc-dev / agentic-plugins equivalent |
+|---------|--------------|---------------------------------------|
 | `analysis` (default) | Explore an unfamiliar codebase / area to build a structured understanding | omcc-dev `explore` |
 | `root-cause` | Diagnose a bug or unexpected behavior through structured hypothesis investigation | omcc-dev `investigate` |
+| `cited-brief` | Research a topic with external sources and produce a durable cited brief artifact | absorbs `plugins/research` per [ADR-0014](../../../../docs/adr/0014-plugins-research-deprecation.md) (was a Stage 1 single-verb capability plugin) |
 
 The profile is set via `--profile=<name>` on `/engineer:investigate`,
 or inferred from the user's intent when auto-activated. A missing
@@ -34,11 +35,17 @@ ensemble dispatch. The depth is appropriate for a quick scoping pass.
 
 ### Step 1: Profile selection
 
-1. Inspect the user's request. If it mentions a bug / error / "why
-   isn't this working" / unexpected behavior → `root-cause` profile.
-   Otherwise → `analysis` profile.
+1. Inspect the user's request:
+   - Mentions of "research X", "cited brief", "literature review",
+     "investigate <topic>", "리서치", "조사해줘", or external-sources
+     intent → `cited-brief` profile.
+   - Mentions of bug / error / "why isn't this working" / unexpected
+     behavior → `root-cause` profile.
+   - Otherwise → `analysis` profile.
 2. Privacy gate: avoid sending proprietary identifiers / internal
-   paths / customer data anywhere. Generic technology terms only.
+   paths / customer data anywhere — including web search queries,
+   external fetches, and peer-host dispatch (cited-brief mode).
+   Generic technology terms only.
 
 ### Step 2: Survey
 
@@ -55,6 +62,21 @@ For `root-cause`:
 4. Read the relevant code area.
 5. Determine: genuine bug investigation, or simple question? Simple
    questions are answered directly without the rest of this skill.
+
+For `cited-brief`:
+1. Confirm the topic with the user as a single concise statement
+   (the user's phrasing, normalized).
+2. Draft 1-7 sub-questions that decompose the topic into investigation
+   axes. Confirm with the user (or auto-proceed if obvious).
+3. Define scope — what the brief covers and explicitly excludes.
+4. Existing-directory check per
+   `references/output-file-rules.md` — if the resolved per-topic
+   directory already exists, ask overwrite / distinct / abort BEFORE
+   running web searches (avoids wasted work on a session the user
+   will discard). Default on no-response: distinct directory.
+5. Privacy gate (re-confirm): the topic + sub-questions are about to
+   leave the local host via WebSearch / WebFetch. No proprietary
+   identifiers.
 
 ### Step 3: Three-perspective scan (analysis profile)
 
@@ -73,6 +95,23 @@ Generate 2+ hypotheses from distinct failure categories
 - What evidence would confirm it?
 - What evidence would refute it?
 - Which file(s) are relevant?
+
+### Step 3'': Source-tier scan (cited-brief profile)
+
+For each confirmed sub-question, run external evidence gathering
+prioritized by source tier (per
+`references/cited-brief-spec.md` § Source Type Taxonomy):
+
+1. **Tier 1** — official-docs, standards, academic.
+2. **Tier 2** — well-attributed secondary (vendor docs, recognized
+   technical blogs).
+3. **Tier 3** — community/anecdotal, used only to fill gaps and
+   marked accordingly.
+
+Use WebSearch + WebFetch. Capture sources in **research-execution
+order** — the first source becomes `[1]`, the next new source `[2]`,
+etc. Deduplicate URLs canonically. Record title, URL, access date
+(`YYYY-MM-DD`), and source type per source.
 
 ### Step 4: Synthesize and present
 
@@ -101,6 +140,26 @@ Do NOT implement the fix in this skill. Hand off to
 `/engineer:decide` (when the fix has 2+ viable approaches) or
 `/engineer:refine` (when the fix is straightforward).
 
+For `cited-brief`, produce the durable artifact per
+`references/cited-brief-spec.md` (canonical structure, citation
+conventions, audit checklist) and save it per
+`references/output-file-rules.md` (per-topic directory under the
+resolved output root, fixed filename `research_brief.md`):
+
+1. Run the **Audit Checklist** before saving — every finding must
+   be cited or carry a permitted sentinel; PEER-ONLY claims must be
+   Path A (locally verified, `[N]`-cited) or Path B (moved into Open
+   Questions); no source-of-discovery labels in the brief artifact.
+2. Save to `<resolved-root>/YYYY-MM-DD_<topic-slug>/research_brief.md`.
+3. Present a completion summary inline — saved path, sub-questions
+   covered, source-tier breakdown, overall confidence, any
+   degraded-ensemble note.
+
+The cited-brief profile produces a saved artifact, not a workflow
+state write — the artifact is the handoff. Other engineer verbs
+(`/engineer:decide`, `/engineer:compose`, `/engineer:critique`,
+`/engineer:refine`) consume it as additional context.
+
 ---
 
 ## When invoked by command (`/engineer:investigate`)
@@ -116,6 +175,15 @@ Build the Task Profile per
 complexity, and Ensemble Affinity (recorded but not gating —
 always-max policy).
 
+For `cited-brief`, scope and layer fields are descriptive only — the
+domain's quality dimensions (topic depth, source-tier requirement,
+controversy, freshness) do not map onto the file/layer/risk axes
+used by code workflows. Affinity remains always-on per
+`references/cited-brief-ensemble.md` § Affinity. After the Task
+Profile, the cited-brief profile runs the auto-mode Step 2 flow
+above (topic confirmation + sub-questions + scope + existing-directory
+check + privacy gate) before proceeding to Step 2 below.
+
 ### Step 2: Spawn local agents
 
 Follow `../_shared/references/orchestration.md`, targeting:
@@ -126,36 +194,61 @@ Follow `../_shared/references/orchestration.md`, targeting:
 - `root-cause` profile → Investigation Agents (hypothesis-tracer,
   regression-hunter, state-analyzer — at minimum 2 hypotheses from
   distinct failure categories).
+- `cited-brief` profile → No subagent spawning. The orchestrator runs
+  WebSearch + WebFetch directly per-sub-question (Step 3'' above).
+  Local-host evidence-gathering is single-actor here because external
+  source retrieval is the work, and parallelizing it across
+  read-only-file subagents (which lack web tools) would not help.
 
-Investigation agents have read-only file tools and no `git` access.
-When a hypothesis depends on change history, the orchestrator
+Investigation/analysis agents have read-only file tools and no `git`
+access. When a hypothesis depends on change history, the orchestrator
 collects `git log --oneline -20` and the relevant diffs first and
 embeds them in the agent's mission (especially for the
 `regression-hunter` pattern; see
 `../_shared/references/agent-taxonomy.md`).
 
 Launch all selected agents in parallel (single message, multiple
-Agent calls on the orchestrator host).
+Agent calls on the orchestrator host). For `cited-brief`, this step
+is a no-op — proceed directly to Step 3 (the peer ensemble) and run
+the local web-search work simultaneously per Step 3'' above.
 
 ### Step 3: Peer ensemble parallel analysis
 
-Simultaneously with local agent dispatch, launch the peer ensemble
-per `../_shared/references/ensemble-protocol.md`:
+Simultaneously with local agent dispatch (or, for `cited-brief`, with
+the local web-search work in Step 3''), launch the peer ensemble:
 
 - `analysis` profile → **Explore** ensemble point type
+  (`../_shared/references/ensemble-protocol.md`)
 - `root-cause` profile → **Investigate** ensemble point type
+  (`../_shared/references/ensemble-protocol.md`)
+- `cited-brief` profile → **research-scan** ensemble point type
+  (`references/cited-brief-ensemble.md`). Dispatch goes through
+  `plugins/engineer/scripts/dispatch-peer.mjs`; the prompt carries
+  the topic, confirmed sub-questions, scope, and the
+  `<citation_contract>` and `<privacy_contract>` XML blocks per the
+  ensemble protocol; the companion is invoked in JSON envelope mode
+  via `--prompt-file`.
 
 The peer call is automatic (always-max policy); skills do not pass
 `--model` or `--effort` flags.
 
 ### Step 4: Collect, evaluate, synthesize
 
-1. Wait for local agents to return; collect findings.
-2. Wait for the peer ensemble background notification; read the
-   peer envelope.
-3. Synthesize per `../_shared/references/ensemble-protocol.md`
-   §Base Synthesis Categories — `AGREED` / `LOCAL-ONLY` /
-   `PEER-ONLY` / `CONFLICT`.
+1. Wait for local agents (or, for `cited-brief`, the local
+   per-sub-question WebSearch / WebFetch run) to return; collect
+   findings.
+2. Wait for the peer ensemble background notification; read the peer
+   envelope.
+3. Synthesize:
+   - `analysis` / `root-cause` → per
+     `../_shared/references/ensemble-protocol.md` §Base Synthesis
+     Categories: `AGREED` / `LOCAL-ONLY` / `PEER-ONLY` / `CONFLICT`.
+   - `cited-brief` → per `references/cited-brief-ensemble.md`
+     §Synthesis: same base taxonomy; PEER-ONLY claims undergo the
+     bidirectional Independence Rule (Path A locally verify and cite,
+     Path B move to Open Questions); citation numbering is remapped to
+     local capture order (peer's internal labels MUST NOT be copied
+     verbatim).
 4. For `root-cause`: rank hypotheses by confidence
    (HIGH > MEDIUM > LOW), verify the top result with a targeted
    check before presenting.
@@ -166,6 +259,19 @@ Follow the Presentation Mode Protocol
 (`../_shared/references/presentation-protocol.md`) before
 presenting. Use the same shapes as the auto-activated mode (Step 4
 above), at the deeper synthesized fidelity.
+
+For `cited-brief`, the presentation has three possible terminal
+outcomes:
+
+- **saved** — audit passed and the brief was written to
+  `<resolved-root>/YYYY-MM-DD_<topic-slug>/research_brief.md`. Show
+  the saved path, sub-question coverage, source-tier breakdown,
+  overall confidence, and any degraded-ensemble note.
+- **aborted-at-save** — the user chose abort at the existing-directory
+  gate or at a final review prompt. No file written; the synthesized
+  brief is shown inline only.
+- **aborted-at-scoping** — the user declined the topic, sub-questions,
+  or privacy gate before dispatch. No web search / peer dispatch ran.
 
 ### State write (when invoked from a workflow command)
 
@@ -182,18 +288,13 @@ write.
 When invoked standalone (no parent workflow command), no
 workflow file write occurs.
 
----
-
-## Cross-plugin handoff suggestion
-
-If the user's question needs **durable cited external evidence**
-beyond what investigate produces — primary sources, RFCs,
-citations, source-tier confidence — and the
-`research@agentic-plugins` plugin is installed, suggest running
-`/research:research <topic>` first to produce a saved brief, then
-resuming investigation with that brief as additional context. Per
-ADR-0010 §5, this is informational only; no automatic invocation
-occurs from this skill.
+For `cited-brief`, the saved brief artifact
+(`<resolved-root>/YYYY-MM-DD_<topic-slug>/research_brief.md`) is
+**orthogonal** to any workflow state write — when invoked from a
+workflow command, the workflow file gets the phase-note write AND
+the brief artifact is saved separately (dual write, no collision).
+The brief artifact is never tracked in the workflow's
+state-managed body; it is referenced by saved-path only.
 
 ---
 
@@ -223,3 +324,25 @@ refuted (`root-cause` profile only):
 - **Modifying code** to verify a hypothesis. Use targeted reads,
   test runs, or log inspection instead. Code changes belong to
   `/engineer:refine`.
+- **Source-of-discovery labels in the cited-brief artifact**
+  (`cited-brief` profile). The saved brief MUST NOT carry `[Local]`
+  / `[Peer]` / `[Both]` markers or any host-specific equivalent.
+  Numeric `[N]` citations are the only allowed labeling format in
+  Findings and Sources. Workflow phase notes elsewhere may carry
+  these labels for orchestration transparency, but the brief artifact
+  strips them before the audit gate. See
+  `references/cited-brief-spec.md` § Ensemble Label Policy.
+- **Decision-bound option comparisons** in the cited-brief profile.
+  cited-brief is **topic-bound** evidence gathering — it surveys what
+  exists about a topic with citations. Comparing 2+ approaches
+  against criteria to pick a path belongs to `/engineer:decide` (or
+  `/engineer:frame` when scoping the decision). Mixing a decision
+  scaffold into a cited-brief produces a hybrid that is neither
+  reusable nor honest.
+- **Marketing claims without citation** in the cited-brief artifact.
+  Every substantive claim in Findings must trace to a `[N]`-cited
+  source OR carry one of the permitted sentinels
+  (`[uncited inference]` for the model's own synthesis,
+  `[research interrupted — partial coverage]` for tool unavailability).
+  Un-cited factual claims attributed to external authority are
+  removed before the audit gate.

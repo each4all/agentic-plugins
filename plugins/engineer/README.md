@@ -6,7 +6,7 @@ skills:
 
 | Verb | Skill | What it does |
 |------|-------|--------------|
-| **Investigate** | [`skills/investigate`](skills/investigate/SKILL.md) | Gather evidence, inspect context, scan codebase, diagnose bugs (`analysis` / `root-cause` profiles) |
+| **Investigate** | [`skills/investigate`](skills/investigate/SKILL.md) | Gather evidence, inspect context, scan codebase, diagnose bugs, produce cited briefs (`analysis` / `root-cause` / `cited-brief` profiles) |
 | **Frame** | [`skills/frame`](skills/frame/SKILL.md) | Turn evidence into a problem model (goals, constraints, audience, success criteria, risks) |
 | **Decide** | [`skills/decide`](skills/decide/SKILL.md) | Compare alternatives across multiple perspectives, recommend a direction |
 | **Compose** | [`skills/compose`](skills/compose/SKILL.md) | Produce code or plan (`plan` / `code` profiles) |
@@ -64,12 +64,15 @@ current release ships:
   `<cwd>/.claude/agentic-engineer/workflows/<workflow_id>.md` per
   [ADR-0011](../../docs/adr/0011-workflow-continuity-storage.md) §1
 
-Both hosts can invoke engineer verbs in full command mode (local
-subagent dispatch + peer ensemble dispatch + workflow state
-writes). The engineer Stage 2 non-goals (sharded workflow / drift
-classification / cross-host transition guarantees /
-`/engineer:resume` / multi-active workflows) remain explicitly out
-of scope per ADR-0011 §Stage 2 Non-Goals.
+Both hosts can invoke engineer verbs in **command-invoked mode**
+(local subagent dispatch + peer ensemble dispatch). On Claude Code
+the slash command additionally wires Phase 0 (continuity) and Phase 2
+(state finalize) automatically; on Codex CLI the workflow state
+writes are NOT yet automatic — see "Codex-side scope (Stage 2,
+honest)" below for the precise division. The engineer Stage 2
+non-goals (sharded workflow / drift classification / cross-host
+transition guarantees / `/engineer:resume` / multi-active workflows)
+remain explicitly out of scope per ADR-0011 §Stage 2 Non-Goals.
 
 The plugin is invokable through:
 
@@ -220,6 +223,7 @@ Three verbs accept profile arguments:
 
 ```text
 $engineer:investigate --profile=root-cause <bug context>
+$engineer:investigate --profile=cited-brief <topic>     # produces a saved cited brief artifact
 $engineer:compose --profile=code <task description>
 $engineer:critique --profile=full-codebase <area>
 ```
@@ -233,13 +237,18 @@ user-facing warning.
 | Variable | Purpose | Default |
 |---|---|---|
 | `AGENTIC_COMPANIONS_ROOT` | Absolute path containing `claude-companion.mjs` and `codex-companion.mjs`; the discovery library resolves the peer companion under this root, bypassing cache-glob discovery. Useful for development workflows pointing at a source-tree checkout. | (cache-glob fallback through the `companions` plugin) |
+| `RESEARCH_OUTPUT_ROOT` | Absolute path for cited-brief artifacts produced by `engineer:investigate --profile=cited-brief`. The brief saves to `<root>/YYYY-MM-DD_<topic-slug>/research_brief.md`. Name preserved from Stage 1 `plugins/research` for backwards compatibility per [ADR-0014](../../docs/adr/0014-plugins-research-deprecation.md). | `./output/` |
 
-The plugin has no plugin-specific environment variables. All
-companion discovery flows through the canonical `companions` plugin's
-`discover-peer.mjs` library, so its `AGENTIC_COMPANIONS_ROOT`
-override is the only relevant env var. Note that
+Companion discovery flows through the canonical `companions` plugin's
+`discover-peer.mjs` library, so `AGENTIC_COMPANIONS_ROOT` overrides
+the cache-glob discovery for development workflows. Note that
 `discover-peer.mjs` itself is loaded from the consumer plugin's
 cache-glob bootstrap, not from the env-var-resolved directory.
+
+`RESEARCH_OUTPUT_ROOT` applies only to the `cited-brief` profile of
+`engineer:investigate` — see
+`skills/investigate/references/output-file-rules.md` for sandbox
+enforcement and topic-slug sanitization rules.
 
 ## What this plugin does NOT do (Stage 2 non-goals)
 
@@ -287,6 +296,10 @@ cache-glob bootstrap, not from the env-var-resolved directory.
   wire-spec contract v0.1.1
 - [`plugins/companions/`](../companions/) — L1 framework primitive
   the engineer skills discover via `discover-peer.mjs`
-- [`plugins/research/`](../research/) — L2 capability plugin;
-  cross-plugin handoff target for cited evidence per
-  ADR-0010 §5
+- [ADR-0014](../../docs/adr/0014-plugins-research-deprecation.md) —
+  plugins/research deprecation; cited-brief contract absorbed into
+  the cited-brief profile of `engineer:investigate` (this plugin)
+- [`plugins/research/`](../research/) — L2 capability plugin
+  (deprecated in Stage 2.5 per ADR-0014; cited-brief functionality
+  absorbed into the cited-brief profile of `engineer:investigate`;
+  archived at Stage 3)
