@@ -285,7 +285,7 @@ const VALID_KINDS = new Set([
   'peer_invocation_error',
 ]);
 
-function validateEnvelopeShape(env) {
+export function validateEnvelopeShape(env) {
   if (env === null || typeof env !== 'object' || Array.isArray(env)) {
     return { ok: false, reason: 'envelope is not a JSON object' };
   }
