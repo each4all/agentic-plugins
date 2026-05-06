@@ -15,7 +15,47 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Run release-please
+        id: release
         uses: googleapis/release-please-action@v4
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # When release-please tags new releases, the per-package manifests
+      # (.claude-plugin/plugin.json, .codex-plugin/plugin.json) are
+      # already updated via release-please-config extra-files. The root
+      # .claude-plugin/marketplace.json is intentionally NOT an
+      # extra-files target (see AGENTS.md §Release process); we sync it
+      # here so catalog entries match the new manifest versions.
+      - name: Checkout main for marketplace sync
+        if: ${{ steps.release.outputs.releases_created == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node
+        if: ${{ steps.release.outputs.releases_created == 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Sync marketplace catalog versions
+        if: ${{ steps.release.outputs.releases_created == 'true' }}
+        run: node scripts/sync-marketplace-versions.mjs
+
+      - name: Commit + push marketplace sync (if any drift)
+        if: ${{ steps.release.outputs.releases_created == 'true' }}
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          if [ -n "$(git status --porcelain .claude-plugin/marketplace.json)" ]; then
+            git add .claude-plugin/marketplace.json
+            git commit -m "chore(marketplace): sync catalog versions to release-please-manifest"
+            git push
+          else
+            echo "No marketplace catalog drift; nothing to commit."
+          fi

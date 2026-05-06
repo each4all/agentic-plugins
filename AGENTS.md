@@ -164,6 +164,24 @@ SemVer (MAJOR.MINOR.PATCH). MAJOR for breaking changes (companion
 contract, adapter contract, manifest schema). MINOR for new plugins or
 new adapter features. PATCH for fixes and docs.
 
+### Release process
+
+release-please owns per-package version automation. It tracks each
+package via `release-please-config.json` and writes new versions into
+`.release-please-manifest.json` plus each package's
+`.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` (per the
+`extra-files` mapping).
+
+The root `.claude-plugin/marketplace.json` catalog is **deliberately
+not** an `extra-files` target — keeping the catalog under
+release-please management would couple every plugin package to commits
+that touch any catalog entry, producing no-op version bumps on
+unrelated plugins. Instead, the catalog is synced separately by
+`scripts/sync-marketplace-versions.mjs` after each release. The
+release-please GitHub Action runs that sync as a follow-up step
+automatically, and `validate:versions` fails CI if catalog entries
+drift from the manifest.
+
 ### ADR process
 
 1. Copy `docs/adr/template.md` to `docs/adr/NNNN-<slug>.md` (next number)
