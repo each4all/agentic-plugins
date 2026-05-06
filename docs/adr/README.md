@@ -48,3 +48,4 @@ old one, and change the old one's status to `Superseded by ADR-NNNN`.
 | [0011](0011-workflow-continuity-storage.md) | Workflow continuity storage — minimal Option III for Stage 2 | Accepted |
 | [0012](0012-omcc-removal-preconditions.md) | omcc + codex-plugin-cc removal preconditions | Accepted |
 | 0013 | Codex CLI commands integration mechanism (file pending — Stage 3+ trigger) | Reserved |
+| [0014](0014-plugins-research-deprecation.md) | plugins/research deprecation — capability folded into engineer:investigate cited-brief profile | Proposed |
