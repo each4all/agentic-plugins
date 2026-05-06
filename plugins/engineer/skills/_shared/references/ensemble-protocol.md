@@ -7,11 +7,14 @@ skill); the other is the **peer**. The orchestrator drives the
 workflow, dispatches the peer for independent parallel analysis, and
 synthesizes both perspectives into a unified result.
 
-The Stage 1 `plugins/research` plugin already proves this
-bidirectional pattern: when invoked on Claude Code, it calls
-`codex-companion`; when invoked on Codex CLI, it calls
+The Stage 1 `plugins/research` plugin established this bidirectional
+pattern empirically before its retirement at Stage 2.5+ (per
+[ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md)
+Amendment 2026-05-06): when invoked on Claude Code, it called
+`codex-companion`; when invoked on Codex CLI, it called
 `claude-companion`. The engineer plugin adopts the same symmetry
-across all six verbs.
+across all six verbs and absorbs the cited-brief contract that drove
+the original pattern.
 
 ---
 

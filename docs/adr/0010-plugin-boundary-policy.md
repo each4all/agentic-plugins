@@ -4,6 +4,9 @@
 
 Accepted
 
+> Last amended 2026-05-06 — see [Amendments](#amendments) for the
+> ADR-0014 cascade (`plugins/research` retirement at Stage 2.5+).
+
 ## Context
 
 agentic-plugins shipped Stage 1 with two plugins:
@@ -401,3 +404,107 @@ matches the user's mental vocabulary ("엔지니어 모자/디자이너 모자",
 - Design Thinking (IDEO) — https://designthinking.ideo.com/faq/isnt-design-thinking-a-set-step-by-step-process
 - Composition over inheritance (Gamma, Helm, Johnson, Vlissides 1994 — *Design Patterns*)
 - Plugin ecosystem precedents: Eclipse/OSGi, VS Code (extension dependencies vs extension packs — https://code.visualstudio.com/api/references/extension-manifest), MCP (https://modelcontextprotocol.wiki/en/docs/concepts/tools)
+
+## Amendments
+
+### 2026-05-06 — research deprecation cascade (per ADR-0014 Amendment)
+
+**Trigger**: [ADR-0014](0014-plugins-research-deprecation.md) acceptance
+and its 2026-05-06 Amendment, which retired `plugins/research` at
+Stage 2.5+ (timeline collapse from the originally proposed Stage 2.5
+deprecate / Stage 3 archive lifecycle, after the parent workflow
+established no installed user base existed to require the deprecation
+period).
+
+**Finding**: Several specific examples and reference points in this
+ADR named `plugins/research` as the canonical L2 capability, the
+typed handoff prototype (`research_brief.md`), and the single-verb
+capability naming precedent (`/research:research`). Those points
+referenced a now-removed plugin. Three structural questions emerged
+from the parent workflow's Phase 1 brainstorm (`Approach 1` chosen
+with HIGH confidence):
+
+1. **Does the L2 capability layer survive when its only Stage 1
+   incumbent retires?** — Yes. ADR-0010 §6's plugin separation
+   triggers, applied inverse to `plugins/research`, were not met
+   (no second consumer plugin materialized; no separate
+   cost/quota/auth axis emerged; install-time intent was weak).
+   The trigger framework correctly predicted retirement, which
+   *validates* the framework rather than invalidating it. The
+   layer remains defined; planned occupants `decision` and
+   `image` continue to be evaluated independently when the time
+   comes.
+2. **Does the typed handoff prototype (§5) survive the retirement
+   of its prototype implementation?** — Yes. The cited-brief
+   contract — `research_brief.md` shape, capture-order numeric
+   citations, 4-tier source taxonomy, 11-item audit checklist,
+   ensemble label policy — is absorbed into
+   `engineer:investigate`'s cited-brief profile. The prototype
+   demonstrated the shape; the shape now lives in-persona at
+   `plugins/engineer/skills/investigate/references/cited-brief-spec.md`
+   and is exercised by the cited-brief profile's command-mode flow.
+3. **Does the single-verb capability naming precedent (§3) survive
+   when the precedent itself is gone?** — Yes. The
+   `<capability>:<capability>` rule is named for any future
+   single-verb L2 capability; the historical precedent (Stage 1
+   `plugins/research` → `/research:research`) stands as
+   documentation even after the plugin's removal.
+
+**Changes** (read alongside the original Decision sections; the
+original prose is preserved for decision-history audit):
+
+- **§1 (4-layer composition)** — the Layer 2 examples table
+  previously listed `research` as Stage 1 / current and `decision`,
+  `image` as planned. Read this row in light of the 2026-05-06
+  retirement: the L2 slot is now empty pending future occupants.
+  The 4-layer model and its dependency direction are unchanged.
+- **§3 (Naming convention, single-verb capability special case)** —
+  read the `/research:research` example as **historical precedent**
+  for the rule (Stage 1 only). The rule itself stands for any
+  future single-verb L2 capability.
+- **§5 (Cross-plugin handoff)** — the typed handoff prototype
+  (`research_brief.md`) is no longer a *cross-plugin* artifact.
+  It is now produced by `engineer:investigate --profile=cited-brief`
+  inside the engineer persona. Read §5 as describing a contract
+  pattern that need not be *physically* cross-plugin — the same
+  contract can be in-persona when ADR-0014's analysis applies
+  (handoff suggestion non-sticky by design + L2 separation
+  triggers fail inverse). The prototype's contractual shape
+  survives unchanged; only its production locus moved.
+- **§6 (Plugin separation triggers)** — the trigger framework was
+  inverse-tested against `plugins/research` in the parent
+  workflow's Phase 1 brainstorm (Approach 1 evidential foundation).
+  Trigger 1 (2+ consumer plugins) was unmet; Trigger 2 (distinct
+  cost/quota/auth axis) was unmet; Trigger 3 (install-time intent
+  separation) was weak. The framework correctly diagnosed
+  retirement; this is its first inverse application and is recorded
+  as evidence for the framework's predictive value.
+- **Independent-install example prose** (research as the
+  independent-install demonstration) is retired alongside the
+  plugin. Future independent-install demonstrations will use
+  planned L2 occupants (`decision`, `image`) when those land.
+
+**Unchanged**:
+
+- The 4-layer composition itself (L1 framework primitive / L2
+  capability / L3 persona / L4 profile).
+- The 6 universal cognitive verbs (Investigate / Frame / Decide /
+  Compose / Critique / Refine).
+- §3's naming convention as a rule (`<persona>:<verb>` for L3,
+  `<capability>:<verb>` for L2, `<capability>:<capability>` for
+  single-verb L2 special case).
+- §6's plugin separation trigger framework and its 3-trigger
+  taxonomy.
+- §7's plugin name policy.
+- All references to `plugins/companions` (L1 framework primitive),
+  `plugins/engineer` (L3 persona), `plugins/designer` (planned
+  L3), and `plugins/decision` / `plugins/image` (planned L2
+  occupants).
+
+**Verified-against**: ADR-0014 (Decision §1–§7 + Amendment 2026-05-06)
+plus the parent workflow's Phase 2 explore evidence (12
+plugins/research surfaces enumerated, 18 engineer:investigate
+confluence points, 31 affected files across documentation / plugin
+source / meta layers). The cascade implementation lands in the same
+parent workflow's Deliverable D commit (`28b5eb8`) and Deliverable E
+commit (this PR's adjacent commit).
