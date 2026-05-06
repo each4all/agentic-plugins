@@ -85,8 +85,12 @@ per ADR-0010:
 
 1. **Layer 1 — Framework primitive** (`plugins/companions`): cross-host
    peer-agent invocation infrastructure
-2. **Layer 2 — Capability** (`plugins/research`): persona-agnostic
-   activities reusable by multiple personas
+2. **Layer 2 — Capability** (planned occupants: `decision`, `image`):
+   persona-agnostic activities reusable by multiple personas. The L2
+   slot is defined but currently empty — the Stage 1 `plugins/research`
+   incumbent was retired at Stage 2.5+ ([ADR-0014](docs/adr/0014-plugins-research-deprecation.md)),
+   its cited-brief contract absorbed into `engineer:investigate`'s
+   cited-brief profile.
 3. **Layer 3 — Persona / workbench** (`plugins/engineer` Stage 2,
    `plugins/designer` Stage 3): user-facing install unit, composes
    capabilities through profiles
@@ -104,9 +108,11 @@ verbs**: Investigate / Frame / Decide / Compose / Critique / Refine
   future `/decision:decide`, `/decision:critique`)
 - **Single-verb capability plugins** are a special case where
   plugin name and verb collide: `<capability>:<capability>`. The
-  shipped Stage 1 `plugins/research` is exactly this case — its
-  one command is `/research:research` (Investigate is implicit
-  in the plugin name). See ADR-0010 §3 for the special-case rule
+  Stage 1 `plugins/research` was the precedent for this pattern
+  (its single command was `/research:research`); the plugin was
+  retired at Stage 2.5+ per [ADR-0014](docs/adr/0014-plugins-research-deprecation.md),
+  but the rule itself stands for any future single-verb L2
+  capability. See ADR-0010 §3 for the special-case rule
 
 Profile and topic flow as arguments. Verb-level sugar aliases
 within a plugin are permitted (ADR-0010 §3); plugin-name level
@@ -225,7 +231,7 @@ shape:
 
 **Stage 0 (Scaffolding)** — complete (2026-04 to 2026-05-02). All 7 ADRs accepted (0001–0007), tooling decided, LICENSE in place.
 
-**Stage 1 (Reference plugin + companion contract)** — complete (2026-05-05). Shipped `plugins/companions` (script-only library) and `plugins/research` (single-skill capability with bidirectional companion ensemble). Round-trip verification: bidirectional companion calls succeed in both directions; per-host CI gates (`claude-tests.yml`, `codex-tests.yml`) green on every push. The two reference brief artifacts (`output/` directory, gitignored locally) demonstrate the protocol but are not committed evidence — exit verification is the green CI runs and the protocol acceptance documented in `docs/DEVELOPMENT.md` §Stage 1 exit evidence.
+**Stage 1 (Reference plugin + companion contract)** — complete (2026-05-05). Shipped `plugins/companions` (script-only library) and `plugins/research` (single-skill capability with bidirectional companion ensemble; retired at Stage 2.5+ per [ADR-0014](docs/adr/0014-plugins-research-deprecation.md), cited-brief contract absorbed into `engineer:investigate`). Round-trip verification at the time: bidirectional companion calls succeeded in both directions; per-host CI gates (`claude-tests.yml`, `codex-tests.yml`) green on every push. The two reference brief artifacts (`output/` directory, gitignored locally) demonstrated the protocol but were not committed evidence — exit verification was the green CI runs and the protocol acceptance documented in `docs/DEVELOPMENT.md` §Stage 1 exit evidence.
 
 **Stage 2 (Self-development plugin)** — in progress. ADRs 0010 (plugin boundary policy + 4-layer composition + 6 universal verbs) and 0011 (workflow continuity Option III storage) drafted. Building `plugins/engineer` (canonical L3 persona name; plugin-name level marketplace aliases like `/dev:` are a Stage 2 non-goal per ADR-0011 §9). Verb-level aliases inside the plugin (e.g., `/engineer:audit` ≡ `/engineer:critique --profile=full-codebase`) are permitted (ADR-0010 §3). 5 deliverables (A foundation → B kit/discovery → C plugin core + 6 verb skills → D adapters + minimal continuity → E validation + dogfood). Stage 2 exit gate: `plugins/engineer` can drive its own development without omcc-dev.
 

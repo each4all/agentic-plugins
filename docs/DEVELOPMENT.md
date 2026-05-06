@@ -63,6 +63,14 @@ The strategic intent is for agentic-plugins to develop agentic-plugins. The path
 
 #### Stage 1 exit evidence
 
+> Note: `plugins/research` was retired at Stage 2.5+ per
+> [ADR-0014](adr/0014-plugins-research-deprecation.md); its
+> cited-brief contract was absorbed into `engineer:investigate`'s
+> cited-brief profile. The Stage 1 evidence below remains valid as
+> historical record — it describes the round-trip that was achieved
+> at the time and is the reason ADR-0010's Layer 2 was taken to be
+> "current" before re-evaluation.
+
 Stage 1 exit was reached on 2026-05-05 with `plugins/research` shipped
 (PR #17, main `f1c398f`) plus the companion contract patches (PRs #19,
 #20) and the Phase 5b cleanup (this PR). Round-trip is demonstrated
@@ -77,9 +85,10 @@ empirically by the canonical brief artifacts under `output/`:
 - **Codex direction** — `output/2026-05-05_current_tls_13_1124/research_brief.md`
   - Topic: "current TLS 1.3 deployment guidance"
   - Round-trip: 5+ min Claude peer turn via `claude-companion`; gracefully
-    degraded after the Codex background-terminal timeout (per
-    `plugins/research/skills/research/references/ensemble-protocol.md`
-    Failure Handling)
+    degraded after the Codex background-terminal timeout (per the
+    Stage 1 `plugins/research` ensemble-protocol Failure Handling
+    spec, since absorbed into
+    `plugins/engineer/skills/investigate/references/cited-brief-ensemble.md`)
   - Synthesis: 12 cited sources HIGH confidence (5 standards: RFC 8446 /
     8470 / 9001 / 9110 / 9325 + NIST SP 800-52r2; 7 official-docs:
     Cloudflare / Fastly / GCP / Akamai / nginx / OpenSSL)
@@ -288,12 +297,6 @@ subsequent stages and updated here.
 - Larger per-deliverable scope criterion (Phase 6 SUGGESTION #16) — to
   be re-evaluated when a deliverable's review surfaces actionable
   segmentation rules.
-- `plugins/research` naming review at the time of Stage 3 designer
-  plugin naming (Stage 2 user-articulated concern that `research`
-  retains an `omcc-research` 1:1-port shape; the same `<persona>:<verb>`
-  axis from ADR-0010 should re-examine the L2 capability name in
-  light of Stage 3 evidence).
-
 These items are explicitly out of scope for Stage 2; they become
 first-class Stage 2.5+ ADR follow-ups when accumulated dogfood usage
 or Stage 3 work makes the design choice tractable.

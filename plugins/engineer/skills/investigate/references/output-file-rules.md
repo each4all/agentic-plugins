@@ -150,9 +150,10 @@ profile with the variable unset reverts to `./output/` automatically.
 `RESEARCH_OUTPUT_ROOT` is preserved (not renamed to
 `ENGINEER_INVESTIGATE_OUTPUT_ROOT` or similar) so existing
 configurations from Stage 1 `plugins/research` continue to work
-unchanged. Per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md),
-the env-var name is treated as a stable interface during the
-deprecation period; renaming it would be a separate ADR decision.
+unchanged. Per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md)
+(Amendment 2026-05-06 — `plugins/research` removed at Stage 2.5+ rather
+than deprecated), the env-var name is treated as a stable interface
+across the absorption; renaming it would be a separate ADR decision.
 
 `RESEARCH_OUTPUT_ROOT` is the only output-path knob. The profile does
 not accept a per-call `--output` flag, a slug override, or a custom

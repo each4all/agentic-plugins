@@ -61,11 +61,11 @@ independently of the plugin's enable state.
 
 ## Discovery for consumer plugins
 
-Consumer plugins (e.g. `plugins/research/`) reach the bundled companion
+Consumer plugins (e.g. `plugins/engineer/`) reach the bundled companion
 scripts at runtime via cache-glob, with `AGENTIC_COMPANIONS_ROOT` env
-override taking precedence when set. Both mechanisms are owned by the
-consumer plugin's adapter (`adapters/<host>/scripts/discover-companion.mjs`)
-per ADR-0008 § (b.1).
+override taking precedence when set. The discovery library
+(`scripts/discover-peer.mjs`) is owned by this companions plugin and
+imported by the consumer's adapter wrapper per ADR-0008 § (b.1).
 
 **Since v0.3.0**, the canonical discovery algorithm itself lives inside
 this plugin at [`scripts/discover-peer.mjs`](scripts/discover-peer.mjs).

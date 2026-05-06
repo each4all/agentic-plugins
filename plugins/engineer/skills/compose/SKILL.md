@@ -156,19 +156,6 @@ When invoked standalone, no workflow file write occurs.
 
 ---
 
-## Cross-plugin handoff suggestion
-
-If composing requires **durable cited reference material** (e.g.,
-RFC text for a network-protocol implementation, design system
-spec for a UI build, standard library reference for a low-level
-implementation), and the `research@agentic-plugins` plugin is
-installed, suggest running `/research:research <topic>` first to
-capture the reference as a cited brief, then resume composition
-with that brief grounding implementation choices. Per
-ADR-0010 §5, this is informational only; no automatic invocation.
-
----
-
 ## Anti-patterns (do not produce)
 
 - **Composing without a confirmed frame**. Code without a frame

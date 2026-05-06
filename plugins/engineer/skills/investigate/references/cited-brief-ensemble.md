@@ -22,11 +22,12 @@ command-invoked-mode prose. This protocol describes only the
 wire-level contract: what to send, what to expect back, how to
 synthesize.
 
-Per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md),
-this protocol absorbs the research-scan ensemble contract from the
-deprecated `plugins/research` plugin. The ensemble point type name
-`research-scan` is preserved for continuity with the Stage 1 contract
-and the omcc base synthesis taxonomy.
+Per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md)
+(Amendment 2026-05-06), this protocol absorbs the research-scan ensemble
+contract from the now-removed `plugins/research` plugin (retired at
+Stage 2.5+). The ensemble point type name `research-scan` is preserved
+for continuity with the Stage 1 contract and the omcc base synthesis
+taxonomy.
 
 ---
 
@@ -543,5 +544,6 @@ profile owns its prompt template and artifact contract.
   composition, naming convention, cross-plugin handoff principle. The
   cited-brief profile is the L3-internal absorption of the L2 contract
   per ADR-0014.
-- `docs/adr/0014-plugins-research-deprecation.md` — the deprecation
-  decision that produced this protocol.
+- `docs/adr/0014-plugins-research-deprecation.md` — the retirement
+  decision (Stage 2.5+ archive per Amendment 2026-05-06) that
+  produced this protocol.

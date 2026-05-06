@@ -297,9 +297,6 @@ enforcement and topic-slug sanitization rules.
 - [`plugins/companions/`](../companions/) — L1 framework primitive
   the engineer skills discover via `discover-peer.mjs`
 - [ADR-0014](../../docs/adr/0014-plugins-research-deprecation.md) —
-  plugins/research deprecation; cited-brief contract absorbed into
-  the cited-brief profile of `engineer:investigate` (this plugin)
-- [`plugins/research/`](../research/) — L2 capability plugin
-  (deprecated in Stage 2.5 per ADR-0014; cited-brief functionality
-  absorbed into the cited-brief profile of `engineer:investigate`;
-  archived at Stage 3)
+  plugins/research retirement (Stage 2.5+ archive per Amendment
+  2026-05-06); cited-brief contract absorbed into the cited-brief
+  profile of `engineer:investigate` (this plugin)

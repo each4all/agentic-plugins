@@ -399,3 +399,61 @@ for individual override potential. The findings:
 
 The bundle survives the override checks unmodified, which is
 recorded in the parent workflow's Phase 1 decision frontmatter.
+
+## Amendments
+
+### 2026-05-06 — Timeline collapse to immediate archive at Stage 2.5+
+
+**Trigger**: User re-evaluation during Deliverable D — agentic-plugins
+has no installed base, so the deprecation period prescribed in
+Decision §1 has no audience.
+
+**Finding**: The deprecation lifecycle template that informed Decision
+§1 (Python PEP 387, Chrome Manifest) presupposes consumers whose
+installations would require migration. With no public release and no
+documented downstream consumers, the period is cost without benefit
+— banner work, dual-track marketplace entries, and cross-skill caveat
+updates that nobody would see. The framework-instability concern that
+disqualified Approach 3 (immediate archive + supersede) at brainstorm
+time also weakens when the audience is internal-only; the audit trail
+is preserved by this Amendment and ADR-0014 itself.
+
+This is not a return to Approach 3. Approach 3 bundled the timeline
+collapse with an ADR-0010 *supersede* and removal of the L2
+capability slot itself. This Amendment retains the original Approach
+1 framing — ADR-0010 is amended (Decision §4, Deliverable E), the L2
+slot remains with `decision` and `image` listed as planned future
+occupants — and only changes the `plugins/research` retirement
+timeline.
+
+**Changes**:
+
+- §1 deprecation period is **skipped**. Stage 2.5+ executes the
+  archival enumerated in §7 directly. Banner / `[DEPRECATED]` work
+  is obsolete.
+- §7 ("Stage 3 archive removal surfaces") is reinterpreted as
+  Stage 2.5+ scope, not Stage 3.
+- §1's cross-skill handoff rewrite bullet is partially obviated —
+  the five engineer skills (`frame`, `decide`, `compose`, `refine`,
+  `critique`) **remove** their `/research:research` references
+  entirely rather than rewriting them to point at cited-brief,
+  since the cited-brief profile is in-persona and needs no
+  advisory.
+- Consequences "Neutral" bullet *"plugins/research is deprecated,
+  not removed"* is superseded — under this Amendment, the plugin
+  IS removed at Stage 2.5+. The `research_brief.md` format remains
+  readable because the cited-brief profile preserves it
+  (unchanged).
+
+**Unchanged**:
+
+- §2 (cited-brief absorbs contract — shipped in commit 4077552)
+- §3 (source-of-discovery label policy)
+- §4 (ADR-0010 amend by consequence — Deliverable E proceeds; §1
+  examples wording adjusted from "deprecated" to "removed")
+- §5 (ADR-0013 numbering — finalized in commit dc49ef0)
+- §6 (Stage 2.5+ MVP statement)
+
+**Verified-against**: No installed-base evidence to weigh; user
+direction supersedes deprecation-lifecycle convention for this
+specific decision under the no-audience condition.
