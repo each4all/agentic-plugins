@@ -18,7 +18,7 @@
 //   2 — misuse (bad arguments, plugin-dir not a directory)
 //
 // This is the "minimal" Stage 1 lint per Deliverable B.10, generalized
-// in C.2 to handle adapter-bearing plugins (e.g., plugins/research/).
+// in C.2 to handle adapter-bearing plugins (e.g., plugins/engineer/).
 // Additional checks (drift detection, SemVer cross-version constraints,
 // marketplace registration coverage) remain in their own scripts/tests
 // and may be folded in here as the kit/lint surface matures.

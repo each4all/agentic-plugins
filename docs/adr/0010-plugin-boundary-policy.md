@@ -2,14 +2,20 @@
 
 ## Status
 
-Proposed
+Accepted
+
+> Last amended 2026-05-06 — see [Amendments](#amendments) for the
+> ADR-0015 cascade (`plugins/research` retirement at Stage 2.5+,
+> superseding ADR-0014's deprecation timeline).
 
 ## Context
 
 agentic-plugins shipped Stage 1 with two plugins:
 [`plugins/companions`](../../plugins/companions/) (framework primitive
-per ADR-0008) and [`plugins/research`](../../plugins/research/) (single
-capability skill). Stage 2 introduces the self-development plugin
+per ADR-0008) and `plugins/research` (single capability skill,
+retired Stage 2.5+ per [ADR-0014](0014-plugins-research-deprecation.md)
+\+ [ADR-0015](0015-research-archive-timeline-collapse.md); historical
+state visible at commit `28b5eb8`). Stage 2 introduces the self-development plugin
 ([`docs/DEVELOPMENT.md`](../DEVELOPMENT.md) §Stage 2) and Stage 3 will
 introduce the design-domain plugin ([ADR-0007](0007-migration-cutover-plan.md)
 §Stage 3). With three or more plugins on the horizon, the framework
@@ -130,9 +136,11 @@ arguments.
 plugin's domain is naturally exactly one verb, the plugin name and
 verb may collide and the canonical command becomes
 `<capability>:<capability>`. The Stage 1 `plugins/research` plugin
-ships exactly this case: its only command is `/research:research`
-(see `plugins/research/commands/research.md`), and `Investigate`
-is the implicit verb absorbed by the plugin name. Future capability
+shipped exactly this case: its only command was `/research:research`
+(retired Stage 2.5+ per [ADR-0014](0014-plugins-research-deprecation.md)
+\+ [ADR-0015](0015-research-archive-timeline-collapse.md); the
+file's last state is at commit `28b5eb8`), and `Investigate` was
+the implicit verb absorbed by the plugin name. Future capability
 plugins may ship multiple verbs (`/decision:decide`,
 `/decision:critique`); single-verb is a precedent, not a default.
 
@@ -202,9 +210,11 @@ in-process imports or runtime coupling. An artifact handoff carries:
 - Constraints (deadlines, scope, prior decisions to honor)
 - Confidence and unresolved questions
 
-The Stage 1 [`research_brief.md`](../../plugins/research/skills/research/references/research-brief-spec.md)
-is the prototype — a durable cited artifact that downstream plugins
-(or future invocations of the same plugin) can consume.
+The Stage 1 `research_brief.md` was the prototype — a durable cited
+artifact that downstream plugins (or future invocations of the same
+plugin) can consume. The contractual shape now lives in-persona at
+`plugins/engineer/skills/investigate/references/cited-brief-spec.md`
+per ADR-0014 §2; the original Stage 1 spec is at commit `28b5eb8`.
 
 Runtime auto-handoff is permitted when both plugins are installed and
 adapters can invoke the target cleanly. When the target plugin is not
@@ -401,3 +411,114 @@ matches the user's mental vocabulary ("엔지니어 모자/디자이너 모자",
 - Design Thinking (IDEO) — https://designthinking.ideo.com/faq/isnt-design-thinking-a-set-step-by-step-process
 - Composition over inheritance (Gamma, Helm, Johnson, Vlissides 1994 — *Design Patterns*)
 - Plugin ecosystem precedents: Eclipse/OSGi, VS Code (extension dependencies vs extension packs — https://code.visualstudio.com/api/references/extension-manifest), MCP (https://modelcontextprotocol.wiki/en/docs/concepts/tools)
+
+## Amendments
+
+### 2026-05-06 — research deprecation cascade (per ADR-0015)
+
+**Trigger**: [ADR-0015](0015-research-archive-timeline-collapse.md)
+acceptance, which supersedes [ADR-0014](0014-plugins-research-deprecation.md)'s
+timeline portion and archives `plugins/research` at Stage 2.5+
+directly. ADR-0014's capability decision (deprecate research, fold
+contract into `plugins/engineer:investigate`'s cited-brief profile)
+remains operative; ADR-0015 reverses only the deprecation-period
+timeline. Both ADRs together produce the cascade recorded here.
+
+**Finding**: Several specific examples and reference points in this
+ADR named `plugins/research` as the canonical L2 capability, the
+typed handoff prototype (`research_brief.md`), and the single-verb
+capability naming precedent (`/research:research`). Those points
+referenced a now-removed plugin. Three structural questions emerged
+from the parent workflow's Phase 1 brainstorm (`Approach 1` chosen
+with HIGH confidence):
+
+1. **Does the L2 capability layer survive when its only Stage 1
+   incumbent retires?** — Yes. §6's plugin separation triggers,
+   applied inverse to `plugins/research`, were not met (no second
+   consumer plugin materialized; no separate cost/quota/auth axis
+   emerged; install-time intent was weak). §6's discipline admits
+   a coherent inverse reading consistent with the retirement
+   decision, which supports the framework's *descriptive utility*:
+   §6 diagnoses why `plugins/research`'s separation is no longer
+   warranted, given evidence collected during Stage 2 dogfood. The
+   framework records its own first retraction without mutating its
+   3-trigger taxonomy. The layer remains defined; planned occupants
+   `decision` and `image` continue to be evaluated independently
+   when the time comes.
+2. **Does the typed handoff prototype (§5) survive the retirement
+   of its prototype implementation?** — Yes. The cited-brief
+   contract — `research_brief.md` shape, capture-order numeric
+   citations, 4-tier source taxonomy, 12-item audit checklist
+   (11 absorbed + 1 PEER-ONLY routing addition), ensemble label
+   policy — is absorbed into
+   `engineer:investigate`'s cited-brief profile. The prototype
+   demonstrated the shape; the shape now lives in-persona at
+   `plugins/engineer/skills/investigate/references/cited-brief-spec.md`
+   and is exercised by the cited-brief profile's command-mode flow.
+3. **Does the single-verb capability naming precedent (§3) survive
+   when the precedent itself is gone?** — Yes. The
+   `<capability>:<capability>` rule is named for any future
+   single-verb L2 capability; the historical precedent (Stage 1
+   `plugins/research` → `/research:research`) stands as
+   documentation even after the plugin's removal.
+
+**Changes** (read alongside the original Decision sections; the
+original prose is preserved for decision-history audit):
+
+- **§1 (4-layer composition)** — the Layer 2 examples table
+  previously listed `research` as Stage 1 / current and `decision`,
+  `image` as planned. Read this row in light of the 2026-05-06
+  retirement: the L2 slot is now empty pending future occupants.
+  The 4-layer model and its dependency direction are unchanged.
+- **§3 (Naming convention, single-verb capability special case)** —
+  read the `/research:research` example as **historical precedent**
+  for the rule (Stage 1 only). The rule itself stands for any
+  future single-verb L2 capability.
+- **§5 (Cross-plugin handoff)** — the typed handoff prototype
+  (`research_brief.md`) is no longer a *cross-plugin* artifact.
+  It is now produced by `engineer:investigate --profile=cited-brief`
+  inside the engineer persona. Read §5 as describing a contract
+  pattern that need not be *physically* cross-plugin — the same
+  contract can be in-persona when ADR-0014's analysis applies
+  (handoff suggestion non-sticky by design + L2 separation
+  triggers fail inverse). The prototype's contractual shape
+  survives unchanged; only its production locus moved.
+- **§6 (Plugin separation triggers)** — the trigger framework was
+  inverse-tested against `plugins/research` in the parent
+  workflow's Phase 1 brainstorm (Approach 1 evidential foundation).
+  Trigger 1 (2+ consumer plugins) was unmet; Trigger 2 (distinct
+  cost/quota/auth axis) was unmet; Trigger 3 (install-time intent
+  separation) was weak. The framework's first inverse application
+  is recorded here; the result describes why `plugins/research`'s
+  separation was not warranted, not a prospective prediction made
+  before the retirement decision.
+- **Independent-install example prose** (research as the
+  independent-install demonstration) is retired alongside the
+  plugin. Future independent-install demonstrations will use
+  planned L2 occupants (`decision`, `image`) when those land.
+
+**Unchanged**:
+
+- The 4-layer composition itself (L1 framework primitive / L2
+  capability / L3 persona / L4 profile).
+- The 6 universal cognitive verbs (Investigate / Frame / Decide /
+  Compose / Critique / Refine).
+- §3's naming convention as a rule (`<persona>:<verb>` for L3,
+  `<capability>:<verb>` for L2, `<capability>:<capability>` for
+  single-verb L2 special case).
+- §6's plugin separation trigger framework and its 3-trigger
+  taxonomy.
+- §7's plugin name policy.
+- All references to `plugins/companions` (L1 framework primitive),
+  `plugins/engineer` (L3 persona), `plugins/designer` (planned
+  L3), and `plugins/decision` / `plugins/image` (planned L2
+  occupants).
+
+**Verified-against**: ADR-0014 (capability decision, Decision §2–§7)
+\+ ADR-0015 (timeline portion, Decision §1) + the parent workflow's
+Phase 2 explore evidence (12 `plugins/research` surfaces enumerated,
+18 `engineer:investigate` confluence points, 31 affected files
+across documentation / plugin source / meta layers). The cascade
+implementation lands at commits `28b5eb8` (plugin archive) and
+`944fd4e` (this Amendment's first form, rewritten in the same PR
+as ADR-0015's authoring).

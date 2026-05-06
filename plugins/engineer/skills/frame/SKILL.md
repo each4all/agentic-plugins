@@ -49,8 +49,9 @@ Frame consumes evidence from one of three sources:
 
 - Output of a prior `/engineer:investigate` run (the user pastes the
   symptom/finding block, or the orchestrator passes it explicitly).
-- A research_brief from `/research:research` (per ADR-0010 §5 typed
-  artifact handoff).
+- A `research_brief.md` produced by
+  `/engineer:investigate --profile=cited-brief` (per ADR-0010 §5
+  typed artifact handoff).
 - The user's own description of what they observed.
 
 If evidence is missing or thin, suggest running
@@ -135,17 +136,6 @@ write.
 
 When invoked standalone (no parent workflow command), no workflow
 file write occurs.
-
----
-
-## Cross-plugin handoff suggestion
-
-If the problem statement reveals that evidence is incomplete and
-needs **durable cited external sources** (RFCs, standards,
-benchmarks), and the `research@agentic-plugins` plugin is installed,
-suggest running `/research:research <focused topic>` first to
-produce a saved brief, then resume framing with that brief as
-additional evidence. Informational only; no automatic invocation.
 
 ---
 

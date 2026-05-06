@@ -1,0 +1,367 @@
+// Fixture-level tests for the engineer:investigate cited-brief profile
+// (ADR-0014 absorption of plugins/research). Complements the macro-level
+// shape conformance test in tests/plugin-shape/test-engineer-plugin.mjs
+// with per-document fixture and consistency checks at the spec / rules /
+// ensemble protocol layer.
+//
+// The cited-brief profile is prose-driven (no `cited-brief.mjs` runtime
+// helper), so these tests verify cross-document agreement rather than
+// invoke runtime functions. The PEER-ONLY routing, existing-directory
+// outcomes, citation audit checklist, and topic-slug sanitization
+// examples are all encoded in references/ markdown files; the tests
+// here parse those documents and assert the encoded expectations are
+// internally consistent.
+//
+// Run via `node --test tests/engineer/test-cited-brief.mjs`.
+
+import { describe, it } from 'node:test';
+import { ok, strictEqual } from 'node:assert/strict';
+import { readFile, readdir } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
+const SKILL_PATH = resolve(REPO_ROOT, 'plugins/engineer/skills/investigate/SKILL.md');
+const COMMAND_PATH = resolve(REPO_ROOT, 'plugins/engineer/commands/investigate.md');
+const SPEC_PATH = resolve(
+  REPO_ROOT,
+  'plugins/engineer/skills/investigate/references/cited-brief-spec.md',
+);
+const RULES_PATH = resolve(
+  REPO_ROOT,
+  'plugins/engineer/skills/investigate/references/output-file-rules.md',
+);
+const ENSEMBLE_PATH = resolve(
+  REPO_ROOT,
+  'plugins/engineer/skills/investigate/references/cited-brief-ensemble.md',
+);
+const SHARED_ENSEMBLE_PATH = resolve(
+  REPO_ROOT,
+  'plugins/engineer/skills/_shared/references/ensemble-protocol.md',
+);
+
+describe('cited-brief — output path resolution (output-file-rules.md)', () => {
+  it('output-file-rules.md describes the absolute-path requirement for RESEARCH_OUTPUT_ROOT', async () => {
+    const text = await readFile(RULES_PATH, 'utf8');
+    ok(/Absolute path required/.test(text), 'rules missing absolute-path requirement');
+    ok(/relative paths[\s\S]*?rejected/i.test(text), 'rules missing relative-path rejection');
+    ok(/falls back to[\s\S]{0,40}\.\/output\//.test(text), 'rules missing fallback to ./output/');
+  });
+
+  it('output-file-rules.md fixed filename is research_brief.md (Stage 1 backwards compat)', async () => {
+    const text = await readFile(RULES_PATH, 'utf8');
+    // The brief filename is preserved per ADR-0014 backwards compat.
+    ok(
+      /\*\*always\*\*\s*named\s*`research_brief\.md`/.test(text),
+      'rules missing "always named research_brief.md" guarantee',
+    );
+    ok(/Stage 1.*plugins\/research/.test(text), 'rules missing Stage 1 backwards-compat note');
+  });
+
+  it('output-file-rules.md sandbox enforcement protects against traversal escape', async () => {
+    const text = await readFile(RULES_PATH, 'utf8');
+    ok(/Sandbox enforcement/i.test(text), 'rules missing Sandbox enforcement section');
+    ok(/symlink resolution/i.test(text), 'rules missing symlink resolution mention');
+    ok(/rejected\s+before the file is written/i.test(text), 'rules missing pre-write rejection');
+  });
+
+  it('output-file-rules.md topic-slug sanitization runs traversal rejection on raw input first', async () => {
+    const text = await readFile(RULES_PATH, 'utf8');
+    // Step 1 must run before character stripping to avoid `..` collapsing.
+    ok(/Traversal rejection \(raw input\)/.test(text), 'rules missing Step 1 traversal rejection label');
+    ok(
+      /raw topic string contains[\s\S]{0,120}two or more consecutive dots/.test(text),
+      'rules missing two-dot detection',
+    );
+    ok(/15 Unicode code points/.test(text), 'rules missing 15-codepoint truncation rule');
+  });
+
+  it('output-file-rules.md describes sandbox guarantees (tilde rejection, mkdir -p, post-symlink resolution)', async () => {
+    const text = await readFile(RULES_PATH, 'utf8');
+    // RESEARCH_OUTPUT_ROOT semantics — line 132-142 region.
+    ok(
+      /Absolute path required[\s\S]{0,200}tilde-prefixed paths\s*\n?\s*are rejected/i.test(text),
+      'rules missing explicit tilde-prefix rejection in RESEARCH_OUTPUT_ROOT semantics',
+    );
+    ok(
+      /Auto-create on use[\s\S]{0,200}created with `mkdir -p`/i.test(text),
+      'rules missing "Auto-create on use" mkdir -p guarantee',
+    );
+    ok(
+      /Sandbox enforcement[\s\S]{0,200}resolves outside the root after symlink resolution is rejected/i.test(text),
+      'rules missing post-symlink-resolution rejection guarantee',
+    );
+  });
+
+  it('output-file-rules.md topic-slug sanitization steps 2-5 and 7 are each described', async () => {
+    const text = await readFile(RULES_PATH, 'utf8');
+    ok(/2\.\s+\*\*Lowercase\*\*/.test(text), 'rules missing Step 2 (Lowercase)');
+    ok(
+      /3\.\s+\*\*Strip filesystem-forbidden characters\*\*[\s\S]{0,120}`:`,\s*`\*`,\s*`\?`/i.test(text),
+      'rules missing Step 3 (Strip filesystem-forbidden chars `:` `*` `?`)',
+    );
+    ok(
+      /4\.\s+\*\*Normalize whitespace\*\*[\s\S]{0,120}collapse to single `_`/i.test(text),
+      'rules missing Step 4 (Normalize whitespace → `_`)',
+    );
+    ok(
+      /5\.\s+\*\*Allowed character class\*\*[\s\S]{0,200}CJK characters/i.test(text),
+      'rules missing Step 5 (Allowed character class with CJK retention)',
+    );
+    ok(
+      /7\.\s+\*\*Remove trailing `_`\*\*/.test(text),
+      'rules missing Step 7 (Remove trailing `_`)',
+    );
+  });
+
+  it('output-file-rules.md sanitization examples cover all critical scenarios', async () => {
+    const text = await readFile(RULES_PATH, 'utf8');
+    // ASCII passthrough + whitespace normalization
+    ok(
+      /Server-Sent Events vs WebSockets[\s\S]{0,80}server-sent_eve/.test(text),
+      'examples missing ASCII passthrough scenario',
+    );
+    // CJK retention
+    ok(
+      /리서치 기능 도입 검토[\s\S]{0,80}리서치_기능_도입_검토/.test(text),
+      'examples missing CJK retention scenario',
+    );
+    // Emoji-only fallback
+    ok(
+      /🎉🎊[\s\S]{0,80}\(empty\)\s*→\s*fallback/.test(text),
+      'examples missing emoji-only fallback scenario',
+    );
+    // Traversal rejection fallback
+    ok(
+      /\.\.\/etc\/passwd[\s\S]{0,80}rejected at step 1/.test(text),
+      'examples missing traversal-rejection scenario',
+    );
+    // Numeric-only passthrough
+    ok(
+      /\|\s*`2025`\s*\|\s*`2025`\s*\|/.test(text),
+      'examples missing numeric-only passthrough scenario',
+    );
+  });
+});
+
+describe('cited-brief — existing-directory gate (3 outcomes consistent across docs)', () => {
+  // Outcome names: overwrite / distinct / abort. They appear in
+  // output-file-rules.md (canonical), SKILL.md auto-mode Step 2, and
+  // commands/investigate.md Completion. All three must agree.
+  it('output-file-rules.md enumerates all 3 outcomes with default = distinct directory', async () => {
+    const text = await readFile(RULES_PATH, 'utf8');
+    ok(/Overwrite/.test(text), 'rules missing Overwrite outcome');
+    ok(/Distinct directory/.test(text), 'rules missing Distinct directory outcome');
+    ok(/Abort/.test(text), 'rules missing Abort outcome');
+    ok(/Default if the user does not respond:\s*option 2/i.test(text), 'rules missing default = option 2 (distinct)');
+  });
+
+  it('SKILL.md cited-brief Step 2 mentions the existing-directory check pre-dispatch', async () => {
+    const text = await readFile(SKILL_PATH, 'utf8');
+    ok(
+      /Existing-directory check/.test(text),
+      'SKILL.md cited-brief arm missing Existing-directory check',
+    );
+    ok(
+      /BEFORE\s+running web searches/.test(text),
+      'SKILL.md missing pre-dispatch ordering for existing-directory gate',
+    );
+  });
+
+  it('commands/investigate.md Completion taxonomy includes aborted-at-save outcome', async () => {
+    const text = await readFile(COMMAND_PATH, 'utf8');
+    ok(
+      /aborted at save/i.test(text) && /existing-directory gate/i.test(text),
+      'Completion missing aborted-at-save outcome with existing-dir gate reference',
+    );
+  });
+});
+
+describe('cited-brief — citation audit checklist (cited-brief-spec.md)', () => {
+  it('audit checklist enumerates exactly 12 required items', async () => {
+    // 11 base items absorbed from Stage 1 plugins/research's
+    // research-brief-spec.md + 1 cited-brief-profile-specific item
+    // (Every PEER-ONLY claim resolved per Path A / Path B Independence
+    // Rule).
+    const text = await readFile(SPEC_PATH, 'utf8');
+    const auditMatch = text.match(/##\s+Audit Checklist[\s\S]+/);
+    ok(auditMatch, 'Audit Checklist section not found');
+    const items = (auditMatch[0].match(/^-\s+\[\s\]\s+\*\*[^*]/gm) || []).length;
+    strictEqual(
+      items,
+      12,
+      `Audit Checklist has ${items} items (===12 expected: 11 absorbed base + 1 PEER-ONLY routing addition)`,
+    );
+  });
+
+  it('source-of-discovery labels appear only in forbidden-context sections', async () => {
+    const text = await readFile(SPEC_PATH, 'utf8');
+    // Locate the two sections where the tokens are legitimately
+    // mentioned to forbid them.
+    const labelPolicyMatch = text.match(/##\s+Ensemble Label Policy[\s\S]*?(?=\n##\s|$)/);
+    const auditChecklistMatch = text.match(/##\s+Audit Checklist[\s\S]*?(?=\n##\s|$)/);
+    ok(labelPolicyMatch, 'spec missing Ensemble Label Policy section');
+    ok(auditChecklistMatch, 'spec missing Audit Checklist section');
+
+    // Strip those sections and assert no [Local]/[Peer]/[Both] tokens
+    // remain in the rest of the document. This catches drift where
+    // someone introduces the labels in a non-forbidden section.
+    const stripped = text
+      .replace(labelPolicyMatch[0], '')
+      .replace(auditChecklistMatch[0], '');
+    for (const token of ['[Local]', '[Peer]', '[Both]']) {
+      ok(
+        !stripped.includes(token),
+        `spec: token "${token}" appears outside Ensemble Label Policy / Audit Checklist sections`,
+      );
+    }
+
+    // Confirm forbidden-context wording is present in at least one
+    // of the two sections (the "must not appear" assertion is what
+    // gives the tokens their meaning when they appear).
+    ok(
+      /must not appear/i.test(text) || /No source-of-discovery labels/i.test(text),
+      'spec missing forbidden-context wording for source-of-discovery labels',
+    );
+  });
+
+  it('permitted sentinels for un-cited claims are exactly 2', async () => {
+    const text = await readFile(SPEC_PATH, 'utf8');
+    ok(/\[uncited inference\]/.test(text), 'missing [uncited inference] sentinel');
+    ok(/\[research interrupted — partial coverage\]/.test(text), 'missing [research interrupted] sentinel');
+  });
+
+  it('citation numbering rules describe research-execution capture order with no renumbering', async () => {
+    const text = await readFile(SPEC_PATH, 'utf8');
+    ok(
+      /research-execution capture order/.test(text),
+      'spec missing "research-execution capture order" rule',
+    );
+    ok(
+      /Do not renumber on edits/.test(text),
+      'spec missing "Do not renumber on edits" rule',
+    );
+  });
+
+  it('source-tier taxonomy has exactly 4 tiers (official-docs / standards / academic / secondary)', async () => {
+    const text = await readFile(SPEC_PATH, 'utf8');
+    for (const tier of ['official-docs', 'standards', 'academic', 'secondary']) {
+      ok(new RegExp(`\\*\\*${tier}\\*\\*`).test(text), `spec missing source-tier "${tier}"`);
+    }
+  });
+});
+
+describe('cited-brief — PEER-ONLY routing (Path A / Path B Independence Rule)', () => {
+  // The bidirectional Independence Rule routes PEER-ONLY claims through
+  // either Path A (locally verify and cite) or Path B (move to Open
+  // Questions). This rule must be encoded in cited-brief-ensemble.md
+  // (canonical), referenced by SKILL.md command-mode Step 4, and by the
+  // shared ensemble-protocol.md research-scan section.
+  it('cited-brief-ensemble.md describes both Path A and Path B', async () => {
+    const text = await readFile(ENSEMBLE_PATH, 'utf8');
+    ok(/Path A/.test(text), 'cited-brief-ensemble.md missing Path A');
+    ok(/Path B/.test(text), 'cited-brief-ensemble.md missing Path B');
+    ok(/Independence Rule/.test(text), 'cited-brief-ensemble.md missing Independence Rule');
+  });
+
+  it('SKILL.md command-mode Step 4 mentions Independence Rule routing', async () => {
+    const text = await readFile(SKILL_PATH, 'utf8');
+    ok(
+      /Independence Rule[\s\S]{0,200}Path A[\s\S]{0,200}Path B/.test(text),
+      'SKILL.md command-mode Step 4 missing Path A / Path B routing',
+    );
+  });
+
+  it('shared ensemble-protocol.md research-scan synthesis describes Path A / Path B', async () => {
+    const text = await readFile(SHARED_ENSEMBLE_PATH, 'utf8');
+    const sectionMatch = text.match(
+      /###\s+Research-scan[\s\S]+?(?=###\s+Refine-verify|$)/,
+    );
+    ok(sectionMatch, 'Research-scan section not found in shared ensemble-protocol.md');
+    ok(
+      /Path A[\s\S]{0,200}Path B/.test(sectionMatch[0]),
+      'Research-scan section missing Path A / Path B routing',
+    );
+  });
+
+  it('citation remapping forbids verbatim peer label copying', async () => {
+    const text = await readFile(SHARED_ENSEMBLE_PATH, 'utf8');
+    const sectionMatch = text.match(
+      /###\s+Research-scan[\s\S]+?(?=###\s+Refine-verify|$)/,
+    );
+    ok(sectionMatch, 'Research-scan section not found');
+    ok(
+      /MUST NOT be copied verbatim/.test(sectionMatch[0]),
+      'Research-scan section missing "MUST NOT copied verbatim" rule for peer labels',
+    );
+  });
+});
+
+describe('cited-brief — repository guards (no stale plugins/research references in user-facing surfaces)', () => {
+  // ADR-0014/0015 archived plugins/research at Stage 2.5+. Install
+  // commands and active skill/command surfaces must not reference
+  // the removed plugin. Historical mentions in docs/adr/ and the
+  // AGENTS.md historical-precedent prose are permitted as audit
+  // trail; user-facing surfaces are not.
+  const FORBIDDEN_TOKENS = ['/research:research', 'research@agentic-plugins'];
+
+  it('repository-root README.md contains no stale plugins/research tokens', async () => {
+    const text = await readFile(resolve(REPO_ROOT, 'README.md'), 'utf8');
+    for (const token of FORBIDDEN_TOKENS) {
+      ok(!text.includes(token), `README.md: forbidden token "${token}" present`);
+    }
+  });
+
+  it('plugins/companions/README.md contains no stale plugins/research tokens', async () => {
+    const text = await readFile(
+      resolve(REPO_ROOT, 'plugins/companions/README.md'),
+      'utf8',
+    );
+    for (const token of FORBIDDEN_TOKENS) {
+      ok(
+        !text.includes(token),
+        `plugins/companions/README.md: forbidden token "${token}" present`,
+      );
+    }
+  });
+
+  it('plugins/engineer skills + commands point users at the cited-brief profile, not /research:research', async () => {
+    // Recursively walk plugins/engineer/skills/ and plugins/engineer/commands/
+    // for .md files; assert no FORBIDDEN_TOKENS occur in any of them.
+    const skillsDir = resolve(REPO_ROOT, 'plugins/engineer/skills');
+    const commandsDir = resolve(REPO_ROOT, 'plugins/engineer/commands');
+    const collect = async (dir) => {
+      const entries = await readdir(dir, { recursive: true, withFileTypes: true });
+      return entries
+        .filter((e) => e.isFile() && e.name.endsWith('.md'))
+        .map((e) => resolve(e.parentPath, e.name));
+    };
+    const files = [...(await collect(skillsDir)), ...(await collect(commandsDir))];
+    ok(files.length > 0, 'no .md files found in engineer skills/ or commands/ — globbing failed');
+
+    for (const path of files) {
+      const text = await readFile(path, 'utf8');
+      for (const token of FORBIDDEN_TOKENS) {
+        ok(
+          !text.includes(token),
+          `${path}: contains stale token "${token}" (user-facing surface)`,
+        );
+      }
+    }
+  });
+});
+
+describe('cited-brief — privacy gate consistency', () => {
+  it('SKILL.md auto-mode Step 1 privacy gate covers web search and peer dispatch', async () => {
+    const text = await readFile(SKILL_PATH, 'utf8');
+    ok(
+      /web search queries/i.test(text) && /peer-host dispatch/i.test(text),
+      'SKILL.md privacy gate missing web search / peer dispatch coverage',
+    );
+  });
+
+  it('cited-brief-ensemble.md privacy contract block defined under Prompt Construction', async () => {
+    const text = await readFile(ENSEMBLE_PATH, 'utf8');
+    ok(/<privacy_contract>/.test(text) || /privacy contract/i.test(text), 'ensemble missing privacy_contract block');
+  });
+});

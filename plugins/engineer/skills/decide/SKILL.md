@@ -222,17 +222,6 @@ When invoked standalone, no workflow file write occurs.
 
 ---
 
-## Cross-plugin handoff suggestion
-
-If the decision needs **durable cited evidence beyond Step 2's web
-research** (e.g., a primary-sources RFC review for a security
-decision), and the `research@agentic-plugins` plugin is installed,
-suggest running `/research:research <topic>` first to produce a
-saved brief, then resume the decision with that brief as additional
-evidence. Informational only.
-
----
-
 ## Anti-patterns (do not produce)
 
 - **Acting first, justifying after**. Always present comparison +

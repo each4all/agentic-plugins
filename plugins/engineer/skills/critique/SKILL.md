@@ -195,19 +195,6 @@ When invoked standalone, no workflow file write occurs.
 
 ---
 
-## Cross-plugin handoff suggestion
-
-If critique requires **durable cited reference material** (e.g.,
-security best practices to evaluate against, standards documents
-to compare implementation choices, framework guidelines for the
-`conventions` perspective), and the `research@agentic-plugins`
-plugin is installed, suggest running `/research:research <topic>`
-first to capture the review criteria as a cited brief, then resume
-critique with that brief grounding the finding severity. Per
-ADR-0010 §5, this is informational only; no automatic invocation.
-
----
-
 ## Anti-patterns (do not produce)
 
 - **Asking the user "is this an issue?"** Validity is the

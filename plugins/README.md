@@ -14,17 +14,27 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
   `AGENTIC_COMPANIONS_ROOT` env override). See
   [`plugins/companions/README.md`](companions/README.md) for install,
   discovery, and drift-protection details.
-- **`research/`** — Stage 1 reference plugin: topic-bound research
-  producing a durable cited brief, with bidirectional companion
-  ensemble (Claude → Codex via `codex-companion`, Codex → Claude via
-  `claude-companion`). Per
-  [ADR-0007](../docs/adr/0007-migration-cutover-plan.md), this plugin
-  references omcc-research as a lesson source, not a 1:1 port; the
-  redesign moves to host-neutral `LOCAL-ONLY/PEER-ONLY` synthesis,
-  drops the cross-plugin backtick-prohibition workaround, and adds
-  `RESEARCH_OUTPUT_ROOT` sandboxing. See
-  [`plugins/research/README.md`](research/README.md) for install,
-  invocation, and environment details.
+- **`engineer/`** — Stage 2 L3 persona plugin: 6 universal cognitive
+  verbs (`investigate`, `frame`, `decide`, `compose`, `critique`,
+  `refine`) plus the `audit` sugar alias, with bidirectional
+  companion ensemble (Claude → Codex via `codex-companion`, Codex →
+  Claude via `claude-companion`) under an always-max policy. The
+  `investigate` verb ships three profiles — `analysis`, `root-cause`,
+  and `cited-brief`; the cited-brief profile absorbs the Stage 1
+  `plugins/research` contract per
+  [ADR-0014](../docs/adr/0014-plugins-research-deprecation.md). See
+  [`plugins/engineer/README.md`](engineer/README.md) for install,
+  invocation, and environment details (including the
+  `RESEARCH_OUTPUT_ROOT` env var preserved from Stage 1 for
+  backwards compatibility).
+
+The Stage 1 `plugins/research` reference plugin was retired at
+Stage 2.5+ per
+[ADR-0014](../docs/adr/0014-plugins-research-deprecation.md);
+its cited-brief contract is now folded into `engineer:investigate`,
+and saved `research_brief.md` artifacts from the Stage 1 period
+remain forward-compatible with the cited-brief profile's audit
+and parse logic.
 
 ## Planned plugins (tentative)
 
@@ -32,15 +42,10 @@ Per `docs/adr/0007-migration-cutover-plan.md`, plugin names and
 structures are agentic-plugins' own design — not 1:1 ports of omcc.
 omcc plugins serve as **experiential reference**, not porting targets.
 
-- **Stage 2**: self-development plugin (name TBD) — references
-  omcc-dev's workflow experience (`/start`, `/fix`, `/audit`, brainstorm,
-  continuity, ensemble, etc.). Keep what works, redesign what doesn't,
-  scope to what genuinely benefits from dual-host. From this point,
-  agentic-plugins can develop itself in dual-host form
 - **Stage 3+**: design-domain plugin — references omcc-designer's
   experience (poster, social-graphics, frontend, brief, evaluation,
-  etc.) with the same redesign stance. Plus any remaining omcc-dev
-  workflow patterns not covered in Stage 2
+  etc.) with the same redesign stance and the same 4-layer
+  composition model
 
 ## Plugin layout convention
 

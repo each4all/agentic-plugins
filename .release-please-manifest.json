@@ -1,6 +1,5 @@
 {
   "companions": "0.3.0",
   "plugins/companions": "0.3.1",
-  "plugins/research": "0.3.1",
   "plugins/engineer": "0.3.0"
 }

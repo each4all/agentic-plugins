@@ -16,7 +16,7 @@ losing the script-only category. No `SKILL.md` directory is permitted
 under this placeholder; the formal qualifier still prohibits functional
 skills content.
 
-Consumer plugins (e.g. `plugins/research/`) reach the bundled companion
+Consumer plugins (e.g. `plugins/engineer/`) reach the bundled companion
 scripts via cache-glob discovery — see ADR-0008 § (b) and the
 companions plugin's [`README.md`](../README.md) for the discovery
 algorithm.

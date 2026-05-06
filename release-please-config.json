@@ -33,28 +33,6 @@
         }
       ]
     },
-    "plugins/research": {
-      "package-name": "plugin-research",
-      "component": "plugin-research",
-      "changelog-path": "CHANGELOG.md",
-      "extra-files": [
-        {
-          "type": "json",
-          "path": ".claude-plugin/plugin.json",
-          "jsonpath": "$.version"
-        },
-        {
-          "type": "json",
-          "path": ".codex-plugin/plugin.json",
-          "jsonpath": "$.version"
-        },
-        {
-          "type": "json",
-          "path": "/.claude-plugin/marketplace.json",
-          "jsonpath": "$.plugins[?(@.name=='research')].version"
-        }
-      ]
-    },
     "plugins/engineer": {
       "package-name": "plugin-engineer",
       "component": "plugin-engineer",

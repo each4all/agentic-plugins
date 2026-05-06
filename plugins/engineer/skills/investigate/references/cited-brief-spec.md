@@ -1,12 +1,20 @@
-# Research Brief Spec
+# Cited-Brief Spec (engineer:investigate `cited-brief` profile)
 
-The research brief is the **durable handoff artifact** produced by the
-research skill. Topic-bound, organized around investigation
-sub-questions, reusable across future workflows.
+The cited-brief is the **durable handoff artifact** produced by
+`engineer:investigate --profile=cited-brief`. Topic-bound, organized
+around investigation sub-questions, reusable across future workflows
+and other engineer verbs (`/engineer:decide`, `/engineer:compose`,
+`/engineer:critique`, `/engineer:refine`).
 
 This spec defines the canonical structure, citation conventions, and
 audit checklist for the brief file (`research_brief.md` per the rules
-in `skills/research/references/output-file-rules.md`).
+in `output-file-rules.md`).
+
+The artifact filename is preserved as `research_brief.md` so previously
+saved briefs from `plugins/research` (Stage 1) remain readable
+unchanged. Per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md)
+(Amendment 2026-05-06), this profile absorbs the cited-brief contract
+from the now-removed `plugins/research` plugin (retired at Stage 2.5+).
 
 ---
 
@@ -59,6 +67,11 @@ URLs are deduplicated — same canonical URL appears once even if cited multiple
   community/blog-tier sources for sub-question 3"]
 ```
 
+The brief artifact format is identical to the Stage 1
+`plugins/research` brief. This is intentional — existing briefs remain
+valid, and downstream engineer verbs that consume cited briefs already
+know this shape via the ADR-0010 §5 typed handoff prototype.
+
 ---
 
 ## Citation Conventions
@@ -102,28 +115,73 @@ weight in confidence ratings than secondary sources.
 
 ---
 
+## Conflict Handling
+
+When two or more cited sources directly conflict on the same factual
+claim, the brief presents the disagreement with citations rather than
+silently choosing one source. Three resolution patterns:
+
+- **Equal-tier conflict** (both sources at the same source-type tier
+  or otherwise comparable rigor): present both with citations
+  side-by-side and state the disagreement explicitly. Do not pick a
+  winner. Example: *"Specification A states X [N1]; the published
+  errata at [N2] revises this to Y."*
+- **Tier-asymmetric conflict** (one source at a significantly higher
+  tier — official-docs over secondary, standards over a blog post,
+  current spec over an outdated revision): cite the higher-tier
+  source as authoritative; record the lower-tier source as a
+  contradictory data point with its citation, and signal in the
+  narrative that the higher-tier source supersedes the lower-tier
+  reading.
+- **Unresolvable conflict** (no clear tier asymmetry, and the
+  conflict materially affects a sub-question's answer): move the
+  conflict into "Open Questions / Gaps" as an unresolved evidence
+  pointer. Both citations remain in Sources.
+
+Do NOT silently drop a source from the brief to make a conflict go
+away. The audit checklist's "No orphan sources" rule retains both
+citations as part of the audit trail; the only legitimate way to
+remove a source is when it carried zero load on any finding.
+
+The bidirectional ensemble's `cited-brief-ensemble.md` §"CONFLICT
+handling" cross-references this rule for peer-vs-local claim
+divergence; the rule above governs both intra-corpus conflicts
+(two sources the local host found) and cross-corpus conflicts
+(local source vs peer source after Path A verification).
+
+---
+
 ## Ensemble Label Policy
 
-When the research skill runs in command-invoked mode, the bidirectional
-research-scan ensemble (per
-`skills/research/references/ensemble-protocol.md`, which calls peer-host
-CLIs through `companions/contract.md` v0.1.1) may contribute claims and
-sources. The brief artifact does NOT carry any source-of-discovery
-labels:
+When `engineer:investigate --profile=cited-brief` runs in command-mode,
+the bidirectional research-scan ensemble (per
+`cited-brief-ensemble.md`) may contribute claims and sources. The
+brief artifact does NOT carry any source-of-discovery labels:
 
-- No host-named markers anywhere in the brief — none of `[local]`,
-  `[peer]`, `[both]`, or any host-specific equivalent.
+- No host-named markers anywhere in the brief — none of `[Local]`,
+  `[Peer]`, `[Both]`, or any host-specific equivalent.
 - Numeric `[N]` citations remain the only labeling format in
   Findings and Sources.
 - The peer's internal citation labels are NEVER copied verbatim into
   the brief — they are remapped to the brief's capture-order
   numbering by Citation Remapping (canonical rule in
-  `skills/research/references/ensemble-protocol.md`).
+  `cited-brief-ensemble.md`).
 
 The presence or absence of ensemble execution must NOT be inferable
 from reading the brief. Ensemble status (unavailable, partial,
 degraded) is communicated only in the user-facing completion summary
 that follows the save, never inside the brief artifact.
+
+**Note on engineer's wider label policy**: engineer's standard
+ensemble synthesis (in `_shared/references/ensemble-protocol.md`)
+presents synthesis findings with explicit `[Both]` / `[Local]` /
+`[Peer]` source-of-discovery labels in **workflow phase notes** (the
+`state.mjs append`-driven workflow `.md` body). The cited-brief
+profile preserves those labels in workflow phase notes for internal
+orchestration transparency, but the saved brief artifact strips them
+before the audit gate per the rule above. This is the dual-track
+rendering described in [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md)
+§ Decision item 3.
 
 ---
 
@@ -147,8 +205,9 @@ Before saving the brief, verify:
 - [ ] **Confidence rating is exactly one of `HIGH | MEDIUM | LOW`** with caveats tied to source quality.
 - [ ] **Open Questions section is honest** — gaps surfaced, not hidden under HIGH confidence.
 - [ ] **No source-of-discovery labels** anywhere in the brief —
-      `[local]` / `[peer]` / `[both]` and any host-specific equivalents
-      must not appear.
+      `[Local]` / `[Peer]` / `[Both]` and any host-specific equivalents
+      must not appear. (Workflow phase notes elsewhere may carry these
+      labels; the brief artifact strips them.)
 - [ ] **Every PEER-ONLY claim resolved** — when command-invoked mode
       ran the bidirectional ensemble, every claim originating only
       from the peer host was either Path A (locally verified,

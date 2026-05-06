@@ -171,18 +171,6 @@ When invoked standalone, no workflow file write occurs.
 
 ---
 
-## Cross-plugin handoff suggestion
-
-Refine consumes evidence already gathered upstream by investigate /
-frame / decide; this verb does not initiate research handoff
-itself. If new external evidence is needed mid-refinement (e.g.,
-the fix uncovers an unknown about a third-party API contract),
-return to `/engineer:investigate` first — and from there route
-through `/research:research` if durable cited evidence is
-warranted, per ADR-0010 §5.
-
----
-
 ## Anti-patterns (do not produce)
 
 - **Refining before root cause is confirmed** for bug fixes.

@@ -1,11 +1,11 @@
-# Research Ensemble Protocol
+# Cited-Brief Ensemble Protocol (engineer:investigate `cited-brief` profile)
 
 Defines how the local host and a peer host operate as a dual-model
-ensemble for the **research-scan** ensemble point — the research-domain
-analog of the text ensemble points used by other agentic-plugins
-skills. Activated inside the research skill's command-invoked mode to
-cross-validate sub-question findings against an independent model on
-the peer host.
+ensemble for the **research-scan** ensemble point — the cited-brief
+profile's bidirectional analog of the standard ensemble points (Explore,
+Investigate) used by other engineer profiles. Activated inside the
+cited-brief profile's command-invoked mode to cross-validate
+sub-question findings against an independent model on the peer host.
 
 The user never invokes the peer host directly. The skill orchestrates
 dispatch, collection, and synthesis transparently through
@@ -14,47 +14,61 @@ Codex → Claude via `claude-companion`). When the peer host is not
 installed or returns no usable output, the ensemble degrades silently
 to local-only.
 
-This document is the **bidirectional contract** for research-scan.
-Mechanics — how to discover the companion script, how to invoke it,
-how to consume its JSON envelope — live in each host's adapter
-(`adapters/<host>/scripts/discover-companion.mjs` plus the SKILL.md
-command-invoked-mode prose). This protocol describes only the
+This document is the **bidirectional contract** for research-scan
+inside the engineer plugin. Mechanics — how to dispatch the peer
+companion, how to consume its JSON envelope — live in
+`plugins/engineer/scripts/dispatch-peer.mjs` plus the SKILL.md
+command-invoked-mode prose. This protocol describes only the
 wire-level contract: what to send, what to expect back, how to
 synthesize.
+
+Per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md)
+(Amendment 2026-05-06), this protocol absorbs the research-scan ensemble
+contract from the now-removed `plugins/research` plugin (retired at
+Stage 2.5+). The ensemble point type name `research-scan` is preserved
+for continuity with the Stage 1 contract and the omcc base synthesis
+taxonomy.
 
 ---
 
 ## When This Protocol Applies
 
-Activates inside the research skill's command-invoked mode (Step 1
+Activates inside the cited-brief profile's command-invoked mode (Step 1
 end through Step 3 entry) when invoked as:
 
-- Claude: `/research:research <topic>` (slash command)
-- Codex: `$research <topic>` (skill mention)
+- Claude: `/engineer:investigate --profile=cited-brief <topic>` (slash command)
+- Codex: `$engineer:investigate cited-brief <topic>` (skill mention; per
+  ADR-0014 MVP statement, full slash-command parity is deferred to
+  ADR-0013 reserved)
 
 Does NOT apply to:
 
-- Auto-activated research outside the command-invoked mode.
-- Inline cross-references from other plugins or commands.
+- Auto-activated cited-brief profile outside the command-invoked mode.
+- Other engineer:investigate profiles (`analysis`, `root-cause`) — they
+  use the Explore / Investigate ensemble point types defined in
+  `_shared/references/ensemble-protocol.md`.
+- Inline cross-references from other engineer skills (`frame`, `decide`,
+  `compose`, `refine`, `critique`) — those skills suggest cited-brief
+  via handoff text but do not run the ensemble themselves.
 - Binary confirmations or progress updates within the same session.
 
 ---
 
 ## Affinity
 
-For research v1 the ensemble is **always-on** for command-invoked
-research. The research domain's quality dimensions (topic depth,
-source-tier requirement, controversy, freshness) do not map cleanly
-onto the file/layer/risk-based affinity tiers used by code workflows.
-A future version may introduce graduated affinity; v1 keeps the
-surface simple and relies on graceful degradation when the cost would
-be unjustified (e.g., the peer host CLI is not installed).
+Per engineer's always-max policy, the ensemble is **always-on** for
+command-invoked cited-brief sessions. The cited-brief domain's quality
+dimensions (topic depth, source-tier requirement, controversy,
+freshness) do not map cleanly onto the file/layer/risk-based affinity
+tiers used by code workflows. The surface stays simple and relies on
+graceful degradation when the cost would be unjustified (e.g., the
+peer host CLI is not installed).
 
 ---
 
 ## Execution Pattern
 
-Three steps per research session: **Launch**, **Collect**, **Synthesize**.
+Three steps per cited-brief session: **Launch**, **Collect**, **Synthesize**.
 
 ### Step 1: Launch — after sub-question confirmation + scope
 
@@ -63,20 +77,20 @@ Pre-conditions before dispatch:
 1. The privacy gate has passed for the topic AND the confirmed
    sub-questions. The gate covers BOTH web search AND external
    ensemble dispatch — see "Privacy" below.
-2. The existing-directory check (per
-   `skills/research/references/output-file-rules.md`) has completed
-   and the user did NOT choose abort. Aborting before dispatch
-   prevents wasted peer runs on a session the user will discard.
+2. The existing-directory check (per `output-file-rules.md`) has
+   completed and the user did NOT choose abort. Aborting before
+   dispatch prevents wasted peer runs on a session the user will
+   discard.
 
-Dispatch (mechanics owned by the adapter; this protocol pins shape
-only):
+Dispatch (mechanics owned by `plugins/engineer/scripts/dispatch-peer.mjs`;
+this protocol pins shape only):
 
-3. The adapter resolves the peer-companion script path per
-   `adapters/<host>/scripts/discover-companion.mjs` (cache-glob with
+3. Engineer's `dispatch-peer.mjs` resolves the peer-companion script
+   path via the same companion-cache discovery (cache-glob with
    `AGENTIC_COMPANIONS_ROOT` env override, per ADR-0008). If
    discovery fails, the ensemble degrades to local-only per "Failure
    Handling" below.
-4. The adapter constructs the research-scan prompt per "Prompt
+4. The dispatcher constructs the research-scan prompt per "Prompt
    Construction" below and writes it to a per-dispatch temporary file
    (UTF-8). The prompt contains user-controlled material (topic,
    sub-questions, scope), so it MUST be passed via
@@ -84,21 +98,21 @@ only):
    as a positional argument and never inlined into a shell command.
    The companion reads the file directly; the prompt never crosses
    shell parsing, process argv, or `ps aux`.
-5. The adapter invokes the companion in **JSON envelope mode**:
+5. The dispatcher invokes the companion in **JSON envelope mode**:
 
    ```
    <peer-companion> task --prompt-file <path> --output-format json [--cwd <wd>]
    ```
 
-   per `companions/contract.md` § 4.2. The adapter SHOULD background
+   per `companions/contract.md` § 4.2. The dispatcher SHOULD background
    the call so the local host's own research can proceed in parallel.
-   The adapter MUST NOT pass companion-internal flags (no
+   The dispatcher MUST NOT pass companion-internal flags (no
    `--background`, no timeout knobs); those are out of contract scope
    per `companions/contract.md` § 6.2 and § 6.4.
-6. The local host proceeds immediately to Step 2 of the research
-   SKILL (per-sub-question WebSearch / WebFetch).
+6. The local host proceeds immediately to Step 2 of the cited-brief
+   profile flow (per-sub-question WebSearch / WebFetch).
 
-### Step 2: Collect — before research SKILL Step 3 synthesis
+### Step 2: Collect — before profile Step 3 synthesis
 
 1. Wait for the background dispatch notification — do NOT poll, sleep,
    or proactively check status.
@@ -114,7 +128,7 @@ only):
      unavailable; degrade to local-only.
    - `companion_error` with `error.kind: companion_misuse` → adapter
      bug; surface as a runtime error (this is NOT a degradation case —
-     it indicates the adapter constructed an invalid invocation).
+     it indicates the dispatcher constructed an invalid invocation).
 4. The peer's `stdout` is the structured answer to the research-scan
    prompt: claims and sources for each sub-question. Parse against
    the Normalized Claim Shape below.
@@ -124,7 +138,7 @@ only):
    the brief is saved — never as a finding label inside the brief
    artifact.
 
-### Step 3: Synthesize — during research SKILL Step 3
+### Step 3: Synthesize — during cited-brief profile Step 3
 
 1. Normalize each peer finding into the intermediate Claim Shape
    defined below.
@@ -135,9 +149,9 @@ only):
    becoming a numeric `[N]` entry in the Sources section.
 4. Apply Source Union for AGREED-with-different-sources cases.
 5. Resolve PEER-ONLY factual claims via the rules below.
-6. Hand the merged content back to research SKILL Step 3 for
-   sub-question organization, citation numbering (capture order
-   preserved), and confidence rating.
+6. Hand the merged content back to the cited-brief profile's audit and
+   save flow for sub-question organization, citation numbering
+   (capture order preserved), and confidence rating.
 
 ---
 
@@ -183,7 +197,7 @@ For each sub-question, return:
 - Each substantive claim is backed by at least one source URL.
 - Source URLs must be retrievable (no paywalled-only or invented URLs).
 - Source-type classification matches the four-tier taxonomy in
-  the research brief spec (official-docs / standards / academic /
+  the cited-brief spec (official-docs / standards / academic /
   secondary).
 - Access date in ISO YYYY-MM-DD.
 - Do NOT use peer-internal numeric citation labels in the response —
@@ -212,8 +226,8 @@ reference.
 
 Model and effort are NOT passed via flags — the user's peer-host
 configuration is the single source of truth. (`companions/contract.md`
-§ 2.2 makes `--model` / `--effort` optional; this protocol does not
-set them.)
+§ 2.2 makes `--model` / `--effort` optional; engineer's always-max
+policy declines to override at the protocol layer.)
 
 ---
 
@@ -260,9 +274,9 @@ synthesis:
 ```
 
 This shape is internal — it is not written into the brief artifact.
-The brief uses the structure defined in
-`skills/research/references/research-brief-spec.md`. Synthesis maps
-normalized claims into the brief's Findings and Sources sections.
+The brief uses the structure defined in `cited-brief-spec.md`.
+Synthesis maps normalized claims into the brief's Findings and Sources
+sections.
 
 ---
 
@@ -279,8 +293,16 @@ during reconciliation:
 | CONFLICT     | Models reached opposing conclusions                    |
 
 `LOCAL-ONLY` / `PEER-ONLY` are host-neutral — they describe the
-discovery side relative to the invoked skill, regardless of which
+discovery side relative to the invoked profile, regardless of which
 host happens to be local. The same protocol works in both directions.
+
+This taxonomy is a domain-specific application of the omcc base
+synthesis taxonomy (AGREED / CLAUDE-ONLY / CODEX-ONLY / CONFLICT) —
+the engineer plugin renames `CLAUDE-ONLY` / `CODEX-ONLY` to host-neutral
+`LOCAL-ONLY` / `PEER-ONLY` to match its bidirectional dispatch
+semantics. The renaming is a sub-rule extension under the four-name
+contract, not a new top-level category. Mapping is direct: the
+discovery side relative to the invoked workflow.
 
 ### AGREED handling
 
@@ -295,17 +317,19 @@ host happens to be local. The same protocol works in both directions.
 
 ### LOCAL-ONLY handling
 
-Present normally with the local host's citations. No special label
-appears in the brief — the brief never carries source-of-discovery
-labels (per `skills/research/references/research-brief-spec.md`
-"Ensemble Label Policy").
+Present normally with the local host's citations. **No
+source-of-discovery label appears in the brief artifact** — the brief
+never carries `[Local]` / `[Peer]` / `[Both]` markers (per
+`cited-brief-spec.md` "Ensemble Label Policy"). Workflow phase notes
+elsewhere (engineer's standard `state.mjs`-driven workflow `.md` body)
+may carry these labels for orchestration transparency, but the saved
+brief artifact strips them.
 
 ### PEER-ONLY handling
 
 The brief's audit checklist requires every substantive claim to have
 either a `[N]` citation OR an allowed sentinel (per
-`skills/research/references/research-brief-spec.md`). PEER-ONLY
-claims must take ONE of these paths:
+`cited-brief-spec.md`). PEER-ONLY claims must take ONE of these paths:
 
 - **Path A — Verify and cite**: The local host fetches the
   peer-provided source via WebFetch (or its host-equivalent),
@@ -327,11 +351,10 @@ deferred.
 
 ### CONFLICT handling
 
-Apply the Conflict Handling rule from the research SKILL Step 3:
-present both interpretations with their citations. Do not pick a
-winner unless one source is significantly higher tier. The wording in
-`skills/research/references/research-brief-spec.md` is canonical when
-the two rules diverge.
+Apply the Conflict Handling rule from `cited-brief-spec.md`: present
+both interpretations with their citations. Do not pick a winner unless
+one source is significantly higher tier. The wording in
+`cited-brief-spec.md` is canonical when the two rules diverge.
 
 ---
 
@@ -353,15 +376,14 @@ Mapping rule:
    Path B does not modify Sources.
 
 The brief's Sources section remains single-numbered, capture-order
-preserving, and URL-deduplicated per
-`skills/research/references/research-brief-spec.md`. The peer
+preserving, and URL-deduplicated per `cited-brief-spec.md`. The peer
 contributes to that ordering only via Path A.
 
 ---
 
 ## Privacy
 
-The research SKILL Step 1.1 privacy gate covers external ensemble
+The cited-brief profile's Step 1 privacy gate covers external ensemble
 dispatch in addition to web search. Specifically:
 
 - The topic AND sub-questions transmitted in the peer prompt are
@@ -393,8 +415,8 @@ that surface only after parsing the peer's content.
 ### Peer host CLI unavailable, not installed, or unauthenticated
 
 - Detect: `error.kind ∈ {peer_cli_not_found, peer_unauthenticated,
-  peer_invocation_error}` per `companions/contract.md` § 5.3, OR the
-  adapter's discovery script returns no companion path
+  peer_invocation_error}` per `companions/contract.md` § 5.3, OR
+  `dispatch-peer.mjs` returns no companion path
   (`peer_cli_not_found` equivalent at the discovery layer).
 - Action: Skip dispatch silently. Proceed with local-only research.
 - Surface: Mention in the user-facing completion summary that the
@@ -403,7 +425,7 @@ that surface only after parsing the peer's content.
 ### Peer timeout or runtime error
 
 - Detect: `status: peer_error` with `error.kind: peer_run_error`, OR
-  the background dispatch exits in a way the adapter cannot map to
+  the background dispatch exits in a way the dispatcher cannot map to
   any envelope `error.kind` (treated as `peer_invocation_error`).
 - Action: Record the failure mode internally; proceed with local-only
   research.
@@ -449,49 +471,88 @@ the ensemble ran at all.
 
 ## State and Recovery
 
-The research skill has no persistent workflow state. The research-scan
-ensemble is therefore **in-session only**:
+Unlike the Stage 1 `plugins/research` plugin (which had no persistent
+workflow state), the cited-brief profile writes phase notes through
+engineer's persistent workflow `.md` via `state.mjs`. Concretely:
 
-- If the session compacts or terminates while a peer dispatch is in
-  flight, that dispatch becomes uncollectable. The next research
-  invocation does NOT recover it — the user re-runs the topic.
-- This is an explicit design gap for v1. A future version with
-  workflow state may add recovery; v1 trades recovery for plugin
-  simplicity.
+- The cited-brief profile's command-mode flow appends phase notes
+  through `state.mjs append` at each protocol step (Launch, Collect,
+  Synthesize). The notes preserve a body-level audit trail of which
+  ensemble was launched at what time and what its synthesis verdict
+  was, in human-readable form.
+- The brief artifact itself (the saved `research_brief.md`) remains
+  the durable artifact; even if the workflow `.md` is archived later,
+  the brief is preserved at its `<root>/YYYY-MM-DD_<topic-slug>/`
+  location.
+
+In-flight peer dispatches do NOT survive session compaction in the
+current schema. Per [`_shared/references/ensemble-protocol.md`](../../_shared/references/ensemble-protocol.md)
+§"Result Bookkeeping," frontmatter promotion of `pending_ensemble:` /
+`ensemble_results:` is explicitly deferred to a post-Stage 2 ADR
+(see [ADR-0011](../../../../../docs/adr/0011-workflow-continuity-storage.md)
+§5 schema-1 closure). If a peer dispatch is in flight when the
+session compacts, the recovered session sees the in-flight phase
+note (`### Ensemble launched: <type> at <iso-utc>`) but cannot
+collect the background task by ID — the next session must
+re-dispatch the ensemble. The phase notes preserve enough audit
+trail for the user to recognise this state and decide whether to
+re-dispatch.
+
+Workflow re-entry uses engineer's own continuity — `scripts/state.mjs`
+restores the workflow `.md`'s tasks frontmatter and current_phase per
+ADR-0011 §5; the cited-brief profile inherits that without
+profile-specific wiring. The body-level phase notes (above) plus the
+saved brief artifact together give the user the recovery surface.
 
 ---
 
 ## Boundary with decision-bound flows
 
-Research is **topic-bound** and produces a durable cited brief.
-Decision-bound flows (option comparison, recommendation) are NOT
-within research's scope; they belong to skills designed for that
-shape, which use a different ensemble template and synthesize into a
-different artifact contract. Researchers gathering evidence reach for
-research; users choosing between options reach for the appropriate
-decision-bound skill.
+The cited-brief profile is **topic-bound** and produces a durable
+cited brief. Decision-bound flows (option comparison, recommendation)
+are NOT within this profile's scope; they belong to:
+
+- `engineer:decide` — for option comparison and direction selection.
+- `engineer:critique` — for evaluating an existing artifact.
+- `engineer:frame` — for turning evidence into a problem model.
+
+A user gathering evidence reaches for `engineer:investigate
+--profile=cited-brief`; a user choosing between options reaches for
+`engineer:decide`. The cited-brief profile may be invoked first to
+produce a brief that `engineer:decide` then consumes as additional
+input — but the two are distinct verbs by design (per ADR-0010 §2
+6-verb model).
 
 The shared bidirectional ensemble surface
 (`companions/contract.md` v0.1.1) does not blur this boundary — each
-skill owns its prompt template and artifact contract.
+profile owns its prompt template and artifact contract.
 
 ---
 
 ## Related
 
-- `skills/research/SKILL.md` — research skill body; calls into this
-  protocol from its command-invoked mode.
-- `skills/research/references/research-brief-spec.md` — canonical
-  brief structure, citation conventions, audit checklist.
-- `skills/research/references/output-file-rules.md` — output-file
-  conventions; the existing-directory check that gates ensemble
-  dispatch lives here.
-- `adapters/claude/scripts/discover-companion.mjs` and
-  `adapters/codex/scripts/discover-companion.mjs` — host-side
-  mechanics that resolve and invoke the peer companion. This
-  protocol describes intent only; mechanics live there.
+- `../SKILL.md` — engineer:investigate skill body; the cited-brief
+  profile branches call into this protocol from command-invoked mode.
+- `cited-brief-spec.md` — canonical brief structure, citation
+  conventions, audit checklist.
+- `output-file-rules.md` — output-file conventions; the
+  existing-directory check that gates ensemble dispatch lives here.
+- `../../_shared/references/ensemble-protocol.md` — engineer's
+  standard ensemble protocol (Explore + Investigate point types).
+  research-scan registers as a third point type with this protocol as
+  its contract.
+- `../../../scripts/dispatch-peer.mjs` — engineer's dispatcher; the
+  mechanics that resolve and invoke the peer companion. This protocol
+  describes intent only; mechanics live there.
 - `companions/contract.md` v0.1.1 — wire-spec contract for both
   companion bridges (`claude-companion`, `codex-companion`).
 - `docs/adr/0008-companion-distribution-model.md` — companion
   distribution model (cache-glob discovery + env override) that the
-  discovery scripts implement.
+  dispatcher implements.
+- `docs/adr/0010-plugin-boundary-policy.md` — 4-layer plugin
+  composition, naming convention, cross-plugin handoff principle. The
+  cited-brief profile is the L3-internal absorption of the L2 contract
+  per ADR-0014.
+- `docs/adr/0014-plugins-research-deprecation.md` — the retirement
+  decision (Stage 2.5+ archive per Amendment 2026-05-06) that
+  produced this protocol.

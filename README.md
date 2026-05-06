@@ -30,14 +30,21 @@ Two installable plugins ship in this repository:
   plugin that bundles the canonical companion CLIs for cache-glob
   discovery by consumer plugins (per
   [ADR-0008](docs/adr/0008-companion-distribution-model.md))
-- [`plugins/research/`](plugins/research/) — Stage 1 reference plugin:
-  topic-bound research producing a durable cited brief, with
-  bidirectional companion ensemble. References omcc-research as
-  lesson source, not a 1:1 port (per
-  [ADR-0007](docs/adr/0007-migration-cutover-plan.md))
+- [`plugins/engineer/`](plugins/engineer/) — Stage 2 L3 persona
+  plugin: 6 universal cognitive verbs (investigate / frame / decide
+  / compose / critique / refine) with bidirectional companion
+  ensemble. The investigate verb's `cited-brief` profile produces
+  durable cited research artifacts (absorbing the Stage 1
+  `plugins/research` contract per
+  [ADR-0014](docs/adr/0014-plugins-research-deprecation.md))
 
 See each plugin's README for install commands, invocation, and
 environment details.
+
+The earlier Stage 1 `plugins/research` reference plugin was retired
+at Stage 2.5+ per
+[ADR-0014](docs/adr/0014-plugins-research-deprecation.md); its
+cited-brief contract is now folded into `engineer:investigate`.
 
 ### Coming next
 
@@ -60,7 +67,7 @@ environment details.
 # Claude Code
 /plugin marketplace add each4all/agentic-plugins
 /plugin install companions@agentic-plugins
-/plugin install research@agentic-plugins
+/plugin install engineer@agentic-plugins
 
 # OpenAI Codex CLI
 codex plugin marketplace add each4all/agentic-plugins
