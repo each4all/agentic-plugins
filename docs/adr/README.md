@@ -31,6 +31,35 @@ old one, and change the old one's status to `Superseded by ADR-NNNN`.
 4. Merge with `Status: Accepted`
 5. To supersede: new ADR + update old ADR's status
 
+### Amendments vs Supersedes
+
+When an Accepted ADR needs revision, the choice between *Amendment*
+(adding to the existing ADR) and *Supersede* (writing a new ADR
+that replaces all or part of the old one) follows a single
+discriminator:
+
+- **Amendment** — the original Decision-section prose remains
+  *operatively accurate* after the change. The Amendment adds
+  clarifications, sub-finding additions, or downstream cascades
+  that follow from the original Decision. Pattern: ADR-0008's
+  Amendments (additive clarifications), ADR-0010's 2026-05-06
+  Amendment (downstream cascade from ADR-0014/0015).
+- **Supersede** — the original Decision-section prose is
+  *no longer operatively accurate*. A reader landing on the old
+  ADR must be pointed at the new one for the operative decision.
+  Pattern: ADR-0015 supersedes ADR-0014's timeline portion;
+  ADR-0014's Decision §1 ("plugin remains installable through
+  Stage 3 entry") is reversed.
+
+Partial supersedure is supported: if an ADR's Decision sections
+divide cleanly (e.g., capability decision vs timeline), the old
+ADR's Status becomes `Superseded by ADR-NNNN (X portion only)` and
+the new ADR scopes its supersedure to that portion. ADR-0014/0015
+is the precedent.
+
+When in doubt, ask: *does the original Decision-section prose remain
+operatively accurate?* If no, write a new ADR (Supersede).
+
 ## Index
 
 | # | Title | Status |
@@ -48,4 +77,5 @@ old one, and change the old one's status to `Superseded by ADR-NNNN`.
 | [0011](0011-workflow-continuity-storage.md) | Workflow continuity storage — minimal Option III for Stage 2 | Accepted |
 | [0012](0012-omcc-removal-preconditions.md) | omcc + codex-plugin-cc removal preconditions | Accepted |
 | 0013 | Codex CLI commands integration mechanism (file pending — Stage 3+ trigger) | Reserved |
-| [0014](0014-plugins-research-deprecation.md) | plugins/research deprecation — capability folded into engineer:investigate cited-brief profile | Proposed |
+| [0014](0014-plugins-research-deprecation.md) | plugins/research deprecation — capability folded into engineer:investigate cited-brief profile | Superseded by [ADR-0015](0015-research-archive-timeline-collapse.md) (timeline portion only) |
+| [0015](0015-research-archive-timeline-collapse.md) | Research archive timeline collapse — supersedes ADR-0014 timeline portion | Accepted |

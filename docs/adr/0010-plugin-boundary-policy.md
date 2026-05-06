@@ -5,14 +5,17 @@
 Accepted
 
 > Last amended 2026-05-06 — see [Amendments](#amendments) for the
-> ADR-0014 cascade (`plugins/research` retirement at Stage 2.5+).
+> ADR-0015 cascade (`plugins/research` retirement at Stage 2.5+,
+> superseding ADR-0014's deprecation timeline).
 
 ## Context
 
 agentic-plugins shipped Stage 1 with two plugins:
 [`plugins/companions`](../../plugins/companions/) (framework primitive
-per ADR-0008) and [`plugins/research`](../../plugins/research/) (single
-capability skill). Stage 2 introduces the self-development plugin
+per ADR-0008) and `plugins/research` (single capability skill,
+retired Stage 2.5+ per [ADR-0014](0014-plugins-research-deprecation.md)
+\+ [ADR-0015](0015-research-archive-timeline-collapse.md); historical
+state visible at commit `28b5eb8`). Stage 2 introduces the self-development plugin
 ([`docs/DEVELOPMENT.md`](../DEVELOPMENT.md) §Stage 2) and Stage 3 will
 introduce the design-domain plugin ([ADR-0007](0007-migration-cutover-plan.md)
 §Stage 3). With three or more plugins on the horizon, the framework
@@ -133,9 +136,11 @@ arguments.
 plugin's domain is naturally exactly one verb, the plugin name and
 verb may collide and the canonical command becomes
 `<capability>:<capability>`. The Stage 1 `plugins/research` plugin
-ships exactly this case: its only command is `/research:research`
-(see `plugins/research/commands/research.md`), and `Investigate`
-is the implicit verb absorbed by the plugin name. Future capability
+shipped exactly this case: its only command was `/research:research`
+(retired Stage 2.5+ per [ADR-0014](0014-plugins-research-deprecation.md)
+\+ [ADR-0015](0015-research-archive-timeline-collapse.md); the
+file's last state is at commit `28b5eb8`), and `Investigate` was
+the implicit verb absorbed by the plugin name. Future capability
 plugins may ship multiple verbs (`/decision:decide`,
 `/decision:critique`); single-verb is a precedent, not a default.
 
@@ -205,9 +210,11 @@ in-process imports or runtime coupling. An artifact handoff carries:
 - Constraints (deadlines, scope, prior decisions to honor)
 - Confidence and unresolved questions
 
-The Stage 1 [`research_brief.md`](../../plugins/research/skills/research/references/research-brief-spec.md)
-is the prototype — a durable cited artifact that downstream plugins
-(or future invocations of the same plugin) can consume.
+The Stage 1 `research_brief.md` was the prototype — a durable cited
+artifact that downstream plugins (or future invocations of the same
+plugin) can consume. The contractual shape now lives in-persona at
+`plugins/engineer/skills/investigate/references/cited-brief-spec.md`
+per ADR-0014 §2; the original Stage 1 spec is at commit `28b5eb8`.
 
 Runtime auto-handoff is permitted when both plugins are installed and
 adapters can invoke the target cleanly. When the target plugin is not
@@ -407,14 +414,15 @@ matches the user's mental vocabulary ("엔지니어 모자/디자이너 모자",
 
 ## Amendments
 
-### 2026-05-06 — research deprecation cascade (per ADR-0014 Amendment)
+### 2026-05-06 — research deprecation cascade (per ADR-0015)
 
-**Trigger**: [ADR-0014](0014-plugins-research-deprecation.md) acceptance
-and its 2026-05-06 Amendment, which retired `plugins/research` at
-Stage 2.5+ (timeline collapse from the originally proposed Stage 2.5
-deprecate / Stage 3 archive lifecycle, after the parent workflow
-established no installed user base existed to require the deprecation
-period).
+**Trigger**: [ADR-0015](0015-research-archive-timeline-collapse.md)
+acceptance, which supersedes [ADR-0014](0014-plugins-research-deprecation.md)'s
+timeline portion and archives `plugins/research` at Stage 2.5+
+directly. ADR-0014's capability decision (deprecate research, fold
+contract into `plugins/engineer:investigate`'s cited-brief profile)
+remains operative; ADR-0015 reverses only the deprecation-period
+timeline. Both ADRs together produce the cascade recorded here.
 
 **Finding**: Several specific examples and reference points in this
 ADR named `plugins/research` as the canonical L2 capability, the
@@ -425,15 +433,18 @@ from the parent workflow's Phase 1 brainstorm (`Approach 1` chosen
 with HIGH confidence):
 
 1. **Does the L2 capability layer survive when its only Stage 1
-   incumbent retires?** — Yes. ADR-0010 §6's plugin separation
-   triggers, applied inverse to `plugins/research`, were not met
-   (no second consumer plugin materialized; no separate
-   cost/quota/auth axis emerged; install-time intent was weak).
-   The trigger framework correctly predicted retirement, which
-   *validates* the framework rather than invalidating it. The
-   layer remains defined; planned occupants `decision` and
-   `image` continue to be evaluated independently when the time
-   comes.
+   incumbent retires?** — Yes. §6's plugin separation triggers,
+   applied inverse to `plugins/research`, were not met (no second
+   consumer plugin materialized; no separate cost/quota/auth axis
+   emerged; install-time intent was weak). §6's discipline admits
+   a coherent inverse reading consistent with the retirement
+   decision, which supports the framework's *descriptive utility*:
+   §6 diagnoses why `plugins/research`'s separation is no longer
+   warranted, given evidence collected during Stage 2 dogfood. The
+   framework records its own first retraction without mutating its
+   3-trigger taxonomy. The layer remains defined; planned occupants
+   `decision` and `image` continue to be evaluated independently
+   when the time comes.
 2. **Does the typed handoff prototype (§5) survive the retirement
    of its prototype implementation?** — Yes. The cited-brief
    contract — `research_brief.md` shape, capture-order numeric
@@ -476,9 +487,10 @@ original prose is preserved for decision-history audit):
   workflow's Phase 1 brainstorm (Approach 1 evidential foundation).
   Trigger 1 (2+ consumer plugins) was unmet; Trigger 2 (distinct
   cost/quota/auth axis) was unmet; Trigger 3 (install-time intent
-  separation) was weak. The framework correctly diagnosed
-  retirement; this is its first inverse application and is recorded
-  as evidence for the framework's predictive value.
+  separation) was weak. The framework's first inverse application
+  is recorded here; the result describes why `plugins/research`'s
+  separation was not warranted, not a prospective prediction made
+  before the retirement decision.
 - **Independent-install example prose** (research as the
   independent-install demonstration) is retired alongside the
   plugin. Future independent-install demonstrations will use
@@ -501,10 +513,11 @@ original prose is preserved for decision-history audit):
   L3), and `plugins/decision` / `plugins/image` (planned L2
   occupants).
 
-**Verified-against**: ADR-0014 (Decision §1–§7 + Amendment 2026-05-06)
-plus the parent workflow's Phase 2 explore evidence (12
-plugins/research surfaces enumerated, 18 engineer:investigate
-confluence points, 31 affected files across documentation / plugin
-source / meta layers). The cascade implementation lands in the same
-parent workflow's Deliverable D commit (`28b5eb8`) and Deliverable E
-commit (this PR's adjacent commit).
+**Verified-against**: ADR-0014 (capability decision, Decision §2–§7)
+\+ ADR-0015 (timeline portion, Decision §1) + the parent workflow's
+Phase 2 explore evidence (12 `plugins/research` surfaces enumerated,
+18 `engineer:investigate` confluence points, 31 affected files
+across documentation / plugin source / meta layers). The cascade
+implementation lands at commits `28b5eb8` (plugin archive) and
+`944fd4e` (this Amendment's first form, rewritten in the same PR
+as ADR-0015's authoring).

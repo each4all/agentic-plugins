@@ -2,7 +2,17 @@
 
 ## Status
 
-Proposed
+Superseded by [ADR-0015](0015-research-archive-timeline-collapse.md) — timeline portion only
+
+> **Timeline reversed by [ADR-0015](0015-research-archive-timeline-collapse.md).**
+> The capability decision (deprecate `plugins/research`, fold into
+> `plugins/engineer:investigate --profile=cited-brief`) is unchanged
+> and operative. The timeline (Decision §1 deprecation period, §7
+> Stage 3 archive scope, Consequences "Negative"/"Neutral" bullets)
+> is superseded — `plugins/research` is archived at Stage 2.5+
+> rather than carried through a deprecation period. Sections marked
+> with inline `(Superseded by ADR-0015 §1)` notes carry the
+> reversal; the original prose is preserved as historical record.
 
 ## Context
 
@@ -94,6 +104,14 @@ mechanism is selected).
 ## Decision
 
 ### 1. Deprecate `plugins/research` at Stage 2.5+
+
+> **Superseded by [ADR-0015](0015-research-archive-timeline-collapse.md) §1.**
+> The deprecation period prescribed below (plugin installable through
+> Stage 3 entry, banner / `[DEPRECATED]` marketplace prefix, 5-skill
+> rewrite-then-remove cycle) is not produced. `plugins/research` is
+> archived directly at Stage 2.5+. The capability decision —
+> deprecation in principle — stands; its timeline implementation is
+> what changes. Original prose preserved below as historical record.
 
 `plugins/research` enters a deprecation period at this ADR's
 acceptance. Concretely:
@@ -246,6 +264,13 @@ mention; full Codex parity is deferred to ADR-0013.**
 
 ### 7. Stage 3 archive removal surfaces (explicit list)
 
+> **Superseded by [ADR-0015](0015-research-archive-timeline-collapse.md) §1.**
+> The archival surfaces enumerated below are reinterpreted as
+> Stage 2.5+ scope rather than Stage 3 scope; the list itself is
+> still operative as the inventory of files to remove. The
+> commits implementing this archival are `28b5eb8` (plugin archive)
+> and `944fd4e` (ADR-0010 cascade).
+
 When Stage 3 entry triggers archival of `plugins/research`, the
 following surfaces must be removed or migrated. Recording them here
 ensures Stage 3 work does not have to rediscover them.
@@ -303,7 +328,11 @@ intact and adds deprecation signals only.
   description, 5 cross-skill handoff rewrites, ADR amendment,
   Stage 3 archive surfaces enumeration) becomes precedent for
   future deprecations and must be implemented carefully so it can
-  be followed mechanically.
+  be followed mechanically. *(Superseded by
+  [ADR-0015](0015-research-archive-timeline-collapse.md) §1: the
+  banner / manifest prefix / 5-skill rewrite portion of this
+  precedent is not produced. The archive-surfaces enumeration
+  precedent stands, executed at Stage 2.5+.)*
 - The source-of-discovery label policy conflict (engineer
   surfaces `[Both]/[Local]/[Peer]`; research brief artifact forbids
   them) requires dual-track rendering (workflow phase notes vs
@@ -328,6 +357,10 @@ intact and adds deprecation signals only.
   through the deprecation period; no manual changelog entry is
   added by this PR (release-please generates the 0.4.0 deprecation
   release from the commit body of the deprecation commit).
+  *(Superseded by [ADR-0015](0015-research-archive-timeline-collapse.md)
+  §1: `plugins/research` is removed at Stage 2.5+. The `research_brief.md`
+  format remains readable because the cited-brief profile preserves
+  it unchanged.)*
 - ADR-0010's 4-layer model and 6-verb model are unchanged. The L2
   capability slot remains, with `decision` and `image` still
   listed as planned future occupants whose triggers will be
@@ -399,61 +432,3 @@ for individual override potential. The findings:
 
 The bundle survives the override checks unmodified, which is
 recorded in the parent workflow's Phase 1 decision frontmatter.
-
-## Amendments
-
-### 2026-05-06 — Timeline collapse to immediate archive at Stage 2.5+
-
-**Trigger**: User re-evaluation during Deliverable D — agentic-plugins
-has no installed base, so the deprecation period prescribed in
-Decision §1 has no audience.
-
-**Finding**: The deprecation lifecycle template that informed Decision
-§1 (Python PEP 387, Chrome Manifest) presupposes consumers whose
-installations would require migration. With no public release and no
-documented downstream consumers, the period is cost without benefit
-— banner work, dual-track marketplace entries, and cross-skill caveat
-updates that nobody would see. The framework-instability concern that
-disqualified Approach 3 (immediate archive + supersede) at brainstorm
-time also weakens when the audience is internal-only; the audit trail
-is preserved by this Amendment and ADR-0014 itself.
-
-This is not a return to Approach 3. Approach 3 bundled the timeline
-collapse with an ADR-0010 *supersede* and removal of the L2
-capability slot itself. This Amendment retains the original Approach
-1 framing — ADR-0010 is amended (Decision §4, Deliverable E), the L2
-slot remains with `decision` and `image` listed as planned future
-occupants — and only changes the `plugins/research` retirement
-timeline.
-
-**Changes**:
-
-- §1 deprecation period is **skipped**. Stage 2.5+ executes the
-  archival enumerated in §7 directly. Banner / `[DEPRECATED]` work
-  is obsolete.
-- §7 ("Stage 3 archive removal surfaces") is reinterpreted as
-  Stage 2.5+ scope, not Stage 3.
-- §1's cross-skill handoff rewrite bullet is partially obviated —
-  the five engineer skills (`frame`, `decide`, `compose`, `refine`,
-  `critique`) **remove** their `/research:research` references
-  entirely rather than rewriting them to point at cited-brief,
-  since the cited-brief profile is in-persona and needs no
-  advisory.
-- Consequences "Neutral" bullet *"plugins/research is deprecated,
-  not removed"* is superseded — under this Amendment, the plugin
-  IS removed at Stage 2.5+. The `research_brief.md` format remains
-  readable because the cited-brief profile preserves it
-  (unchanged).
-
-**Unchanged**:
-
-- §2 (cited-brief absorbs contract — shipped in commit 4077552)
-- §3 (source-of-discovery label policy)
-- §4 (ADR-0010 amend by consequence — Deliverable E proceeds; §1
-  examples wording adjusted from "deprecated" to "removed")
-- §5 (ADR-0013 numbering — finalized in commit dc49ef0)
-- §6 (Stage 2.5+ MVP statement)
-
-**Verified-against**: No installed-base evidence to weigh; user
-direction supersedes deprecation-lifecycle convention for this
-specific decision under the no-audience condition.

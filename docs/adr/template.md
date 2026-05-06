@@ -4,6 +4,12 @@
 
 Proposed | Accepted | Superseded by ADR-NNNN | Deprecated
 
+<!--
+For revisions to an Accepted ADR, see README.md §"Amendments vs
+Supersedes" — Amendment for clarifications/cascades; new ADR
+(Supersede) for Decision-section reversals.
+-->
+
 ## Context
 
 What forces are at play? What problem requires a decision? What
