@@ -485,18 +485,21 @@ engineer's persistent workflow `.md` via `state.mjs`. Concretely:
   the brief is preserved at its `<root>/YYYY-MM-DD_<topic-slug>/`
   location.
 
-In-flight peer dispatches do NOT survive session compaction in the
-current schema. Per [`_shared/references/ensemble-protocol.md`](../../_shared/references/ensemble-protocol.md)
-§"Result Bookkeeping," frontmatter promotion of `pending_ensemble:` /
-`ensemble_results:` is explicitly deferred to a post-Stage 2 ADR
-(see [ADR-0011](../../../../../docs/adr/0011-workflow-continuity-storage.md)
-§5 schema-1 closure). If a peer dispatch is in flight when the
-session compacts, the recovered session sees the in-flight phase
-note (`### Ensemble launched: <type> at <iso-utc>`) but cannot
-collect the background task by ID — the next session must
-re-dispatch the ensemble. The phase notes preserve enough audit
-trail for the user to recognise this state and decide whether to
-re-dispatch.
+In-flight peer dispatches do NOT survive session compaction. The
+schema-1.1 `pending_ensemble` field (per
+[ADR-0017 §sub-decision 4](../../../../../docs/adr/0017-stage25-continuity-and-schema-roadmap.md)
+and [`_shared/references/ensemble-protocol.md`](../../_shared/references/ensemble-protocol.md)
+§"State Bookkeeping (Stage 2.5+)") records that a dispatch began
+(`run_id` + `started_at`), but the background task itself is not
+recoverable across sessions — the OS process is gone. If a peer
+dispatch is in flight when the session compacts, the recovered
+session sees both the in-flight phase note
+(`### Ensemble launched: <type> at <iso-utc>`) and the
+`pending_ensemble[]` entry with the matching `run_id`; it cannot
+collect the original background task. The next session must
+re-dispatch the ensemble (which calls `recordPendingEnsemble` with
+the same or a new `run_id`; the helper is idempotent on `run_id` so
+duplicate entries do not accumulate).
 
 Workflow re-entry uses engineer's own continuity — `scripts/state.mjs`
 restores the workflow `.md`'s tasks frontmatter and current_phase per
