@@ -75,9 +75,13 @@ dispatch in background:
 
 ```bash
 PROMPT_FILE="$(mktemp -t engineer-decide-prompt.XXXXXX).xml"
+# ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
+RUN_ID="brainstorm-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 # ... LLM writes the Brainstorm XML prompt to $PROMPT_FILE ...
 node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs" \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
+  --workflow-path "$ACTIVE" --phase decide \
+  --ensemble-type brainstorm --run-id "$RUN_ID" \
   > "$PROMPT_FILE.out" 2> "$PROMPT_FILE.err" &
 ```
 
@@ -116,6 +120,13 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --current-phase phase-2-presented \
   --next-action "Compose the artifact for the chosen direction" \
   --event updated
+
+# ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
+  --workflow-path "$ACTIVE" --host claude \
+  --phase decide --ensemble-type brainstorm --run-id "$RUN_ID" \
+  --verdict "$VERDICT" --summary "$SUMMARY" \
+  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ADR-0017 §sub-decision 5 — atomic terminal write. Bumps current_phase
 # into the auto-archive whitelist + sets terminal_marker=true so the

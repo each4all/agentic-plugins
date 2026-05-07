@@ -33,6 +33,7 @@ import { readFile, writeFile, stat, readdir, mkdtemp, rm } from 'node:fs/promise
 import { join, isAbsolute, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, tmpdir } from 'node:os';
+import { recordPendingEnsemble } from './state.mjs';
 
 const ENV_OVERRIDE = 'AGENTIC_COMPANIONS_ROOT';
 const VALID_PEERS = new Set(['claude', 'codex']);
@@ -413,6 +414,7 @@ export async function dispatchPeer({
   cwd,
   outputFormat = 'json',
   env = process.env,
+  ensembleBookkeeping = null,
 }) {
   if (!VALID_OUTPUT_FORMATS.has(outputFormat)) {
     throw new Error(`Invalid outputFormat: ${outputFormat}. Must be 'text' or 'json'.`);
@@ -422,6 +424,39 @@ export async function dispatchPeer({
   }
   if (!promptFile && (promptText === undefined || promptText === null)) {
     throw new Error('promptFile or promptText is required.');
+  }
+  if (ensembleBookkeeping !== null && ensembleBookkeeping !== undefined) {
+    for (const k of ['workflowPath', 'phase', 'ensembleType', 'runId']) {
+      const v = ensembleBookkeeping[k];
+      if (typeof v !== 'string' || v.length === 0) {
+        throw new Error(
+          `ensembleBookkeeping.${k} must be a non-empty string (got ${JSON.stringify(v)})`,
+        );
+      }
+    }
+  }
+
+  // ADR-0017 §sub-decision 4 — record the pending ensemble entry under the
+  // workflow file's per-file lock BEFORE we spawn the companion. This pairs
+  // with the caller-driven `state.mjs ensemble-commit` invocation that pops
+  // this entry, appends a result, and prunes the retention cap in a single
+  // atomic three-step mutation. Pending registration is best-effort: a
+  // failure here does NOT block the dispatch — caller still gets the peer
+  // response, and `/engineer:resume` Step 5b will scrub orphaned pending
+  // entries on the next session if commit never lands.
+  if (ensembleBookkeeping) {
+    try {
+      await recordPendingEnsemble({
+        workflowPath: ensembleBookkeeping.workflowPath,
+        phase: ensembleBookkeeping.phase,
+        ensemble_type: ensembleBookkeeping.ensembleType,
+        run_id: ensembleBookkeeping.runId,
+      });
+    } catch (err) {
+      process.stderr.write(
+        `dispatch-peer: pending registration failed (continuing): ${err.message}\n`,
+      );
+    }
   }
 
   const companionPath = await resolveCompanionPath(peer, { env });
@@ -580,6 +615,18 @@ function parseCliArgs(argv) {
       case '--output-format':
         opts.outputFormat = argv[++i];
         break;
+      case '--workflow-path':
+        opts.workflowPath = argv[++i];
+        break;
+      case '--phase':
+        opts.phase = argv[++i];
+        break;
+      case '--ensemble-type':
+        opts.ensembleType = argv[++i];
+        break;
+      case '--run-id':
+        opts.runId = argv[++i];
+        break;
       case '-h':
       case '--help':
         opts.help = true;
@@ -607,6 +654,14 @@ function printHelp() {
       '         (--prompt-file <path> | --prompt-text <string> | <positional>)',
       '         [--model <id>] [--effort <level>] [--cwd <dir>]',
       '         [--output-format text|json]',
+      '         [--workflow-path <path> --phase <p> --ensemble-type <t> --run-id <id>]',
+      '',
+      'When the four ensemble-bookkeeping flags are supplied (all four',
+      'or none), dispatch-peer records a pending_ensemble entry under',
+      "the workflow file's per-file lock before spawning the companion.",
+      'The caller is responsible for invoking `state.mjs ensemble-commit`',
+      'after synthesis to pop the pending entry and append the result',
+      '(ADR-0017 §sub-decision 4 three-step atomic mutation).',
       '',
       'Exit codes (per companions/contract.md §5.1):',
       '  0 — success',
@@ -641,7 +696,35 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     process.exit(2);
   }
 
-  const result = await dispatchPeer(opts);
+  // Ensemble-bookkeeping flags are all-or-nothing: either all four
+  // (--workflow-path / --phase / --ensemble-type / --run-id) are
+  // supplied, or none are. A partial set is a misuse error rather than
+  // a silent skip — silent skip would let a typo on `--run-id` mask the
+  // pending registration.
+  const bookkeepingFlags = ['workflowPath', 'phase', 'ensembleType', 'runId'];
+  const presentBookkeepingFlags = bookkeepingFlags.filter(
+    (k) => opts[k] !== undefined,
+  );
+  let ensembleBookkeeping = null;
+  if (presentBookkeepingFlags.length > 0) {
+    if (presentBookkeepingFlags.length !== bookkeepingFlags.length) {
+      const missing = bookkeepingFlags.filter(
+        (k) => opts[k] === undefined,
+      );
+      process.stderr.write(
+        `dispatch-peer: --workflow-path requires --phase, --ensemble-type, --run-id (missing: ${missing.join(', ')})\n`,
+      );
+      process.exit(2);
+    }
+    ensembleBookkeeping = {
+      workflowPath: opts.workflowPath,
+      phase: opts.phase,
+      ensembleType: opts.ensembleType,
+      runId: opts.runId,
+    };
+  }
+
+  const result = await dispatchPeer({ ...opts, ensembleBookkeeping });
 
   // Pass-through: stdout = companion stdout (text mode) or envelope JSON (json mode).
   if (opts.outputFormat === 'json' && result.envelope) {

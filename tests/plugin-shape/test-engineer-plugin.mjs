@@ -8,9 +8,11 @@
 //   - 6 skills (investigate / frame / decide / compose / critique / refine)
 //     × {SKILL.md, agents/openai.yaml}
 //   - 4 shared references (presentation / ensemble / orchestration / agent-taxonomy)
-//   - 2 host-shared canonical scripts (state.mjs, dispatch-peer.mjs)
-//   - 9 commands (6 canonical verbs + 1 sugar alias `audit` per ADR-0010 §3
-//     + 2 meta commands `resume` / `checkpoint` per ADR-0017 §sub-decisions 1+2)
+//   - 3 host-shared canonical scripts (state.mjs, dispatch-peer.mjs,
+//     stop-archive.mjs)
+//   - 10 commands (6 canonical verbs + 1 sugar alias `audit` per ADR-0010 §3
+//     + 3 meta commands `resume` / `checkpoint` / `peer-now` per ADR-0017
+//     §sub-decisions 1+2+3)
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
 //   - 1 Codex adapter hook (stop helper)
 //   - 1 Claude hooks manifest (hooks/hooks.json)
@@ -64,7 +66,7 @@ const ALIAS_VERBS = ['audit'];
 // (frontmatter with description), but their argument-hint and body
 // shape differ from verbs, so verb-name consistency assertions below
 // skip them.
-const META_COMMANDS = ['resume', 'checkpoint'];
+const META_COMMANDS = ['resume', 'checkpoint', 'peer-now'];
 const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...META_COMMANDS];
 const SHARED_REFS = [
   'presentation-protocol.md',
@@ -72,7 +74,7 @@ const SHARED_REFS = [
   'orchestration.md',
   'agent-taxonomy.md',
 ];
-const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs'];
+const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['pre-compact.mjs', 'stop.mjs', 'session-start.mjs', '_shared.mjs'];
 
 // Stale tokens that should NEVER appear in engineer SKILL/commands/refs.
@@ -305,7 +307,7 @@ describe('plugins/engineer — 4 shared references (skills/_shared/references/*.
   }
 });
 
-describe('plugins/engineer — 9 commands (commands/<verb>.md — 6 verbs + audit alias + resume + checkpoint meta)', () => {
+describe('plugins/engineer — 10 commands (commands/<verb>.md — 6 verbs + audit alias + resume + checkpoint + peer-now meta)', () => {
   for (const verb of ALL_COMMANDS) {
     describe(verb, () => {
       const path = resolve(PLUGIN_ROOT, 'commands', `${verb}.md`);

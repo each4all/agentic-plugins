@@ -97,6 +97,18 @@ fires. This separation prevents Proposed-ADR drift.
   re-injects the summary on resume.
 - **Validation command**: `tests/engineer/test-checkpoint.mjs` covering
   set, read, and SessionStart re-injection of summary.
+- **Status**: **Implemented** (2026-05-07) — `commands/checkpoint.md`
+  thin shim over `state.mjs setCheckpoint` + SessionStart re-injection
+  via `adapters/claude/hooks/session-start.mjs` reading the
+  `latest_checkpoint` frontmatter. `setCheckpoint` preserves the
+  on-disk schema marker bidirectionally (legacy schema=1 files stay at
+  schema=1 even after the new field is written; new files emit
+  schema='1.1'). Trigger satisfied by user explicit request as part of
+  the ADR-0017 sub-decisions 1+2+3+4+5 combined-implementation
+  workflow. Ships in PR3 of the 5-PR stack (`feat(plugins/engineer):
+  /engineer:checkpoint + schema 1.1 latest_checkpoint emit`,
+  commit `dabd898`, merge `304e3d9`). Validation artifact:
+  `tests/engineer/test-checkpoint.mjs` (all green).
 
 ### Sub-decision 3: `/engineer:peer-now` command
 
@@ -114,6 +126,18 @@ fires. This separation prevents Proposed-ADR drift.
   auto-trigger from the Codex side inherits the
   [ADR-0013](README.md#index) (reserved) blocker. Manual invocation
   works on both hosts in the meantime.
+- **Status**: **Implemented** (2026-05-07) — `commands/peer-now.md`
+  thin wrapper over `dispatch-peer.mjs` (verbatim mode is the existing
+  generic-wrapper behaviour; no script change was needed). The peer's
+  response is appended under a `[Peer] $PEER consultation` label phase
+  note via `state.mjs append` without `--current-phase` /
+  `--next-action` (peer-now is a side-channel that does not advance
+  phase). Excluded from `ensemble_results` by design — mirrors
+  omcc-dev's `Result Bookkeeping exclusion` for `codex-now`. Trigger
+  satisfied by user explicit request as part of the combined-
+  implementation workflow. Ships in PR5 of the 5-PR stack (commit c1
+  of `feat(plugins/engineer): /engineer:peer-now`). Validation
+  artifact: `tests/engineer/test-peer-now.mjs`.
 
 ### Sub-decision 4: `ensemble_results` frontmatter persistence
 
@@ -134,6 +158,28 @@ fires. This separation prevents Proposed-ADR drift.
 - **Validation command**: `tests/engineer/test-ensemble-results.mjs`
   covering append, retention-cap eviction, atomic 3-step mutation,
   and parse-tolerant fall-back for schema-1.0 readers.
+- **Status**: **Implemented** (2026-05-07) — `state.mjs` exposes
+  `recordPendingEnsemble` / `commitEnsemble` / `pruneEnsembleResults`
+  helpers + `ensemble-pending` / `ensemble-commit` CLI subcommands
+  (PR1 `67ca92a`); `dispatch-peer.mjs` accepts a four-flag
+  bookkeeping bundle (`--workflow-path` / `--phase` /
+  `--ensemble-type` / `--run-id`) that records a `pending_ensemble`
+  entry under the workflow file's per-file lock BEFORE the companion
+  spawns. Each of the six command-mode verbs (`compose` / `refine` /
+  `frame` / `decide` / `critique` / `investigate`) was wired to
+  generate a stable `RUN_ID` before dispatch and to invoke
+  `state.mjs ensemble-commit` after synthesis (atomic three-step
+  mutation: pop pending → append result → prune to N=20).
+  `codex_session_id` is recorded as `null` for now (companion contract
+  envelope does not surface it as of `companions/contract.md` v0.1.1
+  — F-X10 PEER-ONLY, caller-side parsing deferred to a future trigger
+  rather than expand the contract). Trigger satisfied by user
+  explicit request as part of the combined-implementation workflow.
+  Ships in PR5 of the 5-PR stack (commit c2 of
+  `feat(plugins/engineer): ensemble_results frontmatter wiring`).
+  Validation artifact: `tests/engineer/test-ensemble-results.mjs` (9
+  integration cases) + the existing unit-level coverage in
+  `tests/engineer/test-state.mjs` lines 629/680/738.
 
 ### Sub-decision 5: Stop hook auto-archive semantics
 

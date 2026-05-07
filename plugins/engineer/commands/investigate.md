@@ -123,10 +123,17 @@ background:
 
 ```bash
 PROMPT_FILE="$(mktemp -t engineer-investigate-prompt.XXXXXX).xml"
+# ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
+# `$ENSEMBLE_TYPE` is `investigate` for analysis profile, `root-cause`
+# for the root-cause profile, `cited-brief` for cited-brief (set in
+# Phase 1 from the resolved profile).
+RUN_ID="${ENSEMBLE_TYPE:-investigate}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 # ... LLM writes the XML prompt to $PROMPT_FILE ...
 # Then dispatch in background:
 node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs" \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
+  --workflow-path "$ACTIVE" --phase investigate \
+  --ensemble-type "${ENSEMBLE_TYPE:-investigate}" --run-id "$RUN_ID" \
   > "$PROMPT_FILE.out" 2> "$PROMPT_FILE.err" &
 ```
 
@@ -186,6 +193,13 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --current-phase phase-2-presented \
   --next-action "<one-sentence imperative for next verb>" \
   --event updated
+
+# ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
+  --workflow-path "$ACTIVE" --host claude \
+  --phase investigate --ensemble-type "${ENSEMBLE_TYPE:-investigate}" --run-id "$RUN_ID" \
+  --verdict "$VERDICT" --summary "$SUMMARY" \
+  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ADR-0017 §sub-decision 5 — atomic terminal write. Bumps current_phase
 # into the auto-archive whitelist + sets terminal_marker=true so the

@@ -85,11 +85,25 @@ plan with the diff or list of written files):
 
 ```bash
 PROMPT_FILE="$(mktemp -t engineer-compose-prompt.XXXXXX).xml"
+# ADR-0017 §sub-decision 4 — generate a stable run-id BEFORE dispatch
+# so the pending entry, the peer's eventual result, and the
+# ensemble-commit call all share the same key.
+RUN_ID="plan-verify-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 # ... LLM writes the Plan-verify XML prompt to $PROMPT_FILE ...
 node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs" \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
+  --workflow-path "$ACTIVE" --phase compose \
+  --ensemble-type plan-verify --run-id "$RUN_ID" \
   > "$PROMPT_FILE.out" 2> "$PROMPT_FILE.err" &
 ```
+
+The four bookkeeping flags (`--workflow-path`, `--phase`,
+`--ensemble-type`, `--run-id`) cause `dispatch-peer.mjs` to record a
+`pending_ensemble` entry under the workflow file's per-file lock
+BEFORE spawning the companion (ADR-0017 §sub-decision 4). After
+synthesis, Phase 2 invokes `state.mjs ensemble-commit` with the same
+`--run-id` to atomically pop the pending entry, append the result to
+`ensemble_results`, and prune to the retention cap.
 
 Independence exception (per ensemble-protocol.md § Independence
 Rule): the peer DOES receive the orchestrator's draft plan as input
@@ -127,6 +141,16 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --current-phase phase-2-presented \
   --next-action "Critique the composed artifact" \
   --event updated
+
+# ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit
+# (pop pending → append result → prune). $VERDICT is the synthesizer's
+# agree|modify|conflict verdict; $SUMMARY is a one-line résumé of the
+# AGREED/LOCAL-ONLY/PEER-ONLY/CONFLICT breakdown (~200 chars).
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
+  --workflow-path "$ACTIVE" --host claude \
+  --phase compose --ensemble-type plan-verify --run-id "$RUN_ID" \
+  --verdict "$VERDICT" --summary "$SUMMARY" \
+  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ADR-0017 §sub-decision 5 — atomic terminal write. Bumps current_phase
 # into the auto-archive whitelist + sets terminal_marker=true so the
