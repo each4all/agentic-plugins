@@ -85,9 +85,15 @@ Build the prompt per the matching ensemble-protocol section:
 
 ```bash
 PROMPT_FILE="$(mktemp -t engineer-critique-prompt.XXXXXX).xml"
+# ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
+# `$ENSEMBLE_TYPE` is `review` for the default critique profile and
+# `adversarial-scan` for `--profile=full-codebase` (set in Phase 1).
+RUN_ID="${ENSEMBLE_TYPE:-review}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 # ... LLM writes the matching XML prompt to $PROMPT_FILE ...
 node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs" \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
+  --workflow-path "$ACTIVE" --phase critique \
+  --ensemble-type "${ENSEMBLE_TYPE:-review}" --run-id "$RUN_ID" \
   > "$PROMPT_FILE.out" 2> "$PROMPT_FILE.err" &
 ```
 
@@ -127,6 +133,13 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --current-phase phase-2-presented \
   --next-action "Refine to address findings" \
   --event updated
+
+# ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
+  --workflow-path "$ACTIVE" --host claude \
+  --phase critique --ensemble-type "${ENSEMBLE_TYPE:-review}" --run-id "$RUN_ID" \
+  --verdict "$VERDICT" --summary "$SUMMARY" \
+  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ADR-0017 §sub-decision 5 — atomic terminal write. Bumps current_phase
 # into the auto-archive whitelist + sets terminal_marker=true so the
