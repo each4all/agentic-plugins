@@ -9,7 +9,8 @@
 //     × {SKILL.md, agents/openai.yaml}
 //   - 4 shared references (presentation / ensemble / orchestration / agent-taxonomy)
 //   - 2 host-shared canonical scripts (state.mjs, dispatch-peer.mjs)
-//   - 7 commands (6 canonical verbs + audit sugar alias per ADR-0010 §3)
+//   - 8 commands (6 canonical verbs + 1 sugar alias `audit` per ADR-0010 §3
+//     + 1 meta command `checkpoint` per ADR-0017 §sub-decision 2)
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
 //   - 1 Codex adapter hook (stop helper)
 //   - 1 Claude hooks manifest (hooks/hooks.json)
@@ -54,7 +55,13 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/engineer');
 
 const VERBS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
 const ALIAS_VERBS = ['audit'];
-const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS];
+// Meta commands per ADR-0017 — non-verb plugin commands that do not
+// bootstrap a new workflow but operate on the existing one. Each has the
+// same surface conformance (frontmatter with description), but its
+// argument-hint and body shape differ from verbs, so verb-name
+// consistency assertions below skip them.
+const META_COMMANDS = ['checkpoint'];
+const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...META_COMMANDS];
 const SHARED_REFS = [
   'presentation-protocol.md',
   'ensemble-protocol.md',
@@ -294,7 +301,7 @@ describe('plugins/engineer — 4 shared references (skills/_shared/references/*.
   }
 });
 
-describe('plugins/engineer — 7 commands (commands/<verb>.md, includes audit sugar alias)', () => {
+describe('plugins/engineer — 8 commands (commands/<verb>.md — 6 verbs + audit alias + checkpoint meta)', () => {
   for (const verb of ALL_COMMANDS) {
     describe(verb, () => {
       const path = resolve(PLUGIN_ROOT, 'commands', `${verb}.md`);
@@ -321,6 +328,33 @@ describe('plugins/engineer — 7 commands (commands/<verb>.md, includes audit su
     ok(
       /full-codebase/.test(text),
       'commands/audit.md does not mention full-codebase profile',
+    );
+  });
+
+  it('checkpoint meta command surfaces required ADR-0017 sub-2 signals (argument-hint + state.mjs delegation)', async () => {
+    // Meta commands per ADR-0017 are thin shims over `state.mjs`
+    // subcommands. Verify the contract surface: argument-hint advertises
+    // a summary, body delegates to checkpoint-set, and the SessionStart
+    // re-injection contract is mentioned (otherwise the user would not
+    // know why the command is worth invoking).
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/checkpoint.md'), 'utf8');
+    const fm = frontmatter(text);
+    ok(fm, 'commands/checkpoint.md has no YAML frontmatter');
+    ok(
+      /^argument-hint:.*summary/im.test(fm),
+      'commands/checkpoint.md argument-hint must advertise <summary>',
+    );
+    ok(
+      /checkpoint-set/.test(text),
+      'commands/checkpoint.md must delegate to state.mjs checkpoint-set subcommand',
+    );
+    ok(
+      /SessionStart/.test(text),
+      'commands/checkpoint.md must surface the SessionStart re-injection contract (otherwise users will not understand the value)',
+    );
+    ok(
+      /ADR-0017/.test(text),
+      'commands/checkpoint.md must cite ADR-0017 sub-decision 2',
     );
   });
 });

@@ -43,15 +43,19 @@ import { hrtime, pid } from 'node:process';
 // Constants — ADR-0011 §1, §2, §3 + ADR-0017 schema 1.1
 
 // SCHEMA_VERSION names the version that `createWorkflow` emits today.
-// PR1 (schema 1.1 reader) keeps emit at 1; PR3 (`/engineer:checkpoint` —
-// first sub-decision-2 frontmatter write) flips emit to '1.1' per
-// ADR-0017 §"Schema versioning policy".
-export const SCHEMA_VERSION = 1;
+// PR3 (`/engineer:checkpoint` — first sub-decision-2 frontmatter write)
+// flipped emit to the string '1.1' per ADR-0017 §"Schema versioning policy".
+// String form is required because the YAML parser (`parseScalar`) does not
+// emit a JS Number for `1.1` — bare `1.1` round-trips through Number, which
+// loses precision and changes type.
+export const SCHEMA_VERSION = '1.1';
 
 // Versions accepted on read. ADR-0017 §"Schema versioning policy" mandates
 // schema-1.0 readers tolerantly accept 1.1 frontmatter; 1.1 readers must
-// continue to read legacy schema-1 files. PR1 ships the read-side support;
-// the writer flip happens later (in PR3).
+// continue to read legacy schema-1 files. Mutation helpers (`setCheckpoint`,
+// `setTerminal`, `appendPhaseNote`, …) preserve the disk-recorded schema —
+// no silent promotion of legacy `1` files and no silent downgrade of `'1.1'`
+// files.
 export const SUPPORTED_SCHEMA_VERSIONS = new Set([1, '1.1']);
 
 export const WORKFLOW_DIR_REL = '.claude/agentic-engineer/workflows';
