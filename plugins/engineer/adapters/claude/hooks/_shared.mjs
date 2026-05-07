@@ -48,3 +48,42 @@ export function gitStatusDigest(repoRoot) {
     return '';
   }
 }
+
+export function gitHeadSha(repoRoot) {
+  try {
+    const out = execSync('git rev-parse HEAD', {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return out.toString().trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function gitHeadSubject(repoRoot) {
+  try {
+    const out = execSync('git log -1 --pretty=%s', {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return out.toString().trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// ADR-0017 §sub-decision 5 conventional-commit warning gate.
+// Pattern is the project's Conventional Commits subset declared in
+// AGENTS.md `## Conventions § Commits — Conventional Commits`:
+//   feat | fix | docs | ci | refactor | chore | test
+// followed by an optional `(scope)` and a colon. Anything else is
+// treated as non-conventional → archive proceeds, but stop.mjs emits
+// a stderr warning so the user can spot a misconfigured terminal write.
+const CONVENTIONAL_COMMIT_RE =
+  /^(feat|fix|docs|ci|refactor|chore|test)(\([^)]+\))?:/;
+
+export function isConventionalCommitSubject(subject) {
+  if (typeof subject !== 'string' || subject.length === 0) return false;
+  return CONVENTIONAL_COMMIT_RE.test(subject);
+}

@@ -169,6 +169,26 @@ fires. This separation prevents Proposed-ADR drift.
   unset → no archive (default off); (c) head moved but no terminal
   marker → no archive; (d) active children present → no archive;
   (e) terminal phase outside whitelist → no archive.
+- **Status**: **Implemented** (2026-05-07) — `runStopArchive` in
+  `plugins/engineer/scripts/stop-archive.mjs` orchestrates a
+  pure-evaluable four-gate check (terminal_marker, terminal-phase
+  whitelist, HEAD-moved, no active children) plus the soft
+  conventional-commit warning gate; the Claude `Stop` hook and Codex
+  manual-invoke `stop.mjs` both call it under the same contract. The
+  six command-mode verbs (`compose` / `refine` / `frame` / `decide` /
+  `critique` / `investigate`) wire the X1 atomic terminal write
+  (`state.mjs set-terminal --terminal-phase summary-complete
+  --terminal-marker true`) immediately after their Phase 1 phase-note
+  append, so a session that ends with a real `git commit` after a
+  verb's synthesis triggers archive automatically. Trigger satisfied
+  by user explicit request as part of the ADR-0017 sub-decisions
+  1+2+3+4+5 combined-implementation workflow (per the trigger-driven
+  multi-fire pattern). Ships in PR4 of the 5-PR stack on top of PR1
+  (schema 1.1 reader). Validation artifact:
+  `tests/engineer/test-stop-archive.mjs` (20 tests covering 11 pure
+  evaluation cases + the five ADR-required scenarios + the
+  conventional-commit warning case + Codex parity + idempotency, all
+  green).
 
 ### Schema versioning policy
 
