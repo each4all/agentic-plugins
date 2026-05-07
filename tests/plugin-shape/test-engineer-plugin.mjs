@@ -9,8 +9,8 @@
 //     × {SKILL.md, agents/openai.yaml}
 //   - 4 shared references (presentation / ensemble / orchestration / agent-taxonomy)
 //   - 2 host-shared canonical scripts (state.mjs, dispatch-peer.mjs)
-//   - 8 commands (6 canonical verbs + 1 sugar alias `audit` per ADR-0010 §3
-//     + 1 meta command `checkpoint` per ADR-0017 §sub-decision 2)
+//   - 9 commands (6 canonical verbs + 1 sugar alias `audit` per ADR-0010 §3
+//     + 2 meta commands `resume` / `checkpoint` per ADR-0017 §sub-decisions 1+2)
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
 //   - 1 Codex adapter hook (stop helper)
 //   - 1 Claude hooks manifest (hooks/hooks.json)
@@ -56,11 +56,15 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/engineer');
 const VERBS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
 const ALIAS_VERBS = ['audit'];
 // Meta commands per ADR-0017 — non-verb plugin commands that do not
-// bootstrap a new workflow but operate on the existing one. Each has the
-// same surface conformance (frontmatter with description), but its
-// argument-hint and body shape differ from verbs, so verb-name
-// consistency assertions below skip them.
-const META_COMMANDS = ['checkpoint'];
+// bootstrap a new workflow but operate on the existing one. They ship
+// under commands/<name>.md but do NOT have a corresponding
+// skills/<name>/SKILL.md or agents/openai.yaml — they are thin shims
+// over plugins/engineer/scripts/state.mjs (ADR-0017 §sub-decision-1 et
+// seq.). All meta commands share the same surface conformance
+// (frontmatter with description), but their argument-hint and body
+// shape differ from verbs, so verb-name consistency assertions below
+// skip them.
+const META_COMMANDS = ['resume', 'checkpoint'];
 const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...META_COMMANDS];
 const SHARED_REFS = [
   'presentation-protocol.md',
@@ -301,7 +305,7 @@ describe('plugins/engineer — 4 shared references (skills/_shared/references/*.
   }
 });
 
-describe('plugins/engineer — 8 commands (commands/<verb>.md — 6 verbs + audit alias + checkpoint meta)', () => {
+describe('plugins/engineer — 9 commands (commands/<verb>.md — 6 verbs + audit alias + resume + checkpoint meta)', () => {
   for (const verb of ALL_COMMANDS) {
     describe(verb, () => {
       const path = resolve(PLUGIN_ROOT, 'commands', `${verb}.md`);
