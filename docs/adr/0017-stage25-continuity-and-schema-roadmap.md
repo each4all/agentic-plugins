@@ -74,6 +74,15 @@ fires. This separation prevents Proposed-ADR drift.
 - **Out of scope**: drift classification 4-tier (clean / compatible /
   conflicting / rewound). Defer to Stage 3+ trigger when same-file
   cross-host transition surfaces an actual reconciliation case.
+- **Status**: **Implemented** (2026-05-07) — `commands/resume.md` thin
+  shim over `state.mjs` with the four documented outcomes (single
+  active / multi-active / no active / archive). Trigger satisfied by
+  user explicit request as part of the ADR-0017 sub-decisions
+  1+2+3+4+5 combined-implementation workflow (per the trigger-driven
+  multi-fire pattern). Ships in PR2 of the 5-PR stack on top of PR1
+  (ADR-0017 PR1 / `feat(plugins/engineer): schema 1.1 reader +
+  ensemble bookkeeping helpers`, commit `67ca92a`). Validation
+  artifact: `tests/engineer/test-resume.mjs` (15 tests, all green).
 
 ### Sub-decision 2: `/engineer:checkpoint` command + `latest_checkpoint` field
 
