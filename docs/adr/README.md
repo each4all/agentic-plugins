@@ -81,3 +81,4 @@ operatively accurate?* If no, write a new ADR (Supersede).
 | [0015](0015-research-archive-timeline-collapse.md) | Research archive timeline collapse — supersedes ADR-0014 timeline portion | Accepted |
 | [0016](0016-cross-package-commit-splitting.md) | Cross-package commit splitting for release-please routing | Accepted |
 | [0017](0017-stage25-continuity-and-schema-roadmap.md) | Stage 2.5+ continuity and schema roadmap (meta commands + `ensemble_results` frontmatter + Stop auto-archive) | Accepted |
+| [0018](0018-stage3-architecture-orchestrator-and-branch-context.md) | Stage 3+ architecture — orchestration capability + branch-as-workflow-context + cross-host verification | Accepted |
