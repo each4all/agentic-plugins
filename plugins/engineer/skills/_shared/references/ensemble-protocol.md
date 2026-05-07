@@ -151,24 +151,65 @@ Synthesis output replaces the standard single-model output. Follow
 the Presentation Mode Protocol (`presentation-protocol.md`) for the
 synthesized result.
 
-### State Bookkeeping (Stage 2)
+### State Bookkeeping (Stage 2.5+)
 
-Stage 2 records ensemble dispatch and synthesis results in the
-workflow file's **Markdown body** as phase notes — not in frontmatter.
-ADR-0011 §2 schema 1 is closed; the frontmatter set is fixed and
-extending it requires a follow-up ADR (out of Stage 2 scope).
+Ensemble dispatch and synthesis results are recorded in **two complementary
+locations**:
 
-Each phase note appended via `state.mjs append --phase-note ...`
-captures the ensemble in human-readable form:
-- in-flight markers: `### Ensemble launched: <type> at <iso-utc>`
-  near the phase boundary
-- synthesis results: `### Ensemble synthesis: <type> verdict=<...>`
-  followed by the AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown
+1. **Frontmatter** — programmatic bookkeeping via the schema-1.1
+   `pending_ensemble` and `ensemble_results` fields (additive optional
+   keys per
+   [ADR-0017 §sub-decision 4](../../../../../docs/adr/0017-stage25-continuity-and-schema-roadmap.md)).
+   The schema-1.1 reader in `plugins/engineer/scripts/state.mjs` accepts
+   both legacy `schema: 1` (no 1.1 fields) and `schema: '1.1'` (with any
+   subset of the 1.1 fields populated) per `SUPPORTED_SCHEMA_VERSIONS`.
+   The frontmatter parser remains closed-schema: unknown top-level keys
+   that are neither schema-1 nor schema-1.1 known throw at parse time.
+   Older parsers (in earlier engineer builds without the ADR-0017 keys
+   in `FRONTMATTER_KEY_ORDER`) cannot read schema-1.1 frontmatter and
+   will reject it as an unknown-key violation — there is no shared
+   on-disk format with engineer < ADR-0017. All readers / writers in
+   this build go through the helpers in
+   `plugins/engineer/scripts/state.mjs`:
+   - `recordPendingEnsemble(...)` — idempotent on `run_id`; replaces
+     duplicate entries rather than appending.
+   - `commitEnsemble(...)` — three-step atomic mutation in a single file
+     lock window: (1) pop matching pending, (2) idempotent append result,
+     (3) prune to `ENSEMBLE_RESULTS_RETENTION_CAP` (default 20, FIFO by
+     `completed_at`).
+   - Equivalent CLI subcommands: `state.mjs ensemble-pending` /
+     `ensemble-commit`.
+2. **Markdown body** — human-readable phase notes appended via
+   `state.mjs append --phase-note ...`:
+   - in-flight markers: `### Ensemble launched: <type> at <iso-utc>`
+     near the phase boundary
+   - synthesis results: `### Ensemble synthesis: <type> verdict=<...>`
+     followed by the AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown
 
-This satisfies the "every dispatch is recorded" principle without
-amending ADR-0011 schema 1. Frontmatter promotion of
-`pending_ensemble` / `ensemble_results` is explicitly deferred to a
-future ADR (post-Stage 2).
+The two channels carry distinct concerns: frontmatter is the
+machine-parsable retrospective surface (verdict-rate queries, retention,
+cross-workflow analytics); body is the human-readable narrative. Both are
+written under the per-file lock; the body update happens via
+`appendPhase`, the frontmatter update via the helpers above. They MAY be
+written in separate calls — neither requires the other.
+
+`ensemble_results` entries carry `{phase, ensemble_type, run_id, verdict,
+summary, completed_at, codex_session_id}`. `codex_session_id` is
+best-effort: if the orchestrator can extract a session id from the peer's
+stdout, it is recorded as a string. When unavailable, the JS-API caller
+passes `null`; the serializer **omits** the subkey from the on-disk
+entry rather than emitting an empty string. The reader treats absence
+and `null` as equivalent ("no session"). This matches the schema 1.1
+optional-subkey policy in
+`OPTIONAL_ENTRY_KEYS_BY_LIST_KEY` and avoids the
+empty-string-vs-null ambiguity in retrospective queries.
+
+`pending_ensemble` entries carry `{phase, ensemble_type, run_id,
+started_at}`. Stale entries (process killed between
+`recordPendingEnsemble` and `commitEnsemble`) are surfaced by the next
+`/engineer:resume` drift report; cleanup happens by the next
+`commitEnsemble` for the same `run_id`, or manually via a future
+ensemble-prune subcommand.
 
 ---
 

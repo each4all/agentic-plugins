@@ -61,11 +61,13 @@ At the first major presentation point in a command or skill workflow, ask:
 - **Persistence**: When invoked from `/engineer:*` commands that own a
   workflow file, the chosen mode is recorded in the workflow's Markdown
   body as a phase note (`### Presentation mode: batch | interview`)
-  rather than in frontmatter. ADR-0011 §2 schema=1 is closed; the
-  body-note approach keeps the chosen mode discoverable on resume
-  without forcing a frontmatter extension. A future ADR may promote
-  `presentation_mode` into frontmatter if dogfood reveals a strong
-  need for machine-queryable persistence.
+  rather than in frontmatter. ADR-0017 schema 1.1 added `latest_checkpoint`
+  / `pending_ensemble` / `ensemble_results` / `terminal_marker` /
+  `child_completions` to the closed frontmatter set, but did not
+  promote `presentation_mode`; the body-note approach is intentionally
+  retained because presentation-mode preference rarely needs
+  machine-queryable retrospection. A future ADR may promote it to
+  frontmatter if dogfood reveals a strong need.
 
 ---
 

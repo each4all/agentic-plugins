@@ -40,11 +40,37 @@ import { randomBytes } from 'node:crypto';
 import { hrtime, pid } from 'node:process';
 
 // -----------------------------------------------------------------------------
-// Constants — ADR-0011 §1, §2, §3
+// Constants — ADR-0011 §1, §2, §3 + ADR-0017 schema 1.1
 
+// SCHEMA_VERSION names the version that `createWorkflow` emits today.
+// PR1 (schema 1.1 reader) keeps emit at 1; PR3 (`/engineer:checkpoint` —
+// first sub-decision-2 frontmatter write) flips emit to '1.1' per
+// ADR-0017 §"Schema versioning policy".
 export const SCHEMA_VERSION = 1;
+
+// Versions accepted on read. ADR-0017 §"Schema versioning policy" mandates
+// schema-1.0 readers tolerantly accept 1.1 frontmatter; 1.1 readers must
+// continue to read legacy schema-1 files. PR1 ships the read-side support;
+// the writer flip happens later (in PR3).
+export const SUPPORTED_SCHEMA_VERSIONS = new Set([1, '1.1']);
+
 export const WORKFLOW_DIR_REL = '.claude/agentic-engineer/workflows';
 export const CREATION_LOCK_REL = '.claude/agentic-engineer/.creation-lock';
+// ADR-0017 §sub-decision 5 — auto-archive destination.
+export const ARCHIVE_DIR_REL = '.claude/agentic-engineer/archive';
+
+// ADR-0017 §sub-decision 5 — terminal phase whitelist that gates Stop
+// auto-archive. The whitelist is intentionally small + explicit so an
+// intermediate phase write cannot trip auto-archive.
+export const TERMINAL_PHASES = new Set([
+  'commit-complete',
+  'summary-complete',
+  'fix-complete',
+]);
+
+// ADR-0017 §sub-decision 4 — global retention cap on `ensemble_results`.
+// Oldest entries (by `completed_at`) are evicted on append.
+export const ENSEMBLE_RESULTS_RETENTION_CAP = 20;
 
 const STALE_THRESHOLD_MS = 60_000;        // ADR-0011 §3
 const RETRY_BACKOFF_MAX_MS = 5_000;       // ADR-0011 §3 step 2
@@ -58,7 +84,16 @@ const VALID_VERBS = new Set([
   'refine',
 ]);
 const VALID_HOSTS = new Set(['claude', 'codex']);
-const VALID_HOOK_EVENTS = new Set(['created', 'updated', 'snapshot', 'resumed']);
+// `archived` and `checkpointed` are added for ADR-0017 sub-decisions 1/5
+// (resume archive flow) and 2 (`/engineer:checkpoint`) respectively.
+const VALID_HOOK_EVENTS = new Set([
+  'created',
+  'updated',
+  'snapshot',
+  'resumed',
+  'archived',
+  'checkpointed',
+]);
 const VALID_SNAPSHOT_TRIGGERS = new Set(['pre-compact', 'stop']);
 
 // -----------------------------------------------------------------------------
@@ -433,7 +468,54 @@ const FRONTMATTER_KEY_ORDER = [
   'tasks',
   'host_history',
   'last_snapshot',
+  // ADR-0017 schema 1.1 additions — all optional, additive.
+  'latest_checkpoint',     // sub-decision 2
+  'pending_ensemble',      // sub-decision 4 (paired with ensemble_results)
+  'ensemble_results',      // sub-decision 4
+  'terminal_marker',       // sub-decision 5
+  'child_completions',     // sub-decision 5 (A4 transitive)
 ];
+
+// ADR-0017 keys are optional. They MUST NOT appear in REQUIRED, and a
+// schema-1 workflow file may have none of them — that is normal.
+const SCHEMA_1_1_OPTIONAL_KEYS = new Set([
+  'latest_checkpoint',
+  'pending_ensemble',
+  'ensemble_results',
+  'terminal_marker',
+  'child_completions',
+]);
+
+// Per-entry field order for list-of-objects schema 1.1 frontmatter keys.
+// The first field name doubles as the discriminator that opens a `- ` list
+// item in the YAML emit; remaining fields are continuation lines.
+// `host_history` is structurally similar but lives in schema 1; its key
+// order stays inline in `serializeFrontmatter` for readability.
+const ENTRY_KEYS_BY_LIST_KEY = Object.freeze({
+  pending_ensemble: ['phase', 'ensemble_type', 'run_id', 'started_at'],
+  ensemble_results: [
+    'phase',
+    'ensemble_type',
+    'run_id',
+    'verdict',
+    'summary',
+    'completed_at',
+    'codex_session_id',
+  ],
+  child_completions: ['child_id', 'spawned_at', 'commit', 'closed_at'],
+});
+
+// Subkeys that may legitimately be missing per ADR-0017:
+// - `child_completions[*].commit` and `.closed_at` — present only after
+//   the child workflow terminates.
+// - `ensemble_results[*].codex_session_id` — best-effort surface; nullable.
+// Co-located with ENTRY_KEYS_BY_LIST_KEY so the two pieces of the spec
+// stay together (Codex review M2 — schema-correctness perspective).
+const OPTIONAL_ENTRY_KEYS_BY_LIST_KEY = Object.freeze({
+  pending_ensemble: new Set(),
+  ensemble_results: new Set(['codex_session_id']),
+  child_completions: new Set(['commit', 'closed_at']),
+});
 
 function yamlScalar(value) {
   if (value === null || value === undefined) return '""';
@@ -471,6 +553,78 @@ function serializeFrontmatter(fm) {
       lines.push(`  at: ${yamlScalar(value.at)}`);
       lines.push(`  trigger: ${yamlScalar(value.trigger)}`);
       lines.push(`  status_digest: ${yamlScalar(value.status_digest)}`);
+      continue;
+    }
+
+    if (key === 'latest_checkpoint') {
+      // ADR-0017 sub-decision 2 — block-style {at, summary} (last_snapshot pattern).
+      lines.push(`${key}:`);
+      lines.push(`  at: ${yamlScalar(value.at)}`);
+      lines.push(`  summary: ${yamlScalar(value.summary)}`);
+      continue;
+    }
+
+    if (key === 'terminal_marker') {
+      // ADR-0017 sub-decision 5 — scalar boolean. Default off; gates auto-archive.
+      // Refuse silent type coercion at the write boundary (Codex/Schema
+      // review M5/M6) — a stringy "false" must NOT round-trip as `true`.
+      if (typeof value !== 'boolean') {
+        throw new Error(
+          `terminal_marker must be a boolean (got ${typeof value} ${JSON.stringify(value)})`,
+        );
+      }
+      lines.push(`${key}: ${yamlScalar(value)}`);
+      continue;
+    }
+
+    if (
+      key === 'pending_ensemble' ||
+      key === 'ensemble_results' ||
+      key === 'child_completions'
+    ) {
+      // ADR-0017 sub-decisions 4/5 — list-of-objects (host_history pattern).
+      // Field order per entry is fixed below. Optional subkeys (per
+      // OPTIONAL_ENTRY_KEYS_BY_LIST_KEY) whose value is `null` /
+      // `undefined` are omitted from emit so the parsed shape preserves
+      // the "absent vs explicitly null" distinction (Codex review MINOR
+      // on yamlScalar(null) → empty string).
+      if (!Array.isArray(value)) {
+        throw new Error(`${key} must be an array, got ${typeof value}`);
+      }
+      if (value.length === 0) {
+        lines.push(`${key}: []`);
+      } else {
+        lines.push(`${key}:`);
+        const entryKeys = ENTRY_KEYS_BY_LIST_KEY[key];
+        const optional = OPTIONAL_ENTRY_KEYS_BY_LIST_KEY[key] ?? new Set();
+        for (const entry of value) {
+          // Determine the first field that has a non-null value — that
+          // is the line that opens the list item with `- key: val`.
+          // (Required keys must be present per validateFrontmatter, so
+          // `entryKeys[0]` is always emittable in practice; the
+          // null-skip rule only ever drops optional keys mid-entry.)
+          let opened = false;
+          for (const k of entryKeys) {
+            const v = entry[k];
+            if (v === null || v === undefined) {
+              if (optional.has(k)) continue;
+              // Required key missing — surface immediately rather than
+              // emitting an empty placeholder that would silently pass
+              // round-trip (Codex MAJOR M3/M4 — required field gate at
+              // write boundary).
+              throw new Error(
+                `Missing required entry key ${key}[*].${k} (required by ADR-0017)`,
+              );
+            }
+            if (!opened) {
+              lines.push(`  - ${k}: ${yamlScalar(v)}`);
+              opened = true;
+            } else {
+              lines.push(`    ${k}: ${yamlScalar(v)}`);
+            }
+          }
+        }
+      }
       continue;
     }
 
@@ -512,11 +666,14 @@ function serializeFrontmatter(fm) {
     lines.push(`${key}: ${yamlScalar(value)}`);
   }
 
-  // Drop frontmatter keys not in canonical order — schema=1 is closed.
-  // (Unknown keys would silently drop on round-trip, so we surface them.)
+  // Drop frontmatter keys not in canonical order — schemas 1 and 1.1 are
+  // both closed (ADR-0011 §2 + ADR-0017). Unknown keys would silently
+  // drop on round-trip, so we surface them.
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
-      throw new Error(`Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 is closed.`);
+      throw new Error(
+        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 are closed.`,
+      );
     }
   }
 
@@ -567,7 +724,11 @@ export function parseWorkflowFile(text) {
 
     if (rest === '') {
       // Block-style nested value
-      if (key === 'git_baseline' || key === 'last_snapshot') {
+      if (
+        key === 'git_baseline' ||
+        key === 'last_snapshot' ||
+        key === 'latest_checkpoint'                                  // ADR-0017 sub-2
+      ) {
         const sub = {};
         i += 1;
         while (i < lines.length && lines[i].startsWith('  ') && !lines[i].startsWith('    ')) {
@@ -585,7 +746,13 @@ export function parseWorkflowFile(text) {
         fm[key] = sub;
         continue;
       }
-      if (key === 'host_history' || key === 'tasks') {
+      if (
+        key === 'host_history' ||
+        key === 'tasks' ||
+        key === 'pending_ensemble' ||                                // ADR-0017 sub-4
+        key === 'ensemble_results' ||                                // ADR-0017 sub-4
+        key === 'child_completions'                                  // ADR-0017 sub-5
+      ) {
         // Block-style list
         const list = [];
         i += 1;
@@ -630,7 +797,14 @@ export function parseWorkflowFile(text) {
     }
 
     // Inline scalar
-    if (rest === '[]' && (key === 'tasks' || key === 'host_history')) {
+    if (
+      rest === '[]' &&
+      (key === 'tasks' ||
+        key === 'host_history' ||
+        key === 'pending_ensemble' ||                                // ADR-0017 sub-4
+        key === 'ensemble_results' ||                                // ADR-0017 sub-4
+        key === 'child_completions')                                 // ADR-0017 sub-5
+    ) {
       fm[key] = [];
       i += 1;
       continue;
@@ -639,10 +813,14 @@ export function parseWorkflowFile(text) {
     i += 1;
   }
 
-  // Surface unknown keys per closed-schema rule.
+  // Surface unknown keys per closed-schema rule. Schema 1.1 expands the
+  // known set additively per ADR-0017; the rule still rejects keys that
+  // are neither schema-1 nor schema-1.1 known.
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
-      throw new Error(`Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 is closed.`);
+      throw new Error(
+        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 are closed.`,
+      );
     }
   }
 
@@ -656,14 +834,20 @@ export function parseWorkflowFile(text) {
 }
 
 /**
- * Strict ADR-0011 §2 schema=1 validation. Called at parse-before-mutate
- * boundaries. Throws on any deviation from the closed schema set.
+ * Strict ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 validation. Called at
+ * parse-before-mutate boundaries. Throws on any deviation from the closed
+ * schema set. Schema 1.1 is additive; the schema-1 required key set is
+ * unchanged, and 1.1 keys are all optional.
  */
 function validateFrontmatter(fm) {
-  if (fm.schema !== SCHEMA_VERSION) {
+  if (!SUPPORTED_SCHEMA_VERSIONS.has(fm.schema)) {
+    const accepted = [...SUPPORTED_SCHEMA_VERSIONS]
+      .map((v) => JSON.stringify(v))
+      .join(', ');
     throw new Error(
-      `Unsupported schema version: ${fm.schema} (expected ${SCHEMA_VERSION}). ` +
-      `ADR-0011 §2 schema=1 is closed; cross-schema mutation is rejected.`,
+      `Unsupported schema version: ${JSON.stringify(fm.schema)} ` +
+      `(supported: ${accepted}). ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 are closed; ` +
+      `cross-schema mutation is rejected.`,
     );
   }
   const REQUIRED = [
@@ -722,6 +906,113 @@ function validateFrontmatter(fm) {
   if ('last_snapshot' in fm) {
     validateNestedShape(fm, 'last_snapshot', ['at', 'trigger', 'status_digest']);
     validateSnapshotTrigger(fm.last_snapshot.trigger);
+  }
+
+  // ADR-0017 schema 1.1 optional fields. All gates are independent — a
+  // schema-1 file with no ADR-0017 keys passes validation unchanged.
+  validateSchema11Fields(fm);
+}
+
+/**
+ * Validate the ADR-0017 schema-1.1 optional fields. Each field's nested
+ * shape and value-types are checked when present. The function is silent
+ * when a field is absent; ADR-0017 makes 1.1 keys optional.
+ */
+function validateSchema11Fields(fm) {
+  if ('latest_checkpoint' in fm) {
+    validateNestedShape(fm, 'latest_checkpoint', ['at', 'summary']);
+    if (typeof fm.latest_checkpoint.at !== 'string') {
+      throw new Error('latest_checkpoint.at must be a string');
+    }
+    if (typeof fm.latest_checkpoint.summary !== 'string') {
+      throw new Error('latest_checkpoint.summary must be a string');
+    }
+  }
+
+  if ('terminal_marker' in fm) {
+    if (typeof fm.terminal_marker !== 'boolean') {
+      throw new Error('terminal_marker must be a boolean');
+    }
+  }
+
+  validateListOfObjectsField(fm, 'pending_ensemble');
+  validateListOfObjectsField(fm, 'ensemble_results');
+  validateListOfObjectsField(fm, 'child_completions');
+}
+
+/**
+ * Per-list-key value-type checks. All schema 1.1 list-of-objects entries
+ * carry string-shaped values (ISO timestamps, identifiers, free-form
+ * summaries). Codex / schema review (Codex MINOR + Schema MAJOR) flagged
+ * the absence of value-type validation: hand-edited or programmatic
+ * callers could write numeric `run_id` or boolean `completed_at` and
+ * still pass the shape gate.
+ *
+ * Each value gate accepts either `string` (the canonical case) or — for
+ * subkeys explicitly nullable per ADR-0017 — `null` / `undefined`. The
+ * function throws with a precise field path on type violation.
+ */
+function validateListOfObjectsValueTypes(key, idx, entry) {
+  const optional = OPTIONAL_ENTRY_KEYS_BY_LIST_KEY[key] ?? new Set();
+  for (const k of ENTRY_KEYS_BY_LIST_KEY[key]) {
+    const v = entry[k];
+    if (v === undefined || v === null) {
+      // Optional subkeys may legitimately be absent or null.
+      if (optional.has(k)) continue;
+      // Required-key absence is caught by the presence loop in
+      // `validateListOfObjectsField`; nothing to do here.
+      continue;
+    }
+    if (typeof v !== 'string') {
+      throw new Error(
+        `${key}[${idx}].${k} must be a string (got ${typeof v} ${JSON.stringify(v)})`,
+      );
+    }
+  }
+}
+
+/**
+ * Validate a schema-1.1 list-of-objects optional field. The field's per-
+ * entry key set is `ENTRY_KEYS_BY_LIST_KEY[key]`, which doubles as the
+ * known-set check (no unknown subkeys; missing subkeys allowed only for
+ * those marked optional below).
+ *
+ * Optional subkeys per ADR-0017:
+ * - `child_completions[*].commit` and `.closed_at` — present only after
+ *   the child workflow terminates.
+ * - `ensemble_results[*].codex_session_id` — best-effort surface; nullable.
+ */
+function validateListOfObjectsField(fm, key) {
+  if (!(key in fm)) return;
+  const value = fm[key];
+  if (!Array.isArray(value)) {
+    throw new Error(`${key} must be an array, got ${typeof value}`);
+  }
+  const expected = ENTRY_KEYS_BY_LIST_KEY[key];
+  if (!expected) {
+    throw new Error(`No entry-key spec for list-of-objects field ${key}`);
+  }
+  const expectedSet = new Set(expected);
+  const optional = OPTIONAL_ENTRY_KEYS_BY_LIST_KEY[key] ?? new Set();
+  for (let idx = 0; idx < value.length; idx++) {
+    const entry = value[idx];
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      throw new Error(`${key}[${idx}] must be an object`);
+    }
+    for (const k of Object.keys(entry)) {
+      if (!expectedSet.has(k)) {
+        throw new Error(
+          `Unknown nested key ${key}[${idx}].${k}. Expected: ${expected.join(', ')}.`,
+        );
+      }
+    }
+    for (const k of expected) {
+      if (optional.has(k)) continue;
+      if (!(k in entry)) {
+        throw new Error(`Missing nested key ${key}[${idx}].${k}`);
+      }
+    }
+    validateListOfObjectsValueTypes(key, idx, entry);
   }
 }
 
@@ -1013,6 +1304,543 @@ export async function readWorkflow(workflowPath) {
 }
 
 // -----------------------------------------------------------------------------
+// ADR-0017 schema 1.1 helpers — checkpoint, ensemble bookkeeping, archive
+//
+// All mutation helpers acquire `withFileLock` for the workflow file and
+// route every disk write through `atomicWrite` so the ownership-token
+// recheck (Phase 6 fix #2) still applies.
+
+/**
+ * Apply the ADR-0017 §sub-decision-4 retention cap to an `ensemble_results`
+ * list. Sorts oldest→newest by `completed_at` and trims to `cap`. The
+ * input array is **not** mutated; a new array is returned.
+ *
+ * @param {Array<object>} entries
+ * @param {number} cap
+ * @returns {Array<object>}
+ */
+export function pruneEnsembleResults(entries, cap = ENSEMBLE_RESULTS_RETENTION_CAP) {
+  if (!Array.isArray(entries)) {
+    throw new Error('pruneEnsembleResults: entries must be an array');
+  }
+  if (!Number.isInteger(cap) || cap < 0) {
+    throw new Error(`pruneEnsembleResults: cap must be a non-negative integer (got ${cap})`);
+  }
+  if (entries.length <= cap) return [...entries];
+  const sorted = [...entries].sort((a, b) => {
+    const ka = a?.completed_at ?? '';
+    const kb = b?.completed_at ?? '';
+    if (ka < kb) return -1;
+    if (ka > kb) return 1;
+    return 0;
+  });
+  return sorted.slice(sorted.length - cap);
+}
+
+/**
+ * ADR-0017 §sub-decision 4 — record a pending ensemble dispatch.
+ *
+ * Idempotency: if an entry with the same `run_id` already exists in
+ * `pending_ensemble`, it is replaced (not duplicated). This keeps
+ * dispatch-side retries safe and prevents the pending list from growing
+ * unboundedly under restart loops.
+ *
+ * Required fields are validated at the call boundary (Codex review M3 —
+ * partial entries with empty phase / ensemble_type would otherwise pass
+ * silently and corrupt drift / retrospection queries).
+ */
+export async function recordPendingEnsemble({
+  workflowPath,
+  phase,
+  ensemble_type,
+  run_id,
+  started_at,
+  now = new Date(),
+}) {
+  for (const [name, val] of [
+    ['phase', phase],
+    ['ensemble_type', ensemble_type],
+    ['run_id', run_id],
+  ]) {
+    if (typeof val !== 'string' || val.length === 0) {
+      throw new Error(
+        `recordPendingEnsemble: ${name} must be a non-empty string (got ${JSON.stringify(val)})`,
+      );
+    }
+  }
+  // Codex re-review M-3: reject non-string `started_at` so the writer
+  // does not produce a file the next reader will reject (yamlScalar
+  // would happily emit a number, but validateListOfObjectsValueTypes
+  // requires string on read).
+  if (started_at !== undefined && typeof started_at !== 'string') {
+    throw new Error(
+      `recordPendingEnsemble: started_at must be a string (got ${typeof started_at})`,
+    );
+  }
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const nowIso = isoUtc(now);
+    const entry = {
+      phase,
+      ensemble_type,
+      run_id,
+      started_at: started_at ?? nowIso,
+    };
+    const existing = Array.isArray(frontmatter.pending_ensemble)
+      ? frontmatter.pending_ensemble.filter((e) => e.run_id !== run_id)
+      : [];
+    frontmatter.pending_ensemble = [...existing, entry];
+    frontmatter.updated_at = nowIso;
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath };
+  });
+}
+
+/**
+ * ADR-0017 §sub-decision 4 — commit an ensemble result via the prescribed
+ * three-step atomic mutation in a single `withFileLock` window:
+ *
+ *   1. Pop the matching `pending_ensemble` entry (by `run_id`).
+ *   2. Append `result` to `ensemble_results`.
+ *   3. Prune `ensemble_results` to `ENSEMBLE_RESULTS_RETENTION_CAP`.
+ *
+ * Idempotency: if an `ensemble_results` entry with the same `run_id`
+ * already exists, the second commit is a no-op for the results list (the
+ * matching pending entry is still removed if present).
+ */
+export async function commitEnsemble({
+  workflowPath,
+  run_id,
+  phase,
+  ensemble_type,
+  verdict,
+  summary,
+  completed_at,
+  codex_session_id = null,
+  cap = ENSEMBLE_RESULTS_RETENTION_CAP,
+  now = new Date(),
+}) {
+  // Required field validation at the call boundary (Codex review M4 —
+  // partial commits with empty verdict / summary would otherwise corrupt
+  // retrospective ensemble-quality queries).
+  for (const [name, val] of [
+    ['run_id', run_id],
+    ['phase', phase],
+    ['ensemble_type', ensemble_type],
+    ['verdict', verdict],
+    ['summary', summary],
+  ]) {
+    if (typeof val !== 'string' || val.length === 0) {
+      throw new Error(
+        `commitEnsemble: ${name} must be a non-empty string (got ${JSON.stringify(val)})`,
+      );
+    }
+  }
+  if (
+    codex_session_id !== null &&
+    codex_session_id !== undefined &&
+    typeof codex_session_id !== 'string'
+  ) {
+    throw new Error(
+      `commitEnsemble: codex_session_id must be string|null (got ${typeof codex_session_id})`,
+    );
+  }
+  // Codex re-review M-3: reject non-string `completed_at` for the same
+  // reason as recordPendingEnsemble's started_at gate.
+  if (completed_at !== undefined && typeof completed_at !== 'string') {
+    throw new Error(
+      `commitEnsemble: completed_at must be a string (got ${typeof completed_at})`,
+    );
+  }
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const nowIso = isoUtc(now);
+
+    // Step 1: pop matching pending (no-op if missing).
+    const pending = Array.isArray(frontmatter.pending_ensemble)
+      ? frontmatter.pending_ensemble
+      : [];
+    frontmatter.pending_ensemble = pending.filter((e) => e.run_id !== run_id);
+
+    // Step 2: append result idempotently.
+    const existing = Array.isArray(frontmatter.ensemble_results)
+      ? frontmatter.ensemble_results
+      : [];
+    const alreadyCommitted = existing.some((e) => e.run_id === run_id);
+    let next;
+    if (alreadyCommitted) {
+      next = existing;
+    } else {
+      const entry = {
+        phase,
+        ensemble_type,
+        run_id,
+        verdict,
+        summary,
+        completed_at: completed_at ?? nowIso,
+        codex_session_id,
+      };
+      next = [...existing, entry];
+    }
+
+    // Step 3: prune.
+    frontmatter.ensemble_results = pruneEnsembleResults(next, cap);
+    frontmatter.updated_at = nowIso;
+
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath, idempotentSkip: alreadyCommitted };
+  });
+}
+
+/**
+ * ADR-0017 §sub-decision 2 — set `latest_checkpoint` and append a
+ * `checkpointed` `host_history` entry under the per-file lock.
+ */
+export async function setCheckpoint({
+  workflowPath,
+  host,
+  summary,
+  now = new Date(),
+}) {
+  validateHost(host);
+  if (typeof summary !== 'string' || summary.length === 0) {
+    throw new Error('setCheckpoint: summary must be a non-empty string');
+  }
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const nowIso = isoUtc(now);
+    frontmatter.latest_checkpoint = { at: nowIso, summary };
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'checkpointed' },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath };
+  });
+}
+
+/**
+ * ADR-0017 §sub-decision 5 — atomic terminal-phase write.
+ *
+ * Sets `current_phase`, optionally `next_action`, optionally
+ * `terminal_marker`, and appends a `host_history` entry — all under one
+ * file-lock window. This avoids the Stop-vs-finalization race where Stop
+ * could fire between a `current_phase = "commit-complete"` write and a
+ * separate `terminal_marker = true` write.
+ */
+export async function setTerminal({
+  workflowPath,
+  host,
+  terminalPhase,
+  terminalMarker = true,
+  nextAction,
+  event = 'updated',
+  now = new Date(),
+}) {
+  validateHost(host);
+  validateHookEvent(event);
+  if (!TERMINAL_PHASES.has(terminalPhase)) {
+    const allowed = [...TERMINAL_PHASES].join(', ');
+    throw new Error(
+      `setTerminal: terminalPhase ${JSON.stringify(terminalPhase)} not in whitelist (${allowed})`,
+    );
+  }
+  // Boolean-strict at the JS API boundary too — Codex review M5 flagged
+  // that `Boolean("false")` silently flipped the auto-archive gate.
+  if (typeof terminalMarker !== 'boolean') {
+    throw new Error(
+      `setTerminal: terminalMarker must be a boolean (got ${typeof terminalMarker} ${JSON.stringify(terminalMarker)})`,
+    );
+  }
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const nowIso = isoUtc(now);
+    frontmatter.current_phase = terminalPhase;
+    if (nextAction !== undefined) frontmatter.next_action = nextAction;
+    frontmatter.terminal_marker = terminalMarker;
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath };
+  });
+}
+
+/**
+ * ADR-0017 §sub-decision 5 — move a workflow file out of the live
+ * `workflows/` directory into `archive/`. Acquires the directory lock
+ * first, then the per-file lock (creation precedent: dir → file).
+ *
+ * Collision policy: when the canonical destination
+ * `<archiveDir>/<basename>` already exists, append a sub-second-precision
+ * suffix and probe again until a free name is found:
+ * `<basename-without-ext>-<isoCompact>-<6-hex>.md`. The hex randomizer
+ * defeats two concurrent archives that land on the same iso-second.
+ *
+ * Idempotency: if `workflowPath` is already absent at directory-lock
+ * acquire (or vanishes before the inner file lock), the helper resolves
+ * cleanly with `{archived: false, reason: 'source-missing'|...}`.
+ *
+ * Durability: the move uses `atomicWrite` to the **destination** path
+ * (with a fresh ownership lock on the destination), then `unlink`s the
+ * source. This avoids the failure mode where a `rename` after the source
+ * was already history-mutated leaves a stale `archived` event in the
+ * source (Codex review M3, Concurrency review M3). It also closes the
+ * Codex CRITICAL race window where a stalled rename could cross-rename a
+ * reclaimed peer's active workflow into archive — the destination write
+ * goes through its own lock, and the source is removed only after the
+ * destination is durably committed.
+ *
+ * @param {object}  args
+ * @param {string}  args.workflowPath
+ * @param {string}  args.host
+ * @param {string}  [args.repoRoot] — required if `archiveDirectory` is omitted
+ * @param {string}  [args.archiveDirectory]
+ * @param {Date}    [args.now]
+ * @returns {Promise<{archived: boolean, from?: string, to?: string, host?: string, reason?: string, workflowPath?: string}>}
+ */
+export async function archiveWorkflow({
+  workflowPath,
+  host,
+  repoRoot,
+  archiveDirectory,
+  now = new Date(),
+}) {
+  validateHost(host);
+  if (!repoRoot && !archiveDirectory) {
+    throw new Error('archiveWorkflow: repoRoot or archiveDirectory is required');
+  }
+  const targetDir = archiveDirectory ?? archiveDir(repoRoot);
+  const baseName = basename(workflowPath);
+
+  // The directory lock must hash to the same `.creation-lock` path
+  // `withDirectoryLock`/`createWorkflow` use (it resolves
+  // `<repoRoot>/.claude/agentic-engineer/.creation-lock` per
+  // `creationLockPath`). When the caller provided only
+  // `archiveDirectory`, derive the repoRoot from the canonical four-deep
+  // workflow layout (`<repoRoot>/.claude/agentic-engineer/workflows/<id>.md`)
+  // — Codex re-review M-1 caught the previous two-deep derivation that
+  // double-appended `.claude/agentic-engineer/`, producing a different
+  // lock path and breaking serialization with createWorkflow / archive.
+  const dirLockRoot =
+    repoRoot ??
+    dirname(dirname(dirname(dirname(workflowPath))));
+
+  return withDirectoryLock(dirLockRoot, async () => {
+    const sourceStat = await pathStat(workflowPath);
+    if (!sourceStat) {
+      return { archived: false, reason: 'source-missing', workflowPath };
+    }
+    if (!sourceStat.isFile()) {
+      throw new Error(`archiveWorkflow: source is not a regular file: ${workflowPath}`);
+    }
+
+    await ensureDir(targetDir, 0o700);
+
+    return withFileLock(workflowPath, async ({ lockPath, token }) => {
+      // Re-stat under the inner lock — defends against the source being
+      // unlinked between the directory-lock pathStat and the file-lock
+      // acquire (e.g., a non-cooperating actor or a parallel resume
+      // archive).
+      const sourceStatLocked = await pathStat(workflowPath);
+      if (!sourceStatLocked) {
+        return { archived: false, reason: 'source-missing-after-lock', workflowPath };
+      }
+
+      // Read under the file lock so the parsed frontmatter matches the
+      // exact bytes we are about to relocate.
+      const text = await readFile(workflowPath, 'utf8');
+      const { frontmatter, body } = parseWorkflowFile(text);
+      const nowIso = isoUtc(now);
+      frontmatter.updated_at = nowIso;
+      frontmatter.host_history = [
+        ...(frontmatter.host_history ?? []),
+        { host, at: nowIso, event: 'archived' },
+      ];
+      const archivedBytes = assembleWorkflowFile(frontmatter, body);
+
+      // Resolve + write the destination under a retry loop. Codex
+      // re-review M-2 flagged that pre-lock pathStat + post-lock
+      // atomicWrite leaves a lost-candidate race: two archive runs from
+      // different repoRoots writing to the same custom archive dir can
+      // both choose the same absent candidate before either takes its
+      // destination lock. The retry loop closes that window: under the
+      // destination lock we re-stat the path and bail to a fresh
+      // candidate if someone won the race.
+      const destination = await archiveCandidateWithRaceRetry({
+        targetDir,
+        baseName,
+        now,
+        archivedBytes,
+      });
+      // Source-remove is best-effort durable: if it fails after a
+      // successful destination write, the workflow is duplicated rather
+      // than lost. Caller can re-archive (idempotent — second run sees
+      // source-missing-after-lock).
+      try {
+        await unlink(workflowPath);
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+      }
+      // Release the original source lock cleanly.
+      // (`atomicWrite` with the source lockPath would have rechecked the
+      // token — but we deliberately wrote to a different file. The outer
+      // `withFileLock` finally-block releases this lock; we just ensure
+      // its lockPath/token were never used to commit a stale source
+      // write.)
+      // Note: we intentionally do NOT atomicWrite to `workflowPath`
+      // here; the source is being deleted. The lockPath/token returned
+      // from this withFileLock callback are only used to satisfy the
+      // outer scope contract, not to commit anything.
+      void lockPath; void token;
+
+      return {
+        archived: true,
+        from: workflowPath,
+        to: destination,
+        host,
+      };
+    });
+  });
+}
+
+/**
+ * Resolve a non-colliding archive destination by probing successive
+ * suffixed candidates. The first candidate is the canonical
+ * `<targetDir>/<baseName>`; on collision, we append
+ * `-<isoCompact>-<6-hex>` and re-check. Sub-second random hex prevents
+ * two concurrent archivers from generating the same suffix at the same
+ * iso-second.
+ *
+ * NOTE: The pre-lock check here is best-effort — the call site MUST
+ * also re-check under the destination lock and retry on race (see
+ * `archiveCandidateWithRaceRetry`).
+ */
+async function resolveArchiveDestination({ targetDir, baseName, now }) {
+  const stem = baseName.endsWith('.md') ? baseName.slice(0, -3) : baseName;
+  const canonical = join(targetDir, baseName);
+  if (!(await pathStat(canonical))) return canonical;
+
+  const isoCompact = isoUtc(now).replace(/[-:]/g, '').replace(/Z$/, 'Z');
+  // Probe up to a few suffixed candidates; collision past 8 attempts is
+  // implausible under realistic load.
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const rand = randomBytes(3).toString('hex');
+    const candidate = join(targetDir, `${stem}-${isoCompact}-${rand}.md`);
+    if (!(await pathStat(candidate))) return candidate;
+  }
+  throw new Error(
+    `archiveWorkflow: could not resolve a non-colliding destination under ${targetDir}`,
+  );
+}
+
+/**
+ * Pick a non-colliding destination AND commit `archivedBytes` to it
+ * under a per-file lock. Codex re-review M-2 surfaced a lost-candidate
+ * race: between `resolveArchiveDestination`'s pathStat and
+ * `atomicWrite`'s rename, another archiver in a different lock domain
+ * (e.g., custom `archiveDirectory` shared across repoRoots) could win
+ * the destination first. This wrapper re-checks existence inside the
+ * destination lock and retries with a fresh candidate on race; the
+ * loop bound is small because each fresh attempt re-randomizes the
+ * suffix.
+ *
+ * Returns the chosen `destination` path on success.
+ */
+async function archiveCandidateWithRaceRetry({
+  targetDir,
+  baseName,
+  now,
+  archivedBytes,
+}) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const candidate = await resolveArchiveDestination({ targetDir, baseName, now });
+    let won = false;
+    try {
+      await withFileLock(candidate, async ({ lockPath, token }) => {
+        const existing = await pathStat(candidate);
+        if (existing) {
+          // Race lost — release the lock and let the outer loop pick a
+          // fresh candidate. We do NOT throw here so the lock release
+          // path runs cleanly.
+          return;
+        }
+        await atomicWrite(candidate, archivedBytes, { lockPath, token });
+        won = true;
+      });
+    } catch (err) {
+      throw err;
+    }
+    if (won) return candidate;
+  }
+  throw new Error(
+    `archiveWorkflow: lost candidate race after 8 retries under ${targetDir}`,
+  );
+}
+
+export function archiveDir(repoRoot) {
+  if (!isAbsolute(repoRoot)) {
+    throw new Error(`repoRoot must be absolute: ${repoRoot}`);
+  }
+  return join(repoRoot, ARCHIVE_DIR_REL);
+}
+
+/**
+ * ADR-0017 §sub-decision 5 false-positive defense — the gate is `true`
+ * only if `terminal_marker === true`. Default off; absent → false.
+ */
+export function terminalMarkerCheck(frontmatter) {
+  return frontmatter?.terminal_marker === true;
+}
+
+/**
+ * ADR-0017 §sub-decision 5 terminal-phase whitelist gate.
+ */
+export function terminalPhaseCheck(currentPhase) {
+  return TERMINAL_PHASES.has(currentPhase);
+}
+
+/**
+ * ADR-0017 §sub-decision 5 transitive A4 gate — every entry in
+ * `child_completions` must carry both `commit` (non-empty string) and
+ * `closed_at` (non-empty string). An empty / absent list is treated as
+ * "no children", which passes the gate.
+ */
+export function noActiveChildrenCheck(frontmatter) {
+  const list = frontmatter?.child_completions;
+  if (!Array.isArray(list) || list.length === 0) return true;
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') return false;
+    if (typeof entry.commit !== 'string' || entry.commit.length === 0) return false;
+    if (typeof entry.closed_at !== 'string' || entry.closed_at.length === 0) return false;
+  }
+  return true;
+}
+
+// -----------------------------------------------------------------------------
 // CLI mode
 
 function cliParseFlags(argv) {
@@ -1071,6 +1899,31 @@ function cliPrintHelp() {
       '',
       '  read --workflow-path <path>',
       '    Print the parsed frontmatter as JSON on stdout (informational).',
+      '',
+      '  ensemble-pending --workflow-path <path> --phase <name>',
+      '                   --ensemble-type <name> --run-id <id> [--started-at <iso>]',
+      '    ADR-0017 sub-4 — record a pending ensemble dispatch. Idempotent on run-id.',
+      '',
+      '  ensemble-commit --workflow-path <path> --run-id <id> --phase <name>',
+      '                  --ensemble-type <name> --verdict <text> --summary <text>',
+      '                  [--completed-at <iso>] [--codex-session-id <id>]',
+      '                  [--cap <n>]',
+      '    ADR-0017 sub-4 — three-step atomic commit: pop pending → append result → prune.',
+      '    Idempotent on run-id (second commit is a no-op for the results list).',
+      '',
+      '  checkpoint-set --workflow-path <path> --host <host> --summary <text>',
+      '    ADR-0017 sub-2 — set latest_checkpoint and append host_history checkpointed.',
+      '',
+      '  set-terminal --workflow-path <path> --host <host>',
+      '               --terminal-phase commit-complete|summary-complete|fix-complete',
+      '               [--terminal-marker true|false] [--next-action <text>]',
+      '               [--event updated|resumed]',
+      '    ADR-0017 sub-5 — atomic terminal-phase write (current_phase + terminal_marker).',
+      '    Default --terminal-marker=true.',
+      '',
+      '  archive --workflow-path <path> --host <host> --repo-root <path>',
+      '    ADR-0017 sub-5 — move workflow file from workflows/ to archive/.',
+      '    Collision-safe (timestamp-suffix). Idempotent if source is already absent.',
       '',
       'Verbs: investigate, frame, decide, compose, critique, refine.',
       'Hosts: claude, codex.',
@@ -1158,6 +2011,104 @@ async function cliMain(argv) {
         cliRequire(flags, ['workflow-path']);
         const { frontmatter } = await readWorkflow(flags['workflow-path']);
         process.stdout.write(`${JSON.stringify(frontmatter, null, 2)}\n`);
+        return 0;
+      }
+
+      // ADR-0017 schema 1.1 subcommands ------------------------------
+
+      case 'ensemble-pending': {
+        cliRequire(flags, ['workflow-path', 'phase', 'ensemble-type', 'run-id']);
+        await recordPendingEnsemble({
+          workflowPath: flags['workflow-path'],
+          phase: flags.phase,
+          ensemble_type: flags['ensemble-type'],
+          run_id: flags['run-id'],
+          started_at: flags['started-at'],
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'ensemble-commit': {
+        cliRequire(flags, [
+          'workflow-path', 'run-id', 'phase', 'ensemble-type', 'verdict', 'summary',
+        ]);
+        const cap = flags.cap !== undefined
+          ? Number.parseInt(flags.cap, 10)
+          : ENSEMBLE_RESULTS_RETENTION_CAP;
+        if (!Number.isInteger(cap) || cap < 0) {
+          throw new Error(`--cap must be a non-negative integer (got ${flags.cap})`);
+        }
+        await commitEnsemble({
+          workflowPath: flags['workflow-path'],
+          run_id: flags['run-id'],
+          phase: flags.phase,
+          ensemble_type: flags['ensemble-type'],
+          verdict: flags.verdict,
+          summary: flags.summary,
+          completed_at: flags['completed-at'],
+          codex_session_id: flags['codex-session-id'] ?? null,
+          cap,
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'checkpoint-set': {
+        cliRequire(flags, ['workflow-path', 'host', 'summary']);
+        await setCheckpoint({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          summary: flags.summary,
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'set-terminal': {
+        cliRequire(flags, ['workflow-path', 'host', 'terminal-phase']);
+        // Strict --terminal-marker parsing (Codex review MINOR — typos
+        // like `--terminal-marker tru` previously fell through to false
+        // silently, masking a misconfigured auto-archive gate).
+        const tm = flags['terminal-marker'];
+        let terminalMarker;
+        if (tm === undefined) {
+          terminalMarker = true;
+        } else if (tm === 'true') {
+          terminalMarker = true;
+        } else if (tm === 'false') {
+          terminalMarker = false;
+        } else {
+          throw new Error(
+            `--terminal-marker must be 'true' or 'false' (got '${tm}')`,
+          );
+        }
+        await setTerminal({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          terminalPhase: flags['terminal-phase'],
+          terminalMarker,
+          nextAction: flags['next-action'],
+          event: flags.event ?? 'updated',
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'archive': {
+        cliRequire(flags, ['workflow-path', 'host', 'repo-root']);
+        const result = await archiveWorkflow({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          repoRoot: flags['repo-root'],
+        });
+        if (result.archived) {
+          process.stdout.write(`${result.to}\n`);
+        } else {
+          process.stderr.write(
+            `state.mjs archive: ${result.reason ?? 'no-op'} for ${flags['workflow-path']}\n`,
+          );
+        }
         return 0;
       }
 
