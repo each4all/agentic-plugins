@@ -1056,7 +1056,7 @@ function parseScalar(text) {
 // -----------------------------------------------------------------------------
 // File assembly
 
-function assembleWorkflowFile(frontmatter, body) {
+export function assembleWorkflowFile(frontmatter, body) {
   const fmText = serializeFrontmatter(frontmatter);
   const trailingBody = body.endsWith('\n') ? body : `${body}\n`;
   return `${fmText}\n\n${trailingBody}`;

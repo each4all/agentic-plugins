@@ -124,6 +124,17 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --current-phase phase-2-presented \
   --next-action "Decide on a direction given this frame" \
   --event updated
+
+# ADR-0017 §sub-decision 5 — atomic terminal write. Bumps current_phase
+# into the auto-archive whitelist + sets terminal_marker=true so the
+# Stop hook can archive once the user commits and closes the session
+# (HEAD-moved gate enforces real progress before archive triggers).
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
+  --workflow-path "$ACTIVE" --host claude \
+  --terminal-phase summary-complete \
+  --terminal-marker true \
+  --next-action "Decide on a direction given this frame" \
+  --event updated
 ```
 
 ---
