@@ -9,7 +9,8 @@
 //     × {SKILL.md, agents/openai.yaml}
 //   - 4 shared references (presentation / ensemble / orchestration / agent-taxonomy)
 //   - 2 host-shared canonical scripts (state.mjs, dispatch-peer.mjs)
-//   - 7 commands (6 canonical verbs + audit sugar alias per ADR-0010 §3)
+//   - 8 commands (6 canonical verbs + audit sugar alias per ADR-0010 §3
+//     + resume meta command per ADR-0017 §sub-decision-1)
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
 //   - 1 Codex adapter hook (stop helper)
 //   - 1 Claude hooks manifest (hooks/hooks.json)
@@ -54,7 +55,12 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/engineer');
 
 const VERBS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
 const ALIAS_VERBS = ['audit'];
-const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS];
+// Meta commands ship under commands/<name>.md but do NOT have a
+// corresponding skills/<name>/SKILL.md or agents/openai.yaml — they are
+// thin shims over plugins/engineer/scripts/state.mjs (ADR-0017
+// §sub-decision-1 et seq.).
+const META_COMMANDS = ['resume'];
+const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...META_COMMANDS];
 const SHARED_REFS = [
   'presentation-protocol.md',
   'ensemble-protocol.md',
@@ -294,7 +300,7 @@ describe('plugins/engineer — 4 shared references (skills/_shared/references/*.
   }
 });
 
-describe('plugins/engineer — 7 commands (commands/<verb>.md, includes audit sugar alias)', () => {
+describe('plugins/engineer — 8 commands (commands/<verb>.md, includes audit sugar alias + resume meta command)', () => {
   for (const verb of ALL_COMMANDS) {
     describe(verb, () => {
       const path = resolve(PLUGIN_ROOT, 'commands', `${verb}.md`);
