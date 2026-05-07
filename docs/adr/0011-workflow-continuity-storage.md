@@ -4,6 +4,13 @@
 
 Accepted
 
+> **Amendment 2026-05-08 (ADR-0018 cascade)**: §Stage 2 Non-Goals
+> items #1 / #2 / #3 / #5 / #6 / #7 carry resolution stances assigned
+> by [ADR-0018](0018-stage3-architecture-orchestrator-and-branch-context.md)
+> §"ADR-0011 §Stage 2 Non-Goals — cascade after this ADR". Items #4 /
+> #8 / #9 stay deferred. ADR-0011's body text remains as written for
+> historical record; ADR-0018 carries the per-item current stance.
+
 ## Context
 
 [ADR-0007](0007-migration-cutover-plan.md) §Data migration leaves the
