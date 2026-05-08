@@ -20,6 +20,13 @@
       "version": "0.5.0",
       "description": "Engineer workbench — 6 cognitive verbs (investigate / frame / decide / compose / critique / refine) for AI-assisted engineering across Claude Code & Codex CLI. Includes cited-brief research profile.",
       "category": "Development"
+    },
+    {
+      "name": "orchestrator",
+      "source": "./plugins/orchestrator",
+      "version": "0.1.0",
+      "description": "Macro orchestration capability — multi-deliverable plan + Plan-verify ensemble for AI-assisted development across Claude Code & Codex CLI. L2 capability plugin per ADR-0010 4-layer composition (ADR-0018 §sub-decision-1, plan-only MVP).",
+      "category": "Productivity"
     }
   ]
 }

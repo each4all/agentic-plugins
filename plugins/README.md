@@ -27,6 +27,18 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
   invocation, and environment details (including the
   `RESEARCH_OUTPUT_ROOT` env var preserved from Stage 1 for
   backwards compatibility).
+- **`orchestrator/`** — Stage 3+ L2 capability plugin (plan-only MVP
+  per [ADR-0018](../docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
+  §sub-decision-1): macro plan + Plan-verify Codex peer ensemble for
+  multi-deliverable features. First multi-verb L2 occupant; the
+  `/orchestrator:plan` command produces `plan.subtasks[]` proposals
+  (a list of deliverables) that future engineer workflows drive
+  end-to-end. Workflow files at `<repo>/.claude/agentic-orchestrator/
+  workflows/<workflow_id>.md` with frontmatter `schema: '1.0'` and
+  `workflow_id: macro-<verb>-<iso>-<rand>`. Stop hook is snapshot-
+  only in this MVP; auto-archive ships in a follow-up PR alongside
+  `/orchestrator:next` and `/orchestrator:done`. See
+  [`plugins/orchestrator/README.md`](orchestrator/README.md).
 
 The Stage 1 `plugins/research` reference plugin was retired at
 Stage 2.5+ per

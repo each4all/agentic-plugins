@@ -87,12 +87,16 @@ per ADR-0010:
 
 1. **Layer 1 — Framework primitive** (`plugins/companions`): cross-host
    peer-agent invocation infrastructure
-2. **Layer 2 — Capability** (planned occupants: `decision`, `image`):
-   persona-agnostic activities reusable by multiple personas. The L2
-   slot is defined but currently empty — the Stage 1 `plugins/research`
-   incumbent was retired at Stage 2.5+ ([ADR-0014](docs/adr/0014-plugins-research-deprecation.md)),
+2. **Layer 2 — Capability** (`plugins/orchestrator` Stage 3+):
+   persona-agnostic activities reusable by multiple personas. The
+   first multi-verb L2 occupant is `plugins/orchestrator` (Stage 3+
+   plan-only MVP per [ADR-0018](docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
+   §sub-decision-1 — macro plan + Plan-verify ensemble for multi-
+   deliverable features). The Stage 1 `plugins/research` incumbent
+   was retired at Stage 2.5+ ([ADR-0014](docs/adr/0014-plugins-research-deprecation.md)),
    its cited-brief contract absorbed into `engineer:investigate`'s
-   cited-brief profile.
+   cited-brief profile. Other planned occupants (`decision`, `image`)
+   remain future work.
 3. **Layer 3 — Persona / workbench** (`plugins/engineer` Stage 2,
    `plugins/designer` Stage 3): user-facing install unit, composes
    capabilities through profiles
