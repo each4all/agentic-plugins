@@ -521,6 +521,83 @@ describe('createWorkflow + branch-keyed lookup', () => {
       strictEqual(r, null);
     });
   });
+
+  it('cross-branch malformed file does NOT block same-branch lookup (engineer parity)', async () => {
+    await withTmpRepo('cross-branch-skip', async (root) => {
+      const { filePath: validPath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE('main'), originalRequest: 'good',
+      });
+      // Sibling file whose body is corrupt but whose lightweight
+      // extractable git_baseline.branch is 'other' — cross-branch.
+      // The lightweight extractor reads `branch: "other"` and skips
+      // this file without invoking the strict parseWorkflowFile.
+      const sibling = join(
+        root,
+        '.claude/agentic-orchestrator/workflows/macro-plan-20260101T000000Z-zzzzzz.md',
+      );
+      await writeFile(
+        sibling,
+        '---\nschema: 99\ngit_baseline:\n  branch: "other"\n---\n!!corrupt body!!\n',
+        { mode: 0o600 },
+      );
+      const result = await findActiveWorkflowByBranch(root, 'main');
+      strictEqual(
+        result,
+        validPath,
+        'cross-branch malformed file must not block lookup of the same-branch workflow',
+      );
+    });
+  });
+
+  it('same-branch undeterminable file FAILS CLOSED (engineer parity)', async () => {
+    await withTmpRepo('same-branch-fail-closed', async (root) => {
+      await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE('main'), originalRequest: 'good',
+      });
+      // Sibling file with no extractable branch field AND unparseable
+      // frontmatter. fail-closed rule (ADR-0018 §sub-2) requires
+      // findActiveWorkflowByBranch to throw rather than risk inviting
+      // createWorkflow to add a second same-branch file.
+      const opaque = join(
+        root,
+        '.claude/agentic-orchestrator/workflows/macro-plan-20260101T000000Z-zzzzzz.md',
+      );
+      await writeFile(opaque, '---\n!!totally corrupt!!\n', { mode: 0o600 });
+      await rejects(
+        () => findActiveWorkflowByBranch(root, 'main'),
+        /undeterminable|invariant at risk/i,
+      );
+    });
+  });
+
+  it('extractFrontmatterBranch handles malformed quoted branch (broken JSON) — null then fail-closed', async () => {
+    await withTmpRepo('malformed-quoted', async (root) => {
+      await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE('main'), originalRequest: 'good',
+      });
+      // Sibling with branch that starts AND ends with `"` so the
+      // lightweight extractor enters the JSON.parse branch — but the
+      // contents fail to parse (invalid escape sequence). Extractor
+      // returns null → falls back to parseWorkflowFile. parseWorkflowFile
+      // rejects schema 99 → fail-closed throw (same code path as (h)).
+      const sibling = join(
+        root,
+        '.claude/agentic-orchestrator/workflows/macro-plan-20260101T000001Z-yyyyyy.md',
+      );
+      await writeFile(
+        sibling,
+        '---\nschema: 99\ngit_baseline:\n  branch: "broken\\u"\n---\n',
+        { mode: 0o600 },
+      );
+      await rejects(
+        () => findActiveWorkflowByBranch(root, 'main'),
+        /undeterminable|invariant at risk|cannot parse/i,
+      );
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -641,6 +718,35 @@ describe('recordPendingEnsemble + commitEnsemble', () => {
       strictEqual(frontmatter.ensemble_results.length, 1);
       // idempotent → first summary kept
       strictEqual(frontmatter.ensemble_results[0].summary, 'a');
+    });
+  });
+
+  it('recordPendingEnsemble replaces entry with same run_id (engineer parity)', async () => {
+    await withTmpRepo('pending-dedupe', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'x',
+      });
+      await recordPendingEnsemble({
+        workflowPath: filePath,
+        phase: 'plan',
+        ensemble_type: 'plan-verify',
+        run_id: 'macro-plan-1',
+        started_at: '2026-05-09T01:00:00Z',
+      });
+      await recordPendingEnsemble({
+        workflowPath: filePath,
+        phase: 'plan',
+        ensemble_type: 'plan-verify',
+        run_id: 'macro-plan-1',
+        started_at: '2026-05-09T01:00:30Z',
+      });
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.pending_ensemble.length, 1);
+      strictEqual(
+        frontmatter.pending_ensemble[0].started_at,
+        '2026-05-09T01:00:30Z',
+      );
     });
   });
 });

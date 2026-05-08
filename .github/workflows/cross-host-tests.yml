@@ -1,0 +1,37 @@
+# ADR-0018 §sub-decision-5 names a "cross-host job slot in
+# .github/workflows/ matrix". The contract is satisfied either by an
+# additional matrix entry inside an existing host workflow or by a
+# dedicated workflow file; this implementation uses a dedicated file so
+# the existing host-segregated CI workflows (claude-tests.yml,
+# codex-tests.yml) stay scoped to their own companion's tests and the
+# cross-host scenario gets a single canonical slot.
+name: cross-host-tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: cross-host integration tests (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Run cross-host integration tests
+        run: npm run test:cross-host
