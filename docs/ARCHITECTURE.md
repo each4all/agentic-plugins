@@ -62,9 +62,11 @@ model** for plugin organization (ADR-0010).
 │   verb-level sugar aliases inside plugin allowed (ADR-0010) │
 ├─────────────────────────────────────────────────────────────┤
 │ L2 — Capability plugins (persona-agnostic activities)       │
-│   (currently empty — plugins/research retired at            │
-│    Stage 2.5+ per ADR-0014; cited-brief absorbed into       │
-│    engineer:investigate)                                    │
+│   plugins/orchestrator  ← Stage 3+ (plan-only MVP per       │
+│                            ADR-0018 §sub-1 — first multi-   │
+│                            verb L2 occupant)                │
+│   (plugins/research retired at Stage 2.5+ per ADR-0014;     │
+│    cited-brief absorbed into engineer:investigate)          │
 │   future: plugins/decision, plugins/image                   │
 │   skills: <capability>:<verb> for relevant verbs            │
 ├─────────────────────────────────────────────────────────────┤

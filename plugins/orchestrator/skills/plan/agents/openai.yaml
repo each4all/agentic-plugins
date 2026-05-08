@@ -1,0 +1,7 @@
+interface:
+  display_name: "Orchestrator — Plan"
+  short_description: "Macro plan + Plan-verify ensemble for multi-deliverable features"
+  default_prompt: "Use $orchestrator:plan to produce a multi-deliverable subtasks list and verify it via a Codex peer ensemble"
+
+policy:
+  allow_implicit_invocation: false

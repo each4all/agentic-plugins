@@ -24,7 +24,7 @@ bridges implemented and tested:
 - [`companions/claude-companion.mjs`](companions/claude-companion.mjs) — Codex → Claude bridge
 - [`companions/codex-companion.mjs`](companions/codex-companion.mjs) — Claude → Codex bridge
 
-Two installable plugins ship in this repository:
+Three installable plugins ship in this repository:
 
 - [`plugins/companions/`](plugins/companions/) — script-only library
   plugin that bundles the canonical companion CLIs for cache-glob
@@ -37,6 +37,15 @@ Two installable plugins ship in this repository:
   durable cited research artifacts (absorbing the Stage 1
   `plugins/research` contract per
   [ADR-0014](docs/adr/0014-plugins-research-deprecation.md))
+- [`plugins/orchestrator/`](plugins/orchestrator/) — Stage 3+ L2
+  capability plugin (plan-only MVP per
+  [ADR-0018](docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
+  §sub-decision-1): macro plan + Plan-verify Codex ensemble for
+  multi-deliverable features. First multi-verb L2 occupant. The
+  `/orchestrator:plan` command produces `plan.subtasks[]` (a list
+  of deliverables) that future engineer workflows drive end-to-end.
+  `/orchestrator:next` and `/orchestrator:done` ship in follow-up
+  PRs alongside the cross-plugin invocation contract.
 
 See each plugin's README for install commands, invocation, and
 environment details.

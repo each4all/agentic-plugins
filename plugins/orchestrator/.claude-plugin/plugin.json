@@ -1,0 +1,23 @@
+{
+  "name": "orchestrator",
+  "version": "0.1.0",
+  "description": "Macro orchestration capability — multi-deliverable plan + Plan-verify ensemble for AI-assisted development across Claude Code & Codex CLI. L2 capability plugin per ADR-0010 4-layer composition (ADR-0018 §sub-decision-1, plan-only MVP).",
+  "author": {
+    "name": "each4all"
+  },
+  "homepage": "https://github.com/each4all/agentic-plugins",
+  "repository": "https://github.com/each4all/agentic-plugins",
+  "license": "MIT",
+  "keywords": [
+    "orchestrator",
+    "macro",
+    "plan",
+    "plan-verify",
+    "subtasks",
+    "capability",
+    "L2",
+    "claude",
+    "codex",
+    "agentic-plugins"
+  ]
+}

@@ -308,9 +308,10 @@ These items are explicitly out of scope for Stage 2; they become
 first-class Stage 2.5+ ADR follow-ups when accumulated dogfood usage
 or Stage 3 work makes the design choice tractable.
 
-### Stage 3 — Design domain and remaining workflows
+### Stage 3+ — L2 capability + Design domain + remaining workflows
 
-- A design-domain plugin ships, referencing omcc-designer's experience (poster, social-graphics, frontend, brief, evaluation, etc.) with the same redesign stance
+- **`plugins/orchestrator` (L2 capability)** ships per [ADR-0018](adr/0018-stage3-architecture-orchestrator-and-branch-context.md) §sub-decision-1 — first multi-verb L2 occupant. Plan-only MVP (`/orchestrator:plan` + Plan-verify Codex ensemble) lands first; `/orchestrator:next` and `/orchestrator:done` follow alongside the cross-plugin invocation contract (Sub-decision 1 follow-up ADR). Acceptance trigger of ADR-0018 §sub-1 is satisfied by user explicit request to scaffold the MVP. This advances [ADR-0012](adr/0012-omcc-removal-preconditions.md) condition 3 — the "first non-trivial Stage 3 workflow developed engineer-only" criterion is now reachable through the orchestrator → engineer composition (cross-plugin invocation contract pending).
+- A design-domain plugin (`plugins/designer`) ships, referencing omcc-designer's experience (poster, social-graphics, frontend, brief, evaluation, etc.) with the same redesign stance
 - Any omcc-dev workflow patterns not covered in Stage 2 are addressed (implemented or explicitly dropped with rationale)
 - The user's daily workflows have agentic-plugins equivalents preferred over omcc
 - omcc archived per ADR-0007's archive procedure

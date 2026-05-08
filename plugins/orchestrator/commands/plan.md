@@ -1,0 +1,196 @@
+---
+description: Macro plan + Plan-verify Codex peer ensemble — produce plan.subtasks[] for a multi-deliverable feature
+argument-hint: <feature description>
+---
+
+# Orchestrator · Plan
+
+$ARGUMENTS
+
+Use `TaskCreate` and `TaskUpdate` to track progress. The peer ensemble runs automatically per `skills/_shared/references/ensemble-protocol.md` (Plan-verify point type). Never ask the user whether to invoke the peer. When the companions plugin or peer CLI is unavailable, the ensemble degrades silently to a LOCAL-ONLY plan (`dispatch-peer.mjs` returns `peer_cli_not_found` with no orphan-pending entry — orchestrator-specific graceful degradation contract).
+
+Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root. Fallback: discover via `find ~/.claude/plugins/cache/agentic-plugins/orchestrator -maxdepth 3 -name plugin.json` SemVer walk if `$CLAUDE_PLUGIN_ROOT` is unset.
+
+---
+
+## Phase 0 — Workflow continuity (per ADR-0011 §5 + ADR-0018 §sub-2)
+
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+GIT_BRANCH="$(git branch --show-current)"
+# ADR-0018 §sub-2 — orchestrator workflows are anchored to a branch;
+# detached HEAD has no branch context to anchor to.
+if [ -z "$GIT_BRANCH" ]; then
+  echo "✗ Detached HEAD detected — orchestrator workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
+  echo "  Switch to a branch first: git switch <branch>" >&2
+  exit 1
+fi
+FIND_ERR="${TMPDIR:-/tmp}/orchestrator-find-active-$$.err"
+ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
+  find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
+FIND_RC=$?
+if [ "$FIND_RC" -ne 0 ]; then
+  echo "✗ find-active failed (exit $FIND_RC):" >&2
+  cat "$FIND_ERR" >&2
+  rm -f "$FIND_ERR"
+  exit "$FIND_RC"
+fi
+rm -f "$FIND_ERR"
+```
+
+- Empty → bootstrap with verb=plan:
+
+  ```bash
+  GIT_HEAD="$(git rev-parse HEAD)"
+  STATUS_DIGEST="$(git status --porcelain=v1 -z | shasum -a 256 | cut -d' ' -f1)"
+  ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
+    --repo-root "$REPO_ROOT" \
+    --verb plan --host claude \
+    --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
+    --status-digest "$STATUS_DIGEST" \
+    --original-request "<one-line scrubbed user feature description>" \
+    --current-phase phase-0-bootstrap \
+    --next-action "Run plan skill")"
+  ```
+
+- Non-empty → append-on-resume:
+
+  ```bash
+  node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
+    --workflow-path "$ACTIVE" --host claude \
+    --phase-label "Phase 0: Resume macro plan" \
+    --phase-note "Resumed prior orchestrator plan workflow." \
+    --current-phase phase-0-resume \
+    --next-action "Run plan skill" --event resumed
+  ```
+
+`createWorkflowUnderLock` rejects same-branch duplicates per ADR-0018 §sub-2 — concurrent `/orchestrator:plan` invocations on the same branch race the directory lock, and the loser sees a clear error message pointing at the existing workflow.
+
+---
+
+## Phase 1 — Execute plan skill (decompose + dependency graph)
+
+Follow the plan skill's command-invoked mode at `$CLAUDE_PLUGIN_ROOT/skills/plan/SKILL.md`. Produce a draft `plan.subtasks[]` per ADR-0018 §sub-decision-1 schema:
+
+```yaml
+- id: <unique short token (e.g. PR1, schema-reader)>
+  label: <short human-readable label>
+  branch: <suggested git branch name (optional but recommended)>
+  blocked_by: [<predecessor ids>]   # empty list when no dependencies
+  status: pending | blocked          # initial: pending if blocked_by==[], else blocked
+  # engineer_workflow_id / commit / pr_url / closed_at omitted at plan-time
+  # — populated by future /orchestrator:next + /orchestrator:done (follow-up PR)
+```
+
+Validation runs at the `state.mjs plan-set` boundary (id non-empty + unique, blocked_by → existing id only, no self-cycle, status enum).
+
+### Ensemble dispatch (Plan-verify point type)
+
+Build the Plan-verify prompt per `$CLAUDE_PLUGIN_ROOT/skills/_shared/references/ensemble-protocol.md` § Plan-verify. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (Independence Rule exception per protocol).
+
+```bash
+PROMPT_FILE="$(mktemp -t orchestrator-plan-prompt.XXXXXX).xml"
+# Generate a stable run-id BEFORE dispatch so the pending entry, the
+# peer's eventual result, and the ensemble-commit call all share the
+# same key.
+RUN_ID="macro-plan-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
+# ... LLM writes the Plan-verify XML prompt to $PROMPT_FILE ...
+node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs" \
+  --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
+  --workflow-path "$ACTIVE" --phase plan \
+  --ensemble-type plan-verify --run-id "$RUN_ID" \
+  > "$PROMPT_FILE.out" 2> "$PROMPT_FILE.err" &
+```
+
+The four bookkeeping flags (`--workflow-path`, `--phase`, `--ensemble-type`, `--run-id`) cause `dispatch-peer.mjs` to:
+
+1. Resolve the companion script (`peer codex`) via `companions/discover-peer.mjs`.
+2. **If companion missing** → return `peer_cli_not_found`, NO `pending_ensemble` entry recorded (orchestrator-specific graceful-degradation order). Caller proceeds with a LOCAL-ONLY plan.
+3. **If companion present** → record a `pending_ensemble` entry under the workflow file's per-file lock BEFORE spawning the companion.
+4. Spawn the companion's `task --prompt-file …` subcommand and capture the JSON envelope.
+
+After synthesis, Phase 2 invokes `state.mjs ensemble-commit` with the same `--run-id` to atomically pop the pending entry (no-op if companion was missing), append the result to `ensemble_results`, and prune to the retention cap.
+
+Synthesize per AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT categories (host-agnostic per orchestrator ensemble-protocol). Gaps and ordering issues from the peer go directly into the plan revision; CONFLICT items surface for user decision.
+
+---
+
+## Phase 2 — State finalize (setPlan + ensemble-commit)
+
+Materialize the synthesized subtasks into a JSON file and call `plan-set`:
+
+```bash
+SUBTASKS_JSON="$(mktemp -t orchestrator-subtasks.XXXXXX).json"
+# ... LLM writes the synthesized subtasks array (top-level JSON array
+# of subtask objects matching the ADR-0018 §sub-1 schema) to $SUBTASKS_JSON ...
+
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" plan-set \
+  --workflow-path "$ACTIVE" --host claude \
+  --subtasks-json-file "$SUBTASKS_JSON" \
+  --decision "<one-line decision rationale>" \
+  --architecture "<one-line architecture summary>" \
+  --event updated
+```
+
+Then record the phase note + ensemble result:
+
+```bash
+NOTE="### Ensemble launched: plan at <iso-utc>
+
+### Ensemble synthesis: plan-verify verdict=<pass|concerns|conflict>
+
+<AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT breakdown>
+
+### Macro plan
+
+<subtasks summary: ids + labels + dependency graph>
+
+### Recommended next step
+
+When /orchestrator:next ships (follow-up PR), invoke it on the first
+subtask with status=pending and empty blocked_by to dispatch its
+verb chain into engineer. Until then, drive each subtask manually
+through engineer (e.g. /engineer:investigate / :compose).
+"
+
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
+  --workflow-path "$ACTIVE" --host claude \
+  --phase-label "Phase 1: Plan (synthesized)" \
+  --phase-note "$NOTE" \
+  --current-phase phase-2-presented \
+  --next-action "Await user approval of macro plan" \
+  --event updated
+
+# Atomic three-step ensemble-results commit (pop pending → append result
+# → prune). $VERDICT is one of pass | concerns | conflict; $SUMMARY is a
+# one-line résumé of the AGREED/LOCAL-ONLY/PEER-ONLY/CONFLICT breakdown
+# (~200 chars).
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
+  --workflow-path "$ACTIVE" \
+  --run-id "$RUN_ID" \
+  --phase plan --ensemble-type plan-verify \
+  --verdict "$VERDICT" --summary "$SUMMARY" \
+  --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+```
+
+**Note on auto-archive**: orchestrator MVP's Stop hook is **snapshot-only**. There is no `set-terminal` call here — the macro-phase A1–A4 auto-archive gate is deferred to a follow-up PR alongside `/orchestrator:done`. Until that PR lands, manual archive is by file-move once the macro plan is fully consumed.
+
+**Note on empty subtasks[]**: a plan with zero subtasks (a deliberate "no work needed" terminal plan) is valid. `plan-set` accepts an empty list; the workflow stays open for a future `/orchestrator:plan` revision.
+
+---
+
+## Phase 3 — Present and confirm
+
+Follow the Presentation Mode Protocol (`$CLAUDE_PLUGIN_ROOT/skills/_shared/references/presentation-protocol.md`) before presenting. Present the synthesized plan as one decision item — wait for user approval before reporting completion.
+
+---
+
+## Completion
+
+Output the macro plan and one of:
+
+- `✓ Plan complete.` + path to the workflow file + recommend driving subtasks one-by-one through engineer (until `/orchestrator:next` ships in a follow-up PR).
+- `✓ Plan complete (LOCAL-ONLY).` + note that Codex peer was unavailable; recommend re-running once `/codex:setup` is configured.
+- `✓ Plan paused (CONFLICT items surfaced).` — when synthesizer flagged disagreements that warrant user input before subtasks land.
+
+Always include the workflow path.
