@@ -37,10 +37,12 @@ const MIN_BASELINE = {
     'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
 };
 
-async function withTmpRepo(fn) {
+async function withTmpRepo(fn, { branch = 'test' } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'engineer-checkpoint-test-'));
   try {
-    await runCmd('git', ['init', '-q'], { cwd: dir });
+    // -b <branch> ensures `git branch --show-current` returns the
+    // expected name for ADR-0018 §sub-2 branch-keyed lookup.
+    await runCmd('git', ['init', '-q', '-b', branch], { cwd: dir });
     await runCmd('git', ['config', 'user.email', 'test@test'], { cwd: dir });
     await runCmd('git', ['config', 'user.name', 'test'], { cwd: dir });
     await fn(dir);

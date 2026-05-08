@@ -122,10 +122,10 @@ Branch on the result:
   consultation from blowing the workflow body out; the full
   `$DISPATCH_OUT` is also printed to the user separately.
 
-- **Exit 1, multi-active error** → reject with a hint pointing at
-  `/engineer:resume` (peer-now must not pick a workflow itself —
-  multi-active is a user-resolvable invariant violation per
-  ADR-0011 §1).
+- **Exit 1, per-branch duplicate error** → reject with a hint
+  pointing at `/engineer:resume` (peer-now must not pick a workflow
+  itself — per-branch duplicate is a user-resolvable invariant
+  violation per ADR-0018 §sub-2 cascade of ADR-0011 §1).
 
 ---
 
@@ -140,8 +140,9 @@ Emit one of:
 - `✗ Peer dispatch failed (exit <RC>): <first stderr line>.` — Phase 1
   failed.
 - `✗ <usage hint from Phase 0>.` — argument parsing rejected.
-- `✗ Multi-active workflows detected — resolve via /engineer:resume.` —
-  Phase 2 found more than one workflow file.
+- `✗ Per-branch duplicate detected — resolve via /engineer:resume.` —
+  Phase 2 found more than one workflow file on the current branch
+  (ADR-0018 §sub-2 violation: corruption / external mutation).
 
 The peer's response is printed verbatim, with no synthesis label
 injection or AGREED/PEER-ONLY/CONFLICT structuring. That structuring

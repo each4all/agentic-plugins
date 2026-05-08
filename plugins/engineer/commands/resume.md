@@ -60,21 +60,33 @@ Branch on the result:
 - **Exit 0, single path on stdout** → that path is the single active
   workflow. Continue with Phase 2.
 
-- **Exit 1, multi-active error on stderr** → the directory contains
-  more than one workflow file, violating ADR-0011 §1 single-active
-  invariant. List the candidate files (oldest first per filename
-  ordering — the workflow_id timestamp is monotonic):
+- **Exit 1, per-branch duplicate error on stderr** → two or more
+  workflow files coexist on the current branch, violating the
+  per-branch single-active invariant (ADR-0018 §sub-2 cascade of
+  ADR-0011 §1). This is corruption / external mutation since
+  `createWorkflow` itself rejects same-branch duplicates. List ALL
+  candidate files in the workflows directory together with each
+  file's `git_baseline.branch` so the user can see which ones belong
+  to other branches (those are coexisting workflows on parallel
+  branches and are NOT the duplicate); the duplicates are the rows
+  whose branch matches `git branch --show-current`.
 
   ```bash
-  ls -1 "$REPO_ROOT/.claude/agentic-engineer/workflows"/*.md 2>/dev/null
+  for f in "$REPO_ROOT/.claude/agentic-engineer/workflows"/*.md; do
+    [ -f "$f" ] || continue
+    BR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
+      --workflow-path "$f" 2>/dev/null \
+      | sed -n 's/^[[:space:]]*"branch": "\(.*\)",/\1/p' | head -1)"
+    echo "  $(basename "$f") — branch=$BR"
+  done
   ```
 
   Present each candidate with its frontmatter `current_phase` /
   `next_action` (parsed via `state.mjs read --workflow-path <p>`) and
-  ask the user which one to resume — or whether to archive one or more
-  stale candidates first via `/engineer:resume archive <id>`. Do NOT
-  pick one yourself; multi-active is a user-resolvable invariant
-  violation, not a drift case.
+  ask the user which one to resume — or whether to archive one or
+  more stale candidates first via `/engineer:resume archive <id>`. Do
+  NOT pick one yourself; per-branch duplicate is a user-resolvable
+  invariant violation, not a drift case.
 
 ---
 
@@ -242,10 +254,11 @@ controls phase progression.
 
 Parse the rest of the argument:
 
-- `archive` (no id) → archive the **single active** workflow. If
-  `find-active` returned multi-active, reject with a usage hint:
-  `/engineer:resume archive <workflow-id>` is required when more than
-  one workflow file exists.
+- `archive` (no id) → archive the **single active** workflow on the
+  current branch. If `find-active` returned a per-branch duplicate
+  error, reject with a usage hint: `/engineer:resume archive
+  <workflow-id>` is required when more than one workflow file exists
+  on the current branch.
 - `archive <id>` → archive the named workflow. Validate the id
   matches the workflow_id regex per ADR-0011 §1. Resolve to
   `<REPO_ROOT>/.claude/agentic-engineer/workflows/<id>.md` and confirm
@@ -285,8 +298,11 @@ Emit one of:
 - `✓ Archived: <id>` — Phase 3 finished.
 - `✗ No active workflow; nothing to resume.` — Phase 1 found nothing.
   Recommend `/engineer:investigate` or another verb.
-- `✗ Multi-active workflows detected: N candidates.` — Phase 1 found
-  more than one. Show the candidate list and stop.
+- `✗ Per-branch duplicate detected: N workflow files on branch <X>.` —
+  Phase 1 found more than one workflow on the current branch
+  (corruption / external mutation, since `createWorkflow` itself
+  rejects same-branch duplicates per ADR-0018 §sub-2). Show the
+  candidate list with each file's `git_baseline.branch` and stop.
 
 Always include the absolute workflow path so the user can inspect or
 edit by hand:

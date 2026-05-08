@@ -304,6 +304,47 @@ describe('Claude stop hook — case (a) all gates pass → archive', () => {
   });
 });
 
+describe('Claude stop hook — case (g) cross-branch workflow → no archive (ADR-0018 §sub-2)', () => {
+  it('leaves the workflow in workflows/ when its git_baseline.branch differs from current branch', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { filePath } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'cross-branch stop',
+        // Fixture is on 'main' (withTmpGitRepo init -b main); workflow
+        // is anchored to 'other'. findActiveWorkflow returns null even
+        // though all four other gates would pass.
+        gitBaseline: {
+          branch: 'other',
+          head: baselineHead,
+          status_digest: MIN_DIGEST,
+        },
+        host: 'claude',
+      });
+      await setFrontmatter(filePath, (fm) => {
+        fm.current_phase = 'summary-complete';
+        fm.terminal_marker = true;
+      });
+      makeAdvanceCommit(repoRoot);
+      const { code, stderr } = spawnStopHook({
+        hostScript: CLAUDE_STOP_PATH,
+        cwd: repoRoot,
+      });
+      strictEqual(code, 0, `stderr: ${stderr}`);
+      strictEqual(
+        (await listWorkflows(repoRoot)).length,
+        1,
+        'workflow should remain in workflows/ (cross-branch silent)',
+      );
+      strictEqual(
+        (await listArchive(repoRoot)).length,
+        0,
+        'archive/ should remain empty',
+      );
+    });
+  });
+});
+
 describe('Claude stop hook — case (b) terminal_marker unset → no archive', () => {
   it('leaves the workflow in workflows/ and exits 0', async () => {
     await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {

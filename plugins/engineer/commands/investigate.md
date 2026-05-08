@@ -29,12 +29,30 @@ Determine workflow state via the host-shared canonical I/O module:
 
    ```bash
    REPO_ROOT="$(git rev-parse --show-toplevel)"
+   GIT_BRANCH="$(git branch --show-current)"
+   # ADR-0018 §sub-2 — engineer workflows are anchored to a branch;
+   # detached HEAD has no branch context to anchor to.
+   if [ -z "$GIT_BRANCH" ]; then
+     echo "✗ Detached HEAD detected — engineer workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
+     echo "  Switch to a branch first: git switch <branch>" >&2
+     exit 1
+   fi
+   FIND_ERR="${TMPDIR:-/tmp}/engineer-find-active-$$.err"
    ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" \
-     find-active --repo-root "$REPO_ROOT")"
+     find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
+   FIND_RC=$?
+   if [ "$FIND_RC" -ne 0 ]; then
+     echo "✗ find-active failed (exit $FIND_RC):" >&2
+     cat "$FIND_ERR" >&2
+     rm -f "$FIND_ERR"
+     exit "$FIND_RC"
+   fi
+   rm -f "$FIND_ERR"
    ```
 
-   - Empty `$ACTIVE` → no active workflow → bootstrap a new one (Step 2).
-   - Non-empty path → active workflow → append-on-resume (Step 3).
+   - Empty `$ACTIVE` → no active workflow on this branch → bootstrap a new one (Step 2).
+   - Non-empty path → active workflow on this branch → append-on-resume (Step 3).
+   - `find-active` exits 1 on per-branch duplicate (corruption / external mutation); the snippet surfaces the diagnostic and aborts.
 
 2. **Bootstrap** (no active workflow):
 

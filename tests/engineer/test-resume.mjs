@@ -28,7 +28,7 @@ import { strictEqual, ok, match } from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -48,14 +48,23 @@ const {
 } = await import(STATE_PATH);
 
 const MIN_BASELINE = {
-  branch: 'main',
+  branch: 'test',
   head: '0000000000000000000000000000000000000000',
   status_digest: '',
 };
 
-async function withTmpRepo(fn) {
+// Real git repo so findActiveWorkflow's `git branch --show-current`
+// probe (ADR-0018 §sub-2) returns the expected name.
+function gitInit(dir, branch) {
+  execFileSync('git', ['init', '-q', '-b', branch], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'test@test'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir, stdio: 'ignore' });
+}
+
+async function withTmpRepo(fn, { branch = 'test' } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'engineer-resume-test-'));
   try {
+    gitInit(dir, branch);
     await fn(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -300,7 +309,10 @@ describe('/engineer:resume — commands/resume.md shape conformance', () => {
   it('body covers all four outcome paths (single / multi / none / archive)', async () => {
     const text = await readFile(COMMAND_PATH, 'utf8');
     ok(/single active/i.test(text), 'body missing single-active branch');
-    ok(/multi-?active/i.test(text), 'body missing multi-active branch');
+    ok(
+      /per-branch duplicate/i.test(text),
+      'body missing per-branch duplicate branch (ADR-0018 §sub-2 cascade of multi-active)',
+    );
     ok(/no active workflow/i.test(text), 'body missing no-active branch');
     ok(/archive mode/i.test(text), 'body missing archive-mode branch');
   });

@@ -38,6 +38,11 @@ import {
 import { join, dirname, basename, isAbsolute } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { hrtime, pid } from 'node:process';
+// ADR-0018 §sub-2 — `currentGitBranch` shells out to `git branch
+// --show-current` for branch-keyed active workflow lookup. This is
+// the only `child_process` use in state.mjs; all other modules
+// continue to inject the branch via `gitBaseline.branch`.
+import { execFileSync } from 'node:child_process';
 
 // -----------------------------------------------------------------------------
 // Constants — ADR-0011 §1, §2, §3 + ADR-0017 schema 1.1
@@ -408,7 +413,9 @@ export async function withFileLock(workflowPath, fn) {
 }
 
 // -----------------------------------------------------------------------------
-// Discovery — single-active invariant per ADR-0011 §1
+// Discovery — per-branch single-active invariant per ADR-0018 §sub-2
+// (cascade of ADR-0011 §1; the directory-wide Stage 2 baseline is
+// generalized to "exactly one workflow per branch").
 
 /**
  * List workflow files (just `.md`, not `.md.lock` or `.md.tmp`) under
@@ -433,18 +440,184 @@ export async function listWorkflowFiles(repoRoot) {
 }
 
 /**
- * Find the single active workflow file or return null. Throws if more
- * than one exists (single-active invariant per ADR-0011 §1).
+ * Probe the current git branch via `git branch --show-current`.
+ *
+ * Returns the branch name with only the transport `\n` trimmed —
+ * ADR-0018 §sub-2 mandates byte-exact comparison, so any leading
+ * or trailing whitespace inside the value is preserved verbatim.
+ * Returns the empty string `''` when the repo is in detached-HEAD
+ * state (git's documented behavior for `--show-current`) OR when
+ * the probe fails for any reason (no git, not a repo, permission
+ * error). Callers treat empty as "no branch context" and resolve to
+ * null active workflow.
+ */
+export function currentGitBranch(repoRoot) {
+  try {
+    const buf = execFileSync('git', ['branch', '--show-current'], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return String(buf).replace(/\n$/, '');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Lightweight `git_baseline.branch` extractor — scans the YAML
+ * frontmatter without invoking the full `parseWorkflowFile` so that
+ * `findActiveWorkflowByBranch` can still classify a file as
+ * cross-branch even when the frontmatter has unrelated structural
+ * problems. Returns the unquoted branch string, or `null` if the
+ * extractor cannot locate a `git_baseline:` block followed by a
+ * `  branch:` line. The caller MUST treat `null` as "branch unknown"
+ * — never as "different branch".
+ */
+function extractFrontmatterBranch(text) {
+  const lines = String(text).split('\n');
+  let inFm = false;
+  let inGitBaseline = false;
+  for (const line of lines) {
+    if (line === '---') {
+      if (!inFm) {
+        inFm = true;
+        continue;
+      }
+      // Frontmatter close — stop scanning even if branch not yet found.
+      return null;
+    }
+    if (!inFm) continue;
+    if (line === 'git_baseline:') {
+      inGitBaseline = true;
+      continue;
+    }
+    if (inGitBaseline) {
+      const m = line.match(/^ {2}branch:\s*(.+)$/);
+      if (m) {
+        const raw = m[1].trim();
+        // Frontmatter writers JSON-stringify all scalars (yamlScalar);
+        // bare values are tolerated for hand-written test fixtures.
+        if (raw.startsWith('"') && raw.endsWith('"')) {
+          try {
+            return JSON.parse(raw);
+          } catch {
+            return null;
+          }
+        }
+        return raw;
+      }
+      // Encountered a top-level (non-indented) key — out of the
+      // git_baseline nested block.
+      if (line && !line.startsWith('  ')) inGitBaseline = false;
+    }
+  }
+  return null;
+}
+
+/**
+ * Sanitize a path for inclusion in user-visible error messages.
+ * Returns the basename in JSON-stringified form, which escapes
+ * control characters / terminal escape sequences so an attacker-
+ * controlled workflow filename cannot inject ANSI codes into hook
+ * stderr or `cat "$FIND_ERR" >&2` output.
+ */
+function safeFilename(file) {
+  return JSON.stringify(basename(file));
+}
+
+/**
+ * Resolve the active workflow on a specific branch. Pure / no-lock —
+ * MUST NOT acquire any lock so it is safe to call from inside
+ * `createWorkflowUnderLock`, which already holds the directory lock.
+ *
+ * Behavior:
+ *  - `branch` empty / null / undefined → return null (detached-HEAD
+ *    equivalent; no branch context to anchor to).
+ *  - 0 same-branch workflow files → return null.
+ *  - 1 same-branch workflow file → return its absolute path.
+ *  - ≥ 2 same-branch workflow files → throw.
+ *
+ * Malformed-file policy (sub-2 brainstorm decision: skip-malformed
+ * with same-branch fail-closed):
+ *  - Files whose lightweight branch extractor returns a value that
+ *    does NOT match the queried branch are *cross-branch* (or have a
+ *    different branch name) and are skipped silently — they cannot
+ *    affect this branch's invariant.
+ *  - Files whose lightweight extractor returns `null` are
+ *    *branch-unknown*. The full `parseWorkflowFile` is then tried as
+ *    a fallback. If that also throws, the function THROWS (fail
+ *    closed) rather than skipping — a same-branch malformed file
+ *    would otherwise let `createWorkflow` write a duplicate,
+ *    bypassing the per-branch single-active invariant (Codex review
+ *    P2).
+ *  - `readFile` failure (permissions, FIFO, etc.) is also fail-closed
+ *    for the same reason — branch identity is undeterminable.
+ */
+export async function findActiveWorkflowByBranch(repoRoot, branch) {
+  if (!branch) return null;
+  const files = await listWorkflowFiles(repoRoot);
+  const matching = [];
+  for (const file of files) {
+    let text;
+    try {
+      text = await readFile(file, 'utf8');
+    } catch (err) {
+      throw new Error(
+        `findActiveWorkflowByBranch: failed to read workflow file ${safeFilename(file)} ` +
+          `(${err.code || err.message}). Cannot determine its branch — per-branch ` +
+          `single-active invariant at risk (ADR-0018 §sub-2). Reconcile manually.`,
+      );
+    }
+    const fmBranch = extractFrontmatterBranch(text);
+    if (fmBranch !== null) {
+      if (fmBranch === branch) matching.push(file);
+      continue;
+    }
+    let fm;
+    try {
+      fm = parseWorkflowFile(text).frontmatter;
+    } catch (err) {
+      throw new Error(
+        `findActiveWorkflowByBranch: cannot parse workflow file ${safeFilename(file)} ` +
+          `(${err.message}). Branch identity is undeterminable — per-branch ` +
+          `single-active invariant at risk (ADR-0018 §sub-2). Reconcile manually ` +
+          `(repair or archive the file).`,
+      );
+    }
+    if (
+      fm &&
+      fm.git_baseline &&
+      typeof fm.git_baseline.branch === 'string' &&
+      fm.git_baseline.branch === branch
+    ) {
+      matching.push(file);
+    }
+  }
+  if (matching.length === 0) return null;
+  if (matching.length === 1) return matching[0];
+  throw new Error(
+    `Per-branch single-active invariant violated: ${matching.length} workflow files on branch '${branch}'. ` +
+      `ADR-0018 §sub-2 requires exactly one workflow per branch. ` +
+      `Reconcile manually — keep one file, archive the rest.`,
+  );
+}
+
+/**
+ * Find the active workflow file on the current git branch, or null.
+ *
+ * Auto-probes the branch via `currentGitBranch(repoRoot)` and
+ * delegates to `findActiveWorkflowByBranch`. Detached HEAD or
+ * unreadable git state both produce a null return (no active
+ * workflow).
+ *
+ * ADR-0018 §sub-2 — branch identity is the source of truth for
+ * "active". `git checkout <branch>` swaps the active workflow
+ * automatically; `git stash` is tree-only and leaves the active
+ * workflow unchanged because branch is unchanged.
  */
 export async function findActiveWorkflow(repoRoot) {
-  const files = await listWorkflowFiles(repoRoot);
-  if (files.length === 0) return null;
-  if (files.length === 1) return files[0];
-  throw new Error(
-    `Multi-active state detected: ${files.length} workflow files in ${workflowDir(repoRoot)}. ` +
-      `Stage 2 enforces single-active invariant (ADR-0011 §1). ` +
-      `Reconcile manually before continuing.`,
-  );
+  const branch = currentGitBranch(repoRoot);
+  return findActiveWorkflowByBranch(repoRoot, branch);
 }
 
 // -----------------------------------------------------------------------------
@@ -1154,11 +1327,20 @@ export async function createWorkflowUnderLock({
   if (!gitBaseline || !gitBaseline.branch || !gitBaseline.head) {
     throw new Error('gitBaseline must have { branch, head, status_digest }');
   }
-  const existing = await listWorkflowFiles(repoRoot);
-  if (existing.length > 0) {
+  if (typeof gitBaseline.branch !== 'string') {
     throw new Error(
-      `Cannot create workflow — ${existing.length} workflow file(s) already exist. ` +
-        `Stage 2 enforces single-active invariant (ADR-0011 §1).`,
+      `gitBaseline.branch must be a string (got ${typeof gitBaseline.branch} ${JSON.stringify(gitBaseline.branch)})`,
+    );
+  }
+  // ADR-0018 §sub-2 — same-branch single-active invariant. Caller is
+  // expected to be inside `withDirectoryLock`, so use the no-lock
+  // resolver variant to avoid deadlock against ourselves.
+  const existing = await findActiveWorkflowByBranch(repoRoot, gitBaseline.branch);
+  if (existing) {
+    throw new Error(
+      `Cannot create workflow — a workflow already exists on branch '${gitBaseline.branch}' (${existing}). ` +
+        `Per-branch single-active invariant (ADR-0018 §sub-2). ` +
+        `Resume with /engineer:resume on this branch, or archive the existing workflow first.`,
     );
   }
 
@@ -1878,9 +2060,13 @@ function cliPrintHelp() {
       'Usage: state.mjs <subcommand> [flags]',
       '',
       'Subcommands:',
-      '  find-active --repo-root <path>',
-      '    Print the single active workflow path (empty if none). Exit 0 on success;',
-      '    exit 1 if multi-active state detected.',
+      '  find-active --repo-root <path> [--branch <name>]',
+      '    Print the active workflow path on the current git branch (empty if',
+      '    none). Branch is probed via `git branch --show-current`; supply',
+      '    --branch <name> to override (or to test detached-HEAD via empty).',
+      '    Exit 0 on success (including null active); exit 1 if two or more',
+      '    workflow files are on the same branch (per-branch single-active',
+      '    invariant per ADR-0018 §sub-2).',
       '',
       '  create --repo-root <path> --verb <verb> --host <host>',
       '         --git-baseline-branch <name> --git-baseline-head <sha>',
@@ -1955,7 +2141,13 @@ async function cliMain(argv) {
     switch (subcommand) {
       case 'find-active': {
         cliRequire(flags, ['repo-root']);
-        const path = await findActiveWorkflow(flags['repo-root']);
+        // ADR-0018 §sub-2 — `--branch` overrides the auto-probe so
+        // callers (tests, scripts that already know the branch) skip
+        // the `git branch --show-current` shell-out.
+        const path =
+          'branch' in flags
+            ? await findActiveWorkflowByBranch(flags['repo-root'], flags.branch)
+            : await findActiveWorkflow(flags['repo-root']);
         if (path) process.stdout.write(`${path}\n`);
         return 0;
       }

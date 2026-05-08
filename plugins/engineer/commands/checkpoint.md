@@ -71,12 +71,14 @@ Branch on the result:
 - **Exit 0, single path on stdout** → that path is the single active
   workflow. Continue with Phase 2.
 
-- **Exit 1, multi-active error on stderr** → the directory contains
-  more than one workflow file, violating ADR-0011 §1 single-active
-  invariant. Reject with a one-line hint pointing at
-  `/engineer:resume` (which can list multi-active candidates and
-  archive stale ones). Do NOT pick one yourself — multi-active is a
-  user-resolvable invariant violation, not a checkpoint case.
+- **Exit 1, per-branch duplicate error on stderr** → two or more
+  workflow files coexist on the current branch, violating the
+  per-branch single-active invariant (ADR-0018 §sub-2 cascade of
+  ADR-0011 §1). Reject with a one-line hint pointing at
+  `/engineer:resume` (which can list per-branch duplicate candidates
+  with their `git_baseline.branch` and archive stale ones). Do NOT
+  pick one yourself — per-branch duplicate is a user-resolvable
+  invariant violation, not a checkpoint case.
 
 ---
 
@@ -113,8 +115,10 @@ Emit one of:
   workflow path on the next line, so the user can inspect by hand).
 - `✗ No active workflow; nothing to checkpoint.` — Phase 1 found
   nothing.
-- `✗ Multi-active workflows detected — resolve via /engineer:resume
-  before checkpointing.` — Phase 1 found more than one.
+- `✗ Per-branch duplicate detected — resolve via /engineer:resume
+  before checkpointing.` — Phase 1 found more than one workflow on
+  the current branch (corruption / external mutation per ADR-0018
+  §sub-2).
 - `✗ Empty summary; required form: /engineer:checkpoint <summary>.` —
   Phase 0 rejected.
 

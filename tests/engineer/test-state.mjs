@@ -23,10 +23,11 @@
 // Run via `node --test tests/engineer/test-state.mjs`.
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok, deepStrictEqual, rejects } from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { strictEqual, ok, deepStrictEqual, rejects, match } from 'node:assert/strict';
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -40,6 +41,8 @@ const {
   createWorkflow,
   readWorkflow,
   listWorkflowFiles,
+  findActiveWorkflow,
+  findActiveWorkflowByBranch,
   withFileLock,
   workflowFilePath,
   // ADR-0017 schema 1.1
@@ -60,9 +63,20 @@ const {
   noActiveChildrenCheck,
 } = await import(STATE_PATH);
 
-async function withTmpRepo(fn) {
+// Real git repo so findActiveWorkflow's `git branch --show-current` probe
+// (ADR-0018 §sub-2) returns the expected name. Without the init+checkout,
+// the probe sees detached/uninitialized state and branch-keyed lookup
+// returns null even when a same-branch workflow is on disk.
+function gitInit(dir, branch) {
+  execFileSync('git', ['init', '-q', '-b', branch], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'test@test'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir, stdio: 'ignore' });
+}
+
+async function withTmpRepo(fn, { branch = 'test' } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'engineer-state-test-'));
   try {
+    gitInit(dir, branch);
     await fn(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -381,8 +395,8 @@ describe('state.mjs — createWorkflow round-trip with special characters', () =
   });
 });
 
-describe('state.mjs — single-active invariant (ADR-0011 §1)', () => {
-  it('rejects second createWorkflow when one already exists', async () => {
+describe('state.mjs — single-active invariant (ADR-0011 §1, ADR-0018 §sub-2 cascade)', () => {
+  it('rejects second createWorkflow on the same branch (per-branch invariant)', async () => {
     await withTmpRepo(async (repoRoot) => {
       await createWorkflow({
         repoRoot,
@@ -401,8 +415,305 @@ describe('state.mjs — single-active invariant (ADR-0011 §1)', () => {
             originalRequest: 'second',
           });
         },
-        /single-active invariant|already exist/i,
+        /per-branch|same-branch|already exists on branch/i,
       );
+    });
+  });
+
+  it('allows createWorkflow on a different branch when one already exists (cross-branch coexistence)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'on test branch',
+      });
+      // Switch fixture to 'other' branch; createWorkflow with a
+      // matching gitBaseline.branch must succeed since same-branch
+      // single-active is per ADR-0018 §sub-2 not directory-wide.
+      execFileSync('git', ['checkout', '-q', '-b', 'other'], {
+        cwd: repoRoot,
+        stdio: 'ignore',
+      });
+      await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        host: 'claude',
+        gitBaseline: { ...MIN_BASELINE, branch: 'other' },
+        originalRequest: 'on other branch',
+      });
+      const files = await listWorkflowFiles(repoRoot);
+      strictEqual(files.length, 2, 'both workflows should coexist on disk');
+    });
+  });
+});
+
+describe('state.mjs — findActiveWorkflow branch-keyed lookup (ADR-0018 §sub-2)', () => {
+  it('(a) returns null on empty workflows directory', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      strictEqual(await findActiveWorkflow(repoRoot), null);
+    });
+  });
+
+  it('(b) returns path when single workflow matches current branch', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'same-branch case',
+      });
+      const [filePath] = await listWorkflowFiles(repoRoot);
+      strictEqual(await findActiveWorkflow(repoRoot), filePath);
+    });
+  });
+
+  it('(c) returns null when single workflow is on a different branch', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      // Fixture is on 'test'; workflow's git_baseline.branch is 'other'.
+      // createWorkflow's own branch reject would block this in the
+      // public API after A5, so we use findActiveWorkflowByBranch
+      // directly to verify the resolver itself.
+      await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: { ...MIN_BASELINE, branch: 'other' },
+        originalRequest: 'cross-branch case',
+      });
+      strictEqual(
+        await findActiveWorkflowByBranch(repoRoot, 'test'),
+        null,
+        'workflow on branch=other must not match current branch=test',
+      );
+    });
+  });
+
+  it('(d) throws when two same-branch workflow files coexist (corruption / external write)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'first',
+      });
+      // Bypass createWorkflow's branch-keyed reject by duplicating the
+      // workflow file directly — simulates external mutation or
+      // pre-Option-A migration leftover.
+      const [first] = await listWorkflowFiles(repoRoot);
+      const second = first.replace(/-[0-9a-f]{6}\.md$/, '-aaaaaa.md');
+      const content = await readFile(first, 'utf8');
+      await writeFile(second, content, { mode: 0o600 });
+      await rejects(
+        async () => {
+          await findActiveWorkflow(repoRoot);
+        },
+        /per-branch|same-branch|two workflows/i,
+      );
+    });
+  });
+
+  it('(e) returns null under detached HEAD (empty branch identity)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'detached test',
+      });
+      // Empty branch simulates detached HEAD without mutating the
+      // fixture's git state (which would risk leaking into other tests).
+      strictEqual(await findActiveWorkflowByBranch(repoRoot, ''), null);
+    });
+  });
+
+  it('(f) treats branch identity as case-sensitive (Feature/x !== feature/x)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: { ...MIN_BASELINE, branch: 'Feature/x' },
+        originalRequest: 'case-sensitive',
+      });
+      const [filePath] = await listWorkflowFiles(repoRoot);
+      strictEqual(
+        await findActiveWorkflowByBranch(repoRoot, 'Feature/x'),
+        filePath,
+        'exact case match must succeed',
+      );
+      strictEqual(
+        await findActiveWorkflowByBranch(repoRoot, 'feature/x'),
+        null,
+        'case-only difference must NOT match (byte-exact rule)',
+      );
+    });
+  });
+
+  it('(g) cross-branch malformed file does NOT block same-branch lookup (lightweight extractor + skip)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const { filePath: validPath } = await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'good',
+      });
+      // Sibling file whose body is corrupt but whose lightweight
+      // extractable git_baseline.branch is 'other' — cross-branch.
+      // The lightweight extractor reads `branch: "other"` and skips
+      // this file without invoking the strict parseWorkflowFile.
+      const sibling = join(
+        repoRoot,
+        '.claude/agentic-engineer/workflows/investigate-20260101T000000Z-zzzzzz.md',
+      );
+      await writeFile(
+        sibling,
+        '---\nschema: 99\ngit_baseline:\n  branch: "other"\n---\n!!corrupt body!!\n',
+        { mode: 0o600 },
+      );
+      const result = await findActiveWorkflow(repoRoot);
+      strictEqual(
+        result,
+        validPath,
+        'cross-branch malformed file must not block lookup of the same-branch workflow',
+      );
+    });
+  });
+
+  it('(h) same-branch malformed file FAILS CLOSED (Codex P2 — invariant protection)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'good',
+      });
+      // Sibling file with no extractable branch field AND unparseable
+      // frontmatter. Under skip-malformed policy this would silently
+      // hide a potential same-branch duplicate; the fail-closed rule
+      // (sub-2 brainstorm decision) requires findActiveWorkflow to
+      // throw rather than risk inviting createWorkflow to add a
+      // second same-branch file.
+      const opaque = join(
+        repoRoot,
+        '.claude/agentic-engineer/workflows/investigate-20260101T000000Z-zzzzzz.md',
+      );
+      await writeFile(opaque, '---\n!!totally corrupt!!\n', { mode: 0o600 });
+      await rejects(
+        async () => {
+          await findActiveWorkflow(repoRoot);
+        },
+        /branch identity is undeterminable|invariant at risk/i,
+      );
+    });
+  });
+});
+
+describe('state.mjs CLI — find-active --branch + auto-probe (ADR-0018 §sub-2)', () => {
+  function runCli(args) {
+    return spawnSync(process.execPath, [STATE_PATH, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
+
+  it('(a) auto-probe: same-branch workflow → stdout=path, exit=0', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const { filePath } = await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'cli auto-probe success',
+      });
+      const proc = runCli(['find-active', '--repo-root', repoRoot]);
+      strictEqual(proc.status, 0, `stderr: ${proc.stderr}`);
+      strictEqual(proc.stdout.trim(), filePath);
+    });
+  });
+
+  it('(b) auto-probe: cross-branch workflow → stdout=empty, exit=0', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: { ...MIN_BASELINE, branch: 'other' },
+        originalRequest: 'cli cross-branch',
+      });
+      const proc = runCli(['find-active', '--repo-root', repoRoot]);
+      strictEqual(proc.status, 0, `stderr: ${proc.stderr}`);
+      strictEqual(proc.stdout, '');
+    });
+  });
+
+  it('(c) --branch "" (detached-HEAD equivalent) → stdout=empty, exit=0', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'cli detached',
+      });
+      const proc = runCli([
+        'find-active',
+        '--repo-root',
+        repoRoot,
+        '--branch',
+        '',
+      ]);
+      strictEqual(proc.status, 0, `stderr: ${proc.stderr}`);
+      strictEqual(proc.stdout, '');
+    });
+  });
+
+  it('(d) auto-probe: same-branch duplicate → exit=1, stderr contains per-branch reason', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const { filePath } = await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'cli dup first',
+      });
+      // Duplicate the file directly to bypass createWorkflowUnderLock's
+      // own per-branch reject — simulating corruption.
+      const second = filePath.replace(/-[0-9a-f]{6}\.md$/, '-aaaaaa.md');
+      const text = await readFile(filePath, 'utf8');
+      await writeFile(second, text, { mode: 0o600 });
+      const proc = runCli(['find-active', '--repo-root', repoRoot]);
+      strictEqual(proc.status, 1);
+      match(proc.stderr, /per-branch|same-branch|two workflows/i);
+    });
+  });
+
+  it('(e) --branch X overrides auto-probe (tests bypass git probing)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const { filePath } = await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: { ...MIN_BASELINE, branch: 'feat/explicit' },
+        originalRequest: 'cli explicit branch',
+      });
+      // Fixture branch is 'test'; auto-probe would return null for
+      // this workflow. --branch 'feat/explicit' must locate it.
+      const proc = runCli([
+        'find-active',
+        '--repo-root',
+        repoRoot,
+        '--branch',
+        'feat/explicit',
+      ]);
+      strictEqual(proc.status, 0, `stderr: ${proc.stderr}`);
+      strictEqual(proc.stdout.trim(), filePath);
     });
   });
 });
