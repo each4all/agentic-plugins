@@ -176,6 +176,24 @@ async function pathStat(path) {
   }
 }
 
+/**
+ * Acquire a lock with O_EXCL fresh path, falling through to atomic
+ * rename-based stale reclaim per ADR-0011 §3 (revised). Returns the
+ * owner token written to the lock file on success.
+ *
+ * Stale reclaim: when the existing lock is confirmed stale (token
+ * unchanged across a full STALE_THRESHOLD_MS window), the reclaimer
+ * writes its own token to a uniquely-named tmp file in the same
+ * directory and POSIX-renames it onto the lock path. POSIX rename(2)
+ * atomically replaces the destination, so two concurrent reclaimers
+ * are sequenced by the kernel — the last rename's token is what's on
+ * disk. Each reclaimer reads back the lock contents: the winner sees
+ * its own token and returns; the loser sees a different token and
+ * loops to retry-wait. This avoids the unlink-then-acquire race where
+ * a paused reclaimer would unlink the new owner's lock.
+ *
+ * @returns {Promise<string>} owner token written into the lock file
+ */
 async function acquireLock(lockPath, opts = {}) {
   const { now = Date.now, sleep = sleepMs, randomSource = randomBytes } = opts;
   const myToken = generateOwnerToken({ randomSource });
@@ -218,6 +236,12 @@ async function acquireLock(lockPath, opts = {}) {
   }
 }
 
+/**
+ * Classify an existing lock as 'fresh' (recent mtime), 'stale' (token
+ * unchanged across a full STALE_THRESHOLD_MS window — holder genuinely
+ * crashed), 'progress' (token mutated mid-window — someone is alive),
+ * or 'gone' (lock vanished while inspecting).
+ */
 async function checkLockStaleness(lockPath, { now, sleep }) {
   const st = await pathStat(lockPath);
   if (!st) return 'gone';
@@ -232,6 +256,16 @@ async function checkLockStaleness(lockPath, { now, sleep }) {
   return 'stale';
 }
 
+/**
+ * Try to atomically reclaim a stale lock by tmpfile + rename. Returns
+ * true if the rename's resulting on-disk token matches our token (we
+ * are now the lock holder); false if another reclaimer beat us in the
+ * kernel's rename sequencing.
+ *
+ * Concurrent reclaimers are safe: rename(2) atomically replaces the
+ * destination so neither unlinks the other's lock; the rename ordering
+ * picks one winner deterministically.
+ */
 async function tryReclaimByRename(lockPath, myToken, { randomSource }) {
   const dir = dirname(lockPath);
   const reclaimTmp = join(
@@ -260,6 +294,12 @@ async function tryReclaimByRename(lockPath, myToken, { randomSource }) {
   return onDisk === myToken;
 }
 
+/**
+ * Release a lock. If the on-disk token does not match the acquirer's
+ * token (another writer reclaimed the lock as stale), DO NOT unlink —
+ * abort the in-flight operation per ADR-0011 §3. Returns true on clean
+ * release, false on ownership mismatch.
+ */
 async function releaseLock(lockPath, ownerToken) {
   let onDisk;
   try {
@@ -322,6 +362,12 @@ async function ensureDir(path, mode) {
   await mkdir(path, { recursive: true, mode });
 }
 
+/**
+ * Run `fn` while holding the directory-level creation lock per ADR-0011 §3.
+ * `fn` receives `{ lockPath, token }` so callers can pass ownership
+ * info into `atomicWrite()` for the pre-commit recheck. The release
+ * path is in finally — runs on every exit, including throws.
+ */
 export async function withDirectoryLock(repoRoot, fn) {
   await ensureDir(workflowDir(repoRoot), 0o700);
   await ensureDir(dirname(creationLockPath(repoRoot)), 0o700);
@@ -343,6 +389,12 @@ export async function withDirectoryLock(repoRoot, fn) {
   }
 }
 
+/**
+ * Run `fn` while holding the per-file lock for a workflow. `fn` receives
+ * `{ lockPath, token }` so it can pass ownership into `atomicWrite()`
+ * for pre-commit recheck. Used for appends / snapshot updates /
+ * frontmatter edits to an existing workflow file.
+ */
 export async function withFileLock(workflowPath, fn) {
   const lockPath = fileLockPath(workflowPath);
   const token = await acquireLock(lockPath);
@@ -365,6 +417,11 @@ export async function withFileLock(workflowPath, fn) {
 // -----------------------------------------------------------------------------
 // Discovery — per-branch single-active invariant per ADR-0018 §sub-2.
 
+/**
+ * List workflow files (just `.md`, not `.md.lock` or `.md.tmp`) under
+ * the workflows directory. Caller is responsible for holding the
+ * directory-level lock if exclusivity matters.
+ */
 export async function listWorkflowFiles(repoRoot) {
   const dir = workflowDir(repoRoot);
   const st = await pathStat(dir);
@@ -382,6 +439,18 @@ export async function listWorkflowFiles(repoRoot) {
     .sort();
 }
 
+/**
+ * Probe the current git branch via `git branch --show-current`.
+ *
+ * Returns the branch name with only the transport `\n` trimmed —
+ * ADR-0018 §sub-2 mandates byte-exact comparison, so any leading
+ * or trailing whitespace inside the value is preserved verbatim.
+ * Returns the empty string `''` when the repo is in detached-HEAD
+ * state (git's documented behavior for `--show-current`) OR when
+ * the probe fails for any reason (no git, not a repo, permission
+ * error). Callers treat empty as "no branch context" and resolve to
+ * null active workflow.
+ */
 export function currentGitBranch(repoRoot) {
   try {
     const buf = execFileSync('git', ['branch', '--show-current'], {
@@ -394,6 +463,16 @@ export function currentGitBranch(repoRoot) {
   }
 }
 
+/**
+ * Lightweight `git_baseline.branch` extractor — scans the YAML
+ * frontmatter without invoking the full `parseWorkflowFile` so that
+ * `findActiveWorkflowByBranch` can still classify a file as
+ * cross-branch even when the frontmatter has unrelated structural
+ * problems. Returns the unquoted branch string, or `null` if the
+ * extractor cannot locate a `git_baseline:` block followed by a
+ * `  branch:` line. The caller MUST treat `null` as "branch unknown"
+ * — never as "different branch".
+ */
 function extractFrontmatterBranch(text) {
   const lines = String(text).split('\n');
   let inFm = false;
@@ -430,10 +509,45 @@ function extractFrontmatterBranch(text) {
   return null;
 }
 
+/**
+ * Sanitize a path for inclusion in user-visible error messages.
+ * Returns the basename in JSON-stringified form, which escapes
+ * control characters / terminal escape sequences so an attacker-
+ * controlled workflow filename cannot inject ANSI codes into hook
+ * stderr or `cat "$FIND_ERR" >&2` output.
+ */
 function safeFilename(file) {
   return JSON.stringify(basename(file));
 }
 
+/**
+ * Resolve the active workflow on a specific branch. Pure / no-lock —
+ * MUST NOT acquire any lock so it is safe to call from inside
+ * `createWorkflowUnderLock`, which already holds the directory lock.
+ *
+ * Behavior:
+ *  - `branch` empty / null / undefined → return null (detached-HEAD
+ *    equivalent; no branch context to anchor to).
+ *  - 0 same-branch workflow files → return null.
+ *  - 1 same-branch workflow file → return its absolute path.
+ *  - ≥ 2 same-branch workflow files → throw.
+ *
+ * Malformed-file policy (sub-2 brainstorm decision: skip-malformed
+ * with same-branch fail-closed):
+ *  - Files whose lightweight branch extractor returns a value that
+ *    does NOT match the queried branch are *cross-branch* (or have a
+ *    different branch name) and are skipped silently — they cannot
+ *    affect this branch's invariant.
+ *  - Files whose lightweight extractor returns `null` are
+ *    *branch-unknown*. The full `parseWorkflowFile` is then tried as
+ *    a fallback. If that also throws, the function THROWS (fail
+ *    closed) rather than skipping — a same-branch malformed file
+ *    would otherwise let `createWorkflow` write a duplicate,
+ *    bypassing the per-branch single-active invariant (Codex review
+ *    P2).
+ *  - `readFile` failure (permissions, FIFO, etc.) is also fail-closed
+ *    for the same reason — branch identity is undeterminable.
+ */
 export async function findActiveWorkflowByBranch(repoRoot, branch) {
   if (!branch) return null;
   const files = await listWorkflowFiles(repoRoot);
@@ -483,6 +597,19 @@ export async function findActiveWorkflowByBranch(repoRoot, branch) {
   );
 }
 
+/**
+ * Find the active workflow file on the current git branch, or null.
+ *
+ * Auto-probes the branch via `currentGitBranch(repoRoot)` and
+ * delegates to `findActiveWorkflowByBranch`. Detached HEAD or
+ * unreadable git state both produce a null return (no active
+ * workflow).
+ *
+ * ADR-0018 §sub-2 — branch identity is the source of truth for
+ * "active". `git checkout <branch>` swaps the active workflow
+ * automatically; `git stash` is tree-only and leaves the active
+ * workflow unchanged because branch is unchanged.
+ */
 export async function findActiveWorkflow(repoRoot) {
   const branch = currentGitBranch(repoRoot);
   return findActiveWorkflowByBranch(repoRoot, branch);
@@ -692,6 +819,14 @@ function serializeFrontmatter(fm) {
   return lines.join('\n');
 }
 
+/**
+ * Parse the frontmatter block at the start of a workflow file. Returns
+ * { frontmatter, body, frontmatterRaw }. Throws on malformed structure.
+ *
+ * The parser accepts only the shape produced by serializeFrontmatter
+ * above — unknown keys throw, mis-indented blocks throw. This is a
+ * round-trip parser, not a general YAML parser.
+ */
 export function parseWorkflowFile(text) {
   if (!text.startsWith('---\n')) {
     throw new Error('Missing frontmatter open delimiter (expected "---\\n" at file start).');
@@ -974,6 +1109,12 @@ export function assembleWorkflowFile(frontmatter, body) {
 // -----------------------------------------------------------------------------
 // Frontmatter validation — orchestrator schema '1.0'
 
+/**
+ * Strict ADR-0011 §2 / ADR-0018 §sub-1 schema='1.0' validation. Called at
+ * parse-before-mutate boundaries. Throws on any deviation from the closed
+ * schema set. orchestrator schema '1.0' rejects engineer schema 1 / '1.1' /
+ * 2 cleanly to keep namespaces separate.
+ */
 function validateFrontmatter(fm) {
   if (!SUPPORTED_SCHEMA_VERSIONS.has(fm.schema)) {
     const accepted = [...SUPPORTED_SCHEMA_VERSIONS]
@@ -1054,6 +1195,15 @@ function validateFrontmatter(fm) {
   validateListOfObjectsField(fm, 'ensemble_results');
 }
 
+/**
+ * Validate a schema-'1.0' list-of-objects optional field. The field's per-
+ * entry key set is `ENTRY_KEYS_BY_LIST_KEY[key]`, which doubles as the
+ * known-set check (no unknown subkeys; missing subkeys allowed only for
+ * those marked optional below).
+ *
+ * Optional subkeys per ADR-0017 mirror:
+ * - `ensemble_results[*].codex_session_id` — best-effort surface; nullable.
+ */
 function validateListOfObjectsField(fm, key) {
   if (!(key in fm)) return;
   const value = fm[key];
@@ -1088,6 +1238,17 @@ function validateListOfObjectsField(fm, key) {
   }
 }
 
+/**
+ * Per-list-key value-type checks. All schema '1.0' list-of-objects entries
+ * carry string-shaped values (ISO timestamps, identifiers, free-form
+ * summaries). Mirror of engineer's ADR-0017 §sub-4 validation; the same
+ * gate applies to orchestrator's `pending_ensemble` + `ensemble_results`.
+ *
+ * Each value gate accepts either `string` (the canonical case) or — for
+ * subkeys explicitly nullable per the entry-key spec — `null` /
+ * `undefined`. The function throws with a precise field path on type
+ * violation.
+ */
 function validateListOfObjectsValueTypes(key, idx, entry) {
   const optional = OPTIONAL_ENTRY_KEYS_BY_LIST_KEY[key] ?? new Set();
   for (const k of ENTRY_KEYS_BY_LIST_KEY[key]) {
@@ -1257,6 +1418,16 @@ export function singleLine(text) {
 // -----------------------------------------------------------------------------
 // Public API: createWorkflow
 
+/**
+ * Create a new workflow under the directory-level lock per ADR-0011 §3.
+ * Throws if any workflow already exists on the same branch (per-branch
+ * single-active invariant per ADR-0018 §sub-2).
+ *
+ * Caller is expected to hold the directory lock. Use createWorkflow()
+ * for the lock-wrapped variant. The `ownership` object (when provided)
+ * carries the directory-lock token and is forwarded to `atomicWrite()`
+ * for pre-commit recheck.
+ */
 export async function createWorkflowUnderLock({
   repoRoot,
   verb,
@@ -1434,6 +1605,15 @@ export async function readWorkflow(workflowPath) {
 // -----------------------------------------------------------------------------
 // Ensemble bookkeeping (ADR-0017 §sub-4 mirror)
 
+/**
+ * Apply the ADR-0017 §sub-decision-4 retention cap to an `ensemble_results`
+ * list. Sorts oldest→newest by `completed_at` and trims to `cap`. The
+ * input array is **not** mutated; a new array is returned.
+ *
+ * @param {Array<object>} entries
+ * @param {number} cap
+ * @returns {Array<object>}
+ */
 export function pruneEnsembleResults(entries, cap = ENSEMBLE_RESULTS_RETENTION_CAP) {
   if (!Array.isArray(entries)) {
     throw new Error('pruneEnsembleResults: entries must be an array');
@@ -1452,6 +1632,18 @@ export function pruneEnsembleResults(entries, cap = ENSEMBLE_RESULTS_RETENTION_C
   return sorted.slice(sorted.length - cap);
 }
 
+/**
+ * ADR-0017 §sub-decision 4 — record a pending ensemble dispatch.
+ *
+ * Idempotency: if an entry with the same `run_id` already exists in
+ * `pending_ensemble`, it is replaced (not duplicated). This keeps
+ * dispatch-side retries safe and prevents the pending list from growing
+ * unboundedly under restart loops.
+ *
+ * Required fields are validated at the call boundary (Codex review M3 —
+ * partial entries with empty phase / ensemble_type would otherwise pass
+ * silently and corrupt drift / retrospection queries).
+ */
 export async function recordPendingEnsemble({
   workflowPath,
   phase,
@@ -1500,6 +1692,18 @@ export async function recordPendingEnsemble({
   });
 }
 
+/**
+ * ADR-0017 §sub-decision 4 — commit an ensemble result via the prescribed
+ * three-step atomic mutation in a single `withFileLock` window:
+ *
+ *   1. Pop the matching `pending_ensemble` entry (by `run_id`).
+ *   2. Append `result` to `ensemble_results`.
+ *   3. Prune `ensemble_results` to `ENSEMBLE_RESULTS_RETENTION_CAP`.
+ *
+ * Idempotency: if an `ensemble_results` entry with the same `run_id`
+ * already exists, the second commit is a no-op for the results list (the
+ * matching pending entry is still removed if present).
+ */
 export async function commitEnsemble({
   workflowPath,
   run_id,
