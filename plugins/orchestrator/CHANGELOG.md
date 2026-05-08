@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.1.0...plugin-orchestrator-v0.2.0) (2026-05-08)
+
+
+### Features
+
+* **plugins/orchestrator:** MVP scaffolding (ADR-0018 §sub-1) ([#53](https://github.com/each4all/agentic-plugins/issues/53)) ([3615bbc](https://github.com/each4all/agentic-plugins/commit/3615bbc24fe0c851a7b58a269976562b094ea183))
+
 ## 0.1.0 (initial)
 
 Initial plan-only MVP scaffold per [ADR-0018](../../docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md) §sub-decision-1.

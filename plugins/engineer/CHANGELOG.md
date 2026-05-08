@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.5.0...plugin-engineer-v0.6.0) (2026-05-08)
+
+
+### Features
+
+* **engineer:** /engineer:checkpoint + schema 1.1 latest_checkpoint emit (ADR-0017 PR3) ([304e3d9](https://github.com/each4all/agentic-plugins/commit/304e3d9e9e640664ffda77f7a14cd2240f0e3e3a))
+* **plugins/engineer:** /engineer:checkpoint + schema 1.1 latest_checkpoint emit (ADR-0017 PR3) ([dabd898](https://github.com/each4all/agentic-plugins/commit/dabd898659eed7251792a19c2da17fbbc4e71e85))
+* **plugins/engineer:** /engineer:peer-now + ensemble_results wiring (ADR-0017 PR5) ([#49](https://github.com/each4all/agentic-plugins/issues/49)) ([6571bd4](https://github.com/each4all/agentic-plugins/commit/6571bd4af0f20d1c71aa010c2b55bc6bd12ddbb6))
+* **plugins/engineer:** /engineer:resume (ADR-0017 PR2) ([595acd7](https://github.com/each4all/agentic-plugins/commit/595acd776bdfe24f3937b73c532363e1706aa784))
+* **plugins/engineer:** /engineer:resume (ADR-0017 PR2) ([465858a](https://github.com/each4all/agentic-plugins/commit/465858ab1dcc1fa7287fa140994a72755131ab8d))
+* **plugins/engineer:** /engineer:resume drift dirty case enrichment (ADR-0018 §sub-3) ([#51](https://github.com/each4all/agentic-plugins/issues/51)) ([eb3c485](https://github.com/each4all/agentic-plugins/commit/eb3c4857738f1346f758d7a2a81417f15263bfe7))
+* **plugins/engineer:** branch-keyed active workflow lookup (ADR-0018 §sub-2) ([#52](https://github.com/each4all/agentic-plugins/issues/52)) ([9128c95](https://github.com/each4all/agentic-plugins/commit/9128c955839015bcfa65dfa60b80d7e1b3f2424f))
+* **plugins/engineer:** schema 1.1 reader + ensemble bookkeeping helpers (ADR-0017 PR1) ([3c15753](https://github.com/each4all/agentic-plugins/commit/3c1575348312b608713a14454b16db0165568f66))
+* **plugins/engineer:** schema 1.1 reader + ensemble bookkeeping helpers (ADR-0017 PR1) ([67ca92a](https://github.com/each4all/agentic-plugins/commit/67ca92adde76671ece289287a6e05770a957a792))
+* **plugins/engineer:** Stop hook auto-archive (ADR-0017 PR4) ([#48](https://github.com/each4all/agentic-plugins/issues/48)) ([cfb6fa6](https://github.com/each4all/agentic-plugins/commit/cfb6fa6c9d8f5c45d9a5a2c3b90526d83b4e020b))
+
 ## [0.5.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.4.0...plugin-engineer-v0.5.0) (2026-05-06)
 
 
