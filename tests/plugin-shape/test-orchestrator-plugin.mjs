@@ -335,15 +335,29 @@ describe('plugins/orchestrator commands/', () => {
 
 describe('plugins/orchestrator stale-token audit', () => {
   // Stale tokens (CLAUDE-ONLY / CODEX-ONLY / [Claude] / [Codex] /
-  // CODEX_HOME / omcc-research) MUST NOT appear in shared references.
+  // CODEX_HOME / omcc-research) MUST NOT appear in any orchestrator doc.
   // Bodies MAY cite engineer / omcc-dev as experiential references per
   // ADR-0007.
-  for (const ref of SHARED_REFS) {
-    it(`skills/_shared/references/${ref} contains no stale tokens`, async () => {
-      const refPath = resolve(PLUGIN_ROOT, 'skills/_shared/references', ref);
-      const text = await readFile(refPath, 'utf-8');
+  //
+  // PR #53 SUGGESTION (e) — audit scope expansion to all orchestrator
+  // docs. Engineer audit (test-engineer-plugin.mjs) covers SKILL.md +
+  // shared refs only; orchestrator extends to all .md files for tighter
+  // regression safety. Asymmetry is intentional and tracked in the
+  // workflow record; future engineer audit expansion would re-symmetrize.
+  const ALL_AUDIT_DOCS = [
+    'README.md',
+    'CHANGELOG.md',
+    'commands/plan.md',
+    'skills/plan/SKILL.md',
+    ...SHARED_REFS.map((ref) => `skills/_shared/references/${ref}`),
+    'adapters/codex/hooks/README.md',
+  ];
+  for (const doc of ALL_AUDIT_DOCS) {
+    it(`${doc} contains no stale tokens`, async () => {
+      const docPath = resolve(PLUGIN_ROOT, doc);
+      const text = await readFile(docPath, 'utf-8');
       for (const stale of STALE_TOKENS) {
-        ok(!text.includes(stale), `${ref} must not contain ${stale}`);
+        ok(!text.includes(stale), `${doc} must not contain ${stale}`);
       }
     });
   }
