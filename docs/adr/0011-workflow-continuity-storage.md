@@ -63,11 +63,19 @@ storage format chosen at Phase 3 plan approval.
   and write the same file.
 - The directory is created at mode `0700` on first use; the workflow
   files are written at mode `0600`.
-- Single-active constraint: at most one workflow file may exist in
-  this directory at a time during Stage 2. The directory is also a
-  light "registry" — its sole `.md` entry IS the active workflow.
-  Multi-active workflows are a Stage 2.5+ concern (see Non-goals
-  below).
+- Single-active constraint: at most one workflow file **per branch**
+  may exist in this directory at a time. **Stage 2 baseline** was
+  directory-wide single-active (a single `.md` entry IS the active
+  workflow); **Stage 3+ cascades to per-branch single-active** per
+  [ADR-0018](0018-stage3-architecture-orchestrator-and-branch-context.md)
+  §sub-2 — the directory may carry multiple `.md` entries on parallel
+  branches, with `git branch --show-current` resolving the active
+  one. Two workflow files coexisting on the **same branch** remain a
+  corruption / external-mutation scenario (`createWorkflow` rejects
+  same-branch duplicates at write time; `findActiveWorkflow` throws
+  if two slip in via external means). See Non-goals below for the
+  historical Stage 2.5+ multi-active frame, since superseded by the
+  branch-keyed model.
 
 `<workflow_id>` format:
 

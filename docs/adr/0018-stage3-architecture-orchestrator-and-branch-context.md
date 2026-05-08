@@ -376,7 +376,7 @@ ADR-0017 trigger-driven pattern:
 | Sub | Owner PR theme | Acceptance trigger |
 |-----|----------------|--------------------|
 | 1 | `feat: plugins/orchestrator scaffolding` (likely multi-PR) | First multi-deliverable feature after this ADR merges, or user explicit request to implement orchestrator MVP |
-| 2 | `refactor(plugins/engineer): branch=workflow active matching` | Multi-branch operation case surfaces, or batch with sub-decision 1 PR |
+| 2 | `feat(plugins/engineer): branch-keyed active workflow lookup` (this PR) — **Implemented** | Multi-branch operation case surfaces, or batch with sub-decision 1 PR |
 | 3 | `feat(plugins/engineer): drift report dirty case enrichment` | First dirty resume report or batch with sub-decision 1 |
 | 4 | (no code change; cascade stance only) | This ADR merge |
 | 5 | `feat: tests/cross-host/` integration test | Multi-host operation begins or batch with sub-decision 1 |

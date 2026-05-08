@@ -84,6 +84,17 @@ fires. This separation prevents Proposed-ADR drift.
   ensemble bookkeeping helpers`, commit `67ca92a`). Validation
   artifact: `tests/engineer/test-resume.mjs` (15 tests, all green).
 
+  **Cascade (ADR-0018 §sub-2, 2026-05-08)**: the "multi-active"
+  outcome is renamed *per-branch duplicate*. The single-active
+  invariant is per-branch (resolved via `git branch --show-current`),
+  not directory-wide; cross-branch workflow coexistence is normal
+  Stage 3+ behavior. The four documented outcomes therefore become
+  **single active on this branch / per-branch duplicate / no active
+  workflow / archive**. `commands/resume.md` Phase 1's per-branch
+  duplicate branch lists every candidate file with its
+  `git_baseline.branch` so the user can distinguish the corrupt
+  same-branch row from coexisting parallel-branch rows.
+
 ### Sub-decision 2: `/engineer:checkpoint` command + `latest_checkpoint` field
 
 - **Acceptance trigger**: first Stage 3+ deliverable that takes 3+

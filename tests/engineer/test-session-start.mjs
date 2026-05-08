@@ -31,11 +31,13 @@ const SESSION_START = resolve(
 const STATE_PATH = resolve(REPO_ROOT, 'plugins/engineer/scripts/state.mjs');
 const { createWorkflow } = await import(STATE_PATH);
 
-async function withTmpRepo(fn) {
+async function withTmpRepo(fn, { branch = 'test' } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'engineer-session-start-test-'));
   try {
     // Initialize as a real git repo so gitTopLevel() resolves to dir.
-    await runCmd('git', ['init', '-q'], { cwd: dir });
+    // -b <branch> ensures `git branch --show-current` returns the
+    // expected name for ADR-0018 §sub-2 branch-keyed lookup.
+    await runCmd('git', ['init', '-q', '-b', branch], { cwd: dir });
     await runCmd('git', ['config', 'user.email', 'test@test'], { cwd: dir });
     await runCmd('git', ['config', 'user.name', 'test'], { cwd: dir });
     await fn(dir);
@@ -95,6 +97,24 @@ describe('session-start.mjs — non-fatal empty paths', () => {
 
   it('empty stdout when repo has no active workflow', async () => {
     await withTmpRepo(async (dir) => {
+      const r = await runHook({ cwd: dir });
+      strictEqual(r.code, 0);
+      strictEqual(r.stdout, '');
+    });
+  });
+
+  it('empty stdout when active workflow exists on a different branch (ADR-0018 §sub-2)', async () => {
+    await withTmpRepo(async (dir) => {
+      // Workflow created with branch 'other'; fixture is on 'test'.
+      // SessionStart's findActiveWorkflow returns null for cross-branch
+      // workflows, so the metadata marker must NOT be emitted.
+      await createWorkflow({
+        repoRoot: dir,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: { ...MIN_BASELINE, branch: 'other' },
+        originalRequest: 'cross-branch session-start',
+      });
       const r = await runHook({ cwd: dir });
       strictEqual(r.code, 0);
       strictEqual(r.stdout, '');

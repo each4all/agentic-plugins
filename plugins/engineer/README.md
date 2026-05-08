@@ -71,8 +71,11 @@ the slash command additionally wires Phase 0 (continuity) and Phase 2
 writes are NOT yet automatic — see "Codex-side scope (Stage 2,
 honest)" below for the precise division. The engineer Stage 2
 non-goals (sharded workflow / drift classification / cross-host
-transition guarantees / `/engineer:resume` / multi-active workflows)
-remain explicitly out of scope per ADR-0011 §Stage 2 Non-Goals.
+transition guarantees / `/engineer:resume`) were resolved across
+the ADR-0017 + ADR-0018 cascade; **multi-active workflows are now
+per-branch via [ADR-0018](../../docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
+§sub-2** — `git checkout <branch>` swaps the active workflow,
+and the workflows directory may carry one workflow per branch.
 
 The plugin is invokable through:
 
@@ -143,8 +146,9 @@ enabled = true
 Each slash command runs:
 1. **Phase 0** — workflow continuity check per ADR-0011 §5 implicit
    resume. Either creates a new workflow under the directory-level
-   lock or appends a phase note to the existing single-active
-   workflow.
+   lock or appends a phase note to the existing **same-branch**
+   active workflow (per-branch single-active per ADR-0018 §sub-2;
+   parallel-branch workflows coexist in the workflows directory).
 2. **Phase 1** — SKILL.md command-invoked mode: local subagents
    dispatched in parallel, peer ensemble dispatched in background
    per `skills/_shared/references/ensemble-protocol.md`,
