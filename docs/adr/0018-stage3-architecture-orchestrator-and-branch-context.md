@@ -158,7 +158,7 @@ files.
   proportional to *behavioural branching available*; without an
   auto-reconciliation actor, finer classification is cosmetic noise.
 - **Dirty case is enriched** with native git introspection in
-  `commands/resume.md` Phase 3:
+  `commands/resume.md` Phase 2:
   - `git log <baseline.head>..HEAD --oneline` — commits since baseline
   - `git diff --stat HEAD` — file-level change footprint
   - `git log --diff-filter=R --name-status <baseline.head>..HEAD` —
@@ -377,8 +377,8 @@ ADR-0017 trigger-driven pattern:
 |-----|----------------|--------------------|
 | 1 | `feat: plugins/orchestrator scaffolding` (likely multi-PR) | First multi-deliverable feature after this ADR merges, or user explicit request to implement orchestrator MVP |
 | 2 | `refactor(plugins/engineer): branch=workflow active matching` | Multi-branch operation case surfaces, or batch with sub-decision 1 PR |
-| 3 | (no code change; cascade stance only) | This ADR merge |
-| 4 | `feat(plugins/engineer): drift report dirty case enrichment` | First dirty resume report or batch with sub-decision 1 |
+| 3 | `feat(plugins/engineer): drift report dirty case enrichment` | First dirty resume report or batch with sub-decision 1 |
+| 4 | (no code change; cascade stance only) | This ADR merge |
 | 5 | `feat: tests/cross-host/` integration test | Multi-host operation begins or batch with sub-decision 1 |
 
 The cross-plugin invocation contract (orchestrator → engineer) is
