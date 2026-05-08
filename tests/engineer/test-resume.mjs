@@ -286,7 +286,7 @@ describe('/engineer:resume — commands/resume.md shape conformance', () => {
     match(fm, /archive/, 'argument-hint should mention archive');
   });
 
-  it('body classifies drift as exactly clean / dirty (ADR-0017 sub-decision-1 two-tier)', async () => {
+  it('body classifies drift as exactly clean / dirty (ADR-0017 §sub-decision-1 two-tier)', async () => {
     const text = await readFile(COMMAND_PATH, 'utf8');
     ok(/clean/i.test(text), 'body missing "clean" classification');
     ok(/dirty/i.test(text), 'body missing "dirty" classification');
@@ -337,5 +337,50 @@ describe('/engineer:resume — commands/resume.md shape conformance', () => {
   it('append uses --event resumed so SessionStart suffix sees the resume marker', async () => {
     const text = await readFile(COMMAND_PATH, 'utf8');
     ok(/--event resumed/.test(text), 'append must record --event resumed');
+  });
+
+  it('dirty case enriches output with ADR-0018 §sub-decision-3 four git introspection probes', async () => {
+    const text = await readFile(COMMAND_PATH, 'utf8');
+    ok(
+      /git\s+log\s+"\$BASE_HEAD\.\.HEAD"\s+--oneline/.test(text),
+      'probe #1 (git log <baseline.head>..HEAD --oneline) missing',
+    );
+    ok(
+      /git\s+diff\s+--stat\s+HEAD/.test(text),
+      'probe #2 (git diff --stat HEAD) missing',
+    );
+    ok(
+      /git\s+log\s+--diff-filter=R\s+--name-status\s+"\$BASE_HEAD\.\.HEAD"/.test(text),
+      'probe #3 (git log --diff-filter=R --name-status <baseline.head>..HEAD) missing',
+    );
+    ok(
+      /git\s+log\s+--diff-filter=D\s+--name-status\s+"\$BASE_HEAD\.\.HEAD"/.test(text),
+      'probe #4 (git log --diff-filter=D --name-status <baseline.head>..HEAD) missing',
+    );
+  });
+
+  it('dirty case includes ADR-0018 §sub-decision-3 auto-reconcile-not-supported notice', async () => {
+    const text = await readFile(COMMAND_PATH, 'utf8');
+    ok(
+      text.includes(
+        'current plugin does not auto-reconcile; review and decide [resume / archive / abort]',
+      ),
+      'ADR-0018 §sub-3 exact notice text missing or altered',
+    );
+  });
+
+  it('body cites ADR-0018 §sub-decision-3 (drift enrichment provenance)', async () => {
+    const text = await readFile(COMMAND_PATH, 'utf8');
+    ok(/ADR-0018/.test(text), 'body missing ADR-0018 reference');
+    ok(/sub-decision[ -]?3/i.test(text), 'body missing §sub-decision-3 reference');
+  });
+
+  it('dirty enrichment guards against empty BASE_HEAD before running range probes', async () => {
+    const text = await readFile(COMMAND_PATH, 'utf8');
+    // Either an empty/null check on BASE_HEAD, or an "Invalid baseline" diagnostic.
+    ok(
+      /-z\s+"\$BASE_HEAD"|BASE_HEAD"\s*=\s*"null"|Invalid baseline/i.test(text),
+      'BASE_HEAD non-empty guard missing — range probes can fatal on empty baseline.head',
+    );
   });
 });
