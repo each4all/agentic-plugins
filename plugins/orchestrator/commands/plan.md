@@ -179,18 +179,12 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 
 ---
 
-## Phase 3 — Present and confirm
-
-Follow the Presentation Mode Protocol (`$CLAUDE_PLUGIN_ROOT/skills/_shared/references/presentation-protocol.md`) before presenting. Present the synthesized plan as one decision item — wait for user approval before reporting completion.
-
----
-
 ## Completion
 
-Output the macro plan and one of:
+After user approval of the synthesized plan, output the macro plan and one of:
 
-- `✓ Plan complete.` + path to the workflow file + recommend driving subtasks one-by-one through engineer (until `/orchestrator:next` ships in a follow-up PR).
-- `✓ Plan complete (LOCAL-ONLY).` + note that Codex peer was unavailable; recommend re-running once `/codex:setup` is configured.
+- `✓ Plan complete.` + path to the workflow file. Recommend driving the first unblocked subtask (lowest-id entry with `status=pending` and empty `blocked_by`, if any) through engineer manually (e.g. `/engineer:investigate` / `:compose`) until `/orchestrator:next` ships in a follow-up PR. A subtask becomes unblocked when all its `blocked_by` predecessors reach `status=completed` — drive subtasks in dependency order.
+- `✓ Plan complete (LOCAL-ONLY).` + note that Codex peer was unavailable; recommend re-running once `/codex:setup` is configured. Same dependency-order driving guidance applies until `/orchestrator:next` ships.
 - `✓ Plan paused (CONFLICT items surfaced).` — when synthesizer flagged disagreements that warrant user input before subtasks land.
 
 Always include the workflow path.
