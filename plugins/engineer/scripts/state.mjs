@@ -651,16 +651,29 @@ const FRONTMATTER_KEY_ORDER = [
   'ensemble_results',      // sub-decision 4
   'terminal_marker',       // sub-decision 5
   'child_completions',     // sub-decision 5 (A4 transitive)
+  // ADR-0019 schema 1.1 cross-plugin parent-linkage additions — all
+  // optional, additive (PR-A). parent_workflow / originating_subtask
+  // are immutable once set at create-time per ADR-0019 §3 (consumed
+  // by orchestrator dispatch). parent_detached is set by orchestrator
+  // /finalize·/abort detach pass per ADR-0019 §5.
+  'parent_workflow',
+  'originating_subtask',
+  'parent_detached',
 ];
 
-// ADR-0017 keys are optional. They MUST NOT appear in REQUIRED, and a
-// schema-1 workflow file may have none of them — that is normal.
+// ADR-0017 + ADR-0019 keys are optional. They MUST NOT appear in
+// REQUIRED, and a schema-1 workflow file may have none of them — that
+// is normal.
 const SCHEMA_1_1_OPTIONAL_KEYS = new Set([
   'latest_checkpoint',
   'pending_ensemble',
   'ensemble_results',
   'terminal_marker',
   'child_completions',
+  // ADR-0019 PR-A
+  'parent_workflow',
+  'originating_subtask',
+  'parent_detached',
 ]);
 
 // Per-entry field order for list-of-objects schema 1.1 frontmatter keys.
@@ -1115,6 +1128,27 @@ function validateSchema11Fields(fm) {
   validateListOfObjectsField(fm, 'pending_ensemble');
   validateListOfObjectsField(fm, 'ensemble_results');
   validateListOfObjectsField(fm, 'child_completions');
+
+  // ADR-0019 PR-A — cross-plugin parent-linkage fields. All three are
+  // optional top-level scalars. parent_workflow + originating_subtask
+  // are immutable once written at create-time per ADR-0019 §3;
+  // parent_detached is set by orchestrator /finalize·/abort detach
+  // pass per ADR-0019 §5 (write entry-point ships in PR-C/PR-E).
+  if ('parent_workflow' in fm) {
+    if (typeof fm.parent_workflow !== 'string' || fm.parent_workflow.length === 0) {
+      throw new Error('parent_workflow must be a non-empty string');
+    }
+  }
+  if ('originating_subtask' in fm) {
+    if (typeof fm.originating_subtask !== 'string' || fm.originating_subtask.length === 0) {
+      throw new Error('originating_subtask must be a non-empty string');
+    }
+  }
+  if ('parent_detached' in fm) {
+    if (typeof fm.parent_detached !== 'boolean') {
+      throw new Error('parent_detached must be a boolean');
+    }
+  }
 }
 
 /**
@@ -1320,6 +1354,14 @@ export async function createWorkflowUnderLock({
   currentPhase = 'phase-0',
   nextAction = '',
   bodyTitle,
+  // ADR-0019 PR-A — optional parent-linkage at create-time. Both fields
+  // are immutable thereafter (§3). When orchestrator dispatches via
+  // `/orchestrator:next`, it sets these via the engineer command's
+  // Phase 0 boilerplate (which reads AGENTIC_PARENT_WORKFLOW /
+  // AGENTIC_ORIGINATING_SUBTASK env vars and forwards as CLI flags
+  // — wired up in PR-D, not this PR).
+  parentWorkflow,
+  originatingSubtask,
   now = new Date(),
 }, ownership = null) {
   validateVerb(verb);
@@ -1370,6 +1412,37 @@ export async function createWorkflowUnderLock({
       { host, at: nowIso, event: 'created' },
     ],
   };
+
+  // ADR-0019 PR-A — write parent-linkage fields when supplied. Validate
+  // shape eagerly (reuse validateSchema11Fields contract: non-empty
+  // strings) so callers get a clear error before the file lands.
+  // Discriminator: only `undefined` / `null` mean omitted; an empty
+  // string is treated as explicitly-provided-but-invalid (matters for
+  // CLI shims that expand unset env vars to empty `--flag ''` args
+  // — those would otherwise silently drop the parent association).
+  if (parentWorkflow !== undefined && parentWorkflow !== null) {
+    if (typeof parentWorkflow !== 'string' || parentWorkflow.length === 0) {
+      throw new Error('parentWorkflow must be a non-empty string when provided');
+    }
+    frontmatter.parent_workflow = parentWorkflow;
+  }
+  if (originatingSubtask !== undefined && originatingSubtask !== null) {
+    if (typeof originatingSubtask !== 'string' || originatingSubtask.length === 0) {
+      throw new Error('originatingSubtask must be a non-empty string when provided');
+    }
+    frontmatter.originating_subtask = originatingSubtask;
+  }
+  // Cross-validation: both must be set together OR both omitted. A
+  // half-set linkage is meaningless (parent without subtask cannot
+  // anchor the writeback per ADR-0019 §4).
+  if (
+    ('parent_workflow' in frontmatter) !==
+    ('originating_subtask' in frontmatter)
+  ) {
+    throw new Error(
+      'parent_workflow and originating_subtask must be set together or both omitted (ADR-0019 §3 parent-child linkage)',
+    );
+  }
 
   const title = bodyTitle ?? `${persona}:${verb}`;
   const body =
@@ -2073,8 +2146,12 @@ function cliPrintHelp() {
       '         [--persona engineer] [--profile <name>] [--status-digest <hex>]',
       '         [--current-phase <label>] [--next-action <text>]',
       '         [--original-request <text>] [--body-title <text>]',
+      '         [--parent-workflow <id> --originating-subtask <id>]',
       '    Create a new workflow under the directory-level lock. Print the new',
       '    workflow path on stdout.',
+      '    ADR-0019 §3 — when invoked by orchestrator dispatch (PR-D),',
+      '    --parent-workflow + --originating-subtask record cross-plugin',
+      '    parent linkage. Both flags must be supplied together or both omitted.',
       '',
       '  append --workflow-path <path> --host <host>',
       '         [--verb <verb>] [--profile <name>]',
@@ -2169,6 +2246,11 @@ async function cliMain(argv) {
           currentPhase: flags['current-phase'] ?? 'phase-0',
           nextAction: flags['next-action'] ?? '',
           bodyTitle: flags['body-title'],
+          // ADR-0019 PR-A — optional parent-linkage flags. createWorkflow
+          // enforces "both-or-neither" cross-validation; supplying only
+          // one throws.
+          parentWorkflow: flags['parent-workflow'],
+          originatingSubtask: flags['originating-subtask'],
         });
         process.stdout.write(`${result.filePath}\n`);
         return 0;
