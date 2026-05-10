@@ -25,6 +25,14 @@ transition.
 
 ## Initial development host
 
+> **Stage 2.5+ snapshot (2026-05-10)**: Stage 2 exited 2026-05-06. Per
+> dogfood policy, `omcc-dev` continues as the active authoring tool
+> through Stage 3 (designer landing); agentic-plugins' scaffolding
+> itself operates without `omcc-dev` reference per ADR-0012 condition
+> 4 functional reading (audit `audit-20260509T105532Z-3f0021`).
+> Detailed Stage 2 exit narrative under
+> [§Stage 2 — Self-development plugin](#stage-2--self-development-plugin).
+
 Until agentic-plugins has its first published plugin stable enough to
 self-serve, **agentic-plugins development uses Claude Code as the primary host**
 and `omcc-dev` as the workflow framework.
@@ -44,7 +52,7 @@ This is **transitional**. Once agentic-plugins has its own equivalent plugin
 
 The strategic intent is for agentic-plugins to develop agentic-plugins. The path:
 
-### Stage 0 — Scaffolding (current)
+### Stage 0 — Scaffolding (completed 2026-05-02)
 
 - Repository structure exists
 - All 7 ADRs accepted (0001–0007)
@@ -277,16 +285,16 @@ statement.
 [ADR-0012](adr/0012-omcc-removal-preconditions.md) defines a
 four-condition rubric for when the legacy `omcc` and
 `codex-plugin-cc` dependencies may be removed from the agentic-plugins
-development environment. Stage 2 exit establishes the following
-partial status; remaining condition progress is tracked in
-subsequent stages and updated here.
+development environment. Stage 2 exit establishes the baseline
+status below; per-row progress is tracked in subsequent stages and
+updated here as conditions advance.
 
 | # | Condition | Stage 2 status | Notes |
 |---|-----------|----------------|-------|
 | 1 | engineer reaches omcc-dev parity | partial | Infrastructure complete (lock ownership protocol / atomic-write token verify / frontmatter validation schema closed / extended secret patterns / SessionStart hardening / envelope strict + structuredOutputContract emit). Sustained dogfood through Stage 3 completes the parity claim. **2026-05-06 Stage 2.5+ exit audit ([docs/audits/2026-05-06-stage25-exit-validation.md](audits/2026-05-06-stage25-exit-validation.md)) Q6 PARTIAL with 10 gap (G-1..G-10). [ADR-0017](adr/0017-stage25-continuity-and-schema-roadmap.md) 5 sub-decisions all Implemented (PR2 [#46](https://github.com/each4all/agentic-plugins/pull/46) / PR3 [#47](https://github.com/each4all/agentic-plugins/pull/47) / PR4 [#48](https://github.com/each4all/agentic-plugins/pull/48) / PR5 [#49](https://github.com/each4all/agentic-plugins/pull/49) — meta commands `/engineer:resume` / `:checkpoint` / `:peer-now` + `ensemble_results` frontmatter persistence + Stop auto-archive 4-gate semantics). PR #53 follow-up review SUGGESTIONs 5/5 closed: PR [#54](https://github.com/each4all/agentic-plugins/pull/54) (a `recordPendingEnsemble` dedupe + b `extractFrontmatterBranch` guard parity tests) + PR [#55](https://github.com/each4all/agentic-plugins/pull/55) (d plan.md Phase 3 fold) + PR [#56](https://github.com/each4all/agentic-plugins/pull/56) (c state.mjs JSDoc engineer parity restoration) + PR [#57](https://github.com/each4all/agentic-plugins/pull/57) (e stale-token audit scope expansion to all docs) — orchestrator-engineer parity strengthened.** |
 | 2 | engineer guarantees bidirectional companion round-trip | partial | Claude direction on engineer's own code: ✓ (D Phase 5 dispatch-peer parallel-review). Codex direction: pending — Codex CLI commands schema absence (see Honest scope above) blocks the auto-trigger path; manual or upstream-resolved path is Stage 2.5+ work (ADR-0013 candidate). **2026-05-06 Stage 2.5+ exit audit Q4 PASS adds substantial evidence (128 unit + 4 smoke 양방향 실 LLM round-trip + JSON envelope wire validation per `companions/contract.md` §4.2). [ADR-0018](adr/0018-stage3-architecture-orchestrator-and-branch-context.md) §sub-5 ✅ PR [#54](https://github.com/each4all/agentic-plugins/pull/54) ships the cross-host integration test contract (claude→codex / codex→claude in-process state.mjs round-trip + stop-archive subprocess + standalone `.github/workflows/cross-host-tests.yml` CI matrix slot). Satisfied label still requires Codex auto-trigger path (ADR-0013 trigger pending — Codex CLI plugin-commands schema upstream).** |
 | 3 | engineer alone is sufficient for agentic-plugins development | partial | Stage 2 itself was developed using `omcc-dev`, not engineer. The first single-verb engineer dogfood (Codex-side `investigate`, chess design landscape) showed the SKILL substance is usable end-user. Full sufficiency accumulates as Stage 3 (designer plugin) is developed using engineer. **2026-05-06 Stage 2.5+ exit audit records second engineer dogfood evidence (4 parallel agent + Codex plan-verify ensemble via `companions/codex-companion.mjs`). [ADR-0018](adr/0018-stage3-architecture-orchestrator-and-branch-context.md) §sub-1 ✅ PR [#53](https://github.com/each4all/agentic-plugins/pull/53) lands `plugins/orchestrator` MVP — first multi-verb L2 capability plugin (plan-only `/orchestrator:plan` + Plan-verify Codex ensemble). The "first non-trivial Stage 3 workflow developed engineer-only" criterion is now reachable through the orchestrator → engineer composition; cross-plugin invocation contract (orchestrator → engineer, surfaced via `/orchestrator:next` + `/:done`) is a follow-up ADR per ADR-0018 §sub-1.** |
-| 4 | self-contained development scaffolding | partial | The development surface (AGENTS.md / CLAUDE.md / 18 ADRs / `test:plugin-shape` / `lint:plugin-shape` / per-host CI / `release-please` / `scripts/` / `kit/` / `plugins/companions`) is in place, but a per-item omcc-dependency audit has not yet been performed. Targeted at Stage 3 cushion or a dedicated Stage 2.5 review. **2026-05-06 Stage 2.5+ exit audit Q3 PASS confirms infrastructure (release-please cascade + 3-way validate-versions + drift detection + ADR-0016 cross-package commit splitting). [ADR-0018](adr/0018-stage3-architecture-orchestrator-and-branch-context.md) Accepted (PR [#50](https://github.com/each4all/agentic-plugins/pull/50)) — Stage 3+ architecture cascade (5 sub-decisions, 4 implemented + 1 no-action). per-item omcc-dependency lens audit remains pending — targeted at Stage 3 cushion.** |
+| 4 | self-contained development scaffolding | functional satisfied (below full satisfied) | The development surface (AGENTS.md / CLAUDE.md / 18 ADRs / `test:plugin-shape` / `lint:plugin-shape` / per-host CI / `release-please` / `scripts/` / `kit/` / `plugins/companions`) is in place. **2026-05-06 Stage 2.5+ exit audit Q3 PASS confirms infrastructure (release-please cascade + 3-way validate-versions + drift detection + ADR-0016 cross-package commit splitting). [ADR-0018](adr/0018-stage3-architecture-orchestrator-and-branch-context.md) Accepted (PR [#50](https://github.com/each4all/agentic-plugins/pull/50)) — Stage 3+ architecture cascade (5 sub-decisions, 4 implemented + 1 no-action). 2026-05-10 per-item omcc-dependency lens audit (workflow `audit-20260509T105532Z-3f0021`) confirms functional reading: 5/5 operational surfaces clean — Lens-B `scripts/`+`kit/` / Lens-C `plugins/companions` / Lens-D `.github/workflows/` / Lens-E `package.json`+`release-please`+marketplace catalogs all 0 hits; Lens-A documentation 0 functional implicit, ~122 (c) clean for historical Context / Alternatives Considered / pattern attribution; Codex audit-scan (LOW affinity review-phase ensemble) ratifies functional verdict. Strict reading ("elimination of any references" per ADR-0012 line 46) remains pending until Stage 3 cushion concurrent with `omcc-dev` uninstall (= condition 3 trigger); ADR-0012 removal trigger requires all four conditions to reach the full satisfied state. F1 (DEVELOPMENT.md tone-drift in 'Initial development host' subsection + Stage 0 stage-history-stamp drift) was the single low-severity actionable; resolved in this PR. F2-F4 (ADR-0011 References list local-cache citation, audit provenance line, AGENTS.md/DEVELOPMENT.md `omcc-research`/`omcc-designer` experiential references) are acceptable-by-classification per Lens-A semantic verdict.** |
 
 ##### Stage 2.5+ ADR candidates surfaced
 
