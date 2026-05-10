@@ -28,7 +28,7 @@ Cross-host macro orchestration capability for Claude Code and Codex CLI. **L2 ca
 
 ## Workflow file shape
 
-`<repo>/.claude/agentic-orchestrator/workflows/<workflow_id>.md` with frontmatter `schema: '1.0'` (distinct from engineer's `'1.1'`). `workflow_id` format `macro-<verb>-<iso>-<rand>`. `workflow_type: macro`. The `plan` block carries `decision`, `architecture`, and `subtasks: [{id, label, branch, blocked_by, status, engineer_workflow_id, commit, pr_url, closed_at}]` per ADR-0018 §sub-decision-1 spec.
+`<repo>/.claude/agentic-orchestrator/workflows/<workflow_id>.md` with frontmatter `schema: '1.1'` post ADR-0019 PR-B (legacy `'1.0'` files are still readable; mutations refused with archive/re-plan diagnostic). `workflow_id` format `macro-<verb>-<iso>-<rand>`. `workflow_type: macro`. The `plan` block carries `decision`, `architecture`, and `subtasks: [{id, verb, branch, blocked_by, status, label?, profile?, topic?, engineer_workflow_id?, commit?, pr_url?, closed_at?}]` per ADR-0018 §sub-decision-1 + ADR-0019 §2 spec. `verb` ∈ {investigate, frame, decide, compose, critique, refine}; `branch` must pass git ref-format and have no parent/child path-prefix relationship across subtasks. Optional top-level `terminal_marker: boolean` per ADR-0019 §5 (set by `/orchestrator:finalize` / `/orchestrator:abort` or auto-set when all subtasks reach terminal status).
 
 Per [ADR-0018 §sub-decision-2](../../docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md), the **active workflow** is the one whose `git_baseline.branch` equals the current branch. `git checkout` is the primary context-switch primitive; no extra "switch workflow" UX. This applies symmetrically to engineer and orchestrator.
 
@@ -49,9 +49,9 @@ Codex CLI 0.128.0 has **no plugin-local automatic hook packaging verified**, so 
 | Plugin | schema | Workflow dir | workflow_id format |
 |--------|--------|---------------|--------------------|
 | `engineer` | `'1.1'` | `.claude/agentic-engineer/workflows/` | `<verb>-<iso>-<rand>` |
-| `orchestrator` (this) | `'1.0'` | `.claude/agentic-orchestrator/workflows/` | `macro-<verb>-<iso>-<rand>` |
+| `orchestrator` (this) | `'1.1'` (post ADR-0019 PR-B; `'1.0'` legacy read-only) | `.claude/agentic-orchestrator/workflows/` | `macro-<verb>-<iso>-<rand>` |
 
-The two schema lines evolve independently. orchestrator's `state.mjs` rejects engineer-schema files (`'1.1'` / `1` / `2`) cleanly to keep the two namespaces separate.
+The two schema lines collide on the literal `'1.1'` string but namespace separation is preserved by structural validation: orchestrator requires `workflow_type: macro` + `plan.subtasks[]`; engineer files lack those fields and fail at the per-field gates. orchestrator's `state.mjs` rejects engineer schema-1 / 2 (numeric) cleanly. Legacy 1.0 orchestrator files are readable but mutations are refused with an archive/re-plan diagnostic per ADR-0019 PR-B.
 
 ## Install
 

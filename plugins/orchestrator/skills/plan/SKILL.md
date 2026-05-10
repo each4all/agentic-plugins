@@ -28,13 +28,18 @@ For a feature description, propose 2-N subtasks where each subtask is independen
 
 ```
 ### Subtask [id]: [label]
-- **Branch**: [git branch name suggestion, e.g., feat/<scope>-<short-name>]
+- **Verb**: [canonical 6-verb: investigate | frame | decide | compose | critique | refine] (REQUIRED — ADR-0019 §2)
+- **Branch**: [git branch name; must pass git ref-format — no spaces, no leading '.', no '..', no '~ ^ : ? * [ \\', no trailing '/' or '.lock'; branch values MUST be unique across subtasks AND MUST NOT have a parent/child path-prefix relationship (e.g., `feat/api` and `feat/api/db` cannot coexist — pick siblings like `feat/api/db` + `feat/api/auth` instead)] (REQUIRED — ADR-0019 §1)
+- **Profile**: [sub-discipline argument passed to engineer, e.g., backend / architecture / ui — optional]
+- **Topic**: [one-line objective passed as engineer's original_request — optional]
 - **Description**: [1-2 sentences explaining what this deliverable accomplishes]
 - **Dependencies**: [subtask ids that must complete before this one can start]
-- **Status**: pending | blocked | in_progress | completed (initial: pending or blocked depending on dependencies)
+- **Status**: pending | blocked | in_progress | completed | deferred | abandoned (initial: pending or blocked depending on dependencies; deferred / abandoned are terminal-partial states set by /orchestrator:finalize / /orchestrator:abort respectively)
 ```
 
 The id is a short token unique within the plan (e.g., `PR1`, `PR2`, or thematic short names like `schema-reader` / `schema-writer`).
+
+**Verb selection guidance** — pick the verb that matches the subtask's terminal cognitive activity. If the subtask gathers evidence → `investigate`. If it composes a concrete artifact → `compose`. If it evaluates an existing artifact → `critique`. Engineer's resume mechanism handles upstream verbs (e.g., a `compose` subtask may run investigate first inside the same engineer workflow). When the verb is ambiguous, default to `compose` for build-style deliverables and `investigate` for research-style ones.
 
 ### Step 2: Order by dependencies
 
@@ -79,13 +84,15 @@ Incorporate valid PEER-ONLY additions. Adjust ordering for valid sequencing issu
 
 ### Step 5: Persist via setPlan
 
-Once the synthesized plan is ready, write it via `state.mjs plan-set --workflow-path <path> --host claude --subtasks-json-file <tmp.json> [--decision <text>] [--architecture <text>]`. The CLI reads the JSON file (top-level array of subtask objects matching ADR-0018 §sub-1 schema) and atomically writes the `plan` block under the per-file lock.
+Once the synthesized plan is ready, write it via `state.mjs plan-set --workflow-path <path> --host claude --subtasks-json-file <tmp.json> [--decision <text>] [--architecture <text>]`. The CLI reads the JSON file (top-level array of subtask objects matching ADR-0018 §sub-1 + ADR-0019 §2 schema 1.1) and atomically writes the `plan` block under the per-file lock.
 
-Subtask validation runs at the write boundary:
+Subtask validation runs at the write boundary (schema 1.1):
 - `id` non-empty + unique within the plan
+- `verb` (REQUIRED) — one of `investigate | frame | decide | compose | critique | refine`
+- `branch` (REQUIRED) — must pass git ref-format (no spaces, no leading `.`, no `..`, no `~ ^ : ? * [ \\`, no trailing `/` or `.lock`, no `@{`, not `HEAD`, not `-`-prefixed); branch values MUST be unique across subtasks (dispatch keys engineer workflows by branch); branches MUST NOT have a parent/child path-prefix relationship across subtasks (e.g., `feat/api` and `feat/api/db` cannot coexist — git stores refs as path components, so one ref cannot be both a leaf and a parent directory)
 - `blocked_by` references existing ids only (no unknown id, no self-cycle)
-- `status` is one of `pending | blocked | in_progress | completed`
-- optional fields (`label`, `branch`, `engineer_workflow_id`, `commit`, `pr_url`, `closed_at`) are string-or-null
+- `status` is one of `pending | blocked | in_progress | completed | deferred | abandoned`
+- optional fields (`label`, `profile`, `topic`, `engineer_workflow_id`, `commit`, `pr_url`, `closed_at`) are string-or-null
 
 ### Step 6: Commit the ensemble result
 

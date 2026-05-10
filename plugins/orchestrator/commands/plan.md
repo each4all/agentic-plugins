@@ -70,23 +70,26 @@ rm -f "$FIND_ERR"
 
 ## Phase 1 — Execute plan skill (decompose + dependency graph)
 
-Follow the plan skill's command-invoked mode at `$CLAUDE_PLUGIN_ROOT/skills/plan/SKILL.md`. Produce a draft `plan.subtasks[]` per ADR-0018 §sub-decision-1 schema:
+Follow the plan skill's command-invoked mode at `$CLAUDE_PLUGIN_ROOT/skills/plan/SKILL.md`. Produce a draft `plan.subtasks[]` per ADR-0018 §sub-decision-1 + ADR-0019 §2 schema (1.1):
 
 ```yaml
 - id: <unique short token (e.g. PR1, schema-reader)>
-  label: <short human-readable label>
-  branch: <suggested git branch name (optional but recommended)>
+  verb: <canonical 6-verb: investigate | frame | decide | compose | critique | refine>   # REQUIRED in 1.1
+  branch: <git branch name; must pass git ref-format>                                     # REQUIRED in 1.1
+  label: <short human-readable label>                                                     # optional
+  profile: <sub-discipline name passed to engineer, e.g., backend / architecture>         # optional
+  topic: <one-line objective; passed as engineer's original_request>                      # optional
   blocked_by: [<predecessor ids>]   # empty list when no dependencies
   status: pending | blocked          # initial: pending if blocked_by==[], else blocked
   # engineer_workflow_id / commit / pr_url / closed_at omitted at plan-time
   # — populated by future /orchestrator:next + /orchestrator:done (follow-up PR)
 ```
 
-Validation runs at the `state.mjs plan-set` boundary (id non-empty + unique, blocked_by → existing id only, no self-cycle, status enum).
+Validation runs at the `state.mjs plan-set` boundary (id non-empty + unique, blocked_by → existing id only, no self-cycle, status enum, verb in canonical 6-verb whitelist, branch passes git ref-format gate per ADR-0019 §1: no spaces, no leading `.`, no `..`, no `~ ^ : ? * [ \\`, no trailing `/` or `.lock`, branches unique across subtasks, no parent/child path-prefix relationship between any two subtask branches — e.g., `feat/api` and `feat/api/db` cannot coexist; pick siblings like `feat/api/db` + `feat/api/auth` instead).
 
 ### Ensemble dispatch (Plan-verify point type)
 
-Build the Plan-verify prompt per `$CLAUDE_PLUGIN_ROOT/skills/_shared/references/ensemble-protocol.md` § Plan-verify. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (Independence Rule exception per protocol).
+Build the Plan-verify prompt per `$CLAUDE_PLUGIN_ROOT/skills/_shared/references/ensemble-protocol.md` § Plan-verify. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (Independence Rule exception per protocol). The `<grounding_rules>` section MUST include the schema 1.1 constraints so peer-emitted plan revisions don't bypass validation: every subtask requires `verb` (canonical 6-verb whitelist: investigate / frame / decide / compose / critique / refine) AND `branch` (git ref-format), plus `id` (unique) / `blocked_by` (array) / `status` (`pending|blocked|in_progress|completed|deferred|abandoned`) per ADR-0019 §2.
 
 ```bash
 PROMPT_FILE="$(mktemp -t orchestrator-plan-prompt.XXXXXX).xml"

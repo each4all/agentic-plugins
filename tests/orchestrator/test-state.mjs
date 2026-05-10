@@ -89,13 +89,13 @@ const MIN_BASELINE = (branch = 'main') => ({
 // Constants + path helpers
 
 describe('orchestrator state.mjs constants', () => {
-  it('schema is 1.0 (orchestrator-only)', () => {
-    strictEqual(SCHEMA_VERSION, '1.0');
+  it('schema is 1.1 (orchestrator emits 1.1 post ADR-0019 PR-B; 1.0 still readable)', () => {
+    strictEqual(SCHEMA_VERSION, '1.1');
   });
-  it('SUPPORTED_SCHEMA_VERSIONS rejects engineer 1, "1.1", 2', () => {
+  it('SUPPORTED_SCHEMA_VERSIONS accepts both 1.0 and 1.1; rejects engineer schema-1 / 2', () => {
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.0'));
+    ok(SUPPORTED_SCHEMA_VERSIONS.has('1.1'));
     ok(!SUPPORTED_SCHEMA_VERSIONS.has(1));
-    ok(!SUPPORTED_SCHEMA_VERSIONS.has('1.1'));
     ok(!SUPPORTED_SCHEMA_VERSIONS.has(2));
   });
   it('WORKFLOW_DIR_REL is .claude/agentic-orchestrator/workflows', () => {
@@ -262,10 +262,20 @@ describe('validateFrontmatter rejects engineer schemas', () => {
     throws(() => parseWorkflowFile(assembleEngineerStyle(fm)), /Unsupported schema/);
   });
 
-  it('rejects schema "1.1" (current engineer)', () => {
+  it('accepts schema "1.1" (orchestrator post-PR-B emit) — namespace separation now relies on workflow_type=macro + plan structure, not schema string', () => {
+    // Per ADR-0019 PR-B, orchestrator's own '1.1' schema string
+    // collides with engineer's '1.1' string. Namespace separation is
+    // preserved by structural validation: engineer files don't have
+    // `workflow_type: macro` or `plan.subtasks[]`, so they get
+    // rejected at the per-field gates instead of the schema-version
+    // gate. This test confirms the schema string is accepted; the
+    // structural rejection is covered by the workflow_type test below.
     const fm = baseFrontmatter();
     fm.schema = '1.1';
-    throws(() => parseWorkflowFile(assembleEngineerStyle(fm)), /Unsupported schema/);
+    // Add 1.1-required subtask fields when populating; baseFrontmatter
+    // emits empty subtasks so REQUIRED-key check passes vacuously.
+    const parsed = parseWorkflowFile(assembleEngineerStyle(fm));
+    strictEqual(parsed.frontmatter.schema, '1.1');
   });
 
   it('rejects schema 2 (hypothetical future)', () => {
@@ -362,8 +372,8 @@ describe('subtasks validation', () => {
         workflowPath: filePath,
         host: 'claude',
         subtasks: [
-          { id: 'A', blocked_by: [], status: 'pending' },
-          { id: 'A', blocked_by: [], status: 'pending' },
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+          { id: 'A', verb: 'compose', branch: 'feat/a-dup', blocked_by: [], status: 'pending' },
         ],
       }), /Duplicate subtask id/);
     });
@@ -379,7 +389,7 @@ describe('subtasks validation', () => {
         workflowPath: filePath,
         host: 'claude',
         subtasks: [
-          { id: 'A', blocked_by: ['ZZZ'], status: 'pending' },
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: ['ZZZ'], status: 'pending' },
         ],
       }), /unknown subtask id/);
     });
@@ -395,7 +405,7 @@ describe('subtasks validation', () => {
         workflowPath: filePath,
         host: 'claude',
         subtasks: [
-          { id: 'A', blocked_by: ['A'], status: 'pending' },
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: ['A'], status: 'pending' },
         ],
       }), /self-reference/);
     });
@@ -411,7 +421,7 @@ describe('subtasks validation', () => {
         workflowPath: filePath,
         host: 'claude',
         subtasks: [
-          { id: 'A', blocked_by: [], status: 'maybe' },
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'maybe' },
         ],
       }), /status invalid/);
     });
@@ -445,9 +455,9 @@ describe('subtasks validation', () => {
         workflowPath: filePath,
         host: 'claude',
         subtasks: [
-          { id: 'A', label: 'first', branch: 'feat/a', blocked_by: [], status: 'pending' },
-          { id: 'B', label: 'second', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
-          { id: 'C', blocked_by: ['A', 'B'], status: 'pending' },
+          { id: 'A', verb: 'compose', label: 'first', branch: 'feat/a', blocked_by: [], status: 'pending' },
+          { id: 'B', verb: 'compose', label: 'second', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+          { id: 'C', verb: 'critique', branch: 'feat/c', blocked_by: ['A', 'B'], status: 'pending' },
         ],
       });
       const { frontmatter } = await readWorkflow(filePath);
@@ -473,7 +483,8 @@ describe('createWorkflow + branch-keyed lookup', () => {
       ok(filePath.includes('.claude/agentic-orchestrator/workflows/'));
       ok(filePath.endsWith(`${workflowId}.md`));
       const { frontmatter } = await readWorkflow(filePath);
-      strictEqual(frontmatter.schema, '1.0');
+      // ADR-0019 PR-B — orchestrator emits schema 1.1 for new workflows
+      strictEqual(frontmatter.schema, '1.1');
       strictEqual(frontmatter.workflow_type, 'macro');
       deepStrictEqual(frontmatter.plan, { subtasks: [] });
       strictEqual(frontmatter.git_baseline.branch, 'main');
@@ -817,8 +828,8 @@ describe('CLI subcommands', () => {
 
       const subtasksPath = join(root, 'subtasks.json');
       await writeFile(subtasksPath, JSON.stringify([
-        { id: 'A', label: 'first', branch: 'feat/a', blocked_by: [], status: 'pending' },
-        { id: 'B', blocked_by: ['A'], status: 'blocked' },
+        { id: 'A', verb: 'compose', label: 'first', branch: 'feat/a', blocked_by: [], status: 'pending' },
+        { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
       ]), 'utf8');
 
       execFileSync(
@@ -859,8 +870,419 @@ describe('CLI subcommands', () => {
         { encoding: 'utf8' },
       );
       const fm = JSON.parse(readOut);
-      strictEqual(fm.schema, '1.0');
+      // ADR-0019 PR-B — orchestrator emits schema 1.1 for new workflows
+      strictEqual(fm.schema, '1.1');
       strictEqual(fm.workflow_type, 'macro');
+    });
+  });
+});
+
+// ============================================================================
+// ADR-0019 PR-B — schema 1.1 bump + plan producers (atomic). Covers:
+//  - subtask schema 1.1 fields (verb / profile / topic) round-trip
+//  - new terminal-partial statuses (deferred / abandoned)
+//  - terminal_marker top-level optional boolean
+//  - 1.0 read-only path (legacy file readable, mutations refused)
+//  - 1.1 verb whitelist + branch git ref-format validation
+// ============================================================================
+
+describe('state.mjs — ADR-0019 PR-B 1.1 subtask fields (verb / profile / topic)', () => {
+  it('accepts well-formed 1.1 subtasks with verb + branch + profile + topic', async () => {
+    await withTmpRepo('pr-b-subtask-full', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: '1.1 subtask shape',
+      });
+      await setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          {
+            id: 'PR1',
+            verb: 'investigate',
+            branch: 'feat/x',
+            profile: 'architecture',
+            topic: 'evaluate sharded vs flat',
+            label: 'baseline study',
+            blocked_by: [],
+            status: 'pending',
+          },
+        ],
+      });
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.plan.subtasks[0].verb, 'investigate');
+      strictEqual(frontmatter.plan.subtasks[0].branch, 'feat/x');
+      strictEqual(frontmatter.plan.subtasks[0].profile, 'architecture');
+      strictEqual(frontmatter.plan.subtasks[0].topic, 'evaluate sharded vs flat');
+    });
+  });
+
+  it('rejects subtask with non-canonical verb', async () => {
+    await withTmpRepo('pr-b-bad-verb', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'bad verb',
+      });
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'inspect', branch: 'feat/a', blocked_by: [], status: 'pending' },
+        ],
+      }), /verb invalid/);
+    });
+  });
+
+  it('rejects subtask missing required verb (1.1)', async () => {
+    await withTmpRepo('pr-b-missing-verb', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'missing verb',
+      });
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', branch: 'feat/a', blocked_by: [], status: 'pending' },
+        ],
+      }), /Missing required subtask key.*verb/);
+    });
+  });
+
+  it('rejects subtask missing required branch (1.1)', async () => {
+    await withTmpRepo('pr-b-missing-branch', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'missing branch',
+      });
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', blocked_by: [], status: 'pending' },
+        ],
+      }), /Missing required subtask key.*branch/);
+    });
+  });
+
+  it('rejects full git-invalid branch refs (full ref-format coverage)', async () => {
+    // Per ADR-0019 §1 + git check-ref-format(1) rules. Codex review
+    // flagged that the original simple regex missed component-level
+    // rules and special names — this enumerates the full set so
+    // peer-emitted plans can't slip past plan-set.
+    const invalidBranches = [
+      // Whitespace / control chars
+      'feat with space',
+      'feat\ttab',
+      // Disallowed chars
+      'feat/sub^1',
+      'feat~child',
+      'feat/sub:1',
+      'feat/sub?',
+      'feat/sub*',
+      'feat/sub[1]',
+      'feat\\backslash',
+      // Segment-level rules (Codex review additions)
+      '.dotfile',                  // whole-string leading dot
+      'feat/.hidden',              // segment-level leading dot
+      'feat/sub.lock',             // trailing .lock
+      'foo.lock/bar',              // segment-level .lock
+      // Path rules
+      '/foo',                      // leading slash
+      'feat/sub/',                 // trailing slash
+      'feat//sub',                 // consecutive slashes
+      // .. and trailing dot
+      'foo..bar',
+      'feat.',                     // trailing dot
+      // @ rules
+      '@',                         // single '@'
+      'feat@{ref}',                // '@{' sequence
+      // Branch-specific rules
+      'HEAD',                      // reserved name
+      '-feat',                     // leading dash
+    ];
+    for (const branch of invalidBranches) {
+      await withTmpRepo(`pr-b-bad-branch-${branch.replace(/[^a-z0-9]/gi, '-')}`, async (root) => {
+        const { filePath } = await createWorkflow({
+          repoRoot: root, verb: 'plan', host: 'claude',
+          gitBaseline: MIN_BASELINE(), originalRequest: 'bad branch',
+        });
+        await rejects(() => setPlan({
+          workflowPath: filePath,
+          host: 'claude',
+          subtasks: [
+            { id: 'A', verb: 'compose', branch, blocked_by: [], status: 'pending' },
+          ],
+        }), /branch invalid git ref-format/);
+      });
+    }
+  });
+
+  it('rejects duplicate subtask branches (1.1 dispatch keys by branch)', async () => {
+    await withTmpRepo('pr-b-dup-branch', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'dup branch',
+      });
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/shared', blocked_by: [], status: 'pending' },
+          { id: 'B', verb: 'critique', branch: 'feat/shared', blocked_by: [], status: 'pending' },
+        ],
+      }), /Duplicate subtask branch/);
+    });
+  });
+
+  it('rejects branch prefix collisions (git refs cannot be both leaf and parent dir)', async () => {
+    await withTmpRepo('pr-b-prefix-collision', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'prefix collision',
+      });
+      // feat/api as leaf ref + feat/api/db as nested ref cannot coexist
+      // — git would fail to create the second after the first lands.
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/api', blocked_by: [], status: 'pending' },
+          { id: 'B', verb: 'compose', branch: 'feat/api/db', blocked_by: [], status: 'pending' },
+        ],
+      }), /prefix collision/);
+    });
+  });
+
+  it('rejects branch prefix collisions (reverse order)', async () => {
+    await withTmpRepo('pr-b-prefix-collision-reverse', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'prefix collision reverse',
+      });
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/api/db', blocked_by: [], status: 'pending' },
+          { id: 'B', verb: 'compose', branch: 'feat/api', blocked_by: [], status: 'pending' },
+        ],
+      }), /prefix collision/);
+    });
+  });
+
+  it('rejects subtask branch that path-collides with macro branch', async () => {
+    // Macro workflow is on 'main' (per MIN_BASELINE) — try a subtask
+    // branch 'main/sub' which would attempt to nest under macro's ref.
+    await withTmpRepo('pr-b-macro-prefix', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'macro prefix',
+      });
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          // 'main/sub' would require 'main' to be a parent dir; ref-storage prevents that
+          { id: 'A', verb: 'compose', branch: 'main/sub', blocked_by: [], status: 'pending' },
+        ],
+      }), /prefix collision/);
+    });
+  });
+
+  it('accepts sibling branches with shared prefix (no parent-child relationship)', async () => {
+    await withTmpRepo('pr-b-sibling-branches', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'siblings',
+      });
+      // feat/api/db and feat/api/auth share the prefix 'feat/api/' but
+      // neither is the parent of the other — both can exist as siblings
+      // under refs/heads/feat/api/.
+      await setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/api/db', blocked_by: [], status: 'pending' },
+          { id: 'B', verb: 'compose', branch: 'feat/api/auth', blocked_by: [], status: 'pending' },
+        ],
+      });
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.plan.subtasks.length, 2);
+    });
+  });
+
+  it('accepts new terminal-partial statuses (deferred / abandoned)', async () => {
+    await withTmpRepo('pr-b-terminal-partial', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'terminal partial',
+      });
+      await setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'deferred' },
+          { id: 'B', verb: 'compose', branch: 'feat/b', blocked_by: [], status: 'abandoned' },
+        ],
+      });
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.plan.subtasks[0].status, 'deferred');
+      strictEqual(frontmatter.plan.subtasks[1].status, 'abandoned');
+    });
+  });
+});
+
+describe('state.mjs — ADR-0019 PR-B terminal_marker top-level field', () => {
+  it('parses 1.1 frontmatter with terminal_marker: true', () => {
+    const text = [
+      '---',
+      'schema: "1.1"',
+      'workflow_id: "macro-plan-20260510T000000Z-aaaaaa"',
+      'workflow_type: "macro"',
+      'original_request: "term marker test"',
+      'started_at: "2026-05-10T00:00:00Z"',
+      'updated_at: "2026-05-10T00:00:00Z"',
+      'repo_root: "/tmp/r"',
+      'git_baseline:',
+      '  branch: "main"',
+      '  head: "deadbeef"',
+      '  status_digest: ""',
+      'current_phase: "finalized"',
+      'next_action: "archive"',
+      'plan:',
+      '  subtasks: []',
+      'host_history:',
+      '  - host: "claude"',
+      '    at: "2026-05-10T00:00:00Z"',
+      '    event: "created"',
+      'terminal_marker: true',
+      '---',
+      '',
+      '# body',
+      '',
+    ].join('\n');
+    const { frontmatter } = parseWorkflowFile(text);
+    strictEqual(frontmatter.terminal_marker, true);
+  });
+
+  it('rejects non-boolean terminal_marker', () => {
+    const text = [
+      '---',
+      'schema: "1.1"',
+      'workflow_id: "x"',
+      'workflow_type: "macro"',
+      'original_request: ""',
+      'started_at: ""',
+      'updated_at: ""',
+      'repo_root: ""',
+      'git_baseline:',
+      '  branch: ""',
+      '  head: ""',
+      '  status_digest: ""',
+      'current_phase: ""',
+      'next_action: ""',
+      'plan:',
+      '  subtasks: []',
+      'host_history: []',
+      'terminal_marker: "yes"',
+      '---',
+      '',
+    ].join('\n');
+    throws(() => parseWorkflowFile(text), /terminal_marker must be a boolean/);
+  });
+
+  it('terminal_marker absence is normal (omitted by default)', async () => {
+    await withTmpRepo('pr-b-no-marker', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'no marker',
+      });
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual('terminal_marker' in frontmatter, false);
+    });
+  });
+});
+
+describe('state.mjs — ADR-0019 PR-B 1.0 legacy read-only (ensureMutable)', () => {
+  it('reads a hand-crafted 1.0 file (legacy schema) without rejection', () => {
+    const text = [
+      '---',
+      'schema: "1.0"',
+      'workflow_id: "macro-plan-20260101T000000Z-aabbcc"',
+      'workflow_type: "macro"',
+      'original_request: "legacy 1.0 file"',
+      'started_at: "2026-01-01T00:00:00Z"',
+      'updated_at: "2026-01-01T00:00:00Z"',
+      'repo_root: "/tmp/r"',
+      'git_baseline:',
+      '  branch: "main"',
+      '  head: "deadbeef"',
+      '  status_digest: ""',
+      'current_phase: "phase-0"',
+      'next_action: ""',
+      'plan:',
+      '  subtasks:',
+      '    - id: "A"',
+      '      label: "legacy first"',
+      '      branch: "feat/a"',
+      '      blocked_by: []',
+      '      status: "pending"',
+      'host_history:',
+      '  - host: "claude"',
+      '    at: "2026-01-01T00:00:00Z"',
+      '    event: "created"',
+      '---',
+      '',
+      '# body',
+      '',
+    ].join('\n');
+    const { frontmatter } = parseWorkflowFile(text);
+    strictEqual(frontmatter.schema, '1.0');
+    strictEqual(frontmatter.plan.subtasks[0].id, 'A');
+    // 1.0 subtask has no verb — and that's OK on read.
+    strictEqual('verb' in frontmatter.plan.subtasks[0], false);
+  });
+
+  it('refuses setPlan mutation on a 1.0 file with diagnostic', async () => {
+    await withTmpRepo('pr-b-1.0-mutation', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'starts at 1.1',
+      });
+      // Hand-downgrade the on-disk schema to 1.0 to simulate a
+      // pre-PR-B file. The reader still parses; mutations refuse.
+      const raw = await readFile(filePath, 'utf8');
+      const downgraded = raw.replace(/^schema: "1\.1"\s*$/m, 'schema: "1.0"');
+      await writeFile(filePath, downgraded, { mode: 0o600 });
+
+      await rejects(() => setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+        ],
+      }), /Cannot mutate schema 1\.0 file/);
+    });
+  });
+
+  it('refuses snapshot mutation on a 1.0 file', async () => {
+    await withTmpRepo('pr-b-1.0-snapshot', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'starts 1.1',
+      });
+      const raw = await readFile(filePath, 'utf8');
+      const downgraded = raw.replace(/^schema: "1\.1"\s*$/m, 'schema: "1.0"');
+      await writeFile(filePath, downgraded, { mode: 0o600 });
+
+      // snapshot takes mutation lock; ensureMutable should reject.
+      const { snapshot } = await import('../../plugins/orchestrator/scripts/state.mjs');
+      await rejects(() => snapshot({
+        workflowPath: filePath,
+        host: 'claude',
+        trigger: 'stop',
+      }), /Cannot mutate schema 1\.0 file/);
     });
   });
 });

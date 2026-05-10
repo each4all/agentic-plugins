@@ -188,7 +188,8 @@ describe('plugins/orchestrator README + CHANGELOG', () => {
   it('README exists and mentions plan-only MVP scope', async () => {
     const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf-8');
     ok(readme.includes('plan-only MVP'), 'README documents plan-only scope');
-    ok(/schema:?\s*['"]?1\.0['"]?/.test(readme), 'README documents schema 1.0');
+    // ADR-0019 PR-B — orchestrator schema bumped to 1.1 (1.0 legacy read-only).
+    ok(/schema:?\s*['"]?1\.1['"]?/.test(readme), 'README documents schema 1.1');
     ok(readme.includes('macro-<verb>-<iso>-<rand>') || readme.includes('macro-&lt;verb&gt;'), 'README documents workflow_id format');
     // Stop snapshot-only divergence from engineer must be explicit
     ok(/snapshot-only/i.test(readme), 'README documents Stop snapshot-only');

@@ -49,11 +49,12 @@ import { execFileSync } from 'node:child_process';
 // -----------------------------------------------------------------------------
 // Constants — ADR-0018 §sub-decision-1 + §sub-decision-2
 
-export const SCHEMA_VERSION = '1.0';
-// Closed schema. Reject engineer schema '1.1' / 1 / 2 cleanly so a
-// misrouted file is never silently mutated by orchestrator (Codex
-// plan-verify edge case: "Accidental engineer schema read").
-export const SUPPORTED_SCHEMA_VERSIONS = new Set(['1.0']);
+// ADR-0019 PR-B — schema bump 1.0 → 1.1. New workflows emit '1.1';
+// existing '1.0' files read OK but mutations are refused (legacy
+// archive + re-plan required). Engineer schema 1 / '1.1' / 2 still
+// rejected — orchestrator and engineer namespaces stay separate.
+export const SCHEMA_VERSION = '1.1';
+export const SUPPORTED_SCHEMA_VERSIONS = new Set(['1.0', '1.1']);
 
 export const WORKFLOW_DIR_REL = '.claude/agentic-orchestrator/workflows';
 export const CREATION_LOCK_REL = '.claude/agentic-orchestrator/.creation-lock';
@@ -81,15 +82,23 @@ const VALID_HOOK_EVENTS = new Set([
 ]);
 const VALID_SNAPSHOT_TRIGGERS = new Set(['pre-compact', 'stop']);
 
-// ADR-0018 §sub-1 plan.subtasks[i].status enum.
+// ADR-0018 §sub-1 plan.subtasks[i].status enum, extended by ADR-0019 §2
+// with two terminal-partial states (set by /orchestrator:finalize and
+// /orchestrator:abort respectively in PR-E).
 const VALID_SUBTASK_STATUSES = new Set([
   'pending',
   'blocked',
   'in_progress',
   'completed',
+  // ADR-0019 PR-B
+  'deferred',
+  'abandoned',
 ]);
 
-// ADR-0018 §sub-1 plan.subtasks[i] field set.
+// ADR-0018 §sub-1 + ADR-0019 §2 plan.subtasks[i] field set. `verb`,
+// `profile`, `topic` are 1.1-only fields; legacy 1.0 plans don't carry
+// them (read-only path tolerates absence; the SCHEMA_VERSION-aware
+// required check below enforces presence under 1.1).
 const SUBTASK_KEYS = [
   'id',
   'label',
@@ -100,13 +109,30 @@ const SUBTASK_KEYS = [
   'commit',
   'pr_url',
   'closed_at',
+  // ADR-0019 PR-B (1.1)
+  'verb',
+  'profile',
+  'topic',
 ];
 const SUBTASK_KEYS_SET = new Set(SUBTASK_KEYS);
-const SUBTASK_REQUIRED_KEYS = new Set(['id', 'blocked_by', 'status']);
+
+// SUBTASK_REQUIRED_KEYS branch by schema version. Under 1.0 the legacy
+// invariants (id / blocked_by / status) hold so existing files read
+// without forced retroactive `verb`/`branch`. Under 1.1 the dispatch
+// contract per ADR-0019 §1 needs `verb` (canonical 6-verb) and
+// `branch` (git ref-format) at every subtask — those are REQUIRED.
+const SUBTASK_REQUIRED_KEYS_BY_SCHEMA = Object.freeze({
+  '1.0': new Set(['id', 'blocked_by', 'status']),
+  '1.1': new Set(['id', 'blocked_by', 'status', 'verb', 'branch']),
+});
+
 // Optional string-or-null subtask keys. Each is permitted to be absent
 // or null when the subtask has not yet acquired the corresponding
 // downstream artifact (engineer_workflow_id appears after dispatch,
-// commit + closed_at after `done`).
+// commit + closed_at after `done`). Under 1.0 `branch` is optional;
+// under 1.1 it is required (so it is excluded from this set when
+// validating 1.1 files — the validator runs the required-key check
+// first which catches the omission).
 const SUBTASK_OPTIONAL_KEYS = new Set([
   'label',
   'branch',
@@ -114,6 +140,67 @@ const SUBTASK_OPTIONAL_KEYS = new Set([
   'commit',
   'pr_url',
   'closed_at',
+  // ADR-0019 PR-B (1.1)
+  'profile',
+  'topic',
+]);
+
+// ADR-0019 §1 git ref-format gate for subtask branch names. Mirrors the
+// full set of `git check-ref-format --branch` rules so peer-emitted
+// plans don't ship branches that pass plan-set but fail at /next's
+// `git switch`. Implemented in-process (no shell-out) per the
+// validator's self-contained boundary.
+//
+// Rules (per git-check-ref-format(1)):
+//   1. No slash-separated component begins with '.' or ends with '.lock'
+//   2. No '..' anywhere
+//   3. No ASCII control chars (< \x20 or \x7f), space, '~', '^', ':'
+//   4. No '?', '*', '['
+//   5. Cannot begin/end with '/' or have consecutive '/'
+//   6. Cannot end with '.'
+//   7. Cannot contain '@{'
+//   8. Cannot be the single character '@'
+//   9. Cannot contain '\\'
+//   10. Cannot begin with '-' (branch-specific rule)
+//   11. Cannot be 'HEAD' (branch-specific rule)
+const INVALID_BRANCH_CHARS = /[\x00-\x1f\x7f \s~^:?*\[\\]/;
+function isValidGitBranchSegment(name) {
+  if (typeof name !== 'string' || name.length === 0) return false;
+  // Branch-specific: cannot be 'HEAD' or start with '-'
+  if (name === 'HEAD') return false;
+  if (name.startsWith('-')) return false;
+  // Cannot begin/end with '/', cannot end with '.', cannot have '..'
+  if (name.startsWith('/')) return false;
+  if (name.endsWith('/')) return false;
+  if (name.endsWith('.')) return false;
+  if (name.includes('..')) return false;
+  // Cannot have '@{' sequence or be lone '@'
+  if (name === '@') return false;
+  if (name.includes('@{')) return false;
+  // Cannot have consecutive '/'
+  if (name.includes('//')) return false;
+  // Disallowed chars anywhere
+  if (INVALID_BRANCH_CHARS.test(name)) return false;
+  // Per-component checks: no segment begins with '.' or ends with '.lock'
+  const components = name.split('/');
+  for (const c of components) {
+    if (c.length === 0) return false;            // catches empty segments
+    if (c.startsWith('.')) return false;          // segment-level leading dot
+    if (c.endsWith('.lock')) return false;        // segment-level .lock suffix
+  }
+  return true;
+}
+
+// ADR-0019 §2 — engineer canonical 6-verb whitelist. Subtask `verb`
+// must be one of these under 1.1 so /orchestrator:next can dispatch
+// against the matching engineer command (PR-D).
+const VALID_SUBTASK_VERBS = new Set([
+  'investigate',
+  'frame',
+  'decide',
+  'compose',
+  'critique',
+  'refine',
 ]);
 
 // -----------------------------------------------------------------------------
@@ -634,6 +721,12 @@ const FRONTMATTER_KEY_ORDER = [
   'last_snapshot',
   'pending_ensemble',
   'ensemble_results',
+  // ADR-0019 PR-B (1.1) — optional top-level boolean. Set by
+  // /orchestrator:finalize / /orchestrator:abort (PR-E) or
+  // auto-set when all subtasks become terminal (parent-writeback
+  // auto-terminal pass per ADR-0019 §4 step 7). Required by §5 A1
+  // gate for orchestrator stop-archive.
+  'terminal_marker',
 ];
 
 const ENTRY_KEYS_BY_LIST_KEY = Object.freeze({
@@ -715,12 +808,21 @@ function serializeFrontmatter(fm) {
         lines.push(`  subtasks: []`);
       } else {
         lines.push(`  subtasks:`);
+        // ADR-0019 PR-B — required-key set varies by schema version.
+        // Under 1.0 only id/blocked_by/status are required (legacy);
+        // under 1.1 verb+branch are also required. The serializer
+        // mirrors validateSubtasks: any key NOT in the required set
+        // for this schema is treated as optional on emit (absent
+        // values dropped, present values written).
+        const subtaskRequiredForSchema =
+          SUBTASK_REQUIRED_KEYS_BY_SCHEMA[fm.schema]
+          ?? SUBTASK_REQUIRED_KEYS_BY_SCHEMA['1.1'];
         for (const entry of value.subtasks) {
           let opened = false;
           for (const k of SUBTASK_KEYS) {
             const v = entry[k];
             if (v === null || v === undefined) {
-              if (SUBTASK_OPTIONAL_KEYS.has(k)) continue;
+              if (!subtaskRequiredForSchema.has(k)) continue;
               if (k === 'blocked_by') {
                 // blocked_by must always be present (caller invariant);
                 // empty list is the canonical "no deps" representation.
@@ -1122,7 +1224,7 @@ function validateFrontmatter(fm) {
       .join(', ');
     throw new Error(
       `Unsupported schema version: ${JSON.stringify(fm.schema)} ` +
-      `(supported: ${accepted}). orchestrator schema '1.0' is closed; ` +
+      `(supported: ${accepted}). orchestrator schema '1.0'/'1.1' is closed; ` +
       `engineer schema 1 / '1.1' / 2 files must not be mutated by orchestrator.`,
     );
   }
@@ -1158,7 +1260,7 @@ function validateFrontmatter(fm) {
   if (!Array.isArray(fm.plan.subtasks)) {
     throw new Error('plan.subtasks must be an array');
   }
-  validateSubtasks(fm.plan.subtasks);
+  validateSubtasks(fm.plan.subtasks, fm.schema, fm.git_baseline?.branch ?? null);
 
   // host_history list-of-objects
   if (!Array.isArray(fm.host_history)) {
@@ -1193,6 +1295,15 @@ function validateFrontmatter(fm) {
 
   validateListOfObjectsField(fm, 'pending_ensemble');
   validateListOfObjectsField(fm, 'ensemble_results');
+
+  // ADR-0019 PR-B (1.1) — optional terminal_marker boolean. Mirrors
+  // engineer 1.1 pattern (state.mjs:1109). Required by §5 A1 gate
+  // for macro-adapted stop-archive (PR-E).
+  if ('terminal_marker' in fm) {
+    if (typeof fm.terminal_marker !== 'boolean') {
+      throw new Error('terminal_marker must be a boolean');
+    }
+  }
 }
 
 /**
@@ -1284,13 +1395,43 @@ function validateNestedShape(fm, key, expectedKeys) {
   }
 }
 
-// ADR-0018 §sub-1 plan.subtasks[*] validation:
+// ADR-0018 §sub-1 + ADR-0019 §2 plan.subtasks[*] validation:
 //   - id non-empty unique
 //   - blocked_by → existing id, no self-cycle
-//   - status enum
+//   - status enum (1.1 adds deferred / abandoned)
 //   - optional fields are string-or-null
-function validateSubtasks(subtasks) {
+//   - 1.1: verb (canonical 6-verb whitelist) + branch (git ref-format) REQUIRED
+//
+// `schemaVersion` selects the required-key set: 1.0 retains the legacy
+// invariants (id / blocked_by / status); 1.1 enforces verb + branch
+// per ADR-0019 §1 branch precondition. The default `'1.1'` is for
+// callers that don't have schema context (e.g., setPlan when emitting
+// a fresh plan); validateFrontmatter passes the actual fm.schema.
+function validateSubtasks(subtasks, schemaVersion = SCHEMA_VERSION, macroBranch = null) {
+  const requiredKeys =
+    SUBTASK_REQUIRED_KEYS_BY_SCHEMA[schemaVersion]
+    ?? SUBTASK_REQUIRED_KEYS_BY_SCHEMA['1.1'];
   const ids = new Set();
+  // ADR-0019 §1 — branch uniqueness across subtasks (1.1 only). Two
+  // subtasks on the same branch would race the per-branch single-active
+  // invariant at /orchestrator:next dispatch time: the first creates an
+  // engineer workflow keyed by branch, the second's ownership check
+  // (different originating_subtask) would abort. Catch at plan-set so
+  // the macro plan never lands in an unexecutable shape.
+  //
+  // The collision map is seeded with the macro workflow's own branch
+  // (`git_baseline.branch`) when supplied so subtasks cannot collide
+  // with the macro branch via either exact match or path-prefix
+  // (e.g., macro on `feat/api` rejects subtask `feat/api/db`). When
+  // macroBranch is null (legacy / unknown context), the macro-branch
+  // gate is skipped — callers that have the frontmatter context (the
+  // validateFrontmatter call) supply it; setPlan's pre-write call
+  // does not.
+  const branches = new Map(); // branch → idx of first occurrence (or 'macro')
+  const enforceBranchUniqueness = schemaVersion !== '1.0';
+  if (enforceBranchUniqueness && typeof macroBranch === 'string' && macroBranch.length > 0) {
+    branches.set(macroBranch, 'macro (git_baseline.branch)');
+  }
   for (let idx = 0; idx < subtasks.length; idx++) {
     const e = subtasks[idx];
     if (typeof e !== 'object' || e === null || Array.isArray(e)) {
@@ -1303,7 +1444,7 @@ function validateSubtasks(subtasks) {
         );
       }
     }
-    for (const k of SUBTASK_REQUIRED_KEYS) {
+    for (const k of requiredKeys) {
       if (!(k in e)) {
         throw new Error(`Missing required subtask key plan.subtasks[${idx}].${k}`);
       }
@@ -1340,6 +1481,55 @@ function validateSubtasks(subtasks) {
         );
       }
     }
+    // ADR-0019 §2 — verb whitelist (1.1 only; 1.0 plans don't carry verb).
+    if ('verb' in e && e.verb !== null && e.verb !== undefined) {
+      if (typeof e.verb !== 'string' || !VALID_SUBTASK_VERBS.has(e.verb)) {
+        throw new Error(
+          `plan.subtasks[${idx}].verb invalid: ${JSON.stringify(e.verb)}. ` +
+            `Must be one of ${[...VALID_SUBTASK_VERBS].join(', ')}.`,
+        );
+      }
+    }
+    // ADR-0019 §1 — branch git ref-format gate (applies to 1.1; 1.0
+    // tolerates any string here for legacy compatibility).
+    if (schemaVersion !== '1.0' && 'branch' in e && e.branch !== null && e.branch !== undefined) {
+      if (!isValidGitBranchSegment(e.branch)) {
+        throw new Error(
+          `plan.subtasks[${idx}].branch invalid git ref-format: ${JSON.stringify(e.branch)}. ` +
+            `Branch names must not contain spaces, '..', '~ ^ : ? * [ \\\\', or start with '.', or end with '/' or '.lock'.`,
+        );
+      }
+      // Branch uniqueness (1.1) — see §1 dispatch contract.
+      if (enforceBranchUniqueness) {
+        if (branches.has(e.branch)) {
+          throw new Error(
+            `Duplicate subtask branch: ${JSON.stringify(e.branch)} ` +
+              `(plan.subtasks[${idx}] collides with plan.subtasks[${branches.get(e.branch)}]). ` +
+              `Each 1.1 subtask MUST have a unique branch — /orchestrator:next dispatch ` +
+              `keys engineer workflows by branch, so duplicate branches cannot both execute.`,
+          );
+        }
+        // Prefix collision check (per Codex review): git stores refs
+        // as path components. `feat/api` (a leaf ref) cannot coexist
+        // with `feat/api/db` (would require `feat/api` to be a
+        // directory). Plan-set rejects so /orchestrator:next never
+        // hits "cannot lock ref ... exists" mid-dispatch.
+        for (const [existing, existingIdx] of branches) {
+          if (
+            e.branch.startsWith(`${existing}/`)
+            || existing.startsWith(`${e.branch}/`)
+          ) {
+            throw new Error(
+              `Subtask branch prefix collision: plan.subtasks[${idx}].branch=${JSON.stringify(e.branch)} ` +
+                `conflicts with plan.subtasks[${existingIdx}].branch=${JSON.stringify(existing)} ` +
+                `(git stores refs as path components — one cannot be a leaf and another a parent directory). ` +
+                `Choose distinct branch names with no shared path-prefix relationship.`,
+            );
+          }
+        }
+        branches.set(e.branch, idx);
+      }
+    }
   }
   for (let idx = 0; idx < subtasks.length; idx++) {
     const e = subtasks[idx];
@@ -1355,6 +1545,23 @@ function validateSubtasks(subtasks) {
         );
       }
     }
+  }
+}
+
+// ADR-0019 PR-B — refuse mutations on legacy 1.0 files. Reads pass
+// validateFrontmatter (1.0 supported), but writes back via setPlan /
+// appendPhase / snapshot / ensemble helpers must abort with a
+// diagnostic so legacy plans don't get half-migrated. Users either
+// archive the legacy workflow or run /orchestrator:plan to start
+// fresh under 1.1.
+function ensureMutable(fm) {
+  if (fm.schema === '1.0') {
+    throw new Error(
+      `Cannot mutate schema 1.0 file (legacy ADR-0018 §sub-1 shape). ` +
+        `Per ADR-0019 PR-B schema bump, /orchestrator:plan now emits 1.1 workflows. ` +
+        `Archive this legacy workflow (move to .claude/agentic-orchestrator/archive/) ` +
+        `and run /orchestrator:plan on this branch to start a fresh 1.1 plan.`,
+    );
   }
 }
 
@@ -1532,6 +1739,7 @@ export async function appendPhase({
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
+    ensureMutable(frontmatter);
     const nowIso = isoUtc(now);
 
     if (currentPhase !== undefined) frontmatter.current_phase = currentPhase;
@@ -1572,6 +1780,7 @@ export async function snapshot({
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
+    ensureMutable(frontmatter);
     const nowIso = isoUtc(now);
 
     frontmatter.updated_at = nowIso;
@@ -1671,6 +1880,7 @@ export async function recordPendingEnsemble({
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
+    ensureMutable(frontmatter);
     const nowIso = isoUtc(now);
     const entry = {
       phase,
@@ -1746,6 +1956,7 @@ export async function commitEnsemble({
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
+    ensureMutable(frontmatter);
     const nowIso = isoUtc(now);
 
     const pending = Array.isArray(frontmatter.pending_ensemble)
@@ -1816,11 +2027,19 @@ export async function setPlan({
       `setPlan: architecture must be string|null (got ${typeof architecture})`,
     );
   }
-  validateSubtasks(subtasks);
 
   return withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
+    // Per ADR-0019 PR-B: refuse mutation on 1.0 files BEFORE running
+    // validateSubtasks so legacy plans get the archive/re-plan
+    // diagnostic instead of a confusing "Missing required verb"
+    // (which would mislead users who haven't realized their file
+    // is the legacy shape).
+    ensureMutable(frontmatter);
+    // Pass macro branch for the §1 prefix-collision gate so a subtask
+    // branch cannot path-collide with the parent macro branch.
+    validateSubtasks(subtasks, frontmatter.schema, frontmatter.git_baseline?.branch ?? null);
     const nowIso = isoUtc(now);
 
     const plan = { subtasks };
@@ -1897,7 +2116,7 @@ function cliRequire(flags, names) {
 function cliPrintHelp() {
   process.stdout.write(
     [
-      'plugins/orchestrator/scripts/state.mjs — orchestrator schema 1.0 state CLI',
+      'plugins/orchestrator/scripts/state.mjs — orchestrator schema 1.1 state CLI (1.0 read-only)',
       '',
       'Usage:',
       '',
@@ -1939,10 +2158,16 @@ function cliPrintHelp() {
       '           --subtasks-json-file <path>',
       '           [--decision <text>] [--architecture <text>]',
       '           [--event updated|resumed]',
-      '    ADR-0018 §sub-1 — atomic write of plan.{decision?, architecture?, subtasks[]}.',
+      '    ADR-0018 §sub-1 + ADR-0019 §2 — atomic write of plan.{decision?, architecture?, subtasks[]}.',
       '    --subtasks-json-file points at a UTF-8 JSON file whose top-level value',
-      '    is the subtasks array (array of {id, label?, branch?, blocked_by[],',
-      '    status, engineer_workflow_id?, commit?, pr_url?, closed_at?}).',
+      '    is the subtasks array. Schema 1.1 subtask shape:',
+      '      {id, verb, branch, blocked_by[], status,                      (REQUIRED)',
+      '       label?, profile?, topic?,                                    (optional 1.1)',
+      '       engineer_workflow_id?, commit?, pr_url?, closed_at?}         (optional, post-dispatch)',
+      '    verb ∈ {investigate, frame, decide, compose, critique, refine}',
+      '    status ∈ {pending, blocked, in_progress, completed, deferred, abandoned}',
+      '    branch must pass git ref-format (ADR-0019 §1).',
+      '    Note: 1.0 legacy files are READ-only — mutations refused with diagnostic.',
       '',
       'Verbs: plan (orchestrator MVP).',
       'Hosts: claude, codex.',
