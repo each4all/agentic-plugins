@@ -1700,3 +1700,297 @@ describe('state.mjs — non-string timestamp gates (Codex re-review M-3)', () =>
     });
   });
 });
+
+// ============================================================================
+// ADR-0019 PR-A — schema 1.1 cross-plugin parent-linkage fields
+// (parent_workflow + originating_subtask + parent_detached). All three
+// are optional top-level scalars; validateSchema11Fields gates types,
+// createWorkflow enforces "both-or-neither" cross-validation.
+// ============================================================================
+
+describe('state.mjs — ADR-0019 PR-A parent-linkage fields (schema 1.1 additive)', () => {
+  it('parses a hand-crafted 1.1 file with parent_workflow + originating_subtask set', () => {
+    const text =
+      '---\n' +
+      'schema: "1.1"\n' +
+      'workflow_id: "investigate-20260510T070000Z-aabbcc"\n' +
+      'persona: "engineer"\n' +
+      'verb: "investigate"\n' +
+      'profile: "architecture"\n' +
+      'original_request: "subtask dispatched by orchestrator"\n' +
+      'started_at: "2026-05-10T07:00:00Z"\n' +
+      'updated_at: "2026-05-10T07:00:00Z"\n' +
+      'repo_root: "/tmp/repo"\n' +
+      'git_baseline:\n' +
+      '  branch: "feat/sub-1"\n' +
+      '  head: "0000000000000000000000000000000000000000"\n' +
+      '  status_digest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"\n' +
+      'current_phase: "phase-0"\n' +
+      'next_action: "Run investigate skill"\n' +
+      'tasks: []\n' +
+      'host_history:\n' +
+      '  - host: "claude"\n' +
+      '    at: "2026-05-10T07:00:00Z"\n' +
+      '    event: "created"\n' +
+      'parent_workflow: "macro-plan-20260510T065959Z-aaaaaa"\n' +
+      'originating_subtask: "PR1"\n' +
+      '---\n\n# body\n';
+    const { frontmatter } = parseWorkflowFile(text);
+    strictEqual(frontmatter.parent_workflow, 'macro-plan-20260510T065959Z-aaaaaa');
+    strictEqual(frontmatter.originating_subtask, 'PR1');
+    strictEqual('parent_detached' in frontmatter, false);
+  });
+
+  it('parses a 1.1 file with parent_detached: true (set later by /finalize/abort)', () => {
+    const text =
+      '---\n' +
+      'schema: "1.1"\n' +
+      'workflow_id: "compose-20260510T080000Z-ddeeff"\n' +
+      'persona: "engineer"\n' +
+      'verb: "compose"\n' +
+      'profile: ""\n' +
+      'original_request: "schema bump implementation"\n' +
+      'started_at: "2026-05-10T08:00:00Z"\n' +
+      'updated_at: "2026-05-10T08:30:00Z"\n' +
+      'repo_root: "/tmp/repo"\n' +
+      'git_baseline:\n' +
+      '  branch: "feat/sub-2"\n' +
+      '  head: "0000000000000000000000000000000000000000"\n' +
+      '  status_digest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"\n' +
+      'current_phase: "phase-1"\n' +
+      'next_action: "implement"\n' +
+      'tasks: []\n' +
+      'host_history:\n' +
+      '  - host: "codex"\n' +
+      '    at: "2026-05-10T08:00:00Z"\n' +
+      '    event: "created"\n' +
+      'terminal_marker: false\n' +
+      'parent_workflow: "macro-plan-20260510T080000Z-bbbbbb"\n' +
+      'originating_subtask: "PR2"\n' +
+      'parent_detached: true\n' +
+      '---\n\n# body\n';
+    const { frontmatter } = parseWorkflowFile(text);
+    strictEqual(frontmatter.parent_workflow, 'macro-plan-20260510T080000Z-bbbbbb');
+    strictEqual(frontmatter.originating_subtask, 'PR2');
+    strictEqual(frontmatter.parent_detached, true);
+    strictEqual(frontmatter.terminal_marker, false);
+  });
+
+  it('rejects empty-string parent_workflow', () => {
+    const text =
+      '---\nschema: "1.1"\nworkflow_id: "x"\npersona: "engineer"\nverb: "investigate"\n' +
+      'profile: ""\noriginal_request: ""\nstarted_at: ""\nupdated_at: ""\n' +
+      'repo_root: ""\ngit_baseline:\n  branch: ""\n  head: ""\n  status_digest: ""\n' +
+      'current_phase: ""\nnext_action: ""\ntasks: []\nhost_history: []\n' +
+      'parent_workflow: ""\noriginating_subtask: "PR1"\n---\n\n';
+    const err = (() => {
+      try { parseWorkflowFile(text); return null; } catch (e) { return e; }
+    })();
+    ok(err, 'expected empty parent_workflow to throw');
+    ok(/parent_workflow must be a non-empty string/.test(err.message), `message: ${err.message}`);
+  });
+
+  it('rejects empty-string originating_subtask', () => {
+    const text =
+      '---\nschema: "1.1"\nworkflow_id: "x"\npersona: "engineer"\nverb: "investigate"\n' +
+      'profile: ""\noriginal_request: ""\nstarted_at: ""\nupdated_at: ""\n' +
+      'repo_root: ""\ngit_baseline:\n  branch: ""\n  head: ""\n  status_digest: ""\n' +
+      'current_phase: ""\nnext_action: ""\ntasks: []\nhost_history: []\n' +
+      'parent_workflow: "macro-x"\noriginating_subtask: ""\n---\n\n';
+    const err = (() => {
+      try { parseWorkflowFile(text); return null; } catch (e) { return e; }
+    })();
+    ok(err, 'expected empty originating_subtask to throw');
+    ok(/originating_subtask must be a non-empty string/.test(err.message), `message: ${err.message}`);
+  });
+
+  it('rejects non-boolean parent_detached', () => {
+    const text =
+      '---\nschema: "1.1"\nworkflow_id: "x"\npersona: "engineer"\nverb: "investigate"\n' +
+      'profile: ""\noriginal_request: ""\nstarted_at: ""\nupdated_at: ""\n' +
+      'repo_root: ""\ngit_baseline:\n  branch: ""\n  head: ""\n  status_digest: ""\n' +
+      'current_phase: ""\nnext_action: ""\ntasks: []\nhost_history: []\n' +
+      'parent_detached: "yes"\n---\n\n';
+    const err = (() => {
+      try { parseWorkflowFile(text); return null; } catch (e) { return e; }
+    })();
+    ok(err, 'expected string parent_detached to throw');
+    ok(/parent_detached must be a boolean/.test(err.message), `message: ${err.message}`);
+  });
+
+  it('createWorkflow round-trip persists parent_workflow + originating_subtask', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'orchestrator dispatched compose',
+        parentWorkflow: 'macro-plan-20260510T090000Z-zzzzzz',
+        originatingSubtask: 'PR3',
+      });
+      const [filePath] = await listWorkflowFiles(repoRoot);
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.parent_workflow, 'macro-plan-20260510T090000Z-zzzzzz');
+      strictEqual(frontmatter.originating_subtask, 'PR3');
+      // parent_detached omitted at create-time per ADR-0019 §3
+      strictEqual('parent_detached' in frontmatter, false);
+    });
+  });
+
+  it('createWorkflow rejects half-set linkage (parent_workflow only)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await rejects(
+        createWorkflow({
+          repoRoot,
+          verb: 'investigate',
+          host: 'claude',
+          gitBaseline: MIN_BASELINE,
+          originalRequest: 'half-set parent should fail',
+          parentWorkflow: 'macro-plan-orphan',
+          // originatingSubtask intentionally omitted
+        }),
+        /parent_workflow and originating_subtask must be set together/,
+      );
+    });
+  });
+
+  it('createWorkflow rejects half-set linkage (originating_subtask only)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await rejects(
+        createWorkflow({
+          repoRoot,
+          verb: 'investigate',
+          host: 'claude',
+          gitBaseline: MIN_BASELINE,
+          originalRequest: 'half-set subtask should fail',
+          originatingSubtask: 'PR4',
+          // parentWorkflow intentionally omitted
+        }),
+        /parent_workflow and originating_subtask must be set together/,
+      );
+    });
+  });
+
+  it('createWorkflow rejects explicitly-empty parent_workflow string', async () => {
+    // ADR-0019 dispatch shims may expand unset env vars to empty `--flag ''`
+    // args. Treating that as "omitted" would silently drop the parent
+    // association. Only undefined/null mean omitted; '' is invalid.
+    await withTmpRepo(async (repoRoot) => {
+      await rejects(
+        createWorkflow({
+          repoRoot,
+          verb: 'compose',
+          host: 'claude',
+          gitBaseline: MIN_BASELINE,
+          originalRequest: 'empty parentWorkflow should reject',
+          parentWorkflow: '',
+          originatingSubtask: 'PR-x',
+        }),
+        /parentWorkflow must be a non-empty string when provided/,
+      );
+    });
+  });
+
+  it('createWorkflow rejects explicitly-empty originating_subtask string', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await rejects(
+        createWorkflow({
+          repoRoot,
+          verb: 'compose',
+          host: 'claude',
+          gitBaseline: MIN_BASELINE,
+          originalRequest: 'empty originatingSubtask should reject',
+          parentWorkflow: 'macro-x',
+          originatingSubtask: '',
+        }),
+        /originatingSubtask must be a non-empty string when provided/,
+      );
+    });
+  });
+
+  it('CLI create rejects empty --parent-workflow flag (shim safety)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const result = spawnSync(process.execPath, [
+        STATE_PATH,
+        'create',
+        '--repo-root', repoRoot,
+        '--verb', 'investigate',
+        '--host', 'claude',
+        '--git-baseline-branch', MIN_BASELINE.branch,
+        '--git-baseline-head', MIN_BASELINE.head,
+        '--status-digest', MIN_BASELINE.status_digest,
+        '--parent-workflow', '',
+        '--originating-subtask', 'PR-shim',
+      ], { encoding: 'utf8' });
+      strictEqual(result.status, 1, `expected exit 1, got ${result.status}: ${result.stderr}`);
+      match(result.stderr, /parentWorkflow must be a non-empty string when provided/);
+    });
+  });
+
+  it('createWorkflow without parent linkage omits both fields', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'manual workflow no parent',
+      });
+      const [filePath] = await listWorkflowFiles(repoRoot);
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual('parent_workflow' in frontmatter, false);
+      strictEqual('originating_subtask' in frontmatter, false);
+      strictEqual('parent_detached' in frontmatter, false);
+    });
+  });
+
+  it('CLI create --parent-workflow + --originating-subtask flags pass through', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const out = execFileSync(process.execPath, [
+        STATE_PATH,
+        'create',
+        '--repo-root', repoRoot,
+        '--verb', 'compose',
+        '--host', 'claude',
+        '--git-baseline-branch', MIN_BASELINE.branch,
+        '--git-baseline-head', MIN_BASELINE.head,
+        '--status-digest', MIN_BASELINE.status_digest,
+        '--parent-workflow', 'macro-plan-cli-test',
+        '--originating-subtask', 'PR-cli',
+      ], { encoding: 'utf8' });
+      const filePath = out.trim();
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.parent_workflow, 'macro-plan-cli-test');
+      strictEqual(frontmatter.originating_subtask, 'PR-cli');
+    });
+  });
+
+  it('FRONTMATTER_KEY_ORDER places parent linkage fields after ADR-0017 1.1 fields', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'frame',
+        host: 'codex',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'serialization order test',
+        parentWorkflow: 'macro-order',
+        originatingSubtask: 'PR-order',
+      });
+      const [filePath] = await listWorkflowFiles(repoRoot);
+      const raw = await readFile(filePath, 'utf8');
+      // The serialized frontmatter must place parent_workflow AFTER
+      // host_history (last schema-1 field) and AFTER any ADR-0017 1.1
+      // optional fields. Since this workflow has no ADR-0017 fields
+      // populated, host_history is the immediate predecessor.
+      const idxHostHistory = raw.indexOf('\nhost_history:');
+      const idxParentWorkflow = raw.indexOf('\nparent_workflow:');
+      const idxOriginatingSubtask = raw.indexOf('\noriginating_subtask:');
+      ok(idxHostHistory > 0, 'host_history must appear');
+      ok(idxParentWorkflow > 0, 'parent_workflow must appear');
+      ok(idxOriginatingSubtask > 0, 'originating_subtask must appear');
+      ok(idxParentWorkflow > idxHostHistory, 'parent_workflow must serialize after host_history');
+      ok(idxOriginatingSubtask > idxParentWorkflow, 'originating_subtask must serialize after parent_workflow');
+    });
+  });
+});
