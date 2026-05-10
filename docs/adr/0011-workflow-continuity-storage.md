@@ -10,6 +10,15 @@ Accepted
 > §"ADR-0011 §Stage 2 Non-Goals — cascade after this ADR". Items #4 /
 > #8 / #9 stay deferred. ADR-0011's body text remains as written for
 > historical record; ADR-0018 carries the per-item current stance.
+>
+> **Amendment 2026-05-10 (ADR-0019 cascade)**: §Stage 2 Non-Goal #8
+> (per-step lock-ordering across multiple files) is now scoped — the
+> cross-plugin parent-writeback case is covered by
+> [ADR-0019 §6](0019-cross-plugin-invocation-contract.md) "Lock-order
+> — child release → parent acquire". Other multi-file lock-order
+> cases (sharded layout, multi-shard coordination) remain out of scope
+> per the original Non-Goal. §3 atomic write protocol below carries an
+> inline pointer to ADR-0019 §6.
 
 ## Context
 
@@ -280,6 +289,15 @@ each create a different `<workflow_id>.md` (which would silently
 break the §1 single-active invariant). Per-file lock has the same
 shape as omcc-dev's `atomicModifyFile` (simplified — no sharded
 coordination needed since Stage 2 has no shards).
+
+**Cross-file lock-order (Stage 3+ amendment)**: cross-plugin parent-
+writeback (engineer → orchestrator subtask completion) introduces the
+first multi-file mutation in this storage system. The lock-ordering
+rule lives in [ADR-0019 §6](0019-cross-plugin-invocation-contract.md):
+mutate the child workflow under its own lock(s), release ALL
+child-side locks, THEN acquire the parent workflow's per-file lock
+for writeback. Never hold child and parent locks simultaneously. See
+ADR-0019 §6 for the concrete `runStopArchive` post-archive sequence.
 
 ### 4. Hook contracts
 
