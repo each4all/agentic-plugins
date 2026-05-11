@@ -2570,6 +2570,32 @@ describe('state.mjs — ADR-0019 PR-E noActiveEngineerChildrenScan', () => {
       strictEqual(n, 0);
     });
   });
+
+  // ADR-0019 PR-E Phase 5 review (Phase 6 resolve) — CRLF tolerance.
+  // Engineer's state.mjs writes LF, but a frontmatter file manually
+  // edited on a Windows-style tool could carry \r\n. The scan must
+  // correctly match `parent_workflow` regardless of line ending so a
+  // CRLF-saved child isn't silently miscounted as "not a child".
+  it('counts CRLF-line-ending engineer files correctly (Windows-edited frontmatter)', async () => {
+    await withTmpRepo('pr-e-scan-crlf', async (root) => {
+      const macroId = 'macro-plan-20260511T000000Z-abcdef';
+      const dir = join(root, ENG_WORKFLOW_DIR_REL);
+      await mkdir(dir, { recursive: true });
+      const crlfBody = [
+        '---',
+        'schema: "1.1"',
+        `workflow_id: "compose-20260511T010101Z-aaaaaa"`,
+        `parent_workflow: ${JSON.stringify(macroId)}`,
+        'originating_subtask: "T1"',
+        '---',
+        '# CRLF engineer fixture',
+        '',
+      ].join('\r\n');
+      await writeFile(join(dir, 'compose-20260511T010101Z-aaaaaa.md'), crlfBody);
+      const n = await noActiveEngineerChildrenScan(root, macroId);
+      strictEqual(n, 1, 'CRLF-line-ending child should still be counted as a referencing child');
+    });
+  });
 });
 
 describe('state.mjs — ADR-0019 PR-E CLI subcommands', () => {

@@ -129,9 +129,12 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
           const childPath = path.join(ENG_WORKFLOW_DIR, name);
           let text;
           try { text = await fs.readFile(childPath, "utf8"); } catch { continue; }
-          const fmM = text.match(/^---\n([\s\S]*?)\n---/);
+          // CRLF tolerance — engineer files written by a Windows tool
+          // would carry \r\n; defend so a CRLF-saved child is correctly
+          // routed (Phase 5 review).
+          const fmM = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
           if (!fmM) continue;
-          const parentM = fmM[1].match(/^parent_workflow:\s*(?:"([^"]+)"|'"'"'([^'"'"']+)'"'"'|(\S+))\s*$/m);
+          const parentM = fmM[1].match(/^parent_workflow:\s*(?:"([^"]+)"|'"'"'([^'"'"']+)'"'"'|(\S+))\s*\r?$/m);
           if (!parentM) continue;
           if ((parentM[1] ?? parentM[2] ?? parentM[3]) !== MACRO_ID) continue;
 

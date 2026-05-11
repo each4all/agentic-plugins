@@ -2913,10 +2913,18 @@ export async function noActiveEngineerChildrenScan(repoRoot, macroId) {
     // Avoid invoking engineer's parseWorkflowFile (cross-plugin import
     // forbidden per ADR-0010 §5). Use a minimal frontmatter regex scan
     // instead — we only need the `parent_workflow` scalar value.
-    const fmMatch = text.match(/^---\n([\s\S]*?)\n---/);
+    //
+    // CRLF tolerance: while engineer's state.mjs writes LF-only, a
+    // workflow file manually edited on a Windows-style tool could carry
+    // CRLF line endings. A CRLF-saved child would silently miscount as
+    // "not a child," letting A4 pass while the child is actually live.
+    // Defend against this with `\r?\n` in the frontmatter-delimiter
+    // pattern; the per-line scalar regex already uses /m which is
+    // CR-tolerant.
+    const fmMatch = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!fmMatch) continue;
     const fmText = fmMatch[1];
-    const parentMatch = fmText.match(/^parent_workflow:\s*(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/m);
+    const parentMatch = fmText.match(/^parent_workflow:\s*(?:"([^"]+)"|'([^']+)'|(\S+))\s*\r?$/m);
     if (!parentMatch) continue;
     const parentValue = parentMatch[1] ?? parentMatch[2] ?? parentMatch[3];
     if (parentValue === macroId) count++;

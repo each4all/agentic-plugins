@@ -178,15 +178,25 @@ export async function runMacroStopArchive({
     try {
       noActiveEngineerChildren = await noActiveEngineerChildrenScan(repoRoot, macroId);
     } catch (err) {
-      // Fail-open: a scan failure (e.g., readdir permission denied)
-      // should not block the archive — engineer hook absence is
-      // non-fatal per ADR-0011 §4, same shape applies here. A
-      // conservative read would set children=∞ (block archive); the
-      // fail-open shape mirrors engineer's `headSha = null` treatment.
+      // Scan errors split by category:
+      //
+      // - ENOENT on the engineer workflows directory is the "engineer
+      //   not installed / no live workflows" case. `noActiveEngineerChildrenScan`
+      //   itself returns 0 for that path without throwing, so we never
+      //   reach this catch via that branch.
+      // - Any other error (EACCES, EPERM, EIO, etc.) reaching this catch
+      //   indicates we could NOT confirm the absence of live engineer
+      //   children. Fail-CLOSED in that case: setting a non-zero
+      //   sentinel (we use 1) makes the A4 gate fail and keeps the
+      //   workflow file in `workflows/` for the next Stop event, when
+      //   the filesystem state may have recovered. The cost of an extra
+      //   Stop cycle is far less than the cost of archiving a macro
+      //   whose children are still active. This is the trade-off Phase
+      //   5 review flagged (Phase 6 resolve).
       stderr.write(
-        `orchestrator/stop-archive: noActiveEngineerChildrenScan failed for ${macroId}: ${err.message}\n`,
+        `orchestrator/stop-archive: noActiveEngineerChildrenScan failed for ${macroId}: ${err.message} (fail-closed; macro remains live until next Stop)\n`,
       );
-      noActiveEngineerChildren = 0;
+      noActiveEngineerChildren = 1;
     }
   }
 
