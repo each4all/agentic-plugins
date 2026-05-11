@@ -40,6 +40,13 @@ fi
 
 ORCH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
 
+# Host auto-detection (Codex P2 finding — mirror /next, /done, /finalize).
+case "$CLAUDE_PLUGIN_ROOT" in
+  *"/.codex/"*) DETECTED_HOST="codex" ;;
+  *"/.claude/"*) DETECTED_HOST="claude" ;;
+  *) DETECTED_HOST="${AGENTIC_HOST:-claude}" ;;
+esac
+
 FIND_ERR="${TMPDIR:-/tmp}/orchestrator-abort-find-$$.err"
 trap 'rm -f "$FIND_ERR"' EXIT
 MACRO_PATH=""
@@ -55,18 +62,21 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
     exit 1
   fi
 else
-  MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
-    find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
-  RC=$?
-  if [ "$RC" -ne 0 ]; then
-    cat "$FIND_ERR" >&2; exit "$RC"
+  # Codex P3 finding: `set -e` + `MACRO_PATH="$(...)"` would exit
+  # immediately on non-zero, skipping the `RC=$?`/`cat $FIND_ERR` block.
+  # `if !` gates `set -e` so the diagnostic block runs on failure.
+  if ! MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
+      find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"; then
+    RC=$?
+    cat "$FIND_ERR" >&2
+    exit "$RC"
   fi
   if [ -z "$MACRO_PATH" ]; then
-    MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
-      find-macro --repo-root "$REPO_ROOT" --subtask-branch "$GIT_BRANCH" 2>"$FIND_ERR")"
-    RC=$?
-    if [ "$RC" -ne 0 ]; then
-      cat "$FIND_ERR" >&2; exit "$RC"
+    if ! MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
+        find-macro --repo-root "$REPO_ROOT" --subtask-branch "$GIT_BRANCH" 2>"$FIND_ERR")"; then
+      RC=$?
+      cat "$FIND_ERR" >&2
+      exit "$RC"
     fi
   fi
 fi
@@ -75,7 +85,7 @@ if [ -z "$MACRO_PATH" ]; then
   exit 1
 fi
 MACRO_ID="$(basename "$MACRO_PATH" .md)"
-echo "→ Aborting macro: $MACRO_ID"
+echo "→ Aborting macro: $MACRO_ID (host=$DETECTED_HOST)"
 ```
 
 ---
@@ -86,7 +96,7 @@ echo "→ Aborting macro: $MACRO_ID"
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
   bulk-subtask-status \
   --workflow-path "$MACRO_PATH" \
-  --host claude \
+  --host "$DETECTED_HOST" \
   --from-statuses pending,blocked,in_progress \
   --to-status abandoned
 ```
@@ -107,18 +117,25 @@ if [ -z "$ENGINEER_PLUGIN_ROOT" ]; then
 fi
 node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" preflight --root "$ENGINEER_PLUGIN_ROOT" || exit 1
 
+# Child-archive failure counter (Codex P2 finding) — same pattern as
+# /orchestrator:finalize.
+FAILURES_FILE="${TMPDIR:-/tmp}/orchestrator-abort-failures-$$.cnt"
+trap 'rm -f "$FIND_ERR" "$FAILURES_FILE"' EXIT
 ENG_WORKFLOW_DIR="$REPO_ROOT/.claude/agentic-engineer/workflows"
 if [ -d "$ENG_WORKFLOW_DIR" ]; then
   env MACRO_ID="$MACRO_ID" REPO_ROOT="$REPO_ROOT" ENG_WORKFLOW_DIR="$ENG_WORKFLOW_DIR" \
     ENGINEER_PLUGIN_ROOT="$ENGINEER_PLUGIN_ROOT" \
+    DETECTED_HOST="$DETECTED_HOST" \
+    FAILURES_FILE="$FAILURES_FILE" \
     node -e '
       const fs = require("fs/promises");
       const path = require("path");
       const { execFile } = require("child_process");
       const { promisify } = require("util");
       const execFileAsync = promisify(execFile);
-      const { MACRO_ID, REPO_ROOT, ENG_WORKFLOW_DIR, ENGINEER_PLUGIN_ROOT } = process.env;
+      const { MACRO_ID, REPO_ROOT, ENG_WORKFLOW_DIR, ENGINEER_PLUGIN_ROOT, DETECTED_HOST, FAILURES_FILE } = process.env;
       const ENG_STATE = path.join(ENGINEER_PLUGIN_ROOT, "scripts/state.mjs");
+      let failures = 0;
       (async () => {
         let entries;
         try { entries = await fs.readdir(ENG_WORKFLOW_DIR); }
@@ -172,7 +189,7 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
               [
                 ENG_STATE, "stop-archive",
                 "--workflow-path", childPath,
-                "--host", "claude",
+                "--host", DETECTED_HOST,
                 "--repo-root", REPO_ROOT,
                 "--head-sha", branchHead,
                 "--head-subject", branchSubject,
@@ -182,6 +199,7 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
             envelope = JSON.parse(r.stdout.trim());
           } catch (err) {
             process.stderr.write(`  ! engineer stop-archive failed for ${name}: ${err.message}\n`);
+            failures += 1;
             continue;
           }
           if (envelope.archived) {
@@ -195,7 +213,7 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
           try {
             const r = await execFileAsync(
               process.execPath,
-              [ENG_STATE, "detach-archive", "--workflow-path", childPath, "--host", "claude", "--repo-root", REPO_ROOT],
+              [ENG_STATE, "detach-archive", "--workflow-path", childPath, "--host", DETECTED_HOST, "--repo-root", REPO_ROOT],
               { encoding: "utf8" },
             );
             const env = JSON.parse(r.stdout.trim());
@@ -203,13 +221,28 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
               process.stdout.write(`  ✓ mid-flight child detached: ${path.basename(childPath)} → ${env.to}\n`);
             } else {
               process.stderr.write(`  ! detach-archive no-op for ${path.basename(childPath)}: ${env.reason}\n`);
+              failures += 1;
             }
           } catch (err) {
             process.stderr.write(`  ! detach-archive threw for ${path.basename(childPath)}: ${err.message}\n`);
+            failures += 1;
           }
         }
-      })().catch((err) => { process.stderr.write(`  ! abort step 2 error: ${err.message}\n`); process.exit(1); });
+      })()
+        .catch((err) => { process.stderr.write(`  ! abort step 2 error: ${err.message}\n`); failures += 1; })
+        .finally(async () => { await fs.writeFile(FAILURES_FILE, String(failures)); });
     '
+fi
+
+# Codex P2 finding (Phase 6 resolve): refuse to mark macro terminal when
+# any child failed to archive — A4 would keep failing forever otherwise.
+if [ -f "$FAILURES_FILE" ]; then
+  ABORT_FAILURES="$(cat "$FAILURES_FILE")"
+  if [ "${ABORT_FAILURES:-0}" -gt 0 ]; then
+    echo "✗ $ABORT_FAILURES engineer child(ren) failed to archive in step 2 — refusing to set macro terminal markers." >&2
+    echo "  Reconcile manually and re-run /orchestrator:abort." >&2
+    exit 1
+  fi
 fi
 ```
 
@@ -221,7 +254,7 @@ fi
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
   set-terminal \
   --workflow-path "$MACRO_PATH" \
-  --host claude \
+  --host "$DETECTED_HOST" \
   --terminal-phase aborted \
   --terminal-marker true \
   --next-action archive

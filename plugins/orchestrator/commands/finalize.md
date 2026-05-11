@@ -37,6 +37,16 @@ fi
 
 ORCH_PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
 
+# Host auto-detection (Codex P2 finding — same shape as /next, /done).
+# `set -e` would normally abort on `case` `*)` matches that depend on
+# unset $AGENTIC_HOST; the parameter substitution `${AGENTIC_HOST:-claude}`
+# resolves to 'claude' rather than tripping nounset.
+case "$CLAUDE_PLUGIN_ROOT" in
+  *"/.codex/"*) DETECTED_HOST="codex" ;;
+  *"/.claude/"*) DETECTED_HOST="claude" ;;
+  *) DETECTED_HOST="${AGENTIC_HOST:-claude}" ;;
+esac
+
 FIND_ERR="${TMPDIR:-/tmp}/orchestrator-finalize-find-$$.err"
 trap 'rm -f "$FIND_ERR"' EXIT
 MACRO_PATH=""
@@ -53,18 +63,22 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
     exit 1
   fi
 else
-  MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
-    find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"
-  RC=$?
-  if [ "$RC" -ne 0 ]; then
-    cat "$FIND_ERR" >&2; exit "$RC"
+  # Codex P3 finding: `set -e` + `MACRO_PATH="$(...)"` would exit
+  # immediately on non-zero, skipping the `RC=$?`/`cat $FIND_ERR` block
+  # entirely and the `trap` would scrub the stderr. The `if !` form
+  # gates `set -e` so the diagnostic block runs on failure.
+  if ! MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
+      find-active --repo-root "$REPO_ROOT" 2>"$FIND_ERR")"; then
+    RC=$?
+    cat "$FIND_ERR" >&2
+    exit "$RC"
   fi
   if [ -z "$MACRO_PATH" ]; then
-    MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
-      find-macro --repo-root "$REPO_ROOT" --subtask-branch "$GIT_BRANCH" 2>"$FIND_ERR")"
-    RC=$?
-    if [ "$RC" -ne 0 ]; then
-      cat "$FIND_ERR" >&2; exit "$RC"
+    if ! MACRO_PATH="$(node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
+        find-macro --repo-root "$REPO_ROOT" --subtask-branch "$GIT_BRANCH" 2>"$FIND_ERR")"; then
+      RC=$?
+      cat "$FIND_ERR" >&2
+      exit "$RC"
     fi
   fi
 fi
@@ -73,7 +87,7 @@ if [ -z "$MACRO_PATH" ]; then
   exit 1
 fi
 MACRO_ID="$(basename "$MACRO_PATH" .md)"
-echo "→ Finalizing macro: $MACRO_ID"
+echo "→ Finalizing macro: $MACRO_ID (host=$DETECTED_HOST)"
 ```
 
 ---
@@ -84,7 +98,7 @@ echo "→ Finalizing macro: $MACRO_ID"
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
   bulk-subtask-status \
   --workflow-path "$MACRO_PATH" \
-  --host claude \
+  --host "$DETECTED_HOST" \
   --from-statuses pending,blocked,in_progress \
   --to-status deferred
 ```
@@ -105,6 +119,11 @@ if [ -z "$ENGINEER_PLUGIN_ROOT" ]; then
 fi
 node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" preflight --root "$ENGINEER_PLUGIN_ROOT" || exit 1
 
+# Child-archive failure counter (Codex P2 finding). The Node shim
+# writes the failure tally to this file; on >0 we abort BEFORE step 3
+# rather than mark the macro terminal while children are still live.
+FAILURES_FILE="${TMPDIR:-/tmp}/orchestrator-finalize-failures-$$.cnt"
+trap 'rm -f "$FIND_ERR" "$FAILURES_FILE"' EXIT
 ENG_WORKFLOW_DIR="$REPO_ROOT/.claude/agentic-engineer/workflows"
 if [ -d "$ENG_WORKFLOW_DIR" ]; then
   # Enumerate engineer workflow files. For each, read frontmatter via
@@ -112,14 +131,17 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
   # parse the frontmatter robustly (engineer state.mjs read prints JSON).
   env MACRO_ID="$MACRO_ID" REPO_ROOT="$REPO_ROOT" ENG_WORKFLOW_DIR="$ENG_WORKFLOW_DIR" \
     ENGINEER_PLUGIN_ROOT="$ENGINEER_PLUGIN_ROOT" \
+    DETECTED_HOST="$DETECTED_HOST" \
+    FAILURES_FILE="$FAILURES_FILE" \
     node -e '
       const fs = require("fs/promises");
       const path = require("path");
       const { execFile } = require("child_process");
       const { promisify } = require("util");
       const execFileAsync = promisify(execFile);
-      const { MACRO_ID, REPO_ROOT, ENG_WORKFLOW_DIR, ENGINEER_PLUGIN_ROOT } = process.env;
+      const { MACRO_ID, REPO_ROOT, ENG_WORKFLOW_DIR, ENGINEER_PLUGIN_ROOT, DETECTED_HOST, FAILURES_FILE } = process.env;
       const ENG_STATE = path.join(ENGINEER_PLUGIN_ROOT, "scripts/state.mjs");
+      let failures = 0;
       (async () => {
         let entries;
         try { entries = await fs.readdir(ENG_WORKFLOW_DIR); }
@@ -196,7 +218,7 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
               [
                 ENG_STATE, "stop-archive",
                 "--workflow-path", childPath,
-                "--host", "claude",
+                "--host", DETECTED_HOST,
                 "--repo-root", REPO_ROOT,
                 "--head-sha", branchHead,
                 "--head-subject", branchSubject,
@@ -206,6 +228,7 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
             envelope = JSON.parse(r.stdout.trim());
           } catch (err) {
             process.stderr.write(`  ! engineer stop-archive failed for ${name}: ${err.message}\n`);
+            failures += 1;
             continue;
           }
 
@@ -229,7 +252,7 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
               [
                 ENG_STATE, "detach-archive",
                 "--workflow-path", childPath,
-                "--host", "claude",
+                "--host", DETECTED_HOST,
                 "--repo-root", REPO_ROOT,
               ],
               { encoding: "utf8" },
@@ -239,13 +262,36 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
               process.stdout.write(`  ✓ mid-flight child detached: ${path.basename(childPath)} → ${env.to}\n`);
             } else {
               process.stderr.write(`  ! detach-archive no-op for ${path.basename(childPath)}: ${env.reason}\n`);
+              failures += 1;
             }
           } catch (err) {
             process.stderr.write(`  ! detach-archive threw for ${path.basename(childPath)}: ${err.message}\n`);
+            failures += 1;
           }
         }
-      })().catch((err) => { process.stderr.write(`  ! finalize step 2 error: ${err.message}\n`); process.exit(1); });
+      })()
+        .catch((err) => { process.stderr.write(`  ! finalize step 2 error: ${err.message}\n`); failures += 1; })
+        .finally(async () => {
+          // Persist tally so the outer shell can decide whether to abort
+          // before step 3 (Codex P2 finding).
+          await fs.writeFile(FAILURES_FILE, String(failures));
+        });
     '
+fi
+
+# Codex P2 finding (Phase 6 resolve): refuse to mark the macro terminal
+# while any child failed to archive. The child remains in
+# `.claude/agentic-engineer/workflows`, so without this gate the macro's
+# A4 keeps failing on every Stop while the command falsely reports the
+# macro as finalized. Re-run /orchestrator:finalize after manually
+# reconciling the offending child.
+if [ -f "$FAILURES_FILE" ]; then
+  FINALIZE_FAILURES="$(cat "$FAILURES_FILE")"
+  if [ "${FINALIZE_FAILURES:-0}" -gt 0 ]; then
+    echo "✗ $FINALIZE_FAILURES engineer child(ren) failed to archive in step 2 — refusing to set macro terminal markers." >&2
+    echo "  Reconcile manually (inspect the engineer workflow file(s), fix the underlying issue, re-run /orchestrator:finalize)." >&2
+    exit 1
+  fi
 fi
 ```
 
@@ -257,7 +303,7 @@ fi
 node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" \
   set-terminal \
   --workflow-path "$MACRO_PATH" \
-  --host claude \
+  --host "$DETECTED_HOST" \
   --terminal-phase finalized \
   --terminal-marker true \
   --next-action archive
