@@ -2073,6 +2073,338 @@ export async function setPlan({
 }
 
 // -----------------------------------------------------------------------------
+// Public API: updateSubtask (ADR-0019 PR-C0)
+//
+// Atomic single-subtask mutation. Updates one `plan.subtasks[i]` entry
+// by `id` without rewriting the entire plan. Required by PR-C
+// (engineer-local parent-writeback helper) and PR-D
+// (/orchestrator:next + /orchestrator:done) — those callers
+// transition exactly one subtask's status / records the dispatched
+// engineer_workflow_id / writes back commit + closed_at on completion.
+//
+// Side effects applied atomically with the primary mutation:
+//   - Unblock pass (per ADR-0019 §4 step 6): any subtask with
+//     `status: 'blocked'` whose `blocked_by` predecessors are now all
+//     `completed` transitions to `'pending'`.
+//   - Auto-terminal pass (per ADR-0019 §4 step 7): if this update
+//     caused ALL subtasks to reach a terminal status
+//     (`completed | deferred | abandoned`) AND the macro's
+//     `terminal_marker` is not already set, also write
+//     `terminal_marker: true` AND `current_phase: 'commit-complete'`.
+//     This is the happy-path auto-promotion that lets the macro
+//     stop-archive A1/A2 gates pass without an explicit /finalize call.
+//
+// Immutable fields (rejected if supplied): `id`, `verb`, `branch`,
+// `blocked_by`, `profile`, `topic`, `label`. These are plan-time
+// decisions; changing them requires `setPlan` (full re-plan).
+
+const TERMINAL_SUBTASK_STATUSES = new Set(['completed', 'deferred', 'abandoned']);
+
+const UPDATE_SUBTASK_ALLOWED_KEYS = new Set([
+  'workflowPath', 'subtaskId', 'status', 'engineerWorkflowId',
+  'commit', 'prUrl', 'closedAt', 'host', 'event', 'now',
+]);
+
+export async function updateSubtask(opts) {
+  if (typeof opts !== 'object' || opts === null) {
+    throw new Error('updateSubtask: opts must be an object');
+  }
+  // ADR-0019 PR-C0 — reject unknown keys at the API boundary so an
+  // imported caller spreading a subtask object can't silently bypass
+  // the immutable-field contract. Immutable plan-time fields
+  // (id, verb, branch, blocked_by, profile, topic, label) must go
+  // through setPlan, not updateSubtask.
+  for (const key of Object.keys(opts)) {
+    if (!UPDATE_SUBTASK_ALLOWED_KEYS.has(key)) {
+      throw new Error(
+        `updateSubtask: unknown option ${JSON.stringify(key)}. ` +
+          `Allowed: ${[...UPDATE_SUBTASK_ALLOWED_KEYS].join(', ')}. ` +
+          `Immutable plan-time fields (id, verb, branch, blocked_by, profile, topic, label) ` +
+          `must be changed via setPlan (full re-plan).`,
+      );
+    }
+  }
+  const {
+    workflowPath,
+    subtaskId,
+    status,
+    engineerWorkflowId,
+    commit,
+    prUrl,
+    closedAt,
+    host,
+    event = 'updated',
+    now = new Date(),
+  } = opts;
+  validateHost(host);
+  validateHookEvent(event);
+  if (typeof subtaskId !== 'string' || subtaskId.length === 0) {
+    throw new Error('updateSubtask: subtaskId must be a non-empty string');
+  }
+
+  // Build the update payload — only the mutation-allowed fields.
+  // `undefined` means "leave existing value untouched"; explicit
+  // `null` is rejected as ambiguous (callers should omit instead).
+  const payload = {};
+  const reject = (name, v) => {
+    if (v === null) {
+      throw new Error(
+        `updateSubtask: ${name} must not be null (omit the argument to leave existing value untouched)`,
+      );
+    }
+  };
+  reject('status', status);
+  reject('engineerWorkflowId', engineerWorkflowId);
+  reject('commit', commit);
+  reject('prUrl', prUrl);
+  reject('closedAt', closedAt);
+  if (status !== undefined) {
+    if (!VALID_SUBTASK_STATUSES.has(status)) {
+      throw new Error(
+        `updateSubtask: status invalid: ${JSON.stringify(status)}. ` +
+          `Must be one of ${[...VALID_SUBTASK_STATUSES].join(', ')}.`,
+      );
+    }
+    // ADR-0019 §4 — terminal-partial statuses (deferred, abandoned)
+    // are the /orchestrator:finalize and /orchestrator:abort decision
+    // domains; they MUST come through setPlan (full re-plan), not
+    // single-subtask update. Allowing them here would let a caller
+    // bypass /finalize-/abort terminal_marker + current_phase labels
+    // (the auto-terminal pass below would mislabel the macro as
+    // commit-complete instead of finalized/aborted).
+    if (status === 'deferred' || status === 'abandoned') {
+      throw new Error(
+        `updateSubtask: cannot set status to ${JSON.stringify(status)} ` +
+          `via single-subtask update — those terminal-partial states ` +
+          `are owned by /orchestrator:finalize / /orchestrator:abort ` +
+          `(via setPlan), so terminal_marker + current_phase land on ` +
+          `the correct finalize/abort labels rather than the happy-path ` +
+          `'commit-complete'.`,
+      );
+    }
+    payload.status = status;
+  }
+  if (engineerWorkflowId !== undefined) {
+    if (typeof engineerWorkflowId !== 'string' || engineerWorkflowId.length === 0) {
+      throw new Error('updateSubtask: engineerWorkflowId must be a non-empty string');
+    }
+    payload.engineer_workflow_id = engineerWorkflowId;
+  }
+  if (commit !== undefined) {
+    if (typeof commit !== 'string' || commit.length === 0) {
+      throw new Error('updateSubtask: commit must be a non-empty string');
+    }
+    payload.commit = commit;
+  }
+  if (prUrl !== undefined) {
+    if (typeof prUrl !== 'string' || prUrl.length === 0) {
+      throw new Error('updateSubtask: prUrl must be a non-empty string');
+    }
+    payload.pr_url = prUrl;
+  }
+  if (closedAt !== undefined) {
+    if (typeof closedAt !== 'string' || closedAt.length === 0) {
+      throw new Error('updateSubtask: closedAt must be a non-empty string');
+    }
+    payload.closed_at = closedAt;
+  }
+  if (Object.keys(payload).length === 0) {
+    throw new Error(
+      'updateSubtask: at least one mutable field must be supplied (status / engineerWorkflowId / commit / prUrl / closedAt)',
+    );
+  }
+
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    ensureMutable(frontmatter);
+
+    const subtasks = frontmatter.plan?.subtasks;
+    if (!Array.isArray(subtasks)) {
+      throw new Error(
+        'updateSubtask: workflow has no plan.subtasks[]; run /orchestrator:plan first',
+      );
+    }
+    const targetIdx = subtasks.findIndex((s) => s.id === subtaskId);
+    if (targetIdx === -1) {
+      throw new Error(
+        `updateSubtask: subtask id ${JSON.stringify(subtaskId)} not found in plan.subtasks[]`,
+      );
+    }
+
+    const nowIso = isoUtc(now);
+    const current = subtasks[targetIdx];
+
+    // ADR-0019 §4 precondition — terminal-partial states (deferred /
+    // abandoned) are ABSORBING. Once `/orchestrator:finalize` or
+    // `/orchestrator:abort` sets a subtask to deferred/abandoned, no
+    // single-subtask update can transition it back — that would
+    // resurrect a subtask whose terminal decision the user already
+    // recorded, breaking the all-subtasks-terminal lifecycle invariant
+    // §5 macro-archive depends on. Any update (completion writeback
+    // OR non-completion mutation such as a delayed /next setting
+    // status=in_progress + engineerWorkflowId) is skipped with a
+    // diagnostic. Only setPlan (full re-plan) can change a
+    // terminal-partial subtask's shape.
+    if (current.status === 'deferred' || current.status === 'abandoned') {
+      return {
+        frontmatter,
+        workflowPath,
+        updatedSubtask: current,
+        autoTerminal: false,
+        skipped: true,
+        skipReason: `subtask ${JSON.stringify(subtaskId)} already terminal as ${current.status}; ` +
+          `single-subtask update ignored to preserve /finalize or /abort decision ` +
+          `(ADR-0019 §4 precondition — terminal-partial states are absorbing). ` +
+          `Use setPlan if a full re-plan is intended.`,
+      };
+    }
+
+    // ADR-0019 §4 — `completed` is absorbing for status transitions.
+    // A delayed /next post-dispatch writeback or any caller cannot
+    // resurrect a subtask after engineer Stop or /done marked it
+    // completed; that would leave terminal_marker / current_phase set
+    // from the prior auto-terminal pass while plan.subtasks[] is no
+    // longer all-terminal, breaking the macro stop-archive gates.
+    // Idempotent metadata updates from the same owner (e.g., adding
+    // pr_url after the initial commit writeback) are still allowed —
+    // those don't touch status.
+    if (current.status === 'completed' && 'status' in payload && payload.status !== 'completed') {
+      return {
+        frontmatter,
+        workflowPath,
+        updatedSubtask: current,
+        autoTerminal: false,
+        skipped: true,
+        skipReason: `subtask ${JSON.stringify(subtaskId)} already completed; ` +
+          `status downgrade to ${JSON.stringify(payload.status)} ignored — ` +
+          `'completed' is absorbing for status transitions (ADR-0019 §4). ` +
+          `Use setPlan if a full re-plan is intended.`,
+      };
+    }
+
+    // ADR-0019 §4 ownership check — once an engineer_workflow_id is
+    // recorded for a subtask, completion-side writebacks (status →
+    // completed, commit, closed_at) MUST carry the matching owner id.
+    // Stale or misrouted writebacks (missing id, or different id) are
+    // rejected so the original child's writeback path stays the
+    // single source of truth. Non-completion updates (e.g., reading
+    // a status that already reflects the child's progress) don't
+    // require the id.
+    const hasCompletionFields =
+      payload.status === 'completed'
+      || 'commit' in payload
+      || 'closed_at' in payload
+      || 'pr_url' in payload;
+
+    // ADR-0019 §4 — every completion writeback (status=completed,
+    // commit, closed_at, pr_url) MUST supply engineer_workflow_id.
+    // This covers BOTH the first-write case (current.engineer_workflow_id
+    // absent — establishes owner) AND the subsequent-write case
+    // (current.engineer_workflow_id present — must match). Without
+    // this gate, a caller could write completion artifacts to an
+    // unowned subtask, then a later misrouted writeback could
+    // overwrite them with no single-writer enforcement available.
+    if (hasCompletionFields && typeof payload.engineer_workflow_id !== 'string') {
+      throw new Error(
+        `updateSubtask: completion writeback (status=completed / commit / closed_at / pr_url) ` +
+          `MUST supply --engineer-workflow-id so the subtask binds to its child workflow. ` +
+          `Without an owner id, later writebacks cannot be verified against stale dispatches.`,
+      );
+    }
+
+    if (typeof current.engineer_workflow_id === 'string' && current.engineer_workflow_id.length > 0) {
+      if (hasCompletionFields) {
+        // engineer_workflow_id must match (presence already guaranteed
+        // by the gate above).
+        if (payload.engineer_workflow_id !== current.engineer_workflow_id) {
+          throw new Error(
+            `updateSubtask: engineer_workflow_id mismatch on subtask ${JSON.stringify(subtaskId)}. ` +
+              `Existing: ${JSON.stringify(current.engineer_workflow_id)}, ` +
+              `incoming: ${JSON.stringify(payload.engineer_workflow_id)}. ` +
+              `Ownership is single-writer once set; archive or reconcile the stale child workflow first.`,
+          );
+        }
+      } else if (
+        typeof payload.engineer_workflow_id === 'string'
+        && payload.engineer_workflow_id !== current.engineer_workflow_id
+      ) {
+        // Non-completion path also rejects mismatched ids (so a
+        // re-attach via /next can't accidentally overwrite the
+        // owner record either).
+        throw new Error(
+          `updateSubtask: engineer_workflow_id mismatch on subtask ${JSON.stringify(subtaskId)}. ` +
+            `Existing: ${JSON.stringify(current.engineer_workflow_id)}, ` +
+            `incoming: ${JSON.stringify(payload.engineer_workflow_id)}. ` +
+            `Ownership is single-writer once set; archive or reconcile the stale child workflow first.`,
+        );
+      }
+    }
+
+    // Apply primary mutation.
+    const updated = { ...current, ...payload };
+    subtasks[targetIdx] = updated;
+
+    // Unblock pass — any blocked subtask whose blocked_by predecessors
+    // are now all completed transitions to pending.
+    const completedIds = new Set(
+      subtasks.filter((s) => s.status === 'completed').map((s) => s.id),
+    );
+    for (let i = 0; i < subtasks.length; i++) {
+      const s = subtasks[i];
+      if (s.status !== 'blocked') continue;
+      if (!Array.isArray(s.blocked_by) || s.blocked_by.length === 0) continue;
+      const allComplete = s.blocked_by.every((depId) => completedIds.has(depId));
+      if (allComplete) {
+        subtasks[i] = { ...s, status: 'pending' };
+      }
+    }
+
+    // Auto-terminal pass — if all subtasks are now terminal AND macro
+    // has not already been marked terminal (by /finalize or /abort),
+    // auto-promote macro to commit-complete. Track whether this
+    // invocation actually performed the promotion so callers can
+    // distinguish a fresh happy-path auto-terminal from a state
+    // that was already terminal-marked by an earlier /finalize.
+    const allTerminal = subtasks.every((s) => TERMINAL_SUBTASK_STATUSES.has(s.status));
+    const autoTerminalSetThisCall = allTerminal && frontmatter.terminal_marker !== true;
+    if (autoTerminalSetThisCall) {
+      frontmatter.terminal_marker = true;
+      frontmatter.current_phase = 'commit-complete';
+    }
+
+    // Re-validate the full plan against schema invariants (catches
+    // any caller violations that slipped past payload guards).
+    validateSubtasks(subtasks, frontmatter.schema, frontmatter.git_baseline?.branch ?? null);
+
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event },
+    ];
+
+    const noteHeading = `### subtask-update ${JSON.stringify(subtaskId)} @ ${nowIso}\n\n`;
+    const noteSummary =
+      `Fields updated: ${Object.keys(payload).join(', ')}` +
+      (autoTerminalSetThisCall ? '. Auto-terminal: all subtasks terminal; terminal_marker + current_phase set.' : '.') +
+      '\n\n';
+    const newBody = `${body}${noteHeading}${noteSummary}`;
+
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, newBody),
+      { lockPath, token },
+    );
+    return {
+      frontmatter,
+      workflowPath,
+      updatedSubtask: subtasks[targetIdx],
+      autoTerminal: autoTerminalSetThisCall,
+    };
+  });
+}
+
+// -----------------------------------------------------------------------------
 // CLI
 
 function cliParseFlags(argv) {
@@ -2168,6 +2500,20 @@ function cliPrintHelp() {
       '    status ∈ {pending, blocked, in_progress, completed, deferred, abandoned}',
       '    branch must pass git ref-format (ADR-0019 §1).',
       '    Note: 1.0 legacy files are READ-only — mutations refused with diagnostic.',
+      '',
+      '  subtask-update --workflow-path <path> --host claude|codex',
+      '                 --subtask-id <id>',
+      '                 [--status <status>] [--engineer-workflow-id <id>]',
+      '                 [--commit <sha>] [--pr-url <url>] [--closed-at <iso>]',
+      '                 [--event updated|resumed]',
+      '    ADR-0019 PR-C0 — atomic single-subtask mutation. Updates one',
+      '    plan.subtasks[i] entry by id without rewriting the whole plan.',
+      '    At least one mutable field must be supplied. Immutable fields',
+      '    (id / verb / branch / blocked_by / profile / topic / label) are rejected;',
+      '    use plan-set for full re-planning.',
+      '    Side effects (atomic): unblock pass (§4 step 6) + auto-terminal pass',
+      '    (§4 step 7 — sets terminal_marker + current_phase when all subtasks',
+      '    are terminal). Prints JSON {workflowPath, updatedSubtask, autoTerminal}.',
       '',
       'Verbs: plan (orchestrator MVP).',
       'Hosts: claude, codex.',
@@ -2324,6 +2670,56 @@ async function cliMain(argv) {
           event: flags.event ?? 'updated',
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'subtask-update': {
+        cliRequire(flags, ['workflow-path', 'host', 'subtask-id']);
+        // ADR-0019 PR-C0 — surface forbidden mutations instead of
+        // silently dropping them. The API only accepts mutable fields
+        // (status / engineer-workflow-id / commit / pr-url / closed-at);
+        // any immutable-field flag is a caller bug worth flagging.
+        const IMMUTABLE_FLAGS = [
+          'id', 'verb', 'branch', 'blocked-by',
+          'profile', 'topic', 'label',
+        ];
+        for (const f of IMMUTABLE_FLAGS) {
+          if (f in flags) {
+            throw new Error(
+              `--${f} cannot be set via subtask-update (immutable plan-time field). ` +
+                `Use plan-set for full re-planning if a plan-time field must change.`,
+            );
+          }
+        }
+        const result = await updateSubtask({
+          workflowPath: flags['workflow-path'],
+          subtaskId: flags['subtask-id'],
+          host: flags.host,
+          status: flags.status,
+          engineerWorkflowId: flags['engineer-workflow-id'],
+          commit: flags.commit,
+          prUrl: flags['pr-url'],
+          closedAt: flags['closed-at'],
+          event: flags.event ?? 'updated',
+        });
+        // Emit JSON envelope so callers (PR-C engineer parent-writeback
+        // helper, PR-D /next + /done runbooks) can parse the result
+        // including the auto-terminal signal AND the skip signal
+        // (deferred/abandoned precondition path returns skipped=true
+        // with skipReason).
+        const envelope = {
+          workflowPath: result.workflowPath,
+          updatedSubtask: result.updatedSubtask,
+          autoTerminal: result.autoTerminal,
+        };
+        if (result.skipped) {
+          envelope.skipped = true;
+          envelope.skipReason = result.skipReason;
+          // Also surface the diagnostic on stderr so shell callers
+          // that don't parse JSON still see the suppression.
+          process.stderr.write(`state.mjs subtask-update: ${result.skipReason}\n`);
+        }
+        process.stdout.write(`${JSON.stringify(envelope)}\n`);
         return 0;
       }
 
