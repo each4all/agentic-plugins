@@ -4,6 +4,18 @@
 
 Accepted (2026-05-06; merged via [PR #40](https://github.com/each4all/agentic-plugins/pull/40), main commit `27fb308`). Adoption of this ADR records the *roadmap* — sub-decision implementations follow per-trigger acceptance criteria defined in §"Decision" and ship in their own PRs when triggers fire.
 
+> **Amendment 2026-05-11 (ADR-0020 cross-reference)**: sub-decision 1
+> (`/engineer:resume`) and sub-decision 2 (`/engineer:checkpoint`)
+> surfaces are compatible with
+> [ADR-0020](0020-engineer-integrated-workflow-umbrella.md)'s
+> `/engineer:start` lifecycle macro command. `/engineer:start` Phase 0
+> auto-resume reuses the same active-workflow-on-branch discovery as
+> the six canonical-verb commands (per ADR-0018 §sub-2 branch=workflow
+> invariant); mid-workflow `/engineer:checkpoint` invocations append
+> `latest_checkpoint` to the active `/engineer:start` workflow without
+> modification. Neither sub-decision requires further work for
+> ADR-0020 compatibility — see ADR-0020 §Sub-decision 4.
+
 ## Context
 
 [ADR-0011](0011-workflow-continuity-storage.md) intentionally deferred several

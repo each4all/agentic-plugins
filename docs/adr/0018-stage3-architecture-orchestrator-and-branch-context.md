@@ -4,6 +4,25 @@
 
 Accepted
 
+> **Amendment 2026-05-11 (ADR-0020 cascade)**: §"Consequences" /
+> "Neutral" paragraph titled "User operational pattern shifts" is
+> corrected by
+> [ADR-0020](0020-engineer-integrated-workflow-umbrella.md). The
+> original wording mapped omcc-dev `/start <feature>` entirely to
+> `/orchestrator:plan`. ADR-0020 splits the mapping by feature shape:
+> *single-deliverable* `/start` → `/engineer:start` (engineer-internal
+> lifecycle macro per ADR-0020 §Sub-decision 1); *multi-deliverable*
+> `/start` → `/orchestrator:plan` + `/orchestrator:next` +
+> `/orchestrator:done` + `/orchestrator:finalize` (the path described
+> in §sub-1 below). The user chooses the entry surface based on
+> feature shape; no automatic escalation between the two paths
+> (ADR-0020 §Sub-decision 6, honoring ADR-0019 §3 immutable parent-
+> linkage, §430-433 no retroactive linking, and §841-846 orchestrator
+> does not own verb chains). §sub-1's "Single Responsibility —
+> orchestration *only*" framing remains operative: orchestrator owns
+> multi-deliverable orchestration, not the single-deliverable
+> lifecycle.
+
 ## Context
 
 Stage 2.5+ ADR-0017 5 sub-decisions are all Implemented (PR2 #46 / PR3
