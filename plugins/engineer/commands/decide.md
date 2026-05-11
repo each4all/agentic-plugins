@@ -50,21 +50,34 @@ rm -f "$FIND_ERR"
   GIT_BRANCH="$(git branch --show-current)"
   GIT_HEAD="$(git rev-parse HEAD)"
   STATUS_DIGEST="$(git status --porcelain=v1 -z | shasum -a 256 | cut -d' ' -f1)"
+  # ADR-0019 §1+§3 — when /orchestrator:next dispatches this command,
+  # it sets AGENTIC_PARENT_WORKFLOW + AGENTIC_ORIGINATING_SUBTASK so
+  # the create-time bootstrap records the immutable parent linkage.
+  # Both must be set together (or both absent for direct invocation).
+  PARENT_ARGS=()
+  if [ -n "${AGENTIC_PARENT_WORKFLOW:-}" ] || [ -n "${AGENTIC_ORIGINATING_SUBTASK:-}" ]; then
+    if [ -z "${AGENTIC_PARENT_WORKFLOW:-}" ] || [ -z "${AGENTIC_ORIGINATING_SUBTASK:-}" ]; then
+      echo "✗ AGENTIC_PARENT_WORKFLOW and AGENTIC_ORIGINATING_SUBTASK must be set together (ADR-0019 §3 immutable parent-child linkage). This usually indicates a dispatcher bug — /orchestrator:next must export both env vars or neither. If you set them manually, set both or neither." >&2
+      exit 1
+    fi
+    PARENT_ARGS=(--parent-workflow "$AGENTIC_PARENT_WORKFLOW" --originating-subtask "$AGENTIC_ORIGINATING_SUBTASK")
+  fi
   ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
     --repo-root "$REPO_ROOT" \
-    --verb decide --host claude --persona engineer \
+    --verb decide --host "${AGENTIC_HOST:-claude}" --persona engineer \
     --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
     --status-digest "$STATUS_DIGEST" \
-    --original-request "<one-line scrubbed user request>" \
+    --original-request "${AGENTIC_TOPIC:-<one-line scrubbed user request>}" \
     --current-phase phase-0-bootstrap \
-    --next-action "Run decide skill")"
+    --next-action "Run decide skill" \
+    "${PARENT_ARGS[@]}")"
   ```
 
 - Non-empty → append-on-resume:
 
   ```bash
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
-    --workflow-path "$ACTIVE" --host claude --verb decide \
+    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb decide \
     --phase-label "Phase 0: Resume into decide" \
     --phase-note "Resumed from prior verb." \
     --current-phase phase-0-resume \
@@ -131,7 +144,7 @@ NOTE="### Ensemble launched: decide at <iso-utc>
 "
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
-  --workflow-path "$ACTIVE" --host claude \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase-label "Phase 1: Decide (synthesized)" \
   --phase-note "$NOTE" \
   --current-phase phase-2-presented \
@@ -140,7 +153,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 
 # ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
-  --workflow-path "$ACTIVE" --host claude \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase decide --ensemble-type brainstorm --run-id "$RUN_ID" \
   --verdict "$VERDICT" --summary "$SUMMARY" \
   --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -150,7 +163,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # Stop hook can archive once the user commits and closes the session
 # (HEAD-moved gate enforces real progress before archive triggers).
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
-  --workflow-path "$ACTIVE" --host claude \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
   --terminal-marker true \
   --next-action "Compose the artifact for the chosen direction" \

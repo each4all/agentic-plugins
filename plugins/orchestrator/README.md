@@ -4,7 +4,7 @@ Cross-host macro orchestration capability for Claude Code and Codex CLI. **L2 ca
 
 ## Status
 
-`v0.1.0` — **plan-only MVP**. Ships `/orchestrator:plan` (macro plan + Plan-verify Codex ensemble). `/orchestrator:next` and `/orchestrator:done` are deferred to follow-up PRs alongside the cross-plugin invocation contract (ADR-0018 §sub-decision-1 follow-up ADR).
+Ships `/orchestrator:plan` (macro plan + Plan-verify Codex ensemble), `/orchestrator:next` (same-host dispatch into engineer), `/orchestrator:done` (manual completion backup for engineer Stop-hook auto-writeback). Schema `'1.1'` (post-ADR-0019 PR-B). The cross-plugin invocation contract is [ADR-0019](../../docs/adr/0019-cross-plugin-invocation-contract.md). `/orchestrator:finalize`, `/orchestrator:abort`, and the macro Stop auto-archive A1–A4 gate are pending PR-E. The cross-host `--peer` dispatch path is pending PR-F.
 
 ## What it is
 
@@ -17,14 +17,15 @@ Cross-host macro orchestration capability for Claude Code and Codex CLI. **L2 ca
 | L3 persona | `plugins/engineer` | Single-deliverable cognitive verb chain |
 | L4 profile | `engineer:<sub-discipline>` | Discipline-specific context (backend, frontend, …) |
 
-## Commands (plan-only MVP)
+## Commands
 
 | Command | Status | Description |
 |---------|--------|-------------|
 | `/orchestrator:plan <feature>` | ✅ shipping | Build a macro plan: produce `plan.subtasks[]` proposals via Plan-verify ensemble (Claude + Codex), persist to `<repo>/.claude/agentic-orchestrator/workflows/<workflow_id>.md`, and present for approval. |
-| `/orchestrator:next` | ⏳ follow-up PR | Pick the next unblocked subtask and dispatch its verb chain into `plugins/engineer`. Requires the cross-plugin invocation contract (ADR-0018 §sub-1 follow-up ADR). |
-| `/orchestrator:done <subtask-id>` | ⏳ follow-up PR | Mark a subtask completed; record the engineer workflow id, commit SHA, PR URL, and close timestamp. |
-| `/orchestrator:resume`, `/orchestrator:checkpoint`, `/orchestrator:peer-now` | ⏳ follow-up PR | Meta commands mirroring engineer's pattern. |
+| `/orchestrator:next [<subtask-id>] [--workflow=<macro-id>]` | ✅ shipping (same-host) | Dispatch the next ready subtask into `plugins/engineer`. Branch precondition + ownership check + parent-linkage env vars per ADR-0019 §1+§3. Cross-host `--peer` ships in PR-F. |
+| `/orchestrator:done <subtask-id> [--commit=<sha>] [--workflow=<macro-id>]` | ✅ shipping | Manually record subtask completion (idempotent backup for engineer Stop auto-writeback) per ADR-0019 §4. Required when the engineer session crashed before terminal commit OR for cross-host reconciliation. |
+| `/orchestrator:finalize`, `/orchestrator:abort` | ⏳ PR-E | Close the macro plan with deferred / abandoned subtask statuses + macro `terminal_marker`. |
+| `/orchestrator:resume`, `/orchestrator:checkpoint`, `/orchestrator:peer-now`, `/orchestrator:audit` | ⏳ follow-up PR | Meta commands mirroring engineer's pattern. |
 
 ## Workflow file shape
 
@@ -38,7 +39,7 @@ Claude Code hooks declared in `hooks/hooks.json`:
 
 - `SessionStart` (matcher `compact`): re-inject the active workflow snapshot
 - `PreCompact`: write a snapshot before compaction
-- `Stop`: write a `stop` snapshot — **snapshot-only in this MVP** (auto-archive A1–A4 gate is deferred to a follow-up PR alongside `/orchestrator:done` and the macro-phase terminal_marker mapping)
+- `Stop`: write a `stop` snapshot — **snapshot-only**; the macro-phase auto-archive A1–A4 gate is pending PR-E (it requires the macro `terminal_marker` mapping from `/orchestrator:finalize` / `/abort` + the all-subtasks-terminal pass)
 
 Codex CLI 0.128.0 has **no plugin-local automatic hook packaging verified**, so `hooks/hooks.json` declares only Claude hooks; the Codex-side `Stop` script under `adapters/codex/hooks/stop.mjs` ships as a manual helper that may be wired by the user when a future Codex hook surface is verified for plugin-local registration.
 
@@ -63,7 +64,9 @@ claude /plugin install orchestrator@agentic-plugins
 codex plugin install --marketplace agentic-plugins orchestrator
 ```
 
-The plan-only MVP requires `companions` (L1) for the Plan-verify Codex ensemble. `engineer` is **not** required for this MVP — it becomes a runtime dependency only when `/orchestrator:next` lands in a follow-up PR.
+Required peers:
+- `companions` (L1) — for the Plan-verify Codex ensemble inside `/orchestrator:plan`.
+- `engineer` (L3) — runtime peer for `/orchestrator:next` dispatch (the runbook spawns engineer's `state.mjs` CLI). Discovery is automatic (env override → Claude cache → Codex cache → monorepo sibling) per ADR-0019 §1; install engineer before `/orchestrator:next` invocations or set `AGENTIC_ENGINEER_ROOT=<path>` to override.
 
 ## License
 

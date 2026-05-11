@@ -41,8 +41,12 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
 
 const VERBS = ['plan'];
 const ALIAS_VERBS = [];
+// ADR-0019 PR-D — orchestrator dispatch commands. `next` and `done`
+// are slash-command runbooks (same-host dispatch + manual backup);
+// they are NOT 6-verb persona commands (those live in engineer).
+const DISPATCH_COMMANDS = ['next', 'done'];
 const META_COMMANDS = []; // resume / checkpoint / peer-now defer to follow-up PRs
-const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...META_COMMANDS];
+const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...DISPATCH_COMMANDS, ...META_COMMANDS];
 const SHARED_REFS = ['ensemble-protocol.md', 'presentation-protocol.md'];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs'];
 const CLAUDE_HOOKS = ['_shared.mjs', 'session-start.mjs', 'pre-compact.mjs', 'stop.mjs'];
@@ -185,13 +189,19 @@ describe('plugins/orchestrator hooks/hooks.json shape', () => {
 });
 
 describe('plugins/orchestrator README + CHANGELOG', () => {
-  it('README exists and mentions plan-only MVP scope', async () => {
+  it('README exists and mentions ADR-0019 PR-D dispatch + manual backup commands', async () => {
     const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf-8');
-    ok(readme.includes('plan-only MVP'), 'README documents plan-only scope');
+    // ADR-0019 PR-D — orchestrator gains /next + /done. plan-only MVP
+    // language was retired with the PR-D landing; the surviving
+    // forward-looking marker is PR-E (finalize/abort + macro stop-archive).
+    ok(readme.includes('/orchestrator:next'), 'README documents /orchestrator:next');
+    ok(readme.includes('/orchestrator:done'), 'README documents /orchestrator:done');
+    ok(/PR-E|finalize|abort/i.test(readme), 'README documents PR-E deferred scope');
     // ADR-0019 PR-B — orchestrator schema bumped to 1.1 (1.0 legacy read-only).
     ok(/schema:?\s*['"]?1\.1['"]?/.test(readme), 'README documents schema 1.1');
     ok(readme.includes('macro-<verb>-<iso>-<rand>') || readme.includes('macro-&lt;verb&gt;'), 'README documents workflow_id format');
-    // Stop snapshot-only divergence from engineer must be explicit
+    // Stop snapshot-only divergence from engineer must be explicit (macro
+    // auto-archive A1–A4 is PR-E scope; until then Stop remains snapshot-only).
     ok(/snapshot-only/i.test(readme), 'README documents Stop snapshot-only');
     // Codex hook scope wording must be explicit (not stale)
     ok(/no plugin-local automatic hook packaging/i.test(readme),
@@ -320,8 +330,11 @@ describe('plugins/orchestrator commands/', () => {
     });
   }
 
-  it('does NOT ship deferred commands (next, done, resume, checkpoint, peer-now, audit)', async () => {
-    for (const banned of ['next', 'done', 'resume', 'checkpoint', 'peer-now', 'audit']) {
+  it('does NOT ship deferred commands (resume, checkpoint, peer-now, audit, finalize, abort)', async () => {
+    // ADR-0019 PR-D ships next + done (dispatch + manual backup). PR-E
+    // will add finalize / abort. resume / checkpoint / peer-now / audit
+    // remain deferred until a concrete need surfaces.
+    for (const banned of ['resume', 'checkpoint', 'peer-now', 'audit', 'finalize', 'abort']) {
       const p = resolve(PLUGIN_ROOT, 'commands', `${banned}.md`);
       let exists = true;
       try {
@@ -329,7 +342,7 @@ describe('plugins/orchestrator commands/', () => {
       } catch (err) {
         if (err.code === 'ENOENT') exists = false;
       }
-      strictEqual(exists, false, `${banned}.md absent in plan-only MVP`);
+      strictEqual(exists, false, `${banned}.md absent in current orchestrator scope`);
     }
   });
 });
@@ -349,6 +362,8 @@ describe('plugins/orchestrator stale-token audit', () => {
     'README.md',
     'CHANGELOG.md',
     'commands/plan.md',
+    'commands/next.md',     // ADR-0019 PR-D
+    'commands/done.md',     // ADR-0019 PR-D
     'skills/plan/SKILL.md',
     ...SHARED_REFS.map((ref) => `skills/_shared/references/${ref}`),
     'adapters/codex/hooks/README.md',

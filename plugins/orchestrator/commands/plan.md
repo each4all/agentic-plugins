@@ -82,7 +82,7 @@ Follow the plan skill's command-invoked mode at `$CLAUDE_PLUGIN_ROOT/skills/plan
   blocked_by: [<predecessor ids>]   # empty list when no dependencies
   status: pending | blocked          # initial: pending if blocked_by==[], else blocked
   # engineer_workflow_id / commit / pr_url / closed_at omitted at plan-time
-  # — populated by future /orchestrator:next + /orchestrator:done (follow-up PR)
+  # — populated by /orchestrator:next + /orchestrator:done (ADR-0019 PR-D)
 ```
 
 Validation runs at the `state.mjs plan-set` boundary (id non-empty + unique, blocked_by → existing id only, no self-cycle, status enum, verb in canonical 6-verb whitelist, branch passes git ref-format gate per ADR-0019 §1: no spaces, no leading `.`, no `..`, no `~ ^ : ? * [ \\`, no trailing `/` or `.lock`, branches unique across subtasks, no parent/child path-prefix relationship between any two subtask branches — e.g., `feat/api` and `feat/api/db` cannot coexist; pick siblings like `feat/api/db` + `feat/api/auth` instead).
@@ -150,10 +150,11 @@ NOTE="### Ensemble launched: plan at <iso-utc>
 
 ### Recommended next step
 
-When /orchestrator:next ships (follow-up PR), invoke it on the first
-subtask with status=pending and empty blocked_by to dispatch its
-verb chain into engineer. Until then, drive each subtask manually
-through engineer (e.g. /engineer:investigate / :compose).
+Invoke `/orchestrator:next` to dispatch the first subtask with
+status=pending and empty blocked_by into engineer (ADR-0019 §1
+same-host dispatch). A subtask becomes unblocked when all its
+blocked_by predecessors reach status=completed; drive subtasks in
+dependency order.
 "
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
@@ -186,8 +187,8 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 
 After user approval of the synthesized plan, output the macro plan and one of:
 
-- `✓ Plan complete.` + path to the workflow file. Recommend driving the first unblocked subtask (lowest-id entry with `status=pending` and empty `blocked_by`, if any) through engineer manually (e.g. `/engineer:investigate` / `:compose`) until `/orchestrator:next` ships in a follow-up PR. A subtask becomes unblocked when all its `blocked_by` predecessors reach `status=completed` — drive subtasks in dependency order.
-- `✓ Plan complete (LOCAL-ONLY).` + note that Codex peer was unavailable; recommend re-running once `/codex:setup` is configured. Same dependency-order driving guidance applies until `/orchestrator:next` ships.
+- `✓ Plan complete.` + path to the workflow file. Recommend invoking `/orchestrator:next` to dispatch the first unblocked subtask (lowest-id entry with `status=pending` and empty `blocked_by`) into engineer. A subtask becomes unblocked when all its `blocked_by` predecessors reach `status=completed` — drive subtasks in dependency order.
+- `✓ Plan complete (LOCAL-ONLY).` + note that Codex peer was unavailable; recommend re-running once `/codex:setup` is configured. Same `/orchestrator:next` driving guidance applies.
 - `✓ Plan paused (CONFLICT items surfaced).` — when synthesizer flagged disagreements that warrant user input before subtasks land.
 
 Always include the workflow path.
