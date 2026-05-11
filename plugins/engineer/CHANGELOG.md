@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.6.0...plugin-engineer-v0.7.0) (2026-05-11)
+
+
+### Features
+
+* **orchestrator+engineer:** /finalize + /abort + macro stop-archive A1-A4 (ADR-0019 PR-E) ([#67](https://github.com/each4all/agentic-plugins/issues/67)) ([c0d5c0b](https://github.com/each4all/agentic-plugins/commit/c0d5c0b622d690ae3a23f83ba5c317089fe4be6b))
+* **orchestrator+engineer:** /next + /done dispatch + Phase 0 parent-linkage (ADR-0019 PR-D) ([#66](https://github.com/each4all/agentic-plugins/issues/66)) ([084848a](https://github.com/each4all/agentic-plugins/commit/084848ad829386ccf67649699bea79bcd9ae426d))
+* **plugins/engineer:** parent-writeback helper + Stop hook integration (ADR-0019 PR-C) ([#65](https://github.com/each4all/agentic-plugins/issues/65)) ([7c4d628](https://github.com/each4all/agentic-plugins/commit/7c4d62819b9b0a1619c8df4d7fda6deabb625867))
+* **plugins/engineer:** schema 1.1 parent-linkage fields (ADR-0019 PR-A) ([#61](https://github.com/each4all/agentic-plugins/issues/61)) ([fa2a9c7](https://github.com/each4all/agentic-plugins/commit/fa2a9c7b6100a684d7699e63f3590d39492070da))
+
 ## [0.6.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.5.0...plugin-engineer-v0.6.0) (2026-05-08)
 
 

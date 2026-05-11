@@ -15,6 +15,16 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.3.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.2.0...plugin-orchestrator-v0.3.0) (2026-05-11)
+
+
+### Features
+
+* **orchestrator+engineer:** /finalize + /abort + macro stop-archive A1-A4 (ADR-0019 PR-E) ([#67](https://github.com/each4all/agentic-plugins/issues/67)) ([c0d5c0b](https://github.com/each4all/agentic-plugins/commit/c0d5c0b622d690ae3a23f83ba5c317089fe4be6b))
+* **orchestrator+engineer:** /next + /done dispatch + Phase 0 parent-linkage (ADR-0019 PR-D) ([#66](https://github.com/each4all/agentic-plugins/issues/66)) ([084848a](https://github.com/each4all/agentic-plugins/commit/084848ad829386ccf67649699bea79bcd9ae426d))
+* **plugins/orchestrator:** schema 1.1 bump + plan producers (ADR-0019 PR-B) ([#63](https://github.com/each4all/agentic-plugins/issues/63)) ([8bf71c2](https://github.com/each4all/agentic-plugins/commit/8bf71c2649634a4f4cd8fd23b8aba8d17e83fb1a))
+* **plugins/orchestrator:** single-subtask update API (ADR-0019 PR-C0) ([#64](https://github.com/each4all/agentic-plugins/issues/64)) ([8b6a685](https://github.com/each4all/agentic-plugins/commit/8b6a685763342f2fabeaaa0ef62d33eaa258d3f3))
+
 ## [0.2.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.1.0...plugin-orchestrator-v0.2.0) (2026-05-08)
 
 
