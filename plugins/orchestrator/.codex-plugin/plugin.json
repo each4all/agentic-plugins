@@ -1,7 +1,7 @@
 {
   "name": "orchestrator",
   "version": "0.2.0",
-  "description": "Macro orchestration capability — multi-deliverable plan + Plan-verify ensemble for AI-assisted development across Claude Code & Codex CLI. L2 capability plugin per ADR-0010 4-layer composition (ADR-0018 §sub-decision-1, plan-only MVP).",
+  "description": "Macro orchestration capability — multi-deliverable plan + Plan-verify ensemble + same-host dispatch into engineer for AI-assisted development across Claude Code & Codex CLI. L2 capability plugin per ADR-0010 4-layer composition (ADR-0018 §sub-decision-1, ADR-0019 cross-plugin invocation).",
   "author": {
     "name": "each4all",
     "url": "https://github.com/each4all"
@@ -24,8 +24,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Orchestrator",
-    "shortDescription": "Macro orchestration — multi-deliverable plan + Plan-verify ensemble",
-    "longDescription": "L2 capability plugin per ADR-0010 4-layer composition + ADR-0018 §sub-decision-1. First multi-verb L2 occupant (single-verb capability precedent ADR-0010 §3 does not apply). Provides /orchestrator:plan — a macro plan command that produces a list of deliverables (subtasks[]) and verifies the plan via a Codex peer ensemble. Single Responsibility: orchestration only; cognitive activity (single-deliverable thought) remains engineer's responsibility. Workflow files at <repo>/.claude/agentic-orchestrator/workflows/ with schema '1.0' (distinct from engineer's schema 1.1). plan-only MVP — /orchestrator:next and /orchestrator:done ship in follow-up PRs alongside the cross-plugin invocation contract (ADR-0018 §sub-1 follow-up ADR).",
+    "shortDescription": "Macro orchestration — multi-deliverable plan + Plan-verify ensemble + same-host dispatch",
+    "longDescription": "L2 capability plugin per ADR-0010 4-layer composition + ADR-0018 §sub-decision-1 + ADR-0019 cross-plugin invocation contract. First multi-verb L2 occupant (single-verb capability precedent ADR-0010 §3 does not apply). Provides /orchestrator:plan (macro plan + Plan-verify Codex ensemble), /orchestrator:next (same-host dispatch into engineer with branch precondition + parent-linkage env vars), /orchestrator:done (idempotent backup for engineer Stop auto-writeback). Single Responsibility: orchestration only; cognitive activity (single-deliverable thought) remains engineer's responsibility. Workflow files at <repo>/.claude/agentic-orchestrator/workflows/ with schema '1.1' (distinct from engineer's schema '1.1' by structural validation — orchestrator requires workflow_type=macro + plan.subtasks[]). /orchestrator:finalize + /orchestrator:abort + macro Stop auto-archive land in PR-E. Cross-host --peer dispatch lands in PR-F.",
     "developerName": "each4all",
     "category": "Productivity",
     "capabilities": [
