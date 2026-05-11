@@ -27,6 +27,7 @@ import {
   terminalMarkerCheck,
   terminalPhaseCheck,
 } from './state.mjs';
+import { writebackParent } from './parent-writeback.mjs';
 import { readFile } from 'node:fs/promises';
 
 /**
@@ -160,23 +161,64 @@ export async function runStopArchive({
 
   // Step 4 — archive. Failure here is logged but does not throw past
   // the caller — host stop lifecycle must not be blocked.
+  let archiveResult;
   try {
-    const result = await archiveWorkflow({
+    archiveResult = await archiveWorkflow({
       workflowPath,
       host,
       repoRoot,
     });
-    if (!result.archived) {
+    if (!archiveResult.archived) {
       return {
         archived: false,
-        reason: result.reason ?? 'archive-no-op',
+        reason: archiveResult.reason ?? 'archive-no-op',
       };
     }
-    return { archived: true, to: result.to };
   } catch (err) {
     stderr.write(`engineer/stop-archive: archive failed: ${err.message}\n`);
     return { archived: false, reason: 'archive-threw' };
   }
+
+  // Step 5 — ADR-0019 §4 parent writeback. Engineer-side locks are
+  // already released here (archiveWorkflow's withDirectoryLock +
+  // withFileLock callbacks both exited before this point), so §6
+  // lock-order (child release → parent acquire) is naturally satisfied.
+  // The writeback is best-effort: any failure is reported via stderr
+  // but does NOT invalidate the archive that already succeeded —
+  // manual reconciliation is available through /orchestrator:done
+  // (ADR-0019 §4 backup path, PR-D scope).
+  if (typeof frontmatter.parent_workflow === 'string'
+      && typeof frontmatter.originating_subtask === 'string'
+      && typeof frontmatter.workflow_id === 'string'
+      && typeof headSha === 'string'
+      && headSha.length > 0) {
+    const closedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+    try {
+      await writebackParent({
+        repoRoot,
+        parentWorkflowId: frontmatter.parent_workflow,
+        originatingSubtaskId: frontmatter.originating_subtask,
+        engineerWorkflowId: frontmatter.workflow_id,
+        commit: headSha,
+        closedAt,
+        host,
+        stderr,
+      });
+    } catch (err) {
+      // writebackParent itself never throws past its contract, but
+      // defend against unexpected programmer errors (e.g., bad arg
+      // shape) so the stop lifecycle still completes cleanly. Surface
+      // the parent/subtask ids so the user has the concrete handles
+      // needed for manual reconciliation via /orchestrator:done.
+      stderr.write(
+        `engineer/stop-archive: parent-writeback threw unexpectedly for ` +
+        `parent=${frontmatter.parent_workflow} subtask=${frontmatter.originating_subtask}: ` +
+        `${err.message}\n`,
+      );
+    }
+  }
+
+  return { archived: true, to: archiveResult.to };
 }
 
 // Inline copy of the conventional-commit pattern used in the Claude

@@ -20,7 +20,7 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, match } from 'node:assert/strict';
-import { mkdtemp, rm, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readdir, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
@@ -40,10 +40,12 @@ const CODEX_STOP_PATH = resolve(
   REPO_ROOT,
   'plugins/engineer/adapters/codex/hooks/stop.mjs',
 );
+const ORCHESTRATOR_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
+const ORCHESTRATOR_STATE = resolve(ORCHESTRATOR_ROOT, 'scripts/state.mjs');
 
 const { createWorkflow, parseWorkflowFile, ARCHIVE_DIR_REL, WORKFLOW_DIR_REL } =
   await import(STATE_PATH);
-const { evaluateStopArchive } = await import(STOP_ARCHIVE_PATH);
+const { evaluateStopArchive, runStopArchive } = await import(STOP_ARCHIVE_PATH);
 
 const MIN_DIGEST =
   'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
@@ -576,6 +578,279 @@ describe('Codex stop hook — parity: case (a) all gates pass → archive', () =
       const last = frontmatter.host_history.at(-1);
       strictEqual(last.event, 'archived');
       strictEqual(last.host, 'codex');
+    });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// ADR-0019 PR-C — parent-writeback integration inside runStopArchive.
+// These cases drive runStopArchive directly (rather than spawning the
+// host stop.mjs entrypoint) so we can inject orchestratorRoot via env
+// and inspect the parent file mutations in-process.
+
+async function withOrchestratorEnv(value, fn) {
+  const saved = process.env.AGENTIC_ORCHESTRATOR_ROOT;
+  if (value === null || value === undefined) {
+    delete process.env.AGENTIC_ORCHESTRATOR_ROOT;
+  } else {
+    process.env.AGENTIC_ORCHESTRATOR_ROOT = value;
+  }
+  try {
+    return await fn();
+  } finally {
+    if (saved === undefined) {
+      delete process.env.AGENTIC_ORCHESTRATOR_ROOT;
+    } else {
+      process.env.AGENTIC_ORCHESTRATOR_ROOT = saved;
+    }
+  }
+}
+
+async function bootstrapMacroPlan(repoRoot, subtaskId = 'T1') {
+  // Create the orchestrator macro workflow + a single in_progress subtask.
+  // Uses the real orchestrator state.mjs CLI so the on-disk shape matches
+  // production semantics. The macro workflow lives under
+  // <repoRoot>/.claude/agentic-orchestrator/workflows/<id>.md.
+  const createOut = execFileSync(
+    process.execPath,
+    [
+      ORCHESTRATOR_STATE,
+      'create',
+      '--repo-root', repoRoot,
+      '--verb', 'plan',
+      '--host', 'claude',
+      '--git-baseline-branch', 'orch-macro',
+      '--git-baseline-head', 'a'.repeat(40),
+      '--status-digest', MIN_DIGEST,
+      '--original-request', 'pr-c stop-archive integration macro',
+    ],
+    { encoding: 'utf8' },
+  ).trim();
+  const macroPath = createOut;
+  const macroId = macroPath.split('/').pop().replace(/\.md$/, '');
+  const subtasksFile = join(repoRoot, `subtasks-${subtaskId}.json`);
+  await writeFile(
+    subtasksFile,
+    JSON.stringify([{
+      id: subtaskId,
+      verb: 'compose',
+      branch: `feat/${subtaskId.toLowerCase()}`,
+      blocked_by: [],
+      status: 'in_progress',
+    }]),
+  );
+  execFileSync(
+    process.execPath,
+    [
+      ORCHESTRATOR_STATE,
+      'plan-set',
+      '--workflow-path', macroPath,
+      '--host', 'claude',
+      '--subtasks-json-file', subtasksFile,
+    ],
+    { encoding: 'utf8' },
+  );
+  return { macroPath, macroId };
+}
+
+describe('ADR-0019 PR-C — runStopArchive parent-writeback (parent in workflows/)', () => {
+  it('marks the parent subtask completed after engineer archive succeeds', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+
+      const { filePath: engineerPath, workflowId: engineerId } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'pr-c child workflow',
+        gitBaseline: {
+          branch: 'main',
+          head: baselineHead,
+          status_digest: MIN_DIGEST,
+        },
+        host: 'claude',
+        parentWorkflow: macroId,
+        originatingSubtask: 'T1',
+      });
+      await setFrontmatter(engineerPath, (fm) => {
+        fm.current_phase = 'summary-complete';
+        fm.terminal_marker = true;
+      });
+      const newHead = makeAdvanceCommit(repoRoot);
+
+      const stderrBuf = [];
+      const result = await withOrchestratorEnv(ORCHESTRATOR_ROOT, () =>
+        runStopArchive({
+          workflowPath: engineerPath,
+          host: 'claude',
+          repoRoot,
+          headSha: newHead,
+          headSubject: 'feat(plugins/engineer): pr-c child terminal commit',
+          stderr: { write: (s) => stderrBuf.push(s) },
+        }),
+      );
+
+      strictEqual(result.archived, true);
+      // engineer file moved to archive/
+      strictEqual((await listWorkflows(repoRoot)).length, 0);
+      strictEqual((await listArchive(repoRoot)).length, 1);
+
+      // Parent macro now has the subtask completed + auto-terminal.
+      const macroText = await readFile(macroPath, 'utf8');
+      match(macroText, /status: "completed"/);
+      match(macroText, new RegExp(`commit: "${newHead}"`));
+      match(macroText, new RegExp(`engineer_workflow_id: "${engineerId}"`));
+      match(macroText, /terminal_marker: true/);
+    });
+  });
+});
+
+describe('ADR-0019 PR-C — parent_workflow unset → no writeback attempted', () => {
+  it('archives normally without spawning the orchestrator CLI', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { filePath: engineerPath } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'no parent linkage',
+        gitBaseline: {
+          branch: 'main',
+          head: baselineHead,
+          status_digest: MIN_DIGEST,
+        },
+        host: 'claude',
+      });
+      await setFrontmatter(engineerPath, (fm) => {
+        fm.current_phase = 'summary-complete';
+        fm.terminal_marker = true;
+      });
+      const newHead = makeAdvanceCommit(repoRoot);
+
+      const stderrBuf = [];
+      const result = await withOrchestratorEnv(ORCHESTRATOR_ROOT, () =>
+        runStopArchive({
+          workflowPath: engineerPath,
+          host: 'claude',
+          repoRoot,
+          headSha: newHead,
+          headSubject: 'feat(plugins/engineer): unparented terminal commit',
+          stderr: { write: (s) => stderrBuf.push(s) },
+        }),
+      );
+
+      strictEqual(result.archived, true);
+      // No parent-writeback diagnostics emitted (writeback path skipped).
+      const stderrStr = stderrBuf.join('');
+      ok(!stderrStr.includes('engineer/parent-writeback'),
+        `did not expect parent-writeback diagnostics, got: ${stderrStr}`);
+    });
+  });
+});
+
+describe('ADR-0019 PR-C — parent in archive/ → archive proceeds, writeback skipped with warning', () => {
+  it('emits the archive-fallback warning and leaves the archived parent untouched', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+
+      // Move the macro into the orchestrator's archive/ to simulate
+      // /orchestrator:finalize having beat us to it.
+      const orchArchiveDir = join(repoRoot, '.claude', 'agentic-orchestrator', 'archive');
+      await mkdir(orchArchiveDir, { recursive: true });
+      const archivedMacro = join(orchArchiveDir, `${macroId}.md`);
+      const macroText = await readFile(macroPath, 'utf8');
+      await writeFile(archivedMacro, macroText);
+      await rm(macroPath);
+
+      const { filePath: engineerPath } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'parent already archived',
+        gitBaseline: {
+          branch: 'main',
+          head: baselineHead,
+          status_digest: MIN_DIGEST,
+        },
+        host: 'claude',
+        parentWorkflow: macroId,
+        originatingSubtask: 'T1',
+      });
+      await setFrontmatter(engineerPath, (fm) => {
+        fm.current_phase = 'summary-complete';
+        fm.terminal_marker = true;
+      });
+      const newHead = makeAdvanceCommit(repoRoot);
+
+      const stderrBuf = [];
+      const result = await withOrchestratorEnv(ORCHESTRATOR_ROOT, () =>
+        runStopArchive({
+          workflowPath: engineerPath,
+          host: 'claude',
+          repoRoot,
+          headSha: newHead,
+          headSubject: 'feat(plugins/engineer): post-finalize child',
+          stderr: { write: (s) => stderrBuf.push(s) },
+        }),
+      );
+
+      strictEqual(result.archived, true,
+        'engineer archive should still succeed even when parent is frozen');
+      const stderrStr = stderrBuf.join('');
+      match(stderrStr, /parent_workflow.*archive/i);
+
+      // Archived macro must remain untouched (frozen state).
+      const archivedText = await readFile(archivedMacro, 'utf8');
+      ok(!archivedText.includes('status: "completed"'),
+        'archived macro must not be mutated');
+    });
+  });
+});
+
+describe('ADR-0019 PR-C — orchestrator root unresolved → archive proceeds, writeback skipped', () => {
+  it('emits the orchestrator-not-found warning without rolling back the engineer archive', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+
+      const { filePath: engineerPath } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'orchestrator not found',
+        gitBaseline: {
+          branch: 'main',
+          head: baselineHead,
+          status_digest: MIN_DIGEST,
+        },
+        host: 'claude',
+        parentWorkflow: macroId,
+        originatingSubtask: 'T1',
+      });
+      await setFrontmatter(engineerPath, (fm) => {
+        fm.current_phase = 'summary-complete';
+        fm.terminal_marker = true;
+      });
+      const newHead = makeAdvanceCommit(repoRoot);
+
+      const stderrBuf = [];
+      // Force discovery failure via AGENTIC_ORCHESTRATOR_ROOT pointing
+      // at a garbage absolute path — the env override branch short-
+      // circuits all other discovery (Claude cache / Codex cache /
+      // sibling fallback are not attempted when env override is set),
+      // so the discovery returns null regardless of the real engineer
+      // plugin's location.
+      const result = await withOrchestratorEnv('/nonexistent/orchestrator/install/path', () =>
+        runStopArchive({
+          workflowPath: engineerPath,
+          host: 'claude',
+          repoRoot,
+          headSha: newHead,
+          headSubject: 'feat(plugins/engineer): no orch root',
+          stderr: { write: (s) => stderrBuf.push(s) },
+        }),
+      );
+      strictEqual(result.archived, true);
+
+      const stderrStr = stderrBuf.join('');
+      match(stderrStr, /orchestrator.*not.*found/i);
+      // engineer file still archived
+      strictEqual((await listWorkflows(repoRoot)).length, 0);
+      strictEqual((await listArchive(repoRoot)).length, 1);
     });
   });
 });
