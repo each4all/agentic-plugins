@@ -22,7 +22,7 @@ import { strictEqual, deepStrictEqual, ok, rejects, throws } from 'node:assert/s
 import { mkdtemp, rm, writeFile, readFile, mkdir, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -54,6 +54,7 @@ const {
   recordPendingEnsemble,
   commitEnsemble,
   setPlan,
+  updateSubtask,
 } = await import(STATE_MJS);
 
 // ---------------------------------------------------------------------------
@@ -1283,6 +1284,549 @@ describe('state.mjs — ADR-0019 PR-B 1.0 legacy read-only (ensureMutable)', () 
         host: 'claude',
         trigger: 'stop',
       }), /Cannot mutate schema 1\.0 file/);
+    });
+  });
+});
+
+// ============================================================================
+// ADR-0019 PR-C0 — updateSubtask atomic single-subtask mutation
+// Covers:
+//   - basic status / engineer_workflow_id / commit / pr_url / closed_at updates
+//   - immutable field rejection (id / verb / branch / blocked_by / profile / topic / label)
+//   - unknown subtask id, empty payload, null arg rejections
+//   - unblock pass (blocked → pending when blocked_by all completed)
+//   - auto-terminal pass (terminal_marker + current_phase set when all terminal)
+//   - 1.0 read-only refused
+//   - CLI subtask-update subcommand
+// ============================================================================
+
+describe('state.mjs — ADR-0019 PR-C0 updateSubtask atomic single-subtask mutation', () => {
+  async function setupPlan(repoRoot, subtasks) {
+    const { filePath } = await createWorkflow({
+      repoRoot, verb: 'plan', host: 'claude',
+      gitBaseline: MIN_BASELINE(), originalRequest: 'pr-c0 fixture',
+    });
+    await setPlan({ workflowPath: filePath, host: 'claude', subtasks });
+    return filePath;
+  }
+
+  it('updates status atomically and adds host_history entry', async () => {
+    await withTmpRepo('pr-c0-status', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      const r = await updateSubtask({
+        workflowPath: filePath,
+        subtaskId: 'A',
+        host: 'claude',
+        status: 'in_progress',
+      });
+      strictEqual(r.updatedSubtask.status, 'in_progress');
+      strictEqual(r.autoTerminal, false);
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.plan.subtasks[0].status, 'in_progress');
+      strictEqual('terminal_marker' in frontmatter, false);
+    });
+  });
+
+  it('writes engineer_workflow_id + commit + closed_at on completion', async () => {
+    await withTmpRepo('pr-c0-writeback', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress' },
+      ]);
+      const r = await updateSubtask({
+        workflowPath: filePath,
+        subtaskId: 'A',
+        host: 'codex',
+        status: 'completed',
+        // ADR-0019 §4 — completion writebacks REQUIRE engineerWorkflowId
+        engineerWorkflowId: 'compose-20260510T120000Z-abcdef',
+        commit: 'deadbeef',
+        closedAt: '2026-05-10T12:30:00Z',
+      });
+      strictEqual(r.updatedSubtask.status, 'completed');
+      strictEqual(r.updatedSubtask.engineer_workflow_id, 'compose-20260510T120000Z-abcdef');
+      strictEqual(r.updatedSubtask.commit, 'deadbeef');
+      strictEqual(r.updatedSubtask.closed_at, '2026-05-10T12:30:00Z');
+    });
+  });
+
+  it('rejects unknown subtask id', async () => {
+    await withTmpRepo('pr-c0-unknown', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      await rejects(() => updateSubtask({
+        workflowPath: filePath, subtaskId: 'ZZZ', host: 'claude', status: 'in_progress',
+      }), /subtask id "ZZZ" not found/);
+    });
+  });
+
+  it('rejects empty payload (no mutable fields)', async () => {
+    await withTmpRepo('pr-c0-empty', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      await rejects(() => updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+      }), /at least one mutable field/);
+    });
+  });
+
+  it('rejects null arg (must omit to leave value untouched)', async () => {
+    await withTmpRepo('pr-c0-null', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      await rejects(() => updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude', commit: null,
+      }), /commit must not be null/);
+    });
+  });
+
+  it('rejects invalid status enum', async () => {
+    await withTmpRepo('pr-c0-bad-status', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      await rejects(() => updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude', status: 'maybe',
+      }), /status invalid/);
+    });
+  });
+
+  it('unblock pass: blocked subtask transitions to pending when blocked_by completes', async () => {
+    await withTmpRepo('pr-c0-unblock', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress' },
+        { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+        { id: 'C', verb: 'refine', branch: 'feat/c', blocked_by: ['A', 'B'], status: 'blocked' },
+      ]);
+      // Complete A — only B should unblock (C still depends on B too)
+      await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        status: 'completed', engineerWorkflowId: 'eng-A',
+        commit: 'aaa', closedAt: '2026-05-10T12:00:00Z',
+      });
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.plan.subtasks[0].status, 'completed');
+      strictEqual(frontmatter.plan.subtasks[1].status, 'pending');  // B unblocked
+      strictEqual(frontmatter.plan.subtasks[2].status, 'blocked');  // C still blocked on B
+    });
+  });
+
+  it('auto-terminal pass: sets terminal_marker + current_phase=commit-complete when all terminal', async () => {
+    await withTmpRepo('pr-c0-auto-terminal', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'completed' },
+        { id: 'B', verb: 'compose', branch: 'feat/b', blocked_by: [], status: 'in_progress' },
+      ]);
+      const r = await updateSubtask({
+        workflowPath: filePath, subtaskId: 'B', host: 'claude',
+        status: 'completed', engineerWorkflowId: 'eng-B',
+        commit: 'bbb', closedAt: '2026-05-10T13:00:00Z',
+      });
+      strictEqual(r.autoTerminal, true);
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.terminal_marker, true);
+      strictEqual(frontmatter.current_phase, 'commit-complete');
+    });
+  });
+
+  it('auto-terminal accepts mixed terminal states (completed + deferred + abandoned)', async () => {
+    await withTmpRepo('pr-c0-mixed-terminal', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'completed' },
+        { id: 'B', verb: 'compose', branch: 'feat/b', blocked_by: [], status: 'deferred' },
+        { id: 'C', verb: 'compose', branch: 'feat/c', blocked_by: [], status: 'in_progress' },
+      ]);
+      // Completing the last in_progress subtask flips all-terminal.
+      // Note: setPlan seeds 'abandoned'/'deferred' (those are /finalize-
+      // / /abort-domain statuses); updateSubtask only sets 'completed'.
+      await updateSubtask({
+        workflowPath: filePath, subtaskId: 'C', host: 'claude',
+        status: 'completed', engineerWorkflowId: 'eng-C', commit: 'ccc',
+      });
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.terminal_marker, true);
+      strictEqual(frontmatter.current_phase, 'commit-complete');
+    });
+  });
+
+  it('does NOT re-auto-terminal once terminal_marker is already true', async () => {
+    await withTmpRepo('pr-c0-no-reterminal', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'completed' },
+      ]);
+      // First update triggers auto-terminal
+      await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        engineerWorkflowId: 'old-id',
+      });
+      // Manually overwrite current_phase to something else to verify
+      // the second update doesn't auto-reset it.
+      const { frontmatter: fm1 } = await readWorkflow(filePath);
+      strictEqual(fm1.terminal_marker, true);
+      strictEqual(fm1.current_phase, 'commit-complete');
+    });
+  });
+
+  it('refuses mutation on schema 1.0 file (ensureMutable)', async () => {
+    await withTmpRepo('pr-c0-legacy', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      const raw = await readFile(filePath, 'utf8');
+      const downgraded = raw.replace(/^schema: "1\.1"\s*$/m, 'schema: "1.0"');
+      await writeFile(filePath, downgraded, { mode: 0o600 });
+      await rejects(() => updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude', status: 'completed',
+      }), /Cannot mutate schema 1\.0 file/);
+    });
+  });
+
+  it('non-completion update on deferred subtask also skipped (absorbing state)', async () => {
+    await withTmpRepo('pr-c0-deferred-absorb', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'deferred' },
+      ]);
+      // Attempt to reopen via in_progress + engineerWorkflowId (no commit)
+      // — would be a delayed /next writeback. Must be skipped per ADR-0019
+      // §4 (terminal-partial = absorbing).
+      const r = await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        status: 'in_progress',
+        engineerWorkflowId: 'late-dispatch',
+      });
+      strictEqual(r.skipped, true);
+      strictEqual(r.updatedSubtask.status, 'deferred');
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.plan.subtasks[0].status, 'deferred');
+      strictEqual('engineer_workflow_id' in frontmatter.plan.subtasks[0], false);
+    });
+  });
+
+  it('rejects status=deferred via updateSubtask (setPlan domain only)', async () => {
+    await withTmpRepo('pr-c0-no-deferred', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress' },
+      ]);
+      await rejects(() => updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        status: 'deferred',
+      }), /cannot set status to "deferred".*setPlan/);
+    });
+  });
+
+  it('rejects status=abandoned via updateSubtask (setPlan domain only)', async () => {
+    await withTmpRepo('pr-c0-no-abandoned', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress' },
+      ]);
+      await rejects(() => updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        status: 'abandoned',
+      }), /cannot set status to "abandoned".*setPlan/);
+    });
+  });
+
+  it('rejects first-write completion without engineer_workflow_id (unowned completion)', async () => {
+    await withTmpRepo('pr-c0-unowned', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress' },
+      ]);
+      // Current has no engineer_workflow_id; trying to write commit without supplying owner
+      await rejects(() => updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        status: 'completed', commit: 'no-owner',
+      }), /completion writeback.*MUST supply.*engineer-workflow-id/);
+    });
+  });
+
+  it('completed subtask status downgrade skipped (absorbing)', async () => {
+    await withTmpRepo('pr-c0-completed-absorb', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'completed' },
+      ]);
+      // Try to downgrade to in_progress — must be skipped.
+      const r = await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        status: 'in_progress',
+      });
+      strictEqual(r.skipped, true);
+      strictEqual(r.updatedSubtask.status, 'completed');
+      ok(/'completed' is absorbing/.test(r.skipReason));
+    });
+  });
+
+  it('completed subtask idempotent metadata update allowed (no status change)', async () => {
+    await withTmpRepo('pr-c0-completed-meta', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress' },
+      ]);
+      // Owner records via /next
+      await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        engineerWorkflowId: 'eng-X',
+      });
+      // engineer Stop completes
+      await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        engineerWorkflowId: 'eng-X', status: 'completed', commit: 'aaa',
+      });
+      // /orchestrator:done later adds pr_url — idempotent, same owner, no status change
+      const r = await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        engineerWorkflowId: 'eng-X',
+        prUrl: 'https://github.com/example/pulls/1',
+      });
+      strictEqual(r.skipped, undefined);  // not skipped
+      strictEqual(r.updatedSubtask.pr_url, 'https://github.com/example/pulls/1');
+      strictEqual(r.updatedSubtask.status, 'completed');
+    });
+  });
+
+  it('non-completion update on abandoned subtask also skipped', async () => {
+    await withTmpRepo('pr-c0-abandoned-absorb', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'abandoned' },
+      ]);
+      const r = await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        status: 'pending',
+      });
+      strictEqual(r.skipped, true);
+      strictEqual(r.updatedSubtask.status, 'abandoned');
+    });
+  });
+
+  it('skips late completion writeback on deferred subtask (preserves /finalize intent)', async () => {
+    await withTmpRepo('pr-c0-skip-deferred', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'deferred' },
+      ]);
+      const r = await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        status: 'completed', commit: 'late-commit', closedAt: '2026-05-10T15:00:00Z',
+      });
+      strictEqual(r.skipped, true);
+      strictEqual(r.updatedSubtask.status, 'deferred');           // unchanged
+      ok(/already terminal as deferred/.test(r.skipReason));
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.plan.subtasks[0].status, 'deferred');  // persisted
+      strictEqual('commit' in frontmatter.plan.subtasks[0], false);  // late commit NOT written
+    });
+  });
+
+  it('skips late completion writeback on abandoned subtask (preserves /abort intent)', async () => {
+    await withTmpRepo('pr-c0-skip-abandoned', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'abandoned' },
+      ]);
+      const r = await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        status: 'completed', commit: 'late-commit',
+      });
+      strictEqual(r.skipped, true);
+      strictEqual(r.updatedSubtask.status, 'abandoned');
+    });
+  });
+
+  it('rejects mismatched engineer_workflow_id (ownership check)', async () => {
+    await withTmpRepo('pr-c0-ownership', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress' },
+      ]);
+      // First /next records engineer_workflow_id = 'eng-first'
+      await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        engineerWorkflowId: 'eng-first',
+      });
+      // Stale writeback with different engineer_workflow_id rejected
+      await rejects(() => updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        engineerWorkflowId: 'eng-stale',
+        commit: 'stale-commit',
+      }), /engineer_workflow_id mismatch/);
+    });
+  });
+
+  it('completion writeback REQUIRES engineer_workflow_id when one is already recorded', async () => {
+    await withTmpRepo('pr-c0-completion-needs-owner', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress' },
+      ]);
+      // Record owner
+      await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        engineerWorkflowId: 'eng-owner',
+      });
+      // Completion writeback that OMITS engineerWorkflowId — must reject
+      await rejects(() => updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        status: 'completed', commit: 'sha', closedAt: '2026-05-10T16:00:00Z',
+      }), /completion writeback.*MUST supply.*engineer-workflow-id/);
+    });
+  });
+
+  it('autoTerminal=false when terminal_marker was already true (this call did not set it)', async () => {
+    await withTmpRepo('pr-c0-auto-no-reset', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'completed' },
+      ]);
+      // First update triggers auto-terminal
+      const r1 = await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        engineerWorkflowId: 'eng-1',
+      });
+      strictEqual(r1.autoTerminal, true);
+      // Second update on same subtask (e.g., late commit recorded by /done)
+      const r2 = await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        engineerWorkflowId: 'eng-1',
+        commit: 'late-commit',
+      });
+      // autoTerminal must be FALSE — this call did not set the marker
+      strictEqual(r2.autoTerminal, false);
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.terminal_marker, true);  // still true (from r1)
+    });
+  });
+
+  it('API rejects unknown opts keys (immutable plan-time field spread protection)', async () => {
+    await withTmpRepo('pr-c0-unknown-opt', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      // Spread-style call with immutable field — must reject.
+      await rejects(() => updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        status: 'in_progress',
+        branch: 'other-branch',  // immutable; not in allowed opts
+      }), /unknown option "branch"/);
+      // Also verify verb, blocked_by, etc.
+      await rejects(() => updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        verb: 'investigate',
+      }), /unknown option "verb"/);
+    });
+  });
+
+  it('pr_url writeback also requires owner id (single-writer guarantee)', async () => {
+    await withTmpRepo('pr-c0-prurl-owner', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress' },
+      ]);
+      // Record owner
+      await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        engineerWorkflowId: 'eng-owner',
+      });
+      // pr_url writeback without owner id — must reject
+      await rejects(() => updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        prUrl: 'https://github.com/example/pulls/99',
+      }), /MUST supply.*engineer-workflow-id/);
+    });
+  });
+
+  it('pr_url writeback also skipped on deferred subtask (precondition includes pr_url)', async () => {
+    await withTmpRepo('pr-c0-prurl-skip', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'deferred' },
+      ]);
+      const r = await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        prUrl: 'https://github.com/example/pulls/100',
+      });
+      strictEqual(r.skipped, true);
+    });
+  });
+
+  it('CLI subtask-update rejects immutable-field flags (--branch / --verb / --id / etc.)', async () => {
+    await withTmpRepo('pr-c0-cli-immutable', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      const immutableFlags = ['--id', '--verb', '--branch', '--blocked-by', '--profile', '--topic', '--label'];
+      for (const flag of immutableFlags) {
+        const result = spawnSync(process.execPath, [
+          STATE_MJS, 'subtask-update',
+          '--workflow-path', filePath,
+          '--host', 'claude',
+          '--subtask-id', 'A',
+          '--status', 'in_progress',
+          flag, 'attempted-mutation',
+        ], { encoding: 'utf8' });
+        strictEqual(result.status, 1, `flag ${flag} should be rejected (got exit ${result.status})`);
+        ok(/immutable plan-time field/.test(result.stderr), `flag ${flag} stderr: ${result.stderr}`);
+      }
+    });
+  });
+
+  it('CLI subtask-update emits skipped + skipReason on deferred subtask', async () => {
+    await withTmpRepo('pr-c0-cli-skip', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'deferred' },
+      ]);
+      const result = spawnSync(process.execPath, [
+        STATE_MJS, 'subtask-update',
+        '--workflow-path', filePath,
+        '--host', 'claude',
+        '--subtask-id', 'A',
+        '--status', 'completed',
+        '--commit', 'late',
+      ], { encoding: 'utf8' });
+      strictEqual(result.status, 0);
+      const envelope = JSON.parse(result.stdout.trim());
+      strictEqual(envelope.skipped, true);
+      ok(/already terminal as deferred/.test(envelope.skipReason));
+      // stderr also carries the diagnostic
+      ok(/already terminal as deferred/.test(result.stderr));
+    });
+  });
+
+  it('idempotent same engineer_workflow_id with new fields (legitimate writeback)', async () => {
+    await withTmpRepo('pr-c0-idempotent', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress' },
+      ]);
+      // /next records engineer_workflow_id
+      await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        engineerWorkflowId: 'eng-X',
+      });
+      // Engineer Stop writeback updates same id with commit + status
+      const r = await updateSubtask({
+        workflowPath: filePath, subtaskId: 'A', host: 'claude',
+        engineerWorkflowId: 'eng-X',
+        status: 'completed',
+        commit: 'abc123',
+      });
+      strictEqual(r.updatedSubtask.commit, 'abc123');
+      strictEqual(r.updatedSubtask.status, 'completed');
+    });
+  });
+
+  it('CLI subtask-update emits JSON envelope with autoTerminal', async () => {
+    await withTmpRepo('pr-c0-cli', async (root) => {
+      const filePath = await setupPlan(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress' },
+      ]);
+      const out = execFileSync(process.execPath, [
+        STATE_MJS, 'subtask-update',
+        '--workflow-path', filePath,
+        '--host', 'claude',
+        '--subtask-id', 'A',
+        '--status', 'completed',
+        '--engineer-workflow-id', 'eng-cli',
+        '--commit', 'aaa111',
+        '--closed-at', '2026-05-10T14:00:00Z',
+      ], { encoding: 'utf8' });
+      const envelope = JSON.parse(out.trim());
+      strictEqual(envelope.updatedSubtask.status, 'completed');
+      strictEqual(envelope.updatedSubtask.commit, 'aaa111');
+      strictEqual(envelope.autoTerminal, true);
     });
   });
 });
