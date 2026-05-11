@@ -893,3 +893,339 @@ describe('Stop hook — idempotency: re-running on already-archived workflow no-
     });
   });
 });
+
+// -----------------------------------------------------------------------------
+// ADR-0019 PR-E — engineer CLI surface used by orchestrator /finalize + /abort
+// step 2 (active-children detach pass). Two new state.mjs subcommands:
+//
+//   detach-archive   — mid-flight child: write parent_detached:true +
+//                      terminal_marker:false, then archive. No parent
+//                      writeback (the orchestrator already marked the
+//                      subtask deferred/abandoned in step 1).
+//   stop-archive     — terminal child: wrap runStopArchive with explicit
+//                      --head-sha / --head-subject / --status-digest so
+//                      the gate A3 head_moved is evaluated against the
+//                      child's own branch HEAD (not the orchestrator's
+//                      current branch). Emits a JSON envelope on stdout.
+//
+// Both CLIs are invoked from orchestrator /finalize / /abort runbooks via
+// `execFile(node, [stateMjsPath, 'detach-archive'|'stop-archive', ...])`.
+// The JSON envelope on stdout is the contract orchestrator parses.
+
+function runStateCli(args, { cwd } = {}) {
+  const cp = spawnSync(
+    process.execPath,
+    [STATE_PATH, ...args],
+    { cwd: cwd ?? process.cwd(), encoding: 'utf8' },
+  );
+  return { code: cp.status, stdout: cp.stdout, stderr: cp.stderr };
+}
+
+describe('ADR-0019 PR-E — state.mjs detach-archive CLI (mid-flight child path)', () => {
+  it('writes parent_detached:true + terminal_marker:false then archives + emits JSON envelope', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { filePath } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'detach-archive happy path',
+        gitBaseline: {
+          branch: 'feat/child-mid-flight',
+          head: baselineHead,
+          status_digest: MIN_DIGEST,
+        },
+        host: 'claude',
+      });
+      // No terminal_marker, no terminal phase — this is mid-flight.
+
+      const { code, stdout, stderr } = runStateCli(
+        [
+          'detach-archive',
+          '--workflow-path', filePath,
+          '--host', 'claude',
+          '--repo-root', repoRoot,
+        ],
+        { cwd: repoRoot },
+      );
+      strictEqual(code, 0, `stderr: ${stderr}`);
+
+      // JSON envelope on stdout: {detached:true, to:<archive-path>}
+      let envelope;
+      try {
+        envelope = JSON.parse(stdout.trim());
+      } catch (err) {
+        throw new Error(`detach-archive stdout is not JSON: ${stdout.trim()} (${err.message})`);
+      }
+      strictEqual(envelope.detached, true);
+      ok(
+        typeof envelope.to === 'string' && envelope.to.includes(ARCHIVE_DIR_REL),
+        `expected envelope.to under ${ARCHIVE_DIR_REL}, got ${envelope.to}`,
+      );
+
+      // File is now in archive/ with mutated frontmatter.
+      strictEqual((await listWorkflows(repoRoot)).length, 0, 'workflow file should be archived');
+      const archived = await listArchive(repoRoot);
+      strictEqual(archived.length, 1, 'archive should contain one entry');
+      const archivedPath = join(repoRoot, ARCHIVE_DIR_REL, archived[0]);
+      const archivedText = await readFile(archivedPath, 'utf8');
+      const { frontmatter } = parseWorkflowFile(archivedText);
+      strictEqual(
+        frontmatter.parent_detached,
+        true,
+        'parent_detached must be true after detach-archive',
+      );
+      strictEqual(
+        frontmatter.terminal_marker,
+        false,
+        'terminal_marker must be explicitly false (not absent)',
+      );
+    });
+  });
+
+  it('does NOT fire parent writeback even when parent_workflow is set', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      // Bootstrap a macro parent + mid-flight engineer child with parent linkage.
+      const { macroPath, macroId } = await bootstrapMacroPlan(repoRoot, 'T1');
+      const { filePath: engineerPath } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'detach-archive: parent writeback must NOT fire',
+        gitBaseline: {
+          branch: 'feat/t1',
+          head: baselineHead,
+          status_digest: MIN_DIGEST,
+        },
+        host: 'claude',
+        parentWorkflow: macroId,
+        originatingSubtask: 'T1',
+      });
+      // Pre-snapshot the macro text — engineer's parseWorkflowFile rejects
+      // orchestrator's schema (different frontmatter key set), so we
+      // compare raw bytes / regex shape the same way PR-C parent-writeback
+      // tests do (see line 698 precedent).
+      const beforeText = await readFile(macroPath, 'utf8');
+
+      await withOrchestratorEnv(ORCHESTRATOR_ROOT, async () => {
+        const { code } = runStateCli(
+          [
+            'detach-archive',
+            '--workflow-path', engineerPath,
+            '--host', 'claude',
+            '--repo-root', repoRoot,
+          ],
+          { cwd: repoRoot },
+        );
+        strictEqual(code, 0);
+      });
+
+      // Macro must be byte-identical — detach-archive does NOT fire any
+      // parent writeback (no `subtask-update` CLI spawn). The only writes
+      // were to the engineer child file + its archive destination, both
+      // outside the orchestrator workflow file.
+      const afterText = await readFile(macroPath, 'utf8');
+      strictEqual(
+        afterText,
+        beforeText,
+        'detach-archive must NOT mutate the orchestrator macro file (no parent writeback)',
+      );
+    });
+  });
+
+  it('returns non-zero exit when workflow-path does not exist', async () => {
+    await withTmpGitRepo(async ({ repoRoot }) => {
+      const ghost = join(repoRoot, '.claude/agentic-engineer/workflows/no-such.md');
+      const { code, stderr } = runStateCli(
+        [
+          'detach-archive',
+          '--workflow-path', ghost,
+          '--host', 'claude',
+          '--repo-root', repoRoot,
+        ],
+        { cwd: repoRoot },
+      );
+      ok(code !== 0, 'detach-archive on missing file must exit non-zero');
+      ok(
+        stderr.length > 0,
+        'stderr must surface a diagnostic when workflow file is absent',
+      );
+    });
+  });
+});
+
+describe('ADR-0019 PR-E — state.mjs stop-archive CLI (terminal-child path)', () => {
+  it('archives and emits {archived:true, to:<archive-path>} when all gates pass', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { filePath } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'stop-archive happy path',
+        gitBaseline: {
+          branch: 'main',
+          head: baselineHead,
+          status_digest: MIN_DIGEST,
+        },
+        host: 'claude',
+      });
+      await setFrontmatter(filePath, (fm) => {
+        fm.current_phase = 'summary-complete';
+        fm.terminal_marker = true;
+      });
+      // Probe a real advanced HEAD on the workflow's branch so A3 passes
+      // with explicit --head-sha (mirrors orchestrator /finalize step 2's
+      // `git rev-parse <child_baseline_branch>` flow).
+      const advancedHead = makeAdvanceCommit(
+        repoRoot,
+        'feat(plugins/engineer): subtask commit',
+      );
+
+      const { code, stdout, stderr } = runStateCli(
+        [
+          'stop-archive',
+          '--workflow-path', filePath,
+          '--host', 'claude',
+          '--repo-root', repoRoot,
+          '--head-sha', advancedHead,
+          '--head-subject', 'feat(plugins/engineer): subtask commit',
+          '--status-digest', MIN_DIGEST,
+        ],
+        { cwd: repoRoot },
+      );
+      strictEqual(code, 0, `stderr: ${stderr}`);
+      let envelope;
+      try {
+        envelope = JSON.parse(stdout.trim());
+      } catch (err) {
+        throw new Error(`stop-archive stdout not JSON: ${stdout.trim()} (${err.message})`);
+      }
+      strictEqual(envelope.archived, true);
+      ok(typeof envelope.to === 'string' && envelope.to.includes(ARCHIVE_DIR_REL));
+      strictEqual((await listWorkflows(repoRoot)).length, 0);
+      strictEqual((await listArchive(repoRoot)).length, 1);
+    });
+  });
+
+  it('emits {archived:false, reason:"gate-not-met", gateFailures:[head_moved]} when --head-sha equals baseline', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { filePath } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'stop-archive head_moved fail',
+        gitBaseline: {
+          branch: 'main',
+          head: baselineHead,
+          status_digest: MIN_DIGEST,
+        },
+        host: 'claude',
+      });
+      await setFrontmatter(filePath, (fm) => {
+        fm.current_phase = 'summary-complete';
+        fm.terminal_marker = true;
+      });
+      const { code, stdout, stderr } = runStateCli(
+        [
+          'stop-archive',
+          '--workflow-path', filePath,
+          '--host', 'claude',
+          '--repo-root', repoRoot,
+          // Pass baselineHead as --head-sha — A3 must fail.
+          '--head-sha', baselineHead,
+          '--head-subject', 'feat: no-op',
+          '--status-digest', MIN_DIGEST,
+        ],
+        { cwd: repoRoot },
+      );
+      strictEqual(code, 0, `stderr: ${stderr}`);
+      const envelope = JSON.parse(stdout.trim());
+      strictEqual(envelope.archived, false);
+      strictEqual(envelope.reason, 'gate-not-met');
+      ok(Array.isArray(envelope.gateFailures));
+      ok(
+        envelope.gateFailures.includes('head_moved'),
+        `expected gateFailures to include 'head_moved', got ${JSON.stringify(envelope.gateFailures)}`,
+      );
+      // File remains in workflows/
+      strictEqual((await listWorkflows(repoRoot)).length, 1);
+      strictEqual((await listArchive(repoRoot)).length, 0);
+    });
+  });
+
+  it('emits {archived:false, gateFailures:[terminal_marker]} when terminal_marker is unset', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { filePath } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'stop-archive terminal_marker fail',
+        gitBaseline: {
+          branch: 'main',
+          head: baselineHead,
+          status_digest: MIN_DIGEST,
+        },
+        host: 'claude',
+      });
+      // Leave terminal_marker unset; head advanced — only A1 fails.
+      const advancedHead = makeAdvanceCommit(repoRoot);
+
+      const { code, stdout, stderr } = runStateCli(
+        [
+          'stop-archive',
+          '--workflow-path', filePath,
+          '--host', 'claude',
+          '--repo-root', repoRoot,
+          '--head-sha', advancedHead,
+          '--head-subject', 'feat(plugins/engineer): work',
+          '--status-digest', MIN_DIGEST,
+        ],
+        { cwd: repoRoot },
+      );
+      strictEqual(code, 0, `stderr: ${stderr}`);
+      const envelope = JSON.parse(stdout.trim());
+      strictEqual(envelope.archived, false);
+      ok(envelope.gateFailures.includes('terminal_marker'));
+      strictEqual((await listWorkflows(repoRoot)).length, 1);
+    });
+  });
+
+  it('accepts cross-branch invocation — --head-sha differs from current-process HEAD', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      // Workflow anchored to 'feat/child-branch' branch — different from
+      // the test process's working-branch HEAD. Orchestrator probes the
+      // child's branch HEAD via `git rev-parse refs/heads/<branch>` and
+      // passes that explicitly. We simulate that here by passing a
+      // synthetic --head-sha that is NOT the current HEAD.
+      const { filePath } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'stop-archive cross-branch',
+        gitBaseline: {
+          branch: 'feat/child-branch',
+          head: baselineHead,
+          status_digest: MIN_DIGEST,
+        },
+        host: 'claude',
+      });
+      await setFrontmatter(filePath, (fm) => {
+        fm.current_phase = 'summary-complete';
+        fm.terminal_marker = true;
+      });
+
+      // Cross-branch: pass an explicit advanced sha that differs from the
+      // workflow baselineHead (A3 passes via explicit arg, even though
+      // makeAdvanceCommit is on the test's current branch).
+      const crossBranchHead = 'f'.repeat(40);
+      const { code, stdout, stderr } = runStateCli(
+        [
+          'stop-archive',
+          '--workflow-path', filePath,
+          '--host', 'claude',
+          '--repo-root', repoRoot,
+          '--head-sha', crossBranchHead,
+          '--head-subject', 'feat(plugins/engineer): cross-branch',
+          '--status-digest', MIN_DIGEST,
+        ],
+        { cwd: repoRoot },
+      );
+      strictEqual(code, 0, `stderr: ${stderr}`);
+      const envelope = JSON.parse(stdout.trim());
+      strictEqual(envelope.archived, true);
+    });
+  });
+});
