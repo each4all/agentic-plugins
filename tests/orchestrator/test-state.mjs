@@ -41,6 +41,7 @@ const {
   currentGitBranch,
   findActiveWorkflowByBranch,
   findActiveWorkflow,
+  findMacroBySubtaskBranch,
   parseWorkflowFile,
   assembleWorkflowFile,
   scrubSecrets,
@@ -1827,6 +1828,277 @@ describe('state.mjs — ADR-0019 PR-C0 updateSubtask atomic single-subtask mutat
       strictEqual(envelope.updatedSubtask.status, 'completed');
       strictEqual(envelope.updatedSubtask.commit, 'aaa111');
       strictEqual(envelope.autoTerminal, true);
+    });
+  });
+});
+
+describe('state.mjs — ADR-0019 PR-D findMacroBySubtaskBranch branch-agnostic macro lookup', () => {
+  // ADR-0019 §1 lines 187-213 — after /orchestrator:next switches the
+  // user to a subtask branch, the macro workflow (anchored to a
+  // different branch via git_baseline.branch) cannot be found by the
+  // branch-keyed findActiveWorkflowByBranch. findMacroBySubtaskBranch
+  // scans all active orchestrator workflows for any whose
+  // plan.subtasks[].branch matches the supplied (subtask) branch, with
+  // a fail-closed exact-one uniqueness rule.
+
+  async function setupMacro(repoRoot, subtasks, { macroBranch = 'main' } = {}) {
+    const { filePath } = await createWorkflow({
+      repoRoot,
+      verb: 'plan',
+      host: 'claude',
+      gitBaseline: { branch: macroBranch, head: 'a'.repeat(40), status_digest: '' },
+      originalRequest: 'pr-d find-macro fixture',
+    });
+    await setPlan({ workflowPath: filePath, host: 'claude', subtasks });
+    return filePath;
+  }
+
+  it('returns null when no macro references the subtask branch', async () => {
+    await withTmpRepo('pr-d-find-macro-none', async (root) => {
+      await setupMacro(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      const result = await findMacroBySubtaskBranch(root, 'feat/zzz');
+      strictEqual(result, null);
+    });
+  });
+
+  it('returns the macro path when exactly one references the subtask branch', async () => {
+    await withTmpRepo('pr-d-find-macro-one', async (root) => {
+      const filePath = await setupMacro(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+        { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: [], status: 'pending' },
+      ]);
+      const result = await findMacroBySubtaskBranch(root, 'feat/b');
+      strictEqual(result, filePath);
+    });
+  });
+
+  it('throws fail-closed when two+ macros reference the same subtask branch', async () => {
+    // Branches are unique within a single macro plan (plan-set rejects
+    // duplicates), but two SEPARATE macro plans could each declare a
+    // subtask on the same branch — ADR-0019 §1 says auto-resolution
+    // MUST fail-closed in that case so writes do not land on the wrong
+    // parent.
+    await withTmpRepo('pr-d-find-macro-ambiguous', async (root) => {
+      await setupMacro(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/shared', blocked_by: [], status: 'pending' },
+      ], { macroBranch: 'macro-1' });
+      await setupMacro(root, [
+        { id: 'X', verb: 'critique', branch: 'feat/shared', blocked_by: [], status: 'pending' },
+      ], { macroBranch: 'macro-2' });
+      await rejects(
+        () => findMacroBySubtaskBranch(root, 'feat/shared'),
+        /ambiguous.*feat\/shared.*macro/i,
+      );
+    });
+  });
+
+  it('ignores archived workflows (workflows/ only — archive/ is frozen)', async () => {
+    await withTmpRepo('pr-d-find-macro-archive', async (root) => {
+      const filePath = await setupMacro(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      // Simulate the macro being archived (file moved out of workflows/).
+      const archiveDir = join(root, '.claude', 'agentic-orchestrator', 'archive');
+      await mkdir(archiveDir, { recursive: true });
+      const archived = join(archiveDir, filePath.split('/').pop());
+      await writeFile(archived, await readFile(filePath, 'utf8'));
+      await rm(filePath);
+      const result = await findMacroBySubtaskBranch(root, 'feat/a');
+      strictEqual(result, null);
+    });
+  });
+
+  it('rejects empty / non-string branch argument', async () => {
+    await withTmpRepo('pr-d-find-macro-empty', async (root) => {
+      await setupMacro(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      strictEqual(await findMacroBySubtaskBranch(root, ''), null);
+      strictEqual(await findMacroBySubtaskBranch(root, null), null);
+      strictEqual(await findMacroBySubtaskBranch(root, undefined), null);
+    });
+  });
+});
+
+describe('state.mjs CLI — ADR-0019 PR-D find-macro subcommand', () => {
+  async function setupMacro(repoRoot, subtasks, { macroBranch = 'main' } = {}) {
+    const { filePath } = await createWorkflow({
+      repoRoot, verb: 'plan', host: 'claude',
+      gitBaseline: { branch: macroBranch, head: 'a'.repeat(40), status_digest: '' },
+      originalRequest: 'pr-d find-macro CLI fixture',
+    });
+    await setPlan({ workflowPath: filePath, host: 'claude', subtasks });
+    return filePath;
+  }
+
+  it('find-macro emits empty stdout when no match (exit 0)', async () => {
+    await withTmpRepo('pr-d-cli-find-macro-none', async (root) => {
+      await setupMacro(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'find-macro',
+        '--repo-root', root,
+        '--subtask-branch', 'feat/none',
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 0);
+      strictEqual(cp.stdout, '');
+    });
+  });
+
+  it('find-macro emits absolute path on exact-one match (exit 0)', async () => {
+    await withTmpRepo('pr-d-cli-find-macro-one', async (root) => {
+      const filePath = await setupMacro(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'find-macro',
+        '--repo-root', root,
+        '--subtask-branch', 'feat/a',
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 0);
+      strictEqual(cp.stdout.trim(), filePath);
+    });
+  });
+
+  it('find-macro exits non-zero on ambiguous match (exit 1)', async () => {
+    await withTmpRepo('pr-d-cli-find-macro-ambiguous', async (root) => {
+      await setupMacro(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/shared', blocked_by: [], status: 'pending' },
+      ], { macroBranch: 'macro-1' });
+      await setupMacro(root, [
+        { id: 'X', verb: 'critique', branch: 'feat/shared', blocked_by: [], status: 'pending' },
+      ], { macroBranch: 'macro-2' });
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'find-macro',
+        '--repo-root', root,
+        '--subtask-branch', 'feat/shared',
+      ], { encoding: 'utf8' });
+      ok(cp.status !== 0, `expected non-zero exit; got ${cp.status}`);
+      ok(cp.stderr.includes('ambiguous'), `stderr: ${cp.stderr}`);
+    });
+  });
+
+  it('find-macro --subtask-branch is required', async () => {
+    await withTmpRepo('pr-d-cli-find-macro-no-flag', async (root) => {
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'find-macro', '--repo-root', root,
+      ], { encoding: 'utf8' });
+      ok(cp.status !== 0);
+      ok(cp.stderr.includes('subtask-branch'), `stderr: ${cp.stderr}`);
+    });
+  });
+});
+
+describe('state.mjs CLI — ADR-0019 PR-D read-subtask + next-ready subcommands', () => {
+  async function setupMacro(repoRoot, subtasks) {
+    const { filePath } = await createWorkflow({
+      repoRoot, verb: 'plan', host: 'claude',
+      gitBaseline: MIN_BASELINE(),
+      originalRequest: 'pr-d read/next-ready CLI fixture',
+    });
+    await setPlan({ workflowPath: filePath, host: 'claude', subtasks });
+    return filePath;
+  }
+
+  it('read-subtask emits the subtask object as JSON', async () => {
+    await withTmpRepo('pr-d-cli-read-subtask', async (root) => {
+      const filePath = await setupMacro(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending',
+          profile: 'plan', topic: 'design the API' },
+      ]);
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'read-subtask',
+        '--workflow-path', filePath,
+        '--subtask-id', 'A',
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 0, `stderr: ${cp.stderr}`);
+      const out = JSON.parse(cp.stdout.trim());
+      strictEqual(out.id, 'A');
+      strictEqual(out.verb, 'compose');
+      strictEqual(out.branch, 'feat/a');
+      strictEqual(out.profile, 'plan');
+      strictEqual(out.topic, 'design the API');
+    });
+  });
+
+  it('read-subtask exits 1 + stderr when subtask id not found', async () => {
+    await withTmpRepo('pr-d-cli-read-subtask-not-found', async (root) => {
+      const filePath = await setupMacro(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'pending' },
+      ]);
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'read-subtask',
+        '--workflow-path', filePath,
+        '--subtask-id', 'ZZZ',
+      ], { encoding: 'utf8' });
+      ok(cp.status !== 0);
+      ok(cp.stderr.includes('ZZZ'));
+    });
+  });
+
+  it('next-ready emits the first pending+deps-satisfied subtask', async () => {
+    await withTmpRepo('pr-d-cli-next-ready-happy', async (root) => {
+      const filePath = await setupMacro(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'completed' },
+        { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'pending' },
+        { id: 'C', verb: 'refine', branch: 'feat/c', blocked_by: ['B'], status: 'blocked' },
+      ]);
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'next-ready', '--workflow-path', filePath,
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 0);
+      const out = JSON.parse(cp.stdout.trim());
+      strictEqual(out.ready.id, 'B');
+    });
+  });
+
+  it('next-ready reports all_terminal when no candidate exists and every subtask is terminal', async () => {
+    await withTmpRepo('pr-d-cli-next-ready-all-terminal', async (root) => {
+      const filePath = await setupMacro(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'completed' },
+      ]);
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'next-ready', '--workflow-path', filePath,
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 0);
+      const out = JSON.parse(cp.stdout.trim());
+      strictEqual(out.ready, null);
+      strictEqual(out.reason, 'all_terminal');
+      strictEqual(out.summary.completed, 1);
+    });
+  });
+
+  it('next-ready reports in_progress_or_blocked when waiting on a non-terminal sibling', async () => {
+    await withTmpRepo('pr-d-cli-next-ready-blocked', async (root) => {
+      const filePath = await setupMacro(root, [
+        { id: 'A', verb: 'compose', branch: 'feat/a', blocked_by: [], status: 'in_progress' },
+        { id: 'B', verb: 'critique', branch: 'feat/b', blocked_by: ['A'], status: 'blocked' },
+      ]);
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'next-ready', '--workflow-path', filePath,
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 0);
+      const out = JSON.parse(cp.stdout.trim());
+      strictEqual(out.ready, null);
+      strictEqual(out.reason, 'in_progress_or_blocked');
+      strictEqual(out.summary.in_progress, 1);
+      strictEqual(out.summary.blocked, 1);
+    });
+  });
+
+  it('next-ready reports empty_plan when plan.subtasks[] is empty', async () => {
+    await withTmpRepo('pr-d-cli-next-ready-empty', async (root) => {
+      const filePath = await setupMacro(root, []);
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS, 'next-ready', '--workflow-path', filePath,
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 0);
+      const out = JSON.parse(cp.stdout.trim());
+      strictEqual(out.ready, null);
+      strictEqual(out.reason, 'empty_plan');
     });
   });
 });

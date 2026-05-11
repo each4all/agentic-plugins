@@ -702,6 +702,84 @@ export async function findActiveWorkflow(repoRoot) {
   return findActiveWorkflowByBranch(repoRoot, branch);
 }
 
+/**
+ * ADR-0019 §1 lines 187-213 — branch-agnostic macro lookup. Scans
+ * every active orchestrator workflow file under `workflows/` for the
+ * one whose `plan.subtasks[i].branch` matches the supplied branch.
+ *
+ * Used by `/orchestrator:next` and `/orchestrator:done` AFTER the user
+ * has been switched to a subtask branch: `findActiveWorkflowByBranch`
+ * keys on the macro's own `git_baseline.branch`, which no longer
+ * matches the current branch once the runbook has switched. This
+ * function bridges the gap by indexing into the macro plan's
+ * subtasks[] table instead.
+ *
+ * Fail-closed uniqueness rule (ADR-0019 §1):
+ *   - 0 match → returns null. Callers should surface "no macro
+ *     workflow references this branch — use `--workflow <id>` to
+ *     specify".
+ *   - 1 match → returns the absolute path.
+ *   - 2+ match → throws "ambiguous: branch <name> appears in macro
+ *     workflows <id-A>, <id-B>; use `--workflow <id>` to specify".
+ *     This prevents writes from landing on the wrong parent when the
+ *     same branch name happens to appear in two separate non-archived
+ *     macro plans.
+ *
+ * Archived workflows under `archive/` are NOT scanned — by design,
+ * archived macros are frozen and do not participate in active dispatch.
+ *
+ * Empty / null / non-string branch returns null (defensive: callers
+ * that probe with an empty branch get a clean miss rather than a
+ * sentinel error).
+ *
+ * @param {string} repoRoot
+ * @param {?string} branch
+ * @returns {Promise<?string>}
+ */
+export async function findMacroBySubtaskBranch(repoRoot, branch) {
+  if (typeof branch !== 'string' || branch.length === 0) return null;
+  const files = await listWorkflowFiles(repoRoot);
+  const matching = [];
+  for (const file of files) {
+    let fm;
+    try {
+      const text = await readFile(file, 'utf8');
+      fm = parseWorkflowFile(text).frontmatter;
+    } catch (err) {
+      // Fail-closed on parse failure (Codex P2 finding): a corrupt or
+      // unreadable workflow file COULD be the matching macro, or one of
+      // two ambiguous macros referencing this branch. Silently skipping
+      // it would let a different file win the lookup and produce a
+      // wrong-parent writeback. Surface the corruption to the user so
+      // they can reconcile (repair the file or archive it).
+      throw new Error(
+        `findMacroBySubtaskBranch: cannot parse workflow file ${safeFilename(file)} ` +
+          `(${err?.message ?? err}). Branch-agnostic macro lookup must fail-closed ` +
+          `on corruption (ADR-0019 §1 fail-closed uniqueness). Repair or archive ` +
+          `the corrupt workflow file before re-running /orchestrator:next or /done.`,
+      );
+    }
+    const subtasks = fm?.plan?.subtasks;
+    if (!Array.isArray(subtasks)) continue;
+    for (const s of subtasks) {
+      if (s && typeof s === 'object' && s.branch === branch) {
+        matching.push(file);
+        break;
+      }
+    }
+  }
+  if (matching.length === 0) return null;
+  if (matching.length === 1) return matching[0];
+  // 2+ match — ambiguous. List the involved workflow ids in the
+  // diagnostic so the user can pick the right `--workflow <id>`.
+  const ids = matching.map((f) => f.split('/').pop().replace(/\.md$/, ''));
+  throw new Error(
+    `findMacroBySubtaskBranch: ambiguous — branch ${JSON.stringify(branch)} ` +
+      `appears in macro workflows ${ids.map((i) => JSON.stringify(i)).join(', ')}; ` +
+      `use \`--workflow <id>\` to specify which macro the dispatch should target.`,
+  );
+}
+
 // -----------------------------------------------------------------------------
 // Frontmatter parse / serialize — orchestrator schema '1.0'
 
@@ -2456,6 +2534,26 @@ function cliPrintHelp() {
       '    Print absolute path of active workflow on the given branch (or current branch).',
       '    Empty stdout + exit 0 if no active workflow on this branch.',
       '',
+      '  find-macro --repo-root <path> --subtask-branch <branch>',
+      '    ADR-0019 PR-D — branch-agnostic macro lookup. Scans active',
+      '    orchestrator workflows for any whose plan.subtasks[].branch',
+      '    matches <branch>. Used by /orchestrator:next + /orchestrator:done',
+      '    AFTER the user has been switched to a subtask branch.',
+      '    Empty stdout + exit 0 if no match; exit 1 + stderr on 2+ ambiguous.',
+      '',
+      '  read-subtask --workflow-path <path> --subtask-id <id>',
+      '    ADR-0019 PR-D — emit one plan.subtasks[i] entry as JSON. Used',
+      '    by /orchestrator:next + /orchestrator:done to extract verb /',
+      '    branch / status / engineer_workflow_id / etc. without inline',
+      '    YAML scans. Exit 1 + stderr on subtask id not found.',
+      '',
+      '  next-ready --workflow-path <path>',
+      '    ADR-0019 PR-D — emit the first plan.subtasks[i] entry with',
+      '    status=pending AND all blocked_by predecessors completed. JSON:',
+      '    {ready: <subtask>} on success or',
+      '    {ready: null, reason: empty_plan|all_terminal|in_progress_or_blocked,',
+      '     summary?: {...}} when no candidate is ready.',
+      '',
       '  create --repo-root <path> --verb plan --host claude|codex',
       '         --git-baseline-branch <name> --git-baseline-head <sha>',
       '         [--status-digest <hex>] [--original-request <text>]',
@@ -2546,6 +2644,117 @@ async function cliMain(argv) {
             ? await findActiveWorkflowByBranch(flags['repo-root'], flags.branch)
             : await findActiveWorkflow(flags['repo-root']);
         if (path) process.stdout.write(`${path}\n`);
+        return 0;
+      }
+
+      case 'find-macro': {
+        // ADR-0019 §1 lines 187-213 — branch-agnostic macro lookup
+        // used by /orchestrator:next + /orchestrator:done after the
+        // user has switched to a subtask branch.
+        cliRequire(flags, ['repo-root', 'subtask-branch']);
+        const path = await findMacroBySubtaskBranch(
+          flags['repo-root'],
+          flags['subtask-branch'],
+        );
+        if (path) process.stdout.write(`${path}\n`);
+        return 0;
+      }
+
+      case 'read-subtask': {
+        // ADR-0019 PR-D — emit one plan.subtasks[i] entry as JSON so
+        // /orchestrator:next + /orchestrator:done runbook bash blocks can
+        // extract fields (verb / branch / status / engineer_workflow_id /
+        // commit / closed_at / profile / topic) without inline YAML scan
+        // shims. Exit 0 + JSON on stdout; exit 1 + stderr on not-found
+        // or on a legacy schema 1.0 file (dispatch requires verb+branch).
+        cliRequire(flags, ['workflow-path', 'subtask-id']);
+        const text = await readFile(flags['workflow-path'], 'utf8');
+        const { frontmatter } = parseWorkflowFile(text);
+        if (frontmatter?.schema === '1.0') {
+          process.stderr.write(
+            `read-subtask: schema 1.0 plan does not carry the required verb/branch fields ` +
+              `for /orchestrator:next dispatch — archive this legacy plan and run ` +
+              `/orchestrator:plan to generate a fresh schema 1.1 plan (ADR-0019 §2 PR-B).\n`,
+          );
+          return 1;
+        }
+        const subtasks = frontmatter?.plan?.subtasks;
+        if (!Array.isArray(subtasks)) {
+          process.stderr.write(`read-subtask: workflow has no plan.subtasks[]\n`);
+          return 1;
+        }
+        const found = subtasks.find((s) => s && s.id === flags['subtask-id']);
+        if (!found) {
+          process.stderr.write(
+            `read-subtask: subtask id ${JSON.stringify(flags['subtask-id'])} not found in plan.subtasks[]\n`,
+          );
+          return 1;
+        }
+        process.stdout.write(`${JSON.stringify(found)}\n`);
+        return 0;
+      }
+
+      case 'next-ready': {
+        // ADR-0019 PR-D + Codex P2 deterministic-selection policy —
+        // emit the first subtask that is `pending` AND has all
+        // `blocked_by` predecessors `completed`. When no such candidate
+        // exists, emit a structured diagnostic JSON `{reason, summary}`
+        // distinguishing the three actionable states:
+        //   - all_terminal   → all subtasks are completed/deferred/abandoned
+        //                      (recommend /orchestrator:finalize)
+        //   - in_progress_or_blocked → at least one is in_progress (waiting)
+        //                              or blocked (waiting on predecessor)
+        //   - empty_plan     → plan.subtasks[] is empty
+        // Schema 1.0 legacy plans are rejected here — they lack the
+        // verb/branch fields the dispatch path requires.
+        cliRequire(flags, ['workflow-path']);
+        const text = await readFile(flags['workflow-path'], 'utf8');
+        const { frontmatter } = parseWorkflowFile(text);
+        if (frontmatter?.schema === '1.0') {
+          process.stderr.write(
+            `next-ready: schema 1.0 plan does not carry the required verb/branch fields ` +
+              `for /orchestrator:next dispatch — archive this legacy plan and run ` +
+              `/orchestrator:plan to generate a fresh schema 1.1 plan (ADR-0019 §2 PR-B).\n`,
+          );
+          return 1;
+        }
+        const subtasks = Array.isArray(frontmatter?.plan?.subtasks)
+          ? frontmatter.plan.subtasks
+          : [];
+        if (subtasks.length === 0) {
+          process.stdout.write(`${JSON.stringify({ ready: null, reason: 'empty_plan' })}\n`);
+          return 0;
+        }
+        const completed = new Set(
+          subtasks.filter((s) => s?.status === 'completed').map((s) => s.id),
+        );
+        const ready = subtasks.find((s) => {
+          if (s?.status !== 'pending') return false;
+          const deps = Array.isArray(s.blocked_by) ? s.blocked_by : [];
+          return deps.every((d) => completed.has(d));
+        });
+        if (ready) {
+          process.stdout.write(`${JSON.stringify({ ready })}\n`);
+          return 0;
+        }
+        const TERMINAL = new Set(['completed', 'deferred', 'abandoned']);
+        const allTerminal = subtasks.every((s) => TERMINAL.has(s?.status));
+        const summary = {
+          total: subtasks.length,
+          completed: subtasks.filter((s) => s?.status === 'completed').length,
+          in_progress: subtasks.filter((s) => s?.status === 'in_progress').length,
+          blocked: subtasks.filter((s) => s?.status === 'blocked').length,
+          pending_unready: subtasks.filter((s) => s?.status === 'pending').length,
+          deferred: subtasks.filter((s) => s?.status === 'deferred').length,
+          abandoned: subtasks.filter((s) => s?.status === 'abandoned').length,
+        };
+        process.stdout.write(
+          `${JSON.stringify({
+            ready: null,
+            reason: allTerminal ? 'all_terminal' : 'in_progress_or_blocked',
+            summary,
+          })}\n`,
+        );
         return 0;
       }
 
