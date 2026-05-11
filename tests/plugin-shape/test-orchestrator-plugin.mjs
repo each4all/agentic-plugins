@@ -235,7 +235,11 @@ describe('plugins/orchestrator scripts/', () => {
     const p = resolve(PLUGIN_ROOT, 'scripts', 'stop-archive.mjs');
     const st = await stat(p);
     ok(st.isFile(), 'stop-archive.mjs is a file');
-    // Not required to be executable — it's a library module imported by hooks.
+    // Executable bit required per `kit/lint/check-plugin-shape.mjs`
+    // scripts/ scan — engineer mirror has it set; orchestrator must
+    // match (CI plugin-shape lint fails otherwise).
+    const isExecutable = (st.mode & 0o111) !== 0;
+    ok(isExecutable, 'stop-archive.mjs has executable bit set');
   });
 });
 
