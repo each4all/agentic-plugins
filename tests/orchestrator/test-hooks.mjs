@@ -152,71 +152,192 @@ describe('pre-compact.mjs', () => {
 });
 
 // ---------------------------------------------------------------------------
-// stop.mjs (Claude) — snapshot-only, NO archive
+// stop.mjs (Claude) — snapshot + macro auto-archive (ADR-0019 PR-E §5)
 
-describe('Claude stop.mjs (snapshot-only, no archive)', () => {
-  it('writes last_snapshot trigger=stop AND leaves workflow file in workflows/ (no archive)', async () => {
-    await withTmpRepo('stop-claude', async (root) => {
+describe('Claude stop.mjs — snapshot + macro auto-archive', () => {
+  it('writes last_snapshot trigger=stop for every macro, regardless of gate verdict', async () => {
+    await withTmpRepo('stop-claude-snapshot', async (root) => {
       const { filePath } = await createWorkflow({
         repoRoot: root, verb: 'plan', host: 'claude',
         gitBaseline: MIN_BASELINE(), originalRequest: 'feat',
       });
       const r = await runHook(join(HOOKS_CLAUDE, 'stop.mjs'), { repoRoot: root });
       strictEqual(r.code, 0);
-
-      // Snapshot recorded
+      // Snapshot recorded — runMacroStopArchive snapshots before evaluation.
       const { frontmatter } = await readWorkflow(filePath);
       strictEqual(frontmatter.last_snapshot.trigger, 'stop');
       ok(frontmatter.host_history.some((e) => e.host === 'claude' && e.event === 'snapshot'));
+    });
+  });
 
-      // Workflow file still in workflows/ (no auto-archive)
-      const workflows = await readdir(join(root, '.claude/agentic-orchestrator/workflows'));
-      ok(workflows.some((f) => f.endsWith('.md') && !f.endsWith('.lock')),
-        'workflow file remains in workflows/ — Stop did not auto-archive');
+  it('archives the macro when all gates pass (terminal_marker + macro phase + all subtasks terminal + no engineer children)', async () => {
+    await withTmpRepo('stop-claude-archive', async (root) => {
+      // Setup macro in finalized state via direct frontmatter manipulation
+      // (the runbook commands ship in T9/T10; tests exercise the hook
+      // directly here).
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'feat',
+      });
+      // Import setMacroTerminal + setPlan to bring the macro to a
+      // terminal state with no live engineer children.
+      const { setMacroTerminal, setPlan } = await import(STATE_MJS);
+      await setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'completed' },
+        ],
+      });
+      await setMacroTerminal({
+        workflowPath: filePath,
+        host: 'claude',
+        terminalPhase: 'finalized',
+        terminalMarker: true,
+      });
+      const r = await runHook(join(HOOKS_CLAUDE, 'stop.mjs'), { repoRoot: root });
+      strictEqual(r.code, 0, `stderr: ${r.stderr}`);
+      // Workflow file has moved to archive/
+      const live = await readdir(join(root, '.claude/agentic-orchestrator/workflows'))
+        .then((es) => es.filter((e) => e.endsWith('.md')));
+      strictEqual(live.length, 0, 'workflow file should have been archived');
+      const archived = await readdir(join(root, '.claude/agentic-orchestrator/archive'))
+        .then((es) => es.filter((e) => e.endsWith('.md')));
+      strictEqual(archived.length, 1, 'archive should contain the macro file');
+    });
+  });
 
-      // No archive directory created
-      let archiveExists = true;
-      try {
-        await readdir(join(root, '.claude/agentic-orchestrator/archive'));
-      } catch (err) {
-        if (err.code === 'ENOENT') archiveExists = false;
-      }
-      strictEqual(archiveExists, false, 'archive directory not created (snapshot-only MVP)');
+  it('does NOT archive when an engineer child references this macro (A4 blocks)', async () => {
+    await withTmpRepo('stop-claude-blocked-by-child', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'feat',
+      });
+      const { setMacroTerminal, setPlan } = await import(STATE_MJS);
+      await setPlan({
+        workflowPath: filePath,
+        host: 'claude',
+        subtasks: [
+          { id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'completed' },
+        ],
+      });
+      await setMacroTerminal({
+        workflowPath: filePath,
+        host: 'claude',
+        terminalPhase: 'finalized',
+        terminalMarker: true,
+      });
+      // Place an engineer child referencing this macro id
+      const macroId = filePath.split('/').pop().replace(/\.md$/, '');
+      const engDir = join(root, '.claude/agentic-engineer/workflows');
+      await execFileSync('mkdir', ['-p', engDir]);
+      await writeFile(
+        join(engDir, 'compose-20260511T010000Z-aaaaaa.md'),
+        [
+          '---',
+          'schema: "1.1"',
+          'workflow_id: "compose-20260511T010000Z-aaaaaa"',
+          `parent_workflow: ${JSON.stringify(macroId)}`,
+          'originating_subtask: "T1"',
+          '---',
+          '# engineer child',
+          '',
+        ].join('\n'),
+      );
+      const r = await runHook(join(HOOKS_CLAUDE, 'stop.mjs'), { repoRoot: root });
+      strictEqual(r.code, 0);
+      // Workflow still live (engineer child blocks A4)
+      const live = await readdir(join(root, '.claude/agentic-orchestrator/workflows'))
+        .then((es) => es.filter((e) => e.endsWith('.md')));
+      strictEqual(live.length, 1);
+    });
+  });
+
+  it('does NOT archive when terminal_marker is false (A1 blocks)', async () => {
+    await withTmpRepo('stop-claude-no-terminal-marker', async (root) => {
+      await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'feat',
+      });
+      // No setMacroTerminal call — terminal_marker absent.
+      const r = await runHook(join(HOOKS_CLAUDE, 'stop.mjs'), { repoRoot: root });
+      strictEqual(r.code, 0);
+      const live = await readdir(join(root, '.claude/agentic-orchestrator/workflows'))
+        .then((es) => es.filter((e) => e.endsWith('.md')));
+      strictEqual(live.length, 1, 'workflow remains live without terminal_marker');
+    });
+  });
+
+  it('graceful no-op when no macros exist (empty workflows/)', async () => {
+    await withTmpRepo('stop-claude-empty', async (root) => {
+      const r = await runHook(join(HOOKS_CLAUDE, 'stop.mjs'), { repoRoot: root });
+      strictEqual(r.code, 0);
     });
   });
 });
 
 // ---------------------------------------------------------------------------
-// stop.mjs (Codex) — snapshot-only, host=codex
+// stop.mjs (Codex) — manual helper, snapshot + macro auto-archive parity
 
-describe('Codex stop.mjs (manual helper, snapshot-only)', () => {
+describe('Codex stop.mjs — manual helper with macro auto-archive parity', () => {
+  async function runCodexStop(root) {
+    return new Promise((resolveP, rejectP) => {
+      const child = spawn(process.execPath, [join(HOOKS_CODEX, 'stop.mjs')], {
+        cwd: root,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const out = [];
+      const err = [];
+      child.stdout.on('data', (c) => out.push(c));
+      child.stderr.on('data', (c) => err.push(c));
+      child.once('error', rejectP);
+      child.once('close', (code) => resolveP({
+        code,
+        stdout: Buffer.concat(out).toString('utf8'),
+        stderr: Buffer.concat(err).toString('utf8'),
+      }));
+    });
+  }
+
   it('writes last_snapshot trigger=stop with host=codex', async () => {
-    await withTmpRepo('stop-codex', async (root) => {
+    await withTmpRepo('stop-codex-snapshot', async (root) => {
       const { filePath } = await createWorkflow({
         repoRoot: root, verb: 'plan', host: 'codex',
         gitBaseline: MIN_BASELINE(), originalRequest: 'feat',
       });
-      // Codex stop.mjs reads cwd, not stdin — it's a manual helper.
-      const r = await new Promise((resolveP, rejectP) => {
-        const child = spawn(process.execPath, [join(HOOKS_CODEX, 'stop.mjs')], {
-          cwd: root,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        const out = [];
-        const err = [];
-        child.stdout.on('data', (c) => out.push(c));
-        child.stderr.on('data', (c) => err.push(c));
-        child.once('error', rejectP);
-        child.once('close', (code) => resolveP({
-          code,
-          stdout: Buffer.concat(out).toString('utf8'),
-          stderr: Buffer.concat(err).toString('utf8'),
-        }));
-      });
+      const r = await runCodexStop(root);
       strictEqual(r.code, 0);
       const { frontmatter } = await readWorkflow(filePath);
       strictEqual(frontmatter.last_snapshot.trigger, 'stop');
       ok(frontmatter.host_history.some((e) => e.host === 'codex' && e.event === 'snapshot'));
+    });
+  });
+
+  it('archives the macro when all gates pass (Codex parity)', async () => {
+    await withTmpRepo('stop-codex-archive', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'codex',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'feat',
+      });
+      const { setMacroTerminal, setPlan } = await import(STATE_MJS);
+      await setPlan({
+        workflowPath: filePath,
+        host: 'codex',
+        subtasks: [
+          { id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'abandoned' },
+        ],
+      });
+      await setMacroTerminal({
+        workflowPath: filePath,
+        host: 'codex',
+        terminalPhase: 'aborted',
+        terminalMarker: true,
+      });
+      const r = await runCodexStop(root);
+      strictEqual(r.code, 0, `stderr: ${r.stderr}`);
+      const live = await readdir(join(root, '.claude/agentic-orchestrator/workflows'))
+        .then((es) => es.filter((e) => e.endsWith('.md')));
+      strictEqual(live.length, 0, 'workflow archived under Codex helper too');
     });
   });
 });

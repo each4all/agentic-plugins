@@ -60,3 +60,19 @@ export function gitHeadSha(repoRoot) {
     return null;
   }
 }
+
+// ADR-0019 PR-E — soft conventional-commit warning gate in
+// runMacroStopArchive needs the current HEAD commit subject. Engineer
+// adapter has the analogous helper at
+// plugins/engineer/adapters/claude/hooks/_shared.mjs:64; same shape.
+export function gitHeadSubject(repoRoot) {
+  try {
+    const out = execSync('git log -1 --pretty=%s', {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return out.toString().trim() || null;
+  } catch {
+    return null;
+  }
+}

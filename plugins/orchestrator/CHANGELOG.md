@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **ADR-0019 PR-E — macro completion lifecycle**: `/orchestrator:finalize` + `/orchestrator:abort` slash-command runbooks implement the §5 three-step ritual (bulk subtask status transition → active-children detach pass → terminal markers). Engineer children are routed cross-plugin via the new `state.mjs` `stop-archive` / `detach-archive` CLIs (PR-E engineer side; orchestrator probes the child's `git_baseline.branch` HEAD via `git rev-parse` and passes it as explicit `--head-sha` per ADR-0019 §5 D-ε′).
+- **Macro auto-archive A1–A4** on `Stop`: orchestrator hooks (Claude auto + Codex manual helper) now invoke `runMacroStopArchiveAll` which iterates every non-archived macro under `workflows/`, snapshots each, evaluates the four hard gates (terminal_marker / macro terminal_phase / all_subtasks_terminal / no_active_engineer_children), and atomically moves passing macros into `archive/`. Branch-agnostic discovery — the Stop event firing on a subtask branch still archives the parent macro on its own branch.
+- **`scripts/stop-archive.mjs`** (new): pure `evaluateMacroStopArchive` gate evaluator + composite `runMacroStopArchive` + branch-agnostic iterator `runMacroStopArchiveAll`. Mirrors engineer's stop-archive shape with the §5 macro-specific divergences.
+- **`scripts/state.mjs` primitives**: `archiveWorkflow` + `bulkSubtaskStatus` (atomic, domain-constrained from→to enum) + `setMacroTerminal` (atomic terminal_phase + terminal_marker write) + predicates `terminalMarkerCheck` / `macroTerminalPhaseCheck` / `allSubtasksTerminalCheck` + scan helpers `listAllMacros` / `noActiveEngineerChildrenScan`. New CLI subcommands `bulk-subtask-status`, `set-terminal`, `archive`.
+- **`scripts/discover-engineer.mjs` preflight extension**: probe for the two new engineer CLI subcommand tokens (`detach-archive` + `stop-archive`) so a PR-D-era engineer install (without PR-E CLIs) is rejected with a clear diagnostic before `/orchestrator:finalize` / `/orchestrator:abort` dispatch.
+
+### Internal
+
+- `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event.
+- `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
+
 ## [0.2.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.1.0...plugin-orchestrator-v0.2.0) (2026-05-08)
 
 

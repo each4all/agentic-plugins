@@ -258,4 +258,76 @@ describe('preflightEngineerCapability — PR-A flag detection', () => {
     const result = await preflightEngineerCapability(null);
     strictEqual(result.ok, false);
   });
+
+  // -----------------------------------------------------------------------------
+  // ADR-0019 PR-E extension — preflight also probes for the two new
+  // engineer CLI subcommands (detach-archive + stop-archive) that
+  // orchestrator /finalize·/abort step 2 invokes. A real (PR-E or later)
+  // engineer install ships both; a PR-A-only install (after-PR-A,
+  // before-PR-E) ships --parent-workflow and AGENTIC_PARENT_WORKFLOW
+  // but NOT the two new subcommands, so dispatch must abort cleanly.
+
+  it('returns ok=true when engineer state.mjs ships detach-archive + stop-archive subcommands (PR-E or later)', async () => {
+    // Real monorepo engineer install — PR-E ships both subcommands.
+    const result = await preflightEngineerCapability(ENGINEER_ROOT);
+    strictEqual(result.ok, true, `expected ok=true; got reason=${result.reason}`);
+  });
+
+  it('returns ok=false when engineer state.mjs lacks the detach-archive subcommand', async () => {
+    await withTmpHomeAndRepo(async (dir) => {
+      const fakeRoot = join(dir, 'pr-a-only-engineer');
+      // Include `--parent-workflow` (PR-A) and AGENTIC_PARENT_WORKFLOW
+      // command-file reference (PR-D) so prior preflight gates pass,
+      // but DON'T include `'detach-archive'` or `'stop-archive'` tokens.
+      // String concatenation prevents the literal tokens from appearing
+      // verbatim in the source bytes that preflight greps.
+      await writeEngineerLayout(fakeRoot, {
+        version: '0.5.0',
+        statePayload:
+          "#!/usr/bin/env node\n"
+          + "// PR-A gate marker: --parent-workflow flag\n"
+          + "if (process.argv.includes('--help')) process.stdout.write('legacy engineer\\n');\n"
+          + "process.exit(0);\n",
+      });
+      // PR-D Phase 0 env-var probe needs commands/investigate.md with
+      // 'AGENTIC_PARENT_WORKFLOW' token.
+      await mkdir(join(fakeRoot, 'commands'), { recursive: true });
+      await writeFile(
+        join(fakeRoot, 'commands', 'investigate.md'),
+        '# investigate\nAGENTIC_PARENT_WORKFLOW reading boilerplate\n',
+      );
+      await chmod(join(fakeRoot, 'scripts', 'state.mjs'), 0o755);
+      const result = await preflightEngineerCapability(fakeRoot);
+      strictEqual(result.ok, false);
+      match(result.reason, /detach-archive|stop-archive|PR-E/i);
+    });
+  });
+
+  it('returns ok=false when engineer state.mjs has detach-archive but lacks stop-archive', async () => {
+    await withTmpHomeAndRepo(async (dir) => {
+      const fakeRoot = join(dir, 'partial-pr-e-engineer');
+      // Quoted 'detach-archive' present so the first PR-E gate passes;
+      // 'stop-archive' deliberately omitted (the surrounding comments
+      // never use the literal so the source-grep does NOT match).
+      const detachToken = "'detach-" + "archive'"; // assemble at runtime to avoid the source bytes carrying the quoted literal in this test file too
+      await writeEngineerLayout(fakeRoot, {
+        version: '0.6.0',
+        statePayload:
+          "#!/usr/bin/env node\n"
+          + "// PR-A gate marker: --parent-workflow flag\n"
+          + `case ${detachToken}: process.exit(0);\n`
+          + "if (process.argv.includes('--help')) process.stdout.write('partial pr-e engineer\\n');\n"
+          + "process.exit(0);\n",
+      });
+      await mkdir(join(fakeRoot, 'commands'), { recursive: true });
+      await writeFile(
+        join(fakeRoot, 'commands', 'investigate.md'),
+        '# investigate\nAGENTIC_PARENT_WORKFLOW reading boilerplate\n',
+      );
+      await chmod(join(fakeRoot, 'scripts', 'state.mjs'), 0o755);
+      const result = await preflightEngineerCapability(fakeRoot);
+      strictEqual(result.ok, false);
+      match(result.reason, /stop-archive|PR-E/i);
+    });
+  });
 });

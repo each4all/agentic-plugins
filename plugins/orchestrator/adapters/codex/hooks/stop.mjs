@@ -1,55 +1,46 @@
 #!/usr/bin/env node
 // plugins/orchestrator/adapters/codex/hooks/stop.mjs
 //
-// Codex-side Stop helper for the orchestrator plugin (plan-only MVP).
+// Codex-side Stop helper for the orchestrator plugin per ADR-0019 §5
+// macro completion semantics (PR-E). Mirrors
+// plugins/orchestrator/adapters/claude/hooks/stop.mjs functionally;
+// the only divergence is that Codex CLI does not expose a hook system
+// equivalent to Claude Code's Stop event (as of Codex CLI 0.128.0),
+// so this script is invoked manually as a final step in
+// /orchestrator:finalize, /orchestrator:abort, /orchestrator:next, and
+// /orchestrator:done runbooks under Codex.
 //
-// As of Codex CLI 0.128.0, **no plugin-local automatic hook packaging
-// has been verified** for orchestrator's lifecycle events. Whether
-// Codex CLI exposes a global hook surface that could fire this script
-// at session-end is a separate user-environment concern; this helper
-// is shipped as a script the user can invoke manually at the end of a
-// Codex session, or that a future Codex hook surface can register if
-// plugin-local hook packaging becomes available.
+// Equivalent behavior to the Claude adapter:
 //
-// Equivalent behavior to plugins/orchestrator/adapters/claude/hooks/
-// stop.mjs: writes last_snapshot + host_history snapshot (trigger:
-// stop). Auto-archive is **not** performed in this MVP — it ships in
-// a follow-up PR alongside /orchestrator:done.
+//   1. Iterate every non-archived macro under
+//      <repoRoot>/.claude/agentic-orchestrator/workflows/
+//   2. For each macro: snapshot last_snapshot/host_history + evaluate
+//      A1–A4 gates + archive on pass.
 //
 // Manual invocation contract:
 //
 //   node "${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"
 //
-// (CLAUDE_PLUGIN_ROOT is the orchestrator plugin's resolved root in the
-// Codex side; the env-var name is shared with Claude for symmetry.)
+// (CLAUDE_PLUGIN_ROOT is the orchestrator plugin's resolved root in
+// the Codex side; the env-var name is shared with Claude for symmetry.)
 //
 // Hook absence is non-fatal (ADR-0011 §4 explicit). This script
 // silently no-ops on any error.
 
-import { findActiveWorkflow, snapshot } from '../../../scripts/state.mjs';
-// Reuse the canonical git probes from the Claude adapter shared module
-// (Phase 6 review SUGGESTION resolved — same helpers, single source of
-// truth for both adapter sides).
-import { gitTopLevel, gitStatusDigest } from '../../claude/hooks/_shared.mjs';
+import { runMacroStopArchiveAll } from '../../../scripts/stop-archive.mjs';
+import { gitHeadSubject, gitStatusDigest, gitTopLevel } from '../../claude/hooks/_shared.mjs';
 
 async function main() {
   const repoRoot = gitTopLevel(process.cwd());
   if (!repoRoot) return 0;
 
-  let active;
   try {
-    active = await findActiveWorkflow(repoRoot);
-  } catch {
-    return 0;
-  }
-  if (!active) return 0;
-
-  try {
-    await snapshot({
-      workflowPath: active,
+    await runMacroStopArchiveAll({
+      repoRoot,
       host: 'codex',
-      trigger: 'stop',
       statusDigest: gitStatusDigest(repoRoot),
+      headSubject: gitHeadSubject(repoRoot),
+      stderr: process.stderr,
     });
   } catch (err) {
     process.stderr.write(`orchestrator/codex-stop: ${err.message}\n`);
