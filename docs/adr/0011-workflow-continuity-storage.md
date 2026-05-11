@@ -19,6 +19,25 @@ Accepted
 > cases (sharded layout, multi-shard coordination) remain out of scope
 > per the original Non-Goal. §3 atomic write protocol below carries an
 > inline pointer to ADR-0019 §6.
+>
+> **Amendment 2026-05-11 (ADR-0020 cascade)**:
+> [ADR-0020](0020-engineer-integrated-workflow-umbrella.md) proposes
+> a `workflow_type` frontmatter field (enum: `verb-chain` | `start`)
+> for engineer's workflow schema. The field is **additive within the
+> closed schema** (no `SCHEMA_VERSION` bump), following the
+> [ADR-0017](0017-stage25-continuity-and-schema-roadmap.md) /
+> [ADR-0019 §881-889](0019-cross-plugin-invocation-contract.md)
+> *1.1-additive* precedent (`terminal_marker`, `child_completions`,
+> `latest_checkpoint`, `pending_ensemble`, `ensemble_results`,
+> `parent_workflow`, `originating_subtask`, `parent_detached`).
+> When `workflow_type` is absent (older workflows or new direct verb
+> invocations), readers treat it as `verb-chain`. The ADR-0020 PR 2
+> implementation lands the field in `state.mjs`'s
+> `FRONTMATTER_KEY_ORDER`, `SCHEMA_1_1_OPTIONAL_KEYS`,
+> `validateSchema11Fields`, and `createWorkflowUnderLock` in a single
+> coordinated commit (closed-schema constraint, same as ADR-0019
+> PR-A). §2 "File format" below is the storage shape this cascade
+> extends.
 
 ## Context
 

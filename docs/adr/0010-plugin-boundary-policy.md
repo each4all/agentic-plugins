@@ -4,9 +4,10 @@
 
 Accepted
 
-> Last amended 2026-05-06 — see [Amendments](#amendments) for the
-> ADR-0015 cascade (`plugins/research` retirement at Stage 2.5+,
-> superseding ADR-0014's deprecation timeline).
+> Last amended 2026-05-11 — see [Amendments](#amendments). 2026-05-06
+> recorded the ADR-0015 cascade (`plugins/research` retirement);
+> 2026-05-11 records the ADR-0020 cascade (lifecycle macro command
+> boundary versus verb-level alias).
 
 ## Context
 
@@ -522,3 +523,47 @@ across documentation / plugin source / meta layers). The cascade
 implementation lands at commits `28b5eb8` (plugin archive) and
 `944fd4e` (this Amendment's first form, rewritten in the same PR
 as ADR-0015's authoring).
+
+### 2026-05-11 — ADR-0020 cascade (engineer integrated workflow umbrella)
+
+**Trigger**: [ADR-0020](0020-engineer-integrated-workflow-umbrella.md)
+acceptance, which adds `/engineer:start` as a command-only lifecycle
+macro inside `plugins/engineer`.
+
+**Finding**: §3 "Naming convention" / "Verb-level sugar aliases"
+describes within-plugin verb→verb-plus-profile aliases (e.g.,
+`/engineer:audit ≡ /engineer:critique --profile=full-codebase`).
+`/engineer:start` is **not** such a sugar alias — it is a *lifecycle
+macro command* that sequences multiple verb skill invocations through
+the seven omcc-dev-equivalent lifecycle phases. ADR-0020 fixes the
+boundary between the two shapes:
+
+- **Verb-level sugar alias** (§3, unchanged): rewrites at
+  command-dispatch time to a single canonical verb plus profile.
+  State-mutation happens through the canonical verb.
+  `/engineer:audit` canonicalizes to
+  `/engineer:critique --profile=full-codebase` before
+  `state.mjs create --verb critique`; the workflow file records
+  `verb: critique`.
+- **Lifecycle macro command** (new shape introduced by ADR-0020):
+  orchestrates multiple verb skills sequentially with phase
+  boundaries. Bootstraps its own workflow file with
+  `workflow_type: start` (ADR-0020 §Sub-decision 5 + ADR-0011 §2
+  cascade). The `verb` field tracks the current phase's primary
+  verb and is updated at each phase transition. Example:
+  `/engineer:start <feature>` lands in ADR-0020 PR 3.
+
+`/engineer:start` does not extend `VALID_VERBS` (kept at the six
+canonical verbs) and does not consume the verb-level alias namespace.
+Future lifecycle macros (if any) follow the same shape; future
+verb-level aliases continue to follow the §3 within-verb pattern.
+
+**Unchanged**: 4-layer composition (§1), 6 cognitive verbs (§2),
+naming convention (§3) for verb skills and verb-level sugar aliases,
+plugin separation triggers (§6). The L2 capability slot remains
+occupied by `plugins/orchestrator` (per ADR-0018 §sub-1); the
+proposed `plugins/workflow` L2 plugin was evaluated and rejected in
+ADR-0020 Alternatives §B against §6 separation triggers.
+
+**Verified-against**: ADR-0020 §Sub-decision 1 + Alternatives §B +
+§Implementation Roadmap PR 3.
