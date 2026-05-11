@@ -252,6 +252,70 @@ describe('plugins/engineer — 6 verb skills (skills/<verb>/SKILL.md)', () => {
   }
 });
 
+describe('plugins/engineer — ADR-0019 PR-D Phase 0 parent-linkage env-var contract', () => {
+  // Every verb command's Phase 0 bootstrap snippet MUST read the three
+  // AGENTIC_* env vars set by /orchestrator:next so the create-time
+  // bootstrap records the immutable parent linkage per ADR-0019 §3.
+  // Direct invocation (no env vars) remains backward-compat — the snippet
+  // falls back to host=claude with no parent flags.
+  for (const verb of VERBS) {
+    describe(verb, () => {
+      const path = resolve(PLUGIN_ROOT, 'commands', `${verb}.md`);
+
+      it('uses AGENTIC_HOST variable instead of hardcoded --host claude', async () => {
+        const text = await readFile(path, 'utf8');
+        ok(!/--host\s+claude(?!\.\$)/m.test(text),
+          `commands/${verb}.md still hardcodes --host claude`);
+        ok(text.includes('--host "${AGENTIC_HOST:-claude}"'),
+          `commands/${verb}.md must use --host "\${AGENTIC_HOST:-claude}"`);
+      });
+
+      it('reads AGENTIC_PARENT_WORKFLOW + AGENTIC_ORIGINATING_SUBTASK with paired-set validation', async () => {
+        const text = await readFile(path, 'utf8');
+        ok(text.includes('AGENTIC_PARENT_WORKFLOW'),
+          `commands/${verb}.md must reference AGENTIC_PARENT_WORKFLOW`);
+        ok(text.includes('AGENTIC_ORIGINATING_SUBTASK'),
+          `commands/${verb}.md must reference AGENTIC_ORIGINATING_SUBTASK`);
+        ok(text.includes('PARENT_ARGS'),
+          `commands/${verb}.md must build a PARENT_ARGS array for forwarding`);
+        // Paired-set validation: both set or both absent.
+        ok(/must be set together/i.test(text),
+          `commands/${verb}.md must enforce paired-set validation diagnostic`);
+      });
+
+      it('forwards --parent-workflow + --originating-subtask via PARENT_ARGS to state.mjs create', async () => {
+        const text = await readFile(path, 'utf8');
+        ok(text.includes('--parent-workflow') && text.includes('--originating-subtask'),
+          `commands/${verb}.md must forward --parent-workflow + --originating-subtask flags`);
+        ok(text.includes('"${PARENT_ARGS[@]}"'),
+          `commands/${verb}.md must expand "\${PARENT_ARGS[@]}" in the create CLI call`);
+      });
+
+      it('reads AGENTIC_TOPIC env var with fallback to LLM-provided original request', async () => {
+        const text = await readFile(path, 'utf8');
+        // ADR-0019 PR-D Codex P2 — /orchestrator:next forwards subtask
+        // topic via AGENTIC_TOPIC env var. The engineer Phase 0
+        // boilerplate's --original-request must read it with a fallback
+        // to the LLM-provided scrubbed user request.
+        ok(text.includes('${AGENTIC_TOPIC:-'),
+          `commands/${verb}.md --original-request must use \${AGENTIC_TOPIC:-...} env-var fallback`);
+      });
+
+      if (['investigate', 'compose', 'critique'].includes(verb)) {
+        it('reads AGENTIC_PROFILE env var (verbs that accept --profile)', async () => {
+          const text = await readFile(path, 'utf8');
+          // ADR-0019 PR-D Codex P2 — /orchestrator:next forwards subtask
+          // profile via AGENTIC_PROFILE env var for the three multi-profile
+          // verbs. The Phase 0 boilerplate's --profile must read it with a
+          // fallback to the LLM-extracted $ARGUMENTS profile.
+          ok(text.includes('${AGENTIC_PROFILE:-'),
+            `commands/${verb}.md --profile must use \${AGENTIC_PROFILE:-...} env-var fallback`);
+        });
+      }
+    });
+  }
+});
+
 describe('plugins/engineer — 6 Codex agents YAML (skills/<verb>/agents/openai.yaml)', () => {
   for (const verb of VERBS) {
     describe(verb, () => {

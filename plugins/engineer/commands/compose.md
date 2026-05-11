@@ -51,22 +51,35 @@ rm -f "$FIND_ERR"
   GIT_BRANCH="$(git branch --show-current)"
   GIT_HEAD="$(git rev-parse HEAD)"
   STATUS_DIGEST="$(git status --porcelain=v1 -z | shasum -a 256 | cut -d' ' -f1)"
+  # ADR-0019 §1+§3 — when /orchestrator:next dispatches this command,
+  # it sets AGENTIC_PARENT_WORKFLOW + AGENTIC_ORIGINATING_SUBTASK so
+  # the create-time bootstrap records the immutable parent linkage.
+  # Both must be set together (or both absent for direct invocation).
+  PARENT_ARGS=()
+  if [ -n "${AGENTIC_PARENT_WORKFLOW:-}" ] || [ -n "${AGENTIC_ORIGINATING_SUBTASK:-}" ]; then
+    if [ -z "${AGENTIC_PARENT_WORKFLOW:-}" ] || [ -z "${AGENTIC_ORIGINATING_SUBTASK:-}" ]; then
+      echo "✗ AGENTIC_PARENT_WORKFLOW and AGENTIC_ORIGINATING_SUBTASK must be set together (ADR-0019 §3 immutable parent-child linkage). This usually indicates a dispatcher bug — /orchestrator:next must export both env vars or neither. If you set them manually, set both or neither." >&2
+      exit 1
+    fi
+    PARENT_ARGS=(--parent-workflow "$AGENTIC_PARENT_WORKFLOW" --originating-subtask "$AGENTIC_ORIGINATING_SUBTASK")
+  fi
   ACTIVE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" create \
     --repo-root "$REPO_ROOT" \
-    --verb compose --host claude --persona engineer \
+    --verb compose --host "${AGENTIC_HOST:-claude}" --persona engineer \
     --git-baseline-branch "$GIT_BRANCH" --git-baseline-head "$GIT_HEAD" \
     --status-digest "$STATUS_DIGEST" \
-    --profile "<profile from \$ARGUMENTS or 'plan'>" \
-    --original-request "<one-line scrubbed user request>" \
+    --profile "${AGENTIC_PROFILE:-<profile from \$ARGUMENTS or 'plan'>}" \
+    --original-request "${AGENTIC_TOPIC:-<one-line scrubbed user request>}" \
     --current-phase phase-0-bootstrap \
-    --next-action "Run compose skill")"
+    --next-action "Run compose skill" \
+    "${PARENT_ARGS[@]}")"
   ```
 
 - Non-empty → append-on-resume:
 
   ```bash
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
-    --workflow-path "$ACTIVE" --host claude --verb compose \
+    --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" --verb compose \
     --profile "<profile or empty>" \
     --phase-label "Phase 0: Resume into compose" \
     --phase-note "Resumed from prior verb. Profile=<...>." \
@@ -152,7 +165,7 @@ NOTE="### Ensemble launched: compose at <iso-utc>
 "
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
-  --workflow-path "$ACTIVE" --host claude \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase-label "Phase 1: Compose (synthesized)" \
   --phase-note "$NOTE" \
   --current-phase phase-2-presented \
@@ -164,7 +177,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 # agree|modify|conflict verdict; $SUMMARY is a one-line résumé of the
 # AGREED/LOCAL-ONLY/PEER-ONLY/CONFLICT breakdown (~200 chars).
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
-  --workflow-path "$ACTIVE" --host claude \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase compose --ensemble-type plan-verify --run-id "$RUN_ID" \
   --verdict "$VERDICT" --summary "$SUMMARY" \
   --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -174,7 +187,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 # Stop hook can archive once the user commits and closes the session
 # (HEAD-moved gate enforces real progress before archive triggers).
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
-  --workflow-path "$ACTIVE" --host claude \
+  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
   --terminal-marker true \
   --next-action "Critique the composed artifact" \
