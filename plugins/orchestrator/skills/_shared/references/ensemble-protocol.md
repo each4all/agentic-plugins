@@ -125,6 +125,8 @@ The orchestrator MVP ships exactly one ensemble point type. Future points (Brain
 
   <grounding_rules>
   Ground every gap or issue in specific subtasks (by id) or codebase evidence. Do not propose subtasks that contradict the macro layer's role (one subtask = one deliverable / one engineer workflow / one PR).
+
+  Schema 1.1 constraints (per ADR-0019 §2): every subtask MUST carry `id` (unique), `verb` (one of investigate / frame / decide / compose / critique / refine), `branch` (git ref-format), `blocked_by` (array of existing ids), and `status` (one of pending / blocked / in_progress / completed / deferred / abandoned). `branch` values must be unique across subtasks AND must not have a parent/child path-prefix relationship (`feat/api` + `feat/api/db` is rejected — git stores refs as path components; pick siblings like `feat/api/db` + `feat/api/auth` instead). Optional fields: `label`, `profile`, `topic`. Any peer-proposed addition or revision MUST satisfy these constraints — `plan-set` rejects plans that don't.
   </grounding_rules>
   ```
 
