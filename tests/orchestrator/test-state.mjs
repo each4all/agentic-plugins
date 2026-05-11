@@ -56,6 +56,20 @@ const {
   commitEnsemble,
   setPlan,
   updateSubtask,
+  // ADR-0019 PR-E exports — populated by T5 GREEN. Tests that use these
+  // before T5 fails with "X is not a function" / "undefined" — that's
+  // the intended RED state.
+  ARCHIVE_DIR_REL,
+  MACRO_TERMINAL_PHASES,
+  archiveDir,
+  archiveWorkflow,
+  bulkSubtaskStatus,
+  setMacroTerminal,
+  terminalMarkerCheck,
+  macroTerminalPhaseCheck,
+  allSubtasksTerminalCheck,
+  listAllMacros,
+  noActiveEngineerChildrenScan,
 } = await import(STATE_MJS);
 
 // ---------------------------------------------------------------------------
@@ -2099,6 +2113,619 @@ describe('state.mjs CLI — ADR-0019 PR-D read-subtask + next-ready subcommands'
       const out = JSON.parse(cp.stdout.trim());
       strictEqual(out.ready, null);
       strictEqual(out.reason, 'empty_plan');
+    });
+  });
+});
+
+// ============================================================================
+// ADR-0019 PR-E — macro lifecycle primitives, archive infrastructure, predicates,
+// and macro-A4 scan helpers. Covers:
+//   - constants: ARCHIVE_DIR_REL + MACRO_TERMINAL_PHASES
+//   - archiveDir / archiveWorkflow (mirror engineer)
+//   - bulkSubtaskStatus (atomic transition with from/to enum guard)
+//   - setMacroTerminal (atomic current_phase + terminal_marker write)
+//   - terminalMarkerCheck / macroTerminalPhaseCheck / allSubtasksTerminalCheck
+//   - listAllMacros (readdir + workflow-id filter)
+//   - noActiveEngineerChildrenScan (engineer workflows dir scan + parent_workflow filter)
+//   - CLI subcommands (bulk-subtask-status / set-terminal / archive)
+//   - Codex CONCERN regression: subtask-update must reject status=deferred|abandoned
+// ============================================================================
+
+describe('state.mjs — ADR-0019 PR-E constants', () => {
+  it('ARCHIVE_DIR_REL is .claude/agentic-orchestrator/archive', () => {
+    strictEqual(ARCHIVE_DIR_REL, '.claude/agentic-orchestrator/archive');
+  });
+  it('MACRO_TERMINAL_PHASES contains commit-complete + finalized + aborted (and only those)', () => {
+    ok(MACRO_TERMINAL_PHASES instanceof Set);
+    ok(MACRO_TERMINAL_PHASES.has('commit-complete'));
+    ok(MACRO_TERMINAL_PHASES.has('finalized'));
+    ok(MACRO_TERMINAL_PHASES.has('aborted'));
+    // Engineer phases NOT in orchestrator macro set (cross-plugin namespace isolation)
+    ok(!MACRO_TERMINAL_PHASES.has('summary-complete'));
+    ok(!MACRO_TERMINAL_PHASES.has('fix-complete'));
+    strictEqual(MACRO_TERMINAL_PHASES.size, 3);
+  });
+  it('archiveDir composes the correct absolute path', () => {
+    strictEqual(archiveDir('/tmp/foo'), '/tmp/foo/.claude/agentic-orchestrator/archive');
+  });
+  it('archiveDir rejects relative repoRoot', () => {
+    throws(() => archiveDir('relative/path'), /absolute/);
+  });
+});
+
+describe('state.mjs — ADR-0019 PR-E archiveWorkflow', () => {
+  it('moves workflow file from workflows/ to archive/', async () => {
+    await withTmpRepo('pr-e-archive-happy', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE(),
+        currentPhase: 'finalized',
+        nextAction: 'archive',
+        originalRequest: 'pr-e archive happy',
+      });
+      const result = await archiveWorkflow({ workflowPath: filePath, host: 'claude', repoRoot: root });
+      strictEqual(result.archived, true);
+      ok(result.to.includes(ARCHIVE_DIR_REL));
+      // Source file no longer exists in workflows/
+      const sourceText = await readFile(filePath, 'utf8').catch((e) => ({ err: e.code }));
+      ok(sourceText.err === 'ENOENT', 'source file should be unlinked');
+      // Destination file readable
+      const destText = await readFile(result.to, 'utf8');
+      ok(destText.includes('workflow_id:'));
+    });
+  });
+
+  it('is idempotent: second archive of an already-archived path returns archived=false reason=source-missing', async () => {
+    await withTmpRepo('pr-e-archive-idempotent', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE(),
+        currentPhase: 'finalized',
+        nextAction: 'archive',
+        originalRequest: 'pr-e archive idempotent',
+      });
+      const first = await archiveWorkflow({ workflowPath: filePath, host: 'claude', repoRoot: root });
+      strictEqual(first.archived, true);
+      const second = await archiveWorkflow({ workflowPath: filePath, host: 'claude', repoRoot: root });
+      strictEqual(second.archived, false);
+      ok(second.reason === 'source-missing' || second.reason === 'source-missing-after-lock');
+    });
+  });
+
+  it('collision-safe: archiving two files with the same basename produces distinct destinations', async () => {
+    await withTmpRepo('pr-e-archive-collision', async (root) => {
+      // Two macro workflows on different branches but identical baseline basename.
+      // We force the same basename by writing a second workflow with the
+      // first's basename pre-populated into archive/.
+      const { filePath: a } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE('main'),
+        currentPhase: 'finalized',
+        nextAction: 'archive',
+        originalRequest: 'collision-a',
+      });
+      const first = await archiveWorkflow({ workflowPath: a, host: 'claude', repoRoot: root });
+      strictEqual(first.archived, true);
+      // Re-create a workflow with the SAME basename in archive/. We achieve
+      // this by pre-writing the basename into archive/ ahead of the second
+      // archive call.
+      const aBasename = a.split('/').pop();
+      const collisionTarget = join(root, ARCHIVE_DIR_REL, aBasename);
+      await writeFile(collisionTarget, '---\nstub: true\n---\n# stub\n');
+      const { filePath: b } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE('other'),
+        currentPhase: 'finalized',
+        nextAction: 'archive',
+        originalRequest: 'collision-b',
+      });
+      const second = await archiveWorkflow({ workflowPath: b, host: 'claude', repoRoot: root });
+      strictEqual(second.archived, true);
+      ok(second.to !== first.to, 'collision must produce a distinct destination');
+    });
+  });
+});
+
+describe('state.mjs — ADR-0019 PR-E bulkSubtaskStatus', () => {
+  async function bootstrapMacroWithSubtasks(root, subtasks) {
+    const { filePath } = await createWorkflow({
+      repoRoot: root,
+      verb: 'plan',
+      host: 'claude',
+      gitBaseline: MIN_BASELINE(),
+      currentPhase: 'phase-0',
+      nextAction: 'plan-set',
+      originalRequest: 'pr-e bulk fixture',
+    });
+    await setPlan({ workflowPath: filePath, host: 'claude', subtasks });
+    return filePath;
+  }
+
+  it('transitions matching subtasks atomically (pending|blocked|in_progress → deferred)', async () => {
+    await withTmpRepo('pr-e-bulk-deferred', async (root) => {
+      const filePath = await bootstrapMacroWithSubtasks(root, [
+        { id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'pending' },
+        { id: 'T2', verb: 'compose', branch: 'feat/t2', blocked_by: [], status: 'blocked' },
+        { id: 'T3', verb: 'compose', branch: 'feat/t3', blocked_by: [], status: 'in_progress' },
+        { id: 'T4', verb: 'compose', branch: 'feat/t4', blocked_by: [], status: 'completed' },
+      ]);
+      await bulkSubtaskStatus({
+        workflowPath: filePath,
+        host: 'claude',
+        fromStatuses: ['pending', 'blocked', 'in_progress'],
+        toStatus: 'deferred',
+      });
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.plan.subtasks.find((s) => s.id === 'T1').status, 'deferred');
+      strictEqual(frontmatter.plan.subtasks.find((s) => s.id === 'T2').status, 'deferred');
+      strictEqual(frontmatter.plan.subtasks.find((s) => s.id === 'T3').status, 'deferred');
+      strictEqual(
+        frontmatter.plan.subtasks.find((s) => s.id === 'T4').status,
+        'completed',
+        'completed subtasks MUST NOT be transitioned (outside from-set)',
+      );
+      // closed_at written on transitioned subtasks
+      ok(frontmatter.plan.subtasks.find((s) => s.id === 'T1').closed_at);
+    });
+  });
+
+  it('rejects toStatus outside {deferred, abandoned}', async () => {
+    await withTmpRepo('pr-e-bulk-reject', async (root) => {
+      const filePath = await bootstrapMacroWithSubtasks(root, [
+        { id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'pending' },
+      ]);
+      await rejects(
+        bulkSubtaskStatus({
+          workflowPath: filePath,
+          host: 'claude',
+          fromStatuses: ['pending'],
+          toStatus: 'completed', // not a terminal-partial state
+        }),
+        /toStatus|completed/,
+      );
+    });
+  });
+
+  it('rejects fromStatuses elements outside {pending, blocked, in_progress}', async () => {
+    await withTmpRepo('pr-e-bulk-from-reject', async (root) => {
+      const filePath = await bootstrapMacroWithSubtasks(root, [
+        { id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'pending' },
+      ]);
+      await rejects(
+        bulkSubtaskStatus({
+          workflowPath: filePath,
+          host: 'claude',
+          fromStatuses: ['pending', 'completed'], // 'completed' is not transitionable
+          toStatus: 'deferred',
+        }),
+        /fromStatuses|completed/,
+      );
+    });
+  });
+});
+
+describe('state.mjs — ADR-0019 PR-E setMacroTerminal', () => {
+  it('writes current_phase + terminal_marker atomically; appends host_history event', async () => {
+    await withTmpRepo('pr-e-set-terminal', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE(),
+        currentPhase: 'phase-0',
+        nextAction: 'plan',
+        originalRequest: 'pr-e set-terminal',
+      });
+      await setMacroTerminal({
+        workflowPath: filePath,
+        host: 'claude',
+        terminalPhase: 'finalized',
+        terminalMarker: true,
+        nextAction: 'archive',
+      });
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.current_phase, 'finalized');
+      strictEqual(frontmatter.terminal_marker, true);
+      strictEqual(frontmatter.next_action, 'archive');
+      ok(frontmatter.host_history.some((h) => h.event === 'updated'));
+    });
+  });
+
+  it('rejects terminalPhase outside the macro whitelist', async () => {
+    await withTmpRepo('pr-e-set-terminal-reject', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE(),
+        currentPhase: 'phase-0',
+        nextAction: 'plan',
+        originalRequest: 'pr-e reject',
+      });
+      // Engineer terminal phase — must be rejected for orchestrator macro
+      await rejects(
+        setMacroTerminal({
+          workflowPath: filePath,
+          host: 'claude',
+          terminalPhase: 'summary-complete',
+        }),
+        /terminalPhase|whitelist|summary-complete/,
+      );
+    });
+  });
+
+  it('rejects non-boolean terminalMarker', async () => {
+    await withTmpRepo('pr-e-set-terminal-marker-boolean', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE(),
+        currentPhase: 'phase-0',
+        nextAction: 'plan',
+        originalRequest: 'pr-e boolean',
+      });
+      await rejects(
+        setMacroTerminal({
+          workflowPath: filePath,
+          host: 'claude',
+          terminalPhase: 'finalized',
+          terminalMarker: 'true', // string, not boolean
+        }),
+        /terminalMarker|boolean/,
+      );
+    });
+  });
+});
+
+describe('state.mjs — ADR-0019 PR-E predicates', () => {
+  it('terminalMarkerCheck is true only when frontmatter.terminal_marker === true', () => {
+    strictEqual(terminalMarkerCheck({ terminal_marker: true }), true);
+    strictEqual(terminalMarkerCheck({ terminal_marker: false }), false);
+    strictEqual(terminalMarkerCheck({ terminal_marker: 'true' }), false);
+    strictEqual(terminalMarkerCheck({}), false);
+    strictEqual(terminalMarkerCheck(undefined), false);
+    strictEqual(terminalMarkerCheck(null), false);
+  });
+
+  it('macroTerminalPhaseCheck accepts {commit-complete, finalized, aborted} only', () => {
+    strictEqual(macroTerminalPhaseCheck('commit-complete'), true);
+    strictEqual(macroTerminalPhaseCheck('finalized'), true);
+    strictEqual(macroTerminalPhaseCheck('aborted'), true);
+    strictEqual(macroTerminalPhaseCheck('phase-0'), false);
+    strictEqual(macroTerminalPhaseCheck('summary-complete'), false); // engineer phase
+    strictEqual(macroTerminalPhaseCheck(undefined), false);
+    strictEqual(macroTerminalPhaseCheck(null), false);
+  });
+
+  it('allSubtasksTerminalCheck passes only when every subtask is in {completed, deferred, abandoned}', () => {
+    const all = (subtasks) =>
+      allSubtasksTerminalCheck({ plan: { subtasks } });
+    strictEqual(
+      all([
+        { id: 'T1', status: 'completed' },
+        { id: 'T2', status: 'deferred' },
+        { id: 'T3', status: 'abandoned' },
+      ]),
+      true,
+    );
+    strictEqual(all([{ id: 'T1', status: 'pending' }]), false);
+    strictEqual(all([{ id: 'T1', status: 'in_progress' }]), false);
+    strictEqual(all([{ id: 'T1', status: 'blocked' }]), false);
+    // Empty plan: vacuously true (no subtasks → no non-terminal subtasks).
+    strictEqual(all([]), true);
+    // Missing plan: vacuously true.
+    strictEqual(allSubtasksTerminalCheck({}), true);
+    strictEqual(allSubtasksTerminalCheck(null), true);
+  });
+});
+
+describe('state.mjs — ADR-0019 PR-E listAllMacros', () => {
+  it('lists all non-archived macro files in workflows/', async () => {
+    await withTmpRepo('pr-e-list-all', async (root) => {
+      const { filePath: a } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE('main'),
+        currentPhase: 'phase-0',
+        nextAction: 'plan',
+        originalRequest: 'list-a',
+      });
+      const { filePath: b } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE('other'),
+        currentPhase: 'phase-0',
+        nextAction: 'plan',
+        originalRequest: 'list-b',
+      });
+      const paths = await listAllMacros(root);
+      strictEqual(paths.length, 2);
+      ok(paths.includes(a));
+      ok(paths.includes(b));
+    });
+  });
+
+  it('returns empty array when workflows/ directory does not exist', async () => {
+    await withTmpRepo('pr-e-list-empty', async (root) => {
+      const paths = await listAllMacros(root);
+      deepStrictEqual(paths, []);
+    });
+  });
+
+  it('excludes archived files (only lists current workflows/)', async () => {
+    await withTmpRepo('pr-e-list-skip-archive', async (root) => {
+      const { filePath: a } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE('main'),
+        currentPhase: 'finalized',
+        nextAction: 'archive',
+        originalRequest: 'soon-archived',
+      });
+      await archiveWorkflow({ workflowPath: a, host: 'claude', repoRoot: root });
+      // Now create a second live macro
+      const { filePath: b } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE('other'),
+        currentPhase: 'phase-0',
+        nextAction: 'plan',
+        originalRequest: 'live',
+      });
+      const paths = await listAllMacros(root);
+      strictEqual(paths.length, 1);
+      strictEqual(paths[0], b, 'archived macro must not appear in listAllMacros');
+    });
+  });
+});
+
+describe('state.mjs — ADR-0019 PR-E noActiveEngineerChildrenScan', () => {
+  // Build engineer-shape workflow files manually under the engineer
+  // workflows directory — orchestrator state.mjs can NOT create
+  // engineer workflows (different schema). Engineer's
+  // createWorkflow is unavailable here per ADR-0010 §5 cross-plugin
+  // import boundary; orchestrator's scan reads frontmatter directly
+  // via parseEngineerFrontmatter or a generic readdir+regex shim. The
+  // test exercises the directory-scan contract regardless of which
+  // schema the engineer files emit.
+  const ENG_WORKFLOW_DIR_REL = '.claude/agentic-engineer/workflows';
+
+  async function writeEngineerWorkflow(root, name, frontmatterFields) {
+    const dir = join(root, ENG_WORKFLOW_DIR_REL);
+    await mkdir(dir, { recursive: true });
+    const lines = ['---'];
+    for (const [k, v] of Object.entries(frontmatterFields)) {
+      lines.push(`${k}: ${typeof v === 'string' ? JSON.stringify(v) : v}`);
+    }
+    lines.push('---', '# engineer fixture', '');
+    await writeFile(join(dir, name), lines.join('\n'));
+  }
+
+  it('returns 0 when engineer workflows directory does not exist', async () => {
+    await withTmpRepo('pr-e-scan-no-dir', async (root) => {
+      const n = await noActiveEngineerChildrenScan(root, 'macro-plan-20260511T000000Z-abcdef');
+      strictEqual(n, 0);
+    });
+  });
+
+  it('counts engineer files where parent_workflow == macroId', async () => {
+    await withTmpRepo('pr-e-scan-match', async (root) => {
+      const macroId = 'macro-plan-20260511T000000Z-abcdef';
+      // Engineer workflow-id regex: `<verb>-<YYYYMMDDTHHMMSSZ>-<6hex>`
+      await writeEngineerWorkflow(root, 'compose-20260511T000100Z-aaaaaa.md', {
+        schema: '1.1',
+        workflow_id: 'compose-20260511T000100Z-aaaaaa',
+        parent_workflow: macroId,
+        originating_subtask: 'T1',
+      });
+      await writeEngineerWorkflow(root, 'compose-20260511T000200Z-bbbbbb.md', {
+        schema: '1.1',
+        workflow_id: 'compose-20260511T000200Z-bbbbbb',
+        parent_workflow: 'macro-different-id',
+        originating_subtask: 'T1',
+      });
+      await writeEngineerWorkflow(root, 'investigate-20260511T000300Z-cccccc.md', {
+        schema: '1.1',
+        workflow_id: 'investigate-20260511T000300Z-cccccc',
+        parent_workflow: macroId,
+        originating_subtask: 'T2',
+      });
+      const n = await noActiveEngineerChildrenScan(root, macroId);
+      strictEqual(n, 2, 'should count 2 engineer files referencing macroId');
+    });
+  });
+
+  it('ignores engineer files with no parent_workflow field (root workflows)', async () => {
+    await withTmpRepo('pr-e-scan-skip-root', async (root) => {
+      const macroId = 'macro-plan-20260511T000000Z-abcdef';
+      await writeEngineerWorkflow(root, 'compose-20260511T000400Z-dddddd.md', {
+        schema: '1.1',
+        workflow_id: 'compose-20260511T000400Z-dddddd',
+      });
+      const n = await noActiveEngineerChildrenScan(root, macroId);
+      strictEqual(n, 0);
+    });
+  });
+
+  it('ignores files whose name does not match the engineer workflow-id regex', async () => {
+    await withTmpRepo('pr-e-scan-skip-malformed', async (root) => {
+      const dir = join(root, ENG_WORKFLOW_DIR_REL);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'README.md'), '# not a workflow\n');
+      await writeFile(join(dir, '.lock'), '');
+      const n = await noActiveEngineerChildrenScan(root, 'macro-foo');
+      strictEqual(n, 0);
+    });
+  });
+
+  // ADR-0019 PR-E Phase 5 review (Phase 6 resolve) — CRLF tolerance.
+  // Engineer's state.mjs writes LF, but a frontmatter file manually
+  // edited on a Windows-style tool could carry \r\n. The scan must
+  // correctly match `parent_workflow` regardless of line ending so a
+  // CRLF-saved child isn't silently miscounted as "not a child".
+  it('counts CRLF-line-ending engineer files correctly (Windows-edited frontmatter)', async () => {
+    await withTmpRepo('pr-e-scan-crlf', async (root) => {
+      const macroId = 'macro-plan-20260511T000000Z-abcdef';
+      const dir = join(root, ENG_WORKFLOW_DIR_REL);
+      await mkdir(dir, { recursive: true });
+      const crlfBody = [
+        '---',
+        'schema: "1.1"',
+        `workflow_id: "compose-20260511T010101Z-aaaaaa"`,
+        `parent_workflow: ${JSON.stringify(macroId)}`,
+        'originating_subtask: "T1"',
+        '---',
+        '# CRLF engineer fixture',
+        '',
+      ].join('\r\n');
+      await writeFile(join(dir, 'compose-20260511T010101Z-aaaaaa.md'), crlfBody);
+      const n = await noActiveEngineerChildrenScan(root, macroId);
+      strictEqual(n, 1, 'CRLF-line-ending child should still be counted as a referencing child');
+    });
+  });
+});
+
+describe('state.mjs — ADR-0019 PR-E CLI subcommands', () => {
+  async function setupMacroForCli(root, subtasks) {
+    const filePath = await (async () => {
+      const { filePath: fp } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE(),
+        currentPhase: 'phase-0',
+        nextAction: 'plan-set',
+        originalRequest: 'pr-e cli fixture',
+      });
+      return fp;
+    })();
+    if (subtasks) {
+      await setPlan({ workflowPath: filePath, host: 'claude', subtasks });
+    }
+    return filePath;
+  }
+
+  it('bulk-subtask-status CLI transitions matching subtasks', async () => {
+    await withTmpRepo('pr-e-cli-bulk', async (root) => {
+      const filePath = await setupMacroForCli(root, [
+        { id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'pending' },
+        { id: 'T2', verb: 'compose', branch: 'feat/t2', blocked_by: [], status: 'in_progress' },
+      ]);
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS,
+        'bulk-subtask-status',
+        '--workflow-path', filePath,
+        '--host', 'claude',
+        '--from-statuses', 'pending,in_progress',
+        '--to-status', 'deferred',
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 0, `stderr: ${cp.stderr}`);
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.plan.subtasks[0].status, 'deferred');
+      strictEqual(frontmatter.plan.subtasks[1].status, 'deferred');
+    });
+  });
+
+  it('set-terminal CLI writes current_phase + terminal_marker', async () => {
+    await withTmpRepo('pr-e-cli-set-terminal', async (root) => {
+      const filePath = await setupMacroForCli(root, []);
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS,
+        'set-terminal',
+        '--workflow-path', filePath,
+        '--host', 'claude',
+        '--terminal-phase', 'aborted',
+        '--terminal-marker', 'true',
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 0, `stderr: ${cp.stderr}`);
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.current_phase, 'aborted');
+      strictEqual(frontmatter.terminal_marker, true);
+    });
+  });
+
+  it('archive CLI moves workflow into archive/', async () => {
+    await withTmpRepo('pr-e-cli-archive', async (root) => {
+      const filePath = await setupMacroForCli(root, []);
+      const cp = spawnSync(process.execPath, [
+        STATE_MJS,
+        'archive',
+        '--workflow-path', filePath,
+        '--host', 'claude',
+        '--repo-root', root,
+      ], { encoding: 'utf8' });
+      strictEqual(cp.status, 0, `stderr: ${cp.stderr}`);
+      ok(cp.stdout.includes(ARCHIVE_DIR_REL));
+    });
+  });
+});
+
+describe('state.mjs — ADR-0019 PR-E Codex CONCERN regression: subtask-update rejects deferred|abandoned', () => {
+  // PR-C0 added a deferred/abandoned guard in updateSubtask. This is a
+  // regression test to ensure the guard remains in place after PR-E.
+  async function setupMacroForGuard(root) {
+    const filePath = await (async () => {
+      const { filePath: fp } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE(),
+        currentPhase: 'phase-0',
+        nextAction: 'plan-set',
+        originalRequest: 'pr-e guard fixture',
+      });
+      return fp;
+    })();
+    await setPlan({
+      workflowPath: filePath,
+      host: 'claude',
+      subtasks: [
+        { id: 'T1', verb: 'compose', branch: 'feat/t1', blocked_by: [], status: 'in_progress' },
+      ],
+    });
+    return filePath;
+  }
+
+  it('updateSubtask rejects status=deferred (must use bulkSubtaskStatus + setMacroTerminal)', async () => {
+    await withTmpRepo('pr-e-guard-deferred', async (root) => {
+      const filePath = await setupMacroForGuard(root);
+      await rejects(
+        updateSubtask({
+          workflowPath: filePath,
+          host: 'claude',
+          subtaskId: 'T1',
+          status: 'deferred',
+        }),
+        /deferred|finalize|bulkSubtaskStatus/i,
+      );
+    });
+  });
+
+  it('updateSubtask rejects status=abandoned (must use bulkSubtaskStatus + setMacroTerminal)', async () => {
+    await withTmpRepo('pr-e-guard-abandoned', async (root) => {
+      const filePath = await setupMacroForGuard(root);
+      await rejects(
+        updateSubtask({
+          workflowPath: filePath,
+          host: 'claude',
+          subtaskId: 'T1',
+          status: 'abandoned',
+        }),
+        /abandoned|abort/i,
+      );
     });
   });
 });

@@ -58,6 +58,17 @@ export const SUPPORTED_SCHEMA_VERSIONS = new Set(['1.0', '1.1']);
 
 export const WORKFLOW_DIR_REL = '.claude/agentic-orchestrator/workflows';
 export const CREATION_LOCK_REL = '.claude/agentic-orchestrator/.creation-lock';
+// ADR-0019 PR-E §5 — auto-archive destination + macro terminal-phase
+// whitelist. The phase set diverges from engineer's
+// {commit-complete, summary-complete, fix-complete}: macro plans use
+// {commit-complete (happy path via auto-terminal pass), finalized
+// (/orchestrator:finalize), aborted (/orchestrator:abort)}.
+export const ARCHIVE_DIR_REL = '.claude/agentic-orchestrator/archive';
+export const MACRO_TERMINAL_PHASES = new Set([
+  'commit-complete',
+  'finalized',
+  'aborted',
+]);
 
 // Retention cap on `ensemble_results` (mirrors engineer ADR-0017 §sub-4).
 // Macro Plan-verify ensembles are typically fewer-but-higher-value, but
@@ -72,13 +83,17 @@ const RETRY_BACKOFF_MAX_MS = 5_000;       // ADR-0011 §3 step 2 — acquireLock
 // cross-plugin invocation contract (ADR-0018 §sub-1 follow-up ADR).
 const VALID_VERBS = new Set(['plan']);
 const VALID_HOSTS = new Set(['claude', 'codex']);
-// Auto-archive (event 'archived') and checkpoint ('checkpointed') are
-// engineer-only for now; orchestrator MVP defers both with `next/done`.
+// Auto-archive event was deferred from the orchestrator MVP; ADR-0019
+// PR-E ships /orchestrator:finalize + /orchestrator:abort + macro
+// auto-archive A1-A4, so 'archived' is now a recognized event. The
+// 'checkpointed' event remains engineer-only — orchestrator has no
+// `/orchestrator:checkpoint` command yet.
 const VALID_HOOK_EVENTS = new Set([
   'created',
   'updated',
   'snapshot',
   'resumed',
+  'archived',
 ]);
 const VALID_SNAPSHOT_TRIGGERS = new Set(['pre-compact', 'stop']);
 
@@ -2483,6 +2498,441 @@ export async function updateSubtask(opts) {
 }
 
 // -----------------------------------------------------------------------------
+// ADR-0019 PR-E §5 — macro lifecycle primitives, archive infrastructure,
+// predicates, and macro-A4 scan helpers. Used by:
+//   - plugins/orchestrator/commands/{finalize,abort}.md (slash-command
+//     runbooks orchestrating the §5 3-step protocol)
+//   - plugins/orchestrator/scripts/stop-archive.mjs (macro auto-archive
+//     A1-A4 evaluation)
+//   - plugins/orchestrator/adapters/{claude,codex}/hooks/stop.mjs (host
+//     Stop event integration)
+//
+// Mirrors engineer's archive surface (engineer/scripts/state.mjs:1851-2100)
+// — same lock-order, same collision-safe rename, same idempotency. The
+// orchestrator-specific divergence is the macro terminal-phase whitelist
+// (MACRO_TERMINAL_PHASES, NOT TERMINAL_PHASES) and the A4 gate semantics
+// (cross-plugin engineer workflows directory scan, NOT engineer's own
+// child_completions array check).
+
+export function archiveDir(repoRoot) {
+  if (!isAbsolute(repoRoot)) {
+    throw new Error(`repoRoot must be absolute: ${repoRoot}`);
+  }
+  return join(repoRoot, ARCHIVE_DIR_REL);
+}
+
+/**
+ * ADR-0019 §5 / engineer-archiveWorkflow mirror — move a macro workflow
+ * file out of `workflows/` into `archive/`. Dir lock → file lock; durable
+ * write to destination + unlink source.
+ *
+ * Collision policy: when `<archiveDir>/<basename>` already exists,
+ * append a sub-second-precision suffix and probe again until a free
+ * name is found: `<basename-without-ext>-<isoCompact>-<6-hex>.md`.
+ *
+ * Idempotency: if `workflowPath` is already absent at directory-lock
+ * acquire (or vanishes before the inner file lock), the helper resolves
+ * cleanly with `{archived: false, reason: 'source-missing'}`.
+ *
+ * @param {object}  args
+ * @param {string}  args.workflowPath
+ * @param {string}  args.host
+ * @param {string}  [args.repoRoot] — required if `archiveDirectory` is omitted
+ * @param {string}  [args.archiveDirectory]
+ * @param {Date}    [args.now]
+ * @returns {Promise<{archived: boolean, from?: string, to?: string, host?: string, reason?: string, workflowPath?: string}>}
+ */
+export async function archiveWorkflow({
+  workflowPath,
+  host,
+  repoRoot,
+  archiveDirectory,
+  now = new Date(),
+}) {
+  validateHost(host);
+  if (!repoRoot && !archiveDirectory) {
+    throw new Error('archiveWorkflow: repoRoot or archiveDirectory is required');
+  }
+  const targetDir = archiveDirectory ?? archiveDir(repoRoot);
+  const baseName = basename(workflowPath);
+
+  // Derive dir-lock root from canonical four-deep layout when only
+  // `archiveDirectory` is supplied — mirrors engineer's M-1 fix.
+  const dirLockRoot =
+    repoRoot ??
+    dirname(dirname(dirname(dirname(workflowPath))));
+
+  return withDirectoryLock(dirLockRoot, async () => {
+    const sourceStat = await pathStat(workflowPath);
+    if (!sourceStat) {
+      return { archived: false, reason: 'source-missing', workflowPath };
+    }
+    if (!sourceStat.isFile()) {
+      throw new Error(`archiveWorkflow: source is not a regular file: ${workflowPath}`);
+    }
+    await ensureDir(targetDir, 0o700);
+
+    return withFileLock(workflowPath, async ({ lockPath, token }) => {
+      const sourceStatLocked = await pathStat(workflowPath);
+      if (!sourceStatLocked) {
+        return { archived: false, reason: 'source-missing-after-lock', workflowPath };
+      }
+      const text = await readFile(workflowPath, 'utf8');
+      const { frontmatter, body } = parseWorkflowFile(text);
+      const nowIso = isoUtc(now);
+      frontmatter.updated_at = nowIso;
+      frontmatter.host_history = [
+        ...(frontmatter.host_history ?? []),
+        { host, at: nowIso, event: 'archived' },
+      ];
+      const archivedBytes = assembleWorkflowFile(frontmatter, body);
+      const destination = await archiveCandidateWithRaceRetry({
+        targetDir,
+        baseName,
+        now,
+        archivedBytes,
+      });
+      try {
+        await unlink(workflowPath);
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+      }
+      void lockPath; void token;
+      return {
+        archived: true,
+        from: workflowPath,
+        to: destination,
+        host,
+      };
+    });
+  });
+}
+
+async function resolveArchiveDestination({ targetDir, baseName, now }) {
+  const stem = baseName.endsWith('.md') ? baseName.slice(0, -3) : baseName;
+  const canonical = join(targetDir, baseName);
+  if (!(await pathStat(canonical))) return canonical;
+
+  const isoCompact = isoUtc(now).replace(/[-:]/g, '').replace(/Z$/, 'Z');
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const rand = randomBytes(3).toString('hex');
+    const candidate = join(targetDir, `${stem}-${isoCompact}-${rand}.md`);
+    if (!(await pathStat(candidate))) return candidate;
+  }
+  throw new Error(
+    `archiveWorkflow: could not find a non-colliding destination under ${targetDir} (8 attempts)`,
+  );
+}
+
+async function archiveCandidateWithRaceRetry({
+  targetDir,
+  baseName,
+  now,
+  archivedBytes,
+}) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const candidate = await resolveArchiveDestination({ targetDir, baseName, now });
+    let won = false;
+    await withFileLock(candidate, async ({ lockPath, token }) => {
+      const existing = await pathStat(candidate);
+      if (existing) return; // Race lost — outer loop picks a fresh candidate.
+      await atomicWrite(candidate, archivedBytes, { lockPath, token });
+      won = true;
+    });
+    if (won) return candidate;
+  }
+  throw new Error(
+    `archiveWorkflow: lost candidate race after 8 retries under ${targetDir}`,
+  );
+}
+
+/**
+ * ADR-0019 §5 step 1 — bulk subtask status transition under the parent's
+ * per-file lock. Used by /orchestrator:finalize (toStatus=deferred) and
+ * /orchestrator:abort (toStatus=abandoned) to atomically transition every
+ * non-terminal subtask before step 2 (child-detach pass).
+ *
+ * Domain constraints (Codex CONCERN #1 in plan-verify):
+ *   - fromStatuses elements MUST be subset of {pending, blocked, in_progress}
+ *   - toStatus MUST be one of {deferred, abandoned}
+ * These restrictions keep the primitive narrow: it can ONLY perform the
+ * /finalize / /abort step-1 transition. Other state transitions go through
+ * `updateSubtask` (single-row) or `setPlan` (full re-plan).
+ *
+ * @param {object}   args
+ * @param {string}   args.workflowPath
+ * @param {string}   args.host
+ * @param {string[]} args.fromStatuses — subset of {pending, blocked, in_progress}
+ * @param {string}   args.toStatus     — 'deferred' or 'abandoned'
+ * @param {string}   [args.event='updated']
+ * @param {Date}     [args.now]
+ * @returns {Promise<{workflowPath: string, transitionedIds: string[]}>}
+ */
+export async function bulkSubtaskStatus({
+  workflowPath,
+  host,
+  fromStatuses,
+  toStatus,
+  event = 'updated',
+  now = new Date(),
+}) {
+  validateHost(host);
+  validateHookEvent(event);
+  const FROM_ALLOWED = new Set(['pending', 'blocked', 'in_progress']);
+  const TO_ALLOWED = new Set(['deferred', 'abandoned']);
+  if (!Array.isArray(fromStatuses) || fromStatuses.length === 0) {
+    throw new Error('bulkSubtaskStatus: fromStatuses must be a non-empty array');
+  }
+  for (const s of fromStatuses) {
+    if (!FROM_ALLOWED.has(s)) {
+      throw new Error(
+        `bulkSubtaskStatus: fromStatuses element ${JSON.stringify(s)} not in ` +
+          `{pending, blocked, in_progress} — this primitive only handles the ` +
+          `/finalize·/abort step-1 transition.`,
+      );
+    }
+  }
+  if (!TO_ALLOWED.has(toStatus)) {
+    throw new Error(
+      `bulkSubtaskStatus: toStatus ${JSON.stringify(toStatus)} not in ` +
+        `{deferred, abandoned} — terminal-partial states are owned by ` +
+        `/orchestrator:finalize (deferred) and /orchestrator:abort (abandoned).`,
+    );
+  }
+  const fromSet = new Set(fromStatuses);
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    if (frontmatter?.schema === '1.0') {
+      throw new Error(
+        `bulkSubtaskStatus: schema 1.0 plan refused (archive legacy + re-plan ` +
+          `under 1.1 first).`,
+      );
+    }
+    const nowIso = isoUtc(now);
+    const subtasks = Array.isArray(frontmatter?.plan?.subtasks)
+      ? frontmatter.plan.subtasks
+      : [];
+    const transitionedIds = [];
+    for (const s of subtasks) {
+      if (!s || typeof s !== 'object') continue;
+      if (fromSet.has(s.status)) {
+        s.status = toStatus;
+        s.closed_at = nowIso;
+        transitionedIds.push(s.id);
+      }
+    }
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { workflowPath, transitionedIds };
+  });
+}
+
+/**
+ * ADR-0019 §5 step 3 — atomic terminal-marker + current_phase write under
+ * the parent's per-file lock. Used by /orchestrator:finalize
+ * (terminalPhase='finalized') and /orchestrator:abort (terminalPhase='aborted').
+ * Also callable for the explicit 'commit-complete' label, though the
+ * §4 step-7 auto-terminal pass inside `updateSubtask` already covers that
+ * happy-path case.
+ *
+ * Mirrors engineer's `setTerminal` shape (engineer/scripts/state.mjs:1806)
+ * — same atomicity, same boolean-strict gate, same host_history append.
+ * Diverges on `terminalPhase` whitelist (macro vs engineer phase set).
+ */
+export async function setMacroTerminal({
+  workflowPath,
+  host,
+  terminalPhase,
+  terminalMarker = true,
+  nextAction,
+  event = 'updated',
+  now = new Date(),
+}) {
+  validateHost(host);
+  validateHookEvent(event);
+  if (!MACRO_TERMINAL_PHASES.has(terminalPhase)) {
+    const allowed = [...MACRO_TERMINAL_PHASES].join(', ');
+    throw new Error(
+      `setMacroTerminal: terminalPhase ${JSON.stringify(terminalPhase)} not in ` +
+        `macro whitelist (${allowed})`,
+    );
+  }
+  if (typeof terminalMarker !== 'boolean') {
+    throw new Error(
+      `setMacroTerminal: terminalMarker must be a boolean (got ${typeof terminalMarker} ${JSON.stringify(terminalMarker)})`,
+    );
+  }
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    if (frontmatter?.schema === '1.0') {
+      throw new Error(
+        `setMacroTerminal: schema 1.0 plan refused (archive legacy + re-plan ` +
+          `under 1.1 first).`,
+      );
+    }
+    const nowIso = isoUtc(now);
+    frontmatter.current_phase = terminalPhase;
+    if (nextAction !== undefined) frontmatter.next_action = nextAction;
+    frontmatter.terminal_marker = terminalMarker;
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { workflowPath, frontmatter };
+  });
+}
+
+/**
+ * ADR-0019 §5 A1 gate — `terminal_marker === true`. Strict identity check
+ * (Codex M5 precedent: `Boolean("false")` silently flipped the engineer-side
+ * gate). Mirror of engineer's `terminalMarkerCheck`.
+ */
+export function terminalMarkerCheck(frontmatter) {
+  return frontmatter?.terminal_marker === true;
+}
+
+/**
+ * ADR-0019 §5 A2 gate — macro terminal-phase whitelist. Set membership.
+ */
+export function macroTerminalPhaseCheck(currentPhase) {
+  return MACRO_TERMINAL_PHASES.has(currentPhase);
+}
+
+/**
+ * ADR-0019 §5 A3 gate — every entry in `plan.subtasks[]` must be in a
+ * terminal-status set (completed | deferred | abandoned). Empty / absent
+ * plan is vacuously true (a macro with zero subtasks is trivially "all
+ * subtasks terminal").
+ */
+export function allSubtasksTerminalCheck(frontmatter) {
+  const subtasks = frontmatter?.plan?.subtasks;
+  if (!Array.isArray(subtasks) || subtasks.length === 0) return true;
+  for (const s of subtasks) {
+    if (!s || typeof s !== 'object') return false;
+    if (!TERMINAL_SUBTASK_STATUSES.has(s.status)) return false;
+  }
+  return true;
+}
+
+/**
+ * List all non-archived macro workflow files under
+ * `<repoRoot>/.claude/agentic-orchestrator/workflows/`. Returns absolute
+ * paths. Used by branch-agnostic macro auto-archive iteration in PR-E's
+ * `runMacroStopArchiveAll`.
+ *
+ * The macro workflow-id regex is `^macro-[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$`
+ * (per ADR-0018 §sub-1 generateWorkflowId). The filter rejects non-
+ * matching filenames (README.md, lock files, accidental edits) so the
+ * iteration only touches genuine macro files.
+ */
+export async function listAllMacros(repoRoot) {
+  const dir = workflowDir(repoRoot);
+  let entries;
+  try {
+    entries = await readdir(dir);
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const MACRO_ID_RE = /^macro-[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}\.md$/;
+  return entries
+    .filter((name) => MACRO_ID_RE.test(name))
+    .map((name) => join(dir, name))
+    .sort(); // stable order for deterministic iteration
+}
+
+/**
+ * ADR-0019 §5 A4 gate — scan the engineer workflows directory and count
+ * non-archived engineer workflow files whose `parent_workflow` references
+ * this orchestrator macro id.
+ *
+ * Single-level scan: engineer is L3 leaf (no further nesting in ADR-0019
+ * scope), so a directory readdir + parent_workflow filter is sufficient.
+ * The transitive walk used by engineer's own A4 (child_completions array
+ * check) is orthogonal — that gate evaluates engineer-side parent linkage,
+ * not the orchestrator-engineer cross-plugin linkage this scan covers.
+ *
+ * ENOENT on the engineer workflows directory returns 0 (no children).
+ * Files whose name does not match the engineer workflow-id regex are
+ * silently skipped (README.md, lock files, etc.). Files that fail to
+ * parse as valid YAML frontmatter are skipped with a stderr warning —
+ * a corrupt engineer workflow file should not block the orchestrator
+ * macro auto-archive evaluation. The fail-open default mirrors the
+ * "hook absence is non-fatal" contract per ADR-0011 §4.
+ *
+ * @param {string} repoRoot
+ * @param {string} macroId — orchestrator workflow_id to match against
+ *   engineer frontmatter `parent_workflow` field.
+ * @returns {Promise<number>} count of engineer workflow files
+ *   referencing this macroId.
+ */
+export async function noActiveEngineerChildrenScan(repoRoot, macroId) {
+  if (!isAbsolute(repoRoot)) {
+    throw new Error(`noActiveEngineerChildrenScan: repoRoot must be absolute: ${repoRoot}`);
+  }
+  const dir = join(repoRoot, '.claude/agentic-engineer/workflows');
+  let entries;
+  try {
+    entries = await readdir(dir);
+  } catch (err) {
+    if (err.code === 'ENOENT') return 0;
+    throw err;
+  }
+  // Engineer workflow-id regex per engineer state.mjs generateWorkflowId.
+  const ENG_ID_RE = /^[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+\.md$/;
+  let count = 0;
+  for (const name of entries) {
+    if (!ENG_ID_RE.test(name)) continue;
+    const path = join(dir, name);
+    let text;
+    try {
+      text = await readFile(path, 'utf8');
+    } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      process.stderr.write(
+        `noActiveEngineerChildrenScan: failed to read ${name}: ${err.message}\n`,
+      );
+      continue;
+    }
+    // Avoid invoking engineer's parseWorkflowFile (cross-plugin import
+    // forbidden per ADR-0010 §5). Use a minimal frontmatter regex scan
+    // instead — we only need the `parent_workflow` scalar value.
+    //
+    // CRLF tolerance: while engineer's state.mjs writes LF-only, a
+    // workflow file manually edited on a Windows-style tool could carry
+    // CRLF line endings. A CRLF-saved child would silently miscount as
+    // "not a child," letting A4 pass while the child is actually live.
+    // Defend against this with `\r?\n` in the frontmatter-delimiter
+    // pattern; the per-line scalar regex already uses /m which is
+    // CR-tolerant.
+    const fmMatch = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!fmMatch) continue;
+    const fmText = fmMatch[1];
+    const parentMatch = fmText.match(/^parent_workflow:\s*(?:"([^"]+)"|'([^']+)'|(\S+))\s*\r?$/m);
+    if (!parentMatch) continue;
+    const parentValue = parentMatch[1] ?? parentMatch[2] ?? parentMatch[3];
+    if (parentValue === macroId) count++;
+  }
+  return count;
+}
+
+// -----------------------------------------------------------------------------
 // CLI
 
 function cliParseFlags(argv) {
@@ -2612,6 +3062,33 @@ function cliPrintHelp() {
       '    Side effects (atomic): unblock pass (§4 step 6) + auto-terminal pass',
       '    (§4 step 7 — sets terminal_marker + current_phase when all subtasks',
       '    are terminal). Prints JSON {workflowPath, updatedSubtask, autoTerminal}.',
+      '    Status guard: deferred/abandoned are rejected — those terminal-partial',
+      '    states are owned by /orchestrator:finalize and /orchestrator:abort',
+      '    (via bulk-subtask-status + set-terminal below).',
+      '',
+      '  bulk-subtask-status --workflow-path <path> --host claude|codex',
+      '                      --from-statuses <csv> --to-status deferred|abandoned',
+      '                      [--event updated|resumed]',
+      '    ADR-0019 PR-E §5 step 1 — atomic bulk subtask status transition.',
+      '    Domain-constrained: fromStatuses must be subset of',
+      '    {pending, blocked, in_progress}; toStatus must be one of',
+      '    {deferred, abandoned}. Used by /orchestrator:finalize (deferred)',
+      '    and /orchestrator:abort (abandoned) before the child-detach pass.',
+      '    Prints JSON {workflowPath, transitionedIds[]}.',
+      '',
+      '  set-terminal --workflow-path <path> --host claude|codex',
+      '               --terminal-phase commit-complete|finalized|aborted',
+      '               [--terminal-marker true|false] [--next-action <text>]',
+      '               [--event updated|resumed]',
+      '    ADR-0019 PR-E §5 step 3 — atomic terminal-marker + current_phase',
+      '    write. Default --terminal-marker=true. Used after the child-detach',
+      '    pass to mark the macro plan terminal so the next host Stop hook can',
+      '    auto-archive the workflow file.',
+      '',
+      '  archive --workflow-path <path> --host claude|codex --repo-root <path>',
+      '    ADR-0019 PR-E §5 — move macro workflow file from workflows/ to',
+      '    archive/. Collision-safe (timestamp-suffix). Idempotent if source is',
+      '    already absent. Engineer-pattern mirror.',
       '',
       'Verbs: plan (orchestrator MVP).',
       'Hosts: claude, codex.',
@@ -2879,6 +3356,72 @@ async function cliMain(argv) {
           event: flags.event ?? 'updated',
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      // ADR-0019 PR-E §5 — macro lifecycle primitives. The three CLI
+      // subcommands below are invoked by /orchestrator:finalize and
+      // /orchestrator:abort runbooks via execFile spawn against this
+      // state.mjs file. JSON envelope on stdout is the contract.
+
+      case 'bulk-subtask-status': {
+        cliRequire(flags, ['workflow-path', 'host', 'from-statuses', 'to-status']);
+        const fromStatuses = flags['from-statuses']
+          .split(',')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        const result = await bulkSubtaskStatus({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          fromStatuses,
+          toStatus: flags['to-status'],
+          event: flags.event ?? 'updated',
+        });
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+        return 0;
+      }
+
+      case 'set-terminal': {
+        cliRequire(flags, ['workflow-path', 'host', 'terminal-phase']);
+        const tm = flags['terminal-marker'];
+        let terminalMarker;
+        if (tm === undefined) {
+          terminalMarker = true;
+        } else if (tm === 'true') {
+          terminalMarker = true;
+        } else if (tm === 'false') {
+          terminalMarker = false;
+        } else {
+          throw new Error(
+            `--terminal-marker must be 'true' or 'false' (got '${tm}')`,
+          );
+        }
+        await setMacroTerminal({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          terminalPhase: flags['terminal-phase'],
+          terminalMarker,
+          nextAction: flags['next-action'],
+          event: flags.event ?? 'updated',
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'archive': {
+        cliRequire(flags, ['workflow-path', 'host', 'repo-root']);
+        const result = await archiveWorkflow({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          repoRoot: flags['repo-root'],
+        });
+        if (result.archived) {
+          process.stdout.write(`${result.to}\n`);
+        } else {
+          process.stderr.write(
+            `state.mjs archive: ${result.reason ?? 'no-op'} for ${flags['workflow-path']}\n`,
+          );
+        }
         return 0;
       }
 

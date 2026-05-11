@@ -310,6 +310,38 @@ export async function preflightEngineerCapability(root) {
         'or later before /orchestrator:next.',
     };
   }
+  // PR-E added two new engineer CLI subcommands invoked by
+  // /orchestrator:finalize and /orchestrator:abort step 2 (active-children
+  // detach pass): `detach-archive` (mid-flight child) and `stop-archive`
+  // (terminal child with explicit head args). A PR-D-era engineer install
+  // would pass the previous two probes but fail at finalize/abort dispatch
+  // when the runbook tries to spawn these subcommands. Detect via the
+  // `case 'detach-archive':` / `case 'stop-archive':` literal tokens in
+  // state.mjs — same source-grep shape as the PR-A `--parent-workflow`
+  // probe above (skill: handles refactors that rename surrounding context
+  // as long as the literal CLI flag/subcommand string persists).
+  if (!stateText.includes("'detach-archive'")
+      && !stateText.includes('"detach-archive"')) {
+    return {
+      ok: false,
+      reason: 'preflight-missing-cli: engineer state.mjs does NOT ship the ' +
+        '`detach-archive` subcommand — install pre-dates ADR-0019 PR-E. ' +
+        '/orchestrator:finalize / /orchestrator:abort step 2 (active-children ' +
+        'detach pass) cannot dispatch without it. Upgrade engineer to a ' +
+        'PR-E-or-later version.',
+    };
+  }
+  if (!stateText.includes("'stop-archive'")
+      && !stateText.includes('"stop-archive"')) {
+    return {
+      ok: false,
+      reason: 'preflight-missing-cli: engineer state.mjs does NOT ship the ' +
+        '`stop-archive` subcommand — install pre-dates ADR-0019 PR-E. ' +
+        '/orchestrator:finalize / /orchestrator:abort step 2 (terminal-child ' +
+        'path) cannot invoke the engineer Stop lifecycle without it. Upgrade ' +
+        'engineer to a PR-E-or-later version.',
+    };
+  }
   return { ok: true };
 }
 

@@ -2099,6 +2099,88 @@ export function noActiveChildrenCheck(frontmatter) {
   return true;
 }
 
+/**
+ * ADR-0019 §5 PR-E — mid-flight detach path invoked by orchestrator
+ * /finalize / /abort step 2 when a child engineer workflow has NOT
+ * reached a terminal commit. Two operations in one logical action:
+ *
+ *   1. Set `parent_detached: true` + `terminal_marker: false` on the
+ *      child frontmatter (atomic under the per-file lock). The
+ *      `parent_detached` field is closed-set per ADR-0019 PR-A — the
+ *      schema already accepts it.
+ *   2. Archive the workflow file (dir lock → file lock under
+ *      `archiveWorkflow`).
+ *
+ * No parent writeback fires: the orchestrator already marked the
+ * subtask `deferred` / `abandoned` in step 1, so there is no
+ * `completed` semantic to propagate. ADR-0019 §6 lock-order is
+ * naturally satisfied — this helper acquires only engineer-side
+ * locks (per-file for the frontmatter mutation, dir+per-file inside
+ * `archiveWorkflow`), all released before the orchestrator
+ * re-acquires its own parent lock in step 3.
+ *
+ * @param {object} args
+ * @param {string} args.workflowPath
+ * @param {string} args.host
+ * @param {string} args.repoRoot
+ * @param {Date}   [args.now]
+ * @returns {Promise<{detached: true, to: string, host: string} | {detached: false, reason: string}>}
+ */
+export async function detachArchive({
+  workflowPath,
+  host,
+  repoRoot,
+  now = new Date(),
+}) {
+  validateHost(host);
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
+    throw new Error('detachArchive: repoRoot is required (non-empty string)');
+  }
+
+  // Step 1 — mark `parent_detached: true` + `terminal_marker: false`
+  // under the per-file lock. The `parent_detached` field is already
+  // in FRONTMATTER_KEY_ORDER + validateSchema11Fields (PR-A); we just
+  // set the boolean and let the serializer preserve key order.
+  await withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const nowIso = isoUtc(now);
+    frontmatter.parent_detached = true;
+    // Explicitly set `false` (not absent) so a stop-archive evaluation
+    // post-detach reads the gate as "did not pass" rather than "missing
+    // — defaults to false". Same boolean-strict treatment as PR-C0's
+    // §4 auto-terminal pass.
+    frontmatter.terminal_marker = false;
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'updated' },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+  });
+
+  // Step 2 — archive. archiveWorkflow's withDirectoryLock + withFileLock
+  // are acquired+released within its own scope; the step-1 file lock
+  // above has already been released by the time we reach here. Both
+  // engineer-side lock windows are independent, satisfying ADR-0019
+  // §6 child-locks-released-before-parent rule for any subsequent
+  // orchestrator parent acquire.
+  const result = await archiveWorkflow({
+    workflowPath,
+    host,
+    repoRoot,
+    now,
+  });
+  if (!result.archived) {
+    return { detached: false, reason: result.reason ?? 'archive-no-op' };
+  }
+  return { detached: true, to: result.to, host };
+}
+
 // -----------------------------------------------------------------------------
 // CLI mode
 
@@ -2191,6 +2273,26 @@ function cliPrintHelp() {
       '  archive --workflow-path <path> --host <host> --repo-root <path>',
       '    ADR-0017 sub-5 — move workflow file from workflows/ to archive/.',
       '    Collision-safe (timestamp-suffix). Idempotent if source is already absent.',
+      '',
+      '  detach-archive --workflow-path <path> --host <host> --repo-root <path>',
+      '    ADR-0019 PR-E — atomic mid-flight detach: write parent_detached:true +',
+      '    terminal_marker:false on the engineer frontmatter, then archive. Invoked',
+      '    by orchestrator /finalize·/abort step 2 when the child has NOT reached a',
+      '    terminal commit. Does NOT fire parent writeback (orchestrator already',
+      '    marked the subtask deferred/abandoned in step 1). Emits JSON envelope:',
+      '      {detached: true, to: <archive-path>, host} on success',
+      '      {detached: false, reason: <string>} on archive no-op',
+      '',
+      '  stop-archive --workflow-path <path> --host <host> --repo-root <path>',
+      '               [--head-sha <sha>] [--head-subject <text>] [--status-digest <hex>]',
+      '    ADR-0019 PR-E — wraps runStopArchive with explicit head info so the A3',
+      '    head_moved gate is evaluated against an explicitly-supplied SHA rather',
+      '    than the current-process git HEAD. Invoked by orchestrator /finalize·/abort',
+      '    step 2 when the child HAS reached a terminal commit (the orchestrator',
+      '    probes the child branch HEAD via `git rev-parse refs/heads/<child_branch>`',
+      '    and passes it as --head-sha). Emits the runStopArchive return as JSON:',
+      '      {archived: true, to: <archive-path>} on archive success',
+      '      {archived: false, reason: <reason>, gateFailures?: [...]} otherwise',
       '',
       'Verbs: investigate, frame, decide, compose, critique, refine.',
       'Hosts: claude, codex.',
@@ -2390,6 +2492,43 @@ async function cliMain(argv) {
         return 0;
       }
 
+      // ADR-0019 PR-E — orchestrator /finalize·/abort step 2 invokes
+      // these two subcommands across the engineer-plugin boundary via
+      // `execFile(node, [stateMjsPath, 'detach-archive'|'stop-archive', …])`.
+      // Both emit a JSON envelope on stdout (the contract orchestrator
+      // parses); stderr carries any diagnostic from underlying helpers.
+
+      case 'detach-archive': {
+        cliRequire(flags, ['workflow-path', 'host', 'repo-root']);
+        const result = await detachArchive({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          repoRoot: flags['repo-root'],
+        });
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+        return 0;
+      }
+
+      case 'stop-archive': {
+        cliRequire(flags, ['workflow-path', 'host', 'repo-root']);
+        // Dynamic import: stop-archive.mjs imports back from this
+        // module, so a top-level static import would be a circular
+        // edge resolved by Node's module loader. Dynamic import keeps
+        // the dependency edge contained to this single invocation.
+        const { runStopArchive } = await import('./stop-archive.mjs');
+        const result = await runStopArchive({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          repoRoot: flags['repo-root'],
+          statusDigest: flags['status-digest'] ?? '',
+          headSha: flags['head-sha'] ?? null,
+          headSubject: flags['head-subject'] ?? null,
+          stderr: process.stderr,
+        });
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+        return 0;
+      }
+
       default:
         process.stderr.write(`state.mjs: unknown subcommand: ${subcommand}\n`);
         return 2;
@@ -2401,6 +2540,16 @@ async function cliMain(argv) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const code = await cliMain(process.argv.slice(2));
-  process.exit(code);
+  // Wrap cliMain in an async IIFE rather than awaiting it at top level.
+  // Top-level await blocks circular dynamic imports performed inside
+  // cliMain (the `stop-archive` subcommand dynamically imports
+  // stop-archive.mjs, which re-imports from this file): with top-level
+  // await pending, the inner dynamic import resolves to a Module record
+  // whose state never settles, and Node emits "Detected unsettled
+  // top-level await" before exiting with code 13. The IIFE keeps the
+  // dispatch asynchronous without making it top-level.
+  (async () => {
+    const code = await cliMain(process.argv.slice(2));
+    process.exit(code);
+  })();
 }
