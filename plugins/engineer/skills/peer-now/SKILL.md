@@ -5,12 +5,13 @@ description: "Dispatches a verbatim prompt at the cross-host companion (claude o
 
 # Peer-now (engineer persona, meta skill)
 
-The `peer-now` meta skill is a thin wrapper over `dispatch-peer.mjs`
-that fires a verbatim prompt at the cross-host peer companion
-(`claude` or `codex`) without opening a full verb-skill ensemble.
-The peer's response is appended to the active workflow's body under
-a `[Peer]` label phase note when a workflow exists; otherwise the
-response is printed and the skill exits.
+The `peer-now` meta skill is a side-channel wrapper over
+`peer-runner.mjs run --kind peer-now` that fires a verbatim prompt
+at the cross-host peer companion (`claude` or `codex`) without
+opening a full verb-skill ensemble. The peer's response is appended
+to the active workflow's body under a `[Peer]` label phase note when
+a workflow exists; otherwise the response is printed and the skill
+exits.
 
 It is a **meta skill** per [ADR-0010](../../../../docs/adr/0010-plugin-boundary-policy.md)
 §3 cascade ([ADR-0022](../../../../docs/adr/0022-engineer-meta-skill-category.md)):
@@ -22,13 +23,12 @@ This skill is a deliberate side-channel: it does NOT update
 `current_phase`, `next_action`, `latest_checkpoint`, or the
 `ensemble_results` frontmatter list. peer-now is **excluded from
 `ensemble_results`** by design — that field is reserved for verb-
-skill structured ensemble verdicts. The four-flag
-ensemble-bookkeeping argument set documented at
-`scripts/dispatch-peer.mjs --help`
-(`--workflow-path / --phase / --ensemble-type / --run-id`) is what
-opts a dispatch INTO `ensemble_results`; `peer-now` deliberately
-omits those flags, mirroring the structural exclusion that
-verb-skill ensembles record in
+skill structured ensemble verdicts. The managed ensemble
+bookkeeping argument set (`--workflow-path / --phase /
+--ensemble-type / --run-id`) is what opts a dispatch INTO
+`ensemble_results`; `peer-now` deliberately omits the workflow
+bookkeeping flags even though it now has an operational `run_id`,
+mirroring the structural exclusion that verb-skill ensembles record in
 `skills/_shared/references/ensemble-protocol.md`
 § State Bookkeeping.
 
@@ -39,8 +39,9 @@ verb-skill ensembles record in
 | Operation | Claude side | Codex side |
 |-----------|-------------|------------|
 | Argument parse + dispatch | Yes | Yes |
-| `dispatch-peer.mjs --peer codex` (Claude asking Codex) | Native — `codex-companion.mjs` invoked | N/A (Codex would not ask itself) |
-| `dispatch-peer.mjs --peer claude` (Codex asking Claude) | N/A (Claude would not ask itself) | Native — `claude-companion.mjs` invoked |
+| `peer-runner.mjs run --kind peer-now --peer codex` (Claude asking Codex) | Native — `codex-companion.mjs` invoked and tracked under `.claude/agentic-engineer/peer-runs/<run_id>/` | N/A (Codex would not ask itself) |
+| `peer-runner.mjs run --kind peer-now --peer claude` (Codex asking Claude) | N/A (Claude would not ask itself) | Native — `claude-companion.mjs` invoked and tracked under `.claude/agentic-engineer/peer-runs/<run_id>/` |
+| `peer-runner.mjs status/cancel --run-id <id>` | Yes — local status/cancel surface for peer-now ledgers | Yes — same local status/cancel surface |
 | `state.mjs append --phase-label "[Peer] <peer> consultation"` (when active workflow exists) | `--host claude` | `--host codex` |
 | Standalone mode (no active workflow → stdout only) | Yes | Yes |
 
@@ -59,7 +60,7 @@ fires based on the `--peer` flag.
 |---------|--------|-------|
 | Plugin root | `$CLAUDE_PLUGIN_ROOT` (set by the Claude Code runtime); Claude fallback `$(find ~/.claude/plugins/cache/agentic-plugins/engineer -maxdepth 1 -mindepth 1 -type d \| sort -V \| tail -1)` — versioned subdirectory layout | Direct path: `~/.codex/.tmp/marketplaces/agentic-plugins/plugins/engineer` (Codex marketplace install layout per ADR-0008 — no versioned subdirectory, no glob needed) |
 | Entry path | `/engineer:peer-now --peer <claude|codex> (--prompt-text "..." \| --prompt-file <path>)` | `$engineer:peer-now --peer <claude|codex> (--prompt-text "..." \| --prompt-file <path>)` |
-| Companion bridge invoked | `--peer codex` runs `<plugin-root>/scripts/dispatch-peer.mjs` → `companions/codex-companion.mjs` | `--peer claude` runs `<plugin-root>/scripts/dispatch-peer.mjs` → `companions/claude-companion.mjs` (same `dispatch-peer.mjs` path inside the engineer plugin's `scripts/` on both hosts; only the bridge target differs) |
+| Companion bridge invoked | `--peer codex` runs `<plugin-root>/scripts/peer-runner.mjs run --kind peer-now` → `companions/codex-companion.mjs` | `--peer claude` runs `<plugin-root>/scripts/peer-runner.mjs run --kind peer-now` → `companions/claude-companion.mjs` (same `peer-runner.mjs` path inside the engineer plugin's `scripts/` on both hosts; only the bridge target differs) |
 | `state.mjs` host flag (when injecting `[Peer]` note) | `--host claude` | `--host codex` |
 
 ---
@@ -84,36 +85,63 @@ Reject with a one-line usage hint and stop on:
 
 ---
 
-## Phase 1 — Dispatch verbatim
+## Phase 1 — Dispatch verbatim with operational tracking
 
-`dispatch-peer.mjs` is a generic wrapper. **Without** the four-flag
-ensemble-bookkeeping argument set (`--workflow-path / --phase /
---ensemble-type / --run-id`), it does NOT touch `pending_ensemble`
-or `ensemble_results` — it just runs the companion `task`
-subcommand and surfaces the response. Use `--output-format text`
-so the raw companion stdout flows through unmodified.
+`peer-runner.mjs` supervises the companion process and writes a
+hidden repo-local ledger under
+`.claude/agentic-engineer/peer-runs/<run_id>/`. With
+`--kind peer-now`, it does NOT touch `pending_ensemble` or
+`ensemble_results` — it just tracks the side-channel process and
+surfaces the response path. Use `--output-format text` so the raw
+companion stdout remains verbatim in `stdout.log`.
 
 ```bash
-DISPATCH_OUT="$(mktemp -t engineer-peer-now.XXXXXX).out"
-DISPATCH_ERR="$(mktemp -t engineer-peer-now.XXXXXX).err"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+HOST="${AGENTIC_HOST:-claude}" # Codex-side command-invoked mode uses codex.
+RUN_ID="peer-now-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
+RUN_JSON="$(mktemp -t engineer-peer-now.XXXXXX).json"
+RUN_ERR="$(mktemp -t engineer-peer-now.XXXXXX).err"
 
-node "<plugin-root>/scripts/dispatch-peer.mjs" \
+echo "peer-now run_id=$RUN_ID" >&2
+
+node "<plugin-root>/scripts/peer-runner.mjs" run \
+  --repo-root "$REPO_ROOT" \
+  --run-id "$RUN_ID" \
+  --kind peer-now \
   --peer "$PEER" $PROMPT_ARG \
   --output-format text \
-  > "$DISPATCH_OUT" 2> "$DISPATCH_ERR"
-DISPATCH_RC=$?
+  --host "$HOST" \
+  --cwd "$REPO_ROOT" \
+  > "$RUN_JSON" 2> "$RUN_ERR"
+RUN_RC=$?
+
+STDOUT_PATH="$(jq -r '.stdout_path // empty' "$RUN_JSON" 2>/dev/null)"
+STDERR_PATH="$(jq -r '.stderr_path // empty' "$RUN_JSON" 2>/dev/null)"
+HANDLE_PATH="$(jq -r '.handle_path // empty' "$RUN_JSON" 2>/dev/null)"
+ERROR_KIND="$(jq -r '.error_kind // empty' "$RUN_JSON" 2>/dev/null)"
 ```
 
 Exit-code semantics (per `companions/contract.md` §5.1):
 
-- 0 — success, peer response in `$DISPATCH_OUT`
+- 0 — success, peer response in `$STDOUT_PATH`
 - 1 — `peer_run_error` (companion ran but peer signaled failure)
 - 2 — `companion_misuse` (bad CLI args; this command's bug)
 - 3 — peer CLI infrastructure failure (companion not found)
 
-On `DISPATCH_RC != 0`, surface the first stderr line plus the exit
-code and stop (do NOT append any phase note). Exit non-zero from
-this skill too.
+While the run is active, another local host/session can inspect or
+cancel it:
+
+```bash
+node "<plugin-root>/scripts/peer-runner.mjs" status \
+  --repo-root "$REPO_ROOT" --run-id "$RUN_ID" --json
+node "<plugin-root>/scripts/peer-runner.mjs" cancel \
+  --repo-root "$REPO_ROOT" --run-id "$RUN_ID"
+```
+
+On `RUN_RC != 0`, surface the first line from `$RUN_ERR`, then
+`$STDERR_PATH`, then `$ERROR_KIND` as fallback, plus the exit code
+and run id. Stop without appending a phase note and exit non-zero
+from this skill too.
 
 ---
 
@@ -122,7 +150,7 @@ this skill too.
 Locate the active workflow with `state.mjs find-active`:
 
 - **Exit 0, empty stdout** → no active workflow. Standalone mode:
-  print the response from `$DISPATCH_OUT` to stdout and skip the
+  print the response from `$STDOUT_PATH` to stdout and skip the
   state mutation step.
 - **Exit 0, single path** → append a `[Peer]` label phase note to
   that workflow's body via
@@ -130,18 +158,22 @@ Locate the active workflow with `state.mjs find-active`:
   --phase-note "<note>" --event updated`. Do NOT pass
   `--current-phase` or `--next-action` — `peer-now` does not
   advance phase.
+  - Include `run_id: $RUN_ID` and `handle: $HANDLE_PATH` in the
+    `[Peer]` note so the raw ledger can be inspected while retention
+    keeps it.
   - Cap the appended response excerpt at 4000 chars (`head -c 4000`
-    on `$DISPATCH_OUT`) so one consultation cannot blow the
+    on `$STDOUT_PATH`) so one consultation cannot blow the
     workflow body out. The full response is also printed to the
     user separately.
   - **Cross-Bash-call note (parallel to `resume` Phase 2b)**:
-    shell-variable state (`$DISPATCH_OUT`, `$ACTIVE`, `$PEER`) does
+    shell-variable state (`$STDOUT_PATH`, `$ACTIVE`, `$PEER`) does
     not survive across Bash tool invocations. If Phase 1 dispatch
     and Phase 2 state-write run in separate Bash calls, re-resolve
     the active workflow inside Phase 2 (e.g., re-run
-    `state.mjs find-active`) and re-read `$DISPATCH_OUT` via
-    `head -c 4000` after locating the file path; the temp file
-    itself persists across calls but the variable does not.
+    `state.mjs find-active`) and re-read `$STDOUT_PATH` via
+    `head -c 4000` after locating the file path; the ledger file
+    itself persists until peer-run retention removes it, but the
+    variable does not.
 - **Exit 1, per-branch duplicate error** → reject with a hint
   pointing at the `resume` meta skill. `peer-now` must not pick a
   workflow itself — per-branch duplicate is a user-resolvable
@@ -151,18 +183,18 @@ Locate the active workflow with `state.mjs find-active`:
 
 ## Completion outcomes
 
-- `✓ Peer consultation recorded under [Peer] <peer> consultation in <workflow path>.` (followed by the response).
-- `✓ Peer consultation completed (standalone — no active workflow).` (followed by the response).
-- `✗ Peer dispatch failed (exit <RC>): <first stderr line>.` — Phase 1 failed.
+- `✓ Peer consultation recorded under [Peer] <peer> consultation in <workflow path> (run_id=<id>).` (followed by the response).
+- `✓ Peer consultation completed (standalone — no active workflow, run_id=<id>).` (followed by the response).
+- `✗ Peer dispatch failed (run_id=<id>, exit <RC>): <first stderr line>.` — Phase 1 failed.
 - `✗ <usage hint from Phase 0>.` — argument parsing rejected.
 - `✗ Per-branch duplicate detected — resolve via the resume meta skill.` — Phase 2 found more than one workflow on the current branch.
 
-The peer's response is printed verbatim, with no synthesis label
-injection or `AGREED / PEER-ONLY / CONFLICT` structuring. That
-structuring is a verb-level concern (compose / critique / decide /
-…) carried by the verb-skill ensemble dispatch contract; `peer-now`
-is meant for casual cross-host probes where the user wants the raw
-answer.
+The peer's response is printed verbatim from `$STDOUT_PATH`, with no
+synthesis label injection or `AGREED / PEER-ONLY / CONFLICT`
+structuring. That structuring is a verb-level concern (compose /
+critique / decide / …) carried by the verb-skill ensemble dispatch
+contract; `peer-now` is meant for casual cross-host probes where the
+user wants the raw answer.
 
 ---
 

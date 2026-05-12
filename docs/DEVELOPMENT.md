@@ -367,14 +367,15 @@ updated here as conditions advance.
 - **[ADR-0023](adr/0023-peer-runner-supervisor-layer.md)** — caller-side peer-runner
   supervisor for companion dispatch monitoring, cancellation, sweep, and bounded ledger
   retention without expanding `companions/contract.md` v0.1.1.
-  **Status: Accepted (2026-05-12). Core PR-A through PR-D shipped:** PR-A
+  **Status: Accepted (2026-05-12). PR-A through PR-E shipped:** PR-A
   [#80](https://github.com/each4all/agentic-plugins/pull/80) (ADR text) / PR-B
   [#81](https://github.com/each4all/agentic-plugins/pull/81) (engineer peer-runner primitive)
   / PR-C [#82](https://github.com/each4all/agentic-plugins/pull/82) (engineer command
   integration while preserving `dispatch-peer.mjs` compatibility and `peer-now` exclusion)
   / PR-D [#83](https://github.com/each4all/agentic-plugins/pull/83) (orchestrator mirror with
-  resolve-before-record graceful degradation and `/orchestrator:plan` integration).
-  PR-E (`peer-now` operational controls) remains optional/triggered per ADR-0023 §9.
+  resolve-before-record graceful degradation and `/orchestrator:plan` integration)
+  / PR-E (peer-now operational controls: `peer-runner.mjs run --kind peer-now` plus
+  run-id based status/cancel while preserving `ensemble_results` exclusion).
 - Verb-level alias expansion based on dogfood usage signal (deferred
   from Deliverable D, Phase 6 SUGGESTION #15).
 - Larger per-deliverable scope criterion (Phase 6 SUGGESTION #16) — to
