@@ -69,7 +69,7 @@ Follow the auto-activated Step 1 (Decompose) and Step 2 (Order) above to produce
 
 Launch the peer ensemble per `../_shared/references/ensemble-protocol.md` using the **Plan-verify** ensemble point. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (the only Independence Rule exception — Plan-verify is the per-protocol exception). The peer returns gaps, ordering issues, risk areas, and edge cases on the macro plan.
 
-Ensemble dispatch is via `dispatch-peer.mjs --peer codex --workflow-path <path> --phase plan --ensemble-type plan-verify --run-id macro-plan-<iso>-<rand>`. Pending entry is recorded best-effort under the workflow file's per-file lock (graceful-degradation: if Codex is unavailable, dispatch returns kind `peer_cli_not_found` with no pending entry — caller proceeds with a LOCAL-ONLY plan).
+Ensemble dispatch is via `peer-runner.mjs run --kind ensemble --peer codex --workflow-path <path> --phase plan --ensemble-type plan-verify --run-id macro-plan-<iso>-<rand>`. The runner preserves orchestrator's graceful-degradation order: if Codex is unavailable, it returns kind `peer_cli_not_found` with no peer-run ledger and no pending entry; caller proceeds with a LOCAL-ONLY plan. If the companion resolves, the runner creates the peer-run ledger, records pending best-effort under the workflow file's per-file lock, and supervises stdout/stderr/envelope capture.
 
 ### Step 4: Synthesize
 

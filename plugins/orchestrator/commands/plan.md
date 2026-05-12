@@ -7,7 +7,7 @@ argument-hint: <feature description>
 
 $ARGUMENTS
 
-Use `TaskCreate` and `TaskUpdate` to track progress. The peer ensemble runs automatically per `skills/_shared/references/ensemble-protocol.md` (Plan-verify point type). Never ask the user whether to invoke the peer. When the companions plugin or peer CLI is unavailable, the ensemble degrades silently to a LOCAL-ONLY plan (`dispatch-peer.mjs` returns `peer_cli_not_found` with no orphan-pending entry — orchestrator-specific graceful degradation contract).
+Use `TaskCreate` and `TaskUpdate` to track progress. The peer ensemble runs automatically per `skills/_shared/references/ensemble-protocol.md` (Plan-verify point type). Never ask the user whether to invoke the peer. When the companions plugin or peer CLI is unavailable, the ensemble degrades silently to a LOCAL-ONLY plan (`peer-runner.mjs run` returns `peer_cli_not_found` with no peer-run ledger or orphan-pending entry — orchestrator-specific graceful degradation contract).
 
 Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin's resolved root. Fallback: discover via `find ~/.claude/plugins/cache/agentic-plugins/orchestrator -maxdepth 3 -name plugin.json` SemVer walk if `$CLAUDE_PLUGIN_ROOT` is unset.
 
@@ -98,19 +98,21 @@ PROMPT_FILE="$(mktemp -t orchestrator-plan-prompt.XXXXXX).xml"
 # same key.
 RUN_ID="macro-plan-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 # ... LLM writes the Plan-verify XML prompt to $PROMPT_FILE ...
-node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs" \
+node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
+  --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
   --workflow-path "$ACTIVE" --phase plan \
   --ensemble-type plan-verify --run-id "$RUN_ID" \
-  > "$PROMPT_FILE.out" 2> "$PROMPT_FILE.err" &
+  --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
+  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
 ```
 
-The four bookkeeping flags (`--workflow-path`, `--phase`, `--ensemble-type`, `--run-id`) cause `dispatch-peer.mjs` to:
+The four bookkeeping flags (`--workflow-path`, `--phase`, `--ensemble-type`, `--run-id`) cause `peer-runner.mjs run` to:
 
 1. Resolve the companion script (`peer codex`) via `companions/discover-peer.mjs`.
-2. **If companion missing** → return `peer_cli_not_found`, NO `pending_ensemble` entry recorded (orchestrator-specific graceful-degradation order). Caller proceeds with a LOCAL-ONLY plan.
-3. **If companion present** → record a `pending_ensemble` entry under the workflow file's per-file lock BEFORE spawning the companion.
-4. Spawn the companion's `task --prompt-file …` subcommand and capture the JSON envelope.
+2. **If companion missing** → return `peer_cli_not_found`, create no peer-run ledger, and record NO `pending_ensemble` entry (orchestrator-specific graceful-degradation order). Caller proceeds with a LOCAL-ONLY plan.
+3. **If companion present** → create `.claude/agentic-orchestrator/peer-runs/<run_id>/`, record a `pending_ensemble` entry under the workflow file's per-file lock, then spawn the companion.
+4. Tee stdout/stderr to bounded ledger files, write the final JSON envelope to `envelope.json`, and print machine-readable run metadata to `$PROMPT_FILE.run.json`.
 
 After synthesis, Phase 2 invokes `state.mjs ensemble-commit` with the same `--run-id` to atomically pop the pending entry (no-op if companion was missing), append the result to `ensemble_results`, and prune to the retention cap.
 

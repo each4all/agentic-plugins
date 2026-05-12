@@ -26,7 +26,7 @@ Every ensemble point follows three steps: Launch, Collect, Synthesize.
 
 1. Determine the ensemble point type (Plan-verify in orchestrator MVP).
 2. Build the peer prompt per the per-type template below (Plan-verify is the only template shipped in this MVP).
-3. Resolve the companion script and dispatch via `plugins/orchestrator/scripts/dispatch-peer.mjs`. The graceful-degradation contract: companion missing → `dispatchPeer` returns `kind: 'peer_cli_not_found'` and the orchestrator side proceeds with a **LOCAL-ONLY** synthesis.
+3. Resolve the companion script and dispatch via `plugins/orchestrator/scripts/peer-runner.mjs run`. The graceful-degradation contract: companion missing → the runner returns `kind: 'peer_cli_not_found'` without creating a peer-run ledger or `pending_ensemble` row, and the orchestrator side proceeds with a **LOCAL-ONLY** synthesis. If the companion resolves, the runner creates `.claude/agentic-orchestrator/peer-runs/<run_id>/`, records `pending_ensemble`, supervises the child process, tees stdout/stderr to ledger files, and writes the final JSON envelope to `envelope.json`.
 
 ### Step 2: Collect
 
@@ -57,7 +57,7 @@ The synthesis output replaces the standard single-side output. Follow the Presen
 
 Whenever an ensemble point is launched from inside an orchestrator workflow file (`/orchestrator:plan`), the launching command MUST record the in-flight job in the workflow file per `state.mjs` `pending_ensemble` schema.
 
-- After Step 1 Launch returns the background task id, append an entry `{phase, ensemble_type, run_id, started_at}` to `pending_ensemble`.
+- `peer-runner.mjs run --kind ensemble` appends `{phase, ensemble_type, run_id, started_at}` to `pending_ensemble` only after companion resolution succeeds.
 - The `state.mjs ensemble-commit` CLI subcommand performs the **three-step atomic mutation** at synthesis time: pop the matching pending entry by `run_id`, append the new `ensemble_results` entry, and prune the retention list to `ENSEMBLE_RESULTS_RETENTION_CAP` — all in a single `withFileLock` window via `atomicWrite`.
 
 Stale entries left over by an interrupted session are out of scope for this MVP — `/orchestrator:resume` ships in a follow-up PR alongside the cross-plugin invocation contract; until then, stale `pending_ensemble` entries are inspected by manual `state.mjs read` and pruned by hand if needed.
@@ -138,13 +138,13 @@ The orchestrator MVP ships exactly one ensemble point type. Future points (Brain
 
 ### Companion unavailable, not installed, or unauthenticated
 
-- **Detect**: `dispatchPeer` returns `{ ok: false, kind: 'peer_cli_not_found' }`.
+- **Detect**: `peer-runner.mjs run` returns `{ ok: false, kind: 'peer_cli_not_found' }`.
 - **Action**: log warning, proceed with LOCAL-ONLY results. Synthesis presents the orchestrator's draft plan as a single LOCAL-ONLY decision item.
 - **Present**: "Codex ensemble unavailable — macro plan is LOCAL-ONLY. Run `/codex:setup` to configure the Codex peer for the next plan revision."
 
 ### Peer timeout, error, or malformed envelope
 
-- **Detect**: dispatch returns non-zero exit or envelope shape validation fails.
+- **Detect**: peer-runner returns non-zero exit or envelope shape validation fails.
 - **Action**: log the error, proceed with LOCAL-ONLY results.
 - **Present**: "Codex peer analysis did not complete — macro plan is LOCAL-ONLY for this dispatch."
 
