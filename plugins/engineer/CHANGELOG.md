@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.8.0...plugin-engineer-v0.9.0) (2026-05-12)
+
+
+### Features
+
+* **plugin/engineer:** add peer-now run controls ([8ba4c68](https://github.com/each4all/agentic-plugins/commit/8ba4c68d1ab84ee03fe90768a8c324d33d03f678))
+* **plugin/engineer:** add peer-now run controls ([75f3770](https://github.com/each4all/agentic-plugins/commit/75f377050a952bd59e9e0b7cee615c8b307f3b66))
+* **plugin/engineer:** add peer-runner primitive ([707ac83](https://github.com/each4all/agentic-plugins/commit/707ac83d7b3014918effa6fb09fd59153d4c8511))
+* **plugin/engineer:** add peer-runner primitive ([14e8253](https://github.com/each4all/agentic-plugins/commit/14e8253e0de8a08ce25cbfba10bb6f371a000642))
+* **plugin/engineer:** route command ensembles through peer-runner ([efd80e1](https://github.com/each4all/agentic-plugins/commit/efd80e166b68590e4f0ae41c3f4b375666936a09))
+* **plugin/engineer:** route command ensembles through peer-runner ([27a3add](https://github.com/each4all/agentic-plugins/commit/27a3addbb3ef5597024b2ca5cbdf68cb59b72450))
+* **plugins/engineer:** meta-skill category mirror (ADR-0022) ([#77](https://github.com/each4all/agentic-plugins/issues/77)) ([c4dd712](https://github.com/each4all/agentic-plugins/commit/c4dd7124928da13e30abbfd4842367ea4b7937f3))
+
 ## [0.8.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.7.0...plugin-engineer-v0.8.0) (2026-05-12)
 
 

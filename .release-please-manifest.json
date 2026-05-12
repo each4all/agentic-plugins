@@ -1,6 +1,6 @@
 {
   "companions": "0.3.0",
   "plugins/companions": "0.4.0",
-  "plugins/engineer": "0.8.0",
-  "plugins/orchestrator": "0.3.0"
+  "plugins/engineer": "0.9.0",
+  "plugins/orchestrator": "0.4.0"
 }
