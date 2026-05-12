@@ -223,6 +223,6 @@ PR-C0's `updateSubtask` handles single-writer ownership, absorbing-completed pre
 Report one of:
 
 - `✓ Subtask <id> recorded completed. commit=<sha> closed_at=<iso>. Auto-terminal=<true|false>.`
-- `✓ Subtask <id> auto-promoted: macro terminal_marker=true. Run /orchestrator:finalize (PR-E) or wait for the Stop hook auto-archive.`
+- `✓ Subtask <id> auto-promoted: macro terminal_marker=true. Run /orchestrator:finalize or wait for the Stop hook auto-archive.`
 - `✓ /orchestrator:done was a no-op — subtask <id> was already completed at <closed_at> with commit <sha>.`
 - `✗ Ownership conflict — engineer_workflow_id mismatch (existing=<X>, supplied=<Y>). Archive the stale engineer workflow or use --workflow=<correct-macro-id> if the wrong macro was selected.`

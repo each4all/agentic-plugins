@@ -62,9 +62,8 @@ model** for plugin organization (ADR-0010).
 │   verb-level sugar aliases inside plugin allowed (ADR-0010) │
 ├─────────────────────────────────────────────────────────────┤
 │ L2 — Capability plugins (persona-agnostic activities)       │
-│   plugins/orchestrator  ← Stage 3+ (plan-only MVP per       │
-│                            ADR-0018 §sub-1 — first multi-   │
-│                            verb L2 occupant)                │
+│   plugins/orchestrator  ← Stage 3+ (first multi-verb L2     │
+│                            occupant; ADR-0018/0019/0023)    │
 │   (plugins/research retired at Stage 2.5+ per ADR-0014;     │
 │    cited-brief absorbed into engineer:investigate)          │
 │   future: plugins/decision, plugins/image                   │
@@ -246,6 +245,6 @@ milestones, cutover trigger conditions, data migration policy
 Stage progression:
 
 - **Stage 1** (complete) — `plugins/companions` + `plugins/research` (research retired at Stage 2.5+ per [ADR-0014](adr/0014-plugins-research-deprecation.md); cited-brief contract absorbed into `engineer:investigate`). Bidirectional companion contract verified.
-- **Stage 2** (in progress) — `plugins/engineer` self-development plugin. See [`adr/0010-plugin-boundary-policy.md`](adr/0010-plugin-boundary-policy.md) and [`adr/0011-workflow-continuity-storage.md`](adr/0011-workflow-continuity-storage.md). Stage 2 exit drops omcc-dev dependency for agentic-plugins development.
-- **Stage 3** (planned) — `plugins/designer` design-domain plugin. Same 4-layer composition.
+- **Stage 2** (complete) — `plugins/engineer` self-development plugin. See [`adr/0010-plugin-boundary-policy.md`](adr/0010-plugin-boundary-policy.md), [`adr/0011-workflow-continuity-storage.md`](adr/0011-workflow-continuity-storage.md), and the ADR-0017 / ADR-0020–0023 continuity follow-ups.
+- **Stage 3+** (in progress) — `plugins/orchestrator` L2 capability is shipped for macro planning, same-host engineer dispatch, macro completion, and peer-runner-supervised Plan-verify. `plugins/designer` remains the planned design-domain L3 plugin. Same 4-layer composition.
 - **Cutover** — declared by user when Stage 1–3 milestones met, ≥1 week sustained use without regression, and ≥1 clear improvement over omcc.

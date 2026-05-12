@@ -13,10 +13,11 @@ jobs:
   release-please:
     name: release-please
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Run release-please
         id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@v5
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
@@ -29,16 +30,16 @@ jobs:
       # here so catalog entries match the new manifest versions.
       - name: Checkout main for marketplace sync
         if: ${{ steps.release.outputs.releases_created == 'true' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node
         if: ${{ steps.release.outputs.releases_created == 'true' }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Sync marketplace catalog versions
         if: ${{ steps.release.outputs.releases_created == 'true' }}

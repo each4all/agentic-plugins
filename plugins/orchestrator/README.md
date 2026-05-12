@@ -8,12 +8,12 @@ Ships `/orchestrator:plan` (macro plan + Plan-verify Codex ensemble through the 
 
 ## What it is
 
-`orchestrator` is the macro layer. It manages **multi-deliverable workflows** by emitting a list of subtasks (`plan.subtasks[]`) — each subtask is a unit that a separate `engineer` workflow then drives end-to-end. The orchestrator's responsibility ends at the macro plan; the cognitive workbench (investigate / frame / decide / compose / critique / refine) lives in `plugins/engineer`.
+`orchestrator` is the macro layer. It manages **multi-deliverable workflows** by emitting a list of subtasks (`plan.subtasks[]`), dispatching each ready subtask into a separate `engineer` workflow, and closing or archiving the parent macro when the subtasks reach terminal states. The cognitive workbench (investigate / frame / decide / compose / critique / refine) lives in `plugins/engineer`.
 
 | Layer | Plugin | Responsibility |
 |-------|--------|----------------|
 | L1 framework | `plugins/companions` | Cross-host bidirectional companion bridges (Claude ↔ Codex) |
-| **L2 capability** | **`plugins/orchestrator` (this plugin)** | **Multi-deliverable macro plan + Plan-verify ensemble** |
+| **L2 capability** | **`plugins/orchestrator` (this plugin)** | **Multi-deliverable macro planning, dispatch, completion, and Plan-verify ensemble** |
 | L3 persona | `plugins/engineer` | Single-deliverable cognitive verb chain |
 | L4 profile | `engineer:<sub-discipline>` | Discipline-specific context (backend, frontend, …) |
 
@@ -22,7 +22,7 @@ Ships `/orchestrator:plan` (macro plan + Plan-verify Codex ensemble through the 
 | Command | Status | Description |
 |---------|--------|-------------|
 | `/orchestrator:plan <feature>` | ✅ shipping | Build a macro plan: produce `plan.subtasks[]` proposals via Plan-verify ensemble (Claude + Codex), persist to `<repo>/.claude/agentic-orchestrator/workflows/<workflow_id>.md`, and present for approval. |
-| `/orchestrator:next [<subtask-id>] [--workflow=<macro-id>]` | ✅ shipping (same-host) | Dispatch the next ready subtask into `plugins/engineer`. Branch precondition + ownership check + parent-linkage env vars per ADR-0019 §1+§3. Cross-host `--peer` ships in PR-F. |
+| `/orchestrator:next [<subtask-id>] [--workflow=<macro-id>]` | ✅ shipping (same-host) | Dispatch the next ready subtask into `plugins/engineer`. Branch precondition + ownership check + parent-linkage env vars per ADR-0019 §1+§3. Cross-host `--peer` remains trigger-deferred PR-F scope. |
 | `/orchestrator:done <subtask-id> [--commit=<sha>] [--workflow=<macro-id>]` | ✅ shipping | Manually record subtask completion (idempotent backup for engineer Stop auto-writeback) per ADR-0019 §4. Required when the engineer session crashed before terminal commit OR for cross-host reconciliation. |
 | `/orchestrator:finalize [--workflow=<macro-id>]` | ✅ shipping | Close the macro plan with all non-terminal subtasks → `deferred` + macro `current_phase: 'finalized'` + `terminal_marker: true`. Three-step §5 ritual: bulk subtask transition → active-children detach pass (NO parent lock; routes terminal engineer children through `stop-archive`, mid-flight via `detach-archive`) → terminal markers. |
 | `/orchestrator:abort [--workflow=<macro-id>]` | ✅ shipping | Same ritual as `/finalize`, but subtask transition → `abandoned` and `current_phase: 'aborted'`. Use when work cannot continue. |

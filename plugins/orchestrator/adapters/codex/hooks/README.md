@@ -4,7 +4,7 @@ As of Codex CLI 0.128.0, **no plugin-local automatic hook packaging has been ver
 
 ## Files
 
-- `stop.mjs` — runs the same `last_snapshot + host_history` write that Claude's automatic Stop hook performs (snapshot-only in this plan-only MVP; auto-archive ships in a follow-up PR alongside `/orchestrator:done`). Skills should invoke this script as the final step of their command-invoked mode on Codex side, e.g.:
+- `stop.mjs` — runs the same `last_snapshot + host_history` write that Claude's automatic Stop hook performs, then evaluates macro auto-archive A1-A4 using the shared orchestrator stop-archive implementation. Skills should invoke this script as the final step of their command-invoked mode on Codex side, e.g.:
 
   ```bash
   node "${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"
@@ -15,4 +15,3 @@ As of Codex CLI 0.128.0, **no plugin-local automatic hook packaging has been ver
 ## Future work
 
 - If a future Codex CLI release ships plugin-local automatic hook packaging, the manual invocation can be replaced by a hooks manifest similar to `plugins/orchestrator/hooks/hooks.json`. The script body itself does not need to change.
-- The auto-archive A1–A4 gate is deferred to a follow-up PR per ADR-0018 §sub-decision-1; when it lands, this script will be extended to mirror `plugins/orchestrator/adapters/claude/hooks/stop.mjs`'s gate evaluation rather than performing snapshot-only writes.
