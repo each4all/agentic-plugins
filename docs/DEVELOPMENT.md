@@ -25,9 +25,10 @@ transition.
 
 ## Initial development host
 
-> **Stage 2.5+ snapshot (2026-05-12)**: Stage 2 exited 2026-05-06. Per
+> **Stage 2.5+ snapshot (2026-05-13)**: Stage 2 exited 2026-05-06. Per
 > dogfood policy, `omcc-dev` continues as the active authoring tool
-> through Stage 3 (designer landing); agentic-plugins' scaffolding
+> until a non-trivial engineer/orchestrator-driven Stage 3+ workflow
+> completes without an escape hatch; agentic-plugins' scaffolding
 > itself operates without `omcc-dev` reference per ADR-0012 condition
 > 4 functional reading (audit `audit-20260509T105532Z-3f0021`).
 > **ADR-0020 4-PR roadmap shipped 2026-05-12** ([#69](https://github.com/each4all/agentic-plugins/pull/69)
@@ -52,21 +53,31 @@ transition.
 > condition 3 satisfaction begins with the first non-trivial
 > engineer-driven workflow that completes via `/engineer:start`
 > (Claude) or `$engineer:start` (Codex) without `omcc-dev` escape
-> hatch. Detailed Stage 2 exit narrative under
+> hatch. **ADR-0024 (Proposed)** reframes the immediate Stage 3+
+> candidate as runtime/operator control plane work (`doctor`,
+> `settings`, dynamic peer consensus, context hygiene, and host
+> readiness), while deferring `plugins/designer` as a possible future
+> L3 persona rather than the active next-step trigger. Detailed Stage 2
+> exit narrative under
 > [§Stage 2 — Self-development plugin](#stage-2--self-development-plugin).
 
-Until agentic-plugins has its first published plugin stable enough to
-self-serve, **agentic-plugins development uses Claude Code as the primary host**
-and `omcc-dev` as the workflow framework.
+Until the ADR-0024 runtime/operator track produces a non-trivial
+self-hosted workflow, **agentic-plugins development still permits
+`omcc-dev` as a fallback workflow framework**. Engineer and orchestrator
+are the intended dogfood path; condition 3 is not satisfied until that
+path handles substantial work without an escape hatch.
 
 Concrete:
-- New work happens in Claude Code sessions in this directory
-- Workflows go through `omcc-dev`'s `/start`, `/fix`, `/audit`, etc.
+- New dogfood-targeted work should start with `/engineer:start`,
+  `$engineer:start`, or `/orchestrator:plan` when feasible
+- `omcc-dev` remains a legacy fallback until ADR-0012 condition 3 is
+  satisfied
 - The session reads `AGENTS.md` (via Claude Code's `CLAUDE.md` → `@AGENTS.md` redirect) for project conventions
 - ADR proposals follow the process documented in `AGENTS.md`
 
-This is **transitional**. Once agentic-plugins has its own equivalent plugin
-(see "Dogfooding plan" below), agentic-plugins switches to itself.
+This is **transitional**. Once the runtime/operator track proves the
+self-hosted path on substantial work, agentic-plugins switches to itself
+as the default development workflow.
 
 ---
 
@@ -386,10 +397,11 @@ These items are explicitly out of scope for Stage 2; they become
 first-class Stage 2.5+ ADR follow-ups when accumulated dogfood usage
 or Stage 3 work makes the design choice tractable.
 
-### Stage 3+ — L2 capability + Design domain + remaining workflows
+### Stage 3+ — Runtime/operator track + remaining workflows
 
 - **`plugins/orchestrator` (L2 capability)** ships per [ADR-0018](adr/0018-stage3-architecture-orchestrator-and-branch-context.md) §sub-decision-1 — first multi-verb L2 occupant. Plan-only MVP (`/orchestrator:plan` + Plan-verify Codex ensemble) shipped first via [PR #53](https://github.com/each4all/agentic-plugins/pull/53); the cross-plugin invocation contract is [ADR-0019](adr/0019-cross-plugin-invocation-contract.md) (sub-decision 1 follow-up). **As of 2026-05-11 the ADR-0019 cascade is fully shipped (PR-A through PR-E)** — `/orchestrator:plan` + `/next` + `/done` + `/finalize` + `/abort` + macro Stop auto-archive A1-A4 all operational on both hosts (Claude auto-archive via host Stop event; Codex manual helper via `adapters/codex/hooks/stop.mjs`). [ADR-0012](adr/0012-omcc-removal-preconditions.md) condition 1 transitions to satisfied (engineer parity unlocked — multi-deliverable workflow expressible via orchestrator + engineer composition); condition 3 still partial — the actual designer dogfood (or any other Stage 3 non-trivial workflow driven engineer-only) is the trigger for that condition's satisfied transition. PR-F (`--peer` cross-host dispatch) remains trigger-deferred.
-- A design-domain plugin (`plugins/designer`) ships, referencing omcc-designer's experience (poster, social-graphics, frontend, brief, evaluation, etc.) with the same redesign stance
+- **Runtime/operator control plane (ADR-0024, Proposed)** becomes the immediate Stage 3+ dogfood target. It introduces a future `plugins/runtime` L1 framework primitive for `doctor` (host/plugin/auth/model/effort/sandbox readiness), `settings` (dry-run-first install/config assistance), dynamic peer fanout and consensus loops, context-hygiene policy, and completion footers that recommend current-session vs new-session continuation.
+- A design-domain plugin (`plugins/designer`) remains possible future work, referencing omcc-designer's experience (poster, social-graphics, frontend, brief, evaluation, etc.) with the same redesign stance, but it is no longer the active next-step trigger for ADR-0012 condition 3.
 - Any omcc-dev workflow patterns not covered in Stage 2 are addressed (implemented or explicitly dropped with rationale)
 - The user's daily workflows have agentic-plugins equivalents preferred over omcc
 - omcc archived per ADR-0007's archive procedure
