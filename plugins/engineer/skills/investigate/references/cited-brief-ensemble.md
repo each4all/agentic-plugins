@@ -17,10 +17,10 @@ to local-only.
 This document is the **bidirectional contract** for research-scan
 inside the engineer plugin. Mechanics — how to dispatch the peer
 companion, how to consume its JSON envelope — live in
-`plugins/engineer/scripts/dispatch-peer.mjs` plus the SKILL.md
-command-invoked-mode prose. This protocol describes only the
-wire-level contract: what to send, what to expect back, how to
-synthesize.
+`plugins/engineer/scripts/peer-runner.mjs` for command-managed
+ensembles, with `dispatch-peer.mjs` retained as the blocking
+compatibility surface. This protocol describes only the wire-level
+contract: what to send, what to expect back, how to synthesize.
 
 Per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md)
 (Amendment 2026-05-06), this protocol absorbs the research-scan ensemble
@@ -82,31 +82,32 @@ Pre-conditions before dispatch:
    dispatch prevents wasted peer runs on a session the user will
    discard.
 
-Dispatch (mechanics owned by `plugins/engineer/scripts/dispatch-peer.mjs`;
+Dispatch (mechanics owned by `plugins/engineer/scripts/peer-runner.mjs`;
 this protocol pins shape only):
 
-3. Engineer's `dispatch-peer.mjs` resolves the peer-companion script
+3. Engineer's `peer-runner.mjs run` resolves the peer-companion script
    path via the same companion-cache discovery (cache-glob with
-   `AGENTIC_COMPANIONS_ROOT` env override, per ADR-0008). If
-   discovery fails, the ensemble degrades to local-only per "Failure
-   Handling" below.
-4. The dispatcher constructs the research-scan prompt per "Prompt
+   `AGENTIC_COMPANIONS_ROOT` env override, per ADR-0008), records the
+   matching `pending_ensemble` row, and creates the hidden peer-run
+   ledger. If discovery fails, the ensemble degrades to local-only per
+   "Failure Handling" below.
+4. The caller constructs the research-scan prompt per "Prompt
    Construction" below and writes it to a per-dispatch temporary file
-   (UTF-8). The prompt contains user-controlled material (topic,
-   sub-questions, scope), so it MUST be passed via
-   `--prompt-file <path>` per `companions/contract.md` § 2.2 — never
-   as a positional argument and never inlined into a shell command.
-   The companion reads the file directly; the prompt never crosses
-   shell parsing, process argv, or `ps aux`.
-5. The dispatcher invokes the companion in **JSON envelope mode**:
+   (UTF-8), then passes that file to the runner. The prompt contains
+   user-controlled material (topic, sub-questions, scope), so it MUST
+   be passed via `--prompt-file <path>` per `companions/contract.md`
+   § 2.2 — never as a positional argument and never inlined into a
+   shell command. The companion reads the file directly; the prompt
+   never crosses shell parsing, process argv, or `ps aux`.
+5. The runner invokes the companion in **JSON envelope mode**:
 
    ```
    <peer-companion> task --prompt-file <path> --output-format json [--cwd <wd>]
    ```
 
-   per `companions/contract.md` § 4.2. The dispatcher SHOULD background
+   per `companions/contract.md` § 4.2. The caller SHOULD background
    the call so the local host's own research can proceed in parallel.
-   The dispatcher MUST NOT pass companion-internal flags (no
+   The runner MUST NOT pass companion-internal flags (no
    `--background`, no timeout knobs); those are out of contract scope
    per `companions/contract.md` § 6.2 and § 6.4.
 6. The local host proceeds immediately to Step 2 of the cited-brief
@@ -416,7 +417,7 @@ that surface only after parsing the peer's content.
 
 - Detect: `error.kind ∈ {peer_cli_not_found, peer_unauthenticated,
   peer_invocation_error}` per `companions/contract.md` § 5.3, OR
-  `dispatch-peer.mjs` returns no companion path
+  `peer-runner.mjs run` returns no companion path
   (`peer_cli_not_found` equivalent at the discovery layer).
 - Action: Skip dispatch silently. Proceed with local-only research.
 - Surface: Mention in the user-facing completion summary that the
@@ -544,9 +545,12 @@ profile owns its prompt template and artifact contract.
   standard ensemble protocol (Explore + Investigate point types).
   research-scan registers as a third point type with this protocol as
   its contract.
-- `../../../scripts/dispatch-peer.mjs` — engineer's dispatcher; the
-  mechanics that resolve and invoke the peer companion. This protocol
-  describes intent only; mechanics live there.
+- `../../../scripts/peer-runner.mjs` — engineer's managed peer runner;
+  the mechanics that resolve and invoke the peer companion, write the
+  ledger, and record `pending_ensemble` for command-managed ensembles.
+  This protocol describes intent only; mechanics live there.
+- `../../../scripts/dispatch-peer.mjs` — engineer's blocking
+  compatibility dispatcher for legacy/raw callers.
 - `companions/contract.md` v0.1.1 — wire-spec contract for both
   companion bridges (`claude-companion`, `codex-companion`).
 - `docs/adr/0008-companion-distribution-model.md` — companion

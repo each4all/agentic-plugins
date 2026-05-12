@@ -120,20 +120,25 @@ PROMPT_FILE="$(mktemp -t engineer-compose-prompt.XXXXXX).xml"
 # ensemble-commit call all share the same key.
 RUN_ID="plan-verify-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 # ... LLM writes the Plan-verify XML prompt to $PROMPT_FILE ...
-node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs" \
+node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
+  --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
   --workflow-path "$ACTIVE" --phase compose \
+  --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
   --ensemble-type plan-verify --run-id "$RUN_ID" \
-  > "$PROMPT_FILE.out" 2> "$PROMPT_FILE.err" &
+  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
 ```
 
 The four bookkeeping flags (`--workflow-path`, `--phase`,
-`--ensemble-type`, `--run-id`) cause `dispatch-peer.mjs` to record a
-`pending_ensemble` entry under the workflow file's per-file lock
-BEFORE spawning the companion (ADR-0017 §sub-decision 4). After
-synthesis, Phase 2 invokes `state.mjs ensemble-commit` with the same
-`--run-id` to atomically pop the pending entry, append the result to
-`ensemble_results`, and prune to the retention cap.
+`--ensemble-type`, `--run-id`) cause `peer-runner.mjs run` to record a
+`pending_ensemble` entry under the workflow file's per-file lock BEFORE
+spawning the companion (ADR-0017 §sub-decision 4). The runner writes
+raw peer output under the hidden peer-run ledger and emits a small JSON
+result to `$PROMPT_FILE.run.json` with `envelope_path`, `stdout_path`,
+`stderr_path`, and `handle_path`. After synthesis, Phase 2 invokes
+`state.mjs ensemble-commit` with the same `--run-id` to atomically pop
+the pending entry, append the result to `ensemble_results`, and prune
+to the retention cap.
 
 Independence exception (per ensemble-protocol.md § Independence
 Rule): the peer DOES receive the orchestrator's draft plan as input

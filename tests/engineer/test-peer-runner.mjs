@@ -1,4 +1,4 @@
-// plugins/engineer/scripts/peer-runner.mjs unit tests (ADR-0023 PR-B).
+// plugins/engineer/scripts/peer-runner.mjs unit tests (ADR-0023 PR-B/PR-C).
 //
 // Covers the engineer peer-runner primitive without invoking real peer CLIs:
 // tests build a fake companions discovery root and fake companion script, then
@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PEER_RUNNER_PATH = resolve(REPO_ROOT, 'plugins/engineer/scripts/peer-runner.mjs');
+const STATE_PATH = resolve(REPO_ROOT, 'plugins/engineer/scripts/state.mjs');
 
 const {
   HANDLE_SCHEMA_VERSION,
@@ -38,6 +39,7 @@ const {
   cancelPeerRun,
   sweepPeerRuns,
 } = await import(PEER_RUNNER_PATH);
+const { createWorkflow, readWorkflow } = await import(STATE_PATH);
 
 async function withTmpRepo(fn) {
   const dir = await mkdtemp(join(tmpdir(), 'engineer-peer-runner-test-'));
@@ -193,9 +195,19 @@ describe('peer-runner.mjs — run ledger and handle schema', () => {
   it('run creates hidden ledger files, handle schema 1.0, and final envelope', async () => {
     await withTmpRepo(async (repoRoot) => {
       const companionsRoot = await writeFakeCompanions(repoRoot);
-      const workflowPath = join(repoRoot, '.claude/agentic-engineer/workflows/fake.md');
-      await mkdir(resolve(workflowPath, '..'), { recursive: true });
-      await writeFile(workflowPath, '---\npending_ensemble: []\n---\n', 'utf8');
+      const { filePath: workflowPath } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'peer-runner pending test',
+        gitBaseline: {
+          branch: 'main',
+          head: 'abc123',
+          status_digest: '',
+        },
+        host: 'codex',
+        currentPhase: 'phase-test',
+        nextAction: 'test peer-runner',
+      });
 
       const result = await runPeer({
         repoRoot,
@@ -230,6 +242,14 @@ describe('peer-runner.mjs — run ledger and handle schema', () => {
       const envelope = await readJson(paths.envelope);
       strictEqual(envelope.status, 'success');
       strictEqual(envelope.stdout, 'fake ok');
+
+      const { frontmatter } = await readWorkflow(workflowPath);
+      deepStrictEqual(frontmatter.pending_ensemble, [{
+        phase: 'compose',
+        ensemble_type: 'plan-verify',
+        run_id: 'plan-verify-test',
+        started_at: handle.started_at,
+      }]);
 
       const dirMode = (await stat(paths.dir)).mode & 0o777;
       const handleMode = (await stat(paths.handle)).mode & 0o777;

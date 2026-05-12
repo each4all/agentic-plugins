@@ -662,6 +662,42 @@ describe('plugins/engineer — 11 commands (commands/<verb>.md — 6 verbs + aud
       'commands/checkpoint.md must cite ADR-0017 sub-decision 2',
     );
   });
+
+  it('six verb commands use peer-runner.mjs for managed ensemble dispatch (ADR-0023 PR-C)', async () => {
+    for (const verb of VERBS) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
+      ok(
+        /peer-runner\.mjs"\s+run[\s\S]{0,260}--kind ensemble[\s\S]{0,260}--run-id "\$RUN_ID"/.test(text),
+        `commands/${verb}.md must dispatch managed ensembles through peer-runner.mjs run`,
+      );
+      ok(
+        /PROMPT_FILE\.run\.json/.test(text),
+        `commands/${verb}.md must capture peer-runner's machine-readable result JSON`,
+      );
+    }
+  });
+
+  it('six verb commands no longer route managed ensembles through dispatch-peer.mjs', async () => {
+    for (const verb of VERBS) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
+      ok(
+        !/dispatch-peer\.mjs/.test(text),
+        `commands/${verb}.md should reserve dispatch-peer.mjs for compatibility/raw callers`,
+      );
+    }
+  });
+
+  it('peer-now remains on dispatch-peer.mjs text mode and out of peer-runner command integration', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/peer-now.md'), 'utf8');
+    ok(
+      /dispatch-peer\.mjs[\s\S]{0,220}--output-format text/.test(text),
+      'commands/peer-now.md must keep the raw dispatch-peer text-mode path',
+    );
+    ok(
+      !/peer-runner\.mjs/.test(text),
+      'commands/peer-now.md must not migrate to peer-runner in ADR-0023 PR-C',
+    );
+  });
 });
 
 describe('plugins/engineer — 4 host-shared canonical scripts (scripts/*.mjs)', () => {
