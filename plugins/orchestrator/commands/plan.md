@@ -179,7 +179,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
   --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
-**Note on auto-archive**: orchestrator MVP's Stop hook is **snapshot-only**. There is no `set-terminal` call here — the macro-phase A1–A4 auto-archive gate is deferred to a follow-up PR alongside `/orchestrator:done`. Until that PR lands, manual archive is by file-move once the macro plan is fully consumed.
+**Note on auto-archive**: `/orchestrator:plan` does not set terminal markers. Macro auto-archive A1-A4 runs from the Stop hook/manual Codex helper after later lifecycle commands (`/orchestrator:done`, `/orchestrator:finalize`, or `/orchestrator:abort`) make the macro terminal.
 
 **Note on empty subtasks[]**: a plan with zero subtasks (a deliberate "no work needed" terminal plan) is valid. `plan-set` accepts an empty list; the workflow stays open for a future `/orchestrator:plan` revision.
 

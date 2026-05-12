@@ -101,9 +101,21 @@ incidentally bump unrelated packages.
 paths, split into per-package commits before pushing.**
 
 A "release-please package path" is any path listed as a key in
-`release-please-config.json` `packages`. As of 2026-05-06 those keys
-are `companions`, `plugins/companions`, and `plugins/engineer`. Any
-file under one of these prefixes is package-routed.
+`release-please-config.json` `packages`. As of 2026-05-13 those keys
+are `companions`, `plugins/companions`, `plugins/engineer`, and
+`plugins/orchestrator`. Any file under one of these prefixes is
+package-routed.
+
+### Merge-shape clarification (2026-05-13)
+
+For a single-package PR, prefer a squash merge whose final message is
+the one intended changelog entry. When preserving multiple
+release-routed commits is necessary, use rebase merge if available or
+avoid a merge commit body that repeats the same conventional headline.
+A regular GitHub merge commit can embed the PR's conventional title in
+the merge body; release-please may parse that merge commit alongside the
+original branch commit and generate duplicate changelog entries for the
+same change.
 
 ### Exemption — root-level docs
 

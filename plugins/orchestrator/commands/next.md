@@ -7,7 +7,7 @@ argument-hint: [<subtask-id>] [--workflow=<macro-id>]
 
 $ARGUMENTS
 
-Dispatch one orchestrator macro subtask into the engineer plugin's command runbook, recording the immutable parent linkage (`AGENTIC_PARENT_WORKFLOW` + `AGENTIC_ORIGINATING_SUBTASK`) so engineer's terminal commit auto-writes back via `runStopArchive` per ADR-0019 §4. This is the **same-host default**; cross-host (`--peer`) ships in a follow-up PR.
+Dispatch one orchestrator macro subtask into the engineer plugin's command runbook, recording the immutable parent linkage (`AGENTIC_PARENT_WORKFLOW` + `AGENTIC_ORIGINATING_SUBTASK`) so engineer's terminal commit auto-writes back via `runStopArchive` per ADR-0019 §4. This is the **same-host default**; cross-host (`--peer`) remains trigger-deferred PR-F scope.
 
 Use `TaskCreate` / `TaskUpdate` to track progress across the five phases below. Each phase is a discrete bash snippet — execute them in order and **abort on any non-zero exit** unless the snippet's commentary explicitly handles the failure.
 
@@ -119,7 +119,7 @@ else
         echo "✗ Macro plan has no subtasks. Run /orchestrator:plan to add some." >&2
         exit 1;;
       all_terminal)
-        echo "✓ All subtasks reached a terminal status — run /orchestrator:finalize to close the macro (PR-E scope) or wait for the auto-archive Stop hook." >&2
+        echo "✓ All subtasks reached a terminal status — run /orchestrator:finalize to close the macro or wait for the auto-archive Stop hook." >&2
         exit 1;;
       in_progress_or_blocked)
         echo "✗ No subtask is ready to dispatch — at least one is in_progress (waiting for completion) or blocked (waiting on a predecessor)." >&2
@@ -356,7 +356,7 @@ node "$ORCH_PLUGIN_ROOT/scripts/state.mjs" subtask-update \
 
 Surface the orchestrator JSON envelope. PR-C0 handles single-writer ownership rejection, absorbing-completed precondition, and unblock/auto-terminal passes — surface its stderr verbatim on any non-zero exit.
 
-If the envelope reports `skipped: true` (deferred / abandoned absorbing-terminal state), report it and stop — `/orchestrator:next` should NOT advance a subtask the user has already terminated via `/finalize` / `/abort` (PR-E scope).
+If the envelope reports `skipped: true` (deferred / abandoned absorbing-terminal state), report it and stop — `/orchestrator:next` should NOT advance a subtask the user has already terminated via `/finalize` / `/abort`.
 
 ---
 
@@ -368,4 +368,4 @@ Report one of:
 - `✓ Subtask <id> already in_progress — re-attached to existing engineer workflow <id>.` (idempotent re-attach.)
 - `✓ Subtask <id> auto-promoted: engineer Stop hook had already completed it; macro now terminal_marker=true.` (rare race; PR-C0 auto-terminal pass fired.)
 
-When more subtasks remain ready, recommend the user follow up with `/orchestrator:next` after the current subtask commits. When all subtasks reach terminal status, recommend `/orchestrator:finalize` (PR-E) or expect the auto-archive once macro `terminal_marker` is set.
+When more subtasks remain ready, recommend the user follow up with `/orchestrator:next` after the current subtask commits. When all subtasks reach terminal status, recommend `/orchestrator:finalize` or expect the auto-archive once macro `terminal_marker` is set.

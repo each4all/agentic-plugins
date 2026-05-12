@@ -90,10 +90,14 @@ per ADR-0010:
 2. **Layer 2 — Capability** (`plugins/orchestrator` Stage 3+):
    persona-agnostic activities reusable by multiple personas. The
    first multi-verb L2 occupant is `plugins/orchestrator` (Stage 3+
-   plan-only MVP per [ADR-0018](docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
-   §sub-decision-1 — macro plan + Plan-verify ensemble for multi-
-   deliverable features). The Stage 1 `plugins/research` incumbent
-   was retired at Stage 2.5+ ([ADR-0014](docs/adr/0014-plugins-research-deprecation.md)),
+   first shipped as a plan-only MVP per
+   [ADR-0018](docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
+   §sub-decision-1, then expanded by [ADR-0019](docs/adr/0019-cross-plugin-invocation-contract.md)
+   and [ADR-0023](docs/adr/0023-peer-runner-supervisor-layer.md) into
+   macro planning, supervised Plan-verify peer dispatch, same-host
+   engineer dispatch, manual completion backup, finalize/abort, and
+   macro auto-archive. The Stage 1 `plugins/research` incumbent was
+   retired at Stage 2.5+ ([ADR-0014](docs/adr/0014-plugins-research-deprecation.md)),
    its cited-brief contract absorbed into `engineer:investigate`'s
    cited-brief profile. Other planned occupants (`decision`, `image`)
    remain future work.
@@ -128,13 +132,11 @@ The **adapter** sub-layer per host implements the host's runtime
 model (manifest schemas, hook event/payload mapping, orchestration
 patterns, continuity protocols). The **companion** layer (Layer 1)
 holds two bridges — one in each direction — for peer-agent
-invocation. See ADRs 0001–0017 for the specifics (0013 reserved
-pending Codex CLI commands integration trigger; 0014 superseded by
-0015 for the `plugins/research` archive timeline only — the
-capability decision in 0014 is operative; 0017 covers the Stage
-2.5+ continuity + schema roadmap surfaced by the 2026-05-06
-exit-validation audit, with sub-decision implementations gated by
-per-trigger acceptance criteria).
+invocation. See ADRs 0001–0023 for the specifics (0013 remains
+reserved pending Codex CLI commands integration trigger; 0014 was
+superseded by 0015 for the `plugins/research` archive timeline only;
+0017–0023 cover continuity, orchestrator, command-surface parity, and
+peer-runner supervision follow-ups).
 
 ---
 
@@ -189,6 +191,15 @@ release-please GitHub Action runs that sync as a follow-up step
 automatically, and `validate:versions` fails CI if catalog entries
 drift from the manifest.
 
+Release-please changelog hygiene depends on merge shape. For a
+single-package PR, prefer a squash merge whose final message is the one
+intended changelog entry. When preserving multiple release-routed
+commits is necessary, use rebase merge if available or avoid a merge
+commit body that repeats the same conventional headline. A GitHub merge
+commit that embeds a conventional PR title can be parsed alongside the
+original branch commit, producing duplicate changelog entries for the
+same change.
+
 ### Cross-package commit splitting
 
 release-please routes a commit's footer (`feat`, `fix`,
@@ -200,9 +211,10 @@ before pushing**. Per-package commits stage only that package's
 files (`git add <package-path> && git commit`).
 
 The package paths are the keys of `release-please-config.json`
-`packages` — currently `companions`, `plugins/companions`, and
-`plugins/engineer`. Files **outside** every package key prefix are
-exempt: root files (`AGENTS.md`, `README.md`, `package.json`, etc.),
+`packages` — currently `companions`, `plugins/companions`,
+`plugins/engineer`, and `plugins/orchestrator`. Files **outside**
+every package key prefix are exempt: root files (`AGENTS.md`,
+`README.md`, `package.json`, etc.),
 `docs/`, `scripts/`, `tests/`, `kit/`, `.claude-plugin/`,
 `.agents/`, `.github/`, and any other unlisted path. Root-level
 docs may be folded into any per-package commit or a separate
@@ -278,12 +290,19 @@ context lifecycle events, statusline, etc.). See ADR-0001 final note.
 
 ## Build / test / CI
 
-Currently empty. To be decided in the next development session. Likely
-shape:
-- Per-host smoke test workflows (Claude Code in CI, Codex CLI in CI)
-- Adapter contract conformance tests in `kit/lint/`
-- Companion round-trip tests in `companions/tests/`
-- Marketplace JSON validation (both `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json`)
+Primary local commands:
+
+- `npm test` — full Node test suite.
+- `npm run test:plugin-shape` — plugin shape + engineer/orchestrator state tests.
+- `npm run test:cross-host` — cross-host workflow contract tests.
+- `npm run lint:plugin-shape` — validate all plugin directories with `kit/lint`.
+- `npm run validate:marketplace` and `npm run validate:versions` — catalog and
+  release-please manifest consistency.
+- `npm run sync:companions` and `npm run sync:marketplace` — drift-correction helpers.
+
+GitHub Actions run on Node 24 and cover Claude companion tests, Codex
+companion tests, cross-host tests, marketplace/version validation, and
+release-please automation.
 
 ---
 
@@ -293,9 +312,9 @@ shape:
 
 **Stage 1 (Reference plugin + companion contract)** — complete (2026-05-05). Shipped `plugins/companions` (script-only library) and `plugins/research` (single-skill capability with bidirectional companion ensemble; retired at Stage 2.5+ per [ADR-0014](docs/adr/0014-plugins-research-deprecation.md), cited-brief contract absorbed into `engineer:investigate`). Round-trip verification at the time: bidirectional companion calls succeeded in both directions; per-host CI gates (`claude-tests.yml`, `codex-tests.yml`) green on every push. The two reference brief artifacts (`output/` directory, gitignored locally) demonstrated the protocol but were not committed evidence — exit verification was the green CI runs and the protocol acceptance documented in `docs/DEVELOPMENT.md` §Stage 1 exit evidence.
 
-**Stage 2 (Self-development plugin)** — complete (2026-05-06). ADRs 0010 (plugin boundary policy + 4-layer composition + 6 universal verbs), 0011 (workflow continuity Option III storage), and 0012 (omcc + codex-plugin-cc removal preconditions) accepted. Shipped `plugins/engineer` (canonical L3 persona name; plugin-name level marketplace aliases like `/dev:` are a Stage 2 non-goal per ADR-0011 §9). Verb-level aliases inside the plugin (e.g., `/engineer:audit` ≡ `/engineer:critique --profile=full-codebase`) are permitted (ADR-0010 §3). All five deliverables (A foundation → B kit/discovery absorbed into `plugins/companions` per ADR-0010 §6 high-cohesion evaluation → C plugin core + 6 verb skills → D adapters + minimal continuity → E validation + dogfood) merged. Stage 2 exit gate met: `plugins/engineer` drives its own development without omcc-dev (see `docs/DEVELOPMENT.md` §Stage 2 exit evidence). Per-condition progress is tracked via the [ADR-0012](docs/adr/0012-omcc-removal-preconditions.md) four-condition matrix in `docs/DEVELOPMENT.md` — all four conditions currently `partial`; Stage 3 cushion is the gate for `omcc`/`codex-plugin-cc` removal from user environments per ADR-0012.
+**Stage 2 (Self-development plugin)** — complete (2026-05-06). ADRs 0010 (plugin boundary policy + 4-layer composition + 6 universal verbs), 0011 (workflow continuity Option III storage), and 0012 (omcc + codex-plugin-cc removal preconditions) accepted. Shipped `plugins/engineer` (canonical L3 persona name; plugin-name level marketplace aliases like `/dev:` are a Stage 2 non-goal per ADR-0011 §9). Verb-level aliases inside the plugin (e.g., `/engineer:audit` ≡ `/engineer:critique --profile=full-codebase`) are permitted (ADR-0010 §3). All five deliverables (A foundation → B kit/discovery absorbed into `plugins/companions` per ADR-0010 §6 high-cohesion evaluation → C plugin core + 6 verb skills → D adapters + minimal continuity → E validation + dogfood) merged. Stage 2 exit gate met: `plugins/engineer` drives its own development without omcc-dev (see `docs/DEVELOPMENT.md` §Stage 2 exit evidence). Per-condition progress is tracked via the [ADR-0012](docs/adr/0012-omcc-removal-preconditions.md) four-condition matrix in `docs/DEVELOPMENT.md`; condition 1 is satisfied, condition 4 is functionally satisfied, and conditions 2/3 remain partial.
 
-**Stage 2.5+ (Research deprecation cascade + exit validation)** — in progress. ADR-0014 deprecates `plugins/research` and folds the cited-brief contract into `engineer:investigate`'s new `cited-brief` profile (capability decision); ADR-0015 supersedes ADR-0014's deprecation-period timeline with immediate Stage 2.5+ archive (no installed-user audience to require the deprecation period). ADR-0010 amended as cascade. Implementation commits: `dc49ef0` (Stage 2 ADR finalization + ADR-0013 reservation), `2034877` (ADR-0014), `4077552` (`engineer:investigate --profile=cited-brief` absorption), `28b5eb8` (`plugins/research` archive), `944fd4e` (ADR-0010 cascade), `3ee7100` (ADR-0015 supersede + audit shape). 2026-05-06 Stage 2.5+ exit validation audit ([docs/audits/2026-05-06-stage25-exit-validation.md](docs/audits/2026-05-06-stage25-exit-validation.md)) confirms companions parity with codex-plugin-cc 1.0.4 — agentic-plugins/companions 0.4.0 is structurally superior (양방향 first-party, wire-spec 문서화, SRP, 1646 LOC 자체 테스트, signal-safe lifecycle, 공개 CLI surface only); the audit also surfaced [ADR-0017](docs/adr/0017-stage25-continuity-and-schema-roadmap.md) (Stage 2.5+ continuity + schema roadmap, Proposed) consolidating meta commands + `ensemble_results` frontmatter persistence + Stop auto-archive semantics. Other Stage 2.5+ candidates: ADR-0013 (Codex CLI commands integration mechanism, file pending — Stage 3+ trigger).
+**Stage 2.5+ / Stage 3+ continuity cascade** — active but mostly shipped through ADR-0023. ADR-0014/0015 archived `plugins/research` and folded cited-brief into `engineer:investigate`; ADR-0017 accepted and implemented engineer resume/checkpoint/peer-now plus `ensemble_results` and Stop auto-archive; ADR-0018 shipped `plugins/orchestrator` as the first multi-verb L2 capability; ADR-0019 shipped orchestrator→engineer same-host dispatch, `/done`, `/finalize`, `/abort`, and macro auto-archive; ADR-0020–0022 added `/engineer:start` and Codex macro/meta skill parity without waiting on ADR-0013; ADR-0023 added peer-runner supervision for monitoring, cancellation, sweep, and bounded ledger retention. ADR-0013 remains reserved for a future Codex CLI command integration mechanism.
 
 > **User-environment cleanup note**: users of agentic-plugins versions
 > ≤0.3.x may have a stale `research@agentic-plugins 0.1.0` cache from
@@ -307,8 +326,8 @@ shape:
 
 Next steps:
 
-1. Read this `AGENTS.md`, then `docs/ARCHITECTURE.md`, then ADRs 0001–0017 (especially 0010 for plugin boundary policy, 0011 for continuity scope, 0014/0015 for the research deprecation cascade, 0016 for cross-package commit splitting, and 0017 for the Stage 2.5+ continuity + schema roadmap surfaced by the 2026-05-06 exit-validation audit)
-2. Stage 2.5+ continuation: ADR-0017 implementation per sub-decision triggers (each sub-decision ships in its own PR when its acceptance trigger fires); ADR-0013 authoring when its trigger fires (Codex CLI plugin-commands schema lands or alternative mechanism designed)
+1. Read this `AGENTS.md`, then `docs/ARCHITECTURE.md`, then ADRs 0001–0023 (especially 0010 for plugin boundary policy, 0012 for omcc removal gates, 0016 for release-please routing, 0018/0019 for orchestrator, 0020–0022 for engineer command-surface parity, and 0023 for peer-runner supervision).
+2. Stage 2.5+ continuation: ADR-0013 authoring when its trigger fires (Codex CLI plugin-commands schema lands or an alternative mechanism is designed).
 3. Stage 3 (designer plugin) brainstorm + plan — first non-trivial Stage 3 workflow developed engineer-only is the trigger for ADR-0012 condition 3 → satisfied transition
 
 ---
