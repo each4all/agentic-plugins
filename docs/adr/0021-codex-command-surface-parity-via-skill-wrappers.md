@@ -2,12 +2,7 @@
 
 ## Status
 
-Proposed
-
-<!--
-On merge: status flips to Accepted and ADR-0010 §Amendments adds the
-2026-05-12 ADR-0021 cascade entry (already drafted in this PR).
--->
+Accepted (shipped 2026-05-12 — [#75](https://github.com/each4all/agentic-plugins/pull/75) `1ea63fc`)
 
 ## Context
 
