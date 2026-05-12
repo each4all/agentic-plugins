@@ -1,0 +1,7 @@
+interface:
+  display_name: "Engineer — Start"
+  short_description: "Sequence the engineer single-deliverable lifecycle macro (Phase 0 continuity → Phase 7 commit) end-to-end"
+  default_prompt: "Use $engineer:start to take a single feature from idea to commit on the current branch — Phase 1 brainstorm composite → Phase 2 explore → Phase 3 plan-verify → Phase 4 implement → Phase 5 review → Phase 6 resolve → Phase 7 commit"
+
+policy:
+  allow_implicit_invocation: false

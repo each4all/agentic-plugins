@@ -4,10 +4,12 @@
 
 Accepted
 
-> Last amended 2026-05-11 — see [Amendments](#amendments). 2026-05-06
+> Last amended 2026-05-12 — see [Amendments](#amendments). 2026-05-06
 > recorded the ADR-0015 cascade (`plugins/research` retirement);
-> 2026-05-11 records the ADR-0020 cascade (lifecycle macro command
-> boundary versus verb-level alias).
+> 2026-05-11 recorded the ADR-0020 cascade (lifecycle macro command
+> boundary versus verb-level alias); 2026-05-12 records the ADR-0021
+> cascade (macro skill category alongside verb skills, formalizing
+> the `skills/<plugin>/` two-category split).
 
 ## Context
 
@@ -567,3 +569,61 @@ ADR-0020 Alternatives §B against §6 separation triggers.
 
 **Verified-against**: ADR-0020 §Sub-decision 1 + Alternatives §B +
 §Implementation Roadmap PR 3.
+
+### 2026-05-12 — ADR-0021 cascade (macro skill category)
+
+**Trigger**: [ADR-0021](0021-codex-command-surface-parity-via-skill-wrappers.md)
+acceptance, which establishes Codex-side command-surface parity for
+lifecycle macros via skill wrappers. The trigger is the self-
+acknowledged parity gap in
+`plugins/engineer/.codex-plugin/plugin.json` `longDescription`
+shipped at ADR-0020 PR 3: lifecycle macros existed on Claude
+(`/engineer:start`) but had no Codex surface, and the previously-
+anticipated unblocker ([ADR-0013](README.md#status), Codex CLI
+plugin-commands schema) has no trigger yet. The skill primitive is
+the existing Codex surface, so ADR-0021 uses it.
+
+**Finding**: §3 "Naming convention" structured `skills/<plugin>/`
+folders implicitly around `VALID_VERBS` members. ADR-0020 introduced
+a non-verb command (`/engineer:start`) without a skills/ folder
+counterpart, and the plugin-shape test at
+`tests/plugin-shape/test-engineer-plugin.mjs` already encoded
+`LIFECYCLE_MACROS = ['start']` as a separate category from `VERBS`
+in anticipation of this question. ADR-0021 ratifies the split.
+
+**Changes** (read alongside the original Decision sections; the
+original prose is preserved for decision-history audit):
+
+- **§3 (Naming convention) / §4 (Plugin-internal skill use)** —
+  `skills/<plugin>/` permits two named categories:
+
+  | Category | Folder | Naming | Source of name |
+  |----------|--------|--------|----------------|
+  | **Verb skill** | `skills/<verb>/` | `<persona>:<verb>` / `<capability>:<verb>` | one folder per `VALID_VERBS` member |
+  | **Macro skill** | `skills/<macro>/` | `<plugin>:<macro>` | one folder per `LIFECYCLE_MACROS` entry (per ADR-0020 cascade) |
+
+  Both categories share the same internal shape:
+  `SKILL.md` (frontmatter `name: <folder>`) + `agents/openai.yaml`
+  (`interface` block + `policy: allow_implicit_invocation: false`).
+  Macro skills do NOT extend `VALID_VERBS` (kept at six per ADR-0020
+  §Sub-decision 5) and are NOT verb-level sugar aliases (verb-level
+  sugar canonicalizes to a single verb skill; macro skills sequence
+  multiple verb skills across phases). Content authority follows
+  the verb-skill convention: SKILL.md owns the host-agnostic
+  cognitive runbook; the Claude-side `commands/<macro>.md` owns
+  host bootstrap + state writes and delegates cognitive description
+  to SKILL.md.
+
+- **Meta commands (ADR-0017 cascade)** — meta commands
+  (`/engineer:resume`, `/engineer:checkpoint`, `/engineer:peer-now`)
+  remain command-only; whether they mirror as macro skills (or
+  carry their own third category) is deferred to the ADR-0021
+  follow-up PR.
+
+**Unchanged**: 4-layer composition (§1), 6 cognitive verbs (§2),
+verb-level sugar alias rules (§3), plugin-name level alias non-goal
+(§3 / ADR-0011 §9 cascade), plugin-internal skill use orchestration
+pattern (§4), plugin separation triggers (§6).
+
+**Verified-against**: ADR-0021 §Decision §1–§4 + ADR-0021
+Implementation Roadmap (this PR).

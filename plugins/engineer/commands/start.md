@@ -7,26 +7,19 @@ argument-hint: <feature description> [--base-branch <ref>]
 
 $ARGUMENTS
 
-`/engineer:start` is a **lifecycle macro command** (ADR-0020 §Sub-decision 1):
-neither a verb nor a verb-level sugar alias. It sequences the canonical
-single-deliverable lifecycle — Phase 0 continuity → Phase 1 brainstorm
-→ Phase 2 explore → Phase 3 plan-verify → Phase 4 implement → Phase 5
-review → Phase 6 resolve → Phase 7 commit — through the six engineer
-verb skills (`investigate / frame / decide / compose / critique /
-refine` per ADR-0010 §3).
+`/engineer:start` is a **lifecycle macro command** (ADR-0020 §Sub-
+decision 1): neither a verb nor a verb-level sugar alias. Sequences
+Phase 0 continuity → Phase 1 brainstorm → Phase 2 explore → Phase 3
+plan-verify → Phase 4 implement → Phase 5 review → Phase 6 resolve
+→ Phase 7 commit through the six engineer verb skills.
 
-**Intra-document execution model**: this runbook executes the verb
-skills' command-invoked semantics **in-place**. It does NOT invoke
-`/engineer:<verb>` slash commands recursively (recursive slash dispatch
-is not supported on either host's runtime; see Codex plan-verify MAJOR
-#2 finding). At each phase boundary the runbook calls `state.mjs
-append --verb <phase-primary>` so the workflow's `verb` frontmatter
-field reflects the active phase's primary cognitive activity (ADR-0020
-§Sub-decision 5), keeping SessionStart re-injection metadata current.
-
-For multi-deliverable features use `/orchestrator:plan` instead
-(ADR-0020 §Sub-decision 6 — manual escalation; no automatic cross-
-plugin routing). `/engineer:start` is single-pass only.
+**Cognitive runbook lives in
+`$CLAUDE_PLUGIN_ROOT/skills/start/SKILL.md`** per ADR-0021 (macro-
+skill category). This command file owns the Claude-host bootstrap
+(Phase 0 below) and the `state.mjs` writes at each phase boundary;
+for each Phase 1–7 below, follow the matching `§ Phase N` section
+of SKILL.md for the cognitive description, user-approval gates, and
+ensemble dispatch points.
 
 The plugin root in shell snippets below is `$CLAUDE_PLUGIN_ROOT`
 (set by Claude Code for plugin slash commands). If unset for any
@@ -237,15 +230,10 @@ ACTIVE_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
 
 ## Phase 1 — Brainstorm composite (investigate → frame → decide)
 
-Per ADR-0020 §Sub-decision 2, Phase 1 is a **composite** of three
-verbs: `investigate` (option generation), `frame` (5-perspective
-model), `decide` (recommend + user approval). Execute each verb
-skill's command-invoked semantics in-place — read the verb skill's
-SKILL.md and apply its protocol (presentation / ensemble) within this
-runbook context. Do NOT spawn a recursive slash command.
-
-Rotate `verb` at each sub-phase entry so SessionStart and audit
-tooling see the active cognitive activity:
+Composite of three verbs per ADR-0020 §Sub-decision 2; rotate the
+workflow's `verb` field at each sub-phase entry so SessionStart
+re-injection sees the active cognitive activity (intra-document
+execution, no recursive slash dispatch):
 
 ```bash
 # Sub-phase 1a — Investigate (option generation)
@@ -255,9 +243,6 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --current-phase phase-1-brainstorm-investigate \
   --next-action "Generate option candidates and gather supporting evidence" \
   --event updated
-
-# (execute investigate skill semantics here — option generation +
-#  evidence-gathering ensemble via skills/investigate/SKILL.md)
 
 # Sub-phase 1b — Frame (5-perspective model)
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
@@ -276,16 +261,11 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --event updated
 ```
 
-Codex `brainstorm` ensemble dispatch follows the verb skills' own
-ensemble-protocol (always-max per ADR-0020 §Sub-decision 3).
-
 **Do not proceed to Phase 2 until the user approves a direction.**
 
 ---
 
 ## Phase 2 — Explore codebase (investigate --profile=analysis)
-
-Codebase architecture + integration mapping.
 
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
@@ -295,10 +275,6 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --next-action "Map current codebase state and integration points" \
   --event updated
 ```
-
-Execute `skills/investigate/SKILL.md` command-invoked semantics with
-`--profile=analysis`. Codex `explore` ensemble in parallel per
-ADR-0020 §Sub-decision 3.
 
 ---
 
@@ -312,8 +288,6 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --next-action "Produce plan artifact" \
   --event updated
 
-# (execute compose skill with --profile=plan)
-
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --verb critique \
@@ -322,14 +296,9 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --event updated
 ```
 
-Codex `plan-verify` ensemble — Independence Rule exception (Codex
-receives Claude's draft plan) per ADR-0020 §Sub-decision 3.
-
-**Multi-deliverable detection prompt** (ADR-0020 §Sub-decision 6): if
-the plan groups into 2+ deliverables, surface to the user — *"This
-feature reads as multi-deliverable. `/engineer:start` is single-pass
-only. Consider aborting and restarting with `/orchestrator:plan`."*
-User may abort or proceed in single-pass.
+Surface the **multi-deliverable detection prompt** if the plan
+groups into 2+ deliverables (ADR-0020 §Sub-decision 6); user chooses
+abort vs single-pass continuation.
 
 **Do not proceed to Phase 4 until the user approves the plan.**
 
@@ -346,10 +315,6 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --event updated
 ```
 
-RED-GREEN-REFACTOR per task. Mid-task brainstorm dispatch is allowed
-when ambiguity surfaces (ADR-0020 §Sub-decision 3 — mid-task brainstorm
-only, not at phase boundary).
-
 ---
 
 ## Phase 5 — Review (critique --profile=parallel-review)
@@ -362,8 +327,6 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --next-action "Multi-perspective code review + Codex working-tree review" \
   --event updated
 ```
-
-Codex `review --scope working-tree` ensemble per ADR-0020 §Sub-decision 3.
 
 ---
 
@@ -378,14 +341,13 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --event updated
 ```
 
-Iterate refine + Codex re-review per resolve loop (fresh `run_id`
-each pass).
-
 ---
 
 ## Phase 7 — Commit
 
-Terminal runbook: commit + optional PR.
+Terminal runbook. Commit + optional PR creation, then the terminal
+state write below flips the workflow into the auto-archive whitelist
+(ADR-0017 §sub-decision-5):
 
 ```bash
 # (commit + optional gh pr create — verb=refine is the last cognitive
@@ -400,10 +362,6 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --event updated
 ```
 
-Stop hook A1–A4 (terminal_marker / terminal_phase / head_moved / no
-active children) auto-archives the workflow on next Stop event. No
-manual cleanup needed.
-
 ---
 
 ## Notes
@@ -411,6 +369,11 @@ manual cleanup needed.
 - ADR-0020 §Sub-decision 1 — `/engineer:start` is a **command**, not a
   7th canonical verb; the six-verb enum (`VALID_VERBS` in `state.mjs`)
   is unchanged.
+- ADR-0021 — The canonical lifecycle runbook lives in
+  `skills/start/SKILL.md` (macro-skill category per ADR-0010 §3
+  cascade). This command file owns the Claude-host bootstrap (Phase 0)
+  and the state.mjs writes at each phase boundary. The Codex-side
+  parity is `$engineer:start` (same SKILL.md content).
 - ADR-0018 §sub-2 — branch=workflow invariant; one workflow per branch.
 - ADR-0019 — `/engineer:start` is engineer-internal verb sequencing
   and does NOT transit cross-plugin boundaries; `parent_workflow` is

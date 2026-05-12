@@ -5,8 +5,11 @@
 // Mirrors tests/plugin-shape/test-research-plugin.mjs structure with
 // engineer-specific multi-skill shape:
 //   - 2 manifests (Claude + Codex)
-//   - 6 skills (investigate / frame / decide / compose / critique / refine)
+//   - 6 verb skills (investigate / frame / decide / compose / critique / refine)
 //     × {SKILL.md, agents/openai.yaml}
+//   - 1 macro skill `start` (skills/start/ × {SKILL.md, agents/openai.yaml})
+//     per ADR-0021 (ADR-0010 §3 cascade — verb skills + macro skills
+//     two-category split)
 //   - 4 shared references (presentation / ensemble / orchestration / agent-taxonomy)
 //   - 3 host-shared canonical scripts (state.mjs, dispatch-peer.mjs,
 //     stop-archive.mjs)
@@ -71,7 +74,14 @@ const META_COMMANDS = ['resume', 'checkpoint', 'peer-now'];
 // ADR-0020 §Sub-decision 1 — lifecycle macro commands are surface-level
 // neighbors of meta commands but DO bootstrap new workflows (unlike meta
 // commands), so they live in their own list. Currently: `start`.
+// ADR-0021 (2026-05-12) — lifecycle macros also mirror as Codex `macro skills`
+// at skills/<name>/SKILL.md per the ADR-0010 §3 cascade (verb skills + macro
+// skills two-category split). MACRO_SKILLS == LIFECYCLE_MACROS for now; the
+// alias preserves intent: the same string is the command name AND the skill
+// folder name. Meta commands remain command-only pending the ADR-0021 follow-up
+// PR on whether `resume/checkpoint/peer-now` mirror as macro skills too.
 const LIFECYCLE_MACROS = ['start'];
+const MACRO_SKILLS = LIFECYCLE_MACROS;
 const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...META_COMMANDS, ...LIFECYCLE_MACROS];
 const SHARED_REFS = [
   'presentation-protocol.md',
@@ -343,6 +353,73 @@ describe('plugins/engineer — 6 Codex agents YAML (skills/<verb>/agents/openai.
         const yaml = await readFile(path, 'utf8');
         const re = new RegExp(`\\$engineer:${verb}`);
         ok(re.test(yaml), `default_prompt does not mention "$engineer:${verb}"`);
+      });
+
+      it('policy.allow_implicit_invocation is false (Stage 2 explicit-only invocation)', async () => {
+        const yaml = await readFile(path, 'utf8');
+        ok(/^policy:\s*$/m.test(yaml), 'policy block missing');
+        ok(
+          /allow_implicit_invocation:\s*false/m.test(yaml),
+          'allow_implicit_invocation should be false',
+        );
+      });
+    });
+  }
+});
+
+// ADR-0021 — Codex command-surface parity for lifecycle macros via skill
+// wrappers. Macro skills mirror the structure of verb skills (SKILL.md +
+// agents/openai.yaml) but the folder name is the macro name (e.g., `start`),
+// NOT a VALID_VERBS member.
+describe('plugins/engineer — macro skills (skills/<macro>/SKILL.md, per ADR-0021)', () => {
+  for (const macro of MACRO_SKILLS) {
+    describe(macro, () => {
+      const path = resolve(PLUGIN_ROOT, 'skills', macro, 'SKILL.md');
+
+      it('exists', async () => {
+        ok(await exists(path), `skills/${macro}/SKILL.md missing`);
+      });
+
+      it(`frontmatter name=${macro} (macro folder ↔ frontmatter consistency)`, async () => {
+        const text = await readFile(path, 'utf8');
+        const fm = frontmatter(text);
+        ok(fm, 'no YAML frontmatter');
+        const re = new RegExp(`^name:\\s*${macro}\\s*$`, 'm');
+        ok(re.test(fm), `skills/${macro}/SKILL.md frontmatter name != "${macro}"`);
+        ok(/^description:\s*\S/m.test(fm), 'frontmatter description empty or missing');
+      });
+
+      it('passes stale-token audit', async () => {
+        const text = await readFile(path, 'utf8');
+        for (const stale of STALE_TOKENS) {
+          ok(!text.includes(stale), `skills/${macro}/SKILL.md leaks stale token: ${stale}`);
+        }
+      });
+    });
+  }
+});
+
+describe('plugins/engineer — macro skill Codex agents YAML (skills/<macro>/agents/openai.yaml, per ADR-0021)', () => {
+  for (const macro of MACRO_SKILLS) {
+    describe(macro, () => {
+      const path = resolve(PLUGIN_ROOT, 'skills', macro, 'agents/openai.yaml');
+
+      it('exists', async () => {
+        ok(await exists(path), `skills/${macro}/agents/openai.yaml missing`);
+      });
+
+      it('has interface block with display_name mentioning the macro', async () => {
+        const yaml = await readFile(path, 'utf8');
+        ok(/^interface:\s*$/m.test(yaml), 'interface block missing');
+        ok(/^\s+display_name:\s*\S/m.test(yaml), 'interface.display_name missing or empty');
+        const re = new RegExp(`display_name:.*${macro}`, 'i');
+        ok(re.test(yaml), `interface.display_name does not mention macro "${macro}"`);
+      });
+
+      it(`default_prompt mentions $engineer:${macro}`, async () => {
+        const yaml = await readFile(path, 'utf8');
+        const re = new RegExp(`\\$engineer:${macro}`);
+        ok(re.test(yaml), `default_prompt does not mention "$engineer:${macro}"`);
       });
 
       it('policy.allow_implicit_invocation is false (Stage 2 explicit-only invocation)', async () => {
