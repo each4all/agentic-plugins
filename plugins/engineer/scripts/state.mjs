@@ -92,6 +92,12 @@ const VALID_VERBS = new Set([
   'critique',
   'refine',
 ]);
+// ADR-0020 §Sub-decision 5 — workflow-shape discriminator. Schema 1.1-additive
+// (no SCHEMA_VERSION bump per ADR-0017/0019 precedent; Alternative E rejected).
+// `verb-chain` is the historical single-verb workflow shape (default on absence
+// for legacy 1.1 files); `start` is the lifecycle macro shape introduced by
+// PR 3's `/engineer:start` command.
+const VALID_WORKFLOW_TYPES = new Set(['verb-chain', 'start']);
 const VALID_HOSTS = new Set(['claude', 'codex']);
 // `archived` and `checkpointed` are added for ADR-0017 sub-decisions 1/5
 // (resume archive flow) and 2 (`/engineer:checkpoint`) respectively.
@@ -659,6 +665,10 @@ const FRONTMATTER_KEY_ORDER = [
   'parent_workflow',
   'originating_subtask',
   'parent_detached',
+  // ADR-0020 schema 1.1 workflow-shape discriminator (PR 2, additive).
+  // Always-written at create-time with 'verb-chain' default; lifecycle
+  // macro workflows (PR 3 `/engineer:start`) write 'start'.
+  'workflow_type',
 ];
 
 // ADR-0017 + ADR-0019 keys are optional. They MUST NOT appear in
@@ -674,6 +684,8 @@ const SCHEMA_1_1_OPTIONAL_KEYS = new Set([
   'parent_workflow',
   'originating_subtask',
   'parent_detached',
+  // ADR-0020 PR 2
+  'workflow_type',
 ]);
 
 // Per-entry field order for list-of-objects schema 1.1 frontmatter keys.
@@ -1149,6 +1161,21 @@ function validateSchema11Fields(fm) {
       throw new Error('parent_detached must be a boolean');
     }
   }
+
+  // ADR-0020 PR 2 — workflow_type enum discriminator. Absence is
+  // tolerant (read-time default 'verb-chain' applied by callers, e.g.,
+  // resume.md drift report). When present, the value must match
+  // VALID_WORKFLOW_TYPES.
+  if ('workflow_type' in fm) {
+    if (typeof fm.workflow_type !== 'string') {
+      throw new Error('workflow_type must be a string');
+    }
+    if (!VALID_WORKFLOW_TYPES.has(fm.workflow_type)) {
+      throw new Error(
+        `workflow_type must be one of ${[...VALID_WORKFLOW_TYPES].join(', ')} (got ${JSON.stringify(fm.workflow_type)})`,
+      );
+    }
+  }
 }
 
 /**
@@ -1362,10 +1389,24 @@ export async function createWorkflowUnderLock({
   // — wired up in PR-D, not this PR).
   parentWorkflow,
   originatingSubtask,
+  // ADR-0020 PR 2 — workflow-shape discriminator. Always-written at
+  // create-time (default 'verb-chain') so every new workflow is
+  // self-describing. Diverges from parent_workflow's omit-when-unset
+  // pattern intentionally: workflow_type is a primary discriminator,
+  // not a presence flag. PR 3's `/engineer:start` passes 'start'.
+  workflowType = 'verb-chain',
   now = new Date(),
 }, ownership = null) {
   validateVerb(verb);
   validateHost(host);
+  // ADR-0020 PR 2 — eager workflow_type enum check so CLI callers get a
+  // clear error before the file lands. validateSchema11Fields re-checks
+  // on the parse round-trip; this is the create-time guard.
+  if (typeof workflowType !== 'string' || !VALID_WORKFLOW_TYPES.has(workflowType)) {
+    throw new Error(
+      `workflow_type must be one of ${[...VALID_WORKFLOW_TYPES].join(', ')} (got ${JSON.stringify(workflowType)})`,
+    );
+  }
   if (!gitBaseline || !gitBaseline.branch || !gitBaseline.head) {
     throw new Error('gitBaseline must have { branch, head, status_digest }');
   }
@@ -1411,6 +1452,10 @@ export async function createWorkflowUnderLock({
     host_history: [
       { host, at: nowIso, event: 'created' },
     ],
+    // ADR-0020 PR 2 — always-write the workflow_type discriminator so
+    // every new workflow is self-describing. Default 'verb-chain' for
+    // verb commands; PR 3's `/engineer:start` overrides with 'start'.
+    workflow_type: workflowType,
   };
 
   // ADR-0019 PR-A — write parent-linkage fields when supplied. Validate
@@ -2229,11 +2274,16 @@ function cliPrintHelp() {
       '         [--current-phase <label>] [--next-action <text>]',
       '         [--original-request <text>] [--body-title <text>]',
       '         [--parent-workflow <id> --originating-subtask <id>]',
+      '         [--workflow-type verb-chain|start]',
       '    Create a new workflow under the directory-level lock. Print the new',
       '    workflow path on stdout.',
       '    ADR-0019 §3 — when invoked by orchestrator dispatch (PR-D),',
       '    --parent-workflow + --originating-subtask record cross-plugin',
       '    parent linkage. Both flags must be supplied together or both omitted.',
+      '    ADR-0020 §Sub-decision 5 — --workflow-type discriminates the',
+      '    workflow shape. Omit (or pass verb-chain) for single-verb workflows',
+      '    produced by the six engineer verb commands. PR 3 `/engineer:start`',
+      '    passes start for lifecycle macro workflows. Default: verb-chain.',
       '',
       '  append --workflow-path <path> --host <host>',
       '         [--verb <verb>] [--profile <name>]',
@@ -2296,6 +2346,7 @@ function cliPrintHelp() {
       '',
       'Verbs: investigate, frame, decide, compose, critique, refine.',
       'Hosts: claude, codex.',
+      'Workflow types: verb-chain, start.',
       '',
     ].join('\n'),
   );
@@ -2353,6 +2404,12 @@ async function cliMain(argv) {
           // one throws.
           parentWorkflow: flags['parent-workflow'],
           originatingSubtask: flags['originating-subtask'],
+          // ADR-0020 PR 2 — workflow-shape discriminator. Omitting the
+          // flag defaults to 'verb-chain' inside createWorkflowUnderLock;
+          // PR 3's `/engineer:start` passes 'start'. cliParseFlags can
+          // only collect string values, so the enum gate fires inside
+          // createWorkflowUnderLock for invalid values.
+          workflowType: flags['workflow-type'],
         });
         process.stdout.write(`${result.filePath}\n`);
         return 0;

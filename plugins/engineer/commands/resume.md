@@ -121,7 +121,8 @@ Render the report:
 ```
 Workflow: <ACTIVE>
   workflow_id:    <from frontmatter>
-  workflow_type:  <verb>
+  workflow_type:  <workflow_type, default verb-chain if absent>
+  verb:           <verb>
   current_phase:  <current_phase>
   next_action:    <next_action>
   drift:          clean | dirty
@@ -130,6 +131,13 @@ Workflow: <ACTIVE>
     commits:      <git log --oneline BASE_HEAD..HEAD>    (only if HEAD advanced)
     working tree: <count> file(s) modified               (only if digest changed)
 ```
+
+`workflow_type` is the ADR-0020 §Sub-decision 5 shape discriminator
+(`verb-chain` for the six single-verb engineer commands; `start` for the
+lifecycle macro workflows produced by `/engineer:start`). Legacy 1.1
+files written before ADR-0020 PR 2 may omit the field — the renderer
+defaults to `verb-chain` in that case. `verb` is the last cognitive
+activity performed (ADR-0010 §3 six canonical verbs).
 
 If `latest_checkpoint` is present in frontmatter (schema 1.1
 optional, ADR-0017 §sub-decision-2), include its `at` and `summary`

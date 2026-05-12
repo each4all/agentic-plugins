@@ -395,4 +395,33 @@ describe('/engineer:resume — commands/resume.md shape conformance', () => {
       'BASE_HEAD non-empty guard missing — range probes can fatal on empty baseline.head',
     );
   });
+
+  // ADR-0020 PR 2 — display-label correction. Pre-PR-2 the drift report
+  // line `workflow_type:  <verb>` used "workflow_type" as a literal label
+  // but rendered the `verb` field's value. The label is now corrected:
+  // workflow_type and verb are rendered as separate lines (workflow_type
+  // discriminator from ADR-0020 §Sub-decision 5; verb is the last
+  // cognitive activity, ADR-0010 §3).
+  it('drift report renders workflow_type and verb as separate labeled lines (ADR-0020 PR 2)', async () => {
+    const text = await readFile(COMMAND_PATH, 'utf8');
+    // Both label lines must be present in the drift report template.
+    ok(
+      /^\s{2}workflow_type:\s+<workflow_type/m.test(text),
+      'drift report must label workflow_type with the workflow_type frontmatter value (was rendering <verb>)',
+    );
+    ok(
+      /^\s{2}verb:\s+<verb>/m.test(text),
+      'drift report must include a separate verb: label rendering <verb>',
+    );
+  });
+
+  it('drift report no longer mislabels verb as workflow_type (regression guard)', async () => {
+    const text = await readFile(COMMAND_PATH, 'utf8');
+    // The pre-PR-2 pattern was the literal "workflow_type:  <verb>" line.
+    // Strict regression guard: that exact template line must be gone.
+    ok(
+      !/^\s{2}workflow_type:\s+<verb>\s*$/m.test(text),
+      'pre-PR-2 mislabel "workflow_type:  <verb>" must be removed (ADR-0020 §Consequences negative item 2)',
+    );
+  });
 });
