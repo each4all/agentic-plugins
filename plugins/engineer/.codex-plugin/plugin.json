@@ -1,7 +1,7 @@
 {
   "name": "engineer",
   "version": "0.8.0",
-  "description": "Engineer workbench for AI-assisted engineering across Claude Code & Codex CLI — 6 cognitive verbs (investigate / frame / decide / compose / critique / refine), /engineer:start lifecycle macro, and cited-brief research profile.",
+  "description": "Engineer workbench for AI-assisted engineering across Claude Code & Codex CLI — 6 cognitive verbs (investigate / frame / decide / compose / critique / refine), /engineer:start lifecycle macro, 3 workflow-continuity meta skills (resume / checkpoint / peer-now), and cited-brief research profile.",
   "author": {
     "name": "each4all",
     "url": "https://github.com/each4all"
@@ -32,7 +32,7 @@
   "interface": {
     "displayName": "Engineer",
     "shortDescription": "AI-assisted engineering across 6 cognitive verbs + /engineer:start lifecycle macro (with cited-brief research)",
-    "longDescription": "L3 persona plugin exposing six universal cognitive verbs as canonical skills (investigate, frame, decide, compose, critique, refine). Each verb is invokable as /engineer:<verb> with optional --profile and --topic arguments. The investigate verb's cited-brief profile produces durable cited research artifacts (absorbing the Stage 1 plugins/research contract per ADR-0014). Sub-discipline expansion (backend, frontend, devops, ...) flows through the L4 profile axis. The single-deliverable lifecycle macro (ADR-0020 §Sub-decision 1) — Phase 0~7 (continuity → brainstorm → explore → plan-verify → implement → review → resolve → commit) — is available as `/engineer:start` (Claude command) and `$engineer:start` (Codex macro skill, ADR-0021 §macro-skill category) with the canonical runbook in skills/start/SKILL.md. Bidirectional companion ensembles (Claude ↔ Codex) dispatch automatically at every command-mode phase boundary under an always-max policy.",
+    "longDescription": "L3 persona plugin exposing six universal cognitive verbs as canonical skills (investigate, frame, decide, compose, critique, refine). Each verb is invokable as /engineer:<verb> with optional --profile and --topic arguments. The investigate verb's cited-brief profile produces durable cited research artifacts (absorbing the Stage 1 plugins/research contract per ADR-0014). Sub-discipline expansion (backend, frontend, devops, ...) flows through the L4 profile axis. The single-deliverable lifecycle macro (ADR-0020 §Sub-decision 1) — Phase 0~7 (continuity → brainstorm → explore → plan-verify → implement → review → resolve → commit) — is available as `/engineer:start` (Claude command) and `$engineer:start` (Codex macro skill, ADR-0021 §macro-skill category) with the canonical runbook in skills/start/SKILL.md. Three workflow-continuity *meta skills* — `$engineer:resume` (drift report / archive), `$engineer:checkpoint` (one-line progress summary), `$engineer:peer-now` (ad-hoc cross-host peer consultation) — surface alongside the verbs and the start macro per ADR-0022 §meta-skill category (ADR-0010 §3 three-category split: verb / macro / meta). Host availability differs per meta skill — each skills/<meta>/SKILL.md ships an explicit Claude/Codex matrix. Bidirectional companion ensembles (Claude ↔ Codex) dispatch automatically at every command-mode phase boundary under an always-max policy.",
     "developerName": "each4all",
     "category": "Development",
     "capabilities": [

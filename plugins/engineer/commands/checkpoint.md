@@ -21,6 +21,14 @@ also does NOT bootstrap a new workflow — use one of the 6 verbs
 `/engineer:compose`, `/engineer:critique`, `/engineer:refine`) for
 that.
 
+**Cognitive runbook lives in
+`$CLAUDE_PLUGIN_ROOT/skills/checkpoint/SKILL.md`** per ADR-0022
+(meta-skill category, ADR-0010 §3 cascade). This command file owns
+the Claude-host bash bootstrap and the `state.mjs` writes below;
+for each Phase 0–2 the cognitive description, summary-length
+guidance, and host-availability matrix delegate to SKILL.md via the
+matching `§ Phase N` pointer.
+
 The plugin root in shell snippets below is `$CLAUDE_PLUGIN_ROOT`
 (set by Claude Code for plugin slash commands). If unset for any
 reason, fall back to

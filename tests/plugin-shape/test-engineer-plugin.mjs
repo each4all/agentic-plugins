@@ -10,6 +10,10 @@
 //   - 1 macro skill `start` (skills/start/ × {SKILL.md, agents/openai.yaml})
 //     per ADR-0021 (ADR-0010 §3 cascade — verb skills + macro skills
 //     two-category split)
+//   - 3 meta skills `resume` / `checkpoint` / `peer-now`
+//     (skills/<meta>/ × {SKILL.md, agents/openai.yaml}) per ADR-0022
+//     (ADR-0010 §3 cascade — closes ADR-0021 §6; formalizes the
+//     `skills/<plugin>/` three-category split: verb / macro / meta)
 //   - 4 shared references (presentation / ensemble / orchestration / agent-taxonomy)
 //   - 3 host-shared canonical scripts (state.mjs, dispatch-peer.mjs,
 //     stop-archive.mjs)
@@ -62,24 +66,35 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/engineer');
 const VERBS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
 const ALIAS_VERBS = ['audit'];
 // Meta commands per ADR-0017 — non-verb plugin commands that do not
-// bootstrap a new workflow but operate on the existing one. They ship
-// under commands/<name>.md but do NOT have a corresponding
-// skills/<name>/SKILL.md or agents/openai.yaml — they are thin shims
-// over plugins/engineer/scripts/state.mjs (ADR-0017 §sub-decision-1 et
-// seq.). All meta commands share the same surface conformance
-// (frontmatter with description), but their argument-hint and body
-// shape differ from verbs, so verb-name consistency assertions below
-// skip them.
+// bootstrap a new workflow but operate on the existing one (ADR-0017
+// §sub-decisions 1/2/3). They ship as both Claude-side
+// commands/<name>.md AND Codex-side meta skills at
+// skills/<name>/ × {SKILL.md, agents/openai.yaml} per ADR-0022 (the
+// 2026-05-12 ADR-0010 §3 cascade that closes ADR-0021 §6). All meta
+// commands share the same surface conformance (frontmatter with
+// description on the command side, frontmatter+description on the
+// skill side), but their argument-hint and body shape differ from
+// verbs, so verb-name consistency assertions below skip them.
 const META_COMMANDS = ['resume', 'checkpoint', 'peer-now'];
+// ADR-0022 — meta commands mirror as Codex meta skills. META_SKILLS ==
+// META_COMMANDS for now; the alias preserves intent (the same string is
+// the command name AND the skill folder name) and mirrors the
+// MACRO_SKILLS = LIFECYCLE_MACROS precedent from ADR-0021. If a future
+// meta operation ships only as a skill (no Claude command), the alias
+// will diverge and a proper enum split happens at that point.
+const META_SKILLS = META_COMMANDS;
 // ADR-0020 §Sub-decision 1 — lifecycle macro commands are surface-level
 // neighbors of meta commands but DO bootstrap new workflows (unlike meta
 // commands), so they live in their own list. Currently: `start`.
-// ADR-0021 (2026-05-12) — lifecycle macros also mirror as Codex `macro skills`
-// at skills/<name>/SKILL.md per the ADR-0010 §3 cascade (verb skills + macro
-// skills two-category split). MACRO_SKILLS == LIFECYCLE_MACROS for now; the
-// alias preserves intent: the same string is the command name AND the skill
-// folder name. Meta commands remain command-only pending the ADR-0021 follow-up
-// PR on whether `resume/checkpoint/peer-now` mirror as macro skills too.
+// ADR-0022 cascade (2026-05-12, ADR-0010 §3) — `skills/<plugin>/` is now
+// a three-category split: VERBS (cognitive primitives, fixed at 6 per
+// ADR-0020 §Sub-decision 5), LIFECYCLE_MACROS (multi-phase verb
+// sequencers per ADR-0021), and META_COMMANDS (workflow-continuity ops
+// per ADR-0022). MACRO_SKILLS == LIFECYCLE_MACROS and META_SKILLS ==
+// META_COMMANDS for now; both aliases preserve intent (the same string
+// is the command name AND the skill folder name) and will diverge only
+// if a future macro / meta is exposed skill-only without a Claude
+// command.
 const LIFECYCLE_MACROS = ['start'];
 const MACRO_SKILLS = LIFECYCLE_MACROS;
 const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...META_COMMANDS, ...LIFECYCLE_MACROS];
@@ -428,6 +443,144 @@ describe('plugins/engineer — macro skill Codex agents YAML (skills/<macro>/age
         ok(
           /allow_implicit_invocation:\s*false/m.test(yaml),
           'allow_implicit_invocation should be false',
+        );
+      });
+    });
+  }
+});
+
+// ADR-0022 — meta-skill category. Meta skills mirror the structure of
+// verb skills and macro skills (SKILL.md + agents/openai.yaml) but the
+// folder name is the meta-command name (e.g., `resume`, `checkpoint`,
+// `peer-now`), NOT a VALID_VERBS or LIFECYCLE_MACROS member.
+describe('plugins/engineer — meta skills (skills/<meta>/SKILL.md, per ADR-0022)', () => {
+  for (const meta of META_SKILLS) {
+    describe(meta, () => {
+      const path = resolve(PLUGIN_ROOT, 'skills', meta, 'SKILL.md');
+
+      it('exists', async () => {
+        ok(await exists(path), `skills/${meta}/SKILL.md missing`);
+      });
+
+      it(`frontmatter name=${meta} (meta folder ↔ frontmatter consistency)`, async () => {
+        const text = await readFile(path, 'utf8');
+        const fm = frontmatter(text);
+        ok(fm, 'no YAML frontmatter');
+        const re = new RegExp(`^name:\\s*${meta}\\s*$`, 'm');
+        ok(re.test(fm), `skills/${meta}/SKILL.md frontmatter name != "${meta}"`);
+        ok(/^description:\s*\S/m.test(fm), 'frontmatter description empty or missing');
+      });
+
+      it('passes stale-token audit', async () => {
+        const text = await readFile(path, 'utf8');
+        for (const stale of STALE_TOKENS) {
+          ok(!text.includes(stale), `skills/${meta}/SKILL.md leaks stale token: ${stale}`);
+        }
+      });
+
+      // ADR-0022 §Decision §3 — Host availability matrix is the
+      // load-bearing honesty mechanism that distinguishes meta skills
+      // from placeholder parity mirrors. The check (a) requires the
+      // top-level section heading, then (b) slices the body from that
+      // heading to the next top-level `## ` and asserts the markdown
+      // table lives INSIDE the slice — so removing the actual matrix
+      // while keeping a later command-resolution table elsewhere is
+      // caught (Codex re-review LOW #2).
+      it('body includes an explicit Host availability section with a Claude/Codex matrix (ADR-0022 §Decision §3)', async () => {
+        const text = await readFile(path, 'utf8');
+        const start = text.search(/^##\s+Host availability/im);
+        ok(
+          start >= 0,
+          `skills/${meta}/SKILL.md missing top-level "## Host availability" heading per ADR-0022 §Decision §3`,
+        );
+        // Slice from the heading to the next top-level `## ` (or end
+        // of file). Use a lookahead so the next-section marker isn't
+        // consumed by the slice; ignore the first newline so the
+        // current heading line stays in the slice.
+        const tail = text.slice(start);
+        const nextHeading = tail.slice(1).search(/^##\s+/m);
+        const section = nextHeading >= 0 ? tail.slice(0, nextHeading + 1) : tail;
+        // Match a markdown table header row that names both Claude and
+        // Codex columns: e.g., `| Operation | Claude | Codex |`. The
+        // column-order tolerance lets future tables re-order columns
+        // without breaking the test.
+        const tableHeaderRe = /\|.*Claude.*\|.*Codex.*\||\|.*Codex.*\|.*Claude.*\|/;
+        ok(
+          tableHeaderRe.test(section),
+          `skills/${meta}/SKILL.md "## Host availability" section missing a markdown table with both Claude and Codex columns inside the section`,
+        );
+      });
+
+      it('body mentions --host codex (Codex-side state.mjs flag, ADR-0022 §Decision §2)', async () => {
+        const text = await readFile(path, 'utf8');
+        ok(
+          /--host codex/.test(text),
+          `skills/${meta}/SKILL.md does not document the Codex-side --host codex flag`,
+        );
+      });
+    });
+  }
+});
+
+describe('plugins/engineer — meta skill Codex agents YAML (skills/<meta>/agents/openai.yaml, per ADR-0022)', () => {
+  for (const meta of META_SKILLS) {
+    describe(meta, () => {
+      const path = resolve(PLUGIN_ROOT, 'skills', meta, 'agents/openai.yaml');
+
+      it('exists', async () => {
+        ok(await exists(path), `skills/${meta}/agents/openai.yaml missing`);
+      });
+
+      it('has interface block with display_name mentioning the meta name', async () => {
+        const yaml = await readFile(path, 'utf8');
+        ok(/^interface:\s*$/m.test(yaml), 'interface block missing');
+        ok(/^\s+display_name:\s*\S/m.test(yaml), 'interface.display_name missing or empty');
+        const re = new RegExp(`display_name:.*${meta}`, 'i');
+        ok(re.test(yaml), `interface.display_name does not mention meta "${meta}"`);
+      });
+
+      it(`default_prompt mentions $engineer:${meta}`, async () => {
+        const yaml = await readFile(path, 'utf8');
+        const re = new RegExp(`\\$engineer:${meta}`);
+        ok(re.test(yaml), `default_prompt does not mention "$engineer:${meta}"`);
+      });
+
+      it('policy.allow_implicit_invocation is false (Stage 2 explicit-only invocation)', async () => {
+        const yaml = await readFile(path, 'utf8');
+        ok(/^policy:\s*$/m.test(yaml), 'policy block missing');
+        ok(
+          /allow_implicit_invocation:\s*false/m.test(yaml),
+          'allow_implicit_invocation should be false',
+        );
+      });
+    });
+  }
+});
+
+// ADR-0022 §Decision §2 — content authority: SKILL.md owns the
+// cognitive runbook; commands/<meta>.md delegates to SKILL.md via a
+// per-command pointer. The delegation pointer is the structural marker
+// that distinguishes ADR-0022-refactored commands from pre-cascade
+// commands that bundled prose + bash inline.
+describe('plugins/engineer — meta command delegation pointer (commands/<meta>.md → skills/<meta>/SKILL.md, per ADR-0022)', () => {
+  for (const meta of META_SKILLS) {
+    describe(meta, () => {
+      const path = resolve(PLUGIN_ROOT, 'commands', `${meta}.md`);
+
+      it('command file references skills/<meta>/SKILL.md as the cognitive runbook source', async () => {
+        const text = await readFile(path, 'utf8');
+        const re = new RegExp(`skills/${meta}/SKILL\\.md`);
+        ok(
+          re.test(text),
+          `commands/${meta}.md does not reference skills/${meta}/SKILL.md — delegation pointer missing per ADR-0022 §Decision §2`,
+        );
+      });
+
+      it('command file cites ADR-0022 (meta-skill category cascade)', async () => {
+        const text = await readFile(path, 'utf8');
+        ok(
+          /ADR-0022/.test(text),
+          `commands/${meta}.md missing ADR-0022 reference — required for the meta-skill cascade audit trail`,
         );
       });
     });

@@ -40,12 +40,19 @@ transition.
 > ([#75](https://github.com/each4all/agentic-plugins/pull/75)) —
 > `$engineer:start` macro skill at `plugins/engineer/skills/start/`
 > mirrors `/engineer:start` for Codex CLI without waiting on ADR-0013;
-> ADR-0010 §3 amendment formalizes the verb-skills + macro-skills
-> two-category split. Evidence accumulation toward condition 3
-> satisfaction begins with the first non-trivial engineer-driven
-> workflow that completes via `/engineer:start` (Claude) or
-> `$engineer:start` (Codex) without `omcc-dev` escape hatch. Detailed
-> Stage 2 exit narrative under
+> ADR-0010 §3 amendment introduced the verb-skills + macro-skills
+> split. **ADR-0022 follow-up cascade (also 2026-05-12)** closes
+> ADR-0021 §6 by adding a third **meta-skill** category alongside
+> verb and macro — the three engineer meta commands
+> (`resume` / `checkpoint` / `peer-now`) now mirror as Codex meta
+> skills at `plugins/engineer/skills/{resume,checkpoint,peer-now}/`,
+> with mandatory host-availability matrices per skill. ADR-0010 §3
+> is now a **three-category split (verb / macro / meta)** per the
+> 2026-05-12 ADR-0022 cascade amendment. Evidence accumulation toward
+> condition 3 satisfaction begins with the first non-trivial
+> engineer-driven workflow that completes via `/engineer:start`
+> (Claude) or `$engineer:start` (Codex) without `omcc-dev` escape
+> hatch. Detailed Stage 2 exit narrative under
 > [§Stage 2 — Self-development plugin](#stage-2--self-development-plugin).
 
 Until agentic-plugins has its first published plugin stable enough to
