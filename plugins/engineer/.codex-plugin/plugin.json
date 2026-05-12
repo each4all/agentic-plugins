@@ -1,7 +1,7 @@
 {
   "name": "engineer",
   "version": "0.7.0",
-  "description": "Engineer workbench — 6 cognitive verbs (investigate / frame / decide / compose / critique / refine) for AI-assisted engineering across Claude Code & Codex CLI. Includes cited-brief research profile.",
+  "description": "Engineer workbench for AI-assisted engineering across Claude Code & Codex CLI — 6 cognitive verbs (investigate / frame / decide / compose / critique / refine), /engineer:start lifecycle macro, and cited-brief research profile.",
   "author": {
     "name": "each4all",
     "url": "https://github.com/each4all"
@@ -21,6 +21,9 @@
     "cited-brief",
     "research",
     "citations",
+    "start",
+    "lifecycle",
+    "workflow",
     "claude",
     "codex",
     "agentic-plugins"
@@ -28,8 +31,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Engineer",
-    "shortDescription": "AI-assisted engineering across 6 cognitive verbs (with cited-brief research)",
-    "longDescription": "L3 persona plugin exposing six universal cognitive verbs as canonical skills (investigate, frame, decide, compose, critique, refine). Each verb is invokable as /engineer:<verb> with optional --profile and --topic arguments. The investigate verb's cited-brief profile produces durable cited research artifacts (absorbing the Stage 1 plugins/research contract per ADR-0014). Sub-discipline expansion (backend, frontend, devops, ...) flows through the L4 profile axis. Bidirectional companion ensembles (Claude ↔ Codex) dispatch automatically at every command-mode phase boundary under an always-max policy.",
+    "shortDescription": "AI-assisted engineering across 6 cognitive verbs + /engineer:start lifecycle macro (with cited-brief research)",
+    "longDescription": "L3 persona plugin exposing six universal cognitive verbs as canonical skills (investigate, frame, decide, compose, critique, refine). Each verb is invokable as /engineer:<verb> with optional --profile and --topic arguments. The investigate verb's cited-brief profile produces durable cited research artifacts (absorbing the Stage 1 plugins/research contract per ADR-0014). Sub-discipline expansion (backend, frontend, devops, ...) flows through the L4 profile axis. The /engineer:start lifecycle macro (ADR-0020 §Sub-decision 1) sequences Phase 0~7 (continuity → brainstorm → explore → plan-verify → implement → review → resolve → commit) for single-deliverable workflows; the macro is currently Claude-only pending ADR-0013 (Codex CLI plugin-commands schema), and on Codex CLI users continue to drive each phase via the six $engineer:<verb> skill mentions. Bidirectional companion ensembles (Claude ↔ Codex) dispatch automatically at every command-mode phase boundary under an always-max policy.",
     "developerName": "each4all",
     "category": "Development",
     "capabilities": [
