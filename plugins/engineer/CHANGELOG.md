@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.8.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.7.0...plugin-engineer-v0.8.0) (2026-05-12)
+
+
+### Features
+
+* **plugins/engineer:** /engineer:start lifecycle macro + diagnose-redundancy + workflow_type SessionStart fix (ADR-0020 PR 3) ([#72](https://github.com/each4all/agentic-plugins/issues/72)) ([a02ff3f](https://github.com/each4all/agentic-plugins/commit/a02ff3fbfb7432bdb56369bd487ec7a3fbf7e62d))
+* **plugins/engineer:** $engineer:start macro skill mirror (ADR-0021) ([#75](https://github.com/each4all/agentic-plugins/issues/75)) ([1ea63fc](https://github.com/each4all/agentic-plugins/commit/1ea63fcd87b8145e4b2e38e7c9b3ee5f9689e208))
+* **plugins/engineer:** schema 1.1-additive workflow_type field (ADR-0020 PR 2) ([#70](https://github.com/each4all/agentic-plugins/issues/70)) ([70e7596](https://github.com/each4all/agentic-plugins/commit/70e75964a203ef7a6d54d196231896504c26edc9))
+
 ## [0.7.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.6.0...plugin-engineer-v0.7.0) (2026-05-11)
 
 
