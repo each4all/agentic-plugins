@@ -61,6 +61,23 @@
           "jsonpath": "$.version"
         }
       ]
+    },
+    "plugins/runtime": {
+      "package-name": "plugin-runtime",
+      "component": "plugin-runtime",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": ".claude-plugin/plugin.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": ".codex-plugin/plugin.json",
+          "jsonpath": "$.version"
+        }
+      ]
     }
   }
 }

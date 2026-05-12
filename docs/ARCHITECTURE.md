@@ -71,7 +71,7 @@ model** for plugin organization (ADR-0010).
 ├─────────────────────────────────────────────────────────────┤
 │ L1 — Framework primitive plugins (infrastructure)           │
 │   plugins/companions  ← Stage 1 (current, ADR-0008)         │
-│   plugins/runtime    ← Stage 3+ candidate (ADR-0024)        │
+│   plugins/runtime    ← Stage 3+ runtime/operator (ADR-0024) │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -246,5 +246,5 @@ Stage progression:
 
 - **Stage 1** (complete) — `plugins/companions` + `plugins/research` (research retired at Stage 2.5+ per [ADR-0014](adr/0014-plugins-research-deprecation.md); cited-brief contract absorbed into `engineer:investigate`). Bidirectional companion contract verified.
 - **Stage 2** (complete) — `plugins/engineer` self-development plugin. See [`adr/0010-plugin-boundary-policy.md`](adr/0010-plugin-boundary-policy.md), [`adr/0011-workflow-continuity-storage.md`](adr/0011-workflow-continuity-storage.md), and the ADR-0017 / ADR-0020–0023 continuity follow-ups.
-- **Stage 3+** (in progress) — `plugins/orchestrator` L2 capability is shipped for macro planning, same-host engineer dispatch, macro completion, and peer-runner-supervised Plan-verify. ADR-0024 accepts `plugins/runtime` as the immediate runtime/operator control-plane candidate for doctor/settings, dynamic peer consensus, context hygiene, and host readiness. `plugins/designer` remains a possible future design-domain L3 plugin. Same 4-layer composition.
+- **Stage 3+** (in progress) — `plugins/orchestrator` L2 capability is shipped for macro planning, same-host engineer dispatch, macro completion, and peer-runner-supervised Plan-verify. `plugins/runtime` is the ADR-0024 L1 runtime/operator primitive; first shipped surface is read-only `doctor`, with settings, dynamic peer consensus, context hygiene, and completion footer follow-ups still pending. `plugins/designer` remains a possible future design-domain L3 plugin. Same 4-layer composition.
 - **Cutover** — declared by user when Stage 1–3 milestones met, ≥1 week sustained use without regression, and ≥1 clear improvement over omcc.
