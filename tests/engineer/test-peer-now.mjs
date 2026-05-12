@@ -1,9 +1,9 @@
-// plugins/engineer — peer-now command + dispatch-peer.mjs verbatim
-// pass-through tests (ADR-0017 §sub-decision-3).
+// plugins/engineer — peer-now command + peer-runner operational
+// controls tests (ADR-0017 §sub-decision-3 + ADR-0023 PR-E).
 //
 // Validation contract per ADR-0017 §sub-decision 3:
-//   - Reuses dispatch-peer.mjs envelope validation (verbatim prompt
-//     pass-through — no ensemble XML wrapping).
+//   - Reuses peer-runner.mjs text mode for verbatim prompt pass-through
+//     while adding run_id-based status/cancel ledger support.
 //   - [Peer] label injection in the workflow body when an active
 //     workflow exists (additive, side-channel).
 //   - Excluded from `ensemble_results` frontmatter (peer-now mirrors
@@ -12,14 +12,12 @@
 // The command body itself is exercised by static shape assertions —
 // the command is a markdown shim the LLM reads and executes, so the
 // regression value is in pinning the shell skeleton (state.mjs find-
-// active, dispatch-peer.mjs invocation pattern, [Peer] label, no
+// active, peer-runner.mjs invocation pattern, [Peer] label, no
 // current_phase mutation).
 //
-// dispatch-peer.mjs CLI surface is exercised against a missing
-// companion to verify the rejection path stays well-typed (exit 3,
-// status 'companion_error', kind 'peer_cli_not_found') — the happy
-// path requires a real companion binary and lives in the smoke
-// suite.
+// dispatch-peer.mjs remains covered as the blocking compatibility
+// surface. peer-now itself is pinned to peer-runner.mjs --kind peer-now
+// so operational status/cancel can target the hidden ledger by run_id.
 //
 // Run via `node --test tests/engineer/test-peer-now.mjs`.
 
@@ -36,6 +34,10 @@ const STATE_PATH = resolve(REPO_ROOT, 'plugins/engineer/scripts/state.mjs');
 const DISPATCH_PATH = resolve(
   REPO_ROOT,
   'plugins/engineer/scripts/dispatch-peer.mjs',
+);
+const PEER_RUNNER_PATH = resolve(
+  REPO_ROOT,
+  'plugins/engineer/scripts/peer-runner.mjs',
 );
 const COMMAND_PATH = resolve(
   REPO_ROOT,
@@ -106,11 +108,27 @@ describe('/engineer:peer-now — commands/peer-now.md shape conformance', () => 
     );
   });
 
-  it('body invokes dispatch-peer.mjs with --output-format text (verbatim pass-through)', async () => {
+  it('body invokes peer-runner.mjs with --kind peer-now and --output-format text', async () => {
     const text = await readFile(COMMAND_PATH, 'utf8');
     ok(
-      /dispatch-peer\.mjs[\s\S]{0,200}--output-format text/.test(text),
-      'body should call dispatch-peer.mjs with --output-format text for verbatim raw response',
+      /peer-runner\.mjs"\s+run[\s\S]{0,260}--kind peer-now[\s\S]{0,260}--output-format text/.test(text),
+      'body should call peer-runner.mjs run --kind peer-now --output-format text',
+    );
+    ok(
+      /RUN_ID="peer-now-/.test(text) && /run_id=\$RUN_ID/.test(text),
+      'body should allocate and surface a peer-now run_id for status/cancel controls',
+    );
+  });
+
+  it('body documents peer-now status and cancel commands by run_id', async () => {
+    const text = await readFile(COMMAND_PATH, 'utf8');
+    ok(
+      /peer-runner\.mjs"\s+status[\s\S]{0,160}--run-id "\$RUN_ID"/.test(text),
+      'body should document peer-runner status --run-id "$RUN_ID"',
+    );
+    ok(
+      /peer-runner\.mjs"\s+cancel[\s\S]{0,160}--run-id "\$RUN_ID"/.test(text),
+      'body should document peer-runner cancel --run-id "$RUN_ID"',
     );
   });
 
@@ -250,7 +268,79 @@ describe('state.mjs append — phase-note only (no current_phase change)', () =>
   });
 });
 
-// --- dispatch-peer.mjs CLI surface (verbatim path, no companion) -----------
+// --- peer-runner.mjs CLI surface (peer-now path, no companion) -------------
+
+describe('peer-runner.mjs peer-now CLI surface', () => {
+  it('kind=peer-now creates a ledger and status can read it when companion is missing', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const promptFile = join(repoRoot, 'p.txt');
+      await writeFile(promptFile, 'verbatim probe');
+      await writeFile(
+        join(repoRoot, 'discover-peer.mjs'),
+        'export async function discoverPeerCompanion() { return { ok: false, reason: "test miss" }; }\n',
+      );
+      const cleanEnv = { ...process.env };
+      cleanEnv.AGENTIC_COMPANIONS_ROOT = repoRoot;
+      cleanEnv.HOME = repoRoot;
+
+      const runId = 'peer-now-missing-companion';
+      const cp = spawnSync(
+        process.execPath,
+        [
+          PEER_RUNNER_PATH,
+          'run',
+          '--repo-root',
+          repoRoot,
+          '--run-id',
+          runId,
+          '--kind',
+          'peer-now',
+          '--peer',
+          'codex',
+          '--prompt-file',
+          promptFile,
+          '--output-format',
+          'text',
+          '--cwd',
+          repoRoot,
+        ],
+        {
+          encoding: 'utf8',
+          env: cleanEnv,
+          cwd: repoRoot,
+        },
+      );
+
+      strictEqual(cp.status, 3, `expected missing companion exit 3; stderr: ${cp.stderr}`);
+      const result = JSON.parse(cp.stdout);
+      strictEqual(result.run_id, runId);
+      strictEqual(result.status, 'failed');
+      strictEqual(result.error_kind, 'peer_cli_not_found');
+      ok(result.handle_path.endsWith('handle.json'), 'run result should expose handle_path');
+
+      const status = spawnSync(
+        process.execPath,
+        [
+          PEER_RUNNER_PATH,
+          'status',
+          '--repo-root',
+          repoRoot,
+          '--run-id',
+          runId,
+          '--json',
+        ],
+        { encoding: 'utf8', env: cleanEnv, cwd: repoRoot },
+      );
+      strictEqual(status.status, 0, `status stderr: ${status.stderr}`);
+      const parsed = JSON.parse(status.stdout);
+      strictEqual(parsed.handle.kind, 'peer-now');
+      strictEqual(parsed.status, 'failed');
+      strictEqual(parsed.handle.workflow_path, null);
+    });
+  });
+});
+
+// --- dispatch-peer.mjs CLI surface (compatibility path, no companion) ------
 
 describe('dispatch-peer.mjs verbatim CLI surface (peer-now path)', () => {
   it('rejects when --peer is missing', () => {

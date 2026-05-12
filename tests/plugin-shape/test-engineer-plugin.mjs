@@ -687,15 +687,20 @@ describe('plugins/engineer — 11 commands (commands/<verb>.md — 6 verbs + aud
     }
   });
 
-  it('peer-now remains on dispatch-peer.mjs text mode and out of peer-runner command integration', async () => {
+  it('peer-now uses peer-runner text mode with status/cancel controls and remains out of ensemble_results', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, 'commands/peer-now.md'), 'utf8');
     ok(
-      /dispatch-peer\.mjs[\s\S]{0,220}--output-format text/.test(text),
-      'commands/peer-now.md must keep the raw dispatch-peer text-mode path',
+      /peer-runner\.mjs"\s+run[\s\S]{0,260}--kind peer-now[\s\S]{0,260}--output-format text/.test(text),
+      'commands/peer-now.md must use peer-runner.mjs run --kind peer-now --output-format text',
     );
     ok(
-      !/peer-runner\.mjs/.test(text),
-      'commands/peer-now.md must not migrate to peer-runner in ADR-0023 PR-C',
+      /peer-runner\.mjs"\s+status[\s\S]{0,160}--run-id "\$RUN_ID"/.test(text) &&
+        /peer-runner\.mjs"\s+cancel[\s\S]{0,160}--run-id "\$RUN_ID"/.test(text),
+      'commands/peer-now.md must document status/cancel controls by peer-now run_id',
+    );
+    ok(
+      /ensemble_results/.test(text) && /does NOT touch `pending_ensemble` or\s+`ensemble_results`/.test(text),
+      'commands/peer-now.md must keep peer-now out of ensemble_results',
     );
   });
 });

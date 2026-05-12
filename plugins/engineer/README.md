@@ -65,7 +65,7 @@ current release ships:
   (blocking companion task wrapper per `companions/contract.md`
   v0.1.1) + `scripts/peer-runner.mjs` (ADR-0023 caller-side
   ledger/status/cancel/sweep primitive; managed verb-command ensemble
-  dispatch path)
+  dispatch path plus `peer-now` operational controls)
 - **Claude Code hooks** (`hooks/hooks.json` + `adapters/claude/hooks/{pre-compact,stop,session-start}.mjs`) — automatic
   state snapshot per ADR-0011 §4 (PreCompact + Stop + SessionStart)
 - **Codex stop helper** (`adapters/codex/hooks/stop.mjs`) —
@@ -254,9 +254,11 @@ trigger phrases.
   command-invoked mode, including managed peer ensemble dispatch via
   `scripts/peer-runner.mjs run` (which calls `claude-companion` for
   the Claude peer perspective and synthesizes AGREED / LOCAL-ONLY /
-  PEER-ONLY / CONFLICT findings). `scripts/dispatch-peer.mjs` remains
-  available as the blocking compatibility surface and raw `peer-now`
-  path.
+  PEER-ONLY / CONFLICT findings). `$engineer:peer-now` also routes
+  through `scripts/peer-runner.mjs run --kind peer-now`, preserving
+  raw response semantics while adding `run_id` status/cancel support.
+  `scripts/dispatch-peer.mjs` remains available as the blocking
+  compatibility surface for raw callers.
 - **What is NOT yet wired**: workflow continuity on Codex side
   (Phase 0 directory-lock + create-or-append, Phase 2 state finalize)
   is *not* automatic — Codex CLI does not expose a slash-command surface
