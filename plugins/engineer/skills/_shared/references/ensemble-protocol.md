@@ -100,13 +100,18 @@ Every ensemble point follows three steps: **Launch**, **Collect**,
    companions `task --prompt-file <path>` subcommand; the
    ensemble's intent is encoded entirely in the XML prompt body.
 4. Invoke the companion as a background task with the prompt
-   written to a tempfile. The host-shared canonical wrapper
-   (`plugins/engineer/scripts/dispatch-peer.mjs`, added in
-   Deliverable D) implements this dispatch — both Claude and Codex
-   sides import it. The orchestrator's slash command (Claude) or
-   skill agent (Codex) is responsible for arranging background
-   execution per its own host primitives (Bash `run_in_background`
-   on Claude; Codex `task` subcommand on Codex side).
+   written to a tempfile. The host-shared canonical runner
+   (`plugins/engineer/scripts/peer-runner.mjs`, ADR-0023 PR-C)
+   implements managed dispatch for command-runbook ensemble paths:
+   it records the `pending_ensemble` row, spawns the resolved
+   companion directly, and writes raw stdout/stderr plus the final
+   envelope under the hidden peer-run ledger. `dispatch-peer.mjs`
+   remains the blocking compatibility surface for callers that have
+   not migrated and for side-channel `peer-now` use. The orchestrator's
+   slash command (Claude) or skill agent (Codex) is responsible for
+   arranging background execution per its own host primitives (Bash
+   `run_in_background` on Claude; Codex `task` subcommand on Codex
+   side).
 5. The orchestrator proceeds immediately to its own parallel
    analysis.
 
@@ -114,7 +119,9 @@ Every ensemble point follows three steps: **Launch**, **Collect**,
 
 1. Orchestrator completes its own analysis (Task tool agents on
    Claude side, in-context analysis on Codex side, etc.).
-2. Read the peer output from the completed background task.
+2. Read the peer-runner JSON from the completed background task, then
+   read `envelope_path` for the parsed companion envelope (or
+   `stdout_path` / `stderr_path` when diagnosing degraded runs).
 3. If the peer has not finished yet, wait for the background
    notification — do not poll or sleep.
 4. If the peer failed or returned empty output, record the failure
@@ -178,7 +185,9 @@ locations**:
      (3) prune to `ENSEMBLE_RESULTS_RETENTION_CAP` (default 20, FIFO by
      `completed_at`).
    - Equivalent CLI subcommands: `state.mjs ensemble-pending` /
-     `ensemble-commit`.
+     `ensemble-commit`. Command-managed peer ensembles normally use
+     `peer-runner.mjs run --kind ensemble`, which calls
+     `recordPendingEnsemble(...)` before spawning the companion.
 2. **Markdown body** — human-readable phase notes appended via
    `state.mjs append --phase-note ...`:
    - in-flight markers: `### Ensemble launched: <type> at <iso-utc>`
@@ -529,7 +538,7 @@ written files.
   exists for parallelism with Explore / Investigate; the full
   bidirectional protocol — privacy gate, citation remapping, Path A /
   Path B Independence Rule, dispatch via
-  `plugins/engineer/scripts/dispatch-peer.mjs` — lives in the absorbed
+  `plugins/engineer/scripts/peer-runner.mjs` — lives in the absorbed
   contract per [ADR-0014](../../../../../docs/adr/0014-plugins-research-deprecation.md))
 - **Prompt template**:
 

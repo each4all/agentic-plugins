@@ -226,11 +226,11 @@ the local web-search work in Step 3''), launch the peer ensemble:
   (`../_shared/references/ensemble-protocol.md`)
 - `cited-brief` profile → **research-scan** ensemble point type
   (`references/cited-brief-ensemble.md`). Dispatch goes through
-  `plugins/engineer/scripts/dispatch-peer.mjs`; the prompt carries
-  the topic, confirmed sub-questions, scope, and the
-  `<citation_contract>` and `<privacy_contract>` XML blocks per the
-  ensemble protocol; the companion is invoked in JSON envelope mode
-  via `--prompt-file`.
+  `plugins/engineer/scripts/peer-runner.mjs run` for command-managed
+  ensembles; the prompt carries the topic, confirmed sub-questions,
+  scope, and the `<citation_contract>` and `<privacy_contract>` XML
+  blocks per the ensemble protocol; the companion is invoked in JSON
+  envelope mode via `--prompt-file`.
 
 The peer call is automatic (always-max policy); skills do not pass
 `--model` or `--effort` flags.

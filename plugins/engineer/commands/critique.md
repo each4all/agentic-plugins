@@ -120,11 +120,13 @@ PROMPT_FILE="$(mktemp -t engineer-critique-prompt.XXXXXX).xml"
 # `adversarial-scan` for `--profile=full-codebase` (set in Phase 1).
 RUN_ID="${ENSEMBLE_TYPE:-review}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 # ... LLM writes the matching XML prompt to $PROMPT_FILE ...
-node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs" \
+node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
+  --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
   --workflow-path "$ACTIVE" --phase critique \
+  --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
   --ensemble-type "${ENSEMBLE_TYPE:-review}" --run-id "$RUN_ID" \
-  > "$PROMPT_FILE.out" 2> "$PROMPT_FILE.err" &
+  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
 ```
 
 Local agents (orchestrator side): default profile spawns review-style
@@ -132,9 +134,13 @@ agents (correctness, conventions, simplicity, security, etc.) per
 `skills/_shared/references/agent-taxonomy.md`. `full-codebase` spawns
 adversarial-mindset agents.
 
-Synthesize per AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT. Findings
-get severity ratings (CRITICAL / MAJOR / MINOR / SUGGESTION) per the
-critique SKILL's contract.
+`peer-runner.mjs run` records the matching `pending_ensemble` row
+before spawning the companion and writes raw peer output under the
+hidden peer-run ledger; the background command's stdout is the small
+runner JSON result (`envelope_path`, `stdout_path`, `stderr_path`,
+`handle_path`). Synthesize per AGREED / LOCAL-ONLY / PEER-ONLY /
+CONFLICT. Findings get severity ratings (CRITICAL / MAJOR / MINOR /
+SUGGESTION) per the critique SKILL's contract.
 
 ---
 

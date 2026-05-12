@@ -108,16 +108,22 @@ PROMPT_FILE="$(mktemp -t engineer-decide-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 RUN_ID="brainstorm-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 # ... LLM writes the Brainstorm XML prompt to $PROMPT_FILE ...
-node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs" \
+node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
+  --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
   --workflow-path "$ACTIVE" --phase decide \
+  --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
   --ensemble-type brainstorm --run-id "$RUN_ID" \
-  > "$PROMPT_FILE.out" 2> "$PROMPT_FILE.err" &
+  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
 ```
 
-Synthesize: merge orchestrator + peer option sets. PEER-ONLY
-approaches → add. AGREED → elevate confidence. CONFLICT → present
-both with evidence and ask the user.
+The peer-runner records the matching `pending_ensemble` row before
+spawning the companion and writes raw peer output under the hidden
+peer-run ledger; the background command's stdout is the small runner
+JSON result (`envelope_path`, `stdout_path`, `stderr_path`,
+`handle_path`). Synthesize: merge orchestrator + peer option sets.
+PEER-ONLY approaches → add. AGREED → elevate confidence. CONFLICT →
+present both with evidence and ask the user.
 
 ---
 

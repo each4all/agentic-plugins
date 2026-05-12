@@ -129,7 +129,7 @@ Follow the investigate skill's "When invoked by command" mode at
   analysis/root-cause profiles, OR research-scan point type per
   `skills/investigate/references/cited-brief-ensemble.md` for the
   cited-brief profile — via
-  `$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs`. The peer runs in
+  `$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs run`. The peer runs in
   the background; the orchestrator continues its own analysis (or
   per-sub-question web search for cited-brief) in parallel.
 - **Step 4**: Collect both sources, classify findings per the
@@ -160,20 +160,29 @@ PROMPT_FILE="$(mktemp -t engineer-investigate-prompt.XXXXXX).xml"
 # Phase 1 from the resolved profile).
 RUN_ID="${ENSEMBLE_TYPE:-investigate}-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 # ... LLM writes the XML prompt to $PROMPT_FILE ...
-# Then dispatch in background:
-node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs" \
+# Then dispatch in background through the managed peer-runner:
+node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
+  --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
   --workflow-path "$ACTIVE" --phase investigate \
+  --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
   --ensemble-type "${ENSEMBLE_TYPE:-investigate}" --run-id "$RUN_ID" \
-  > "$PROMPT_FILE.out" 2> "$PROMPT_FILE.err" &
+  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
 ```
 
 For the **cited-brief** profile, the XML prompt additionally carries
 the `<citation_contract>` and `<privacy_contract>` blocks defined in
 `skills/investigate/references/cited-brief-ensemble.md` § Prompt
-Construction. The same `dispatch-peer.mjs` is used; `--prompt-file`
-keeps user-controlled material (topic, sub-questions) out of shell
-parsing and process argv per `companions/contract.md` § 2.2.
+Construction. The same `peer-runner.mjs run` path is used;
+`--prompt-file` keeps user-controlled material (topic, sub-questions)
+out of shell parsing and process argv per `companions/contract.md`
+§ 2.2.
+
+The peer-runner records the matching `pending_ensemble` row before
+spawning the companion, writes raw stdout/stderr under the hidden
+peer-run ledger, and emits a small JSON result to
+`$PROMPT_FILE.run.json` with `envelope_path`, `stdout_path`,
+`stderr_path`, and `handle_path`.
 
 (Use `run_in_background: true` on the Bash tool; collect output once
 the orchestrator's local analysis completes.)

@@ -29,6 +29,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import { resolveCompanionPath, validateEnvelopeShape } from './dispatch-peer.mjs';
+import { recordPendingEnsemble } from './state.mjs';
 
 export const HANDLE_SCHEMA_VERSION = '1.0';
 export const VALID_PEERS = new Set(['claude', 'codex']);
@@ -315,6 +316,23 @@ async function materializePrompt({ paths, promptText, promptFile, retainPrompt }
   return { promptFile: file, cleanup: dir };
 }
 
+async function recordPendingIfEnsemble(handle) {
+  if (handle.kind !== 'ensemble') return;
+  try {
+    await recordPendingEnsemble({
+      workflowPath: handle.workflow_path,
+      phase: handle.phase,
+      ensemble_type: handle.ensemble_type,
+      run_id: handle.run_id,
+      started_at: handle.started_at,
+    });
+  } catch (err) {
+    process.stderr.write(
+      `peer-runner: pending registration failed (continuing): ${err.message}\n`,
+    );
+  }
+}
+
 export async function fingerprintForPid(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return { kind: 'none' };
 
@@ -499,6 +517,8 @@ export async function runPeer(args) {
       retainPrompt: options.retainPrompt,
     });
     promptCleanup = prompt.cleanup;
+
+    await recordPendingIfEnsemble(await readHandle(paths.handle));
 
     const companionPath = await resolveCompanionPath(options.peer, { env: options.env });
     if (!companionPath) {

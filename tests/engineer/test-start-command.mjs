@@ -140,7 +140,7 @@ describe('/engineer:start — Phase 1-7 sequencing (ADR-0020 §Sub-decision 2)',
 
   it('explicitly states intra-document execution (no recursive /engineer:<verb> slash dispatch)', async () => {
     // Codex plan-verify MAJOR #2 — the command runbook executes verb
-    // skill semantics in-place via state.mjs + dispatch-peer.mjs;
+    // skill semantics in-place via state.mjs + peer-runner.mjs;
     // it does NOT call slash commands recursively.
     const text = await readFile(COMMAND_PATH, 'utf8');
     ok(

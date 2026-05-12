@@ -113,15 +113,22 @@ PROMPT_FILE="$(mktemp -t engineer-refine-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 RUN_ID="refine-verify-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
 # ... LLM writes the Refine-verify XML prompt to $PROMPT_FILE ...
-node "$CLAUDE_PLUGIN_ROOT/scripts/dispatch-peer.mjs" \
+node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
+  --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
   --workflow-path "$ACTIVE" --phase refine \
+  --host "${AGENTIC_HOST:-claude}" --cwd "$REPO_ROOT" \
   --ensemble-type refine-verify --run-id "$RUN_ID" \
-  > "$PROMPT_FILE.out" 2> "$PROMPT_FILE.err" &
+  > "$PROMPT_FILE.run.json" 2> "$PROMPT_FILE.err" &
 ```
 
-Synthesize per AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT. Peer-flagged
-regressions or over-fitting concerns block completion until addressed.
+`peer-runner.mjs run` records the matching `pending_ensemble` row
+before spawning the companion and writes raw peer output under the
+hidden peer-run ledger; the background command's stdout is the small
+runner JSON result (`envelope_path`, `stdout_path`, `stderr_path`,
+`handle_path`). Synthesize per AGREED / LOCAL-ONLY / PEER-ONLY /
+CONFLICT. Peer-flagged regressions or over-fitting concerns block
+completion until addressed.
 
 ---
 
