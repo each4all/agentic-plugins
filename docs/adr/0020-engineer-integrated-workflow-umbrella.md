@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (4-PR roadmap shipped 2026-05-12 — #69 ADR text, #70 PR 2 schema, #72 PR 3 lifecycle macro, #73 PR 4 manifest)
 
 ## Context
 
@@ -378,9 +378,15 @@ a machine-checked Phase 0 step.
 ADR-0013 reserved): Claude Code supports slash-command auto-trigger
 for `/engineer:start`. Codex CLI's plugin-commands integration is
 unfinalized (ADR-0013 reserved pending the Codex CLI command-schema
-landing). On Codex side, `/engineer:start` is invocable through the
-explicit `$engineer:start` mention but does not auto-trigger from
-host UI. PR 3 documents this asymmetry in the engineer README; full
+landing). On Codex side, `/engineer:start` is **not yet an invocation
+surface** — the Codex plugin manifest exposes only the six verb
+skills via `skills: ./skills/`, and `commands/start.md` is a Claude-
+slash-command file with no Codex equivalent. Codex users continue to
+drive each lifecycle phase manually via the six `$engineer:<verb>`
+skill mentions until the ADR-0013 Codex CLI plugin-commands schema
+lands (which will let `commands/start.md` be exposed alongside the
+skills). PR 3 documents this asymmetry in the engineer README; PR 4
+mirrors it in the Codex manifest's `interface.longDescription`. Full
 parity awaits ADR-0013.
 
 ## Consequences
