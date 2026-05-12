@@ -136,7 +136,7 @@ invocation. See ADRs 0001–0024 for the specifics (0013 remains
 reserved pending Codex CLI commands integration trigger; 0014 was
 superseded by 0015 for the `plugins/research` archive timeline only;
 0017–0023 cover continuity, orchestrator, command-surface parity, and
-peer-runner supervision follow-ups; 0024 proposes the runtime/operator
+peer-runner supervision follow-ups; 0024 accepts the runtime/operator
 control-plane track).
 
 ---
@@ -315,7 +315,7 @@ release-please automation.
 
 **Stage 2 (Self-development plugin)** — complete (2026-05-06). ADRs 0010 (plugin boundary policy + 4-layer composition + 6 universal verbs), 0011 (workflow continuity Option III storage), and 0012 (omcc + codex-plugin-cc removal preconditions) accepted. Shipped `plugins/engineer` (canonical L3 persona name; plugin-name level marketplace aliases like `/dev:` are a Stage 2 non-goal per ADR-0011 §9). Verb-level aliases inside the plugin (e.g., `/engineer:audit` ≡ `/engineer:critique --profile=full-codebase`) are permitted (ADR-0010 §3). All five deliverables (A foundation → B kit/discovery absorbed into `plugins/companions` per ADR-0010 §6 high-cohesion evaluation → C plugin core + 6 verb skills → D adapters + minimal continuity → E validation + dogfood) merged. Stage 2 exit gate met: `plugins/engineer` drives its own development without omcc-dev (see `docs/DEVELOPMENT.md` §Stage 2 exit evidence). Per-condition progress is tracked via the [ADR-0012](docs/adr/0012-omcc-removal-preconditions.md) four-condition matrix in `docs/DEVELOPMENT.md`; condition 1 is satisfied, condition 4 is functionally satisfied, and conditions 2/3 remain partial.
 
-**Stage 2.5+ / Stage 3+ continuity cascade** — active but mostly shipped through ADR-0023. ADR-0014/0015 archived `plugins/research` and folded cited-brief into `engineer:investigate`; ADR-0017 accepted and implemented engineer resume/checkpoint/peer-now plus `ensemble_results` and Stop auto-archive; ADR-0018 shipped `plugins/orchestrator` as the first multi-verb L2 capability; ADR-0019 shipped orchestrator→engineer same-host dispatch, `/done`, `/finalize`, `/abort`, and macro auto-archive; ADR-0020–0022 added `/engineer:start` and Codex macro/meta skill parity without waiting on ADR-0013; ADR-0023 added peer-runner supervision for monitoring, cancellation, sweep, and bounded ledger retention. ADR-0024 is proposed for the immediate runtime/operator control-plane track: `doctor`, `settings`, dynamic peer consensus, context hygiene, model/effort resolution, and host-readiness diagnosis. ADR-0013 remains reserved for a future Codex CLI command integration mechanism.
+**Stage 2.5+ / Stage 3+ continuity cascade** — active but mostly shipped through ADR-0023. ADR-0014/0015 archived `plugins/research` and folded cited-brief into `engineer:investigate`; ADR-0017 accepted and implemented engineer resume/checkpoint/peer-now plus `ensemble_results` and Stop auto-archive; ADR-0018 shipped `plugins/orchestrator` as the first multi-verb L2 capability; ADR-0019 shipped orchestrator→engineer same-host dispatch, `/done`, `/finalize`, `/abort`, and macro auto-archive; ADR-0020–0022 added `/engineer:start` and Codex macro/meta skill parity without waiting on ADR-0013; ADR-0023 added peer-runner supervision for monitoring, cancellation, sweep, and bounded ledger retention. ADR-0024 accepts the immediate runtime/operator control-plane track: `doctor`, `settings`, dynamic peer consensus, context hygiene, model/effort resolution, and host-readiness diagnosis. ADR-0013 remains reserved for a future Codex CLI command integration mechanism.
 
 > **User-environment cleanup note**: users of agentic-plugins versions
 > ≤0.3.x may have a stale `research@agentic-plugins 0.1.0` cache from
@@ -323,7 +323,7 @@ release-please automation.
 > (or the equivalent Codex command) to remove it — the plugin is no
 > longer in either marketplace catalog (per ADR-0014/0015).
 
-**Stage 3+ (Runtime/operator track)** — proposed by ADR-0024. The active next dogfood target is a `plugins/runtime` L1 framework primitive for host readiness and operator control, rather than a design-domain plugin. `plugins/designer` remains possible future work referencing omcc-designer experience under the same 4-layer composition, but it is no longer the active next-step trigger for ADR-0012 condition 3.
+**Stage 3+ (Runtime/operator track)** — accepted by ADR-0024. The active next dogfood target is a `plugins/runtime` L1 framework primitive for host readiness and operator control, rather than a design-domain plugin. `plugins/designer` remains possible future work referencing omcc-designer experience under the same 4-layer composition, but it is no longer the active next-step trigger for ADR-0012 condition 3.
 
 Next steps:
 
