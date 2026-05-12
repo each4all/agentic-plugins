@@ -1994,3 +1994,291 @@ describe('state.mjs — ADR-0019 PR-A parent-linkage fields (schema 1.1 additive
     });
   });
 });
+
+// ============================================================================
+// ADR-0020 §Sub-decision 5 — schema 1.1-additive workflow_type discriminator
+// (verb-chain | start). The field is always-written at create-time with a
+// 'verb-chain' default (discriminator semantics: self-describing > omit-when-
+// unset, parent_workflow precedent intentionally diverged). On read, absent
+// equals 'verb-chain' (legacy 1.1 files without the field remain valid).
+// SCHEMA_VERSION stays '1.1' (additive, Alternative E "1.2 bump" rejected).
+// ============================================================================
+
+describe('state.mjs — ADR-0020 workflow_type field (schema 1.1 additive)', () => {
+  it('parses a 1.1 file with workflow_type: verb-chain explicitly set', () => {
+    const text =
+      '---\n' +
+      'schema: "1.1"\n' +
+      'workflow_id: "investigate-20260511T140000Z-aa1122"\n' +
+      'persona: "engineer"\n' +
+      'verb: "investigate"\n' +
+      'profile: ""\n' +
+      'original_request: "verb chain workflow"\n' +
+      'started_at: "2026-05-11T14:00:00Z"\n' +
+      'updated_at: "2026-05-11T14:00:00Z"\n' +
+      'repo_root: "/tmp/repo"\n' +
+      'git_baseline:\n' +
+      '  branch: "main"\n' +
+      '  head: "0000000000000000000000000000000000000000"\n' +
+      '  status_digest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"\n' +
+      'current_phase: "phase-0"\n' +
+      'next_action: "Run investigate skill"\n' +
+      'tasks: []\n' +
+      'host_history:\n' +
+      '  - host: "claude"\n' +
+      '    at: "2026-05-11T14:00:00Z"\n' +
+      '    event: "created"\n' +
+      'workflow_type: "verb-chain"\n' +
+      '---\n\n# body\n';
+    const { frontmatter } = parseWorkflowFile(text);
+    strictEqual(frontmatter.workflow_type, 'verb-chain');
+  });
+
+  it('parses a 1.1 file with workflow_type: start (lifecycle macro workflow per ADR-0020 PR 3)', () => {
+    const text =
+      '---\n' +
+      'schema: "1.1"\n' +
+      'workflow_id: "investigate-20260511T140100Z-bb2233"\n' +
+      'persona: "engineer"\n' +
+      'verb: "investigate"\n' +
+      'profile: ""\n' +
+      'original_request: "lifecycle macro workflow"\n' +
+      'started_at: "2026-05-11T14:01:00Z"\n' +
+      'updated_at: "2026-05-11T14:01:00Z"\n' +
+      'repo_root: "/tmp/repo"\n' +
+      'git_baseline:\n' +
+      '  branch: "main"\n' +
+      '  head: "0000000000000000000000000000000000000000"\n' +
+      '  status_digest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"\n' +
+      'current_phase: "phase-1-brainstorm"\n' +
+      'next_action: "investigate options"\n' +
+      'tasks: []\n' +
+      'host_history:\n' +
+      '  - host: "claude"\n' +
+      '    at: "2026-05-11T14:01:00Z"\n' +
+      '    event: "created"\n' +
+      'workflow_type: "start"\n' +
+      '---\n\n# body\n';
+    const { frontmatter } = parseWorkflowFile(text);
+    strictEqual(frontmatter.workflow_type, 'start');
+  });
+
+  it('parses a legacy 1.1 file without workflow_type (read-time default verb-chain is caller responsibility)', () => {
+    // ADR-0020 §Sub-decision 5 — pre-PR-2 files have no workflow_type.
+    // The parser MUST accept absence silently; the caller (e.g.,
+    // resume.md drift report) supplies the 'verb-chain' default at
+    // render-time.
+    const text =
+      '---\n' +
+      'schema: "1.1"\n' +
+      'workflow_id: "investigate-20260511T140200Z-cc3344"\n' +
+      'persona: "engineer"\n' +
+      'verb: "investigate"\n' +
+      'profile: ""\n' +
+      'original_request: "pre-PR-2 legacy file"\n' +
+      'started_at: "2026-05-11T14:02:00Z"\n' +
+      'updated_at: "2026-05-11T14:02:00Z"\n' +
+      'repo_root: "/tmp/repo"\n' +
+      'git_baseline:\n' +
+      '  branch: "main"\n' +
+      '  head: "0000000000000000000000000000000000000000"\n' +
+      '  status_digest: ""\n' +
+      'current_phase: "phase-0"\n' +
+      'next_action: "Run investigate skill"\n' +
+      'tasks: []\n' +
+      'host_history:\n' +
+      '  - host: "claude"\n' +
+      '    at: "2026-05-11T14:02:00Z"\n' +
+      '    event: "created"\n' +
+      '---\n\n# body\n';
+    const { frontmatter } = parseWorkflowFile(text);
+    strictEqual('workflow_type' in frontmatter, false);
+  });
+
+  it('rejects unknown workflow_type value (enum violation)', () => {
+    const text =
+      '---\nschema: "1.1"\nworkflow_id: "x"\npersona: "engineer"\nverb: "investigate"\n' +
+      'profile: ""\noriginal_request: ""\nstarted_at: ""\nupdated_at: ""\n' +
+      'repo_root: ""\ngit_baseline:\n  branch: ""\n  head: ""\n  status_digest: ""\n' +
+      'current_phase: ""\nnext_action: ""\ntasks: []\nhost_history: []\n' +
+      'workflow_type: "plan"\n---\n\n';
+    const err = (() => {
+      try { parseWorkflowFile(text); return null; } catch (e) { return e; }
+    })();
+    ok(err, 'expected unknown workflow_type to throw');
+    ok(/workflow_type must be one of/.test(err.message), `message: ${err.message}`);
+  });
+
+  it('rejects non-string workflow_type', () => {
+    const text =
+      '---\nschema: "1.1"\nworkflow_id: "x"\npersona: "engineer"\nverb: "investigate"\n' +
+      'profile: ""\noriginal_request: ""\nstarted_at: ""\nupdated_at: ""\n' +
+      'repo_root: ""\ngit_baseline:\n  branch: ""\n  head: ""\n  status_digest: ""\n' +
+      'current_phase: ""\nnext_action: ""\ntasks: []\nhost_history: []\n' +
+      'workflow_type: 42\n---\n\n';
+    const err = (() => {
+      try { parseWorkflowFile(text); return null; } catch (e) { return e; }
+    })();
+    ok(err, 'expected numeric workflow_type to throw');
+    // Numeric YAML scalar parses as Number; the parser may already
+    // reject at scalar-type level before the enum check fires. Either
+    // 'must be a string' or 'must be one of' satisfies the contract.
+    ok(
+      /workflow_type must be (a string|one of)/.test(err.message),
+      `message: ${err.message}`,
+    );
+  });
+
+  it('createWorkflow without workflowType writes workflow_type: verb-chain (always-write default)', async () => {
+    // ADR-0020 §Sub-decision 5 always-write design — discriminator
+    // semantics, every new workflow self-describes. Diverges from the
+    // parent_workflow precedent (omit-when-unset) intentionally.
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'default workflow_type test',
+      });
+      const [filePath] = await listWorkflowFiles(repoRoot);
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.workflow_type, 'verb-chain');
+    });
+  });
+
+  it('createWorkflow with workflowType: "start" writes workflow_type: start', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'lifecycle macro start',
+        workflowType: 'start',
+      });
+      const [filePath] = await listWorkflowFiles(repoRoot);
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.workflow_type, 'start');
+    });
+  });
+
+  it('createWorkflow rejects invalid workflowType at create-time (clear error)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await rejects(
+        createWorkflow({
+          repoRoot,
+          verb: 'investigate',
+          host: 'claude',
+          gitBaseline: MIN_BASELINE,
+          originalRequest: 'invalid enum should fail',
+          workflowType: 'plan',
+        }),
+        /workflow_type must be one of/,
+      );
+    });
+  });
+
+  it('CLI create --workflow-type start flag passes through', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const out = execFileSync(process.execPath, [
+        STATE_PATH,
+        'create',
+        '--repo-root', repoRoot,
+        '--verb', 'investigate',
+        '--host', 'claude',
+        '--git-baseline-branch', MIN_BASELINE.branch,
+        '--git-baseline-head', MIN_BASELINE.head,
+        '--status-digest', MIN_BASELINE.status_digest,
+        '--workflow-type', 'start',
+      ], { encoding: 'utf8' });
+      const filePath = out.trim();
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.workflow_type, 'start');
+    });
+  });
+
+  it('CLI create without --workflow-type writes workflow_type: verb-chain (default flows through CLI too)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const out = execFileSync(process.execPath, [
+        STATE_PATH,
+        'create',
+        '--repo-root', repoRoot,
+        '--verb', 'frame',
+        '--host', 'codex',
+        '--git-baseline-branch', MIN_BASELINE.branch,
+        '--git-baseline-head', MIN_BASELINE.head,
+        '--status-digest', MIN_BASELINE.status_digest,
+      ], { encoding: 'utf8' });
+      const filePath = out.trim();
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.workflow_type, 'verb-chain');
+    });
+  });
+
+  it('CLI create rejects invalid --workflow-type value (enum guard at CLI)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const result = spawnSync(process.execPath, [
+        STATE_PATH,
+        'create',
+        '--repo-root', repoRoot,
+        '--verb', 'investigate',
+        '--host', 'claude',
+        '--git-baseline-branch', MIN_BASELINE.branch,
+        '--git-baseline-head', MIN_BASELINE.head,
+        '--status-digest', MIN_BASELINE.status_digest,
+        '--workflow-type', 'plan',
+      ], { encoding: 'utf8' });
+      strictEqual(result.status, 1, `expected exit 1, got ${result.status}: ${result.stderr}`);
+      match(result.stderr, /workflow_type must be one of/);
+    });
+  });
+
+  it('CLI create rejects empty --workflow-type flag (shim safety; mirrors parent-workflow empty-string handling)', async () => {
+    // Dispatch shims may expand an unset env var to `--workflow-type ''`.
+    // The destructuring default only applies on `undefined`, so an empty
+    // string falls through to the eager enum check and is rejected. This
+    // matches the parent_workflow precedent at the same code path
+    // (createWorkflow rejects '' as explicitly-provided-but-invalid).
+    await withTmpRepo(async (repoRoot) => {
+      const result = spawnSync(process.execPath, [
+        STATE_PATH,
+        'create',
+        '--repo-root', repoRoot,
+        '--verb', 'investigate',
+        '--host', 'claude',
+        '--git-baseline-branch', MIN_BASELINE.branch,
+        '--git-baseline-head', MIN_BASELINE.head,
+        '--status-digest', MIN_BASELINE.status_digest,
+        '--workflow-type', '',
+      ], { encoding: 'utf8' });
+      strictEqual(result.status, 1, `expected exit 1, got ${result.status}: ${result.stderr}`);
+      match(result.stderr, /workflow_type must be one of/);
+    });
+  });
+
+  it('FRONTMATTER_KEY_ORDER places workflow_type after parent-linkage fields (ADR-0020 group placement)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'serialization order test for workflow_type',
+        parentWorkflow: 'macro-plan-order',
+        originatingSubtask: 'PR-order',
+        workflowType: 'verb-chain',
+      });
+      const [filePath] = await listWorkflowFiles(repoRoot);
+      const raw = await readFile(filePath, 'utf8');
+      const idxOriginatingSubtask = raw.indexOf('\noriginating_subtask:');
+      const idxWorkflowType = raw.indexOf('\nworkflow_type:');
+      ok(idxOriginatingSubtask > 0, 'originating_subtask must appear');
+      ok(idxWorkflowType > 0, 'workflow_type must appear');
+      ok(
+        idxWorkflowType > idxOriginatingSubtask,
+        'workflow_type must serialize after originating_subtask (ADR-0020 group after ADR-0019 group)',
+      );
+    });
+  });
+});
