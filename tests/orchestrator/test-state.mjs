@@ -50,6 +50,7 @@ const {
   createWorkflowUnderLock,
   appendPhase,
   snapshot,
+  setCheckpoint,
   readWorkflow,
   pruneEnsembleResults,
   recordPendingEnsemble,
@@ -261,6 +262,30 @@ describe('parseWorkflowFile + assembleWorkflowFile roundtrip', () => {
           completed_at: '2026-05-08T12:05:00Z',
         },
       ],
+    };
+    const text = assembleWorkflowFile(fm, '# body\n');
+    const parsed = parseWorkflowFile(text);
+    deepStrictEqual(parsed.frontmatter, fm);
+  });
+
+  it('roundtrips latest_checkpoint', () => {
+    const fm = {
+      schema: '1.1',
+      workflow_id: 'macro-plan-20260508T120000Z-abcdef',
+      workflow_type: 'macro',
+      original_request: 'test',
+      started_at: '2026-05-08T12:00:00Z',
+      updated_at: '2026-05-08T12:00:00Z',
+      repo_root: '/tmp/r',
+      git_baseline: { branch: 'main', head: 'deadbeef', status_digest: '' },
+      current_phase: 'plan',
+      next_action: '',
+      plan: { subtasks: [] },
+      host_history: [{ host: 'claude', at: '2026-05-08T12:00:00Z', event: 'created' }],
+      latest_checkpoint: {
+        at: '2026-05-08T12:03:00Z',
+        summary: 'Plan approved; next dispatch PR1',
+      },
     };
     const text = assembleWorkflowFile(fm, '# body\n');
     const parsed = parseWorkflowFile(text);
@@ -666,6 +691,41 @@ describe('snapshot + appendPhase', () => {
   });
 });
 
+describe('checkpoint — setCheckpoint', () => {
+  it('sets latest_checkpoint and appends host_history checkpointed', async () => {
+    await withTmpRepo('checkpoint', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'x',
+      });
+      await setCheckpoint({
+        workflowPath: filePath,
+        host: 'codex',
+        summary: 'macro plan reviewed; dispatch next',
+      });
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.latest_checkpoint.summary, 'macro plan reviewed; dispatch next');
+      strictEqual(typeof frontmatter.latest_checkpoint.at, 'string');
+      const last = frontmatter.host_history.at(-1);
+      strictEqual(last.event, 'checkpointed');
+      strictEqual(last.host, 'codex');
+    });
+  });
+
+  it('rejects empty summaries', async () => {
+    await withTmpRepo('checkpoint-empty', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'x',
+      });
+      await rejects(
+        () => setCheckpoint({ workflowPath: filePath, host: 'claude', summary: '' }),
+        /summary must be a non-empty string/,
+      );
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Ensemble bookkeeping
 
@@ -889,6 +949,37 @@ describe('CLI subcommands', () => {
       // ADR-0019 PR-B — orchestrator emits schema 1.1 for new workflows
       strictEqual(fm.schema, '1.1');
       strictEqual(fm.workflow_type, 'macro');
+    });
+  });
+
+  it('checkpoint-set CLI writes latest_checkpoint', async () => {
+    await withTmpRepo('cli-checkpoint', async (root) => {
+      const stateOut = execFileSync(
+        process.execPath,
+        [
+          STATE_MJS, 'create',
+          '--repo-root', root, '--verb', 'plan', '--host', 'claude',
+          '--git-baseline-branch', 'main',
+          '--git-baseline-head', '0000000000000000000000000000000000000000',
+        ],
+        { encoding: 'utf8' },
+      );
+      const filePath = stateOut.trim();
+      const out = execFileSync(
+        process.execPath,
+        [
+          STATE_MJS, 'checkpoint-set',
+          '--workflow-path', filePath,
+          '--host', 'codex',
+          '--summary', 'dispatch PR2 next',
+        ],
+        { encoding: 'utf8' },
+      );
+      strictEqual(out.trim(), filePath);
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.latest_checkpoint.summary, 'dispatch PR2 next');
+      strictEqual(frontmatter.host_history.at(-1).host, 'codex');
+      strictEqual(frontmatter.host_history.at(-1).event, 'checkpointed');
     });
   });
 });

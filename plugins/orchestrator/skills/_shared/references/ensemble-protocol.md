@@ -60,7 +60,11 @@ Whenever an ensemble point is launched from inside an orchestrator workflow file
 - `peer-runner.mjs run --kind ensemble` appends `{phase, ensemble_type, run_id, started_at}` to `pending_ensemble` only after companion resolution succeeds.
 - The `state.mjs ensemble-commit` CLI subcommand performs the **three-step atomic mutation** at synthesis time: pop the matching pending entry by `run_id`, append the new `ensemble_results` entry, and prune the retention list to `ENSEMBLE_RESULTS_RETENTION_CAP` — all in a single `withFileLock` window via `atomicWrite`.
 
-Stale entries left over by an interrupted session are out of scope for this MVP — `/orchestrator:resume` ships in a follow-up PR alongside the cross-plugin invocation contract; until then, stale `pending_ensemble` entries are inspected by manual `state.mjs read` and pruned by hand if needed.
+Stale entries left over by an interrupted session are inspected through
+`/orchestrator:resume` / `$orchestrator:resume` plus manual
+`state.mjs read` when needed. There is still no automatic stale
+`pending_ensemble` prune operation; retention applies to peer-run
+ledgers, not YAML frontmatter rows.
 
 ---
 
@@ -96,7 +100,11 @@ Both sides receive the same raw context:
 
 ## Ensemble Point Type — Plan-verify
 
-The orchestrator MVP ships exactly one ensemble point type. Future points (Brainstorm / Explore / Review / Investigate / Audit-scan / Codex-now) ship in follow-up PRs alongside the corresponding command-mode flows.
+The orchestrator currently ships one managed ensemble point type:
+Plan-verify. Future managed points ship only with a concrete
+command-mode flow and explicit state bookkeeping. `/orchestrator:audit`
+is not a managed Audit-scan point; it is a follow-up planning alias
+that canonicalizes to `/orchestrator:plan`.
 
 - **Purpose**: Find gaps in the orchestrator's draft macro plan (`plan.subtasks[]`).
 - **Subcommand**: `task` (per `companions/contract.md` §2.2).

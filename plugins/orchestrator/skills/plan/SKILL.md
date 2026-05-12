@@ -5,16 +5,16 @@ description: "Macro orchestration verb — produce a multi-deliverable plan (pla
 
 # Plan (orchestrator capability)
 
-The orchestrator plugin's macro composition verb (per ADR-0018 §sub-decision-1, plan-only MVP). Plan produces a list of deliverables (`plan.subtasks[]`) from a feature description, verifies the plan via a Plan-verify Codex peer ensemble, and persists the result to the active orchestrator workflow file.
+The orchestrator plugin's macro composition verb (per ADR-0018 §sub-decision-1). Plan produces a list of deliverables (`plan.subtasks[]`) from a feature description, verifies the plan via a Plan-verify Codex peer ensemble, and persists the result to the active orchestrator workflow file.
 
 This is the **macro layer** complement to `engineer:compose`. The two verbs share the Plan-verify ensemble pattern but differ in scope:
 
 | Verb | Scope | Output |
 |------|-------|--------|
 | `engineer:compose --profile=plan` | Single deliverable | A task list within one workflow |
-| **`orchestrator:plan` (this skill)** | **Multi-deliverable feature** | **`plan.subtasks[]` — a list of deliverables, each later driven by its own engineer workflow (follow-up `/orchestrator:next` PR)** |
+| **`orchestrator:plan` (this skill)** | **Multi-deliverable feature** | **`plan.subtasks[]` — a list of deliverables, each later driven by its own engineer workflow through `/orchestrator:next`** |
 
-**Core principle**: a macro plan precedes per-deliverable composition. When a feature can be cleanly executed in one engineer workflow, use `engineer:compose`; when it spans 2+ deliverables with dependencies, run `orchestrator:plan` first to set the macro contract, then drive each deliverable through engineer (cross-plugin invocation contract is a follow-up ADR per ADR-0018 §sub-1).
+**Core principle**: a macro plan precedes per-deliverable composition. When a feature can be cleanly executed in one engineer workflow, use `engineer:compose`; when it spans 2+ deliverables with dependencies, run `orchestrator:plan` first to set the macro contract, then drive each deliverable through engineer with `/orchestrator:next`.
 
 ---
 

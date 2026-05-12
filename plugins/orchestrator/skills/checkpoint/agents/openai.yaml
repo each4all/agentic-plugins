@@ -1,0 +1,7 @@
+interface:
+  display_name: "Orchestrator — Checkpoint"
+  short_description: "Record a one-line progress checkpoint on the active macro workflow"
+  default_prompt: "Use $orchestrator:checkpoint <summary> to write latest_checkpoint on the active macro workflow with --host codex when invoked from Codex; do not mutate phase or plan.subtasks"
+
+policy:
+  allow_implicit_invocation: false

@@ -11,9 +11,9 @@
 //     orchestrator MVP intentionally ships a strict subset
 //   - 4 host-shared canonical scripts (state.mjs, dispatch-peer.mjs,
 //     peer-runner.mjs, stop-archive.mjs)
-//   - 1 verb command (plan), 2 dispatch commands (next/done), and
-//     finalize/abort lifecycle commands; meta commands (resume /
-//     checkpoint / peer-now) defer until a concrete need surfaces
+//   - 1 verb command (plan), 2 dispatch commands (next/done),
+//     finalize/abort lifecycle commands, 3 meta commands
+//     (resume/checkpoint/peer-now), and an audit follow-up alias
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
 //   - 1 Codex adapter manual stop helper (Codex CLI 0.128.0 has no
 //     plugin-local automatic hook packaging verified — Codex Stop is
@@ -37,12 +37,12 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
 
 const VERBS = ['plan'];
-const ALIAS_VERBS = [];
+const ALIAS_VERBS = ['audit'];
 // ADR-0019 PR-D — orchestrator dispatch commands. `next` and `done`
 // are slash-command runbooks (same-host dispatch + manual backup);
 // they are NOT 6-verb persona commands (those live in engineer).
 const DISPATCH_COMMANDS = ['next', 'done'];
-const META_COMMANDS = []; // resume / checkpoint / peer-now defer to follow-up PRs
+const META_COMMANDS = ['resume', 'checkpoint', 'peer-now'];
 const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...DISPATCH_COMMANDS, ...META_COMMANDS];
 const SHARED_REFS = ['ensemble-protocol.md', 'presentation-protocol.md'];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
@@ -301,6 +301,33 @@ describe('plugins/orchestrator skills/', () => {
   });
 });
 
+describe('plugins/orchestrator meta skills/', () => {
+  for (const meta of META_COMMANDS) {
+    it(`skills/${meta}/SKILL.md exists with frontmatter name === ${meta}`, async () => {
+      const skillPath = resolve(PLUGIN_ROOT, 'skills', meta, 'SKILL.md');
+      const text = await readFile(skillPath, 'utf-8');
+      ok(text.startsWith('---\n'), 'SKILL.md starts with frontmatter');
+      const fmEnd = text.indexOf('\n---\n', 4);
+      ok(fmEnd > 0, 'SKILL.md frontmatter is closed');
+      const fm = text.slice(4, fmEnd);
+      ok(new RegExp(`^name:\\s*${meta}\\s*$`, 'm').test(fm),
+        `SKILL.md frontmatter name is ${meta}`);
+      ok(/^description:/m.test(fm), 'SKILL.md frontmatter has description');
+      ok(/## Host availability/.test(text), `${meta} skill documents host availability`);
+      ok(text.includes('--host codex'), `${meta} skill documents Codex host flag`);
+    });
+
+    it(`skills/${meta}/agents/openai.yaml exists with display_name`, async () => {
+      const yamlPath = resolve(PLUGIN_ROOT, 'skills', meta, 'agents', 'openai.yaml');
+      const text = await readFile(yamlPath, 'utf-8');
+      ok(/display_name:/.test(text), 'openai.yaml has display_name');
+      ok(/short_description:/.test(text), 'openai.yaml has short_description');
+      ok(text.includes(`$orchestrator:${meta}`), `default prompt references $orchestrator:${meta}`);
+      ok(/allow_implicit_invocation:\s*false/.test(text), 'implicit invocation disabled');
+    });
+  }
+});
+
 describe('plugins/orchestrator commands/', () => {
   for (const cmd of ALL_COMMANDS) {
     it(`commands/${cmd}.md exists with description + argument-hint frontmatter`, async () => {
@@ -317,22 +344,6 @@ describe('plugins/orchestrator commands/', () => {
       ok(!/^allowed-tools:/m.test(fm), `${cmd}.md has no allowed-tools key (convention)`);
     });
   }
-
-  it('does NOT ship deferred commands (resume, checkpoint, peer-now, audit)', async () => {
-    // ADR-0019 PR-D ships next + done; PR-E ships finalize + abort.
-    // resume / checkpoint / peer-now / audit remain deferred until a
-    // concrete need surfaces.
-    for (const banned of ['resume', 'checkpoint', 'peer-now', 'audit']) {
-      const p = resolve(PLUGIN_ROOT, 'commands', `${banned}.md`);
-      let exists = true;
-      try {
-        await stat(p);
-      } catch (err) {
-        if (err.code === 'ENOENT') exists = false;
-      }
-      strictEqual(exists, false, `${banned}.md absent in current orchestrator scope`);
-    }
-  });
 
   it('ships /orchestrator:finalize + /orchestrator:abort commands (ADR-0019 PR-E §5)', async () => {
     for (const required of ['finalize', 'abort']) {
@@ -361,6 +372,39 @@ describe('plugins/orchestrator commands/', () => {
       'commands/plan.md should reserve dispatch-peer.mjs for compatibility/raw callers',
     );
   });
+
+  it('meta command files delegate to matching skills and preserve orchestrator namespace', async () => {
+    for (const meta of META_COMMANDS) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${meta}.md`), 'utf-8');
+      ok(text.includes(`skills/${meta}/SKILL.md`), `${meta}.md points at skills/${meta}/SKILL.md`);
+      ok(text.includes('agentic-orchestrator'), `${meta}.md uses orchestrator workflow namespace`);
+    }
+  });
+
+  it('/orchestrator:checkpoint uses checkpoint-set and documents Codex manual hook honesty', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/checkpoint.md'), 'utf-8');
+    ok(/state\.mjs"\s+checkpoint-set/.test(text), 'checkpoint command calls checkpoint-set');
+    ok(text.includes('latest_checkpoint'), 'checkpoint command documents latest_checkpoint');
+    ok(/Codex CLI\s+has no plugin-local automatic SessionStart hook today/i.test(text),
+      'checkpoint command documents Codex hook limit');
+  });
+
+  it('/orchestrator:peer-now uses peer-runner side-channel and excludes ensemble_results', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/peer-now.md'), 'utf-8');
+    ok(/peer-runner\.mjs"\s+run[\s\S]{0,240}--kind peer-now/.test(text),
+      'peer-now command calls peer-runner kind=peer-now');
+    ok(/never writes[\s\S]{0,80}ensemble_results/i.test(text),
+      'peer-now command excludes ensemble_results');
+    ok(/status[\s\S]{0,120}cancel/.test(text), 'peer-now documents status/cancel controls');
+  });
+
+  it('/orchestrator:audit canonicalizes to /orchestrator:plan, not a new verb', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/audit.md'), 'utf-8');
+    ok(text.includes('/orchestrator:plan Audit follow-up'), 'audit maps to plan follow-up');
+    ok(text.includes('verb=plan'), 'audit preserves plan verb');
+    ok(text.includes('macro-plan-'), 'audit preserves macro-plan workflow id shape');
+    ok(!text.includes('macro-audit-'), 'audit must not introduce macro-audit workflow ids');
+  });
 });
 
 describe('plugins/orchestrator stale-token audit', () => {
@@ -382,7 +426,14 @@ describe('plugins/orchestrator stale-token audit', () => {
     'commands/done.md',     // ADR-0019 PR-D
     'commands/finalize.md', // ADR-0019 PR-E
     'commands/abort.md',    // ADR-0019 PR-E
+    'commands/resume.md',
+    'commands/checkpoint.md',
+    'commands/peer-now.md',
+    'commands/audit.md',
     'skills/plan/SKILL.md',
+    'skills/resume/SKILL.md',
+    'skills/checkpoint/SKILL.md',
+    'skills/peer-now/SKILL.md',
     ...SHARED_REFS.map((ref) => `skills/_shared/references/${ref}`),
     'adapters/codex/hooks/README.md',
   ];

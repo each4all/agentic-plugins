@@ -1,0 +1,7 @@
+interface:
+  display_name: "Orchestrator — Resume"
+  short_description: "Inspect or archive the active orchestrator macro workflow"
+  default_prompt: "Use $orchestrator:resume to inspect the active macro workflow, classify git drift as clean or dirty, append a resume marker with --host codex when invoked from Codex, or archive stale macro workflows with $orchestrator:resume archive [<id>]"
+
+policy:
+  allow_implicit_invocation: false
