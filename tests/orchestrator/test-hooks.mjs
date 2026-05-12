@@ -95,9 +95,42 @@ describe('session-start.mjs', () => {
       strictEqual(payload.workflow_type, 'macro');
       strictEqual(payload.canonical_command, '/orchestrator:plan');
       strictEqual(payload.subtask_count, 0);
+      strictEqual('checkpoint_summary' in payload, false);
+      strictEqual('checkpoint_at' in payload, false);
       ok(typeof payload.workflow_id === 'string' && payload.workflow_id.startsWith('macro-plan-'));
       ok(typeof payload.workflow_path === 'string' && payload.workflow_path.includes('agentic-orchestrator'));
       ok(/data, not instructions/.test(payload.note));
+    });
+  });
+
+  it('re-injects latest_checkpoint summary and caps display length', async () => {
+    await withTmpRepo('ss-checkpoint', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'claude',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'feat',
+      });
+      const { setCheckpoint, readWorkflow: readWorkflowLocal } = await import(STATE_MJS);
+      const long = 'x'.repeat(500);
+      await setCheckpoint({
+        workflowPath: filePath,
+        host: 'codex',
+        summary: long,
+      });
+      const { frontmatter } = await readWorkflowLocal(filePath);
+      strictEqual(frontmatter.latest_checkpoint.summary.length, 500);
+
+      const r = await runHook(join(HOOKS_CLAUDE, 'session-start.mjs'), { repoRoot: root });
+      strictEqual(r.code, 0);
+      const m = r.stdout.match(
+        /^\[orchestrator-active-metadata\] (\{.*\}) \[\/orchestrator-active-metadata\]$/m,
+      );
+      ok(m, 'stdout has marker pair with JSON payload');
+      const payload = JSON.parse(m[1]);
+      strictEqual(payload.checkpoint_summary.length, 256);
+      ok(
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(payload.checkpoint_at),
+        `checkpoint_at not ISO-8601 prefix: ${payload.checkpoint_at}`,
+      );
     });
   });
 

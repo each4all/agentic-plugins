@@ -1,0 +1,7 @@
+interface:
+  display_name: "Orchestrator — Peer-Now"
+  short_description: "Ad-hoc cross-host peer consultation outside Plan-verify"
+  default_prompt: "Use $orchestrator:peer-now --peer <claude|codex> with --prompt-text or --prompt-file for a raw side-channel peer consultation; keep it out of ensemble_results and append only a [Peer] note with --host codex when invoked from Codex"
+
+policy:
+  allow_implicit_invocation: false

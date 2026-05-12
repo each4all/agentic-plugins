@@ -78,22 +78,23 @@ export const ENSEMBLE_RESULTS_RETENTION_CAP = 20;
 const STALE_THRESHOLD_MS = 60_000;        // ADR-0011 §3 — lock staleness window
 const RETRY_BACKOFF_MAX_MS = 5_000;       // ADR-0011 §3 step 2 — acquireLock budget
 
-// orchestrator MVP supports a single verb. /orchestrator:next and
-// /orchestrator:done verbs ship in follow-up PRs alongside the
-// cross-plugin invocation contract (ADR-0018 §sub-1 follow-up ADR).
+// orchestrator state supports a single macro verb. /orchestrator:next
+// and /orchestrator:done are dispatch commands over plan.subtasks[],
+// not additional state verbs.
 const VALID_VERBS = new Set(['plan']);
 const VALID_HOSTS = new Set(['claude', 'codex']);
 // Auto-archive event was deferred from the orchestrator MVP; ADR-0019
 // PR-E ships /orchestrator:finalize + /orchestrator:abort + macro
 // auto-archive A1-A4, so 'archived' is now a recognized event. The
-// 'checkpointed' event remains engineer-only — orchestrator has no
-// `/orchestrator:checkpoint` command yet.
+// orchestrator meta-command parity follow-up adds 'checkpointed' for
+// /orchestrator:checkpoint while preserving macro schema boundaries.
 const VALID_HOOK_EVENTS = new Set([
   'created',
   'updated',
   'snapshot',
   'resumed',
   'archived',
+  'checkpointed',
 ]);
 const VALID_SNAPSHOT_TRIGGERS = new Set(['pre-compact', 'stop']);
 
@@ -812,6 +813,9 @@ const FRONTMATTER_KEY_ORDER = [
   'plan',
   'host_history',
   'last_snapshot',
+  // Orchestrator meta-command parity — same additive checkpoint shape
+  // as engineer ADR-0017 §sub-decision-2, scoped to macro workflows.
+  'latest_checkpoint',
   'pending_ensemble',
   'ensemble_results',
   // ADR-0019 PR-B (1.1) — optional top-level boolean. Set by
@@ -873,6 +877,13 @@ function serializeFrontmatter(fm) {
       lines.push(`  at: ${yamlScalar(value.at)}`);
       lines.push(`  trigger: ${yamlScalar(value.trigger)}`);
       lines.push(`  status_digest: ${yamlScalar(value.status_digest)}`);
+      continue;
+    }
+
+    if (key === 'latest_checkpoint') {
+      lines.push(`${key}:`);
+      lines.push(`  at: ${yamlScalar(value.at)}`);
+      lines.push(`  summary: ${yamlScalar(value.summary)}`);
       continue;
     }
 
@@ -1005,7 +1016,7 @@ function serializeFrontmatter(fm) {
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
       throw new Error(
-        `Unknown frontmatter key: ${key}. orchestrator schema '1.0' is closed.`,
+        `Unknown frontmatter key: ${key}. orchestrator schema '1.0'/'1.1' is closed.`,
       );
     }
   }
@@ -1057,7 +1068,11 @@ export function parseWorkflowFile(text) {
 
     if (rest === '') {
       // Block-style nested value
-      if (key === 'git_baseline' || key === 'last_snapshot') {
+      if (
+        key === 'git_baseline' ||
+        key === 'last_snapshot' ||
+        key === 'latest_checkpoint'
+      ) {
         const sub = {};
         i += 1;
         while (i < lines.length && lines[i].startsWith('  ') && !lines[i].startsWith('    ')) {
@@ -1222,7 +1237,7 @@ export function parseWorkflowFile(text) {
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
       throw new Error(
-        `Unknown frontmatter key: ${key}. orchestrator schema '1.0' is closed.`,
+        `Unknown frontmatter key: ${key}. orchestrator schema '1.0'/'1.1' is closed.`,
       );
     }
   }
@@ -1384,6 +1399,16 @@ function validateFrontmatter(fm) {
   if ('last_snapshot' in fm) {
     validateNestedShape(fm, 'last_snapshot', ['at', 'trigger', 'status_digest']);
     validateSnapshotTrigger(fm.last_snapshot.trigger);
+  }
+
+  if ('latest_checkpoint' in fm) {
+    validateNestedShape(fm, 'latest_checkpoint', ['at', 'summary']);
+    if (typeof fm.latest_checkpoint.at !== 'string') {
+      throw new Error('latest_checkpoint.at must be a string');
+    }
+    if (typeof fm.latest_checkpoint.summary !== 'string') {
+      throw new Error('latest_checkpoint.summary must be a string');
+    }
   }
 
   validateListOfObjectsField(fm, 'pending_ensemble');
@@ -1885,6 +1910,48 @@ export async function snapshot({
     frontmatter.host_history = [
       ...(frontmatter.host_history ?? []),
       { host, at: nowIso, event: 'snapshot' },
+    ];
+
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath };
+  });
+}
+
+// -----------------------------------------------------------------------------
+// Public API: setCheckpoint — orchestrator meta-command parity.
+
+/**
+ * Set `latest_checkpoint` on a macro workflow and append a `checkpointed`
+ * host_history entry under the per-file lock. This mirrors engineer's
+ * ADR-0017 §sub-decision-2 surface, but the workflow namespace remains
+ * orchestrator-specific (`workflow_type: macro`, plan/subtasks schema).
+ */
+export async function setCheckpoint({
+  workflowPath,
+  host,
+  summary,
+  now = new Date(),
+}) {
+  validateHost(host);
+  if (typeof summary !== 'string' || summary.length === 0) {
+    throw new Error('setCheckpoint: summary must be a non-empty string');
+  }
+
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    ensureMutable(frontmatter);
+    const nowIso = isoUtc(now);
+
+    frontmatter.latest_checkpoint = { at: nowIso, summary };
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'checkpointed' },
     ];
 
     await atomicWrite(
@@ -3014,12 +3081,16 @@ function cliPrintHelp() {
       '  append --workflow-path <path> --host <host>',
       '         [--phase-label <text>] [--phase-note <text>]',
       '         [--current-phase <label>] [--next-action <text>]',
-      '         [--event created|updated|snapshot|resumed]',
+      '         [--event created|updated|snapshot|resumed|checkpointed]',
       '    Append a phase note to an existing workflow. Default event=resumed.',
       '',
       '  snapshot --workflow-path <path> --host <host> --trigger pre-compact|stop',
       '           [--status-digest <hex>]',
       '    Update last_snapshot + append host_history snapshot entry. Used by hooks.',
+      '',
+      '  checkpoint-set --workflow-path <path> --host claude|codex --summary <text>',
+      '    Set latest_checkpoint and append host_history checkpointed.',
+      '    Used by /orchestrator:checkpoint and $orchestrator:checkpoint.',
       '',
       '  read --workflow-path <path>',
       '    Print the parsed frontmatter as JSON on stdout.',
@@ -3281,6 +3352,17 @@ async function cliMain(argv) {
           host: flags.host,
           trigger: flags.trigger,
           statusDigest: flags['status-digest'],
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'checkpoint-set': {
+        cliRequire(flags, ['workflow-path', 'host', 'summary']);
+        await setCheckpoint({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          summary: flags.summary,
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;
