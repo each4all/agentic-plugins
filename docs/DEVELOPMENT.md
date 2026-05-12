@@ -364,6 +364,17 @@ updated here as conditions advance.
   (`/orchestrator:finalize` + `/orchestrator:abort` §5 three-step ritual + macro Stop auto-archive A1-A4 — engineer `detach-archive` / `stop-archive` cross-plugin CLIs added in same cascade).
   PR-F (`--peer` cross-host dispatch via companions wire-spec) remains explicitly trigger-deferred per ADR-0019 §Implementation Roadmap.
   ADR-0011 amended in same Proposed → Accepted PR (§Stage 2 Non-Goal #8 + §3 cross-file lock-order pointer per ADR-0019 §6).
+- **[ADR-0023](adr/0023-peer-runner-supervisor-layer.md)** — caller-side peer-runner
+  supervisor for companion dispatch monitoring, cancellation, sweep, and bounded ledger
+  retention without expanding `companions/contract.md` v0.1.1.
+  **Status: Accepted (2026-05-12). Core PR-A through PR-D shipped:** PR-A
+  [#80](https://github.com/each4all/agentic-plugins/pull/80) (ADR text) / PR-B
+  [#81](https://github.com/each4all/agentic-plugins/pull/81) (engineer peer-runner primitive)
+  / PR-C [#82](https://github.com/each4all/agentic-plugins/pull/82) (engineer command
+  integration while preserving `dispatch-peer.mjs` compatibility and `peer-now` exclusion)
+  / PR-D [#83](https://github.com/each4all/agentic-plugins/pull/83) (orchestrator mirror with
+  resolve-before-record graceful degradation and `/orchestrator:plan` integration).
+  PR-E (`peer-now` operational controls) remains optional/triggered per ADR-0023 §9.
 - Verb-level alias expansion based on dogfood usage signal (deferred
   from Deliverable D, Phase 6 SUGGESTION #15).
 - Larger per-deliverable scope criterion (Phase 6 SUGGESTION #16) — to

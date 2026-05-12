@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (core PR-A through PR-D shipped 2026-05-12 — [#80](https://github.com/each4all/agentic-plugins/pull/80) ADR text, [#81](https://github.com/each4all/agentic-plugins/pull/81) engineer primitive, [#82](https://github.com/each4all/agentic-plugins/pull/82) engineer command integration, [#83](https://github.com/each4all/agentic-plugins/pull/83) orchestrator mirror; PR-E remains optional/triggered)
 
 ## Context
 
