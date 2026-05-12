@@ -9,13 +9,11 @@
 //     — engineer's orchestration.md / agent-taxonomy.md are explicitly
 //     engineer-internal per ADR-0010 §5 cross-plugin import ban; the
 //     orchestrator MVP intentionally ships a strict subset
-//   - 2 host-shared canonical scripts (state.mjs, dispatch-peer.mjs)
-//     — engineer's stop-archive.mjs is NOT mirrored: Stop is snapshot-only
-//     in MVP, auto-archive ships in a follow-up PR
-//   - 1 verb command (plan) — /orchestrator:next and /orchestrator:done
-//     defer to follow-up PRs alongside the cross-plugin invocation
-//     contract (ADR-0018 §sub-1 follow-up ADR); meta commands
-//     (resume / checkpoint / peer-now) also defer per ADR-0017 mirror
+//   - 4 host-shared canonical scripts (state.mjs, dispatch-peer.mjs,
+//     peer-runner.mjs, stop-archive.mjs)
+//   - 1 verb command (plan), 2 dispatch commands (next/done), and
+//     finalize/abort lifecycle commands; meta commands (resume /
+//     checkpoint / peer-now) defer until a concrete need surfaces
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
 //   - 1 Codex adapter manual stop helper (Codex CLI 0.128.0 has no
 //     plugin-local automatic hook packaging verified — Codex Stop is
@@ -23,10 +21,9 @@
 //   - 1 Claude hooks manifest (hooks/hooks.json) declaring SessionStart,
 //     PreCompact, and Stop only
 //
-// This Phase 1 skeleton verifies the manifest + marketplace + hooks
-// shape only. Phase 2/3/4/5 RED tests in tests/orchestrator/ cover
-// state.mjs export surface, dispatch-peer.mjs envelope shape, hook
-// behavior, and command-mode flow.
+// This verifies manifest + marketplace + hooks + command shape. The
+// tests/orchestrator/ suite covers state.mjs, dispatch-peer.mjs,
+// peer-runner.mjs, hook behavior, and command-mode flow.
 //
 // Run via `node --test tests/plugin-shape/test-orchestrator-plugin.mjs`.
 
@@ -48,7 +45,7 @@ const DISPATCH_COMMANDS = ['next', 'done'];
 const META_COMMANDS = []; // resume / checkpoint / peer-now defer to follow-up PRs
 const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...DISPATCH_COMMANDS, ...META_COMMANDS];
 const SHARED_REFS = ['ensemble-protocol.md', 'presentation-protocol.md'];
-const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs'];
+const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['_shared.mjs', 'session-start.mjs', 'pre-compact.mjs', 'stop.mjs'];
 const CODEX_HOOK_HELPERS = ['stop.mjs', 'README.md'];
 
@@ -230,17 +227,6 @@ describe('plugins/orchestrator scripts/', () => {
       ok(isExecutable, `${script} has executable bit set`);
     });
   }
-
-  it('ships stop-archive.mjs (ADR-0019 PR-E — macro auto-archive A1-A4 adapted)', async () => {
-    const p = resolve(PLUGIN_ROOT, 'scripts', 'stop-archive.mjs');
-    const st = await stat(p);
-    ok(st.isFile(), 'stop-archive.mjs is a file');
-    // Executable bit required per `kit/lint/check-plugin-shape.mjs`
-    // scripts/ scan — engineer mirror has it set; orchestrator must
-    // match (CI plugin-shape lint fails otherwise).
-    const isExecutable = (st.mode & 0o111) !== 0;
-    ok(isExecutable, 'stop-archive.mjs has executable bit set');
-  });
 });
 
 describe('plugins/orchestrator adapters/claude/hooks/', () => {
@@ -354,6 +340,26 @@ describe('plugins/orchestrator commands/', () => {
       const st = await stat(p);
       ok(st.isFile(), `${required}.md is a file`);
     }
+  });
+
+  it('/orchestrator:plan uses peer-runner.mjs for managed Plan-verify dispatch (ADR-0023 PR-D)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/plan.md'), 'utf-8');
+    ok(
+      /peer-runner\.mjs"\s+run[\s\S]{0,260}--kind ensemble[\s\S]{0,260}--run-id "\$RUN_ID"/.test(text),
+      'commands/plan.md must dispatch managed Plan-verify through peer-runner.mjs run',
+    );
+    ok(
+      /> "\$PROMPT_FILE\.run\.json"/.test(text),
+      'commands/plan.md must capture peer-runner machine-readable run JSON',
+    );
+  });
+
+  it('/orchestrator:plan no longer routes managed Plan-verify through dispatch-peer.mjs', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/plan.md'), 'utf-8');
+    ok(
+      !/scripts\/dispatch-peer\.mjs|dispatch-peer\.mjs"\s+\\/.test(text),
+      'commands/plan.md should reserve dispatch-peer.mjs for compatibility/raw callers',
+    );
   });
 });
 

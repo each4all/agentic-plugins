@@ -4,7 +4,7 @@ Cross-host macro orchestration capability for Claude Code and Codex CLI. **L2 ca
 
 ## Status
 
-Ships `/orchestrator:plan` (macro plan + Plan-verify Codex ensemble), `/orchestrator:next` (same-host dispatch into engineer), `/orchestrator:done` (manual completion backup for engineer Stop-hook auto-writeback), `/orchestrator:finalize` + `/orchestrator:abort` (macro completion lifecycle), and macro auto-archive A1–A4 on the host Stop event (branch-agnostic per ADR-0019 §5). Schema `'1.1'` (post-ADR-0019 PR-B). The cross-plugin invocation contract is [ADR-0019](../../docs/adr/0019-cross-plugin-invocation-contract.md). The cross-host `--peer` dispatch path is pending PR-F.
+Ships `/orchestrator:plan` (macro plan + Plan-verify Codex ensemble through the ADR-0023 peer-runner supervisor), `/orchestrator:next` (same-host dispatch into engineer), `/orchestrator:done` (manual completion backup for engineer Stop-hook auto-writeback), `/orchestrator:finalize` + `/orchestrator:abort` (macro completion lifecycle), and macro auto-archive A1–A4 on the host Stop event (branch-agnostic per ADR-0019 §5). Schema `'1.1'` (post-ADR-0019 PR-B). The cross-plugin invocation contract is [ADR-0019](../../docs/adr/0019-cross-plugin-invocation-contract.md). The cross-host `--peer` dispatch path is pending PR-F.
 
 ## What it is
 
@@ -33,6 +33,21 @@ Ships `/orchestrator:plan` (macro plan + Plan-verify Codex ensemble), `/orchestr
 `<repo>/.claude/agentic-orchestrator/workflows/<workflow_id>.md` with frontmatter `schema: '1.1'` post ADR-0019 PR-B (legacy `'1.0'` files are still readable; mutations refused with archive/re-plan diagnostic). `workflow_id` format `macro-<verb>-<iso>-<rand>`. `workflow_type: macro`. The `plan` block carries `decision`, `architecture`, and `subtasks: [{id, verb, branch, blocked_by, status, label?, profile?, topic?, engineer_workflow_id?, commit?, pr_url?, closed_at?}]` per ADR-0018 §sub-decision-1 + ADR-0019 §2 spec. `verb` ∈ {investigate, frame, decide, compose, critique, refine}; `branch` must pass git ref-format and have no parent/child path-prefix relationship across subtasks. Optional top-level `terminal_marker: boolean` per ADR-0019 §5 (set by `/orchestrator:finalize` / `/orchestrator:abort` or auto-set when all subtasks reach terminal status).
 
 Per [ADR-0018 §sub-decision-2](../../docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md), the **active workflow** is the one whose `git_baseline.branch` equals the current branch. `git checkout` is the primary context-switch primitive; no extra "switch workflow" UX. This applies symmetrically to engineer and orchestrator.
+
+## Peer-run operational state
+
+`scripts/dispatch-peer.mjs` remains the compatibility wrapper for raw callers and tests. `/orchestrator:plan` uses `scripts/peer-runner.mjs run --kind ensemble` for managed Plan-verify dispatch. The runner stores operational state under:
+
+```text
+<repo>/.claude/agentic-orchestrator/peer-runs/<run_id>/
+  handle.json
+  stdout.log
+  stderr.log
+  envelope.json
+  prompt.xml   # only when --retain-prompt is supplied
+```
+
+Orchestrator keeps its graceful-degradation rule: the runner resolves the companion before creating this ledger or recording `pending_ensemble`. If the Codex companion is unavailable, it returns `peer_cli_not_found` and `/orchestrator:plan` proceeds with a LOCAL-ONLY synthesis. If the companion resolves, the runner records the pending row, supervises the child process, supports `status` / `cancel` / `sweep`, and enforces terminal ledger retention.
 
 ## Hooks
 
@@ -68,6 +83,15 @@ codex plugin install --marketplace agentic-plugins orchestrator
 Required peers:
 - `companions` (L1) — for the Plan-verify Codex ensemble inside `/orchestrator:plan`.
 - `engineer` (L3) — runtime peer for `/orchestrator:next` dispatch (the runbook spawns engineer's `state.mjs` CLI). Discovery is automatic (env override → Claude cache → Codex cache → monorepo sibling) per ADR-0019 §1; install engineer before `/orchestrator:next` invocations or set `AGENTIC_ENGINEER_ROOT=<path>` to override.
+
+## Environment
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `PEER_RUN_CANCEL_GRACE_MS` | Grace period used by `scripts/peer-runner.mjs cancel` between TERM and KILL. | `10000` |
+| `PEER_RUN_STALE_GRACE_MS` | Age threshold used by `scripts/peer-runner.mjs sweep` before a dead, no-envelope non-terminal run is marked `orphaned`. | `60000` |
+| `PEER_RUN_RETENTION_TTL_DAYS` | Terminal peer-run ledger TTL used by `scripts/peer-runner.mjs sweep --apply`. | `14` |
+| `PEER_RUN_RETENTION_CAP` | Maximum terminal peer-run ledger directories retained per repo by `scripts/peer-runner.mjs sweep --apply`. Non-terminal runs are preserved. | `200` |
 
 ## License
 
