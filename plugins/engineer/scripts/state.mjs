@@ -2227,6 +2227,166 @@ export async function detachArchive({
 }
 
 // -----------------------------------------------------------------------------
+// Public API: diagnoseRedundancy (ADR-0020 §Sub-decision 7)
+
+/**
+ * Probe the current branch for evidence of work overlapping the user's
+ * request. Used by `/engineer:start` Phase 0 BEFORE bootstrap to flag
+ * possible redundancy with recently-merged or in-flight changes.
+ *
+ * Probes reuse `commands/resume.md:168-198` git introspection plus
+ * optional `gh pr list`. Per ADR-0020 §Sub-decision 7 the caller
+ * surfaces the result and asks the user proceed/abort — this helper
+ * NEVER auto-archives.
+ *
+ * status rule: `redundancy` iff (commits ahead of merge-base with
+ * `baseBranch`) OR (open PR exists on current branch). `no-redundancy`
+ * otherwise.
+ */
+export async function diagnoseRedundancy({
+  repoRoot,
+  baseBranch = 'origin/main',
+} = {}) {
+  if (!repoRoot || typeof repoRoot !== 'string') {
+    throw new Error('repoRoot must be a non-empty string');
+  }
+
+  // Track git executable availability across probes. If `git` itself
+  // is absent from PATH the first ENOENT cascades — we surface this
+  // explicitly in `scanned.git_present` so callers can distinguish
+  // "no overlap" from "git missing → all probes blind" (Codex Phase 5
+  // MAJOR + Correctness review MAJOR #2).
+  let gitPresent = true;
+  const runGit = (args) => {
+    try {
+      const stdout = execFileSync('git', args, {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return { ok: true, stdout: stdout.trimEnd() };
+    } catch (err) {
+      if (err && err.code === 'ENOENT') {
+        gitPresent = false;
+      }
+      return { ok: false, stdout: err.stdout ? String(err.stdout).trimEnd() : '' };
+    }
+  };
+
+  // Resolve baseline. `merge-base baseBranch HEAD` yields the most
+  // useful divergence point; fall back to baseBranch itself when
+  // merge-base fails (e.g., disjoint histories or missing remote).
+  // `base_resolution_failed` distinguishes "baseBranch unreachable
+  // (origin/main not fetched, typo)" from "git itself absent" so
+  // /engineer:start can route the user differently in each case.
+  let baseHead = null;
+  let baseResolutionFailed = false;
+  const mergeBaseResult = runGit(['merge-base', baseBranch, 'HEAD']);
+  if (mergeBaseResult.ok && mergeBaseResult.stdout) {
+    baseHead = mergeBaseResult.stdout;
+  } else {
+    const revParseResult = runGit(['rev-parse', baseBranch]);
+    if (revParseResult.ok && revParseResult.stdout) {
+      baseHead = revParseResult.stdout;
+    } else if (gitPresent) {
+      baseResolutionFailed = true;
+    }
+  }
+
+  const currentHeadResult = runGit(['rev-parse', 'HEAD']);
+  const currentHead = currentHeadResult.ok ? currentHeadResult.stdout : null;
+  const currentBranchResult = runGit(['branch', '--show-current']);
+  const currentBranch = currentBranchResult.ok ? currentBranchResult.stdout : '';
+
+  // Range probes require a valid baseHead. When absent, emit ok=false
+  // per probe so the caller can distinguish "probe skipped" from
+  // "probe succeeded with empty output." `diff --stat HEAD` is the
+  // exception — it operates on the working tree, not the range.
+  const commitsAhead = baseHead
+    ? runGit(['log', `${baseHead}..HEAD`, '--oneline'])
+    : { ok: false, stdout: '' };
+  const workingTreeDiffStat = runGit(['diff', '--stat', 'HEAD']);
+  const renames = baseHead
+    ? runGit(['log', '--diff-filter=R', '--name-status', `${baseHead}..HEAD`])
+    : { ok: false, stdout: '' };
+  const deletes = baseHead
+    ? runGit(['log', '--diff-filter=D', '--name-status', `${baseHead}..HEAD`])
+    : { ok: false, stdout: '' };
+
+  // Optional `gh pr list --state open --head <current-branch>`. Absent
+  // gh / non-zero exit → open_prs = null (graceful fallback per ADR).
+  let openPrs = null;
+  if (currentBranch) {
+    try {
+      const ghStdout = execFileSync(
+        'gh',
+        [
+          'pr',
+          'list',
+          '--state', 'open',
+          '--head', currentBranch,
+          '--json', 'number,title,headRefName',
+        ],
+        { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      const parsed = JSON.parse(ghStdout);
+      if (Array.isArray(parsed)) {
+        openPrs = parsed.map((entry) => ({
+          number: entry.number,
+          title: entry.title,
+          head_ref: entry.headRefName,
+        }));
+      }
+    } catch {
+      // ENOENT (gh absent), non-zero exit (auth missing, network),
+      // JSON parse error — all map to null. The helper never throws.
+      openPrs = null;
+    }
+  }
+
+  const hasCommitsAhead = commitsAhead.ok && commitsAhead.stdout.trim().length > 0;
+  const hasOpenPr = Array.isArray(openPrs) && openPrs.length > 0;
+
+  const scanned = {
+    base_branch: baseBranch,
+    base_head: baseHead,
+    current_head: currentHead,
+    current_branch: currentBranch,
+    git_present: gitPresent,
+    base_resolution_failed: baseResolutionFailed,
+    commits_ahead: commitsAhead,
+    working_tree_diff_stat: workingTreeDiffStat,
+    renames,
+    deletes,
+    open_prs: openPrs,
+  };
+
+  if (hasCommitsAhead || hasOpenPr) {
+    // Prefer open_pr as evidence (more concrete than a raw SHA).
+    const evidence = hasOpenPr
+      ? { kind: 'open_pr', ref: `#${openPrs[0].number}` }
+      : {
+          kind: 'commit',
+          // First line of `log --oneline` is the most recent commit.
+          ref: commitsAhead.stdout.split('\n', 1)[0].split(' ', 1)[0],
+        };
+    return {
+      status: 'redundancy',
+      scanned,
+      evidence,
+      recommended_action: 'archive',
+    };
+  }
+
+  return {
+    status: 'no-redundancy',
+    scanned,
+    evidence: null,
+    recommended_action: null,
+  };
+}
+
+// -----------------------------------------------------------------------------
 // CLI mode
 
 function cliParseFlags(argv) {
@@ -2332,6 +2492,14 @@ function cliPrintHelp() {
       '    marked the subtask deferred/abandoned in step 1). Emits JSON envelope:',
       '      {detached: true, to: <archive-path>, host} on success',
       '      {detached: false, reason: <string>} on archive no-op',
+      '',
+      '  diagnose-redundancy --repo-root <path> [--base-branch <ref>]',
+      '    ADR-0020 §Sub-decision 7 — probe the current branch for evidence of work',
+      '    overlapping the user request (commits ahead of merge-base, open PRs). Invoked',
+      '    by /engineer:start Phase 0 BEFORE bootstrap. Default --base-branch=origin/main.',
+      '    Emits JSON: { status: "no-redundancy" | "redundancy", scanned: {...},',
+      '    evidence: {kind, ref} | null, recommended_action: "archive" | null }. Caller',
+      '    surfaces evidence; user decides proceed/abort. Never auto-archives.',
       '',
       '  stop-archive --workflow-path <path> --host <host> --repo-root <path>',
       '               [--head-sha <sha>] [--head-subject <text>] [--status-digest <hex>]',
@@ -2563,6 +2731,16 @@ async function cliMain(argv) {
           repoRoot: flags['repo-root'],
         });
         process.stdout.write(`${JSON.stringify(result)}\n`);
+        return 0;
+      }
+
+      case 'diagnose-redundancy': {
+        cliRequire(flags, ['repo-root']);
+        const result = await diagnoseRedundancy({
+          repoRoot: flags['repo-root'],
+          baseBranch: flags['base-branch'] ?? 'origin/main',
+        });
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
         return 0;
       }
 

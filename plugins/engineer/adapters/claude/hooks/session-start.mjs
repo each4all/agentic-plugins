@@ -70,9 +70,18 @@ async function main() {
   }
 
   const checkpoint = frontmatter.latest_checkpoint;
+  // ADR-0020 §Sub-decision 5 — workflow_type='start' lifecycle macro
+  // workflows track the phase-primary verb in `frontmatter.verb`, but
+  // the user-facing surface is `/engineer:start`, not the rotating
+  // internal verb. Resolve canonical_command from workflow_type:
+  //   - 'start' → '/engineer:start' (lifecycle macro entry, fixed)
+  //   - 'verb-chain' or absent (legacy) → '/engineer:<verb>'
+  const canonicalCommand = frontmatter.workflow_type === 'start'
+    ? '/engineer:start'
+    : `/engineer:${sanitize(frontmatter.verb, MAX_LENGTHS.verb)}`;
   const summary = {
     workflow_id: sanitize(frontmatter.workflow_id, MAX_LENGTHS.workflow_id),
-    canonical_command: `/engineer:${sanitize(frontmatter.verb, MAX_LENGTHS.verb)}`,
+    canonical_command: canonicalCommand,
     profile: sanitize(frontmatter.profile, MAX_LENGTHS.profile),
     phase: sanitize(frontmatter.current_phase, MAX_LENGTHS.phase),
     workflow_path: sanitize(active, MAX_LENGTHS.workflow_path),

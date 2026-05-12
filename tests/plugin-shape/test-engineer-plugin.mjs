@@ -10,8 +10,9 @@
 //   - 4 shared references (presentation / ensemble / orchestration / agent-taxonomy)
 //   - 3 host-shared canonical scripts (state.mjs, dispatch-peer.mjs,
 //     stop-archive.mjs)
-//   - 10 commands (6 canonical verbs + 1 sugar alias `audit` per ADR-0010 §3
+//   - 11 commands (6 canonical verbs + 1 sugar alias `audit` per ADR-0010 §3
 //     + 3 meta commands `resume` / `checkpoint` / `peer-now` per ADR-0017
+//     + 1 lifecycle macro `start` per ADR-0020 §Sub-decision 1
 //     §sub-decisions 1+2+3)
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
 //   - 1 Codex adapter hook (stop helper)
@@ -67,7 +68,11 @@ const ALIAS_VERBS = ['audit'];
 // shape differ from verbs, so verb-name consistency assertions below
 // skip them.
 const META_COMMANDS = ['resume', 'checkpoint', 'peer-now'];
-const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...META_COMMANDS];
+// ADR-0020 §Sub-decision 1 — lifecycle macro commands are surface-level
+// neighbors of meta commands but DO bootstrap new workflows (unlike meta
+// commands), so they live in their own list. Currently: `start`.
+const LIFECYCLE_MACROS = ['start'];
+const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...META_COMMANDS, ...LIFECYCLE_MACROS];
 const SHARED_REFS = [
   'presentation-protocol.md',
   'ensemble-protocol.md',
@@ -371,7 +376,7 @@ describe('plugins/engineer — 4 shared references (skills/_shared/references/*.
   }
 });
 
-describe('plugins/engineer — 10 commands (commands/<verb>.md — 6 verbs + audit alias + resume + checkpoint + peer-now meta)', () => {
+describe('plugins/engineer — 11 commands (commands/<verb>.md — 6 verbs + audit alias + resume/checkpoint/peer-now meta + start lifecycle macro)', () => {
   for (const verb of ALL_COMMANDS) {
     describe(verb, () => {
       const path = resolve(PLUGIN_ROOT, 'commands', `${verb}.md`);
