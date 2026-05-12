@@ -1,6 +1,6 @@
 {
   "name": "engineer",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Engineer workbench for AI-assisted engineering across Claude Code & Codex CLI — 6 cognitive verbs (investigate / frame / decide / compose / critique / refine), /engineer:start lifecycle macro, and cited-brief research profile.",
   "author": {
     "name": "each4all"
