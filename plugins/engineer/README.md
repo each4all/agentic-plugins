@@ -62,7 +62,10 @@ current release ships:
   `:peer-now`, ADR-0017 §sub-decisions 1/2/3)
 - **Host-shared canonical scripts** — `scripts/state.mjs`
   (workflow I/O per ADR-0011) + `scripts/dispatch-peer.mjs`
-  (companion task wrapper per `companions/contract.md` v0.1.1)
+  (blocking companion task wrapper per `companions/contract.md`
+  v0.1.1) + `scripts/peer-runner.mjs` (ADR-0023 caller-side
+  ledger/status/cancel/sweep primitive; command integration follows in
+  a later PR)
 - **Claude Code hooks** (`hooks/hooks.json` + `adapters/claude/hooks/{pre-compact,stop,session-start}.mjs`) — automatic
   state snapshot per ADR-0011 §4 (PreCompact + Stop + SessionStart)
 - **Codex stop helper** (`adapters/codex/hooks/stop.mjs`) —
@@ -291,6 +294,10 @@ user-facing warning.
 | Variable | Purpose | Default |
 |---|---|---|
 | `AGENTIC_COMPANIONS_ROOT` | Absolute path containing `claude-companion.mjs` and `codex-companion.mjs`; the discovery library resolves the peer companion under this root, bypassing cache-glob discovery. Useful for development workflows pointing at a source-tree checkout. | (cache-glob fallback through the `companions` plugin) |
+| `PEER_RUN_CANCEL_GRACE_MS` | Grace period used by `scripts/peer-runner.mjs cancel` between TERM and KILL. | `10000` |
+| `PEER_RUN_STALE_GRACE_MS` | Age threshold used by `scripts/peer-runner.mjs sweep` before a dead, no-envelope non-terminal run is marked `orphaned`. | `60000` |
+| `PEER_RUN_RETENTION_TTL_DAYS` | Terminal peer-run ledger TTL used by `scripts/peer-runner.mjs sweep --apply`. | `14` |
+| `PEER_RUN_RETENTION_CAP` | Maximum terminal peer-run ledger directories retained per repo by `scripts/peer-runner.mjs sweep --apply`. Non-terminal runs are preserved. | `200` |
 | `RESEARCH_OUTPUT_ROOT` | Absolute path for cited-brief artifacts produced by `engineer:investigate --profile=cited-brief`. The brief saves to `<root>/YYYY-MM-DD_<topic-slug>/research_brief.md`. Name preserved from Stage 1 `plugins/research` for backwards compatibility per [ADR-0014](../../docs/adr/0014-plugins-research-deprecation.md). | `./output/` |
 
 Companion discovery flows through the canonical `companions` plugin's

@@ -15,8 +15,8 @@
 //     (ADR-0010 §3 cascade — closes ADR-0021 §6; formalizes the
 //     `skills/<plugin>/` three-category split: verb / macro / meta)
 //   - 4 shared references (presentation / ensemble / orchestration / agent-taxonomy)
-//   - 3 host-shared canonical scripts (state.mjs, dispatch-peer.mjs,
-//     stop-archive.mjs)
+//   - 4 host-shared canonical scripts (state.mjs, dispatch-peer.mjs,
+//     peer-runner.mjs, stop-archive.mjs)
 //   - 11 commands (6 canonical verbs + 1 sugar alias `audit` per ADR-0010 §3
 //     + 3 meta commands `resume` / `checkpoint` / `peer-now` per ADR-0017
 //     + 1 lifecycle macro `start` per ADR-0020 §Sub-decision 1
@@ -104,7 +104,7 @@ const SHARED_REFS = [
   'orchestration.md',
   'agent-taxonomy.md',
 ];
-const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'stop-archive.mjs'];
+const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['pre-compact.mjs', 'stop.mjs', 'session-start.mjs', '_shared.mjs'];
 
 // Stale tokens that should NEVER appear in engineer SKILL/commands/refs.
@@ -664,7 +664,7 @@ describe('plugins/engineer — 11 commands (commands/<verb>.md — 6 verbs + aud
   });
 });
 
-describe('plugins/engineer — 2 host-shared canonical scripts (scripts/*.mjs)', () => {
+describe('plugins/engineer — 4 host-shared canonical scripts (scripts/*.mjs)', () => {
   for (const name of HOST_SHARED_SCRIPTS) {
     describe(name, () => {
       const path = resolve(PLUGIN_ROOT, 'scripts', name);
