@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (2026-05-13, PR #91)
 
 ## Context
 

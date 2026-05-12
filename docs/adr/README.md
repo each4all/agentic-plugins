@@ -87,4 +87,4 @@ operatively accurate?* If no, write a new ADR (Supersede).
 | [0021](0021-codex-command-surface-parity-via-skill-wrappers.md) | Codex command-surface parity via skill wrappers — macro skill category alongside verb skills | Accepted |
 | [0022](0022-engineer-meta-skill-category.md) | engineer meta-skill category — third category in `skills/<plugin>/` for workflow-continuity ops | Accepted |
 | [0023](0023-peer-runner-supervisor-layer.md) | Peer-runner supervisor layer for companion dispatch | Accepted |
-| [0024](0024-runtime-operator-control-plane.md) | Runtime operator control plane — doctor/settings, dynamic consensus, context hygiene, and host readiness | Proposed |
+| [0024](0024-runtime-operator-control-plane.md) | Runtime operator control plane — doctor/settings, dynamic consensus, context hygiene, and host readiness | Accepted |
