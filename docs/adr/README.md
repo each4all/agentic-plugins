@@ -84,4 +84,4 @@ operatively accurate?* If no, write a new ADR (Supersede).
 | [0018](0018-stage3-architecture-orchestrator-and-branch-context.md) | Stage 3+ architecture — orchestration capability + branch-as-workflow-context + cross-host verification | Accepted |
 | [0019](0019-cross-plugin-invocation-contract.md) | Cross-plugin invocation contract — orchestrator → engineer (Stage 3+ §sub-1 follow-up) | Accepted |
 | [0020](0020-engineer-integrated-workflow-umbrella.md) | engineer integrated workflow umbrella — `/engineer:start` lifecycle macro command | Accepted |
-| [0021](0021-codex-command-surface-parity-via-skill-wrappers.md) | Codex command-surface parity via skill wrappers — macro skill category alongside verb skills | Proposed |
+| [0021](0021-codex-command-surface-parity-via-skill-wrappers.md) | Codex command-surface parity via skill wrappers — macro skill category alongside verb skills | Accepted |
