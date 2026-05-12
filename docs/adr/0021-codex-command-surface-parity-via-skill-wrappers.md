@@ -132,14 +132,22 @@ Append a 2026-05-12 ADR-0021 cascade entry to ADR-0010's
 Amendments section, declaring the two-category skills folder
 contract and pointing back to this ADR.
 
-### 6. Meta commands — deferred
+### 6. Meta commands — resolved by ADR-0022 (2026-05-12)
 
 Meta commands (`/engineer:resume`, `/engineer:checkpoint`,
 `/engineer:peer-now` per
-[ADR-0017](0017-stage25-continuity-and-schema-roadmap.md)) remain
-command-only — the question of whether they should also mirror as
-macro skills (or carry their own third category) is deferred to a
-follow-up PR.
+[ADR-0017](0017-stage25-continuity-and-schema-roadmap.md)) were
+deferred at ADR-0021 acceptance — the question was whether they
+should also mirror as macro skills (or carry their own third
+category). The follow-up PR resolved this question by introducing
+a **third "meta skill" category** alongside verb and macro:
+**Resolved 2026-05-12 by [ADR-0022](0022-engineer-meta-skill-category.md)**.
+All three meta commands now mirror as Codex meta skills at
+`plugins/engineer/skills/{resume,checkpoint,peer-now}/` with
+honest Codex-operable runbooks (host-availability matrix
+mandatory). See ADR-0022 §Decision for the three-category split
+and ADR-0010 §Amendments §2026-05-12 ADR-0022 cascade for the
+updated `skills/<plugin>/` table.
 
 ## Consequences
 
@@ -238,8 +246,10 @@ folder, eliminating the need for a new category.
   for the lifecycle macro.
 - [ADR-0017](0017-stage25-continuity-and-schema-roadmap.md) —
   meta-commands category (`resume`, `checkpoint`, `peer-now`)
-  introduced. ADR-0021 explicitly defers meta-command skill-mirror
-  decision to a follow-up PR.
+  introduced. ADR-0021 deferred the meta-command skill-mirror
+  decision at acceptance; resolved 2026-05-12 by
+  [ADR-0022](0022-engineer-meta-skill-category.md) (third meta-skill
+  category alongside verb and macro).
 - [ADR-0018](0018-stage3-architecture-orchestrator-and-branch-context.md)
   §sub-2 — branch=workflow invariant. Macro skill inherits this
   constraint.

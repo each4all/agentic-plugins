@@ -1,0 +1,7 @@
+interface:
+  display_name: "Engineer — Checkpoint"
+  short_description: "Record a one-line progress checkpoint on the active engineer workflow for SessionStart re-injection in the next Claude session"
+  default_prompt: "Use $engineer:checkpoint <one-line summary> to durably record a progress note on the active workflow; the next Claude session's SessionStart hook will re-inject the summary on re-entry"
+
+policy:
+  allow_implicit_invocation: false

@@ -85,3 +85,4 @@ operatively accurate?* If no, write a new ADR (Supersede).
 | [0019](0019-cross-plugin-invocation-contract.md) | Cross-plugin invocation contract — orchestrator → engineer (Stage 3+ §sub-1 follow-up) | Accepted |
 | [0020](0020-engineer-integrated-workflow-umbrella.md) | engineer integrated workflow umbrella — `/engineer:start` lifecycle macro command | Accepted |
 | [0021](0021-codex-command-surface-parity-via-skill-wrappers.md) | Codex command-surface parity via skill wrappers — macro skill category alongside verb skills | Accepted |
+| [0022](0022-engineer-meta-skill-category.md) | engineer meta-skill category — third category in `skills/<plugin>/` for workflow-continuity ops | Proposed |

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Engineer — Resume"
+  short_description: "Re-enter an in-flight engineer workflow with a clean/dirty drift report against git baseline, or archive a stale one"
+  default_prompt: "Use $engineer:resume to inspect the per-branch active engineer workflow, classify drift (clean if branch + HEAD + digest match git_baseline; dirty otherwise), and either continue with the next verb skill or archive the workflow via $engineer:resume archive [<id>]"
+
+policy:
+  allow_implicit_invocation: false

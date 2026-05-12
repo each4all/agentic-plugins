@@ -17,6 +17,14 @@ verbs (`/engineer:investigate`, `/engineer:frame`, `/engineer:decide`,
 `/engineer:compose`, `/engineer:critique`, `/engineer:refine`) for
 that.
 
+**Cognitive runbook lives in
+`$CLAUDE_PLUGIN_ROOT/skills/resume/SKILL.md`** per ADR-0022
+(meta-skill category, ADR-0010 §3 cascade). This command file owns
+the Claude-host bash bootstrap and the `state.mjs` writes below;
+for each Phase 0–3 the cognitive description, decision gates, and
+host-availability matrix delegate to SKILL.md via the matching
+`§ Phase N` pointer.
+
 The plugin root in shell snippets below is `$CLAUDE_PLUGIN_ROOT`
 (set by Claude Code for plugin slash commands). If unset for any
 reason, fall back to

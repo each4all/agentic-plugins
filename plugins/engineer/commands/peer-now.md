@@ -18,10 +18,22 @@ printed to stdout and the command exits.
 This command is a deliberate side-channel: it does NOT update
 `current_phase`, `next_action`, `latest_checkpoint`, or the
 `ensemble_results` frontmatter list. peer-now is excluded from
-`ensemble_results` by design — that field is reserved for the verb's
-structured ensemble verdicts (omcc-dev's `Result Bookkeeping
-exclusions` precedent for `codex-now` carries forward to
-`peer-now`).
+`ensemble_results` by design — that field is reserved for verb-skill
+structured ensemble verdicts. The exclusion is structural: opting a
+dispatch INTO `ensemble_results` requires the four-flag set
+documented at `scripts/dispatch-peer.mjs --help`
+(`--workflow-path / --phase / --ensemble-type / --run-id`), and
+peer-now deliberately omits them. See
+`skills/peer-now/SKILL.md` § Phase 1 for the cognitive framing
+(why peer-now is a raw cross-host probe, not a synthesis).
+
+**Cognitive runbook lives in
+`$CLAUDE_PLUGIN_ROOT/skills/peer-now/SKILL.md`** per ADR-0022
+(meta-skill category, ADR-0010 §3 cascade). This command file owns
+the Claude-host bash bootstrap and the `dispatch-peer.mjs` /
+`state.mjs` invocations below; for each Phase 0–2 the cognitive
+description, peer-prompt phrasing guidance, and host-availability
+matrix delegate to SKILL.md via the matching `§ Phase N` pointer.
 
 The plugin root in shell snippets below is `$CLAUDE_PLUGIN_ROOT`
 (set by Claude Code for plugin slash commands). If unset for any

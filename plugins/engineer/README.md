@@ -43,14 +43,23 @@ This plugin is in Stage 2 of agentic-plugins development (per
 current release ships:
 
 - 4 manifest + marketplace entries (Claude Code + Codex CLI)
-- 6 SKILL.md bodies (cognitive verb skills)
+- 10 SKILL.md bodies — 6 cognitive verb skills + 1 macro skill
+  (`start` per ADR-0021) + 3 meta skills
+  (`resume` / `checkpoint` / `peer-now` per ADR-0022)
 - 4 shared protocol references (presentation / ensemble /
   orchestration / agent-taxonomy)
-- 6 Codex agent definitions (`agents/openai.yaml` per skill)
-- **Claude slash command surface** — 6 canonical verbs
+- 10 Codex agent definitions (`agents/openai.yaml` per skill — one
+  per verb / macro / meta skill, with
+  `policy.allow_implicit_invocation: false` on each)
+- **Claude slash command surface** — 11 commands total:
+  6 canonical verbs
   (`/engineer:investigate|frame|decide|compose|critique|refine`)
   + 1 sugar alias (`/engineer:audit` ≡
   `/engineer:critique --profile=full-codebase` per ADR-0010 §3)
+  + 1 lifecycle macro command (`/engineer:start`,
+  ADR-0020 §Sub-decision 1)
+  + 3 meta commands (`/engineer:resume` / `:checkpoint` /
+  `:peer-now`, ADR-0017 §sub-decisions 1/2/3)
 - **Host-shared canonical scripts** — `scripts/state.mjs`
   (workflow I/O per ADR-0011) + `scripts/dispatch-peer.mjs`
   (companion task wrapper per `companions/contract.md` v0.1.1)
@@ -142,10 +151,11 @@ enabled = true
 # Sugar alias (ADR-0010 §3 verb-level alias):
 /engineer:audit <area>     # ≡ /engineer:critique --profile=full-codebase
 
-# Meta commands (ADR-0017 §sub-decision-1/2 + ADR-0017 §sub-decision-3):
-/engineer:resume                          # Resume / archive the active workflow
-/engineer:checkpoint <one-line summary>   # Record a progress checkpoint
-/engineer:peer-now <question>             # One-shot peer ensemble dispatch
+# Meta commands (ADR-0017 §sub-decisions 1/2/3; mirror as Codex meta skills per ADR-0022):
+/engineer:resume [archive [<workflow-id>]]   # Drift report / archive the active workflow
+/engineer:checkpoint <one-line summary>      # Record a progress checkpoint
+/engineer:peer-now --peer <claude|codex> --prompt-text "..."  # Ad-hoc side-channel peer consultation
+                                          # (or --prompt-file <path>; not an ensemble — no synthesis label)
 
 # Lifecycle macro (ADR-0020 §Sub-decision 1):
 /engineer:start <feature> [--base-branch <ref>]
@@ -191,21 +201,42 @@ For full command-mode behavior, use the slash command form above.
 ### Codex CLI — explicit skill mention
 
 ```text
+# Verb skills (cognitive activity)
 $engineer:investigate <topic>
 $engineer:frame <problem context>
 $engineer:decide <decision question>
 $engineer:compose <task description>
 $engineer:critique <change description or area>
 $engineer:refine <feedback or bug context>
+
+# Macro skill (lifecycle sequencer — Phase 0 continuity → Phase 7 commit)
+$engineer:start <feature description>
+
+# Meta skills (workflow-continuity ops on the active workflow)
+$engineer:resume [archive [<workflow-id>]]
+$engineer:checkpoint <one-line progress summary>
+$engineer:peer-now --peer <claude|codex> --prompt-text "..."   # or --prompt-file <path>
 ```
 
-**Codex-side parity for `/engineer:start`**: at PR 3 the Codex manifest
-exposes only the six verb skills via `skills:`; `/engineer:start` is
-**Claude-only** until ADR-0020 PR 4 wires the command into both
-manifests. Codex CLI's plugin-commands integration is also unfinalized
-(ADR-0013 reserved), so the lifecycle macro is not yet a Codex
-invocation surface. For multi-host workflows in the interim, drive
-each phase manually through the six `$engineer:<verb>` skill mentions.
+**Codex-side parity** (per ADR-0021 + ADR-0022): the Codex manifest
+exposes the six verb skills, the `start` macro skill (ADR-0021), and
+three meta skills (`resume` / `checkpoint` / `peer-now` per
+ADR-0022). Each skill's canonical cognitive runbook lives in
+`skills/<name>/SKILL.md` and is loaded directly when the skill is
+mentioned. Codex CLI's plugin-commands integration is still
+unfinalized (ADR-0013 reserved), so Codex side does not yet have
+Claude-equivalent slash commands; the skill-mention surface is the
+canonical Codex entry point.
+
+**Host-availability honesty** (per ADR-0022 §Decision §3): meta
+skills carry an explicit Host availability matrix in their
+SKILL.md describing which parts work on Claude vs Codex. The
+prominent asymmetry: SessionStart re-injection (which surfaces the
+`latest_checkpoint.summary` written by `$engineer:checkpoint`) is
+**Claude-only** today — a Codex session writes the checkpoint, but
+only the next Claude session re-injects it. peer-now is symmetric
+(`companions/` ships bidirectional bridges). resume's drift report
+and archive subcommand are host-agnostic.
 
 Each `agents/openai.yaml` sets
 `policy.allow_implicit_invocation: false` (matching the Stage 1

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Engineer — Peer-Now"
+  short_description: "Ad-hoc cross-host peer consultation — dispatch a verbatim prompt at the cross-host companion outside a verb skill's normal ensemble flow"
+  default_prompt: "Use $engineer:peer-now --peer <claude|codex> --prompt-text \"...\" (or --prompt-file <path>) to fire a verbatim prompt at the cross-host peer companion and optionally append a [Peer] label phase note when an active workflow exists"
+
+policy:
+  allow_implicit_invocation: false

@@ -7,9 +7,11 @@ Accepted
 > Last amended 2026-05-12 — see [Amendments](#amendments). 2026-05-06
 > recorded the ADR-0015 cascade (`plugins/research` retirement);
 > 2026-05-11 recorded the ADR-0020 cascade (lifecycle macro command
-> boundary versus verb-level alias); 2026-05-12 records the ADR-0021
-> cascade (macro skill category alongside verb skills, formalizing
-> the `skills/<plugin>/` two-category split).
+> boundary versus verb-level alias); 2026-05-12 first records the
+> ADR-0021 cascade (macro skill category alongside verb skills);
+> 2026-05-12 then records the ADR-0022 cascade (meta skill category
+> as the third sibling of verb and macro skills, closing ADR-0021 §6
+> and formalizing the `skills/<plugin>/` three-category split).
 
 ## Context
 
@@ -626,4 +628,66 @@ verb-level sugar alias rules (§3), plugin-name level alias non-goal
 pattern (§4), plugin separation triggers (§6).
 
 **Verified-against**: ADR-0021 §Decision §1–§4 + ADR-0021
+Implementation Roadmap (this PR).
+
+### 2026-05-12 — ADR-0022 cascade (meta skill category)
+
+**Trigger**: [ADR-0022](0022-engineer-meta-skill-category.md)
+acceptance, which closes ADR-0021 §6 — the deferred question of
+whether the engineer plugin's three **meta commands**
+(`/engineer:resume`, `/engineer:checkpoint`, `/engineer:peer-now`
+per [ADR-0017](0017-stage25-continuity-and-schema-roadmap.md)
+§sub-decisions 1/2/3) should also mirror as Codex skills, and how.
+ADR-0021 left two paths: (a) extend the macro category or (c)
+introduce a third category. ADR-0022 chose (c).
+
+**Finding**: ADR-0021's `skills/<plugin>/` two-category split (verb
++ macro) treats `macro` as "sequences multiple verb skill
+invocations across phases" (ADR-0021 §Decision §3). The three meta
+commands are *single host-bootstrap operations*, not phase
+sequencers — they do not rotate `verb` field, do not introduce
+phase boundaries, and do not sequence verb skills. Cramming them
+into `macro` erodes that definition. ADR-0022 ratifies a third
+**meta skill** category alongside verb and macro.
+
+**Changes** (read alongside the prior Decision sections and the
+2026-05-12 ADR-0021 cascade entry above):
+
+- **§3 (Naming convention) / §4 (Plugin-internal skill use)** —
+  `skills/<plugin>/` permits **three** named categories (extending
+  the two-row table from the ADR-0021 cascade entry):
+
+  | Category | Folder | Naming | Source of name |
+  |----------|--------|--------|----------------|
+  | **Verb skill** | `skills/<verb>/` | `<persona>:<verb>` / `<capability>:<verb>` | one folder per `VALID_VERBS` member |
+  | **Macro skill** | `skills/<macro>/` | `<plugin>:<macro>` | one folder per `LIFECYCLE_MACROS` entry (per ADR-0020 cascade) |
+  | **Meta skill** | `skills/<meta>/` | `<plugin>:<meta>` | one folder per `META_COMMANDS` entry (per ADR-0017 cascade) |
+
+  All three categories share the same internal shape: `SKILL.md`
+  (frontmatter `name: <folder>`) + `agents/openai.yaml`
+  (`interface` block + `policy: allow_implicit_invocation: false`).
+  Meta skills do NOT extend `VALID_VERBS` (kept at six per
+  ADR-0020 §Sub-decision 5) and are NOT macro skills (macro
+  remains "multi-phase verb sequencer" per ADR-0021). Content
+  authority follows the verb-skill / macro-skill convention:
+  SKILL.md owns the host-agnostic cognitive runbook; the Claude-
+  side `commands/<meta>.md` owns host bootstrap +
+  `state.mjs` writes and delegates cognitive description to
+  SKILL.md.
+
+  Additionally, ADR-0022 §Decision §3 mandates that each meta
+  SKILL.md include an explicit **Host availability** matrix
+  describing which parts of the operation work on Claude vs Codex
+  (e.g., Codex has no SessionStart re-injection; `peer-now` is
+  symmetric via bidirectional `companions/`). This honesty
+  requirement is what distinguishes ADR-0022's `meta` from a
+  placeholder mirror.
+
+**Unchanged**: 4-layer composition (§1), 6 cognitive verbs (§2),
+verb-level sugar alias rules (§3), plugin-name level alias non-goal
+(§3 / ADR-0011 §9 cascade), plugin-internal skill use orchestration
+pattern (§4), plugin separation triggers (§6), the ADR-0021 cascade
+two-row table above (preserved for decision-history audit).
+
+**Verified-against**: ADR-0022 §Decision §1–§5 + ADR-0022
 Implementation Roadmap (this PR).
