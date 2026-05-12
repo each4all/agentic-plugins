@@ -247,6 +247,73 @@ describe('session-start.mjs — marker pair + JSON shape (Phase 6 MAJOR #12 + MI
     });
   });
 
+  // ADR-0020 PR 3 — workflow_type=start emits canonical_command='/engineer:start'
+  // regardless of the current phase-primary verb (Codex Phase 5 SUPPLEMENTAL
+  // finding from PR 2 review). Phase-internal verb mutation MUST NOT leak into
+  // the SessionStart-injected canonical_command surface; the user invoked
+  // `/engineer:start`, so resume surface should match.
+  it('canonical_command=/engineer:start when workflow_type=start (ADR-0020 §Sub-decision 5)', async () => {
+    await withTmpRepo(async (dir) => {
+      await createWorkflow({
+        repoRoot: dir,
+        verb: 'investigate',
+        workflowType: 'start',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'lifecycle macro test',
+      });
+
+      const r = await runHook({ cwd: dir });
+      const m = r.stdout.match(/\{.*\}/);
+      ok(m, `payload not found: ${r.stdout}`);
+      const summary = JSON.parse(m[0]);
+      strictEqual(summary.canonical_command, '/engineer:start');
+    });
+  });
+
+  it('canonical_command=/engineer:start even when phase-primary verb has rotated to refine (Phase 6)', async () => {
+    // ADR-0020 §Sub-decision 5 — under workflow_type=start the verb
+    // field tracks the phase-primary verb (rotates investigate → frame
+    // → decide → compose → critique → refine through phases 1-6).
+    // canonical_command must remain /engineer:start regardless.
+    await withTmpRepo(async (dir) => {
+      await createWorkflow({
+        repoRoot: dir,
+        verb: 'refine',
+        workflowType: 'start',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'phase 6 resolve loop',
+        currentPhase: 'phase-6-resolve',
+      });
+
+      const r = await runHook({ cwd: dir });
+      const m = r.stdout.match(/\{.*\}/);
+      ok(m, `payload not found: ${r.stdout}`);
+      const summary = JSON.parse(m[0]);
+      strictEqual(summary.canonical_command, '/engineer:start');
+    });
+  });
+
+  it('canonical_command=/engineer:<verb> when workflow_type=verb-chain (regression — existing behavior)', async () => {
+    await withTmpRepo(async (dir) => {
+      await createWorkflow({
+        repoRoot: dir,
+        verb: 'critique',
+        workflowType: 'verb-chain',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'verb-chain regression',
+      });
+
+      const r = await runHook({ cwd: dir });
+      const m = r.stdout.match(/\{.*\}/);
+      ok(m, `payload not found: ${r.stdout}`);
+      const summary = JSON.parse(m[0]);
+      strictEqual(summary.canonical_command, '/engineer:critique');
+    });
+  });
+
   it('control characters in inputs are sanitized to spaces (sanitize() guards)', async () => {
     await withTmpRepo(async (dir) => {
       // Inject control char via profile (simulating a malformed file).

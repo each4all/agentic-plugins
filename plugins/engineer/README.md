@@ -141,6 +141,17 @@ enabled = true
 
 # Sugar alias (ADR-0010 §3 verb-level alias):
 /engineer:audit <area>     # ≡ /engineer:critique --profile=full-codebase
+
+# Meta commands (ADR-0017 §sub-decision-1/2 + ADR-0017 §sub-decision-3):
+/engineer:resume                          # Resume / archive the active workflow
+/engineer:checkpoint <one-line summary>   # Record a progress checkpoint
+/engineer:peer-now <question>             # One-shot peer ensemble dispatch
+
+# Lifecycle macro (ADR-0020 §Sub-decision 1):
+/engineer:start <feature> [--base-branch <ref>]
+    # Sequences Phase 0 (continuity + diagnose-redundancy) through
+    # Phase 7 (commit) using the six verb skills intra-document.
+    # Single-pass only; for multi-deliverable use /orchestrator:plan.
 ```
 
 Each slash command runs:
@@ -187,6 +198,14 @@ $engineer:compose <task description>
 $engineer:critique <change description or area>
 $engineer:refine <feedback or bug context>
 ```
+
+**Codex-side parity for `/engineer:start`**: at PR 3 the Codex manifest
+exposes only the six verb skills via `skills:`; `/engineer:start` is
+**Claude-only** until ADR-0020 PR 4 wires the command into both
+manifests. Codex CLI's plugin-commands integration is also unfinalized
+(ADR-0013 reserved), so the lifecycle macro is not yet a Codex
+invocation surface. For multi-host workflows in the interim, drive
+each phase manually through the six `$engineer:<verb>` skill mentions.
 
 Each `agents/openai.yaml` sets
 `policy.allow_implicit_invocation: false` (matching the Stage 1
