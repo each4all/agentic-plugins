@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (shipped 2026-05-12 — [#77](https://github.com/each4all/agentic-plugins/pull/77) `c4dd712`)
 
 ## Context
 
