@@ -288,3 +288,10 @@ Always include the workflow path so the user can inspect or resume:
 ```
 Workflow: <absolute path to workflow .md file>
 ```
+
+Append the runtime completion footer after the workflow path. Use the
+runtime footer helper when available, or render the same fields manually:
+context state, workflow id/path, artifact pointers, recommended next work,
+and next-session action/command or prompt pointer. The footer is advisory
+and pointer-only; do not mutate host session context or paste raw peer /
+consensus output into the main session.

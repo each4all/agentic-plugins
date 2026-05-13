@@ -703,6 +703,16 @@ describe('plugins/engineer — 11 commands (commands/<verb>.md — 6 verbs + aud
       'commands/peer-now.md must keep peer-now out of ensemble_results',
     );
   });
+
+  it('workflow completion commands append the runtime completion footer contract', async () => {
+    for (const cmd of [...VERBS, ...LIFECYCLE_MACROS]) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${cmd}.md`), 'utf8');
+      ok(/runtime completion footer/i.test(text), `commands/${cmd}.md missing runtime footer guidance`);
+      ok(/advisory/i.test(text), `commands/${cmd}.md must mark footer advisory`);
+      ok(/pointer-only/i.test(text), `commands/${cmd}.md must keep footer pointer-only`);
+      ok(/do not mutate host session\s+context/i.test(text), `commands/${cmd}.md must forbid context mutation`);
+    }
+  });
 });
 
 describe('plugins/engineer — 4 host-shared canonical scripts (scripts/*.mjs)', () => {
