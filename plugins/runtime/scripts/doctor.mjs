@@ -37,6 +37,7 @@ const DEFAULT_STALE_GRACE_MS = 60000;
 const DEFAULT_DEEP_PEER_SMOKE_TIMEOUT_MS = 120000;
 const DEFAULT_PERMISSION_PROOF_TIMEOUT_MS = 120000;
 const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+const CONSENSUS_RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 
 export async function runDoctor({
   repoRoot = process.cwd(),
@@ -113,6 +114,9 @@ export async function runDoctor({
   const settingsRuns = await inspectSettingsRuns({
     repoRoot: resolvedRepoRoot,
   });
+  const consensusRuns = await inspectConsensusRuns({
+    repoRoot: resolvedRepoRoot,
+  });
 
   const readiness = buildReadiness({
     claude,
@@ -180,6 +184,7 @@ export async function runDoctor({
     companions: companion,
     model_effort: modelEffort,
     settings_runs: settingsRuns,
+    consensus_runs: consensusRuns,
     readiness_matrix: readinessMatrix,
     readiness,
     ledgers,
@@ -1145,6 +1150,104 @@ function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifact }) 
       failed: safeCount(summary.failed),
       failures,
     },
+  };
+}
+
+async function inspectConsensusRuns({ repoRoot }) {
+  const root = join(repoRoot, '.agentic-plugins', 'runs', 'consensus');
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (err) {
+    return {
+      status: 'missing',
+      root,
+      count: 0,
+      malformed: 0,
+      latest: null,
+      error: err.code ?? err.message,
+    };
+  }
+
+  const runs = [];
+  let malformed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !CONSENSUS_RUN_ID_RE.test(entry.name)) continue;
+    const artifactPath = join(root, entry.name, 'execution.json');
+    const artifact = await readJsonIfExists(artifactPath);
+    if (!artifact.ok) {
+      continue;
+    }
+    const summary = summarizeConsensusArtifact({
+      repoRoot,
+      runId: entry.name,
+      artifactPath,
+      artifact: artifact.json,
+    });
+    if (summary.status === 'blocked') malformed++;
+    runs.push(summary);
+  }
+
+  if (runs.length === 0) {
+    return {
+      status: malformed > 0 ? 'blocked' : 'empty',
+      root,
+      count: 0,
+      malformed,
+      latest: null,
+    };
+  }
+
+  runs.sort((a, b) => b.selected_at_ms - a.selected_at_ms || b.run_id.localeCompare(a.run_id));
+  const latest = runs[0];
+  const status = malformed > 0
+    ? 'blocked'
+    : latest.summary.failed > 0
+      ? 'needs_attention'
+      : 'available';
+  return {
+    status,
+    root,
+    count: runs.length,
+    malformed,
+    latest,
+  };
+}
+
+function summarizeConsensusArtifact({ repoRoot, runId, artifactPath, artifact }) {
+  const summary = artifact.summary ?? {};
+  const failures = Array.isArray(artifact.failures)
+    ? artifact.failures.map((failure) => ({
+        peer: sanitizeValue(failure.peer),
+        status: sanitizeValue(failure.status),
+        failure_type: sanitizeValue(failure.failure_type),
+        retryable: failure.retryable === true,
+        retry_after: sanitizeValue(failure.retry_after),
+        raw_output: {
+          pointer: sanitizeValue(failure.raw_output?.pointer),
+          bytes: safeCount(failure.raw_output?.bytes),
+          sha256: sanitizeValue(failure.raw_output?.sha256),
+        },
+      }))
+    : [];
+  const selectedAt = artifactTimestampMs(artifact, runId);
+  return {
+    run_id: sanitizeValue(artifact.run_id) ?? runId,
+    status: typeof artifact.status === 'string' ? artifact.status : 'blocked',
+    artifact_pointer: pointer(repoRoot, artifactPath),
+    selected_at: selectedAt === null ? null : new Date(selectedAt).toISOString(),
+    selected_at_ms: selectedAt ?? 0,
+    round: safeCount(artifact.round),
+    peer_execution: artifact.peer_execution === true,
+    summary: {
+      executed: safeCount(summary.executed),
+      passed: safeCount(summary.passed),
+      failed: safeCount(summary.failed),
+      skipped: safeCount(summary.skipped),
+      failed_retryable: safeCount(summary.failed_retryable),
+      failed_non_retryable: safeCount(summary.failed_non_retryable),
+    },
+    failures,
   };
 }
 
@@ -2270,6 +2373,11 @@ function summarizeOverall(report) {
   } else if (report.settings_runs.latest?.plugin_management?.failed > 0) {
     warnings.push('latest settings plugin-management execution has failures');
   }
+  if (report.consensus_runs.status === 'blocked') {
+    warnings.push('consensus execution artifact health blocked');
+  } else if (report.consensus_runs.latest?.summary?.failed > 0) {
+    warnings.push('latest consensus execution has failures');
+  }
   if (report.host_parity.status !== 'pass') {
     warnings.push(`host parity ${report.host_parity.status}`);
   }
@@ -2419,6 +2527,18 @@ export function formatText(report) {
       lines.push(`  failure: ${failure.plugin}/${failure.host} ${failure.action}; type=${failure.failure_type}; retryable=${failure.retryable}`);
       if (failure.retry_after) lines.push(`    retry-after: ${failure.retry_after}`);
       if (failure.doctor_hint) lines.push(`    doctor: ${failure.doctor_hint}`);
+    }
+  }
+  lines.push('');
+  lines.push('Consensus Execution Artifacts');
+  lines.push(`- status: ${report.consensus_runs.status}; count=${report.consensus_runs.count}; malformed=${report.consensus_runs.malformed}`);
+  if (report.consensus_runs.latest) {
+    const latest = report.consensus_runs.latest;
+    lines.push(`- latest: ${latest.run_id}; status=${latest.status}; artifact=${latest.artifact_pointer}; round=${latest.round}`);
+    lines.push(`  execution: peer-execution=${latest.peer_execution}; executed=${latest.summary.executed}; passed=${latest.summary.passed}; failed=${latest.summary.failed}; skipped=${latest.summary.skipped}; retryable-failed=${latest.summary.failed_retryable}; non-retryable-failed=${latest.summary.failed_non_retryable}`);
+    for (const failure of latest.failures) {
+      lines.push(`  failure: ${failure.peer}; status=${failure.status}; type=${failure.failure_type}; retryable=${failure.retryable}; raw=${failure.raw_output.pointer}; bytes=${failure.raw_output.bytes}; sha256=${failure.raw_output.sha256}`);
+      if (failure.retry_after) lines.push(`    retry-after: ${failure.retry_after}`);
     }
   }
   lines.push('');

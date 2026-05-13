@@ -1,7 +1,7 @@
 interface:
   display_name: "Runtime - Consensus"
-  short_description: "Artifact-only peer fanout and consensus synthesis scaffold"
-  default_prompt: "Use $runtime:consensus to plan peer fanout, record raw output as artifacts, and synthesize summary/disagreement evidence pointers without executing peers."
+  short_description: "Peer fanout, explicit companion execution, and consensus synthesis artifacts"
+  default_prompt: "Use $runtime:consensus to plan peer fanout, execute companions only with execute --execute, record raw output as artifacts, and synthesize summary/disagreement evidence pointers."
 
 policy:
   allow_implicit_invocation: false

@@ -132,7 +132,7 @@ describe('plugins/runtime settings surface', () => {
 
   it('follow-ups document plugin-management boundaries plus deferred consensus/context/footer scope', async () => {
     const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
-    for (const token of ['Plugin management beyond the explicit settings executor', 'Automatic peer execution for consensus', 'Context automation', 'Completion footer']) {
+    for (const token of ['Plugin management beyond the explicit settings executor', 'Consensus executor depth beyond the explicit boundary', 'Context automation', 'Completion footer']) {
       ok(followUps.includes(token), `${token} documented`);
     }
     ok(/Codex manual-hook/i.test(followUps), 'Codex manual-hook honesty documented');
@@ -164,11 +164,11 @@ describe('plugins/runtime consensus surface', () => {
     ok(command.startsWith('---\n'));
     ok(command.includes('scripts/consensus.mjs'));
     ok(command.includes('artifact'));
-    ok(command.includes('does not execute peer agents'));
+    ok(command.includes('execute --execute'));
     const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/consensus/SKILL.md'), 'utf-8');
     ok(/^name:\s*consensus\s*$/m.test(skill));
     ok(skill.includes('raw peer output out of the main session'));
-    ok(skill.includes('No direct peer execution'));
+    ok(skill.includes('No peer execution except `execute --execute`'));
     const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/consensus/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:consensus'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));

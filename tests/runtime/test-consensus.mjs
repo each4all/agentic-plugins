@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
-import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -31,7 +31,7 @@ describe('runtime consensus', () => {
     strictEqual(report.run_id, RUN_ID);
     deepStrictEqual(report.peers.active, ['claude', 'codex']);
     deepStrictEqual(report.peers.skipped, ['reviewer']);
-    ok(report.limits.some((limit) => /never executes peer agents/i.test(limit)));
+    ok(report.limits.some((limit) => /requires the separate runtime:consensus execute command/i.test(limit)));
 
     const manifest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'manifest.json'));
     strictEqual(manifest.schema_version, 'runtime-consensus-run-1.0');
@@ -39,10 +39,87 @@ describe('runtime consensus', () => {
     strictEqual(manifest.rounds[0].kind, 'independent-fanout');
     strictEqual(manifest.rounds[0].prompts.length, 2);
     strictEqual(manifest.policy.raw_output_policy, 'artifact-pointer-only');
+    strictEqual(manifest.policy.execution_timeout_ms, 120000);
+    strictEqual(manifest.policy.limits.max_rounds_cap, 3);
+    strictEqual(manifest.policy.limits.max_peers_cap, 4);
 
     const prompt = await readFile(join(root, manifest.rounds[0].prompts[0].pointer), 'utf8');
     ok(prompt.includes('Check the ADR-0024 runtime consensus MVP scope.'));
     ok(formatText(report).includes(`run: ${RUN_ID}`));
+  });
+
+  it('executes a planned round only with --execute and stores raw outputs as artifacts', async () => {
+    const root = await seedPlan();
+    const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-home-'));
+    await seedCompanionCache(homeDir);
+    const claudeRaw = 'CLAUDE RAW OUTPUT THAT MUST STAY IN THE ARTIFACT';
+    const codexRaw = 'CODEX RAW OUTPUT THAT MUST STAY IN THE ARTIFACT';
+
+    const report = await runConsensus({
+      command: 'execute',
+      repoRoot: root,
+      homeDir,
+      runId: RUN_ID,
+      execute: true,
+      now: new Date('2026-05-13T00:02:00.000Z'),
+      runner: fakeConsensusRunner({ claudeRaw, codexRaw }),
+    });
+
+    strictEqual(report.command, 'execute');
+    strictEqual(report.peer_execution, true);
+    strictEqual(report.execution_boundary.execute_flag_required, true);
+    strictEqual(report.execution_summary.passed, 2);
+    strictEqual(report.execution_summary.failed, 0);
+    ok(!JSON.stringify(report).includes(claudeRaw), 'json report must not include raw Claude output');
+    ok(!formatText(report).includes(codexRaw), 'text report must not include raw Codex output');
+
+    const claudeResult = report.executions.find((entry) => entry.peer === 'claude');
+    const codexResult = report.executions.find((entry) => entry.peer === 'codex');
+    strictEqual(claudeResult.status, 'passed');
+    strictEqual(codexResult.status, 'passed');
+    strictEqual(claudeResult.raw_output.bytes, Buffer.byteLength(claudeRaw));
+    ok(claudeResult.raw_output.sha256);
+    strictEqual(await readFile(join(root, claudeResult.raw_output.pointer), 'utf8'), claudeRaw);
+    strictEqual(await readFile(join(root, codexResult.raw_output.pointer), 'utf8'), codexRaw);
+
+    const manifest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'manifest.json'));
+    strictEqual(manifest.status, 'executed');
+    strictEqual(manifest.rounds[0].status, 'executed');
+    strictEqual(manifest.rounds[0].execution_results.length, 2);
+    const latest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', 'latest.json'));
+    strictEqual(latest.run_id, RUN_ID);
+    strictEqual(latest.summary.passed, 2);
+  });
+
+  it('classifies permission failures from explicit consensus execution without leaking raw text', async () => {
+    const root = await seedPlan();
+    const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-home-'));
+    await seedCompanionCache(homeDir);
+
+    const report = await runConsensus({
+      command: 'execute',
+      repoRoot: root,
+      homeDir,
+      runId: RUN_ID,
+      execute: true,
+      peers: ['claude'],
+      runner: fakeConsensusRunner({
+        claudeRaw: 'RAW DENIED OUTPUT THAT MUST NOT LEAK',
+        claudeFailure: true,
+      }),
+    });
+
+    strictEqual(report.status, 'failed');
+    strictEqual(report.execution_summary.failed, 1);
+    strictEqual(report.execution_summary.failed_non_retryable, 1);
+    const failure = report.executions[0];
+    strictEqual(failure.peer, 'claude');
+    strictEqual(failure.status, 'permission_failed');
+    strictEqual(failure.failure_type, 'permission_denied');
+    strictEqual(failure.retryable, false);
+    ok(!JSON.stringify(report).includes('RAW DENIED OUTPUT'), 'raw failed peer output must not be in json report');
+    ok(!formatText(report).includes('RAW DENIED OUTPUT'), 'raw failed peer output must not be in text report');
+    strictEqual(await readFile(join(root, failure.raw_output.pointer), 'utf8'), 'RAW DENIED OUTPUT THAT MUST NOT LEAK');
   });
 
   it('records raw peer output as an artifact pointer without leaking content', async () => {
@@ -127,12 +204,14 @@ describe('runtime consensus', () => {
 
     strictEqual(report.round, 2);
     strictEqual(report.artifacts.filter((artifact) => artifact.kind === 'peer-prompt').length, 2);
+    strictEqual(report.execution.available, true);
+    strictEqual(report.execution.command, `runtime:consensus execute --run-id ${RUN_ID} --round 2 --execute`);
     const prompt = await readFile(join(root, report.artifacts.find((artifact) => artifact.peer === 'codex').pointer), 'utf8');
     ok(prompt.includes('Confirm whether a follow-up executor should remain out of scope.'));
     ok(prompt.includes('Do not quote or depend on raw peer output'));
   });
 
-  it('parses CLI arguments and rejects unsafe ids or invalid budgets', () => {
+  it('parses CLI arguments and rejects unsafe ids or invalid budgets', async () => {
     const opts = parseArgs([
       'plan',
       '--repo-root',
@@ -159,9 +238,16 @@ describe('runtime consensus', () => {
     strictEqual(commandStyle.repoRoot, '/tmp/repo');
     strictEqual(commandStyle.peer, 'claude');
 
+    const executeStyle = parseArgs(['execute', '--run-id', RUN_ID, '--execute', '--timeout-ms', '60000']);
+    strictEqual(executeStyle.command, 'execute');
+    strictEqual(executeStyle.execute, true);
+    strictEqual(executeStyle.timeoutMs, 60000);
+
     throws(() => parseArgs(['record', '--run-id', '../bad']), /Invalid --run-id/);
     throws(() => parseArgs(['record', '--peer', 'bad/peer']), /Peer ids/);
     throws(() => parseArgs(['plan', '--max-rounds', '0']), /positive integer/);
+    await rejects(() => runConsensus({ command: 'execute', repoRoot: '/tmp/repo', runId: RUN_ID }), /requires --execute/);
+    await rejects(() => runConsensus({ command: 'plan', repoRoot: '/tmp/repo', runId: RUN_ID, task: 'x', maxRounds: 4 }), /--max-rounds must be <= 3/);
   });
 });
 
@@ -193,4 +279,84 @@ async function recordPeer(root, peer, output) {
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, 'utf8'));
+}
+
+async function seedCompanionCache(homeDir) {
+  await mkdir(join(homeDir, '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions', '0.1.0', '.claude-plugin'), { recursive: true });
+  await mkdir(join(homeDir, '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions', '0.1.0', 'scripts'), { recursive: true });
+  await writeFile(join(homeDir, '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions', '0.1.0', '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'companions', version: '0.1.0' }));
+  await writeFile(join(homeDir, '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions', '0.1.0', 'scripts', 'codex-companion.mjs'), "const CONTRACT_VERSION = '0.1.1'; // --prompt-file\n");
+
+  await mkdir(join(homeDir, '.codex', 'plugins', 'cache', 'agentic-plugins', 'companions', '0.1.0', '.codex-plugin'), { recursive: true });
+  await mkdir(join(homeDir, '.codex', 'plugins', 'cache', 'agentic-plugins', 'companions', '0.1.0', 'scripts'), { recursive: true });
+  await writeFile(join(homeDir, '.codex', 'plugins', 'cache', 'agentic-plugins', 'companions', '0.1.0', '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'companions', version: '0.1.0' }));
+  await writeFile(join(homeDir, '.codex', 'plugins', 'cache', 'agentic-plugins', 'companions', '0.1.0', 'scripts', 'claude-companion.mjs'), "const CONTRACT_VERSION = '0.1.1'; // --prompt-file\n");
+}
+
+function fakeConsensusRunner({
+  claudeRaw = 'CLAUDE RAW OUTPUT',
+  codexRaw = 'CODEX RAW OUTPUT',
+  claudeFailure = false,
+  codexFailure = false,
+} = {}) {
+  return async (command, args = []) => {
+    const key = [command, ...args].join(' ');
+    if (command === 'claude') {
+      if (args.join(' ') === '--version') return okResult('2.1.140 (Claude Code)\n');
+      if (args.join(' ') === '--help') return okResult('Usage: claude --print --output-format --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n');
+      if (args.join(' ') === 'auth status') return okResult(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' }));
+      if (args.join(' ') === 'plugin list') return okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.11.0\n    Scope: user\n    Status: enabled\n');
+    }
+    if (command === 'codex') {
+      if (args.join(' ') === '--version') return okResult('codex 1.0.0\n');
+      if (args.join(' ') === '--help') return okResult('Usage: codex exec --model -c --config --cd --sandbox --ask-for-approval\nCommands:\n  login status\n  plugin marketplace add upgrade remove\n');
+      if (args.join(' ') === 'exec --help') return okResult('Usage: codex exec --model -c --config --cd --sandbox --ask-for-approval\n');
+      if (args.join(' ') === 'features list') return okResult('hooks Beta true\nplugin_hooks Beta false\n');
+      if (args.join(' ') === 'login status') return okResult('Logged in using ChatGPT\n');
+      if (args.join(' ') === 'plugin marketplace --help') return okResult('Usage: codex plugin marketplace add upgrade remove\n');
+    }
+    if (command === process.execPath) {
+      const companionPath = args[0] ?? '';
+      if (companionPath.includes('claude-companion.mjs')) {
+        return companionResult({ peer: 'claude', raw: claudeRaw, failed: claudeFailure });
+      }
+      if (companionPath.includes('codex-companion.mjs')) {
+        return companionResult({ peer: 'codex', raw: codexRaw, failed: codexFailure });
+      }
+    }
+    throw new Error(`unexpected command: ${key}`);
+  };
+}
+
+function companionResult({ peer, raw, failed }) {
+  const envelope = failed
+    ? {
+        status: 'companion_error',
+        peer_host: peer,
+        peer_model: null,
+        stdout: raw,
+        exit_code: 3,
+        metadata: { duration_ms: 12, started_at: '2026-05-13T00:02:00.000Z', completed_at: '2026-05-13T00:02:00.012Z' },
+        error: { kind: 'peer_invocation_error', message: 'sandbox permission denied' },
+      }
+    : {
+        status: 'success',
+        peer_host: peer,
+        peer_model: null,
+        stdout: raw,
+        exit_code: 0,
+        metadata: { duration_ms: 12, started_at: '2026-05-13T00:02:00.000Z', completed_at: '2026-05-13T00:02:00.012Z' },
+      };
+  return {
+    ok: !failed,
+    exit_code: failed ? 3 : 0,
+    stdout: JSON.stringify(envelope),
+    stderr: failed ? 'sandbox permission denied' : '',
+    error_code: null,
+    timed_out: false,
+  };
+}
+
+function okResult(stdout) {
+  return { ok: true, exit_code: 0, stdout, stderr: '', error_code: null, timed_out: false };
 }

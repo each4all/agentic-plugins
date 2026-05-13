@@ -274,6 +274,73 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('retryable-failed=1'));
   });
 
+  it('summarizes latest consensus execution artifact without raw peer output', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-consensus-artifact-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const runId = 'consensus-20260513T000000Z-abcdef';
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'consensus', runId), { recursive: true });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'consensus', runId, 'execution.json'), {
+      schema_version: 'runtime-consensus-execution-1.0',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      status: 'failed',
+      updated_at: '2026-05-13T00:00:05.000Z',
+      round: 1,
+      peer_execution: true,
+      summary: {
+        executed: 1,
+        passed: 0,
+        failed: 1,
+        failed_retryable: 0,
+        failed_non_retryable: 1,
+      },
+      failures: [{
+        peer: 'claude',
+        status: 'permission_failed',
+        failure_type: 'permission_denied',
+        retryable: false,
+        retry_after: 'retry only after resolving host permission or sandbox policy outside runtime:consensus',
+        raw_output: {
+          pointer: '.agentic-plugins/runs/consensus/consensus-20260513T000000Z-abcdef/rounds/round-1/raw/claude.txt',
+          bytes: 24,
+          sha256: 'abc123',
+        },
+      }],
+    });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'consensus', 'latest.json'), {
+      schema_version: 'runtime-consensus-execution-latest-1.0',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      status: 'failed',
+      updated_at: '2026-05-13T00:00:05.000Z',
+      round: 1,
+      execution_pointer: `.agentic-plugins/runs/consensus/${runId}/execution.json`,
+      summary: {
+        executed: 1,
+        passed: 0,
+        failed: 1,
+        failed_retryable: 0,
+        failed_non_retryable: 1,
+      },
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    strictEqual(report.consensus_runs.status, 'needs_attention');
+    strictEqual(report.consensus_runs.latest.run_id, runId);
+    strictEqual(report.consensus_runs.latest.summary.failed_non_retryable, 1);
+    strictEqual(report.consensus_runs.latest.failures[0].failure_type, 'permission_denied');
+    ok(report.overall.warnings.includes('latest consensus execution has failures'));
+    ok(formatText(report).includes('Consensus Execution Artifacts'));
+    ok(formatText(report).includes('non-retryable-failed=1'));
+    ok(!JSON.stringify(report).includes('RAW PEER OUTPUT'), 'doctor must not read or print raw peer output');
+  });
+
   it('reports sandbox and permission readiness as unknown without an explicit peer smoke', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-readiness-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
