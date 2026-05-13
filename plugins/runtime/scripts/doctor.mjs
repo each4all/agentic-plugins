@@ -120,6 +120,14 @@ export async function runDoctor({
     permissionProof,
     executePermissionProof,
   });
+  const readinessMatrix = buildReadinessMatrix({
+    claude,
+    codex,
+    plugins,
+    companion,
+    modelEffort,
+    readiness,
+  });
   const sandboxPermissionProbeSection = buildSandboxPermissionProbeSection({
     requested: sandboxPermissionProbe,
     readiness,
@@ -167,6 +175,7 @@ export async function runDoctor({
     host_parity: hostParity,
     companions: companion,
     model_effort: modelEffort,
+    readiness_matrix: readinessMatrix,
     readiness,
     ledgers,
     limits: [
@@ -1282,6 +1291,182 @@ function buildReadiness({
   };
 }
 
+function buildReadinessMatrix({
+  claude,
+  codex,
+  plugins,
+  companion,
+  modelEffort,
+  readiness,
+}) {
+  const runtimePlugin = plugins.runtime;
+  return {
+    schema_version: 'runtime-readiness-matrix-1.0',
+    hosts: {
+      claude: buildHostReadinessRow({
+        host: 'claude',
+        cli: claude,
+        plugin: runtimePlugin,
+        modelEffort: modelEffort.directions.codex_to_claude,
+        hooks: {
+          automatic_plugin_hooks: Boolean(claude.feature_surface.automatic_plugin_hooks),
+          plugin_local_hooks: Boolean(claude.feature_surface.automatic_plugin_hooks),
+          evidence: 'Claude plugin hooks are a host-native plugin surface',
+        },
+      }),
+      codex: buildHostReadinessRow({
+        host: 'codex',
+        cli: codex,
+        plugin: runtimePlugin,
+        modelEffort: modelEffort.directions.claude_to_codex,
+        hooks: {
+          global_hooks: codex.feature_surface.codex_global_hooks,
+          global_hooks_stage: codex.feature_surface.codex_global_hooks_stage,
+          plugin_local_hooks: codex.feature_surface.codex_plugin_hooks,
+          plugin_local_hooks_stage: codex.feature_surface.codex_plugin_hooks_stage,
+          automatic_plugin_hooks: Boolean(codex.feature_surface.automatic_plugin_hooks),
+          evidence: 'Codex global hooks are reported separately from plugin-local automatic hooks',
+        },
+      }),
+    },
+    directions: {
+      claude_to_codex: buildDirectionReadinessRow({
+        key: 'claude_to_codex',
+        caller: 'claude',
+        peer: 'codex',
+        readiness: readiness.claude_to_codex,
+        companion: companion.directions.claude_to_codex,
+        modelEffort: modelEffort.directions.claude_to_codex,
+      }),
+      codex_to_claude: buildDirectionReadinessRow({
+        key: 'codex_to_claude',
+        caller: 'codex',
+        peer: 'claude',
+        readiness: readiness.codex_to_claude,
+        companion: companion.directions.codex_to_claude,
+        modelEffort: modelEffort.directions.codex_to_claude,
+      }),
+    },
+    limits: [
+      'installed distinguishes host plugin/cache evidence from repo source availability',
+      'model and effort are direction-specific peer invocation inputs, not proof of host-native defaults',
+      'Codex global hooks do not imply agentic-plugins plugin-local automatic hook parity',
+    ],
+  };
+}
+
+function buildHostReadinessRow({ host, cli, plugin, modelEffort, hooks }) {
+  return {
+    host,
+    available: {
+      status: cli.status,
+      version: cli.version.text || null,
+      command_status: cli.version.status,
+    },
+    installed: summarizeRuntimeInstallForHost(host, plugin),
+    authenticated: {
+      status: cli.auth.status,
+      method: cli.auth.method ?? null,
+      provider: cli.auth.provider ?? null,
+      subscription: cli.auth.subscription ?? null,
+    },
+    model_when_peer: {
+      value: modelEffort.model.value,
+      source: modelEffort.model.source,
+    },
+    effort_when_peer: {
+      value: modelEffort.effort.value,
+      source: modelEffort.effort.source,
+    },
+    hooks,
+  };
+}
+
+function summarizeRuntimeInstallForHost(host, plugin) {
+  const sourceVersion = plugin.source?.claude_manifest?.version ?? plugin.source?.codex_manifest?.version ?? null;
+  if (host === 'claude') {
+    const installed = plugin.installed.claude_plugin_list;
+    if (installed?.status === 'enabled') {
+      return {
+        status: 'installed',
+        evidence: 'claude plugin list reports enabled',
+        version: installed.version ?? plugin.cache.claude.latest?.manifest_version ?? sourceVersion,
+      };
+    }
+    if (installed?.status === 'failed') {
+      return {
+        status: 'blocked',
+        evidence: 'claude plugin list reports failed',
+        version: installed.version ?? plugin.cache.claude.latest?.manifest_version ?? sourceVersion,
+        error: installed.error ?? null,
+      };
+    }
+    if (plugin.cache.claude.status === 'available') {
+      return {
+        status: 'installed',
+        evidence: 'claude plugin cache contains runtime',
+        version: plugin.cache.claude.latest?.manifest_version ?? sourceVersion,
+      };
+    }
+    if (plugin.source?.present) {
+      return {
+        status: 'source_available',
+        evidence: 'repo source tree contains runtime; host install not proven',
+        version: sourceVersion,
+      };
+    }
+    return { status: 'not_installed', evidence: 'no claude plugin list, cache, or source evidence', version: null };
+  }
+
+  if (plugin.cache.codex.status === 'available') {
+    return {
+      status: 'installed',
+      evidence: 'codex plugin cache contains runtime',
+      version: plugin.cache.codex.latest?.manifest_version ?? sourceVersion,
+    };
+  }
+  if (plugin.source?.present) {
+    return {
+      status: 'source_available',
+      evidence: 'repo source tree contains runtime; host install not proven',
+      version: sourceVersion,
+    };
+  }
+  if (plugin.cache.codex_tmp_marketplace.status === 'available') {
+    return {
+      status: 'marketplace_cache_only',
+      evidence: 'codex temporary marketplace cache is not installation evidence',
+      version: plugin.cache.codex_tmp_marketplace.manifest_version ?? null,
+    };
+  }
+  return { status: 'not_installed', evidence: 'no codex install cache or source evidence', version: null };
+}
+
+function buildDirectionReadinessRow({ key, caller, peer, readiness, companion, modelEffort }) {
+  return {
+    key,
+    direction: readiness.direction,
+    caller,
+    peer,
+    status: readiness.status,
+    companion: {
+      status: companion.status,
+      contract_version: companion.selected?.contract_version ?? null,
+    },
+    model: {
+      value: modelEffort.model.value,
+      source: modelEffort.model.source,
+    },
+    effort: {
+      value: modelEffort.effort.value,
+      source: modelEffort.effort.source,
+    },
+    sandbox_permission: readiness.sandbox_permission.status,
+    blocker_count: readiness.blockers.length,
+    warning_count: readiness.warnings.length,
+  };
+}
+
 function buildSandboxPermissionProbeSection({ requested, readiness }) {
   const directions = {
     claude_to_codex: readiness.claude_to_codex.sandbox_permission,
@@ -1963,6 +2148,20 @@ export function formatText(report) {
   lines.push(`runtime:doctor ${report.runtime_version} (${report.overall.status})`);
   lines.push(`repo: ${report.repo_root}`);
   lines.push('read-only: true');
+  lines.push('');
+  lines.push('Readiness Matrix');
+  for (const name of ['claude', 'codex']) {
+    const host = report.readiness_matrix.hosts[name];
+    const hookText = name === 'codex'
+      ? `hooks=global:${featureFlagEvidence(host.hooks.global_hooks, host.hooks.global_hooks_stage)}, plugin-local:${featureFlagEvidence(host.hooks.plugin_local_hooks, host.hooks.plugin_local_hooks_stage)}, automatic-plugin-hooks:${host.hooks.automatic_plugin_hooks}`
+      : `hooks=automatic-plugin-hooks:${host.hooks.automatic_plugin_hooks}`;
+    lines.push(`- ${name}: available=${host.available.status}; installed=${host.installed.status}; authenticated=${host.authenticated.status}; peer-model=${host.model_when_peer.value ?? '<host-default>'} (${host.model_when_peer.source}); peer-effort=${host.effort_when_peer.value ?? '<host-default>'} (${host.effort_when_peer.source}); ${hookText}`);
+    lines.push(`  install-evidence: ${host.installed.evidence}`);
+  }
+  for (const key of ['claude_to_codex', 'codex_to_claude']) {
+    const direction = report.readiness_matrix.directions[key];
+    lines.push(`- ${direction.direction}: readiness=${direction.status}; companion=${direction.companion.status}; model=${direction.model.value ?? '<host-default>'}; effort=${direction.effort.value ?? '<host-default>'}; sandbox-permission=${direction.sandbox_permission}; blockers=${direction.blocker_count}; warnings=${direction.warning_count}`);
+  }
   lines.push('');
   lines.push('Host CLIs');
   for (const name of ['claude', 'codex']) {
