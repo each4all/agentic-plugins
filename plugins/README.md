@@ -37,6 +37,14 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
   with frontmatter `schema: '1.1'`, `workflow_type: macro`, and
   `workflow_id: macro-<verb>-<iso>-<rand>`. See
   [`plugins/orchestrator/README.md`](orchestrator/README.md).
+- **`runtime/`** — Stage 3+ L1 framework primitive per
+  [ADR-0024](../docs/adr/0024-runtime-operator-control-plane.md):
+  read-only `doctor` diagnostics for host CLI/auth readiness,
+  marketplace/cache/plugin state, companion contract compatibility,
+  model/effort observation, companion sandbox/permission readiness, and
+  workflow/peer-run ledger health. `settings`, dynamic consensus,
+  context hygiene, and completion footer work are deferred. See
+  [`plugins/runtime/README.md`](runtime/README.md).
 
 The Stage 1 `plugins/research` reference plugin was retired at
 Stage 2.5+ per
@@ -52,7 +60,7 @@ Per `docs/adr/0007-migration-cutover-plan.md`, plugin names and
 structures are agentic-plugins' own design — not 1:1 ports of omcc.
 omcc plugins serve as **experiential reference**, not porting targets.
 
-- **Stage 3+**: design-domain plugin — references omcc-designer's
+- **Future**: design-domain plugin — references omcc-designer's
   experience (poster, social-graphics, frontend, brief, evaluation,
   etc.) with the same redesign stance and the same 4-layer
   composition model

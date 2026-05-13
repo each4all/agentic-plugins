@@ -24,7 +24,7 @@ bridges implemented and tested:
 - [`companions/claude-companion.mjs`](companions/claude-companion.mjs) — Codex → Claude bridge
 - [`companions/codex-companion.mjs`](companions/codex-companion.mjs) — Claude → Codex bridge
 
-Three installable plugins ship in this repository:
+Four installable plugins ship in this repository:
 
 - [`plugins/companions/`](plugins/companions/) — script-only library
   plugin that bundles the canonical companion CLIs for cache-glob
@@ -38,14 +38,20 @@ Three installable plugins ship in this repository:
   `plugins/research` contract per
   [ADR-0014](docs/adr/0014-plugins-research-deprecation.md))
 - [`plugins/orchestrator/`](plugins/orchestrator/) — Stage 3+ L2
-  capability plugin (plan-only MVP per
+  capability plugin per
   [ADR-0018](docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
-  §sub-decision-1): macro plan + Plan-verify Codex ensemble for
-  multi-deliverable features. First multi-verb L2 occupant. The
-  `/orchestrator:plan` command produces `plan.subtasks[]` (a list
-  of deliverables) that future engineer workflows drive end-to-end.
-  `/orchestrator:next` and `/orchestrator:done` ship in follow-up
-  PRs alongside the cross-plugin invocation contract.
+  §sub-decision-1 and
+  [ADR-0019](docs/adr/0019-cross-plugin-invocation-contract.md):
+  macro plan, Plan-verify Codex ensemble, same-host engineer dispatch,
+  manual completion backup, finalize/abort lifecycle, and macro
+  auto-archive.
+- [`plugins/runtime/`](plugins/runtime/) — Stage 3+ L1 framework
+  primitive per
+  [ADR-0024](docs/adr/0024-runtime-operator-control-plane.md):
+  read-only `runtime:doctor` diagnostics for host readiness, plugin
+  install/cache state, companion compatibility, model/effort
+  observation, sandbox/permission readiness, and workflow ledger
+  health.
 
 See each plugin's README for install commands, invocation, and
 environment details.
@@ -57,10 +63,9 @@ cited-brief contract is now folded into `engineer:investigate`.
 
 ### Coming next
 
-- Stage 2: self-development plugin (omcc-dev workflow patterns
-  redesigned for dual-host)
-- Marketplace catalog schema docs and broader `kit/lint/` adapter
-  conformance checks
+- `runtime:settings` dry-run/apply operator surface
+- Runtime dynamic consensus, context hygiene, and completion footer
+  follow-ups from ADR-0024
 - Non-interactive auth story for CI smoke tests (DEVELOPMENT.md Risk #4)
 
 ## Concepts
@@ -77,6 +82,8 @@ cited-brief contract is now folded into `engineer:investigate`.
 /plugin marketplace add each4all/agentic-plugins
 /plugin install companions@agentic-plugins
 /plugin install engineer@agentic-plugins
+/plugin install orchestrator@agentic-plugins
+/plugin install runtime@agentic-plugins
 
 # OpenAI Codex CLI
 codex plugin marketplace add each4all/agentic-plugins
