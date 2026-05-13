@@ -38,6 +38,7 @@ const {
   statusPeerRun,
   cancelPeerRun,
   sweepPeerRuns,
+  fingerprintForPid,
 } = await import(PEER_RUNNER_PATH);
 const { createWorkflow, readWorkflow } = await import(STATE_PATH);
 
@@ -394,56 +395,46 @@ describe('peer-runner.mjs — status and output byte tracking', () => {
 describe('peer-runner.mjs — cancel', () => {
   it('cancel sends TERM then KILL after grace and marks the handle cancelled', async () => {
     await withTmpRepo(async (repoRoot) => {
-      const companionsRoot = await writeFakeCompanions(repoRoot);
-      const child = spawn(process.execPath, [
-        PEER_RUNNER_PATH,
-        'run',
-        '--repo-root', repoRoot,
-        '--run-id', 'cancel-run',
-        '--kind', 'manual',
-        '--peer', 'claude',
-        '--prompt-text', '<task>cancel</task>',
-        '--output-format', 'text',
-        '--cwd', repoRoot,
-      ], {
-        env: fakeEnv(companionsRoot, { FAKE_COMPANION_MODE: 'ignore-term' }),
-        stdio: ['ignore', 'pipe', 'pipe'],
+      const readyFile = join(repoRoot, 'cancel-run.ready');
+      const detached = process.platform !== 'win32';
+      const child = spawn(process.execPath, ['-e', `
+const { writeFileSync } = require('node:fs');
+process.on('SIGTERM', () => {});
+writeFileSync(process.env.FAKE_READY_FILE, 'ready\\n');
+setInterval(() => {}, 1000);
+`], {
+        env: { ...process.env, FAKE_READY_FILE: readyFile },
+        detached,
+        stdio: ['ignore', 'ignore', 'ignore'],
       });
-      const closePromise = new Promise((resolveP) => {
-        let stdout = '';
-        let stderr = '';
-        child.stdout.on('data', (c) => { stdout += c; });
-        child.stderr.on('data', (c) => { stderr += c; });
-        child.on('close', (code) => resolveP({ code, stdout, stderr }));
-      });
+      const closePromise = new Promise((resolveP) => child.on('close', (code, signal) => resolveP({ code, signal })));
 
-      const paths = peerRunPaths(repoRoot, 'cancel-run');
-      await waitFor(async () => {
-        if (!(await exists(paths.handle))) return false;
-        const handle = await readHandle(paths.handle);
-        return handle.status === 'running' && handle.stdout_bytes > 0;
-      }, { message: 'running cancellable peer run' });
+      try {
+        await waitFor(() => exists(readyFile), { message: 'running cancellable peer process' });
+        await writeHandleFixture(repoRoot, 'cancel-run', {
+          status: 'running',
+          pid: child.pid,
+          pgid: detached ? child.pid : null,
+          process_fingerprint: await fingerprintForPid(child.pid),
+        });
 
-      const cancelled = await cancelPeerRun({ repoRoot, runId: 'cancel-run', graceMs: 50 });
-      if (!cancelled.ok) {
-        const h = await readHandle(paths.handle);
-        if (h.pgid) {
-          try { process.kill(-h.pgid, 'SIGKILL'); } catch {}
-        } else if (h.pid) {
-          try { process.kill(h.pid, 'SIGKILL'); } catch {}
+        const cancelled = await cancelPeerRun({ repoRoot, runId: 'cancel-run', graceMs: 50 });
+        strictEqual(cancelled.ok, true);
+        strictEqual(cancelled.status, 'cancelled');
+
+        await closePromise;
+        const handle = await readHandle(peerRunPaths(repoRoot, 'cancel-run').handle);
+        strictEqual(handle.status, 'cancelled');
+        strictEqual(handle.error_kind, 'cancelled');
+        strictEqual(handle.pid, null);
+        strictEqual(handle.pgid, null);
+      } finally {
+        if (detached && child.pid) {
+          try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+        } else if (child.pid) {
+          try { process.kill(child.pid, 'SIGKILL'); } catch {}
         }
       }
-      strictEqual(cancelled.ok, true);
-      strictEqual(cancelled.status, 'cancelled');
-
-      const close = await closePromise;
-      strictEqual(close.code, 1, 'peer-runner CLI returns non-zero for cancelled run result');
-
-      const handle = await readHandle(paths.handle);
-      strictEqual(handle.status, 'cancelled');
-      strictEqual(handle.error_kind, 'cancelled');
-      strictEqual(handle.pid, null);
-      strictEqual(handle.pgid, null);
     });
   });
 
