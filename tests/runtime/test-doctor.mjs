@@ -220,6 +220,60 @@ describe('runtime doctor', () => {
     deepStrictEqual(report.ledgers.engineer.storage.overlapping_branches, ['feat/shared']);
   });
 
+  it('summarizes latest settings execution artifact failures with retry classification', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-settings-artifact-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const runId = 'settings-20260513T000000Z-abcdef';
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
+      schema_version: 'runtime-settings-execution-artifact-1.0',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      status: 'failed',
+      created_at: '2026-05-13T00:00:00.000Z',
+      updated_at: '2026-05-13T00:00:05.000Z',
+      plugin_management: {
+        mode: 'explicit-plugin-management-executor',
+        requested: true,
+        executed: true,
+        host_filter: 'codex',
+        summary: {
+          executed: 0,
+          failed: 1,
+          failed_retryable: 1,
+          failed_non_retryable: 0,
+        },
+      },
+      failures: [{
+        id: 'runtime:codex:add-marketplace',
+        plugin: 'runtime',
+        host: 'codex',
+        action: 'add-marketplace',
+        failure_type: 'network',
+        retryable: true,
+        retry_after: 'retry after network or registry connectivity recovers',
+        doctor_hint: 'runtime:doctor can re-check host CLI and plugin surface availability',
+      }],
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    strictEqual(report.settings_runs.status, 'needs_attention');
+    strictEqual(report.settings_runs.latest.run_id, runId);
+    strictEqual(report.settings_runs.latest.plugin_management.failed, 1);
+    strictEqual(report.settings_runs.latest.plugin_management.summary.failed_retryable, 1);
+    strictEqual(report.settings_runs.latest.plugin_management.failures[0].failure_type, 'network');
+    strictEqual(report.settings_runs.latest.plugin_management.failures[0].retryable, true);
+    ok(report.overall.warnings.includes('latest settings plugin-management execution has failures'));
+    ok(formatText(report).includes('Settings Execution Artifacts'));
+    ok(formatText(report).includes('retryable-failed=1'));
+  });
+
   it('reports sandbox and permission readiness as unknown without an explicit peer smoke', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-readiness-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));

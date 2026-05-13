@@ -1,6 +1,6 @@
 ---
-description: Dry-run runtime settings planner for agentic-plugins config, host/plugin readiness, companion model/effort defaults, and explicit plugin-management execution
-argument-hint: "[--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply] [--execute-plugin-management] [--plugin-management-host all|claude|codex]"
+description: Dry-run runtime settings planner for agentic-plugins config, host/plugin readiness, companion model/effort defaults, and explicit plugin-management execution artifacts
+argument-hint: "[--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply] [--execute-plugin-management] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]"
 ---
 
 # Runtime - Settings
@@ -27,6 +27,6 @@ Notes:
 - `--model` and `--effort` plan shared runtime defaults.
 - `--claude-model`, `--claude-effort`, `--codex-model`, and `--codex-effort` plan direction-specific companion defaults that still flow through `companions/contract.md` `--model` and `--effort`.
 - Output includes the projected effective companion model/effort after repo/user config precedence is applied. Settings warns when a lower-precedence target is shadowed by an existing repo-local or direction-specific setting.
-- Plugin install/update is dry-run unless `--execute-plugin-management` is supplied. The executor runs only allowlisted host-native plugin commands as argv arrays, omits raw stdout/stderr, and can be scoped with `--plugin-management-host`.
+- Plugin install/update is dry-run unless `--execute-plugin-management` is supplied. The executor runs only allowlisted host-native plugin commands as argv arrays, omits raw stdout/stderr, writes sanitized artifacts under `.agentic-plugins/runs/settings/<run-id>/`, and can be scoped with `--plugin-management-host`.
 - Host-native config, authentication, secrets, and sandbox/permission settings are never written by this command.
 - Codex CLI may expose host-level hooks, but agentic-plugins has no verified plugin-local automatic hook packaging today; settings reports manual paths instead of claiming parity.

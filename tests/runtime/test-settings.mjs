@@ -12,6 +12,8 @@ import {
 } from '../../plugins/runtime/scripts/settings.mjs';
 import { RUNTIME_VERSION } from '../../plugins/runtime/scripts/version.mjs';
 
+const SETTINGS_RUN_ID = 'settings-20260513T000000Z-abcdef';
+
 describe('runtime settings', () => {
   it('builds a dry-run settings plan without mutating config or running install commands', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-repo-'));
@@ -166,6 +168,60 @@ describe('runtime settings', () => {
     ok(!JSON.stringify(report).includes('RAW OUTPUT MUST NOT LEAK'), 'plugin management report must not include raw command output');
   });
 
+  it('persists execution artifacts and classifies failed plugin-management retries', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-artifact-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-artifact-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      runId: SETTINGS_RUN_ID,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex plugin marketplace add each4all/agentic-plugins': {
+          ok: false,
+          exit_code: null,
+          stdout: 'RAW OUTPUT MUST NOT LEAK',
+          stderr: 'ECONNRESET RAW ERROR MUST NOT LEAK',
+          error_code: 'ECONNRESET',
+          timed_out: false,
+        },
+      }),
+    });
+
+    strictEqual(report.artifacts.settings_execution.written, true);
+    strictEqual(report.artifacts.settings_execution.run_id, SETTINGS_RUN_ID);
+    strictEqual(report.artifacts.settings_execution.report_pointer, `.agentic-plugins/runs/settings/${SETTINGS_RUN_ID}/settings.json`);
+    strictEqual(report.plugin_management.summary.failed, 1);
+    strictEqual(report.plugin_management.summary.failed_retryable, 1);
+    strictEqual(report.plugin_management.summary.failed_non_retryable, 0);
+    const failed = report.plugin_management.plans.find((plan) => plan.status === 'failed');
+    strictEqual(failed.result.failure_type, 'network');
+    strictEqual(failed.result.retryable, true);
+    ok(failed.result.retry_after.includes('network'));
+
+    const artifact = await readJson(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'));
+    strictEqual(artifact.schema_version, 'runtime-settings-execution-artifact-1.0');
+    strictEqual(artifact.run_id, SETTINGS_RUN_ID);
+    strictEqual(artifact.status, 'failed');
+    strictEqual(artifact.summary.failed_retryable, 1);
+    strictEqual(artifact.failures[0].failure_type, 'network');
+    strictEqual(artifact.failures[0].retryable, true);
+    ok(artifact.doctor_integration.command.includes('runtime:doctor'));
+
+    const latest = await readJson(join(root, '.agentic-plugins', 'runs', 'settings', 'latest.json'));
+    strictEqual(latest.run_id, SETTINGS_RUN_ID);
+    strictEqual(latest.status, 'failed');
+    ok(!JSON.stringify(artifact).includes('RAW OUTPUT MUST NOT LEAK'), 'execution artifact must not include raw stdout');
+    ok(!JSON.stringify(artifact).includes('RAW ERROR MUST NOT LEAK'), 'execution artifact must not include raw stderr');
+    ok(formatText(report).includes('Execution Artifact'));
+    ok(formatText(report).includes(`run-id=${SETTINGS_RUN_ID}`));
+  });
+
   it('parses CLI arguments and rejects unsafe config values', () => {
     const opts = parseArgs([
       '--repo-root',
@@ -190,6 +246,8 @@ describe('runtime settings', () => {
       'codex',
       '--plugin-management-timeout-ms',
       '90000',
+      '--run-id',
+      SETTINGS_RUN_ID,
     ]);
     strictEqual(opts.repoRoot, '/tmp/repo');
     strictEqual(opts.format, 'json');
@@ -199,6 +257,7 @@ describe('runtime settings', () => {
     strictEqual(opts.executePluginManagement, true);
     strictEqual(opts.pluginManagementHost, 'codex');
     strictEqual(opts.pluginManagementTimeoutMs, 90000);
+    strictEqual(opts.runId, SETTINGS_RUN_ID);
     deepStrictEqual(opts.desired, {
       model: 'shared',
       effort: 'medium',
@@ -209,6 +268,7 @@ describe('runtime settings', () => {
     rejects(async () => parseArgs(['--target', 'host']), /--target must be repo, user, or both/);
     rejects(async () => parseArgs(['--plugin-management-host', 'host']), /--plugin-management-host must be all, claude, or codex/);
     rejects(async () => parseArgs(['--plugin-management-timeout-ms', '0']), /positive integer/);
+    rejects(async () => parseArgs(['--run-id', '../bad']), /Invalid --run-id/);
   });
 
   it('upserts flat TOML keys while preserving unrelated config', () => {
@@ -309,4 +369,8 @@ async function seedRepo(root) {
 
 async function writeJson(path, value) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function readJson(path) {
+  return JSON.parse(await readFile(path, 'utf8'));
 }
