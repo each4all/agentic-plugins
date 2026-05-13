@@ -47,7 +47,16 @@ coverage/
 # Codex CLI local state
 .codex/
 
-# Plugin output (artifacts generated during local testing)
+# agentic-plugins runtime/operator local artifacts
+#
+# Keep .agentic-plugins/config.toml trackable for intentional repo-local
+# defaults. Generated runs and local operator byproducts stay out of git.
+.agentic-plugins/runs/
+.agentic-plugins/tmp/
+.agentic-plugins/cache/
+.agentic-plugins/*.local.toml
+
+# Legacy plugin output (artifacts generated during local testing)
 output/
 
 # Temp / scratch

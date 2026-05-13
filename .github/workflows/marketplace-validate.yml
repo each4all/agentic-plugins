@@ -7,8 +7,11 @@ on:
       - '.claude-plugin/marketplace.json'
       - '.agents/plugins/marketplace.json'
       - '.release-please-manifest.json'
+      - '.gitignore'
+      - 'scripts/validate-artifacts.mjs'
       - 'scripts/validate-marketplace.mjs'
       - 'scripts/validate-versions.mjs'
+      - 'tests/scripts/test-validate-artifacts.mjs'
       - '.github/workflows/marketplace-validate.yml'
       - 'package.json'
       - 'plugins/**'
@@ -17,8 +20,11 @@ on:
       - '.claude-plugin/marketplace.json'
       - '.agents/plugins/marketplace.json'
       - '.release-please-manifest.json'
+      - '.gitignore'
+      - 'scripts/validate-artifacts.mjs'
       - 'scripts/validate-marketplace.mjs'
       - 'scripts/validate-versions.mjs'
+      - 'tests/scripts/test-validate-artifacts.mjs'
       - '.github/workflows/marketplace-validate.yml'
       - 'package.json'
       - 'plugins/**'
@@ -46,3 +52,6 @@ jobs:
 
       - name: Cross-check versions (release-please-manifest <-> plugin manifests <-> Claude marketplace)
         run: npm run validate:versions
+
+      - name: Validate artifact ignore policy
+        run: npm run validate:artifacts

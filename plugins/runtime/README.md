@@ -39,6 +39,13 @@ It does not own persona-level engineering work or macro planning. Those remain i
 
 Runtime also ships `scripts/footer.mjs`, a helper used by engineer and orchestrator completion surfaces to render the ADR-0024 advisory footer from explicit fields or a `runtime:context` artifact pointer. It is intentionally not a new slash command.
 
+Runtime artifact git policy is documented in
+[`docs/artifact-policy.md`](docs/artifact-policy.md) and validated by
+`npm run validate:artifacts`. In short, `.agentic-plugins/config.toml` remains
+trackable for intentional repo-local defaults, while generated artifacts under
+`.agentic-plugins/runs/`, local runtime caches, temporary files, and local
+override TOML files are ignored.
+
 Codex skill parity:
 
 ```sh
