@@ -212,7 +212,8 @@ When the argument starts with `archive`:
   explicitly.
 - `archive <id>` → validate the id against the workflow-id regex
   (ADR-0011 §1), resolve to
-  `<REPO_ROOT>/.claude/agentic-engineer/workflows/<id>.md`, confirm
+  `<REPO_ROOT>/.agentic-plugins/state/engineer/workflows/<id>.md`
+  (or the legacy `.claude/agentic-engineer/workflows/<id>.md`), confirm
   it exists.
 
 Confirm with the user before mutating state — archive is reversible

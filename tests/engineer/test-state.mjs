@@ -24,7 +24,7 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, rejects, match } from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -45,12 +45,16 @@ const {
   findActiveWorkflowByBranch,
   withFileLock,
   workflowFilePath,
+  WORKFLOW_DIR_REL,
+  LEGACY_WORKFLOW_DIR_REL,
   // ADR-0017 schema 1.1
   SCHEMA_VERSION,
   SUPPORTED_SCHEMA_VERSIONS,
   TERMINAL_PHASES,
   ENSEMBLE_RESULTS_RETENTION_CAP,
   ARCHIVE_DIR_REL,
+  LEGACY_ARCHIVE_DIR_REL,
+  resolveWorkflowStorage,
   pruneEnsembleResults,
   recordPendingEnsemble,
   commitEnsemble,
@@ -88,6 +92,37 @@ const MIN_BASELINE = {
   head: '0000000000000000000000000000000000000000',
   status_digest: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
 };
+
+async function writeWorkflowFixture(path, branch) {
+  await writeFile(path, [
+    '---',
+    `workflow_id: ${JSON.stringify(path.split('/').at(-1).replace(/\.md$/, ''))}`,
+    'schema: "1.1"',
+    'persona: "engineer"',
+    'verb: "investigate"',
+    'profile: ""',
+    'original_request: "fixture"',
+    'started_at: "2026-01-01T00:00:00Z"',
+    'updated_at: "2026-01-01T00:00:00Z"',
+    'repo_root: ""',
+    'git_baseline:',
+    `  branch: ${JSON.stringify(branch)}`,
+    '  head: "0000000000000000000000000000000000000000"',
+    '  status_digest: ""',
+    'current_phase: "phase-0"',
+    'next_action: ""',
+    'tasks:',
+    'host_history:',
+    '  - host: "codex"',
+    '    at: "2026-01-01T00:00:00Z"',
+    '    event: "created"',
+    'workflow_type: "verb-chain"',
+    '---',
+    '',
+    '# fixture',
+    '',
+  ].join('\n'));
+}
 
 describe('state.mjs — scrubSecrets (Phase 6 fix #8 — extended secret patterns)', () => {
   it('AWS access key (AKIA prefix) is redacted', () => {
@@ -359,6 +394,94 @@ host_history:
 });
 
 describe('state.mjs — createWorkflow round-trip with special characters', () => {
+  it('creates new workflow state under canonical .agentic-plugins/state by default', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const { filePath } = await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'codex',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'canonical state home',
+      });
+      ok(filePath.includes('/.agentic-plugins/state/engineer/workflows/'), filePath);
+      const storage = await resolveWorkflowStorage(repoRoot);
+      strictEqual(storage.home, 'canonical');
+      strictEqual(storage.canonicalHasState, true);
+      strictEqual(storage.legacyHasState, false);
+    });
+  });
+
+  it('keeps writing to the legacy state home while legacy engineer state exists', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const legacyDir = join(repoRoot, LEGACY_WORKFLOW_DIR_REL);
+      await mkdir(legacyDir, { recursive: true });
+      await writeWorkflowFixture(
+        join(legacyDir, 'investigate-20260101T000000Z-aaaaaa.md'),
+        'legacy/main',
+      );
+
+      const { filePath } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        host: 'claude',
+        gitBaseline: { ...MIN_BASELINE, branch: 'feature/new' },
+        originalRequest: 'legacy write continuity',
+      });
+
+      ok(filePath.includes('/.claude/agentic-engineer/workflows/'), filePath);
+      const storage = await resolveWorkflowStorage(repoRoot);
+      strictEqual(storage.home, 'legacy');
+      strictEqual(storage.canonicalHasState, false);
+      strictEqual(storage.legacyHasState, true);
+    });
+  });
+
+  it('fails closed when canonical and legacy homes both have an active workflow on the same branch', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await mkdir(join(repoRoot, WORKFLOW_DIR_REL), { recursive: true });
+      await mkdir(join(repoRoot, LEGACY_WORKFLOW_DIR_REL), { recursive: true });
+      await writeWorkflowFixture(
+        join(repoRoot, WORKFLOW_DIR_REL, 'investigate-20260101T000000Z-aaaaaa.md'),
+        'test',
+      );
+      await writeWorkflowFixture(
+        join(repoRoot, LEGACY_WORKFLOW_DIR_REL, 'investigate-20260101T000001Z-bbbbbb.md'),
+        'test',
+      );
+
+      await rejects(
+        () => findActiveWorkflowByBranch(repoRoot, 'test'),
+        /Ambiguous engineer workflow storage/,
+      );
+    });
+  });
+
+  it('blocks ordinary writes when canonical and legacy homes both contain engineer state', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await mkdir(join(repoRoot, WORKFLOW_DIR_REL), { recursive: true });
+      await mkdir(join(repoRoot, LEGACY_WORKFLOW_DIR_REL), { recursive: true });
+      await writeWorkflowFixture(
+        join(repoRoot, WORKFLOW_DIR_REL, 'investigate-20260101T000000Z-aaaaaa.md'),
+        'canonical/branch',
+      );
+      await writeWorkflowFixture(
+        join(repoRoot, LEGACY_WORKFLOW_DIR_REL, 'investigate-20260101T000001Z-bbbbbb.md'),
+        'legacy/branch',
+      );
+
+      await rejects(
+        () => createWorkflow({
+          repoRoot,
+          verb: 'compose',
+          host: 'codex',
+          gitBaseline: MIN_BASELINE,
+          originalRequest: 'blocked split home',
+        }),
+        /Workflow storage migration blocked/,
+      );
+    });
+  });
+
   it('preserves UTF-8 / quotes / Korean / control-adjacent chars in original_request', async () => {
     await withTmpRepo(async (repoRoot) => {
       const tricky = '한국어 + "quoted" + symbols #@! and unicode ☕';
@@ -569,7 +692,7 @@ describe('state.mjs — findActiveWorkflow branch-keyed lookup (ADR-0018 §sub-2
       // this file without invoking the strict parseWorkflowFile.
       const sibling = join(
         repoRoot,
-        '.claude/agentic-engineer/workflows/investigate-20260101T000000Z-zzzzzz.md',
+        '.agentic-plugins/state/engineer/workflows/investigate-20260101T000000Z-zzzzzz.md',
       );
       await writeFile(
         sibling,
@@ -602,7 +725,7 @@ describe('state.mjs — findActiveWorkflow branch-keyed lookup (ADR-0018 §sub-2
       // second same-branch file.
       const opaque = join(
         repoRoot,
-        '.claude/agentic-engineer/workflows/investigate-20260101T000000Z-zzzzzz.md',
+        '.agentic-plugins/state/engineer/workflows/investigate-20260101T000000Z-zzzzzz.md',
       );
       await writeFile(opaque, '---\n!!totally corrupt!!\n', { mode: 0o600 });
       await rejects(
@@ -810,8 +933,10 @@ describe('state.mjs — ADR-0017 schema 1.1 constants', () => {
     strictEqual(ENSEMBLE_RESULTS_RETENTION_CAP, 20);
   });
 
-  it('ARCHIVE_DIR_REL is .claude/agentic-engineer/archive', () => {
-    strictEqual(ARCHIVE_DIR_REL, '.claude/agentic-engineer/archive');
+  it('workflow and archive dirs default to canonical .agentic-plugins/state', () => {
+    strictEqual(WORKFLOW_DIR_REL, '.agentic-plugins/state/engineer/workflows');
+    strictEqual(ARCHIVE_DIR_REL, '.agentic-plugins/state/engineer/archive');
+    strictEqual(LEGACY_ARCHIVE_DIR_REL, '.claude/agentic-engineer/archive');
   });
 });
 
@@ -1620,9 +1745,9 @@ describe('state.mjs — archiveWorkflow archiveDirectory-only mode (Codex review
 
   it('locks the same .creation-lock as createWorkflow (Codex re-review M-1)', async () => {
     // Hand-derived dirLockRoot must produce the canonical lock path
-    // `<repoRoot>/.claude/agentic-engineer/.creation-lock`. The previous
+    // `<repoRoot>/.agentic-plugins/state/engineer/.creation-lock`. The previous
     // (incorrect) two-deep dirname produced
-    // `<repoRoot>/.claude/agentic-engineer/.claude/agentic-engineer/.creation-lock`,
+    // `<repoRoot>/.agentic-plugins/state/engineer/.agentic-plugins/state/engineer/.creation-lock`,
     // which did not serialize with the rest of the engineer locking
     // domain.
     const { stat } = await import('node:fs/promises');
@@ -1644,7 +1769,7 @@ describe('state.mjs — archiveWorkflow archiveDirectory-only mode (Codex review
         host: 'claude',
         archiveDirectory: customArchive,
       });
-      const stray = `${repoRoot}/.claude/agentic-engineer/.claude`;
+      const stray = `${repoRoot}/.agentic-plugins/state/engineer/.agentic-plugins`;
       const strayStat = await stat(stray).catch(() => null);
       strictEqual(strayStat, null, `unexpected stray dir at ${stray}`);
     });

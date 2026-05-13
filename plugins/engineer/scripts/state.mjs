@@ -8,11 +8,12 @@
 //   - plugins/engineer/adapters/{claude,codex}/hooks/* (snapshot writes)
 //
 // Storage location:
-//   <repo_root>/.claude/agentic-engineer/workflows/<workflow_id>.md
+//   canonical: <repo_root>/.agentic-plugins/state/engineer/workflows/<workflow_id>.md
+//   legacy:    <repo_root>/.claude/agentic-engineer/workflows/<workflow_id>.md
 //
 // Lock files:
-//   <repo_root>/.claude/agentic-engineer/.creation-lock        (directory-level)
-//   <repo_root>/.claude/agentic-engineer/workflows/<id>.md.lock (per-file)
+//   <state-home>/.creation-lock             (directory-level)
+//   <state-home>/workflows/<id>.md.lock     (per-file)
 //
 // File modes:
 //   directories: 0o700
@@ -63,10 +64,15 @@ export const SCHEMA_VERSION = '1.1';
 // files.
 export const SUPPORTED_SCHEMA_VERSIONS = new Set([1, '1.1']);
 
-export const WORKFLOW_DIR_REL = '.claude/agentic-engineer/workflows';
-export const CREATION_LOCK_REL = '.claude/agentic-engineer/.creation-lock';
+export const STATE_DIR_REL = '.agentic-plugins/state/engineer';
+export const LEGACY_STATE_DIR_REL = '.claude/agentic-engineer';
+export const WORKFLOW_DIR_REL = `${STATE_DIR_REL}/workflows`;
+export const LEGACY_WORKFLOW_DIR_REL = `${LEGACY_STATE_DIR_REL}/workflows`;
+export const CREATION_LOCK_REL = `${STATE_DIR_REL}/.creation-lock`;
+export const LEGACY_CREATION_LOCK_REL = `${LEGACY_STATE_DIR_REL}/.creation-lock`;
 // ADR-0017 §sub-decision 5 — auto-archive destination.
-export const ARCHIVE_DIR_REL = '.claude/agentic-engineer/archive';
+export const ARCHIVE_DIR_REL = `${STATE_DIR_REL}/archive`;
+export const LEGACY_ARCHIVE_DIR_REL = `${LEGACY_STATE_DIR_REL}/archive`;
 
 // ADR-0017 §sub-decision 5 — terminal phase whitelist that gates Stop
 // auto-archive. The whitelist is intentionally small + explicit so an
@@ -114,23 +120,113 @@ const VALID_SNAPSHOT_TRIGGERS = new Set(['pre-compact', 'stop']);
 // -----------------------------------------------------------------------------
 // Path helpers
 
-export function workflowDir(repoRoot) {
+const STATE_HOMES = Object.freeze({
+  canonical: {
+    home: 'canonical',
+    stateDirRel: STATE_DIR_REL,
+    workflowDirRel: WORKFLOW_DIR_REL,
+    archiveDirRel: ARCHIVE_DIR_REL,
+    creationLockRel: CREATION_LOCK_REL,
+    peerRunsDirRel: `${STATE_DIR_REL}/peer-runs`,
+  },
+  legacy: {
+    home: 'legacy',
+    stateDirRel: LEGACY_STATE_DIR_REL,
+    workflowDirRel: LEGACY_WORKFLOW_DIR_REL,
+    archiveDirRel: LEGACY_ARCHIVE_DIR_REL,
+    creationLockRel: LEGACY_CREATION_LOCK_REL,
+    peerRunsDirRel: `${LEGACY_STATE_DIR_REL}/peer-runs`,
+  },
+});
+
+function assertAbsoluteRepoRoot(repoRoot, fnName = 'repoRoot') {
   if (!isAbsolute(repoRoot)) {
-    throw new Error(`repoRoot must be absolute: ${repoRoot}`);
+    throw new Error(`${fnName} must be absolute: ${repoRoot}`);
   }
-  return join(repoRoot, WORKFLOW_DIR_REL);
 }
 
-export function creationLockPath(repoRoot) {
-  return join(repoRoot, CREATION_LOCK_REL);
+function statePaths(repoRoot, home = 'canonical') {
+  assertAbsoluteRepoRoot(repoRoot);
+  const spec = STATE_HOMES[home];
+  if (!spec) throw new Error(`unknown workflow state home: ${home}`);
+  return {
+    ...spec,
+    root: join(repoRoot, spec.stateDirRel),
+    workflows: join(repoRoot, spec.workflowDirRel),
+    archive: join(repoRoot, spec.archiveDirRel),
+    creationLock: join(repoRoot, spec.creationLockRel),
+    peerRuns: join(repoRoot, spec.peerRunsDirRel),
+  };
 }
 
-export function workflowFilePath(repoRoot, workflowId) {
-  return join(workflowDir(repoRoot), `${workflowId}.md`);
+export function workflowDir(repoRoot, { home = 'canonical' } = {}) {
+  return statePaths(repoRoot, home).workflows;
+}
+
+export function creationLockPath(repoRoot, { home = 'canonical' } = {}) {
+  return statePaths(repoRoot, home).creationLock;
+}
+
+export function workflowFilePath(repoRoot, workflowId, { home = 'canonical' } = {}) {
+  return join(workflowDir(repoRoot, { home }), `${workflowId}.md`);
 }
 
 function fileLockPath(workflowFilePath_) {
   return `${workflowFilePath_}.lock`;
+}
+
+async function directoryHasEntries(dir) {
+  try {
+    const entries = await readdir(dir);
+    return entries.length > 0;
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+async function stateHomeHasState(repoRoot, home) {
+  const paths = statePaths(repoRoot, home);
+  if (await pathStat(paths.creationLock)) return true;
+  return (
+    await directoryHasEntries(paths.workflows) ||
+    await directoryHasEntries(paths.archive) ||
+    await directoryHasEntries(paths.peerRuns)
+  );
+}
+
+export async function resolveWorkflowStorage(repoRoot, { mode = 'read' } = {}) {
+  assertAbsoluteRepoRoot(repoRoot);
+  const canonicalHasState = await stateHomeHasState(repoRoot, 'canonical');
+  const legacyHasState = await stateHomeHasState(repoRoot, 'legacy');
+  if (mode === 'write' && canonicalHasState && legacyHasState) {
+    throw new Error(
+      `Workflow storage migration blocked: both ${STATE_DIR_REL} and ` +
+        `${LEGACY_STATE_DIR_REL} contain engineer state. Migrate or reconcile ` +
+        `the legacy home before ordinary workflow writes.`,
+    );
+  }
+  const home = canonicalHasState ? 'canonical' : (legacyHasState ? 'legacy' : 'canonical');
+  return {
+    ...statePaths(repoRoot, home),
+    canonicalHasState,
+    legacyHasState,
+  };
+}
+
+function inferStorageFromWorkflowPath(workflowPath) {
+  const text = String(workflowPath);
+  const canonicalNeedle = '/.agentic-plugins/state/engineer/';
+  const legacyNeedle = '/.claude/agentic-engineer/';
+  const canonicalIndex = text.indexOf(canonicalNeedle);
+  if (canonicalIndex >= 0) {
+    return { home: 'canonical', repoRoot: text.slice(0, canonicalIndex) };
+  }
+  const legacyIndex = text.indexOf(legacyNeedle);
+  if (legacyIndex >= 0) {
+    return { home: 'legacy', repoRoot: text.slice(0, legacyIndex) };
+  }
+  return null;
 }
 
 // -----------------------------------------------------------------------------
@@ -372,14 +468,15 @@ async function ensureDir(path, mode) {
  * info into `atomicWrite()` for the pre-commit recheck. The release
  * path is in finally — runs on every exit, including throws.
  */
-export async function withDirectoryLock(repoRoot, fn) {
-  await ensureDir(workflowDir(repoRoot), 0o700);
-  await ensureDir(dirname(creationLockPath(repoRoot)), 0o700);
-  const lockPath = creationLockPath(repoRoot);
+export async function withDirectoryLock(repoRoot, fn, opts = {}) {
+  const storage = opts.storage ?? await resolveWorkflowStorage(repoRoot, { mode: 'write' });
+  await ensureDir(storage.workflows, 0o700);
+  await ensureDir(dirname(storage.creationLock), 0o700);
+  const lockPath = storage.creationLock;
   const token = await acquireLock(lockPath);
   let releaseOk = false;
   try {
-    const result = await fn({ lockPath, token });
+    const result = await fn({ lockPath, token, storage });
     releaseOk = true;
     return result;
   } finally {
@@ -429,19 +526,19 @@ export async function withFileLock(workflowPath, fn) {
  * directory-level lock if exclusivity matters.
  */
 export async function listWorkflowFiles(repoRoot) {
-  const dir = workflowDir(repoRoot);
-  const st = await pathStat(dir);
+  const storage = await resolveWorkflowStorage(repoRoot);
+  const st = await pathStat(storage.workflows);
   if (!st) return [];
   let entries;
   try {
-    entries = await readdir(dir);
+    entries = await readdir(storage.workflows);
   } catch (err) {
     if (err.code === 'ENOENT') return [];
     throw err;
   }
   return entries
     .filter((name) => name.endsWith('.md') && !name.endsWith('.md.tmp'))
-    .map((name) => join(dir, name))
+    .map((name) => join(storage.workflows, name))
     .sort();
 }
 
@@ -559,9 +656,21 @@ function safeFilename(file) {
  *  - `readFile` failure (permissions, FIFO, etc.) is also fail-closed
  *    for the same reason — branch identity is undeterminable.
  */
-export async function findActiveWorkflowByBranch(repoRoot, branch) {
+async function findActiveWorkflowByBranchInDir(dir, branch) {
   if (!branch) return null;
-  const files = await listWorkflowFiles(repoRoot);
+  const st = await pathStat(dir);
+  if (!st) return null;
+  let entries;
+  try {
+    entries = await readdir(dir);
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  const files = entries
+    .filter((name) => name.endsWith('.md') && !name.endsWith('.md.tmp'))
+    .map((name) => join(dir, name))
+    .sort();
   const matching = [];
   for (const file of files) {
     let text;
@@ -606,6 +715,26 @@ export async function findActiveWorkflowByBranch(repoRoot, branch) {
       `ADR-0018 §sub-2 requires exactly one workflow per branch. ` +
       `Reconcile manually — keep one file, archive the rest.`,
   );
+}
+
+export async function findActiveWorkflowByBranch(repoRoot, branch) {
+  if (!branch) return null;
+  const canonical = await findActiveWorkflowByBranchInDir(
+    workflowDir(repoRoot, { home: 'canonical' }),
+    branch,
+  );
+  const legacy = await findActiveWorkflowByBranchInDir(
+    workflowDir(repoRoot, { home: 'legacy' }),
+    branch,
+  );
+  if (canonical && legacy) {
+    throw new Error(
+      `Ambiguous engineer workflow storage: both ${WORKFLOW_DIR_REL} and ` +
+        `${LEGACY_WORKFLOW_DIR_REL} contain an active workflow on branch ` +
+        `${JSON.stringify(branch)}. Reconcile or migrate before continuing.`,
+    );
+  }
+  return canonical ?? legacy;
 }
 
 /**
@@ -1497,16 +1626,17 @@ export async function createWorkflowUnderLock({
     `## Phase notes\n\n` +
     `### ${currentPhase}\n\n`;
 
-  const filePath = workflowFilePath(repoRoot, workflowId);
-  await ensureDir(workflowDir(repoRoot), 0o700);
+  const storage = ownership?.storage ?? await resolveWorkflowStorage(repoRoot, { mode: 'write' });
+  const filePath = workflowFilePath(repoRoot, workflowId, { home: storage.home });
+  await ensureDir(storage.workflows, 0o700);
   await atomicWrite(filePath, assembleWorkflowFile(frontmatter, body), ownership);
 
   return { workflowId, filePath, frontmatter, body };
 }
 
 export async function createWorkflow(args) {
-  return withDirectoryLock(args.repoRoot, ({ lockPath, token }) =>
-    createWorkflowUnderLock(args, { lockPath, token }),
+  return withDirectoryLock(args.repoRoot, ({ lockPath, token, storage }) =>
+    createWorkflowUnderLock(args, { lockPath, token, storage }),
   );
 }
 
@@ -1937,20 +2067,23 @@ export async function archiveWorkflow({
   if (!repoRoot && !archiveDirectory) {
     throw new Error('archiveWorkflow: repoRoot or archiveDirectory is required');
   }
-  const targetDir = archiveDirectory ?? archiveDir(repoRoot);
+  const inferred = inferStorageFromWorkflowPath(workflowPath);
+  const effectiveRepoRoot = repoRoot ?? inferred?.repoRoot;
+  const sourceHome = inferred?.home ?? 'canonical';
+  const sourceStorage = effectiveRepoRoot ? statePaths(effectiveRepoRoot, sourceHome) : null;
+  const targetDir = archiveDirectory ?? archiveDir(effectiveRepoRoot, { home: sourceHome });
   const baseName = basename(workflowPath);
 
   // The directory lock must hash to the same `.creation-lock` path
-  // `withDirectoryLock`/`createWorkflow` use (it resolves
-  // `<repoRoot>/.claude/agentic-engineer/.creation-lock` per
-  // `creationLockPath`). When the caller provided only
-  // `archiveDirectory`, derive the repoRoot from the canonical four-deep
-  // workflow layout (`<repoRoot>/.claude/agentic-engineer/workflows/<id>.md`)
-  // — Codex re-review M-1 caught the previous two-deep derivation that
-  // double-appended `.claude/agentic-engineer/`, producing a different
-  // lock path and breaking serialization with createWorkflow / archive.
+  // `withDirectoryLock`/`createWorkflow` use for the source state home.
+  // When the caller provided only `archiveDirectory`, derive the repoRoot
+  // from the four-deep workflow layout
+  // (`<repoRoot>/<state-home>/workflows/<id>.md`). Codex re-review M-1
+  // caught the previous two-deep derivation that double-appended the
+  // state home, producing a different lock path and breaking
+  // serialization with createWorkflow / archive.
   const dirLockRoot =
-    repoRoot ??
+    effectiveRepoRoot ??
     dirname(dirname(dirname(dirname(workflowPath))));
 
   return withDirectoryLock(dirLockRoot, async () => {
@@ -2028,7 +2161,7 @@ export async function archiveWorkflow({
         host,
       };
     });
-  });
+  }, sourceStorage ? { storage: sourceStorage } : {});
 }
 
 /**
@@ -2105,11 +2238,8 @@ async function archiveCandidateWithRaceRetry({
   );
 }
 
-export function archiveDir(repoRoot) {
-  if (!isAbsolute(repoRoot)) {
-    throw new Error(`repoRoot must be absolute: ${repoRoot}`);
-  }
-  return join(repoRoot, ARCHIVE_DIR_REL);
+export function archiveDir(repoRoot, { home = 'canonical' } = {}) {
+  return statePaths(repoRoot, home).archive;
 }
 
 /**

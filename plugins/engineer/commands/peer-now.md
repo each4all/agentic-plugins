@@ -65,7 +65,9 @@ Reject with a one-line usage hint and stop on:
 
 `peer-runner.mjs` supervises the companion process and writes a
 hidden repo-local ledger under
-`.claude/agentic-engineer/peer-runs/<run_id>/`. With
+`.agentic-plugins/state/engineer/peer-runs/<run_id>/` for new repos
+(legacy `.claude/agentic-engineer/peer-runs/<run_id>/` remains active
+until explicit migration). With
 `--kind peer-now`, it does NOT touch `pending_ensemble` or
 `ensemble_results` — it just tracks the side-channel process and
 surfaces the response path. Use `--output-format text` so the raw
