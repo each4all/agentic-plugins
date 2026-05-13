@@ -11,7 +11,9 @@ import {
 import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.1.0';
+import { RUNTIME_VERSION } from './version.mjs';
+
+const VERSION = RUNTIME_VERSION;
 const MANIFEST_SCHEMA = 'runtime-consensus-run-1.0';
 const RESULT_SCHEMA = 'runtime-consensus-result-1.0';
 const VALID_COMMANDS = new Set(['plan', 'record', 'synthesize', 'next-round', 'status']);

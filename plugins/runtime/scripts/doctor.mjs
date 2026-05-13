@@ -12,8 +12,10 @@ import { access, readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { RUNTIME_VERSION } from './version.mjs';
 
-export const RUNTIME_VERSION = '0.1.0';
+export { RUNTIME_VERSION };
+
 export const CONTRACT_COMPATIBLE_MAJOR = 0;
 export const PLUGIN_NAMES = ['companions', 'engineer', 'orchestrator', 'runtime'];
 export const TERMINAL_PEER_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled', 'orphaned', 'pruned']);
@@ -82,6 +84,7 @@ export async function runDoctor({
   const caches = await inspectPluginCaches(resolvedHomeDir);
   const claudePluginList = parseClaudePluginList(claude.plugin?.stdout ?? '');
   const plugins = buildPluginMatrix({ source, catalogs, caches, claudePluginList });
+  const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList });
   const companion = await inspectCompanionContract({
     repoRoot: resolvedRepoRoot,
     homeDir: resolvedHomeDir,
@@ -136,6 +139,7 @@ export async function runDoctor({
       codex: redactCommandDetails(codex),
     },
     plugins,
+    host_parity: hostParity,
     companions: companion,
     model_effort: modelEffort,
     readiness,
@@ -220,9 +224,12 @@ async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, a
   const authRaw = available ? await runner(name, authArgs, { cwd, env }) : skipped('cli unavailable');
   const pluginRaw = available ? await runner(name, pluginArgs, { cwd, env }) : skipped('cli unavailable');
   const auth = name === 'claude' ? parseClaudeAuth(authRaw) : parseCodexAuth(authRaw);
+  const featureText = name === 'claude'
+    ? `${help.stdout}\n${help.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}`
+    : `${help.stdout}\n${help.stderr}\n${extraHelp.stdout}\n${extraHelp.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}`;
   const featureSurface = name === 'claude'
-    ? inspectClaudeFeatureSurface(`${help.stdout}\n${help.stderr}`)
-    : inspectCodexFeatureSurface(`${help.stdout}\n${help.stderr}\n${extraHelp.stdout}\n${extraHelp.stderr}`);
+    ? inspectClaudeFeatureSurface(featureText)
+    : inspectCodexFeatureSurface(featureText);
 
   return {
     name,
@@ -314,6 +321,8 @@ function classifyAuthFailure(result) {
 function inspectClaudeFeatureSurface(helpText) {
   return {
     plugin_command: /\bplugin\|plugins\b|\bplugins?\s+Manage Claude Code plugins/i.test(helpText),
+    plugin_list_command: /\bplugin\s+list\b|\bplugin list\b|Installed plugins/i.test(helpText),
+    plugin_install_command: /\bplugin\s+install\b|\binstall\b/i.test(helpText),
     auth_status: /\bauth\b[\s\S]*\bstatus\b/i.test(helpText),
     print_mode: /--print|-p,\s*--print/.test(helpText),
     no_session_persistence: /--no-session-persistence/.test(helpText),
@@ -330,6 +339,11 @@ function inspectCodexFeatureSurface(helpText) {
     exec_command: /\bexec\b[\s\S]*Run Codex non-interactively/i.test(helpText) || /\bexec\b/.test(helpText),
     login_status: /\blogin\b[\s\S]*\bstatus\b/i.test(helpText),
     plugin_marketplace: /\bplugin\b[\s\S]*\bmarketplace\b/i.test(helpText),
+    plugin_marketplace_add: /\badd\b/.test(helpText),
+    plugin_marketplace_upgrade: /\bupgrade\b/.test(helpText),
+    plugin_marketplace_remove: /\bremove\b/.test(helpText),
+    plugin_install_command: /\binstall\b/.test(helpText),
+    plugin_list_command: /\blist\b/.test(helpText),
     model_flag: /--model\b|-m,\s*--model/.test(helpText),
     config_flag: /--config\b|-c,\s*--config/.test(helpText),
     cd_flag: /--cd\b|-C,\s*--cd/.test(helpText),
@@ -531,6 +545,177 @@ function parseClaudePluginList(stdout) {
     if (/^Error:/i.test(line)) current.error = redactSecrets(line.replace(/^Error:\s*/i, ''));
   }
   return result;
+}
+
+function buildHostParity({ claude, codex, plugins, claudePluginList }) {
+  const issues = [];
+  const differences = [];
+
+  if (claude.feature_surface.automatic_plugin_hooks === true && codex.feature_surface.automatic_plugin_hooks !== true) {
+    differences.push(parityEntry({
+      id: 'codex_manual_skill_invocation',
+      severity: 'warning',
+      host: 'codex',
+      area: 'hooks',
+      summary: 'Codex plugin-local automatic hooks are not observed; Codex parity depends on manual skill invocation or an explicit wrapper.',
+      evidence: 'claude automatic_plugin_hooks=true, codex automatic_plugin_hooks=false',
+      next_step: 'Keep Codex command/skill surfaces explicit and do not claim Claude hook parity.',
+    }));
+  }
+
+  if (codex.feature_surface.plugin_marketplace === true && codex.feature_surface.plugin_install_command !== true) {
+    differences.push(parityEntry({
+      id: 'codex_marketplace_command_shape',
+      severity: 'warning',
+      host: 'codex',
+      area: 'plugin-install',
+      summary: 'Codex exposes marketplace add/upgrade/remove semantics rather than the Claude-style plugin install/list surface.',
+      evidence: `codex marketplace add=${Boolean(codex.feature_surface.plugin_marketplace_add)}, upgrade=${Boolean(codex.feature_surface.plugin_marketplace_upgrade)}, remove=${Boolean(codex.feature_surface.plugin_marketplace_remove)}, install=${Boolean(codex.feature_surface.plugin_install_command)}`,
+      next_step: 'Render host-specific install/update recommendations instead of a shared install command.',
+    }));
+  }
+
+  if (claude.feature_surface.permission_mode === true || codex.feature_surface.sandbox_flag === true || codex.feature_surface.approval_flag === true) {
+    differences.push(parityEntry({
+      id: 'host_permission_model_differs',
+      severity: 'info',
+      host: 'both',
+      area: 'permissions',
+      summary: 'Claude and Codex expose different permission controls; runtime can preflight them but must not normalize them into one hidden setting.',
+      evidence: `claude permission_mode=${Boolean(claude.feature_surface.permission_mode)}, codex sandbox=${Boolean(codex.feature_surface.sandbox_flag)}, codex approval=${Boolean(codex.feature_surface.approval_flag)}`,
+      next_step: 'Keep permission proof explicit and direction-aware.',
+    }));
+  }
+
+  for (const [name, plugin] of Object.entries(plugins)) {
+    issues.push(...inspectPluginVersionParity(name, plugin));
+  }
+
+  for (const installed of Object.values(claudePluginList)) {
+    if (!PLUGIN_NAMES.includes(installed.name)) {
+      issues.push(parityEntry({
+        id: 'claude_retired_or_unknown_plugin',
+        severity: installed.status === 'failed' ? 'warning' : 'info',
+        host: 'claude',
+        area: 'plugin-install',
+        plugin: installed.name,
+        summary: `Claude has an agentic-plugins entry that is not in the current runtime plugin set: ${installed.name}.`,
+        evidence: `status=${installed.status ?? 'unknown'}, version=${installed.version ?? 'unknown'}, error=${installed.error ?? 'none'}`,
+        next_step: 'If this is the retired research plugin, uninstall it from the Claude host cache.',
+      }));
+    }
+  }
+
+  const all = [...issues, ...differences];
+  return {
+    status: summarizeParityStatus(all),
+    issue_count: issues.length,
+    difference_count: differences.length,
+    issues,
+    differences,
+  };
+}
+
+function inspectPluginVersionParity(name, plugin) {
+  const issues = [];
+  const claudeSourceVersion = plugin.source?.claude_manifest?.version ?? null;
+  const codexSourceVersion = plugin.source?.codex_manifest?.version ?? null;
+  const sourceVersion = claudeSourceVersion ?? codexSourceVersion;
+
+  if (claudeSourceVersion && codexSourceVersion && claudeSourceVersion !== codexSourceVersion) {
+    issues.push(parityEntry({
+      id: 'source_manifest_version_mismatch',
+      severity: 'blocked',
+      host: 'both',
+      area: 'version',
+      plugin: name,
+      summary: `${name} source manifests disagree between Claude and Codex.`,
+      evidence: `claude=${claudeSourceVersion}, codex=${codexSourceVersion}`,
+      next_step: 'Align .claude-plugin/plugin.json and .codex-plugin/plugin.json before publishing.',
+    }));
+  }
+
+  if (plugin.marketplace.claude?.version && sourceVersion && plugin.marketplace.claude.version !== sourceVersion) {
+    issues.push(parityEntry({
+      id: 'claude_marketplace_version_drift',
+      severity: 'warning',
+      host: 'claude',
+      area: 'version',
+      plugin: name,
+      summary: `${name} Claude marketplace version differs from source manifest.`,
+      evidence: `marketplace=${plugin.marketplace.claude.version}, source=${sourceVersion}`,
+      next_step: 'Run sync/validate version tooling before release.',
+    }));
+  }
+
+  if (plugin.installed.claude_plugin_list?.status === 'failed') {
+    issues.push(parityEntry({
+      id: 'claude_plugin_failed_to_load',
+      severity: 'blocked',
+      host: 'claude',
+      area: 'plugin-install',
+      plugin: name,
+      summary: `${name} is present in Claude plugin list but failed to load.`,
+      evidence: plugin.installed.claude_plugin_list.error ?? 'Claude plugin list reported failed status',
+      next_step: 'Fix or uninstall the failed Claude plugin entry before relying on Claude-side parity.',
+    }));
+  }
+
+  const claudeInstalledVersion = plugin.installed.claude_plugin_list?.version ?? plugin.cache.claude?.latest?.manifest_version ?? null;
+  const codexInstalledVersion = plugin.cache.codex?.latest?.manifest_version ?? null;
+  issues.push(...compareInstalledVersion({
+    plugin: name,
+    host: 'claude',
+    actual: claudeInstalledVersion,
+    expected: sourceVersion,
+    source: 'Claude installed/cache version',
+  }));
+  issues.push(...compareInstalledVersion({
+    plugin: name,
+    host: 'codex',
+    actual: codexInstalledVersion,
+    expected: sourceVersion,
+    source: 'Codex cache version',
+  }));
+
+  return issues;
+}
+
+function compareInstalledVersion({ plugin, host, actual, expected, source }) {
+  if (!actual || !expected || actual === expected) return [];
+  const cmp = semverCompare(actual, expected);
+  const stale = cmp < 0;
+  return [parityEntry({
+    id: stale ? 'installed_plugin_stale' : 'installed_plugin_version_ahead',
+    severity: stale ? 'warning' : 'info',
+    host,
+    area: 'version',
+    plugin,
+    summary: `${plugin} ${host} ${stale ? 'installed/cache version is older than' : 'installed/cache version is newer than'} source manifest.`,
+    evidence: `${source}=${actual}, source=${expected}`,
+    next_step: stale
+      ? 'Upgrade or reinstall the plugin in that host before expecting source behavior.'
+      : 'Confirm the host cache was intentionally updated ahead of this checkout.',
+  })];
+}
+
+function parityEntry({ id, severity, host, area, plugin = null, summary, evidence, next_step }) {
+  return {
+    id,
+    severity,
+    host,
+    area,
+    plugin,
+    summary,
+    evidence: sanitizeValue(evidence),
+    next_step,
+  };
+}
+
+function summarizeParityStatus(entries) {
+  if (entries.some((entry) => entry.severity === 'blocked')) return 'blocked';
+  if (entries.some((entry) => entry.severity === 'warning')) return 'warning';
+  return 'pass';
 }
 
 async function inspectCompanionContract({ repoRoot, homeDir }) {
@@ -1344,6 +1529,9 @@ function summarizeOverall(report) {
     if (ledger.workflows.status === 'blocked') warnings.push(`${name} workflow files malformed`);
     if (ledger.peer_runs.status === 'blocked') warnings.push(`${name} peer-run ledger needs attention`);
   }
+  if (report.host_parity.status !== 'pass') {
+    warnings.push(`host parity ${report.host_parity.status}`);
+  }
   return {
     status: hardFailures.length > 0 ? 'fail' : warnings.length > 0 ? 'warning' : 'pass',
     hard_failures: hardFailures,
@@ -1374,6 +1562,14 @@ export function formatText(report) {
   for (const key of ['claude_to_codex', 'codex_to_claude']) {
     const direction = report.companions.directions[key];
     lines.push(`- ${direction.label}: ${direction.status}; contract=${direction.selected?.contract_version ?? 'n/a'}`);
+  }
+  lines.push('');
+  lines.push('Host Parity');
+  lines.push(`- status: ${report.host_parity.status}; issues=${report.host_parity.issue_count}; differences=${report.host_parity.difference_count}`);
+  for (const entry of [...report.host_parity.issues, ...report.host_parity.differences]) {
+    lines.push(`- ${entry.severity}: ${entry.id}${entry.plugin ? ` (${entry.plugin})` : ''}; host=${entry.host}; ${entry.summary}`);
+    lines.push(`  evidence: ${entry.evidence}`);
+    lines.push(`  next: ${entry.next_step}`);
   }
   lines.push('');
   lines.push('Model / Effort');

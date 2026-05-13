@@ -67,6 +67,15 @@ Doctor is read-only. It does not:
 
 Readiness output distinguishes missing CLI, missing plugin/cache state, unauthenticated host, and available surfaces. By default companion sandbox/permission readiness remains `unknown`. `--sandbox-permission-probe` adds an explicit read-only preflight for both companion directions using the already observed CLI, auth, feature-surface, and companion-script evidence. It records `peer_execution=false`, does not run companion scripts, does not run peer agents, and does not mutate host-native config/auth/secrets/sandbox state. `--deep-peer-smoke` adds a structured plan-only preflight section for both companion directions, including readiness status, model/effort inputs, blockers, warnings, and next-step guidance.
 
+Doctor also emits a `host_parity` / `Host Parity` section. It makes
+Claude-vs-Codex differences explicit rather than hiding them behind a shared
+abstraction: Codex manual skill invocation versus Claude plugin hooks,
+host-specific plugin install/update command shape, different permission
+surfaces, stale host plugin caches, failed Claude plugin entries, and retired
+agentic-plugins installs such as the old `research` plugin. These findings are
+diagnostic output only; doctor does not uninstall, upgrade, or mutate either
+host.
+
 Deep peer smoke execution requires the separate `--execute-deep-peer-smoke` flag in addition to `--deep-peer-smoke`. The executor invokes each available companion through `companions/contract.md` JSON-envelope mode with the resolved model/effort inputs and no host session persistence beyond the companion behavior. Doctor output records only execution status, exit codes, peer host/model metadata, duration, stdout byte count, and stdout SHA-256. Raw peer stdout, prompt bodies, host secrets, and account details are not printed into the main report. `--deep-peer-smoke-timeout-ms <n>` bounds each companion process. This executor does not mutate host-native config/auth/secrets/sandbox state and does not claim Codex manual-hook parity.
 
 ## Model and effort

@@ -10,6 +10,7 @@ import {
   runSettings,
   upsertRuntimeConfigToml,
 } from '../../plugins/runtime/scripts/settings.mjs';
+import { RUNTIME_VERSION } from '../../plugins/runtime/scripts/version.mjs';
 
 describe('runtime settings', () => {
   it('builds a dry-run settings plan without mutating config or running install commands', async () => {
@@ -43,7 +44,7 @@ describe('runtime settings', () => {
     strictEqual(report.companion_settings.directions.codex_to_claude.proposed.model, 'claude-new');
     strictEqual(await readFile(join(root, '.agentic-plugins', 'config.toml'), 'utf8'), 'codex_model = "old-codex"\n');
     ok(calls.every((call) => !/\binstall\b|\bupdate\b/.test(call)), 'settings must not execute plugin install/update commands');
-    ok(formatText(report).includes('runtime:settings 0.1.0 (dry-run)'));
+    ok(formatText(report).includes(`runtime:settings ${RUNTIME_VERSION} (dry-run)`));
   });
 
   it('applies only selected agentic-plugins-owned config writes', async () => {
