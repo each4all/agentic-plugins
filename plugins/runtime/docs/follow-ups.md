@@ -4,7 +4,7 @@ ADR-0024 defines more than the first `doctor`, `settings`, consensus, and contex
 
 ## Deferred to follow-up PRs
 
-- Automatic plugin install/update apply mode: first settings only recommends host-native install/update commands. A later PR may add an explicit apply boundary for plugin management.
+- Plugin management beyond the explicit settings executor: `runtime:settings --execute-plugin-management` can run allowlisted host-native plugin install/update/add/upgrade commands, but broader host-native config apply, plugin uninstall, authentication automation, sandbox/permission changes, richer retry policy, and persistent execution artifacts remain follow-up scope.
 - Automatic peer execution for consensus: the first consensus PR creates and updates runtime-owned run artifacts, but peer execution remains manual/host-native. A later PR may add an explicit executor boundary for companion dispatch, cancellation, and deeper smoke evidence.
 - Context automation beyond read-only checks: automatic capture triggers beyond the current `runtime:context` scaffold and explicit budget check. No automatic host switch, new workflow start, or host-session compaction.
 - Completion footer command-surface integration beyond latest context lookup and PR handling readiness: the helper remains advisory and pointer-only, can read the latest existing `runtime:context` artifact with stale metadata, and can render PR handling readiness. Later PRs may add richer command-surface integration, but must still avoid automatic context mutation, automatic session start, raw peer/consensus output in the main session, or automatic commit/push/PR mutation.

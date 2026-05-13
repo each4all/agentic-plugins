@@ -122,7 +122,7 @@ describe('plugins/runtime settings surface', () => {
     const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/SKILL.md'), 'utf-8');
     ok(/^name:\s*settings\s*$/m.test(skill));
     ok(skill.includes('Host-native Claude Code'));
-    ok(skill.includes('automatic plugin install/update apply mode'));
+    ok(skill.includes('--execute-plugin-management'));
     const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:settings'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
@@ -130,9 +130,9 @@ describe('plugins/runtime settings surface', () => {
     ok((scriptStat.mode & 0o111) !== 0, 'settings.mjs has executable bit');
   });
 
-  it('follow-ups document deferred automatic consensus execution/settings/context automation/footer scope', async () => {
+  it('follow-ups document plugin-management boundaries plus deferred consensus/context/footer scope', async () => {
     const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
-    for (const token of ['Automatic plugin install/update apply mode', 'Automatic peer execution for consensus', 'Context automation', 'Completion footer']) {
+    for (const token of ['Plugin management beyond the explicit settings executor', 'Automatic peer execution for consensus', 'Context automation', 'Completion footer']) {
       ok(followUps.includes(token), `${token} documented`);
     }
     ok(/Codex manual-hook/i.test(followUps), 'Codex manual-hook honesty documented');
