@@ -3,7 +3,8 @@
 //
 // ADR-0024 first implementation: read-only runtime/operator diagnosis.
 // This script deliberately observes and reports. It does not install plugins,
-// authenticate hosts, mutate config, sweep ledgers, or execute peer agents.
+// authenticate hosts, mutate config, sweep ledgers, or execute peer agents
+// unless a named, explicit executor flag is supplied.
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -34,6 +35,7 @@ export const VALID_PEER_RUN_STATUSES = new Set([
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_STALE_GRACE_MS = 60000;
 const DEFAULT_DEEP_PEER_SMOKE_TIMEOUT_MS = 120000;
+const DEFAULT_PERMISSION_PROOF_TIMEOUT_MS = 120000;
 
 export async function runDoctor({
   repoRoot = process.cwd(),
@@ -49,9 +51,15 @@ export async function runDoctor({
   executeDeepPeerSmoke = false,
   deepPeerSmokeTimeoutMs = DEFAULT_DEEP_PEER_SMOKE_TIMEOUT_MS,
   sandboxPermissionProbe = false,
+  permissionProof = false,
+  executePermissionProof = false,
+  permissionProofTimeoutMs = DEFAULT_PERMISSION_PROOF_TIMEOUT_MS,
 } = {}) {
   if (executeDeepPeerSmoke && !deepPeerSmoke) {
     throw new Error('--execute-deep-peer-smoke requires --deep-peer-smoke');
+  }
+  if (executePermissionProof && !permissionProof) {
+    throw new Error('--execute-permission-proof requires --permission-proof');
   }
   const resolvedRepoRoot = resolve(repoRoot);
   const resolvedHomeDir = resolve(homeDir);
@@ -108,10 +116,25 @@ export async function runDoctor({
     deepPeerSmoke,
     executeDeepPeerSmoke,
     sandboxPermissionProbe,
+    permissionProof,
+    executePermissionProof,
   });
   const sandboxPermissionProbeSection = buildSandboxPermissionProbeSection({
     requested: sandboxPermissionProbe,
     readiness,
+  });
+  const permissionProofSection = await buildPermissionProofSection({
+    requested: permissionProof,
+    execute: executePermissionProof,
+    readiness,
+    claude,
+    codex,
+    companion,
+    modelEffort,
+    repoRoot: resolvedRepoRoot,
+    env,
+    runner,
+    timeoutMs: permissionProofTimeoutMs,
   });
   const deepPeerSmokeSection = await buildDeepPeerSmokeSection({
     requested: deepPeerSmoke,
@@ -133,6 +156,7 @@ export async function runDoctor({
     host,
     read_only: true,
     sandbox_permission_probe: sandboxPermissionProbeSection,
+    permission_proof: permissionProofSection,
     deep_peer_smoke: deepPeerSmokeSection,
     clis: {
       claude: redactCommandDetails(claude),
@@ -146,7 +170,7 @@ export async function runDoctor({
     ledgers,
     limits: [
       'Codex plugin-local automatic hooks are not assumed; doctor reports manual-hook limits.',
-      'Sandbox/permission readiness is unknown unless --sandbox-permission-probe is requested; the probe remains read-only and does not execute peers.',
+      'Readiness sandbox/permission status remains unknown unless --sandbox-permission-probe is requested; --permission-proof records separate preflight/execution evidence.',
       'Settings mutation belongs to runtime:settings; dynamic consensus, context hygiene, and completion footer mutation are deferred.',
     ],
   };
@@ -1095,7 +1119,16 @@ function validatePeerRunHandle(handle, { expectedPlugin, status, updatedAt, term
   return issues;
 }
 
-function buildReadiness({ claude, codex, companion, deepPeerSmoke, executeDeepPeerSmoke, sandboxPermissionProbe }) {
+function buildReadiness({
+  claude,
+  codex,
+  companion,
+  deepPeerSmoke,
+  executeDeepPeerSmoke,
+  sandboxPermissionProbe,
+  permissionProof,
+  executePermissionProof,
+}) {
   return {
     claude_to_codex: buildDirectionReadiness({
       direction: 'Claude -> Codex',
@@ -1107,6 +1140,8 @@ function buildReadiness({ claude, codex, companion, deepPeerSmoke, executeDeepPe
       deepPeerSmoke,
       executeDeepPeerSmoke,
       sandboxPermissionProbe,
+      permissionProof,
+      executePermissionProof,
     }),
     codex_to_claude: buildDirectionReadiness({
       direction: 'Codex -> Claude',
@@ -1118,6 +1153,8 @@ function buildReadiness({ claude, codex, companion, deepPeerSmoke, executeDeepPe
       deepPeerSmoke,
       executeDeepPeerSmoke,
       sandboxPermissionProbe,
+      permissionProof,
+      executePermissionProof,
     }),
   };
 }
@@ -1151,6 +1188,246 @@ function summarizeSandboxPermissionProbeStatus({ requested, directions }) {
   if (statuses.every((status) => status === 'read_only_probe_passed')) return 'read_only_probe_passed';
   if (statuses.some((status) => status === 'read_only_probe_passed')) return 'partially_blocked';
   return 'blocked';
+}
+
+async function buildPermissionProofSection({
+  requested,
+  execute,
+  readiness,
+  claude,
+  codex,
+  companion,
+  modelEffort,
+  repoRoot,
+  env,
+  runner,
+  timeoutMs,
+}) {
+  const directionSpecs = {
+    claude_to_codex: {
+      caller: claude,
+      peer: codex,
+      requiredPermissionFeatures: ['sandbox_flag', 'approval_flag'],
+    },
+    codex_to_claude: {
+      caller: codex,
+      peer: claude,
+      requiredPermissionFeatures: ['permission_mode'],
+    },
+  };
+  const directions = {};
+  for (const key of ['claude_to_codex', 'codex_to_claude']) {
+    const directionReadiness = readiness[key];
+    const companionDirection = companion.directions[key];
+    const directionSettings = modelEffort.directions[key];
+    const spec = directionSpecs[key];
+    const preflight = buildDirectionSandboxPermissionProbe({
+      requested,
+      direction: directionReadiness.direction,
+      caller: spec.caller,
+      peer: spec.peer,
+      companion: companionDirection,
+      requiredPermissionFeatures: spec.requiredPermissionFeatures,
+      peerExecutionEvidence: execute
+        ? 'preflight did not execute a peer; explicit permission proof executor is handled separately'
+        : 'no companion command or peer agent was executed',
+    });
+    const preflightBlockers = preflight.status === 'blocked'
+      ? preflight.blockers.map((blocker) => `permission preflight ${blocker}`)
+      : [];
+    const blockers = uniqueStrings([...directionReadiness.blockers, ...preflightBlockers]);
+    const warnings = uniqueStrings([
+      ...directionReadiness.warnings,
+      execute
+        ? 'permission proof executor requested; companion runs under host-native permission defaults'
+        : 'permission proof is plan-only until --execute-permission-proof is supplied',
+      'runtime:doctor does not add sandbox, approval, permission-mode, or host-native policy relaxation flags',
+    ]);
+    const blocked = blockers.length > 0;
+    const direction = {
+      direction: directionReadiness.direction,
+      requested,
+      execution: execute && requested && !blocked ? 'pending' : 'not_executed',
+      status: !requested ? 'not_requested' : blocked ? 'blocked' : 'ready_with_warnings',
+      plan: requested
+        ? execute
+          ? 'explicit permission proof executor requested; peer agent is invoked through the companion contract when readiness is not blocked'
+          : 'plan-only permission preflight; no peer agent is executed by runtime:doctor'
+        : 'not requested',
+      model: directionSettings.model,
+      effort: directionSettings.effort,
+      permission_policy: {
+        host_native_default: true,
+        relaxed_by_doctor: false,
+        injected_flags: [],
+      },
+      preflight,
+      blockers,
+      warnings,
+      result: null,
+      next_step: requested
+        ? blocked
+          ? 'resolve blockers before executing the permission proof'
+          : execute
+            ? 'inspect the sanitized permission proof metadata; raw peer output is intentionally omitted'
+            : 'rerun with --permission-proof --execute-permission-proof to prove companion execution under current host permission defaults'
+        : 'rerun with --permission-proof to include this permission preflight',
+    };
+    if (requested && execute && blocked) {
+      direction.execution = 'skipped';
+      direction.result = {
+        status: 'skipped',
+        reason: 'readiness or permission preflight blockers prevent live permission proof execution',
+      };
+    } else if (requested && execute) {
+      direction.result = await executePermissionProofDirection({
+        key,
+        repoRoot,
+        companionDirection,
+        directionSettings,
+        runner,
+        env,
+        timeoutMs,
+      });
+      direction.execution = 'executed';
+      direction.status = direction.result.status;
+    }
+    directions[key] = direction;
+  }
+  return {
+    requested,
+    executed: Boolean(requested && execute),
+    peer_execution: Boolean(requested && execute),
+    mode: !requested ? 'not_requested' : execute ? 'explicit_permission_executor' : 'plan_only_preflight',
+    status: execute
+      ? summarizePermissionProofExecutionStatus({ requested, directions })
+      : summarizePermissionProofPlanStatus({ requested, directions }),
+    reason: requested
+      ? execute
+        ? 'runtime:doctor executed a permission proof through the companion contract behind an explicit executor flag'
+        : 'runtime:doctor plans the permission proof preflight but does not execute peer agents'
+      : 'not requested',
+    directions,
+    limits: [
+      execute
+        ? 'Explicit executor; peer agents are invoked only when --permission-proof and --execute-permission-proof are both supplied.'
+        : 'Plan-only preflight; runtime:doctor does not execute peer agents.',
+      'The executor proves companion invocation under current host permission defaults; it does not authorize future writes or broader tool use.',
+      'runtime:doctor does not pass sandbox, approval, permission-mode, or host-native policy relaxation flags to the companion command.',
+      'Raw peer stdout is not included in doctor output; only status, exit code, byte count, SHA-256, timing metadata, and sanitized error class are reported.',
+      'No host-native config, auth, secrets, sandbox, or permission state is mutated.',
+    ],
+  };
+}
+
+function summarizePermissionProofPlanStatus({ requested, directions }) {
+  if (!requested) return 'not_requested';
+  const statuses = Object.values(directions).map((direction) => direction.status);
+  if (statuses.every((status) => !['ready_with_warnings', 'available'].includes(status))) return 'blocked';
+  if (statuses.some((status) => !['ready_with_warnings', 'available'].includes(status))) return 'partially_blocked';
+  return 'ready_with_warnings';
+}
+
+function summarizePermissionProofExecutionStatus({ requested, directions }) {
+  if (!requested) return 'not_requested';
+  const statuses = Object.values(directions).map((direction) => direction.status);
+  if (statuses.every((status) => status === 'passed')) return 'passed';
+  if (statuses.some((status) => status === 'passed')) return 'partially_failed';
+  if (statuses.some((status) => status === 'permission_failed')) return 'permission_failed';
+  if (statuses.some((status) => status === 'timed_out')) return 'timed_out';
+  if (statuses.some((status) => ['skipped', 'blocked', 'unavailable', 'unauthenticated', 'not_installed'].includes(status))) return 'blocked';
+  return 'failed';
+}
+
+async function executePermissionProofDirection({
+  key,
+  repoRoot,
+  companionDirection,
+  directionSettings,
+  runner,
+  env,
+  timeoutMs,
+}) {
+  const companionPath = companionDirection.selected?.path;
+  if (!companionPath) {
+    return {
+      status: 'blocked',
+      reason: `companion ${companionDirection.filename} is not available`,
+    };
+  }
+  const expectedToken = `RUNTIME_DOCTOR_PERMISSION_OK ${companionDirection.peer}`;
+  const prompt = buildPermissionProofPrompt({ key, peer: companionDirection.peer, expectedToken });
+  const args = [
+    companionPath,
+    'task',
+    '--cwd',
+    repoRoot,
+    '--output-format',
+    'json',
+  ];
+  if (directionSettings.model.value) args.push('--model', directionSettings.model.value);
+  if (directionSettings.effort.value) args.push('--effort', directionSettings.effort.value);
+  args.push(prompt);
+
+  const result = await runner(process.execPath, args, {
+    cwd: repoRoot,
+    env,
+    timeoutMs,
+  });
+  return summarizeCompanionPermissionProofResult({ result, companionPath, expectedToken });
+}
+
+function buildPermissionProofPrompt({ key, peer, expectedToken }) {
+  return [
+    '<task>',
+    `Runtime doctor permission proof for ${key} targeting ${peer}. Reply with exactly one short line: ${expectedToken}.`,
+    '</task>',
+    '',
+    '<permission_boundary>',
+    '<rule>Use the current host permission policy; do not request elevation or change settings.</rule>',
+    '<rule>Do not inspect, create, delete, or modify repository files.</rule>',
+    '<rule>Do not include secrets, account details, environment values, or prompt text.</rule>',
+    '<rule>If the host blocks execution or asks for approval, let the companion return the failure rather than bypassing it.</rule>',
+    '</permission_boundary>',
+    '',
+    '<expected_output>',
+    expectedToken,
+    '</expected_output>',
+  ].join('\n');
+}
+
+function summarizeCompanionPermissionProofResult({ result, companionPath, expectedToken }) {
+  const summary = summarizeCompanionSmokeResult({ result, companionPath, expectedToken });
+  const permissionFailureKind = summary.status === 'passed' ? null : classifyPermissionFailure(summary);
+  return {
+    ...summary,
+    status: permissionFailureKind ? 'permission_failed' : summary.status,
+    permission_failure: Boolean(permissionFailureKind),
+    permission_failure_kind: permissionFailureKind,
+    permission_policy: {
+      host_native_default: true,
+      relaxed_by_doctor: false,
+      injected_flags: [],
+    },
+  };
+}
+
+function classifyPermissionFailure(summary) {
+  const text = [
+    summary.companion_error_code,
+    summary.envelope_status,
+    summary.stderr_summary,
+    summary.error?.kind,
+    summary.error?.message,
+  ].filter(Boolean).join(' ');
+  if (!text) return null;
+  if (/\b(approval|consent|permission prompt|requires permission|requires approval)\b/i.test(text)) {
+    return 'approval_required';
+  }
+  if (/\b(sandbox|read-only|read only|not allowed|operation not permitted|permission denied|EACCES|EPERM|denied)\b/i.test(text)) {
+    return 'sandbox_or_permission_denied';
+  }
+  return null;
 }
 
 async function buildDeepPeerSmokeSection({
@@ -1378,6 +1655,8 @@ function buildDirectionReadiness({
   deepPeerSmoke,
   executeDeepPeerSmoke,
   sandboxPermissionProbe,
+  permissionProof,
+  executePermissionProof,
 }) {
   const blockers = [];
   const warnings = [];
@@ -1405,6 +1684,10 @@ function buildDirectionReadiness({
   }
   if (sandboxPermissionProbe) {
     warnings.push('sandbox/permission probe is read-only; live peer-agent execution remains unverified');
+  } else if (permissionProof) {
+    warnings.push(executePermissionProof
+      ? 'permission proof executor requested; sanitized execution evidence appears under permission_proof'
+      : 'permission proof requested but not executed by runtime:doctor');
   } else {
     warnings.push('sandbox/permission readiness is unknown until --sandbox-permission-probe is requested');
   }
@@ -1424,7 +1707,15 @@ function buildDirectionReadiness({
   };
 }
 
-function buildDirectionSandboxPermissionProbe({ requested, direction, caller, peer, companion, requiredPermissionFeatures }) {
+function buildDirectionSandboxPermissionProbe({
+  requested,
+  direction,
+  caller,
+  peer,
+  companion,
+  requiredPermissionFeatures,
+  peerExecutionEvidence = 'no companion command or peer agent was executed',
+}) {
   if (!requested) {
     return {
       direction,
@@ -1464,7 +1755,7 @@ function buildDirectionSandboxPermissionProbe({ requested, direction, caller, pe
     probeResult({
       name: 'peer_execution_boundary',
       status: 'passed',
-      evidence: 'no companion command or peer agent was executed',
+      evidence: peerExecutionEvidence,
     }),
   ];
 
@@ -1520,6 +1811,9 @@ function summarizeOverall(report) {
   }
   if (report.deep_peer_smoke.executed && report.deep_peer_smoke.status !== 'passed') {
     hardFailures.push(`deep peer smoke ${report.deep_peer_smoke.status}`);
+  }
+  if (report.permission_proof.executed && report.permission_proof.status !== 'passed') {
+    hardFailures.push(`permission proof ${report.permission_proof.status}`);
   }
   const warnings = [];
   for (const [name, plugin] of Object.entries(report.plugins)) {
@@ -1596,6 +1890,35 @@ export function formatText(report) {
       for (const probe of direction.probes) lines.push(`  probe ${probe.name}: ${probe.status}; ${probe.evidence}`);
     }
     for (const limit of report.sandbox_permission_probe.limits) lines.push(`- limit: ${limit}`);
+    lines.push('');
+  }
+  if (report.permission_proof.requested) {
+    lines.push('Permission Proof');
+    lines.push(`- mode: ${report.permission_proof.mode}; requested=${report.permission_proof.requested}; executed=${report.permission_proof.executed}; peer-execution=${report.permission_proof.peer_execution}; status=${report.permission_proof.status}`);
+    for (const key of ['claude_to_codex', 'codex_to_claude']) {
+      const direction = report.permission_proof.directions[key];
+      lines.push(`- ${direction.direction}: ${direction.status}; execution=${direction.execution}; model=${direction.model.value ?? '<host-default>'}; effort=${direction.effort.value ?? '<host-default>'}`);
+      lines.push(`  plan: ${direction.plan}`);
+      lines.push(`  permission-policy: host-default=${direction.permission_policy.host_native_default}; relaxed-by-doctor=${direction.permission_policy.relaxed_by_doctor}; injected-flags=${direction.permission_policy.injected_flags.length}`);
+      if (direction.preflight?.probes) {
+        for (const probe of direction.preflight.probes) lines.push(`  probe ${probe.name}: ${probe.status}; ${probe.evidence}`);
+      }
+      if (direction.result && direction.execution === 'executed') {
+        lines.push(`  result: peer=${direction.result.peer_host ?? '<unknown>'}; envelope=${direction.result.envelope_status ?? '<none>'}; exit=${direction.result.peer_exit_code ?? direction.result.companion_exit_code ?? '<none>'}; expected-token=${direction.result.expected_token_present}; stdout-bytes=${direction.result.stdout_bytes}; stdout-sha256=${direction.result.stdout_sha256 ?? '<empty>'}; permission-failure=${direction.result.permission_failure}`);
+        if (direction.result.permission_failure_kind) lines.push(`  permission-failure-kind: ${direction.result.permission_failure_kind}`);
+        if (direction.result.metadata?.duration_ms !== null && direction.result.metadata?.duration_ms !== undefined) {
+          lines.push(`  duration-ms: ${direction.result.metadata.duration_ms}`);
+        }
+        if (direction.result.error?.message) lines.push(`  error: ${direction.result.error.message}`);
+      } else if (direction.result?.reason) {
+        lines.push(`  result: ${direction.result.reason}`);
+      }
+      if (direction.blockers.length > 0) {
+        for (const blocker of direction.blockers) lines.push(`  blocker: ${blocker}`);
+      }
+      lines.push(`  next: ${direction.next_step}`);
+    }
+    for (const limit of report.permission_proof.limits) lines.push(`- limit: ${limit}`);
     lines.push('');
   }
   if (report.deep_peer_smoke.requested) {
@@ -1730,6 +2053,10 @@ function truncate(value, maxLength) {
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 3)}...`;
 }
 
+function uniqueStrings(values) {
+  return [...new Set(values.filter((value) => typeof value === 'string' && value.length > 0))];
+}
+
 function semverCompare(a, b) {
   const pa = a.split('.').map((x) => Number.parseInt(x, 10) || 0);
   const pb = b.split('.').map((x) => Number.parseInt(x, 10) || 0);
@@ -1746,7 +2073,7 @@ function escapeRegExp(value) {
 }
 
 function usage() {
-  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--sandbox-permission-probe]\n`;
+  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>]\n`;
 }
 
 export function parseArgs(argv) {
@@ -1760,6 +2087,9 @@ export function parseArgs(argv) {
     executeDeepPeerSmoke: false,
     deepPeerSmokeTimeoutMs: DEFAULT_DEEP_PEER_SMOKE_TIMEOUT_MS,
     sandboxPermissionProbe: false,
+    permissionProof: false,
+    executePermissionProof: false,
+    permissionProofTimeoutMs: DEFAULT_PERMISSION_PROOF_TIMEOUT_MS,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -1785,12 +2115,21 @@ export function parseArgs(argv) {
       opts.deepPeerSmokeTimeoutMs = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--sandbox-permission-probe') {
       opts.sandboxPermissionProbe = true;
+    } else if (arg === '--permission-proof') {
+      opts.permissionProof = true;
+    } else if (arg === '--execute-permission-proof') {
+      opts.executePermissionProof = true;
+    } else if (arg === '--permission-proof-timeout-ms') {
+      opts.permissionProofTimeoutMs = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
   }
   if (opts.executeDeepPeerSmoke && !opts.deepPeerSmoke) {
     throw new Error('--execute-deep-peer-smoke requires --deep-peer-smoke');
+  }
+  if (opts.executePermissionProof && !opts.permissionProof) {
+    throw new Error('--execute-permission-proof requires --permission-proof');
   }
   return opts;
 }

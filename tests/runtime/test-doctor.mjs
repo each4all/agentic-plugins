@@ -173,6 +173,8 @@ describe('runtime doctor', () => {
     strictEqual(report.readiness.codex_to_claude.sandbox_permission.status, 'unknown');
     strictEqual(report.sandbox_permission_probe.requested, false);
     strictEqual(report.sandbox_permission_probe.executed, false);
+    strictEqual(report.permission_proof.requested, false);
+    strictEqual(report.permission_proof.executed, false);
   });
 
   it('runs sandbox permission proof as an explicit read-only probe without peer execution', async () => {
@@ -208,6 +210,108 @@ describe('runtime doctor', () => {
     ok(report.sandbox_permission_probe.limits.some((limit) => /does not execute peer agents/i.test(limit)));
     ok(formatText(report).includes('Sandbox Permission Probe'));
     ok(formatText(report).includes('peer-execution=false'));
+  });
+
+  it('plans permission proof as an explicit preflight without executing peers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-proof-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      explicitModel: 'gpt-5.4',
+      explicitEffort: 'high',
+      permissionProof: true,
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    strictEqual(report.permission_proof.mode, 'plan_only_preflight');
+    strictEqual(report.permission_proof.requested, true);
+    strictEqual(report.permission_proof.executed, false);
+    strictEqual(report.permission_proof.peer_execution, false);
+    strictEqual(report.permission_proof.status, 'ready_with_warnings');
+    strictEqual(report.permission_proof.directions.claude_to_codex.execution, 'not_executed');
+    strictEqual(report.permission_proof.directions.claude_to_codex.preflight.status, 'read_only_probe_passed');
+    strictEqual(report.permission_proof.directions.codex_to_claude.permission_policy.relaxed_by_doctor, false);
+    ok(report.permission_proof.directions.codex_to_claude.warnings.some((warning) => /does not add sandbox/i.test(warning)));
+    ok(report.permission_proof.limits.some((limit) => /does not execute peer agents/i.test(limit)));
+    ok(formatText(report).includes('Permission Proof'));
+    ok(formatText(report).includes('permission-policy: host-default=true; relaxed-by-doctor=false; injected-flags=0'));
+  });
+
+  it('executes permission proof only behind the explicit executor boundary and classifies permission failures', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-proof-execute-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const calls = [];
+    const permissionFailureEnvelope = {
+      status: 'peer_error',
+      peer_host: 'claude',
+      peer_model: null,
+      stdout: 'RUNTIME_DOCTOR_PERMISSION_RAW_DETAILS_MUST_NOT_LEAK',
+      exit_code: 1,
+      error: {
+        kind: 'peer_permission_denied',
+        message: 'Permission denied: sandbox approval required',
+      },
+      metadata: {
+        duration_ms: 777,
+        started_at: '2026-05-13T00:00:00.000Z',
+        completed_at: '2026-05-13T00:00:01.000Z',
+      },
+    };
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      explicitModel: 'gpt-5.4',
+      explicitEffort: 'high',
+      permissionProof: true,
+      executePermissionProof: true,
+      permissionProofTimeoutMs: 45000,
+      runner: async (command, args, options = {}) => {
+        calls.push({ command, args, options });
+        if (args[0]?.endsWith('codex-companion.mjs')) {
+          strictEqual(options.timeoutMs, 45000);
+          return okResult(JSON.stringify(smokeEnvelope('codex', 'RUNTIME_DOCTOR_PERMISSION_OK codex\nRAW DETAILS MUST NOT LEAK', 321)));
+        }
+        if (args[0]?.endsWith('claude-companion.mjs')) {
+          strictEqual(options.timeoutMs, 45000);
+          return {
+            ok: false,
+            exit_code: 1,
+            stdout: JSON.stringify(permissionFailureEnvelope),
+            stderr: 'EACCES',
+            error_code: null,
+            timed_out: false,
+          };
+        }
+        return fakeRuntimeProbeRunner(command, args);
+      },
+    });
+
+    strictEqual(report.permission_proof.mode, 'explicit_permission_executor');
+    strictEqual(report.permission_proof.executed, true);
+    strictEqual(report.permission_proof.peer_execution, true);
+    strictEqual(report.permission_proof.status, 'partially_failed');
+    strictEqual(report.overall.status, 'fail');
+    strictEqual(report.permission_proof.directions.claude_to_codex.execution, 'executed');
+    strictEqual(report.permission_proof.directions.claude_to_codex.result.status, 'passed');
+    strictEqual(report.permission_proof.directions.codex_to_claude.result.status, 'permission_failed');
+    strictEqual(report.permission_proof.directions.codex_to_claude.result.permission_failure, true);
+    strictEqual(report.permission_proof.directions.codex_to_claude.result.permission_failure_kind, 'approval_required');
+    ok(calls.some((call) => call.args[0]?.endsWith('codex-companion.mjs') && call.args.includes('--output-format') && call.args.includes('json')));
+    ok(calls.some((call) => call.args[0]?.endsWith('claude-companion.mjs')));
+    for (const call of calls.filter((entry) => entry.args[0]?.endsWith('codex-companion.mjs') || entry.args[0]?.endsWith('claude-companion.mjs'))) {
+      ok(!call.args.includes('--sandbox'));
+      ok(!call.args.includes('--ask-for-approval'));
+      ok(!call.args.includes('--permission-mode'));
+    }
+
+    const serialized = JSON.stringify(report);
+    ok(!serialized.includes('RAW DETAILS MUST NOT LEAK'), 'doctor report must not include raw peer stdout');
+    ok(!serialized.includes('RUNTIME_DOCTOR_PERMISSION_RAW_DETAILS_MUST_NOT_LEAK'), 'doctor report must not include raw failed peer stdout');
+    ok(formatText(report).includes('permission-failure=true'));
+    ok(formatText(report).includes('permission-failure-kind: approval_required'));
   });
 
   it('plans deep peer smoke as a structured read-only doctor section without executing peers', async () => {
@@ -296,7 +400,7 @@ describe('runtime doctor', () => {
   });
 
   it('parses CLI arguments and rejects unknown or malformed flags', () => {
-    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--execute-deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '90000', '--sandbox-permission-probe']);
+    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--execute-deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '90000', '--sandbox-permission-probe', '--permission-proof', '--execute-permission-proof', '--permission-proof-timeout-ms', '45000']);
     strictEqual(opts.repoRoot, '/tmp/repo');
     strictEqual(opts.format, 'json');
     strictEqual(opts.host, 'codex');
@@ -306,9 +410,14 @@ describe('runtime doctor', () => {
     strictEqual(opts.executeDeepPeerSmoke, true);
     strictEqual(opts.deepPeerSmokeTimeoutMs, 90000);
     strictEqual(opts.sandboxPermissionProbe, true);
+    strictEqual(opts.permissionProof, true);
+    strictEqual(opts.executePermissionProof, true);
+    strictEqual(opts.permissionProofTimeoutMs, 45000);
     rejects(async () => parseArgs(['--format', 'xml']), /--format must be text or json/);
     rejects(async () => parseArgs(['--execute-deep-peer-smoke']), /requires --deep-peer-smoke/);
+    rejects(async () => parseArgs(['--execute-permission-proof']), /requires --permission-proof/);
     rejects(async () => parseArgs(['--deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '0']), /positive integer/);
+    rejects(async () => parseArgs(['--permission-proof', '--permission-proof-timeout-ms', '0']), /positive integer/);
   });
 });
 

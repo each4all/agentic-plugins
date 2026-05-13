@@ -1,6 +1,6 @@
 ---
 name: doctor
-description: "Read-only runtime operator diagnostic for agentic-plugins. Use when the user wants to inspect Claude/Codex CLI availability, auth state, plugin marketplace/cache state, companion contract compatibility, model/effort observation, sandbox/permission readiness, workflow/peer-run ledger health, or explicitly opted-in deep peer smoke execution. Does not mutate settings."
+description: "Read-only runtime operator diagnostic for agentic-plugins. Use when the user wants to inspect Claude/Codex CLI availability, auth state, plugin marketplace/cache state, companion contract compatibility, model/effort observation, sandbox/permission readiness, workflow/peer-run ledger health, or explicitly opted-in permission proof / deep peer smoke execution. Does not mutate settings."
 ---
 
 # Doctor (runtime framework primitive)
@@ -15,12 +15,13 @@ description: "Read-only runtime operator diagnostic for agentic-plugins. Use whe
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>]
+node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>]
 ```
 
 3. Present the result without hiding host asymmetry. In particular:
    - Codex has no verified plugin-local automatic hook packaging today.
-   - Read-only doctor reports sandbox/permission readiness as unknown unless `--sandbox-permission-probe` is requested. That probe reports CLI/auth/permission-surface/companion-script evidence and records `peer_execution=false`; it still cannot prove a live peer run will succeed unless a future explicit executor is added.
+   - The readiness summary reports sandbox/permission status as unknown unless `--sandbox-permission-probe` is requested. `--permission-proof` records separate preflight/execution evidence under `permission_proof`.
+   - `--permission-proof` remains plan-only unless the user also supplies `--execute-permission-proof`. The executor uses the existing companion contract, does not pass sandbox/approval/permission-mode relaxation flags, classifies permission failures, and omits raw peer stdout from doctor output.
    - `--deep-peer-smoke` remains plan-only unless the user also supplies `--execute-deep-peer-smoke`. The executor uses the existing companion contract and omits raw peer stdout from doctor output.
    - Authentication output must stay sanitized. Do not expose email, org id, token, or account secrets.
 
@@ -35,6 +36,8 @@ Doctor reports:
 - Current explicit and resolved model/effort inputs according to ADR-0024 order: command flags, workflow/subtask override observation, repo config, user config, host-native default.
 - Codex -> Claude and Claude -> Codex companion sandbox/permission readiness as unknown by default, or as an explicit read-only preflight when `--sandbox-permission-probe` is requested.
 - Optional `--sandbox-permission-probe` output, including per-direction CLI/auth/permission-surface/companion-script proof points without executing companions or peers.
+- Optional `--permission-proof` plan-only preflight, including per-direction permission surface, model/effort inputs, blockers, warnings, and next-step guidance without executing peers.
+- Optional `--permission-proof --execute-permission-proof` execution proof through the companion contract under host-native permission defaults. Output is bounded to status, exit codes, peer host/model metadata, timing, stdout byte count, stdout SHA-256, and sanitized permission-failure class; raw peer stdout is not printed into the main session.
 - Optional `--deep-peer-smoke` plan-only preflight, including per-direction readiness, model/effort inputs, blockers, warnings, and next-step guidance without executing peers.
 - Optional `--deep-peer-smoke --execute-deep-peer-smoke` execution proof through the companion contract. Output is bounded to status, exit codes, peer host/model metadata, timing, stdout byte count, and stdout SHA-256; raw peer stdout is not printed into the main session.
 - Basic workflow and peer-run ledger health for `.claude/agentic-engineer` and `.claude/agentic-orchestrator`.
