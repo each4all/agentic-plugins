@@ -24,6 +24,7 @@ describe('plugins/runtime manifest pair', () => {
     ok(manifest.keywords.includes('doctor'));
     ok(manifest.keywords.includes('settings'));
     ok(manifest.keywords.includes('consensus'));
+    ok(manifest.keywords.includes('context'));
     ok(manifest.keywords.includes('L1'));
   });
 
@@ -38,6 +39,7 @@ describe('plugins/runtime manifest pair', () => {
     ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:doctor')));
     ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:settings')));
     ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:consensus')));
+    ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:context')));
   });
 
   it('Claude and Codex manifests share name + version + description', async () => {
@@ -124,9 +126,9 @@ describe('plugins/runtime settings surface', () => {
     ok((scriptStat.mode & 0o111) !== 0, 'settings.mjs has executable bit');
   });
 
-  it('follow-ups document deferred automatic consensus execution/settings/context/footer scope', async () => {
+  it('follow-ups document deferred automatic consensus execution/settings/context automation/footer scope', async () => {
     const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
-    for (const token of ['Automatic plugin install/update apply mode', 'Automatic peer execution for consensus', 'Context hygiene', 'Completion footer']) {
+    for (const token of ['Automatic plugin install/update apply mode', 'Automatic peer execution for consensus', 'Context automation', 'Completion footer']) {
       ok(followUps.includes(token), `${token} documented`);
     }
     ok(/Codex manual-hook/i.test(followUps), 'Codex manual-hook honesty documented');
@@ -149,5 +151,24 @@ describe('plugins/runtime consensus surface', () => {
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/consensus.mjs'));
     ok((scriptStat.mode & 0o111) !== 0, 'consensus.mjs has executable bit');
+  });
+});
+
+describe('plugins/runtime context surface', () => {
+  it('ships context command, skill wrapper, agent yaml, and executable script', async () => {
+    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/context.md'), 'utf-8');
+    ok(command.startsWith('---\n'));
+    ok(command.includes('scripts/context.mjs'));
+    ok(command.includes('does not trim, rewrite, or mutate host session context'));
+    ok(command.includes('Main-session output is limited'));
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/context/SKILL.md'), 'utf-8');
+    ok(/^name:\s*context\s*$/m.test(skill));
+    ok(skill.includes('No host session context mutation'));
+    ok(skill.includes('No consensus raw output or peer raw output in the main session'));
+    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/context/agents/openai.yaml'), 'utf-8');
+    ok(agent.includes('$runtime:context'));
+    ok(/allow_implicit_invocation:\s*false/.test(agent));
+    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/context.mjs'));
+    ok((scriptStat.mode & 0o111) !== 0, 'context.mjs has executable bit');
   });
 });

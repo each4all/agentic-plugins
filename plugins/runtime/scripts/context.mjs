@@ -1,0 +1,444 @@
+#!/usr/bin/env node
+
+import { randomBytes } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const VERSION = '0.1.0';
+const ARTIFACT_SCHEMA = 'runtime-context-artifact-1.0';
+const VALID_COMMANDS = new Set(['capture', 'status']);
+const RISK_LEVELS = new Set(['green', 'yellow', 'red']);
+const RUN_ID_RE = /^context-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+const ARTIFACT_KIND_RE = /^[A-Za-z0-9._-]+$/;
+const REPORT_PREVIEW_LIMIT = 1200;
+
+export async function runContext(options = {}) {
+  const command = options.command ?? 'capture';
+  if (!VALID_COMMANDS.has(command)) {
+    throw new Error(`Unsupported context command: ${command}`);
+  }
+  const repoRoot = resolve(options.repoRoot ?? process.cwd());
+  if (command === 'capture') {
+    return captureContext({ ...options, repoRoot });
+  }
+  return readStatus({ ...options, repoRoot });
+}
+
+export async function captureContext(options = {}) {
+  const repoRoot = resolve(options.repoRoot ?? process.cwd());
+  const now = options.now ?? new Date();
+  const createdAt = toIso(now);
+  const runId = options.runId ? validateRunId(options.runId) : makeRunId(now);
+  const runDir = contextRunDir(repoRoot, runId);
+  await assertInside(contextRoot(repoRoot), runDir);
+  await mkdir(runDir, { recursive: true });
+
+  const summary = await resolveSummary(options);
+  const riskLevel = validateRiskLevel(options.risk ?? 'yellow');
+  const riskReason = options.riskReason
+    ? requireSingleLine(options.riskReason, '--risk-reason')
+    : defaultRiskReason(options.risk);
+  const artifactPointers = normalizeArtifacts(repoRoot, options.artifacts ?? []);
+  const recommendedAction = options.nextAction
+    ? requireSingleLine(options.nextAction, '--next-action')
+    : defaultNextAction(riskLevel);
+
+  const contextPointer = pointer(repoRoot, resolve(runDir, 'context.json'));
+  const prompt = await resolveNextSessionPrompt({
+    ...options,
+    summary,
+    riskLevel,
+    recommendedAction,
+    contextPointer,
+  });
+  const promptPath = resolve(runDir, 'next-session-prompt.md');
+  await writeFile(promptPath, ensureTrailingNewline(prompt));
+
+  const summaryPath = resolve(runDir, 'summary.md');
+  await writeFile(summaryPath, ensureTrailingNewline(summary));
+
+  const artifact = {
+    schema_version: ARTIFACT_SCHEMA,
+    runtime_version: VERSION,
+    run_id: runId,
+    status: 'captured',
+    created_at: createdAt,
+    updated_at: createdAt,
+    repo_root_pointer: '.',
+    context: {
+      summary: summary.trim(),
+      risk_level: riskLevel,
+      risk_reason: riskReason,
+    },
+    artifacts: [
+      { kind: 'context-summary', pointer: pointer(repoRoot, summaryPath) },
+      ...artifactPointers,
+    ],
+    next_session: {
+      recommended_action: recommendedAction,
+      prompt_pointer: pointer(repoRoot, promptPath),
+    },
+    limits: contextLimits(),
+  };
+
+  const contextPath = resolve(runDir, 'context.json');
+  await writeJson(contextPath, artifact);
+
+  return buildReport({ command: 'capture', repoRoot, artifact, contextPath, prompt });
+}
+
+export async function readStatus(options = {}) {
+  const repoRoot = resolve(options.repoRoot ?? process.cwd());
+  const runId = validateRunId(required(options.runId, '--run-id'));
+  const contextPath = contextFile(repoRoot, runId);
+  const artifact = await readJson(contextPath);
+  let prompt = null;
+  if (artifact.next_session?.prompt_pointer) {
+    prompt = await readFile(resolve(repoRoot, artifact.next_session.prompt_pointer), 'utf8');
+  }
+  return buildReport({ command: 'status', repoRoot, artifact, contextPath, prompt });
+}
+
+export function parseArgs(argv) {
+  const args = [...argv];
+  let command = null;
+  if (args[0] && !args[0].startsWith('-')) {
+    command = args.shift();
+    if (!VALID_COMMANDS.has(command)) {
+      throw new Error(`Command must be one of: ${[...VALID_COMMANDS].join(', ')}`);
+    }
+  }
+
+  const options = { artifacts: [] };
+  while (args.length > 0) {
+    const arg = args.shift();
+    if (!arg.startsWith('-')) {
+      if (!command && VALID_COMMANDS.has(arg)) {
+        command = arg;
+        continue;
+      }
+      throw new Error(`Command must be one of: ${[...VALID_COMMANDS].join(', ')}`);
+    }
+    switch (arg) {
+      case '--repo-root':
+        options.repoRoot = requireValue(args, arg);
+        break;
+      case '--format': {
+        const format = requireValue(args, arg);
+        if (!['text', 'json'].includes(format)) throw new Error('--format must be text or json');
+        options.format = format;
+        break;
+      }
+      case '--run-id':
+        options.runId = validateRunId(requireValue(args, arg));
+        break;
+      case '--summary':
+        options.summary = requireValue(args, arg);
+        break;
+      case '--summary-file':
+        options.summaryFile = requireValue(args, arg);
+        break;
+      case '--risk':
+        options.risk = validateRiskLevel(requireValue(args, arg));
+        break;
+      case '--risk-reason':
+        options.riskReason = requireSingleLine(requireValue(args, arg), arg);
+        break;
+      case '--artifact':
+        options.artifacts.push(requireSingleLine(requireValue(args, arg), arg));
+        break;
+      case '--next-action':
+        options.nextAction = requireSingleLine(requireValue(args, arg), arg);
+        break;
+      case '--next-session-prompt':
+        options.nextSessionPrompt = requireValue(args, arg);
+        break;
+      case '--next-session-prompt-file':
+        options.nextSessionPromptFile = requireValue(args, arg);
+        break;
+      case '--help':
+        options.help = true;
+        break;
+      default:
+        throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+  options.command = command ?? 'capture';
+  return options;
+}
+
+export function formatText(report) {
+  if (report.help) return helpText();
+  const lines = [`runtime:context ${report.version ?? VERSION} (${report.command})`];
+  if (report.run_id) lines.push(`run: ${report.run_id}`);
+  if (report.risk_level) lines.push(`risk: ${report.risk_level}`);
+  if (report.context_pointer) lines.push(`context artifact: ${report.context_pointer}`);
+  if (report.next_session?.prompt_pointer) lines.push(`next-session prompt: ${report.next_session.prompt_pointer}`);
+
+  if (report.context_summary) {
+    lines.push('', 'context summary:', report.context_summary);
+  }
+  if (report.risk_reason) {
+    lines.push('', `risk reason: ${report.risk_reason}`);
+  }
+  if (report.artifacts?.length) {
+    lines.push('', 'artifact pointers:');
+    for (const artifact of report.artifacts) {
+      lines.push(`- ${artifact.kind}: ${artifact.pointer}`);
+    }
+  }
+  if (report.next_session?.recommended_action) {
+    lines.push('', `recommended next action: ${report.next_session.recommended_action}`);
+  }
+  if (report.next_session?.prompt_preview) {
+    lines.push('', 'recommended next-session prompt:', report.next_session.prompt_preview);
+  }
+  if (report.limits?.length) {
+    lines.push('', 'limits:');
+    for (const limit of report.limits) lines.push(`- ${limit}`);
+  }
+  return lines.join('\n');
+}
+
+function buildReport({ command, repoRoot, artifact, contextPath, prompt }) {
+  return {
+    command,
+    version: VERSION,
+    run_id: artifact.run_id,
+    status: artifact.status,
+    context_pointer: pointer(repoRoot, contextPath),
+    context_summary: preview(artifact.context.summary),
+    risk_level: artifact.context.risk_level,
+    risk_reason: artifact.context.risk_reason,
+    artifacts: [
+      { kind: 'context-artifact', pointer: pointer(repoRoot, contextPath) },
+      ...(artifact.artifacts ?? []),
+    ],
+    next_session: {
+      recommended_action: artifact.next_session.recommended_action,
+      prompt_pointer: artifact.next_session.prompt_pointer,
+      prompt_preview: prompt ? preview(prompt) : null,
+    },
+    limits: artifact.limits,
+  };
+}
+
+async function resolveSummary(options) {
+  if (options.summary && options.summaryFile) {
+    throw new Error('Use either --summary or --summary-file, not both');
+  }
+  if (options.summary) {
+    if (!options.summary.trim()) throw new Error('--summary must not be empty');
+    return options.summary.trim();
+  }
+  if (options.summaryFile) {
+    const text = await readFile(resolve(options.summaryFile), 'utf8');
+    if (!text.trim()) throw new Error('--summary-file must not be empty');
+    return text.trim();
+  }
+  throw new Error('capture requires --summary or --summary-file');
+}
+
+async function resolveNextSessionPrompt(options) {
+  if (options.nextSessionPrompt && options.nextSessionPromptFile) {
+    throw new Error('Use either --next-session-prompt or --next-session-prompt-file, not both');
+  }
+  if (options.nextSessionPrompt) {
+    if (!options.nextSessionPrompt.trim()) throw new Error('--next-session-prompt must not be empty');
+    return options.nextSessionPrompt.trim();
+  }
+  if (options.nextSessionPromptFile) {
+    const text = await readFile(resolve(options.nextSessionPromptFile), 'utf8');
+    if (!text.trim()) throw new Error('--next-session-prompt-file must not be empty');
+    return text.trim();
+  }
+  return `Continue agentic-plugins work from runtime context artifact ${options.contextPointer}.
+
+Context summary:
+${options.summary.trim()}
+
+Risk level: ${options.riskLevel}
+Recommended next action: ${options.recommendedAction}`;
+}
+
+function normalizeArtifacts(repoRoot, values) {
+  const inputs = Array.isArray(values) ? values : [values];
+  return inputs.map((value) => {
+    const { kind, path } = parseArtifactSpec(value);
+    return { kind, pointer: normalizeRepoPointer(repoRoot, path) };
+  });
+}
+
+function parseArtifactSpec(value) {
+  const text = String(value ?? '').trim();
+  if (!text) throw new Error('--artifact must not be empty');
+  const colon = text.indexOf(':');
+  if (colon > 0) {
+    const kind = text.slice(0, colon);
+    const path = text.slice(colon + 1);
+    if (ARTIFACT_KIND_RE.test(kind) && path) return { kind, path };
+  }
+  return { kind: 'artifact', path: text };
+}
+
+function normalizeRepoPointer(repoRoot, value) {
+  if (/[\u0000-\u001F]/.test(value)) {
+    throw new Error('artifact pointers must not contain control characters');
+  }
+  const candidate = isAbsolute(value) ? resolve(value) : resolve(repoRoot, value);
+  assertInsideSync(repoRoot, candidate, 'Artifact path escapes repo root');
+  return pointer(repoRoot, candidate);
+}
+
+function validateRiskLevel(value) {
+  if (!RISK_LEVELS.has(value)) {
+    throw new Error('--risk must be green, yellow, or red');
+  }
+  return value;
+}
+
+function defaultRiskReason(riskProvided) {
+  return riskProvided
+    ? 'Risk level was supplied by the caller.'
+    : 'No automatic host-context measurement is performed; context capture defaults to yellow unless --risk is supplied.';
+}
+
+function defaultNextAction(riskLevel) {
+  if (riskLevel === 'green') {
+    return 'Continue in the current session only for small follow-up work; keep the context artifact pointer available.';
+  }
+  if (riskLevel === 'red') {
+    return 'Start a fresh session with the next-session prompt before continuing substantial work.';
+  }
+  return 'Prefer a fresh or resumed session with the next-session prompt before substantial follow-up work.';
+}
+
+function contextLimits() {
+  return [
+    'This scaffold writes runtime-owned context artifacts only; it does not mutate host session context.',
+    'Main-session output is limited to context summary, risk level, artifact pointers, and recommended next-session action/prompt.',
+    'Engineer and orchestrator workflow state stays in its existing storage; no migration is performed.',
+    'Consensus or peer raw output should be referenced by artifact pointer only, not pasted into the context summary.',
+    'Codex manual-hook and permission limits are not represented as host parity.',
+  ];
+}
+
+function helpText() {
+  return `runtime:context ${VERSION}
+
+Usage:
+  runtime:context capture --summary <text> [--risk green|yellow|red]
+  runtime:context capture --summary-file <path> [--artifact kind:<repo-path>] [--next-action <text>]
+  runtime:context status --run-id <id>
+
+This MVP writes repo-local context artifacts under .agentic-plugins/runs/context/ and does not mutate host session context.`;
+}
+
+function requireValue(args, flag) {
+  if (args.length === 0 || args[0].startsWith('-')) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return args.shift();
+}
+
+function requireSingleLine(value, flag) {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`${flag} must be a single-line value`);
+  }
+  return value;
+}
+
+function required(value, flag) {
+  if (value === undefined || value === null || value === '') {
+    throw new Error(`${flag} is required`);
+  }
+  return value;
+}
+
+function validateRunId(runId) {
+  if (!RUN_ID_RE.test(runId)) {
+    throw new Error('Invalid --run-id; expected context-YYYYMMDDTHHMMSSZ-abcdef');
+  }
+  return runId;
+}
+
+function makeRunId(now) {
+  const stamp = toIso(now).replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  return `context-${stamp}-${randomBytes(3).toString('hex')}`;
+}
+
+function toIso(value) {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function contextRoot(repoRoot) {
+  return resolve(repoRoot, '.agentic-plugins', 'runs', 'context');
+}
+
+function contextRunDir(repoRoot, runId) {
+  return resolve(contextRoot(repoRoot), validateRunId(runId));
+}
+
+function contextFile(repoRoot, runId) {
+  return resolve(contextRunDir(repoRoot, runId), 'context.json');
+}
+
+function pointer(repoRoot, path) {
+  const rel = relative(repoRoot, path).split(sep).join('/');
+  return rel || basename(path);
+}
+
+async function assertInside(root, candidate) {
+  assertInsideSync(root, candidate, `Artifact path escapes context root: ${candidate}`);
+}
+
+function assertInsideSync(root, candidate, message) {
+  const rootPath = resolve(root);
+  const candidatePath = resolve(candidate);
+  const rel = relative(rootPath, candidatePath);
+  if (rel.startsWith('..') || rel === '..' || rel.startsWith(`..${sep}`)) {
+    throw new Error(message);
+  }
+}
+
+async function readJson(path) {
+  return JSON.parse(await readFile(path, 'utf8'));
+}
+
+async function writeJson(path, value) {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function ensureTrailingNewline(text) {
+  return text.endsWith('\n') ? text : `${text}\n`;
+}
+
+function preview(text) {
+  const trimmed = text.trim();
+  if (trimmed.length <= REPORT_PREVIEW_LIMIT) return trimmed;
+  return `${trimmed.slice(0, REPORT_PREVIEW_LIMIT)}...`;
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help) {
+    console.log(helpText());
+    return;
+  }
+  const report = await runContext(options);
+  if (options.format === 'json') {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    console.log(formatText(report));
+  }
+}
+
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  main().catch((error) => {
+    console.error(`runtime:context: ${error.message}`);
+    process.exitCode = 1;
+  });
+}

@@ -1,12 +1,12 @@
 # Runtime Follow-ups
 
-ADR-0024 defines more than the first `doctor`, `settings`, and consensus scaffold PRs. This file keeps the deferred surfaces explicit so runtime operator commands do not grow into hidden workflow, host-native config, or plugin-install mutation by accident.
+ADR-0024 defines more than the first `doctor`, `settings`, consensus, and context scaffold PRs. This file keeps the deferred surfaces explicit so runtime operator commands do not grow into hidden workflow, host-native config, context mutation, or plugin-install mutation by accident.
 
 ## Deferred to follow-up PRs
 
 - Automatic plugin install/update apply mode: first settings only recommends host-native install/update commands. A later PR may add an explicit apply boundary for plugin management.
 - Automatic peer execution for consensus: the first consensus PR creates and updates runtime-owned run artifacts, but peer execution remains manual/host-native. A later PR may add an explicit executor boundary for companion dispatch, cancellation, and deeper smoke evidence.
-- Context hygiene: main-session context budget checks and artifact-pointer summaries. No automatic host switch or new workflow start.
+- Context automation: main-session context budget checks, automatic capture triggers, and completion-surface integration beyond the current artifact-only `runtime:context` scaffold. No automatic host switch or new workflow start.
 - Completion footer: standard advisory footer for engineer/orchestrator completion surfaces with context state, workflow ids, artifact pointers, recommended next work, and exact next-session command or prompt.
 - Deep peer smoke for `runtime:doctor`: explicit opt-in only. The first PR accepts `--deep-peer-smoke` but does not execute peer agents.
 - Sandbox permission proof: explicit smoke/probe only. Settings must not silently relax sandbox or approval policy.

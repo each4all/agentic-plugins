@@ -1,0 +1,7 @@
+interface:
+  display_name: "Runtime - Context"
+  short_description: "Context summary, risk, artifact pointers, and next-session handoff scaffold"
+  default_prompt: "Use $runtime:context to write a bounded context artifact and recommend a next-session action without mutating host context."
+
+policy:
+  allow_implicit_invocation: false
