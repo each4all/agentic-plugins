@@ -4,7 +4,7 @@ Runtime operator control plane for agentic-plugins. **L1 framework primitive** p
 
 ## Status
 
-Ships `runtime:doctor`, the first `runtime:settings` implementation, an artifact-only `runtime:consensus` scaffold, the first runtime-owned `runtime:context` scaffold, and a pointer-only completion footer helper. Deep peer smoke, automatic plugin install/update apply mode, automatic peer execution, and context automation beyond artifact capture are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
+Ships `runtime:doctor`, the first `runtime:settings` implementation, an artifact-only `runtime:consensus` scaffold, the first runtime-owned `runtime:context` scaffold with a read-only explicit budget check, and a pointer-only completion footer helper. Deep peer smoke, automatic plugin install/update apply mode, automatic peer execution, and automatic context mutation/capture triggers are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
 
 ## What it is
 
@@ -35,7 +35,7 @@ It does not own persona-level engineering work or macro planning. Those remain i
 | `/runtime:doctor [--format text\|json] [--model <id>] [--effort <level>] [--deep-peer-smoke]` | shipping | Read-only diagnosis for host CLIs, auth, plugin cache/install state, companion readiness, model/effort observation, and workflow/peer-run ledger health. |
 | `/runtime:settings [--format text\|json] [--target repo\|user\|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply]` | shipping | Dry-run settings planner for marketplace/plugin/CLI readiness and agentic-plugins-owned model/effort config. `--apply` writes only `.agentic-plugins/config.toml`. |
 | `/runtime:consensus plan\|record\|synthesize\|next-round\|status ...` | shipping scaffold | Runtime-owned consensus artifact manager. Creates fanout/rebuttal prompts, records raw peer output as files, and emits only synthesized summary, durable disagreements, evidence pointers, and artifact paths. |
-| `/runtime:context capture\|status ...` | shipping scaffold | Runtime-owned context hygiene artifact manager. Writes context summary, risk level, artifact pointers, and next-session prompt/action under `.agentic-plugins/runs/context/` without mutating host session context. |
+| `/runtime:context capture\|status\|check ...` | shipping scaffold | Runtime-owned context hygiene artifact manager and read-only explicit budget check. Writes context summary, risk level, artifact pointers, and next-session prompt/action under `.agentic-plugins/runs/context/` for capture/status without mutating host session context; `check` creates no artifact. |
 
 Runtime also ships `scripts/footer.mjs`, a helper used by engineer and orchestrator completion surfaces to render the ADR-0024 advisory footer from explicit fields or a `runtime:context` artifact pointer. It is intentionally not a new slash command.
 
@@ -48,6 +48,7 @@ $runtime:settings
 $runtime:settings --codex-model gpt-5.4 --codex-effort high --apply
 $runtime:consensus plan --task "Review this risky change" --max-rounds 2
 $runtime:context capture --summary "Handoff summary" --risk yellow --next-action "Start a fresh session before the next large change."
+$runtime:context check --token-budget 100000 --used-tokens 82000
 ```
 
 ## Doctor behavior
@@ -101,10 +102,11 @@ Main-session output intentionally omits raw peer output. It reports artifact poi
 
 ## Context behavior
 
-Context is a runtime-owned artifact scaffold for ADR-0024 context hygiene. It does not inspect or mutate host session context directly. The first flow is:
+Context is a runtime-owned artifact scaffold and read-only check surface for ADR-0024 context hygiene. It does not inspect or mutate host session context directly. The first flows are:
 
 1. `capture`: create `<repo>/.agentic-plugins/runs/context/<run-id>/context.json`, `summary.md`, and `next-session-prompt.md`.
 2. `status`: read the stored artifact and emit the same bounded handoff fields.
+3. `check`: compute an advisory green/yellow/red risk from caller-supplied `--token-budget` plus `--used-tokens` or `--remaining-tokens`, or from caller-supplied `--risk`.
 
 Context output is intentionally limited to:
 
@@ -114,7 +116,7 @@ Context output is intentionally limited to:
 - recommended next-session action;
 - generated or caller-supplied next-session prompt preview and pointer.
 
-This scaffold does not migrate engineer/orchestrator workflow state, run peers, paste consensus raw output into the main session, mutate host-native config/auth/secrets/sandbox state, or claim Codex manual-hook parity.
+`check` does not create a context artifact, trigger `capture`, measure host context automatically, compact the session, or start a new session. This scaffold does not migrate engineer/orchestrator workflow state, run peers, paste consensus raw output into the main session, mutate host-native config/auth/secrets/sandbox state, or claim Codex manual-hook parity.
 
 ## Completion footer behavior
 
