@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,6 +16,7 @@ const CONTEXT_BUDGET_THRESHOLDS = {
   yellowAt: 0.7,
   redAt: 0.9,
 };
+const DEFAULT_HANDOFF_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 export async function runContext(options = {}) {
   const command = options.command ?? 'capture';
@@ -97,14 +98,36 @@ export async function captureContext(options = {}) {
 
 export async function readStatus(options = {}) {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
-  const runId = validateRunId(required(options.runId, '--run-id'));
-  const contextPath = contextFile(repoRoot, runId);
+  const latest = options.latest === true;
+  if (options.runId && latest) {
+    throw new Error('Use either --run-id or --latest, not both');
+  }
+  if (!options.runId && !latest) {
+    throw new Error('status requires --run-id or --latest');
+  }
+  const staleAfterMs = options.staleAfterMs ?? DEFAULT_HANDOFF_STALE_AFTER_MS;
+  const lookup = latest
+    ? await findLatestContextArtifact(repoRoot)
+    : {
+        runId: validateRunId(required(options.runId, '--run-id')),
+        contextPath: contextFile(repoRoot, options.runId),
+        skippedInvalid: 0,
+      };
+  const contextPath = lookup.contextPath;
   const artifact = await readJson(contextPath);
+  const handoff = buildHandoffLookup({
+    artifact,
+    runId: lookup.runId,
+    latest,
+    now: options.now ?? new Date(),
+    staleAfterMs,
+    skippedInvalid: lookup.skippedInvalid,
+  });
   let prompt = null;
   if (artifact.next_session?.prompt_pointer) {
     prompt = await readFile(resolve(repoRoot, artifact.next_session.prompt_pointer), 'utf8');
   }
-  return buildReport({ command: 'status', repoRoot, artifact, contextPath, prompt });
+  return buildReport({ command: 'status', repoRoot, artifact, contextPath, prompt, handoff });
 }
 
 export async function checkContext(options = {}) {
@@ -162,6 +185,12 @@ export function parseArgs(argv) {
       }
       case '--run-id':
         options.runId = validateRunId(requireValue(args, arg));
+        break;
+      case '--latest':
+        options.latest = true;
+        break;
+      case '--stale-after-hours':
+        options.staleAfterMs = parseNonNegativeInteger(requireValue(args, arg), arg) * 60 * 60 * 1000;
         break;
       case '--summary':
         options.summary = requireValue(args, arg);
@@ -225,6 +254,10 @@ export function formatText(report) {
     lines.push('', 'context budget:');
     lines.push(formatContextBudget(report.context_budget));
   }
+  if (report.handoff) {
+    lines.push('', 'handoff lookup:');
+    lines.push(formatHandoffLookup(report.handoff));
+  }
   if (report.artifacts?.length) {
     lines.push('', 'artifact pointers:');
     for (const artifact of report.artifacts) {
@@ -244,8 +277,8 @@ export function formatText(report) {
   return lines.join('\n');
 }
 
-function buildReport({ command, repoRoot, artifact, contextPath, prompt }) {
-  return {
+function buildReport({ command, repoRoot, artifact, contextPath, prompt, handoff = null }) {
+  const report = {
     command,
     version: VERSION,
     run_id: artifact.run_id,
@@ -265,6 +298,8 @@ function buildReport({ command, repoRoot, artifact, contextPath, prompt }) {
     },
     limits: artifact.limits,
   };
+  if (handoff) report.handoff = handoff;
+  return report;
 }
 
 function buildBudgetCheck(options) {
@@ -454,7 +489,7 @@ function helpText() {
 Usage:
   runtime:context capture --summary <text> [--risk green|yellow|red]
   runtime:context capture --summary-file <path> [--artifact kind:<repo-path>] [--next-action <text>]
-  runtime:context status --run-id <id>
+  runtime:context status (--run-id <id>|--latest) [--stale-after-hours <n>]
   runtime:context check --token-budget <n> (--used-tokens <n>|--remaining-tokens <n>)
   runtime:context check --risk green|yellow|red
 
@@ -500,6 +535,91 @@ function parseRemainingTokens(value, tokenBudget) {
     throw new Error('--remaining-tokens must be less than or equal to --token-budget');
   }
   return remaining;
+}
+
+async function findLatestContextArtifact(repoRoot) {
+  const root = contextRoot(repoRoot);
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    throw new Error(`No context artifacts found under ${pointer(repoRoot, root)}: ${error.code ?? error.message}`);
+  }
+
+  const candidates = [];
+  let skippedInvalid = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !RUN_ID_RE.test(entry.name)) continue;
+    const contextPath = contextFile(repoRoot, entry.name);
+    try {
+      const artifact = await readJson(contextPath);
+      const selectedAt = artifactTimestampMs(artifact, entry.name);
+      if (selectedAt === null) {
+        skippedInvalid++;
+        continue;
+      }
+      candidates.push({
+        runId: entry.name,
+        contextPath,
+        selectedAt,
+      });
+    } catch {
+      skippedInvalid++;
+    }
+  }
+
+  if (candidates.length === 0) {
+    throw new Error(`No readable context artifacts found under ${pointer(repoRoot, root)}`);
+  }
+
+  candidates.sort((a, b) => b.selectedAt - a.selectedAt || b.runId.localeCompare(a.runId));
+  return { ...candidates[0], skippedInvalid };
+}
+
+function buildHandoffLookup({ artifact, runId, latest, now, staleAfterMs, skippedInvalid }) {
+  const selectedAt = artifactTimestampMs(artifact, runId);
+  const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  const ageMs = selectedAt === null ? null : Math.max(0, nowMs - selectedAt);
+  return {
+    mode: latest ? 'latest' : 'run-id',
+    latest,
+    selected_at: selectedAt === null ? null : new Date(selectedAt).toISOString(),
+    age_ms: ageMs,
+    age_minutes: ageMs === null ? null : roundOne(ageMs / 60000),
+    stale_after_ms: staleAfterMs,
+    stale: ageMs === null ? null : ageMs > staleAfterMs,
+    skipped_invalid: skippedInvalid,
+  };
+}
+
+function artifactTimestampMs(artifact, fallbackRunId) {
+  for (const value of [artifact.updated_at, artifact.created_at]) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return runIdTimestampMs(fallbackRunId);
+}
+
+function runIdTimestampMs(runId) {
+  const match = String(runId ?? '').match(/^context-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match;
+  const parsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatHandoffLookup(handoff) {
+  const selected = handoff.selected_at ?? 'unknown';
+  const age = handoff.age_minutes === null ? 'unknown' : `${handoff.age_minutes} minutes`;
+  return [
+    `- mode: ${handoff.mode}`,
+    `- latest: ${handoff.latest}`,
+    `- selected_at: ${selected}`,
+    `- age: ${age}`,
+    `- stale: ${handoff.stale}`,
+    `- stale_after_ms: ${handoff.stale_after_ms}`,
+    `- skipped_invalid: ${handoff.skipped_invalid}`,
+  ].join('\n');
 }
 
 function contextBudgetThresholds() {
