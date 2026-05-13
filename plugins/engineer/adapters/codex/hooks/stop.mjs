@@ -4,10 +4,11 @@
 // Codex-side Stop helper for the engineer plugin per ADR-0011 §4 +
 // ADR-0017 §sub-decision 5.
 //
-// Codex CLI does not expose a hook system equivalent to Claude Code's
-// PreCompact / Stop / SessionStart events (as of Codex CLI 0.128.0).
-// This script is therefore intended to be invoked **manually** at the
-// end of a Codex skill's command-invoked mode — i.e., the Codex SKILL
+// Codex CLI exposes a host-level hooks feature in current releases, but
+// agentic-plugins has not verified plugin-local automatic hook packaging
+// equivalent to Claude Code's plugin lifecycle bindings. This script is
+// therefore intended to be invoked **manually** at the end of a Codex
+// skill's command-invoked mode — i.e., the Codex SKILL
 // agent calls this script as its final step before returning, which
 // produces the same last_snapshot + host_history record that Claude's
 // automatic Stop hook produces, AND triggers the same four-gate
