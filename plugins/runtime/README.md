@@ -46,7 +46,8 @@ Runtime artifact git policy is documented in
 [`docs/artifact-policy.md`](docs/artifact-policy.md) and validated by
 `npm run validate:artifacts`. In short, `.agentic-plugins/config.toml` remains
 trackable for intentional repo-local defaults, while generated artifacts under
-`.agentic-plugins/runs/`, local runtime caches, temporary files, and local
+`.agentic-plugins/runs/`, generated workflow state under
+`.agentic-plugins/state/`, local runtime caches, temporary files, and local
 override TOML files are ignored.
 
 Codex skill parity:

@@ -4,8 +4,8 @@
 // Policy:
 //   - .agentic-plugins/config.toml stays trackable for intentional repo-local
 //     runtime defaults.
-//   - .agentic-plugins/runs/, tmp/, cache/, and *.local.toml are local
-//     byproducts and must be ignored by the repository .gitignore.
+//   - .agentic-plugins/runs/, state/, tmp/, cache/, and *.local.toml are
+//     local byproducts and must be ignored by the repository .gitignore.
 //   - Legacy host/runtime byproducts (.claude/, .codex/, output/) remain
 //     ignored and must not be tracked.
 
@@ -21,6 +21,11 @@ export const REQUIRED_IGNORES = [
     pattern: '.agentic-plugins/runs/',
     probe: '.agentic-plugins/runs/context/example/context.json',
     reason: 'runtime context, consensus, doctor, and future run artifacts',
+  },
+  {
+    pattern: '.agentic-plugins/state/',
+    probe: '.agentic-plugins/state/engineer/workflows/example.md',
+    reason: 'workflow files, archives, peer-run ledgers, locks, and migration manifests',
   },
   {
     pattern: '.agentic-plugins/tmp/',
@@ -76,6 +81,7 @@ export const DISALLOWED_GITIGNORE_PATTERNS = new Set([
 
 export const DISALLOWED_TRACKED_PREFIXES = [
   '.agentic-plugins/runs/',
+  '.agentic-plugins/state/',
   '.agentic-plugins/tmp/',
   '.agentic-plugins/cache/',
   '.claude/',

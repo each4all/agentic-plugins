@@ -40,7 +40,7 @@ Doctor reports:
 - Optional `--permission-proof --execute-permission-proof` execution proof through the companion contract under host-native permission defaults. Output is bounded to status, exit codes, peer host/model metadata, timing, stdout byte count, stdout SHA-256, and sanitized permission-failure class; raw peer stdout is not printed into the main session.
 - Optional `--deep-peer-smoke` plan-only preflight, including per-direction readiness, model/effort inputs, blockers, warnings, and next-step guidance without executing peers.
 - Optional `--deep-peer-smoke --execute-deep-peer-smoke` execution proof through the companion contract. Output is bounded to status, exit codes, peer host/model metadata, timing, stdout byte count, and stdout SHA-256; raw peer stdout is not printed into the main session.
-- Basic workflow and peer-run ledger health for `.claude/agentic-engineer` and `.claude/agentic-orchestrator`.
+- Basic workflow and peer-run ledger health for canonical `.agentic-plugins/state/<plugin>` and legacy `.claude/agentic-*` homes, including migration ambiguity/blocker status.
 
 ## Out of Scope
 

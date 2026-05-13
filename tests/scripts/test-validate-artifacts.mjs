@@ -45,6 +45,17 @@ describe('validate-artifacts', () => {
     ok(report.errors.some((error) => error.includes('git check-ignore did not ignore .agentic-plugins/runs/context/example/context.json')));
   });
 
+  it('rejects missing repo-level ignore coverage for generated workflow state', () => {
+    writeGitignore(defaultGitignore().replace('.agentic-plugins/state/\n', ''));
+    writeSourceFile('plugins/runtime/README.md', '# runtime\n');
+
+    const report = validateArtifactPolicy(repoRoot);
+
+    strictEqual(report.ok, false);
+    ok(report.errors.some((error) => error.includes('.gitignore missing .agentic-plugins/state/')));
+    ok(report.errors.some((error) => error.includes('git check-ignore did not ignore .agentic-plugins/state/engineer/workflows/example.md')));
+  });
+
   it('rejects broad .agentic-plugins ignores that would hide config.toml', () => {
     writeGitignore(`${defaultGitignore()}.agentic-plugins/\n`);
     writeSourceFile('plugins/runtime/README.md', '# runtime\n');
@@ -59,13 +70,13 @@ describe('validate-artifacts', () => {
   it('rejects tracked generated artifacts even when they are ignored', () => {
     writeGitignore(defaultGitignore());
     writeSourceFile('plugins/runtime/README.md', '# runtime\n');
-    writeSourceFile('output/research_brief.md', 'local artifact\n');
-    git('add', '-f', 'output/research_brief.md');
+    writeSourceFile('.agentic-plugins/state/engineer/workflows/wf.md', 'local state\n');
+    git('add', '-f', '.agentic-plugins/state/engineer/workflows/wf.md');
 
     const report = validateArtifactPolicy(repoRoot);
 
     strictEqual(report.ok, false);
-    ok(report.errors.some((error) => error.includes('tracked generated artifact is not allowed: output/research_brief.md')));
+    ok(report.errors.some((error) => error.includes('tracked generated artifact is not allowed: .agentic-plugins/state/engineer/workflows/wf.md')));
   });
 });
 
@@ -74,6 +85,7 @@ function defaultGitignore() {
     '.claude/',
     '.codex/',
     '.agentic-plugins/runs/',
+    '.agentic-plugins/state/',
     '.agentic-plugins/tmp/',
     '.agentic-plugins/cache/',
     '.agentic-plugins/*.local.toml',
