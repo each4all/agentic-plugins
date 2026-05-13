@@ -333,3 +333,10 @@ When running on Codex (no host Stop event), the auto-archive evaluation must be 
 3. Macro `terminal_marker: true` + `current_phase: 'finalized'`.
 
 The macro workflow file is moved to `archive/` on the next host Stop event by `runMacroStopArchiveAll`. Re-running `/orchestrator:finalize` after step 3 is a no-op (subtasks already deferred, terminal_marker already set).
+
+Append the runtime completion footer after the finalize summary. Use the
+runtime footer helper when available, or render the same fields manually:
+context state, workflow id/path, artifact pointers, recommended next work,
+and next-session action/command or prompt pointer. The footer is advisory
+and pointer-only; do not mutate host session context or paste raw peer /
+consensus output into the main session.

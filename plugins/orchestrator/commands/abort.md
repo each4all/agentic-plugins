@@ -276,3 +276,10 @@ echo "  Next Stop event will evaluate A1-A4 and auto-archive the macro file."
 ## Summary
 
 `/orchestrator:abort` completes when all non-terminal subtasks are `abandoned`, every engineer child workflow is archived (terminal via stop-archive, mid-flight via detach-archive), and the macro carries `terminal_marker: true` + `current_phase: 'aborted'`. The macro workflow file is moved to `archive/` on the next host Stop event.
+
+Append the runtime completion footer after the abort summary. Use the
+runtime footer helper when available, or render the same fields manually:
+context state, workflow id/path, artifact pointers, recommended next work,
+and next-session action/command or prompt pointer. The footer is advisory
+and pointer-only; do not mutate host session context or paste raw peer /
+consensus output into the main session.
