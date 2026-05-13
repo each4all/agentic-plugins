@@ -12,7 +12,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runDoctor } from './doctor.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.0';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.1';
 export const CONFIG_KEYS = [
   'model',
   'effort',
@@ -67,6 +67,13 @@ export async function runSettings({
     await applyConfigPlans(configPlans);
   }
 
+  const companionSettings = buildCompanionSettingPlans({
+    currentDirections: doctor.model_effort.directions,
+    desiredConfig,
+    configTargets: configPlans.targets,
+    apply,
+  });
+
   const report = {
     schema_version: SETTINGS_SCHEMA_VERSION,
     runtime_version: RUNTIME_VERSION,
@@ -95,14 +102,12 @@ export async function runSettings({
       desired: desiredConfig,
       targets: configPlans.targets,
     },
-    companion_settings: buildCompanionSettingPlans({
-      currentDirections: doctor.model_effort.directions,
-      desiredConfig,
-    }),
+    companion_settings: companionSettings,
     recommendations: buildTopLevelRecommendations({
       clis: doctor.clis,
       plugins: doctor.plugins,
       desiredConfig,
+      companionSettings,
     }),
     limits: [
       'Plugin install/update is recommendation-only in this PR; no host command is executed.',
@@ -170,6 +175,8 @@ async function buildOneConfigPlan({ kind, path, selected, desiredConfig }) {
     path,
     status: currentText.ok ? 'available' : 'missing',
     selected,
+    current_config: sortConfig(current),
+    projected_config: sortConfig(selected ? { ...current, ...desiredConfig } : current),
     current_keys: Object.keys(current).sort(),
     planned_writes: actions.filter((action) => action.op !== 'keep'),
     unchanged: actions.filter((action) => action.op === 'keep'),
@@ -247,6 +254,10 @@ function normalizeConfigKey(key) {
 
 function tomlString(value) {
   return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function sortConfig(config) {
+  return Object.fromEntries(Object.entries(config).sort(([a], [b]) => a.localeCompare(b)));
 }
 
 function buildCliPlans(clis) {
@@ -361,31 +372,73 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
   return recommendations;
 }
 
-function buildCompanionSettingPlans({ currentDirections, desiredConfig }) {
+function buildCompanionSettingPlans({ currentDirections, desiredConfig, configTargets, apply }) {
+  const projection = buildConfigProjection(configTargets);
   return {
     contract_path: 'companions/contract.md --model / --effort',
+    effective_mode: apply ? 'applied' : 'projected',
+    resolution_order: [
+      'repo-local .agentic-plugins/config.toml',
+      'user-global ~/.agentic-plugins/config.toml',
+      'host-native default',
+    ],
     directions: {
       claude_to_codex: buildDirectionSettingPlan({
         label: 'Claude -> Codex',
         peer: 'codex',
         current: currentDirections.claude_to_codex,
         desiredConfig,
+        projection,
+        apply,
       }),
       codex_to_claude: buildDirectionSettingPlan({
         label: 'Codex -> Claude',
         peer: 'claude',
         current: currentDirections.codex_to_claude,
         desiredConfig,
+        projection,
+        apply,
       }),
     },
   };
 }
 
-function buildDirectionSettingPlan({ label, peer, current, desiredConfig }) {
+function buildConfigProjection(configTargets) {
+  const projection = {};
+  for (const target of configTargets) {
+    projection[target.kind] = {
+      kind: target.kind,
+      path: target.path,
+      selected: target.selected,
+      current_config: target.current_config,
+      projected_config: target.projected_config,
+    };
+  }
+  return projection;
+}
+
+function buildDirectionSettingPlan({ label, peer, current, desiredConfig, projection, apply }) {
   const modelKey = `${peer}_model`;
   const effortKey = `${peer}_effort`;
   const proposedModel = desiredConfig[modelKey] ?? desiredConfig.model ?? null;
   const proposedEffort = desiredConfig[effortKey] ?? desiredConfig.effort ?? null;
+  const effectiveModel = buildEffectiveSetting({
+    peer,
+    kind: 'model',
+    requestedKey: desiredConfig[modelKey] !== undefined ? modelKey : desiredConfig.model !== undefined ? 'model' : null,
+    proposedValue: proposedModel,
+    currentValue: current.model,
+    projection,
+  });
+  const effectiveEffort = buildEffectiveSetting({
+    peer,
+    kind: 'effort',
+    requestedKey: desiredConfig[effortKey] !== undefined ? effortKey : desiredConfig.effort !== undefined ? 'effort' : null,
+    proposedValue: proposedEffort,
+    currentValue: current.effort,
+    projection,
+  });
+  const warnings = [effectiveModel.warning, effectiveEffort.warning].filter(Boolean);
   return {
     label,
     peer,
@@ -400,13 +453,76 @@ function buildDirectionSettingPlan({ label, peer, current, desiredConfig }) {
       model: proposedModel,
       effort: proposedEffort,
     },
+    effective: {
+      mode: apply ? 'applied' : 'projected',
+      model: effectiveModel,
+      effort: effectiveEffort,
+      warnings,
+    },
     recommendation: proposedModel || proposedEffort
       ? `Write ${[proposedModel ? modelKey : null, proposedEffort ? effortKey : null].filter(Boolean).join(' and ')} or shared model/effort defaults to agentic-plugins config.`
       : `No value requested; pass --${peer}-model/--${peer}-effort or shared --model/--effort to propose ${modelKey}/${effortKey}.`,
   };
 }
 
-function buildTopLevelRecommendations({ clis, plugins, desiredConfig }) {
+function buildEffectiveSetting({ peer, kind, requestedKey, proposedValue, currentValue, projection }) {
+  const projected = resolveProjectedSetting({
+    keys: [`${peer}_${kind}`, kind],
+    projection,
+  });
+  const status = proposedValue === null
+    ? 'unchanged'
+    : projected.value === proposedValue
+      ? 'effective'
+      : 'shadowed';
+  const warning = status === 'shadowed'
+    ? [
+      `${peer}_${kind} request ${requestedKey}=${proposedValue} is shadowed by ${projected.source}`,
+      'choose a higher-precedence target/key or remove the shadowing config entry',
+    ].join('; ')
+    : null;
+  return {
+    value: projected.value,
+    source: projected.source,
+    key: projected.key,
+    target: projected.target,
+    path: projected.path,
+    status,
+    requested_key: requestedKey,
+    requested_value: proposedValue,
+    current_value: currentValue?.value ?? null,
+    current_source: currentValue?.source ?? null,
+    warning,
+  };
+}
+
+function resolveProjectedSetting({ keys, projection }) {
+  for (const targetKind of ['repo', 'user']) {
+    const target = projection[targetKind];
+    if (!target) continue;
+    for (const key of keys) {
+      const value = target.projected_config[key];
+      if (value) {
+        return {
+          value,
+          source: `${targetKind} config ${key}`,
+          key,
+          target: targetKind,
+          path: target.path,
+        };
+      }
+    }
+  }
+  return {
+    value: null,
+    source: 'host-native default',
+    key: null,
+    target: null,
+    path: null,
+  };
+}
+
+function buildTopLevelRecommendations({ clis, plugins, desiredConfig, companionSettings }) {
   const recommendations = [];
   for (const [name, cli] of Object.entries(clis)) {
     if (cli.status !== 'available') {
@@ -430,6 +546,13 @@ function buildTopLevelRecommendations({ clis, plugins, desiredConfig }) {
       detail: 'No config writes planned. Use --model/--effort or --claude-model/--codex-model with optional --apply.',
     });
   }
+  for (const warning of collectCompanionSettingWarnings(companionSettings)) {
+    recommendations.push({
+      area: 'config',
+      executed: false,
+      detail: warning,
+    });
+  }
   return recommendations;
 }
 
@@ -437,12 +560,22 @@ function summarizeSettings(report) {
   const writeCount = report.config.targets.reduce((sum, target) => sum + target.planned_writes.length, 0);
   const appliedCount = report.config.targets.filter((target) => target.applied).length;
   const missingCli = Object.values(report.clis).filter((cli) => cli.status !== 'available').length;
+  const settingWarnings = collectCompanionSettingWarnings(report.companion_settings).length;
   return {
-    status: missingCli > 0 ? 'warning' : 'pass',
+    status: missingCli > 0 || settingWarnings > 0 ? 'warning' : 'pass',
     planned_config_writes: writeCount,
     applied_config_targets: appliedCount,
     plugin_recommendations: Object.values(report.plugins).reduce((sum, plugin) => sum + plugin.recommendations.length, 0),
+    setting_warnings: settingWarnings,
   };
+}
+
+function collectCompanionSettingWarnings(companionSettings) {
+  const warnings = [];
+  for (const direction of Object.values(companionSettings.directions)) {
+    warnings.push(...direction.effective.warnings);
+  }
+  return warnings;
 }
 
 export function formatText(report) {
@@ -485,6 +618,8 @@ export function formatText(report) {
   for (const key of ['claude_to_codex', 'codex_to_claude']) {
     const direction = report.companion_settings.directions[key];
     lines.push(`- ${direction.label}: ${direction.config_keys.model}/${direction.config_keys.effort}; proposed model=${direction.proposed.model ?? '<none>'}; effort=${direction.proposed.effort ?? '<none>'}`);
+    lines.push(`  effective-${direction.effective.mode}: model=${direction.effective.model.value ?? '<host-default>'} (${direction.effective.model.source}); effort=${direction.effective.effort.value ?? '<host-default>'} (${direction.effective.effort.source})`);
+    for (const warning of direction.effective.warnings) lines.push(`  warning: ${warning}`);
   }
   lines.push('');
   lines.push('Limits');

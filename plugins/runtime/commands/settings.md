@@ -26,6 +26,7 @@ Notes:
 
 - `--model` and `--effort` plan shared runtime defaults.
 - `--claude-model`, `--claude-effort`, `--codex-model`, and `--codex-effort` plan direction-specific companion defaults that still flow through `companions/contract.md` `--model` and `--effort`.
+- Output includes the projected effective companion model/effort after repo/user config precedence is applied. Settings warns when a lower-precedence target is shadowed by an existing repo-local or direction-specific setting.
 - Plugin install/update is recommendation-only in this PR. The command does not run host-native install/update commands.
 - Host-native config, authentication, secrets, and sandbox/permission settings are never written by this command.
 - Codex CLI may expose host-level hooks, but agentic-plugins has no verified plugin-local automatic hook packaging today; settings reports manual paths instead of claiming parity.

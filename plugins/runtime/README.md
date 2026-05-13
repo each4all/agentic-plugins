@@ -118,6 +118,8 @@ Settings is dry-run by default. It checks marketplace registration and install/c
 
 Supported keys are `model`, `effort`, `claude_model`, `claude_effort`, `codex_model`, and `codex_effort`. Direction-specific keys map to the companion peer: `claude_*` for Codex -> Claude and `codex_*` for Claude -> Codex.
 
+Settings also projects the effective companion model/effort after the selected target's planned writes. This projection uses the same repo-local before user-global precedence as doctor. If a user-global write would be shadowed by an existing repo-local or direction-specific setting, settings reports a warning instead of implying the requested value will take effect.
+
 Settings does not write host-native config, auth, secrets, sandbox/permission settings, or execute plugin install/update commands. Plugin install/update remains a host-native command recommendation in this PR.
 
 ## Migration Behavior

@@ -41,7 +41,11 @@ describe('runtime settings', () => {
     ok(report.config.targets[0].planned_writes.some((write) => write.key === 'model' && write.op === 'add'));
     strictEqual(report.companion_settings.directions.claude_to_codex.proposed.model, 'codex-new');
     strictEqual(report.companion_settings.directions.claude_to_codex.proposed.effort, 'high');
+    strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.value, 'codex-new');
+    strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.source, 'repo config codex_model');
+    strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.status, 'effective');
     strictEqual(report.companion_settings.directions.codex_to_claude.proposed.model, 'claude-new');
+    strictEqual(report.overall.setting_warnings, 0);
     strictEqual(await readFile(join(root, '.agentic-plugins', 'config.toml'), 'utf8'), 'codex_model = "old-codex"\n');
     ok(calls.every((call) => !/\binstall\b|\bupdate\b/.test(call)), 'settings must not execute plugin install/update commands');
     ok(formatText(report).includes(`runtime:settings ${RUNTIME_VERSION} (dry-run)`));
@@ -76,6 +80,34 @@ describe('runtime settings', () => {
     ok(repoConfig.includes('codex_effort = "high"'));
     await rejects(() => stat(join(home, '.agentic-plugins', 'config.toml')), /ENOENT/);
     strictEqual(await readFile(join(home, '.codex', 'config.toml'), 'utf8'), 'model = "host-native"\n');
+  });
+
+  it('warns when a selected lower-precedence config target is shadowed by repo config', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-shadow-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-shadow-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'codex_model = "repo-codex"\n');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      target: 'user',
+      desired: {
+        codex_model: 'user-codex',
+      },
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    const direction = report.companion_settings.directions.claude_to_codex;
+    strictEqual(direction.effective.model.value, 'repo-codex');
+    strictEqual(direction.effective.model.source, 'repo config codex_model');
+    strictEqual(direction.effective.model.status, 'shadowed');
+    ok(direction.effective.model.warning.includes('codex_model request codex_model=user-codex is shadowed by repo config codex_model'));
+    ok(report.recommendations.some((rec) => rec.area === 'config' && rec.detail.includes('shadowed by repo config codex_model')));
+    ok(formatText(report).includes('warning: codex_model request codex_model=user-codex is shadowed by repo config codex_model'));
+    strictEqual(report.overall.status, 'warning');
+    strictEqual(report.overall.setting_warnings, 1);
   });
 
   it('reports plugin installation recommendations without treating them as executed', async () => {
