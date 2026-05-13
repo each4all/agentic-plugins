@@ -1,7 +1,7 @@
 interface:
   display_name: "Runtime - Doctor"
   short_description: "Read-only host readiness, companion, model/effort, smoke, and ledger diagnostics"
-  default_prompt: "Use $runtime:doctor to inspect Claude/Codex availability, auth, agentic-plugins install/cache state, companion readiness, model/effort observation, optional explicit deep peer smoke execution, and workflow ledger health without mutating settings."
+  default_prompt: "Use $runtime:doctor to inspect Claude/Codex availability, auth, agentic-plugins install/cache state, companion readiness, model/effort observation, optional explicit permission proof / deep peer smoke execution, and workflow ledger health without mutating settings."
 
 policy:
   allow_implicit_invocation: false
