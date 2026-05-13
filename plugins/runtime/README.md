@@ -126,6 +126,7 @@ Context output is intentionally limited to:
 The footer helper renders the standard ADR-0024 completion footer:
 
 - context state (`green`, `yellow`, or `red`);
+- linked context artifact and lookup freshness when a context artifact is supplied;
 - workflow kind/id/path;
 - artifact pointers, including `.agentic-plugins/runs/context/<run-id>/context.json` when linked;
 - recommended next work;
@@ -133,6 +134,8 @@ The footer helper renders the standard ADR-0024 completion footer:
 - explicit advisory/pointer-only limits.
 
 When supplied `--context-run-id`, the helper reads only bounded fields from the matching `runtime:context` artifact: risk level, artifact pointers, recommended action, and next-session prompt pointer. It does not print the context summary body, prompt body, raw peer output, or consensus raw output.
+
+When supplied `--context-latest`, the helper reads the newest existing readable `runtime:context` artifact and reports read-only lookup metadata, including selected timestamp, age, stale state, stale threshold, and skipped invalid artifacts. `--stale-after-hours <n>` sets the stale threshold. The latest lookup does not create, update, or compact context.
 
 ## Install
 
