@@ -1,6 +1,6 @@
 # Codex hooks (manual-invoke helpers)
 
-As of Codex CLI 0.128.0, **no plugin-local automatic hook packaging has been verified** for orchestrator's lifecycle events (whether Codex CLI exposes a global hook surface that could register this script is a separate user-environment concern). ADR-0011 §4's "Codex CLI | Stop" hook contract is therefore satisfied here by **manual invocation** rather than automatic event binding.
+Codex CLI exposes a host-level hooks feature in current releases, but **no plugin-local automatic hook packaging has been verified** for orchestrator's lifecycle events. ADR-0011 §4's "Codex CLI | Stop" hook contract is therefore satisfied here by **manual invocation** rather than automatic event binding.
 
 ## Files
 

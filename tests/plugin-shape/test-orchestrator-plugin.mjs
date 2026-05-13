@@ -15,8 +15,8 @@
 //     finalize/abort lifecycle commands, 3 meta commands
 //     (resume/checkpoint/peer-now), and an audit follow-up alias
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
-//   - 1 Codex adapter manual stop helper (Codex CLI 0.128.0 has no
-//     plugin-local automatic hook packaging verified — Codex Stop is
+//   - 1 Codex adapter manual stop helper (Codex CLI exposes host-level
+//     hooks, but no plugin-local automatic hook packaging is verified — Codex Stop is
 //     declared as a script file but NOT registered in hooks/hooks.json)
 //   - 1 Claude hooks manifest (hooks/hooks.json) declaring SessionStart,
 //     PreCompact, and Stop only
@@ -169,8 +169,8 @@ describe('plugins/orchestrator hooks/hooks.json shape', () => {
     ok(Array.isArray(hooks.hooks.SessionStart));
     ok(Array.isArray(hooks.hooks.PreCompact));
     ok(Array.isArray(hooks.hooks.Stop));
-    // Only Claude lifecycle events declared — no Codex (CLI 0.128.0 has no
-    // plugin-local automatic hook packaging verified)
+    // Only Claude lifecycle events declared — no Codex plugin-local automatic
+    // hook packaging is verified.
     const declaredEvents = Object.keys(hooks.hooks);
     deepStrictEqual(declaredEvents.sort(), ['PreCompact', 'SessionStart', 'Stop']);
 
