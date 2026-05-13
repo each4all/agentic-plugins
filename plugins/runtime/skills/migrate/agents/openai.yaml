@@ -1,0 +1,7 @@
+interface:
+  display_name: "Runtime - Migrate"
+  short_description: "Dry-run or apply explicit workflow state migration to .agentic-plugins/state"
+  default_prompt: "Use $runtime:migrate workflow-storage to inspect legacy workflow state migration readiness. Add --apply only after blockers are clear."
+
+policy:
+  allow_implicit_invocation: false

@@ -4,7 +4,7 @@ Runtime operator control plane for agentic-plugins. **L1 framework primitive** p
 
 ## Status
 
-Ships `runtime:doctor`, the first `runtime:settings` implementation, an artifact-only `runtime:consensus` scaffold, the first runtime-owned `runtime:context` scaffold with a read-only explicit budget check, and a pointer-only completion footer helper. `runtime:doctor --sandbox-permission-probe` reports an explicit read-only sandbox/permission preflight without peer execution, `runtime:doctor --permission-proof` reports a plan-only permission proof preflight, `runtime:doctor --permission-proof --execute-permission-proof` runs a bounded companion-contract proof under host-native permission defaults, `runtime:doctor --deep-peer-smoke` reports a plan-only preflight, and `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` runs a bounded companion-contract smoke while omitting raw peer stdout from doctor output. Automatic plugin install/update apply mode, automatic consensus peer execution, richer permission-proof retention/cancellation, and automatic context mutation/capture triggers are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
+Ships `runtime:doctor`, the first `runtime:settings` implementation, an artifact-only `runtime:consensus` scaffold, the first runtime-owned `runtime:context` scaffold with a read-only explicit budget check, an explicit `runtime:migrate workflow-storage` path migration surface, and a pointer-only completion footer helper. `runtime:doctor --sandbox-permission-probe` reports an explicit read-only sandbox/permission preflight without peer execution, `runtime:doctor --permission-proof` reports a plan-only permission proof preflight, `runtime:doctor --permission-proof --execute-permission-proof` runs a bounded companion-contract proof under host-native permission defaults, `runtime:doctor --deep-peer-smoke` reports a plan-only preflight, and `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` runs a bounded companion-contract smoke while omitting raw peer stdout from doctor output. Automatic plugin install/update apply mode, automatic consensus peer execution, richer permission-proof retention/cancellation, and automatic context mutation/capture triggers are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
 
 ## What it is
 
@@ -34,6 +34,7 @@ It does not own persona-level engineering work or macro planning. Those remain i
 |---------|--------|-------------|
 | `/runtime:doctor [--format text\|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>]` | shipping | Read-only diagnosis for host CLIs, auth, plugin cache/install state, companion readiness, model/effort observation, workflow/peer-run ledger health, optional read-only sandbox/permission probe, optional plan-only permission proof, explicit opt-in permission proof under host-native defaults, optional plan-only deep peer smoke preflight, and explicit opt-in companion-contract smoke execution with raw peer stdout omitted. |
 | `/runtime:settings [--format text\|json] [--target repo\|user\|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply]` | shipping | Dry-run settings planner for marketplace/plugin/CLI readiness and agentic-plugins-owned model/effort config. `--apply` writes only `.agentic-plugins/config.toml`. |
+| `/runtime:migrate workflow-storage [--format text\|json] [--plugin all\|engineer\|orchestrator] [--apply]` | shipping | Explicit ADR-0025 workflow storage migration planner. Dry-run reports legacy/canonical state, branch counts, peer-run and lock blockers, and source/destination paths. `--apply` moves only gitignored `.claude/agentic-*` workflow state into `.agentic-plugins/state/<plugin>` and writes a local migration manifest. |
 | `/runtime:consensus plan\|record\|synthesize\|next-round\|status ...` | shipping scaffold | Runtime-owned consensus artifact manager. Creates fanout/rebuttal prompts, records raw peer output as files, and emits only synthesized summary, durable disagreements, evidence pointers, and artifact paths. |
 | `/runtime:context capture\|status\|check ...` | shipping scaffold | Runtime-owned context hygiene artifact manager and read-only explicit budget check. Writes context summary, risk level, artifact pointers, and next-session prompt/action under `.agentic-plugins/runs/context/`; `status --latest` reads the newest handoff artifact with stale metadata; `check` creates no artifact. |
 
@@ -60,6 +61,8 @@ $runtime:doctor --permission-proof --execute-permission-proof
 $runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke
 $runtime:settings
 $runtime:settings --codex-model gpt-5.4 --codex-effort high --apply
+$runtime:migrate workflow-storage
+$runtime:migrate workflow-storage --plugin engineer --apply
 $runtime:consensus plan --task "Review this risky change" --max-rounds 2
 $runtime:context capture --summary "Handoff summary" --risk yellow --next-action "Start a fresh session before the next large change."
 $runtime:context status --latest --stale-after-hours 12
@@ -116,6 +119,30 @@ Settings is dry-run by default. It checks marketplace registration and install/c
 Supported keys are `model`, `effort`, `claude_model`, `claude_effort`, `codex_model`, and `codex_effort`. Direction-specific keys map to the companion peer: `claude_*` for Codex -> Claude and `codex_*` for Claude -> Codex.
 
 Settings does not write host-native config, auth, secrets, sandbox/permission settings, or execute plugin install/update commands. Plugin install/update remains a host-native command recommendation in this PR.
+
+## Migration Behavior
+
+Migration is explicit and dry-run by default. The first supported subcommand is:
+
+```sh
+$runtime:migrate workflow-storage [--plugin all|engineer|orchestrator] [--apply]
+```
+
+Dry-run reports namespace presence in legacy `.claude/agentic-*` and canonical
+`.agentic-plugins/state/<plugin>` homes, active workflow counts by branch,
+archive counts, peer-run counts, non-terminal peer-run counts, lock blockers,
+tracked worktree dirtiness, and exact source/destination paths.
+
+`--apply` moves state directories rather than copying them. It refuses when
+canonical state already exists, both homes contain overlapping workflow
+branches, creation or workflow lock files are present, workflow files are
+malformed, peer-run handles are malformed, or peer-run handles are
+non-terminal. `--plugin all` is safe for dry-run inventory; when both engineer
+and orchestrator are ready, apply one namespace at a time with an explicit
+`--plugin` value to avoid partial multi-namespace migration. On success it writes
+`.agentic-plugins/state/migrations/workflow-storage-v1.json`. It does not
+rewrite workflow schemas, peer-run handle schemas, host-native config,
+authentication, secrets, sandbox, or permission settings.
 
 ## Consensus behavior
 

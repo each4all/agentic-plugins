@@ -29,9 +29,10 @@ The following paths are generated local byproducts and must stay ignored:
 - `output/` — legacy plugin test output.
 
 This policy makes `.agentic-plugins/state/` safe as an ignored generated
-state home before workflow writers move there. Existing `.claude/agentic-*`
-workflow storage remains a legacy compatibility home until ADR-0025's
-dual-read/write and explicit migration implementation lands.
+state home for canonical workflow writers and the explicit ADR-0025 migration
+manifest. Existing `.claude/agentic-*` workflow storage remains a legacy
+compatibility home until the operator runs `runtime:migrate workflow-storage
+--apply`.
 
 ## Validation
 
