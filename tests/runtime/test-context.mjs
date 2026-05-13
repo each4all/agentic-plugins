@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
-import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { deepStrictEqual, ok, strictEqual, throws, rejects } from 'node:assert/strict';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -72,6 +72,62 @@ describe('runtime context', () => {
     ok(!JSON.stringify(report).includes('RAW PEER OUTPUT'));
   });
 
+  it('checks explicit context budget without creating artifacts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-context-check-'));
+    const report = await runContext({
+      command: 'check',
+      repoRoot: root,
+      tokenBudget: 100000,
+      usedTokens: 82000,
+    });
+
+    strictEqual(report.command, 'check');
+    strictEqual(report.read_only, true);
+    strictEqual(report.risk_level, 'yellow');
+    strictEqual(report.context_budget.status, 'observed');
+    strictEqual(report.context_budget.used_percent, 82);
+    strictEqual(report.context_budget.remaining_tokens, 18000);
+    ok(report.next_session.recommended_action.includes('Prefer a fresh or resumed session'));
+    ok(report.limits.some((limit) => /no context artifact is created/i.test(limit)));
+    ok(formatText(report).includes('context budget:'));
+    await rejects(stat(join(root, '.agentic-plugins')), /ENOENT/);
+  });
+
+  it('classifies green and red context checks from explicit inputs', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-context-check-risk-'));
+    const green = await runContext({
+      command: 'check',
+      repoRoot: root,
+      tokenBudget: 100000,
+      remainingTokens: 40000,
+    });
+    const red = await runContext({
+      command: 'check',
+      repoRoot: root,
+      tokenBudget: 100000,
+      usedTokens: 95000,
+    });
+
+    strictEqual(green.risk_level, 'green');
+    strictEqual(green.context_budget.used_tokens, 60000);
+    strictEqual(red.risk_level, 'red');
+    strictEqual(red.context_budget.used_ratio, 0.95);
+  });
+
+  it('accepts caller-supplied check risk without pretending to measure host context', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-context-check-manual-'));
+    const report = await runContext({
+      command: 'check',
+      repoRoot: root,
+      risk: 'red',
+      riskReason: 'Long implementation session.',
+    });
+
+    strictEqual(report.risk_level, 'red');
+    strictEqual(report.context_budget.status, 'not_provided');
+    strictEqual(report.risk_reason, 'Long implementation session.');
+  });
+
   it('normalizes absolute artifact pointers only when they stay inside the repo', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-context-artifacts-'));
     const report = await runContext({
@@ -120,9 +176,48 @@ describe('runtime context', () => {
     strictEqual(commandStyle.command, 'status');
     strictEqual(commandStyle.runId, RUN_ID);
 
+    const check = parseArgs(['check', '--repo-root', '/tmp/repo', '--token-budget', '100000', '--used-tokens', '71000']);
+    strictEqual(check.command, 'check');
+    strictEqual(check.tokenBudget, 100000);
+    strictEqual(check.usedTokens, 71000);
+
     throws(() => parseArgs(['status', '--run-id', '../bad']), /Invalid --run-id/);
     throws(() => parseArgs(['capture', '--risk', 'orange']), /green, yellow, or red/);
     throws(() => parseArgs(['capture', '--artifact', 'bad\npath']), /single-line/);
+    throws(() => parseArgs(['check', '--token-budget', '0', '--used-tokens', '1']), /positive integer/);
+    throws(() => parseArgs(['check', '--used-tokens', 'abc']), /non-negative integer/);
+  });
+
+  it('rejects ambiguous or incomplete context budget checks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-context-check-invalid-'));
+    await rejectsAsync(
+      runContext({
+        command: 'check',
+        repoRoot: root,
+        tokenBudget: 100000,
+      }),
+      /check requires --token-budget/,
+    );
+    await rejectsAsync(
+      runContext({
+        command: 'check',
+        repoRoot: root,
+        tokenBudget: 100000,
+        usedTokens: 1000,
+        remainingTokens: 99000,
+      }),
+      /Use either --used-tokens or --remaining-tokens/,
+    );
+    await rejectsAsync(
+      runContext({
+        command: 'check',
+        repoRoot: root,
+        tokenBudget: 100000,
+        usedTokens: 1000,
+        risk: 'green',
+      }),
+      /Use budget metrics or --risk/,
+    );
   });
 });
 

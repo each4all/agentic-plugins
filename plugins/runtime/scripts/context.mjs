@@ -7,11 +7,15 @@ import { fileURLToPath } from 'node:url';
 
 const VERSION = '0.1.0';
 const ARTIFACT_SCHEMA = 'runtime-context-artifact-1.0';
-const VALID_COMMANDS = new Set(['capture', 'status']);
+const VALID_COMMANDS = new Set(['capture', 'status', 'check']);
 const RISK_LEVELS = new Set(['green', 'yellow', 'red']);
 const RUN_ID_RE = /^context-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const ARTIFACT_KIND_RE = /^[A-Za-z0-9._-]+$/;
 const REPORT_PREVIEW_LIMIT = 1200;
+const CONTEXT_BUDGET_THRESHOLDS = {
+  yellowAt: 0.7,
+  redAt: 0.9,
+};
 
 export async function runContext(options = {}) {
   const command = options.command ?? 'capture';
@@ -22,7 +26,10 @@ export async function runContext(options = {}) {
   if (command === 'capture') {
     return captureContext({ ...options, repoRoot });
   }
-  return readStatus({ ...options, repoRoot });
+  if (command === 'status') {
+    return readStatus({ ...options, repoRoot });
+  }
+  return checkContext({ ...options, repoRoot });
 }
 
 export async function captureContext(options = {}) {
@@ -100,6 +107,29 @@ export async function readStatus(options = {}) {
   return buildReport({ command: 'status', repoRoot, artifact, contextPath, prompt });
 }
 
+export async function checkContext(options = {}) {
+  const budgetCheck = buildBudgetCheck(options);
+  const riskReason = options.riskReason
+    ? requireSingleLine(options.riskReason, '--risk-reason')
+    : budgetCheck.riskReason;
+  return {
+    command: 'check',
+    version: VERSION,
+    status: 'checked',
+    read_only: true,
+    risk_level: budgetCheck.riskLevel,
+    risk_reason: riskReason,
+    context_budget: budgetCheck.contextBudget,
+    artifacts: [],
+    next_session: {
+      recommended_action: defaultCheckNextAction(budgetCheck.riskLevel),
+      prompt_pointer: null,
+      prompt_preview: null,
+    },
+    limits: checkLimits(),
+  };
+}
+
 export function parseArgs(argv) {
   const args = [...argv];
   let command = null;
@@ -142,6 +172,15 @@ export function parseArgs(argv) {
       case '--risk':
         options.risk = validateRiskLevel(requireValue(args, arg));
         break;
+      case '--token-budget':
+        options.tokenBudget = parsePositiveInteger(requireValue(args, arg), arg);
+        break;
+      case '--used-tokens':
+        options.usedTokens = parseNonNegativeInteger(requireValue(args, arg), arg);
+        break;
+      case '--remaining-tokens':
+        options.remainingTokens = parseNonNegativeInteger(requireValue(args, arg), arg);
+        break;
       case '--risk-reason':
         options.riskReason = requireSingleLine(requireValue(args, arg), arg);
         break;
@@ -182,6 +221,10 @@ export function formatText(report) {
   if (report.risk_reason) {
     lines.push('', `risk reason: ${report.risk_reason}`);
   }
+  if (report.context_budget) {
+    lines.push('', 'context budget:');
+    lines.push(formatContextBudget(report.context_budget));
+  }
   if (report.artifacts?.length) {
     lines.push('', 'artifact pointers:');
     for (const artifact of report.artifacts) {
@@ -221,6 +264,67 @@ function buildReport({ command, repoRoot, artifact, contextPath, prompt }) {
       prompt_preview: prompt ? preview(prompt) : null,
     },
     limits: artifact.limits,
+  };
+}
+
+function buildBudgetCheck(options) {
+  const hasRisk = options.risk !== undefined && options.risk !== null;
+  const hasBudget = options.tokenBudget !== undefined && options.tokenBudget !== null;
+  const hasUsed = options.usedTokens !== undefined && options.usedTokens !== null;
+  const hasRemaining = options.remainingTokens !== undefined && options.remainingTokens !== null;
+  if (hasRisk && (hasBudget || hasUsed || hasRemaining)) {
+    throw new Error('Use budget metrics or --risk, not both');
+  }
+  if (hasRisk) {
+    const riskLevel = validateRiskLevel(options.risk);
+    return {
+      riskLevel,
+      riskReason: 'Risk level was supplied by the caller; no automatic host-context measurement is performed.',
+      contextBudget: {
+        status: 'not_provided',
+        token_budget: null,
+        used_tokens: null,
+        remaining_tokens: null,
+        used_ratio: null,
+        used_percent: null,
+        thresholds: contextBudgetThresholds(),
+      },
+    };
+  }
+  if (!hasBudget || (!hasUsed && !hasRemaining)) {
+    throw new Error('check requires --token-budget with either --used-tokens or --remaining-tokens, or --risk');
+  }
+  if (hasUsed && hasRemaining) {
+    throw new Error('Use either --used-tokens or --remaining-tokens, not both');
+  }
+
+  const tokenBudget = parsePositiveInteger(options.tokenBudget, '--token-budget');
+  const usedTokens = hasUsed
+    ? parseNonNegativeInteger(options.usedTokens, '--used-tokens')
+    : tokenBudget - parseRemainingTokens(options.remainingTokens, tokenBudget);
+  const remainingTokens = hasUsed
+    ? Math.max(0, tokenBudget - usedTokens)
+    : parseRemainingTokens(options.remainingTokens, tokenBudget);
+  const usedRatio = usedTokens / tokenBudget;
+  const usedPercent = roundOne(usedRatio * 100);
+  const riskLevel = usedRatio >= CONTEXT_BUDGET_THRESHOLDS.redAt
+    ? 'red'
+    : usedRatio >= CONTEXT_BUDGET_THRESHOLDS.yellowAt
+      ? 'yellow'
+      : 'green';
+  return {
+    riskLevel,
+    riskReason: `Context budget check used ${usedPercent}% of the supplied token budget.`,
+    contextBudget: {
+      status: 'observed',
+      token_budget: tokenBudget,
+      used_tokens: usedTokens,
+      remaining_tokens: remainingTokens,
+      over_budget_tokens: Math.max(0, usedTokens - tokenBudget),
+      used_ratio: roundFour(usedRatio),
+      used_percent: usedPercent,
+      thresholds: contextBudgetThresholds(),
+    },
   };
 }
 
@@ -314,12 +418,32 @@ function defaultNextAction(riskLevel) {
   return 'Prefer a fresh or resumed session with the next-session prompt before substantial follow-up work.';
 }
 
+function defaultCheckNextAction(riskLevel) {
+  if (riskLevel === 'green') {
+    return 'Continue in the current session only for small follow-up work; keep artifact pointers available.';
+  }
+  if (riskLevel === 'red') {
+    return 'Start a fresh or resumed session before continuing substantial work; run runtime:context capture first if no handoff artifact exists.';
+  }
+  return 'Prefer a fresh or resumed session before substantial follow-up work; run runtime:context capture first if no handoff artifact exists.';
+}
+
 function contextLimits() {
   return [
     'This scaffold writes runtime-owned context artifacts only; it does not mutate host session context.',
     'Main-session output is limited to context summary, risk level, artifact pointers, and recommended next-session action/prompt.',
     'Engineer and orchestrator workflow state stays in its existing storage; no migration is performed.',
     'Consensus or peer raw output should be referenced by artifact pointer only, not pasted into the context summary.',
+    'Codex manual-hook and permission limits are not represented as host parity.',
+  ];
+}
+
+function checkLimits() {
+  return [
+    'Read-only check only; no context artifact is created.',
+    'This check does not mutate, compact, trim, or rewrite host session context.',
+    'No automatic context capture, host switch, new workflow, or new session is started.',
+    'Engineer and orchestrator workflow state stays in its existing storage; no migration is performed.',
     'Codex manual-hook and permission limits are not represented as host parity.',
   ];
 }
@@ -331,8 +455,10 @@ Usage:
   runtime:context capture --summary <text> [--risk green|yellow|red]
   runtime:context capture --summary-file <path> [--artifact kind:<repo-path>] [--next-action <text>]
   runtime:context status --run-id <id>
+  runtime:context check --token-budget <n> (--used-tokens <n>|--remaining-tokens <n>)
+  runtime:context check --risk green|yellow|red
 
-This MVP writes repo-local context artifacts under .agentic-plugins/runs/context/ and does not mutate host session context.`;
+This MVP writes repo-local context artifacts under .agentic-plugins/runs/context/ for capture/status. The check command is read-only and does not create artifacts or mutate host session context.`;
 }
 
 function requireValue(args, flag) {
@@ -354,6 +480,52 @@ function required(value, flag) {
     throw new Error(`${flag} is required`);
   }
   return value;
+}
+
+function parsePositiveInteger(value, flag) {
+  const parsed = parseNonNegativeInteger(value, flag);
+  if (parsed <= 0) throw new Error(`${flag} must be a positive integer`);
+  return parsed;
+}
+
+function parseNonNegativeInteger(value, flag) {
+  const text = String(value ?? '').trim();
+  if (!/^\d+$/.test(text)) throw new Error(`${flag} must be a non-negative integer`);
+  return Number.parseInt(text, 10);
+}
+
+function parseRemainingTokens(value, tokenBudget) {
+  const remaining = parseNonNegativeInteger(value, '--remaining-tokens');
+  if (remaining > tokenBudget) {
+    throw new Error('--remaining-tokens must be less than or equal to --token-budget');
+  }
+  return remaining;
+}
+
+function contextBudgetThresholds() {
+  return {
+    green_below_percent: CONTEXT_BUDGET_THRESHOLDS.yellowAt * 100,
+    yellow_from_percent: CONTEXT_BUDGET_THRESHOLDS.yellowAt * 100,
+    red_from_percent: CONTEXT_BUDGET_THRESHOLDS.redAt * 100,
+  };
+}
+
+function formatContextBudget(budget) {
+  if (budget.status !== 'observed') {
+    return `- status: ${budget.status}`;
+  }
+  const overBudget = budget.over_budget_tokens > 0
+    ? `, over budget ${budget.over_budget_tokens}`
+    : '';
+  return `- ${budget.used_percent}% used (${budget.used_tokens}/${budget.token_budget} tokens, remaining ${budget.remaining_tokens}${overBudget})`;
+}
+
+function roundOne(value) {
+  return Math.round(value * 10) / 10;
+}
+
+function roundFour(value) {
+  return Math.round(value * 10000) / 10000;
 }
 
 function validateRunId(runId) {
