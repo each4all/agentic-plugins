@@ -140,7 +140,8 @@ Forms:
 - `/orchestrator:resume archive` -> archive the single active macro
   workflow on the current branch.
 - `/orchestrator:resume archive <workflow-id>` -> archive the named
-  macro workflow under `.claude/agentic-orchestrator/workflows/`.
+  macro workflow under `.agentic-plugins/state/orchestrator/workflows/`
+  or the legacy `.claude/agentic-orchestrator/workflows/` home.
 
 Confirm with the user before mutation. Show workflow id, current
 phase, subtask counts, and path.
@@ -152,8 +153,8 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" archive \
   --workflow-path "$WORKFLOW" --host claude --repo-root "$REPO_ROOT"
 ```
 
-Archive is a move to `.claude/agentic-orchestrator/archive/`, not a
-delete. The state CLI is collision-safe and idempotent.
+Archive is a move to the matching canonical or legacy `archive/` home,
+not a delete. The state CLI is collision-safe and idempotent.
 
 ---
 

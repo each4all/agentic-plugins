@@ -56,9 +56,14 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
       echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id." >&2
       exit 1;;
   esac
-  MACRO_PATH="$REPO_ROOT/.claude/agentic-orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
-  if [ ! -f "$MACRO_PATH" ]; then
-    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found at $MACRO_PATH." >&2
+  CANONICAL_MACRO_PATH="$REPO_ROOT/.agentic-plugins/state/orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
+  LEGACY_MACRO_PATH="$REPO_ROOT/.claude/agentic-orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
+  if [ -f "$CANONICAL_MACRO_PATH" ]; then
+    MACRO_PATH="$CANONICAL_MACRO_PATH"
+  elif [ -f "$LEGACY_MACRO_PATH" ]; then
+    MACRO_PATH="$LEGACY_MACRO_PATH"
+  else
+    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found in canonical or legacy workflow homes." >&2
     exit 1
   fi
 else
@@ -121,9 +126,11 @@ node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" preflight --root "$ENGINE
 # /orchestrator:finalize.
 FAILURES_FILE="${TMPDIR:-/tmp}/orchestrator-abort-failures-$$.cnt"
 trap 'rm -f "$FIND_ERR" "$FAILURES_FILE"' EXIT
-ENG_WORKFLOW_DIR="$REPO_ROOT/.claude/agentic-engineer/workflows"
-if [ -d "$ENG_WORKFLOW_DIR" ]; then
-  env MACRO_ID="$MACRO_ID" REPO_ROOT="$REPO_ROOT" ENG_WORKFLOW_DIR="$ENG_WORKFLOW_DIR" \
+CANONICAL_ENG_WORKFLOW_DIR="$REPO_ROOT/.agentic-plugins/state/engineer/workflows"
+LEGACY_ENG_WORKFLOW_DIR="$REPO_ROOT/.claude/agentic-engineer/workflows"
+if [ -d "$CANONICAL_ENG_WORKFLOW_DIR" ] || [ -d "$LEGACY_ENG_WORKFLOW_DIR" ]; then
+  env MACRO_ID="$MACRO_ID" REPO_ROOT="$REPO_ROOT" \
+    ENG_WORKFLOW_DIRS="$CANONICAL_ENG_WORKFLOW_DIR:$LEGACY_ENG_WORKFLOW_DIR" \
     ENGINEER_PLUGIN_ROOT="$ENGINEER_PLUGIN_ROOT" \
     DETECTED_HOST="$DETECTED_HOST" \
     FAILURES_FILE="$FAILURES_FILE" \
@@ -133,80 +140,82 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
       const { execFile } = require("child_process");
       const { promisify } = require("util");
       const execFileAsync = promisify(execFile);
-      const { MACRO_ID, REPO_ROOT, ENG_WORKFLOW_DIR, ENGINEER_PLUGIN_ROOT, DETECTED_HOST, FAILURES_FILE } = process.env;
+      const { MACRO_ID, REPO_ROOT, ENG_WORKFLOW_DIRS, ENGINEER_PLUGIN_ROOT, DETECTED_HOST, FAILURES_FILE } = process.env;
       const ENG_STATE = path.join(ENGINEER_PLUGIN_ROOT, "scripts/state.mjs");
       let failures = 0;
       (async () => {
-        let entries;
-        try { entries = await fs.readdir(ENG_WORKFLOW_DIR); }
-        catch (err) { if (err.code === "ENOENT") return; throw err; }
         const ID_RE = /^[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+\.md$/;
-        for (const name of entries) {
-          if (!ID_RE.test(name)) continue;
-          const childPath = path.join(ENG_WORKFLOW_DIR, name);
-          let text;
-          try { text = await fs.readFile(childPath, "utf8"); } catch { continue; }
-          // CRLF tolerance — engineer files written by a Windows tool
-          // would carry \r\n; defend so a CRLF-saved child is correctly
-          // routed (Phase 5 review).
-          const fmM = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-          if (!fmM) continue;
-          const parentM = fmM[1].match(/^parent_workflow:\s*(?:"([^"]+)"|'"'"'([^'"'"']+)'"'"'|(\S+))\s*\r?$/m);
-          if (!parentM) continue;
-          if ((parentM[1] ?? parentM[2] ?? parentM[3]) !== MACRO_ID) continue;
+        for (const ENG_WORKFLOW_DIR of String(ENG_WORKFLOW_DIRS || "").split(path.delimiter).filter(Boolean)) {
+          let entries;
+          try { entries = await fs.readdir(ENG_WORKFLOW_DIR); }
+          catch (err) { if (err.code === "ENOENT") continue; throw err; }
+          for (const name of entries) {
+            if (!ID_RE.test(name)) continue;
+            const childPath = path.join(ENG_WORKFLOW_DIR, name);
+            let text;
+            try { text = await fs.readFile(childPath, "utf8"); } catch { continue; }
+            // CRLF tolerance — engineer files written by a Windows tool
+            // would carry \r\n; defend so a CRLF-saved child is correctly
+            // routed (Phase 5 review).
+            const fmM = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+            if (!fmM) continue;
+            const parentM = fmM[1].match(/^parent_workflow:\s*(?:"([^"]+)"|'"'"'([^'"'"']+)'"'"'|(\S+))\s*\r?$/m);
+            if (!parentM) continue;
+            if ((parentM[1] ?? parentM[2] ?? parentM[3]) !== MACRO_ID) continue;
 
-          let frontmatter;
-          try {
-            const { stdout } = await execFileAsync(
-              process.execPath,
-              [ENG_STATE, "read", "--workflow-path", childPath],
-              { encoding: "utf8" },
-            );
-            frontmatter = JSON.parse(stdout);
-          } catch (err) {
-            process.stderr.write(`  ! failed to read ${name}: ${err.message}\n`);
-            continue;
-          }
-          const branch = frontmatter?.git_baseline?.branch;
-          if (typeof branch !== "string" || branch.length === 0) {
-            await detachArchive(childPath); continue;
-          }
+            let frontmatter;
+            try {
+              const { stdout } = await execFileAsync(
+                process.execPath,
+                [ENG_STATE, "read", "--workflow-path", childPath],
+                { encoding: "utf8" },
+              );
+              frontmatter = JSON.parse(stdout);
+            } catch (err) {
+              process.stderr.write(`  ! failed to read ${name}: ${err.message}\n`);
+              continue;
+            }
+            const branch = frontmatter?.git_baseline?.branch;
+            if (typeof branch !== "string" || branch.length === 0) {
+              await detachArchive(childPath); continue;
+            }
 
-          let branchHead = "", branchSubject = "";
-          try {
-            const r = await execFileAsync("git", ["-C", REPO_ROOT, "rev-parse", "--verify", `refs/heads/${branch}`], { encoding: "utf8" });
-            branchHead = r.stdout.trim();
-            const s = await execFileAsync("git", ["-C", REPO_ROOT, "log", "-1", "--pretty=%s", branchHead], { encoding: "utf8" });
-            branchSubject = s.stdout.trim();
-          } catch {
-            await detachArchive(childPath); continue;
-          }
+            let branchHead = "", branchSubject = "";
+            try {
+              const r = await execFileAsync("git", ["-C", REPO_ROOT, "rev-parse", "--verify", `refs/heads/${branch}`], { encoding: "utf8" });
+              branchHead = r.stdout.trim();
+              const s = await execFileAsync("git", ["-C", REPO_ROOT, "log", "-1", "--pretty=%s", branchHead], { encoding: "utf8" });
+              branchSubject = s.stdout.trim();
+            } catch {
+              await detachArchive(childPath); continue;
+            }
 
-          let envelope;
-          try {
-            const r = await execFileAsync(
-              process.execPath,
-              [
-                ENG_STATE, "stop-archive",
-                "--workflow-path", childPath,
-                "--host", DETECTED_HOST,
-                "--repo-root", REPO_ROOT,
-                "--head-sha", branchHead,
-                "--head-subject", branchSubject,
-              ],
-              { encoding: "utf8" },
-            );
-            envelope = JSON.parse(r.stdout.trim());
-          } catch (err) {
-            process.stderr.write(`  ! engineer stop-archive failed for ${name}: ${err.message}\n`);
-            failures += 1;
-            continue;
-          }
-          if (envelope.archived) {
-            process.stdout.write(`  ✓ terminal child archived: ${name} → ${envelope.to}\n`);
-          } else {
-            process.stdout.write(`  · child ${name} not archivable (${envelope.reason}) → detach-archive\n`);
-            await detachArchive(childPath);
+            let envelope;
+            try {
+              const r = await execFileAsync(
+                process.execPath,
+                [
+                  ENG_STATE, "stop-archive",
+                  "--workflow-path", childPath,
+                  "--host", DETECTED_HOST,
+                  "--repo-root", REPO_ROOT,
+                  "--head-sha", branchHead,
+                  "--head-subject", branchSubject,
+                ],
+                { encoding: "utf8" },
+              );
+              envelope = JSON.parse(r.stdout.trim());
+            } catch (err) {
+              process.stderr.write(`  ! engineer stop-archive failed for ${name}: ${err.message}\n`);
+              failures += 1;
+              continue;
+            }
+            if (envelope.archived) {
+              process.stdout.write(`  ✓ terminal child archived: ${name} → ${envelope.to}\n`);
+            } else {
+              process.stdout.write(`  · child ${name} not archivable (${envelope.reason}) → detach-archive\n`);
+              await detachArchive(childPath);
+            }
           }
         }
         async function detachArchive(childPath) {

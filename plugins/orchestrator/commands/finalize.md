@@ -57,9 +57,14 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
       echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID invalid — must be a basename-shaped workflow id (no '/', '\\\\', '..', leading '.', or NUL)." >&2
       exit 1;;
   esac
-  MACRO_PATH="$REPO_ROOT/.claude/agentic-orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
-  if [ ! -f "$MACRO_PATH" ]; then
-    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found at $MACRO_PATH." >&2
+  CANONICAL_MACRO_PATH="$REPO_ROOT/.agentic-plugins/state/orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
+  LEGACY_MACRO_PATH="$REPO_ROOT/.claude/agentic-orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
+  if [ -f "$CANONICAL_MACRO_PATH" ]; then
+    MACRO_PATH="$CANONICAL_MACRO_PATH"
+  elif [ -f "$LEGACY_MACRO_PATH" ]; then
+    MACRO_PATH="$LEGACY_MACRO_PATH"
+  else
+    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found in canonical or legacy workflow homes." >&2
     exit 1
   fi
 else
@@ -124,12 +129,14 @@ node "$ORCH_PLUGIN_ROOT/scripts/discover-engineer.mjs" preflight --root "$ENGINE
 # rather than mark the macro terminal while children are still live.
 FAILURES_FILE="${TMPDIR:-/tmp}/orchestrator-finalize-failures-$$.cnt"
 trap 'rm -f "$FIND_ERR" "$FAILURES_FILE"' EXIT
-ENG_WORKFLOW_DIR="$REPO_ROOT/.claude/agentic-engineer/workflows"
-if [ -d "$ENG_WORKFLOW_DIR" ]; then
+CANONICAL_ENG_WORKFLOW_DIR="$REPO_ROOT/.agentic-plugins/state/engineer/workflows"
+LEGACY_ENG_WORKFLOW_DIR="$REPO_ROOT/.claude/agentic-engineer/workflows"
+if [ -d "$CANONICAL_ENG_WORKFLOW_DIR" ] || [ -d "$LEGACY_ENG_WORKFLOW_DIR" ]; then
   # Enumerate engineer workflow files. For each, read frontmatter via
   # state.mjs read and check parent_workflow. Use a small Node shim to
   # parse the frontmatter robustly (engineer state.mjs read prints JSON).
-  env MACRO_ID="$MACRO_ID" REPO_ROOT="$REPO_ROOT" ENG_WORKFLOW_DIR="$ENG_WORKFLOW_DIR" \
+  env MACRO_ID="$MACRO_ID" REPO_ROOT="$REPO_ROOT" \
+    ENG_WORKFLOW_DIRS="$CANONICAL_ENG_WORKFLOW_DIR:$LEGACY_ENG_WORKFLOW_DIR" \
     ENGINEER_PLUGIN_ROOT="$ENGINEER_PLUGIN_ROOT" \
     DETECTED_HOST="$DETECTED_HOST" \
     FAILURES_FILE="$FAILURES_FILE" \
@@ -139,17 +146,18 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
       const { execFile } = require("child_process");
       const { promisify } = require("util");
       const execFileAsync = promisify(execFile);
-      const { MACRO_ID, REPO_ROOT, ENG_WORKFLOW_DIR, ENGINEER_PLUGIN_ROOT, DETECTED_HOST, FAILURES_FILE } = process.env;
+      const { MACRO_ID, REPO_ROOT, ENG_WORKFLOW_DIRS, ENGINEER_PLUGIN_ROOT, DETECTED_HOST, FAILURES_FILE } = process.env;
       const ENG_STATE = path.join(ENGINEER_PLUGIN_ROOT, "scripts/state.mjs");
       let failures = 0;
       (async () => {
-        let entries;
-        try { entries = await fs.readdir(ENG_WORKFLOW_DIR); }
-        catch (err) { if (err.code === "ENOENT") return; throw err; }
         const ID_RE = /^[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+\.md$/;
-        for (const name of entries) {
-          if (!ID_RE.test(name)) continue;
-          const childPath = path.join(ENG_WORKFLOW_DIR, name);
+        for (const ENG_WORKFLOW_DIR of String(ENG_WORKFLOW_DIRS || "").split(path.delimiter).filter(Boolean)) {
+          let entries;
+          try { entries = await fs.readdir(ENG_WORKFLOW_DIR); }
+          catch (err) { if (err.code === "ENOENT") continue; throw err; }
+          for (const name of entries) {
+            if (!ID_RE.test(name)) continue;
+            const childPath = path.join(ENG_WORKFLOW_DIR, name);
           // Quick frontmatter parent_workflow check via regex (no
           // cross-plugin import per ADR-0010 §5).
           let text;
@@ -243,6 +251,7 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
           // archivable state; detach-archive is safe.
           process.stdout.write(`  · child ${name} not archivable (${envelope.reason}: ${(envelope.gateFailures || []).join(",")}) → detach-archive\n`);
           await detachArchive(childPath);
+          }
         }
 
         async function detachArchive(childPath) {
@@ -280,11 +289,11 @@ if [ -d "$ENG_WORKFLOW_DIR" ]; then
 fi
 
 # Codex P2 finding (Phase 6 resolve): refuse to mark the macro terminal
-# while any child failed to archive. The child remains in
-# `.claude/agentic-engineer/workflows`, so without this gate the macro's
-# A4 keeps failing on every Stop while the command falsely reports the
-# macro as finalized. Re-run /orchestrator:finalize after manually
-# reconciling the offending child.
+# while any child failed to archive. The child remains in an engineer
+# workflow home, so without this gate the macro's A4 keeps failing on
+# every Stop while the command falsely reports the macro as finalized.
+# Re-run /orchestrator:finalize after manually reconciling the offending
+# child.
 if [ -f "$FAILURES_FILE" ]; then
   FINALIZE_FAILURES="$(cat "$FAILURES_FILE")"
   if [ "${FINALIZE_FAILURES:-0}" -gt 0 ]; then

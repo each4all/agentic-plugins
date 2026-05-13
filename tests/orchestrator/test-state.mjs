@@ -32,7 +32,9 @@ const {
   SCHEMA_VERSION,
   SUPPORTED_SCHEMA_VERSIONS,
   WORKFLOW_DIR_REL,
+  LEGACY_WORKFLOW_DIR_REL,
   ENSEMBLE_RESULTS_RETENTION_CAP,
+  resolveWorkflowStorage,
   workflowDir,
   workflowFilePath,
   generateWorkflowId,
@@ -61,6 +63,7 @@ const {
   // before T5 fails with "X is not a function" / "undefined" — that's
   // the intended RED state.
   ARCHIVE_DIR_REL,
+  LEGACY_ARCHIVE_DIR_REL,
   MACRO_TERMINAL_PHASES,
   archiveDir,
   archiveWorkflow,
@@ -102,6 +105,35 @@ const MIN_BASELINE = (branch = 'main') => ({
   status_digest: '',
 });
 
+async function writeWorkflowFixture(path, branch) {
+  await writeFile(path, [
+    '---',
+    'schema: "1.1"',
+    `workflow_id: ${JSON.stringify(path.split('/').at(-1).replace(/\.md$/, ''))}`,
+    'workflow_type: "macro"',
+    'original_request: "fixture"',
+    'started_at: "2026-01-01T00:00:00Z"',
+    'updated_at: "2026-01-01T00:00:00Z"',
+    'repo_root: ""',
+    'git_baseline:',
+    `  branch: ${JSON.stringify(branch)}`,
+    '  head: "0000000000000000000000000000000000000000"',
+    '  status_digest: ""',
+    'current_phase: "phase-0"',
+    'next_action: ""',
+    'plan:',
+    '  subtasks:',
+    'host_history:',
+    '  - host: "codex"',
+    '    at: "2026-01-01T00:00:00Z"',
+    '    event: "created"',
+    '---',
+    '',
+    '# fixture',
+    '',
+  ].join('\n'));
+}
+
 // ---------------------------------------------------------------------------
 // Constants + path helpers
 
@@ -115,14 +147,15 @@ describe('orchestrator state.mjs constants', () => {
     ok(!SUPPORTED_SCHEMA_VERSIONS.has(1));
     ok(!SUPPORTED_SCHEMA_VERSIONS.has(2));
   });
-  it('WORKFLOW_DIR_REL is .claude/agentic-orchestrator/workflows', () => {
-    strictEqual(WORKFLOW_DIR_REL, '.claude/agentic-orchestrator/workflows');
+  it('WORKFLOW_DIR_REL is canonical .agentic-plugins/state/orchestrator/workflows', () => {
+    strictEqual(WORKFLOW_DIR_REL, '.agentic-plugins/state/orchestrator/workflows');
+    strictEqual(LEGACY_WORKFLOW_DIR_REL, '.claude/agentic-orchestrator/workflows');
   });
   it('ENSEMBLE_RESULTS_RETENTION_CAP is 20 (engineer parity)', () => {
     strictEqual(ENSEMBLE_RESULTS_RETENTION_CAP, 20);
   });
   it('workflowDir composes the correct path', () => {
-    strictEqual(workflowDir('/tmp/foo'), '/tmp/foo/.claude/agentic-orchestrator/workflows');
+    strictEqual(workflowDir('/tmp/foo'), '/tmp/foo/.agentic-plugins/state/orchestrator/workflows');
   });
 });
 
@@ -514,21 +547,96 @@ describe('subtasks validation', () => {
 // Workflow lifecycle
 
 describe('createWorkflow + branch-keyed lookup', () => {
-  it('creates workflow file at agentic-orchestrator/workflows/<id>.md', async () => {
+  it('creates workflow file under canonical .agentic-plugins/state by default', async () => {
     await withTmpRepo('create', async (root) => {
       const { filePath, workflowId } = await createWorkflow({
         repoRoot: root, verb: 'plan', host: 'claude',
         gitBaseline: MIN_BASELINE(), originalRequest: 'test',
       });
       ok(workflowId.startsWith('macro-plan-'));
-      ok(filePath.includes('.claude/agentic-orchestrator/workflows/'));
+      ok(filePath.includes('.agentic-plugins/state/orchestrator/workflows/'));
       ok(filePath.endsWith(`${workflowId}.md`));
+      const storage = await resolveWorkflowStorage(root);
+      strictEqual(storage.home, 'canonical');
+      strictEqual(storage.canonicalHasState, true);
+      strictEqual(storage.legacyHasState, false);
       const { frontmatter } = await readWorkflow(filePath);
       // ADR-0019 PR-B — orchestrator emits schema 1.1 for new workflows
       strictEqual(frontmatter.schema, '1.1');
       strictEqual(frontmatter.workflow_type, 'macro');
       deepStrictEqual(frontmatter.plan, { subtasks: [] });
       strictEqual(frontmatter.git_baseline.branch, 'main');
+    });
+  });
+
+  it('keeps writing to legacy storage while legacy orchestrator state exists', async () => {
+    await withTmpRepo('legacy-write', async (root) => {
+      const legacyDir = join(root, LEGACY_WORKFLOW_DIR_REL);
+      await mkdir(legacyDir, { recursive: true });
+      await writeWorkflowFixture(
+        join(legacyDir, 'macro-plan-20260101T000000Z-aaaaaa.md'),
+        'legacy/main',
+      );
+
+      const { filePath } = await createWorkflow({
+        repoRoot: root,
+        verb: 'plan',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE('feature/new'),
+        originalRequest: 'legacy write continuity',
+      });
+
+      ok(filePath.includes('/.claude/agentic-orchestrator/workflows/'), filePath);
+      const storage = await resolveWorkflowStorage(root);
+      strictEqual(storage.home, 'legacy');
+      strictEqual(storage.canonicalHasState, false);
+      strictEqual(storage.legacyHasState, true);
+    });
+  });
+
+  it('fails closed when canonical and legacy homes both have an active macro on the same branch', async () => {
+    await withTmpRepo('ambiguous-storage', async (root) => {
+      await mkdir(join(root, WORKFLOW_DIR_REL), { recursive: true });
+      await mkdir(join(root, LEGACY_WORKFLOW_DIR_REL), { recursive: true });
+      await writeWorkflowFixture(
+        join(root, WORKFLOW_DIR_REL, 'macro-plan-20260101T000000Z-aaaaaa.md'),
+        'main',
+      );
+      await writeWorkflowFixture(
+        join(root, LEGACY_WORKFLOW_DIR_REL, 'macro-plan-20260101T000001Z-bbbbbb.md'),
+        'main',
+      );
+
+      await rejects(
+        () => findActiveWorkflowByBranch(root, 'main'),
+        /Ambiguous orchestrator workflow storage/,
+      );
+    });
+  });
+
+  it('blocks ordinary writes when canonical and legacy homes both contain orchestrator state', async () => {
+    await withTmpRepo('blocked-storage', async (root) => {
+      await mkdir(join(root, WORKFLOW_DIR_REL), { recursive: true });
+      await mkdir(join(root, LEGACY_WORKFLOW_DIR_REL), { recursive: true });
+      await writeWorkflowFixture(
+        join(root, WORKFLOW_DIR_REL, 'macro-plan-20260101T000000Z-aaaaaa.md'),
+        'canonical/main',
+      );
+      await writeWorkflowFixture(
+        join(root, LEGACY_WORKFLOW_DIR_REL, 'macro-plan-20260101T000001Z-bbbbbb.md'),
+        'legacy/main',
+      );
+
+      await rejects(
+        () => createWorkflow({
+          repoRoot: root,
+          verb: 'plan',
+          host: 'codex',
+          gitBaseline: MIN_BASELINE('main'),
+          originalRequest: 'blocked split home',
+        }),
+        /Workflow storage migration blocked/,
+      );
     });
   });
 
@@ -586,7 +694,7 @@ describe('createWorkflow + branch-keyed lookup', () => {
       // this file without invoking the strict parseWorkflowFile.
       const sibling = join(
         root,
-        '.claude/agentic-orchestrator/workflows/macro-plan-20260101T000000Z-zzzzzz.md',
+        '.agentic-plugins/state/orchestrator/workflows/macro-plan-20260101T000000Z-zzzzzz.md',
       );
       await writeFile(
         sibling,
@@ -614,7 +722,7 @@ describe('createWorkflow + branch-keyed lookup', () => {
       // createWorkflow to add a second same-branch file.
       const opaque = join(
         root,
-        '.claude/agentic-orchestrator/workflows/macro-plan-20260101T000000Z-zzzzzz.md',
+        '.agentic-plugins/state/orchestrator/workflows/macro-plan-20260101T000000Z-zzzzzz.md',
       );
       await writeFile(opaque, '---\n!!totally corrupt!!\n', { mode: 0o600 });
       await rejects(
@@ -637,7 +745,7 @@ describe('createWorkflow + branch-keyed lookup', () => {
       // rejects schema 99 → fail-closed throw (same code path as (h)).
       const sibling = join(
         root,
-        '.claude/agentic-orchestrator/workflows/macro-plan-20260101T000001Z-yyyyyy.md',
+        '.agentic-plugins/state/orchestrator/workflows/macro-plan-20260101T000001Z-yyyyyy.md',
       );
       await writeFile(
         sibling,
@@ -2223,8 +2331,9 @@ describe('state.mjs CLI — ADR-0019 PR-D read-subtask + next-ready subcommands'
 // ============================================================================
 
 describe('state.mjs — ADR-0019 PR-E constants', () => {
-  it('ARCHIVE_DIR_REL is .claude/agentic-orchestrator/archive', () => {
-    strictEqual(ARCHIVE_DIR_REL, '.claude/agentic-orchestrator/archive');
+  it('ARCHIVE_DIR_REL is .agentic-plugins/state/orchestrator/archive', () => {
+    strictEqual(ARCHIVE_DIR_REL, '.agentic-plugins/state/orchestrator/archive');
+    strictEqual(LEGACY_ARCHIVE_DIR_REL, '.claude/agentic-orchestrator/archive');
   });
   it('MACRO_TERMINAL_PHASES contains commit-complete + finalized + aborted (and only those)', () => {
     ok(MACRO_TERMINAL_PHASES instanceof Set);
@@ -2237,7 +2346,7 @@ describe('state.mjs — ADR-0019 PR-E constants', () => {
     strictEqual(MACRO_TERMINAL_PHASES.size, 3);
   });
   it('archiveDir composes the correct absolute path', () => {
-    strictEqual(archiveDir('/tmp/foo'), '/tmp/foo/.claude/agentic-orchestrator/archive');
+    strictEqual(archiveDir('/tmp/foo'), '/tmp/foo/.agentic-plugins/state/orchestrator/archive');
   });
   it('archiveDir rejects relative repoRoot', () => {
     throws(() => archiveDir('relative/path'), /absolute/);
@@ -2592,7 +2701,7 @@ describe('state.mjs — ADR-0019 PR-E noActiveEngineerChildrenScan', () => {
   // via parseEngineerFrontmatter or a generic readdir+regex shim. The
   // test exercises the directory-scan contract regardless of which
   // schema the engineer files emit.
-  const ENG_WORKFLOW_DIR_REL = '.claude/agentic-engineer/workflows';
+  const ENG_WORKFLOW_DIR_REL = '.agentic-plugins/state/engineer/workflows';
 
   async function writeEngineerWorkflow(root, name, frontmatterFields) {
     const dir = join(root, ENG_WORKFLOW_DIR_REL);

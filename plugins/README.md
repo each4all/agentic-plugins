@@ -33,8 +33,10 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
   macro plan, Plan-verify peer ensemble, same-host engineer dispatch,
   manual completion backup, finalize/abort lifecycle, and macro
   auto-archive A1-A4. First multi-verb L2 occupant; workflow files live
-  at `<repo>/.claude/agentic-orchestrator/workflows/<workflow_id>.md`
-  with frontmatter `schema: '1.1'`, `workflow_type: macro`, and
+  at `<repo>/.agentic-plugins/state/orchestrator/workflows/<workflow_id>.md`
+  for new repos, with legacy `.claude/agentic-orchestrator/` state
+  supported until explicit migration. Files use frontmatter
+  `schema: '1.1'`, `workflow_type: macro`, and
   `workflow_id: macro-<verb>-<iso>-<rand>`. See
   [`plugins/orchestrator/README.md`](orchestrator/README.md).
 - **`runtime/`** — Stage 3+ L1 framework primitive per

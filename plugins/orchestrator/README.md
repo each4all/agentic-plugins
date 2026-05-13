@@ -21,7 +21,7 @@ Ships `/orchestrator:plan` (macro plan + Plan-verify Codex ensemble through the 
 
 | Command | Status | Description |
 |---------|--------|-------------|
-| `/orchestrator:plan <feature>` | ✅ shipping | Build a macro plan: produce `plan.subtasks[]` proposals via Plan-verify ensemble (Claude + Codex), persist to `<repo>/.claude/agentic-orchestrator/workflows/<workflow_id>.md`, and present for approval. |
+| `/orchestrator:plan <feature>` | ✅ shipping | Build a macro plan: produce `plan.subtasks[]` proposals via Plan-verify ensemble (Claude + Codex), persist to `<repo>/.agentic-plugins/state/orchestrator/workflows/<workflow_id>.md` for new repos, and present for approval. |
 | `/orchestrator:next [<subtask-id>] [--workflow=<macro-id>]` | ✅ shipping (same-host) | Dispatch the next ready subtask into `plugins/engineer`. Branch precondition + ownership check + parent-linkage env vars per ADR-0019 §1+§3. Cross-host `--peer` remains trigger-deferred PR-F scope. |
 | `/orchestrator:done <subtask-id> [--commit=<sha>] [--workflow=<macro-id>]` | ✅ shipping | Manually record subtask completion (idempotent backup for engineer Stop auto-writeback) per ADR-0019 §4. Required when the engineer session crashed before terminal commit OR for cross-host reconciliation. |
 | `/orchestrator:finalize [--workflow=<macro-id>]` | ✅ shipping | Close the macro plan with all non-terminal subtasks → `deferred` + macro `current_phase: 'finalized'` + `terminal_marker: true`. Three-step §5 ritual: bulk subtask transition → active-children detach pass (NO parent lock; routes terminal engineer children through `stop-archive`, mid-flight via `detach-archive`) → terminal markers. |
@@ -33,7 +33,7 @@ Ships `/orchestrator:plan` (macro plan + Plan-verify Codex ensemble through the 
 
 ## Workflow file shape
 
-`<repo>/.claude/agentic-orchestrator/workflows/<workflow_id>.md` with frontmatter `schema: '1.1'` post ADR-0019 PR-B (legacy `'1.0'` files are still readable; mutations refused with archive/re-plan diagnostic). `workflow_id` format `macro-<verb>-<iso>-<rand>`. `workflow_type: macro`. The `plan` block carries `decision`, `architecture`, and `subtasks: [{id, verb, branch, blocked_by, status, label?, profile?, topic?, engineer_workflow_id?, commit?, pr_url?, closed_at?}]` per ADR-0018 §sub-decision-1 + ADR-0019 §2 spec. `verb` ∈ {investigate, frame, decide, compose, critique, refine}; `branch` must pass git ref-format and have no parent/child path-prefix relationship across subtasks. Optional top-level `terminal_marker: boolean` per ADR-0019 §5 (set by `/orchestrator:finalize` / `/orchestrator:abort` or auto-set when all subtasks reach terminal status). Optional `latest_checkpoint: {at, summary}` is written by `/orchestrator:checkpoint` for macro workflow continuity.
+`<repo>/.agentic-plugins/state/orchestrator/workflows/<workflow_id>.md` with frontmatter `schema: '1.1'` post ADR-0019 PR-B. Existing legacy `.claude/agentic-orchestrator/` state remains readable/writable until explicit migration; legacy schema `'1.0'` files are still readable but mutations are refused with archive/re-plan diagnostic. `workflow_id` format `macro-<verb>-<iso>-<rand>`. `workflow_type: macro`. The `plan` block carries `decision`, `architecture`, and `subtasks: [{id, verb, branch, blocked_by, status, label?, profile?, topic?, engineer_workflow_id?, commit?, pr_url?, closed_at?}]` per ADR-0018 §sub-decision-1 + ADR-0019 §2 spec. `verb` ∈ {investigate, frame, decide, compose, critique, refine}; `branch` must pass git ref-format and have no parent/child path-prefix relationship across subtasks. Optional top-level `terminal_marker: boolean` per ADR-0019 §5 (set by `/orchestrator:finalize` / `/orchestrator:abort` or auto-set when all subtasks reach terminal status). Optional `latest_checkpoint: {at, summary}` is written by `/orchestrator:checkpoint` for macro workflow continuity.
 
 Per [ADR-0018 §sub-decision-2](../../docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md), the **active workflow** is the one whose `git_baseline.branch` equals the current branch. `git checkout` is the primary context-switch primitive; no extra "switch workflow" UX. This applies symmetrically to engineer and orchestrator.
 
@@ -42,7 +42,7 @@ Per [ADR-0018 §sub-decision-2](../../docs/adr/0018-stage3-architecture-orchestr
 `scripts/dispatch-peer.mjs` remains the compatibility wrapper for raw callers and tests. `/orchestrator:plan` uses `scripts/peer-runner.mjs run --kind ensemble` for managed Plan-verify dispatch. The runner stores operational state under:
 
 ```text
-<repo>/.claude/agentic-orchestrator/peer-runs/<run_id>/
+<repo>/.agentic-plugins/state/orchestrator/peer-runs/<run_id>/
   handle.json
   stdout.log
   stderr.log
@@ -68,8 +68,8 @@ Codex CLI exposes a host-level hooks feature in current releases, but agentic-pl
 
 | Plugin | schema | Workflow dir | workflow_id format |
 |--------|--------|---------------|--------------------|
-| `engineer` | `'1.1'` | `.claude/agentic-engineer/workflows/` | `<verb>-<iso>-<rand>` |
-| `orchestrator` (this) | `'1.1'` (post ADR-0019 PR-B; `'1.0'` legacy read-only) | `.claude/agentic-orchestrator/workflows/` | `macro-<verb>-<iso>-<rand>` |
+| `engineer` | `'1.1'` | `.agentic-plugins/state/engineer/workflows/` (`.claude/agentic-engineer/workflows/` legacy) | `<verb>-<iso>-<rand>` |
+| `orchestrator` (this) | `'1.1'` (post ADR-0019 PR-B; `'1.0'` legacy read-only) | `.agentic-plugins/state/orchestrator/workflows/` (`.claude/agentic-orchestrator/workflows/` legacy) | `macro-<verb>-<iso>-<rand>` |
 
 The two schema lines collide on the literal `'1.1'` string but namespace separation is preserved by structural validation: orchestrator requires `workflow_type: macro` + `plan.subtasks[]`; engineer files lack those fields and fail at the per-field gates. orchestrator's `state.mjs` rejects engineer schema-1 / 2 (numeric) cleanly. Legacy 1.0 orchestrator files are readable but mutations are refused with an archive/re-plan diagnostic per ADR-0019 PR-B.
 

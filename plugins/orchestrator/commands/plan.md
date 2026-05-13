@@ -111,7 +111,7 @@ The four bookkeeping flags (`--workflow-path`, `--phase`, `--ensemble-type`, `--
 
 1. Resolve the companion script (`peer codex`) via `companions/discover-peer.mjs`.
 2. **If companion missing** → return `peer_cli_not_found`, create no peer-run ledger, and record NO `pending_ensemble` entry (orchestrator-specific graceful-degradation order). Caller proceeds with a LOCAL-ONLY plan.
-3. **If companion present** → create `.claude/agentic-orchestrator/peer-runs/<run_id>/`, record a `pending_ensemble` entry under the workflow file's per-file lock, then spawn the companion.
+3. **If companion present** → create `.agentic-plugins/state/orchestrator/peer-runs/<run_id>/` for new repos (or the legacy peer-run home until explicit migration), record a `pending_ensemble` entry under the workflow file's per-file lock, then spawn the companion.
 4. Tee stdout/stderr to bounded ledger files, write the final JSON envelope to `envelope.json`, and print machine-readable run metadata to `$PROMPT_FILE.run.json`.
 
 After synthesis, Phase 2 invokes `state.mjs ensemble-commit` with the same `--run-id` to atomically pop the pending entry (no-op if companion was missing), append the result to `ensemble_results`, and prune to the retention cap.

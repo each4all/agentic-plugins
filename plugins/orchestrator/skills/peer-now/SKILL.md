@@ -61,7 +61,8 @@ node "<plugin-root>/scripts/peer-runner.mjs" run \
 ```
 
 The runner writes a ledger under
-`.claude/agentic-orchestrator/peer-runs/<run_id>/`. Use
+`.agentic-plugins/state/orchestrator/peer-runs/<run_id>/` for new repos
+(or the legacy peer-run home until explicit migration). Use
 `peer-runner.mjs status` and `peer-runner.mjs cancel` for operational
 control.
 

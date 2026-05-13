@@ -5,7 +5,7 @@
 // macro completion semantics (PR-E).
 //
 // Two responsibilities, both performed for every non-archived macro
-// under `<repoRoot>/.claude/agentic-orchestrator/workflows/`:
+// under the selected canonical or legacy orchestrator workflow home:
 //
 //   1. Snapshot — write `last_snapshot` + `host_history` snapshot
 //      entry (trigger: stop). This preserves the original ADR-0011 §4

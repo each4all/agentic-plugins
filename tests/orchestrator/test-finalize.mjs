@@ -128,7 +128,7 @@ async function bootstrapEngineerChild(repoRoot, {
 
 async function listEngineerWorkflows(repoRoot) {
   try {
-    const dir = join(repoRoot, '.claude/agentic-engineer/workflows');
+    const dir = join(repoRoot, '.agentic-plugins/state/engineer/workflows');
     const entries = await readdir(dir);
     return entries.filter((e) => e.endsWith('.md'));
   } catch (err) {
@@ -139,7 +139,7 @@ async function listEngineerWorkflows(repoRoot) {
 
 async function listEngineerArchive(repoRoot) {
   try {
-    const dir = join(repoRoot, '.claude/agentic-engineer/archive');
+    const dir = join(repoRoot, '.agentic-plugins/state/engineer/archive');
     const entries = await readdir(dir);
     return entries.filter((e) => e.endsWith('.md'));
   } catch (err) {
@@ -260,7 +260,7 @@ describe('finalize step 2 — mid-flight child routed to detach-archive', () => 
       strictEqual((await listEngineerWorkflows(root)).length, 0);
       const archived = await listEngineerArchive(root);
       strictEqual(archived.length, 1);
-      const text = await readFile(join(root, '.claude/agentic-engineer/archive', archived[0]), 'utf8');
+      const text = await readFile(join(root, '.agentic-plugins/state/engineer/archive', archived[0]), 'utf8');
       match(text, /parent_detached: true/);
       match(text, /terminal_marker: false/);
     });
@@ -422,10 +422,10 @@ describe('finalize §5 end-to-end ritual', () => {
       // T1: mid-flight → detach-archive
       const t1Path = (await listEngineerWorkflows(root))
         .filter((n) => n.startsWith('compose-'))
-        .map((n) => join(root, '.claude/agentic-engineer/workflows', n))[0];
+        .map((n) => join(root, '.agentic-plugins/state/engineer/workflows', n))[0];
       // We can't be sure which is T1 vs T2 from filename alone, so probe via frontmatter
       for (const name of await listEngineerWorkflows(root)) {
-        const path = join(root, '.claude/agentic-engineer/workflows', name);
+        const path = join(root, '.agentic-plugins/state/engineer/workflows', name);
         const text = await readFile(path, 'utf8');
         if (text.includes('originating_subtask: "T1"')) {
           // mid-flight
