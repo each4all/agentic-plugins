@@ -36,6 +36,9 @@ Settings reports and plans:
 - Direction-specific companion defaults:
   - `claude_model` / `claude_effort` for Codex -> Claude.
   - `codex_model` / `codex_effort` for Claude -> Codex.
+- Effective projected companion defaults after repo-local and user-global
+  precedence. Warn when a lower-precedence write would not actually affect
+  companion invocation.
 
 ## Apply Boundary
 
