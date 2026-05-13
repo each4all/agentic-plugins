@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,12 +9,18 @@ const VALID_HOSTS = new Set(['claude', 'codex', 'neutral']);
 const VALID_CONTEXT_STATES = new Set(['green', 'yellow', 'red']);
 const RUN_ID_RE = /^context-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const ARTIFACT_KIND_RE = /^[A-Za-z0-9._-]+$/;
+const DEFAULT_HANDOFF_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 export async function runFooter(options = {}) {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
   const host = validateHost(options.host ?? 'neutral');
-  const context = options.contextRunId
-    ? await readContextArtifact(repoRoot, options.contextRunId)
+  const context = options.contextRunId || options.contextLatest
+    ? await readContextArtifact(repoRoot, {
+        runId: options.contextRunId,
+        latest: options.contextLatest === true,
+        now: options.now ?? new Date(),
+        staleAfterMs: options.staleAfterMs ?? DEFAULT_HANDOFF_STALE_AFTER_MS,
+      })
     : null;
 
   const contextState = validateContextState(
@@ -34,6 +40,13 @@ export async function runFooter(options = {}) {
     version: VERSION,
     advisory: true,
     context_state: contextState,
+    context: context
+      ? {
+          run_id: context.runId,
+          pointer: context.contextPointer,
+          lookup: context.lookup,
+        }
+      : null,
     workflow,
     artifacts,
     recommended_next_work: options.recommendedNextWork
@@ -81,6 +94,12 @@ export function parseArgs(argv) {
       case '--context-run-id':
         options.contextRunId = validateRunId(requireValue(args, arg));
         break;
+      case '--context-latest':
+        options.contextLatest = true;
+        break;
+      case '--stale-after-hours':
+        options.staleAfterMs = parseNonNegativeInteger(requireValue(args, arg), arg) * 60 * 60 * 1000;
+        break;
       case '--context-state':
         options.contextState = validateContextState(requireValue(args, arg));
         break;
@@ -106,6 +125,9 @@ export function parseArgs(argv) {
         throw new Error(`Unknown argument: ${arg}`);
     }
   }
+  if (options.contextRunId && options.contextLatest) {
+    throw new Error('Use either --context-run-id or --context-latest, not both');
+  }
   return options;
 }
 
@@ -113,6 +135,11 @@ export function formatText(report) {
   if (report.help) return helpText();
   const lines = ['Runtime completion footer (advisory)'];
   lines.push(`context state: ${report.context_state}`);
+  if (report.context?.pointer) lines.push(`context artifact: ${report.context.pointer}`);
+  if (report.context?.lookup) {
+    lines.push('context lookup:');
+    lines.push(formatContextLookup(report.context.lookup));
+  }
   if (report.workflow?.kind || report.workflow?.id) {
     lines.push(`workflow: ${[report.workflow.kind, report.workflow.id].filter(Boolean).join(' ')}`);
   }
@@ -138,9 +165,23 @@ export function formatText(report) {
   return lines.join('\n');
 }
 
-async function readContextArtifact(repoRoot, runIdValue) {
-  const runId = validateRunId(runIdValue);
-  const contextPath = resolve(contextRoot(repoRoot), runId, 'context.json');
+async function readContextArtifact(repoRoot, options) {
+  const latest = options.latest === true;
+  if (options.runId && latest) {
+    throw new Error('Use either --context-run-id or --context-latest, not both');
+  }
+  if (!options.runId && !latest) {
+    throw new Error('Context lookup requires --context-run-id or --context-latest');
+  }
+  const lookup = latest
+    ? await findLatestContextArtifact(repoRoot)
+    : {
+        runId: validateRunId(options.runId),
+        contextPath: resolve(contextRoot(repoRoot), validateRunId(options.runId), 'context.json'),
+        skippedInvalid: 0,
+      };
+  const runId = lookup.runId;
+  const contextPath = lookup.contextPath;
   assertInsideSync(contextRoot(repoRoot), contextPath, 'Context artifact path escapes context root');
   const artifact = JSON.parse(await readFile(contextPath, 'utf8'));
   const state = validateContextState(artifact.context?.risk_level ?? 'yellow');
@@ -158,6 +199,69 @@ async function readContextArtifact(repoRoot, runIdValue) {
         : defaultNextAction(state),
       promptPointer,
     },
+    lookup: buildContextLookup({
+      artifact,
+      runId,
+      latest,
+      now: options.now,
+      staleAfterMs: options.staleAfterMs,
+      skippedInvalid: lookup.skippedInvalid,
+    }),
+  };
+}
+
+async function findLatestContextArtifact(repoRoot) {
+  const root = contextRoot(repoRoot);
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    throw new Error(`No context artifacts found under ${pointer(repoRoot, root)}: ${error.code ?? error.message}`);
+  }
+
+  const candidates = [];
+  let skippedInvalid = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !RUN_ID_RE.test(entry.name)) continue;
+    const contextPath = resolve(root, entry.name, 'context.json');
+    try {
+      const artifact = JSON.parse(await readFile(contextPath, 'utf8'));
+      const selectedAt = artifactTimestampMs(artifact, entry.name);
+      if (selectedAt === null) {
+        skippedInvalid++;
+        continue;
+      }
+      candidates.push({
+        runId: entry.name,
+        contextPath,
+        selectedAt,
+      });
+    } catch {
+      skippedInvalid++;
+    }
+  }
+
+  if (candidates.length === 0) {
+    throw new Error(`No readable context artifacts found under ${pointer(repoRoot, root)}`);
+  }
+
+  candidates.sort((a, b) => b.selectedAt - a.selectedAt || b.runId.localeCompare(a.runId));
+  return { ...candidates[0], skippedInvalid };
+}
+
+function buildContextLookup({ artifact, runId, latest, now, staleAfterMs, skippedInvalid }) {
+  const selectedAt = artifactTimestampMs(artifact, runId);
+  const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  const ageMs = selectedAt === null ? null : Math.max(0, nowMs - selectedAt);
+  return {
+    mode: latest ? 'latest' : 'run-id',
+    latest,
+    selected_at: selectedAt === null ? null : new Date(selectedAt).toISOString(),
+    age_ms: ageMs,
+    age_minutes: ageMs === null ? null : roundOne(ageMs / 60000),
+    stale_after_ms: staleAfterMs,
+    stale: ageMs === null ? null : ageMs > staleAfterMs,
+    skipped_invalid: skippedInvalid,
   };
 }
 
@@ -265,6 +369,40 @@ function contextStatusCommand(host, runId) {
   return `runtime:context status --run-id ${runId}`;
 }
 
+function formatContextLookup(lookup) {
+  const selected = lookup.selected_at ?? 'unknown';
+  const age = lookup.age_minutes === null ? 'unknown' : `${lookup.age_minutes} minutes`;
+  return [
+    `- mode: ${lookup.mode}`,
+    `- latest: ${lookup.latest}`,
+    `- selected_at: ${selected}`,
+    `- age: ${age}`,
+    `- stale: ${lookup.stale}`,
+    `- stale_after_ms: ${lookup.stale_after_ms}`,
+    `- skipped_invalid: ${lookup.skipped_invalid}`,
+  ].join('\n');
+}
+
+function artifactTimestampMs(artifact, fallbackRunId) {
+  for (const value of [artifact.updated_at, artifact.created_at]) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return runIdTimestampMs(fallbackRunId);
+}
+
+function runIdTimestampMs(runId) {
+  const match = String(runId ?? '').match(/^context-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match;
+  const parsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function roundOne(value) {
+  return Math.round(value * 10) / 10;
+}
+
 function defaultNextAction(stateValue) {
   const state = validateContextState(stateValue);
   if (state === 'green') {
@@ -320,6 +458,12 @@ function requireSingleLine(value, flag) {
   return value;
 }
 
+function parseNonNegativeInteger(value, flag) {
+  const text = String(value ?? '').trim();
+  if (!/^\d+$/.test(text)) throw new Error(`${flag} must be a non-negative integer`);
+  return Number.parseInt(text, 10);
+}
+
 function contextRoot(repoRoot) {
   return resolve(repoRoot, '.agentic-plugins', 'runs', 'context');
 }
@@ -344,6 +488,7 @@ function helpText() {
 Usage:
   runtime footer render [--format text|json] [--host claude|codex|neutral]
   runtime footer render --context-run-id <context-run-id> --workflow-id <id>
+  runtime footer render --context-latest [--stale-after-hours <n>] --workflow-id <id>
   runtime footer render --context-state green|yellow|red --recommended-next-work <text>
 
 Renders an advisory, pointer-only completion footer. It reads optional

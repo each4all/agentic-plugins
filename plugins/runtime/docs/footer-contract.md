@@ -44,6 +44,27 @@ It uses only the context risk level, artifact pointers, recommended
 action, and next-session prompt pointer. It does not print the context
 summary body or the next-session prompt body.
 
+Callers that want the newest existing handoff without creating or updating
+context may use `--context-latest`:
+
+```bash
+node <runtime-plugin-root>/scripts/footer.mjs render \
+  --repo-root "$REPO_ROOT" \
+  --host codex \
+  --context-latest \
+  --stale-after-hours 12 \
+  --workflow-kind engineer \
+  --workflow-id "$WORKFLOW_ID" \
+  --workflow-path "$WORKFLOW_PATH" \
+  --recommended-next-work "Continue from the latest handoff pointer."
+```
+
+`--context-latest` selects the newest readable
+`.agentic-plugins/runs/context/<run-id>/context.json` artifact and reports
+lookup metadata (`mode`, `selected_at`, age, stale state, stale threshold,
+and skipped invalid artifacts). It is mutually exclusive with
+`--context-run-id`.
+
 Without a context artifact, callers may supply `--context-state`,
 `--artifact`, `--next-session-action`, `--next-session-command`, and
 `--next-session-prompt-pointer` directly.
