@@ -25,6 +25,7 @@ describe('plugins/runtime manifest pair', () => {
     ok(manifest.keywords.includes('settings'));
     ok(manifest.keywords.includes('consensus'));
     ok(manifest.keywords.includes('context'));
+    ok(manifest.keywords.includes('footer'));
     ok(manifest.keywords.includes('L1'));
   });
 
@@ -170,5 +171,21 @@ describe('plugins/runtime context surface', () => {
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/context.mjs'));
     ok((scriptStat.mode & 0o111) !== 0, 'context.mjs has executable bit');
+  });
+});
+
+describe('plugins/runtime footer helper', () => {
+  it('ships footer helper and pointer-only contract docs', async () => {
+    const contract = await readFile(resolve(PLUGIN_ROOT, 'docs/footer-contract.md'), 'utf-8');
+    ok(contract.includes('Completion Footer Contract'));
+    ok(/advisory/i.test(contract));
+    ok(/pointer-only/i.test(contract));
+    ok(contract.includes('scripts/footer.mjs'));
+    const script = await readFile(resolve(PLUGIN_ROOT, 'scripts/footer.mjs'), 'utf-8');
+    ok(script.includes('Runtime completion footer (advisory)'));
+    ok(script.includes('context-run-id'));
+    ok(script.includes('does not mutate host session context'));
+    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/footer.mjs'));
+    ok((scriptStat.mode & 0o111) !== 0, 'footer.mjs has executable bit');
   });
 });

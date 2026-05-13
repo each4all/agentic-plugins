@@ -6,8 +6,8 @@ ADR-0024 defines more than the first `doctor`, `settings`, consensus, and contex
 
 - Automatic plugin install/update apply mode: first settings only recommends host-native install/update commands. A later PR may add an explicit apply boundary for plugin management.
 - Automatic peer execution for consensus: the first consensus PR creates and updates runtime-owned run artifacts, but peer execution remains manual/host-native. A later PR may add an explicit executor boundary for companion dispatch, cancellation, and deeper smoke evidence.
-- Context automation: main-session context budget checks, automatic capture triggers, and completion-surface integration beyond the current artifact-only `runtime:context` scaffold. No automatic host switch or new workflow start.
-- Completion footer: standard advisory footer for engineer/orchestrator completion surfaces with context state, workflow ids, artifact pointers, recommended next work, and exact next-session command or prompt.
+- Context automation: main-session context budget checks and automatic capture triggers beyond the current artifact-only `runtime:context` scaffold. No automatic host switch or new workflow start.
+- Completion footer expansion: the first helper is advisory and pointer-only. Later PRs may add richer integration, but must still avoid automatic context mutation, automatic session start, and raw peer/consensus output in the main session.
 - Deep peer smoke for `runtime:doctor`: explicit opt-in only. The first PR accepts `--deep-peer-smoke` but does not execute peer agents.
 - Sandbox permission proof: explicit smoke/probe only. Settings must not silently relax sandbox or approval policy.
 

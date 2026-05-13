@@ -109,7 +109,7 @@ export async function runSettings({
       'Host-native config, auth, secrets, and sandbox/permission settings are not written.',
       'Companion invocation still uses companions/contract.md --model and --effort.',
       'Codex plugin-local automatic hooks are not assumed; settings reports manual paths honestly.',
-      'Dynamic peer consensus, context hygiene, completion footer integration, deep peer smoke, and automatic plugin install/update apply mode are deferred.',
+      'Dynamic peer consensus, context hygiene mutation, completion footer mutation, deep peer smoke, and automatic plugin install/update apply mode are deferred.',
     ],
   };
   report.overall = summarizeSettings(report);

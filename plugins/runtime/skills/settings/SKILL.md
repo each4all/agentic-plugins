@@ -61,6 +61,6 @@ Forbidden writes:
 
 - No dynamic peer consensus loop.
 - No context hygiene mutation.
-- No completion footer integration.
+- No automatic completion footer mutation. The footer helper is read-only and advisory.
 - No deep peer smoke or sandbox permission proof.
 - No automatic plugin install/update apply mode.
