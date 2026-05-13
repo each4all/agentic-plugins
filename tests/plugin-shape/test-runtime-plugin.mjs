@@ -23,6 +23,7 @@ describe('plugins/runtime manifest pair', () => {
     ok(manifest.keywords.includes('runtime'));
     ok(manifest.keywords.includes('doctor'));
     ok(manifest.keywords.includes('settings'));
+    ok(manifest.keywords.includes('consensus'));
     ok(manifest.keywords.includes('L1'));
   });
 
@@ -36,6 +37,7 @@ describe('plugins/runtime manifest pair', () => {
     deepStrictEqual(manifest.interface.capabilities, ['Read', 'Write']);
     ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:doctor')));
     ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:settings')));
+    ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:consensus')));
   });
 
   it('Claude and Codex manifests share name + version + description', async () => {
@@ -122,11 +124,30 @@ describe('plugins/runtime settings surface', () => {
     ok((scriptStat.mode & 0o111) !== 0, 'settings.mjs has executable bit');
   });
 
-  it('follow-ups document deferred settings/consensus/context/footer scope', async () => {
+  it('follow-ups document deferred automatic consensus execution/settings/context/footer scope', async () => {
     const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
-    for (const token of ['Automatic plugin install/update apply mode', 'Dynamic peer consensus', 'Context hygiene', 'Completion footer']) {
+    for (const token of ['Automatic plugin install/update apply mode', 'Automatic peer execution for consensus', 'Context hygiene', 'Completion footer']) {
       ok(followUps.includes(token), `${token} documented`);
     }
     ok(/Codex manual-hook/i.test(followUps), 'Codex manual-hook honesty documented');
+  });
+});
+
+describe('plugins/runtime consensus surface', () => {
+  it('ships consensus command, skill wrapper, agent yaml, and executable script', async () => {
+    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/consensus.md'), 'utf-8');
+    ok(command.startsWith('---\n'));
+    ok(command.includes('scripts/consensus.mjs'));
+    ok(command.includes('artifact'));
+    ok(command.includes('does not execute peer agents'));
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/consensus/SKILL.md'), 'utf-8');
+    ok(/^name:\s*consensus\s*$/m.test(skill));
+    ok(skill.includes('raw peer output out of the main session'));
+    ok(skill.includes('No direct peer execution'));
+    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/consensus/agents/openai.yaml'), 'utf-8');
+    ok(agent.includes('$runtime:consensus'));
+    ok(/allow_implicit_invocation:\s*false/.test(agent));
+    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/consensus.mjs'));
+    ok((scriptStat.mode & 0o111) !== 0, 'consensus.mjs has executable bit');
   });
 });
