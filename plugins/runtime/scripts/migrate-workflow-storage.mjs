@@ -743,10 +743,18 @@ export function parseArgs(argv) {
     apply: false,
   };
   const rest = [...argv];
-  if (rest[0] === 'workflow-storage') rest.shift();
+  let sawWorkflowStorage = false;
+  if (rest[0] === 'workflow-storage') {
+    rest.shift();
+    sawWorkflowStorage = true;
+  }
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
     switch (arg) {
+      case 'workflow-storage':
+        if (sawWorkflowStorage) throw new Error('workflow-storage subcommand may be supplied only once');
+        sawWorkflowStorage = true;
+        break;
       case '--repo-root':
         opts.repoRoot = readFlagValue(rest, ++i, '--repo-root');
         break;

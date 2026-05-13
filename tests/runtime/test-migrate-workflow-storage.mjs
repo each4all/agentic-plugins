@@ -218,9 +218,9 @@ describe('runtime migrate workflow-storage', () => {
 
   it('parses CLI arguments', async () => {
     const opts = parseArgs([
-      'workflow-storage',
       '--repo-root',
       '/tmp/repo',
+      'workflow-storage',
       '--format',
       'json',
       '--plugin',
@@ -232,6 +232,7 @@ describe('runtime migrate workflow-storage', () => {
     strictEqual(opts.plugin, 'orchestrator');
     strictEqual(opts.apply, true);
     await rejects(async () => parseArgs(['--plugin']), /--plugin requires a value/);
+    await rejects(async () => parseArgs(['workflow-storage', 'workflow-storage']), /workflow-storage subcommand may be supplied only once/);
   });
 });
 
