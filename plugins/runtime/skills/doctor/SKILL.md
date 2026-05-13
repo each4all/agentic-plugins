@@ -19,7 +19,7 @@ node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--form
 ```
 
 3. Present the result without hiding host asymmetry. In particular:
-   - Codex has no verified plugin-local automatic hook packaging today.
+   - Codex may expose host-level hooks, but agentic-plugins has no verified plugin-local automatic hook packaging today.
    - The readiness summary reports sandbox/permission status as unknown unless `--sandbox-permission-probe` is requested. `--permission-proof` records separate preflight/execution evidence under `permission_proof`.
    - `--permission-proof` remains plan-only unless the user also supplies `--execute-permission-proof`. The executor uses the existing companion contract, does not pass sandbox/approval/permission-mode relaxation flags, classifies permission failures, and omits raw peer stdout from doctor output.
    - `--deep-peer-smoke` remains plan-only unless the user also supplies `--execute-deep-peer-smoke`. The executor uses the existing companion contract and omits raw peer stdout from doctor output.

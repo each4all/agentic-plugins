@@ -178,7 +178,7 @@ opens PRs, updates PR metadata, merges, or marks a PR ready for review.
 claude /plugin install runtime@agentic-plugins
 
 # Codex CLI
-codex plugin install --marketplace agentic-plugins runtime
+codex plugin marketplace add each4all/agentic-plugins
 ```
 
 ## License

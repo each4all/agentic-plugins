@@ -34,6 +34,7 @@ describe('runtime doctor', () => {
         'codex --version': okResult('codex-cli 0.130.0\n'),
         'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
         'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort=\"high\"\n'),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development false\nplugins stable true\nmulti_agent stable true\n'),
         'codex login status': okResult('Logged in using sk-proj-abcdefghijklmnopqrstuvwxyz1234567890\n'),
         'codex plugin marketplace --help': okResult('Commands:\n  add\n  upgrade\n  remove\n'),
       }),
@@ -51,7 +52,13 @@ describe('runtime doctor', () => {
     strictEqual(report.companions.directions.codex_to_claude.status, 'available');
     strictEqual(report.ledgers.engineer.peer_runs.stale_non_terminal, 1);
     strictEqual(report.plugins.runtime.status, 'available');
+    strictEqual(report.clis.codex.feature_surface.codex_global_hooks, true);
+    strictEqual(report.clis.codex.feature_surface.codex_global_hooks_stage, 'stable');
+    strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks, false);
+    strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks_stage, 'under development');
+    strictEqual(report.clis.codex.feature_surface.automatic_plugin_hooks, false);
     ok(report.host_parity.differences.some((issue) => issue.id === 'codex_manual_skill_invocation'));
+    ok(report.host_parity.differences.some((issue) => issue.id === 'codex_manual_skill_invocation' && issue.evidence.includes('global_hooks=true/stable')));
 
     const serialized = JSON.stringify(report);
     ok(!serialized.includes('person@example.com'), 'email must be redacted');
@@ -165,6 +172,7 @@ describe('runtime doctor', () => {
         'codex --version': okResult('codex-cli 0.130.0\n'),
         'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
         'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort=\"high\"\n'),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development false\n'),
         'codex login status': okResult('Logged in using ChatGPT\n'),
         'codex plugin marketplace --help': okResult(''),
       }),
@@ -193,6 +201,7 @@ describe('runtime doctor', () => {
         'codex --version': okResult('codex-cli 0.130.0\n'),
         'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
         'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort=\"high\"\n'),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development false\n'),
         'codex login status': okResult('Logged in using ChatGPT\n'),
         'codex plugin marketplace --help': okResult(''),
       }),
@@ -332,6 +341,7 @@ describe('runtime doctor', () => {
         'codex --version': okResult('codex-cli 0.130.0\n'),
         'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
         'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort=\"high\"\n'),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development false\n'),
         'codex login status': okResult('Logged in using ChatGPT\n'),
         'codex plugin marketplace --help': okResult(''),
       }),
@@ -453,6 +463,7 @@ function defaultRuntimeProbeMap() {
     'codex --version': okResult('codex-cli 0.130.0\n'),
     'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
     'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort="high"\n'),
+    'codex features list': okResult('hooks stable true\nplugin_hooks under development false\nplugins stable true\nmulti_agent stable true\n'),
     'codex login status': okResult('Logged in using ChatGPT\n'),
     'codex plugin marketplace --help': okResult(''),
   };

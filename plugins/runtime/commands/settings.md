@@ -28,4 +28,4 @@ Notes:
 - `--claude-model`, `--claude-effort`, `--codex-model`, and `--codex-effort` plan direction-specific companion defaults that still flow through `companions/contract.md` `--model` and `--effort`.
 - Plugin install/update is recommendation-only in this PR. The command does not run host-native install/update commands.
 - Host-native config, authentication, secrets, and sandbox/permission settings are never written by this command.
-- Codex CLI has no verified plugin-local automatic hook packaging today; settings reports manual paths instead of claiming parity.
+- Codex CLI may expose host-level hooks, but agentic-plugins has no verified plugin-local automatic hook packaging today; settings reports manual paths instead of claiming parity.

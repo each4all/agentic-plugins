@@ -88,7 +88,10 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    ok(report.plugins.runtime.recommendations.some((rec) => rec.action === 'install-plugin' && rec.host === 'codex'));
+    const codexRecommendation = report.plugins.runtime.recommendations.find((rec) => rec.host === 'codex');
+    strictEqual(codexRecommendation.action, 'add-marketplace');
+    strictEqual(codexRecommendation.command, 'codex plugin marketplace add each4all/agentic-plugins');
+    ok(codexRecommendation.detail.includes('not per-plugin install'));
     ok(report.recommendations.some((rec) => rec.area === 'plugin' && rec.executed === false));
     ok(report.limits.some((limit) => limit.includes('Plugin install/update is recommendation-only')));
   });
@@ -148,6 +151,7 @@ function defaultCliMap() {
     'codex --version': okResult('codex-cli 0.130.0\n'),
     'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
     'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort="high"\n'),
+    'codex features list': okResult('hooks stable true\nplugin_hooks under development false\nplugins stable true\nmulti_agent stable true\n'),
     'codex login status': okResult('Logged in using ChatGPT\n'),
     'codex plugin marketplace --help': okResult('Commands:\n  add\n  upgrade\n  remove\n'),
   };

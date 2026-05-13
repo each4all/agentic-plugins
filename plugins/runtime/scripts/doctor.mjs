@@ -79,6 +79,7 @@ export async function runDoctor({
       versionArgs: ['--version'],
       helpArgs: ['--help'],
       extraHelpArgs: ['exec', '--help'],
+      featureArgs: ['features', 'list'],
       authArgs: ['login', 'status'],
       pluginArgs: ['plugin', 'marketplace', '--help'],
       runner,
@@ -240,11 +241,12 @@ export async function runCommand(command, args = [], { cwd = process.cwd(), env 
   });
 }
 
-async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, authArgs, pluginArgs, runner, cwd, env }) {
+async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, featureArgs = null, authArgs, pluginArgs, runner, cwd, env }) {
   const version = await runner(name, versionArgs, { cwd, env });
   const available = version.ok || version.exit_code !== null;
   const help = available ? await runner(name, helpArgs, { cwd, env }) : skipped('cli unavailable');
   const extraHelp = available && extraHelpArgs ? await runner(name, extraHelpArgs, { cwd, env }) : skipped('not requested');
+  const featuresRaw = available && featureArgs ? await runner(name, featureArgs, { cwd, env }) : skipped('not requested');
   const authRaw = available ? await runner(name, authArgs, { cwd, env }) : skipped('cli unavailable');
   const pluginRaw = available ? await runner(name, pluginArgs, { cwd, env }) : skipped('cli unavailable');
   const auth = name === 'claude' ? parseClaudeAuth(authRaw) : parseCodexAuth(authRaw);
@@ -253,7 +255,7 @@ async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, a
     : `${help.stdout}\n${help.stderr}\n${extraHelp.stdout}\n${extraHelp.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}`;
   const featureSurface = name === 'claude'
     ? inspectClaudeFeatureSurface(featureText)
-    : inspectCodexFeatureSurface(featureText);
+    : inspectCodexFeatureSurface(featureText, featuresRaw);
 
   return {
     name,
@@ -266,6 +268,11 @@ async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, a
     },
     auth,
     feature_surface: featureSurface,
+    features: {
+      status: commandStatus(featuresRaw),
+      exit_code: featuresRaw.exit_code,
+      error_code: featuresRaw.error_code,
+    },
     plugin: {
       status: commandStatus(pluginRaw),
       stdout: pluginRaw.stdout,
@@ -358,7 +365,10 @@ function inspectClaudeFeatureSurface(helpText) {
   };
 }
 
-function inspectCodexFeatureSurface(helpText) {
+function inspectCodexFeatureSurface(helpText, featuresRaw) {
+  const featureList = parseCodexFeatureList(featuresRaw);
+  const hooks = featureList.features.hooks ?? null;
+  const pluginHooks = featureList.features.plugin_hooks ?? null;
   return {
     exec_command: /\bexec\b[\s\S]*Run Codex non-interactively/i.test(helpText) || /\bexec\b/.test(helpText),
     login_status: /\blogin\b[\s\S]*\bstatus\b/i.test(helpText),
@@ -373,8 +383,30 @@ function inspectCodexFeatureSurface(helpText) {
     cd_flag: /--cd\b|-C,\s*--cd/.test(helpText),
     sandbox_flag: /--sandbox\b/.test(helpText),
     approval_flag: /--ask-for-approval\b/.test(helpText),
-    automatic_plugin_hooks: false,
+    feature_list_command: featureList.status,
+    codex_global_hooks: hooks?.enabled ?? null,
+    codex_global_hooks_stage: hooks?.stage ?? null,
+    codex_plugin_hooks: pluginHooks?.enabled ?? null,
+    codex_plugin_hooks_stage: pluginHooks?.stage ?? null,
+    automatic_plugin_hooks: pluginHooks?.enabled === true,
   };
+}
+
+function parseCodexFeatureList(result) {
+  const status = commandStatus(result);
+  const features = {};
+  if (!result.ok) return { status, features };
+  for (const rawLine of String(result.stdout ?? '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const match = line.match(/^([A-Za-z0-9_]+)\s+(.+?)\s+(true|false)$/);
+    if (!match) continue;
+    features[match[1]] = {
+      stage: match[2].trim(),
+      enabled: match[3] === 'true',
+    };
+  }
+  return { status: 'available', features };
 }
 
 async function inspectSourcePluginState(repoRoot) {
@@ -581,9 +613,11 @@ function buildHostParity({ claude, codex, plugins, claudePluginList }) {
       severity: 'warning',
       host: 'codex',
       area: 'hooks',
-      summary: 'Codex plugin-local automatic hooks are not observed; Codex parity depends on manual skill invocation or an explicit wrapper.',
-      evidence: 'claude automatic_plugin_hooks=true, codex automatic_plugin_hooks=false',
-      next_step: 'Keep Codex command/skill surfaces explicit and do not claim Claude hook parity.',
+      summary: codex.feature_surface.codex_global_hooks === true
+        ? 'Codex exposes a global hooks feature, but plugin-local automatic hooks are not enabled/observed for agentic-plugins; Codex parity still depends on manual skill invocation or an explicit wrapper.'
+        : 'Codex plugin-local automatic hooks are not observed; Codex parity depends on manual skill invocation or an explicit wrapper.',
+      evidence: `claude automatic_plugin_hooks=true, codex global_hooks=${featureFlagEvidence(codex.feature_surface.codex_global_hooks, codex.feature_surface.codex_global_hooks_stage)}, codex plugin_hooks=${featureFlagEvidence(codex.feature_surface.codex_plugin_hooks, codex.feature_surface.codex_plugin_hooks_stage)}, codex automatic_plugin_hooks=false`,
+      next_step: 'Keep Codex command/skill surfaces explicit until plugin-local hook packaging is available and wired for agentic-plugins.',
     }));
   }
 
@@ -1669,7 +1703,9 @@ function buildDirectionReadiness({
     if (peer.feature_surface[feature] !== true) warnings.push(`${peer.name} feature not observed: ${feature}`);
   }
   if (caller.name === 'codex') {
-    warnings.push('Codex plugin-local automatic hooks are not assumed; manual skill invocation is the supported path');
+    warnings.push(caller.feature_surface.codex_global_hooks === true
+      ? 'Codex global hooks are available, but plugin-local automatic hooks are not assumed; manual skill invocation is the supported path'
+      : 'Codex plugin-local automatic hooks are not assumed; manual skill invocation is the supported path');
   }
   const sandboxPermission = buildDirectionSandboxPermissionProbe({
     requested: sandboxPermissionProbe,
@@ -1843,6 +1879,9 @@ export function formatText(report) {
   for (const name of ['claude', 'codex']) {
     const cli = report.clis[name];
     lines.push(`- ${name}: ${cli.status}; version=${cli.version.text || cli.version.status}; auth=${cli.auth.status}`);
+    if (name === 'codex') {
+      lines.push(`  hooks: global=${featureFlagEvidence(cli.feature_surface.codex_global_hooks, cli.feature_surface.codex_global_hooks_stage)}; plugin-local=${featureFlagEvidence(cli.feature_surface.codex_plugin_hooks, cli.feature_surface.codex_plugin_hooks_stage)}; automatic-plugin-hooks=${Boolean(cli.feature_surface.automatic_plugin_hooks)}`);
+    }
   }
   lines.push('');
   lines.push('Plugins');
@@ -1963,12 +2002,19 @@ function redactCommandDetails(cli) {
     version: cli.version,
     auth: cli.auth,
     feature_surface: cli.feature_surface,
+    feature_command_status: cli.features,
     plugin_command_status: {
       status: cli.plugin.status,
       exit_code: cli.plugin.exit_code,
       error_code: cli.plugin.error_code,
     },
   };
+}
+
+function featureFlagEvidence(enabled, stage) {
+  if (enabled === true) return stage ? `true/${stage}` : 'true';
+  if (enabled === false) return stage ? `false/${stage}` : 'false';
+  return 'unknown';
 }
 
 async function readJsonIfExists(path) {
