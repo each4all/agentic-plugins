@@ -16,8 +16,8 @@ policy.
 
 The following paths are generated local byproducts and must stay ignored:
 
-- `.agentic-plugins/runs/` — runtime context, consensus, doctor, and future
-  run artifacts.
+- `.agentic-plugins/runs/` — runtime context, consensus, settings execution,
+  doctor, and future run artifacts.
 - `.agentic-plugins/state/` — workflow files, archives, peer-run ledgers,
   locks, and migration manifests.
 - `.agentic-plugins/tmp/` — temporary operator process byproducts.

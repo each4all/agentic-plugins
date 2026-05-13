@@ -6,14 +6,16 @@
 // a separate explicit executor flag and never mutates host-native config,
 // authentication, secrets, or sandbox/permission settings.
 
+import { randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor } from './doctor.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.2';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.3';
+export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.0';
 export const CONFIG_KEYS = [
   'model',
   'effort',
@@ -27,6 +29,7 @@ const TARGETS = new Set(['repo', 'user', 'both']);
 const PLUGIN_MANAGEMENT_HOSTS = new Set(['all', 'claude', 'codex']);
 const EXECUTABLE_PLUGIN_ACTIONS = new Set(['install-plugin', 'update-plugin', 'add-marketplace', 'upgrade-marketplace']);
 const DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS = 120000;
+const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const DEFAULT_HOST_INSTALL_COMMANDS = {
   claude: 'install Claude Code with the host-native installer, then run `claude --version`',
   codex: 'install Codex CLI with the host-native installer, then run `codex --version`',
@@ -46,12 +49,14 @@ export async function runSettings({
   executePluginManagement = false,
   pluginManagementHost = 'all',
   pluginManagementTimeoutMs = DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS,
+  runId = null,
 } = {}) {
   if (!TARGETS.has(target)) throw new Error('--target must be repo, user, or both');
   if (!PLUGIN_MANAGEMENT_HOSTS.has(pluginManagementHost)) throw new Error('--plugin-management-host must be all, claude, or codex');
   const resolvedRepoRoot = resolve(repoRoot);
   const resolvedHomeDir = resolve(homeDir);
   const startedAt = now.toISOString();
+  const settingsRunId = runId ? validateSettingsRunId(runId) : executePluginManagement ? makeSettingsRunId(now) : null;
   const desiredConfig = normalizeDesiredConfig(desired);
   const commandRunner = runner ?? runCommand;
 
@@ -131,6 +136,12 @@ export async function runSettings({
       targets: configPlans.targets,
     },
     companion_settings: companionSettings,
+    artifacts: buildSettingsArtifactReport({
+      repoRoot: resolvedRepoRoot,
+      runId: settingsRunId,
+      written: false,
+      executePluginManagement,
+    }),
     recommendations: buildTopLevelRecommendations({
       clis: doctor.clis,
       plugins: pluginPlans,
@@ -148,6 +159,14 @@ export async function runSettings({
     ],
   };
   report.overall = summarizeSettings(report);
+  if (executePluginManagement) {
+    report.artifacts = await writeSettingsExecutionArtifact({
+      repoRoot: resolvedRepoRoot,
+      runId: settingsRunId,
+      report,
+      now,
+    });
+  }
   return report;
 }
 
@@ -552,6 +571,7 @@ function classifyPluginManagementPlan({ recommendation, hostFilter, clis }) {
 }
 
 function sanitizeCommandResult({ result, startedAt, completedAt }) {
+  const failure = result.ok ? null : classifyPluginManagementFailure(result);
   return {
     ok: Boolean(result.ok),
     exit_code: result.exit_code ?? null,
@@ -562,6 +582,10 @@ function sanitizeCommandResult({ result, startedAt, completedAt }) {
     started_at: startedAt.toISOString(),
     completed_at: completedAt.toISOString(),
     duration_ms: Math.max(0, completedAt.getTime() - startedAt.getTime()),
+    failure_type: failure?.type ?? null,
+    retryable: failure?.retryable ?? false,
+    retry_after: failure?.retry_after ?? null,
+    doctor_hint: failure?.doctor_hint ?? null,
   };
 }
 
@@ -574,11 +598,78 @@ function summarizePluginManagementPlans(plans) {
     blocked: 0,
     manual: 0,
     deduplicated: 0,
+    failed_retryable: 0,
+    failed_non_retryable: 0,
   };
   for (const plan of plans) {
     if (Object.hasOwn(summary, plan.status)) summary[plan.status] += 1;
+    if (plan.status === 'failed' && plan.result?.retryable === true) summary.failed_retryable += 1;
+    if (plan.status === 'failed' && plan.result?.retryable !== true) summary.failed_non_retryable += 1;
   }
   return summary;
+}
+
+function classifyPluginManagementFailure(result) {
+  const errorCode = String(result.error_code ?? '').toUpperCase();
+  const text = `${errorCode}\n${result.error_message ?? ''}\n${result.stderr ?? ''}\n${result.stdout ?? ''}`.toLowerCase();
+  if (result.timed_out || errorCode === 'ETIMEDOUT') {
+    return failureClass({
+      type: 'timeout',
+      retryable: true,
+      retry_after: 'retry with a larger --plugin-management-timeout-ms or after host command load drops',
+      doctor_hint: 'runtime:doctor can verify CLI availability before retrying plugin management',
+    });
+  }
+  if (['ENOENT', 'ENOTDIR'].includes(errorCode)) {
+    return failureClass({
+      type: 'cli_unavailable',
+      retryable: false,
+      retry_after: 'install the missing host CLI before retrying',
+      doctor_hint: 'runtime:doctor reports host CLI availability',
+    });
+  }
+  if (['EACCES', 'EPERM'].includes(errorCode) || /\b(permission denied|not permitted|operation not permitted|approval required|sandbox)\b/.test(text)) {
+    return failureClass({
+      type: 'permission_denied',
+      retryable: false,
+      retry_after: 'retry only after resolving host permission or sandbox policy outside runtime:settings',
+      doctor_hint: 'runtime:doctor --sandbox-permission-probe reports read-only permission surface evidence',
+    });
+  }
+  if (/\b(not logged in|login required|auth required|authentication required|unauthorized|forbidden|401|403)\b/.test(text)) {
+    return failureClass({
+      type: 'authentication_required',
+      retryable: false,
+      retry_after: 'authenticate the host CLI before retrying',
+      doctor_hint: 'runtime:doctor reports host authentication state',
+    });
+  }
+  if (/\b(enotfound|econnreset|econnrefused|ehostunreach|network|networkerror|dns|tls|socket|temporary failure)\b/.test(text)) {
+    return failureClass({
+      type: 'network',
+      retryable: true,
+      retry_after: 'retry after network or registry connectivity recovers',
+      doctor_hint: 'runtime:doctor can re-check host CLI and plugin surface availability',
+    });
+  }
+  if (/\b(rate limit|too many requests|429|temporarily unavailable|try again|busy)\b/.test(text)) {
+    return failureClass({
+      type: 'transient_host_failure',
+      retryable: true,
+      retry_after: 'retry after the host-imposed backoff or transient failure clears',
+      doctor_hint: 'runtime:doctor can confirm the host CLI still responds before retrying',
+    });
+  }
+  return failureClass({
+    type: 'host_command_failed',
+    retryable: false,
+    retry_after: 'inspect the host-native plugin command outside runtime:settings before retrying',
+    doctor_hint: 'runtime:doctor reads the latest settings artifact and reports this failure class',
+  });
+}
+
+function failureClass({ type, retryable, retry_after, doctor_hint }) {
+  return { type, retryable, retry_after, doctor_hint };
 }
 
 function applyPluginManagementResults(plugins, pluginManagement) {
@@ -593,6 +684,102 @@ function applyPluginManagementResults(plugins, pluginManagement) {
       recommendation.result = plan.result;
     }
   }
+}
+
+function buildSettingsArtifactReport({ repoRoot, runId, written, executePluginManagement }) {
+  const settingsRoot = settingsArtifactRoot(repoRoot);
+  const reportPath = runId ? settingsArtifactFile(repoRoot, runId) : null;
+  const latestPath = resolve(settingsRoot, 'latest.json');
+  return {
+    settings_execution: {
+      schema_version: SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION,
+      written,
+      run_id: runId,
+      run_pointer: reportPath ? pointer(repoRoot, dirname(reportPath)) : null,
+      report_pointer: reportPath ? pointer(repoRoot, reportPath) : null,
+      latest_pointer: executePluginManagement ? pointer(repoRoot, latestPath) : null,
+      reason: executePluginManagement
+        ? 'settings execution artifact is written for explicit plugin-management execution'
+        : 'no settings execution artifact is written unless --execute-plugin-management is supplied',
+    },
+  };
+}
+
+async function writeSettingsExecutionArtifact({ repoRoot, runId, report, now }) {
+  const validRunId = validateSettingsRunId(runId);
+  const runDir = settingsRunDir(repoRoot, validRunId);
+  await assertInside(settingsArtifactRoot(repoRoot), runDir);
+  await mkdir(runDir, { recursive: true });
+  const reportPath = settingsArtifactFile(repoRoot, validRunId);
+  const latestPath = resolve(settingsArtifactRoot(repoRoot), 'latest.json');
+  const status = report.plugin_management.summary.failed > 0 ? 'failed' : 'completed';
+  const artifact = {
+    schema_version: SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION,
+    runtime_version: RUNTIME_VERSION,
+    run_id: validRunId,
+    status,
+    created_at: report.generated_at,
+    updated_at: toIso(now),
+    repo_root_pointer: '.',
+    command: {
+      execute_plugin_management: report.execute_plugin_management,
+      plugin_management_host: report.plugin_management.host_filter,
+      plugin_management_timeout_ms: report.plugin_management.timeout_ms,
+      apply: report.apply,
+      target: report.config.targets.filter((target) => target.selected).map((target) => target.kind),
+    },
+    plugin_management: report.plugin_management,
+    summary: {
+      overall_status: report.overall.status,
+      executed: report.plugin_management.summary.executed,
+      failed: report.plugin_management.summary.failed,
+      failed_retryable: report.plugin_management.summary.failed_retryable,
+      failed_non_retryable: report.plugin_management.summary.failed_non_retryable,
+    },
+    failures: extractPluginManagementFailures(report.plugin_management.plans),
+    doctor_integration: {
+      status: 'readable_by_runtime_doctor',
+      command: 'runtime:doctor --format json',
+      detail: 'runtime:doctor reads the latest settings execution artifact and surfaces failed plugin-management retry classification.',
+    },
+    limits: [
+      'Raw stdout and stderr are not stored in settings execution artifacts.',
+      'Artifacts record command status, exit code, byte counts, timing, failure type, retryability, and doctor hints only.',
+      'Artifacts do not authorize automatic retry, install, update, auth, sandbox, or permission mutation.',
+    ],
+  };
+  await writeJson(reportPath, artifact);
+  await writeJson(latestPath, {
+    schema_version: `${SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION}-latest`,
+    runtime_version: RUNTIME_VERSION,
+    run_id: validRunId,
+    status,
+    updated_at: artifact.updated_at,
+    report_pointer: pointer(repoRoot, reportPath),
+    summary: artifact.summary,
+  });
+  return buildSettingsArtifactReport({
+    repoRoot,
+    runId: validRunId,
+    written: true,
+    executePluginManagement: true,
+  });
+}
+
+function extractPluginManagementFailures(plans) {
+  return plans
+    .filter((plan) => plan.status === 'failed')
+    .map((plan) => ({
+      id: plan.id,
+      plugin: plan.plugin,
+      host: plan.host,
+      action: plan.action,
+      command: plan.command,
+      failure_type: plan.result?.failure_type ?? 'host_command_failed',
+      retryable: plan.result?.retryable === true,
+      retry_after: plan.result?.retry_after ?? null,
+      doctor_hint: plan.result?.doctor_hint ?? null,
+    }));
 }
 
 function buildCompanionSettingPlans({ currentDirections, desiredConfig, configTargets, apply }) {
@@ -834,12 +1021,24 @@ export function formatText(report) {
   lines.push('');
   lines.push('Plugin Management');
   lines.push(`- mode: ${report.plugin_management.mode}; requested=${report.plugin_management.requested}; host-filter=${report.plugin_management.host_filter}; timeout-ms=${report.plugin_management.timeout_ms}`);
-  lines.push(`- summary: planned=${report.plugin_management.summary.planned}; executed=${report.plugin_management.summary.executed}; failed=${report.plugin_management.summary.failed}; blocked=${report.plugin_management.summary.blocked}; manual=${report.plugin_management.summary.manual}; deduplicated=${report.plugin_management.summary.deduplicated}; skipped=${report.plugin_management.summary.skipped}`);
+  lines.push(`- summary: planned=${report.plugin_management.summary.planned}; executed=${report.plugin_management.summary.executed}; failed=${report.plugin_management.summary.failed}; retryable-failed=${report.plugin_management.summary.failed_retryable}; non-retryable-failed=${report.plugin_management.summary.failed_non_retryable}; blocked=${report.plugin_management.summary.blocked}; manual=${report.plugin_management.summary.manual}; deduplicated=${report.plugin_management.summary.deduplicated}; skipped=${report.plugin_management.summary.skipped}`);
   for (const plan of report.plugin_management.plans) {
     const command = plan.command ? ` command=${plan.command}` : '';
     lines.push(`- ${plan.plugin}/${plan.host}: ${plan.action}; status=${plan.status}; executable=${plan.executable}; executed=${plan.executed};${command}`);
     if (plan.reason) lines.push(`  reason: ${plan.reason}`);
-    if (plan.result) lines.push(`  result: ok=${plan.result.ok}; exit=${plan.result.exit_code ?? '<none>'}; stdout-bytes=${plan.result.stdout_bytes}; stderr-bytes=${plan.result.stderr_bytes}; timed-out=${plan.result.timed_out}`);
+    if (plan.result) {
+      lines.push(`  result: ok=${plan.result.ok}; exit=${plan.result.exit_code ?? '<none>'}; stdout-bytes=${plan.result.stdout_bytes}; stderr-bytes=${plan.result.stderr_bytes}; timed-out=${plan.result.timed_out}; failure-type=${plan.result.failure_type ?? '<none>'}; retryable=${plan.result.retryable}`);
+      if (plan.result.retry_after) lines.push(`  retry-after: ${plan.result.retry_after}`);
+      if (plan.result.doctor_hint) lines.push(`  doctor: ${plan.result.doctor_hint}`);
+    }
+  }
+  if (report.artifacts?.settings_execution) {
+    const artifact = report.artifacts.settings_execution;
+    lines.push('');
+    lines.push('Execution Artifact');
+    lines.push(`- written: ${artifact.written}; run-id=${artifact.run_id ?? '<none>'}`);
+    if (artifact.report_pointer) lines.push(`- report: ${artifact.report_pointer}`);
+    if (artifact.latest_pointer) lines.push(`- latest: ${artifact.latest_pointer}`);
   }
   lines.push('');
   lines.push('Config Proposals');
@@ -891,12 +1090,58 @@ async function readTextIfExists(path) {
   }
 }
 
+async function writeJson(path, value) {
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function validateSettingsRunId(runId) {
+  if (!SETTINGS_RUN_ID_RE.test(runId)) {
+    throw new Error('Invalid --run-id; expected settings-YYYYMMDDTHHMMSSZ-abcdef');
+  }
+  return runId;
+}
+
+function makeSettingsRunId(now) {
+  const stamp = toIso(now).replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  return `settings-${stamp}-${randomBytes(3).toString('hex')}`;
+}
+
+function toIso(value) {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function settingsArtifactRoot(repoRoot) {
+  return resolve(repoRoot, '.agentic-plugins', 'runs', 'settings');
+}
+
+function settingsRunDir(repoRoot, runId) {
+  return resolve(settingsArtifactRoot(repoRoot), validateSettingsRunId(runId));
+}
+
+function settingsArtifactFile(repoRoot, runId) {
+  return resolve(settingsRunDir(repoRoot, runId), 'settings.json');
+}
+
+async function assertInside(root, candidate) {
+  const rootPath = resolve(root);
+  const candidatePath = resolve(candidate);
+  const rel = relative(rootPath, candidatePath);
+  if (rel.startsWith('..') || rel === '..' || rel.startsWith(`..${sep}`)) {
+    throw new Error(`Artifact path escapes settings root: ${candidate}`);
+  }
+}
+
+function pointer(repoRoot, path) {
+  const rel = relative(repoRoot, path).split(sep).join('/');
+  return rel || basename(path);
+}
+
 function usage() {
   return [
     'Usage: settings.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex]',
     '  [--target repo|user|both] [--model <id>] [--effort <level>]',
     '  [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>]',
-    '  [--apply] [--execute-plugin-management] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
+    '  [--apply] [--execute-plugin-management] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>] [--run-id <settings-run-id>]',
     '',
   ].join('\n');
 }
@@ -911,6 +1156,7 @@ export function parseArgs(argv) {
     executePluginManagement: false,
     pluginManagementHost: 'all',
     pluginManagementTimeoutMs: DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS,
+    runId: null,
     desired: {},
   };
   for (let i = 0; i < argv.length; i++) {
@@ -937,6 +1183,8 @@ export function parseArgs(argv) {
       if (!PLUGIN_MANAGEMENT_HOSTS.has(opts.pluginManagementHost)) throw new Error('--plugin-management-host must be all, claude, or codex');
     } else if (arg === '--plugin-management-timeout-ms') {
       opts.pluginManagementTimeoutMs = parsePositiveInt(requireValue(argv, ++i, arg), arg);
+    } else if (arg === '--run-id') {
+      opts.runId = validateSettingsRunId(requireValue(argv, ++i, arg));
     } else if (arg === '--model') {
       opts.desired.model = requireValue(argv, ++i, arg);
     } else if (arg === '--effort') {
