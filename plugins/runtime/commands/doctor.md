@@ -1,6 +1,6 @@
 ---
 description: Read-only runtime readiness diagnosis for Claude/Codex hosts, plugins, companions, model/effort, permissions, and workflow ledgers
-argument-hint: "[--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--deep-peer-smoke]"
+argument-hint: "[--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--deep-peer-smoke] [--execute-deep-peer-smoke]"
 ---
 
 # Runtime - Doctor
@@ -24,5 +24,7 @@ Notes:
 - `--format json` emits the machine-readable report.
 - `--model` and `--effort` are observed as explicit ADR-0024 resolution inputs; companion invocation still uses `companions/contract.md` `--model` and `--effort`.
 - `--sandbox-permission-probe` is an explicit opt-in read-only preflight. It reports CLI/auth/permission-surface/companion-script evidence for both companion directions and records `peer_execution=false`.
-- `--deep-peer-smoke` is an explicit opt-in flag. It adds a plan-only preflight section with per-direction readiness, model, and effort inputs, but it does not execute peer agents yet.
+- `--deep-peer-smoke` is an explicit opt-in flag. By itself it adds a plan-only preflight section with per-direction readiness, model, and effort inputs.
+- `--execute-deep-peer-smoke` must be paired with `--deep-peer-smoke`. It executes the smoke through the existing companion contract and reports only sanitized metadata: status, exit codes, peer host/model, timing, stdout byte count, and stdout SHA-256. Raw peer stdout is not printed.
+- `--deep-peer-smoke-timeout-ms <n>` bounds each companion process when the executor flag is used.
 - Codex CLI has no verified plugin-local automatic hook packaging today; doctor reports that limit instead of claiming parity.

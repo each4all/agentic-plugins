@@ -215,16 +215,70 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('plan-only preflight'));
   });
 
+  it('executes deep peer smoke only behind the explicit executor boundary and omits raw peer output', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-deep-smoke-execute-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const peerOutputs = {
+      codex: 'RUNTIME_DOCTOR_SMOKE_OK codex\nRAW DETAILS MUST NOT LEAK',
+      claude: 'RUNTIME_DOCTOR_SMOKE_OK claude\nRAW DETAILS MUST NOT LEAK',
+    };
+    const calls = [];
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      explicitModel: 'gpt-5.4',
+      explicitEffort: 'high',
+      deepPeerSmoke: true,
+      executeDeepPeerSmoke: true,
+      deepPeerSmokeTimeoutMs: 90000,
+      runner: async (command, args, options = {}) => {
+        calls.push({ command, args, options });
+        if (args[0]?.endsWith('codex-companion.mjs')) {
+          strictEqual(options.timeoutMs, 90000);
+          return okResult(JSON.stringify(smokeEnvelope('codex', peerOutputs.codex, 321)));
+        }
+        if (args[0]?.endsWith('claude-companion.mjs')) {
+          strictEqual(options.timeoutMs, 90000);
+          return okResult(JSON.stringify(smokeEnvelope('claude', peerOutputs.claude, 654)));
+        }
+        return fakeRuntimeProbeRunner(command, args);
+      },
+    });
+
+    strictEqual(report.deep_peer_smoke.mode, 'explicit_executor');
+    strictEqual(report.deep_peer_smoke.executed, true);
+    strictEqual(report.deep_peer_smoke.peer_execution, true);
+    strictEqual(report.deep_peer_smoke.status, 'passed');
+    strictEqual(report.overall.status, 'warning');
+    strictEqual(report.deep_peer_smoke.directions.claude_to_codex.execution, 'executed');
+    strictEqual(report.deep_peer_smoke.directions.claude_to_codex.result.peer_host, 'codex');
+    strictEqual(report.deep_peer_smoke.directions.claude_to_codex.result.expected_token_present, true);
+    strictEqual(report.deep_peer_smoke.directions.claude_to_codex.result.stdout_bytes, Buffer.byteLength(peerOutputs.codex));
+    ok(report.deep_peer_smoke.directions.claude_to_codex.result.stdout_sha256);
+    ok(calls.some((call) => call.args[0]?.endsWith('codex-companion.mjs') && call.args.includes('--output-format') && call.args.includes('json')));
+    ok(calls.some((call) => call.args[0]?.endsWith('claude-companion.mjs')));
+
+    const serialized = JSON.stringify(report);
+    ok(!serialized.includes('RAW DETAILS MUST NOT LEAK'), 'doctor report must not include raw peer stdout');
+    ok(!formatText(report).includes('RAW DETAILS MUST NOT LEAK'), 'text report must not include raw peer stdout');
+    ok(formatText(report).includes('peer-execution=true'));
+  });
+
   it('parses CLI arguments and rejects unknown or malformed flags', () => {
-    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--sandbox-permission-probe']);
+    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--execute-deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '90000', '--sandbox-permission-probe']);
     strictEqual(opts.repoRoot, '/tmp/repo');
     strictEqual(opts.format, 'json');
     strictEqual(opts.host, 'codex');
     strictEqual(opts.explicitModel, 'm');
     strictEqual(opts.explicitEffort, 'high');
     strictEqual(opts.deepPeerSmoke, true);
+    strictEqual(opts.executeDeepPeerSmoke, true);
+    strictEqual(opts.deepPeerSmokeTimeoutMs, 90000);
     strictEqual(opts.sandboxPermissionProbe, true);
     rejects(async () => parseArgs(['--format', 'xml']), /--format must be text or json/);
+    rejects(async () => parseArgs(['--execute-deep-peer-smoke']), /requires --deep-peer-smoke/);
+    rejects(async () => parseArgs(['--deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '0']), /positive integer/);
   });
 });
 
@@ -248,6 +302,35 @@ function fakeRunner(map) {
   return async (command, args) => {
     const key = `${command} ${args.join(' ')}`;
     return map[key] ?? enoent(command);
+  };
+}
+
+function fakeRuntimeProbeRunner(command, args) {
+  return fakeRunner({
+    'claude --version': okResult('2.1.140 (Claude Code)\n'),
+    'claude --help': okResult('Usage: claude --print --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n'),
+    'claude auth status': okResult(JSON.stringify({ loggedIn: true })),
+    'claude plugin list': okResult(''),
+    'codex --version': okResult('codex-cli 0.130.0\n'),
+    'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
+    'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort="high"\n'),
+    'codex login status': okResult('Logged in using ChatGPT\n'),
+    'codex plugin marketplace --help': okResult(''),
+  })(command, args);
+}
+
+function smokeEnvelope(peer, stdout, durationMs) {
+  return {
+    status: 'success',
+    peer_host: peer,
+    peer_model: null,
+    stdout,
+    exit_code: 0,
+    metadata: {
+      duration_ms: durationMs,
+      started_at: '2026-05-13T00:00:00.000Z',
+      completed_at: '2026-05-13T00:00:01.000Z',
+    },
   };
 }
 
