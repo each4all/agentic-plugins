@@ -37,9 +37,8 @@ Doctor reports:
 
 ## Out of Scope
 
-- No `runtime:settings` in this PR.
 - No install/update/uninstall.
 - No auth automation.
-- No settings writes.
+- No settings writes. Use `runtime:settings` for dry-run settings plans and explicit agentic-plugins config apply.
 - No ledger sweep/cancel/retention mutation.
 - No dynamic consensus loop, context hygiene mutation, or completion footer mutation. Those are tracked in `docs/follow-ups.md`.

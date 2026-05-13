@@ -123,7 +123,7 @@ export async function runDoctor({
     limits: [
       'Codex plugin-local automatic hooks are not assumed; doctor reports manual-hook limits.',
       'Sandbox/permission readiness is inferred from read-only probes unless a future deep smoke implementation runs.',
-      'runtime:settings, dynamic consensus, context hygiene, and completion footer mutation are deferred.',
+      'Settings mutation belongs to runtime:settings; dynamic consensus, context hygiene, and completion footer mutation are deferred.',
     ],
   };
   report.overall = summarizeOverall(report);
