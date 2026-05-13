@@ -150,6 +150,13 @@ terminal marker, terminal phase, HEAD movement (real commit progress),
 and no active children. When all four hold, the workflow archives
 without manual cleanup.
 
+Append the runtime completion footer after the commit summary and workflow
+path. The footer is advisory and pointer-only: include context state,
+workflow id/path, artifact pointers, recommended next work, and
+next-session action/command or prompt pointer, but do not mutate host
+session context or paste raw peer / consensus output into the main
+session.
+
 ---
 
 ## Anti-patterns (do not produce)
