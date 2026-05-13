@@ -19,6 +19,7 @@ node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--form
 ```
 
 3. Present the result without hiding host asymmetry. In particular:
+   - Start from the `Readiness Matrix` / `readiness_matrix` summary when explaining whether Claude/Codex are available, installed, authenticated, which model/effort would be used, and where hook parity differs.
    - Codex may expose host-level hooks, but agentic-plugins has no verified plugin-local automatic hook packaging today.
    - The readiness summary reports sandbox/permission status as unknown unless `--sandbox-permission-probe` is requested. `--permission-proof` records separate preflight/execution evidence under `permission_proof`.
    - `--permission-proof` remains plan-only unless the user also supplies `--execute-permission-proof`. The executor uses the existing companion contract, does not pass sandbox/approval/permission-mode relaxation flags, classifies permission failures, and omits raw peer stdout from doctor output.
@@ -29,6 +30,7 @@ node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--form
 
 Doctor reports:
 
+- A top-level readiness matrix for Claude and Codex host availability, runtime installation evidence, authentication, direction-specific peer model/effort inputs, hook evidence, companion readiness, and sandbox/permission status.
 - `claude` and `codex` CLI availability and version.
 - Authentication state, sanitized to status and provider/method metadata.
 - agentic-plugins marketplace entries, local source manifests, and known Claude/Codex cache state for `companions`, `engineer`, `orchestrator`, and `runtime`.

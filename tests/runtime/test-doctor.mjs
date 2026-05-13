@@ -64,12 +64,30 @@ describe('runtime doctor', () => {
     strictEqual(report.clis.codex.feature_surface.automatic_plugin_hooks, false);
     ok(report.host_parity.differences.some((issue) => issue.id === 'codex_manual_skill_invocation'));
     ok(report.host_parity.differences.some((issue) => issue.id === 'codex_manual_skill_invocation' && issue.evidence.includes('global_hooks=true/stable')));
+    strictEqual(report.readiness_matrix.schema_version, 'runtime-readiness-matrix-1.0');
+    strictEqual(report.readiness_matrix.hosts.claude.available.status, 'available');
+    strictEqual(report.readiness_matrix.hosts.claude.installed.status, 'installed');
+    strictEqual(report.readiness_matrix.hosts.claude.installed.evidence, 'claude plugin list reports enabled');
+    strictEqual(report.readiness_matrix.hosts.claude.authenticated.status, 'available');
+    strictEqual(report.readiness_matrix.hosts.claude.model_when_peer.value, 'gpt-5.4');
+    strictEqual(report.readiness_matrix.hosts.codex.available.status, 'available');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.status, 'installed');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.evidence, 'codex plugin cache contains runtime');
+    strictEqual(report.readiness_matrix.hosts.codex.authenticated.status, 'available');
+    strictEqual(report.readiness_matrix.hosts.codex.hooks.global_hooks, true);
+    strictEqual(report.readiness_matrix.hosts.codex.hooks.plugin_local_hooks, false);
+    strictEqual(report.readiness_matrix.directions.claude_to_codex.companion.status, 'available');
+    strictEqual(report.readiness_matrix.directions.claude_to_codex.model.value, 'gpt-5.4');
+    strictEqual(report.readiness_matrix.directions.codex_to_claude.effort.value, 'high');
 
     const serialized = JSON.stringify(report);
     ok(!serialized.includes('person@example.com'), 'email must be redacted');
     ok(!serialized.includes('11111111-2222-3333-4444-555555555555'), 'org id must be redacted');
     ok(!serialized.includes('sk-proj-abcdefghijklmnopqrstuvwxyz1234567890'), 'hyphenated provider token must be redacted');
     ok(formatText(report).includes(`runtime:doctor ${RUNTIME_VERSION}`));
+    ok(formatText(report).includes('Readiness Matrix'));
+    ok(formatText(report).includes('claude: available=available; installed=installed; authenticated=available'));
+    ok(formatText(report).includes('codex: available=available; installed=installed; authenticated=available'));
     ok(formatText(report).includes('Host Parity'));
   });
 
@@ -141,6 +159,8 @@ describe('runtime doctor', () => {
     strictEqual(report.plugins.runtime.cache.codex.status, 'missing');
     strictEqual(report.plugins.runtime.cache.codex_tmp_marketplace.status, 'available');
     strictEqual(report.plugins.runtime.status, 'not_installed');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.status, 'marketplace_cache_only');
+    ok(/not installation evidence/i.test(report.readiness_matrix.hosts.codex.installed.evidence));
   });
 
   it('flags malformed non-terminal peer-run handles as blocked ledger health', async () => {
