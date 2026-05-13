@@ -20,7 +20,7 @@ node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--form
 
 3. Present the result without hiding host asymmetry. In particular:
    - Codex has no verified plugin-local automatic hook packaging today.
-   - Read-only doctor reports sandbox/permission readiness as unknown/read-only inference from CLI/auth/companion state; it cannot prove a peer run will succeed unless a future explicit deep smoke implementation is added.
+   - Read-only doctor reports sandbox/permission readiness as unknown/read-only inference from CLI/auth/companion state; `--deep-peer-smoke` adds a plan-only preflight section but cannot prove a peer run will succeed unless a future explicit smoke executor is added.
    - Authentication output must stay sanitized. Do not expose email, org id, token, or account secrets.
 
 ## Scope
@@ -33,6 +33,7 @@ Doctor reports:
 - Companion discovery and `companions/contract.md` compatibility.
 - Current explicit and resolved model/effort inputs according to ADR-0024 order: command flags, workflow/subtask override observation, repo config, user config, host-native default.
 - Codex -> Claude and Claude -> Codex companion sandbox/permission readiness as read-only inference.
+- Optional `--deep-peer-smoke` plan-only preflight, including per-direction readiness, model/effort inputs, blockers, warnings, and next-step guidance without executing peers.
 - Basic workflow and peer-run ledger health for `.claude/agentic-engineer` and `.claude/agentic-orchestrator`.
 
 ## Out of Scope

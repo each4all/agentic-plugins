@@ -96,6 +96,11 @@ export async function runDoctor({
     companion,
     deepPeerSmoke,
   });
+  const deepPeerSmokeSection = buildDeepPeerSmokeSection({
+    requested: deepPeerSmoke,
+    readiness,
+    modelEffort,
+  });
 
   const report = {
     schema_version: 'runtime-doctor-1.0',
@@ -104,13 +109,7 @@ export async function runDoctor({
     repo_root: resolvedRepoRoot,
     host,
     read_only: true,
-    deep_peer_smoke: {
-      requested: deepPeerSmoke,
-      executed: false,
-      reason: deepPeerSmoke
-        ? 'first runtime:doctor PR accepts the flag but does not execute peer agents'
-        : 'not requested',
-    },
+    deep_peer_smoke: deepPeerSmokeSection,
     clis: {
       claude: redactCommandDetails(claude),
       codex: redactCommandDetails(codex),
@@ -911,6 +910,56 @@ function buildReadiness({ claude, codex, companion, deepPeerSmoke }) {
   };
 }
 
+function buildDeepPeerSmokeSection({ requested, readiness, modelEffort }) {
+  const directions = {};
+  for (const key of ['claude_to_codex', 'codex_to_claude']) {
+    const directionReadiness = readiness[key];
+    const directionSettings = modelEffort.directions[key];
+    const blocked = directionReadiness.blockers.length > 0;
+    directions[key] = {
+      direction: directionReadiness.direction,
+      requested,
+      execution: 'not_executed',
+      status: !requested ? 'not_requested' : blocked ? directionReadiness.status : 'ready_with_warnings',
+      plan: requested
+        ? 'plan-only preflight; no peer agent is executed by runtime:doctor'
+        : 'not requested',
+      model: directionSettings.model,
+      effort: directionSettings.effort,
+      blockers: directionReadiness.blockers,
+      warnings: directionReadiness.warnings,
+      next_step: requested
+        ? blocked
+          ? 'resolve blockers before a future explicit peer smoke executor is attempted'
+          : 'future executor work may use this preflight to run a manual or explicitly approved peer smoke'
+        : 'rerun with --deep-peer-smoke to include this plan-only preflight',
+    };
+  }
+  return {
+    requested,
+    executed: false,
+    mode: 'plan_only_preflight',
+    status: summarizeDeepPeerSmokePlanStatus({ requested, directions }),
+    reason: requested
+      ? 'runtime:doctor plans the explicit deep peer smoke preflight but does not execute peer agents'
+      : 'not requested',
+    directions,
+    limits: [
+      'Plan-only preflight; runtime:doctor does not execute peer agents.',
+      'No host-native config, auth, secrets, sandbox, or permission state is mutated.',
+      'Codex manual-hook and permission limits remain visible; no host parity claim is made.',
+    ],
+  };
+}
+
+function summarizeDeepPeerSmokePlanStatus({ requested, directions }) {
+  if (!requested) return 'not_requested';
+  const statuses = Object.values(directions).map((direction) => direction.status);
+  if (statuses.every((status) => !['ready_with_warnings', 'available'].includes(status))) return 'blocked';
+  if (statuses.some((status) => !['ready_with_warnings', 'available'].includes(status))) return 'partially_blocked';
+  return 'ready_with_warnings';
+}
+
 function buildDirectionReadiness({ direction, caller, peer, companion, requiredPeerFeatures, deepPeerSmoke }) {
   const blockers = [];
   const warnings = [];
@@ -1013,6 +1062,21 @@ export function formatText(report) {
     for (const warning of readiness.warnings) lines.push(`  warning: ${warning}`);
   }
   lines.push('');
+  if (report.deep_peer_smoke.requested) {
+    lines.push('Deep Peer Smoke');
+    lines.push(`- mode: ${report.deep_peer_smoke.mode}; requested=${report.deep_peer_smoke.requested}; executed=${report.deep_peer_smoke.executed}; status=${report.deep_peer_smoke.status}`);
+    for (const key of ['claude_to_codex', 'codex_to_claude']) {
+      const direction = report.deep_peer_smoke.directions[key];
+      lines.push(`- ${direction.direction}: ${direction.status}; execution=${direction.execution}; model=${direction.model.value ?? '<host-default>'}; effort=${direction.effort.value ?? '<host-default>'}`);
+      lines.push(`  plan: ${direction.plan}`);
+      if (direction.blockers.length > 0) {
+        for (const blocker of direction.blockers) lines.push(`  blocker: ${blocker}`);
+      }
+      lines.push(`  next: ${direction.next_step}`);
+    }
+    for (const limit of report.deep_peer_smoke.limits) lines.push(`- limit: ${limit}`);
+    lines.push('');
+  }
   lines.push('Ledgers');
   for (const key of ['engineer', 'orchestrator']) {
     const ledger = report.ledgers[key];

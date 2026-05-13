@@ -23,5 +23,5 @@ Notes:
 
 - `--format json` emits the machine-readable report.
 - `--model` and `--effort` are observed as explicit ADR-0024 resolution inputs; companion invocation still uses `companions/contract.md` `--model` and `--effort`.
-- `--deep-peer-smoke` is accepted as an explicit opt-in flag, but the first doctor PR only reports readiness. It does not execute peer agents yet.
+- `--deep-peer-smoke` is an explicit opt-in flag. It adds a plan-only preflight section with per-direction readiness, model, and effort inputs, but it does not execute peer agents yet.
 - Codex CLI has no verified plugin-local automatic hook packaging today; doctor reports that limit instead of claiming parity.

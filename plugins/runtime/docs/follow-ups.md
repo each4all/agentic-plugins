@@ -8,7 +8,7 @@ ADR-0024 defines more than the first `doctor`, `settings`, consensus, and contex
 - Automatic peer execution for consensus: the first consensus PR creates and updates runtime-owned run artifacts, but peer execution remains manual/host-native. A later PR may add an explicit executor boundary for companion dispatch, cancellation, and deeper smoke evidence.
 - Context automation beyond read-only checks: automatic capture triggers beyond the current `runtime:context` scaffold and explicit budget check. No automatic host switch, new workflow start, or host-session compaction.
 - Completion footer expansion: the first helper is advisory and pointer-only. Later PRs may add richer integration, but must still avoid automatic context mutation, automatic session start, and raw peer/consensus output in the main session.
-- Deep peer smoke for `runtime:doctor`: explicit opt-in only. The first PR accepts `--deep-peer-smoke` but does not execute peer agents.
+- Deep peer smoke execution for `runtime:doctor`: explicit opt-in only. Current doctor output includes a plan-only `--deep-peer-smoke` preflight, but it still does not execute peer agents.
 - Sandbox permission proof: explicit smoke/probe only. Settings must not silently relax sandbox or approval policy.
 
 ## Boundaries

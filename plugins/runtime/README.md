@@ -4,7 +4,7 @@ Runtime operator control plane for agentic-plugins. **L1 framework primitive** p
 
 ## Status
 
-Ships `runtime:doctor`, the first `runtime:settings` implementation, an artifact-only `runtime:consensus` scaffold, the first runtime-owned `runtime:context` scaffold with a read-only explicit budget check, and a pointer-only completion footer helper. Deep peer smoke, automatic plugin install/update apply mode, automatic peer execution, and automatic context mutation/capture triggers are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
+Ships `runtime:doctor`, the first `runtime:settings` implementation, an artifact-only `runtime:consensus` scaffold, the first runtime-owned `runtime:context` scaffold with a read-only explicit budget check, and a pointer-only completion footer helper. `runtime:doctor --deep-peer-smoke` reports a plan-only preflight, but deep peer smoke execution, automatic plugin install/update apply mode, automatic peer execution, and automatic context mutation/capture triggers are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
 
 ## What it is
 
@@ -32,7 +32,7 @@ It does not own persona-level engineering work or macro planning. Those remain i
 
 | Command | Status | Description |
 |---------|--------|-------------|
-| `/runtime:doctor [--format text\|json] [--model <id>] [--effort <level>] [--deep-peer-smoke]` | shipping | Read-only diagnosis for host CLIs, auth, plugin cache/install state, companion readiness, model/effort observation, and workflow/peer-run ledger health. |
+| `/runtime:doctor [--format text\|json] [--model <id>] [--effort <level>] [--deep-peer-smoke]` | shipping | Read-only diagnosis for host CLIs, auth, plugin cache/install state, companion readiness, model/effort observation, workflow/peer-run ledger health, and optional plan-only deep peer smoke preflight. |
 | `/runtime:settings [--format text\|json] [--target repo\|user\|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply]` | shipping | Dry-run settings planner for marketplace/plugin/CLI readiness and agentic-plugins-owned model/effort config. `--apply` writes only `.agentic-plugins/config.toml`. |
 | `/runtime:consensus plan\|record\|synthesize\|next-round\|status ...` | shipping scaffold | Runtime-owned consensus artifact manager. Creates fanout/rebuttal prompts, records raw peer output as files, and emits only synthesized summary, durable disagreements, evidence pointers, and artifact paths. |
 | `/runtime:context capture\|status\|check ...` | shipping scaffold | Runtime-owned context hygiene artifact manager and read-only explicit budget check. Writes context summary, risk level, artifact pointers, and next-session prompt/action under `.agentic-plugins/runs/context/`; `status --latest` reads the newest handoff artifact with stale metadata; `check` creates no artifact. |
@@ -63,7 +63,7 @@ Doctor is read-only. It does not:
 - execute peer agents by default;
 - relax sandbox or permission boundaries.
 
-Readiness output distinguishes missing CLI, missing plugin/cache state, unauthenticated host, and available surfaces. Because this first PR does not run peer-agent smoke checks or inspect host permission state directly, companion sandbox/permission readiness is reported as unknown/read-only inference rather than proven availability.
+Readiness output distinguishes missing CLI, missing plugin/cache state, unauthenticated host, and available surfaces. `--deep-peer-smoke` adds a structured plan-only preflight section for both companion directions, including readiness status, model/effort inputs, blockers, warnings, and next-step guidance. It still does not run peer agents or inspect host permission state directly, so companion sandbox/permission readiness is reported as unknown/read-only inference rather than proven availability.
 
 ## Model and effort
 
