@@ -297,8 +297,9 @@ Primary local commands:
 - `npm run test:plugin-shape` — plugin shape + engineer/orchestrator state tests.
 - `npm run test:cross-host` — cross-host workflow contract tests.
 - `npm run lint:plugin-shape` — validate all plugin directories with `kit/lint`.
-- `npm run validate:marketplace` and `npm run validate:versions` — catalog and
-  release-please manifest consistency.
+- `npm run validate:marketplace`, `npm run validate:versions`, and
+  `npm run validate:artifacts` — catalog, release-please manifest, and
+  generated-artifact ignore policy consistency.
 - `npm run sync:companions` and `npm run sync:marketplace` — drift-correction helpers.
 
 GitHub Actions run on Node 24 and cover Claude companion tests, Codex
