@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 // plugins/runtime/scripts/settings.mjs
 //
-// ADR-0024 settings surface. Dry-run is the default. Apply mode writes only
-// agentic-plugins-owned config files and never mutates host-native config,
-// authentication, plugin installation, or sandbox/permission settings.
+// ADR-0024 settings surface. Dry-run is the default. Config apply mode writes
+// only agentic-plugins-owned config files. Plugin management execution requires
+// a separate explicit executor flag and never mutates host-native config,
+// authentication, secrets, or sandbox/permission settings.
 
 import { constants as fsConstants } from 'node:fs';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
-import { PLUGIN_NAMES, RUNTIME_VERSION, runDoctor } from './doctor.mjs';
+import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor } from './doctor.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.1';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.2';
 export const CONFIG_KEYS = [
   'model',
   'effort',
@@ -23,6 +24,9 @@ export const CONFIG_KEYS = [
 ];
 
 const TARGETS = new Set(['repo', 'user', 'both']);
+const PLUGIN_MANAGEMENT_HOSTS = new Set(['all', 'claude', 'codex']);
+const EXECUTABLE_PLUGIN_ACTIONS = new Set(['install-plugin', 'update-plugin', 'add-marketplace', 'upgrade-marketplace']);
+const DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS = 120000;
 const DEFAULT_HOST_INSTALL_COMMANDS = {
   claude: 'install Claude Code with the host-native installer, then run `claude --version`',
   codex: 'install Codex CLI with the host-native installer, then run `codex --version`',
@@ -39,19 +43,24 @@ export async function runSettings({
   apply = false,
   target = 'both',
   desired = {},
+  executePluginManagement = false,
+  pluginManagementHost = 'all',
+  pluginManagementTimeoutMs = DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS,
 } = {}) {
   if (!TARGETS.has(target)) throw new Error('--target must be repo, user, or both');
+  if (!PLUGIN_MANAGEMENT_HOSTS.has(pluginManagementHost)) throw new Error('--plugin-management-host must be all, claude, or codex');
   const resolvedRepoRoot = resolve(repoRoot);
   const resolvedHomeDir = resolve(homeDir);
   const startedAt = now.toISOString();
   const desiredConfig = normalizeDesiredConfig(desired);
+  const commandRunner = runner ?? runCommand;
 
   const doctor = await runDoctor({
     repoRoot: resolvedRepoRoot,
     homeDir: resolvedHomeDir,
     env,
     now,
-    runner,
+    runner: commandRunner,
     format: 'json',
     host,
   });
@@ -67,6 +76,19 @@ export async function runSettings({
     await applyConfigPlans(configPlans);
   }
 
+  const pluginPlans = buildPluginPlans(doctor.plugins);
+  const pluginManagement = await buildPluginManagementPlan({
+    plugins: pluginPlans,
+    clis: doctor.clis,
+    execute: executePluginManagement,
+    hostFilter: pluginManagementHost,
+    runner: commandRunner,
+    cwd: resolvedRepoRoot,
+    env,
+    timeoutMs: pluginManagementTimeoutMs,
+  });
+  applyPluginManagementResults(pluginPlans, pluginManagement);
+
   const companionSettings = buildCompanionSettingPlans({
     currentDirections: doctor.model_effort.directions,
     desiredConfig,
@@ -81,22 +103,28 @@ export async function runSettings({
     repo_root: resolvedRepoRoot,
     host,
     output_format: format,
-    dry_run: !apply,
+    dry_run: !(apply || executePluginManagement),
     apply,
+    config_apply: apply,
+    execute_plugin_management: executePluginManagement,
     mutation_boundary: {
-      writes_allowed: apply
-        ? 'agentic-plugins-owned config files only'
-        : 'none; dry-run only',
+      writes_allowed: mutationBoundaryWritesAllowed({ apply, executePluginManagement }),
       allowed_paths: configPlans.targets.filter((plan) => plan.selected).map((plan) => plan.path),
+      allowed_plugin_management_actions: executePluginManagement
+        ? Array.from(EXECUTABLE_PLUGIN_ACTIONS).sort()
+        : [],
+      plugin_management_host_filter: pluginManagementHost,
       forbidden: [
         'host-native Claude Code or Codex CLI config',
         'authentication state or secrets',
         'sandbox or permission relaxation',
-        'plugin install, update, or uninstall execution',
+        ...(executePluginManagement ? [] : ['plugin install/update execution']),
+        'plugin uninstall execution',
       ],
     },
     clis: buildCliPlans(doctor.clis),
-    plugins: buildPluginPlans(doctor.plugins),
+    plugins: pluginPlans,
+    plugin_management: pluginManagement,
     config: {
       resolution_order: doctor.model_effort.resolution_order,
       desired: desiredConfig,
@@ -105,16 +133,18 @@ export async function runSettings({
     companion_settings: companionSettings,
     recommendations: buildTopLevelRecommendations({
       clis: doctor.clis,
-      plugins: doctor.plugins,
+      plugins: pluginPlans,
       desiredConfig,
       companionSettings,
     }),
     limits: [
-      'Plugin install/update is recommendation-only in this PR; no host command is executed.',
+      'Plugin install/update execution is dry-run unless --execute-plugin-management is supplied.',
+      'Plugin management execution runs only allowlisted host-native plugin commands without shell interpolation.',
+      'Plugin management output omits raw stdout/stderr and records only status, exit code, byte counts, timing, and sanitized error metadata.',
       'Host-native config, auth, secrets, and sandbox/permission settings are not written.',
       'Companion invocation still uses companions/contract.md --model and --effort.',
       'Codex plugin-local automatic hooks are not assumed; settings reports manual paths honestly.',
-      'Dynamic peer consensus, context hygiene mutation, completion footer mutation, deep peer smoke, and automatic plugin install/update apply mode are deferred.',
+      'Dynamic peer consensus, context hygiene mutation, completion footer mutation, deep peer smoke, and broader host-config apply mode are deferred.',
     ],
   };
   report.overall = summarizeSettings(report);
@@ -136,6 +166,13 @@ function normalizeConfigValue(value, key) {
   if (!text) throw new Error(`${key} cannot be empty`);
   if (/[\r\n\u0000]/.test(text)) throw new Error(`${key} must be a single-line value`);
   return text;
+}
+
+function mutationBoundaryWritesAllowed({ apply, executePluginManagement }) {
+  const allowed = [];
+  if (apply) allowed.push('agentic-plugins-owned config files');
+  if (executePluginManagement) allowed.push('allowlisted host-native plugin install/update commands');
+  return allowed.length > 0 ? allowed.join('; ') : 'none; dry-run only';
 }
 
 async function buildConfigPlans({ repoRoot, homeDir, target, desiredConfig }) {
@@ -334,42 +371,228 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
 
   const claudeVersion = claudeInstalled?.version ?? claudeCacheLatest?.manifest_version ?? null;
   if (!claudeInstalled && !claudeCacheLatest) {
+    const command = buildPluginCommand({ host: 'claude', action: 'install-plugin', name });
     recommendations.push({
+      id: `${name}:claude:install-plugin`,
       host: 'claude',
       action: 'install-plugin',
       executed: false,
-      command: `claude /plugin install ${name}@agentic-plugins`,
-      detail: 'Recommendation only; this PR does not execute plugin install/update.',
+      command: command.display,
+      argv: command.argv,
+      executable: true,
+      detail: 'Dry-run by default; add --execute-plugin-management to run this allowlisted host-native plugin command.',
     });
   } else if (sourceVersion && claudeVersion && semverCompare(String(claudeVersion), String(sourceVersion)) < 0) {
+    const command = buildPluginCommand({ host: 'claude', action: 'update-plugin', name });
     recommendations.push({
+      id: `${name}:claude:update-plugin`,
       host: 'claude',
       action: 'update-plugin',
       executed: false,
-      command: `claude /plugin update ${name}@agentic-plugins`,
+      command: command.display,
+      argv: command.argv,
+      executable: true,
       detail: `Installed ${claudeVersion}; source/catalog ${sourceVersion}.`,
     });
   }
 
   const codexVersion = codexCacheLatest?.manifest_version ?? null;
   if (!codexCacheLatest) {
+    const command = buildPluginCommand({ host: 'codex', action: 'add-marketplace', name });
     recommendations.push({
+      id: `${name}:codex:add-marketplace`,
       host: 'codex',
       action: 'add-marketplace',
       executed: false,
-      command: 'codex plugin marketplace add each4all/agentic-plugins',
+      command: command.display,
+      argv: command.argv,
+      executable: true,
       detail: `Codex exposes marketplace add/upgrade/remove, not per-plugin install; add the marketplace catalog to make ${name} available.`,
     });
   } else if (sourceVersion && codexVersion && semverCompare(String(codexVersion), String(sourceVersion)) < 0) {
+    const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
     recommendations.push({
+      id: `${name}:codex:upgrade-marketplace`,
       host: 'codex',
       action: 'upgrade-marketplace',
       executed: false,
-      command: 'codex plugin marketplace upgrade agentic-plugins',
+      command: command.display,
+      argv: command.argv,
+      executable: true,
       detail: `Cached ${codexVersion}; source/catalog ${sourceVersion}. Codex upgrades the marketplace, not an individual plugin install.`,
     });
   }
   return recommendations;
+}
+
+function buildPluginCommand({ host, action, name }) {
+  if (host === 'claude' && action === 'install-plugin') {
+    return commandSpec('claude', ['/plugin', 'install', `${name}@agentic-plugins`]);
+  }
+  if (host === 'claude' && action === 'update-plugin') {
+    return commandSpec('claude', ['/plugin', 'update', `${name}@agentic-plugins`]);
+  }
+  if (host === 'codex' && action === 'add-marketplace') {
+    return commandSpec('codex', ['plugin', 'marketplace', 'add', 'each4all/agentic-plugins']);
+  }
+  if (host === 'codex' && action === 'upgrade-marketplace') {
+    return commandSpec('codex', ['plugin', 'marketplace', 'upgrade', 'agentic-plugins']);
+  }
+  return null;
+}
+
+function commandSpec(command, args) {
+  return {
+    display: [command, ...args].join(' '),
+    argv: { command, args },
+  };
+}
+
+async function buildPluginManagementPlan({ plugins, clis, execute, hostFilter, runner, cwd, env, timeoutMs }) {
+  const plans = buildPluginManagementCandidates({ plugins, clis, hostFilter });
+  if (execute) {
+    for (const plan of plans) {
+      if (plan.status !== 'planned') continue;
+      const startedAt = new Date();
+      const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs });
+      const completedAt = new Date();
+      plan.executed = true;
+      plan.status = result.ok ? 'executed' : 'failed';
+      plan.result = sanitizeCommandResult({ result, startedAt, completedAt });
+    }
+  }
+  return {
+    requested: execute,
+    executed: execute,
+    mode: execute ? 'explicit-plugin-management-executor' : 'dry-run-plan',
+    host_filter: hostFilter,
+    timeout_ms: timeoutMs,
+    allowlist: Array.from(EXECUTABLE_PLUGIN_ACTIONS).sort(),
+    plans,
+    summary: summarizePluginManagementPlans(plans),
+    limits: [
+      'No shell interpolation is used; executable commands are invoked as argv arrays.',
+      'Only install/update/add/upgrade plugin-management actions are executable.',
+      'Marketplace catalog file registration remains manual because it is a repository edit, not a host plugin command.',
+      'Raw stdout and stderr are omitted from settings output.',
+    ],
+  };
+}
+
+function buildPluginManagementCandidates({ plugins, clis, hostFilter }) {
+  const plans = [];
+  const seenExecutableCommands = new Map();
+  for (const [pluginName, plugin] of Object.entries(plugins)) {
+    for (const recommendation of plugin.recommendations) {
+      const basePlan = {
+        id: recommendation.id ?? `${pluginName}:${recommendation.host}:${recommendation.action}`,
+        plugin: pluginName,
+        host: recommendation.host,
+        action: recommendation.action,
+        command: recommendation.command,
+        argv: recommendation.argv ?? null,
+        executed: false,
+        result: null,
+        detail: recommendation.detail,
+      };
+      const status = classifyPluginManagementPlan({ recommendation, hostFilter, clis });
+      plans.push({ ...basePlan, ...status });
+      const plan = plans.at(-1);
+      if (plan.status !== 'planned') continue;
+      const commandKey = `${plan.argv.command}\0${plan.argv.args.join('\0')}`;
+      const duplicateOf = seenExecutableCommands.get(commandKey);
+      if (duplicateOf) {
+        plan.status = 'deduplicated';
+        plan.executable = false;
+        plan.reason = `same host command already planned by ${duplicateOf}`;
+        plan.duplicate_of = duplicateOf;
+      } else {
+        seenExecutableCommands.set(commandKey, plan.id);
+      }
+    }
+  }
+  return plans;
+}
+
+function classifyPluginManagementPlan({ recommendation, hostFilter, clis }) {
+  if (hostFilter !== 'all' && recommendation.host !== hostFilter) {
+    return {
+      status: 'skipped',
+      executable: false,
+      reason: `filtered by --plugin-management-host=${hostFilter}`,
+    };
+  }
+  if (!EXECUTABLE_PLUGIN_ACTIONS.has(recommendation.action)) {
+    return {
+      status: 'manual',
+      executable: false,
+      reason: 'action is not in the plugin-management executor allowlist',
+    };
+  }
+  if (!recommendation.argv?.command || !Array.isArray(recommendation.argv?.args)) {
+    return {
+      status: 'manual',
+      executable: false,
+      reason: 'recommendation has no argv command spec',
+    };
+  }
+  const cli = clis[recommendation.host];
+  if (cli?.status !== 'available') {
+    return {
+      status: 'blocked',
+      executable: false,
+      reason: `${recommendation.host} CLI is not available`,
+    };
+  }
+  return {
+    status: 'planned',
+    executable: true,
+    reason: 'allowlisted host-native plugin command',
+  };
+}
+
+function sanitizeCommandResult({ result, startedAt, completedAt }) {
+  return {
+    ok: Boolean(result.ok),
+    exit_code: result.exit_code ?? null,
+    error_code: result.error_code ?? null,
+    timed_out: Boolean(result.timed_out),
+    stdout_bytes: Buffer.byteLength(result.stdout ?? '', 'utf8'),
+    stderr_bytes: Buffer.byteLength(result.stderr ?? '', 'utf8'),
+    started_at: startedAt.toISOString(),
+    completed_at: completedAt.toISOString(),
+    duration_ms: Math.max(0, completedAt.getTime() - startedAt.getTime()),
+  };
+}
+
+function summarizePluginManagementPlans(plans) {
+  const summary = {
+    planned: 0,
+    executed: 0,
+    failed: 0,
+    skipped: 0,
+    blocked: 0,
+    manual: 0,
+    deduplicated: 0,
+  };
+  for (const plan of plans) {
+    if (Object.hasOwn(summary, plan.status)) summary[plan.status] += 1;
+  }
+  return summary;
+}
+
+function applyPluginManagementResults(plugins, pluginManagement) {
+  const byId = new Map(pluginManagement.plans.map((plan) => [plan.id, plan]));
+  for (const plugin of Object.values(plugins)) {
+    for (const recommendation of plugin.recommendations) {
+      const plan = byId.get(recommendation.id);
+      if (!plan) continue;
+      recommendation.executable = plan.executable;
+      recommendation.execution_status = plan.status;
+      recommendation.executed = plan.executed;
+      recommendation.result = plan.result;
+    }
+  }
 }
 
 function buildCompanionSettingPlans({ currentDirections, desiredConfig, configTargets, apply }) {
@@ -534,7 +757,7 @@ function buildTopLevelRecommendations({ clis, plugins, desiredConfig, companionS
       });
     }
   }
-  for (const plugin of Object.values(buildPluginPlans(plugins))) {
+  for (const plugin of Object.values(plugins)) {
     for (const recommendation of plugin.recommendations) {
       recommendations.push({ area: 'plugin', ...recommendation });
     }
@@ -561,12 +784,15 @@ function summarizeSettings(report) {
   const appliedCount = report.config.targets.filter((target) => target.applied).length;
   const missingCli = Object.values(report.clis).filter((cli) => cli.status !== 'available').length;
   const settingWarnings = collectCompanionSettingWarnings(report.companion_settings).length;
+  const pluginManagementFailed = report.plugin_management.summary.failed;
   return {
-    status: missingCli > 0 || settingWarnings > 0 ? 'warning' : 'pass',
+    status: missingCli > 0 || settingWarnings > 0 || pluginManagementFailed > 0 ? 'warning' : 'pass',
     planned_config_writes: writeCount,
     applied_config_targets: appliedCount,
     plugin_recommendations: Object.values(report.plugins).reduce((sum, plugin) => sum + plugin.recommendations.length, 0),
     setting_warnings: settingWarnings,
+    plugin_management_executed: report.plugin_management.summary.executed,
+    plugin_management_failed: pluginManagementFailed,
   };
 }
 
@@ -580,7 +806,7 @@ function collectCompanionSettingWarnings(companionSettings) {
 
 export function formatText(report) {
   const lines = [];
-  lines.push(`runtime:settings ${report.runtime_version} (${report.dry_run ? 'dry-run' : 'apply'})`);
+  lines.push(`runtime:settings ${report.runtime_version} (${formatSettingsMode(report)})`);
   lines.push(`repo: ${report.repo_root}`);
   lines.push(`dry-run: ${report.dry_run}`);
   lines.push('');
@@ -601,8 +827,19 @@ export function formatText(report) {
     lines.push(`- ${name}: ${plugin.status}; source=${plugin.source_version ?? 'n/a'}; recommendations=${plugin.recommendations.length}`);
     for (const recommendation of plugin.recommendations) {
       const command = recommendation.command ? ` command=${recommendation.command}` : '';
-      lines.push(`  ${recommendation.host}: ${recommendation.action}; executed=false;${command}`);
+      const executionStatus = recommendation.execution_status ? ` status=${recommendation.execution_status};` : '';
+      lines.push(`  ${recommendation.host}: ${recommendation.action};${executionStatus} executed=${recommendation.executed};${command}`);
     }
+  }
+  lines.push('');
+  lines.push('Plugin Management');
+  lines.push(`- mode: ${report.plugin_management.mode}; requested=${report.plugin_management.requested}; host-filter=${report.plugin_management.host_filter}; timeout-ms=${report.plugin_management.timeout_ms}`);
+  lines.push(`- summary: planned=${report.plugin_management.summary.planned}; executed=${report.plugin_management.summary.executed}; failed=${report.plugin_management.summary.failed}; blocked=${report.plugin_management.summary.blocked}; manual=${report.plugin_management.summary.manual}; deduplicated=${report.plugin_management.summary.deduplicated}; skipped=${report.plugin_management.summary.skipped}`);
+  for (const plan of report.plugin_management.plans) {
+    const command = plan.command ? ` command=${plan.command}` : '';
+    lines.push(`- ${plan.plugin}/${plan.host}: ${plan.action}; status=${plan.status}; executable=${plan.executable}; executed=${plan.executed};${command}`);
+    if (plan.reason) lines.push(`  reason: ${plan.reason}`);
+    if (plan.result) lines.push(`  result: ok=${plan.result.ok}; exit=${plan.result.exit_code ?? '<none>'}; stdout-bytes=${plan.result.stdout_bytes}; stderr-bytes=${plan.result.stderr_bytes}; timed-out=${plan.result.timed_out}`);
   }
   lines.push('');
   lines.push('Config Proposals');
@@ -625,6 +862,13 @@ export function formatText(report) {
   lines.push('Limits');
   for (const limit of report.limits) lines.push(`- ${limit}`);
   return `${lines.join('\n')}\n`;
+}
+
+function formatSettingsMode(report) {
+  if (report.config_apply && report.execute_plugin_management) return 'config-apply+plugin-management';
+  if (report.config_apply) return 'config-apply';
+  if (report.execute_plugin_management) return 'plugin-management';
+  return 'dry-run';
 }
 
 function semverCompare(a, b) {
@@ -652,7 +896,7 @@ function usage() {
     'Usage: settings.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex]',
     '  [--target repo|user|both] [--model <id>] [--effort <level>]',
     '  [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>]',
-    '  [--apply]',
+    '  [--apply] [--execute-plugin-management] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
     '',
   ].join('\n');
 }
@@ -664,6 +908,9 @@ export function parseArgs(argv) {
     host: 'auto',
     target: 'both',
     apply: false,
+    executePluginManagement: false,
+    pluginManagementHost: 'all',
+    pluginManagementTimeoutMs: DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS,
     desired: {},
   };
   for (let i = 0; i < argv.length; i++) {
@@ -683,6 +930,13 @@ export function parseArgs(argv) {
       if (!TARGETS.has(opts.target)) throw new Error('--target must be repo, user, or both');
     } else if (arg === '--apply') {
       opts.apply = true;
+    } else if (arg === '--execute-plugin-management') {
+      opts.executePluginManagement = true;
+    } else if (arg === '--plugin-management-host') {
+      opts.pluginManagementHost = requireValue(argv, ++i, arg);
+      if (!PLUGIN_MANAGEMENT_HOSTS.has(opts.pluginManagementHost)) throw new Error('--plugin-management-host must be all, claude, or codex');
+    } else if (arg === '--plugin-management-timeout-ms') {
+      opts.pluginManagementTimeoutMs = parsePositiveInt(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--model') {
       opts.desired.model = requireValue(argv, ++i, arg);
     } else if (arg === '--effort') {
@@ -701,6 +955,12 @@ export function parseArgs(argv) {
   }
   opts.desired = normalizeDesiredConfig(opts.desired);
   return opts;
+}
+
+function parsePositiveInt(value, flag) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`${flag} must be a positive integer`);
+  return parsed;
 }
 
 function requireValue(argv, index, flag) {

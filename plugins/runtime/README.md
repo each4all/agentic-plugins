@@ -4,7 +4,7 @@ Runtime operator control plane for agentic-plugins. **L1 framework primitive** p
 
 ## Status
 
-Ships `runtime:doctor`, the first `runtime:settings` implementation, an artifact-only `runtime:consensus` scaffold, the first runtime-owned `runtime:context` scaffold with a read-only explicit budget check, an explicit `runtime:migrate workflow-storage` path migration surface, and a pointer-only completion footer helper. `runtime:doctor --sandbox-permission-probe` reports an explicit read-only sandbox/permission preflight without peer execution, `runtime:doctor --permission-proof` reports a plan-only permission proof preflight, `runtime:doctor --permission-proof --execute-permission-proof` runs a bounded companion-contract proof under host-native permission defaults, `runtime:doctor --deep-peer-smoke` reports a plan-only preflight, and `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` runs a bounded companion-contract smoke while omitting raw peer stdout from doctor output. Automatic plugin install/update apply mode, automatic consensus peer execution, richer permission-proof retention/cancellation, and automatic context mutation/capture triggers are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
+Ships `runtime:doctor`, `runtime:settings` with explicit plugin-management execution, an artifact-only `runtime:consensus` scaffold, the first runtime-owned `runtime:context` scaffold with a read-only explicit budget check, an explicit `runtime:migrate workflow-storage` path migration surface, and a pointer-only completion footer helper. `runtime:doctor --sandbox-permission-probe` reports an explicit read-only sandbox/permission preflight without peer execution, `runtime:doctor --permission-proof` reports a plan-only permission proof preflight, `runtime:doctor --permission-proof --execute-permission-proof` runs a bounded companion-contract proof under host-native permission defaults, `runtime:doctor --deep-peer-smoke` reports a plan-only preflight, and `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` runs a bounded companion-contract smoke while omitting raw peer stdout from doctor output. Automatic consensus peer execution, richer permission-proof retention/cancellation, host-native config apply, and automatic context mutation/capture triggers are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
 
 ## What it is
 
@@ -33,7 +33,7 @@ It does not own persona-level engineering work or macro planning. Those remain i
 | Command | Status | Description |
 |---------|--------|-------------|
 | `/runtime:doctor [--format text\|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>]` | shipping | Read-only diagnosis for host CLIs, auth, plugin cache/install state, companion readiness, model/effort observation, workflow/peer-run ledger health, optional read-only sandbox/permission probe, optional plan-only permission proof, explicit opt-in permission proof under host-native defaults, optional plan-only deep peer smoke preflight, and explicit opt-in companion-contract smoke execution with raw peer stdout omitted. |
-| `/runtime:settings [--format text\|json] [--target repo\|user\|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply]` | shipping | Dry-run settings planner for marketplace/plugin/CLI readiness and agentic-plugins-owned model/effort config. `--apply` writes only `.agentic-plugins/config.toml`. |
+| `/runtime:settings [--format text\|json] [--target repo\|user\|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply] [--execute-plugin-management] [--plugin-management-host all\|claude\|codex]` | shipping | Dry-run settings planner for marketplace/plugin/CLI readiness and agentic-plugins-owned model/effort config. `--apply` writes only `.agentic-plugins/config.toml`; `--execute-plugin-management` runs only allowlisted host-native plugin install/update/add/upgrade commands and omits raw stdout/stderr. |
 | `/runtime:migrate workflow-storage [--format text\|json] [--plugin all\|engineer\|orchestrator] [--apply]` | shipping | Explicit ADR-0025 workflow storage migration planner. Dry-run reports legacy/canonical state, branch counts, peer-run and lock blockers, and source/destination paths. `--apply` moves only gitignored `.claude/agentic-*` workflow state into `.agentic-plugins/state/<plugin>` and writes a local migration manifest. |
 | `/runtime:consensus plan\|record\|synthesize\|next-round\|status ...` | shipping scaffold | Runtime-owned consensus artifact manager. Creates fanout/rebuttal prompts, records raw peer output as files, and emits only synthesized summary, durable disagreements, evidence pointers, and artifact paths. |
 | `/runtime:context capture\|status\|check ...` | shipping scaffold | Runtime-owned context hygiene artifact manager and read-only explicit budget check. Writes context summary, risk level, artifact pointers, and next-session prompt/action under `.agentic-plugins/runs/context/`; `status --latest` reads the newest handoff artifact with stale metadata; `check` creates no artifact. |
@@ -61,6 +61,7 @@ $runtime:doctor --permission-proof --execute-permission-proof
 $runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke
 $runtime:settings
 $runtime:settings --codex-model gpt-5.4 --codex-effort high --apply
+$runtime:settings --execute-plugin-management --plugin-management-host codex
 $runtime:migrate workflow-storage
 $runtime:migrate workflow-storage --plugin engineer --apply
 $runtime:consensus plan --task "Review this risky change" --max-rounds 2
@@ -120,7 +121,12 @@ Supported keys are `model`, `effort`, `claude_model`, `claude_effort`, `codex_mo
 
 Settings also projects the effective companion model/effort after the selected target's planned writes. This projection uses the same repo-local before user-global precedence as doctor. If a user-global write would be shadowed by an existing repo-local or direction-specific setting, settings reports a warning instead of implying the requested value will take effect.
 
-Settings does not write host-native config, auth, secrets, sandbox/permission settings, or execute plugin install/update commands. Plugin install/update remains a host-native command recommendation in this PR.
+Settings is still dry-run for plugin management unless `--execute-plugin-management` is supplied. The executor runs only allowlisted host-native plugin commands generated by the settings recommendations:
+
+- Claude plugin install/update commands.
+- Codex marketplace add/upgrade commands.
+
+It invokes commands as argv arrays, never through a shell, and records only status, exit code, byte counts, timing, and sanitized error metadata. Raw stdout and stderr are omitted from settings output. `--plugin-management-host all|claude|codex` scopes execution. Settings still does not write host-native config, auth, secrets, sandbox/permission settings, or execute plugin uninstall commands.
 
 ## Migration Behavior
 

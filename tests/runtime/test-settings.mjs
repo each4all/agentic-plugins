@@ -123,9 +123,47 @@ describe('runtime settings', () => {
     const codexRecommendation = report.plugins.runtime.recommendations.find((rec) => rec.host === 'codex');
     strictEqual(codexRecommendation.action, 'add-marketplace');
     strictEqual(codexRecommendation.command, 'codex plugin marketplace add each4all/agentic-plugins');
+    deepStrictEqual(codexRecommendation.argv, {
+      command: 'codex',
+      args: ['plugin', 'marketplace', 'add', 'each4all/agentic-plugins'],
+    });
     ok(codexRecommendation.detail.includes('not per-plugin install'));
     ok(report.recommendations.some((rec) => rec.area === 'plugin' && rec.executed === false));
-    ok(report.limits.some((limit) => limit.includes('Plugin install/update is recommendation-only')));
+    strictEqual(report.plugin_management.requested, false);
+    ok(report.plugin_management.plans.some((plan) => plan.status === 'planned' && plan.command === 'codex plugin marketplace add each4all/agentic-plugins'));
+    ok(report.plugin_management.plans.some((plan) => plan.status === 'deduplicated'));
+    ok(report.limits.some((limit) => limit.includes('Plugin install/update execution is dry-run')));
+  });
+
+  it('executes only allowlisted plugin management commands behind an explicit flag', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-execute-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-execute-home-'));
+    await seedRepo(root);
+
+    const calls = [];
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex plugin marketplace add each4all/agentic-plugins': okResult('RAW OUTPUT MUST NOT LEAK\n'),
+      }, calls),
+    });
+
+    strictEqual(report.plugin_management.requested, true);
+    strictEqual(report.plugin_management.mode, 'explicit-plugin-management-executor');
+    strictEqual(report.plugin_management.host_filter, 'codex');
+    strictEqual(report.plugin_management.summary.executed, 1);
+    strictEqual(report.plugin_management.summary.failed, 0);
+    ok(report.plugin_management.plans.some((plan) => plan.host === 'claude' && plan.status === 'skipped'));
+    const executed = report.plugin_management.plans.find((plan) => plan.status === 'executed');
+    strictEqual(executed.command, 'codex plugin marketplace add each4all/agentic-plugins');
+    strictEqual(executed.result.ok, true);
+    strictEqual(executed.result.stdout_bytes, 'RAW OUTPUT MUST NOT LEAK\n'.length);
+    ok(calls.includes('codex plugin marketplace add each4all/agentic-plugins'));
+    ok(!JSON.stringify(report).includes('RAW OUTPUT MUST NOT LEAK'), 'plugin management report must not include raw command output');
   });
 
   it('parses CLI arguments and rejects unsafe config values', () => {
@@ -147,12 +185,20 @@ describe('runtime settings', () => {
       '--codex-effort',
       'high',
       '--apply',
+      '--execute-plugin-management',
+      '--plugin-management-host',
+      'codex',
+      '--plugin-management-timeout-ms',
+      '90000',
     ]);
     strictEqual(opts.repoRoot, '/tmp/repo');
     strictEqual(opts.format, 'json');
     strictEqual(opts.host, 'codex');
     strictEqual(opts.target, 'user');
     strictEqual(opts.apply, true);
+    strictEqual(opts.executePluginManagement, true);
+    strictEqual(opts.pluginManagementHost, 'codex');
+    strictEqual(opts.pluginManagementTimeoutMs, 90000);
     deepStrictEqual(opts.desired, {
       model: 'shared',
       effort: 'medium',
@@ -161,6 +207,8 @@ describe('runtime settings', () => {
     });
     rejects(async () => parseArgs(['--model', 'bad\nvalue']), /single-line/);
     rejects(async () => parseArgs(['--target', 'host']), /--target must be repo, user, or both/);
+    rejects(async () => parseArgs(['--plugin-management-host', 'host']), /--plugin-management-host must be all, claude, or codex/);
+    rejects(async () => parseArgs(['--plugin-management-timeout-ms', '0']), /positive integer/);
   });
 
   it('upserts flat TOML keys while preserving unrelated config', () => {
