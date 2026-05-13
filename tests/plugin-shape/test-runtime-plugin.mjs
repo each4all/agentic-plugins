@@ -1,4 +1,4 @@
-// plugins/runtime plugin-shape conformance test (ADR-0024 first doctor PR).
+// plugins/runtime plugin-shape conformance test (ADR-0024 runtime/operator track).
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
@@ -22,6 +22,7 @@ describe('plugins/runtime manifest pair', () => {
     ok(manifest.description.includes('ADR-0024'), 'description cites ADR-0024');
     ok(manifest.keywords.includes('runtime'));
     ok(manifest.keywords.includes('doctor'));
+    ok(manifest.keywords.includes('settings'));
     ok(manifest.keywords.includes('L1'));
   });
 
@@ -32,8 +33,9 @@ describe('plugins/runtime manifest pair', () => {
     strictEqual(manifest.interface.displayName, 'Runtime');
     strictEqual(manifest.interface.developerName, 'each4all');
     strictEqual(manifest.interface.category, 'Productivity');
-    deepStrictEqual(manifest.interface.capabilities, ['Read']);
+    deepStrictEqual(manifest.interface.capabilities, ['Read', 'Write']);
     ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:doctor')));
+    ok(manifest.interface.defaultPrompt.some((p) => p.includes('$runtime:settings')));
   });
 
   it('Claude and Codex manifests share name + version + description', async () => {
@@ -100,21 +102,29 @@ describe('plugins/runtime doctor surface', () => {
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/doctor.mjs'));
     ok((scriptStat.mode & 0o111) !== 0, 'doctor.mjs has executable bit');
   });
+});
 
-  it('does not ship settings command or skill in the first PR', async () => {
-    for (const path of ['commands/settings.md', 'skills/settings/SKILL.md']) {
-      try {
-        await stat(resolve(PLUGIN_ROOT, path));
-        throw new Error(`${path} should not exist`);
-      } catch (err) {
-        strictEqual(err.code, 'ENOENT');
-      }
-    }
+describe('plugins/runtime settings surface', () => {
+  it('ships settings command, skill wrapper, agent yaml, and executable script', async () => {
+    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/settings.md'), 'utf-8');
+    ok(command.startsWith('---\n'));
+    ok(command.includes('scripts/settings.mjs'));
+    ok(/dry-run/i.test(command));
+    ok(command.includes('--apply'));
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/SKILL.md'), 'utf-8');
+    ok(/^name:\s*settings\s*$/m.test(skill));
+    ok(skill.includes('Host-native Claude Code'));
+    ok(skill.includes('automatic plugin install/update apply mode'));
+    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/agents/openai.yaml'), 'utf-8');
+    ok(agent.includes('$runtime:settings'));
+    ok(/allow_implicit_invocation:\s*false/.test(agent));
+    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/settings.mjs'));
+    ok((scriptStat.mode & 0o111) !== 0, 'settings.mjs has executable bit');
   });
 
   it('follow-ups document deferred settings/consensus/context/footer scope', async () => {
     const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
-    for (const token of ['runtime:settings', 'Dynamic peer consensus', 'Context hygiene', 'Completion footer']) {
+    for (const token of ['Automatic plugin install/update apply mode', 'Dynamic peer consensus', 'Context hygiene', 'Completion footer']) {
       ok(followUps.includes(token), `${token} documented`);
     }
     ok(/Codex manual-hook/i.test(followUps), 'Codex manual-hook honesty documented');

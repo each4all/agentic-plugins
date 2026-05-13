@@ -4,7 +4,7 @@ Runtime operator control plane for agentic-plugins. **L1 framework primitive** p
 
 ## Status
 
-Ships `runtime:doctor` only. `runtime:settings`, dynamic consensus, context hygiene, and completion footer work are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
+Ships `runtime:doctor` and the first `runtime:settings` implementation. Dynamic consensus, context hygiene, completion footer work, deep peer smoke, and automatic plugin install/update apply mode are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
 
 ## What it is
 
@@ -31,13 +31,15 @@ It does not own persona-level engineering work or macro planning. Those remain i
 | Command | Status | Description |
 |---------|--------|-------------|
 | `/runtime:doctor [--format text\|json] [--model <id>] [--effort <level>] [--deep-peer-smoke]` | shipping | Read-only diagnosis for host CLIs, auth, plugin cache/install state, companion readiness, model/effort observation, and workflow/peer-run ledger health. |
-| `/runtime:settings` | deferred | Future dry-run/apply settings surface. Not present in this PR. |
+| `/runtime:settings [--format text\|json] [--target repo\|user\|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply]` | shipping | Dry-run settings planner for marketplace/plugin/CLI readiness and agentic-plugins-owned model/effort config. `--apply` writes only `.agentic-plugins/config.toml`. |
 
 Codex skill parity:
 
 ```sh
 $runtime:doctor
 $runtime:doctor --format json
+$runtime:settings
+$runtime:settings --codex-model gpt-5.4 --codex-effort high --apply
 ```
 
 ## Doctor behavior
@@ -64,6 +66,19 @@ ADR-0024 resolution order is reported as:
 5. host-native default.
 
 Companion invocation continues to use `companions/contract.md` `--model` and `--effort`; runtime does not invent a second path.
+
+## Settings behavior
+
+Settings is dry-run by default. It checks marketplace registration and install/cache state for `companions`, `engineer`, `orchestrator`, and `runtime`; reports Claude Code and Codex CLI availability/version; and plans repo-local plus user-global model/effort defaults.
+
+`--apply` is intentionally narrow. It only upserts flat keys in:
+
+- `<repo>/.agentic-plugins/config.toml`
+- `~/.agentic-plugins/config.toml`
+
+Supported keys are `model`, `effort`, `claude_model`, `claude_effort`, `codex_model`, and `codex_effort`. Direction-specific keys map to the companion peer: `claude_*` for Codex -> Claude and `codex_*` for Claude -> Codex.
+
+Settings does not write host-native config, auth, secrets, sandbox/permission settings, or execute plugin install/update commands. Plugin install/update remains a host-native command recommendation in this PR.
 
 ## Install
 
