@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { formatText, parseArgs, runDoctor } from '../../plugins/runtime/scripts/doctor.mjs';
+import { formatText, parseArgs, runDoctor, RUNTIME_VERSION } from '../../plugins/runtime/scripts/doctor.mjs';
 
 describe('runtime doctor', () => {
   it('builds a sanitized read-only report from source, CLI, companion, config, and ledger probes', async () => {
@@ -40,6 +40,7 @@ describe('runtime doctor', () => {
     });
 
     strictEqual(report.read_only, true);
+    strictEqual(report.runtime_version, RUNTIME_VERSION);
     strictEqual(report.clis.claude.auth.status, 'available');
     strictEqual(report.clis.claude.auth.method, 'claude.ai');
     strictEqual(report.clis.claude.auth.provider, 'firstParty');
@@ -50,12 +51,41 @@ describe('runtime doctor', () => {
     strictEqual(report.companions.directions.codex_to_claude.status, 'available');
     strictEqual(report.ledgers.engineer.peer_runs.stale_non_terminal, 1);
     strictEqual(report.plugins.runtime.status, 'available');
+    ok(report.host_parity.differences.some((issue) => issue.id === 'codex_manual_skill_invocation'));
 
     const serialized = JSON.stringify(report);
     ok(!serialized.includes('person@example.com'), 'email must be redacted');
     ok(!serialized.includes('11111111-2222-3333-4444-555555555555'), 'org id must be redacted');
     ok(!serialized.includes('sk-proj-abcdefghijklmnopqrstuvwxyz1234567890'), 'hyphenated provider token must be redacted');
-    ok(formatText(report).includes('runtime:doctor 0.1.0'));
+    ok(formatText(report).includes(`runtime:doctor ${RUNTIME_VERSION}`));
+    ok(formatText(report).includes('Host Parity'));
+  });
+
+  it('reports stale retired Claude plugin entries as host parity issues', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-retired-plugin-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'claude plugin list': okResult([
+          'Installed plugins:',
+          '',
+          '  > research@agentic-plugins',
+          '    Version: 0.1.0',
+          '    Scope: user',
+          '    Status: failed',
+          '    Error: retired plugin failed to load',
+          '',
+        ].join('\n')),
+      }),
+    });
+
+    ok(report.host_parity.issues.some((issue) => issue.id === 'claude_retired_or_unknown_plugin' && issue.plugin === 'research'));
+    strictEqual(report.host_parity.status, 'warning');
+    ok(formatText(report).includes('claude_retired_or_unknown_plugin'));
   });
 
   it('distinguishes missing CLIs as unavailable and fails overall', async () => {
@@ -305,8 +335,8 @@ function fakeRunner(map) {
   };
 }
 
-function fakeRuntimeProbeRunner(command, args) {
-  return fakeRunner({
+function defaultRuntimeProbeMap() {
+  return {
     'claude --version': okResult('2.1.140 (Claude Code)\n'),
     'claude --help': okResult('Usage: claude --print --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n'),
     'claude auth status': okResult(JSON.stringify({ loggedIn: true })),
@@ -316,7 +346,11 @@ function fakeRuntimeProbeRunner(command, args) {
     'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort="high"\n'),
     'codex login status': okResult('Logged in using ChatGPT\n'),
     'codex plugin marketplace --help': okResult(''),
-  })(command, args);
+  };
+}
+
+function fakeRuntimeProbeRunner(command, args) {
+  return fakeRunner(defaultRuntimeProbeMap())(command, args);
 }
 
 function smokeEnvelope(peer, stdout, durationMs) {

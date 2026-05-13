@@ -5,7 +5,9 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.1.0';
+import { RUNTIME_VERSION } from './version.mjs';
+
+const VERSION = RUNTIME_VERSION;
 const ARTIFACT_SCHEMA = 'runtime-context-artifact-1.0';
 const VALID_COMMANDS = new Set(['capture', 'status', 'check']);
 const RISK_LEVELS = new Set(['green', 'yellow', 'red']);

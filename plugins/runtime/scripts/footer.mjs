@@ -4,7 +4,9 @@ import { readdir, readFile } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.1.0';
+import { RUNTIME_VERSION } from './version.mjs';
+
+const VERSION = RUNTIME_VERSION;
 const VALID_HOSTS = new Set(['claude', 'codex', 'neutral']);
 const VALID_CONTEXT_STATES = new Set(['green', 'yellow', 'red']);
 const RUN_ID_RE = /^context-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
