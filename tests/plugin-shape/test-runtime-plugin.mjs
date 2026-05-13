@@ -23,6 +23,7 @@ describe('plugins/runtime manifest pair', () => {
     ok(manifest.keywords.includes('runtime'));
     ok(manifest.keywords.includes('doctor'));
     ok(manifest.keywords.includes('settings'));
+    ok(manifest.keywords.includes('migration'));
     ok(manifest.keywords.includes('consensus'));
     ok(manifest.keywords.includes('context'));
     ok(manifest.keywords.includes('footer'));
@@ -135,6 +136,25 @@ describe('plugins/runtime settings surface', () => {
       ok(followUps.includes(token), `${token} documented`);
     }
     ok(/Codex manual-hook/i.test(followUps), 'Codex manual-hook honesty documented');
+  });
+});
+
+describe('plugins/runtime migrate surface', () => {
+  it('ships migrate command, skill wrapper, agent yaml, and executable script', async () => {
+    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/migrate.md'), 'utf-8');
+    ok(command.startsWith('---\n'));
+    ok(command.includes('scripts/migrate-workflow-storage.mjs'));
+    ok(/dry-run/i.test(command));
+    ok(command.includes('--apply'));
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/migrate/SKILL.md'), 'utf-8');
+    ok(/^name:\s*migrate\s*$/m.test(skill));
+    ok(skill.includes('ADR-0025'));
+    ok(skill.includes('No workflow schema conversion'));
+    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/migrate/agents/openai.yaml'), 'utf-8');
+    ok(agent.includes('$runtime:migrate workflow-storage'));
+    ok(/allow_implicit_invocation:\s*false/.test(agent));
+    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/migrate-workflow-storage.mjs'));
+    ok((scriptStat.mode & 0o111) !== 0, 'migrate-workflow-storage.mjs has executable bit');
   });
 });
 
