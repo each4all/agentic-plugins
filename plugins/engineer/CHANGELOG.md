@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.9.0...plugin-engineer-v0.10.0) (2026-05-13)
+
+
+### Features
+
+* **plugin/engineer:** support canonical workflow state home ([f5c44b3](https://github.com/each4all/agentic-plugins/commit/f5c44b3d0242f5931a99d67960c9f959e20276b8))
+
 ## [0.9.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.8.0...plugin-engineer-v0.9.0) (2026-05-12)
 
 

@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.6.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.5.0...plugin-orchestrator-v0.6.0) (2026-05-13)
+
+
+### Features
+
+* **plugin/orchestrator:** support canonical workflow state home ([b388ba2](https://github.com/each4all/agentic-plugins/commit/b388ba2414cc0e8d32b3e9e81c3f3e5647a45dda))
+
 ## [0.5.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.4.0...plugin-orchestrator-v0.5.0) (2026-05-12)
 
 
