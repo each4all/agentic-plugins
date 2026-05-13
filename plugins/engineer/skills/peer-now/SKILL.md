@@ -39,8 +39,8 @@ mirroring the structural exclusion that verb-skill ensembles record in
 | Operation | Claude side | Codex side |
 |-----------|-------------|------------|
 | Argument parse + dispatch | Yes | Yes |
-| `peer-runner.mjs run --kind peer-now --peer codex` (Claude asking Codex) | Native — `codex-companion.mjs` invoked and tracked under `.claude/agentic-engineer/peer-runs/<run_id>/` | N/A (Codex would not ask itself) |
-| `peer-runner.mjs run --kind peer-now --peer claude` (Codex asking Claude) | N/A (Claude would not ask itself) | Native — `claude-companion.mjs` invoked and tracked under `.claude/agentic-engineer/peer-runs/<run_id>/` |
+| `peer-runner.mjs run --kind peer-now --peer codex` (Claude asking Codex) | Native — `codex-companion.mjs` invoked and tracked under `.agentic-plugins/state/engineer/peer-runs/<run_id>/` for new repos | N/A (Codex would not ask itself) |
+| `peer-runner.mjs run --kind peer-now --peer claude` (Codex asking Claude) | N/A (Claude would not ask itself) | Native — `claude-companion.mjs` invoked and tracked under `.agentic-plugins/state/engineer/peer-runs/<run_id>/` for new repos |
 | `peer-runner.mjs status/cancel --run-id <id>` | Yes — local status/cancel surface for peer-now ledgers | Yes — same local status/cancel surface |
 | `state.mjs append --phase-label "[Peer] <peer> consultation"` (when active workflow exists) | `--host claude` | `--host codex` |
 | Standalone mode (no active workflow → stdout only) | Yes | Yes |
@@ -89,7 +89,9 @@ Reject with a one-line usage hint and stop on:
 
 `peer-runner.mjs` supervises the companion process and writes a
 hidden repo-local ledger under
-`.claude/agentic-engineer/peer-runs/<run_id>/`. With
+`.agentic-plugins/state/engineer/peer-runs/<run_id>/` for new repos
+(legacy `.claude/agentic-engineer/peer-runs/<run_id>/` remains active
+until explicit migration). With
 `--kind peer-now`, it does NOT touch `pending_ensemble` or
 `ensemble_results` — it just tracks the side-channel process and
 surfaces the response path. Use `--output-format text` so the raw

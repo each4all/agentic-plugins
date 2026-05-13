@@ -8,7 +8,7 @@
 // Run via `node --test tests/engineer/test-peer-runner.mjs`.
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
+import { strictEqual, ok, deepStrictEqual, rejects } from 'node:assert/strict';
 import {
   access,
   chmod,
@@ -182,8 +182,8 @@ function baseHandle(repoRoot, runId, overrides = {}) {
   };
 }
 
-async function writeHandleFixture(repoRoot, runId, overrides = {}) {
-  const paths = peerRunPaths(repoRoot, runId);
+async function writeHandleFixture(repoRoot, runId, overrides = {}, opts = {}) {
+  const paths = peerRunPaths(repoRoot, runId, opts);
   await mkdir(paths.dir, { recursive: true, mode: 0o700 });
   await writeFile(paths.stdout, '', { mode: 0o600 });
   await writeFile(paths.stderr, '', { mode: 0o600 });
@@ -277,6 +277,66 @@ describe('peer-runner.mjs — run ledger and handle schema', () => {
       strictEqual(await readFile(paths.prompt, 'utf8'), '<task>retain me</task>');
       const handle = await readHandle(paths.handle);
       strictEqual(handle.prompt_retained, true);
+    });
+  });
+
+  it('run keeps peer-run ledgers in the legacy home while legacy state exists', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const companionsRoot = await writeFakeCompanions(repoRoot);
+      const legacyWorkflowDir = join(repoRoot, '.claude', 'agentic-engineer', 'workflows');
+      await mkdir(legacyWorkflowDir, { recursive: true });
+      await writeFile(join(legacyWorkflowDir, 'wf.md'), 'legacy workflow marker\n', 'utf8');
+
+      await runPeer({
+        repoRoot,
+        runId: 'legacy-ledger',
+        kind: 'manual',
+        peer: 'claude',
+        promptText: '<task>legacy</task>',
+        outputFormat: 'json',
+        cwd: repoRoot,
+        env: fakeEnv(companionsRoot),
+      });
+
+      const legacyPaths = peerRunPaths(repoRoot, 'legacy-ledger', { home: 'legacy' });
+      const canonicalPaths = peerRunPaths(repoRoot, 'legacy-ledger');
+      strictEqual(await exists(legacyPaths.handle), true);
+      strictEqual(await exists(canonicalPaths.handle), false);
+
+      const status = await statusPeerRun({ repoRoot, runId: 'legacy-ledger' });
+      strictEqual(status.paths.handle, legacyPaths.handle);
+      strictEqual(status.handle.status, 'completed');
+    });
+  });
+
+  it('run refuses to create peer-run state when canonical and legacy homes both contain state', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const companionsRoot = await writeFakeCompanions(repoRoot);
+      await mkdir(join(repoRoot, '.agentic-plugins', 'state', 'engineer', 'workflows'), {
+        recursive: true,
+      });
+      await writeFile(
+        join(repoRoot, '.agentic-plugins', 'state', 'engineer', 'workflows', 'canonical.md'),
+        'canonical marker\n',
+        'utf8',
+      );
+      await mkdir(join(repoRoot, '.claude', 'agentic-engineer', 'peer-runs', 'legacy-run'), {
+        recursive: true,
+      });
+
+      await rejects(
+        runPeer({
+          repoRoot,
+          runId: 'blocked-ledger',
+          kind: 'manual',
+          peer: 'claude',
+          promptText: '<task>blocked</task>',
+          outputFormat: 'json',
+          cwd: repoRoot,
+          env: fakeEnv(companionsRoot),
+        }),
+        /Workflow storage migration blocked/,
+      );
     });
   });
 });
@@ -605,7 +665,9 @@ describe('peer-runner.mjs — sweep and retention', () => {
       });
 
       strictEqual(await readFile(workflowPath, 'utf8'), before);
-      const handle = await readHandle(peerRunPaths(repoRoot, 'peer-now-side-channel').handle);
+      const handle = await readHandle(
+        peerRunPaths(repoRoot, 'peer-now-side-channel', { home: 'legacy' }).handle,
+      );
       strictEqual(handle.kind, 'peer-now');
       strictEqual(handle.status, 'completed');
     });

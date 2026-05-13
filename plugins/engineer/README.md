@@ -73,8 +73,10 @@ current release ships:
   (as of 0.128.0), so SKILL command-invoked mode triggers this
   script as its final step
 - **Workflow state persistence** under
-  `<cwd>/.claude/agentic-engineer/workflows/<workflow_id>.md` per
-  [ADR-0011](../../docs/adr/0011-workflow-continuity-storage.md) §1
+  `<cwd>/.agentic-plugins/state/engineer/workflows/<workflow_id>.md`
+  for new repos; existing legacy `.claude/agentic-engineer/` state
+  remains readable/writable until explicit migration per
+  [ADR-0025](../../docs/adr/0025-workflow-storage-migration.md)
 
 Both hosts can invoke engineer verbs in **command-invoked mode**
 (local subagent dispatch + peer ensemble dispatch). On Claude Code

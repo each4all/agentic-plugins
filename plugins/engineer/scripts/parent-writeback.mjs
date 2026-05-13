@@ -15,8 +15,9 @@
 //      multi-version SemVer → Codex cache single fixed → monorepo
 //      sibling). Pattern mirrors `dispatch-peer.mjs`'s companion
 //      discovery — same env-then-cache-then-repo ladder.
-//   2. Resolve the parent workflow file path under
-//      `<repoRoot>/.claude/agentic-orchestrator/workflows/<parent>.md`.
+//   2. Resolve the parent workflow file path under canonical
+//      `<repoRoot>/.agentic-plugins/state/orchestrator/workflows/<parent>.md`
+//      or legacy `<repoRoot>/.claude/agentic-orchestrator/workflows/<parent>.md`.
 //      Apply the ADR-0019 §4 step 3 archive-fallback rule when the
 //      parent has already been moved to `archive/` (skip + stderr
 //      warning, do NOT throw — host stop lifecycle must not be blocked).
@@ -54,8 +55,14 @@ const ENV_OVERRIDE = 'AGENTIC_ORCHESTRATOR_ROOT';
 // orchestrator ever changes its `WORKFLOW_DIR_REL` / `ARCHIVE_DIR_REL`
 // these literals must be updated in lockstep — there are tests that
 // exercise the spawn path end-to-end and will fail loudly on drift.
-const ORCH_WORKFLOW_DIR_REL = '.claude/agentic-orchestrator/workflows';
-const ORCH_ARCHIVE_DIR_REL = '.claude/agentic-orchestrator/archive';
+const ORCH_WORKFLOW_DIR_RELS = [
+  '.agentic-plugins/state/orchestrator/workflows',
+  '.claude/agentic-orchestrator/workflows',
+];
+const ORCH_ARCHIVE_DIR_RELS = [
+  '.agentic-plugins/state/orchestrator/archive',
+  '.claude/agentic-orchestrator/archive',
+];
 
 async function fileExists(path) {
   try {
@@ -212,12 +219,12 @@ export async function discoverOrchestratorPluginRoot({
   return null;
 }
 
-function orchWorkflowDir(repoRoot) {
-  return join(repoRoot, ORCH_WORKFLOW_DIR_REL);
+function orchWorkflowDirs(repoRoot) {
+  return ORCH_WORKFLOW_DIR_RELS.map((rel) => join(repoRoot, rel));
 }
 
-function orchArchiveDir(repoRoot) {
-  return join(repoRoot, ORCH_ARCHIVE_DIR_REL);
+function orchArchiveDirs(repoRoot) {
+  return ORCH_ARCHIVE_DIR_RELS.map((rel) => join(repoRoot, rel));
 }
 
 function parentFileBasename(parentWorkflowId) {
@@ -251,7 +258,7 @@ function parentFileBasename(parentWorkflowId) {
  *
  * @param {object}  args
  * @param {string}  args.repoRoot — absolute path to the repo whose
- *   `.claude/agentic-orchestrator/` tree holds the parent workflow
+ *   canonical or legacy orchestrator state tree holds the parent workflow
  * @param {string}  args.parentWorkflowId
  * @param {string}  args.originatingSubtaskId
  * @param {string}  args.engineerWorkflowId — owner id (must match the
@@ -300,8 +307,8 @@ export async function writebackParent({
 
   // Reject any parent_workflow id that is not a basename-shaped
   // single path component. An id like `../archive/<other>` would
-  // otherwise let `join()` resolve outside `<repoRoot>/.claude/
-  // agentic-orchestrator/workflows/` and bypass the archive-fallback
+  // otherwise let `join()` resolve outside the orchestrator
+  // workflows/ home and bypass the archive-fallback
   // detection below — an attacker (or a corrupted frontmatter) could
   // redirect the writeback at an arbitrary file. orchestrator-
   // generated ids are always basename-shaped (`<verb>-<isoCompact>-
@@ -324,26 +331,33 @@ export async function writebackParent({
   }
 
   // ---------------------------------------------------------------------------
-  // Step 1 — resolve parent file path. Check workflows/ first; on miss
-  // fall back to archive/. The ADR-0019 §4 step 3 rule says: if the
-  // parent is in archive/, emit a stderr warning and skip without
-  // touching the frozen state.
-  const candidatePath = join(orchWorkflowDir(repoRoot), parentFileBasename(parentWorkflowId));
+  // Step 1 — resolve parent file path. Check canonical then legacy
+  // workflows/ first; on miss fall back to both archive/ homes. The
+  // ADR-0019 §4 step 3 rule says: if the parent is in archive/, emit
+  // a stderr warning and skip without touching the frozen state.
   let resolvedParentPath = null;
-  if (await fileExists(candidatePath)) {
-    resolvedParentPath = candidatePath;
-  } else {
+  for (const dir of orchWorkflowDirs(repoRoot)) {
+    const candidatePath = join(dir, parentFileBasename(parentWorkflowId));
+    if (await fileExists(candidatePath)) {
+      resolvedParentPath = candidatePath;
+      break;
+    }
+  }
+  if (!resolvedParentPath) {
     // Check archive/ — best-effort exact-name match. ADR-0019 §4 step
     // 3 only requires us to detect the archived case and skip; the
     // helper does not need to do anything with the archived file.
-    const archivedExact = join(orchArchiveDir(repoRoot), parentFileBasename(parentWorkflowId));
-    let archived = await fileExists(archivedExact);
-    if (!archived) {
+    let archived = false;
+    for (const dir of orchArchiveDirs(repoRoot)) {
+      const archivedExact = join(dir, parentFileBasename(parentWorkflowId));
+      archived = await fileExists(archivedExact);
+      if (archived) break;
       // archiveWorkflow appends `-<isoCompact>-<rand>.md` on collision —
       // scan archive/ for any file whose name starts with the workflow id.
       try {
-        const archiveEntries = await readdir(orchArchiveDir(repoRoot));
+        const archiveEntries = await readdir(dir);
         archived = archiveEntries.some((name) => name.startsWith(parentWorkflowId));
+        if (archived) break;
       } catch {
         // archive dir absent → not archived
       }
@@ -358,7 +372,7 @@ export async function writebackParent({
     stderr.write(
       `engineer/parent-writeback: WARN dangling parent linkage — ` +
       `parent_workflow=${parentWorkflowId} was set on this engineer workflow but the ` +
-      `file does NOT exist in either ${ORCH_WORKFLOW_DIR_REL} or ${ORCH_ARCHIVE_DIR_REL} ` +
+      `file does NOT exist in either canonical or legacy orchestrator workflow/archive homes ` +
       `(possible data integrity issue — orchestrator workflow may have been ` +
       `manually deleted or never existed). Skipping writeback; reconcile via ` +
       `/orchestrator:done if the parent is recoverable.\n`,
@@ -464,7 +478,8 @@ export async function writebackParent({
         `engineer/parent-writeback: orchestrator CLI timed out (30s) — ` +
         `parent per-file lock likely stuck from a crashed peer. ` +
         `Reconcile via /orchestrator:done after manually releasing ` +
-        `<repo>/.claude/agentic-orchestrator/workflows/${parentWorkflowId}.md.lock.\n`,
+        `<repo>/.agentic-plugins/state/orchestrator/workflows/${parentWorkflowId}.md.lock ` +
+        `or the legacy .claude equivalent.\n`,
       );
       return { ok: false, reason: 'cli-timeout', stderr: cliStderr };
     }

@@ -80,12 +80,14 @@ Branch on the result:
   whose branch matches `git branch --show-current`.
 
   ```bash
-  for f in "$REPO_ROOT/.claude/agentic-engineer/workflows"/*.md; do
-    [ -f "$f" ] || continue
-    BR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
-      --workflow-path "$f" 2>/dev/null \
-      | sed -n 's/^[[:space:]]*"branch": "\(.*\)",/\1/p' | head -1)"
-    echo "  $(basename "$f") — branch=$BR"
+  for dir in "$REPO_ROOT/.agentic-plugins/state/engineer/workflows" "$REPO_ROOT/.claude/agentic-engineer/workflows"; do
+    for f in "$dir"/*.md; do
+      [ -f "$f" ] || continue
+      BR="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
+        --workflow-path "$f" 2>/dev/null \
+        | sed -n 's/^[[:space:]]*"branch": "\(.*\)",/\1/p' | head -1)"
+      echo "  $(basename "$f") — branch=$BR"
+    done
   done
   ```
 
@@ -277,7 +279,8 @@ Parse the rest of the argument:
   on the current branch.
 - `archive <id>` → archive the named workflow. Validate the id
   matches the workflow_id regex per ADR-0011 §1. Resolve to
-  `<REPO_ROOT>/.claude/agentic-engineer/workflows/<id>.md` and confirm
+  `<REPO_ROOT>/.agentic-plugins/state/engineer/workflows/<id>.md`
+  (or the legacy `.claude/agentic-engineer/workflows/<id>.md`) and confirm
   it exists.
 
 Confirm with the user before mutating state — archive is reversible
