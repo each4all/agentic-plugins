@@ -38,6 +38,9 @@ It does not own persona-level engineering work or macro planning. Those remain i
 | `/runtime:context capture\|status\|check ...` | shipping scaffold | Runtime-owned context hygiene artifact manager and read-only explicit budget check. Writes context summary, risk level, artifact pointers, and next-session prompt/action under `.agentic-plugins/runs/context/`; `status --latest` reads the newest handoff artifact with stale metadata; `check` creates no artifact. |
 
 Runtime also ships `scripts/footer.mjs`, a helper used by engineer and orchestrator completion surfaces to render the ADR-0024 advisory footer from explicit fields or a `runtime:context` artifact pointer. It is intentionally not a new slash command.
+The helper can also render advisory PR handling readiness so completion
+surfaces use one criterion set before asking the user whether to commit,
+push, and open a PR.
 
 Codex skill parity:
 
@@ -144,10 +147,19 @@ The footer helper renders the standard ADR-0024 completion footer:
 - recommended next work;
 - next-session action and command or prompt pointer;
 - explicit advisory/pointer-only limits.
+- optional PR handling readiness, with criteria for deliverable boundary,
+  validation, context risk, blocking reviews, and branch pushability.
 
 When supplied `--context-run-id`, the helper reads only bounded fields from the matching `runtime:context` artifact: risk level, artifact pointers, recommended action, and next-session prompt pointer. It does not print the context summary body, prompt body, raw peer output, or consensus raw output.
 
 When supplied `--context-latest`, the helper reads the newest existing readable `runtime:context` artifact and reports read-only lookup metadata, including selected timestamp, age, stale state, stale threshold, and skipped invalid artifacts. `--stale-after-hours <n>` sets the stale threshold. The latest lookup does not create, update, or compact context.
+
+When supplied PR handling fields, the helper recommends `ask-user` only
+when the deliverable boundary is reached, validation passed or was
+explicitly waived, context risk is green/yellow, no blocking review
+findings remain, and the branch is pushable. Incomplete evidence returns
+`defer`; failed criteria return `block`. The helper never commits, pushes,
+opens PRs, updates PR metadata, merges, or marks a PR ready for review.
 
 ## Install
 
