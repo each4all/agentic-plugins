@@ -42,6 +42,7 @@ export async function runDoctor({
   explicitModel = null,
   explicitEffort = null,
   deepPeerSmoke = false,
+  sandboxPermissionProbe = false,
 } = {}) {
   const resolvedRepoRoot = resolve(repoRoot);
   const resolvedHomeDir = resolve(homeDir);
@@ -95,6 +96,11 @@ export async function runDoctor({
     codex,
     companion,
     deepPeerSmoke,
+    sandboxPermissionProbe,
+  });
+  const sandboxPermissionProbeSection = buildSandboxPermissionProbeSection({
+    requested: sandboxPermissionProbe,
+    readiness,
   });
   const deepPeerSmokeSection = buildDeepPeerSmokeSection({
     requested: deepPeerSmoke,
@@ -109,6 +115,7 @@ export async function runDoctor({
     repo_root: resolvedRepoRoot,
     host,
     read_only: true,
+    sandbox_permission_probe: sandboxPermissionProbeSection,
     deep_peer_smoke: deepPeerSmokeSection,
     clis: {
       claude: redactCommandDetails(claude),
@@ -121,7 +128,7 @@ export async function runDoctor({
     ledgers,
     limits: [
       'Codex plugin-local automatic hooks are not assumed; doctor reports manual-hook limits.',
-      'Sandbox/permission readiness is inferred from read-only probes unless a future deep smoke implementation runs.',
+      'Sandbox/permission readiness is unknown unless --sandbox-permission-probe is requested; the probe remains read-only and does not execute peers.',
       'Settings mutation belongs to runtime:settings; dynamic consensus, context hygiene, and completion footer mutation are deferred.',
     ],
   };
@@ -889,7 +896,7 @@ function validatePeerRunHandle(handle, { expectedPlugin, status, updatedAt, term
   return issues;
 }
 
-function buildReadiness({ claude, codex, companion, deepPeerSmoke }) {
+function buildReadiness({ claude, codex, companion, deepPeerSmoke, sandboxPermissionProbe }) {
   return {
     claude_to_codex: buildDirectionReadiness({
       direction: 'Claude -> Codex',
@@ -897,7 +904,9 @@ function buildReadiness({ claude, codex, companion, deepPeerSmoke }) {
       peer: codex,
       companion: companion.directions.claude_to_codex,
       requiredPeerFeatures: ['exec_command', 'model_flag', 'config_flag', 'cd_flag'],
+      requiredPermissionFeatures: ['sandbox_flag', 'approval_flag'],
       deepPeerSmoke,
+      sandboxPermissionProbe,
     }),
     codex_to_claude: buildDirectionReadiness({
       direction: 'Codex -> Claude',
@@ -905,9 +914,42 @@ function buildReadiness({ claude, codex, companion, deepPeerSmoke }) {
       peer: claude,
       companion: companion.directions.codex_to_claude,
       requiredPeerFeatures: ['print_mode', 'no_session_persistence', 'model_flag', 'effort_flag'],
+      requiredPermissionFeatures: ['permission_mode'],
       deepPeerSmoke,
+      sandboxPermissionProbe,
     }),
   };
+}
+
+function buildSandboxPermissionProbeSection({ requested, readiness }) {
+  const directions = {
+    claude_to_codex: readiness.claude_to_codex.sandbox_permission,
+    codex_to_claude: readiness.codex_to_claude.sandbox_permission,
+  };
+  return {
+    requested,
+    executed: requested,
+    peer_execution: false,
+    mode: requested ? 'read_only_preflight' : 'not_requested',
+    status: summarizeSandboxPermissionProbeStatus({ requested, directions }),
+    reason: requested
+      ? 'runtime:doctor evaluated read-only CLI, auth, feature-surface, and companion-script preflight evidence without executing peers'
+      : 'not requested',
+    directions,
+    limits: [
+      'Read-only probe; runtime:doctor does not execute peer agents.',
+      'No host-native config, auth, secrets, sandbox, or permission state is mutated.',
+      'A passed probe proves the observed preflight surface only; a future explicit executor is still required to prove live peer execution.',
+    ],
+  };
+}
+
+function summarizeSandboxPermissionProbeStatus({ requested, directions }) {
+  if (!requested) return 'not_requested';
+  const statuses = Object.values(directions).map((direction) => direction.status);
+  if (statuses.every((status) => status === 'read_only_probe_passed')) return 'read_only_probe_passed';
+  if (statuses.some((status) => status === 'read_only_probe_passed')) return 'partially_blocked';
+  return 'blocked';
 }
 
 function buildDeepPeerSmokeSection({ requested, readiness, modelEffort }) {
@@ -960,7 +1002,16 @@ function summarizeDeepPeerSmokePlanStatus({ requested, directions }) {
   return 'ready_with_warnings';
 }
 
-function buildDirectionReadiness({ direction, caller, peer, companion, requiredPeerFeatures, deepPeerSmoke }) {
+function buildDirectionReadiness({
+  direction,
+  caller,
+  peer,
+  companion,
+  requiredPeerFeatures,
+  requiredPermissionFeatures,
+  deepPeerSmoke,
+  sandboxPermissionProbe,
+}) {
   const blockers = [];
   const warnings = [];
   if (caller.status !== 'available') blockers.push(`${caller.name} CLI unavailable`);
@@ -974,7 +1025,22 @@ function buildDirectionReadiness({ direction, caller, peer, companion, requiredP
   if (caller.name === 'codex') {
     warnings.push('Codex plugin-local automatic hooks are not assumed; manual skill invocation is the supported path');
   }
-  warnings.push('sandbox/permission readiness is not verified by read-only doctor v0.1; blocked states require a future explicit smoke or host permission probe');
+  const sandboxPermission = buildDirectionSandboxPermissionProbe({
+    requested: sandboxPermissionProbe,
+    direction,
+    caller,
+    peer,
+    companion,
+    requiredPermissionFeatures,
+  });
+  if (sandboxPermission.status !== 'unknown' && sandboxPermission.status !== 'read_only_probe_passed') {
+    blockers.push(`sandbox permission probe ${sandboxPermission.status}`);
+  }
+  if (sandboxPermissionProbe) {
+    warnings.push('sandbox/permission probe is read-only; live peer-agent execution remains unverified');
+  } else {
+    warnings.push('sandbox/permission readiness is unknown until --sandbox-permission-probe is requested');
+  }
   if (!deepPeerSmoke) {
     warnings.push('read-only inference only; no peer-agent smoke executed');
   } else {
@@ -985,10 +1051,85 @@ function buildDirectionReadiness({ direction, caller, peer, companion, requiredP
     status: blockers.length > 0 ? classifyPrimaryBlocker(blockers) : warnings.length > 0 ? 'available_with_warnings' : 'available',
     blockers,
     warnings,
-    sandbox_permission: {
+    sandbox_permission: sandboxPermission,
+  };
+}
+
+function buildDirectionSandboxPermissionProbe({ requested, direction, caller, peer, companion, requiredPermissionFeatures }) {
+  if (!requested) {
+    return {
+      direction,
+      requested: false,
+      executed: false,
+      peer_execution: false,
       status: 'unknown',
-      reason: 'read-only doctor v0.1 does not execute peer agents or inspect host permission state',
-    },
+      reason: 'read-only doctor does not inspect sandbox or permission readiness unless --sandbox-permission-probe is requested',
+      probes: [],
+    };
+  }
+
+  const probes = [
+    probeResult({
+      name: 'caller_cli_spawn',
+      status: caller.status === 'available' ? 'passed' : 'unavailable',
+      evidence: `${caller.name} version probe ${caller.version.status}`,
+    }),
+    probeResult({
+      name: 'peer_cli_spawn',
+      status: peer.status === 'available' ? 'passed' : 'unavailable',
+      evidence: `${peer.name} version probe ${peer.version.status}`,
+    }),
+    probeResult({
+      name: 'peer_auth_status',
+      status: peer.auth.status === 'available' ? 'passed' : peer.auth.status,
+      evidence: `${peer.name} auth ${peer.auth.status}`,
+    }),
+    probeResult({
+      name: 'companion_script_preflight',
+      status: companion.status === 'available' ? 'passed' : companion.status,
+      evidence: companion.selected
+        ? `${companion.filename} contract ${companion.selected.contract_version ?? 'unknown'}`
+        : `${companion.filename} ${companion.status}`,
+    }),
+    buildPermissionSurfaceProbe(peer, requiredPermissionFeatures),
+    probeResult({
+      name: 'peer_execution_boundary',
+      status: 'passed',
+      evidence: 'no companion command or peer agent was executed',
+    }),
+  ];
+
+  const blockers = probes.filter((probe) => probe.status !== 'passed');
+  return {
+    direction,
+    requested: true,
+    executed: true,
+    peer_execution: false,
+    status: blockers.length > 0 ? 'blocked' : 'read_only_probe_passed',
+    reason: blockers.length > 0
+      ? 'one or more read-only sandbox/permission preflight probes failed'
+      : 'read-only sandbox/permission preflight probes passed without executing peers',
+    probes,
+    blockers: blockers.map((probe) => `${probe.name}: ${probe.status}`),
+  };
+}
+
+function buildPermissionSurfaceProbe(peer, requiredPermissionFeatures) {
+  const missing = requiredPermissionFeatures.filter((feature) => peer.feature_surface[feature] !== true);
+  return probeResult({
+    name: 'peer_permission_surface',
+    status: missing.length === 0 ? 'passed' : 'blocked',
+    evidence: missing.length === 0
+      ? `${peer.name} exposes ${requiredPermissionFeatures.join(', ')}`
+      : `${peer.name} missing ${missing.join(', ')}`,
+  });
+}
+
+function probeResult({ name, status, evidence }) {
+  return {
+    name,
+    status,
+    evidence: sanitizeValue(evidence),
   };
 }
 
@@ -1058,10 +1199,22 @@ export function formatText(report) {
   for (const key of ['claude_to_codex', 'codex_to_claude']) {
     const readiness = report.readiness[key];
     lines.push(`- ${readiness.direction}: ${readiness.status}`);
+    lines.push(`  sandbox-permission: ${readiness.sandbox_permission.status}`);
     for (const blocker of readiness.blockers) lines.push(`  blocker: ${blocker}`);
     for (const warning of readiness.warnings) lines.push(`  warning: ${warning}`);
   }
   lines.push('');
+  if (report.sandbox_permission_probe.requested) {
+    lines.push('Sandbox Permission Probe');
+    lines.push(`- mode: ${report.sandbox_permission_probe.mode}; requested=${report.sandbox_permission_probe.requested}; executed=${report.sandbox_permission_probe.executed}; peer-execution=${report.sandbox_permission_probe.peer_execution}; status=${report.sandbox_permission_probe.status}`);
+    for (const key of ['claude_to_codex', 'codex_to_claude']) {
+      const direction = report.sandbox_permission_probe.directions[key];
+      lines.push(`- ${direction.direction}: ${direction.status}`);
+      for (const probe of direction.probes) lines.push(`  probe ${probe.name}: ${probe.status}; ${probe.evidence}`);
+    }
+    for (const limit of report.sandbox_permission_probe.limits) lines.push(`- limit: ${limit}`);
+    lines.push('');
+  }
   if (report.deep_peer_smoke.requested) {
     lines.push('Deep Peer Smoke');
     lines.push(`- mode: ${report.deep_peer_smoke.mode}; requested=${report.deep_peer_smoke.requested}; executed=${report.deep_peer_smoke.executed}; status=${report.deep_peer_smoke.status}`);
@@ -1192,7 +1345,7 @@ function escapeRegExp(value) {
 }
 
 function usage() {
-  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--deep-peer-smoke]\n`;
+  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--deep-peer-smoke] [--sandbox-permission-probe]\n`;
 }
 
 export function parseArgs(argv) {
@@ -1203,6 +1356,7 @@ export function parseArgs(argv) {
     explicitModel: null,
     explicitEffort: null,
     deepPeerSmoke: false,
+    sandboxPermissionProbe: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -1222,6 +1376,8 @@ export function parseArgs(argv) {
       opts.explicitEffort = requireValue(argv, ++i, arg);
     } else if (arg === '--deep-peer-smoke') {
       opts.deepPeerSmoke = true;
+    } else if (arg === '--sandbox-permission-probe') {
+      opts.sandboxPermissionProbe = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
