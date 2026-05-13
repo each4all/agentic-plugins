@@ -324,13 +324,13 @@ release-please automation.
 > (or the equivalent Codex command) to remove it — the plugin is no
 > longer in either marketplace catalog (per ADR-0014/0015).
 
-**Stage 3+ (Runtime/operator track)** — accepted by ADR-0024. The active next dogfood target is a `plugins/runtime` L1 framework primitive for host readiness and operator control, rather than a design-domain plugin. `plugins/designer` remains possible future work referencing omcc-designer experience under the same 4-layer composition, but it is no longer the active next-step trigger for ADR-0012 condition 3.
+**Stage 3+ (Runtime/operator track)** — accepted by ADR-0024 and actively shipping through `plugins/runtime`. As of `plugin-runtime` v0.12.0, runtime provides the L1 framework primitive for host readiness and operator control: `doctor`, `settings`, explicit consensus execution, context hygiene scaffolding, workflow-storage migration, and an advisory completion footer. `plugins/designer` remains possible future work referencing omcc-designer experience under the same 4-layer composition, but it is no longer the active next-step trigger for ADR-0012 condition 3.
 
 Next steps:
 
 1. Read this `AGENTS.md`, then `docs/ARCHITECTURE.md`, then ADRs 0001–0024 (especially 0010 for plugin boundary policy, 0012 for omcc removal gates, 0016 for release-please routing, 0018/0019 for orchestrator, 0020–0022 for engineer command-surface parity, 0023 for peer-runner supervision, and 0024 for runtime/operator control-plane scope).
 2. Stage 2.5+ continuation: ADR-0013 authoring when its trigger fires (Codex CLI plugin-commands schema lands or an alternative mechanism is designed).
-3. Stage 3+ runtime/operator dogfood: implement ADR-0024 in small PRs (`runtime:doctor`, `runtime:settings`, dynamic consensus/context hygiene, completion footer). The first non-trivial Stage 3+ workflow developed engineer-only remains the trigger candidate for ADR-0012 condition 3 → satisfied transition.
+3. Stage 3+ runtime/operator dogfood: continue ADR-0024 in small PRs from the current shipped surface. The next high-value slice is dogfooding `runtime:consensus plan → execute --execute → synthesize → next-round`, then tightening bounded rebuttal UX, cancellation/retention details, and context/footer integration while preserving the explicit no-unbounded-loops, no-host-permission-relaxation, no-host-session-mutation boundaries. The first non-trivial Stage 3+ workflow developed engineer-only remains the trigger candidate for ADR-0012 condition 3 → satisfied transition.
 
 ---
 
