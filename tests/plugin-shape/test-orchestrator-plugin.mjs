@@ -405,6 +405,16 @@ describe('plugins/orchestrator commands/', () => {
     ok(text.includes('macro-plan-'), 'audit preserves macro-plan workflow id shape');
     ok(!text.includes('macro-audit-'), 'audit must not introduce macro-audit workflow ids');
   });
+
+  it('completion commands append the runtime completion footer contract', async () => {
+    for (const cmd of ['plan', 'next', 'done', 'finalize', 'abort']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${cmd}.md`), 'utf-8');
+      ok(/runtime completion footer/i.test(text), `commands/${cmd}.md missing runtime footer guidance`);
+      ok(/advisory/i.test(text), `commands/${cmd}.md must mark footer advisory`);
+      ok(/pointer-only/i.test(text), `commands/${cmd}.md must keep footer pointer-only`);
+      ok(/do not mutate host session\s+context/i.test(text), `commands/${cmd}.md must forbid context mutation`);
+    }
+  });
 });
 
 describe('plugins/orchestrator stale-token audit', () => {

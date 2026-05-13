@@ -369,3 +369,10 @@ Report one of:
 - `✓ Subtask <id> auto-promoted: engineer Stop hook had already completed it; macro now terminal_marker=true.` (rare race; PR-C0 auto-terminal pass fired.)
 
 When more subtasks remain ready, recommend the user follow up with `/orchestrator:next` after the current subtask commits. When all subtasks reach terminal status, recommend `/orchestrator:finalize` or expect the auto-archive once macro `terminal_marker` is set.
+
+Append the runtime completion footer after the dispatch summary. Use the
+runtime footer helper when available, or render the same fields manually:
+context state, workflow id/path, artifact pointers, recommended next work,
+and next-session action/command or prompt pointer. The footer is advisory
+and pointer-only; do not mutate host session context or paste raw peer /
+consensus output into the main session.

@@ -226,3 +226,10 @@ Report one of:
 - `✓ Subtask <id> auto-promoted: macro terminal_marker=true. Run /orchestrator:finalize or wait for the Stop hook auto-archive.`
 - `✓ /orchestrator:done was a no-op — subtask <id> was already completed at <closed_at> with commit <sha>.`
 - `✗ Ownership conflict — engineer_workflow_id mismatch (existing=<X>, supplied=<Y>). Archive the stale engineer workflow or use --workflow=<correct-macro-id> if the wrong macro was selected.`
+
+Append the runtime completion footer after successful completion/no-op
+summaries. Use the runtime footer helper when available, or render the
+same fields manually: context state, workflow id/path, artifact pointers,
+recommended next work, and next-session action/command or prompt pointer.
+The footer is advisory and pointer-only; do not mutate host session
+context or paste raw peer / consensus output into the main session.
