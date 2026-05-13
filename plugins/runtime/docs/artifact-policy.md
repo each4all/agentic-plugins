@@ -29,6 +29,10 @@ The following paths are generated local byproducts and must stay ignored:
 This policy intentionally does not migrate existing `.claude/agentic-*`
 workflow storage. ADR-0024 keeps that compatibility source of truth until a
 separate migration ADR changes it.
+[ADR-0025](../../../docs/adr/0025-workflow-storage-migration.md) proposes
+that migration path: `.agentic-plugins/state/` becomes the canonical ignored
+workflow-state home after a staged dual-read and explicit migration
+implementation.
 
 ## Validation
 
