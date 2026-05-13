@@ -344,18 +344,18 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
   if (!codexCacheLatest) {
     recommendations.push({
       host: 'codex',
-      action: 'install-plugin',
+      action: 'add-marketplace',
       executed: false,
-      command: `codex plugin install --marketplace agentic-plugins ${name}`,
-      detail: 'Recommendation only; this PR does not execute plugin install/update.',
+      command: 'codex plugin marketplace add each4all/agentic-plugins',
+      detail: `Codex exposes marketplace add/upgrade/remove, not per-plugin install; add the marketplace catalog to make ${name} available.`,
     });
   } else if (sourceVersion && codexVersion && semverCompare(String(codexVersion), String(sourceVersion)) < 0) {
     recommendations.push({
       host: 'codex',
-      action: 'update-plugin',
+      action: 'upgrade-marketplace',
       executed: false,
-      command: `codex plugin update --marketplace agentic-plugins ${name}`,
-      detail: `Installed ${codexVersion}; source/catalog ${sourceVersion}.`,
+      command: 'codex plugin marketplace upgrade agentic-plugins',
+      detail: `Cached ${codexVersion}; source/catalog ${sourceVersion}. Codex upgrades the marketplace, not an individual plugin install.`,
     });
   }
   return recommendations;

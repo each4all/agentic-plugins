@@ -30,4 +30,4 @@ Notes:
 - `--deep-peer-smoke` is an explicit opt-in flag. By itself it adds a plan-only preflight section with per-direction readiness, model, and effort inputs.
 - `--execute-deep-peer-smoke` must be paired with `--deep-peer-smoke`. It executes the smoke through the existing companion contract and reports only sanitized metadata: status, exit codes, peer host/model, timing, stdout byte count, and stdout SHA-256. Raw peer stdout is not printed.
 - `--deep-peer-smoke-timeout-ms <n>` bounds each companion process when the executor flag is used.
-- Codex CLI has no verified plugin-local automatic hook packaging today; doctor reports that limit instead of claiming parity.
+- Codex CLI may expose host-level hooks, but agentic-plugins has no verified plugin-local automatic hook packaging today; doctor reports both surfaces separately instead of claiming parity.

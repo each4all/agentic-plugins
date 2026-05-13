@@ -22,7 +22,7 @@ node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--fo
    - Dry-run output is the default and must be safe to run repeatedly.
    - `--apply` may write only `.agentic-plugins/config.toml` in the repo and/or user home.
    - Plugin install/update remains a host-native command recommendation only.
-   - Codex has no verified plugin-local automatic hook packaging today.
+   - Codex may expose host-level hooks, but agentic-plugins has no verified plugin-local automatic hook packaging today.
 
 ## Scope
 
