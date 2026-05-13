@@ -990,14 +990,16 @@ async function inspectWorkflowLedgers({ repoRoot, now, staleGraceMs }) {
   return {
     engineer: await inspectWorkflowNamespace({
       repoRoot,
-      namespace: 'agentic-engineer',
+      plugin: 'engineer',
+      legacyNamespace: 'agentic-engineer',
       expectedPlugin: 'engineer',
       now,
       staleGraceMs,
     }),
     orchestrator: await inspectWorkflowNamespace({
       repoRoot,
-      namespace: 'agentic-orchestrator',
+      plugin: 'orchestrator',
+      legacyNamespace: 'agentic-orchestrator',
       expectedPlugin: 'orchestrator',
       now,
       staleGraceMs,
@@ -1005,17 +1007,104 @@ async function inspectWorkflowLedgers({ repoRoot, now, staleGraceMs }) {
   };
 }
 
-async function inspectWorkflowNamespace({ repoRoot, namespace, expectedPlugin, now, staleGraceMs }) {
-  const root = join(repoRoot, '.claude', namespace);
+async function inspectWorkflowNamespace({ repoRoot, plugin, legacyNamespace, expectedPlugin, now, staleGraceMs }) {
+  const canonicalRoot = join(repoRoot, '.agentic-plugins', 'state', plugin);
+  const legacyRoot = join(repoRoot, '.claude', legacyNamespace);
+  const canonical = await scanOneWorkflowHome({
+    root: canonicalRoot,
+    home: 'canonical',
+    expectedPlugin,
+    now,
+    staleGraceMs,
+  });
+  const legacy = await scanOneWorkflowHome({
+    root: legacyRoot,
+    home: 'legacy',
+    expectedPlugin,
+    now,
+    staleGraceMs,
+  });
+  const storage = summarizeWorkflowStorage({ canonical, legacy, plugin });
+  const selected = storage.selected_home === 'canonical' ? canonical : legacy;
+  return {
+    root: selected.root,
+    workflows: selected.workflows,
+    peer_runs: selected.peer_runs,
+    storage,
+    homes: {
+      canonical,
+      legacy,
+    },
+  };
+}
+
+async function scanOneWorkflowHome({ root, home, expectedPlugin, now, staleGraceMs }) {
   const workflowsDir = join(root, 'workflows');
   const peerRunsDir = join(root, 'peer-runs');
   const workflows = await scanWorkflowFiles(workflowsDir);
   const peerRuns = await scanPeerRuns(peerRunsDir, expectedPlugin, now, staleGraceMs);
   return {
+    home,
     root,
     workflows,
     peer_runs: peerRuns,
+    has_state: workflows.count > 0 || peerRuns.count > 0,
   };
+}
+
+function summarizeWorkflowStorage({ canonical, legacy, plugin }) {
+  const canonicalHas = canonical.has_state;
+  const legacyHas = legacy.has_state;
+  const canonicalBranches = branchSet(canonical.workflows.files);
+  const legacyBranches = branchSet(legacy.workflows.files);
+  const overlappingBranches = [...canonicalBranches].filter((branch) => legacyBranches.has(branch)).sort();
+
+  let status = 'empty';
+  let selectedHome = 'canonical';
+  let recommendation = 'No workflow state found; new state should use the canonical .agentic-plugins/state home.';
+  if (canonicalHas && !legacyHas) {
+    status = 'canonical';
+    selectedHome = 'canonical';
+    recommendation = 'Workflow state is already under the canonical .agentic-plugins/state home.';
+  } else if (!canonicalHas && legacyHas) {
+    status = 'legacy';
+    selectedHome = 'legacy';
+    recommendation = 'Legacy .claude workflow state is present; migrate explicitly before switching writes to .agentic-plugins/state.';
+  } else if (canonicalHas && legacyHas) {
+    status = overlappingBranches.length > 0 ? 'ambiguous' : 'migration_blocked';
+    selectedHome = 'canonical';
+    recommendation = overlappingBranches.length > 0
+      ? 'Both canonical and legacy homes contain workflow state for the same branch; reconcile before migration.'
+      : 'Both canonical and legacy homes contain state; inspect and migrate explicitly before ordinary workflow writes.';
+  }
+
+  if (
+    (canonical.peer_runs.status === 'blocked' || legacy.peer_runs.status === 'blocked') &&
+    status !== 'ambiguous'
+  ) {
+    status = 'migration_blocked';
+    recommendation = 'Peer-run ledger health blocks safe migration; resolve non-terminal stale or malformed handles first.';
+  }
+
+  return {
+    status,
+    plugin,
+    selected_home: selectedHome,
+    canonical_root: canonical.root,
+    legacy_root: legacy.root,
+    canonical_has_state: canonicalHas,
+    legacy_has_state: legacyHas,
+    overlapping_branches: overlappingBranches,
+    recommendation,
+  };
+}
+
+function branchSet(files) {
+  const result = new Set();
+  for (const file of files ?? []) {
+    if (typeof file.branch === 'string' && file.branch.length > 0) result.add(file.branch);
+  }
+  return result;
 }
 
 async function scanWorkflowFiles(dir) {
@@ -1987,7 +2076,10 @@ export function formatText(report) {
   lines.push('Ledgers');
   for (const key of ['engineer', 'orchestrator']) {
     const ledger = report.ledgers[key];
-    lines.push(`- ${key}: workflows=${ledger.workflows.count}/${ledger.workflows.status}; peer-runs=${ledger.peer_runs.count}/${ledger.peer_runs.status}; stale=${ledger.peer_runs.stale_non_terminal}`);
+    lines.push(`- ${key}: storage=${ledger.storage.status}; selected=${ledger.storage.selected_home}; workflows=${ledger.workflows.count}/${ledger.workflows.status}; peer-runs=${ledger.peer_runs.count}/${ledger.peer_runs.status}; stale=${ledger.peer_runs.stale_non_terminal}`);
+    if (ledger.storage.status !== 'empty') {
+      lines.push(`  storage-next: ${ledger.storage.recommendation}`);
+    }
   }
   lines.push('');
   lines.push('Limits');

@@ -1,5 +1,5 @@
 import { describe, it } from 'node:test';
-import { strictEqual, ok, rejects } from 'node:assert/strict';
+import { strictEqual, ok, rejects, deepStrictEqual } from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -51,6 +51,11 @@ describe('runtime doctor', () => {
     strictEqual(report.companions.directions.claude_to_codex.status, 'available');
     strictEqual(report.companions.directions.codex_to_claude.status, 'available');
     strictEqual(report.ledgers.engineer.peer_runs.stale_non_terminal, 1);
+    strictEqual(report.ledgers.engineer.storage.status, 'migration_blocked');
+    strictEqual(report.ledgers.engineer.storage.selected_home, 'legacy');
+    strictEqual(report.ledgers.engineer.storage.legacy_has_state, true);
+    strictEqual(report.ledgers.engineer.storage.canonical_has_state, false);
+    strictEqual(report.ledgers.orchestrator.storage.status, 'empty');
     strictEqual(report.plugins.runtime.status, 'available');
     strictEqual(report.clis.codex.feature_surface.codex_global_hooks, true);
     strictEqual(report.clis.codex.feature_surface.codex_global_hooks_stage, 'stable');
@@ -155,6 +160,44 @@ describe('runtime doctor', () => {
     strictEqual(report.ledgers.engineer.peer_runs.status, 'blocked');
     strictEqual(report.ledgers.engineer.peer_runs.malformed, 1);
     ok(report.ledgers.engineer.peer_runs.runs[0].issues.includes('non-terminal run missing valid updated_at'));
+  });
+
+  it('reports canonical workflow storage when state already lives under .agentic-plugins/state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-canonical-ledger-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await mkdir(join(root, '.agentic-plugins', 'state', 'engineer', 'workflows'), { recursive: true });
+    await writeWorkflow(join(root, '.agentic-plugins', 'state', 'engineer', 'workflows', 'compose-20260513T000000Z-abcdef.md'), 'feat/canonical');
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({}),
+    });
+
+    strictEqual(report.ledgers.engineer.storage.status, 'canonical');
+    strictEqual(report.ledgers.engineer.storage.selected_home, 'canonical');
+    strictEqual(report.ledgers.engineer.workflows.count, 1);
+    strictEqual(report.ledgers.engineer.homes.legacy.workflows.count, 0);
+    ok(formatText(report).includes('storage=canonical'));
+  });
+
+  it('reports ambiguous storage when canonical and legacy homes share a workflow branch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-ambiguous-ledger-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await mkdir(join(root, '.agentic-plugins', 'state', 'engineer', 'workflows'), { recursive: true });
+    await mkdir(join(root, '.claude', 'agentic-engineer', 'workflows'), { recursive: true });
+    await writeWorkflow(join(root, '.agentic-plugins', 'state', 'engineer', 'workflows', 'compose-20260513T000000Z-aaaaaa.md'), 'feat/shared');
+    await writeWorkflow(join(root, '.claude', 'agentic-engineer', 'workflows', 'compose-20260513T000001Z-bbbbbb.md'), 'feat/shared');
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({}),
+    });
+
+    strictEqual(report.ledgers.engineer.storage.status, 'ambiguous');
+    strictEqual(report.ledgers.engineer.storage.selected_home, 'canonical');
+    deepStrictEqual(report.ledgers.engineer.storage.overlapping_branches, ['feat/shared']);
   });
 
   it('reports sandbox and permission readiness as unknown without an explicit peer smoke', async () => {
@@ -571,6 +614,18 @@ async function seedCodexTmpMarketplace(home) {
     name: 'runtime',
     version: '0.1.0',
   });
+}
+
+async function writeWorkflow(path, branch) {
+  await writeFile(path, [
+    '---',
+    `workflow_id: ${path.split('/').at(-1).replace(/\.md$/, '')}`,
+    'current_phase: phase-4',
+    'git_baseline:',
+    `  branch: ${branch}`,
+    '---',
+    '',
+  ].join('\n'));
 }
 
 async function writeJson(path, value) {

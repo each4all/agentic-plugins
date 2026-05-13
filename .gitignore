@@ -52,6 +52,7 @@ coverage/
 # Keep .agentic-plugins/config.toml trackable for intentional repo-local
 # defaults. Generated runs and local operator byproducts stay out of git.
 .agentic-plugins/runs/
+.agentic-plugins/state/
 .agentic-plugins/tmp/
 .agentic-plugins/cache/
 .agentic-plugins/*.local.toml

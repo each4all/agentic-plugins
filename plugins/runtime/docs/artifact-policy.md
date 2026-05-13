@@ -18,21 +18,20 @@ The following paths are generated local byproducts and must stay ignored:
 
 - `.agentic-plugins/runs/` — runtime context, consensus, doctor, and future
   run artifacts.
+- `.agentic-plugins/state/` — workflow files, archives, peer-run ledgers,
+  locks, and migration manifests.
 - `.agentic-plugins/tmp/` — temporary operator process byproducts.
 - `.agentic-plugins/cache/` — repo-local runtime caches.
 - `.agentic-plugins/*.local.toml` — local runtime config overrides.
-- `.claude/` — Claude host state and current engineer/orchestrator workflow
+- `.claude/` — Claude host state and legacy engineer/orchestrator workflow
   storage.
 - `.codex/` — Codex host state.
 - `output/` — legacy plugin test output.
 
-This policy intentionally does not migrate existing `.claude/agentic-*`
-workflow storage. ADR-0024 keeps that compatibility source of truth until a
-separate migration ADR changes it.
-[ADR-0025](../../../docs/adr/0025-workflow-storage-migration.md) proposes
-that migration path: `.agentic-plugins/state/` becomes the canonical ignored
-workflow-state home after a staged dual-read and explicit migration
-implementation.
+This policy makes `.agentic-plugins/state/` safe as an ignored generated
+state home before workflow writers move there. Existing `.claude/agentic-*`
+workflow storage remains a legacy compatibility home until ADR-0025's
+dual-read/write and explicit migration implementation lands.
 
 ## Validation
 
