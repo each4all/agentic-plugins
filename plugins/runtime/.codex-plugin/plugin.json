@@ -1,7 +1,7 @@
 {
   "name": "runtime",
   "version": "0.1.0",
-  "description": "Runtime operator control plane for agentic-plugins host readiness, doctor diagnostics, settings planning, model/effort config, companion readiness, and workflow ledger health. L1 framework primitive per ADR-0024.",
+  "description": "Runtime operator control plane for agentic-plugins host readiness, doctor diagnostics, settings planning, consensus artifacts, model/effort config, companion readiness, and workflow ledger health. L1 framework primitive per ADR-0024.",
   "author": {
     "name": "each4all",
     "url": "https://github.com/each4all"
@@ -13,6 +13,7 @@
     "runtime",
     "doctor",
     "settings",
+    "consensus",
     "operator",
     "readiness",
     "companions",
@@ -24,8 +25,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Runtime",
-    "shortDescription": "Runtime diagnostics and dry-run settings planning for agentic-plugins",
-    "longDescription": "L1 framework primitive per ADR-0024. Provides $runtime:doctor as a read-only diagnostic surface for Claude Code and Codex CLI availability, auth state, marketplace/cache/plugin discovery, companion contract compatibility, model/effort resolution observation, companion sandbox/permission readiness, and engineer/orchestrator workflow plus peer-run ledger health. Provides $runtime:settings as a dry-run settings planner with explicit --apply writes limited to agentic-plugins-owned .agentic-plugins/config.toml model/effort defaults. Dynamic consensus, context hygiene, completion footer mutation, deep peer smoke, and automatic plugin install/update apply mode are deferred.",
+    "shortDescription": "Runtime diagnostics, settings planning, and consensus artifact scaffolding",
+    "longDescription": "L1 framework primitive per ADR-0024. Provides $runtime:doctor as a read-only diagnostic surface for Claude Code and Codex CLI availability, auth state, marketplace/cache/plugin discovery, companion contract compatibility, model/effort resolution observation, companion sandbox/permission readiness, and engineer/orchestrator workflow plus peer-run ledger health. Provides $runtime:settings as a dry-run settings planner with explicit --apply writes limited to agentic-plugins-owned .agentic-plugins/config.toml model/effort defaults. Provides $runtime:consensus as an artifact-only dynamic peer consensus scaffold: plan peer prompts, record raw peer outputs as files, synthesize summary/disagreements/evidence pointers, and plan targeted rebuttal rounds without direct peer execution. Context hygiene, completion footer mutation, deep peer smoke, and automatic plugin install/update apply mode are deferred.",
     "developerName": "each4all",
     "category": "Productivity",
     "capabilities": [
@@ -35,7 +36,7 @@
     "defaultPrompt": [
       "$runtime:doctor",
       "$runtime:settings",
-      "$runtime:doctor --format json"
+      "$runtime:consensus plan --task \"<task>\""
     ]
   }
 }

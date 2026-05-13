@@ -4,7 +4,7 @@ Runtime operator control plane for agentic-plugins. **L1 framework primitive** p
 
 ## Status
 
-Ships `runtime:doctor` and the first `runtime:settings` implementation. Dynamic consensus, context hygiene, completion footer work, deep peer smoke, and automatic plugin install/update apply mode are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
+Ships `runtime:doctor`, the first `runtime:settings` implementation, and an artifact-only `runtime:consensus` scaffold. Context hygiene, completion footer work, deep peer smoke, automatic plugin install/update apply mode, and automatic peer execution are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
 
 ## What it is
 
@@ -32,6 +32,7 @@ It does not own persona-level engineering work or macro planning. Those remain i
 |---------|--------|-------------|
 | `/runtime:doctor [--format text\|json] [--model <id>] [--effort <level>] [--deep-peer-smoke]` | shipping | Read-only diagnosis for host CLIs, auth, plugin cache/install state, companion readiness, model/effort observation, and workflow/peer-run ledger health. |
 | `/runtime:settings [--format text\|json] [--target repo\|user\|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply]` | shipping | Dry-run settings planner for marketplace/plugin/CLI readiness and agentic-plugins-owned model/effort config. `--apply` writes only `.agentic-plugins/config.toml`. |
+| `/runtime:consensus plan\|record\|synthesize\|next-round\|status ...` | shipping scaffold | Runtime-owned consensus artifact manager. Creates fanout/rebuttal prompts, records raw peer output as files, and emits only synthesized summary, durable disagreements, evidence pointers, and artifact paths. |
 
 Codex skill parity:
 
@@ -40,6 +41,7 @@ $runtime:doctor
 $runtime:doctor --format json
 $runtime:settings
 $runtime:settings --codex-model gpt-5.4 --codex-effort high --apply
+$runtime:consensus plan --task "Review this risky change" --max-rounds 2
 ```
 
 ## Doctor behavior
@@ -79,6 +81,17 @@ Settings is dry-run by default. It checks marketplace registration and install/c
 Supported keys are `model`, `effort`, `claude_model`, `claude_effort`, `codex_model`, and `codex_effort`. Direction-specific keys map to the companion peer: `claude_*` for Codex -> Claude and `codex_*` for Claude -> Codex.
 
 Settings does not write host-native config, auth, secrets, sandbox/permission settings, or execute plugin install/update commands. Plugin install/update remains a host-native command recommendation in this PR.
+
+## Consensus behavior
+
+Consensus is a runtime-owned artifact scaffold for ADR-0024 dynamic peer loops. It does not execute peers directly. The first flow is:
+
+1. `plan`: create `<repo>/.agentic-plugins/runs/consensus/<run-id>/manifest.json`, `task.md`, and round-1 peer prompt files.
+2. `record`: copy each peer raw output into the run artifact tree and update the manifest with pointer, byte count, and hash.
+3. `synthesize`: write `consensus.json` with `synthesized_summary`, `durable_disagreements`, `evidence_pointers`, and `next_action`.
+4. `next-round`: create targeted rebuttal prompts from synthesized disagreement summaries when budget remains.
+
+Main-session output intentionally omits raw peer output. It reports artifact pointers and the bounded consensus result only. This scaffold does not migrate engineer/orchestrator workflow state, mutate companion scripts, alter host-native config/auth/secrets, or claim Codex manual-hook parity.
 
 ## Install
 
