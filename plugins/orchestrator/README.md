@@ -60,7 +60,7 @@ Claude Code hooks declared in `hooks/hooks.json`:
 - `PreCompact`: write a snapshot before compaction
 - `Stop`: macro auto-archive — iterate every non-archived macro under `workflows/` (branch-agnostic, per ADR-0019 §5), snapshot each, evaluate the four hard gates (A1 `terminal_marker` / A2 macro terminal_phase whitelist `{commit-complete, finalized, aborted}` / A3 `all_subtasks_terminal` / A4 `no_active_engineer_children`), and atomically move passing macros into `archive/`. The non-conventional commit subject gate emits a soft warning but does not block archive.
 
-Codex CLI 0.128.0 has **no plugin-local automatic hook packaging verified**, so `hooks/hooks.json` declares only Claude hooks; the Codex-side `Stop` script under `adapters/codex/hooks/stop.mjs` ships as a manual helper invoked from `/orchestrator:finalize` and `/orchestrator:abort` Phase 4 tails (or by the user manually) for cross-host macro auto-archive parity.
+Codex CLI exposes a host-level hooks feature in current releases, but agentic-plugins has **no plugin-local automatic hook packaging verified** for orchestrator lifecycle events. `hooks/hooks.json` therefore declares only Claude hooks; the Codex-side `Stop` script under `adapters/codex/hooks/stop.mjs` ships as a manual helper invoked from `/orchestrator:finalize` and `/orchestrator:abort` Phase 4 tails (or by the user manually) for cross-host macro auto-archive parity.
 
 ## Schema vs engineer
 
@@ -80,7 +80,7 @@ The two schema lines collide on the literal `'1.1'` string but namespace separat
 claude /plugin install orchestrator@agentic-plugins
 
 # Codex CLI
-codex plugin install --marketplace agentic-plugins orchestrator
+codex plugin marketplace add each4all/agentic-plugins
 ```
 
 Required peers:
