@@ -4,7 +4,7 @@ Runtime operator control plane for agentic-plugins. **L1 framework primitive** p
 
 ## Status
 
-Ships `runtime:doctor`, the first `runtime:settings` implementation, an artifact-only `runtime:consensus` scaffold, and the first runtime-owned `runtime:context` scaffold. Completion footer work, deep peer smoke, automatic plugin install/update apply mode, automatic peer execution, and context automation beyond artifact capture are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
+Ships `runtime:doctor`, the first `runtime:settings` implementation, an artifact-only `runtime:consensus` scaffold, the first runtime-owned `runtime:context` scaffold, and a pointer-only completion footer helper. Deep peer smoke, automatic plugin install/update apply mode, automatic peer execution, and context automation beyond artifact capture are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
 
 ## What it is
 
@@ -17,6 +17,7 @@ Ships `runtime:doctor`, the first `runtime:settings` implementation, an artifact
 - companion sandbox/permission readiness observations;
 - workflow and peer-run ledger health;
 - bounded context hygiene artifacts for next-session handoff.
+- advisory completion footer rendering for workflow handoff pointers.
 
 It does not own persona-level engineering work or macro planning. Those remain in `engineer` and `orchestrator`.
 
@@ -35,6 +36,8 @@ It does not own persona-level engineering work or macro planning. Those remain i
 | `/runtime:settings [--format text\|json] [--target repo\|user\|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply]` | shipping | Dry-run settings planner for marketplace/plugin/CLI readiness and agentic-plugins-owned model/effort config. `--apply` writes only `.agentic-plugins/config.toml`. |
 | `/runtime:consensus plan\|record\|synthesize\|next-round\|status ...` | shipping scaffold | Runtime-owned consensus artifact manager. Creates fanout/rebuttal prompts, records raw peer output as files, and emits only synthesized summary, durable disagreements, evidence pointers, and artifact paths. |
 | `/runtime:context capture\|status ...` | shipping scaffold | Runtime-owned context hygiene artifact manager. Writes context summary, risk level, artifact pointers, and next-session prompt/action under `.agentic-plugins/runs/context/` without mutating host session context. |
+
+Runtime also ships `scripts/footer.mjs`, a helper used by engineer and orchestrator completion surfaces to render the ADR-0024 advisory footer from explicit fields or a `runtime:context` artifact pointer. It is intentionally not a new slash command.
 
 Codex skill parity:
 
@@ -112,6 +115,19 @@ Context output is intentionally limited to:
 - generated or caller-supplied next-session prompt preview and pointer.
 
 This scaffold does not migrate engineer/orchestrator workflow state, run peers, paste consensus raw output into the main session, mutate host-native config/auth/secrets/sandbox state, or claim Codex manual-hook parity.
+
+## Completion footer behavior
+
+The footer helper renders the standard ADR-0024 completion footer:
+
+- context state (`green`, `yellow`, or `red`);
+- workflow kind/id/path;
+- artifact pointers, including `.agentic-plugins/runs/context/<run-id>/context.json` when linked;
+- recommended next work;
+- next-session action and command or prompt pointer;
+- explicit advisory/pointer-only limits.
+
+When supplied `--context-run-id`, the helper reads only bounded fields from the matching `runtime:context` artifact: risk level, artifact pointers, recommended action, and next-session prompt pointer. It does not print the context summary body, prompt body, raw peer output, or consensus raw output.
 
 ## Install
 
