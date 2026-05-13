@@ -6,6 +6,7 @@
 
 - Add `runtime:context`, an artifact-only context hygiene scaffold that writes summary, risk, artifact pointers, and next-session handoff files under `.agentic-plugins/runs/context/` without mutating host session context.
 - Add `runtime:context check`, a read-only explicit context budget check that computes green/yellow/red risk without creating artifacts or mutating host session context.
+- Add `runtime:context status --latest`, a read-only latest handoff lookup with artifact age and stale-state reporting.
 
 ## 0.1.0
 

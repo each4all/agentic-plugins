@@ -11,6 +11,7 @@ import {
 } from '../../plugins/runtime/scripts/context.mjs';
 
 const RUN_ID = 'context-20260513T000000Z-abcdef';
+const LATER_RUN_ID = 'context-20260513T020000Z-fedcba';
 
 describe('runtime context', () => {
   it('captures a bounded context artifact without mutating host session state', async () => {
@@ -70,6 +71,42 @@ describe('runtime context', () => {
     ok(report.next_session.prompt_preview.includes('Use this context artifact for the next runtime PR.'));
     ok(report.artifacts.some((artifact) => artifact.kind === 'consensus'));
     ok(!JSON.stringify(report).includes('RAW PEER OUTPUT'));
+  });
+
+  it('finds the latest context artifact and reports stale handoff status', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-context-latest-'));
+    await runContext({
+      command: 'capture',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      summary: 'Older runtime handoff.',
+      risk: 'green',
+    });
+    await runContext({
+      command: 'capture',
+      repoRoot: root,
+      runId: LATER_RUN_ID,
+      now: new Date('2026-05-13T02:00:00.000Z'),
+      summary: 'Latest runtime handoff.',
+      risk: 'yellow',
+    });
+
+    const report = await runContext({
+      command: 'status',
+      repoRoot: root,
+      latest: true,
+      now: new Date('2026-05-13T04:00:00.000Z'),
+      staleAfterMs: 60 * 60 * 1000,
+    });
+
+    strictEqual(report.run_id, LATER_RUN_ID);
+    strictEqual(report.context_summary, 'Latest runtime handoff.');
+    strictEqual(report.handoff.mode, 'latest');
+    strictEqual(report.handoff.latest, true);
+    strictEqual(report.handoff.age_minutes, 120);
+    strictEqual(report.handoff.stale, true);
+    ok(formatText(report).includes('handoff lookup:'));
   });
 
   it('checks explicit context budget without creating artifacts', async () => {
@@ -176,6 +213,11 @@ describe('runtime context', () => {
     strictEqual(commandStyle.command, 'status');
     strictEqual(commandStyle.runId, RUN_ID);
 
+    const latestStatus = parseArgs(['status', '--latest', '--stale-after-hours', '6']);
+    strictEqual(latestStatus.command, 'status');
+    strictEqual(latestStatus.latest, true);
+    strictEqual(latestStatus.staleAfterMs, 6 * 60 * 60 * 1000);
+
     const check = parseArgs(['check', '--repo-root', '/tmp/repo', '--token-budget', '100000', '--used-tokens', '71000']);
     strictEqual(check.command, 'check');
     strictEqual(check.tokenBudget, 100000);
@@ -217,6 +259,34 @@ describe('runtime context', () => {
         risk: 'green',
       }),
       /Use budget metrics or --risk/,
+    );
+  });
+
+  it('rejects missing or ambiguous context status lookup inputs', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-context-status-invalid-'));
+    await rejectsAsync(
+      runContext({
+        command: 'status',
+        repoRoot: root,
+      }),
+      /status requires --run-id or --latest/,
+    );
+    await rejectsAsync(
+      runContext({
+        command: 'status',
+        repoRoot: root,
+        runId: RUN_ID,
+        latest: true,
+      }),
+      /Use either --run-id or --latest/,
+    );
+    await rejectsAsync(
+      runContext({
+        command: 'status',
+        repoRoot: root,
+        latest: true,
+      }),
+      /No context artifacts found/,
     );
   });
 });
