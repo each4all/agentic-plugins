@@ -137,6 +137,66 @@ describe('runtime footer', () => {
     ok(!JSON.stringify(report).includes('latest prompt'));
   });
 
+  it('recommends asking the user about PR handling only when readiness criteria pass', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-pr-ready-'));
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      contextState: 'yellow',
+      prCompletionBoundary: 'reached',
+      prValidationState: 'waived',
+      prReviewState: 'clear',
+      prBranchState: 'pushable',
+    });
+
+    strictEqual(report.pr_handling.recommendation, 'ask-user');
+    strictEqual(report.pr_handling.should_ask_user, true);
+    ok(report.pr_handling.prompt.includes('Ask the user'));
+    ok(report.pr_handling.criteria.every((criterion) => criterion.status === 'pass'));
+
+    const text = formatText(report);
+    ok(text.includes('PR handling:'));
+    ok(text.includes('- recommendation: ask-user'));
+    ok(text.includes('deliverable_boundary: pass (reached)'));
+  });
+
+  it('blocks PR handling when validation, review, branch, or context criteria fail', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-pr-block-'));
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      contextState: 'red',
+      prCompletionBoundary: 'reached',
+      prValidationState: 'failed',
+      prReviewState: 'blocking',
+      prBranchState: 'not-pushable',
+    });
+
+    strictEqual(report.pr_handling.recommendation, 'block');
+    strictEqual(report.pr_handling.should_ask_user, false);
+    strictEqual(report.pr_handling.prompt, null);
+    ok(report.pr_handling.criteria.some((criterion) => criterion.name === 'context_risk' && criterion.status === 'fail'));
+    ok(report.pr_handling.criteria.some((criterion) => criterion.name === 'validation' && criterion.status === 'fail'));
+  });
+
+  it('defers PR handling when readiness evidence is incomplete', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-pr-defer-'));
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      contextState: 'green',
+      prHandling: true,
+      prCompletionBoundary: 'reached',
+      prValidationState: 'passed',
+      prReviewState: 'unknown',
+      prBranchState: 'pushable',
+    });
+
+    strictEqual(report.pr_handling.recommendation, 'defer');
+    strictEqual(report.pr_handling.should_ask_user, false);
+    ok(report.pr_handling.criteria.some((criterion) => criterion.name === 'blocking_reviews' && criterion.status === 'unknown'));
+  });
+
   it('parses CLI arguments and rejects unsafe pointers or context ids', async () => {
     const opts = parseArgs([
       'render',
@@ -154,6 +214,15 @@ describe('runtime footer', () => {
       'engineer-1',
       '--artifact',
       'workflow:.claude/agentic-engineer/workflows/engineer-1.md',
+      '--pr-handling',
+      '--pr-completion-boundary',
+      'reached',
+      '--pr-validation-state',
+      'passed',
+      '--pr-review-state',
+      'clear',
+      '--pr-branch-state',
+      'pushable',
       '--recommended-next-work',
       'Commit after review.',
     ]);
@@ -161,11 +230,20 @@ describe('runtime footer', () => {
     strictEqual(opts.host, 'neutral');
     strictEqual(opts.contextState, 'yellow');
     strictEqual(opts.workflowKind, 'engineer');
+    strictEqual(opts.prHandling, true);
+    strictEqual(opts.prCompletionBoundary, 'reached');
+    strictEqual(opts.prValidationState, 'passed');
+    strictEqual(opts.prReviewState, 'clear');
+    strictEqual(opts.prBranchState, 'pushable');
 
     throws(() => parseArgs(['render', '--context-latest', '--context-run-id', RUN_ID]), /Use either --context-run-id or --context-latest/);
     throws(() => parseArgs(['render', '--context-run-id', '../bad']), /Invalid --context-run-id/);
     throws(() => parseArgs(['render', '--stale-after-hours', 'soon']), /non-negative integer/);
     throws(() => parseArgs(['render', '--context-state', 'orange']), /green, yellow, or red/);
+    throws(() => parseArgs(['render', '--pr-completion-boundary', 'maybe']), /reached, not-reached, or unknown/);
+    throws(() => parseArgs(['render', '--pr-validation-state', 'maybe']), /passed, waived, failed, not-run, or unknown/);
+    throws(() => parseArgs(['render', '--pr-review-state', 'maybe']), /clear, blocking, or unknown/);
+    throws(() => parseArgs(['render', '--pr-branch-state', 'maybe']), /pushable, not-pushable, or unknown/);
     throws(() => parseArgs(['render', '--artifact', 'bad\npath']), /single-line/);
 
     const root = await mkdtemp(join(tmpdir(), 'runtime-footer-reject-'));

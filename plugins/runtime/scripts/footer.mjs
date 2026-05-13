@@ -9,6 +9,10 @@ import { RUNTIME_VERSION } from './version.mjs';
 const VERSION = RUNTIME_VERSION;
 const VALID_HOSTS = new Set(['claude', 'codex', 'neutral']);
 const VALID_CONTEXT_STATES = new Set(['green', 'yellow', 'red']);
+const VALID_PR_COMPLETION_BOUNDARIES = new Set(['reached', 'not-reached', 'unknown']);
+const VALID_PR_VALIDATION_STATES = new Set(['passed', 'waived', 'failed', 'not-run', 'unknown']);
+const VALID_PR_REVIEW_STATES = new Set(['clear', 'blocking', 'unknown']);
+const VALID_PR_BRANCH_STATES = new Set(['pushable', 'not-pushable', 'unknown']);
 const RUN_ID_RE = /^context-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const ARTIFACT_KIND_RE = /^[A-Za-z0-9._-]+$/;
 const DEFAULT_HANDOFF_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
@@ -36,6 +40,9 @@ export async function runFooter(options = {}) {
     ...providedArtifacts,
   ]);
   const nextSession = normalizeNextSession({ host, context, options });
+  const prHandling = shouldIncludePrHandling(options)
+    ? buildPrHandlingReadiness({ contextState, options })
+    : null;
 
   return {
     command: 'render',
@@ -55,6 +62,7 @@ export async function runFooter(options = {}) {
       ? requireSingleLine(options.recommendedNextWork, '--recommended-next-work')
       : 'Review the completion result and choose the next command explicitly.',
     next_session: nextSession,
+    pr_handling: prHandling,
     limits: footerLimits(),
   };
 }
@@ -104,6 +112,37 @@ export function parseArgs(argv) {
         break;
       case '--context-state':
         options.contextState = validateContextState(requireValue(args, arg));
+        break;
+      case '--pr-handling':
+        options.prHandling = true;
+        break;
+      case '--pr-completion-boundary':
+        options.prCompletionBoundary = validateEnum(
+          requireValue(args, arg),
+          VALID_PR_COMPLETION_BOUNDARIES,
+          `${arg} must be reached, not-reached, or unknown`,
+        );
+        break;
+      case '--pr-validation-state':
+        options.prValidationState = validateEnum(
+          requireValue(args, arg),
+          VALID_PR_VALIDATION_STATES,
+          `${arg} must be passed, waived, failed, not-run, or unknown`,
+        );
+        break;
+      case '--pr-review-state':
+        options.prReviewState = validateEnum(
+          requireValue(args, arg),
+          VALID_PR_REVIEW_STATES,
+          `${arg} must be clear, blocking, or unknown`,
+        );
+        break;
+      case '--pr-branch-state':
+        options.prBranchState = validateEnum(
+          requireValue(args, arg),
+          VALID_PR_BRANCH_STATES,
+          `${arg} must be pushable, not-pushable, or unknown`,
+        );
         break;
       case '--artifact':
         options.artifacts.push(requireSingleLine(requireValue(args, arg), arg));
@@ -161,6 +200,16 @@ export function formatText(report) {
   }
   if (report.next_session?.prompt_pointer) {
     lines.push(`next-session prompt: ${report.next_session.prompt_pointer}`);
+  }
+  if (report.pr_handling) {
+    lines.push('PR handling:');
+    lines.push(`- recommendation: ${report.pr_handling.recommendation}`);
+    lines.push(`- should_ask_user: ${report.pr_handling.should_ask_user}`);
+    if (report.pr_handling.prompt) lines.push(`- prompt: ${report.pr_handling.prompt}`);
+    lines.push('- criteria:');
+    for (const criterion of report.pr_handling.criteria ?? []) {
+      lines.push(`  - ${criterion.name}: ${criterion.status} (${criterion.observed})`);
+    }
   }
   lines.push('limits:');
   for (const limit of report.limits ?? []) lines.push(`- ${limit}`);
@@ -312,6 +361,67 @@ function normalizeNextSession({ host, context, options }) {
   };
 }
 
+function shouldIncludePrHandling(options) {
+  return options.prHandling === true
+    || options.prCompletionBoundary !== undefined
+    || options.prValidationState !== undefined
+    || options.prReviewState !== undefined
+    || options.prBranchState !== undefined;
+}
+
+function buildPrHandlingReadiness({ contextState, options }) {
+  const criteria = [
+    criterion(
+      'deliverable_boundary',
+      options.prCompletionBoundary ?? 'unknown',
+      { pass: ['reached'], fail: ['not-reached'] },
+    ),
+    criterion(
+      'validation',
+      options.prValidationState ?? 'unknown',
+      { pass: ['passed', 'waived'], fail: ['failed', 'not-run'] },
+    ),
+    criterion(
+      'context_risk',
+      contextState,
+      { pass: ['green', 'yellow'], fail: ['red'] },
+    ),
+    criterion(
+      'blocking_reviews',
+      options.prReviewState ?? 'unknown',
+      { pass: ['clear'], fail: ['blocking'] },
+    ),
+    criterion(
+      'branch_state',
+      options.prBranchState ?? 'unknown',
+      { pass: ['pushable'], fail: ['not-pushable'] },
+    ),
+  ];
+
+  const hasFail = criteria.some((item) => item.status === 'fail');
+  const hasUnknown = criteria.some((item) => item.status === 'unknown');
+  const shouldAsk = !hasFail && !hasUnknown;
+  const recommendation = shouldAsk ? 'ask-user' : hasFail ? 'block' : 'defer';
+
+  return {
+    recommendation,
+    should_ask_user: shouldAsk,
+    prompt: shouldAsk
+      ? 'Ask the user whether to commit, push, and open a PR now; continue without PR; or defer PR handling.'
+      : null,
+    criteria,
+  };
+}
+
+function criterion(name, observed, rule) {
+  const status = rule.pass.includes(observed)
+    ? 'pass'
+    : rule.fail.includes(observed)
+      ? 'fail'
+      : 'unknown';
+  return { name, status, observed };
+}
+
 function normalizeArtifacts(repoRoot, values) {
   const inputs = Array.isArray(values) ? values : [values];
   return inputs.map((value) => {
@@ -439,6 +549,11 @@ function validateContextState(value) {
   return value;
 }
 
+function validateEnum(value, valid, message) {
+  if (!valid.has(value)) throw new Error(message);
+  return value;
+}
+
 function validateRunId(runId) {
   if (!RUN_ID_RE.test(runId)) {
     throw new Error('Invalid --context-run-id; expected context-YYYYMMDDTHHMMSSZ-abcdef');
@@ -492,9 +607,11 @@ Usage:
   runtime footer render --context-run-id <context-run-id> --workflow-id <id>
   runtime footer render --context-latest [--stale-after-hours <n>] --workflow-id <id>
   runtime footer render --context-state green|yellow|red --recommended-next-work <text>
+  runtime footer render --pr-handling --pr-completion-boundary reached --pr-validation-state passed --pr-review-state clear --pr-branch-state pushable
 
 Renders an advisory, pointer-only completion footer. It reads optional
-runtime:context artifacts but does not mutate host session context or workflow state.`;
+runtime:context artifacts but does not mutate host session context, workflow
+state, or pull request state.`;
 }
 
 async function main() {

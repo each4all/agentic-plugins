@@ -19,6 +19,11 @@ Every footer contains:
 - exact next-session command or prompt pointer when available;
 - limits stating that the footer is advisory and pointer-only.
 
+When a completion surface has enough local evidence, it may also include
+PR handling readiness. This is a decision aid for asking the user what to
+do next; it does not commit, push, open, update, merge, or mark any PR
+ready for review.
+
 ## Helper
 
 The helper is intentionally a script, not a new public runtime command:
@@ -69,10 +74,46 @@ Without a context artifact, callers may supply `--context-state`,
 `--artifact`, `--next-session-action`, `--next-session-command`, and
 `--next-session-prompt-pointer` directly.
 
+### PR handling readiness
+
+Callers should include PR handling fields only after the work itself has
+reached a completion boundary. The helper returns `ask-user` only when all
+readiness criteria pass:
+
+| Criterion | Pass values | Blocking values |
+|---|---|---|
+| deliverable boundary | `--pr-completion-boundary reached` | `not-reached` |
+| validation | `--pr-validation-state passed` or `waived` | `failed` or `not-run` |
+| context risk | `--context-state green` or `yellow` | `red` |
+| blocking reviews | `--pr-review-state clear` | `blocking` |
+| branch state | `--pr-branch-state pushable` | `not-pushable` |
+
+Any `unknown` criterion returns `defer`; an explicit blocking value returns
+`block`. Only `ask-user` means the host should ask the user whether to
+commit, push, and open a PR now; continue without PR; or defer PR handling.
+
+Example:
+
+```bash
+node <runtime-plugin-root>/scripts/footer.mjs render \
+  --repo-root "$REPO_ROOT" \
+  --host codex \
+  --workflow-kind engineer \
+  --workflow-id "$WORKFLOW_ID" \
+  --context-state yellow \
+  --pr-handling \
+  --pr-completion-boundary reached \
+  --pr-validation-state passed \
+  --pr-review-state clear \
+  --pr-branch-state pushable
+```
+
 ## Boundaries
 
 - Advisory only: no automatic context mutation, compaction, host switch, or
   workflow start.
+- PR handling readiness is advisory only: no automatic commit, push, PR
+  creation, PR metadata update, merge, or ready-for-review transition.
 - Pointer-only: raw peer output, consensus raw output, prompt bodies, and
   large artifacts stay in runtime-owned files.
 - Existing engineer and orchestrator workflow state remains in its current
