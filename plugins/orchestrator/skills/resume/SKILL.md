@@ -107,7 +107,8 @@ node "<plugin-root>/scripts/state.mjs" archive \
   --workflow-path "$WORKFLOW" --host <claude|codex> --repo-root "$REPO_ROOT"
 ```
 
-Archive moves the file to `.claude/agentic-orchestrator/archive/`.
+Archive moves the file to the matching canonical or legacy
+orchestrator `archive/` home.
 
 ---
 

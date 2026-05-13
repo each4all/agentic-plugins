@@ -12,7 +12,9 @@ a verbatim prompt through `scripts/peer-runner.mjs run --kind
 peer-now` and records a `[Peer]` phase note on the active macro
 workflow when one exists. It is not Plan-verify and it never writes
 `pending_ensemble` or `ensemble_results`.
-The workflow and peer-run namespace is `.claude/agentic-orchestrator/`.
+The workflow and peer-run namespace is `.agentic-plugins/state/orchestrator/`
+for new repos; legacy `.claude/agentic-orchestrator/` state remains active
+until explicit migration.
 
 **Cognitive runbook lives in
 `$CLAUDE_PLUGIN_ROOT/skills/peer-now/SKILL.md`**. The skill contains

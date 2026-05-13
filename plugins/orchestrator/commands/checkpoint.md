@@ -10,7 +10,9 @@ $ARGUMENTS
 `/orchestrator:checkpoint` records a concise progress note in the
 active macro workflow's `latest_checkpoint` frontmatter field. It
 does not mutate `current_phase`, `next_action`, or `plan.subtasks[]`.
-The workflow namespace is `.claude/agentic-orchestrator/`.
+The workflow namespace is `.agentic-plugins/state/orchestrator/` for
+new repos; legacy `.claude/agentic-orchestrator/` state remains active
+until explicit migration.
 
 **Cognitive runbook lives in
 `$CLAUDE_PLUGIN_ROOT/skills/checkpoint/SKILL.md`**. This command owns

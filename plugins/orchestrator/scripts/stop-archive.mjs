@@ -17,9 +17,9 @@
 //   - A4 gate is `no_active_engineer_children` (no non-archived engineer
 //     workflow file references this orchestrator's id via
 //     `parent_workflow`), NOT engineer's `child_completions` shape
-//     check. Macro plans operate cross-plugin — engineer workflows live
-//     under `.claude/agentic-engineer/workflows/` and the gate counts
-//     references via the orchestrator-local scan helper
+//     check. Macro plans operate cross-plugin — engineer workflows can
+//     live under the canonical or legacy engineer workflow home and the
+//     gate counts references via the orchestrator-local scan helper
 //     `noActiveEngineerChildrenScan`.
 //
 //   - No parent writeback path. Macros are root workflows in the

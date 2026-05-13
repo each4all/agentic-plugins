@@ -12,11 +12,12 @@
 //   - plugins/orchestrator/adapters/{claude,codex}/hooks/* (snapshot writes)
 //
 // Storage location:
-//   <repo_root>/.claude/agentic-orchestrator/workflows/<workflow_id>.md
+//   canonical: <repo_root>/.agentic-plugins/state/orchestrator/workflows/<workflow_id>.md
+//   legacy:    <repo_root>/.claude/agentic-orchestrator/workflows/<workflow_id>.md
 //
 // Lock files:
-//   <repo_root>/.claude/agentic-orchestrator/.creation-lock        (directory-level)
-//   <repo_root>/.claude/agentic-orchestrator/workflows/<id>.md.lock (per-file)
+//   <state-home>/.creation-lock             (directory-level)
+//   <state-home>/workflows/<id>.md.lock     (per-file)
 //
 // File modes:
 //   directories: 0o700
@@ -25,8 +26,8 @@
 // File format: YAML frontmatter (schema='1.0') + Markdown body.
 //
 // Schema divergence from plugins/engineer (intentional):
-//   engineer  schema='1.1', WORKFLOW_DIR_REL=.claude/agentic-engineer/workflows
-//   orchestrator schema='1.0', WORKFLOW_DIR_REL=.claude/agentic-orchestrator/workflows
+//   engineer  schema='1.1'
+//   orchestrator schema='1.0'
 //   The two schema lines evolve independently; orchestrator rejects
 //   engineer-shape files (schema 1 / '1.1' / 2) cleanly to keep namespaces
 //   separate.
@@ -56,14 +57,19 @@ import { execFileSync } from 'node:child_process';
 export const SCHEMA_VERSION = '1.1';
 export const SUPPORTED_SCHEMA_VERSIONS = new Set(['1.0', '1.1']);
 
-export const WORKFLOW_DIR_REL = '.claude/agentic-orchestrator/workflows';
-export const CREATION_LOCK_REL = '.claude/agentic-orchestrator/.creation-lock';
+export const STATE_DIR_REL = '.agentic-plugins/state/orchestrator';
+export const LEGACY_STATE_DIR_REL = '.claude/agentic-orchestrator';
+export const WORKFLOW_DIR_REL = `${STATE_DIR_REL}/workflows`;
+export const LEGACY_WORKFLOW_DIR_REL = `${LEGACY_STATE_DIR_REL}/workflows`;
+export const CREATION_LOCK_REL = `${STATE_DIR_REL}/.creation-lock`;
+export const LEGACY_CREATION_LOCK_REL = `${LEGACY_STATE_DIR_REL}/.creation-lock`;
 // ADR-0019 PR-E §5 — auto-archive destination + macro terminal-phase
 // whitelist. The phase set diverges from engineer's
 // {commit-complete, summary-complete, fix-complete}: macro plans use
 // {commit-complete (happy path via auto-terminal pass), finalized
 // (/orchestrator:finalize), aborted (/orchestrator:abort)}.
-export const ARCHIVE_DIR_REL = '.claude/agentic-orchestrator/archive';
+export const ARCHIVE_DIR_REL = `${STATE_DIR_REL}/archive`;
+export const LEGACY_ARCHIVE_DIR_REL = `${LEGACY_STATE_DIR_REL}/archive`;
 export const MACRO_TERMINAL_PHASES = new Set([
   'commit-complete',
   'finalized',
@@ -222,23 +228,113 @@ const VALID_SUBTASK_VERBS = new Set([
 // -----------------------------------------------------------------------------
 // Path helpers
 
-export function workflowDir(repoRoot) {
+const STATE_HOMES = Object.freeze({
+  canonical: {
+    home: 'canonical',
+    stateDirRel: STATE_DIR_REL,
+    workflowDirRel: WORKFLOW_DIR_REL,
+    archiveDirRel: ARCHIVE_DIR_REL,
+    creationLockRel: CREATION_LOCK_REL,
+    peerRunsDirRel: `${STATE_DIR_REL}/peer-runs`,
+  },
+  legacy: {
+    home: 'legacy',
+    stateDirRel: LEGACY_STATE_DIR_REL,
+    workflowDirRel: LEGACY_WORKFLOW_DIR_REL,
+    archiveDirRel: LEGACY_ARCHIVE_DIR_REL,
+    creationLockRel: LEGACY_CREATION_LOCK_REL,
+    peerRunsDirRel: `${LEGACY_STATE_DIR_REL}/peer-runs`,
+  },
+});
+
+function assertAbsoluteRepoRoot(repoRoot, fnName = 'repoRoot') {
   if (!isAbsolute(repoRoot)) {
-    throw new Error(`repoRoot must be absolute: ${repoRoot}`);
+    throw new Error(`${fnName} must be absolute: ${repoRoot}`);
   }
-  return join(repoRoot, WORKFLOW_DIR_REL);
 }
 
-export function creationLockPath(repoRoot) {
-  return join(repoRoot, CREATION_LOCK_REL);
+function statePaths(repoRoot, home = 'canonical') {
+  assertAbsoluteRepoRoot(repoRoot);
+  const spec = STATE_HOMES[home];
+  if (!spec) throw new Error(`unknown workflow state home: ${home}`);
+  return {
+    ...spec,
+    root: join(repoRoot, spec.stateDirRel),
+    workflows: join(repoRoot, spec.workflowDirRel),
+    archive: join(repoRoot, spec.archiveDirRel),
+    creationLock: join(repoRoot, spec.creationLockRel),
+    peerRuns: join(repoRoot, spec.peerRunsDirRel),
+  };
 }
 
-export function workflowFilePath(repoRoot, workflowId) {
-  return join(workflowDir(repoRoot), `${workflowId}.md`);
+export function workflowDir(repoRoot, { home = 'canonical' } = {}) {
+  return statePaths(repoRoot, home).workflows;
+}
+
+export function creationLockPath(repoRoot, { home = 'canonical' } = {}) {
+  return statePaths(repoRoot, home).creationLock;
+}
+
+export function workflowFilePath(repoRoot, workflowId, { home = 'canonical' } = {}) {
+  return join(workflowDir(repoRoot, { home }), `${workflowId}.md`);
 }
 
 function fileLockPath(workflowFilePath_) {
   return `${workflowFilePath_}.lock`;
+}
+
+async function directoryHasEntries(dir) {
+  try {
+    const entries = await readdir(dir);
+    return entries.length > 0;
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+async function stateHomeHasState(repoRoot, home) {
+  const paths = statePaths(repoRoot, home);
+  if (await pathStat(paths.creationLock)) return true;
+  return (
+    await directoryHasEntries(paths.workflows) ||
+    await directoryHasEntries(paths.archive) ||
+    await directoryHasEntries(paths.peerRuns)
+  );
+}
+
+export async function resolveWorkflowStorage(repoRoot, { mode = 'read' } = {}) {
+  assertAbsoluteRepoRoot(repoRoot);
+  const canonicalHasState = await stateHomeHasState(repoRoot, 'canonical');
+  const legacyHasState = await stateHomeHasState(repoRoot, 'legacy');
+  if (mode === 'write' && canonicalHasState && legacyHasState) {
+    throw new Error(
+      `Workflow storage migration blocked: both ${STATE_DIR_REL} and ` +
+        `${LEGACY_STATE_DIR_REL} contain orchestrator state. Migrate or ` +
+        `reconcile the legacy home before ordinary workflow writes.`,
+    );
+  }
+  const home = canonicalHasState ? 'canonical' : (legacyHasState ? 'legacy' : 'canonical');
+  return {
+    ...statePaths(repoRoot, home),
+    canonicalHasState,
+    legacyHasState,
+  };
+}
+
+function inferStorageFromWorkflowPath(workflowPath) {
+  const text = String(workflowPath);
+  const canonicalNeedle = '/.agentic-plugins/state/orchestrator/';
+  const legacyNeedle = '/.claude/agentic-orchestrator/';
+  const canonicalIndex = text.indexOf(canonicalNeedle);
+  if (canonicalIndex >= 0) {
+    return { home: 'canonical', repoRoot: text.slice(0, canonicalIndex) };
+  }
+  const legacyIndex = text.indexOf(legacyNeedle);
+  if (legacyIndex >= 0) {
+    return { home: 'legacy', repoRoot: text.slice(0, legacyIndex) };
+  }
+  return null;
 }
 
 // -----------------------------------------------------------------------------
@@ -471,14 +567,15 @@ async function ensureDir(path, mode) {
  * info into `atomicWrite()` for the pre-commit recheck. The release
  * path is in finally — runs on every exit, including throws.
  */
-export async function withDirectoryLock(repoRoot, fn) {
-  await ensureDir(workflowDir(repoRoot), 0o700);
-  await ensureDir(dirname(creationLockPath(repoRoot)), 0o700);
-  const lockPath = creationLockPath(repoRoot);
+export async function withDirectoryLock(repoRoot, fn, opts = {}) {
+  const storage = opts.storage ?? await resolveWorkflowStorage(repoRoot, { mode: 'write' });
+  await ensureDir(storage.workflows, 0o700);
+  await ensureDir(dirname(storage.creationLock), 0o700);
+  const lockPath = storage.creationLock;
   const token = await acquireLock(lockPath);
   let releaseOk = false;
   try {
-    const result = await fn({ lockPath, token });
+    const result = await fn({ lockPath, token, storage });
     releaseOk = true;
     return result;
   } finally {
@@ -526,19 +623,19 @@ export async function withFileLock(workflowPath, fn) {
  * directory-level lock if exclusivity matters.
  */
 export async function listWorkflowFiles(repoRoot) {
-  const dir = workflowDir(repoRoot);
-  const st = await pathStat(dir);
+  const storage = await resolveWorkflowStorage(repoRoot);
+  const st = await pathStat(storage.workflows);
   if (!st) return [];
   let entries;
   try {
-    entries = await readdir(dir);
+    entries = await readdir(storage.workflows);
   } catch (err) {
     if (err.code === 'ENOENT') return [];
     throw err;
   }
   return entries
     .filter((name) => name.endsWith('.md') && !name.endsWith('.md.tmp'))
-    .map((name) => join(dir, name))
+    .map((name) => join(storage.workflows, name))
     .sort();
 }
 
@@ -651,9 +748,21 @@ function safeFilename(file) {
  *  - `readFile` failure (permissions, FIFO, etc.) is also fail-closed
  *    for the same reason — branch identity is undeterminable.
  */
-export async function findActiveWorkflowByBranch(repoRoot, branch) {
+async function findActiveWorkflowByBranchInDir(dir, branch) {
   if (!branch) return null;
-  const files = await listWorkflowFiles(repoRoot);
+  const st = await pathStat(dir);
+  if (!st) return null;
+  let entries;
+  try {
+    entries = await readdir(dir);
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  const files = entries
+    .filter((name) => name.endsWith('.md') && !name.endsWith('.md.tmp'))
+    .map((name) => join(dir, name))
+    .sort();
   const matching = [];
   for (const file of files) {
     let text;
@@ -698,6 +807,26 @@ export async function findActiveWorkflowByBranch(repoRoot, branch) {
       `ADR-0018 §sub-2 requires exactly one workflow per branch. ` +
       `Reconcile manually — keep one file, archive the rest.`,
   );
+}
+
+export async function findActiveWorkflowByBranch(repoRoot, branch) {
+  if (!branch) return null;
+  const canonical = await findActiveWorkflowByBranchInDir(
+    workflowDir(repoRoot, { home: 'canonical' }),
+    branch,
+  );
+  const legacy = await findActiveWorkflowByBranchInDir(
+    workflowDir(repoRoot, { home: 'legacy' }),
+    branch,
+  );
+  if (canonical && legacy) {
+    throw new Error(
+      `Ambiguous orchestrator workflow storage: both ${WORKFLOW_DIR_REL} and ` +
+        `${LEGACY_WORKFLOW_DIR_REL} contain an active workflow on branch ` +
+        `${JSON.stringify(branch)}. Reconcile or migrate before continuing.`,
+    );
+  }
+  return canonical ?? legacy;
 }
 
 /**
@@ -1675,9 +1804,9 @@ function validateSubtasks(subtasks, schemaVersion = SCHEMA_VERSION, macroBranch 
 function ensureMutable(fm) {
   if (fm.schema === '1.0') {
     throw new Error(
-      `Cannot mutate schema 1.0 file (legacy ADR-0018 §sub-1 shape). ` +
+        `Cannot mutate schema 1.0 file (legacy ADR-0018 §sub-1 shape). ` +
         `Per ADR-0019 PR-B schema bump, /orchestrator:plan now emits 1.1 workflows. ` +
-        `Archive this legacy workflow (move to .claude/agentic-orchestrator/archive/) ` +
+        `Archive this legacy workflow through /orchestrator:resume archive ` +
         `and run /orchestrator:plan on this branch to start a fresh 1.1 plan.`,
     );
   }
@@ -1823,16 +1952,17 @@ export async function createWorkflowUnderLock({
     `## Phase notes\n\n` +
     `### ${currentPhase}\n\n`;
 
-  const filePath = workflowFilePath(repoRoot, workflowId);
-  await ensureDir(workflowDir(repoRoot), 0o700);
+  const storage = ownership?.storage ?? await resolveWorkflowStorage(repoRoot, { mode: 'write' });
+  const filePath = workflowFilePath(repoRoot, workflowId, { home: storage.home });
+  await ensureDir(storage.workflows, 0o700);
   await atomicWrite(filePath, assembleWorkflowFile(frontmatter, body), ownership);
 
   return { workflowId, filePath, frontmatter, body };
 }
 
 export async function createWorkflow(args) {
-  return withDirectoryLock(args.repoRoot, ({ lockPath, token }) =>
-    createWorkflowUnderLock(args, { lockPath, token }),
+  return withDirectoryLock(args.repoRoot, ({ lockPath, token, storage }) =>
+    createWorkflowUnderLock(args, { lockPath, token, storage }),
   );
 }
 
@@ -2581,11 +2711,8 @@ export async function updateSubtask(opts) {
 // (cross-plugin engineer workflows directory scan, NOT engineer's own
 // child_completions array check).
 
-export function archiveDir(repoRoot) {
-  if (!isAbsolute(repoRoot)) {
-    throw new Error(`repoRoot must be absolute: ${repoRoot}`);
-  }
-  return join(repoRoot, ARCHIVE_DIR_REL);
+export function archiveDir(repoRoot, { home = 'canonical' } = {}) {
+  return statePaths(repoRoot, home).archive;
 }
 
 /**
@@ -2620,13 +2747,17 @@ export async function archiveWorkflow({
   if (!repoRoot && !archiveDirectory) {
     throw new Error('archiveWorkflow: repoRoot or archiveDirectory is required');
   }
-  const targetDir = archiveDirectory ?? archiveDir(repoRoot);
+  const inferred = inferStorageFromWorkflowPath(workflowPath);
+  const effectiveRepoRoot = repoRoot ?? inferred?.repoRoot;
+  const sourceHome = inferred?.home ?? 'canonical';
+  const sourceStorage = effectiveRepoRoot ? statePaths(effectiveRepoRoot, sourceHome) : null;
+  const targetDir = archiveDirectory ?? archiveDir(effectiveRepoRoot, { home: sourceHome });
   const baseName = basename(workflowPath);
 
   // Derive dir-lock root from canonical four-deep layout when only
   // `archiveDirectory` is supplied — mirrors engineer's M-1 fix.
   const dirLockRoot =
-    repoRoot ??
+    effectiveRepoRoot ??
     dirname(dirname(dirname(dirname(workflowPath))));
 
   return withDirectoryLock(dirLockRoot, async () => {
@@ -2672,7 +2803,7 @@ export async function archiveWorkflow({
         host,
       };
     });
-  });
+  }, sourceStorage ? { storage: sourceStorage } : {});
 }
 
 async function resolveArchiveDestination({ targetDir, baseName, now }) {
@@ -2898,9 +3029,9 @@ export function allSubtasksTerminalCheck(frontmatter) {
 }
 
 /**
- * List all non-archived macro workflow files under
- * `<repoRoot>/.claude/agentic-orchestrator/workflows/`. Returns absolute
- * paths. Used by branch-agnostic macro auto-archive iteration in PR-E's
+ * List all non-archived macro workflow files under the selected
+ * canonical or legacy orchestrator workflow home. Returns absolute paths.
+ * Used by branch-agnostic macro auto-archive iteration in PR-E's
  * `runMacroStopArchiveAll`.
  *
  * The macro workflow-id regex is `^macro-[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$`
@@ -2909,7 +3040,8 @@ export function allSubtasksTerminalCheck(frontmatter) {
  * iteration only touches genuine macro files.
  */
 export async function listAllMacros(repoRoot) {
-  const dir = workflowDir(repoRoot);
+  const storage = await resolveWorkflowStorage(repoRoot);
+  const dir = storage.workflows;
   let entries;
   try {
     entries = await readdir(dir);
@@ -2953,48 +3085,53 @@ export async function noActiveEngineerChildrenScan(repoRoot, macroId) {
   if (!isAbsolute(repoRoot)) {
     throw new Error(`noActiveEngineerChildrenScan: repoRoot must be absolute: ${repoRoot}`);
   }
-  const dir = join(repoRoot, '.claude/agentic-engineer/workflows');
-  let entries;
-  try {
-    entries = await readdir(dir);
-  } catch (err) {
-    if (err.code === 'ENOENT') return 0;
-    throw err;
-  }
+  const dirs = [
+    join(repoRoot, '.agentic-plugins/state/engineer/workflows'),
+    join(repoRoot, '.claude/agentic-engineer/workflows'),
+  ];
   // Engineer workflow-id regex per engineer state.mjs generateWorkflowId.
   const ENG_ID_RE = /^[a-z]+-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+\.md$/;
   let count = 0;
-  for (const name of entries) {
-    if (!ENG_ID_RE.test(name)) continue;
-    const path = join(dir, name);
-    let text;
+  for (const dir of dirs) {
+    let entries;
     try {
-      text = await readFile(path, 'utf8');
+      entries = await readdir(dir);
     } catch (err) {
       if (err.code === 'ENOENT') continue;
-      process.stderr.write(
-        `noActiveEngineerChildrenScan: failed to read ${name}: ${err.message}\n`,
-      );
-      continue;
+      throw err;
     }
-    // Avoid invoking engineer's parseWorkflowFile (cross-plugin import
-    // forbidden per ADR-0010 §5). Use a minimal frontmatter regex scan
-    // instead — we only need the `parent_workflow` scalar value.
-    //
-    // CRLF tolerance: while engineer's state.mjs writes LF-only, a
-    // workflow file manually edited on a Windows-style tool could carry
-    // CRLF line endings. A CRLF-saved child would silently miscount as
-    // "not a child," letting A4 pass while the child is actually live.
-    // Defend against this with `\r?\n` in the frontmatter-delimiter
-    // pattern; the per-line scalar regex already uses /m which is
-    // CR-tolerant.
-    const fmMatch = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-    if (!fmMatch) continue;
-    const fmText = fmMatch[1];
-    const parentMatch = fmText.match(/^parent_workflow:\s*(?:"([^"]+)"|'([^']+)'|(\S+))\s*\r?$/m);
-    if (!parentMatch) continue;
-    const parentValue = parentMatch[1] ?? parentMatch[2] ?? parentMatch[3];
-    if (parentValue === macroId) count++;
+    for (const name of entries) {
+      if (!ENG_ID_RE.test(name)) continue;
+      const path = join(dir, name);
+      let text;
+      try {
+        text = await readFile(path, 'utf8');
+      } catch (err) {
+        if (err.code === 'ENOENT') continue;
+        process.stderr.write(
+          `noActiveEngineerChildrenScan: failed to read ${name}: ${err.message}\n`,
+        );
+        continue;
+      }
+      // Avoid invoking engineer's parseWorkflowFile (cross-plugin import
+      // forbidden per ADR-0010 §5). Use a minimal frontmatter regex scan
+      // instead — we only need the `parent_workflow` scalar value.
+      //
+      // CRLF tolerance: while engineer's state.mjs writes LF-only, a
+      // workflow file manually edited on a Windows-style tool could carry
+      // CRLF line endings. A CRLF-saved child would silently miscount as
+      // "not a child," letting A4 pass while the child is actually live.
+      // Defend against this with `\r?\n` in the frontmatter-delimiter
+      // pattern; the per-line scalar regex already uses /m which is
+      // CR-tolerant.
+      const fmMatch = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (!fmMatch) continue;
+      const fmText = fmMatch[1];
+      const parentMatch = fmText.match(/^parent_workflow:\s*(?:"([^"]+)"|'([^']+)'|(\S+))\s*\r?$/m);
+      if (!parentMatch) continue;
+      const parentValue = parentMatch[1] ?? parentMatch[2] ?? parentMatch[3];
+      if (parentValue === macroId) count++;
+    }
   }
   return count;
 }

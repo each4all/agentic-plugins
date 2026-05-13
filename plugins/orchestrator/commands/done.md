@@ -55,9 +55,14 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
       rm -f "$FIND_ERR"
       exit 1;;
   esac
-  MACRO_PATH="$REPO_ROOT/.claude/agentic-orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
-  if [ ! -f "$MACRO_PATH" ]; then
-    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found at $MACRO_PATH." >&2
+  CANONICAL_MACRO_PATH="$REPO_ROOT/.agentic-plugins/state/orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
+  LEGACY_MACRO_PATH="$REPO_ROOT/.claude/agentic-orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
+  if [ -f "$CANONICAL_MACRO_PATH" ]; then
+    MACRO_PATH="$CANONICAL_MACRO_PATH"
+  elif [ -f "$LEGACY_MACRO_PATH" ]; then
+    MACRO_PATH="$LEGACY_MACRO_PATH"
+  else
+    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found in canonical or legacy workflow homes." >&2
     rm -f "$FIND_ERR"
     exit 1
   fi
@@ -135,19 +140,24 @@ if [ -z "$EXISTING_ENG_WF_ID" ]; then
         const path = require("path");
         const { MACRO_ID, SUBTASK_ID, REPO_ROOT } = process.env;
         (async () => {
-          const dir = path.join(REPO_ROOT, ".claude", "agentic-engineer", "workflows");
-          let entries = [];
-          try { entries = await fs.readdir(dir); } catch { process.exit(0); }
-          for (const f of entries) {
-            if (!f.endsWith(".md")) continue;
-            let text;
-            try { text = await fs.readFile(path.join(dir, f), "utf8"); } catch { continue; }
-            // Match frontmatter quoted-scalar style as orchestrator emits it.
-            const parentLine = `parent_workflow: "${MACRO_ID}"`;
-            const subtaskLine = `originating_subtask: "${SUBTASK_ID}"`;
-            if (text.includes(parentLine) && text.includes(subtaskLine)) {
-              process.stdout.write(path.join(dir, f));
-              return;
+          const dirs = [
+            path.join(REPO_ROOT, ".agentic-plugins", "state", "engineer", "workflows"),
+            path.join(REPO_ROOT, ".claude", "agentic-engineer", "workflows"),
+          ];
+          for (const dir of dirs) {
+            let entries = [];
+            try { entries = await fs.readdir(dir); } catch { continue; }
+            for (const f of entries) {
+              if (!f.endsWith(".md")) continue;
+              let text;
+              try { text = await fs.readFile(path.join(dir, f), "utf8"); } catch { continue; }
+              // Match frontmatter quoted-scalar style as orchestrator emits it.
+              const parentLine = `parent_workflow: "${MACRO_ID}"`;
+              const subtaskLine = `originating_subtask: "${SUBTASK_ID}"`;
+              if (text.includes(parentLine) && text.includes(subtaskLine)) {
+                process.stdout.write(path.join(dir, f));
+                return;
+              }
             }
           }
         })();

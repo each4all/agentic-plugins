@@ -29,7 +29,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import { resolveCompanionPath, validateEnvelopeShape } from './dispatch-peer.mjs';
-import { recordPendingEnsemble } from './state.mjs';
+import { recordPendingEnsemble, resolveWorkflowStorage } from './state.mjs';
 
 export const HANDLE_SCHEMA_VERSION = '1.0';
 export const VALID_PEERS = new Set(['claude', 'codex']);
@@ -59,17 +59,24 @@ const STDERR_FILE = 'stderr.log';
 const ENVELOPE_FILE = 'envelope.json';
 const PROMPT_FILE = 'prompt.xml';
 
-export function peerRunsDir(repoRoot) {
-  return join(resolve(repoRoot), '.claude', 'agentic-orchestrator', 'peer-runs');
+const PEER_RUNS_DIR_RELS = Object.freeze({
+  canonical: '.agentic-plugins/state/orchestrator/peer-runs',
+  legacy: '.claude/agentic-orchestrator/peer-runs',
+});
+
+export function peerRunsDir(repoRoot, { home = 'canonical' } = {}) {
+  const rel = PEER_RUNS_DIR_RELS[home];
+  if (!rel) throw new Error(`unknown peer-run state home: ${home}`);
+  return join(resolve(repoRoot), rel);
 }
 
-export function peerRunDir(repoRoot, runId) {
+export function peerRunDir(repoRoot, runId, opts = {}) {
   assertSafeRunId(runId);
-  return join(peerRunsDir(repoRoot), runId);
+  return join(peerRunsDir(repoRoot, opts), runId);
 }
 
-export function peerRunPaths(repoRoot, runId) {
-  const dir = peerRunDir(repoRoot, runId);
+export function peerRunPaths(repoRoot, runId, opts = {}) {
+  const dir = peerRunDir(repoRoot, runId, opts);
   return {
     dir,
     handle: join(dir, HANDLE_FILE),
@@ -78,6 +85,42 @@ export function peerRunPaths(repoRoot, runId) {
     envelope: join(dir, ENVELOPE_FILE),
     prompt: join(dir, PROMPT_FILE),
   };
+}
+
+async function resolvePeerRunPathsForWrite(repoRoot, runId) {
+  const storage = await resolveWorkflowStorage(resolve(repoRoot), { mode: 'write' });
+  return peerRunPaths(repoRoot, runId, { home: storage.home });
+}
+
+async function resolvePeerRunPathsForRead(repoRoot, runId) {
+  const canonical = peerRunPaths(repoRoot, runId, { home: 'canonical' });
+  const legacy = peerRunPaths(repoRoot, runId, { home: 'legacy' });
+  const canonicalExists = await exists(canonical.handle) || await exists(canonical.dir);
+  const legacyExists = await exists(legacy.handle) || await exists(legacy.dir);
+  if (canonicalExists && legacyExists) {
+    throw new Error(
+      `Ambiguous orchestrator peer-run storage: run_id=${runId} exists in both ` +
+        `${PEER_RUNS_DIR_RELS.canonical} and ${PEER_RUNS_DIR_RELS.legacy}.`,
+    );
+  }
+  return legacyExists ? legacy : canonical;
+}
+
+async function resolvePeerRunsDirForSweep(repoRoot) {
+  const canonical = peerRunsDir(repoRoot, { home: 'canonical' });
+  const legacy = peerRunsDir(repoRoot, { home: 'legacy' });
+  const canonicalHasRuns = await directoryHasEntries(canonical);
+  const legacyHasRuns = await directoryHasEntries(legacy);
+  if (canonicalHasRuns && legacyHasRuns) {
+    throw new Error(
+      `Ambiguous orchestrator peer-run storage: both ${PEER_RUNS_DIR_RELS.canonical} ` +
+        `and ${PEER_RUNS_DIR_RELS.legacy} contain peer-run ledgers.`,
+    );
+  }
+  if (legacyHasRuns) return legacy;
+  if (canonicalHasRuns) return canonical;
+  const storage = await resolveWorkflowStorage(resolve(repoRoot));
+  return peerRunsDir(repoRoot, { home: storage.home });
 }
 
 export function isTerminalStatus(status) {
@@ -483,7 +526,6 @@ export async function runPeer(args) {
 
   const runId = options.runId ?? generateRunId(options.kind);
   assertSafeRunId(runId);
-  const paths = peerRunPaths(options.repoRoot, runId);
 
   // Orchestrator-specific graceful degradation: resolve the companion before
   // creating ledger files or recording pending_ensemble. Missing companions
@@ -505,6 +547,8 @@ export async function runPeer(args) {
       companion_path: null,
     };
   }
+
+  const paths = await resolvePeerRunPathsForWrite(options.repoRoot, runId);
 
   if (await exists(paths.dir)) {
     throw new Error(`peer-run ledger already exists for run_id: ${runId}`);
@@ -679,7 +723,7 @@ async function runResult(paths, handle, extra = {}) {
 
 export async function statusPeerRun({ repoRoot = process.cwd(), runId, json = true } = {}) {
   assertSafeRunId(runId);
-  const paths = peerRunPaths(repoRoot, runId);
+  const paths = await resolvePeerRunPathsForRead(repoRoot, runId);
   const handle = await readHandle(paths.handle);
   const derived = await deriveStatusAnnotation(handle, paths);
   const live = Number.isInteger(handle.pid) ? await isProcessAlive(handle.pid) : false;
@@ -723,7 +767,7 @@ export async function cancelPeerRun({
   graceMs = DEFAULT_CANCEL_GRACE_MS,
 } = {}) {
   assertSafeRunId(runId);
-  const paths = peerRunPaths(repoRoot, runId);
+  const paths = await resolvePeerRunPathsForRead(repoRoot, runId);
   const handle = await readHandle(paths.handle);
 
   if (isTerminalStatus(handle.status)) {
@@ -808,7 +852,7 @@ export async function sweepPeerRuns({
   retentionCap = DEFAULT_RETENTION_CAP,
   now = new Date(),
 } = {}) {
-  const root = peerRunsDir(repoRoot);
+  const root = await resolvePeerRunsDirForSweep(repoRoot);
   const report = {
     root,
     scanned: 0,
@@ -918,6 +962,16 @@ async function exists(path) {
     await access(path, fsConstants.F_OK);
     return true;
   } catch {
+    return false;
+  }
+}
+
+async function directoryHasEntries(dir) {
+  try {
+    const entries = await readdir(dir);
+    return entries.length > 0;
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
     return false;
   }
 }

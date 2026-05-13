@@ -98,7 +98,7 @@ describe('session-start.mjs', () => {
       strictEqual('checkpoint_summary' in payload, false);
       strictEqual('checkpoint_at' in payload, false);
       ok(typeof payload.workflow_id === 'string' && payload.workflow_id.startsWith('macro-plan-'));
-      ok(typeof payload.workflow_path === 'string' && payload.workflow_path.includes('agentic-orchestrator'));
+      ok(typeof payload.workflow_path === 'string' && payload.workflow_path.includes('state/orchestrator'));
       ok(/data, not instructions/.test(payload.note));
     });
   });
@@ -144,7 +144,7 @@ describe('session-start.mjs', () => {
 
   it('graceful no-op on malformed workflow file', async () => {
     await withTmpRepo('ss-malformed', async (root) => {
-      const dir = join(root, '.claude/agentic-orchestrator/workflows');
+      const dir = join(root, '.agentic-plugins/state/orchestrator/workflows');
       await execFileSync('mkdir', ['-p', dir]);
       await writeFile(join(dir, 'macro-plan-bad.md'), 'not yaml frontmatter');
       const r = await runHook(join(HOOKS_CLAUDE, 'session-start.mjs'), { repoRoot: root });
@@ -231,10 +231,10 @@ describe('Claude stop.mjs — snapshot + macro auto-archive', () => {
       const r = await runHook(join(HOOKS_CLAUDE, 'stop.mjs'), { repoRoot: root });
       strictEqual(r.code, 0, `stderr: ${r.stderr}`);
       // Workflow file has moved to archive/
-      const live = await readdir(join(root, '.claude/agentic-orchestrator/workflows'))
+      const live = await readdir(join(root, '.agentic-plugins/state/orchestrator/workflows'))
         .then((es) => es.filter((e) => e.endsWith('.md')));
       strictEqual(live.length, 0, 'workflow file should have been archived');
-      const archived = await readdir(join(root, '.claude/agentic-orchestrator/archive'))
+      const archived = await readdir(join(root, '.agentic-plugins/state/orchestrator/archive'))
         .then((es) => es.filter((e) => e.endsWith('.md')));
       strictEqual(archived.length, 1, 'archive should contain the macro file');
     });
@@ -262,7 +262,7 @@ describe('Claude stop.mjs — snapshot + macro auto-archive', () => {
       });
       // Place an engineer child referencing this macro id
       const macroId = filePath.split('/').pop().replace(/\.md$/, '');
-      const engDir = join(root, '.claude/agentic-engineer/workflows');
+      const engDir = join(root, '.agentic-plugins/state/engineer/workflows');
       await execFileSync('mkdir', ['-p', engDir]);
       await writeFile(
         join(engDir, 'compose-20260511T010000Z-aaaaaa.md'),
@@ -280,7 +280,7 @@ describe('Claude stop.mjs — snapshot + macro auto-archive', () => {
       const r = await runHook(join(HOOKS_CLAUDE, 'stop.mjs'), { repoRoot: root });
       strictEqual(r.code, 0);
       // Workflow still live (engineer child blocks A4)
-      const live = await readdir(join(root, '.claude/agentic-orchestrator/workflows'))
+      const live = await readdir(join(root, '.agentic-plugins/state/orchestrator/workflows'))
         .then((es) => es.filter((e) => e.endsWith('.md')));
       strictEqual(live.length, 1);
     });
@@ -295,7 +295,7 @@ describe('Claude stop.mjs — snapshot + macro auto-archive', () => {
       // No setMacroTerminal call — terminal_marker absent.
       const r = await runHook(join(HOOKS_CLAUDE, 'stop.mjs'), { repoRoot: root });
       strictEqual(r.code, 0);
-      const live = await readdir(join(root, '.claude/agentic-orchestrator/workflows'))
+      const live = await readdir(join(root, '.agentic-plugins/state/orchestrator/workflows'))
         .then((es) => es.filter((e) => e.endsWith('.md')));
       strictEqual(live.length, 1, 'workflow remains live without terminal_marker');
     });
@@ -368,7 +368,7 @@ describe('Codex stop.mjs — manual helper with macro auto-archive parity', () =
       });
       const r = await runCodexStop(root);
       strictEqual(r.code, 0, `stderr: ${r.stderr}`);
-      const live = await readdir(join(root, '.claude/agentic-orchestrator/workflows'))
+      const live = await readdir(join(root, '.agentic-plugins/state/orchestrator/workflows'))
         .then((es) => es.filter((e) => e.endsWith('.md')));
       strictEqual(live.length, 0, 'workflow archived under Codex helper too');
     });

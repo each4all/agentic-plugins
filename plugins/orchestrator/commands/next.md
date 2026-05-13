@@ -50,9 +50,14 @@ if [ -n "${EXPLICIT_WORKFLOW_ID:-}" ]; then
       rm -f "$FIND_ERR"
       exit 1;;
   esac
-  MACRO_PATH="$REPO_ROOT/.claude/agentic-orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
-  if [ ! -f "$MACRO_PATH" ]; then
-    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found at $MACRO_PATH." >&2
+  CANONICAL_MACRO_PATH="$REPO_ROOT/.agentic-plugins/state/orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
+  LEGACY_MACRO_PATH="$REPO_ROOT/.claude/agentic-orchestrator/workflows/${EXPLICIT_WORKFLOW_ID}.md"
+  if [ -f "$CANONICAL_MACRO_PATH" ]; then
+    MACRO_PATH="$CANONICAL_MACRO_PATH"
+  elif [ -f "$LEGACY_MACRO_PATH" ]; then
+    MACRO_PATH="$LEGACY_MACRO_PATH"
+  else
+    echo "✗ --workflow=$EXPLICIT_WORKFLOW_ID not found in canonical or legacy workflow homes." >&2
     echo "  Use \`gh pr list\` or run /orchestrator:plan to start a new macro." >&2
     rm -f "$FIND_ERR"
     exit 1

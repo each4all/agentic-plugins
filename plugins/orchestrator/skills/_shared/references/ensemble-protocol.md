@@ -26,7 +26,7 @@ Every ensemble point follows three steps: Launch, Collect, Synthesize.
 
 1. Determine the ensemble point type (Plan-verify in orchestrator MVP).
 2. Build the peer prompt per the per-type template below (Plan-verify is the only template shipped in this MVP).
-3. Resolve the companion script and dispatch via `plugins/orchestrator/scripts/peer-runner.mjs run`. The graceful-degradation contract: companion missing → the runner returns `kind: 'peer_cli_not_found'` without creating a peer-run ledger or `pending_ensemble` row, and the orchestrator side proceeds with a **LOCAL-ONLY** synthesis. If the companion resolves, the runner creates `.claude/agentic-orchestrator/peer-runs/<run_id>/`, records `pending_ensemble`, supervises the child process, tees stdout/stderr to ledger files, and writes the final JSON envelope to `envelope.json`.
+3. Resolve the companion script and dispatch via `plugins/orchestrator/scripts/peer-runner.mjs run`. The graceful-degradation contract: companion missing → the runner returns `kind: 'peer_cli_not_found'` without creating a peer-run ledger or `pending_ensemble` row, and the orchestrator side proceeds with a **LOCAL-ONLY** synthesis. If the companion resolves, the runner creates `.agentic-plugins/state/orchestrator/peer-runs/<run_id>/` for new repos (or the legacy peer-run home until explicit migration), records `pending_ensemble`, supervises the child process, tees stdout/stderr to ledger files, and writes the final JSON envelope to `envelope.json`.
 
 ### Step 2: Collect
 

@@ -87,7 +87,7 @@ async function bootstrapEngineerChild(repoRoot, { subtaskId, parentMacroId, bran
 
 async function listEngineerArchive(repoRoot) {
   try {
-    return (await readdir(join(repoRoot, '.claude/agentic-engineer/archive'))).filter((e) => e.endsWith('.md'));
+    return (await readdir(join(repoRoot, '.agentic-plugins/state/engineer/archive'))).filter((e) => e.endsWith('.md'));
   } catch (err) {
     if (err.code === 'ENOENT') return [];
     throw err;
@@ -96,7 +96,7 @@ async function listEngineerArchive(repoRoot) {
 
 async function listEngineerWorkflows(repoRoot) {
   try {
-    return (await readdir(join(repoRoot, '.claude/agentic-engineer/workflows'))).filter((e) => e.endsWith('.md'));
+    return (await readdir(join(repoRoot, '.agentic-plugins/state/engineer/workflows'))).filter((e) => e.endsWith('.md'));
   } catch (err) {
     if (err.code === 'ENOENT') return [];
     throw err;
@@ -180,7 +180,7 @@ describe('abort §5 end-to-end ritual', () => {
       strictEqual((await listEngineerWorkflows(root)).length, 0);
       const archived = await listEngineerArchive(root);
       strictEqual(archived.length, 1);
-      const archivedText = await readFile(join(root, '.claude/agentic-engineer/archive', archived[0]), 'utf8');
+      const archivedText = await readFile(join(root, '.agentic-plugins/state/engineer/archive', archived[0]), 'utf8');
       match(archivedText, /parent_detached: true/);
       match(archivedText, /terminal_marker: false/);
     });

@@ -13,8 +13,8 @@
 //
 // Equivalent behavior to the Claude adapter:
 //
-//   1. Iterate every non-archived macro under
-//      <repoRoot>/.claude/agentic-orchestrator/workflows/
+//   1. Iterate every non-archived macro under the selected canonical or
+//      legacy orchestrator workflow home.
 //   2. For each macro: snapshot last_snapshot/host_history + evaluate
 //      A1–A4 gates + archive on pass.
 //
