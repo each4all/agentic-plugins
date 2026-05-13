@@ -8,6 +8,21 @@
 - Add `runtime:context check`, a read-only explicit context budget check that computes green/yellow/red risk without creating artifacts or mutating host session context.
 - Add `runtime:context status --latest`, a read-only latest handoff lookup with artifact age and stale-state reporting.
 
+## [0.8.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.7.0...plugin-runtime-v0.8.0) (2026-05-13)
+
+
+### Features
+
+* **plugin/runtime:** add doctor readiness matrix ([857ebc7](https://github.com/each4all/agentic-plugins/commit/857ebc788770650888609c73079fe1b7c1b73a4b))
+* **plugin/runtime:** add workflow storage migration command ([5d974ed](https://github.com/each4all/agentic-plugins/commit/5d974ed37805e13d66803360338a18003699febf))
+* **plugin/runtime:** diagnose workflow storage homes ([6f42f4c](https://github.com/each4all/agentic-plugins/commit/6f42f4c8ae5ca6d9238a1bb28d6c27be02c8ec4c))
+
+
+### Bug Fixes
+
+* **plugin/runtime:** accept migrate subcommand after flags ([550e93d](https://github.com/each4all/agentic-plugins/commit/550e93d91b0a4dd61f9f99a19cece513a833899b))
+* **plugin/runtime:** report codex hook feature parity ([c330698](https://github.com/each4all/agentic-plugins/commit/c330698e0c6183e4c70026631779880710e93857))
+
 ## [0.7.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.6.0...plugin-runtime-v0.7.0) (2026-05-13)
 
 
