@@ -8,18 +8,31 @@ import {
   readFile,
   writeFile,
 } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { runCommand, runDoctor } from './doctor.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
 const MANIFEST_SCHEMA = 'runtime-consensus-run-1.0';
 const RESULT_SCHEMA = 'runtime-consensus-result-1.0';
-const VALID_COMMANDS = new Set(['plan', 'record', 'synthesize', 'next-round', 'status']);
+const EXECUTION_SCHEMA = 'runtime-consensus-execution-1.0';
+const LATEST_EXECUTION_SCHEMA = 'runtime-consensus-execution-latest-1.0';
+const VALID_COMMANDS = new Set(['plan', 'record', 'synthesize', 'next-round', 'execute', 'status']);
 const DEFAULT_PEERS = ['claude', 'codex'];
+const DEFAULT_MAX_ROUNDS = 2;
+const MAX_ROUNDS_CAP = 3;
+const MAX_PEERS_CAP = 4;
+const DEFAULT_EXECUTION_TIMEOUT_MS = 120000;
+const MAX_EXECUTION_TIMEOUT_MS = 600000;
 const RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const PEER_ID_RE = /^[A-Za-z0-9._-]+$/;
+const PEER_DIRECTIONS = {
+  codex: 'claude_to_codex',
+  claude: 'codex_to_claude',
+};
 
 export async function runConsensus(options = {}) {
   const command = options.command ?? 'plan';
@@ -40,6 +53,9 @@ export async function runConsensus(options = {}) {
   if (command === 'next-round') {
     return planNextRound({ ...options, repoRoot });
   }
+  if (command === 'execute') {
+    return executeRound({ ...options, repoRoot });
+  }
   return readStatus({ ...options, repoRoot });
 }
 
@@ -49,19 +65,30 @@ export async function createPlan(options = {}) {
   const createdAt = toIso(now);
   const task = await resolveTask(options);
   const peers = normalizePeers(options.peers ?? DEFAULT_PEERS);
-  const maxPeers = positiveInt(options.maxPeers ?? peers.length, '--max-peers');
+  const maxPeers = options.maxPeers === undefined
+    ? Math.min(peers.length, MAX_PEERS_CAP)
+    : boundedPositiveInt(options.maxPeers, '--max-peers', MAX_PEERS_CAP);
   const activePeers = peers.slice(0, maxPeers);
   const skippedPeers = peers.slice(maxPeers);
-  const maxRounds = positiveInt(options.maxRounds ?? 2, '--max-rounds');
+  const maxRounds = boundedPositiveInt(options.maxRounds ?? DEFAULT_MAX_ROUNDS, '--max-rounds', MAX_ROUNDS_CAP);
+  const processBudget = boundedPositiveInt(options.processBudget ?? activePeers.length, '--process-budget', activePeers.length);
+  const executionTimeoutMs = boundedPositiveInt(options.timeoutMs ?? DEFAULT_EXECUTION_TIMEOUT_MS, '--timeout-ms', MAX_EXECUTION_TIMEOUT_MS);
   const policy = {
     max_rounds: maxRounds,
     max_peers: maxPeers,
     token_budget: optionalPositiveInt(options.tokenBudget, '--token-budget'),
     time_budget_ms: optionalPositiveInt(options.timeBudgetMs, '--time-budget-ms'),
-    process_budget: optionalPositiveInt(options.processBudget, '--process-budget') ?? activePeers.length,
+    process_budget: processBudget,
+    execution_timeout_ms: executionTimeoutMs,
     peer_selection: 'explicit-or-default-host-peers',
     raw_output_policy: 'artifact-pointer-only',
     main_session_output: 'synthesized-summary-disagreements-evidence-pointers-only',
+    limits: {
+      max_rounds_cap: MAX_ROUNDS_CAP,
+      max_peers_cap: MAX_PEERS_CAP,
+      max_execution_timeout_ms: MAX_EXECUTION_TIMEOUT_MS,
+      cancellation: 'per-peer timeout sends SIGTERM through the command runner; no async cancellation subcommand is added in this PR',
+    },
   };
 
   const runId = options.runId ? validateRunId(options.runId) : makeRunId(now);
@@ -104,9 +131,11 @@ export async function createPlan(options = {}) {
     rounds: [round],
     consensus_pointer: null,
     limits: [
-      'This scaffold never executes peer agents directly.',
+      'Peer execution requires the separate runtime:consensus execute command plus --execute.',
       'Raw peer output is stored only as run artifacts and is not printed into the main session.',
       'Consensus output is limited to synthesized summary, durable disagreements, and evidence pointers.',
+      'Runtime never relaxes host permissions, sandbox, authentication, secrets, or host session context.',
+      'Consensus rounds are capped; automatic unbounded retry loops are forbidden.',
     ],
   };
   const manifestPath = resolve(runDir, 'manifest.json');
@@ -126,7 +155,7 @@ export async function createPlan(options = {}) {
       ...round.prompts.map((prompt) => ({ kind: 'peer-prompt', ...prompt, round: 1 })),
     ],
     next_steps: [
-      'Run the peer prompts manually through the appropriate host/companion boundary.',
+      `Execute planned peers with runtime:consensus execute --run-id ${runId} --execute, or run the prompts manually through the appropriate host/companion boundary.`,
       `Record each raw peer output with runtime:consensus record --run-id ${runId} --peer <peer> --input-file <path>.`,
       `Synthesize with runtime:consensus synthesize --run-id ${runId} --summary-file <path> [--disagreements-file <path>].`,
     ],
@@ -196,6 +225,7 @@ export async function synthesizeConsensus(options = {}) {
   const durableDisagreements = await resolveDisagreements(options, repoRoot, manifest);
   const evidencePointers = collectEvidencePointers(manifest);
   const converged = options.converged === true;
+  const nextRound = buildNextRoundAvailability({ manifest, durableDisagreements, runId });
   const result = {
     schema_version: RESULT_SCHEMA,
     run_id: runId,
@@ -204,6 +234,7 @@ export async function synthesizeConsensus(options = {}) {
     synthesized_summary: summary.trim(),
     durable_disagreements: durableDisagreements,
     evidence_pointers: evidencePointers,
+    next_round: nextRound,
     next_action: options.nextAction ?? (converged ? 'Proceed with the synthesized decision.' : 'Owner decision required for durable disagreements.'),
     limits: [
       'Peer raw outputs remain in artifact files.',
@@ -225,6 +256,7 @@ export async function synthesizeConsensus(options = {}) {
     synthesized_summary: result.synthesized_summary,
     durable_disagreements: result.durable_disagreements,
     evidence_pointers: result.evidence_pointers,
+    next_round: result.next_round,
     consensus_pointer: manifest.consensus_pointer,
     next_action: result.next_action,
     limits: result.limits,
@@ -270,6 +302,11 @@ export async function planNextRound(options = {}) {
     run_id: runId,
     status: manifest.status,
     round: nextRound,
+    execution: {
+      available: true,
+      command: `runtime:consensus execute --run-id ${runId} --round ${nextRound} --execute`,
+      peer_execution: false,
+    },
     artifacts: [
       { kind: 'manifest', pointer: pointer(repoRoot, manifestPath) },
       ...round.prompts.map((prompt) => ({ kind: 'peer-prompt', ...prompt, round: nextRound })),
@@ -277,8 +314,159 @@ export async function planNextRound(options = {}) {
     durable_disagreements: disagreements,
     limits: [
       'Next-round prompts contain synthesized disagreement summaries, not raw peer output.',
-      'Peer execution remains manual/host-native in this MVP.',
+      'Peer execution still requires runtime:consensus execute --execute.',
     ],
+  };
+}
+
+export async function executeRound(options = {}) {
+  if (options.execute !== true) {
+    throw new Error('execute command requires --execute');
+  }
+  const repoRoot = resolve(options.repoRoot ?? process.cwd());
+  const homeDir = resolve(options.homeDir ?? homedir());
+  const env = options.env ?? process.env;
+  const runner = options.runner ?? runCommand;
+  const now = options.now ?? new Date();
+  const startedAt = toIso(now);
+  const runId = validateRunId(required(options.runId, '--run-id'));
+  const manifestPath = manifestFile(repoRoot, runId);
+  const manifest = await readJson(manifestPath);
+  const roundNumber = positiveInt(options.round ?? latestRoundNumber(manifest), '--round');
+  const round = findRound(manifest, roundNumber);
+  const requestedPeers = options.peers ? normalizePeers(options.peers) : manifest.peers.active;
+  const unknownPeers = requestedPeers.filter((peer) => !manifest.peers.active.includes(peer));
+  if (unknownPeers.length > 0) {
+    throw new Error(`--peers must be active peers from the manifest: ${manifest.peers.active.join(', ')}`);
+  }
+  const timeoutMs = boundedPositiveInt(
+    options.timeoutMs ?? manifest.policy?.execution_timeout_ms ?? DEFAULT_EXECUTION_TIMEOUT_MS,
+    '--timeout-ms',
+    MAX_EXECUTION_TIMEOUT_MS,
+  );
+  const processBudget = boundedPositiveInt(
+    options.processBudget ?? Math.min(manifest.policy?.process_budget ?? requestedPeers.length, requestedPeers.length),
+    '--process-budget',
+    requestedPeers.length,
+  );
+  const executionPeers = requestedPeers.slice(0, processBudget);
+  const skippedPeers = requestedPeers.slice(processBudget);
+
+  const doctor = await runDoctor({
+    repoRoot,
+    homeDir,
+    env,
+    now,
+    runner,
+    format: 'json',
+    explicitModel: options.model ?? null,
+    explicitEffort: options.effort ?? null,
+  });
+
+  const executions = [];
+  for (const peer of executionPeers) {
+    executions.push(await executePeer({
+      repoRoot,
+      runId,
+      roundNumber,
+      round,
+      peer,
+      doctor,
+      env,
+      runner,
+      timeoutMs,
+      now,
+    }));
+  }
+  for (const peer of skippedPeers) {
+    executions.push(await writeSkippedExecution({
+      repoRoot,
+      runId,
+      roundNumber,
+      peer,
+      reason: `skipped by --process-budget=${processBudget}`,
+      now,
+    }));
+  }
+
+  round.execution_results = mergePeerEntries(round.execution_results ?? [], executions);
+  round.raw_outputs = mergePeerEntries(round.raw_outputs ?? [], executions.map((execution) => ({
+    peer: execution.peer,
+    pointer: execution.raw_output.pointer,
+    bytes: execution.raw_output.bytes,
+    sha256: execution.raw_output.sha256,
+    recorded_at: execution.completed_at,
+    source: 'runtime-consensus-executor',
+    status: execution.status,
+  })));
+  round.status = summarizeRoundStatus({ executions, activePeers: manifest.peers.active, round });
+  manifest.status = round.status;
+  manifest.updated_at = startedAt;
+
+  const executionSummary = summarizeExecutions(executions);
+  const executionPath = resolve(consensusRunDir(repoRoot, runId), 'execution.json');
+  const executionArtifact = {
+    schema_version: EXECUTION_SCHEMA,
+    runtime_version: VERSION,
+    run_id: runId,
+    status: executionSummary.failed > 0 ? 'failed' : executionSummary.executed > 0 ? 'passed' : 'skipped',
+    created_at: startedAt,
+    updated_at: startedAt,
+    round: roundNumber,
+    peer_execution: true,
+    execution_boundary: {
+      command: 'runtime:consensus execute',
+      execute_flag_required: true,
+      execute_flag_supplied: true,
+      timeout_ms: timeoutMs,
+      process_budget: processBudget,
+    },
+    summary: executionSummary,
+    executions,
+    failures: executions
+      .filter((execution) => execution.status !== 'passed')
+      .map((execution) => ({
+        peer: execution.peer,
+        status: execution.status,
+        failure_type: execution.failure_type,
+        retryable: execution.retryable,
+        retry_after: execution.retry_after,
+        raw_output: execution.raw_output,
+      })),
+    limits: executionLimits(),
+  };
+  await writeJson(executionPath, executionArtifact);
+  await writeJson(resolve(consensusRoot(repoRoot), 'latest.json'), {
+    schema_version: LATEST_EXECUTION_SCHEMA,
+    runtime_version: VERSION,
+    run_id: runId,
+    status: executionArtifact.status,
+    updated_at: startedAt,
+    round: roundNumber,
+    execution_pointer: pointer(repoRoot, executionPath),
+    summary: executionSummary,
+  });
+  await writeJson(manifestPath, manifest);
+
+  return {
+    command: 'execute',
+    version: VERSION,
+    run_id: runId,
+    status: executionArtifact.status,
+    round: roundNumber,
+    peer_execution: true,
+    run_pointer: pointer(repoRoot, consensusRunDir(repoRoot, runId)),
+    execution_pointer: pointer(repoRoot, executionPath),
+    execution_boundary: executionArtifact.execution_boundary,
+    execution_summary: executionSummary,
+    executions,
+    artifacts: [
+      { kind: 'manifest', pointer: pointer(repoRoot, manifestPath) },
+      { kind: 'consensus-execution', pointer: pointer(repoRoot, executionPath) },
+      ...executions.map((execution) => ({ kind: 'peer-output', round: roundNumber, peer: execution.peer, ...execution.raw_output })),
+      ...executions.map((execution) => ({ kind: 'peer-execution', round: roundNumber, peer: execution.peer, pointer: execution.execution_pointer })),
+    ],
+    limits: executionArtifact.limits,
   };
 }
 
@@ -305,6 +493,405 @@ export async function readStatus(options = {}) {
     })),
     evidence_pointers: evidencePointers,
     limits: manifest.limits,
+  };
+}
+
+async function executePeer({
+  repoRoot,
+  runId,
+  roundNumber,
+  round,
+  peer,
+  doctor,
+  env,
+  runner,
+  timeoutMs,
+  now,
+}) {
+  const directionKey = PEER_DIRECTIONS[peer];
+  if (!directionKey) {
+    return writeFailedExecution({
+      repoRoot,
+      runId,
+      roundNumber,
+      peer,
+      now,
+      failure: failureClass({
+        status: 'failed',
+        type: 'unsupported_peer',
+        retryable: false,
+        retry_after: 'choose one of the supported companion peers: claude,codex',
+      }),
+      companionPath: null,
+      raw: '',
+      execution: {
+        executed: false,
+        companion_exit_code: null,
+        companion_error_code: null,
+        timed_out: false,
+        envelope_status: null,
+        peer_host: peer,
+        peer_model: null,
+        peer_exit_code: null,
+        metadata: null,
+        error: { kind: 'unsupported_peer', message: 'no companion direction is defined for this peer' },
+      },
+    });
+  }
+
+  const companionDirection = doctor.companions.directions[directionKey];
+  const directionSettings = doctor.model_effort.directions[directionKey];
+  const companionPath = companionDirection?.selected?.path ?? null;
+  if (!companionPath) {
+    return writeFailedExecution({
+      repoRoot,
+      runId,
+      roundNumber,
+      peer,
+      now,
+      failure: failureClass({
+        status: 'failed',
+        type: 'companion_unavailable',
+        retryable: false,
+        retry_after: 'install or repair the companions plugin before retrying runtime:consensus execute',
+      }),
+      companionPath,
+      raw: '',
+      execution: {
+        executed: false,
+        companion_exit_code: null,
+        companion_error_code: null,
+        timed_out: false,
+        envelope_status: null,
+        peer_host: peer,
+        peer_model: null,
+        peer_exit_code: null,
+        metadata: null,
+        error: { kind: 'companion_unavailable', message: `${companionDirection?.filename ?? 'companion'} is not available` },
+      },
+    });
+  }
+
+  const prompt = round.prompts.find((entry) => entry.peer === peer);
+  if (!prompt) {
+    return writeFailedExecution({
+      repoRoot,
+      runId,
+      roundNumber,
+      peer,
+      now,
+      failure: failureClass({
+        status: 'failed',
+        type: 'prompt_missing',
+        retryable: false,
+        retry_after: 'recreate the consensus plan or next-round prompt before retrying',
+      }),
+      companionPath,
+      raw: '',
+      execution: {
+        executed: false,
+        companion_exit_code: null,
+        companion_error_code: null,
+        timed_out: false,
+        envelope_status: null,
+        peer_host: peer,
+        peer_model: null,
+        peer_exit_code: null,
+        metadata: null,
+        error: { kind: 'prompt_missing', message: 'peer prompt artifact is missing from the manifest round' },
+      },
+    });
+  }
+
+  const args = [
+    companionPath,
+    'task',
+    '--cwd',
+    repoRoot,
+    '--output-format',
+    'json',
+    '--prompt-file',
+    resolve(repoRoot, prompt.pointer),
+  ];
+  if (directionSettings.model.value) args.push('--model', directionSettings.model.value);
+  if (directionSettings.effort.value) args.push('--effort', directionSettings.effort.value);
+
+  const result = await runner(process.execPath, args, {
+    cwd: repoRoot,
+    env,
+    timeoutMs,
+  });
+  const parsed = parseJsonObject(result.stdout);
+  const raw = typeof parsed?.stdout === 'string' ? parsed.stdout : '';
+  const failure = classifyConsensusExecutionFailure({ result, parsed });
+  return writeExecutionResult({
+    repoRoot,
+    runId,
+    roundNumber,
+    peer,
+    now,
+    companionPath,
+    raw,
+    status: failure ? failure.status : 'passed',
+    failure,
+    execution: {
+      executed: true,
+      companion_exit_code: result.exit_code ?? null,
+      companion_error_code: result.error_code ?? null,
+      timed_out: Boolean(result.timed_out),
+      envelope_status: parsed?.status ?? null,
+      peer_host: parsed?.peer_host ?? peer,
+      peer_model: parsed?.peer_model ?? null,
+      peer_exit_code: parsed?.exit_code ?? null,
+      metadata: normalizeExecutionMetadata(parsed?.metadata),
+      error: normalizeExecutionError(parsed?.error, failure),
+    },
+  });
+}
+
+async function writeSkippedExecution({ repoRoot, runId, roundNumber, peer, reason, now }) {
+  return writeFailedExecution({
+    repoRoot,
+    runId,
+    roundNumber,
+    peer,
+    now,
+    failure: failureClass({
+      status: 'skipped',
+      type: 'process_budget_exceeded',
+      retryable: true,
+      retry_after: 'retry with a larger --process-budget within the policy cap',
+    }),
+    companionPath: null,
+    raw: '',
+    execution: {
+      executed: false,
+      companion_exit_code: null,
+      companion_error_code: null,
+      timed_out: false,
+      envelope_status: null,
+      peer_host: peer,
+      peer_model: null,
+      peer_exit_code: null,
+      metadata: null,
+      error: { kind: 'process_budget_exceeded', message: reason },
+    },
+  });
+}
+
+async function writeFailedExecution({ repoRoot, runId, roundNumber, peer, now, failure, companionPath, raw, execution }) {
+  return writeExecutionResult({
+    repoRoot,
+    runId,
+    roundNumber,
+    peer,
+    now,
+    companionPath,
+    raw,
+    status: failure.status,
+    failure,
+    execution,
+  });
+}
+
+async function writeExecutionResult({
+  repoRoot,
+  runId,
+  roundNumber,
+  peer,
+  now,
+  companionPath,
+  raw,
+  status,
+  failure,
+  execution,
+}) {
+  const completedAt = toIso(now);
+  const rawBuffer = Buffer.from(raw ?? '', 'utf8');
+  const rawPath = resolve(consensusRunDir(repoRoot, runId), 'rounds', `round-${roundNumber}`, 'raw', `${peer}.txt`);
+  await assertInside(consensusRunDir(repoRoot, runId), rawPath);
+  await mkdir(dirname(rawPath), { recursive: true });
+  await writeFile(rawPath, rawBuffer);
+  const rawOutput = {
+    pointer: pointer(repoRoot, rawPath),
+    bytes: rawBuffer.byteLength,
+    sha256: sha256(rawBuffer),
+  };
+  const executionPath = resolve(consensusRunDir(repoRoot, runId), 'rounds', `round-${roundNumber}`, 'executions', `${peer}.json`);
+  await assertInside(consensusRunDir(repoRoot, runId), executionPath);
+  const metadata = {
+    peer,
+    status,
+    completed_at: completedAt,
+    companion_path: companionPath,
+    ...execution,
+    raw_output: rawOutput,
+    failure_type: failure?.type ?? null,
+    retryable: failure?.retryable ?? false,
+    retry_after: failure?.retry_after ?? null,
+    limits: [
+      'Raw peer stdout is stored only in the raw_output pointer.',
+      'This execution metadata intentionally omits raw stdout and stderr.',
+    ],
+  };
+  metadata.execution_pointer = pointer(repoRoot, executionPath);
+  await writeJson(executionPath, metadata);
+  return metadata;
+}
+
+function classifyConsensusExecutionFailure({ result, parsed }) {
+  if (result.timed_out || result.error_code === 'ETIMEDOUT') {
+    return failureClass({
+      status: 'timed_out',
+      type: 'timeout',
+      retryable: true,
+      retry_after: 'retry with a larger --timeout-ms within the policy cap or after host command load drops',
+    });
+  }
+  const text = [
+    result.error_code,
+    result.error_message,
+    result.stderr,
+    parsed?.status,
+    parsed?.error?.kind,
+    parsed?.error?.message,
+  ].filter(Boolean).join(' ').toLowerCase();
+  if (result.ok && parsed?.status === 'success' && parsed?.exit_code === 0) return null;
+  if (['ENOENT', 'ENOTDIR'].includes(String(result.error_code ?? '').toUpperCase()) || /\b(peer_cli_not_found|not found|not executable)\b/.test(text)) {
+    return failureClass({
+      status: 'failed',
+      type: 'cli_unavailable',
+      retryable: false,
+      retry_after: 'install the missing peer host CLI before retrying',
+    });
+  }
+  if (/\b(peer_unauthenticated|not logged in|login required|auth required|authentication required|unauthorized|forbidden|401|403)\b/.test(text)) {
+    return failureClass({
+      status: 'failed',
+      type: 'authentication_required',
+      retryable: false,
+      retry_after: 'authenticate the peer host CLI before retrying',
+    });
+  }
+  if (/\b(approval|consent|requires approval|approval required|permission prompt)\b/.test(text)) {
+    return failureClass({
+      status: 'permission_failed',
+      type: 'approval_required',
+      retryable: false,
+      retry_after: 'retry only after the operator resolves host approval policy outside runtime:consensus',
+    });
+  }
+  if (/\b(permission denied|not permitted|operation not permitted|sandbox|read-only|read only|not allowed|eacces|eperm|denied)\b/.test(text)) {
+    return failureClass({
+      status: 'permission_failed',
+      type: 'permission_denied',
+      retryable: false,
+      retry_after: 'retry only after resolving host permission or sandbox policy outside runtime:consensus',
+    });
+  }
+  if (/\b(enotfound|econnreset|econnrefused|ehostunreach|network|networkerror|dns|tls|socket|temporary failure)\b/.test(text)) {
+    return failureClass({
+      status: 'failed',
+      type: 'network',
+      retryable: true,
+      retry_after: 'retry after network connectivity recovers',
+    });
+  }
+  if (/\b(rate limit|too many requests|429|temporarily unavailable|try again|busy)\b/.test(text)) {
+    return failureClass({
+      status: 'failed',
+      type: 'transient_host_failure',
+      retryable: true,
+      retry_after: 'retry after the host-imposed backoff or transient failure clears',
+    });
+  }
+  return failureClass({
+    status: 'failed',
+    type: parsed?.status === 'peer_error' ? 'peer_error' : 'companion_error',
+    retryable: false,
+    retry_after: 'inspect the peer host failure outside runtime:consensus before retrying',
+  });
+}
+
+function failureClass({ status, type, retryable, retry_after }) {
+  return { status, type, retryable, retry_after };
+}
+
+function normalizeExecutionMetadata(metadata) {
+  if (!metadata || typeof metadata !== 'object') return null;
+  return {
+    duration_ms: Number.isFinite(metadata.duration_ms) ? metadata.duration_ms : null,
+    started_at: sanitizeValue(metadata.started_at),
+    completed_at: sanitizeValue(metadata.completed_at),
+  };
+}
+
+function normalizeExecutionError(error, failure) {
+  if (!error && !failure) return null;
+  return {
+    kind: sanitizeValue(error?.kind ?? failure?.type ?? 'execution_error'),
+    message: failure ? sanitizeValue(failure.type) : sanitizeValue(error?.message ?? 'execution failed'),
+  };
+}
+
+function summarizeExecutions(executions) {
+  const summary = {
+    executed: 0,
+    passed: 0,
+    failed: 0,
+    skipped: 0,
+    failed_retryable: 0,
+    failed_non_retryable: 0,
+  };
+  for (const execution of executions) {
+    if (execution.executed) summary.executed += 1;
+    if (execution.status === 'passed') summary.passed += 1;
+    else if (execution.status === 'skipped') summary.skipped += 1;
+    else {
+      summary.failed += 1;
+      if (execution.retryable) summary.failed_retryable += 1;
+      else summary.failed_non_retryable += 1;
+    }
+  }
+  return summary;
+}
+
+function summarizeRoundStatus({ executions, activePeers, round }) {
+  const successful = new Set((round.raw_outputs ?? [])
+    .filter((entry) => entry.status === 'passed' || entry.status === undefined)
+    .map((entry) => entry.peer));
+  for (const execution of executions) {
+    if (execution.status === 'passed') successful.add(execution.peer);
+    else successful.delete(execution.peer);
+  }
+  const failed = executions.some((execution) => !['passed', 'skipped'].includes(execution.status));
+  if (failed && successful.size === 0) return 'failed';
+  if (failed) return 'partially-failed';
+  if (successful.size >= activePeers.length) return 'executed';
+  return 'partially-executed';
+}
+
+function mergePeerEntries(existing, updates) {
+  const byPeer = new Map((existing ?? []).map((entry) => [entry.peer, entry]));
+  for (const update of updates) byPeer.set(update.peer, update);
+  return [...byPeer.values()];
+}
+
+function buildNextRoundAvailability({ manifest, durableDisagreements, runId }) {
+  const latestRound = latestRoundNumber(manifest);
+  const hasDisagreements = durableDisagreements.length > 0;
+  const budgetRemaining = latestRound < manifest.policy.max_rounds;
+  return {
+    available: hasDisagreements && budgetRemaining,
+    reason: !hasDisagreements
+      ? 'no durable disagreements were synthesized'
+      : budgetRemaining
+        ? 'durable disagreements remain and max_rounds budget is available'
+        : `max_rounds ${manifest.policy.max_rounds} exhausted`,
+    current_round: latestRound,
+    max_rounds: manifest.policy.max_rounds,
+    command: hasDisagreements && budgetRemaining ? `runtime:consensus next-round --run-id ${runId}` : null,
+    execute_command: hasDisagreements && budgetRemaining ? `runtime:consensus execute --run-id ${runId} --round ${latestRound + 1} --execute` : null,
   };
 }
 
@@ -363,6 +950,19 @@ export function parseArgs(argv) {
       case '--process-budget':
         options.processBudget = positiveInt(requireValue(args, arg), arg);
         break;
+      case '--timeout-ms':
+      case '--execution-timeout-ms':
+        options.timeoutMs = positiveInt(requireValue(args, arg), arg);
+        break;
+      case '--execute':
+        options.execute = true;
+        break;
+      case '--model':
+        options.model = requireSingleLine(requireValue(args, arg), arg);
+        break;
+      case '--effort':
+        options.effort = requireSingleLine(requireValue(args, arg), arg);
+        break;
       case '--run-id':
         options.runId = validateRunId(requireValue(args, arg));
         break;
@@ -413,6 +1013,19 @@ export function formatText(report) {
   if (report.status) lines.push(`status: ${report.status}`);
   if (report.run_pointer) lines.push(`run artifact: ${report.run_pointer}`);
   if (report.consensus_pointer) lines.push(`consensus: ${report.consensus_pointer}`);
+  if (report.execution_pointer) lines.push(`execution: ${report.execution_pointer}`);
+  if (report.execution_summary) {
+    lines.push(`execution summary: executed=${report.execution_summary.executed}; passed=${report.execution_summary.passed}; failed=${report.execution_summary.failed}; skipped=${report.execution_summary.skipped}; retryable-failed=${report.execution_summary.failed_retryable}; non-retryable-failed=${report.execution_summary.failed_non_retryable}`);
+  }
+  if (report.executions?.length) {
+    lines.push('', 'executions:');
+    for (const execution of report.executions) {
+      lines.push(`- ${execution.peer}: status=${execution.status}; raw=${execution.raw_output.pointer}; bytes=${execution.raw_output.bytes}; sha256=${execution.raw_output.sha256}`);
+      if (execution.failure_type) {
+        lines.push(`  failure=${execution.failure_type}; retryable=${execution.retryable}; retry-after=${execution.retry_after ?? '<none>'}`);
+      }
+    }
+  }
   if (report.synthesized_summary) {
     lines.push('', 'synthesized summary:', report.synthesized_summary);
   }
@@ -444,6 +1057,11 @@ export function formatText(report) {
   if (report.next_action) {
     lines.push('', `next action: ${report.next_action}`);
   }
+  if (report.next_round) {
+    lines.push('', `next round: available=${report.next_round.available}; reason=${report.next_round.reason}`);
+    if (report.next_round.command) lines.push(`next-round command: ${report.next_round.command}`);
+    if (report.next_round.execute_command) lines.push(`execute command: ${report.next_round.execute_command}`);
+  }
   if (report.limits?.length) {
     lines.push('', 'limits:');
     for (const limit of report.limits) lines.push(`- ${limit}`);
@@ -455,13 +1073,14 @@ function helpText() {
   return `runtime:consensus ${VERSION}
 
 Usage:
-  runtime:consensus plan --task <text> [--peers claude,codex] [--max-rounds N]
+  runtime:consensus plan --task <text> [--peers claude,codex] [--max-rounds N] [--timeout-ms N]
   runtime:consensus record --run-id <id> --peer <peer> --input-file <path>
   runtime:consensus synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>]
   runtime:consensus next-round --run-id <id> [--disagreements-file <path>]
+  runtime:consensus execute --run-id <id> [--round N] --execute [--timeout-ms N] [--process-budget N]
   runtime:consensus status --run-id <id>
 
-This MVP creates and updates runtime-owned consensus artifacts. It does not execute peer agents.`;
+Planning and synthesis never execute peers. Peer dispatch is available only through the explicit execute command plus --execute.`;
 }
 
 async function resolveTask(options) {
@@ -642,6 +1261,14 @@ function positiveInt(value, label) {
   return number;
 }
 
+function boundedPositiveInt(value, label, max) {
+  const number = positiveInt(value, label);
+  if (number > max) {
+    throw new Error(`${label} must be <= ${max}`);
+  }
+  return number;
+}
+
 function optionalPositiveInt(value, label) {
   if (value === undefined || value === null || value === '') return null;
   return positiveInt(value, label);
@@ -729,6 +1356,39 @@ async function writeJson(path, value) {
 
 function sha256(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
+}
+
+function parseJsonObject(value) {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeValue(value) {
+  if (value === null || value === undefined) return null;
+  return String(value)
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '<redacted-email>')
+    .replace(/\b(?:ghp|github_pat|xox[baprs])_[A-Za-z0-9_=-]{12,}\b/g, '<redacted-token>')
+    .replace(/\b(?:sk|sk-proj|sk-ant)-[A-Za-z0-9_-]{12,}\b/g, '<redacted-token>')
+    .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, '<redacted-aws-key>')
+    .replace(/\b[0-9a-f]{32,}\b/gi, '<redacted-hex>');
+}
+
+function executionLimits() {
+  return [
+    'Execution requires runtime:consensus execute plus --execute; plan, synthesize, next-round, and status do not execute peers.',
+    'Companions are invoked through companions/contract.md only; runtime does not shell out to peer CLIs ad hoc.',
+    'Raw peer stdout is written under .agentic-plugins/runs/consensus/<run-id>/ and omitted from main output.',
+    'Main output exposes only pointers, byte counts, hashes, status, failure class, and retryability.',
+    'No host-native config, auth, secrets, sandbox, permission policy, or host session context is mutated.',
+    'No automatic unbounded loop is allowed; max_rounds, max_peers, process_budget, and timeout caps bound execution.',
+  ];
 }
 
 async function main() {

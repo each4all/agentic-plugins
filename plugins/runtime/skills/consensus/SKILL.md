@@ -1,11 +1,11 @@
 ---
 name: consensus
-description: "Artifact-only ADR-0024 runtime consensus scaffold. Use when the user wants to plan peer fanout, record peer outputs as artifacts, synthesize disagreements, or create a targeted rebuttal round without executing peers directly."
+description: "ADR-0024 runtime consensus scaffold with an explicit companion executor. Use when the user wants to plan peer fanout, execute companions only behind --execute, record peer outputs as artifacts, synthesize disagreements, or create a targeted rebuttal round."
 ---
 
 # Consensus (runtime framework primitive)
 
-`runtime:consensus` is the first ADR-0024 dynamic peer consensus loop scaffold. It owns runtime consensus artifacts and keeps raw peer output out of the main session.
+`runtime:consensus` is the first ADR-0024 dynamic peer consensus loop scaffold. It owns runtime consensus artifacts, keeps raw peer output out of the main session, and executes companion dispatch only through the explicit `execute --execute` boundary.
 
 ## When invoked by command (`/runtime:consensus` or `$runtime:consensus`)
 
@@ -16,6 +16,7 @@ description: "Artifact-only ADR-0024 runtime consensus scaffold. Use when the us
 
 ```bash
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" plan --task <text> [--format text|json] [--peers claude,codex] [--max-rounds <n>] [--max-peers <n>] [--token-budget <n>] [--time-budget-ms <n>] [--process-budget <n>]
+node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" execute --run-id <id> [--round <n>] --execute [--timeout-ms <n>] [--process-budget <n>] [--model <id>] [--effort <level>]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" record --run-id <id> --peer <peer> --input-file <path>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" next-round --run-id <id>
@@ -25,7 +26,7 @@ node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" stat
 3. Present only the returned synthesis and pointers.
    - Do not paste raw peer outputs into the main session.
    - Use artifact paths under `.agentic-plugins/runs/consensus/<run-id>/`.
-   - Treat peer execution as manual or host-native unless a future PR adds an explicit executor boundary.
+   - Execute peers only when the user supplied `execute --execute`.
 
 ## Scope
 
@@ -38,19 +39,24 @@ Consensus reports and manages:
 - durable disagreements;
 - evidence pointers;
 - targeted rebuttal prompt artifacts for a next round.
+- explicit companion execution metadata, including status, failure type, retryability, byte counts, hashes, and artifact pointers.
 
 ## Boundaries
 
-- No direct peer execution.
+- No peer execution except `execute --execute`.
 - No companion bridge mutation.
 - No engineer/orchestrator workflow state migration.
 - No host-native config, authentication, secret, sandbox, or permission writes.
 - No claim that Codex manual-hook or permission limits are host parity.
+- No automatic unbounded loops; max rounds, max peers, process budget, and timeout caps bound execution.
 
 ## Example
 
 ```bash
 $runtime:consensus plan --task "Review this risky runtime change" --max-rounds 2
+$runtime:consensus execute --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --execute
 $runtime:consensus record --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --peer claude --input-file claude.txt
 $runtime:consensus synthesize --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --summary-file summary.md --disagreements-file disagreements.md
+$runtime:consensus next-round --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef
+$runtime:consensus execute --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --round 2 --execute
 ```
