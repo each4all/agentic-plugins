@@ -156,6 +156,11 @@ workflow id/path, artifact pointers, recommended next work, and
 next-session action/command or prompt pointer, but do not mutate host
 session context or paste raw peer / consensus output into the main
 session.
+When the deliverable boundary is reached, include PR handling readiness
+fields in the footer. Ask the user what to do with PR handling only when
+the helper returns `pr_handling.recommendation == "ask-user"`; `defer`
+means evidence is incomplete, and `block` means a readiness criterion
+failed.
 
 ---
 
