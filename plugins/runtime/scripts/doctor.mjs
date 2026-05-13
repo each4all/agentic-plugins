@@ -6,6 +6,7 @@
 // authenticate hosts, mutate config, sweep ledgers, or execute peer agents.
 
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -30,6 +31,7 @@ export const VALID_PEER_RUN_STATUSES = new Set([
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_STALE_GRACE_MS = 60000;
+const DEFAULT_DEEP_PEER_SMOKE_TIMEOUT_MS = 120000;
 
 export async function runDoctor({
   repoRoot = process.cwd(),
@@ -42,8 +44,13 @@ export async function runDoctor({
   explicitModel = null,
   explicitEffort = null,
   deepPeerSmoke = false,
+  executeDeepPeerSmoke = false,
+  deepPeerSmokeTimeoutMs = DEFAULT_DEEP_PEER_SMOKE_TIMEOUT_MS,
   sandboxPermissionProbe = false,
 } = {}) {
+  if (executeDeepPeerSmoke && !deepPeerSmoke) {
+    throw new Error('--execute-deep-peer-smoke requires --deep-peer-smoke');
+  }
   const resolvedRepoRoot = resolve(repoRoot);
   const resolvedHomeDir = resolve(homeDir);
   const startedAt = now.toISOString();
@@ -96,16 +103,23 @@ export async function runDoctor({
     codex,
     companion,
     deepPeerSmoke,
+    executeDeepPeerSmoke,
     sandboxPermissionProbe,
   });
   const sandboxPermissionProbeSection = buildSandboxPermissionProbeSection({
     requested: sandboxPermissionProbe,
     readiness,
   });
-  const deepPeerSmokeSection = buildDeepPeerSmokeSection({
+  const deepPeerSmokeSection = await buildDeepPeerSmokeSection({
     requested: deepPeerSmoke,
+    execute: executeDeepPeerSmoke,
     readiness,
+    companion,
     modelEffort,
+    repoRoot: resolvedRepoRoot,
+    env,
+    runner,
+    timeoutMs: deepPeerSmokeTimeoutMs,
   });
 
   const report = {
@@ -896,7 +910,7 @@ function validatePeerRunHandle(handle, { expectedPlugin, status, updatedAt, term
   return issues;
 }
 
-function buildReadiness({ claude, codex, companion, deepPeerSmoke, sandboxPermissionProbe }) {
+function buildReadiness({ claude, codex, companion, deepPeerSmoke, executeDeepPeerSmoke, sandboxPermissionProbe }) {
   return {
     claude_to_codex: buildDirectionReadiness({
       direction: 'Claude -> Codex',
@@ -906,6 +920,7 @@ function buildReadiness({ claude, codex, companion, deepPeerSmoke, sandboxPermis
       requiredPeerFeatures: ['exec_command', 'model_flag', 'config_flag', 'cd_flag'],
       requiredPermissionFeatures: ['sandbox_flag', 'approval_flag'],
       deepPeerSmoke,
+      executeDeepPeerSmoke,
       sandboxPermissionProbe,
     }),
     codex_to_claude: buildDirectionReadiness({
@@ -916,6 +931,7 @@ function buildReadiness({ claude, codex, companion, deepPeerSmoke, sandboxPermis
       requiredPeerFeatures: ['print_mode', 'no_session_persistence', 'model_flag', 'effort_flag'],
       requiredPermissionFeatures: ['permission_mode'],
       deepPeerSmoke,
+      executeDeepPeerSmoke,
       sandboxPermissionProbe,
     }),
   };
@@ -952,42 +968,86 @@ function summarizeSandboxPermissionProbeStatus({ requested, directions }) {
   return 'blocked';
 }
 
-function buildDeepPeerSmokeSection({ requested, readiness, modelEffort }) {
+async function buildDeepPeerSmokeSection({
+  requested,
+  execute,
+  readiness,
+  companion,
+  modelEffort,
+  repoRoot,
+  env,
+  runner,
+  timeoutMs,
+}) {
   const directions = {};
   for (const key of ['claude_to_codex', 'codex_to_claude']) {
     const directionReadiness = readiness[key];
+    const companionDirection = companion.directions[key];
     const directionSettings = modelEffort.directions[key];
     const blocked = directionReadiness.blockers.length > 0;
-    directions[key] = {
+    const direction = {
       direction: directionReadiness.direction,
       requested,
-      execution: 'not_executed',
+      execution: execute && requested && !blocked ? 'pending' : 'not_executed',
       status: !requested ? 'not_requested' : blocked ? directionReadiness.status : 'ready_with_warnings',
       plan: requested
-        ? 'plan-only preflight; no peer agent is executed by runtime:doctor'
+        ? execute
+          ? 'explicit executor requested; peer agent is invoked through the companion contract when readiness is not blocked'
+          : 'plan-only preflight; no peer agent is executed by runtime:doctor'
         : 'not requested',
       model: directionSettings.model,
       effort: directionSettings.effort,
       blockers: directionReadiness.blockers,
       warnings: directionReadiness.warnings,
+      result: null,
       next_step: requested
         ? blocked
           ? 'resolve blockers before a future explicit peer smoke executor is attempted'
-          : 'future executor work may use this preflight to run a manual or explicitly approved peer smoke'
+          : execute
+            ? 'inspect the sanitized smoke result metadata; raw peer output is intentionally omitted'
+            : 'future executor work may use this preflight to run a manual or explicitly approved peer smoke'
         : 'rerun with --deep-peer-smoke to include this plan-only preflight',
     };
+    if (requested && execute && blocked) {
+      direction.execution = 'skipped';
+      direction.result = {
+        status: 'skipped',
+        reason: 'readiness blockers prevent live peer execution',
+      };
+    } else if (requested && execute) {
+      direction.result = await executeDeepPeerSmokeDirection({
+        key,
+        repoRoot,
+        companionDirection,
+        directionSettings,
+        runner,
+        env,
+        timeoutMs,
+      });
+      direction.execution = 'executed';
+      direction.status = direction.result.status;
+    }
+    directions[key] = direction;
   }
   return {
     requested,
-    executed: false,
-    mode: 'plan_only_preflight',
-    status: summarizeDeepPeerSmokePlanStatus({ requested, directions }),
+    executed: Boolean(requested && execute),
+    peer_execution: Boolean(requested && execute),
+    mode: execute ? 'explicit_executor' : 'plan_only_preflight',
+    status: execute
+      ? summarizeDeepPeerSmokeExecutionStatus({ requested, directions })
+      : summarizeDeepPeerSmokePlanStatus({ requested, directions }),
     reason: requested
-      ? 'runtime:doctor plans the explicit deep peer smoke preflight but does not execute peer agents'
+      ? execute
+        ? 'runtime:doctor executed the deep peer smoke through the companion contract behind an explicit executor flag'
+        : 'runtime:doctor plans the explicit deep peer smoke preflight but does not execute peer agents'
       : 'not requested',
     directions,
     limits: [
-      'Plan-only preflight; runtime:doctor does not execute peer agents.',
+      execute
+        ? 'Explicit executor; peer agents are invoked only when --deep-peer-smoke and --execute-deep-peer-smoke are both supplied.'
+        : 'Plan-only preflight; runtime:doctor does not execute peer agents.',
+      'Raw peer stdout is not included in doctor output; only status, exit code, byte count, SHA-256, and timing metadata are reported.',
       'No host-native config, auth, secrets, sandbox, or permission state is mutated.',
       'Codex manual-hook and permission limits remain visible; no host parity claim is made.',
     ],
@@ -1002,6 +1062,127 @@ function summarizeDeepPeerSmokePlanStatus({ requested, directions }) {
   return 'ready_with_warnings';
 }
 
+function summarizeDeepPeerSmokeExecutionStatus({ requested, directions }) {
+  if (!requested) return 'not_requested';
+  const statuses = Object.values(directions).map((direction) => direction.status);
+  if (statuses.every((status) => status === 'passed')) return 'passed';
+  if (statuses.some((status) => status === 'passed')) return 'partially_failed';
+  if (statuses.some((status) => ['skipped', 'blocked', 'unavailable', 'unauthenticated', 'not_installed'].includes(status))) return 'blocked';
+  return 'failed';
+}
+
+async function executeDeepPeerSmokeDirection({
+  key,
+  repoRoot,
+  companionDirection,
+  directionSettings,
+  runner,
+  env,
+  timeoutMs,
+}) {
+  const companionPath = companionDirection.selected?.path;
+  if (!companionPath) {
+    return {
+      status: 'blocked',
+      reason: `companion ${companionDirection.filename} is not available`,
+    };
+  }
+  const expectedToken = `RUNTIME_DOCTOR_SMOKE_OK ${companionDirection.peer}`;
+  const prompt = buildDeepPeerSmokePrompt({ key, peer: companionDirection.peer, expectedToken });
+  const args = [
+    companionPath,
+    'task',
+    '--cwd',
+    repoRoot,
+    '--output-format',
+    'json',
+  ];
+  if (directionSettings.model.value) args.push('--model', directionSettings.model.value);
+  if (directionSettings.effort.value) args.push('--effort', directionSettings.effort.value);
+  args.push(prompt);
+
+  const result = await runner(process.execPath, args, {
+    cwd: repoRoot,
+    env,
+    timeoutMs,
+  });
+  return summarizeCompanionSmokeResult({ result, companionPath, expectedToken });
+}
+
+function buildDeepPeerSmokePrompt({ key, peer, expectedToken }) {
+  return [
+    '<task>',
+    `Runtime doctor deep peer smoke for ${key}. Reply with exactly one short line: ${expectedToken}.`,
+    '</task>',
+    '',
+    '<grounding_rules>',
+    '<rule>Do not inspect or modify repository files.</rule>',
+    '<rule>Do not include secrets, account details, or environment values.</rule>',
+    '<rule>This is a liveness smoke only; do not perform broader analysis.</rule>',
+    '</grounding_rules>',
+    '',
+    '<expected_output>',
+    expectedToken,
+    '</expected_output>',
+  ].join('\n');
+}
+
+function summarizeCompanionSmokeResult({ result, companionPath, expectedToken }) {
+  const parsed = parseJsonObject(result.stdout);
+  const peerStdout = typeof parsed?.stdout === 'string' ? parsed.stdout : '';
+  const expectedTokenPresent = peerStdout.includes(expectedToken);
+  const passed = result.ok && parsed?.status === 'success' && parsed?.exit_code === 0 && expectedTokenPresent;
+  return {
+    status: passed ? 'passed' : result.timed_out ? 'timed_out' : 'failed',
+    companion_path: companionPath,
+    companion_exit_code: result.exit_code,
+    companion_error_code: result.error_code,
+    timed_out: Boolean(result.timed_out),
+    envelope_status: parsed?.status ?? null,
+    peer_host: parsed?.peer_host ?? null,
+    peer_model: parsed?.peer_model ?? null,
+    peer_exit_code: parsed?.exit_code ?? null,
+    expected_token_present: expectedTokenPresent,
+    stdout_bytes: Buffer.byteLength(peerStdout, 'utf8'),
+    stdout_sha256: peerStdout ? sha256(peerStdout) : null,
+    metadata: normalizeSmokeMetadata(parsed?.metadata),
+    stderr_summary: result.stderr ? truncate(sanitizeValue(result.stderr), 200) : null,
+    error: normalizeSmokeError({ parsed, result }),
+  };
+}
+
+function parseJsonObject(value) {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSmokeMetadata(metadata) {
+  if (!metadata || typeof metadata !== 'object') return null;
+  return {
+    duration_ms: Number.isFinite(metadata.duration_ms) ? metadata.duration_ms : null,
+    started_at: sanitizeValue(metadata.started_at),
+    completed_at: sanitizeValue(metadata.completed_at),
+  };
+}
+
+function normalizeSmokeError({ parsed, result }) {
+  if (parsed?.error && typeof parsed.error === 'object') {
+    return {
+      kind: sanitizeValue(parsed.error.kind),
+      message: sanitizeValue(parsed.error.message),
+    };
+  }
+  if (result.ok && parsed) return null;
+  return {
+    kind: sanitizeValue(result.error_code ?? 'companion_execution_error'),
+    message: sanitizeValue(result.error_message ?? result.stderr ?? 'companion did not return a successful JSON envelope'),
+  };
+}
+
 function buildDirectionReadiness({
   direction,
   caller,
@@ -1010,6 +1191,7 @@ function buildDirectionReadiness({
   requiredPeerFeatures,
   requiredPermissionFeatures,
   deepPeerSmoke,
+  executeDeepPeerSmoke,
   sandboxPermissionProbe,
 }) {
   const blockers = [];
@@ -1043,6 +1225,8 @@ function buildDirectionReadiness({
   }
   if (!deepPeerSmoke) {
     warnings.push('read-only inference only; no peer-agent smoke executed');
+  } else if (executeDeepPeerSmoke) {
+    warnings.push('deep peer smoke executor requested; sanitized execution evidence appears under deep_peer_smoke');
   } else {
     warnings.push('deep peer smoke requested but not executed by runtime:doctor v0.1');
   }
@@ -1149,6 +1333,9 @@ function summarizeOverall(report) {
   for (const [direction, readiness] of Object.entries(report.readiness)) {
     if (!['available', 'available_with_warnings'].includes(readiness.status)) hardFailures.push(`${direction} ${readiness.status}`);
   }
+  if (report.deep_peer_smoke.executed && report.deep_peer_smoke.status !== 'passed') {
+    hardFailures.push(`deep peer smoke ${report.deep_peer_smoke.status}`);
+  }
   const warnings = [];
   for (const [name, plugin] of Object.entries(report.plugins)) {
     if (!['available', 'source_available'].includes(plugin.status)) warnings.push(`${name} plugin ${plugin.status}`);
@@ -1217,11 +1404,20 @@ export function formatText(report) {
   }
   if (report.deep_peer_smoke.requested) {
     lines.push('Deep Peer Smoke');
-    lines.push(`- mode: ${report.deep_peer_smoke.mode}; requested=${report.deep_peer_smoke.requested}; executed=${report.deep_peer_smoke.executed}; status=${report.deep_peer_smoke.status}`);
+    lines.push(`- mode: ${report.deep_peer_smoke.mode}; requested=${report.deep_peer_smoke.requested}; executed=${report.deep_peer_smoke.executed}; peer-execution=${report.deep_peer_smoke.peer_execution}; status=${report.deep_peer_smoke.status}`);
     for (const key of ['claude_to_codex', 'codex_to_claude']) {
       const direction = report.deep_peer_smoke.directions[key];
       lines.push(`- ${direction.direction}: ${direction.status}; execution=${direction.execution}; model=${direction.model.value ?? '<host-default>'}; effort=${direction.effort.value ?? '<host-default>'}`);
       lines.push(`  plan: ${direction.plan}`);
+      if (direction.result && direction.execution === 'executed') {
+        lines.push(`  result: peer=${direction.result.peer_host ?? '<unknown>'}; envelope=${direction.result.envelope_status ?? '<none>'}; exit=${direction.result.peer_exit_code ?? direction.result.companion_exit_code ?? '<none>'}; expected-token=${direction.result.expected_token_present}; stdout-bytes=${direction.result.stdout_bytes}; stdout-sha256=${direction.result.stdout_sha256 ?? '<empty>'}`);
+        if (direction.result.metadata?.duration_ms !== null && direction.result.metadata?.duration_ms !== undefined) {
+          lines.push(`  duration-ms: ${direction.result.metadata.duration_ms}`);
+        }
+        if (direction.result.error?.message) lines.push(`  error: ${direction.result.error.message}`);
+      } else if (direction.result?.reason) {
+        lines.push(`  result: ${direction.result.reason}`);
+      }
       if (direction.blockers.length > 0) {
         for (const blocker of direction.blockers) lines.push(`  blocker: ${blocker}`);
       }
@@ -1329,6 +1525,15 @@ function redactSecrets(value) {
     .replace(/\b[0-9a-f]{32,}\b/gi, '<redacted-hex>');
 }
 
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function truncate(value, maxLength) {
+  const text = String(value ?? '');
+  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 3)}...`;
+}
+
 function semverCompare(a, b) {
   const pa = a.split('.').map((x) => Number.parseInt(x, 10) || 0);
   const pb = b.split('.').map((x) => Number.parseInt(x, 10) || 0);
@@ -1345,7 +1550,7 @@ function escapeRegExp(value) {
 }
 
 function usage() {
-  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--deep-peer-smoke] [--sandbox-permission-probe]\n`;
+  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--sandbox-permission-probe]\n`;
 }
 
 export function parseArgs(argv) {
@@ -1356,6 +1561,8 @@ export function parseArgs(argv) {
     explicitModel: null,
     explicitEffort: null,
     deepPeerSmoke: false,
+    executeDeepPeerSmoke: false,
+    deepPeerSmokeTimeoutMs: DEFAULT_DEEP_PEER_SMOKE_TIMEOUT_MS,
     sandboxPermissionProbe: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -1376,11 +1583,18 @@ export function parseArgs(argv) {
       opts.explicitEffort = requireValue(argv, ++i, arg);
     } else if (arg === '--deep-peer-smoke') {
       opts.deepPeerSmoke = true;
+    } else if (arg === '--execute-deep-peer-smoke') {
+      opts.executeDeepPeerSmoke = true;
+    } else if (arg === '--deep-peer-smoke-timeout-ms') {
+      opts.deepPeerSmokeTimeoutMs = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--sandbox-permission-probe') {
       opts.sandboxPermissionProbe = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
+  }
+  if (opts.executeDeepPeerSmoke && !opts.deepPeerSmoke) {
+    throw new Error('--execute-deep-peer-smoke requires --deep-peer-smoke');
   }
   return opts;
 }
@@ -1389,6 +1603,13 @@ function requireValue(argv, index, flag) {
   const value = argv[index];
   if (!value || value.startsWith('--')) throw new Error(`${flag} requires a value`);
   return value;
+}
+
+function parsePositiveIntArg(value, flag) {
+  if (!/^[1-9][0-9]*$/.test(String(value ?? ''))) {
+    throw new Error(`${flag} must be a positive integer`);
+  }
+  return Number.parseInt(value, 10);
 }
 
 async function main() {

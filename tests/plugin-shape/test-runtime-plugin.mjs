@@ -98,9 +98,11 @@ describe('plugins/runtime doctor surface', () => {
     ok(command.startsWith('---\n'));
     ok(command.includes('scripts/doctor.mjs'));
     ok(/read-only/i.test(command));
+    ok(command.includes('--execute-deep-peer-smoke'));
     const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/doctor/SKILL.md'), 'utf-8');
     ok(/^name:\s*doctor\s*$/m.test(skill));
     ok(skill.includes('Authentication output must stay sanitized'));
+    ok(skill.includes('--execute-deep-peer-smoke'));
     const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/doctor/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:doctor'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
