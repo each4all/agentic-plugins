@@ -141,6 +141,43 @@ describe('runtime doctor', () => {
     });
     strictEqual(report.readiness.claude_to_codex.sandbox_permission.status, 'unknown');
     strictEqual(report.readiness.codex_to_claude.sandbox_permission.status, 'unknown');
+    strictEqual(report.sandbox_permission_probe.requested, false);
+    strictEqual(report.sandbox_permission_probe.executed, false);
+  });
+
+  it('runs sandbox permission proof as an explicit read-only probe without peer execution', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-sandbox-probe-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      sandboxPermissionProbe: true,
+      runner: fakeRunner({
+        'claude --version': okResult('2.1.140 (Claude Code)\n'),
+        'claude --help': okResult('Usage: claude --print --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n'),
+        'claude auth status': okResult(JSON.stringify({ loggedIn: true })),
+        'claude plugin list': okResult(''),
+        'codex --version': okResult('codex-cli 0.130.0\n'),
+        'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
+        'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort=\"high\"\n'),
+        'codex login status': okResult('Logged in using ChatGPT\n'),
+        'codex plugin marketplace --help': okResult(''),
+      }),
+    });
+
+    strictEqual(report.sandbox_permission_probe.requested, true);
+    strictEqual(report.sandbox_permission_probe.executed, true);
+    strictEqual(report.sandbox_permission_probe.peer_execution, false);
+    strictEqual(report.sandbox_permission_probe.status, 'read_only_probe_passed');
+    strictEqual(report.sandbox_permission_probe.directions.claude_to_codex.status, 'read_only_probe_passed');
+    strictEqual(report.sandbox_permission_probe.directions.codex_to_claude.status, 'read_only_probe_passed');
+    strictEqual(report.readiness.claude_to_codex.sandbox_permission.status, 'read_only_probe_passed');
+    strictEqual(report.readiness.codex_to_claude.sandbox_permission.peer_execution, false);
+    ok(report.sandbox_permission_probe.directions.codex_to_claude.probes.some((probe) => probe.name === 'peer_permission_surface' && probe.status === 'passed'));
+    ok(report.sandbox_permission_probe.limits.some((limit) => /does not execute peer agents/i.test(limit)));
+    ok(formatText(report).includes('Sandbox Permission Probe'));
+    ok(formatText(report).includes('peer-execution=false'));
   });
 
   it('plans deep peer smoke as a structured read-only doctor section without executing peers', async () => {
@@ -179,13 +216,14 @@ describe('runtime doctor', () => {
   });
 
   it('parses CLI arguments and rejects unknown or malformed flags', () => {
-    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke']);
+    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--sandbox-permission-probe']);
     strictEqual(opts.repoRoot, '/tmp/repo');
     strictEqual(opts.format, 'json');
     strictEqual(opts.host, 'codex');
     strictEqual(opts.explicitModel, 'm');
     strictEqual(opts.explicitEffort, 'high');
     strictEqual(opts.deepPeerSmoke, true);
+    strictEqual(opts.sandboxPermissionProbe, true);
     rejects(async () => parseArgs(['--format', 'xml']), /--format must be text or json/);
   });
 });
