@@ -143,6 +143,41 @@ describe('runtime doctor', () => {
     strictEqual(report.readiness.codex_to_claude.sandbox_permission.status, 'unknown');
   });
 
+  it('plans deep peer smoke as a structured read-only doctor section without executing peers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-deep-smoke-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      explicitModel: 'gpt-5.4',
+      explicitEffort: 'high',
+      deepPeerSmoke: true,
+      runner: fakeRunner({
+        'claude --version': okResult('2.1.140 (Claude Code)\n'),
+        'claude --help': okResult('Usage: claude --print --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n'),
+        'claude auth status': okResult(JSON.stringify({ loggedIn: true })),
+        'claude plugin list': okResult(''),
+        'codex --version': okResult('codex-cli 0.130.0\n'),
+        'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
+        'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort=\"high\"\n'),
+        'codex login status': okResult('Logged in using ChatGPT\n'),
+        'codex plugin marketplace --help': okResult(''),
+      }),
+    });
+
+    strictEqual(report.deep_peer_smoke.mode, 'plan_only_preflight');
+    strictEqual(report.deep_peer_smoke.requested, true);
+    strictEqual(report.deep_peer_smoke.executed, false);
+    strictEqual(report.deep_peer_smoke.status, 'ready_with_warnings');
+    strictEqual(report.deep_peer_smoke.directions.claude_to_codex.execution, 'not_executed');
+    strictEqual(report.deep_peer_smoke.directions.claude_to_codex.model.value, 'gpt-5.4');
+    strictEqual(report.deep_peer_smoke.directions.codex_to_claude.effort.value, 'high');
+    ok(report.deep_peer_smoke.limits.some((limit) => /does not execute peer agents/i.test(limit)));
+    ok(formatText(report).includes('Deep Peer Smoke'));
+    ok(formatText(report).includes('plan-only preflight'));
+  });
+
   it('parses CLI arguments and rejects unknown or malformed flags', () => {
     const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke']);
     strictEqual(opts.repoRoot, '/tmp/repo');
