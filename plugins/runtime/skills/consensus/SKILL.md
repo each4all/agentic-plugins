@@ -35,7 +35,7 @@ Consensus reports and manages:
 
 - independent fanout prompt artifacts;
 - companion-executable peers (`claude`, `codex`) versus manual/subagent peer labels that are record-only;
-- budget policy fields (`max_rounds`, `max_peers`, token/time/process budget);
+- budget policy fields (`max_rounds`, optional `max_peers`, token/time/process budget);
 - raw peer output pointers, byte counts, and hashes;
 - per-peer execution progress pointer and status;
 - synthesized summary;
@@ -57,7 +57,7 @@ Consensus reports and manages:
 - No engineer/orchestrator workflow state migration.
 - No host-native config, authentication, secret, sandbox, or permission writes.
 - No claim that Codex manual-hook or permission limits are host parity.
-- No automatic unbounded loops; max rounds, max peers, process budget, and timeout caps bound execution.
+- No automatic unbounded loops; max rounds, process budget, and timeout caps bound companion execution, while peer breadth is bounded by the explicit `--peers` roster and optional `--max-peers` with no hidden fixed peer-count cap.
 - No empty rebuttal rounds; `next-round` requires durable disagreements and still never executes peers.
 
 ## Example

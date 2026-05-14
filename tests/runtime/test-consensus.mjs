@@ -44,11 +44,41 @@ describe('runtime consensus', () => {
     strictEqual(manifest.policy.raw_output_policy, 'artifact-pointer-only');
     strictEqual(manifest.policy.execution_timeout_ms, 120000);
     strictEqual(manifest.policy.limits.max_rounds_cap, 3);
-    strictEqual(manifest.policy.limits.max_peers_cap, 12);
+    strictEqual(manifest.policy.limits.max_peers_cap, null);
+    ok(manifest.policy.limits.peer_roster_boundary.includes('explicit --peers roster'));
 
     const prompt = await readFile(join(root, manifest.rounds[0].prompts[0].pointer), 'utf8');
     ok(prompt.includes('Check the ADR-0024 runtime consensus MVP scope.'));
     ok(formatText(report).includes(`run: ${RUN_ID}`));
+  });
+
+  it('does not impose a fixed small peer cap on an explicit broad roster', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-consensus-broad-roster-'));
+    const manualPeers = Array.from({ length: 14 }, (_, index) => `reviewer${index + 1}`);
+    const peers = ['claude', 'codex', ...manualPeers];
+    const report = await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      task: 'Collect a broad bounded roster without a hidden product cap.',
+      peers,
+      maxRounds: 2,
+    });
+
+    deepStrictEqual(report.peers.requested, peers);
+    deepStrictEqual(report.peers.active, peers);
+    deepStrictEqual(report.peers.skipped, []);
+    deepStrictEqual(report.peers.executable, ['claude', 'codex']);
+    deepStrictEqual(report.peers.manual, manualPeers);
+    strictEqual(report.policy.max_peers, peers.length);
+    strictEqual(report.policy.limits.max_peers_cap, null);
+
+    const manifest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'manifest.json'));
+    strictEqual(manifest.rounds[0].prompts.length, peers.length);
+    strictEqual(manifest.peers.active.length, 16);
+    strictEqual(manifest.policy.limits.peer_roster_boundary, 'explicit --peers roster; no hard-coded max peer cap');
+    ok(manifest.limits.some((limit) => /explicit roster and optional --max-peers/i.test(limit)));
   });
 
   it('plans manual peer labels as record-only lanes and excludes them from default execution', async () => {

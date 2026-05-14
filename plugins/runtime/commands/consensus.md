@@ -44,6 +44,6 @@ Notes:
 - Timeouts are retryable and include bounded remediation metadata. Retry a selected peer with `--peers <peer> --timeout-ms <n> --process-budget 1`, or run `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` when prompt startup latency is unclear.
 - `status` reads manifest, execution, progress, and consensus-result artifacts to recommend the next bounded operator action: execute/record, retry selected peers, synthesize, plan next-round, or stop for owner decision. `status --latest` picks the newest readable consensus manifest by `updated_at`/`created_at` without reading raw peer output.
 - Permission and sandbox failures are classified as non-retryable until the operator resolves host policy outside runtime.
-- Max rounds, max peers, process budget, and timeout caps prevent automatic unbounded loops; broader manual peer fanout is still artifact-bounded by the explicit `--peers` roster and `--max-peers`.
+- Max rounds, process budget, and timeout caps prevent automatic unbounded loops; broader manual peer fanout is artifact-bounded by the explicit `--peers` roster and optional `--max-peers`, with no hidden fixed peer-count cap.
 - `next-round` requires durable disagreements from `consensus.json` or `--disagreements-file`; it does not create empty rebuttal rounds or execute peers.
 - This command does not migrate engineer/orchestrator workflow state.
