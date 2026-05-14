@@ -30,6 +30,8 @@ describe('runtime consensus', () => {
     strictEqual(report.command, 'plan');
     strictEqual(report.run_id, RUN_ID);
     deepStrictEqual(report.peers.active, ['claude', 'codex']);
+    deepStrictEqual(report.peers.executable, ['claude', 'codex']);
+    deepStrictEqual(report.peers.manual, []);
     deepStrictEqual(report.peers.skipped, ['reviewer']);
     ok(report.limits.some((limit) => /requires the separate runtime:consensus execute command/i.test(limit)));
 
@@ -38,14 +40,86 @@ describe('runtime consensus', () => {
     strictEqual(manifest.status, 'planned');
     strictEqual(manifest.rounds[0].kind, 'independent-fanout');
     strictEqual(manifest.rounds[0].prompts.length, 2);
+    strictEqual(manifest.policy.peer_selection, 'explicit-companion-peers-plus-manual-peer-labels');
     strictEqual(manifest.policy.raw_output_policy, 'artifact-pointer-only');
     strictEqual(manifest.policy.execution_timeout_ms, 120000);
     strictEqual(manifest.policy.limits.max_rounds_cap, 3);
-    strictEqual(manifest.policy.limits.max_peers_cap, 4);
+    strictEqual(manifest.policy.limits.max_peers_cap, 12);
 
     const prompt = await readFile(join(root, manifest.rounds[0].prompts[0].pointer), 'utf8');
     ok(prompt.includes('Check the ADR-0024 runtime consensus MVP scope.'));
     ok(formatText(report).includes(`run: ${RUN_ID}`));
+  });
+
+  it('plans manual peer labels as record-only lanes and excludes them from default execution', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-consensus-manual-'));
+    const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-home-'));
+    await seedCompanionCache(homeDir);
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      task: 'Collect broad implementation review before choosing a follow-up.',
+      peers: ['claude', 'codex', 'security', 'docs', 'release'],
+      maxPeers: 5,
+      maxRounds: 2,
+    });
+
+    const manifest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'manifest.json'));
+    deepStrictEqual(manifest.peers.active, ['claude', 'codex', 'security', 'docs', 'release']);
+    deepStrictEqual(manifest.peers.executable, ['claude', 'codex']);
+    deepStrictEqual(manifest.peers.manual, ['security', 'docs', 'release']);
+    strictEqual(manifest.rounds[0].prompts.length, 5);
+
+    const report = await runConsensus({
+      command: 'execute',
+      repoRoot: root,
+      homeDir,
+      runId: RUN_ID,
+      execute: true,
+      runner: fakeConsensusRunner(),
+    });
+
+    deepStrictEqual(report.executions.map((entry) => entry.peer), ['claude', 'codex']);
+    strictEqual(report.status, 'passed');
+    strictEqual(report.execution_summary.passed, 2);
+
+    const status = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(status.status, 'partially-executed');
+    strictEqual(status.status_guidance.state, 'record_manual_peers');
+    ok(status.next_steps.some((step) => step.includes('--peer security')));
+    ok(status.next_steps.some((step) => step.includes('--peer docs')));
+    ok(status.next_steps.some((step) => step.includes('--peer release')));
+  });
+
+  it('rejects explicit execution of manual peer labels', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-consensus-manual-reject-'));
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      task: 'Manual lane should not be companion-executed.',
+      peers: ['claude', 'reviewer'],
+      maxPeers: 2,
+    });
+
+    await rejects(
+      () => runConsensus({
+        command: 'execute',
+        repoRoot: root,
+        runId: RUN_ID,
+        peers: ['reviewer'],
+        execute: true,
+        runner: fakeConsensusRunner(),
+      }),
+      /manual-only peer\(s\): reviewer/,
+    );
   });
 
   it('reports status guidance for a planned round before peer execution', async () => {
