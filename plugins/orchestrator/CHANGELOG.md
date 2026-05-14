@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.7.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.6.0...plugin-orchestrator-v0.7.0) (2026-05-14)
+
+
+### Features
+
+* **plugin/orchestrator:** mirror lifecycle commands as codex skills ([9945a02](https://github.com/each4all/agentic-plugins/commit/9945a0213b0405fac6f755e82c4221e3f06de9fd))
+
 ## [0.6.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.5.0...plugin-orchestrator-v0.6.0) (2026-05-13)
 
 
