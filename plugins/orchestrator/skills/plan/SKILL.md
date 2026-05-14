@@ -1,11 +1,11 @@
 ---
 name: plan
-description: "Macro orchestration verb — produce a multi-deliverable plan (plan.subtasks[]) for a feature, verify the plan via a Plan-verify Codex peer ensemble, and persist to the active orchestrator workflow file. Use when the user faces a feature that spans multiple PRs / branches / engineer workflows. Trigger phrases include 'macro plan', 'multi-deliverable', 'orchestrate', 'plan a multi-PR feature', 'break this into subtasks', 'orchestrator plan', '매크로 계획', '여러 PR로 나눌'."
+description: "Macro orchestration verb — produce a multi-deliverable plan (plan.subtasks[]) for a feature, verify the plan via a Plan-verify opposite-host peer ensemble, and persist to the active orchestrator workflow file. Use when the user faces a feature that spans multiple PRs / branches / engineer workflows. Trigger phrases include 'macro plan', 'multi-deliverable', 'orchestrate', 'plan a multi-PR feature', 'break this into subtasks', 'orchestrator plan', '매크로 계획', '여러 PR로 나눌'."
 ---
 
 # Plan (orchestrator capability)
 
-The orchestrator plugin's macro composition verb (per ADR-0018 §sub-decision-1). Plan produces a list of deliverables (`plan.subtasks[]`) from a feature description, verifies the plan via a Plan-verify Codex peer ensemble, and persists the result to the active orchestrator workflow file.
+The orchestrator plugin's macro composition verb (per ADR-0018 §sub-decision-1). Plan produces a list of deliverables (`plan.subtasks[]`) from a feature description, verifies the plan via a Plan-verify opposite-host peer ensemble, and persists the result to the active orchestrator workflow file.
 
 This is the **macro layer** complement to `engineer:compose`. The two verbs share the Plan-verify ensemble pattern but differ in scope:
 
@@ -53,7 +53,7 @@ Follow the Presentation Mode Protocol (`../_shared/references/presentation-proto
 
 ## When invoked by command (`/orchestrator:plan` Claude command or `$orchestrator:plan` Codex skill mention)
 
-Full macro composition with Plan-verify Codex ensemble + state-write.
+Full macro composition with Plan-verify opposite-host peer ensemble + state-write.
 
 ### Step 1: Establish the active workflow
 
@@ -65,26 +65,26 @@ Detached HEAD or empty branch is an error — the macro workflow needs a branch 
 
 Follow the auto-activated Step 1 (Decompose) and Step 2 (Order) above to produce a draft `subtasks[]`.
 
-### Step 3: Plan-verify Codex peer ensemble
+### Step 3: Plan-verify opposite-host peer ensemble
 
 Launch the peer ensemble per `../_shared/references/ensemble-protocol.md` using the **Plan-verify** ensemble point. The peer receives the orchestrator's draft plan as `<inputs><input name="feature_description">…</input><input name="draft_plan">…</input></inputs>` (the only Independence Rule exception — Plan-verify is the per-protocol exception). The peer returns gaps, ordering issues, risk areas, and edge cases on the macro plan.
 
-Ensemble dispatch is via `peer-runner.mjs run --kind ensemble --peer codex --workflow-path <path> --phase plan --ensemble-type plan-verify --run-id macro-plan-<iso>-<rand>`. The runner preserves orchestrator's graceful-degradation order: if Codex is unavailable, it returns kind `peer_cli_not_found` with no peer-run ledger and no pending entry; caller proceeds with a LOCAL-ONLY plan. If the companion resolves, the runner creates the peer-run ledger, records pending best-effort under the workflow file's per-file lock, and supervises stdout/stderr/envelope capture.
+Resolve the peer from the current host: Claude invokes Codex; Codex invokes Claude. Ensemble dispatch is via `peer-runner.mjs run --kind ensemble --peer <opposite-host> --workflow-path <path> --phase plan --ensemble-type plan-verify --run-id macro-plan-<iso>-<rand>`. The runner preserves orchestrator's graceful-degradation order: if the opposite-host peer is unavailable, it returns kind `peer_cli_not_found` with no peer-run ledger and no pending entry; caller proceeds with a LOCAL-ONLY plan. If the companion resolves, the runner creates the peer-run ledger, records pending best-effort under the workflow file's per-file lock, and supervises stdout/stderr/envelope capture.
 
 ### Step 4: Synthesize
 
 Apply the four base synthesis categories (host-agnostic per ensemble-protocol):
 
-- **AGREED [Both]**: orchestrator and Codex both flagged the same subtask, gap, or ordering issue.
+- **AGREED [Both]**: local orchestrator and peer both flagged the same subtask, gap, or ordering issue.
 - **LOCAL-ONLY**: only the orchestrator's draft included it.
-- **PEER-ONLY**: Codex surfaced it but the orchestrator's draft did not.
-- **CONFLICT**: orchestrator and Codex disagree about a subtask boundary, dependency, or risk.
+- **PEER-ONLY**: the peer surfaced it but the orchestrator's draft did not.
+- **CONFLICT**: local orchestrator and peer disagree about a subtask boundary, dependency, or risk.
 
 Incorporate valid PEER-ONLY additions. Adjust ordering for valid sequencing issues. Note CONFLICT items for user resolution. Empty `subtasks[]` (zero deliverables) is valid — it represents a deliberate "no work needed" terminal plan.
 
 ### Step 5: Persist via setPlan
 
-Once the synthesized plan is ready, write it via `state.mjs plan-set --workflow-path <path> --host claude --subtasks-json-file <tmp.json> [--decision <text>] [--architecture <text>]`. The CLI reads the JSON file (top-level array of subtask objects matching ADR-0018 §sub-1 + ADR-0019 §2 schema 1.1) and atomically writes the `plan` block under the per-file lock.
+Once the synthesized plan is ready, write it via `state.mjs plan-set --workflow-path <path> --host <current-host> --subtasks-json-file <tmp.json> [--decision <text>] [--architecture <text>]`, where `<current-host>` is `claude` for `/orchestrator:plan` and `codex` for `$orchestrator:plan`. The CLI reads the JSON file (top-level array of subtask objects matching ADR-0018 §sub-1 + ADR-0019 §2 schema 1.1) and atomically writes the `plan` block under the per-file lock.
 
 Subtask validation runs at the write boundary (schema 1.1):
 - `id` non-empty + unique within the plan
@@ -108,6 +108,6 @@ Follow the Presentation Mode Protocol before presenting. Present the synthesized
 
 - **Macro plan without dependencies recorded**. If subtask B truly depends on A, `blocked_by: ['A']` MUST be set so the future `/orchestrator:next` knows.
 - **Subtask granularity matching engineer task granularity**. Each subtask is a *deliverable* (one engineer workflow / one PR), not a single edit. If a subtask is just one file edit, it belongs inside an engineer compose plan, not at the orchestrator macro layer.
-- **Skipping the Plan-verify ensemble** in command mode. orchestrator's policy is always-max — Codex peer review is the safety net for macro decomposition, where errors compound across multiple PRs.
+- **Skipping the Plan-verify ensemble** in command mode. orchestrator's policy is always-max — opposite-host peer review is the safety net for macro decomposition, where errors compound across multiple PRs.
 - **Missing branch suggestion when the subtask is non-trivial**. A `branch` field on each substantial subtask makes the future `/orchestrator:next` git-checkout step unambiguous.
 - **Plan that includes implementation steps**. Each subtask describes *what* and *why*, not *how*. The *how* is the engineer workflow's responsibility.
