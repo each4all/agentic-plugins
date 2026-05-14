@@ -133,10 +133,27 @@ describe('plugins/runtime settings surface', () => {
 
   it('follow-ups document plugin-management boundaries plus deferred consensus/context/footer scope', async () => {
     const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
-    for (const token of ['Plugin management beyond the explicit settings executor', 'Consensus executor depth beyond the explicit boundary', 'Worktree execution beyond read-only planning', 'Context automation', 'Completion footer']) {
+    for (const token of ['Plugin management beyond the explicit settings executor', 'Consensus executor depth beyond the explicit boundary', 'Worktree execution beyond read-only planning', 'Context automation', 'Completion footer', 'Codex capability drift beyond the current baseline']) {
       ok(followUps.includes(token), `${token} documented`);
     }
     ok(/Codex manual-hook/i.test(followUps), 'Codex manual-hook honesty documented');
+  });
+
+  it('documents the Codex capability baseline with source-backed host boundaries', async () => {
+    const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/codex-capability-baseline.md'), 'utf-8');
+    for (const token of [
+      'codex-cli 0.130.0',
+      'https://developers.openai.com/codex/skills',
+      'https://developers.openai.com/codex/plugins/build',
+      'https://developers.openai.com/codex/hooks',
+      'https://developers.openai.com/codex/concepts/sandboxing',
+      'marketplace-only',
+      'plugin_hooks',
+      'Do not claim Codex subagents run automatically',
+      'Do not mutate `~/.codex/config.toml`',
+    ]) {
+      ok(baseline.includes(token), `${token} documented`);
+    }
   });
 });
 
