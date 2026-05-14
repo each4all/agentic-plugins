@@ -9,7 +9,7 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, readdir, readFile, stat } from 'node:fs/promises';
+import { access, lstat, readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,8 +36,11 @@ const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_STALE_GRACE_MS = 60000;
 const DEFAULT_DEEP_PEER_SMOKE_TIMEOUT_MS = 120000;
 const DEFAULT_PERMISSION_PROOF_TIMEOUT_MS = 120000;
+const DEFAULT_ARTIFACT_RETENTION_CAP = 20;
+const DEFAULT_ARTIFACT_RETENTION_MAX_BYTES = 50 * 1024 * 1024;
 const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const CONSENSUS_RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+const RUNTIME_ARTIFACT_FAMILIES = ['consensus', 'context', 'settings', 'doctor'];
 
 export async function runDoctor({
   repoRoot = process.cwd(),
@@ -56,6 +59,9 @@ export async function runDoctor({
   permissionProof = false,
   executePermissionProof = false,
   permissionProofTimeoutMs = DEFAULT_PERMISSION_PROOF_TIMEOUT_MS,
+  artifactInventory = false,
+  artifactRetentionCap = DEFAULT_ARTIFACT_RETENTION_CAP,
+  artifactMaxBytes = DEFAULT_ARTIFACT_RETENTION_MAX_BYTES,
 } = {}) {
   if (executeDeepPeerSmoke && !deepPeerSmoke) {
     throw new Error('--execute-deep-peer-smoke requires --deep-peer-smoke');
@@ -118,6 +124,18 @@ export async function runDoctor({
   const consensusRuns = await inspectConsensusRuns({
     repoRoot: resolvedRepoRoot,
   });
+  const artifactInventorySection = artifactInventory
+    ? await inspectRuntimeArtifactInventory({
+        repoRoot: resolvedRepoRoot,
+        now,
+        retentionCap: artifactRetentionCap,
+        maxBytes: artifactMaxBytes,
+      })
+    : {
+        requested: false,
+        executed: false,
+        status: 'not_requested',
+      };
 
   const readiness = buildReadiness({
     claude,
@@ -189,6 +207,7 @@ export async function runDoctor({
     model_effort: modelEffort,
     settings_runs: settingsRuns,
     consensus_runs: consensusRuns,
+    artifact_inventory: artifactInventorySection,
     readiness_matrix: readinessMatrix,
     readiness,
     ledgers,
@@ -196,6 +215,7 @@ export async function runDoctor({
       'Codex plugin-local automatic hooks are not assumed; doctor reports manual-hook limits.',
       'Readiness sandbox/permission status remains unknown unless --sandbox-permission-probe is requested; --permission-proof records separate preflight/execution evidence.',
       'Settings mutation belongs to runtime:settings; dynamic consensus, context hygiene, and completion footer mutation are deferred.',
+      'Artifact inventory is read-only; runtime:doctor never deletes or compacts generated artifacts.',
     ],
   };
   report.overall = summarizeOverall(report);
@@ -1330,6 +1350,237 @@ function summarizeConsensusFailures(failures) {
     else result.non_retryable += 1;
   }
   return result;
+}
+
+async function inspectRuntimeArtifactInventory({ repoRoot, now, retentionCap, maxBytes }) {
+  const root = join(repoRoot, '.agentic-plugins', 'runs');
+  const policy = {
+    run_count_cap: retentionCap,
+    byte_cap: maxBytes,
+  };
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (err) {
+    const missing = String(err.code ?? '') === 'ENOENT';
+    return {
+      requested: true,
+      executed: true,
+      status: missing ? 'missing' : 'blocked',
+      root,
+      policy,
+      total: emptyArtifactTotals(),
+      families: Object.fromEntries(RUNTIME_ARTIFACT_FAMILIES.map((family) => [family, missingArtifactFamily(root, family)])),
+      attention: [],
+      error: err.code ?? err.message,
+      limits: artifactInventoryLimits(),
+    };
+  }
+
+  const familyNames = new Set(RUNTIME_ARTIFACT_FAMILIES);
+  for (const entry of entries) {
+    if (entry.isDirectory()) familyNames.add(entry.name);
+  }
+
+  const families = {};
+  const attention = [];
+  for (const family of [...familyNames].sort()) {
+    const summary = await inspectArtifactFamily({
+      repoRoot,
+      root: join(root, family),
+      family,
+      nowMs: now.getTime(),
+      retentionCap,
+      maxBytes,
+    });
+    families[family] = summary;
+    for (const reason of summary.attention) attention.push(reason);
+  }
+
+  const total = Object.values(families).reduce((acc, family) => ({
+    run_count: acc.run_count + family.run_count,
+    file_count: acc.file_count + family.file_count,
+    directory_count: acc.directory_count + family.directory_count,
+    symlink_count: acc.symlink_count + family.symlink_count,
+    unreadable: acc.unreadable + family.unreadable,
+    bytes: acc.bytes + family.bytes,
+  }), emptyArtifactTotals());
+  const statuses = Object.values(families).map((family) => family.status);
+  const status = statuses.includes('blocked')
+    ? 'blocked'
+    : attention.length > 0
+      ? 'needs_attention'
+      : statuses.includes('available')
+        ? 'available'
+        : statuses.includes('empty')
+          ? 'empty'
+          : 'missing';
+
+  return {
+    requested: true,
+    executed: true,
+    status,
+    root,
+    policy,
+    total,
+    families,
+    attention,
+    limits: artifactInventoryLimits(),
+  };
+}
+
+async function inspectArtifactFamily({ repoRoot, root, family, nowMs, retentionCap, maxBytes }) {
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (err) {
+    const missing = String(err.code ?? '') === 'ENOENT';
+    return {
+      ...missingArtifactFamily(dirname(root), family),
+      status: missing ? 'missing' : 'blocked',
+      error: err.code ?? err.message,
+    };
+  }
+
+  const runCount = entries.filter((entry) => entry.isDirectory()).length;
+  const totals = await summarizeArtifactPath(root);
+  const attention = [];
+  if (runCount > retentionCap) {
+    attention.push({
+      family,
+      kind: 'run_count_exceeds_cap',
+      observed: runCount,
+      limit: retentionCap,
+      recommendation: `Review ${pointer(repoRoot, root)} and remove obsolete generated artifacts manually; runtime:doctor does not delete artifacts.`,
+    });
+  }
+  if (totals.bytes > maxBytes) {
+    attention.push({
+      family,
+      kind: 'bytes_exceed_cap',
+      observed: totals.bytes,
+      limit: maxBytes,
+      recommendation: `Review ${pointer(repoRoot, root)} and remove obsolete generated artifacts manually; runtime:doctor does not delete artifacts.`,
+    });
+  }
+  const status = totals.unreadable > 0
+    ? 'blocked'
+    : attention.length > 0
+      ? 'needs_attention'
+      : runCount > 0 || totals.file_count > 0
+        ? 'available'
+        : 'empty';
+
+  return {
+    family,
+    status,
+    root,
+    pointer: pointer(repoRoot, root),
+    run_count: runCount,
+    file_count: totals.file_count,
+    directory_count: totals.directory_count,
+    symlink_count: totals.symlink_count,
+    unreadable: totals.unreadable,
+    bytes: totals.bytes,
+    oldest_mtime: totals.oldest_mtime_ms === null ? null : new Date(totals.oldest_mtime_ms).toISOString(),
+    newest_mtime: totals.newest_mtime_ms === null ? null : new Date(totals.newest_mtime_ms).toISOString(),
+    oldest_age_minutes: totals.oldest_mtime_ms === null ? null : Math.max(0, Math.floor((nowMs - totals.oldest_mtime_ms) / 60000)),
+    attention,
+  };
+}
+
+async function summarizeArtifactPath(path) {
+  const totals = {
+    file_count: 0,
+    directory_count: 0,
+    symlink_count: 0,
+    unreadable: 0,
+    bytes: 0,
+    oldest_mtime_ms: null,
+    newest_mtime_ms: null,
+  };
+  await walkArtifactPath(path, totals);
+  return totals;
+}
+
+async function walkArtifactPath(path, totals) {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch {
+    totals.unreadable += 1;
+    return;
+  }
+
+  if (info.isSymbolicLink()) {
+    totals.symlink_count += 1;
+    totals.bytes += safeCount(info.size);
+    updateArtifactMtime(totals, info.mtimeMs);
+    return;
+  }
+  if (info.isDirectory()) {
+    totals.directory_count += 1;
+    let entries;
+    try {
+      entries = await readdir(path, { withFileTypes: true });
+    } catch {
+      totals.unreadable += 1;
+      return;
+    }
+    for (const entry of entries) {
+      await walkArtifactPath(join(path, entry.name), totals);
+    }
+    return;
+  }
+  if (info.isFile()) {
+    totals.file_count += 1;
+    totals.bytes += safeCount(info.size);
+    updateArtifactMtime(totals, info.mtimeMs);
+  }
+}
+
+function updateArtifactMtime(totals, mtimeMs) {
+  if (!Number.isFinite(mtimeMs)) return;
+  totals.oldest_mtime_ms = totals.oldest_mtime_ms === null ? mtimeMs : Math.min(totals.oldest_mtime_ms, mtimeMs);
+  totals.newest_mtime_ms = totals.newest_mtime_ms === null ? mtimeMs : Math.max(totals.newest_mtime_ms, mtimeMs);
+}
+
+function missingArtifactFamily(root, family) {
+  return {
+    family,
+    status: 'missing',
+    root: join(root, family),
+    pointer: `.agentic-plugins/runs/${family}`,
+    run_count: 0,
+    file_count: 0,
+    directory_count: 0,
+    symlink_count: 0,
+    unreadable: 0,
+    bytes: 0,
+    oldest_mtime: null,
+    newest_mtime: null,
+    oldest_age_minutes: null,
+    attention: [],
+  };
+}
+
+function emptyArtifactTotals() {
+  return {
+    run_count: 0,
+    file_count: 0,
+    directory_count: 0,
+    symlink_count: 0,
+    unreadable: 0,
+    bytes: 0,
+  };
+}
+
+function artifactInventoryLimits() {
+  return [
+    'Inventory uses filesystem metadata only and does not read raw artifact bodies.',
+    'Inventory is advisory and read-only; no retention, cleanup, deletion, or compaction happens in runtime:doctor.',
+    'Generated artifacts remain under .agentic-plugins/runs/ and stay gitignored by artifact policy.',
+  ];
 }
 
 async function inspectWorkflowNamespace({ repoRoot, plugin, legacyNamespace, expectedPlugin, now, staleGraceMs }) {
@@ -2588,6 +2839,11 @@ function summarizeOverall(report) {
       warnings.push('latest consensus execution has failures');
     }
   }
+  if (report.artifact_inventory?.executed && report.artifact_inventory.status === 'blocked') {
+    warnings.push('runtime artifact inventory blocked');
+  } else if (report.artifact_inventory?.executed && report.artifact_inventory.status === 'needs_attention') {
+    warnings.push('runtime artifact inventory exceeds retention guidance');
+  }
   if (report.host_parity.status !== 'pass') {
     warnings.push(`host parity ${report.host_parity.status}`);
   }
@@ -2770,6 +3026,20 @@ export function formatText(report) {
     }
   }
   lines.push('');
+  if (report.artifact_inventory?.requested) {
+    lines.push('Runtime Artifact Inventory');
+    lines.push(`- status: ${report.artifact_inventory.status}; total-runs=${report.artifact_inventory.total.run_count}; total-files=${report.artifact_inventory.total.file_count}; total-bytes=${report.artifact_inventory.total.bytes}; unreadable=${report.artifact_inventory.total.unreadable}`);
+    lines.push(`- policy: run-count-cap=${report.artifact_inventory.policy.run_count_cap}; byte-cap=${report.artifact_inventory.policy.byte_cap}`);
+    for (const family of Object.values(report.artifact_inventory.families ?? {})) {
+      lines.push(`- ${family.family}: status=${family.status}; runs=${family.run_count}; files=${family.file_count}; bytes=${family.bytes}; oldest-age-minutes=${family.oldest_age_minutes ?? '<unknown>'}`);
+    }
+    for (const attention of report.artifact_inventory.attention ?? []) {
+      lines.push(`  retention-attention: ${attention.family}/${attention.kind}; observed=${attention.observed}; limit=${attention.limit}`);
+      lines.push(`    next: ${attention.recommendation}`);
+    }
+    for (const limit of report.artifact_inventory.limits ?? []) lines.push(`- limit: ${limit}`);
+    lines.push('');
+  }
   lines.push('Ledgers');
   for (const key of ['engineer', 'orchestrator']) {
     const ledger = report.ledgers[key];
@@ -2934,7 +3204,7 @@ function escapeRegExp(value) {
 }
 
 function usage() {
-  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>]\n`;
+  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>]\n`;
 }
 
 export function parseArgs(argv) {
@@ -2951,6 +3221,9 @@ export function parseArgs(argv) {
     permissionProof: false,
     executePermissionProof: false,
     permissionProofTimeoutMs: DEFAULT_PERMISSION_PROOF_TIMEOUT_MS,
+    artifactInventory: false,
+    artifactRetentionCap: DEFAULT_ARTIFACT_RETENTION_CAP,
+    artifactMaxBytes: DEFAULT_ARTIFACT_RETENTION_MAX_BYTES,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -2982,6 +3255,12 @@ export function parseArgs(argv) {
       opts.executePermissionProof = true;
     } else if (arg === '--permission-proof-timeout-ms') {
       opts.permissionProofTimeoutMs = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
+    } else if (arg === '--artifact-inventory') {
+      opts.artifactInventory = true;
+    } else if (arg === '--artifact-retention-cap') {
+      opts.artifactRetentionCap = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
+    } else if (arg === '--artifact-max-bytes') {
+      opts.artifactMaxBytes = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
