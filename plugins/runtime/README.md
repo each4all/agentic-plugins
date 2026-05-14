@@ -4,7 +4,7 @@ Runtime operator control plane for agentic-plugins. **L1 framework primitive** p
 
 ## Status
 
-Ships `runtime:doctor`, `runtime:settings` with explicit plugin-management execution and durable sanitized execution artifacts, `runtime:consensus` with artifact scaffolding plus an explicit companion executor, the first runtime-owned `runtime:context` scaffold with a read-only explicit budget check, an explicit `runtime:migrate workflow-storage` path migration surface, and a pointer-only completion footer helper. `runtime:context` captures a read-only git source snapshot when available, and `status`/footer lookup report both age-based stale state and source-freshness state so a time-fresh handoff can still be flagged when the current git commit moved. `runtime:doctor --sandbox-permission-probe` reports an explicit read-only sandbox/permission preflight without peer execution, `runtime:doctor --permission-proof` reports a plan-only permission proof preflight, `runtime:doctor --permission-proof --execute-permission-proof` runs a bounded companion-contract proof under host-native permission defaults, `runtime:doctor --deep-peer-smoke` reports a plan-only preflight, and `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` runs a bounded companion-contract smoke while omitting raw peer stdout from doctor output. Automatic unbounded consensus loops, richer permission-proof retention/cancellation, host-native config apply, and automatic context mutation/capture triggers are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
+Ships `runtime:doctor`, `runtime:settings` with explicit plugin-management execution and durable sanitized execution artifacts, `runtime:consensus` with artifact scaffolding plus an explicit companion executor, the first runtime-owned `runtime:context` scaffold with a read-only explicit budget check, an explicit `runtime:migrate workflow-storage` path migration surface, and a pointer-only completion footer helper. `runtime:context` captures a read-only git source snapshot when available, and `status`/footer lookup report both age-based stale state and source-freshness state so a time-fresh handoff can still be flagged when the current git commit moved. The footer can also link read-only `runtime:consensus status` guidance from an explicit or latest consensus run without printing peer prompts, peer raw outputs, or consensus body text. `runtime:doctor --sandbox-permission-probe` reports an explicit read-only sandbox/permission preflight without peer execution, `runtime:doctor --permission-proof` reports a plan-only permission proof preflight, `runtime:doctor --permission-proof --execute-permission-proof` runs a bounded companion-contract proof under host-native permission defaults, `runtime:doctor --deep-peer-smoke` reports a plan-only preflight, and `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` runs a bounded companion-contract smoke while omitting raw peer stdout from doctor output. Automatic unbounded consensus loops, richer permission-proof retention/cancellation, host-native config apply, and automatic context mutation/capture triggers are deferred to follow-up PRs and tracked in [`docs/follow-ups.md`](docs/follow-ups.md).
 
 ## What it is
 
@@ -198,8 +198,9 @@ The footer helper renders the standard ADR-0024 completion footer:
 
 - context state (`green`, `yellow`, or `red`);
 - linked context artifact and lookup freshness when a context artifact is supplied;
+- linked consensus run and bounded status guidance when a consensus run is supplied;
 - workflow kind/id/path;
-- artifact pointers, including `.agentic-plugins/runs/context/<run-id>/context.json` when linked;
+- artifact pointers, including `.agentic-plugins/runs/context/<run-id>/context.json` and `.agentic-plugins/runs/consensus/<run-id>/` when linked;
 - recommended next work;
 - next-session action and command or prompt pointer;
 - explicit advisory/pointer-only limits.
@@ -209,6 +210,8 @@ The footer helper renders the standard ADR-0024 completion footer:
 When supplied `--context-run-id`, the helper reads only bounded fields from the matching `runtime:context` artifact: risk level, artifact pointers, recommended action, and next-session prompt pointer. It does not print the context summary body, prompt body, raw peer output, or consensus raw output.
 
 When supplied `--context-latest`, the helper reads the newest existing readable `runtime:context` artifact and reports read-only lookup metadata, including selected timestamp, age, stale state, stale threshold, skipped invalid artifacts, and source-freshness state when a git source snapshot is available. `--stale-after-hours <n>` sets the age-based stale threshold. The latest lookup does not create, update, or compact context.
+
+When supplied `--consensus-run-id` or `--consensus-latest`, the helper calls `runtime:consensus status` and includes only run/result/execution/progress pointers plus `status_guidance` next action/steps. Latest consensus lookup selects the newest readable consensus manifest. The footer does not execute peers, synthesize, plan another round, print peer prompts, print peer raw output, or print consensus body text.
 
 When supplied PR handling fields, the helper recommends `ask-user` only
 when the deliverable boundary is reached, validation passed or was

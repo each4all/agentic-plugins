@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { runContext } from '../../plugins/runtime/scripts/context.mjs';
+import { runConsensus } from '../../plugins/runtime/scripts/consensus.mjs';
 import {
   formatText,
   parseArgs,
@@ -12,6 +13,7 @@ import {
 } from '../../plugins/runtime/scripts/footer.mjs';
 
 const RUN_ID = 'context-20260513T010000Z-abcdef';
+const CONSENSUS_RUN_ID = 'consensus-20260513T010000Z-abcdef';
 
 describe('runtime footer', () => {
   it('renders an advisory footer from explicit pointer-only fields', async () => {
@@ -178,6 +180,75 @@ describe('runtime footer', () => {
     ok(!text.includes('Summary body should stay hidden'));
   });
 
+  it('links consensus status guidance without leaking prompt bodies', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-'));
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: CONSENSUS_RUN_ID,
+      now: new Date('2026-05-13T01:00:00.000Z'),
+      task: 'RAW CONSENSUS PROMPT BODY must stay hidden from the footer.',
+      peers: ['claude', 'codex'],
+    });
+
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      consensusRunId: CONSENSUS_RUN_ID,
+      workflowKind: 'orchestrator',
+      workflowId: 'macro-plan-20260513T010000Z-abcdef',
+    });
+
+    strictEqual(report.consensus.run_id, CONSENSUS_RUN_ID);
+    strictEqual(report.consensus.status, 'planned');
+    strictEqual(report.consensus.status_guidance.state, 'execute_or_record');
+    strictEqual(report.recommended_next_work, 'Execute the planned peer prompts, or run them manually and record each raw output as an artifact.');
+    strictEqual(report.next_session.command, `$runtime:consensus status --run-id ${CONSENSUS_RUN_ID}`);
+    ok(report.artifacts.some((artifact) => artifact.kind === 'consensus-run'));
+    ok(report.artifacts.some((artifact) => artifact.kind === 'consensus-manifest'));
+
+    const text = formatText(report);
+    ok(text.includes(`consensus: ${CONSENSUS_RUN_ID}; status=planned`));
+    ok(text.includes('consensus next action: Execute the planned peer prompts'));
+    ok(text.includes(`runtime:consensus execute --run-id ${CONSENSUS_RUN_ID} --round 1 --execute`));
+    ok(!text.includes('RAW CONSENSUS PROMPT BODY'));
+    ok(!JSON.stringify(report).includes('RAW CONSENSUS PROMPT BODY'));
+  });
+
+  it('can link the latest consensus run by manifest freshness', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-latest-'));
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: 'consensus-20260513T000000Z-111111',
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      task: 'older consensus task must stay hidden.',
+    });
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: CONSENSUS_RUN_ID,
+      now: new Date('2026-05-13T01:00:00.000Z'),
+      task: 'latest consensus task must stay hidden.',
+    });
+
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'neutral',
+      consensusLatest: true,
+    });
+
+    strictEqual(report.consensus.run_id, CONSENSUS_RUN_ID);
+    strictEqual(report.consensus.lookup.mode, 'latest');
+    strictEqual(report.consensus.lookup.selected_at, '2026-05-13T01:00:00.000Z');
+    strictEqual(report.next_session.command, `runtime:consensus status --run-id ${CONSENSUS_RUN_ID}`);
+
+    const text = formatText(report);
+    ok(text.includes('consensus lookup:'));
+    ok(text.includes('- mode: latest'));
+    ok(!text.includes('latest consensus task'));
+  });
+
   it('recommends asking the user about PR handling only when readiness criteria pass', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-footer-pr-ready-'));
     const report = await runFooter({
@@ -249,6 +320,8 @@ describe('runtime footer', () => {
       'neutral',
       '--context-state',
       'yellow',
+      '--consensus-run-id',
+      'consensus-20260513T010000Z-abcdef',
       '--workflow-kind',
       'engineer',
       '--workflow-id',
@@ -270,6 +343,7 @@ describe('runtime footer', () => {
     strictEqual(opts.format, 'json');
     strictEqual(opts.host, 'neutral');
     strictEqual(opts.contextState, 'yellow');
+    strictEqual(opts.consensusRunId, 'consensus-20260513T010000Z-abcdef');
     strictEqual(opts.workflowKind, 'engineer');
     strictEqual(opts.prHandling, true);
     strictEqual(opts.prCompletionBoundary, 'reached');
@@ -278,7 +352,9 @@ describe('runtime footer', () => {
     strictEqual(opts.prBranchState, 'pushable');
 
     throws(() => parseArgs(['render', '--context-latest', '--context-run-id', RUN_ID]), /Use either --context-run-id or --context-latest/);
+    throws(() => parseArgs(['render', '--consensus-latest', '--consensus-run-id', CONSENSUS_RUN_ID]), /Use either --consensus-run-id or --consensus-latest/);
     throws(() => parseArgs(['render', '--context-run-id', '../bad']), /Invalid --context-run-id/);
+    throws(() => parseArgs(['render', '--consensus-run-id', '../bad']), /Invalid --consensus-run-id/);
     throws(() => parseArgs(['render', '--stale-after-hours', 'soon']), /non-negative integer/);
     throws(() => parseArgs(['render', '--context-state', 'orange']), /green, yellow, or red/);
     throws(() => parseArgs(['render', '--pr-completion-boundary', 'maybe']), /reached, not-reached, or unknown/);
