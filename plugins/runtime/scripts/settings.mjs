@@ -14,7 +14,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor } from './doctor.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.4';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.5';
 export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.0';
 export const CONFIG_KEYS = [
   'model',
@@ -321,13 +321,38 @@ function buildCliPlans(clis) {
   const result = {};
   for (const name of ['claude', 'codex']) {
     const cli = clis[name];
+    const installPlan = buildCliInstallPlan(name, cli);
     result[name] = {
       status: cli.status,
       version: cli.version,
-      recommendation: cli.status === 'available' ? null : DEFAULT_HOST_INSTALL_COMMANDS[name],
+      recommendation: installPlan.recommendation,
+      install_plan: installPlan,
     };
   }
   return result;
+}
+
+function buildCliInstallPlan(name, cli) {
+  const available = cli.status === 'available';
+  return {
+    status: available ? 'not_needed' : 'manual_required',
+    host: name,
+    executable: false,
+    command: null,
+    recommendation: available ? null : DEFAULT_HOST_INSTALL_COMMANDS[name],
+    next_step: available
+      ? 'No host CLI installation action is required.'
+      : DEFAULT_HOST_INSTALL_COMMANDS[name],
+    evidence: {
+      cli_status: cli.status,
+      version_status: cli.version?.status ?? 'unknown',
+      version_error_code: cli.version?.error_code ?? null,
+    },
+    limits: [
+      'runtime:settings does not install Claude Code or Codex CLI.',
+      'Install host CLIs with their host-native installer, then rerun runtime:doctor or runtime:settings.',
+    ],
+  };
 }
 
 function buildPluginPlans(plugins) {
@@ -988,8 +1013,10 @@ function buildTopLevelRecommendations({ clis, plugins, desiredConfig, companionS
       recommendations.push({
         area: 'cli',
         host: name,
+        action: 'install-host-cli',
+        executable: false,
         executed: false,
-        detail: DEFAULT_HOST_INSTALL_COMMANDS[name],
+        detail: cli.install_plan?.next_step ?? DEFAULT_HOST_INSTALL_COMMANDS[name],
       });
     }
   }
@@ -1055,6 +1082,9 @@ export function formatText(report) {
     const cli = report.clis[name];
     lines.push(`- ${name}: ${cli.status}; version=${cli.version.text || cli.version.status}`);
     if (cli.recommendation) lines.push(`  recommendation: ${cli.recommendation}`);
+    if (cli.install_plan?.status === 'manual_required') {
+      lines.push(`  install-plan: ${cli.install_plan.status}; executable=${cli.install_plan.executable}; next-step=${cli.install_plan.next_step}`);
+    }
   }
   lines.push('');
   lines.push('Plugins');

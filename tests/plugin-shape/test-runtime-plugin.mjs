@@ -123,6 +123,7 @@ describe('plugins/runtime settings surface', () => {
     const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/SKILL.md'), 'utf-8');
     ok(/^name:\s*settings\s*$/m.test(skill));
     ok(skill.includes('Host-native Claude Code'));
+    ok(skill.includes('Non-executable host-CLI install plans'));
     ok(skill.includes('--execute-plugin-management'));
     const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:settings'));

@@ -33,6 +33,9 @@ Settings reports and plans:
 - Codex temporary marketplace cache state, reported separately from per-plugin
   install cache evidence.
 - `claude` and `codex` CLI availability and versions.
+- Non-executable host-CLI install plans when Claude Code or Codex CLI is
+  unavailable. Settings reports host-native installation guidance but never
+  installs the host CLIs itself.
 - Repo-local `.agentic-plugins/config.toml` model/effort defaults.
 - User-global `~/.agentic-plugins/config.toml` model/effort defaults.
 - Direction-specific companion defaults:
