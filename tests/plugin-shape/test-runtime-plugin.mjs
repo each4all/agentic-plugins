@@ -25,6 +25,7 @@ describe('plugins/runtime manifest pair', () => {
     ok(manifest.keywords.includes('settings'));
     ok(manifest.keywords.includes('migration'));
     ok(manifest.keywords.includes('consensus'));
+    ok(manifest.keywords.includes('worktree'));
     ok(manifest.keywords.includes('context'));
     ok(manifest.keywords.includes('footer'));
     ok(manifest.keywords.includes('L1'));
@@ -132,7 +133,7 @@ describe('plugins/runtime settings surface', () => {
 
   it('follow-ups document plugin-management boundaries plus deferred consensus/context/footer scope', async () => {
     const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
-    for (const token of ['Plugin management beyond the explicit settings executor', 'Consensus executor depth beyond the explicit boundary', 'Context automation', 'Completion footer']) {
+    for (const token of ['Plugin management beyond the explicit settings executor', 'Consensus executor depth beyond the explicit boundary', 'Worktree execution beyond read-only planning', 'Context automation', 'Completion footer']) {
       ok(followUps.includes(token), `${token} documented`);
     }
     ok(/Codex manual-hook/i.test(followUps), 'Codex manual-hook honesty documented');
@@ -174,6 +175,25 @@ describe('plugins/runtime consensus surface', () => {
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/consensus.mjs'));
     ok((scriptStat.mode & 0o111) !== 0, 'consensus.mjs has executable bit');
+  });
+});
+
+describe('plugins/runtime worktree surface', () => {
+  it('ships worktree command, skill wrapper, agent yaml, and executable script', async () => {
+    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/worktree.md'), 'utf-8');
+    ok(command.startsWith('---\n'));
+    ok(command.includes('scripts/worktree.mjs'));
+    ok(/read-only/i.test(command));
+    ok(command.includes('git worktree add'));
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/worktree/SKILL.md'), 'utf-8');
+    ok(/^name:\s*worktree\s*$/m.test(skill));
+    ok(skill.includes('never creates branches or worktrees'));
+    ok(skill.includes('No `git worktree add`'));
+    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/worktree/agents/openai.yaml'), 'utf-8');
+    ok(agent.includes('$runtime:worktree'));
+    ok(/allow_implicit_invocation:\s*false/.test(agent));
+    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/worktree.mjs'));
+    ok((scriptStat.mode & 0o111) !== 0, 'worktree.mjs has executable bit');
   });
 });
 
