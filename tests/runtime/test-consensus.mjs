@@ -428,6 +428,55 @@ describe('runtime consensus', () => {
     ok(formatText(report).includes('next action: Retry only the retryable failed peers'));
   });
 
+  it('reports running execution progress instead of suggesting duplicate execution', async () => {
+    const root = await seedPlan();
+    const progressPointer = `.agentic-plugins/runs/consensus/${RUN_ID}/execution-progress.json`;
+    await writeFile(join(root, progressPointer), JSON.stringify({
+      schema_version: 'runtime-consensus-progress-1.0',
+      runtime_version: '0.0.0-test',
+      run_id: RUN_ID,
+      status: 'running',
+      created_at: '2026-05-13T00:02:00.000Z',
+      updated_at: '2026-05-13T00:02:30.000Z',
+      round: 1,
+      peer_execution: true,
+      preflight: {
+        status: 'completed',
+        completed_at: '2026-05-13T00:02:01.000Z',
+      },
+      peers: {
+        claude: {
+          peer: 'claude',
+          status: 'running',
+          scheduled: true,
+          prompt_pointer: `.agentic-plugins/runs/consensus/${RUN_ID}/rounds/round-1/prompts/claude.md`,
+        },
+        codex: {
+          peer: 'codex',
+          status: 'pending',
+          scheduled: true,
+          prompt_pointer: `.agentic-plugins/runs/consensus/${RUN_ID}/rounds/round-1/prompts/codex.md`,
+        },
+      },
+      summary: null,
+      progress_pointer: progressPointer,
+    }, null, 2));
+
+    const report = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(report.status_guidance.state, 'execution_running');
+    strictEqual(report.next_action, report.status_guidance.next_action);
+    ok(report.next_action.includes('claude'));
+    ok(report.status_guidance.reason.includes('pending=codex'));
+    ok(report.status_guidance.commands.includes(`runtime:consensus status --run-id ${RUN_ID}`));
+    ok(!report.status_guidance.next_steps.some((step) => step.includes('execute --run-id')));
+    ok(formatText(report).includes('guidance state: execution_running'));
+  });
+
   it('records raw peer output as an artifact pointer without leaking content', async () => {
     const root = await seedPlan();
     const rawOutput = 'RAW PEER OUTPUT THAT MUST NOT ENTER THE MAIN REPORT';
