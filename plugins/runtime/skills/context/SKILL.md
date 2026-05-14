@@ -57,7 +57,7 @@ Context reports and manages:
 - No consensus raw output or peer raw output in the main session.
 - No engineer/orchestrator workflow state migration.
 - No host-native config, authentication, secret, sandbox, or permission writes.
-- No claim that Codex manual-hook or permission limits are host parity.
+- No claim that Codex plugin-hook feature/trust state or permission limits are host parity.
 
 ## Example
 

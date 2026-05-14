@@ -783,7 +783,7 @@ function footerLimits() {
     'Advisory only; this footer does not mutate host session context or workflow state.',
     'Artifact and prompt bodies are pointer-only in the footer.',
     'Peer raw output and consensus raw output must stay in runtime artifacts, not in the main session footer.',
-    'Codex manual-hook and permission limits are not represented as host parity.',
+    'Codex plugin-hook feature/trust state and permission limits are not represented as host parity.',
   ];
 }
 

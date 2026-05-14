@@ -19,7 +19,7 @@ ADR-0024 defines more than the first `doctor`, `settings`, consensus, and contex
 
 - `plugins/companions` remains a script-only library plugin.
 - Runtime owns cross-plugin host/runtime truth; it does not become an engineer or orchestrator command bundle.
-- Codex manual-hook and permission limits must stay visible in output instead of being treated as host parity.
+- Codex plugin-hook feature/trust state and permission limits must stay visible in output instead of being treated as host parity.
 - Codex marketplace-only plugin management and disabled local `plugin_hooks` must stay visible until official docs and local CLI evidence both support a broader runtime path.
 - Claude agent teams must not be treated as the portable cross-host team-mode substrate. A portable team-mode design should stay artifacted through runtime/orchestrator consensus, explicit companion dispatch, manual/subagent lanes, and worktree planning unless both hosts expose a compatible team primitive.
 - Consensus execution must stay bounded by explicit `--execute`, max rounds, max peers, process budget, and timeout caps. Runtime must not add automatic unbounded loops or relax host permissions.

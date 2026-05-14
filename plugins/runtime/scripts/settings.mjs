@@ -100,6 +100,9 @@ export async function runSettings({
     configTargets: configPlans.targets,
     apply,
   });
+  const hookSettings = buildHookSettingsPlan({
+    codexPluginHooks: doctor.codex_plugin_hooks,
+  });
 
   const report = {
     schema_version: SETTINGS_SCHEMA_VERSION,
@@ -131,6 +134,7 @@ export async function runSettings({
     plugins: pluginPlans,
     plugin_command_surface: doctor.plugin_command_surface,
     plugin_management: pluginManagement,
+    hook_settings: hookSettings,
     config: {
       resolution_order: doctor.model_effort.resolution_order,
       desired: desiredConfig,
@@ -148,6 +152,7 @@ export async function runSettings({
       plugins: pluginPlans,
       desiredConfig,
       companionSettings,
+      hookSettings,
     }),
     limits: [
       'Plugin install/update execution is dry-run unless --execute-plugin-management is supplied.',
@@ -155,7 +160,7 @@ export async function runSettings({
       'Plugin management output omits raw stdout/stderr and records only status, exit code, byte counts, timing, and sanitized error metadata.',
       'Host-native config, auth, secrets, and sandbox/permission settings are not written.',
       'Companion invocation still uses companions/contract.md --model and --effort.',
-      'Codex plugin-local automatic hooks are not assumed; settings reports manual paths honestly.',
+      'Codex plugin_hooks enablement is planned with an explicit config snippet; host-native Codex config is not written by the current settings executor.',
       'Dynamic peer consensus, context hygiene mutation, completion footer mutation, deep peer smoke, and broader host-config apply mode are deferred.',
     ],
   };
@@ -1006,7 +1011,60 @@ function resolveProjectedSetting({ keys, projection }) {
   };
 }
 
-function buildTopLevelRecommendations({ clis, plugins, desiredConfig, companionSettings }) {
+function buildHookSettingsPlan({ codexPluginHooks }) {
+  const hookReport = codexPluginHooks ?? {
+    status: 'unknown',
+    feature_flags: {},
+    summary: { bundled_plugins: [], manifest_exposed_plugins: [], default_file_only_plugins: [] },
+    recommendations: [],
+  };
+  const recommendations = [];
+  for (const recommendation of hookReport.recommendations ?? []) {
+    if (recommendation.action === 'enable-codex-plugin-hooks') {
+      recommendations.push({
+        area: 'hooks',
+        host: 'codex',
+        action: 'enable-codex-plugin-hooks',
+        severity: 'warning',
+        executable: false,
+        executed: false,
+        command: recommendation.command,
+        config_snippet: recommendation.config_snippet,
+        detail: recommendation.detail,
+        next_step: recommendation.next_step,
+      });
+      continue;
+    }
+    recommendations.push({
+      area: 'hooks',
+      host: recommendation.host ?? 'codex',
+      action: recommendation.action,
+      severity: 'warning',
+      executable: false,
+      executed: false,
+      detail: recommendation.detail,
+      next_step: recommendation.next_step ?? null,
+    });
+  }
+  return {
+    status: hookReport.status,
+    feature_flags: hookReport.feature_flags,
+    packaged_plugins: {
+      bundled: hookReport.summary?.bundled_plugins ?? [],
+      manifest_exposed: hookReport.summary?.manifest_exposed_plugins ?? [],
+      default_file_only: hookReport.summary?.default_file_only_plugins ?? [],
+    },
+    recommendations,
+    mutation_boundary: {
+      executable: false,
+      reason: 'Current runtime:settings does not mutate host-native ~/.codex/config.toml or project .codex/config.toml.',
+      persistent_config_snippet: '[features]\nplugin_hooks = true\n',
+      session_command: 'codex --enable plugin_hooks',
+    },
+  };
+}
+
+function buildTopLevelRecommendations({ clis, plugins, desiredConfig, companionSettings, hookSettings }) {
   const recommendations = [];
   for (const [name, cli] of Object.entries(clis)) {
     if (cli.status !== 'available') {
@@ -1039,6 +1097,9 @@ function buildTopLevelRecommendations({ clis, plugins, desiredConfig, companionS
       detail: warning,
     });
   }
+  for (const recommendation of hookSettings?.recommendations ?? []) {
+    recommendations.push(recommendation);
+  }
   return recommendations;
 }
 
@@ -1047,13 +1108,15 @@ function summarizeSettings(report) {
   const appliedCount = report.config.targets.filter((target) => target.applied).length;
   const missingCli = Object.values(report.clis).filter((cli) => cli.status !== 'available').length;
   const settingWarnings = collectCompanionSettingWarnings(report.companion_settings).length;
+  const hookWarnings = (report.hook_settings?.recommendations ?? []).filter((rec) => rec.severity === 'warning').length;
   const pluginManagementFailed = report.plugin_management.summary.failed;
   return {
-    status: missingCli > 0 || settingWarnings > 0 || pluginManagementFailed > 0 ? 'warning' : 'pass',
+    status: missingCli > 0 || settingWarnings > 0 || hookWarnings > 0 || pluginManagementFailed > 0 ? 'warning' : 'pass',
     planned_config_writes: writeCount,
     applied_config_targets: appliedCount,
     plugin_recommendations: Object.values(report.plugins).reduce((sum, plugin) => sum + plugin.recommendations.length, 0),
     setting_warnings: settingWarnings,
+    hook_warnings: hookWarnings,
     plugin_management_executed: report.plugin_management.summary.executed,
     plugin_management_failed: pluginManagementFailed,
   };
@@ -1116,6 +1179,17 @@ export function formatText(report) {
       if (plan.result.retry_after) lines.push(`  retry-after: ${plan.result.retry_after}`);
       if (plan.result.doctor_hint) lines.push(`  doctor: ${plan.result.doctor_hint}`);
     }
+  }
+  lines.push('');
+  lines.push('Codex Plugin Hooks');
+  lines.push(`- status=${report.hook_settings.status}; bundled=${report.hook_settings.packaged_plugins.bundled.join(',') || 'none'}; manifest-exposed=${report.hook_settings.packaged_plugins.manifest_exposed.join(',') || 'none'}; default-file-only=${report.hook_settings.packaged_plugins.default_file_only.join(',') || 'none'}`);
+  lines.push(`- session-command: ${report.hook_settings.mutation_boundary.session_command}`);
+  lines.push('- persistent-config-snippet: [features] plugin_hooks = true');
+  for (const recommendation of report.hook_settings.recommendations) {
+    const command = recommendation.command ? ` command=${recommendation.command}` : '';
+    lines.push(`- ${recommendation.host}: ${recommendation.action}; executable=${recommendation.executable}; executed=${recommendation.executed};${command}`);
+    lines.push(`  detail: ${recommendation.detail}`);
+    if (recommendation.next_step) lines.push(`  next: ${recommendation.next_step}`);
   }
   if (report.artifacts?.settings_execution) {
     const artifact = report.artifacts.settings_execution;

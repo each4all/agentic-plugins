@@ -63,7 +63,7 @@ Consensus reports and manages:
 - No companion bridge mutation.
 - No engineer/orchestrator workflow state migration.
 - No host-native config, authentication, secret, sandbox, or permission writes.
-- No claim that Codex manual-hook or permission limits are host parity.
+- No claim that Codex plugin-hook feature/trust state or permission limits are host parity.
 - No automatic unbounded loops; max rounds, process budget, and timeout caps bound companion execution, while peer breadth is bounded by the explicit `--peers` roster and optional `--max-peers` with no hidden fixed peer-count cap.
 - No empty rebuttal rounds; `next-round` requires durable disagreements and still never executes peers.
 

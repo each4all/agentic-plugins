@@ -23,6 +23,7 @@ Notes:
 
 - `--format json` emits the machine-readable report.
 - Default output starts with a `Readiness Matrix` that separates CLI availability, runtime installation evidence, authentication state, direction-specific peer model/effort inputs, hook evidence, companion readiness, and sandbox/permission status for Claude and Codex.
+- The `Codex Plugin Hooks` section separates generic `hooks`, the `plugin_hooks` feature flag, `.codex-plugin/plugin.json` hook exposure, and installed/source `hooks/hooks.json` packaging.
 - `--model` and `--effort` are observed as explicit ADR-0024 resolution inputs; companion invocation still uses `companions/contract.md` `--model` and `--effort`.
 - `--sandbox-permission-probe` is an explicit opt-in read-only preflight. It reports CLI/auth/permission-surface/companion-script evidence for both companion directions and records `peer_execution=false`.
 - `--permission-proof` is an explicit opt-in permission preflight. By itself it does not execute peers.
@@ -33,4 +34,4 @@ Notes:
 - `--deep-peer-smoke-timeout-ms <n>` bounds each companion process when the executor flag is used.
 - `--artifact-inventory` is an explicit opt-in read-only inventory of `.agentic-plugins/runs` generated artifacts. It reports per-family counts, bytes, age metadata, and retention pressure without reading raw artifact bodies or deleting anything.
 - `--artifact-retention-cap <n>` and `--artifact-max-bytes <n>` tune the advisory inventory thresholds.
-- Codex CLI may expose host-level hooks, but agentic-plugins has no verified plugin-local automatic hook packaging today; doctor reports both surfaces separately instead of claiming parity.
+- Codex CLI supports bundled plugin hooks behind `plugin_hooks`; doctor reports whether hook-bearing agentic-plugins are packaged and exposed before claiming automatic hook parity.
