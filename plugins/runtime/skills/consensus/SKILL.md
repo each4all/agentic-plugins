@@ -16,7 +16,7 @@ description: "ADR-0024 runtime consensus scaffold with an explicit companion exe
 
 ```bash
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" plan --task <text> [--format text|json] [--peers claude,codex] [--max-rounds <n>] [--max-peers <n>] [--token-budget <n>] [--time-budget-ms <n>] [--process-budget <n>]
-node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" execute --run-id <id> [--round <n>] --execute [--timeout-ms <n>] [--process-budget <n>] [--model <id>] [--effort <level>]
+node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" execute --run-id <id> [--round <n>] [--peers claude,codex] --execute [--timeout-ms <n>] [--process-budget <n>] [--model <id>] [--effort <level>]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" record --run-id <id> --peer <peer> --input-file <path>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" next-round --run-id <id>
@@ -35,11 +35,13 @@ Consensus reports and manages:
 - independent fanout prompt artifacts;
 - budget policy fields (`max_rounds`, `max_peers`, token/time/process budget);
 - raw peer output pointers, byte counts, and hashes;
+- per-peer execution progress pointer and status;
 - synthesized summary;
 - durable disagreements;
 - evidence pointers;
 - targeted rebuttal prompt artifacts for a next round.
 - explicit companion execution metadata, including status, failure type, retryability, byte counts, hashes, and artifact pointers.
+- bounded timeout remediation metadata, including a selected-peer retry command.
 
 ## Boundaries
 
@@ -49,6 +51,7 @@ Consensus reports and manages:
 - No host-native config, authentication, secret, sandbox, or permission writes.
 - No claim that Codex manual-hook or permission limits are host parity.
 - No automatic unbounded loops; max rounds, max peers, process budget, and timeout caps bound execution.
+- No empty rebuttal rounds; `next-round` requires durable disagreements and still never executes peers.
 
 ## Example
 

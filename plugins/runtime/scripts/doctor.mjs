@@ -1223,6 +1223,7 @@ function summarizeConsensusArtifact({ repoRoot, runId, artifactPath, artifact })
         failure_type: sanitizeValue(failure.failure_type),
         retryable: failure.retryable === true,
         retry_after: sanitizeValue(failure.retry_after),
+        retry_command: sanitizeValue(failure.retry_command),
         raw_output: {
           pointer: sanitizeValue(failure.raw_output?.pointer),
           bytes: safeCount(failure.raw_output?.bytes),
@@ -1235,6 +1236,7 @@ function summarizeConsensusArtifact({ repoRoot, runId, artifactPath, artifact })
     run_id: sanitizeValue(artifact.run_id) ?? runId,
     status: typeof artifact.status === 'string' ? artifact.status : 'blocked',
     artifact_pointer: pointer(repoRoot, artifactPath),
+    progress_pointer: sanitizeValue(artifact.progress_pointer),
     selected_at: selectedAt === null ? null : new Date(selectedAt).toISOString(),
     selected_at_ms: selectedAt ?? 0,
     round: safeCount(artifact.round),
@@ -1247,8 +1249,26 @@ function summarizeConsensusArtifact({ repoRoot, runId, artifactPath, artifact })
       failed_retryable: safeCount(summary.failed_retryable),
       failed_non_retryable: safeCount(summary.failed_non_retryable),
     },
+    failure_summary: summarizeConsensusFailures(failures),
     failures,
   };
+}
+
+function summarizeConsensusFailures(failures) {
+  const result = {
+    timeout: 0,
+    retryable: 0,
+    non_retryable: 0,
+    by_type: {},
+  };
+  for (const failure of failures) {
+    const type = failure.failure_type || 'unknown';
+    result.by_type[type] = (result.by_type[type] ?? 0) + 1;
+    if (type === 'timeout') result.timeout += 1;
+    if (failure.retryable) result.retryable += 1;
+    else result.non_retryable += 1;
+  }
+  return result;
 }
 
 async function inspectWorkflowNamespace({ repoRoot, plugin, legacyNamespace, expectedPlugin, now, staleGraceMs }) {
@@ -2376,7 +2396,12 @@ function summarizeOverall(report) {
   if (report.consensus_runs.status === 'blocked') {
     warnings.push('consensus execution artifact health blocked');
   } else if (report.consensus_runs.latest?.summary?.failed > 0) {
-    warnings.push('latest consensus execution has failures');
+    const timeoutCount = report.consensus_runs.latest.failure_summary?.timeout ?? 0;
+    if (timeoutCount > 0) {
+      warnings.push(`latest consensus execution timed out for ${timeoutCount} peer(s); retryable-failed=${report.consensus_runs.latest.summary.failed_retryable}`);
+    } else {
+      warnings.push('latest consensus execution has failures');
+    }
   }
   if (report.host_parity.status !== 'pass') {
     warnings.push(`host parity ${report.host_parity.status}`);
@@ -2534,11 +2559,16 @@ export function formatText(report) {
   lines.push(`- status: ${report.consensus_runs.status}; count=${report.consensus_runs.count}; malformed=${report.consensus_runs.malformed}`);
   if (report.consensus_runs.latest) {
     const latest = report.consensus_runs.latest;
-    lines.push(`- latest: ${latest.run_id}; status=${latest.status}; artifact=${latest.artifact_pointer}; round=${latest.round}`);
+    lines.push(`- latest: ${latest.run_id}; status=${latest.status}; artifact=${latest.artifact_pointer}; progress=${latest.progress_pointer ?? '<none>'}; round=${latest.round}`);
     lines.push(`  execution: peer-execution=${latest.peer_execution}; executed=${latest.summary.executed}; passed=${latest.summary.passed}; failed=${latest.summary.failed}; skipped=${latest.summary.skipped}; retryable-failed=${latest.summary.failed_retryable}; non-retryable-failed=${latest.summary.failed_non_retryable}`);
+    lines.push(`  failure-summary: timeout=${latest.failure_summary.timeout}; retryable=${latest.failure_summary.retryable}; non-retryable=${latest.failure_summary.non_retryable}`);
+    if (latest.failure_summary.timeout > 0) {
+      lines.push(`  warning: latest consensus execution timed out for ${latest.failure_summary.timeout} peer(s); retryable-failed=${latest.summary.failed_retryable}`);
+    }
     for (const failure of latest.failures) {
       lines.push(`  failure: ${failure.peer}; status=${failure.status}; type=${failure.failure_type}; retryable=${failure.retryable}; raw=${failure.raw_output.pointer}; bytes=${failure.raw_output.bytes}; sha256=${failure.raw_output.sha256}`);
       if (failure.retry_after) lines.push(`    retry-after: ${failure.retry_after}`);
+      if (failure.retry_command) lines.push(`    retry-command: ${failure.retry_command}`);
     }
   }
   lines.push('');

@@ -122,6 +122,51 @@ describe('runtime consensus', () => {
     strictEqual(await readFile(join(root, failure.raw_output.pointer), 'utf8'), 'RAW DENIED OUTPUT THAT MUST NOT LEAK');
   });
 
+  it('records per-peer timeout progress and retry guidance without leaking raw text', async () => {
+    const root = await seedPlan();
+    const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-home-'));
+    await seedCompanionCache(homeDir);
+
+    const report = await runConsensus({
+      command: 'execute',
+      repoRoot: root,
+      homeDir,
+      runId: RUN_ID,
+      execute: true,
+      timeoutMs: 90000,
+      now: new Date('2026-05-13T00:02:00.000Z'),
+      runner: fakeConsensusRunner({
+        claudeTimeout: true,
+        codexTimeout: true,
+      }),
+    });
+
+    strictEqual(report.status, 'failed');
+    strictEqual(report.progress_pointer, `.agentic-plugins/runs/consensus/${RUN_ID}/execution-progress.json`);
+    strictEqual(report.execution_summary.failed_retryable, 2);
+    ok(report.executions.every((entry) => entry.status === 'timed_out'));
+    ok(report.executions.every((entry) => entry.failure_type === 'timeout'));
+    ok(report.executions.every((entry) => entry.retryable === true));
+    ok(report.executions.every((entry) => entry.retry_after.includes('runtime:doctor --deep-peer-smoke')));
+    ok(formatText(report).includes('progress:'));
+    ok(!JSON.stringify(report).includes('TIMED OUT RAW OUTPUT'), 'timeout report must not include raw text');
+
+    const progress = await readJson(join(root, report.progress_pointer));
+    strictEqual(progress.schema_version, 'runtime-consensus-progress-1.0');
+    strictEqual(progress.status, 'failed');
+    strictEqual(progress.summary.failed_retryable, 2);
+    strictEqual(progress.peers.claude.status, 'timed_out');
+    strictEqual(progress.peers.claude.failure_type, 'timeout');
+    strictEqual(progress.peers.claude.retryable, true);
+    strictEqual(progress.peers.claude.raw_output.bytes, 0);
+    ok(progress.peers.claude.raw_output.sha256);
+    strictEqual(progress.peers.codex.timeout_ms, 90000);
+    ok(progress.peers.codex.retry_after.includes('--timeout-ms'));
+
+    const latest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', 'latest.json'));
+    strictEqual(latest.progress_pointer, report.progress_pointer);
+  });
+
   it('records raw peer output as an artifact pointer without leaking content', async () => {
     const root = await seedPlan();
     const rawOutput = 'RAW PEER OUTPUT THAT MUST NOT ENTER THE MAIN REPORT';
@@ -211,6 +256,35 @@ describe('runtime consensus', () => {
     ok(prompt.includes('Do not quote or depend on raw peer output'));
   });
 
+  it('explains synthesize and next-round blocked states without executing peers', async () => {
+    const root = await seedPlan();
+
+    await rejects(
+      () => runConsensus({ command: 'synthesize', repoRoot: root, runId: RUN_ID }),
+      /runtime:consensus synthesize --run-id consensus-20260513T000000Z-abcdef --summary-file <summary.md>/,
+    );
+
+    await rejects(
+      () => runConsensus({ command: 'next-round', repoRoot: root, runId: RUN_ID }),
+      /next-round requires consensus.json or --disagreements-file/,
+    );
+
+    const summaryFile = join(root, 'summary.md');
+    await writeFile(summaryFile, 'No durable disagreement remains.\n');
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      converged: true,
+    });
+
+    await rejects(
+      () => runConsensus({ command: 'next-round', repoRoot: root, runId: RUN_ID }),
+      /next-round requires at least one durable disagreement/,
+    );
+  });
+
   it('parses CLI arguments and rejects unsafe ids or invalid budgets', async () => {
     const opts = parseArgs([
       'plan',
@@ -298,6 +372,8 @@ function fakeConsensusRunner({
   codexRaw = 'CODEX RAW OUTPUT',
   claudeFailure = false,
   codexFailure = false,
+  claudeTimeout = false,
+  codexTimeout = false,
 } = {}) {
   return async (command, args = []) => {
     const key = [command, ...args].join(' ');
@@ -318,9 +394,11 @@ function fakeConsensusRunner({
     if (command === process.execPath) {
       const companionPath = args[0] ?? '';
       if (companionPath.includes('claude-companion.mjs')) {
+        if (claudeTimeout) return timeoutResult('TIMED OUT RAW OUTPUT CLAUDE');
         return companionResult({ peer: 'claude', raw: claudeRaw, failed: claudeFailure });
       }
       if (companionPath.includes('codex-companion.mjs')) {
+        if (codexTimeout) return timeoutResult('TIMED OUT RAW OUTPUT CODEX');
         return companionResult({ peer: 'codex', raw: codexRaw, failed: codexFailure });
       }
     }
@@ -359,4 +437,16 @@ function companionResult({ peer, raw, failed }) {
 
 function okResult(stdout) {
   return { ok: true, exit_code: 0, stdout, stderr: '', error_code: null, timed_out: false };
+}
+
+function timeoutResult(stdout = '') {
+  return {
+    ok: false,
+    exit_code: null,
+    stdout,
+    stderr: '',
+    error_code: 'ETIMEDOUT',
+    error_message: 'command timed out',
+    timed_out: true,
+  };
 }

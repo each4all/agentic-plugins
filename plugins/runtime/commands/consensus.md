@@ -1,6 +1,6 @@
 ---
 description: Runtime consensus scaffold and explicit companion executor for ADR-0024 peer fanout, disagreement tracking, and synthesis
-argument-hint: "plan|record|synthesize|next-round|execute|status [--format text|json] [--task <text>|--task-file <path>] [--run-id <id>] [--peer <id>] [--input-file <path>] [--summary-file <path>] [--disagreements-file <path>] [--max-rounds <n>] [--max-peers <n>] [--token-budget <n>] [--time-budget-ms <n>] [--process-budget <n>] [--timeout-ms <n>] [--execute]"
+argument-hint: "plan|record|synthesize|next-round|execute|status [--format text|json] [--task <text>|--task-file <path>] [--run-id <id>] [--peer <id>] [--peers <ids>] [--input-file <path>] [--summary-file <path>] [--disagreements-file <path>] [--max-rounds <n>] [--max-peers <n>] [--token-budget <n>] [--time-budget-ms <n>] [--process-budget <n>] [--timeout-ms <n>] [--execute]"
 ---
 
 # Runtime - Consensus
@@ -36,6 +36,9 @@ Notes:
 - Raw peer output stays under `<repo>/.agentic-plugins/runs/consensus/<run-id>/`.
 - Main-session output is limited to synthesized summary, durable disagreements, evidence pointers, artifact paths, and next action.
 - Companion dispatch requires the explicit `execute --execute` boundary. Runtime never relaxes sandbox, approval, auth, permission, or host session state.
-- Execution records status, failure type, retryability, byte count, and SHA-256. Permission and sandbox failures are classified as non-retryable until the operator resolves host policy outside runtime.
+- Execution records per-peer progress in `execution-progress.json` plus status, failure type, retryability, byte count, and SHA-256. Raw stdout stays in peer raw-output artifacts.
+- Timeouts are retryable and include bounded remediation metadata. Retry a selected peer with `--peers <peer> --timeout-ms <n> --process-budget 1`, or run `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` when prompt startup latency is unclear.
+- Permission and sandbox failures are classified as non-retryable until the operator resolves host policy outside runtime.
 - Max rounds, max peers, process budget, and timeout caps prevent automatic unbounded loops.
+- `next-round` requires durable disagreements from `consensus.json` or `--disagreements-file`; it does not create empty rebuttal rounds or execute peers.
 - This command does not migrate engineer/orchestrator workflow state.
