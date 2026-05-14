@@ -180,7 +180,7 @@ recommendation and confirm before proceeding.
 
 ---
 
-## When invoked by command (`/engineer:decide`)
+## When invoked by command (`/engineer:decide` Claude command or `$engineer:decide` Codex skill mention)
 
 Full decision support with Task Profile + peer ensemble +
 state-write integration.

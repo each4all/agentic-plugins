@@ -272,6 +272,15 @@ describe('plugins/engineer — 6 verb skills (skills/<verb>/SKILL.md)', () => {
         ok(/^description:\s*\S/m.test(fm), 'frontmatter description empty or missing');
       });
 
+      it('documents both Claude and Codex explicit entry tokens in the command-mode heading', async () => {
+        const text = await readFile(path, 'utf8');
+        const heading = text.match(/^## When invoked by command .+$/m)?.[0] ?? '';
+        ok(heading.includes(`/engineer:${verb}`), `skills/${verb}/SKILL.md missing Claude /engineer:${verb} entry token`);
+        ok(heading.includes(`$engineer:${verb}`), `skills/${verb}/SKILL.md missing Codex $engineer:${verb} entry token`);
+        ok(/Claude command/i.test(heading), `skills/${verb}/SKILL.md must label the Claude command entry path`);
+        ok(/Codex skill mention/i.test(heading), `skills/${verb}/SKILL.md must label the Codex skill entry path`);
+      });
+
       it('passes stale-token audit', async () => {
         const text = await readFile(path, 'utf8');
         for (const stale of STALE_TOKENS) {
