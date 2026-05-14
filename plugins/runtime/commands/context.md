@@ -34,7 +34,7 @@ Notes:
 
 - Context artifacts stay under `<repo>/.agentic-plugins/runs/context/<run-id>/`.
 - `status --latest` reads the newest readable context artifact and reports age/stale handoff metadata, source-freshness metadata, and bounded handoff guidance; it does not create or update artifacts.
-- Handoff guidance is advisory. Stale age, stale source commits, unknown source metadata, or dirty current worktrees recommend a fresh capture before relying on the artifact as next-session truth.
+- Handoff guidance is advisory. Stale age, stale source commits, unknown source metadata, dirty current worktrees, or artifacts captured from a dirty worktree recommend a fresh capture before relying on the artifact as next-session truth.
 - `check` is read-only and does not create a context artifact or trigger `capture`.
 - Main-session output is limited to context summary, risk level, artifact pointers, and recommended next-session prompt/action.
 - Source freshness uses read-only git observation only. If git metadata is unavailable, source freshness is reported as `unknown` rather than inferred.

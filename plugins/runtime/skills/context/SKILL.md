@@ -36,7 +36,9 @@ Context reports and manages:
 - repo-local artifact pointers for readiness, consensus, workflow, or other handoff evidence;
 - recommended next-session action;
 - generated or caller-supplied next-session prompt artifact.
-- read-only latest-artifact handoff lookup with age/stale, source-freshness metadata, and explicit guidance for reusing or refreshing the artifact.
+- read-only latest-artifact handoff lookup with age/stale, source-freshness
+  metadata, dirty-artifact detection, and explicit guidance for reusing or
+  refreshing the artifact.
 - read-only explicit context budget checks from caller-supplied token counts or caller-supplied risk.
 
 ## Boundaries
@@ -46,6 +48,9 @@ Context reports and manages:
 - No automatic context artifact update from `status --latest`.
 - No automatic execution of handoff guidance; stale handoffs recommend but do not trigger fresh capture.
 - No git mutation: source freshness uses read-only git observation only, and falls back to `unknown` when unavailable.
+- No claim that a dirty-captured artifact is source-verified from commit alone;
+  if capture happened with uncommitted work, status must recommend fresh capture
+  after the source state is settled or intentionally documented.
 - No automatic context measurement, capture trigger, or new session start from `check`.
 - No direct peer execution.
 - No consensus raw output or peer raw output in the main session.

@@ -44,6 +44,13 @@ export function buildSourceFreshness({ artifactSnapshot, currentSnapshot }) {
       reason: 'current git commit differs from the context artifact commit',
     };
   }
+  if (artifactSnapshot.dirty === true) {
+    return {
+      ...base,
+      status: 'dirty_artifact',
+      reason: 'context artifact was captured from a dirty worktree; the uncommitted source state cannot be verified from the commit alone',
+    };
+  }
   return {
     ...base,
     status: 'current',

@@ -649,6 +649,18 @@ export function buildHandoffGuidance({ runId, stale, sourceFreshness }) {
       ],
     };
   }
+  if (sourceFreshness.status === 'dirty_artifact') {
+    return {
+      state: 'capture_after_source_settled',
+      recommended_session: 'fresh_or_resumed',
+      reason: sourceFreshness.reason,
+      recommended_action: 'Capture a new runtime:context artifact from a clean or intentionally documented source state before relying on this handoff.',
+      commands: [
+        'runtime:context capture --summary "<current state>" --risk yellow --next-action "<next step>"',
+        'runtime:context status --latest',
+      ],
+    };
+  }
   if (sourceFreshness.status === 'unknown') {
     return {
       state: 'inspect_context',
