@@ -26,7 +26,6 @@ const VALID_COMMANDS = new Set(['plan', 'record', 'synthesize', 'next-round', 'e
 const DEFAULT_PEERS = ['claude', 'codex'];
 const DEFAULT_MAX_ROUNDS = 2;
 const MAX_ROUNDS_CAP = 3;
-const MAX_PEERS_CAP = 12;
 const DEFAULT_EXECUTION_TIMEOUT_MS = 120000;
 const MAX_EXECUTION_TIMEOUT_MS = 600000;
 const RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
@@ -69,8 +68,8 @@ export async function createPlan(options = {}) {
   const task = await resolveTask(options);
   const peers = normalizePeers(options.peers ?? DEFAULT_PEERS);
   const maxPeers = options.maxPeers === undefined
-    ? Math.min(peers.length, MAX_PEERS_CAP)
-    : boundedPositiveInt(options.maxPeers, '--max-peers', MAX_PEERS_CAP);
+    ? peers.length
+    : positiveInt(options.maxPeers, '--max-peers');
   const activePeers = peers.slice(0, maxPeers);
   const skippedPeers = peers.slice(maxPeers);
   const executablePeers = activePeers.filter(isCompanionPeer);
@@ -93,7 +92,8 @@ export async function createPlan(options = {}) {
     main_session_output: 'synthesized-summary-disagreements-evidence-pointers-only',
     limits: {
       max_rounds_cap: MAX_ROUNDS_CAP,
-      max_peers_cap: MAX_PEERS_CAP,
+      max_peers_cap: null,
+      peer_roster_boundary: 'explicit --peers roster; no hard-coded max peer cap',
       max_execution_timeout_ms: MAX_EXECUTION_TIMEOUT_MS,
       cancellation: 'per-peer timeout sends SIGTERM through the command runner; no async cancellation subcommand is added in this PR',
     },
@@ -145,7 +145,8 @@ export async function createPlan(options = {}) {
       'Raw peer output is stored only as run artifacts and is not printed into the main session.',
       'Consensus output is limited to synthesized summary, durable disagreements, and evidence pointers.',
       'Runtime never relaxes host permissions, sandbox, authentication, secrets, or host session context.',
-      'Consensus rounds are capped; automatic unbounded retry loops are forbidden.',
+      'Consensus rounds, companion execution process budget, and timeouts are capped; peer breadth is bounded by the explicit roster and optional --max-peers rather than a hard-coded product cap.',
+      'Automatic unbounded retry loops are forbidden.',
     ],
   };
   const manifestPath = resolve(runDir, 'manifest.json');
