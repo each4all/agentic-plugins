@@ -42,6 +42,8 @@ Consensus reports and manages:
 - targeted rebuttal prompt artifacts for a next round.
 - explicit companion execution metadata, including status, failure type, retryability, byte counts, hashes, and artifact pointers.
 - bounded timeout remediation metadata, including a selected-peer retry command.
+- status guidance that recommends the next bounded operator action from
+  manifest, execution, progress, and consensus-result artifacts.
 
 ## Boundaries
 

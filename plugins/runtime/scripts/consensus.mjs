@@ -521,7 +521,22 @@ export async function readStatus(options = {}) {
   const runId = validateRunId(required(options.runId, '--run-id'));
   const manifestPath = manifestFile(repoRoot, runId);
   const manifest = await readJson(manifestPath);
+  const runDir = consensusRunDir(repoRoot, runId);
+  const executionPath = resolve(runDir, 'execution.json');
+  const progressPath = resolve(runDir, 'execution-progress.json');
+  const executionArtifact = await readJsonIfExists(executionPath);
+  const progressArtifact = await readJsonIfExists(progressPath);
+  const consensusArtifact = manifest.consensus_pointer
+    ? await readJsonIfExists(resolve(repoRoot, manifest.consensus_pointer))
+    : null;
   const evidencePointers = collectEvidencePointers(manifest);
+  const statusGuidance = buildStatusGuidance({
+    runId,
+    manifest,
+    executionArtifact,
+    progressArtifact,
+    consensusArtifact,
+  });
   return {
     command: 'status',
     version: VERSION,
@@ -530,6 +545,9 @@ export async function readStatus(options = {}) {
     run_pointer: pointer(repoRoot, consensusRunDir(repoRoot, runId)),
     manifest_pointer: pointer(repoRoot, manifestPath),
     consensus_pointer: manifest.consensus_pointer,
+    execution_pointer: executionArtifact ? pointer(repoRoot, executionPath) : null,
+    progress_pointer: progressArtifact ? pointer(repoRoot, progressPath) : null,
+    execution_summary: executionArtifact?.summary ?? progressArtifact?.summary ?? null,
     rounds: manifest.rounds.map((round) => ({
       round: round.round,
       kind: round.kind,
@@ -538,6 +556,9 @@ export async function readStatus(options = {}) {
       raw_output_count: round.raw_outputs.length,
     })),
     evidence_pointers: evidencePointers,
+    status_guidance: statusGuidance,
+    next_action: statusGuidance.next_action,
+    next_steps: statusGuidance.next_steps,
     limits: manifest.limits,
   };
 }
@@ -1083,6 +1104,141 @@ function buildNextRoundAvailability({ manifest, durableDisagreements, runId }) {
   };
 }
 
+function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtifact, consensusArtifact }) {
+  const latestRound = findRound(manifest, latestRoundNumber(manifest));
+  const summary = executionArtifact?.summary ?? progressArtifact?.summary ?? null;
+  const retryCommands = collectRetryCommands(executionArtifact, progressArtifact);
+  const latestRoundExecuteCommand = `runtime:consensus execute --run-id ${runId} --round ${latestRound.round} --execute`;
+  const synthesizeCommand = `runtime:consensus synthesize --run-id ${runId} --summary-file <summary.md> [--disagreements-file <disagreements.md>]`;
+
+  if (consensusArtifact) {
+    const nextRound = buildNextRoundAvailability({
+      manifest,
+      durableDisagreements: consensusArtifact.durable_disagreements ?? [],
+      runId,
+    });
+    if (consensusArtifact.status === 'converged' || (consensusArtifact.durable_disagreements ?? []).length === 0) {
+      return guidance({
+        state: 'complete',
+        next_action: consensusArtifact.next_action ?? 'Consensus is converged; proceed with the synthesized decision.',
+        next_steps: [],
+        commands: [],
+        reason: 'consensus artifact has no durable disagreements',
+      });
+    }
+    if (nextRound.available) {
+      return guidance({
+        state: 'next_round_available',
+        next_action: 'Durable disagreements remain; plan the bounded rebuttal round before executing more peers.',
+        next_steps: [
+          nextRound.command,
+          nextRound.execute_command,
+        ],
+        commands: [nextRound.command, nextRound.execute_command].filter(Boolean),
+        reason: nextRound.reason,
+      });
+    }
+    return guidance({
+      state: 'owner_decision_required',
+      next_action: 'Durable disagreements remain but max_rounds is exhausted; ask the owner for a decision instead of running more peers.',
+      next_steps: [],
+      commands: [],
+      reason: nextRound.reason,
+    });
+  }
+
+  if (summary?.failed_retryable > 0 && retryCommands.length > 0) {
+    return guidance({
+      state: 'retry_failed_peers',
+      next_action: 'Retry only the retryable failed peers using the per-peer retry commands.',
+      next_steps: [
+        ...retryCommands,
+        'After retryable peers pass or are intentionally skipped, synthesize from artifact pointers.',
+      ],
+      commands: retryCommands,
+      reason: `${summary.failed_retryable} retryable peer failure(s) recorded`,
+    });
+  }
+
+  if (summary?.operator_action_required > 0) {
+    return guidance({
+      state: 'operator_action_required',
+      next_action: 'Resolve host auth, sandbox, permission, or approval preconditions outside runtime before retrying peers.',
+      next_steps: [
+        'runtime:doctor --permission-proof --execute-permission-proof',
+        'runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke',
+        ...retryCommands,
+      ],
+      commands: retryCommands,
+      reason: `${summary.operator_action_required} peer failure(s) require operator action`,
+    });
+  }
+
+  if (summary?.failed_non_retryable > 0) {
+    return guidance({
+      state: 'inspect_failure',
+      next_action: 'Inspect the peer execution artifact and resolve the non-retryable failure before continuing consensus.',
+      next_steps: [
+        executionArtifact?.progress_pointer ? `runtime:consensus status --run-id ${runId}` : `Inspect ${executionArtifact?.execution_pointer ?? 'the execution artifact'} and rerun status.`,
+      ],
+      commands: [],
+      reason: `${summary.failed_non_retryable} non-retryable peer failure(s) recorded`,
+    });
+  }
+
+  if (latestRound.raw_outputs?.length > 0 || summary?.passed > 0) {
+    return guidance({
+      state: 'synthesize',
+      next_action: 'Synthesize the recorded peer outputs into a bounded consensus result.',
+      next_steps: [synthesizeCommand],
+      commands: [synthesizeCommand],
+      reason: 'peer output artifacts are available and no consensus artifact exists yet',
+    });
+  }
+
+  if (latestRound.prompts?.length > 0) {
+    return guidance({
+      state: 'execute_or_record',
+      next_action: 'Execute the planned peer prompts, or run them manually and record each raw output as an artifact.',
+      next_steps: [
+        latestRoundExecuteCommand,
+        `runtime:consensus record --run-id ${runId} --round ${latestRound.round} --peer <peer> --input-file <path>`,
+      ],
+      commands: [latestRoundExecuteCommand],
+      reason: `round ${latestRound.round} has prompts but no peer output artifacts`,
+    });
+  }
+
+  return guidance({
+    state: 'blocked',
+    next_action: 'Consensus status cannot identify a safe next step from the current artifacts.',
+    next_steps: [`runtime:consensus status --run-id ${runId}`],
+    commands: [],
+    reason: 'no prompts, peer outputs, execution summary, or consensus result were found',
+  });
+}
+
+function collectRetryCommands(executionArtifact, progressArtifact) {
+  const commands = [];
+  for (const execution of executionArtifact?.executions ?? []) {
+    if (execution.retryable && execution.retry_command) commands.push(execution.retry_command);
+  }
+  for (const peer of Object.values(progressArtifact?.peers ?? {})) {
+    if (peer.retryable && peer.retry_command) commands.push(peer.retry_command);
+  }
+  return [...new Set(commands)];
+}
+
+function guidance({ state, next_action, next_steps, commands, reason }) {
+  return {
+    state,
+    reason,
+    next_action,
+    next_steps: next_steps.filter(Boolean),
+    commands: commands.filter(Boolean),
+  };
+}
+
 export function parseArgs(argv) {
   const args = [...argv];
   let command = null;
@@ -1537,6 +1693,15 @@ async function assertInside(root, candidate) {
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, 'utf8'));
+}
+
+async function readJsonIfExists(path) {
+  try {
+    return await readJson(path);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 async function writeJson(path, value) {
