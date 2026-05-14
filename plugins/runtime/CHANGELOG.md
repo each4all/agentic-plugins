@@ -14,18 +14,11 @@
 ### Features
 
 * **plugin/runtime:** add consensus execution remediation ([2fe7158](https://github.com/each4all/agentic-plugins/commit/2fe7158db272339f6c6718ac863490d59c71776a))
-* **plugin/runtime:** add consensus execution remediation ([2fe7158](https://github.com/each4all/agentic-plugins/commit/2fe7158db272339f6c6718ac863490d59c71776a))
-* **plugin/runtime:** add context host handoff commands ([f109e6f](https://github.com/each4all/agentic-plugins/commit/f109e6f0bbbca21b79e7248e43a1ff47843987cf))
 * **plugin/runtime:** add context host handoff commands ([f109e6f](https://github.com/each4all/agentic-plugins/commit/f109e6f0bbbca21b79e7248e43a1ff47843987cf))
 * **plugin/runtime:** add doctor artifact inventory ([f6775a8](https://github.com/each4all/agentic-plugins/commit/f6775a8b6c2f5d92c03306d64e854366d4b2250e))
-* **plugin/runtime:** add doctor artifact inventory ([f6775a8](https://github.com/each4all/agentic-plugins/commit/f6775a8b6c2f5d92c03306d64e854366d4b2250e))
-* **plugin/runtime:** describe consensus peer lanes ([75b94cb](https://github.com/each4all/agentic-plugins/commit/75b94cbc6b676fd047312d6883f186e9aec15e28))
 * **plugin/runtime:** describe consensus peer lanes ([75b94cb](https://github.com/each4all/agentic-plugins/commit/75b94cbc6b676fd047312d6883f186e9aec15e28))
 * **plugin/runtime:** detect dirty context handoffs ([8f1e953](https://github.com/each4all/agentic-plugins/commit/8f1e953fc8abcd7eb438be3966f77ca27268e2d5))
-* **plugin/runtime:** detect dirty context handoffs ([8f1e953](https://github.com/each4all/agentic-plugins/commit/8f1e953fc8abcd7eb438be3966f77ca27268e2d5))
 * **plugin/runtime:** link consensus execution prompts ([ad0036f](https://github.com/each4all/agentic-plugins/commit/ad0036f3886763c6decc9d18f495dff7c43caa63))
-* **plugin/runtime:** link consensus execution prompts ([ad0036f](https://github.com/each4all/agentic-plugins/commit/ad0036f3886763c6decc9d18f495dff7c43caa63))
-* **plugin/runtime:** localize footer guidance commands ([451e52e](https://github.com/each4all/agentic-plugins/commit/451e52ef03eb74538d344c15474cf9720e6ab22e))
 * **plugin/runtime:** localize footer guidance commands ([451e52e](https://github.com/each4all/agentic-plugins/commit/451e52ef03eb74538d344c15474cf9720e6ab22e))
 
 ## [0.25.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.24.0...plugin-runtime-v0.25.0) (2026-05-14)
