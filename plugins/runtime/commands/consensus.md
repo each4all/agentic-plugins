@@ -1,6 +1,6 @@
 ---
 description: Runtime consensus scaffold and explicit companion executor for ADR-0024 peer fanout, disagreement tracking, and synthesis
-argument-hint: "plan|record|synthesize|next-round|execute|status [--format text|json] [--task <text>|--task-file <path>] [--run-id <id>] [--peer <id>] [--peers <ids>] [--input-file <path>] [--summary-file <path>] [--disagreements-file <path>] [--max-rounds <n>] [--max-peers <n>] [--token-budget <n>] [--time-budget-ms <n>] [--process-budget <n>] [--timeout-ms <n>] [--execute]"
+argument-hint: "plan|record|synthesize|next-round|execute|status [--format text|json] [--task <text>|--task-file <path>] [--run-id <id>|--latest] [--peer <id>] [--peers <ids>] [--input-file <path>] [--summary-file <path>] [--disagreements-file <path>] [--max-rounds <n>] [--max-peers <n>] [--token-budget <n>] [--time-budget-ms <n>] [--process-budget <n>] [--timeout-ms <n>] [--execute]"
 ---
 
 # Runtime - Consensus
@@ -31,6 +31,7 @@ Common flow:
 /runtime:consensus synthesize --run-id <id> --summary-file <summary.md> --disagreements-file <disagreements.md>
 /runtime:consensus next-round --run-id <id>
 /runtime:consensus execute --run-id <id> --round 2 --execute
+/runtime:consensus status --latest
 ```
 
 Notes:
@@ -41,7 +42,7 @@ Notes:
 - Only companion-backed peers (`claude`, `codex`) are executable by `execute --execute`; any other peer id in `--peers` is a manual/subagent lane with prompt artifacts that must be collected through `record`.
 - Execution records per-peer progress in `execution-progress.json` plus status, failure type, retryability, byte count, and SHA-256. Raw stdout stays in peer raw-output artifacts.
 - Timeouts are retryable and include bounded remediation metadata. Retry a selected peer with `--peers <peer> --timeout-ms <n> --process-budget 1`, or run `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` when prompt startup latency is unclear.
-- `status` reads manifest, execution, progress, and consensus-result artifacts to recommend the next bounded operator action: execute/record, retry selected peers, synthesize, plan next-round, or stop for owner decision.
+- `status` reads manifest, execution, progress, and consensus-result artifacts to recommend the next bounded operator action: execute/record, retry selected peers, synthesize, plan next-round, or stop for owner decision. `status --latest` picks the newest readable consensus manifest by `updated_at`/`created_at` without reading raw peer output.
 - Permission and sandbox failures are classified as non-retryable until the operator resolves host policy outside runtime.
 - Max rounds, max peers, process budget, and timeout caps prevent automatic unbounded loops; broader manual peer fanout is still artifact-bounded by the explicit `--peers` roster and `--max-peers`.
 - `next-round` requires durable disagreements from `consensus.json` or `--disagreements-file`; it does not create empty rebuttal rounds or execute peers.

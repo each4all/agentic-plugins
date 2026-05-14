@@ -6,6 +6,7 @@ import {
   access,
   mkdir,
   readFile,
+  readdir,
   writeFile,
 } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -539,7 +540,12 @@ export async function executeRound(options = {}) {
 
 export async function readStatus(options = {}) {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
-  const runId = validateRunId(required(options.runId, '--run-id'));
+  const selection = await resolveStatusRunSelection({
+    repoRoot,
+    runId: options.runId,
+    latest: options.latest,
+  });
+  const runId = selection.runId;
   const manifestPath = manifestFile(repoRoot, runId);
   const manifest = await readJson(manifestPath);
   const runDir = consensusRunDir(repoRoot, runId);
@@ -562,6 +568,7 @@ export async function readStatus(options = {}) {
     command: 'status',
     version: VERSION,
     run_id: runId,
+    lookup: selection.lookup,
     status: manifest.status,
     run_pointer: pointer(repoRoot, consensusRunDir(repoRoot, runId)),
     manifest_pointer: pointer(repoRoot, manifestPath),
@@ -1354,6 +1361,9 @@ export function parseArgs(argv) {
       case '--run-id':
         options.runId = validateRunId(requireValue(args, arg));
         break;
+      case '--latest':
+        options.latest = true;
+        break;
       case '--peer':
         options.peer = validatePeerId(requireValue(args, arg));
         break;
@@ -1389,6 +1399,12 @@ export function parseArgs(argv) {
     }
   }
   options.command = command ?? 'plan';
+  if (options.runId && options.latest) {
+    throw new Error('Use either --run-id or --latest, not both');
+  }
+  if (options.latest && options.command !== 'status') {
+    throw new Error('--latest is only supported by status');
+  }
   return options;
 }
 
@@ -1469,8 +1485,79 @@ Usage:
   runtime:consensus next-round --run-id <id> [--disagreements-file <path>]
   runtime:consensus execute --run-id <id> [--round N] [--peers claude,codex] --execute [--timeout-ms N] [--process-budget N]
   runtime:consensus status --run-id <id>
+  runtime:consensus status --latest
 
 Planning and synthesis never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record.`;
+}
+
+async function resolveStatusRunSelection({ repoRoot, runId, latest }) {
+  if (runId && latest) {
+    throw new Error('Use either --run-id or --latest, not both');
+  }
+  if (latest) return findLatestConsensusRun(repoRoot);
+  const validated = validateRunId(required(runId, '--run-id'));
+  return {
+    runId: validated,
+    lookup: {
+      mode: 'run-id',
+      latest: false,
+      selected_at: null,
+      skipped_invalid: 0,
+    },
+  };
+}
+
+async function findLatestConsensusRun(repoRoot) {
+  const root = consensusRoot(repoRoot);
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw new Error('status --latest requires at least one consensus run; no consensus run artifacts found');
+    }
+    throw error;
+  }
+
+  let selected = null;
+  let skippedInvalid = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !RUN_ID_RE.test(entry.name)) continue;
+    try {
+      const manifest = await readJson(manifestFile(repoRoot, entry.name));
+      if (manifest.run_id !== entry.name) {
+        skippedInvalid += 1;
+        continue;
+      }
+      const timestampMs = consensusTimestampMs(manifest, entry.name);
+      if (timestampMs === null) {
+        skippedInvalid += 1;
+        continue;
+      }
+      if (!selected || timestampMs > selected.timestampMs) {
+        selected = {
+          runId: entry.name,
+          timestampMs,
+          selectedAt: new Date(timestampMs).toISOString(),
+        };
+      }
+    } catch {
+      skippedInvalid += 1;
+    }
+  }
+
+  if (!selected) {
+    throw new Error('status --latest found no readable consensus manifest artifacts');
+  }
+  return {
+    runId: selected.runId,
+    lookup: {
+      mode: 'latest',
+      latest: true,
+      selected_at: selected.selectedAt,
+      skipped_invalid: skippedInvalid,
+    },
+  };
 }
 
 async function resolveTask(options) {
@@ -1732,6 +1819,22 @@ function makeRunId(now) {
 
 function toIso(value) {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function consensusTimestampMs(manifest, fallbackRunId) {
+  for (const value of [manifest.updated_at, manifest.created_at]) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return consensusRunIdTimestampMs(fallbackRunId);
+}
+
+function consensusRunIdTimestampMs(runId) {
+  const match = String(runId ?? '').match(/^consensus-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match;
+  const parsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function consensusRoot(repoRoot) {

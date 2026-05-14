@@ -138,6 +138,43 @@ describe('runtime consensus', () => {
     ok(formatText(report).includes('next action: Execute the planned peer prompts'));
   });
 
+  it('reports latest status by manifest freshness without reading raw peer output', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-consensus-latest-status-'));
+    const olderRunId = 'consensus-20260513T000000Z-111111';
+    const newerRunId = 'consensus-20260513T010000Z-222222';
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: olderRunId,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      task: 'older consensus task must stay hidden.',
+    });
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: newerRunId,
+      now: new Date('2026-05-13T01:00:00.000Z'),
+      task: 'latest consensus task must stay hidden.',
+    });
+    const malformedRunDir = join(root, '.agentic-plugins', 'runs', 'consensus', 'consensus-20260513T020000Z-333333');
+    await mkdir(malformedRunDir, { recursive: true });
+    await writeFile(join(malformedRunDir, 'manifest.json'), '{not json');
+
+    const report = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      latest: true,
+    });
+
+    strictEqual(report.run_id, newerRunId);
+    strictEqual(report.lookup.mode, 'latest');
+    strictEqual(report.lookup.selected_at, '2026-05-13T01:00:00.000Z');
+    strictEqual(report.lookup.skipped_invalid, 1);
+    strictEqual(report.status_guidance.state, 'execute_or_record');
+    ok(report.next_steps.includes(`runtime:consensus execute --run-id ${newerRunId} --round 1 --execute`));
+    ok(!JSON.stringify(report).includes('latest consensus task'), 'status report must not include task body');
+  });
+
   it('executes a planned round only with --execute and stores raw outputs as artifacts', async () => {
     const root = await seedPlan();
     const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-home-'));
@@ -499,8 +536,14 @@ describe('runtime consensus', () => {
     strictEqual(executeStyle.execute, true);
     strictEqual(executeStyle.timeoutMs, 60000);
 
+    const latestStyle = parseArgs(['status', '--latest']);
+    strictEqual(latestStyle.command, 'status');
+    strictEqual(latestStyle.latest, true);
+
     throws(() => parseArgs(['record', '--run-id', '../bad']), /Invalid --run-id/);
     throws(() => parseArgs(['record', '--peer', 'bad/peer']), /Peer ids/);
+    throws(() => parseArgs(['status', '--latest', '--run-id', RUN_ID]), /Use either --run-id or --latest/);
+    throws(() => parseArgs(['execute', '--latest']), /--latest is only supported by status/);
     throws(() => parseArgs(['plan', '--max-rounds', '0']), /positive integer/);
     await rejects(() => runConsensus({ command: 'execute', repoRoot: '/tmp/repo', runId: RUN_ID }), /requires --execute/);
     await rejects(() => runConsensus({ command: 'plan', repoRoot: '/tmp/repo', runId: RUN_ID, task: 'x', maxRounds: 4 }), /--max-rounds must be <= 3/);
