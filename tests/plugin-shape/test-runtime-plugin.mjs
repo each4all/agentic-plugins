@@ -322,3 +322,33 @@ describe('plugins/runtime footer helper', () => {
     ok((scriptStat.mode & 0o111) !== 0, 'footer.mjs has executable bit');
   });
 });
+
+describe('plugins/runtime repo documentation freshness', () => {
+  it('keeps root and stage docs aligned with the shipped runtime version and surfaces', async () => {
+    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
+    const readme = await readFile(resolve(REPO_ROOT, 'README.md'), 'utf-8');
+    const architecture = await readFile(resolve(REPO_ROOT, 'docs/ARCHITECTURE.md'), 'utf-8');
+    const development = await readFile(resolve(REPO_ROOT, 'docs/DEVELOPMENT.md'), 'utf-8');
+    const currentRuntimeToken = `plugin-runtime\` v${manifest.version}`;
+
+    ok(architecture.includes(currentRuntimeToken), 'ARCHITECTURE.md documents the current runtime version');
+    ok(development.includes(currentRuntimeToken), 'DEVELOPMENT.md documents the current runtime version');
+    ok(!architecture.includes('plugin-runtime` v0.12.0'), 'ARCHITECTURE.md must not describe runtime as v0.12.0');
+    ok(!development.includes('plugin-runtime` v0.12.0'), 'DEVELOPMENT.md must not describe runtime as v0.12.0');
+
+    for (const token of [
+      'runtime:doctor',
+      'runtime:settings',
+      'runtime:consensus',
+      'runtime:worktree',
+      'runtime:context',
+      'workflow-storage migration',
+      'completion footer',
+    ]) {
+      ok(readme.includes(token), `README.md documents ${token}`);
+    }
+
+    ok(!readme.includes('### Coming next'), 'README.md should not list shipped runtime surfaces as coming next');
+    ok(!readme.includes('Runtime dynamic consensus, context hygiene, and completion footer'), 'README.md must not carry stale ADR-0024 follow-up wording');
+  });
+});

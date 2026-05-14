@@ -352,6 +352,29 @@ describe('plugins/orchestrator skills/', () => {
       ok(!pattern.test(protocol), `ensemble-protocol.md must not hard-code Codex-only plan peer wording: ${pattern}`);
     }
   });
+
+  it('orchestrator README presents Plan-verify as opposite-host peer behavior', async () => {
+    const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf-8');
+    const rootReadme = await readFile(resolve(REPO_ROOT, 'README.md'), 'utf-8');
+
+    for (const phrase of [
+      'Plan-verify opposite-host peer ensemble',
+      'If the opposite-host companion is unavailable',
+      'Plan-verify opposite-host peer ensemble inside `/orchestrator:plan`',
+    ]) {
+      ok(readme.includes(phrase), `orchestrator README missing host-neutral phrase: ${phrase}`);
+    }
+
+    for (const pattern of [
+      /Plan-verify Codex ensemble/,
+      /Plan-verify Codex peer/,
+      /Codex companion is unavailable/,
+      /Plan-verify Codex ensemble inside/,
+    ]) {
+      ok(!pattern.test(readme), `orchestrator README must not hard-code Codex-only plan peer wording: ${pattern}`);
+      ok(!pattern.test(rootReadme), `root README must not hard-code Codex-only plan peer wording: ${pattern}`);
+    }
+  });
 });
 
 describe('plugins/orchestrator meta skills/', () => {
