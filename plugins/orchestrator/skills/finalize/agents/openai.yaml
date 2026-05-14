@@ -1,0 +1,7 @@
+interface:
+  display_name: "Orchestrator - Finalize"
+  short_description: "Close a macro plan with remaining subtasks deferred and archive/detach engineer children"
+  default_prompt: "Use $orchestrator:finalize to close a macro plan with remaining work deferred; preserve the three-step lock order and Codex manual Stop helper boundary."
+
+policy:
+  allow_implicit_invocation: false

@@ -42,8 +42,10 @@ const ALIAS_VERBS = ['audit'];
 // are slash-command runbooks (same-host dispatch + manual backup);
 // they are NOT 6-verb persona commands (those live in engineer).
 const DISPATCH_COMMANDS = ['next', 'done'];
+const LIFECYCLE_COMMANDS = ['finalize', 'abort'];
 const META_COMMANDS = ['resume', 'checkpoint', 'peer-now'];
-const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...DISPATCH_COMMANDS, ...META_COMMANDS];
+const DISPATCH_AND_LIFECYCLE_SKILLS = [...DISPATCH_COMMANDS, ...LIFECYCLE_COMMANDS];
+const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...DISPATCH_COMMANDS, ...LIFECYCLE_COMMANDS, ...META_COMMANDS];
 const SHARED_REFS = ['ensemble-protocol.md', 'presentation-protocol.md'];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['_shared.mjs', 'session-start.mjs', 'pre-compact.mjs', 'stop.mjs'];
@@ -107,6 +109,10 @@ describe('plugins/orchestrator manifest pair', () => {
     ok(Array.isArray(manifest.interface.capabilities));
     ok(Array.isArray(manifest.interface.defaultPrompt));
     ok(manifest.interface.defaultPrompt.length > 0);
+    ok(
+      manifest.interface.longDescription.includes('Codex skills mirror plan, next, done, finalize, abort, resume, checkpoint, and peer-now'),
+      'longDescription documents the Codex skill mirror surface',
+    );
   });
 
   it('Claude and Codex manifests share name + version + description', async () => {
@@ -328,6 +334,64 @@ describe('plugins/orchestrator meta skills/', () => {
   }
 });
 
+describe('plugins/orchestrator dispatch + lifecycle Codex skill mirrors/', () => {
+  for (const skill of DISPATCH_AND_LIFECYCLE_SKILLS) {
+    it(`skills/${skill}/SKILL.md mirrors /orchestrator:${skill} for Codex`, async () => {
+      const skillPath = resolve(PLUGIN_ROOT, 'skills', skill, 'SKILL.md');
+      const text = await readFile(skillPath, 'utf-8');
+      ok(text.startsWith('---\n'), 'SKILL.md starts with frontmatter');
+      const fmEnd = text.indexOf('\n---\n', 4);
+      ok(fmEnd > 0, 'SKILL.md frontmatter is closed');
+      const fm = text.slice(4, fmEnd);
+      ok(new RegExp(`^name:\\s*${skill}\\s*$`, 'm').test(fm),
+        `SKILL.md frontmatter name is ${skill}`);
+      ok(/^description:/m.test(fm), 'SKILL.md frontmatter has description');
+      ok(text.includes('## Host availability'), `${skill} skill documents host availability`);
+      ok(text.includes('## Command resolution'), `${skill} skill documents command resolution`);
+      ok(text.includes(`/orchestrator:${skill}`), `${skill} skill documents Claude entry token`);
+      ok(text.includes(`$orchestrator:${skill}`), `${skill} skill documents Codex entry token`);
+      ok(text.includes(`commands/${skill}.md`), `${skill} skill points to canonical command runbook`);
+      ok(text.includes('--host codex'), `${skill} skill documents Codex host flag`);
+    });
+
+    it(`skills/${skill}/agents/openai.yaml exists with explicit-only $orchestrator:${skill} prompt`, async () => {
+      const yamlPath = resolve(PLUGIN_ROOT, 'skills', skill, 'agents', 'openai.yaml');
+      const text = await readFile(yamlPath, 'utf-8');
+      ok(/display_name:/.test(text), 'openai.yaml has display_name');
+      ok(/short_description:/.test(text), 'openai.yaml has short_description');
+      ok(text.includes(`$orchestrator:${skill}`), `default prompt references $orchestrator:${skill}`);
+      ok(/allow_implicit_invocation:\s*false/.test(text), 'implicit invocation disabled');
+    });
+  }
+
+  it('next/done mirrors preserve same-host dispatch and completion invariants', async () => {
+    const next = await readFile(resolve(PLUGIN_ROOT, 'skills/next/SKILL.md'), 'utf-8');
+    ok(next.includes('AGENTIC_PARENT_WORKFLOW'), 'next documents parent workflow env');
+    ok(next.includes('AGENTIC_ORIGINATING_SUBTASK'), 'next documents originating subtask env');
+    ok(next.includes('Do not invoke `skills/<verb>/SKILL.md` directly'), 'next forbids bypassing engineer command Phase 0');
+    ok(next.includes('subtask-update'), 'next documents post-create subtask-update');
+
+    const done = await readFile(resolve(PLUGIN_ROOT, 'skills/done/SKILL.md'), 'utf-8');
+    ok(done.includes('engineer_workflow_id'), 'done documents engineer workflow ownership');
+    ok(done.includes('refs/heads/<subtask.branch>'), 'done documents branch-tip commit resolution');
+    ok(done.includes('status completed'), 'done documents completed subtask-update');
+  });
+
+  it('finalize/abort mirrors preserve lifecycle lock order plus Codex manual Stop helper boundary', async () => {
+    const finalize = await readFile(resolve(PLUGIN_ROOT, 'skills/finalize/SKILL.md'), 'utf-8');
+    ok(finalize.includes('--to-status deferred'), 'finalize documents deferred bulk transition');
+    ok(finalize.includes('detach-archive'), 'finalize documents detach-archive child path');
+    ok(finalize.includes('--terminal-phase finalized'), 'finalize documents finalized terminal phase');
+    ok(finalize.includes('adapters/codex/hooks/stop.mjs'), 'finalize documents Codex manual stop helper');
+
+    const abort = await readFile(resolve(PLUGIN_ROOT, 'skills/abort/SKILL.md'), 'utf-8');
+    ok(abort.includes('--to-status abandoned'), 'abort documents abandoned bulk transition');
+    ok(abort.includes('detach-archive'), 'abort documents detach-archive child path');
+    ok(abort.includes('--terminal-phase aborted'), 'abort documents aborted terminal phase');
+    ok(abort.includes('adapters/codex/hooks/stop.mjs'), 'abort documents Codex manual stop helper');
+  });
+});
+
 describe('plugins/orchestrator commands/', () => {
   for (const cmd of ALL_COMMANDS) {
     it(`commands/${cmd}.md exists with description + argument-hint frontmatter`, async () => {
@@ -441,6 +505,10 @@ describe('plugins/orchestrator stale-token audit', () => {
     'commands/peer-now.md',
     'commands/audit.md',
     'skills/plan/SKILL.md',
+    'skills/next/SKILL.md',
+    'skills/done/SKILL.md',
+    'skills/finalize/SKILL.md',
+    'skills/abort/SKILL.md',
     'skills/resume/SKILL.md',
     'skills/checkpoint/SKILL.md',
     'skills/peer-now/SKILL.md',

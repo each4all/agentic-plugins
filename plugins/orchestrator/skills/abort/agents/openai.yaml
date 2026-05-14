@@ -1,0 +1,7 @@
+interface:
+  display_name: "Orchestrator - Abort"
+  short_description: "Abandon a macro plan with remaining subtasks marked not-done and archive/detach engineer children"
+  default_prompt: "Use $orchestrator:abort to abandon a macro plan; mark remaining subtasks abandoned and preserve Codex manual Stop helper boundaries."
+
+policy:
+  allow_implicit_invocation: false
