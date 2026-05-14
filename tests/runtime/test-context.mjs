@@ -159,6 +159,48 @@ describe('runtime context', () => {
     ok(formatText(report).includes('handoff guidance: capture_new_context'));
   });
 
+  it('does not treat dirty-captured source handoffs as verified-current', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-context-dirty-artifact-'));
+    await runContext({
+      command: 'capture',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      summary: 'Context captured while uncommitted source changes existed.',
+      risk: 'yellow',
+      sourceSnapshot: {
+        status: 'observed',
+        kind: 'git',
+        commit: '3333333333333333333333333333333333333333',
+        branch: 'feature/runtime-context',
+        dirty: true,
+      },
+    });
+
+    const report = await runContext({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:15:00.000Z'),
+      currentSourceSnapshot: {
+        status: 'observed',
+        kind: 'git',
+        commit: '3333333333333333333333333333333333333333',
+        branch: 'feature/runtime-context',
+        dirty: false,
+      },
+    });
+
+    strictEqual(report.handoff.source_freshness.status, 'unknown');
+    strictEqual(report.handoff.source_freshness.artifact_dirty, true);
+    strictEqual(report.handoff.source_freshness.current_dirty, false);
+    strictEqual(report.handoff.guidance.state, 'inspect_context');
+    ok(report.handoff.source_freshness.reason.includes('dirty worktree'));
+    ok(report.handoff.guidance.recommended_action.includes('Inspect the current checkout'));
+    ok(formatText(report).includes('- source status: unknown'));
+    ok(formatText(report).includes('handoff guidance: inspect_context'));
+  });
+
   it('checks explicit context budget without creating artifacts', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-context-check-'));
     const report = await runContext({
