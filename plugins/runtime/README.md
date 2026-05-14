@@ -128,6 +128,11 @@ Settings is still dry-run for plugin management unless `--execute-plugin-managem
 - Claude plugin install/update commands.
 - Codex marketplace add/upgrade commands.
 
+Codex temporary marketplace manifests are reported separately from per-plugin
+install cache evidence. If the marketplace cache is current but the per-plugin
+cache is absent, settings reports a manual cache-materialization item instead
+of retrying `codex plugin marketplace add`.
+
 It invokes commands as argv arrays, never through a shell, and records only status, exit code, byte counts, timing, retry classification, and sanitized error metadata. Raw stdout and stderr are omitted from settings output and artifacts. `--plugin-management-host all|claude|codex` scopes execution. Settings writes `.agentic-plugins/runs/settings/<run-id>/settings.json` plus `.agentic-plugins/runs/settings/latest.json` for explicit plugin-management executions; `runtime:doctor` reads the latest artifact and reports failed action types and retryability. Settings still does not write host-native config, auth, secrets, sandbox/permission settings, or execute plugin uninstall commands.
 
 ## Migration Behavior

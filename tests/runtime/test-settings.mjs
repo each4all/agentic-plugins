@@ -137,6 +137,49 @@ describe('runtime settings', () => {
     ok(report.limits.some((limit) => limit.includes('Plugin install/update execution is dry-run')));
   });
 
+  it('does not retry Codex marketplace add when the temporary marketplace cache is already current', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-tmp-current-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-tmp-current-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    strictEqual(report.schema_version, 'runtime-settings-1.4');
+    strictEqual(report.plugins.runtime.installed.codex_cache, null);
+    strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
+    const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
+    ok(codexRecommendations.every((rec) => rec.action !== 'add-marketplace'));
+    const materialize = codexRecommendations.find((rec) => rec.action === 'materialize-plugin-cache');
+    strictEqual(materialize.command, null);
+    ok(materialize.detail.includes('not fixed by repeating marketplace add'));
+    ok(report.plugin_management.plans.some((plan) => plan.id === 'runtime:codex:materialize-plugin-cache' && plan.status === 'manual'));
+    ok(formatText(report).includes('codex-marketplace-cache=0.1.0'));
+  });
+
+  it('recommends Codex marketplace upgrade when the temporary marketplace cache is stale', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-tmp-stale-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-tmp-stale-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home, 'runtime', '0.0.9');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    const codexRecommendation = report.plugins.runtime.recommendations.find((rec) => rec.host === 'codex');
+    strictEqual(codexRecommendation.action, 'upgrade-marketplace');
+    strictEqual(codexRecommendation.command, 'codex plugin marketplace upgrade agentic-plugins');
+    ok(codexRecommendation.detail.includes('Codex marketplace cache has 0.0.9'));
+    ok(report.plugin_management.plans.some((plan) => plan.status === 'planned' && plan.command === 'codex plugin marketplace upgrade agentic-plugins'));
+  });
+
   it('executes only allowlisted plugin management commands behind an explicit flag', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-execute-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-execute-home-'));
@@ -364,6 +407,15 @@ async function seedRepo(root) {
       policy: { installation: 'AVAILABLE', authentication: 'ON_USE' },
       category: 'Productivity',
     })),
+  });
+}
+
+async function seedCodexTmpMarketplace(home, name, version) {
+  await mkdir(join(home, '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', name, '.codex-plugin'), { recursive: true });
+  await writeJson(join(home, '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', name, '.codex-plugin', 'plugin.json'), {
+    name,
+    version,
+    description: `${name} plugin`,
   });
 }
 
