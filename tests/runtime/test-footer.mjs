@@ -128,6 +128,8 @@ describe('runtime footer', () => {
     strictEqual(report.context.lookup.stale, false);
     strictEqual(report.context.lookup.age_minutes, 60);
     strictEqual(report.context.lookup.stale_after_ms, 12 * 60 * 60 * 1000);
+    strictEqual(report.context.lookup.guidance.state, 'inspect_context');
+    strictEqual(report.context.lookup.guidance.recommended_session, 'fresh_or_resumed');
     strictEqual(report.next_session.command, `$runtime:context status --run-id ${RUN_ID}`);
     ok(report.artifacts.some((artifact) => artifact.kind === 'review'));
 
@@ -135,8 +137,53 @@ describe('runtime footer', () => {
     ok(text.includes('context artifact: .agentic-plugins/runs/context/'));
     ok(text.includes('context lookup:'));
     ok(text.includes('- mode: latest'));
+    ok(text.includes('context handoff guidance: inspect_context'));
     ok(!text.includes('latest context summary'));
     ok(!JSON.stringify(report).includes('latest prompt'));
+  });
+
+  it('recommends reusing a fresh context artifact from the current source snapshot', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-source-current-'));
+    await runContext({
+      command: 'capture',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T01:00:00.000Z'),
+      summary: 'Reusable summary should stay hidden.',
+      risk: 'green',
+      sourceSnapshot: {
+        status: 'observed',
+        kind: 'git',
+        commit: 'cccccccccccccccccccccccccccccccccccccccc',
+        branch: 'main',
+        dirty: false,
+      },
+    });
+
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      contextRunId: RUN_ID,
+      workflowId: 'runtime-context-source-current',
+      now: new Date('2026-05-13T01:30:00.000Z'),
+      currentSourceSnapshot: {
+        status: 'observed',
+        kind: 'git',
+        commit: 'cccccccccccccccccccccccccccccccccccccccc',
+        branch: 'main',
+        dirty: false,
+      },
+    });
+
+    strictEqual(report.context.lookup.stale, false);
+    strictEqual(report.context.lookup.source_freshness.status, 'current');
+    strictEqual(report.context.lookup.guidance.state, 'reuse_handoff');
+    strictEqual(report.context.lookup.guidance.recommended_session, 'current_or_resumed');
+    ok(report.context.lookup.guidance.commands.some((command) => command === `runtime:context status --run-id ${RUN_ID}`));
+    const text = formatText(report);
+    ok(text.includes('context handoff guidance: reuse_handoff'));
+    ok(text.includes(`context handoff command: runtime:context status --run-id ${RUN_ID}`));
+    ok(!text.includes('Reusable summary should stay hidden'));
   });
 
   it('surfaces source-stale context artifacts without printing context bodies', async () => {
@@ -174,9 +221,15 @@ describe('runtime footer', () => {
     strictEqual(report.context.lookup.source_freshness.status, 'stale');
     strictEqual(report.context.lookup.source_freshness.artifact_commit, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     strictEqual(report.context.lookup.source_freshness.current_commit, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    strictEqual(report.context.lookup.guidance.state, 'capture_new_context');
+    strictEqual(report.context.lookup.guidance.recommended_session, 'fresh_or_resumed');
+    ok(report.context.lookup.guidance.recommended_action.includes('Capture a new runtime:context artifact'));
+    ok(report.context.lookup.guidance.commands.some((command) => command.includes('runtime:context capture')));
     const text = formatText(report);
     ok(text.includes('source freshness:'));
     ok(text.includes('- source status: stale'));
+    ok(text.includes('context handoff guidance: capture_new_context'));
+    ok(text.includes('context handoff command: runtime:context capture --summary'));
     ok(!text.includes('Summary body should stay hidden'));
   });
 
