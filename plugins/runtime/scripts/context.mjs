@@ -624,7 +624,7 @@ function buildHandoffLookup({
   };
 }
 
-function buildHandoffGuidance({ runId, stale, sourceFreshness }) {
+export function buildHandoffGuidance({ runId, stale, sourceFreshness }) {
   if (sourceFreshness.status === 'stale') {
     return {
       state: 'capture_new_context',

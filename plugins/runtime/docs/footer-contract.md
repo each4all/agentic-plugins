@@ -52,6 +52,10 @@ If `--context-run-id` is supplied, the helper reads:
 It uses only the context risk level, artifact pointers, recommended
 action, and next-session prompt pointer. It does not print the context
 summary body or the next-session prompt body.
+It also reports the same read-only handoff lookup and guidance used by
+`runtime:context status`: age/stale metadata, source-freshness metadata,
+guidance state, recommended session shape, recommended action, and safe
+follow-up commands.
 
 Callers that want the newest existing handoff without creating or updating
 context may use `--context-latest`:
@@ -71,12 +75,15 @@ node <runtime-plugin-root>/scripts/footer.mjs render \
 `--context-latest` selects the newest readable
 `.agentic-plugins/runs/context/<run-id>/context.json` artifact and reports
 lookup metadata (`mode`, `selected_at`, age, stale state, stale threshold,
-skipped invalid artifacts, and source-freshness state when the context
-artifact contains a git source snapshot). It is mutually exclusive with
-`--context-run-id`. Source freshness is read-only: the helper compares the
-artifact's recorded git commit with the current git commit when both are
-available, reports `unknown` otherwise, and never mutates git or host
-session context.
+skipped invalid artifacts, source-freshness state when the context artifact
+contains a git source snapshot, and handoff guidance). It is mutually
+exclusive with `--context-run-id`. Source freshness is read-only: the
+helper compares the artifact's recorded git commit with the current git
+commit when both are available, reports `unknown` otherwise, and never
+mutates git or host session context. Guidance is advisory only: it may
+recommend reusing the handoff, inspecting unverifiable source state,
+capturing new context, or settling a dirty worktree before capture, but the
+footer does not perform any of those actions.
 
 Callers that want to surface consensus progress may use an explicit run id:
 

@@ -5,6 +5,7 @@ import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runConsensus } from './consensus.mjs';
+import { buildHandoffGuidance } from './context.mjs';
 import { buildSourceFreshness, formatSourceFreshness, resolveSourceSnapshot } from './source-snapshot.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
@@ -433,6 +434,11 @@ function buildContextLookup({
   const selectedAt = artifactTimestampMs(artifact, runId);
   const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
   const ageMs = selectedAt === null ? null : Math.max(0, nowMs - selectedAt);
+  const stale = ageMs === null ? null : ageMs > staleAfterMs;
+  const sourceFreshness = buildSourceFreshness({
+    artifactSnapshot: artifact.source_snapshot,
+    currentSnapshot: currentSourceSnapshot,
+  });
   return {
     mode: latest ? 'latest' : 'run-id',
     latest,
@@ -440,12 +446,10 @@ function buildContextLookup({
     age_ms: ageMs,
     age_minutes: ageMs === null ? null : roundOne(ageMs / 60000),
     stale_after_ms: staleAfterMs,
-    stale: ageMs === null ? null : ageMs > staleAfterMs,
+    stale,
     skipped_invalid: skippedInvalid,
-    source_freshness: buildSourceFreshness({
-      artifactSnapshot: artifact.source_snapshot,
-      currentSnapshot: currentSourceSnapshot,
-    }),
+    source_freshness: sourceFreshness,
+    guidance: buildHandoffGuidance({ runId, stale, sourceFreshness }),
   };
 }
 
@@ -666,6 +670,17 @@ function formatContextLookup(lookup) {
   ];
   if (lookup.source_freshness) {
     lines.push(...formatSourceFreshness(lookup.source_freshness));
+  }
+  if (lookup.guidance) {
+    lines.push(
+      `context handoff guidance: ${lookup.guidance.state}`,
+      `- recommended_session: ${lookup.guidance.recommended_session}`,
+      `- reason: ${lookup.guidance.reason}`,
+      `- recommended_action: ${lookup.guidance.recommended_action}`,
+    );
+    for (const command of lookup.guidance.commands ?? []) {
+      lines.push(`context handoff command: ${command}`);
+    }
   }
   return lines.join('\n');
 }
