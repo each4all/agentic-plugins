@@ -78,7 +78,7 @@ Wait for user confirmation before any downstream action.
 
 ---
 
-## When invoked by command (`/engineer:frame`)
+## When invoked by command (`/engineer:frame` Claude command or `$engineer:frame` Codex skill mention)
 
 Full framing with peer ensemble parallel analysis.
 

@@ -108,7 +108,7 @@ before moving to the next task when the diff is non-trivial.
 
 ---
 
-## When invoked by command (`/engineer:compose`)
+## When invoked by command (`/engineer:compose` Claude command or `$engineer:compose` Codex skill mention)
 
 Full composition with Task Profile + peer ensemble + state-write.
 

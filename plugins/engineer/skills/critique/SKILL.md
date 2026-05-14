@@ -111,7 +111,7 @@ Do NOT fix issues in this skill. Fixing belongs to
 
 ---
 
-## When invoked by command (`/engineer:critique`)
+## When invoked by command (`/engineer:critique` Claude command or `$engineer:critique` Codex skill mention)
 
 Full review with subagent dispatch and peer ensemble parallel
 analysis.

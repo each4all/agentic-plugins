@@ -100,7 +100,7 @@ regressions or newly-exposed issues.
 
 ---
 
-## When invoked by command (`/engineer:refine`)
+## When invoked by command (`/engineer:refine` Claude command or `$engineer:refine` Codex skill mention)
 
 Full refinement with peer ensemble verification and (when invoked
 from a workflow command) state writes.

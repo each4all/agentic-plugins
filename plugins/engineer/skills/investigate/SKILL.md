@@ -165,7 +165,7 @@ state write — the artifact is the handoff. Other engineer verbs
 
 ---
 
-## When invoked by command (`/engineer:investigate`)
+## When invoked by command (`/engineer:investigate` Claude command or `$engineer:investigate` Codex skill mention)
 
 Full investigation with agent spawning, peer ensemble parallel
 analysis, and (when invoked from a workflow command) state writes.
