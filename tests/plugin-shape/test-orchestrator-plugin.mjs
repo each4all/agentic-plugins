@@ -315,6 +315,43 @@ describe('plugins/orchestrator skills/', () => {
       strictEqual(exists, false, `${banned} absent (engineer-internal per ADR-0010 §5)`);
     }
   });
+
+  it('plan skill documents opposite-host peer semantics, not Codex-only command semantics', async () => {
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/plan/SKILL.md'), 'utf-8');
+    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/plan/agents/openai.yaml'), 'utf-8');
+    const protocol = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf-8');
+    const planDocs = `${skill}\n${protocol}`;
+
+    for (const phrase of [
+      'Plan-verify opposite-host peer ensemble',
+      '`peer-runner.mjs run --kind ensemble --peer <opposite-host>',
+      '`state.mjs plan-set --workflow-path <path> --host <current-host>',
+      'Claude invokes Codex; Codex invokes Claude',
+      'opposite-host peer review',
+      'Opposite-host peer ensemble unavailable',
+      'Opposite-host peer analysis did not complete',
+    ]) {
+      ok(planDocs.includes(phrase), `orchestrator plan docs missing host-neutral phrase: ${phrase}`);
+    }
+    ok(agent.includes('opposite-host peer ensemble'), 'plan agent prompt must be host-neutral');
+
+    for (const pattern of [
+      /Plan-verify Codex/,
+      /Codex peer ensemble/,
+      /--peer codex/,
+      /--host claude --subtasks-json-file/,
+      /orchestrator and Codex/,
+      /Codex surfaced/,
+      /Codex peer review/,
+      /Codex ensemble unavailable/,
+      /configure the Codex peer/,
+      /Codex peer analysis/,
+    ]) {
+      ok(!pattern.test(skill), `skills/plan/SKILL.md must not hard-code Codex-only plan peer wording: ${pattern}`);
+      ok(!pattern.test(agent), `skills/plan/agents/openai.yaml must not hard-code Codex-only plan peer wording: ${pattern}`);
+      ok(!pattern.test(protocol), `ensemble-protocol.md must not hard-code Codex-only plan peer wording: ${pattern}`);
+    }
+  });
 });
 
 describe('plugins/orchestrator meta skills/', () => {

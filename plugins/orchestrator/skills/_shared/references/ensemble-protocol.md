@@ -148,13 +148,13 @@ that canonicalizes to `/orchestrator:plan`.
 
 - **Detect**: `peer-runner.mjs run` returns `{ ok: false, kind: 'peer_cli_not_found' }`.
 - **Action**: log warning, proceed with LOCAL-ONLY results. Synthesis presents the orchestrator's draft plan as a single LOCAL-ONLY decision item.
-- **Present**: "Codex ensemble unavailable — macro plan is LOCAL-ONLY. Run `/codex:setup` to configure the Codex peer for the next plan revision."
+- **Present**: "Opposite-host peer ensemble unavailable — macro plan is LOCAL-ONLY. Configure the peer host before the next plan revision."
 
 ### Peer timeout, error, or malformed envelope
 
 - **Detect**: peer-runner returns non-zero exit or envelope shape validation fails.
 - **Action**: log the error, proceed with LOCAL-ONLY results.
-- **Present**: "Codex peer analysis did not complete — macro plan is LOCAL-ONLY for this dispatch."
+- **Present**: "Opposite-host peer analysis did not complete — macro plan is LOCAL-ONLY for this dispatch."
 
 ### Graceful degradation principle
 
