@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.10.0...plugin-engineer-v0.10.1) (2026-05-14)
+
+
+### Bug Fixes
+
+* diagnose Codex plugin hook readiness ([e80ed84](https://github.com/each4all/agentic-plugins/commit/e80ed84565fc8326b8baf6c6e401b746de0f26f5))
+
 ## [0.10.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.9.0...plugin-engineer-v0.10.0) (2026-05-13)
 
 
