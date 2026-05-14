@@ -1,0 +1,7 @@
+interface:
+  display_name: "Runtime - Worktree"
+  short_description: "Read-only git worktree planning for the next runtime/operator slice"
+  default_prompt: "Use $runtime:worktree to inspect git/worktree state and plan a dedicated worktree without mutating git state."
+
+policy:
+  allow_implicit_invocation: false
