@@ -536,13 +536,16 @@ describe('runtime doctor', () => {
     strictEqual(report.permission_proof.mode, 'explicit_permission_executor');
     strictEqual(report.permission_proof.executed, true);
     strictEqual(report.permission_proof.peer_execution, true);
-    strictEqual(report.permission_proof.status, 'partially_failed');
-    strictEqual(report.overall.status, 'fail');
+    strictEqual(report.permission_proof.status, 'operator_action_required');
+    strictEqual(report.overall.status, 'warning');
     strictEqual(report.permission_proof.directions.claude_to_codex.execution, 'executed');
     strictEqual(report.permission_proof.directions.claude_to_codex.result.status, 'passed');
-    strictEqual(report.permission_proof.directions.codex_to_claude.result.status, 'permission_failed');
-    strictEqual(report.permission_proof.directions.codex_to_claude.result.permission_failure, true);
-    strictEqual(report.permission_proof.directions.codex_to_claude.result.permission_failure_kind, 'approval_required');
+    strictEqual(report.permission_proof.directions.codex_to_claude.result.status, 'operator_action_required');
+    strictEqual(report.permission_proof.directions.codex_to_claude.result.operator_action_required, true);
+    strictEqual(report.permission_proof.directions.codex_to_claude.result.operator_action_kind, 'permission_required');
+    strictEqual(report.permission_proof.directions.codex_to_claude.next_step, 'operator must satisfy host permission or auth preconditions outside runtime:doctor, then rerun the explicit proof');
+    strictEqual(report.readiness_matrix.directions.codex_to_claude.execution_readiness.permission_proof.status, 'operator_action_required');
+    strictEqual(report.readiness_matrix.directions.codex_to_claude.execution_readiness.permission_proof.operator_action_kind, 'permission_required');
     ok(calls.some((call) => call.args[0]?.endsWith('codex-companion.mjs') && call.args.includes('--output-format') && call.args.includes('json')));
     ok(calls.some((call) => call.args[0]?.endsWith('claude-companion.mjs')));
     for (const call of calls.filter((entry) => entry.args[0]?.endsWith('codex-companion.mjs') || entry.args[0]?.endsWith('claude-companion.mjs'))) {
@@ -554,8 +557,8 @@ describe('runtime doctor', () => {
     const serialized = JSON.stringify(report);
     ok(!serialized.includes('RAW DETAILS MUST NOT LEAK'), 'doctor report must not include raw peer stdout');
     ok(!serialized.includes('RUNTIME_DOCTOR_PERMISSION_RAW_DETAILS_MUST_NOT_LEAK'), 'doctor report must not include raw failed peer stdout');
-    ok(formatText(report).includes('permission-failure=true'));
-    ok(formatText(report).includes('permission-failure-kind: approval_required'));
+    ok(formatText(report).includes('operator-action-required=true'));
+    ok(formatText(report).includes('operator-action-kind: permission_required'));
   });
 
   it('plans deep peer smoke as a structured read-only doctor section without executing peers', async () => {
@@ -635,6 +638,9 @@ describe('runtime doctor', () => {
     strictEqual(report.deep_peer_smoke.directions.claude_to_codex.result.expected_token_present, true);
     strictEqual(report.deep_peer_smoke.directions.claude_to_codex.result.stdout_bytes, Buffer.byteLength(peerOutputs.codex));
     ok(report.deep_peer_smoke.directions.claude_to_codex.result.stdout_sha256);
+    strictEqual(report.readiness_matrix.directions.claude_to_codex.execution_readiness.status, 'passed');
+    strictEqual(report.readiness_matrix.directions.claude_to_codex.execution_readiness.deep_peer_smoke.status, 'passed');
+    strictEqual(report.readiness_matrix.directions.codex_to_claude.execution_readiness.deep_peer_smoke.status, 'passed');
     ok(calls.some((call) => call.args[0]?.endsWith('codex-companion.mjs') && call.args.includes('--output-format') && call.args.includes('json')));
     ok(calls.some((call) => call.args[0]?.endsWith('claude-companion.mjs')));
 
@@ -642,6 +648,51 @@ describe('runtime doctor', () => {
     ok(!serialized.includes('RAW DETAILS MUST NOT LEAK'), 'doctor report must not include raw peer stdout');
     ok(!formatText(report).includes('RAW DETAILS MUST NOT LEAK'), 'text report must not include raw peer stdout');
     ok(formatText(report).includes('peer-execution=true'));
+    ok(formatText(report).includes('execution-readiness=passed'));
+  });
+
+  it('keeps host auth separate from child companion auth failures', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-child-auth-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      deepPeerSmoke: true,
+      executeDeepPeerSmoke: true,
+      runner: async (command, args) => {
+        if (args[0]?.endsWith('codex-companion.mjs')) {
+          return okResult(JSON.stringify(smokeEnvelope('codex', 'RUNTIME_DOCTOR_SMOKE_OK codex\n', 12)));
+        }
+        if (args[0]?.endsWith('claude-companion.mjs')) {
+          return {
+            ok: false,
+            exit_code: 1,
+            stdout: JSON.stringify({
+              status: 'peer_error',
+              peer_host: 'claude',
+              stdout: 'AUTH RAW DETAILS MUST NOT LEAK',
+              exit_code: 1,
+              error: { kind: 'peer_unauthenticated', message: 'child process login required' },
+            }),
+            stderr: 'login required',
+            error_code: null,
+            timed_out: false,
+          };
+        }
+        return fakeRuntimeProbeRunner(command, args);
+      },
+    });
+
+    strictEqual(report.clis.claude.auth.status, 'available');
+    strictEqual(report.readiness_matrix.hosts.claude.authenticated.status, 'available');
+    strictEqual(report.deep_peer_smoke.directions.codex_to_claude.result.status, 'operator_action_required');
+    strictEqual(report.deep_peer_smoke.directions.codex_to_claude.result.operator_action_kind, 'auth_required');
+    strictEqual(report.readiness_matrix.directions.codex_to_claude.execution_readiness.status, 'operator_action_required');
+    strictEqual(report.readiness_matrix.directions.codex_to_claude.execution_readiness.deep_peer_smoke.operator_action_kind, 'auth_required');
+    ok(!JSON.stringify(report).includes('AUTH RAW DETAILS'), 'doctor must not include raw auth failure stdout');
+    ok(formatText(report).includes('authenticated=available'));
+    ok(formatText(report).includes('operator-action-kind: auth_required'));
   });
 
   it('parses CLI arguments and rejects unknown or malformed flags', () => {

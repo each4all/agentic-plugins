@@ -436,7 +436,11 @@ export async function executeRound(options = {}) {
   const executionSummary = summarizeExecutions(executions);
   const executionPath = resolve(consensusRunDir(repoRoot, runId), 'execution.json');
   const progressPointer = pointer(repoRoot, progressPath);
-  const executionStatus = executionSummary.failed > 0 ? 'failed' : executionSummary.executed > 0 ? 'passed' : 'skipped';
+  const executionStatus = executionSummary.failed > 0
+    ? executionSummary.operator_action_required === executionSummary.failed
+      ? 'operator_action_required'
+      : 'failed'
+    : executionSummary.executed > 0 ? 'passed' : 'skipped';
   progress.status = executionStatus;
   progress.summary = executionSummary;
   progress.updated_at = toIso(new Date());
@@ -466,6 +470,7 @@ export async function executeRound(options = {}) {
         peer: execution.peer,
         status: execution.status,
         failure_type: execution.failure_type,
+        operator_action_required: execution.operator_action_required,
         retryable: execution.retryable,
         retry_after: execution.retry_after,
         retry_command: execution.retry_command,
@@ -780,6 +785,7 @@ async function writeExecutionResult({
     ...execution,
     raw_output: rawOutput,
     failure_type: failure?.type ?? null,
+    operator_action_required: failure?.operator_action_required === true,
     retryable: failure?.retryable ?? false,
     retry_after: failure?.retry_after ?? null,
     retry_command: buildRetryCommand({
@@ -823,6 +829,7 @@ function createExecutionProgress({
       raw_output: null,
       execution_pointer: null,
       failure_type: scheduled ? null : 'process_budget_exceeded',
+      operator_action_required: false,
       retryable: !scheduled,
       retry_after: scheduled ? null : 'retry with a larger --process-budget within the policy cap',
       retry_command: scheduled
@@ -892,6 +899,7 @@ function markProgressFromExecution(progress, execution) {
   entry.raw_output = execution.raw_output;
   entry.execution_pointer = execution.execution_pointer;
   entry.failure_type = execution.failure_type;
+  entry.operator_action_required = execution.operator_action_required;
   entry.retryable = execution.retryable;
   entry.retry_after = execution.retry_after;
   entry.retry_command = execution.retry_command;
@@ -939,26 +947,26 @@ function classifyConsensusExecutionFailure({ result, parsed }) {
   }
   if (/\b(peer_unauthenticated|not logged in|login required|auth required|authentication required|unauthorized|forbidden|401|403)\b/.test(text)) {
     return failureClass({
-      status: 'failed',
-      type: 'authentication_required',
+      status: 'operator_action_required',
+      type: 'auth_required',
       retryable: false,
-      retry_after: 'authenticate the peer host CLI before retrying',
+      retry_after: 'operator must authenticate the peer host CLI in the same execution context used by the companion, then retry',
     });
   }
   if (/\b(approval|consent|requires approval|approval required|permission prompt)\b/.test(text)) {
     return failureClass({
-      status: 'permission_failed',
-      type: 'approval_required',
+      status: 'operator_action_required',
+      type: 'permission_required',
       retryable: false,
-      retry_after: 'retry only after the operator resolves host approval policy outside runtime:consensus',
+      retry_after: 'operator must satisfy host approval or permission policy outside runtime:consensus, then retry',
     });
   }
   if (/\b(permission denied|not permitted|operation not permitted|sandbox|read-only|read only|not allowed|eacces|eperm|denied)\b/.test(text)) {
     return failureClass({
-      status: 'permission_failed',
-      type: 'permission_denied',
+      status: 'operator_action_required',
+      type: 'sandbox_blocked',
       retryable: false,
-      retry_after: 'retry only after resolving host permission or sandbox policy outside runtime:consensus',
+      retry_after: 'operator must satisfy host sandbox or filesystem permission preconditions outside runtime:consensus, then retry',
     });
   }
   if (/\b(enotfound|econnreset|econnrefused|ehostunreach|network|networkerror|dns|tls|socket|temporary failure)\b/.test(text)) {
@@ -986,7 +994,13 @@ function classifyConsensusExecutionFailure({ result, parsed }) {
 }
 
 function failureClass({ status, type, retryable, retry_after }) {
-  return { status, type, retryable, retry_after };
+  return {
+    status,
+    type,
+    retryable,
+    retry_after,
+    operator_action_required: status === 'operator_action_required' || ['auth_required', 'permission_required', 'sandbox_blocked'].includes(type),
+  };
 }
 
 function normalizeExecutionMetadata(metadata) {
@@ -1014,6 +1028,7 @@ function summarizeExecutions(executions) {
     skipped: 0,
     failed_retryable: 0,
     failed_non_retryable: 0,
+    operator_action_required: 0,
   };
   for (const execution of executions) {
     if (execution.executed) summary.executed += 1;
@@ -1023,6 +1038,7 @@ function summarizeExecutions(executions) {
       summary.failed += 1;
       if (execution.retryable) summary.failed_retryable += 1;
       else summary.failed_non_retryable += 1;
+      if (execution.operator_action_required) summary.operator_action_required += 1;
     }
   }
   return summary;
@@ -1188,14 +1204,14 @@ export function formatText(report) {
   if (report.execution_pointer) lines.push(`execution: ${report.execution_pointer}`);
   if (report.progress_pointer) lines.push(`progress: ${report.progress_pointer}`);
   if (report.execution_summary) {
-    lines.push(`execution summary: executed=${report.execution_summary.executed}; passed=${report.execution_summary.passed}; failed=${report.execution_summary.failed}; skipped=${report.execution_summary.skipped}; retryable-failed=${report.execution_summary.failed_retryable}; non-retryable-failed=${report.execution_summary.failed_non_retryable}`);
+    lines.push(`execution summary: executed=${report.execution_summary.executed}; passed=${report.execution_summary.passed}; failed=${report.execution_summary.failed}; skipped=${report.execution_summary.skipped}; retryable-failed=${report.execution_summary.failed_retryable}; non-retryable-failed=${report.execution_summary.failed_non_retryable}; operator-action-required=${report.execution_summary.operator_action_required ?? 0}`);
   }
   if (report.executions?.length) {
     lines.push('', 'executions:');
     for (const execution of report.executions) {
       lines.push(`- ${execution.peer}: status=${execution.status}; raw=${execution.raw_output.pointer}; bytes=${execution.raw_output.bytes}; sha256=${execution.raw_output.sha256}`);
       if (execution.failure_type) {
-        lines.push(`  failure=${execution.failure_type}; retryable=${execution.retryable}; retry-after=${execution.retry_after ?? '<none>'}`);
+        lines.push(`  failure=${execution.failure_type}; operator-action-required=${Boolean(execution.operator_action_required)}; retryable=${execution.retryable}; retry-after=${execution.retry_after ?? '<none>'}`);
         if (execution.retry_command) lines.push(`  retry-command=${execution.retry_command}`);
       }
     }

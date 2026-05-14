@@ -106,20 +106,53 @@ describe('runtime consensus', () => {
       runner: fakeConsensusRunner({
         claudeRaw: 'RAW DENIED OUTPUT THAT MUST NOT LEAK',
         claudeFailure: true,
+        claudeFailureMessage: 'Operation not permitted by sandbox',
       }),
     });
 
-    strictEqual(report.status, 'failed');
+    strictEqual(report.status, 'operator_action_required');
     strictEqual(report.execution_summary.failed, 1);
     strictEqual(report.execution_summary.failed_non_retryable, 1);
+    strictEqual(report.execution_summary.operator_action_required, 1);
     const failure = report.executions[0];
     strictEqual(failure.peer, 'claude');
-    strictEqual(failure.status, 'permission_failed');
-    strictEqual(failure.failure_type, 'permission_denied');
+    strictEqual(failure.status, 'operator_action_required');
+    strictEqual(failure.failure_type, 'sandbox_blocked');
+    strictEqual(failure.operator_action_required, true);
     strictEqual(failure.retryable, false);
+    ok(failure.retry_after.includes('operator'));
     ok(!JSON.stringify(report).includes('RAW DENIED OUTPUT'), 'raw failed peer output must not be in json report');
     ok(!formatText(report).includes('RAW DENIED OUTPUT'), 'raw failed peer output must not be in text report');
+    ok(formatText(report).includes('operator-action-required=1'));
     strictEqual(await readFile(join(root, failure.raw_output.pointer), 'utf8'), 'RAW DENIED OUTPUT THAT MUST NOT LEAK');
+  });
+
+  it('classifies child-process auth failures as operator action without changing host auth status', async () => {
+    const root = await seedPlan();
+    const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-home-'));
+    await seedCompanionCache(homeDir);
+
+    const report = await runConsensus({
+      command: 'execute',
+      repoRoot: root,
+      homeDir,
+      runId: RUN_ID,
+      execute: true,
+      peers: ['codex'],
+      runner: fakeConsensusRunner({
+        codexRaw: 'AUTH RAW OUTPUT THAT MUST NOT LEAK',
+        codexFailure: true,
+        codexFailureKind: 'peer_unauthenticated',
+        codexFailureMessage: 'login required in child process',
+      }),
+    });
+
+    strictEqual(report.executions[0].status, 'operator_action_required');
+    strictEqual(report.executions[0].failure_type, 'auth_required');
+    strictEqual(report.executions[0].operator_action_required, true);
+    strictEqual(report.execution_summary.operator_action_required, 1);
+    ok(report.executions[0].retry_after.includes('same execution context'));
+    ok(!JSON.stringify(report).includes('AUTH RAW OUTPUT'), 'auth failure raw output must not leak');
   });
 
   it('records per-peer timeout progress and retry guidance without leaking raw text', async () => {
@@ -372,6 +405,10 @@ function fakeConsensusRunner({
   codexRaw = 'CODEX RAW OUTPUT',
   claudeFailure = false,
   codexFailure = false,
+  claudeFailureKind = 'peer_invocation_error',
+  codexFailureKind = 'peer_invocation_error',
+  claudeFailureMessage = 'sandbox permission denied',
+  codexFailureMessage = 'sandbox permission denied',
   claudeTimeout = false,
   codexTimeout = false,
 } = {}) {
@@ -395,18 +432,18 @@ function fakeConsensusRunner({
       const companionPath = args[0] ?? '';
       if (companionPath.includes('claude-companion.mjs')) {
         if (claudeTimeout) return timeoutResult('TIMED OUT RAW OUTPUT CLAUDE');
-        return companionResult({ peer: 'claude', raw: claudeRaw, failed: claudeFailure });
+        return companionResult({ peer: 'claude', raw: claudeRaw, failed: claudeFailure, failureKind: claudeFailureKind, failureMessage: claudeFailureMessage });
       }
       if (companionPath.includes('codex-companion.mjs')) {
         if (codexTimeout) return timeoutResult('TIMED OUT RAW OUTPUT CODEX');
-        return companionResult({ peer: 'codex', raw: codexRaw, failed: codexFailure });
+        return companionResult({ peer: 'codex', raw: codexRaw, failed: codexFailure, failureKind: codexFailureKind, failureMessage: codexFailureMessage });
       }
     }
     throw new Error(`unexpected command: ${key}`);
   };
 }
 
-function companionResult({ peer, raw, failed }) {
+function companionResult({ peer, raw, failed, failureKind, failureMessage }) {
   const envelope = failed
     ? {
         status: 'companion_error',
@@ -415,7 +452,7 @@ function companionResult({ peer, raw, failed }) {
         stdout: raw,
         exit_code: 3,
         metadata: { duration_ms: 12, started_at: '2026-05-13T00:02:00.000Z', completed_at: '2026-05-13T00:02:00.012Z' },
-        error: { kind: 'peer_invocation_error', message: 'sandbox permission denied' },
+        error: { kind: failureKind, message: failureMessage },
       }
     : {
         status: 'success',
@@ -429,7 +466,7 @@ function companionResult({ peer, raw, failed }) {
     ok: !failed,
     exit_code: failed ? 3 : 0,
     stdout: JSON.stringify(envelope),
-    stderr: failed ? 'sandbox permission denied' : '',
+    stderr: failed ? failureMessage : '',
     error_code: null,
     timed_out: false,
   };
