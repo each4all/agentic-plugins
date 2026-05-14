@@ -231,6 +231,8 @@ When supplied `--context-latest`, the helper reads the newest existing readable 
 
 When supplied `--consensus-run-id` or `--consensus-latest`, the helper calls `runtime:consensus status` and includes only run/result/execution/progress pointers plus `status_guidance` next action/steps. Latest consensus lookup selects the newest readable consensus manifest. The footer does not execute peers, synthesize, plan another round, print peer prompts, print peer raw output, or print consensus body text.
 
+Embedded `runtime:*` guidance commands are rendered with the selected host's invocation syntax when `--host claude` or `--host codex` is supplied, while stored context and consensus artifacts remain host-neutral.
+
 When supplied PR handling fields, the helper recommends `ask-user` only
 when the deliverable boundary is reached, validation passed or was
 explicitly waived, context risk is green/yellow, no blocking review

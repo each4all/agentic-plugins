@@ -72,6 +72,7 @@ describe('runtime footer', () => {
     strictEqual(report.context_state, 'red');
     strictEqual(report.next_session.command, `/runtime:context status --run-id ${RUN_ID}`);
     strictEqual(report.next_session.prompt_pointer, `.agentic-plugins/runs/context/${RUN_ID}/next-session-prompt.md`);
+    ok(report.context.lookup.guidance.commands.some((command) => command.includes('/runtime:context capture')));
     ok(report.artifacts.some((artifact) => artifact.kind === 'context-artifact'));
     ok(report.artifacts.some((artifact) => artifact.kind === 'consensus'));
 
@@ -179,10 +180,10 @@ describe('runtime footer', () => {
     strictEqual(report.context.lookup.source_freshness.status, 'current');
     strictEqual(report.context.lookup.guidance.state, 'reuse_handoff');
     strictEqual(report.context.lookup.guidance.recommended_session, 'current_or_resumed');
-    ok(report.context.lookup.guidance.commands.some((command) => command === `runtime:context status --run-id ${RUN_ID}`));
+    ok(report.context.lookup.guidance.commands.some((command) => command === `$runtime:context status --run-id ${RUN_ID}`));
     const text = formatText(report);
     ok(text.includes('context handoff guidance: reuse_handoff'));
-    ok(text.includes(`context handoff command: runtime:context status --run-id ${RUN_ID}`));
+    ok(text.includes(`context handoff command: $runtime:context status --run-id ${RUN_ID}`));
     ok(!text.includes('Reusable summary should stay hidden'));
   });
 
@@ -224,12 +225,12 @@ describe('runtime footer', () => {
     strictEqual(report.context.lookup.guidance.state, 'capture_new_context');
     strictEqual(report.context.lookup.guidance.recommended_session, 'fresh_or_resumed');
     ok(report.context.lookup.guidance.recommended_action.includes('Capture a new runtime:context artifact'));
-    ok(report.context.lookup.guidance.commands.some((command) => command.includes('runtime:context capture')));
+    ok(report.context.lookup.guidance.commands.some((command) => command.includes('$runtime:context capture')));
     const text = formatText(report);
     ok(text.includes('source freshness:'));
     ok(text.includes('- source status: stale'));
     ok(text.includes('context handoff guidance: capture_new_context'));
-    ok(text.includes('context handoff command: runtime:context capture --summary'));
+    ok(text.includes('context handoff command: $runtime:context capture --summary'));
     ok(!text.includes('Summary body should stay hidden'));
   });
 
@@ -257,13 +258,14 @@ describe('runtime footer', () => {
     strictEqual(report.consensus.status_guidance.state, 'execute_or_record');
     strictEqual(report.recommended_next_work, 'Execute the planned peer prompts, or run them manually and record each raw output as an artifact.');
     strictEqual(report.next_session.command, `$runtime:consensus status --run-id ${CONSENSUS_RUN_ID}`);
+    ok(report.consensus.status_guidance.next_steps.some((step) => step === `$runtime:consensus execute --run-id ${CONSENSUS_RUN_ID} --round 1 --execute`));
     ok(report.artifacts.some((artifact) => artifact.kind === 'consensus-run'));
     ok(report.artifacts.some((artifact) => artifact.kind === 'consensus-manifest'));
 
     const text = formatText(report);
     ok(text.includes(`consensus: ${CONSENSUS_RUN_ID}; status=planned`));
     ok(text.includes('consensus next action: Execute the planned peer prompts'));
-    ok(text.includes(`runtime:consensus execute --run-id ${CONSENSUS_RUN_ID} --round 1 --execute`));
+    ok(text.includes(`$runtime:consensus execute --run-id ${CONSENSUS_RUN_ID} --round 1 --execute`));
     ok(!text.includes('RAW CONSENSUS PROMPT BODY'));
     ok(!JSON.stringify(report).includes('RAW CONSENSUS PROMPT BODY'));
   });
