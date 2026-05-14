@@ -19,6 +19,10 @@ Every footer contains:
 - exact next-session command or prompt pointer when available;
 - limits stating that the footer is advisory and pointer-only.
 
+When a completion surface is continuing or finishing runtime consensus work,
+it may include the current consensus run id, status, artifact pointers, and
+bounded `runtime:consensus status` guidance.
+
 When a completion surface has enough local evidence, it may also include
 PR handling readiness. This is a decision aid for asking the user what to
 do next; it does not commit, push, open, update, merge, or mark any PR
@@ -74,6 +78,35 @@ artifact's recorded git commit with the current git commit when both are
 available, reports `unknown` otherwise, and never mutates git or host
 session context.
 
+Callers that want to surface consensus progress may use an explicit run id:
+
+```bash
+node <runtime-plugin-root>/scripts/footer.mjs render \
+  --repo-root "$REPO_ROOT" \
+  --host codex \
+  --consensus-run-id "$CONSENSUS_RUN_ID" \
+  --workflow-kind orchestrator \
+  --workflow-id "$WORKFLOW_ID"
+```
+
+Or they may select the newest readable consensus run by manifest freshness:
+
+```bash
+node <runtime-plugin-root>/scripts/footer.mjs render \
+  --repo-root "$REPO_ROOT" \
+  --host codex \
+  --consensus-latest
+```
+
+Consensus lookup is read-only and mutually exclusive between
+`--consensus-run-id` and `--consensus-latest`. The helper calls
+`runtime:consensus status` internally and includes only status, run/result/
+execution/progress pointers, status guidance, recommended next action, and
+safe follow-up commands. It does not print peer prompts, peer raw outputs,
+consensus raw output, or consensus body text. If the caller did not provide
+`--recommended-next-work`, consensus `next_action` becomes the footer's
+recommended next work.
+
 Without a context artifact, callers may supply `--context-state`,
 `--artifact`, `--next-session-action`, `--next-session-command`, and
 `--next-session-prompt-pointer` directly.
@@ -120,6 +153,8 @@ node <runtime-plugin-root>/scripts/footer.mjs render \
   creation, PR metadata update, merge, or ready-for-review transition.
 - Pointer-only: raw peer output, consensus raw output, prompt bodies, and
   large artifacts stay in runtime-owned files.
+- Consensus status is advisory only: no peer execution, synthesis,
+  next-round planning, or artifact mutation happens through the footer.
 - Existing engineer and orchestrator workflow state remains in its current
   storage; this contract is not a migration path.
 - Codex manual-hook and permission limits remain explicit and are not

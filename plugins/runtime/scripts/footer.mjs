@@ -4,6 +4,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { runConsensus } from './consensus.mjs';
 import { buildSourceFreshness, formatSourceFreshness, resolveSourceSnapshot } from './source-snapshot.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
@@ -14,7 +15,8 @@ const VALID_PR_COMPLETION_BOUNDARIES = new Set(['reached', 'not-reached', 'unkno
 const VALID_PR_VALIDATION_STATES = new Set(['passed', 'waived', 'failed', 'not-run', 'unknown']);
 const VALID_PR_REVIEW_STATES = new Set(['clear', 'blocking', 'unknown']);
 const VALID_PR_BRANCH_STATES = new Set(['pushable', 'not-pushable', 'unknown']);
-const RUN_ID_RE = /^context-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+const CONTEXT_RUN_ID_RE = /^context-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+const CONSENSUS_RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const ARTIFACT_KIND_RE = /^[A-Za-z0-9._-]+$/;
 const DEFAULT_HANDOFF_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
@@ -30,6 +32,12 @@ export async function runFooter(options = {}) {
         currentSourceSnapshot: options.currentSourceSnapshot,
       })
     : null;
+  const consensus = options.consensusRunId || options.consensusLatest
+    ? await readConsensusStatus(repoRoot, {
+        runId: options.consensusRunId,
+        latest: options.consensusLatest === true,
+      })
+    : null;
 
   const contextState = validateContextState(
     options.contextState ?? context?.contextState ?? 'yellow',
@@ -38,10 +46,11 @@ export async function runFooter(options = {}) {
   const providedArtifacts = normalizeArtifacts(repoRoot, options.artifacts ?? []);
   const artifacts = dedupeArtifacts([
     ...contextArtifacts(context),
+    ...consensusArtifacts(consensus),
     ...workflowArtifacts(workflow),
     ...providedArtifacts,
   ]);
-  const nextSession = normalizeNextSession({ host, context, options });
+  const nextSession = normalizeNextSession({ host, context, consensus, options });
   const prHandling = shouldIncludePrHandling(options)
     ? buildPrHandlingReadiness({ contextState, options })
     : null;
@@ -58,11 +67,22 @@ export async function runFooter(options = {}) {
           lookup: context.lookup,
         }
       : null,
+    consensus: consensus
+      ? {
+          run_id: consensus.runId,
+          status: consensus.status,
+          run_pointer: consensus.runPointer,
+          manifest_pointer: consensus.manifestPointer,
+          consensus_pointer: consensus.consensusPointer,
+          execution_pointer: consensus.executionPointer,
+          progress_pointer: consensus.progressPointer,
+          lookup: consensus.lookup,
+          status_guidance: consensus.statusGuidance,
+        }
+      : null,
     workflow,
     artifacts,
-    recommended_next_work: options.recommendedNextWork
-      ? requireSingleLine(options.recommendedNextWork, '--recommended-next-work')
-      : 'Review the completion result and choose the next command explicitly.',
+    recommended_next_work: normalizeRecommendedNextWork(options, consensus),
     next_session: nextSession,
     pr_handling: prHandling,
     limits: footerLimits(),
@@ -108,6 +128,12 @@ export function parseArgs(argv) {
         break;
       case '--context-latest':
         options.contextLatest = true;
+        break;
+      case '--consensus-run-id':
+        options.consensusRunId = validateConsensusRunId(requireValue(args, arg));
+        break;
+      case '--consensus-latest':
+        options.consensusLatest = true;
         break;
       case '--stale-after-hours':
         options.staleAfterMs = parseNonNegativeInteger(requireValue(args, arg), arg) * 60 * 60 * 1000;
@@ -171,6 +197,9 @@ export function parseArgs(argv) {
   if (options.contextRunId && options.contextLatest) {
     throw new Error('Use either --context-run-id or --context-latest, not both');
   }
+  if (options.consensusRunId && options.consensusLatest) {
+    throw new Error('Use either --consensus-run-id or --consensus-latest, not both');
+  }
   return options;
 }
 
@@ -182,6 +211,31 @@ export function formatText(report) {
   if (report.context?.lookup) {
     lines.push('context lookup:');
     lines.push(formatContextLookup(report.context.lookup));
+  }
+  if (report.consensus) {
+    lines.push(`consensus: ${report.consensus.run_id}; status=${report.consensus.status}`);
+    if (report.consensus.lookup) {
+      lines.push('consensus lookup:');
+      lines.push(formatConsensusLookup(report.consensus.lookup));
+    }
+    if (report.consensus.run_pointer) lines.push(`consensus run: ${report.consensus.run_pointer}`);
+    if (report.consensus.manifest_pointer) lines.push(`consensus manifest: ${report.consensus.manifest_pointer}`);
+    if (report.consensus.consensus_pointer) lines.push(`consensus result: ${report.consensus.consensus_pointer}`);
+    if (report.consensus.execution_pointer) lines.push(`consensus execution: ${report.consensus.execution_pointer}`);
+    if (report.consensus.progress_pointer) lines.push(`consensus progress: ${report.consensus.progress_pointer}`);
+    if (report.consensus.status_guidance) {
+      lines.push(`consensus guidance: ${report.consensus.status_guidance.state}`);
+      if (report.consensus.status_guidance.reason) {
+        lines.push(`consensus reason: ${report.consensus.status_guidance.reason}`);
+      }
+      if (report.consensus.status_guidance.next_action) {
+        lines.push(`consensus next action: ${report.consensus.status_guidance.next_action}`);
+      }
+      if (report.consensus.status_guidance.next_steps?.length) {
+        lines.push('consensus next steps:');
+        for (const step of report.consensus.status_guidance.next_steps) lines.push(`- ${step}`);
+      }
+    }
   }
   if (report.workflow?.kind || report.workflow?.id) {
     lines.push(`workflow: ${[report.workflow.kind, report.workflow.id].filter(Boolean).join(' ')}`);
@@ -281,7 +335,7 @@ async function findLatestContextArtifact(repoRoot) {
   const candidates = [];
   let skippedInvalid = 0;
   for (const entry of entries) {
-    if (!entry.isDirectory() || !RUN_ID_RE.test(entry.name)) continue;
+    if (!entry.isDirectory() || !CONTEXT_RUN_ID_RE.test(entry.name)) continue;
     const contextPath = resolve(root, entry.name, 'context.json');
     try {
       const artifact = JSON.parse(await readFile(contextPath, 'utf8'));
@@ -306,6 +360,65 @@ async function findLatestContextArtifact(repoRoot) {
 
   candidates.sort((a, b) => b.selectedAt - a.selectedAt || b.runId.localeCompare(a.runId));
   return { ...candidates[0], skippedInvalid };
+}
+
+async function selectLatestConsensusRun(repoRoot) {
+  const root = consensusRoot(repoRoot);
+  const entries = await readdir(root, { withFileTypes: true });
+  const candidates = [];
+  let skippedInvalid = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !CONSENSUS_RUN_ID_RE.test(entry.name)) continue;
+    const manifestPath = resolve(root, entry.name, 'manifest.json');
+    try {
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+      const selectedAt = consensusTimestampMs(manifest, entry.name);
+      if (selectedAt === null) {
+        skippedInvalid++;
+        continue;
+      }
+      candidates.push({
+        runId: entry.name,
+        manifestPath,
+        selectedAt,
+      });
+    } catch {
+      skippedInvalid++;
+    }
+  }
+
+  if (candidates.length === 0) {
+    throw new Error(`No readable consensus runs found under ${pointer(repoRoot, root)}`);
+  }
+
+  candidates.sort((a, b) => b.selectedAt - a.selectedAt || b.runId.localeCompare(a.runId));
+  return { ...candidates[0], skippedInvalid };
+}
+
+async function readConsensusStatus(repoRoot, { runId, latest }) {
+  const selected = latest
+    ? await selectLatestConsensusRun(repoRoot)
+    : { runId: validateConsensusRunId(runId), selectedAt: null, skippedInvalid: 0 };
+  const status = await runConsensus({
+    command: 'status',
+    repoRoot,
+    runId: selected.runId,
+  });
+  return {
+    runId: status.run_id,
+    status: status.status,
+    runPointer: status.run_pointer,
+    manifestPointer: status.manifest_pointer,
+    consensusPointer: status.consensus_pointer,
+    executionPointer: status.execution_pointer,
+    progressPointer: status.progress_pointer,
+    statusGuidance: status.status_guidance,
+    lookup: buildConsensusLookup({
+      latest,
+      selectedAt: selected.selectedAt,
+      skippedInvalid: selected.skippedInvalid,
+    }),
+  };
 }
 
 function buildContextLookup({
@@ -336,12 +449,32 @@ function buildContextLookup({
   };
 }
 
+function buildConsensusLookup({ latest, selectedAt, skippedInvalid }) {
+  return {
+    mode: latest ? 'latest' : 'run-id',
+    latest,
+    selected_at: selectedAt === null ? null : new Date(selectedAt).toISOString(),
+    skipped_invalid: skippedInvalid,
+  };
+}
+
 function contextArtifacts(context) {
   if (!context) return [];
   return [
     { kind: 'context-artifact', pointer: context.contextPointer },
     ...context.artifacts,
   ];
+}
+
+function consensusArtifacts(consensus) {
+  if (!consensus) return [];
+  return [
+    { kind: 'consensus-run', pointer: consensus.runPointer },
+    { kind: 'consensus-manifest', pointer: consensus.manifestPointer },
+    consensus.consensusPointer ? { kind: 'consensus-result', pointer: consensus.consensusPointer } : null,
+    consensus.executionPointer ? { kind: 'consensus-execution', pointer: consensus.executionPointer } : null,
+    consensus.progressPointer ? { kind: 'consensus-progress', pointer: consensus.progressPointer } : null,
+  ].filter(Boolean);
 }
 
 function workflowArtifacts(workflow) {
@@ -362,7 +495,17 @@ function normalizeWorkflow(repoRoot, options) {
   };
 }
 
-function normalizeNextSession({ host, context, options }) {
+function normalizeRecommendedNextWork(options, consensus) {
+  if (options.recommendedNextWork) {
+    return requireSingleLine(options.recommendedNextWork, '--recommended-next-work');
+  }
+  if (consensus?.statusGuidance?.next_action) {
+    return requireSingleLine(consensus.statusGuidance.next_action, 'consensus next action');
+  }
+  return 'Review the completion result and choose the next command explicitly.';
+}
+
+function normalizeNextSession({ host, context, consensus, options }) {
   const action = options.nextSessionAction
     ? requireSingleLine(options.nextSessionAction, '--next-session-action')
     : context?.nextSession.action ?? defaultNextAction(options.contextState ?? context?.contextState ?? 'yellow');
@@ -370,7 +513,9 @@ function normalizeNextSession({ host, context, options }) {
     ? requireSingleLine(options.nextSessionCommand, '--next-session-command')
     : context
       ? contextStatusCommand(host, context.runId)
-      : null;
+      : consensus
+        ? consensusStatusCommand(host, consensus.runId)
+        : null;
   const promptPointer = options.nextSessionPromptPointer
     ? normalizeRepoPointer(resolve(options.repoRoot ?? process.cwd()), options.nextSessionPromptPointer)
     : context?.nextSession.promptPointer ?? null;
@@ -501,6 +646,12 @@ function contextStatusCommand(host, runId) {
   return `runtime:context status --run-id ${runId}`;
 }
 
+function consensusStatusCommand(host, runId) {
+  if (host === 'claude') return `/runtime:consensus status --run-id ${runId}`;
+  if (host === 'codex') return `$runtime:consensus status --run-id ${runId}`;
+  return `runtime:consensus status --run-id ${runId}`;
+}
+
 function formatContextLookup(lookup) {
   const selected = lookup.selected_at ?? 'unknown';
   const age = lookup.age_minutes === null ? 'unknown' : `${lookup.age_minutes} minutes`;
@@ -519,6 +670,16 @@ function formatContextLookup(lookup) {
   return lines.join('\n');
 }
 
+function formatConsensusLookup(lookup) {
+  const selected = lookup.selected_at ?? 'unknown';
+  return [
+    `- mode: ${lookup.mode}`,
+    `- latest: ${lookup.latest}`,
+    `- selected_at: ${selected}`,
+    `- skipped_invalid: ${lookup.skipped_invalid}`,
+  ].join('\n');
+}
+
 function artifactTimestampMs(artifact, fallbackRunId) {
   for (const value of [artifact.updated_at, artifact.created_at]) {
     const parsed = Date.parse(value);
@@ -529,6 +690,22 @@ function artifactTimestampMs(artifact, fallbackRunId) {
 
 function runIdTimestampMs(runId) {
   const match = String(runId ?? '').match(/^context-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match;
+  const parsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function consensusTimestampMs(manifest, fallbackRunId) {
+  for (const value of [manifest.updated_at, manifest.created_at]) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return consensusRunIdTimestampMs(fallbackRunId);
+}
+
+function consensusRunIdTimestampMs(runId) {
+  const match = String(runId ?? '').match(/^consensus-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/);
   if (!match) return null;
   const [, year, month, day, hour, minute, second] = match;
   const parsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
@@ -579,8 +756,15 @@ function validateEnum(value, valid, message) {
 }
 
 function validateRunId(runId) {
-  if (!RUN_ID_RE.test(runId)) {
+  if (!CONTEXT_RUN_ID_RE.test(runId)) {
     throw new Error('Invalid --context-run-id; expected context-YYYYMMDDTHHMMSSZ-abcdef');
+  }
+  return runId;
+}
+
+function validateConsensusRunId(runId) {
+  if (!CONSENSUS_RUN_ID_RE.test(runId)) {
+    throw new Error('Invalid --consensus-run-id; expected consensus-YYYYMMDDTHHMMSSZ-abcdef');
   }
   return runId;
 }
@@ -609,6 +793,10 @@ function contextRoot(repoRoot) {
   return resolve(repoRoot, '.agentic-plugins', 'runs', 'context');
 }
 
+function consensusRoot(repoRoot) {
+  return resolve(repoRoot, '.agentic-plugins', 'runs', 'consensus');
+}
+
 function pointer(repoRoot, path) {
   const rel = relative(repoRoot, path).split(sep).join('/');
   return rel || basename(path);
@@ -634,11 +822,13 @@ Usage:
   runtime footer render [--format text|json] [--host claude|codex|neutral]
   runtime footer render --context-run-id <context-run-id> --workflow-id <id>
   runtime footer render --context-latest [--stale-after-hours <n>] --workflow-id <id>
+  runtime footer render --consensus-run-id <consensus-run-id>
+  runtime footer render --consensus-latest
   runtime footer render --context-state green|yellow|red --recommended-next-work <text>
   runtime footer render --pr-handling --pr-completion-boundary reached --pr-validation-state passed --pr-review-state clear --pr-branch-state pushable
 
 Renders an advisory, pointer-only completion footer. It reads optional
-runtime:context artifacts and reports source freshness when available, but
+runtime:context artifacts and runtime:consensus status guidance when available, but
 does not mutate host session context, workflow state, git state, or pull
 request state.`;
 }
