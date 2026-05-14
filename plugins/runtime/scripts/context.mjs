@@ -5,6 +5,7 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { buildSourceFreshness, formatSourceFreshness, resolveSourceSnapshot } from './source-snapshot.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -67,6 +68,11 @@ export async function captureContext(options = {}) {
 
   const summaryPath = resolve(runDir, 'summary.md');
   await writeFile(summaryPath, ensureTrailingNewline(summary));
+  const sourceSnapshot = await resolveSourceSnapshot({
+    repoRoot,
+    snapshot: options.sourceSnapshot,
+    observedAt: createdAt,
+  });
 
   const artifact = {
     schema_version: ARTIFACT_SCHEMA,
@@ -89,6 +95,7 @@ export async function captureContext(options = {}) {
       recommended_action: recommendedAction,
       prompt_pointer: pointer(repoRoot, promptPath),
     },
+    source_snapshot: sourceSnapshot,
     limits: contextLimits(),
   };
 
@@ -117,13 +124,20 @@ export async function readStatus(options = {}) {
       };
   const contextPath = lookup.contextPath;
   const artifact = await readJson(contextPath);
+  const now = options.now ?? new Date();
+  const currentSourceSnapshot = await resolveSourceSnapshot({
+    repoRoot,
+    snapshot: options.currentSourceSnapshot,
+    observedAt: toIso(now),
+  });
   const handoff = buildHandoffLookup({
     artifact,
     runId: lookup.runId,
     latest,
-    now: options.now ?? new Date(),
+    now,
     staleAfterMs,
     skippedInvalid: lookup.skippedInvalid,
+    currentSourceSnapshot,
   });
   let prompt = null;
   if (artifact.next_session?.prompt_pointer) {
@@ -298,6 +312,7 @@ function buildReport({ command, repoRoot, artifact, contextPath, prompt, handoff
       prompt_pointer: artifact.next_session.prompt_pointer,
       prompt_preview: prompt ? preview(prompt) : null,
     },
+    source_snapshot: artifact.source_snapshot ?? null,
     limits: artifact.limits,
   };
   if (handoff) report.handoff = handoff;
@@ -495,7 +510,7 @@ Usage:
   runtime:context check --token-budget <n> (--used-tokens <n>|--remaining-tokens <n>)
   runtime:context check --risk green|yellow|red
 
-This MVP writes repo-local context artifacts under .agentic-plugins/runs/context/ for capture/status. The check command is read-only and does not create artifacts or mutate host session context.`;
+This MVP writes repo-local context artifacts under .agentic-plugins/runs/context/ for capture/status, including a read-only git source snapshot when available. Status reports age-based stale metadata plus source-freshness metadata. The check command is read-only and does not create artifacts or mutate host session context.`;
 }
 
 function requireValue(args, flag) {
@@ -578,7 +593,15 @@ async function findLatestContextArtifact(repoRoot) {
   return { ...candidates[0], skippedInvalid };
 }
 
-function buildHandoffLookup({ artifact, runId, latest, now, staleAfterMs, skippedInvalid }) {
+function buildHandoffLookup({
+  artifact,
+  runId,
+  latest,
+  now,
+  staleAfterMs,
+  skippedInvalid,
+  currentSourceSnapshot,
+}) {
   const selectedAt = artifactTimestampMs(artifact, runId);
   const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
   const ageMs = selectedAt === null ? null : Math.max(0, nowMs - selectedAt);
@@ -591,6 +614,10 @@ function buildHandoffLookup({ artifact, runId, latest, now, staleAfterMs, skippe
     stale_after_ms: staleAfterMs,
     stale: ageMs === null ? null : ageMs > staleAfterMs,
     skipped_invalid: skippedInvalid,
+    source_freshness: buildSourceFreshness({
+      artifactSnapshot: artifact.source_snapshot,
+      currentSnapshot: currentSourceSnapshot,
+    }),
   };
 }
 
@@ -613,7 +640,7 @@ function runIdTimestampMs(runId) {
 function formatHandoffLookup(handoff) {
   const selected = handoff.selected_at ?? 'unknown';
   const age = handoff.age_minutes === null ? 'unknown' : `${handoff.age_minutes} minutes`;
-  return [
+  const lines = [
     `- mode: ${handoff.mode}`,
     `- latest: ${handoff.latest}`,
     `- selected_at: ${selected}`,
@@ -621,7 +648,11 @@ function formatHandoffLookup(handoff) {
     `- stale: ${handoff.stale}`,
     `- stale_after_ms: ${handoff.stale_after_ms}`,
     `- skipped_invalid: ${handoff.skipped_invalid}`,
-  ].join('\n');
+  ];
+  if (handoff.source_freshness) {
+    lines.push(...formatSourceFreshness(handoff.source_freshness));
+  }
+  return lines.join('\n');
 }
 
 function contextBudgetThresholds() {

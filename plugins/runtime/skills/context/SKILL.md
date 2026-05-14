@@ -5,7 +5,7 @@ description: "Runtime-owned ADR-0024 context hygiene artifact scaffold and read-
 
 # Context (runtime framework primitive)
 
-`runtime:context` is the first ADR-0024 context hygiene scaffold. It writes runtime-owned artifacts for capture/status, offers read-only explicit/latest status lookup and budget checks, and keeps the main session output bounded.
+`runtime:context` is the first ADR-0024 context hygiene scaffold. It writes runtime-owned artifacts for capture/status, offers read-only explicit/latest status lookup and budget checks, records a read-only git source snapshot when available, and keeps the main session output bounded.
 
 ## When invoked by command (`/runtime:context` or `$runtime:context`)
 
@@ -36,7 +36,7 @@ Context reports and manages:
 - repo-local artifact pointers for readiness, consensus, workflow, or other handoff evidence;
 - recommended next-session action;
 - generated or caller-supplied next-session prompt artifact.
-- read-only latest-artifact handoff lookup with age/stale metadata.
+- read-only latest-artifact handoff lookup with age/stale and source-freshness metadata.
 - read-only explicit context budget checks from caller-supplied token counts or caller-supplied risk.
 
 ## Boundaries
@@ -44,6 +44,7 @@ Context reports and manages:
 - No host session context mutation.
 - No automatic compaction, host switch, or workflow start.
 - No automatic context artifact update from `status --latest`.
+- No git mutation: source freshness uses read-only git observation only, and falls back to `unknown` when unavailable.
 - No automatic context measurement, capture trigger, or new session start from `check`.
 - No direct peer execution.
 - No consensus raw output or peer raw output in the main session.

@@ -67,8 +67,12 @@ node <runtime-plugin-root>/scripts/footer.mjs render \
 `--context-latest` selects the newest readable
 `.agentic-plugins/runs/context/<run-id>/context.json` artifact and reports
 lookup metadata (`mode`, `selected_at`, age, stale state, stale threshold,
-and skipped invalid artifacts). It is mutually exclusive with
-`--context-run-id`.
+skipped invalid artifacts, and source-freshness state when the context
+artifact contains a git source snapshot). It is mutually exclusive with
+`--context-run-id`. Source freshness is read-only: the helper compares the
+artifact's recorded git commit with the current git commit when both are
+available, reports `unknown` otherwise, and never mutates git or host
+session context.
 
 Without a context artifact, callers may supply `--context-state`,
 `--artifact`, `--next-session-action`, `--next-session-command`, and

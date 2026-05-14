@@ -109,6 +109,47 @@ describe('runtime context', () => {
     ok(formatText(report).includes('handoff lookup:'));
   });
 
+  it('reports source-stale handoffs when the current git commit moved after capture', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-context-source-stale-'));
+    await runContext({
+      command: 'capture',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      summary: 'Context from the previous runtime release.',
+      risk: 'yellow',
+      sourceSnapshot: {
+        status: 'observed',
+        kind: 'git',
+        commit: '1111111111111111111111111111111111111111',
+        branch: 'main',
+        dirty: false,
+      },
+    });
+
+    const report = await runContext({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:30:00.000Z'),
+      currentSourceSnapshot: {
+        status: 'observed',
+        kind: 'git',
+        commit: '2222222222222222222222222222222222222222',
+        branch: 'main',
+        dirty: false,
+      },
+    });
+
+    strictEqual(report.source_snapshot.commit, '1111111111111111111111111111111111111111');
+    strictEqual(report.handoff.source_freshness.status, 'stale');
+    strictEqual(report.handoff.source_freshness.artifact_commit, '1111111111111111111111111111111111111111');
+    strictEqual(report.handoff.source_freshness.current_commit, '2222222222222222222222222222222222222222');
+    strictEqual(report.handoff.source_freshness.reason, 'current git commit differs from the context artifact commit');
+    ok(formatText(report).includes('source freshness:'));
+    ok(formatText(report).includes('- source status: stale'));
+  });
+
   it('checks explicit context budget without creating artifacts', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-context-check-'));
     const report = await runContext({
