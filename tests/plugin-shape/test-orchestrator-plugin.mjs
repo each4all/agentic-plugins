@@ -271,6 +271,16 @@ describe('plugins/orchestrator skills/', () => {
       ok(/^description:/m.test(fm), 'SKILL.md frontmatter has description');
     });
 
+    it(`skills/${verb}/SKILL.md documents both Claude and Codex explicit entry tokens`, async () => {
+      const skillPath = resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md');
+      const text = await readFile(skillPath, 'utf-8');
+      const heading = text.match(/^## When invoked by command .+$/m)?.[0] ?? '';
+      ok(heading.includes(`/orchestrator:${verb}`), `skills/${verb}/SKILL.md missing Claude /orchestrator:${verb} entry token`);
+      ok(heading.includes(`$orchestrator:${verb}`), `skills/${verb}/SKILL.md missing Codex $orchestrator:${verb} entry token`);
+      ok(/Claude command/i.test(heading), `skills/${verb}/SKILL.md must label the Claude command entry path`);
+      ok(/Codex skill mention/i.test(heading), `skills/${verb}/SKILL.md must label the Codex skill entry path`);
+    });
+
     it(`skills/${verb}/agents/openai.yaml exists with display_name`, async () => {
       const yamlPath = resolve(PLUGIN_ROOT, 'skills', verb, 'agents', 'openai.yaml');
       const text = await readFile(yamlPath, 'utf-8');

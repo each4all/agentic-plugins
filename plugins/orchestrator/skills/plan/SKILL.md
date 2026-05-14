@@ -51,7 +51,7 @@ Follow the Presentation Mode Protocol (`../_shared/references/presentation-proto
 
 ---
 
-## When invoked by command (`/orchestrator:plan`)
+## When invoked by command (`/orchestrator:plan` Claude command or `$orchestrator:plan` Codex skill mention)
 
 Full macro composition with Plan-verify Codex ensemble + state-write.
 
