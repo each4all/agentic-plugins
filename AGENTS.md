@@ -324,7 +324,7 @@ release-please automation.
 > (or the equivalent Codex command) to remove it — the plugin is no
 > longer in either marketplace catalog (per ADR-0014/0015).
 
-**Stage 3+ (Runtime/operator track)** — accepted by ADR-0024 and actively shipping through `plugins/runtime`. As of `plugin-runtime` v0.26.3, runtime provides the L1 framework primitive for host readiness and operator control: `doctor`, `settings`, explicit consensus execution, context hygiene scaffolding, workflow-storage migration, Codex plugin hook readiness diagnosis, and an advisory completion footer. `plugins/designer` remains possible future work referencing omcc-designer experience under the same 4-layer composition, but it is no longer the active next-step trigger for ADR-0012 condition 3.
+**Stage 3+ (Runtime/operator track)** — accepted by ADR-0024 and actively shipping through `plugins/runtime`. As of `plugin-runtime` v0.26.4, runtime provides the L1 framework primitive for host readiness and operator control: `doctor`, `settings`, explicit consensus execution, context hygiene scaffolding, workflow-storage migration, Codex plugin hook readiness diagnosis, and an advisory completion footer. `plugins/designer` remains possible future work referencing omcc-designer experience under the same 4-layer composition, but it is no longer the active next-step trigger for ADR-0012 condition 3.
 
 Next steps:
 
