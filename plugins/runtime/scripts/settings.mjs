@@ -93,6 +93,7 @@ export async function runSettings({
     timeoutMs: pluginManagementTimeoutMs,
   });
   applyPluginManagementResults(pluginPlans, pluginManagement);
+  const cliPlans = buildCliPlans(doctor.clis);
 
   const companionSettings = buildCompanionSettingPlans({
     currentDirections: doctor.model_effort.directions,
@@ -130,7 +131,7 @@ export async function runSettings({
         'plugin uninstall execution',
       ],
     },
-    clis: buildCliPlans(doctor.clis),
+    clis: cliPlans,
     plugins: pluginPlans,
     plugin_command_surface: doctor.plugin_command_surface,
     plugin_management: pluginManagement,
@@ -148,7 +149,7 @@ export async function runSettings({
       executePluginManagement,
     }),
     recommendations: buildTopLevelRecommendations({
-      clis: doctor.clis,
+      clis: cliPlans,
       plugins: pluginPlans,
       desiredConfig,
       companionSettings,
@@ -327,11 +328,14 @@ function buildCliPlans(clis) {
   for (const name of ['claude', 'codex']) {
     const cli = clis[name];
     const installPlan = buildCliInstallPlan(name, cli);
+    const authPlan = buildCliAuthPlan(name, cli);
     result[name] = {
       status: cli.status,
       version: cli.version,
+      auth: cli.auth,
       recommendation: installPlan.recommendation,
       install_plan: installPlan,
+      auth_plan: authPlan,
     };
   }
   return result;
@@ -357,6 +361,55 @@ function buildCliInstallPlan(name, cli) {
       'runtime:settings does not install Claude Code or Codex CLI.',
       'Install host CLIs with their host-native installer, then rerun runtime:doctor or runtime:settings.',
     ],
+  };
+}
+
+function buildCliAuthPlan(name, cli) {
+  if (cli.status !== 'available') {
+    return {
+      status: 'not_applicable',
+      host: name,
+      executable: false,
+      command: null,
+      next_step: 'Install the host CLI before checking authentication.',
+      evidence: {
+        cli_status: cli.status,
+        auth_status: cli.auth?.status ?? 'unknown',
+      },
+      limits: ['runtime:settings does not authenticate host CLIs or mutate credentials.'],
+    };
+  }
+  const authStatus = cli.auth?.status ?? 'unknown';
+  if (authStatus === 'available') {
+    return {
+      status: 'not_needed',
+      host: name,
+      executable: false,
+      command: null,
+      next_step: 'No host authentication action is required.',
+      evidence: {
+        cli_status: cli.status,
+        auth_status: authStatus,
+      },
+      limits: ['runtime:settings does not authenticate host CLIs or mutate credentials.'],
+    };
+  }
+  const command = name === 'claude' ? 'claude auth login' : 'codex login';
+  const status = authStatus === 'unauthenticated' ? 'manual_required' : 'manual_check';
+  return {
+    status,
+    host: name,
+    executable: false,
+    command,
+    next_step: authStatus === 'unauthenticated'
+      ? `Run ${command} outside runtime:settings, then rerun runtime:doctor.`
+      : `Verify host auth with ${name === 'claude' ? 'claude auth status' : 'codex login status'}, then rerun runtime:doctor.`,
+    evidence: {
+      cli_status: cli.status,
+      auth_status: authStatus,
+      logged_in: cli.auth?.logged_in ?? null,
+    },
+    limits: ['runtime:settings does not authenticate host CLIs or mutate credentials.'],
   };
 }
 
@@ -1077,6 +1130,18 @@ function buildTopLevelRecommendations({ clis, plugins, desiredConfig, companionS
         detail: cli.install_plan?.next_step ?? DEFAULT_HOST_INSTALL_COMMANDS[name],
       });
     }
+    if (['manual_required', 'manual_check'].includes(cli.auth_plan?.status)) {
+      recommendations.push({
+        area: 'auth',
+        host: name,
+        action: cli.auth_plan.status === 'manual_required' ? 'authenticate-host-cli' : 'verify-host-auth',
+        severity: 'warning',
+        executable: false,
+        executed: false,
+        command: cli.auth_plan.command,
+        detail: cli.auth_plan.next_step,
+      });
+    }
   }
   for (const plugin of Object.values(plugins)) {
     for (const recommendation of plugin.recommendations) {
@@ -1109,14 +1174,16 @@ function summarizeSettings(report) {
   const missingCli = Object.values(report.clis).filter((cli) => cli.status !== 'available').length;
   const settingWarnings = collectCompanionSettingWarnings(report.companion_settings).length;
   const hookWarnings = (report.hook_settings?.recommendations ?? []).filter((rec) => rec.severity === 'warning').length;
+  const authWarnings = Object.values(report.clis).filter((cli) => ['manual_required', 'manual_check'].includes(cli.auth_plan?.status)).length;
   const pluginManagementFailed = report.plugin_management.summary.failed;
   return {
-    status: missingCli > 0 || settingWarnings > 0 || hookWarnings > 0 || pluginManagementFailed > 0 ? 'warning' : 'pass',
+    status: missingCli > 0 || settingWarnings > 0 || hookWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 ? 'warning' : 'pass',
     planned_config_writes: writeCount,
     applied_config_targets: appliedCount,
     plugin_recommendations: Object.values(report.plugins).reduce((sum, plugin) => sum + plugin.recommendations.length, 0),
     setting_warnings: settingWarnings,
     hook_warnings: hookWarnings,
+    auth_warnings: authWarnings,
     plugin_management_executed: report.plugin_management.summary.executed,
     plugin_management_failed: pluginManagementFailed,
   };
@@ -1143,10 +1210,13 @@ export function formatText(report) {
   lines.push('Host CLIs');
   for (const name of ['claude', 'codex']) {
     const cli = report.clis[name];
-    lines.push(`- ${name}: ${cli.status}; version=${cli.version.text || cli.version.status}`);
+    lines.push(`- ${name}: ${cli.status}; version=${cli.version.text || cli.version.status}; auth=${cli.auth?.status ?? 'unknown'}`);
     if (cli.recommendation) lines.push(`  recommendation: ${cli.recommendation}`);
     if (cli.install_plan?.status === 'manual_required') {
       lines.push(`  install-plan: ${cli.install_plan.status}; executable=${cli.install_plan.executable}; next-step=${cli.install_plan.next_step}`);
+    }
+    if (['manual_required', 'manual_check'].includes(cli.auth_plan?.status)) {
+      lines.push(`  auth-plan: ${cli.auth_plan.status}; executable=${cli.auth_plan.executable}; command=${cli.auth_plan.command ?? 'n/a'}; next-step=${cli.auth_plan.next_step}`);
     }
   }
   lines.push('');

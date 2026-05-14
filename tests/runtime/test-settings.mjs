@@ -82,6 +82,37 @@ describe('runtime settings', () => {
     ok(formatText(report).includes('install-plan: manual_required; executable=false'));
   });
 
+  it('reports non-executable host auth remediation plans', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-auth-plan-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-auth-plan-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'claude auth status': {
+          ok: false,
+          exit_code: 1,
+          stdout: JSON.stringify({ loggedIn: false, authMethod: 'none', apiProvider: 'firstParty' }),
+          stderr: '',
+          error_code: null,
+          timed_out: false,
+        },
+      }),
+    });
+
+    strictEqual(report.clis.claude.auth.status, 'unauthenticated');
+    strictEqual(report.clis.claude.auth_plan.status, 'manual_required');
+    strictEqual(report.clis.claude.auth_plan.executable, false);
+    strictEqual(report.clis.claude.auth_plan.command, 'claude auth login');
+    strictEqual(report.overall.auth_warnings, 1);
+    ok(report.recommendations.some((rec) => rec.area === 'auth' && rec.host === 'claude' && rec.action === 'authenticate-host-cli'));
+    ok(formatText(report).includes('auth=unauthenticated'));
+    ok(formatText(report).includes('auth-plan: manual_required; executable=false; command=claude auth login'));
+  });
+
   it('applies only selected agentic-plugins-owned config writes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-apply-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-apply-home-'));
