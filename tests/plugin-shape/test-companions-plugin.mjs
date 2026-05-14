@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/companions');
 const CANONICAL_DIR = resolve(REPO_ROOT, 'companions');
+const CANONICAL_README = resolve(CANONICAL_DIR, 'README.md');
 
 async function readJSON(path) {
   return JSON.parse(await readFile(path, 'utf8'));
@@ -124,6 +125,25 @@ describe('plugins/companions — bundled scripts', () => {
       });
     });
   }
+});
+
+describe('companions/README.md — bidirectional quickstart', () => {
+  it('shows both Claude→Codex and Codex→Claude invocations in text and JSON mode', async () => {
+    const text = await readFile(CANONICAL_README, 'utf8');
+    for (const expected of [
+      '# Claude → Codex (text mode)',
+      "echo '<task>Reply OK</task>' | companions/codex-companion.mjs task",
+      '# Claude → Codex (JSON envelope)',
+      "echo '<task>Reply OK</task>' | companions/codex-companion.mjs task --output-format json",
+      '# Codex → Claude (text mode)',
+      "echo '<task>Reply OK</task>' | companions/claude-companion.mjs task",
+      '# Codex → Claude (JSON envelope)',
+      "echo '<task>Reply OK</task>' | companions/claude-companion.mjs task --output-format json",
+      'Both directions use the same `task` subcommand',
+    ]) {
+      ok(text.includes(expected), `companions README quickstart missing: ${expected}`);
+    }
+  });
 });
 
 describe('plugins/companions — drift detector vs canonical companions/', () => {
