@@ -1,0 +1,7 @@
+interface:
+  display_name: "Orchestrator - Next"
+  short_description: "Dispatch the next ready macro subtask into engineer with parent-linkage preserved"
+  default_prompt: "Use $orchestrator:next to dispatch the next ready macro subtask into engineer; preserve AGENTIC parent-linkage and same-host boundaries."
+
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Orchestrator - Done"
+  short_description: "Manually record macro subtask completion as backup for engineer Stop-hook writeback"
+  default_prompt: "Use $orchestrator:done <subtask-id> to record a completed macro subtask with its terminal commit, preserving engineer workflow ownership."
+
+policy:
+  allow_implicit_invocation: false
