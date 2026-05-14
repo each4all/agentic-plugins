@@ -341,6 +341,57 @@ describe('runtime doctor', () => {
     ok(!JSON.stringify(report).includes('RAW PEER OUTPUT'), 'doctor must not read or print raw peer output');
   });
 
+  it('warns specifically when the latest consensus execution timed out', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-consensus-timeout-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const runId = 'consensus-20260513T000000Z-abcdef';
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'consensus', runId), { recursive: true });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'consensus', runId, 'execution.json'), {
+      schema_version: 'runtime-consensus-execution-1.0',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      status: 'failed',
+      updated_at: '2026-05-13T00:00:05.000Z',
+      round: 1,
+      peer_execution: true,
+      progress_pointer: `.agentic-plugins/runs/consensus/${runId}/execution-progress.json`,
+      summary: {
+        executed: 2,
+        passed: 0,
+        failed: 2,
+        skipped: 0,
+        failed_retryable: 2,
+        failed_non_retryable: 0,
+      },
+      failures: ['claude', 'codex'].map((peer) => ({
+        peer,
+        status: 'timed_out',
+        failure_type: 'timeout',
+        retryable: true,
+        retry_after: 'retry with a larger --timeout-ms within the policy cap; run runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke when prompt startup latency is unclear',
+        raw_output: {
+          pointer: `.agentic-plugins/runs/consensus/${runId}/rounds/round-1/raw/${peer}.txt`,
+          bytes: 0,
+          sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        },
+      })),
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    strictEqual(report.consensus_runs.latest.failure_summary.timeout, 2);
+    ok(report.overall.warnings.includes('latest consensus execution timed out for 2 peer(s); retryable-failed=2'));
+    ok(formatText(report).includes('failure-summary: timeout=2'));
+    ok(formatText(report).includes('warning: latest consensus execution timed out for 2 peer(s); retryable-failed=2'));
+    ok(formatText(report).includes('progress='));
+    ok(!JSON.stringify(report).includes('TIMED OUT RAW OUTPUT'), 'doctor must not read raw timeout output');
+  });
+
   it('reports sandbox and permission readiness as unknown without an explicit peer smoke', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-readiness-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
