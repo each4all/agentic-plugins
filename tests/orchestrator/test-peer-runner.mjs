@@ -446,7 +446,7 @@ describe('peer-runner.mjs — status and output byte tracking', () => {
 });
 
 describe('peer-runner.mjs — cancel', () => {
-  it('cancel sends TERM then KILL after grace and marks the handle cancelled', async () => {
+  it('cancel terminates verified processes and fails closed when process identity is unverifiable', async () => {
     await withTmpRepo(async (repoRoot) => {
       const readyFile = join(repoRoot, 'cancel-run.ready');
       const detached = process.platform !== 'win32';
@@ -464,14 +464,22 @@ setInterval(() => {}, 1000);
 
       try {
         await waitFor(() => exists(readyFile), { message: 'running cancellable peer process' });
+        const processFingerprint = await fingerprintForPid(child.pid);
         await writeHandleFixture(repoRoot, 'cancel-run', {
           status: 'running',
           pid: child.pid,
           pgid: detached ? child.pid : null,
-          process_fingerprint: await fingerprintForPid(child.pid),
+          process_fingerprint: processFingerprint,
         });
 
         const cancelled = await cancelPeerRun({ repoRoot, runId: 'cancel-run', graceMs: 50 });
+        if (processFingerprint.kind === 'none') {
+          strictEqual(cancelled.ok, false);
+          strictEqual(cancelled.reason, 'unsupported_unverifiable');
+          const handle = await readHandle(peerRunPaths(repoRoot, 'cancel-run').handle);
+          strictEqual(handle.status, 'running');
+          return;
+        }
         strictEqual(cancelled.ok, true);
         strictEqual(cancelled.status, 'cancelled');
 
