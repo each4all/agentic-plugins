@@ -39,6 +39,9 @@ Consensus reports and manages:
 - budget policy fields (`max_rounds`, optional `max_peers`, token/time/process budget);
 - raw peer output pointers, byte counts, and hashes;
 - per-peer execution progress pointer and status;
+- advisory `execution_remediation` for retryable failures, operator-action
+  preconditions, proof commands, suggested timeout increases, and artifact
+  pointers;
 - synthesized summary;
 - durable disagreements;
 - evidence pointers;
