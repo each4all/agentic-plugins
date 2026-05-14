@@ -57,6 +57,34 @@ describe('cross-host codex→claude resume — engineer (schema 1.1)', () => {
     });
   });
 
+  it('checkpoint written after codex→claude handoff remains visible and attributed to claude', async () => {
+    await tmpRepo('engineer-checkpoint', async ({ repoRoot }) => {
+      const { filePath } = await engineerState.createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'codex',
+        gitBaseline: MIN_BASELINE(),
+        originalRequest: 'reverse checkpoint',
+      });
+      const before = await engineerState.readWorkflow(filePath);
+      const preHistory = before.frontmatter.host_history;
+
+      await engineerState.setCheckpoint({
+        workflowPath: filePath,
+        host: 'claude',
+        summary: 'Claude picked up the Codex-started workflow.',
+        now: new Date('2026-05-09T07:00:00Z'),
+      });
+
+      const after = await engineerState.readWorkflow(filePath);
+      deepStrictEqual(after.frontmatter.host_history.slice(0, preHistory.length), preHistory);
+      strictEqual(after.frontmatter.latest_checkpoint.summary, 'Claude picked up the Codex-started workflow.');
+      strictEqual(after.frontmatter.latest_checkpoint.at, '2026-05-09T07:00:00Z');
+      strictEqual(after.frontmatter.host_history.at(-1).host, 'claude');
+      strictEqual(after.frontmatter.host_history.at(-1).event, 'checkpointed');
+    });
+  });
+
   it('findActiveWorkflowByBranch returns the same path before and after host transition', async () => {
     await tmpRepo('engineer-find', async ({ repoRoot }) => {
       const { filePath } = await engineerState.createWorkflow({
@@ -219,6 +247,34 @@ describe('cross-host codex→claude resume — orchestrator (schema 1.0)', () =>
         after.frontmatter.host_history[after.frontmatter.host_history.length - 1].host,
         'claude',
       );
+    });
+  });
+
+  it('checkpoint written after codex→claude handoff remains visible and attributed to claude', async () => {
+    await tmpRepo('orchestrator-checkpoint', async ({ repoRoot }) => {
+      const { filePath } = await orchestratorState.createWorkflow({
+        repoRoot,
+        verb: 'plan',
+        host: 'codex',
+        gitBaseline: MIN_BASELINE(),
+        originalRequest: 'reverse orchestrator checkpoint',
+      });
+      const before = await orchestratorState.readWorkflow(filePath);
+      const preHistory = before.frontmatter.host_history;
+
+      await orchestratorState.setCheckpoint({
+        workflowPath: filePath,
+        host: 'claude',
+        summary: 'Claude checkpointed the Codex-started macro.',
+        now: new Date('2026-05-09T08:00:00Z'),
+      });
+
+      const after = await orchestratorState.readWorkflow(filePath);
+      deepStrictEqual(after.frontmatter.host_history.slice(0, preHistory.length), preHistory);
+      strictEqual(after.frontmatter.latest_checkpoint.summary, 'Claude checkpointed the Codex-started macro.');
+      strictEqual(after.frontmatter.latest_checkpoint.at, '2026-05-09T08:00:00Z');
+      strictEqual(after.frontmatter.host_history.at(-1).host, 'claude');
+      strictEqual(after.frontmatter.host_history.at(-1).event, 'checkpointed');
     });
   });
 
