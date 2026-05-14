@@ -21,6 +21,7 @@ node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" reco
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" next-round --run-id <id>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" status --run-id <id>
+node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" status --latest
 ```
 
 3. Present only the returned synthesis and pointers.
@@ -45,6 +46,8 @@ Consensus reports and manages:
 - bounded timeout remediation metadata, including a selected-peer retry command.
 - status guidance that recommends the next bounded operator action from
   manifest, execution, progress, and consensus-result artifacts.
+- latest-run lookup for `status --latest`, selected from readable manifest
+  timestamps without reading raw peer output.
 
 ## Boundaries
 
@@ -67,4 +70,5 @@ $runtime:consensus record --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --peer secu
 $runtime:consensus synthesize --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --summary-file summary.md --disagreements-file disagreements.md
 $runtime:consensus next-round --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef
 $runtime:consensus execute --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --round 2 --execute
+$runtime:consensus status --latest
 ```
