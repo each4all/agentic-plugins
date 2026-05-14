@@ -25,7 +25,7 @@ const VALID_COMMANDS = new Set(['plan', 'record', 'synthesize', 'next-round', 'e
 const DEFAULT_PEERS = ['claude', 'codex'];
 const DEFAULT_MAX_ROUNDS = 2;
 const MAX_ROUNDS_CAP = 3;
-const MAX_PEERS_CAP = 4;
+const MAX_PEERS_CAP = 12;
 const DEFAULT_EXECUTION_TIMEOUT_MS = 120000;
 const MAX_EXECUTION_TIMEOUT_MS = 600000;
 const RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
@@ -34,6 +34,7 @@ const PEER_DIRECTIONS = {
   codex: 'claude_to_codex',
   claude: 'codex_to_claude',
 };
+const COMPANION_PEERS = Object.freeze(Object.keys(PEER_DIRECTIONS));
 
 export async function runConsensus(options = {}) {
   const command = options.command ?? 'plan';
@@ -71,8 +72,11 @@ export async function createPlan(options = {}) {
     : boundedPositiveInt(options.maxPeers, '--max-peers', MAX_PEERS_CAP);
   const activePeers = peers.slice(0, maxPeers);
   const skippedPeers = peers.slice(maxPeers);
+  const executablePeers = activePeers.filter(isCompanionPeer);
+  const manualPeers = activePeers.filter((peer) => !isCompanionPeer(peer));
   const maxRounds = boundedPositiveInt(options.maxRounds ?? DEFAULT_MAX_ROUNDS, '--max-rounds', MAX_ROUNDS_CAP);
-  const processBudget = boundedPositiveInt(options.processBudget ?? activePeers.length, '--process-budget', activePeers.length);
+  const processBudgetCap = Math.max(1, executablePeers.length);
+  const processBudget = boundedPositiveInt(options.processBudget ?? processBudgetCap, '--process-budget', processBudgetCap);
   const executionTimeoutMs = boundedPositiveInt(options.timeoutMs ?? DEFAULT_EXECUTION_TIMEOUT_MS, '--timeout-ms', MAX_EXECUTION_TIMEOUT_MS);
   const policy = {
     max_rounds: maxRounds,
@@ -81,7 +85,9 @@ export async function createPlan(options = {}) {
     time_budget_ms: optionalPositiveInt(options.timeBudgetMs, '--time-budget-ms'),
     process_budget: processBudget,
     execution_timeout_ms: executionTimeoutMs,
-    peer_selection: 'explicit-or-default-host-peers',
+    peer_selection: 'explicit-companion-peers-plus-manual-peer-labels',
+    companion_execution_peers: executablePeers,
+    manual_peer_labels: manualPeers,
     raw_output_policy: 'artifact-pointer-only',
     main_session_output: 'synthesized-summary-disagreements-evidence-pointers-only',
     limits: {
@@ -127,6 +133,8 @@ export async function createPlan(options = {}) {
     peers: {
       requested: peers,
       active: activePeers,
+      executable: executablePeers,
+      manual: manualPeers,
       skipped: skippedPeers,
     },
     rounds: [round],
@@ -155,11 +163,15 @@ export async function createPlan(options = {}) {
       { kind: 'task', pointer: pointer(repoRoot, taskPath) },
       ...round.prompts.map((prompt) => ({ kind: 'peer-prompt', ...prompt, round: 1 })),
     ],
-    next_steps: [
-      `Execute planned peers with runtime:consensus execute --run-id ${runId} --execute, or run the prompts manually through the appropriate host/companion boundary.`,
-      `Record each raw peer output with runtime:consensus record --run-id ${runId} --peer <peer> --input-file <path>.`,
+    next_steps: compact([
+      executablePeers.length > 0
+        ? `Execute companion-backed peers with runtime:consensus execute --run-id ${runId} --execute.`
+        : null,
+      manualPeers.length > 0
+        ? `Run manual peer prompt artifacts for ${manualPeers.join(', ')} and record each output with runtime:consensus record --run-id ${runId} --peer <peer> --input-file <path>.`
+        : `Record any manually obtained raw peer output with runtime:consensus record --run-id ${runId} --peer <peer> --input-file <path>.`,
       `Synthesize with runtime:consensus synthesize --run-id ${runId} --summary-file <path> [--disagreements-file <path>].`,
-    ],
+    ]),
     limits: manifest.limits,
   };
 }
@@ -299,6 +311,7 @@ export async function planNextRound(options = {}) {
   manifest.status = 'planned-rebuttal';
   manifest.updated_at = toIso(now);
   await writeJson(manifestPath, manifest);
+  const executablePeers = executablePeersFor(manifest);
 
   return {
     command: 'next-round',
@@ -307,8 +320,8 @@ export async function planNextRound(options = {}) {
     status: manifest.status,
     round: nextRound,
     execution: {
-      available: true,
-      command: `runtime:consensus execute --run-id ${runId} --round ${nextRound} --execute`,
+      available: executablePeers.length > 0,
+      command: executablePeers.length > 0 ? `runtime:consensus execute --run-id ${runId} --round ${nextRound} --execute` : null,
       peer_execution: false,
     },
     artifacts: [
@@ -338,10 +351,18 @@ export async function executeRound(options = {}) {
   const manifest = await readJson(manifestPath);
   const roundNumber = positiveInt(options.round ?? latestRoundNumber(manifest), '--round');
   const round = findRound(manifest, roundNumber);
-  const requestedPeers = options.peers ? normalizePeers(options.peers) : manifest.peers.active;
+  const executablePeers = executablePeersFor(manifest);
+  const requestedPeers = options.peers ? normalizePeers(options.peers) : executablePeers;
   const unknownPeers = requestedPeers.filter((peer) => !manifest.peers.active.includes(peer));
   if (unknownPeers.length > 0) {
     throw new Error(`--peers must be active peers from the manifest: ${manifest.peers.active.join(', ')}`);
+  }
+  const manualRequested = requestedPeers.filter((peer) => !executablePeers.includes(peer));
+  if (manualRequested.length > 0) {
+    throw new Error(`--peers includes manual-only peer(s): ${manualRequested.join(', ')}. Record those outputs with runtime:consensus record; execute only supports companion peers: ${executablePeers.join(', ') || '<none>'}`);
+  }
+  if (requestedPeers.length === 0) {
+    throw new Error('No executable companion peers are available for this consensus run; use runtime:consensus record for manual peer outputs');
   }
   const timeoutMs = boundedPositiveInt(
     options.timeoutMs ?? manifest.policy?.execution_timeout_ms ?? DEFAULT_EXECUTION_TIMEOUT_MS,
@@ -1090,6 +1111,7 @@ function buildNextRoundAvailability({ manifest, durableDisagreements, runId }) {
   const latestRound = latestRoundNumber(manifest);
   const hasDisagreements = durableDisagreements.length > 0;
   const budgetRemaining = latestRound < manifest.policy.max_rounds;
+  const hasExecutablePeers = executablePeersFor(manifest).length > 0;
   return {
     available: hasDisagreements && budgetRemaining,
     reason: !hasDisagreements
@@ -1100,7 +1122,7 @@ function buildNextRoundAvailability({ manifest, durableDisagreements, runId }) {
     current_round: latestRound,
     max_rounds: manifest.policy.max_rounds,
     command: hasDisagreements && budgetRemaining ? `runtime:consensus next-round --run-id ${runId}` : null,
-    execute_command: hasDisagreements && budgetRemaining ? `runtime:consensus execute --run-id ${runId} --round ${latestRound + 1} --execute` : null,
+    execute_command: hasDisagreements && budgetRemaining && hasExecutablePeers ? `runtime:consensus execute --run-id ${runId} --round ${latestRound + 1} --execute` : null,
   };
 }
 
@@ -1108,7 +1130,13 @@ function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtif
   const latestRound = findRound(manifest, latestRoundNumber(manifest));
   const summary = executionArtifact?.summary ?? progressArtifact?.summary ?? null;
   const retryCommands = collectRetryCommands(executionArtifact, progressArtifact);
-  const latestRoundExecuteCommand = `runtime:consensus execute --run-id ${runId} --round ${latestRound.round} --execute`;
+  const executablePeers = executablePeersFor(manifest);
+  const manualPeers = manualPeersFor(manifest);
+  const missingManualPeers = missingOutputPeers(latestRound, manualPeers);
+  const missingExecutablePeers = missingOutputPeers(latestRound, executablePeers);
+  const latestRoundExecuteCommand = executablePeers.length > 0
+    ? `runtime:consensus execute --run-id ${runId} --round ${latestRound.round} --execute`
+    : null;
   const synthesizeCommand = `runtime:consensus synthesize --run-id ${runId} --summary-file <summary.md> [--disagreements-file <disagreements.md>]`;
 
   if (consensusArtifact) {
@@ -1186,7 +1214,21 @@ function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtif
     });
   }
 
-  if (latestRound.raw_outputs?.length > 0 || summary?.passed > 0) {
+  if (missingManualPeers.length > 0 && ((latestRound.raw_outputs?.length ?? 0) > 0 || summary?.passed > 0 || missingExecutablePeers.length === 0)) {
+    const recordCommands = missingManualPeers.map((peer) => `runtime:consensus record --run-id ${runId} --round ${latestRound.round} --peer ${peer} --input-file <path>`);
+    return guidance({
+      state: 'record_manual_peers',
+      next_action: 'Record the remaining manual peer outputs before synthesis, or intentionally synthesize from partial evidence.',
+      next_steps: [
+        ...recordCommands,
+        synthesizeCommand,
+      ],
+      commands: recordCommands,
+      reason: `manual peer output missing for ${missingManualPeers.join(', ')}`,
+    });
+  }
+
+  if ((latestRound.raw_outputs?.length ?? 0) > 0 || summary?.passed > 0) {
     return guidance({
       state: 'synthesize',
       next_action: 'Synthesize the recorded peer outputs into a bounded consensus result.',
@@ -1197,14 +1239,16 @@ function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtif
   }
 
   if (latestRound.prompts?.length > 0) {
+    const recordCommands = missingManualPeers.map((peer) => `runtime:consensus record --run-id ${runId} --round ${latestRound.round} --peer ${peer} --input-file <path>`);
     return guidance({
       state: 'execute_or_record',
       next_action: 'Execute the planned peer prompts, or run them manually and record each raw output as an artifact.',
-      next_steps: [
+      next_steps: compact([
         latestRoundExecuteCommand,
+        ...recordCommands,
         `runtime:consensus record --run-id ${runId} --round ${latestRound.round} --peer <peer> --input-file <path>`,
-      ],
-      commands: [latestRoundExecuteCommand],
+      ]),
+      commands: compact([latestRoundExecuteCommand]),
       reason: `round ${latestRound.round} has prompts but no peer output artifacts`,
     });
   }
@@ -1419,14 +1463,14 @@ function helpText() {
   return `runtime:consensus ${VERSION}
 
 Usage:
-  runtime:consensus plan --task <text> [--peers claude,codex] [--max-rounds N] [--timeout-ms N]
+  runtime:consensus plan --task <text> [--peers claude,codex,reviewer] [--max-rounds N] [--max-peers N] [--timeout-ms N]
   runtime:consensus record --run-id <id> --peer <peer> --input-file <path>
   runtime:consensus synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>]
   runtime:consensus next-round --run-id <id> [--disagreements-file <path>]
   runtime:consensus execute --run-id <id> [--round N] [--peers claude,codex] --execute [--timeout-ms N] [--process-budget N]
   runtime:consensus status --run-id <id>
 
-Planning and synthesis never execute peers. Peer dispatch is available only through the explicit execute command plus --execute.`;
+Planning and synthesis never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record.`;
 }
 
 async function resolveTask(options) {
@@ -1576,6 +1620,31 @@ function collectEvidencePointers(manifest) {
     }
   }
   return evidence;
+}
+
+function executablePeersFor(manifest) {
+  return Array.isArray(manifest.peers?.executable)
+    ? manifest.peers.executable
+    : (manifest.peers?.active ?? []).filter(isCompanionPeer);
+}
+
+function manualPeersFor(manifest) {
+  return Array.isArray(manifest.peers?.manual)
+    ? manifest.peers.manual
+    : (manifest.peers?.active ?? []).filter((peer) => !isCompanionPeer(peer));
+}
+
+function missingOutputPeers(round, peers) {
+  const recorded = new Set((round.raw_outputs ?? []).map((entry) => entry.peer));
+  return peers.filter((peer) => !recorded.has(peer));
+}
+
+function isCompanionPeer(peer) {
+  return Object.hasOwn(PEER_DIRECTIONS, peer);
+}
+
+function compact(values) {
+  return values.filter(Boolean);
 }
 
 function normalizePeers(value) {

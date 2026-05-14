@@ -15,7 +15,7 @@ description: "ADR-0024 runtime consensus scaffold with an explicit companion exe
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" plan --task <text> [--format text|json] [--peers claude,codex] [--max-rounds <n>] [--max-peers <n>] [--token-budget <n>] [--time-budget-ms <n>] [--process-budget <n>]
+node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" plan --task <text> [--format text|json] [--peers claude,codex,reviewer] [--max-rounds <n>] [--max-peers <n>] [--token-budget <n>] [--time-budget-ms <n>] [--process-budget <n>]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" execute --run-id <id> [--round <n>] [--peers claude,codex] --execute [--timeout-ms <n>] [--process-budget <n>] [--model <id>] [--effort <level>]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" record --run-id <id> --peer <peer> --input-file <path>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>]
@@ -33,6 +33,7 @@ node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" stat
 Consensus reports and manages:
 
 - independent fanout prompt artifacts;
+- companion-executable peers (`claude`, `codex`) versus manual/subagent peer labels that are record-only;
 - budget policy fields (`max_rounds`, `max_peers`, token/time/process budget);
 - raw peer output pointers, byte counts, and hashes;
 - per-peer execution progress pointer and status;
@@ -48,6 +49,7 @@ Consensus reports and manages:
 ## Boundaries
 
 - No peer execution except `execute --execute`.
+- `execute --execute` dispatches only companion-backed peers (`claude`, `codex`); other peer labels are manual/subagent lanes collected through `record`.
 - No companion bridge mutation.
 - No engineer/orchestrator workflow state migration.
 - No host-native config, authentication, secret, sandbox, or permission writes.
@@ -58,9 +60,10 @@ Consensus reports and manages:
 ## Example
 
 ```bash
-$runtime:consensus plan --task "Review this risky runtime change" --max-rounds 2
+$runtime:consensus plan --task "Review this risky runtime change" --peers claude,codex,security,release --max-rounds 2 --max-peers 4
 $runtime:consensus execute --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --execute
 $runtime:consensus record --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --peer claude --input-file claude.txt
+$runtime:consensus record --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --peer security --input-file security.txt
 $runtime:consensus synthesize --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --summary-file summary.md --disagreements-file disagreements.md
 $runtime:consensus next-round --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef
 $runtime:consensus execute --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --round 2 --execute
