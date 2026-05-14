@@ -22,7 +22,7 @@ node "<runtime-plugin-root>/scripts/context.mjs" --repo-root "$REPO_ROOT" check 
 node "<runtime-plugin-root>/scripts/context.mjs" --repo-root "$REPO_ROOT" check --risk green|yellow|red [--risk-reason <text>]
 ```
 
-3. Present only the returned context summary, risk level, artifact pointers, and recommended next-session prompt/action.
+3. Present only the returned context summary, risk level, artifact pointers, handoff guidance, and recommended next-session prompt/action.
    - Do not paste raw peer outputs into the main session.
    - Use artifact paths under `.agentic-plugins/runs/context/<run-id>/`.
    - Treat the scaffold and budget check as advisory. They do not trim, rewrite, compact, or mutate host session context.
@@ -36,7 +36,7 @@ Context reports and manages:
 - repo-local artifact pointers for readiness, consensus, workflow, or other handoff evidence;
 - recommended next-session action;
 - generated or caller-supplied next-session prompt artifact.
-- read-only latest-artifact handoff lookup with age/stale and source-freshness metadata.
+- read-only latest-artifact handoff lookup with age/stale, source-freshness metadata, and explicit guidance for reusing or refreshing the artifact.
 - read-only explicit context budget checks from caller-supplied token counts or caller-supplied risk.
 
 ## Boundaries
@@ -44,6 +44,7 @@ Context reports and manages:
 - No host session context mutation.
 - No automatic compaction, host switch, or workflow start.
 - No automatic context artifact update from `status --latest`.
+- No automatic execution of handoff guidance; stale handoffs recommend but do not trigger fresh capture.
 - No git mutation: source freshness uses read-only git observation only, and falls back to `unknown` when unavailable.
 - No automatic context measurement, capture trigger, or new session start from `check`.
 - No direct peer execution.

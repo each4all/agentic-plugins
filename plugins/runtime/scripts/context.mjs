@@ -605,6 +605,11 @@ function buildHandoffLookup({
   const selectedAt = artifactTimestampMs(artifact, runId);
   const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
   const ageMs = selectedAt === null ? null : Math.max(0, nowMs - selectedAt);
+  const stale = ageMs === null ? null : ageMs > staleAfterMs;
+  const sourceFreshness = buildSourceFreshness({
+    artifactSnapshot: artifact.source_snapshot,
+    currentSnapshot: currentSourceSnapshot,
+  });
   return {
     mode: latest ? 'latest' : 'run-id',
     latest,
@@ -612,12 +617,68 @@ function buildHandoffLookup({
     age_ms: ageMs,
     age_minutes: ageMs === null ? null : roundOne(ageMs / 60000),
     stale_after_ms: staleAfterMs,
-    stale: ageMs === null ? null : ageMs > staleAfterMs,
+    stale,
     skipped_invalid: skippedInvalid,
-    source_freshness: buildSourceFreshness({
-      artifactSnapshot: artifact.source_snapshot,
-      currentSnapshot: currentSourceSnapshot,
-    }),
+    source_freshness: sourceFreshness,
+    guidance: buildHandoffGuidance({ runId, stale, sourceFreshness }),
+  };
+}
+
+function buildHandoffGuidance({ runId, stale, sourceFreshness }) {
+  if (sourceFreshness.status === 'stale') {
+    return {
+      state: 'capture_new_context',
+      recommended_session: 'fresh_or_resumed',
+      reason: sourceFreshness.reason,
+      recommended_action: 'Capture a new runtime:context artifact from the current checkout before relying on this handoff.',
+      commands: [
+        'runtime:context capture --summary "<current state>" --risk yellow --next-action "<next step>"',
+        'runtime:context status --latest',
+      ],
+    };
+  }
+  if (stale === true) {
+    return {
+      state: 'capture_new_context',
+      recommended_session: 'fresh_or_resumed',
+      reason: 'handoff artifact age exceeds the configured stale threshold',
+      recommended_action: 'Capture a new runtime:context artifact before substantial follow-up work.',
+      commands: [
+        'runtime:context capture --summary "<current state>" --risk yellow --next-action "<next step>"',
+        'runtime:context status --latest',
+      ],
+    };
+  }
+  if (sourceFreshness.status === 'unknown') {
+    return {
+      state: 'inspect_context',
+      recommended_session: 'fresh_or_resumed',
+      reason: sourceFreshness.reason,
+      recommended_action: 'Inspect the current checkout and capture a fresh runtime:context artifact if the source state cannot be verified.',
+      commands: [
+        'runtime:context capture --summary "<current state>" --risk yellow --next-action "<next step>"',
+      ],
+    };
+  }
+  if (sourceFreshness.current_dirty === true) {
+    return {
+      state: 'capture_after_source_settled',
+      recommended_session: 'fresh_or_resumed',
+      reason: 'current git commit matches the handoff, but the current worktree has uncommitted changes',
+      recommended_action: 'Finish, commit, or intentionally document the dirty worktree before using this handoff as the next-session source of truth.',
+      commands: [
+        'runtime:context capture --summary "<current state>" --risk yellow --next-action "<next step>"',
+      ],
+    };
+  }
+  return {
+    state: 'reuse_handoff',
+    recommended_session: 'current_or_resumed',
+    reason: 'handoff source and age are within the configured freshness checks',
+    recommended_action: 'Reuse this handoff for small follow-up work, or start a resumed session with the stored next-session prompt for larger work.',
+    commands: [
+      `runtime:context status --run-id ${runId}`,
+    ],
   };
 }
 
@@ -651,6 +712,18 @@ function formatHandoffLookup(handoff) {
   ];
   if (handoff.source_freshness) {
     lines.push(...formatSourceFreshness(handoff.source_freshness));
+  }
+  if (handoff.guidance) {
+    lines.push(
+      `handoff guidance: ${handoff.guidance.state}`,
+      `- recommended_session: ${handoff.guidance.recommended_session}`,
+      `- reason: ${handoff.guidance.reason}`,
+      `- recommended_action: ${handoff.guidance.recommended_action}`,
+    );
+    if (handoff.guidance.commands?.length) {
+      lines.push('- commands:');
+      for (const command of handoff.guidance.commands) lines.push(`  - ${command}`);
+    }
   }
   return lines.join('\n');
 }
