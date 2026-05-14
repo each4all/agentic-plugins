@@ -464,6 +464,7 @@ export async function executeRound(options = {}) {
   const executionSummary = summarizeExecutions(executions);
   const executionPath = resolve(consensusRunDir(repoRoot, runId), 'execution.json');
   const progressPointer = pointer(repoRoot, progressPath);
+  const executionPointer = pointer(repoRoot, executionPath);
   const executionStatus = executionSummary.failed > 0
     ? executionSummary.operator_action_required === executionSummary.failed
       ? 'operator_action_required'
@@ -473,6 +474,14 @@ export async function executeRound(options = {}) {
   progress.summary = executionSummary;
   progress.updated_at = toIso(new Date());
   await writeExecutionProgress(repoRoot, progressPath, progress);
+  const executionRemediation = buildExecutionRemediation({
+    runId,
+    roundNumber,
+    summary: executionSummary,
+    executions,
+    executionPointer,
+    progressPointer,
+  });
   const executionArtifact = {
     schema_version: EXECUTION_SCHEMA,
     runtime_version: VERSION,
@@ -491,6 +500,7 @@ export async function executeRound(options = {}) {
       process_budget: processBudget,
     },
     summary: executionSummary,
+    execution_remediation: executionRemediation,
     executions,
     failures: executions
       .filter((execution) => execution.status !== 'passed')
@@ -514,9 +524,10 @@ export async function executeRound(options = {}) {
     status: executionArtifact.status,
     updated_at: startedAt,
     round: roundNumber,
-    execution_pointer: pointer(repoRoot, executionPath),
+    execution_pointer: executionPointer,
     progress_pointer: progressPointer,
     summary: executionSummary,
+    remediation: executionRemediation,
   });
   await writeJson(manifestPath, manifest);
 
@@ -528,14 +539,15 @@ export async function executeRound(options = {}) {
     round: roundNumber,
     peer_execution: true,
     run_pointer: pointer(repoRoot, consensusRunDir(repoRoot, runId)),
-    execution_pointer: pointer(repoRoot, executionPath),
+    execution_pointer: executionPointer,
     progress_pointer: progressPointer,
     execution_boundary: executionArtifact.execution_boundary,
     execution_summary: executionSummary,
+    execution_remediation: executionRemediation,
     executions,
     artifacts: [
       { kind: 'manifest', pointer: pointer(repoRoot, manifestPath) },
-      { kind: 'consensus-execution', pointer: pointer(repoRoot, executionPath) },
+      { kind: 'consensus-execution', pointer: executionPointer },
       { kind: 'consensus-progress', pointer: progressPointer },
       ...executions.map((execution) => ({ kind: 'peer-output', round: roundNumber, peer: execution.peer, ...execution.raw_output })),
       ...executions.map((execution) => ({ kind: 'peer-execution', round: roundNumber, peer: execution.peer, pointer: execution.execution_pointer })),
@@ -559,6 +571,8 @@ export async function readStatus(options = {}) {
   const progressPath = resolve(runDir, 'execution-progress.json');
   const executionArtifact = await readJsonIfExists(executionPath);
   const progressArtifact = await readJsonIfExists(progressPath);
+  const executionPointer = executionArtifact ? pointer(repoRoot, executionPath) : null;
+  const progressPointer = progressArtifact ? pointer(repoRoot, progressPath) : null;
   const consensusArtifact = manifest.consensus_pointer
     ? await readJsonIfExists(resolve(repoRoot, manifest.consensus_pointer))
     : null;
@@ -579,9 +593,16 @@ export async function readStatus(options = {}) {
     run_pointer: pointer(repoRoot, consensusRunDir(repoRoot, runId)),
     manifest_pointer: pointer(repoRoot, manifestPath),
     consensus_pointer: manifest.consensus_pointer,
-    execution_pointer: executionArtifact ? pointer(repoRoot, executionPath) : null,
-    progress_pointer: progressArtifact ? pointer(repoRoot, progressPath) : null,
+    execution_pointer: executionPointer,
+    progress_pointer: progressPointer,
     execution_summary: executionArtifact?.summary ?? progressArtifact?.summary ?? null,
+    execution_remediation: resolveExecutionRemediation({
+      runId,
+      executionArtifact,
+      progressArtifact,
+      executionPointer,
+      progressPointer,
+    }),
     rounds: manifest.rounds.map((round) => ({
       round: round.round,
       kind: round.kind,
@@ -1100,6 +1121,138 @@ function summarizeExecutions(executions) {
   return summary;
 }
 
+function resolveExecutionRemediation({
+  runId,
+  executionArtifact,
+  progressArtifact,
+  executionPointer,
+  progressPointer,
+}) {
+  if (executionArtifact?.execution_remediation) {
+    return executionArtifact.execution_remediation;
+  }
+  const summary = executionArtifact?.summary ?? progressArtifact?.summary ?? null;
+  if (!summary) return null;
+  const executions = executionArtifact?.executions ?? Object.values(progressArtifact?.peers ?? {});
+  return buildExecutionRemediation({
+    runId,
+    roundNumber: executionArtifact?.round ?? progressArtifact?.round ?? latestRoundFromExecutions(executions),
+    summary,
+    executions,
+    executionPointer,
+    progressPointer,
+  });
+}
+
+function buildExecutionRemediation({
+  runId,
+  roundNumber,
+  summary,
+  executions,
+  executionPointer,
+  progressPointer,
+}) {
+  const failedExecutions = executions.filter((execution) => execution.status !== 'passed');
+  const retryCommands = unique(failedExecutions
+    .filter((execution) => execution.retryable && execution.retry_command)
+    .map((execution) => execution.retry_command));
+  const failureTypes = {};
+  for (const execution of failedExecutions) {
+    const type = execution.failure_type ?? execution.status ?? 'unknown';
+    failureTypes[type] = (failureTypes[type] ?? 0) + 1;
+  }
+  const proofCommands = buildProofCommands(failureTypes, summary);
+  const status = remediationStatus({ summary, retryCommands });
+  const peerActions = failedExecutions.map((execution) => ({
+    peer: execution.peer,
+    status: execution.status,
+    failure_type: execution.failure_type ?? null,
+    retryable: execution.retryable === true,
+    operator_action_required: execution.operator_action_required === true,
+    retry_after: execution.retry_after ?? null,
+    retry_command: execution.retry_command ?? null,
+    suggested_timeout_ms: suggestedTimeoutMs(execution),
+    raw_output: execution.raw_output ?? null,
+    execution_pointer: execution.execution_pointer ?? null,
+  }));
+
+  return {
+    status,
+    next_action: remediationNextAction(status),
+    run_id: runId,
+    round: roundNumber ?? null,
+    failure_types: failureTypes,
+    retry_commands: retryCommands,
+    proof_commands: proofCommands,
+    peer_actions: peerActions,
+    artifacts: {
+      execution: executionPointer,
+      progress: progressPointer,
+      peer_executions: peerActions
+        .map((action) => action.execution_pointer)
+        .filter(Boolean),
+    },
+    limits: [
+      'Remediation is advisory and bounded; it does not auto-retry peers.',
+      'Runtime does not relax host auth, sandbox, approval, permission, network, or session state.',
+      'Raw peer stdout remains only in raw_output pointers.',
+    ],
+  };
+}
+
+function remediationStatus({ summary, retryCommands }) {
+  if (summary?.operator_action_required > 0) return 'operator_action_required';
+  if (summary?.failed_retryable > 0 || retryCommands.length > 0) return 'retryable_failure';
+  if (summary?.failed_non_retryable > 0) return 'inspect_failure';
+  if (summary?.skipped > 0) return 'skipped_peers';
+  return 'none';
+}
+
+function remediationNextAction(status) {
+  switch (status) {
+    case 'operator_action_required':
+      return 'Resolve host auth, sandbox, approval, or permission preconditions outside runtime before retrying selected peers.';
+    case 'retryable_failure':
+      return 'Retry only retryable peers with the listed commands; run proof commands first when startup latency or host readiness is unclear.';
+    case 'inspect_failure':
+      return 'Inspect sanitized execution artifacts and resolve non-retryable peer failures before continuing consensus.';
+    case 'skipped_peers':
+      return 'Run the skipped peer commands explicitly or synthesize from intentionally partial evidence.';
+    default:
+      return 'No execution remediation is required.';
+  }
+}
+
+function buildProofCommands(failureTypes, summary) {
+  const commands = [];
+  if (failureTypes.timeout || summary?.failed_retryable > 0) {
+    commands.push('runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke');
+  }
+  if (
+    failureTypes.auth_required
+    || failureTypes.permission_required
+    || failureTypes.sandbox_blocked
+    || summary?.operator_action_required > 0
+  ) {
+    commands.push('runtime:doctor --permission-proof --execute-permission-proof');
+  }
+  return unique(commands);
+}
+
+function suggestedTimeoutMs(execution) {
+  if (execution.failure_type !== 'timeout') return null;
+  const timeoutMs = Number(execution.timeout_ms);
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 1) return DEFAULT_EXECUTION_TIMEOUT_MS;
+  return Math.min(MAX_EXECUTION_TIMEOUT_MS, Math.max(DEFAULT_EXECUTION_TIMEOUT_MS, Math.ceil(timeoutMs * 2)));
+}
+
+function latestRoundFromExecutions(executions) {
+  const rounds = executions
+    .map((execution) => Number(execution.round))
+    .filter((round) => Number.isInteger(round) && round > 0);
+  return rounds.length ? Math.max(...rounds) : null;
+}
+
 function summarizeRoundStatus({ executions, activePeers, round }) {
   const successful = new Set((round.raw_outputs ?? [])
     .filter((entry) => entry.status === 'passed' || entry.status === undefined)
@@ -1465,6 +1618,22 @@ export function formatText(report) {
   if (report.execution_summary) {
     lines.push(`execution summary: executed=${report.execution_summary.executed}; passed=${report.execution_summary.passed}; failed=${report.execution_summary.failed}; skipped=${report.execution_summary.skipped}; retryable-failed=${report.execution_summary.failed_retryable}; non-retryable-failed=${report.execution_summary.failed_non_retryable}; operator-action-required=${report.execution_summary.operator_action_required ?? 0}`);
   }
+  if (report.execution_remediation) {
+    lines.push(`remediation: ${report.execution_remediation.status}`);
+    lines.push(`remediation next action: ${report.execution_remediation.next_action}`);
+    if (report.execution_remediation.artifacts?.execution) {
+      lines.push(`remediation execution artifact: ${report.execution_remediation.artifacts.execution}`);
+    }
+    if (report.execution_remediation.artifacts?.progress) {
+      lines.push(`remediation progress artifact: ${report.execution_remediation.artifacts.progress}`);
+    }
+    for (const command of report.execution_remediation.proof_commands ?? []) {
+      lines.push(`proof-command: ${command}`);
+    }
+    for (const command of report.execution_remediation.retry_commands ?? []) {
+      lines.push(`retry-command: ${command}`);
+    }
+  }
   if (report.executions?.length) {
     lines.push('', 'executions:');
     for (const execution of report.executions) {
@@ -1792,6 +1961,10 @@ function isCompanionPeer(peer) {
 
 function compact(values) {
   return values.filter(Boolean);
+}
+
+function unique(values) {
+  return [...new Set(values)];
 }
 
 function normalizePeers(value) {

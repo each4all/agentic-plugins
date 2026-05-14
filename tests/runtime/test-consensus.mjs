@@ -349,11 +349,19 @@ describe('runtime consensus', () => {
     strictEqual(report.status, 'failed');
     strictEqual(report.progress_pointer, `.agentic-plugins/runs/consensus/${RUN_ID}/execution-progress.json`);
     strictEqual(report.execution_summary.failed_retryable, 2);
+    strictEqual(report.execution_remediation.status, 'retryable_failure');
+    strictEqual(report.execution_remediation.failure_types.timeout, 2);
+    ok(report.execution_remediation.next_action.includes('Retry only retryable peers'));
+    ok(report.execution_remediation.proof_commands.includes('runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke'));
+    ok(report.execution_remediation.retry_commands.every((command) => command.includes('--process-budget 1')));
+    ok(report.execution_remediation.peer_actions.every((entry) => entry.suggested_timeout_ms === 180000));
     ok(report.executions.every((entry) => entry.status === 'timed_out'));
     ok(report.executions.every((entry) => entry.failure_type === 'timeout'));
     ok(report.executions.every((entry) => entry.retryable === true));
     ok(report.executions.every((entry) => entry.retry_after.includes('runtime:doctor --deep-peer-smoke')));
     ok(formatText(report).includes('progress:'));
+    ok(formatText(report).includes('remediation: retryable_failure'));
+    ok(formatText(report).includes('proof-command: runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke'));
     ok(!JSON.stringify(report).includes('TIMED OUT RAW OUTPUT'), 'timeout report must not include raw text');
 
     const progress = await readJson(join(root, report.progress_pointer));
@@ -370,6 +378,7 @@ describe('runtime consensus', () => {
 
     const latest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', 'latest.json'));
     strictEqual(latest.progress_pointer, report.progress_pointer);
+    strictEqual(latest.remediation.status, 'retryable_failure');
   });
 
   it('reports status guidance for retryable failed peers from execution artifacts', async () => {
@@ -397,6 +406,11 @@ describe('runtime consensus', () => {
 
     strictEqual(report.status_guidance.state, 'retry_failed_peers');
     strictEqual(report.execution_summary.failed_retryable, 2);
+    strictEqual(report.execution_remediation.status, 'retryable_failure');
+    strictEqual(report.execution_remediation.peer_actions.length, 2);
+    ok(report.execution_remediation.retry_commands.some((command) => command.includes(`--peers claude`)));
+    ok(report.execution_remediation.artifacts.execution.endsWith('/execution.json'));
+    ok(report.execution_remediation.artifacts.progress.endsWith('/execution-progress.json'));
     ok(report.progress_pointer.endsWith('/execution-progress.json'));
     ok(report.status_guidance.commands.some((command) => command.includes(`--peers claude`) && command.includes('--timeout-ms 180000')));
     ok(report.status_guidance.commands.some((command) => command.includes(`--peers codex`) && command.includes('--process-budget 1')));
