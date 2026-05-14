@@ -567,6 +567,7 @@ export async function executeRound(options = {}) {
 
 export async function readStatus(options = {}) {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
+  const now = options.now ?? new Date();
   const selection = await resolveStatusRunSelection({
     repoRoot,
     runId: options.runId,
@@ -592,6 +593,7 @@ export async function readStatus(options = {}) {
     executionArtifact,
     progressArtifact,
     consensusArtifact,
+    now,
   });
   return {
     command: 'status',
@@ -1350,7 +1352,7 @@ function laneCommandTemplate({ runId, peer, lane }) {
   return `runtime:consensus record --run-id ${runId} --round <round> --peer ${peer} --input-file <path>`;
 }
 
-function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtifact, consensusArtifact }) {
+function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtifact, consensusArtifact, now }) {
   const latestRound = findRound(manifest, latestRoundNumber(manifest));
   const summary = executionArtifact?.summary ?? progressArtifact?.summary ?? null;
   const retryCommands = collectRetryCommands(executionArtifact, progressArtifact);
@@ -1366,6 +1368,29 @@ function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtif
   if (!executionArtifact && progressArtifact?.status === 'running') {
     const runningPeers = peersWithProgressStatus(progressArtifact, 'running');
     const pendingPeers = peersWithProgressStatus(progressArtifact, 'pending');
+    const stalledPeers = stalledProgressPeers(progressArtifact, now);
+    if (stalledPeers.length > 0) {
+      const stalledNames = stalledPeers.map((peer) => peer.peer);
+      const guardedRetrySteps = stalledPeers
+        .map((peer) => peer.retry_command
+          ? `After confirming no original execute process is still active: ${peer.retry_command}`
+          : null);
+      return guidance({
+        state: 'execution_stalled',
+        next_action: `Consensus execution progress appears stalled for ${stalledNames.join(', ')}; inspect the progress artifact and confirm no original execute process is still active before retrying selected peers.`,
+        next_steps: [
+          progressArtifact.progress_pointer ? `Inspect ${progressArtifact.progress_pointer}` : null,
+          'runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke',
+          ...guardedRetrySteps,
+          `runtime:consensus status --run-id ${runId}`,
+        ],
+        commands: [
+          'runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke',
+          `runtime:consensus status --run-id ${runId}`,
+        ],
+        reason: `execution progress exceeded per-peer timeout; stalled=${stalledPeers.map((peer) => `${peer.peer}:elapsed_ms=${peer.elapsed_ms}:timeout_ms=${peer.timeout_ms}`).join(',')}; pending=${pendingPeers.join(',') || '<none>'}`,
+      });
+    }
     return guidance({
       state: 'execution_running',
       next_action: runningPeers.length > 0
@@ -1508,6 +1533,35 @@ function peersWithProgressStatus(progressArtifact, status) {
     .filter((peer) => peer?.status === status)
     .map((peer) => peer.peer)
     .filter(Boolean);
+}
+
+function stalledProgressPeers(progressArtifact, now) {
+  const nowMs = timestampMs(now);
+  if (nowMs === null) return [];
+  return Object.values(progressArtifact?.peers ?? {})
+    .filter((peer) => peer?.status === 'running')
+    .map((peer) => progressStall(peer, progressArtifact, nowMs))
+    .filter(Boolean);
+}
+
+function progressStall(peer, progressArtifact, nowMs) {
+  const startedAtMs = timestampMs(peer.started_at);
+  const timeoutMs = Number(peer.timeout_ms ?? progressArtifact?.execution_boundary?.timeout_ms);
+  if (startedAtMs === null || !Number.isFinite(timeoutMs) || timeoutMs < 1) return null;
+  const elapsedMs = Math.max(0, nowMs - startedAtMs);
+  if (elapsedMs <= timeoutMs) return null;
+  return {
+    peer: peer.peer,
+    elapsed_ms: elapsedMs,
+    timeout_ms: timeoutMs,
+    retry_command: buildRetryCommand({
+      failure: { type: 'timeout', retryable: true },
+      runId: progressArtifact.run_id,
+      roundNumber: progressArtifact.round,
+      peer: peer.peer,
+      timeoutMs,
+    }),
+  };
 }
 
 function collectRetryCommands(executionArtifact, progressArtifact) {
@@ -2101,6 +2155,15 @@ function makeRunId(now) {
 
 function toIso(value) {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function timestampMs(value) {
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function consensusTimestampMs(manifest, fallbackRunId) {

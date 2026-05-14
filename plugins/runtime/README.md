@@ -179,7 +179,7 @@ Consensus is a runtime-owned artifact scaffold and explicit companion executor f
 2. `execute --execute`: invoke only companion-backed `claude` and/or `codex` peers through `companions/contract.md`, bounded by peer list, process budget, max rounds, and timeout caps. Raw peer stdout is written under the run artifact tree; main output reports prompt pointer, raw-output pointer, byte count, SHA-256, status, failure type, and retryability only.
 3. `record`: copy manually obtained peer raw output, including manual/subagent lane output, into the run artifact tree and update the manifest with pointer, byte count, and hash.
 4. `synthesize`: write `consensus.json` with `synthesized_summary`, `durable_disagreements`, `evidence_pointers`, `next_action`, and next-round availability.
-5. `status`: read manifest, execution, progress, and consensus-result artifacts to recommend the next bounded operator action: execute/record, retry selected peers, synthesize, plan next-round, or stop for owner decision.
+5. `status`: read manifest, execution, progress, and consensus-result artifacts to recommend the next bounded operator action: execute/record, retry selected peers, synthesize, plan next-round, or stop for owner decision. If a running progress artifact has exceeded its per-peer timeout without a final `execution.json`, status reports `execution_stalled` and asks the operator to inspect the progress artifact and confirm no original execute process is still active before retrying a guarded selected-peer command.
 6. `next-round`: create targeted rebuttal prompts from synthesized disagreement summaries when budget remains.
 7. `execute --round <n> --execute`: run a bounded rebuttal round after `next-round`.
 

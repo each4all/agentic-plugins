@@ -50,6 +50,8 @@ Consensus reports and manages:
 - bounded timeout remediation metadata, including a selected-peer retry command.
 - status guidance that recommends the next bounded operator action from
   manifest, execution, progress, and consensus-result artifacts.
+- stalled-progress guidance when a running peer exceeds its timeout without a
+  final execution artifact, guarded by an inspect-before-retry instruction.
 - latest-run lookup for `status --latest`, selected from readable manifest
   timestamps without reading raw peer output.
 

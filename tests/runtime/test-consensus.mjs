@@ -477,6 +477,68 @@ describe('runtime consensus', () => {
     ok(formatText(report).includes('guidance state: execution_running'));
   });
 
+  it('reports stalled running execution progress with guarded timeout remediation', async () => {
+    const root = await seedPlan();
+    const progressPointer = `.agentic-plugins/runs/consensus/${RUN_ID}/execution-progress.json`;
+    await writeFile(join(root, progressPointer), JSON.stringify({
+      schema_version: 'runtime-consensus-progress-1.0',
+      runtime_version: '0.0.0-test',
+      run_id: RUN_ID,
+      status: 'running',
+      created_at: '2026-05-13T00:02:00.000Z',
+      updated_at: '2026-05-13T00:02:00.000Z',
+      round: 1,
+      peer_execution: true,
+      execution_boundary: {
+        execute_flag_required: true,
+        execute_flag_supplied: true,
+        timeout_ms: 90000,
+        process_budget: 2,
+      },
+      preflight: {
+        status: 'completed',
+        completed_at: '2026-05-13T00:02:01.000Z',
+      },
+      peers: {
+        claude: {
+          peer: 'claude',
+          status: 'running',
+          scheduled: true,
+          started_at: '2026-05-13T00:02:00.000Z',
+          timeout_ms: 90000,
+          prompt_pointer: `.agentic-plugins/runs/consensus/${RUN_ID}/rounds/round-1/prompts/claude.md`,
+        },
+        codex: {
+          peer: 'codex',
+          status: 'pending',
+          scheduled: true,
+          started_at: null,
+          timeout_ms: 90000,
+          prompt_pointer: `.agentic-plugins/runs/consensus/${RUN_ID}/rounds/round-1/prompts/codex.md`,
+        },
+      },
+      summary: null,
+      progress_pointer: progressPointer,
+    }, null, 2));
+
+    const report = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:05:00.000Z'),
+    });
+
+    strictEqual(report.status_guidance.state, 'execution_stalled');
+    ok(report.next_action.includes('appears stalled for claude'));
+    ok(report.status_guidance.reason.includes('stalled=claude'));
+    ok(report.status_guidance.reason.includes('elapsed_ms=180000'));
+    ok(report.status_guidance.commands.includes('runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke'));
+    ok(!report.status_guidance.commands.some((command) => command.includes('execute --run-id')));
+    ok(report.status_guidance.next_steps.some((step) => step.includes('After confirming no original execute process is still active')));
+    ok(report.status_guidance.next_steps.some((step) => step.includes(`--peers claude`) && step.includes('--timeout-ms 180000')));
+    ok(formatText(report).includes('guidance state: execution_stalled'));
+  });
+
   it('records raw peer output as an artifact pointer without leaking content', async () => {
     const root = await seedPlan();
     const rawOutput = 'RAW PEER OUTPUT THAT MUST NOT ENTER THE MAIN REPORT';
