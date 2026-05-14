@@ -342,11 +342,21 @@ function commandStatus(result) {
 }
 
 function parseClaudeAuth(result) {
-  if (!result.ok) {
-    return classifyAuthFailure(result);
+  const jsonAuth = parseClaudeAuthJson(result.stdout) ?? parseClaudeAuthJson(result.stderr);
+  if (jsonAuth) return jsonAuth;
+  if (!result.ok) return classifyAuthFailure(result);
+
+  const text = singleLine(`${result.stdout} ${result.stderr}`);
+  if (/not logged in|login required|unauth/i.test(text)) {
+    return { status: 'unauthenticated', logged_in: false, sensitive_fields_redacted: [] };
   }
+  return { status: 'unknown', logged_in: null, detail: redactSecrets(text), sensitive_fields_redacted: [] };
+}
+
+function parseClaudeAuthJson(text) {
+  if (!text || !text.trim()) return null;
   try {
-    const json = JSON.parse(result.stdout);
+    const json = JSON.parse(text);
     if (json.loggedIn === true) {
       return {
         status: 'available',
@@ -357,14 +367,13 @@ function parseClaudeAuth(result) {
         sensitive_fields_redacted: ['email', 'orgId', 'orgName'],
       };
     }
-    return { status: 'unauthenticated', logged_in: false, sensitive_fields_redacted: [] };
-  } catch {
-    const text = singleLine(`${result.stdout} ${result.stderr}`);
-    if (/not logged in|login required|unauth/i.test(text)) {
-      return { status: 'unauthenticated', logged_in: false, sensitive_fields_redacted: [] };
+    if (json.loggedIn === false) {
+      return { status: 'unauthenticated', logged_in: false, sensitive_fields_redacted: ['email', 'orgId', 'orgName'] };
     }
-    return { status: 'unknown', logged_in: null, detail: redactSecrets(text), sensitive_fields_redacted: [] };
+  } catch {
+    return null;
   }
+  return null;
 }
 
 function parseCodexAuth(result) {
