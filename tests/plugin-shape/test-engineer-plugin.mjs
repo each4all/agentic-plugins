@@ -23,7 +23,8 @@
 //     §sub-decisions 1+2+3)
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
 //   - 1 Codex adapter hook (stop helper)
-//   - 1 Claude hooks manifest (hooks/hooks.json)
+//   - 1 bundled hooks manifest (hooks/hooks.json), exposed through the Codex
+//     manifest's `hooks` field and through Claude's plugin hook binding
 //   - 9 ensemble point types in skills/_shared/references/ensemble-protocol.md
 //     (added Research-scan for cited-brief profile per ADR-0014)
 //   - 3 references/ files under skills/investigate/ (cited-brief-spec,
@@ -215,6 +216,11 @@ describe('plugins/engineer — Codex manifest (.codex-plugin/plugin.json)', () =
   it('has skills field per Codex vendored spec (REQUIRED)', async () => {
     const json = await readJSON(path);
     strictEqual(json.skills, './skills/');
+  });
+
+  it('exposes bundled lifecycle hooks to Codex plugin metadata', async () => {
+    const json = await readJSON(path);
+    strictEqual(json.hooks, './hooks/hooks.json');
   });
 
   it('has interface block with engineer-specific values', async () => {
@@ -805,13 +811,16 @@ describe('plugins/engineer — Codex adapter (adapters/codex/hooks/)', () => {
     );
   });
 
-  it('README.md documents Codex hook surface absence (honest scope per ADR-0001 §honest scope)', async () => {
+  it('README.md documents Codex hook fallback scope', async () => {
     const path = resolve(PLUGIN_ROOT, 'adapters/codex/hooks/README.md');
     ok(await exists(path), 'adapters/codex/hooks/README.md missing');
+    const text = await readFile(path, 'utf-8');
+    ok(/plugin_hooks\s*=\s*true/.test(text), 'README documents Codex plugin_hooks feature flag');
+    ok(/fallback accelerator/i.test(text), 'README documents manual fallback');
   });
 });
 
-describe('plugins/engineer — Claude hooks manifest (hooks/hooks.json)', () => {
+describe('plugins/engineer — bundled hooks manifest (hooks/hooks.json)', () => {
   const path = resolve(PLUGIN_ROOT, 'hooks/hooks.json');
 
   it('parses as JSON', async () => {
