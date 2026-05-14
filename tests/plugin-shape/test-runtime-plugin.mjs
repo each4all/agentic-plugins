@@ -133,10 +133,11 @@ describe('plugins/runtime settings surface', () => {
 
   it('follow-ups document plugin-management boundaries plus deferred consensus/context/footer scope', async () => {
     const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
-    for (const token of ['Plugin management beyond the explicit settings executor', 'Consensus executor depth beyond the explicit boundary', 'Worktree execution beyond read-only planning', 'Context automation', 'Completion footer', 'Codex capability drift beyond the current baseline']) {
+    for (const token of ['Plugin management beyond the explicit settings executor', 'Consensus executor depth beyond the explicit boundary', 'Worktree execution beyond read-only planning', 'Context automation', 'Completion footer', 'Codex capability drift beyond the current baseline', 'Claude-vs-Codex parity drift beyond the current baseline']) {
       ok(followUps.includes(token), `${token} documented`);
     }
     ok(/Codex manual-hook/i.test(followUps), 'Codex manual-hook honesty documented');
+    ok(/Claude agent teams must not be treated as the portable cross-host team-mode substrate/i.test(followUps), 'Claude team-mode boundary documented');
   });
 
   it('documents the Codex capability baseline with source-backed host boundaries', async () => {
@@ -151,6 +152,30 @@ describe('plugins/runtime settings surface', () => {
       'plugin_hooks',
       'Do not claim Codex subagents run automatically',
       'Do not mutate `~/.codex/config.toml`',
+      'host-parity-baseline.md',
+    ]) {
+      ok(baseline.includes(token), `${token} documented`);
+    }
+  });
+
+  it('documents the Claude-vs-Codex host parity baseline with source-backed non-parity boundaries', async () => {
+    const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
+    for (const token of [
+      'Claude Code `2.1.141`',
+      'Codex CLI\n`0.130.0`',
+      'https://developers.openai.com/codex/subagents',
+      'https://developers.openai.com/codex/hooks',
+      'https://code.claude.com/docs/en/plugins',
+      'https://code.claude.com/docs/en/agent-teams',
+      'https://code.claude.com/docs/en/hooks',
+      'codex plugin marketplace add',
+      'plugin_hooks',
+      'Codex only spawns subagents when explicitly asked',
+      'Claude agent teams are not a portable cross-host primitive',
+      '.agentic-plugins/config.toml',
+      'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
+      'agents.max_threads',
+      'Do not collapse host-specific plugin metadata into `.agentic-plugins`',
     ]) {
       ok(baseline.includes(token), `${token} documented`);
     }
