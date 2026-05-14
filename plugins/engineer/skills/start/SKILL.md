@@ -66,9 +66,9 @@ presentation + ensemble protocol within this runbook context.
 
 Rotate the workflow's `verb` field at each sub-phase entry so
 SessionStart re-injection and audit tooling see the active cognitive
-activity. The Codex `brainstorm` ensemble dispatch follows the
-always-max policy (ADR-0020 §Sub-decision 3) — never ask whether to
-invoke the peer; the verb skills' own ensemble protocol handles
+activity. The opposite-host `brainstorm` ensemble dispatch follows
+the always-max policy (ADR-0020 §Sub-decision 3) — never ask whether
+to invoke the peer; the verb skills' own ensemble protocol handles
 launch-and-collect automatically.
 
 **Do not proceed to Phase 2 until the user approves a direction.**
@@ -77,9 +77,10 @@ launch-and-collect automatically.
 
 Map the current codebase state and integration points affected by the
 chosen direction. Execute `skills/investigate/SKILL.md` command-
-invoked semantics with `--profile=analysis`. The Codex `explore`
-ensemble runs in parallel per ADR-0020 §Sub-decision 3 (Independence
-Rule honored — local + peer build independent maps before synthesis).
+invoked semantics with `--profile=analysis`. The opposite-host
+`explore` ensemble runs in parallel per ADR-0020 §Sub-decision 3
+(Independence Rule honored — local + peer build independent maps
+before synthesis).
 
 ### Phase 3 — Plan-verify (compose --profile=plan + critique)
 
@@ -87,11 +88,12 @@ Execute `skills/compose/SKILL.md` with `--profile=plan` to produce
 the plan artifact, then `skills/critique/SKILL.md` to verify
 completeness and feasibility.
 
-Codex `plan-verify` ensemble runs at this phase boundary; this is
-the documented **Independence Rule exception** (ADR-0020 §Sub-decision
-3) — Codex receives Claude's draft plan rather than building an
-independent plan from scratch, because re-deriving the plan would
-waste tokens and surface false-disagreements on incidental choices.
+The opposite-host `plan-verify` ensemble runs at this phase boundary;
+this is the documented **Independence Rule exception** (ADR-0020
+§Sub-decision 3) — the peer receives the local draft plan rather than
+building an independent plan from scratch, because re-deriving the
+plan would waste tokens and surface false-disagreements on incidental
+choices.
 
 **Multi-deliverable detection prompt** (ADR-0020 §Sub-decision 6): if
 the plan groups into 2+ independently completable deliverables,
@@ -120,20 +122,20 @@ resuming.
 ### Phase 5 — Review (critique --profile=parallel-review)
 
 Execute `skills/critique/SKILL.md` with `--profile=parallel-review`
-for multi-perspective code review across the diff. The Codex `review
---scope working-tree` ensemble runs in parallel per ADR-0020 §Sub-
-decision 3 — the two reviews catch complementary findings (per-file
-correctness vs runbook system patterns) per the doctrine established
-in PR-E.
+for multi-perspective code review across the diff. The opposite-host
+`review --scope working-tree` ensemble runs in parallel per ADR-0020
+§Sub-decision 3 — the two reviews catch complementary findings
+(per-file correctness vs runbook system patterns) per the doctrine
+established in PR-E.
 
 ### Phase 6 — Resolve (refine)
 
 Execute `skills/refine/SKILL.md` to address Phase 5 findings.
-Iterate refine + Codex re-review (fresh `run_id` each pass) until
-the diff converges. If the same finding recurs across two resolve
-loops, surface to the user as a design-level issue and discuss
-whether to address now or defer to a separate `/engineer:refine`
-follow-up workflow.
+Iterate refine + peer re-review (fresh `run_id` each pass) until the
+diff converges. If the same finding recurs across two resolve loops,
+surface to the user as a design-level issue and discuss whether to
+address now or defer to a separate `/engineer:refine` follow-up
+workflow.
 
 ### Phase 7 — Commit
 
