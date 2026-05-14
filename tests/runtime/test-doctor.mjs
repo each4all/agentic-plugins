@@ -128,6 +128,42 @@ describe('runtime doctor', () => {
     ok(report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_packaging_gap'));
   });
 
+  it('classifies nonzero Claude auth JSON as unauthenticated', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-claude-auth-json-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'claude auth status': {
+          ok: false,
+          exit_code: 1,
+          stdout: JSON.stringify({
+            loggedIn: false,
+            authMethod: 'none',
+            apiProvider: 'firstParty',
+            email: 'person@example.com',
+            orgId: '11111111-2222-3333-4444-555555555555',
+            orgName: 'private org',
+          }),
+          stderr: '',
+          error_code: null,
+          timed_out: false,
+        },
+      }),
+    });
+
+    strictEqual(report.clis.claude.auth.status, 'unauthenticated');
+    strictEqual(report.clis.claude.auth.logged_in, false);
+    strictEqual(report.readiness_matrix.hosts.claude.authenticated.status, 'unauthenticated');
+    ok(formatText(report).includes('authenticated=unauthenticated'));
+    const serialized = JSON.stringify(report);
+    ok(!serialized.includes('person@example.com'), 'email must be redacted from nonzero auth JSON');
+    ok(!serialized.includes('11111111-2222-3333-4444-555555555555'), 'org id must be redacted from nonzero auth JSON');
+  });
+
   it('reports stale retired Claude plugin entries as host parity issues', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-retired-plugin-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
