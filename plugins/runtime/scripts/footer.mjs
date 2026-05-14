@@ -4,6 +4,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { buildSourceFreshness, formatSourceFreshness, resolveSourceSnapshot } from './source-snapshot.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -26,6 +27,7 @@ export async function runFooter(options = {}) {
         latest: options.contextLatest === true,
         now: options.now ?? new Date(),
         staleAfterMs: options.staleAfterMs ?? DEFAULT_HANDOFF_STALE_AFTER_MS,
+        currentSourceSnapshot: options.currentSourceSnapshot,
       })
     : null;
 
@@ -235,6 +237,11 @@ async function readContextArtifact(repoRoot, options) {
   const contextPath = lookup.contextPath;
   assertInsideSync(contextRoot(repoRoot), contextPath, 'Context artifact path escapes context root');
   const artifact = JSON.parse(await readFile(contextPath, 'utf8'));
+  const currentSourceSnapshot = await resolveSourceSnapshot({
+    repoRoot,
+    snapshot: options.currentSourceSnapshot,
+    observedAt: toIso(options.now),
+  });
   const state = validateContextState(artifact.context?.risk_level ?? 'yellow');
   const promptPointer = artifact.next_session?.prompt_pointer
     ? normalizeRepoPointer(repoRoot, artifact.next_session.prompt_pointer)
@@ -257,6 +264,7 @@ async function readContextArtifact(repoRoot, options) {
       now: options.now,
       staleAfterMs: options.staleAfterMs,
       skippedInvalid: lookup.skippedInvalid,
+      currentSourceSnapshot,
     }),
   };
 }
@@ -300,7 +308,15 @@ async function findLatestContextArtifact(repoRoot) {
   return { ...candidates[0], skippedInvalid };
 }
 
-function buildContextLookup({ artifact, runId, latest, now, staleAfterMs, skippedInvalid }) {
+function buildContextLookup({
+  artifact,
+  runId,
+  latest,
+  now,
+  staleAfterMs,
+  skippedInvalid,
+  currentSourceSnapshot,
+}) {
   const selectedAt = artifactTimestampMs(artifact, runId);
   const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
   const ageMs = selectedAt === null ? null : Math.max(0, nowMs - selectedAt);
@@ -313,6 +329,10 @@ function buildContextLookup({ artifact, runId, latest, now, staleAfterMs, skippe
     stale_after_ms: staleAfterMs,
     stale: ageMs === null ? null : ageMs > staleAfterMs,
     skipped_invalid: skippedInvalid,
+    source_freshness: buildSourceFreshness({
+      artifactSnapshot: artifact.source_snapshot,
+      currentSnapshot: currentSourceSnapshot,
+    }),
   };
 }
 
@@ -484,7 +504,7 @@ function contextStatusCommand(host, runId) {
 function formatContextLookup(lookup) {
   const selected = lookup.selected_at ?? 'unknown';
   const age = lookup.age_minutes === null ? 'unknown' : `${lookup.age_minutes} minutes`;
-  return [
+  const lines = [
     `- mode: ${lookup.mode}`,
     `- latest: ${lookup.latest}`,
     `- selected_at: ${selected}`,
@@ -492,7 +512,11 @@ function formatContextLookup(lookup) {
     `- stale: ${lookup.stale}`,
     `- stale_after_ms: ${lookup.stale_after_ms}`,
     `- skipped_invalid: ${lookup.skipped_invalid}`,
-  ].join('\n');
+  ];
+  if (lookup.source_freshness) {
+    lines.push(...formatSourceFreshness(lookup.source_freshness));
+  }
+  return lines.join('\n');
 }
 
 function artifactTimestampMs(artifact, fallbackRunId) {
@@ -599,6 +623,10 @@ function assertInsideSync(root, candidate, message) {
   }
 }
 
+function toIso(value) {
+  return value instanceof Date ? value.toISOString() : new Date(value ?? Date.now()).toISOString();
+}
+
 function helpText() {
   return `runtime footer ${VERSION}
 
@@ -610,8 +638,9 @@ Usage:
   runtime footer render --pr-handling --pr-completion-boundary reached --pr-validation-state passed --pr-review-state clear --pr-branch-state pushable
 
 Renders an advisory, pointer-only completion footer. It reads optional
-runtime:context artifacts but does not mutate host session context, workflow
-state, or pull request state.`;
+runtime:context artifacts and reports source freshness when available, but
+does not mutate host session context, workflow state, git state, or pull
+request state.`;
 }
 
 async function main() {

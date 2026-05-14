@@ -137,6 +137,47 @@ describe('runtime footer', () => {
     ok(!JSON.stringify(report).includes('latest prompt'));
   });
 
+  it('surfaces source-stale context artifacts without printing context bodies', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-source-stale-'));
+    await runContext({
+      command: 'capture',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T01:00:00.000Z'),
+      summary: 'Summary body should stay hidden while source freshness is shown.',
+      risk: 'yellow',
+      sourceSnapshot: {
+        status: 'observed',
+        kind: 'git',
+        commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        branch: 'main',
+        dirty: false,
+      },
+    });
+
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      contextRunId: RUN_ID,
+      workflowId: 'runtime-context-source-freshness',
+      currentSourceSnapshot: {
+        status: 'observed',
+        kind: 'git',
+        commit: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        branch: 'main',
+        dirty: false,
+      },
+    });
+
+    strictEqual(report.context.lookup.source_freshness.status, 'stale');
+    strictEqual(report.context.lookup.source_freshness.artifact_commit, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    strictEqual(report.context.lookup.source_freshness.current_commit, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    const text = formatText(report);
+    ok(text.includes('source freshness:'));
+    ok(text.includes('- source status: stale'));
+    ok(!text.includes('Summary body should stay hidden'));
+  });
+
   it('recommends asking the user about PR handling only when readiness criteria pass', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-footer-pr-ready-'));
     const report = await runFooter({
