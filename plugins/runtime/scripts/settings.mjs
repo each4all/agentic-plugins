@@ -14,7 +14,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor } from './doctor.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.3';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.4';
 export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.0';
 export const CONFIG_KEYS = [
   'model',
@@ -337,6 +337,7 @@ function buildPluginPlans(plugins) {
     const claudeInstalled = plugin.installed?.claude_plugin_list ?? null;
     const claudeCacheLatest = plugin.cache?.claude?.latest ?? null;
     const codexCacheLatest = plugin.cache?.codex?.latest ?? null;
+    const codexTmpMarketplace = plugin.cache?.codex_tmp_marketplace ?? null;
     result[name] = {
       status: plugin.status,
       source_version: sourceVersion,
@@ -346,6 +347,9 @@ function buildPluginPlans(plugins) {
         claude_cache: summarizeCacheInstall(claudeCacheLatest),
         codex_cache: summarizeCacheInstall(codexCacheLatest),
       },
+      marketplace_cache: {
+        codex_tmp_marketplace: summarizeSingleManifest(codexTmpMarketplace),
+      },
       recommendations: pluginRecommendations({
         name,
         sourceVersion,
@@ -353,6 +357,7 @@ function buildPluginPlans(plugins) {
         claudeInstalled,
         claudeCacheLatest,
         codexCacheLatest,
+        codexTmpMarketplace,
       }),
     };
   }
@@ -367,7 +372,16 @@ function summarizeCacheInstall(latest) {
   };
 }
 
-function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstalled, claudeCacheLatest, codexCacheLatest }) {
+function summarizeSingleManifest(manifest) {
+  if (manifest?.status !== 'available') return null;
+  return {
+    version: manifest.manifest_version ?? null,
+    path: manifest.path ?? null,
+    manifest_path: manifest.manifest_path ?? null,
+  };
+}
+
+function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstalled, claudeCacheLatest, codexCacheLatest, codexTmpMarketplace }) {
   const recommendations = [];
   if (!marketplace?.claude) {
     recommendations.push({
@@ -416,18 +430,44 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
   }
 
   const codexVersion = codexCacheLatest?.manifest_version ?? null;
+  const codexTmpVersion = codexTmpMarketplace?.status === 'available' ? codexTmpMarketplace.manifest_version ?? null : null;
   if (!codexCacheLatest) {
-    const command = buildPluginCommand({ host: 'codex', action: 'add-marketplace', name });
-    recommendations.push({
-      id: `${name}:codex:add-marketplace`,
-      host: 'codex',
-      action: 'add-marketplace',
-      executed: false,
-      command: command.display,
-      argv: command.argv,
-      executable: true,
-      detail: `Codex exposes marketplace add/upgrade/remove, not per-plugin install; add the marketplace catalog to make ${name} available.`,
-    });
+    if (sourceVersion && codexTmpVersion && semverCompare(String(codexTmpVersion), String(sourceVersion)) < 0) {
+      const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
+      recommendations.push({
+        id: `${name}:codex:upgrade-marketplace`,
+        host: 'codex',
+        action: 'upgrade-marketplace',
+        executed: false,
+        command: command.display,
+        argv: command.argv,
+        executable: true,
+        detail: `Codex marketplace cache has ${codexTmpVersion}; source/catalog ${sourceVersion}. Codex upgrades the marketplace, not an individual plugin install.`,
+      });
+    } else if (codexTmpVersion) {
+      recommendations.push({
+        id: `${name}:codex:materialize-plugin-cache`,
+        host: 'codex',
+        action: 'materialize-plugin-cache',
+        executed: false,
+        command: null,
+        argv: null,
+        executable: false,
+        detail: `Codex marketplace cache already has ${name} ${codexTmpVersion}, but no per-plugin install cache was found. This is not fixed by repeating marketplace add; start a fresh Codex session or verify host cache materialization with runtime:doctor.`,
+      });
+    } else {
+      const command = buildPluginCommand({ host: 'codex', action: 'add-marketplace', name });
+      recommendations.push({
+        id: `${name}:codex:add-marketplace`,
+        host: 'codex',
+        action: 'add-marketplace',
+        executed: false,
+        command: command.display,
+        argv: command.argv,
+        executable: true,
+        detail: `Codex exposes marketplace add/upgrade/remove, not per-plugin install; add the marketplace catalog to make ${name} available.`,
+      });
+    }
   } else if (sourceVersion && codexVersion && semverCompare(String(codexVersion), String(sourceVersion)) < 0) {
     const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
     recommendations.push({
@@ -1011,7 +1051,8 @@ export function formatText(report) {
   lines.push('Plugins');
   for (const name of PLUGIN_NAMES) {
     const plugin = report.plugins[name];
-    lines.push(`- ${name}: ${plugin.status}; source=${plugin.source_version ?? 'n/a'}; recommendations=${plugin.recommendations.length}`);
+    const codexTmp = plugin.marketplace_cache?.codex_tmp_marketplace;
+    lines.push(`- ${name}: ${plugin.status}; source=${plugin.source_version ?? 'n/a'}; codex-marketplace-cache=${codexTmp?.version ?? 'n/a'}; recommendations=${plugin.recommendations.length}`);
     for (const recommendation of plugin.recommendations) {
       const command = recommendation.command ? ` command=${recommendation.command}` : '';
       const executionStatus = recommendation.execution_status ? ` status=${recommendation.execution_status};` : '';
