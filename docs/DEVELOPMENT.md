@@ -55,7 +55,7 @@ transition.
 > (Claude) or `$engineer:start` (Codex) without `omcc-dev` escape
 > hatch. **ADR-0024 (Accepted)** reframes the immediate Stage 3+
 > candidate as runtime/operator control plane work. As of
-> `plugin-runtime` v0.26.0, runtime ships `doctor`, `settings` with
+> `plugin-runtime` v0.26.1, runtime ships `doctor`, `settings` with
 > explicit plugin-management execution artifacts, consensus artifacts
 > plus an explicit `execute --execute` companion boundary and remediation
 > metadata, read-only worktree planning, context-hygiene artifacts with
@@ -66,7 +66,7 @@ transition.
 > / [#106](https://github.com/each4all/agentic-plugins/pull/106)
 > and executor PRs [#129](https://github.com/each4all/agentic-plugins/pull/129)
 > / [#130](https://github.com/each4all/agentic-plugins/pull/130)
-> are historical ADR-0024 dogfood datapoints; the later v0.26.0 closeout
+> are historical ADR-0024 dogfood datapoints; the later v0.26.1 closeout
 > through PR [#180](https://github.com/each4all/agentic-plugins/pull/180)
 > plus release PR [#182](https://github.com/each4all/agentic-plugins/pull/182)
 > records the current runtime state, but these do not by themselves
@@ -415,7 +415,7 @@ or Stage 3 work makes the design choice tractable.
 ### Stage 3+ — Runtime/operator track + remaining workflows
 
 - **`plugins/orchestrator` (L2 capability)** ships per [ADR-0018](adr/0018-stage3-architecture-orchestrator-and-branch-context.md) §sub-decision-1 — first multi-verb L2 occupant. Plan-only MVP (`/orchestrator:plan` + Plan-verify peer ensemble) shipped first via [PR #53](https://github.com/each4all/agentic-plugins/pull/53); current plan skills document it as an opposite-host peer ensemble so Claude invokes Codex and Codex invokes Claude. The cross-plugin invocation contract is [ADR-0019](adr/0019-cross-plugin-invocation-contract.md) (sub-decision 1 follow-up). **As of 2026-05-11 the ADR-0019 cascade is fully shipped (PR-A through PR-E)** — `/orchestrator:plan` + `/next` + `/done` + `/finalize` + `/abort` + macro Stop auto-archive A1-A4 all operational on both hosts (Claude auto-archive via host Stop event; Codex manual helper via `adapters/codex/hooks/stop.mjs`). [ADR-0012](adr/0012-omcc-removal-preconditions.md) condition 1 transitions to satisfied (engineer parity unlocked — multi-deliverable workflow expressible via orchestrator + engineer composition); condition 3 still partial — accumulated Stage 3 non-trivial workflow evidence driven engineer-only is the trigger for that condition's satisfied transition. PR-F (`--peer` cross-host dispatch) remains trigger-deferred.
-- **Runtime/operator control plane (ADR-0024, Accepted)** is the immediate Stage 3+ dogfood target. As of `plugin-runtime` v0.26.0, `plugins/runtime` is an L1 framework primitive with shipped `runtime:doctor`, `runtime:settings` with explicit plugin-management execution artifacts, `runtime:consensus` artifacts plus an explicit `execute --execute` companion boundary and remediation metadata, read-only `runtime:worktree` planning, runtime-owned `runtime:context` artifacts with explicit budget checks and dirty/source-staleness handoff guidance, explicit workflow-storage migration, runtime artifact inventory, and the advisory completion footer helper with latest context/consensus/PR-readiness guidance. Deferred boundaries remain explicit: no automatic unbounded consensus loops, no broad host-native config apply mode, no automatic host-session context mutation or compaction, no runtime artifact deletion, and no raw peer/consensus output in the main session.
+- **Runtime/operator control plane (ADR-0024, Accepted)** is the immediate Stage 3+ dogfood target. As of `plugin-runtime` v0.26.1, `plugins/runtime` is an L1 framework primitive with shipped `runtime:doctor`, `runtime:settings` with explicit plugin-management execution artifacts, `runtime:consensus` artifacts plus an explicit `execute --execute` companion boundary and remediation metadata, read-only `runtime:worktree` planning, runtime-owned `runtime:context` artifacts with explicit budget checks and dirty/source-staleness handoff guidance, explicit workflow-storage migration, runtime artifact inventory, and the advisory completion footer helper with latest context/consensus/PR-readiness guidance. Deferred boundaries remain explicit: no automatic unbounded consensus loops, no broad host-native config apply mode, no automatic host-session context mutation or compaction, no runtime artifact deletion, and no raw peer/consensus output in the main session.
 - A design-domain plugin (`plugins/designer`) remains possible future work, referencing omcc-designer's experience (poster, social-graphics, frontend, brief, evaluation, etc.) with the same redesign stance, but it is no longer the active next-step trigger for ADR-0012 condition 3.
 - Any omcc-dev workflow patterns not covered in Stage 2 are addressed (implemented or explicitly dropped with rationale)
 - The user's daily workflows have agentic-plugins equivalents preferred over omcc
