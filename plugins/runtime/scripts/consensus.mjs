@@ -383,6 +383,9 @@ export async function executeRound(options = {}) {
   );
   const executionPeers = requestedPeers.slice(0, processBudget);
   const skippedPeers = requestedPeers.slice(processBudget);
+  const promptPointersByPeer = Object.fromEntries(
+    (round.prompts ?? []).map((prompt) => [prompt.peer, prompt.pointer]),
+  );
   const progressPath = resolve(consensusRunDir(repoRoot, runId), 'execution-progress.json');
   await assertInside(consensusRunDir(repoRoot, runId), progressPath);
   const progress = createExecutionProgress({
@@ -395,6 +398,7 @@ export async function executeRound(options = {}) {
     skippedPeers,
     timeoutMs,
     processBudget,
+    promptPointersByPeer,
   });
   await writeExecutionProgress(repoRoot, progressPath, progress);
 
@@ -440,6 +444,7 @@ export async function executeRound(options = {}) {
       roundNumber,
       peer,
       reason: `skipped by --process-budget=${processBudget}`,
+      promptPointer: promptPointersByPeer[peer] ?? null,
       now,
     });
     executions.push(execution);
@@ -507,6 +512,7 @@ export async function executeRound(options = {}) {
       .map((execution) => ({
         peer: execution.peer,
         status: execution.status,
+        prompt_pointer: execution.prompt_pointer,
         failure_type: execution.failure_type,
         operator_action_required: execution.operator_action_required,
         retryable: execution.retryable,
@@ -549,6 +555,9 @@ export async function executeRound(options = {}) {
       { kind: 'manifest', pointer: pointer(repoRoot, manifestPath) },
       { kind: 'consensus-execution', pointer: executionPointer },
       { kind: 'consensus-progress', pointer: progressPointer },
+      ...executions
+        .filter((execution) => execution.prompt_pointer)
+        .map((execution) => ({ kind: 'peer-prompt', round: roundNumber, peer: execution.peer, pointer: execution.prompt_pointer })),
       ...executions.map((execution) => ({ kind: 'peer-output', round: roundNumber, peer: execution.peer, ...execution.raw_output })),
       ...executions.map((execution) => ({ kind: 'peer-execution', round: roundNumber, peer: execution.peer, pointer: execution.execution_pointer })),
     ],
@@ -646,6 +655,7 @@ async function executePeer({
         retry_after: 'choose one of the supported companion peers: claude,codex',
       }),
       companionPath: null,
+      promptPointer: null,
       raw: '',
       execution: {
         executed: false,
@@ -666,6 +676,41 @@ async function executePeer({
 
   const companionDirection = doctor.companions.directions[directionKey];
   const directionSettings = doctor.model_effort.directions[directionKey];
+  const prompt = round.prompts.find((entry) => entry.peer === peer);
+  const promptPointer = prompt?.pointer ?? null;
+  if (!prompt) {
+    return writeFailedExecution({
+      repoRoot,
+      runId,
+      roundNumber,
+      peer,
+      now,
+      failure: failureClass({
+        status: 'failed',
+        type: 'prompt_missing',
+        retryable: false,
+        retry_after: 'recreate the consensus plan or next-round prompt before retrying',
+      }),
+      companionPath: null,
+      promptPointer,
+      raw: '',
+      execution: {
+        executed: false,
+        started_at: null,
+        timeout_ms: timeoutMs,
+        companion_exit_code: null,
+        companion_error_code: null,
+        timed_out: false,
+        envelope_status: null,
+        peer_host: peer,
+        peer_model: null,
+        peer_exit_code: null,
+        metadata: null,
+        error: { kind: 'prompt_missing', message: 'peer prompt artifact is missing from the manifest round' },
+      },
+    });
+  }
+
   const companionPath = companionDirection?.selected?.path ?? null;
   if (!companionPath) {
     return writeFailedExecution({
@@ -681,6 +726,7 @@ async function executePeer({
         retry_after: 'install or repair the companions plugin before retrying runtime:consensus execute',
       }),
       companionPath,
+      promptPointer,
       raw: '',
       execution: {
         executed: false,
@@ -695,39 +741,6 @@ async function executePeer({
         peer_exit_code: null,
         metadata: null,
         error: { kind: 'companion_unavailable', message: `${companionDirection?.filename ?? 'companion'} is not available` },
-      },
-    });
-  }
-
-  const prompt = round.prompts.find((entry) => entry.peer === peer);
-  if (!prompt) {
-    return writeFailedExecution({
-      repoRoot,
-      runId,
-      roundNumber,
-      peer,
-      now,
-      failure: failureClass({
-        status: 'failed',
-        type: 'prompt_missing',
-        retryable: false,
-        retry_after: 'recreate the consensus plan or next-round prompt before retrying',
-      }),
-      companionPath,
-      raw: '',
-      execution: {
-        executed: false,
-        started_at: null,
-        timeout_ms: timeoutMs,
-        companion_exit_code: null,
-        companion_error_code: null,
-        timed_out: false,
-        envelope_status: null,
-        peer_host: peer,
-        peer_model: null,
-        peer_exit_code: null,
-        metadata: null,
-        error: { kind: 'prompt_missing', message: 'peer prompt artifact is missing from the manifest round' },
       },
     });
   }
@@ -761,6 +774,7 @@ async function executePeer({
     peer,
     now,
     companionPath,
+    promptPointer,
     raw,
     status: failure ? failure.status : 'passed',
     failure,
@@ -781,7 +795,7 @@ async function executePeer({
   });
 }
 
-async function writeSkippedExecution({ repoRoot, runId, roundNumber, peer, reason, now }) {
+async function writeSkippedExecution({ repoRoot, runId, roundNumber, peer, reason, promptPointer, now }) {
   return writeFailedExecution({
     repoRoot,
     runId,
@@ -795,6 +809,7 @@ async function writeSkippedExecution({ repoRoot, runId, roundNumber, peer, reaso
       retry_after: 'retry with a larger --process-budget within the policy cap',
     }),
     companionPath: null,
+    promptPointer,
     raw: '',
     execution: {
       executed: false,
@@ -813,7 +828,7 @@ async function writeSkippedExecution({ repoRoot, runId, roundNumber, peer, reaso
   });
 }
 
-async function writeFailedExecution({ repoRoot, runId, roundNumber, peer, now, failure, companionPath, raw, execution }) {
+async function writeFailedExecution({ repoRoot, runId, roundNumber, peer, now, failure, companionPath, promptPointer, raw, execution }) {
   return writeExecutionResult({
     repoRoot,
     runId,
@@ -821,6 +836,7 @@ async function writeFailedExecution({ repoRoot, runId, roundNumber, peer, now, f
     peer,
     now,
     companionPath,
+    promptPointer,
     raw,
     status: failure.status,
     failure,
@@ -835,6 +851,7 @@ async function writeExecutionResult({
   peer,
   now,
   companionPath,
+  promptPointer,
   raw,
   status,
   failure,
@@ -859,6 +876,7 @@ async function writeExecutionResult({
     started_at: execution.started_at ?? null,
     completed_at: completedAt,
     companion_path: companionPath,
+    prompt_pointer: promptPointer ?? null,
     ...execution,
     raw_output: rawOutput,
     failure_type: failure?.type ?? null,
@@ -892,6 +910,7 @@ function createExecutionProgress({
   skippedPeers,
   timeoutMs,
   processBudget,
+  promptPointersByPeer = {},
 }) {
   const peers = {};
   for (const peer of requestedPeers) {
@@ -902,6 +921,7 @@ function createExecutionProgress({
       scheduled,
       started_at: null,
       completed_at: null,
+      prompt_pointer: promptPointersByPeer[peer] ?? null,
       timeout_ms: scheduled ? timeoutMs : null,
       raw_output: null,
       execution_pointer: null,
@@ -972,6 +992,7 @@ function markProgressFromExecution(progress, execution) {
   entry.status = execution.status;
   entry.started_at = execution.started_at ?? entry.started_at;
   entry.completed_at = execution.completed_at;
+  entry.prompt_pointer = execution.prompt_pointer ?? entry.prompt_pointer ?? null;
   entry.timeout_ms = execution.timeout_ms ?? entry.timeout_ms;
   entry.raw_output = execution.raw_output;
   entry.execution_pointer = execution.execution_pointer;
@@ -1637,7 +1658,7 @@ export function formatText(report) {
   if (report.executions?.length) {
     lines.push('', 'executions:');
     for (const execution of report.executions) {
-      lines.push(`- ${execution.peer}: status=${execution.status}; raw=${execution.raw_output.pointer}; bytes=${execution.raw_output.bytes}; sha256=${execution.raw_output.sha256}`);
+      lines.push(`- ${execution.peer}: status=${execution.status}; prompt=${execution.prompt_pointer ?? '<none>'}; raw=${execution.raw_output.pointer}; bytes=${execution.raw_output.bytes}; sha256=${execution.raw_output.sha256}`);
       if (execution.failure_type) {
         lines.push(`  failure=${execution.failure_type}; operator-action-required=${Boolean(execution.operator_action_required)}; retryable=${execution.retryable}; retry-after=${execution.retry_after ?? '<none>'}`);
         if (execution.retry_command) lines.push(`  retry-command=${execution.retry_command}`);
