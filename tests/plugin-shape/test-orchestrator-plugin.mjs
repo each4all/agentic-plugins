@@ -15,11 +15,11 @@
 //     finalize/abort lifecycle commands, 3 meta commands
 //     (resume/checkpoint/peer-now), and an audit follow-up alias
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
-//   - 1 Codex adapter manual stop helper (Codex CLI exposes host-level
-//     hooks, but no plugin-local automatic hook packaging is verified — Codex Stop is
-//     declared as a script file but NOT registered in hooks/hooks.json)
-//   - 1 Claude hooks manifest (hooks/hooks.json) declaring SessionStart,
-//     PreCompact, and Stop only
+//   - 1 Codex adapter manual stop helper fallback for sessions where Codex
+//     plugin hooks are disabled, untrusted, or inactive
+//   - 1 bundled hooks manifest (hooks/hooks.json) declaring SessionStart,
+//     PreCompact, and Stop, exposed through the Codex manifest's `hooks`
+//     field and Claude's plugin hook binding
 //
 // This verifies manifest + marketplace + hooks + command shape. The
 // tests/orchestrator/ suite covers state.mjs, dispatch-peer.mjs,
@@ -99,6 +99,7 @@ describe('plugins/orchestrator manifest pair', () => {
     strictEqual(typeof manifest.version, 'string');
     strictEqual(typeof manifest.description, 'string');
     strictEqual(typeof manifest.skills, 'string');
+    strictEqual(manifest.hooks, './hooks/hooks.json');
     ok(manifest.skills.endsWith('/'), 'skills path is directory-shaped');
     ok(manifest.interface, 'interface block present');
     strictEqual(typeof manifest.interface.displayName, 'string');
@@ -169,14 +170,12 @@ describe('plugins/orchestrator marketplace registration', () => {
 });
 
 describe('plugins/orchestrator hooks/hooks.json shape', () => {
-  it('declares SessionStart (matcher compact), PreCompact, Stop only — no Codex hook events', async () => {
+  it('declares SessionStart (matcher compact), PreCompact, and Stop lifecycle hooks', async () => {
     const hooks = await readJSON(resolve(PLUGIN_ROOT, 'hooks/hooks.json'));
     ok(hooks.hooks);
     ok(Array.isArray(hooks.hooks.SessionStart));
     ok(Array.isArray(hooks.hooks.PreCompact));
     ok(Array.isArray(hooks.hooks.Stop));
-    // Only Claude lifecycle events declared — no Codex plugin-local automatic
-    // hook packaging is verified.
     const declaredEvents = Object.keys(hooks.hooks);
     deepStrictEqual(declaredEvents.sort(), ['PreCompact', 'SessionStart', 'Stop']);
 
@@ -208,9 +207,11 @@ describe('plugins/orchestrator README + CHANGELOG', () => {
     // PR-E Stop hook now auto-archives — snapshot-only language must be retired.
     ok(!/snapshot.?only/i.test(readme),
       'README no longer documents Stop as snapshot-only (PR-E ships auto-archive)');
-    // Codex hook scope wording must remain explicit (not stale)
-    ok(/no plugin-local automatic hook packaging/i.test(readme),
-      'README uses corrected Codex hook scope wording');
+    // Codex hook scope wording must remain explicit and current.
+    ok(/\[features\]\.plugin_hooks\s*=\s*true/i.test(readme),
+      'README documents Codex plugin_hooks feature flag');
+    ok(/manual fallback/i.test(readme),
+      'README documents Codex manual fallback');
   });
 
   it('CHANGELOG exists with 0.1.0 initial entry', async () => {
@@ -515,12 +516,12 @@ describe('plugins/orchestrator commands/', () => {
     }
   });
 
-  it('/orchestrator:checkpoint uses checkpoint-set and documents Codex manual hook honesty', async () => {
+  it('/orchestrator:checkpoint uses checkpoint-set and documents Codex plugin-hook boundary', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, 'commands/checkpoint.md'), 'utf-8');
     ok(/state\.mjs"\s+checkpoint-set/.test(text), 'checkpoint command calls checkpoint-set');
     ok(text.includes('latest_checkpoint'), 'checkpoint command documents latest_checkpoint');
-    ok(/Codex CLI\s+has no plugin-local automatic SessionStart hook today/i.test(text),
-      'checkpoint command documents Codex hook limit');
+    ok(/\[features\]\.plugin_hooks\s*=\s*true/.test(text),
+      'checkpoint command documents Codex plugin_hooks boundary');
   });
 
   it('/orchestrator:peer-now uses peer-runner side-channel and excludes ensemble_results', async () => {

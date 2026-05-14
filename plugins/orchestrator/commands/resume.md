@@ -17,7 +17,7 @@ pattern is useful, but the workflow remains orchestrator-native:
 **Cognitive runbook lives in
 `$CLAUDE_PLUGIN_ROOT/skills/resume/SKILL.md`**. This command file owns
 Claude-host shell bootstrap and state writes; the skill documents the
-cross-host runbook and Codex manual-hook caveats.
+cross-host runbook and Codex plugin-hook feature-flag caveats.
 
 Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin root. If
 unset, discover the latest Claude cache entry under

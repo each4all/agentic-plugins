@@ -60,7 +60,14 @@ Claude Code hooks declared in `hooks/hooks.json`:
 - `PreCompact`: write a snapshot before compaction
 - `Stop`: macro auto-archive — iterate every non-archived macro under `workflows/` (branch-agnostic, per ADR-0019 §5), snapshot each, evaluate the four hard gates (A1 `terminal_marker` / A2 macro terminal_phase whitelist `{commit-complete, finalized, aborted}` / A3 `all_subtasks_terminal` / A4 `no_active_engineer_children`), and atomically move passing macros into `archive/`. The non-conventional commit subject gate emits a soft warning but does not block archive.
 
-Codex CLI exposes a host-level hooks feature in current releases, but agentic-plugins has **no plugin-local automatic hook packaging verified** for orchestrator lifecycle events. `hooks/hooks.json` therefore declares only Claude hooks; the Codex-side `Stop` script under `adapters/codex/hooks/stop.mjs` ships as a manual helper invoked from `/orchestrator:finalize` and `/orchestrator:abort` Phase 4 tails (or by the user manually) for cross-host macro auto-archive parity.
+Codex CLI exposes host-level hooks and plugin-bundled hooks. The
+orchestrator Codex manifest points at `./hooks/hooks.json`, so the plugin
+management surface can show the bundled lifecycle hooks. Automatic Codex
+execution still depends on `[features].plugin_hooks = true` plus Codex hook
+review/trust in the active host session. The Codex-side `Stop` script under
+`adapters/codex/hooks/stop.mjs` remains a manual fallback invoked from
+`/orchestrator:finalize` and `/orchestrator:abort` Phase 4 tails (or by the
+user manually) when plugin hooks are disabled or not yet trusted.
 
 ## Schema vs engineer
 

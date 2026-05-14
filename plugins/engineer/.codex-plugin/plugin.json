@@ -29,6 +29,7 @@
     "agentic-plugins"
   ],
   "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Engineer",
     "shortDescription": "AI-assisted engineering across 6 cognitive verbs + /engineer:start lifecycle macro (with cited-brief research)",

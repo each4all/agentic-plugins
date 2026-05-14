@@ -68,8 +68,12 @@ describe('runtime doctor', () => {
     strictEqual(report.plugin_command_surface.codex.supports.marketplace_upgrade, true);
     strictEqual(report.plugin_command_surface.codex.supports.install_plugin, false);
     strictEqual(report.plugin_command_surface.codex.materialization.status, 'materialized');
-    ok(report.host_parity.differences.some((issue) => issue.id === 'codex_manual_skill_invocation'));
-    ok(report.host_parity.differences.some((issue) => issue.id === 'codex_manual_skill_invocation' && issue.evidence.includes('global_hooks=true/stable')));
+    strictEqual(report.codex_plugin_hooks.status, 'feature_disabled');
+    deepStrictEqual(report.codex_plugin_hooks.summary.bundled_plugins, ['engineer', 'orchestrator']);
+    deepStrictEqual(report.codex_plugin_hooks.summary.manifest_exposed_plugins, ['engineer', 'orchestrator']);
+    ok(report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'enable-codex-plugin-hooks'));
+    ok(report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_feature_disabled'));
+    ok(report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_feature_disabled' && issue.evidence.includes('global_hooks=true/stable')));
     strictEqual(report.readiness_matrix.schema_version, 'runtime-readiness-matrix-1.0');
     strictEqual(report.readiness_matrix.hosts.claude.available.status, 'available');
     strictEqual(report.readiness_matrix.hosts.claude.installed.status, 'installed');
@@ -82,6 +86,7 @@ describe('runtime doctor', () => {
     strictEqual(report.readiness_matrix.hosts.codex.authenticated.status, 'available');
     strictEqual(report.readiness_matrix.hosts.codex.hooks.global_hooks, true);
     strictEqual(report.readiness_matrix.hosts.codex.hooks.plugin_local_hooks, false);
+    strictEqual(report.readiness_matrix.hosts.codex.hooks.packaging_status, 'feature_disabled');
     strictEqual(report.readiness_matrix.directions.claude_to_codex.companion.status, 'available');
     strictEqual(report.readiness_matrix.directions.claude_to_codex.model.value, 'gpt-5.4');
     strictEqual(report.readiness_matrix.directions.codex_to_claude.effort.value, 'high');
@@ -95,8 +100,32 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('claude: available=available; installed=installed; authenticated=available'));
     ok(formatText(report).includes('codex: available=available; installed=installed; authenticated=available'));
     ok(formatText(report).includes('Plugin Command Surface'));
+    ok(formatText(report).includes('Codex Plugin Hooks'));
+    ok(formatText(report).includes('status=feature_disabled'));
     ok(formatText(report).includes('codex: mode=marketplace-only'));
     ok(formatText(report).includes('Host Parity'));
+  });
+
+  it('flags hook-bearing Codex plugins that do not expose hooks in their manifest', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-gap-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    await writeJson(join(root, 'plugins', 'engineer', '.codex-plugin', 'plugin.json'), {
+      name: 'engineer',
+      version: '1.0.0',
+      description: 'engineer plugin',
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    strictEqual(report.codex_plugin_hooks.status, 'packaging_gap');
+    deepStrictEqual(report.codex_plugin_hooks.summary.default_file_only_plugins, ['engineer']);
+    ok(report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'expose-bundled-hooks-in-manifest'));
+    ok(report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_packaging_gap'));
   });
 
   it('reports stale retired Claude plugin entries as host parity issues', async () => {
@@ -853,11 +882,23 @@ async function seedRepo(root) {
       version: name === 'runtime' ? '0.1.0' : '1.0.0',
       description: `${name} plugin`,
     });
-    await writeJson(join(root, 'plugins', name, '.codex-plugin', 'plugin.json'), {
+    const codexManifest = {
       name,
       version: name === 'runtime' ? '0.1.0' : '1.0.0',
       description: `${name} plugin`,
-    });
+    };
+    if (['engineer', 'orchestrator'].includes(name)) codexManifest.hooks = './hooks/hooks.json';
+    await writeJson(join(root, 'plugins', name, '.codex-plugin', 'plugin.json'), codexManifest);
+    if (['engineer', 'orchestrator'].includes(name)) {
+      await mkdir(join(root, 'plugins', name, 'hooks'), { recursive: true });
+      await writeJson(join(root, 'plugins', name, 'hooks', 'hooks.json'), {
+        hooks: {
+          SessionStart: [{ matcher: 'compact', hooks: [{ type: 'command', command: 'node hook.mjs' }] }],
+          PreCompact: [{ hooks: [{ type: 'command', command: 'node hook.mjs' }] }],
+          Stop: [{ hooks: [{ type: 'command', command: 'node hook.mjs' }] }],
+        },
+      });
+    }
   }
   await mkdir(join(root, 'companions'), { recursive: true });
   await writeFile(join(root, 'companions', 'contract.md'), '**Version**: `v0.1.1`\n');

@@ -164,5 +164,5 @@ node <runtime-plugin-root>/scripts/footer.mjs render \
   next-round planning, or artifact mutation happens through the footer.
 - Existing engineer and orchestrator workflow state remains in its current
   storage; this contract is not a migration path.
-- Codex manual-hook and permission limits remain explicit and are not
+- Codex plugin-hook and permission limits remain explicit and are not
   represented as host parity.

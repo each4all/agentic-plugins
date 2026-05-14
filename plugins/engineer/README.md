@@ -66,12 +66,16 @@ current release ships:
   v0.1.1) + `scripts/peer-runner.mjs` (ADR-0023 caller-side
   ledger/status/cancel/sweep primitive; managed verb-command ensemble
   dispatch path plus `peer-now` operational controls)
-- **Claude Code hooks** (`hooks/hooks.json` + `adapters/claude/hooks/{pre-compact,stop,session-start}.mjs`) — automatic
-  state snapshot per ADR-0011 §4 (PreCompact + Stop + SessionStart)
+- **Bundled lifecycle hooks** (`hooks/hooks.json` +
+  `adapters/claude/hooks/{pre-compact,stop,session-start}.mjs`) —
+  exposed in both host manifests. Claude Code binds them through the
+  plugin hook surface. Codex can load the same bundled hooks when
+  `[features].plugin_hooks = true`; `runtime:doctor` / `runtime:settings`
+  report whether that feature is enabled and whether the manifest exposes
+  the hooks.
 - **Codex stop helper** (`adapters/codex/hooks/stop.mjs`) —
-  manual-invoke; Codex CLI does not expose a host hook surface
-  (as of 0.128.0), so SKILL command-invoked mode triggers this
-  script as its final step
+  manual fallback for sessions where Codex plugin hooks are disabled,
+  untrusted, or not yet active in the current host session.
 - **Workflow state persistence** under
   `<cwd>/.agentic-plugins/state/engineer/workflows/<workflow_id>.md`
   for new repos; existing legacy `.claude/agentic-engineer/` state

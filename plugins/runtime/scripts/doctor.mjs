@@ -101,7 +101,8 @@ export async function runDoctor({
   const caches = await inspectPluginCaches(resolvedHomeDir);
   const claudePluginList = parseClaudePluginList(claude.plugin?.stdout ?? '');
   const plugins = buildPluginMatrix({ source, catalogs, caches, claudePluginList });
-  const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList });
+  const codexPluginHooks = buildCodexPluginHookReport({ codex, plugins });
+  const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginHooks });
   const pluginCommandSurface = buildPluginCommandSurface({ claude, codex, plugins });
   const companion = await inspectCompanionContract({
     repoRoot: resolvedRepoRoot,
@@ -179,6 +180,7 @@ export async function runDoctor({
     claude,
     codex,
     plugins,
+    codexPluginHooks,
     companion,
     modelEffort,
     readiness,
@@ -202,6 +204,7 @@ export async function runDoctor({
     },
     plugins,
     plugin_command_surface: pluginCommandSurface,
+    codex_plugin_hooks: codexPluginHooks,
     host_parity: hostParity,
     companions: companion,
     model_effort: modelEffort,
@@ -212,7 +215,7 @@ export async function runDoctor({
     readiness,
     ledgers,
     limits: [
-      'Codex plugin-local automatic hooks are not assumed; doctor reports manual-hook limits.',
+      'Codex bundled plugin hooks require both manifest exposure and [features].plugin_hooks=true; doctor reports those separately from generic hooks.',
       'Readiness sandbox/permission status remains unknown unless --sandbox-permission-probe is requested; --permission-proof records separate preflight/execution evidence.',
       'Settings mutation belongs to runtime:settings; dynamic consensus, context hygiene, and completion footer mutation are deferred.',
       'Artifact inventory is read-only; runtime:doctor never deletes or compacts generated artifacts.',
@@ -463,6 +466,7 @@ async function inspectSourcePluginState(repoRoot) {
       present: Boolean(claudeManifest.ok || codexManifest.ok),
       claude_manifest: manifestSummary(claudeManifest),
       codex_manifest: manifestSummary(codexManifest),
+      codex_default_hooks_file: await hooksFileSummary(join(pluginRoot, 'hooks', 'hooks.json')),
     };
   }
   return result;
@@ -544,11 +548,14 @@ async function scanVersionedManifestDir({ baseDir, manifestRel }) {
     const manifestPath = join(baseDir, entry.name, manifestRel);
     const manifest = await readJsonIfExists(manifestPath);
     if (!manifest.ok) continue;
+    const pluginRoot = dirname(dirname(manifestPath));
     versions.push({
       version_dir: entry.name,
       manifest_version: manifest.json.version ?? null,
       manifest_name: manifest.json.name ?? null,
-      path: dirname(dirname(manifestPath)),
+      path: pluginRoot,
+      manifest_hooks: summarizeManifestHookField(manifest.json.hooks),
+      default_hooks_file: await hooksFileSummary(join(pluginRoot, 'hooks', 'hooks.json')),
     });
   }
   versions.sort((a, b) => semverCompare(String(b.manifest_version ?? b.version_dir), String(a.manifest_version ?? a.version_dir)));
@@ -569,6 +576,8 @@ async function readSingleManifest({ manifestPath }) {
     manifest_name: manifest.json.name ?? null,
     manifest_version: manifest.json.version ?? null,
     path: dirname(dirname(manifestPath)),
+    manifest_hooks: summarizeManifestHookField(manifest.json.hooks),
+    default_hooks_file: await hooksFileSummary(join(dirname(dirname(manifestPath)), 'hooks', 'hooks.json')),
   };
 }
 
@@ -646,21 +655,151 @@ function parseClaudePluginList(stdout) {
   return result;
 }
 
-function buildHostParity({ claude, codex, plugins, claudePluginList }) {
+function buildCodexPluginHookReport({ codex, plugins }) {
+  const plugin_entries = {};
+  const summary = {
+    bundled_plugins: [],
+    manifest_exposed_plugins: [],
+    default_file_only_plugins: [],
+    missing_hooks_file_plugins: [],
+  };
+
+  for (const [name, plugin] of Object.entries(plugins)) {
+    const source = buildCodexHookLocation({
+      manifestHooks: plugin.source?.codex_manifest?.hooks,
+      defaultHooksFile: plugin.source?.codex_default_hooks_file,
+      origin: 'source',
+    });
+    const cache = buildCodexHookLocation({
+      manifestHooks: plugin.cache?.codex?.latest?.manifest_hooks,
+      defaultHooksFile: plugin.cache?.codex?.latest?.default_hooks_file,
+      origin: 'codex_cache',
+    });
+    const marketplaceCache = buildCodexHookLocation({
+      manifestHooks: plugin.cache?.codex_tmp_marketplace?.manifest_hooks,
+      defaultHooksFile: plugin.cache?.codex_tmp_marketplace?.default_hooks_file,
+      origin: 'codex_tmp_marketplace',
+    });
+    const effective = source.status !== 'not_packaged' ? source : cache.status !== 'not_packaged' ? cache : marketplaceCache;
+    plugin_entries[name] = {
+      source,
+      codex_cache: cache,
+      codex_tmp_marketplace: marketplaceCache,
+      effective,
+    };
+    if (effective.bundled) summary.bundled_plugins.push(name);
+    if (effective.manifest_declared) summary.manifest_exposed_plugins.push(name);
+    if (effective.status === 'default_file_only') summary.default_file_only_plugins.push(name);
+    if (effective.status === 'manifest_declared_missing_file') summary.missing_hooks_file_plugins.push(name);
+  }
+
+  for (const value of Object.values(summary)) value.sort();
+  const recommendations = [];
+  if (summary.default_file_only_plugins.length > 0) {
+    recommendations.push({
+      host: 'codex',
+      area: 'hooks',
+      action: 'expose-bundled-hooks-in-manifest',
+      executable: false,
+      detail: `Add "hooks": "./hooks/hooks.json" to .codex-plugin/plugin.json for: ${summary.default_file_only_plugins.join(', ')}.`,
+    });
+  }
+  if (summary.missing_hooks_file_plugins.length > 0) {
+    recommendations.push({
+      host: 'codex',
+      area: 'hooks',
+      action: 'restore-bundled-hooks-file',
+      executable: false,
+      detail: `Codex manifests declare hooks but hooks/hooks.json is missing for: ${summary.missing_hooks_file_plugins.join(', ')}.`,
+    });
+  }
+  if (summary.bundled_plugins.length > 0 && codex.feature_surface.codex_plugin_hooks !== true) {
+    recommendations.push({
+      host: 'codex',
+      area: 'hooks',
+      action: 'enable-codex-plugin-hooks',
+      executable: false,
+      command: 'codex --enable plugin_hooks',
+      config_snippet: '[features]\nplugin_hooks = true\n',
+      detail: 'Codex bundled plugin hooks are packaged, but plugin_hooks is not enabled in the observed feature surface.',
+      next_step: 'Enable plugin_hooks for a test session or in Codex config, then review/trust hooks with /hooks and rerun runtime:doctor.',
+    });
+  }
+
+  const status = summary.default_file_only_plugins.length > 0 || summary.missing_hooks_file_plugins.length > 0
+    ? 'packaging_gap'
+    : summary.bundled_plugins.length === 0
+      ? 'no_bundled_hooks'
+      : codex.feature_surface.codex_plugin_hooks === true
+        ? 'ready'
+        : codex.feature_surface.codex_plugin_hooks === false
+          ? 'feature_disabled'
+          : 'feature_unknown';
+
+  return {
+    schema_version: 'runtime-codex-plugin-hooks-1.0',
+    status,
+    feature_flags: {
+      hooks: codex.feature_surface.codex_global_hooks,
+      hooks_stage: codex.feature_surface.codex_global_hooks_stage,
+      plugin_hooks: codex.feature_surface.codex_plugin_hooks,
+      plugin_hooks_stage: codex.feature_surface.codex_plugin_hooks_stage,
+      automatic_plugin_hooks: Boolean(codex.feature_surface.automatic_plugin_hooks),
+    },
+    summary,
+    plugin_entries,
+    recommendations,
+  };
+}
+
+function buildCodexHookLocation({ manifestHooks, defaultHooksFile, origin }) {
+  const declared = Boolean(manifestHooks?.declared);
+  const bundled = defaultHooksFile?.status === 'available';
+  const status = declared && bundled
+    ? 'exposed'
+    : declared
+      ? 'manifest_declared_missing_file'
+      : bundled
+        ? 'default_file_only'
+        : 'not_packaged';
+  return {
+    origin,
+    status,
+    manifest_declared: declared,
+    manifest_type: manifestHooks?.type ?? null,
+    manifest_paths: manifestHooks?.paths ?? [],
+    bundled,
+    hooks_file: defaultHooksFile ?? { status: 'missing' },
+  };
+}
+
+function buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginHooks }) {
   const issues = [];
   const differences = [];
 
-  if (claude.feature_surface.automatic_plugin_hooks === true && codex.feature_surface.automatic_plugin_hooks !== true) {
+  if (codexPluginHooks.summary.default_file_only_plugins.length > 0 || codexPluginHooks.summary.missing_hooks_file_plugins.length > 0) {
     differences.push(parityEntry({
-      id: 'codex_manual_skill_invocation',
+      id: 'codex_plugin_hooks_packaging_gap',
+      severity: 'warning',
+      host: 'codex',
+      area: 'hooks',
+      summary: 'Codex bundled hooks exist but are not cleanly exposed as plugin metadata for all hook-bearing agentic-plugins.',
+      evidence: `default-file-only=${codexPluginHooks.summary.default_file_only_plugins.join(',') || 'none'}, missing-file=${codexPluginHooks.summary.missing_hooks_file_plugins.join(',') || 'none'}`,
+      next_step: 'Expose hooks through each hook-bearing .codex-plugin/plugin.json and keep hooks/hooks.json in the installed package.',
+    }));
+  }
+
+  if (codexPluginHooks.summary.bundled_plugins.length > 0 && codex.feature_surface.codex_plugin_hooks !== true) {
+    differences.push(parityEntry({
+      id: 'codex_plugin_hooks_feature_disabled',
       severity: 'warning',
       host: 'codex',
       area: 'hooks',
       summary: codex.feature_surface.codex_global_hooks === true
-        ? 'Codex exposes a global hooks feature, but plugin-local automatic hooks are not enabled/observed for agentic-plugins; Codex parity still depends on manual skill invocation or an explicit wrapper.'
-        : 'Codex plugin-local automatic hooks are not observed; Codex parity depends on manual skill invocation or an explicit wrapper.',
-      evidence: `claude automatic_plugin_hooks=true, codex global_hooks=${featureFlagEvidence(codex.feature_surface.codex_global_hooks, codex.feature_surface.codex_global_hooks_stage)}, codex plugin_hooks=${featureFlagEvidence(codex.feature_surface.codex_plugin_hooks, codex.feature_surface.codex_plugin_hooks_stage)}, codex automatic_plugin_hooks=false`,
-      next_step: 'Keep Codex command/skill surfaces explicit until plugin-local hook packaging is available and wired for agentic-plugins.',
+        ? 'Codex global hooks are enabled, but bundled plugin hooks require [features].plugin_hooks=true before hook-bearing agentic-plugins can run lifecycle hooks automatically.'
+        : 'Codex bundled plugin hooks are packaged, but generic hooks and/or plugin_hooks are not enabled in the observed feature surface.',
+      evidence: `bundled=${codexPluginHooks.summary.bundled_plugins.join(',')}, codex global_hooks=${featureFlagEvidence(codex.feature_surface.codex_global_hooks, codex.feature_surface.codex_global_hooks_stage)}, codex plugin_hooks=${featureFlagEvidence(codex.feature_surface.codex_plugin_hooks, codex.feature_surface.codex_plugin_hooks_stage)}, codex automatic_plugin_hooks=false`,
+      next_step: 'Use runtime:settings to plan plugin_hooks enablement, then review/trust the bundled hooks in Codex with /hooks.',
     }));
   }
 
@@ -1862,6 +2001,7 @@ function buildReadinessMatrix({
   claude,
   codex,
   plugins,
+  codexPluginHooks,
   companion,
   modelEffort,
   readiness,
@@ -1894,7 +2034,11 @@ function buildReadinessMatrix({
           plugin_local_hooks: codex.feature_surface.codex_plugin_hooks,
           plugin_local_hooks_stage: codex.feature_surface.codex_plugin_hooks_stage,
           automatic_plugin_hooks: Boolean(codex.feature_surface.automatic_plugin_hooks),
-          evidence: 'Codex global hooks are reported separately from plugin-local automatic hooks',
+          packaging_status: codexPluginHooks.status,
+          bundled_plugins: codexPluginHooks.summary.bundled_plugins,
+          manifest_exposed_plugins: codexPluginHooks.summary.manifest_exposed_plugins,
+          default_file_only_plugins: codexPluginHooks.summary.default_file_only_plugins,
+          evidence: 'Codex generic hooks, plugin_hooks feature flag, and plugin hook packaging are reported separately',
         },
       }),
     },
@@ -1923,7 +2067,7 @@ function buildReadinessMatrix({
     limits: [
       'installed distinguishes host plugin/cache evidence from repo source availability',
       'model and effort are direction-specific peer invocation inputs, not proof of host-native defaults',
-      'Codex global hooks do not imply agentic-plugins plugin-local automatic hook parity',
+      'Codex generic hooks, plugin_hooks enablement, hook trust, and manifest hook packaging are separate readiness questions',
       'execution_readiness is explicit companion executor evidence and is separate from host auth status',
     ],
   };
@@ -2503,7 +2647,7 @@ async function buildDeepPeerSmokeSection({
         : 'Plan-only preflight; runtime:doctor does not execute peer agents.',
       'Raw peer stdout is not included in doctor output; only status, exit code, byte count, SHA-256, and timing metadata are reported.',
       'No host-native config, auth, secrets, sandbox, or permission state is mutated.',
-      'Codex manual-hook and permission limits remain visible; no host parity claim is made.',
+      'Codex plugin-hook feature/trust state and permission limits remain visible; no host parity claim is made.',
     ],
   };
 }
@@ -2668,9 +2812,11 @@ function buildDirectionReadiness({
     if (peer.feature_surface[feature] !== true) warnings.push(`${peer.name} feature not observed: ${feature}`);
   }
   if (caller.name === 'codex') {
-    warnings.push(caller.feature_surface.codex_global_hooks === true
-      ? 'Codex global hooks are available, but plugin-local automatic hooks are not assumed; manual skill invocation is the supported path'
-      : 'Codex plugin-local automatic hooks are not assumed; manual skill invocation is the supported path');
+    warnings.push(caller.feature_surface.codex_plugin_hooks === true
+      ? 'Codex plugin hooks are enabled; bundled lifecycle hooks still require hook review/trust in the active host session'
+      : caller.feature_surface.codex_global_hooks === true
+        ? 'Codex global hooks are available, but bundled plugin hooks require [features].plugin_hooks=true before automatic plugin lifecycle hooks run'
+        : 'Codex hooks are not fully enabled in the observed feature surface; bundled plugin lifecycle hooks will not run automatically');
   }
   const sandboxPermission = buildDirectionSandboxPermissionProbe({
     requested: sandboxPermissionProbe,
@@ -2870,7 +3016,7 @@ export function formatText(report) {
   for (const name of ['claude', 'codex']) {
     const host = report.readiness_matrix.hosts[name];
     const hookText = name === 'codex'
-      ? `hooks=global:${featureFlagEvidence(host.hooks.global_hooks, host.hooks.global_hooks_stage)}, plugin-local:${featureFlagEvidence(host.hooks.plugin_local_hooks, host.hooks.plugin_local_hooks_stage)}, automatic-plugin-hooks:${host.hooks.automatic_plugin_hooks}`
+      ? `hooks=global:${featureFlagEvidence(host.hooks.global_hooks, host.hooks.global_hooks_stage)}, plugin-local:${featureFlagEvidence(host.hooks.plugin_local_hooks, host.hooks.plugin_local_hooks_stage)}, automatic-plugin-hooks=${host.hooks.automatic_plugin_hooks}, packaging=${host.hooks.packaging_status}`
       : `hooks=automatic-plugin-hooks:${host.hooks.automatic_plugin_hooks}`;
     lines.push(`- ${name}: available=${host.available.status}; installed=${host.installed.status}; authenticated=${host.authenticated.status}; peer-model=${host.model_when_peer.value ?? '<host-default>'} (${host.model_when_peer.source}); peer-effort=${host.effort_when_peer.value ?? '<host-default>'} (${host.effort_when_peer.source}); ${hookText}`);
     lines.push(`  install-evidence: ${host.installed.evidence}`);
@@ -2887,6 +3033,14 @@ export function formatText(report) {
     if (name === 'codex') {
       lines.push(`  hooks: global=${featureFlagEvidence(cli.feature_surface.codex_global_hooks, cli.feature_surface.codex_global_hooks_stage)}; plugin-local=${featureFlagEvidence(cli.feature_surface.codex_plugin_hooks, cli.feature_surface.codex_plugin_hooks_stage)}; automatic-plugin-hooks=${Boolean(cli.feature_surface.automatic_plugin_hooks)}`);
     }
+  }
+  lines.push('');
+  lines.push('Codex Plugin Hooks');
+  const codexHooks = report.codex_plugin_hooks;
+  lines.push(`- status=${codexHooks.status}; bundled=${codexHooks.summary.bundled_plugins.join(',') || 'none'}; manifest-exposed=${codexHooks.summary.manifest_exposed_plugins.join(',') || 'none'}; default-file-only=${codexHooks.summary.default_file_only_plugins.join(',') || 'none'}`);
+  for (const recommendation of codexHooks.recommendations) {
+    lines.push(`  ${recommendation.action}: ${recommendation.detail}`);
+    if (recommendation.next_step) lines.push(`  next: ${recommendation.next_step}`);
   }
   lines.push('');
   lines.push('Plugin Command Surface');
@@ -3100,6 +3254,74 @@ function manifestSummary(readResult) {
     status: 'available',
     name: readResult.json.name ?? null,
     version: readResult.json.version ?? null,
+    hooks: summarizeManifestHookField(readResult.json.hooks),
+  };
+}
+
+function summarizeManifestHookField(value) {
+  if (value === undefined || value === null) {
+    return {
+      declared: false,
+      type: null,
+      paths: [],
+    };
+  }
+  if (typeof value === 'string') {
+    return {
+      declared: true,
+      type: 'path',
+      paths: [value],
+    };
+  }
+  if (Array.isArray(value)) {
+    const paths = value.filter((item) => typeof item === 'string');
+    return {
+      declared: true,
+      type: paths.length === value.length ? 'path-array' : 'mixed-array',
+      paths,
+    };
+  }
+  if (typeof value === 'object') {
+    return {
+      declared: true,
+      type: 'inline',
+      paths: [],
+    };
+  }
+  return {
+    declared: true,
+    type: typeof value,
+    paths: [],
+  };
+}
+
+async function hooksFileSummary(path) {
+  const readResult = await readJsonIfExists(path);
+  if (!readResult.ok) {
+    return {
+      status: 'missing',
+      path,
+      error: readResult.reason,
+      events: [],
+      handler_count: 0,
+    };
+  }
+  const hooks = readResult.json?.hooks && typeof readResult.json.hooks === 'object'
+    ? readResult.json.hooks
+    : {};
+  const events = Object.keys(hooks).sort();
+  let handlerCount = 0;
+  for (const groups of Object.values(hooks)) {
+    if (!Array.isArray(groups)) continue;
+    for (const group of groups) {
+      if (Array.isArray(group?.hooks)) handlerCount += group.hooks.length;
+    }
+  }
+  return {
+    status: 'available',
+    path,
+    events,
+    handler_count: handlerCount,
   };
 }
 

@@ -42,4 +42,4 @@ Notes:
 - Context budget checks use explicit caller-supplied values only; this command does not measure Claude or Codex host context automatically.
 - This command does not migrate engineer/orchestrator workflow state.
 - Consensus raw output and peer raw output must be referenced by artifact pointer only.
-- Codex manual-hook and permission limits are reported as limits, not host parity.
+- Codex plugin-hook feature/trust state and permission limits are reported as limits, not host parity.

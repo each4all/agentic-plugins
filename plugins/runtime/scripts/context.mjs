@@ -509,7 +509,7 @@ function contextLimits() {
     'Main-session output is limited to context summary, risk level, artifact pointers, and recommended next-session action/prompt.',
     'Engineer and orchestrator workflow state stays in its existing storage; no migration is performed.',
     'Consensus or peer raw output should be referenced by artifact pointer only, not pasted into the context summary.',
-    'Codex manual-hook and permission limits are not represented as host parity.',
+    'Codex plugin-hook feature/trust state and permission limits are not represented as host parity.',
   ];
 }
 
@@ -519,7 +519,7 @@ function checkLimits() {
     'This check does not mutate, compact, trim, or rewrite host session context.',
     'No automatic context capture, host switch, new workflow, or new session is started.',
     'Engineer and orchestrator workflow state stays in its existing storage; no migration is performed.',
-    'Codex manual-hook and permission limits are not represented as host parity.',
+    'Codex plugin-hook feature/trust state and permission limits are not represented as host parity.',
   ];
 }
 

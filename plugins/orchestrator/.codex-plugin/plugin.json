@@ -22,6 +22,7 @@
     "agentic-plugins"
   ],
   "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Orchestrator",
     "shortDescription": "Macro orchestration — multi-deliverable plan, dispatch, lifecycle closure, and continuity meta skills",

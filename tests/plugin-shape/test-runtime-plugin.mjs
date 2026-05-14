@@ -185,7 +185,7 @@ describe('plugins/runtime settings surface', () => {
     for (const token of ['Plugin management beyond the explicit settings executor', 'Consensus executor depth beyond the explicit boundary', 'Worktree execution beyond read-only planning', 'Context automation', 'Completion footer', 'Codex capability drift beyond the current baseline', 'Claude-vs-Codex parity drift beyond the current baseline']) {
       ok(followUps.includes(token), `${token} documented`);
     }
-    ok(/Codex manual-hook/i.test(followUps), 'Codex manual-hook honesty documented');
+    ok(/Codex capability drift/i.test(followUps), 'Codex capability drift documented');
     ok(/Claude agent teams must not be treated as the portable cross-host team-mode substrate/i.test(followUps), 'Claude team-mode boundary documented');
   });
 
@@ -199,6 +199,7 @@ describe('plugins/runtime settings surface', () => {
       'https://developers.openai.com/codex/concepts/sandboxing',
       'marketplace-only',
       'plugin_hooks',
+      'manifest hook exposure',
       'Do not claim Codex subagents run automatically',
       'Do not mutate `~/.codex/config.toml`',
       'host-parity-baseline.md',
@@ -219,6 +220,7 @@ describe('plugins/runtime settings surface', () => {
       'https://code.claude.com/docs/en/hooks',
       'codex plugin marketplace add',
       'plugin_hooks',
+      'manifest hook exposure',
       'Codex only spawns subagents when explicitly asked',
       'Claude agent teams are not a portable cross-host primitive',
       '.agentic-plugins/config.toml',

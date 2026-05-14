@@ -48,6 +48,9 @@ describe('runtime settings', () => {
     strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.status, 'effective');
     strictEqual(report.companion_settings.directions.codex_to_claude.proposed.model, 'claude-new');
     strictEqual(report.overall.setting_warnings, 0);
+    strictEqual(report.overall.hook_warnings, 1);
+    strictEqual(report.hook_settings.status, 'feature_disabled');
+    ok(report.hook_settings.recommendations.some((rec) => rec.action === 'enable-codex-plugin-hooks'));
     strictEqual(await readFile(join(root, '.agentic-plugins', 'config.toml'), 'utf8'), 'codex_model = "old-codex"\n');
     ok(calls.every((call) => !/\binstall\b|\bupdate\b/.test(call)), 'settings must not execute plugin install/update commands');
     ok(formatText(report).includes(`runtime:settings ${RUNTIME_VERSION} (dry-run)`));
@@ -161,6 +164,28 @@ describe('runtime settings', () => {
     ok(report.plugin_management.plans.some((plan) => plan.status === 'planned' && plan.command === 'codex plugin marketplace add each4all/agentic-plugins'));
     ok(report.plugin_management.plans.some((plan) => plan.status === 'deduplicated'));
     ok(report.limits.some((limit) => limit.includes('Plugin install/update execution is dry-run')));
+  });
+
+  it('plans Codex plugin_hooks enablement without mutating host-native config', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    strictEqual(report.hook_settings.status, 'feature_disabled');
+    deepStrictEqual(report.hook_settings.packaged_plugins.manifest_exposed, ['engineer', 'orchestrator']);
+    const rec = report.hook_settings.recommendations.find((item) => item.action === 'enable-codex-plugin-hooks');
+    strictEqual(rec.executable, false);
+    strictEqual(rec.command, 'codex --enable plugin_hooks');
+    strictEqual(rec.config_snippet, '[features]\nplugin_hooks = true\n');
+    ok(report.recommendations.some((item) => item.area === 'hooks' && item.action === 'enable-codex-plugin-hooks'));
+    ok(formatText(report).includes('Codex Plugin Hooks'));
+    ok(formatText(report).includes('session-command: codex --enable plugin_hooks'));
   });
 
   it('does not retry Codex marketplace add when the temporary marketplace cache is already current', async () => {
@@ -406,11 +431,23 @@ async function seedRepo(root) {
       version: name === 'runtime' ? '0.1.0' : '1.0.0',
       description: `${name} plugin`,
     });
-    await writeJson(join(root, 'plugins', name, '.codex-plugin', 'plugin.json'), {
+    const codexManifest = {
       name,
       version: name === 'runtime' ? '0.1.0' : '1.0.0',
       description: `${name} plugin`,
-    });
+    };
+    if (['engineer', 'orchestrator'].includes(name)) codexManifest.hooks = './hooks/hooks.json';
+    await writeJson(join(root, 'plugins', name, '.codex-plugin', 'plugin.json'), codexManifest);
+    if (['engineer', 'orchestrator'].includes(name)) {
+      await mkdir(join(root, 'plugins', name, 'hooks'), { recursive: true });
+      await writeJson(join(root, 'plugins', name, 'hooks', 'hooks.json'), {
+        hooks: {
+          SessionStart: [{ matcher: 'compact', hooks: [{ type: 'command', command: 'node hook.mjs' }] }],
+          PreCompact: [{ hooks: [{ type: 'command', command: 'node hook.mjs' }] }],
+          Stop: [{ hooks: [{ type: 'command', command: 'node hook.mjs' }] }],
+        },
+      });
+    }
   }
   await mkdir(join(root, 'companions'), { recursive: true });
   await writeFile(join(root, 'companions', 'contract.md'), '**Version**: `v0.1.1`\n');
