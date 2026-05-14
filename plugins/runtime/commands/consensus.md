@@ -40,6 +40,7 @@ Notes:
 - Main-session output is limited to synthesized summary, durable disagreements, evidence pointers, artifact paths, and next action.
 - Companion dispatch requires the explicit `execute --execute` boundary. Runtime never relaxes sandbox, approval, auth, permission, or host session state.
 - Only companion-backed peers (`claude`, `codex`) are executable by `execute --execute`; any other peer id in `--peers` is a manual/subagent lane with prompt artifacts that must be collected through `record`.
+- The manifest and status output include peer lane metadata: `companion_execute` lanes are eligible for `execute --execute`; `manual_subagent_record` lanes should be run manually or through local subagents and then collected with `record`.
 - Execution records per-peer progress in `execution-progress.json` plus status, failure type, retryability, byte count, and SHA-256. Raw stdout stays in peer raw-output artifacts.
 - Timeouts are retryable and include bounded remediation metadata. Retry a selected peer with `--peers <peer> --timeout-ms <n> --process-budget 1`, or run `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` when prompt startup latency is unclear.
 - `status` reads manifest, execution, progress, and consensus-result artifacts to recommend the next bounded operator action: execute/record, retry selected peers, synthesize, plan next-round, or stop for owner decision. `status --latest` picks the newest readable consensus manifest by `updated_at`/`created_at` without reading raw peer output.
