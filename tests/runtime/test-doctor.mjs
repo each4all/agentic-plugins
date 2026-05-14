@@ -420,6 +420,43 @@ describe('runtime doctor', () => {
     ok(!JSON.stringify(report).includes('TIMED OUT RAW OUTPUT'), 'doctor must not read raw timeout output');
   });
 
+  it('reports runtime artifact inventory pressure without reading artifact bodies', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-artifact-inventory-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    for (let i = 0; i < 21; i++) {
+      const seconds = String(i).padStart(2, '0');
+      const suffix = String(i).padStart(6, '0');
+      const runId = `consensus-20260513T0000${seconds}Z-${suffix}`;
+      await mkdir(join(root, '.agentic-plugins', 'runs', 'consensus', runId, 'rounds', 'round-1', 'raw'), { recursive: true });
+      await writeFile(join(root, '.agentic-plugins', 'runs', 'consensus', runId, 'rounds', 'round-1', 'raw', 'claude.txt'), 'RAW PEER OUTPUT MUST NOT LEAK\n');
+    }
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'context', 'context-20260513T000000Z-abcdef'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'runs', 'context', 'context-20260513T000000Z-abcdef', 'context.json'), 'RAW CONTEXT SUMMARY MUST NOT LEAK\n');
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      artifactInventory: true,
+      now: new Date('2026-05-14T00:00:00.000Z'),
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    strictEqual(report.artifact_inventory.requested, true);
+    strictEqual(report.artifact_inventory.executed, true);
+    strictEqual(report.artifact_inventory.status, 'needs_attention');
+    strictEqual(report.artifact_inventory.families.consensus.run_count, 21);
+    strictEqual(report.artifact_inventory.families.context.run_count, 1);
+    ok(report.artifact_inventory.attention.some((entry) => entry.family === 'consensus' && entry.kind === 'run_count_exceeds_cap'));
+    ok(report.overall.warnings.includes('runtime artifact inventory exceeds retention guidance'));
+
+    const text = formatText(report);
+    ok(text.includes('Runtime Artifact Inventory'));
+    ok(text.includes('retention-attention: consensus/run_count_exceeds_cap'));
+    ok(!JSON.stringify(report).includes('RAW PEER OUTPUT'), 'doctor must not read raw peer artifacts');
+    ok(!text.includes('RAW CONTEXT SUMMARY'), 'doctor must not print context artifact bodies');
+  });
+
   it('reports sandbox and permission readiness as unknown without an explicit peer smoke', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-readiness-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
@@ -724,7 +761,7 @@ describe('runtime doctor', () => {
   });
 
   it('parses CLI arguments and rejects unknown or malformed flags', () => {
-    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--execute-deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '90000', '--sandbox-permission-probe', '--permission-proof', '--execute-permission-proof', '--permission-proof-timeout-ms', '45000']);
+    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--execute-deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '90000', '--sandbox-permission-probe', '--permission-proof', '--execute-permission-proof', '--permission-proof-timeout-ms', '45000', '--artifact-inventory', '--artifact-retention-cap', '30', '--artifact-max-bytes', '1024']);
     strictEqual(opts.repoRoot, '/tmp/repo');
     strictEqual(opts.format, 'json');
     strictEqual(opts.host, 'codex');
@@ -737,11 +774,16 @@ describe('runtime doctor', () => {
     strictEqual(opts.permissionProof, true);
     strictEqual(opts.executePermissionProof, true);
     strictEqual(opts.permissionProofTimeoutMs, 45000);
+    strictEqual(opts.artifactInventory, true);
+    strictEqual(opts.artifactRetentionCap, 30);
+    strictEqual(opts.artifactMaxBytes, 1024);
     rejects(async () => parseArgs(['--format', 'xml']), /--format must be text or json/);
     rejects(async () => parseArgs(['--execute-deep-peer-smoke']), /requires --deep-peer-smoke/);
     rejects(async () => parseArgs(['--execute-permission-proof']), /requires --permission-proof/);
     rejects(async () => parseArgs(['--deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '0']), /positive integer/);
     rejects(async () => parseArgs(['--permission-proof', '--permission-proof-timeout-ms', '0']), /positive integer/);
+    rejects(async () => parseArgs(['--artifact-retention-cap', '0']), /positive integer/);
+    rejects(async () => parseArgs(['--artifact-max-bytes', '0']), /positive integer/);
   });
 });
 

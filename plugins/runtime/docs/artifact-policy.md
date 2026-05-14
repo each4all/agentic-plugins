@@ -45,3 +45,8 @@ npm run validate:artifacts
 The validator checks both `.gitignore` policy and `git check-ignore` behavior.
 It also fails if generated artifact paths are already tracked in git. The
 marketplace validation workflow runs the same check in CI.
+
+For local operator visibility, `runtime:doctor --artifact-inventory` reports
+metadata-only counts, byte totals, age metadata, and retention pressure for
+generated `.agentic-plugins/runs/` families. It does not read raw artifact
+bodies and does not delete or compact anything.
