@@ -4,6 +4,9 @@ Observed on 2026-05-14 with Codex CLI `0.130.0` plus official OpenAI
 developer docs. This file is a runtime-owned host-truth checkpoint, not a
 replacement for the upstream docs.
 
+For Claude-vs-Codex behavior differences, see
+[`host-parity-baseline.md`](host-parity-baseline.md).
+
 ## Sources
 
 Official OpenAI developer docs:
