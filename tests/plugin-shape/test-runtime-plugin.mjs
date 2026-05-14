@@ -2,12 +2,20 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
+const RUNTIME_COMMAND_SURFACES = [
+  { name: 'consensus', script: 'consensus.mjs' },
+  { name: 'context', script: 'context.mjs' },
+  { name: 'doctor', script: 'doctor.mjs' },
+  { name: 'migrate', script: 'migrate-workflow-storage.mjs' },
+  { name: 'settings', script: 'settings.mjs' },
+  { name: 'worktree', script: 'worktree.mjs' },
+];
 
 async function readJSON(path) {
   const text = await readFile(path, 'utf-8');
@@ -53,6 +61,46 @@ describe('plugins/runtime manifest pair', () => {
     strictEqual(claude.description, codex.description);
     strictEqual(claude.license, codex.license);
     deepStrictEqual(claude.keywords, codex.keywords);
+  });
+});
+
+describe('plugins/runtime command-skill parity', () => {
+  it('keeps Claude command wrappers and Codex skill wrappers aligned', async () => {
+    const expectedNames = RUNTIME_COMMAND_SURFACES.map((surface) => surface.name).sort();
+    const commandFiles = (await readdir(resolve(PLUGIN_ROOT, 'commands')))
+      .filter((entry) => entry.endsWith('.md'))
+      .sort();
+    deepStrictEqual(commandFiles, expectedNames.map((name) => `${name}.md`));
+
+    const skillDirs = (await readdir(resolve(PLUGIN_ROOT, 'skills'), { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+    deepStrictEqual(skillDirs, expectedNames);
+
+    for (const surface of RUNTIME_COMMAND_SURFACES) {
+      const scriptRef = `scripts/${surface.script}`;
+      const slashToken = `/runtime:${surface.name}`;
+      const codexToken = `$runtime:${surface.name}`;
+      const command = await readFile(resolve(PLUGIN_ROOT, `commands/${surface.name}.md`), 'utf-8');
+      ok(command.startsWith('---\n'), `${surface.name} command has frontmatter`);
+      ok(/^description:\s*\S/m.test(command), `${surface.name} command has description`);
+      ok(/^argument-hint:\s*/m.test(command), `${surface.name} command has argument hint`);
+      ok(command.includes(scriptRef), `${surface.name} command references ${scriptRef}`);
+
+      const skill = await readFile(resolve(PLUGIN_ROOT, `skills/${surface.name}/SKILL.md`), 'utf-8');
+      ok(new RegExp(`^name:\\s*${surface.name}\\s*$`, 'm').test(skill), `${surface.name} skill has matching name`);
+      ok(skill.includes(slashToken), `${surface.name} skill documents Claude command token`);
+      ok(skill.includes(codexToken), `${surface.name} skill documents Codex command token`);
+      ok(skill.includes(scriptRef), `${surface.name} skill references ${scriptRef}`);
+
+      const agent = await readFile(resolve(PLUGIN_ROOT, `skills/${surface.name}/agents/openai.yaml`), 'utf-8');
+      ok(agent.includes(codexToken), `${surface.name} agent default prompt references Codex command token`);
+      ok(/allow_implicit_invocation:\s*false/.test(agent), `${surface.name} agent is explicit-only`);
+
+      const scriptStat = await stat(resolve(PLUGIN_ROOT, scriptRef));
+      ok((scriptStat.mode & 0o111) !== 0, `${surface.script} has executable bit`);
+    }
   });
 });
 
