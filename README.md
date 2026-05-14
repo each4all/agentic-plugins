@@ -42,16 +42,17 @@ Four installable plugins ship in this repository:
   [ADR-0018](docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
   §sub-decision-1 and
   [ADR-0019](docs/adr/0019-cross-plugin-invocation-contract.md):
-  macro plan, Plan-verify Codex ensemble, same-host engineer dispatch,
-  manual completion backup, finalize/abort lifecycle, and macro
-  auto-archive.
+  macro plan, Plan-verify opposite-host peer ensemble, same-host
+  engineer dispatch, manual completion backup, finalize/abort
+  lifecycle, meta continuity commands, and macro auto-archive.
 - [`plugins/runtime/`](plugins/runtime/) — Stage 3+ L1 framework
   primitive per
   [ADR-0024](docs/adr/0024-runtime-operator-control-plane.md):
-  read-only `runtime:doctor` diagnostics for host readiness, plugin
-  install/cache state, companion compatibility, model/effort
-  observation, sandbox/permission readiness, and workflow ledger
-  health.
+  `runtime:doctor` readiness diagnostics, dry-run/default
+  `runtime:settings`, explicit `runtime:consensus` companion execution
+  artifacts, read-only `runtime:worktree` planning, `runtime:context`
+  handoff/check artifacts, workflow-storage migration, and the
+  pointer-only completion footer.
 
 See each plugin's README for install commands, invocation, and
 environment details.
@@ -61,11 +62,13 @@ at Stage 2.5+ per
 [ADR-0014](docs/adr/0014-plugins-research-deprecation.md); its
 cited-brief contract is now folded into `engineer:investigate`.
 
-### Coming next
+### Current follow-ups
 
-- `runtime:settings` dry-run/apply operator surface
-- Runtime dynamic consensus, context hygiene, and completion footer
-  follow-ups from ADR-0024
+- Runtime artifact retention/deletion and richer consensus cancellation
+  policy
+- Host-native config apply beyond agentic-plugins-owned config
+- Risk/budget-driven consensus peer selection and automated synthesis
+  policy
 - Non-interactive auth story for CI smoke tests (DEVELOPMENT.md Risk #4)
 
 ## Concepts

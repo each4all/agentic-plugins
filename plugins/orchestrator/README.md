@@ -4,7 +4,7 @@ Cross-host macro orchestration capability for Claude Code and Codex CLI. **L2 ca
 
 ## Status
 
-Ships `/orchestrator:plan` (macro plan + Plan-verify Codex ensemble through the ADR-0023 peer-runner supervisor), `/orchestrator:next` (same-host dispatch into engineer), `/orchestrator:done` (manual completion backup for engineer Stop-hook auto-writeback), `/orchestrator:finalize` + `/orchestrator:abort` (macro completion lifecycle), meta commands `/orchestrator:resume` / `/orchestrator:checkpoint` / `/orchestrator:peer-now`, `/orchestrator:audit` as a follow-up planning alias, and macro auto-archive A1–A4 on the host Stop event (branch-agnostic per ADR-0019 §5). Schema `'1.1'` (post-ADR-0019 PR-B). The cross-plugin invocation contract is [ADR-0019](../../docs/adr/0019-cross-plugin-invocation-contract.md). The cross-host `--peer` dispatch path for `/orchestrator:next` remains trigger-deferred PR-F scope.
+Ships `/orchestrator:plan` (macro plan + Plan-verify opposite-host peer ensemble through the ADR-0023 peer-runner supervisor), `/orchestrator:next` (same-host dispatch into engineer), `/orchestrator:done` (manual completion backup for engineer Stop-hook auto-writeback), `/orchestrator:finalize` + `/orchestrator:abort` (macro completion lifecycle), meta commands `/orchestrator:resume` / `/orchestrator:checkpoint` / `/orchestrator:peer-now`, `/orchestrator:audit` as a follow-up planning alias, and macro auto-archive A1–A4 on the host Stop event (branch-agnostic per ADR-0019 §5). Schema `'1.1'` (post-ADR-0019 PR-B). The cross-plugin invocation contract is [ADR-0019](../../docs/adr/0019-cross-plugin-invocation-contract.md). The cross-host `--peer` dispatch path for `/orchestrator:next` remains trigger-deferred PR-F scope.
 
 ## What it is
 
@@ -21,7 +21,7 @@ Ships `/orchestrator:plan` (macro plan + Plan-verify Codex ensemble through the 
 
 | Command | Status | Description |
 |---------|--------|-------------|
-| `/orchestrator:plan <feature>` | ✅ shipping | Build a macro plan: produce `plan.subtasks[]` proposals via Plan-verify ensemble (Claude + Codex), persist to `<repo>/.agentic-plugins/state/orchestrator/workflows/<workflow_id>.md` for new repos, and present for approval. |
+| `/orchestrator:plan <feature>` | ✅ shipping | Build a macro plan: produce `plan.subtasks[]` proposals via a Plan-verify opposite-host peer ensemble, persist to `<repo>/.agentic-plugins/state/orchestrator/workflows/<workflow_id>.md` for new repos, and present for approval. |
 | `/orchestrator:next [<subtask-id>] [--workflow=<macro-id>]` | ✅ shipping (same-host) | Dispatch the next ready subtask into `plugins/engineer`. Branch precondition + ownership check + parent-linkage env vars per ADR-0019 §1+§3. Cross-host `--peer` remains trigger-deferred PR-F scope. |
 | `/orchestrator:done <subtask-id> [--commit=<sha>] [--workflow=<macro-id>]` | ✅ shipping | Manually record subtask completion (idempotent backup for engineer Stop auto-writeback) per ADR-0019 §4. Required when the engineer session crashed before terminal commit OR for cross-host reconciliation. |
 | `/orchestrator:finalize [--workflow=<macro-id>]` | ✅ shipping | Close the macro plan with all non-terminal subtasks → `deferred` + macro `current_phase: 'finalized'` + `terminal_marker: true`. Three-step §5 ritual: bulk subtask transition → active-children detach pass (NO parent lock; routes terminal engineer children through `stop-archive`, mid-flight via `detach-archive`) → terminal markers. |
@@ -50,7 +50,7 @@ Per [ADR-0018 §sub-decision-2](../../docs/adr/0018-stage3-architecture-orchestr
   prompt.xml   # only when --retain-prompt is supplied
 ```
 
-Orchestrator keeps its graceful-degradation rule: the runner resolves the companion before creating this ledger or recording `pending_ensemble`. If the Codex companion is unavailable, it returns `peer_cli_not_found` and `/orchestrator:plan` proceeds with a LOCAL-ONLY synthesis. If the companion resolves, the runner records the pending row, supervises the child process, supports `status` / `cancel` / `sweep`, and enforces terminal ledger retention. `/orchestrator:peer-now` also uses the runner, but with `--kind peer-now`; it creates operational ledger state and remains excluded from `pending_ensemble` / `ensemble_results`.
+Orchestrator keeps its graceful-degradation rule: the runner resolves the companion before creating this ledger or recording `pending_ensemble`. If the opposite-host companion is unavailable, it returns `peer_cli_not_found` and `/orchestrator:plan` proceeds with a LOCAL-ONLY synthesis. If the companion resolves, the runner records the pending row, supervises the child process, supports `status` / `cancel` / `sweep`, and enforces terminal ledger retention. `/orchestrator:peer-now` also uses the runner, but with `--kind peer-now`; it creates operational ledger state and remains excluded from `pending_ensemble` / `ensemble_results`.
 
 ## Hooks
 
@@ -84,7 +84,7 @@ codex plugin marketplace add each4all/agentic-plugins
 ```
 
 Required peers:
-- `companions` (L1) — for the Plan-verify Codex ensemble inside `/orchestrator:plan`.
+- `companions` (L1) — for the Plan-verify opposite-host peer ensemble inside `/orchestrator:plan`.
 - `engineer` (L3) — runtime peer for `/orchestrator:next` dispatch (the runbook spawns engineer's `state.mjs` CLI). Discovery is automatic (env override → Claude cache → Codex cache → monorepo sibling) per ADR-0019 §1; install engineer before `/orchestrator:next` invocations or set `AGENTIC_ENGINEER_ROOT=<path>` to override.
 
 ## Environment
