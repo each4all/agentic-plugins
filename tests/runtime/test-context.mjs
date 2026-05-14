@@ -34,6 +34,9 @@ describe('runtime context', () => {
     strictEqual(report.risk_level, 'yellow');
     strictEqual(report.context_summary, 'Context summary for the runtime context hygiene MVP.');
     strictEqual(report.next_session.recommended_action, 'Start a fresh session before expanding runtime automation.');
+    strictEqual(report.next_session.commands.claude, `/runtime:context status --run-id ${RUN_ID}`);
+    strictEqual(report.next_session.commands.codex, `$runtime:context status --run-id ${RUN_ID}`);
+    strictEqual(report.next_session.commands.neutral, `runtime:context status --run-id ${RUN_ID}`);
     ok(report.artifacts.some((artifact) => artifact.kind === 'readiness' && artifact.pointer === '.agentic-plugins/runs/doctor/latest.json'));
     ok(report.limits.some((limit) => /does not mutate host session context/i.test(limit)));
 
@@ -41,11 +44,14 @@ describe('runtime context', () => {
     strictEqual(artifact.schema_version, 'runtime-context-artifact-1.0');
     strictEqual(artifact.context.risk_level, 'yellow');
     strictEqual(artifact.next_session.prompt_pointer, `.agentic-plugins/runs/context/${RUN_ID}/next-session-prompt.md`);
+    strictEqual(artifact.next_session.commands.claude, `/runtime:context status --run-id ${RUN_ID}`);
+    strictEqual(artifact.next_session.commands.codex, `$runtime:context status --run-id ${RUN_ID}`);
 
     const prompt = await readFile(join(root, artifact.next_session.prompt_pointer), 'utf8');
     strictEqual(prompt, 'Continue from the runtime context artifact and keep scope bounded.\n');
     ok(formatText(report).includes('context summary:'));
     ok(formatText(report).includes('recommended next action: Start a fresh session'));
+    ok(formatText(report).includes(`- codex: $runtime:context status --run-id ${RUN_ID}`));
   });
 
   it('generates a next-session prompt and status report from the stored artifact', async () => {
@@ -68,7 +74,11 @@ describe('runtime context', () => {
 
     strictEqual(report.command, 'status');
     strictEqual(report.risk_level, 'red');
+    strictEqual(report.next_session.commands.claude, `/runtime:context status --run-id ${RUN_ID}`);
+    strictEqual(report.next_session.commands.codex, `$runtime:context status --run-id ${RUN_ID}`);
     ok(report.next_session.prompt_preview.includes('Use this context artifact for the next runtime PR.'));
+    ok(report.next_session.prompt_preview.includes('Host handoff commands:'));
+    ok(report.next_session.prompt_preview.includes(`Codex: $runtime:context status --run-id ${RUN_ID}`));
     ok(report.artifacts.some((artifact) => artifact.kind === 'consensus'));
     ok(!JSON.stringify(report).includes('RAW PEER OUTPUT'));
   });
