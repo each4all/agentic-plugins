@@ -8,6 +8,13 @@
 - Add `runtime:context check`, a read-only explicit context budget check that computes green/yellow/red risk without creating artifacts or mutating host session context.
 - Add `runtime:context status --latest`, a read-only latest handoff lookup with artifact age and stale-state reporting.
 
+## [0.18.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.17.0...plugin-runtime-v0.18.0) (2026-05-14)
+
+
+### Features
+
+* **plugin/runtime:** add read-only worktree planner ([46c81fb](https://github.com/each4all/agentic-plugins/commit/46c81fb12640bee51f458b8e2e3e81f985b480fc))
+
 ## [0.17.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.16.0...plugin-runtime-v0.17.0) (2026-05-14)
 
 
