@@ -128,14 +128,6 @@ export async function runDoctor({
     permissionProof,
     executePermissionProof,
   });
-  const readinessMatrix = buildReadinessMatrix({
-    claude,
-    codex,
-    plugins,
-    companion,
-    modelEffort,
-    readiness,
-  });
   const sandboxPermissionProbeSection = buildSandboxPermissionProbeSection({
     requested: sandboxPermissionProbe,
     readiness,
@@ -163,6 +155,16 @@ export async function runDoctor({
     env,
     runner,
     timeoutMs: deepPeerSmokeTimeoutMs,
+  });
+  const readinessMatrix = buildReadinessMatrix({
+    claude,
+    codex,
+    plugins,
+    companion,
+    modelEffort,
+    readiness,
+    permissionProof: permissionProofSection,
+    deepPeerSmoke: deepPeerSmokeSection,
   });
 
   const report = {
@@ -1221,6 +1223,7 @@ function summarizeConsensusArtifact({ repoRoot, runId, artifactPath, artifact })
         peer: sanitizeValue(failure.peer),
         status: sanitizeValue(failure.status),
         failure_type: sanitizeValue(failure.failure_type),
+        operator_action_required: failure.operator_action_required === true,
         retryable: failure.retryable === true,
         retry_after: sanitizeValue(failure.retry_after),
         retry_command: sanitizeValue(failure.retry_command),
@@ -1259,12 +1262,14 @@ function summarizeConsensusFailures(failures) {
     timeout: 0,
     retryable: 0,
     non_retryable: 0,
+    operator_action_required: 0,
     by_type: {},
   };
   for (const failure of failures) {
     const type = failure.failure_type || 'unknown';
     result.by_type[type] = (result.by_type[type] ?? 0) + 1;
     if (type === 'timeout') result.timeout += 1;
+    if (failure.operator_action_required) result.operator_action_required += 1;
     if (failure.retryable) result.retryable += 1;
     else result.non_retryable += 1;
   }
@@ -1553,6 +1558,8 @@ function buildReadinessMatrix({
   companion,
   modelEffort,
   readiness,
+  permissionProof,
+  deepPeerSmoke,
 }) {
   const runtimePlugin = plugins.runtime;
   return {
@@ -1592,6 +1599,8 @@ function buildReadinessMatrix({
         readiness: readiness.claude_to_codex,
         companion: companion.directions.claude_to_codex,
         modelEffort: modelEffort.directions.claude_to_codex,
+        permissionProof,
+        deepPeerSmoke,
       }),
       codex_to_claude: buildDirectionReadinessRow({
         key: 'codex_to_claude',
@@ -1600,12 +1609,15 @@ function buildReadinessMatrix({
         readiness: readiness.codex_to_claude,
         companion: companion.directions.codex_to_claude,
         modelEffort: modelEffort.directions.codex_to_claude,
+        permissionProof,
+        deepPeerSmoke,
       }),
     },
     limits: [
       'installed distinguishes host plugin/cache evidence from repo source availability',
       'model and effort are direction-specific peer invocation inputs, not proof of host-native defaults',
       'Codex global hooks do not imply agentic-plugins plugin-local automatic hook parity',
+      'execution_readiness is explicit companion executor evidence and is separate from host auth status',
     ],
   };
 }
@@ -1697,7 +1709,7 @@ function summarizeRuntimeInstallForHost(host, plugin) {
   return { status: 'not_installed', evidence: 'no codex install cache or source evidence', version: null };
 }
 
-function buildDirectionReadinessRow({ key, caller, peer, readiness, companion, modelEffort }) {
+function buildDirectionReadinessRow({ key, caller, peer, readiness, companion, modelEffort, permissionProof, deepPeerSmoke }) {
   return {
     key,
     direction: readiness.direction,
@@ -1717,9 +1729,57 @@ function buildDirectionReadinessRow({ key, caller, peer, readiness, companion, m
       source: modelEffort.effort.source,
     },
     sandbox_permission: readiness.sandbox_permission.status,
+    execution_readiness: buildDirectionExecutionReadiness({ key, permissionProof, deepPeerSmoke }),
     blocker_count: readiness.blockers.length,
     warning_count: readiness.warnings.length,
   };
+}
+
+function buildDirectionExecutionReadiness({ key, permissionProof, deepPeerSmoke }) {
+  const permission = summarizeExecutorEvidence(permissionProof, key);
+  const smoke = summarizeExecutorEvidence(deepPeerSmoke, key);
+  const executed = [permission, smoke].filter((entry) => entry.executed);
+  const requested = [permission, smoke].filter((entry) => entry.requested);
+  let status = 'not_requested';
+  if (executed.length > 0) {
+    status = summarizeExecutorEvidenceStatus(executed);
+  } else if (requested.length > 0) {
+    status = 'plan_only';
+  }
+  return {
+    status,
+    permission_proof: permission,
+    deep_peer_smoke: smoke,
+    evidence: executed.length > 0
+      ? 'explicit companion executor evidence recorded in runtime:doctor output'
+      : requested.length > 0
+        ? 'plan-only preflight evidence; no companion executor ran'
+        : 'no explicit companion executor evidence requested',
+  };
+}
+
+function summarizeExecutorEvidence(section, key) {
+  const direction = section?.directions?.[key] ?? null;
+  const result = direction?.result ?? null;
+  return {
+    requested: section?.requested === true,
+    executed: direction?.execution === 'executed',
+    status: result?.status ?? direction?.status ?? section?.status ?? 'not_requested',
+    operator_action_required: result?.operator_action_required === true,
+    operator_action_kind: result?.operator_action_kind ?? null,
+    peer_execution: section?.peer_execution === true,
+  };
+}
+
+function summarizeExecutorEvidenceStatus(entries) {
+  const statuses = entries.map((entry) => entry.status);
+  if (statuses.every((status) => status === 'passed')) return 'passed';
+  if (entries.some((entry) => entry.operator_action_required || entry.status === 'operator_action_required')) {
+    return 'operator_action_required';
+  }
+  if (statuses.some((status) => status === 'timed_out')) return 'timed_out';
+  if (statuses.some((status) => ['skipped', 'blocked', 'unavailable', 'unauthenticated', 'not_installed'].includes(status))) return 'blocked';
+  return 'failed';
 }
 
 function buildSandboxPermissionProbeSection({ requested, readiness }) {
@@ -1854,6 +1914,9 @@ async function buildPermissionProofSection({
       });
       direction.execution = 'executed';
       direction.status = direction.result.status;
+      if (direction.result.operator_action_required) {
+        direction.next_step = 'operator must satisfy host permission or auth preconditions outside runtime:doctor, then rerun the explicit proof';
+      }
     }
     directions[key] = direction;
   }
@@ -1895,8 +1958,7 @@ function summarizePermissionProofExecutionStatus({ requested, directions }) {
   if (!requested) return 'not_requested';
   const statuses = Object.values(directions).map((direction) => direction.status);
   if (statuses.every((status) => status === 'passed')) return 'passed';
-  if (statuses.some((status) => status === 'passed')) return 'partially_failed';
-  if (statuses.some((status) => status === 'permission_failed')) return 'permission_failed';
+  if (statuses.some((status) => status === 'operator_action_required')) return 'operator_action_required';
   if (statuses.some((status) => status === 'timed_out')) return 'timed_out';
   if (statuses.some((status) => ['skipped', 'blocked', 'unavailable', 'unauthenticated', 'not_installed'].includes(status))) return 'blocked';
   return 'failed';
@@ -1961,12 +2023,14 @@ function buildPermissionProofPrompt({ key, peer, expectedToken }) {
 
 function summarizeCompanionPermissionProofResult({ result, companionPath, expectedToken }) {
   const summary = summarizeCompanionSmokeResult({ result, companionPath, expectedToken });
-  const permissionFailureKind = summary.status === 'passed' ? null : classifyPermissionFailure(summary);
+  const operatorActionKind = summary.status === 'passed' ? null : classifyOperatorActionKind(summary);
   return {
     ...summary,
-    status: permissionFailureKind ? 'permission_failed' : summary.status,
-    permission_failure: Boolean(permissionFailureKind),
-    permission_failure_kind: permissionFailureKind,
+    status: operatorActionKind ? 'operator_action_required' : summary.status,
+    operator_action_required: Boolean(operatorActionKind),
+    operator_action_kind: operatorActionKind,
+    permission_failure: Boolean(operatorActionKind),
+    permission_failure_kind: operatorActionKind,
     permission_policy: {
       host_native_default: true,
       relaxed_by_doctor: false,
@@ -1975,7 +2039,7 @@ function summarizeCompanionPermissionProofResult({ result, companionPath, expect
   };
 }
 
-function classifyPermissionFailure(summary) {
+function classifyOperatorActionKind(summary) {
   const text = [
     summary.companion_error_code,
     summary.envelope_status,
@@ -1984,11 +2048,14 @@ function classifyPermissionFailure(summary) {
     summary.error?.message,
   ].filter(Boolean).join(' ');
   if (!text) return null;
-  if (/\b(approval|consent|permission prompt|requires permission|requires approval)\b/i.test(text)) {
-    return 'approval_required';
+  if (/\b(peer_unauthenticated|not logged in|login required|auth required|authentication required|unauthorized|forbidden|401|403)\b/i.test(text)) {
+    return 'auth_required';
+  }
+  if (/\b(approval|consent|permission prompt|requires permission|requires approval|approval required)\b/i.test(text)) {
+    return 'permission_required';
   }
   if (/\b(sandbox|read-only|read only|not allowed|operation not permitted|permission denied|EACCES|EPERM|denied)\b/i.test(text)) {
-    return 'sandbox_or_permission_denied';
+    return 'sandbox_blocked';
   }
   return null;
 }
@@ -2051,6 +2118,9 @@ async function buildDeepPeerSmokeSection({
       });
       direction.execution = 'executed';
       direction.status = direction.result.status;
+      if (direction.result.operator_action_required) {
+        direction.next_step = 'operator must satisfy host permission or auth preconditions outside runtime:doctor, then rerun the explicit smoke';
+      }
     }
     directions[key] = direction;
   }
@@ -2091,7 +2161,7 @@ function summarizeDeepPeerSmokeExecutionStatus({ requested, directions }) {
   if (!requested) return 'not_requested';
   const statuses = Object.values(directions).map((direction) => direction.status);
   if (statuses.every((status) => status === 'passed')) return 'passed';
-  if (statuses.some((status) => status === 'passed')) return 'partially_failed';
+  if (statuses.some((status) => status === 'operator_action_required')) return 'operator_action_required';
   if (statuses.some((status) => ['skipped', 'blocked', 'unavailable', 'unauthenticated', 'not_installed'].includes(status))) return 'blocked';
   return 'failed';
 }
@@ -2157,7 +2227,7 @@ function summarizeCompanionSmokeResult({ result, companionPath, expectedToken })
   const peerStdout = typeof parsed?.stdout === 'string' ? parsed.stdout : '';
   const expectedTokenPresent = peerStdout.includes(expectedToken);
   const passed = result.ok && parsed?.status === 'success' && parsed?.exit_code === 0 && expectedTokenPresent;
-  return {
+  const summary = {
     status: passed ? 'passed' : result.timed_out ? 'timed_out' : 'failed',
     companion_path: companionPath,
     companion_exit_code: result.exit_code,
@@ -2173,6 +2243,13 @@ function summarizeCompanionSmokeResult({ result, companionPath, expectedToken })
     metadata: normalizeSmokeMetadata(parsed?.metadata),
     stderr_summary: result.stderr ? truncate(sanitizeValue(result.stderr), 200) : null,
     error: normalizeSmokeError({ parsed, result }),
+  };
+  const operatorActionKind = summary.status === 'passed' ? null : classifyOperatorActionKind(summary);
+  return {
+    ...summary,
+    status: operatorActionKind ? 'operator_action_required' : summary.status,
+    operator_action_required: Boolean(operatorActionKind),
+    operator_action_kind: operatorActionKind,
   };
 }
 
@@ -2374,10 +2451,10 @@ function summarizeOverall(report) {
   for (const [direction, readiness] of Object.entries(report.readiness)) {
     if (!['available', 'available_with_warnings'].includes(readiness.status)) hardFailures.push(`${direction} ${readiness.status}`);
   }
-  if (report.deep_peer_smoke.executed && report.deep_peer_smoke.status !== 'passed') {
+  if (report.deep_peer_smoke.executed && !['passed', 'operator_action_required'].includes(report.deep_peer_smoke.status)) {
     hardFailures.push(`deep peer smoke ${report.deep_peer_smoke.status}`);
   }
-  if (report.permission_proof.executed && report.permission_proof.status !== 'passed') {
+  if (report.permission_proof.executed && !['passed', 'operator_action_required'].includes(report.permission_proof.status)) {
     hardFailures.push(`permission proof ${report.permission_proof.status}`);
   }
   const warnings = [];
@@ -2406,6 +2483,12 @@ function summarizeOverall(report) {
   if (report.host_parity.status !== 'pass') {
     warnings.push(`host parity ${report.host_parity.status}`);
   }
+  if (report.deep_peer_smoke.executed && report.deep_peer_smoke.status === 'operator_action_required') {
+    warnings.push('deep peer smoke requires operator action outside runtime:doctor');
+  }
+  if (report.permission_proof.executed && report.permission_proof.status === 'operator_action_required') {
+    warnings.push('permission proof requires operator action outside runtime:doctor');
+  }
   return {
     status: hardFailures.length > 0 ? 'fail' : warnings.length > 0 ? 'warning' : 'pass',
     hard_failures: hardFailures,
@@ -2430,7 +2513,7 @@ export function formatText(report) {
   }
   for (const key of ['claude_to_codex', 'codex_to_claude']) {
     const direction = report.readiness_matrix.directions[key];
-    lines.push(`- ${direction.direction}: readiness=${direction.status}; companion=${direction.companion.status}; model=${direction.model.value ?? '<host-default>'}; effort=${direction.effort.value ?? '<host-default>'}; sandbox-permission=${direction.sandbox_permission}; blockers=${direction.blocker_count}; warnings=${direction.warning_count}`);
+    lines.push(`- ${direction.direction}: readiness=${direction.status}; companion=${direction.companion.status}; execution-readiness=${direction.execution_readiness.status}; model=${direction.model.value ?? '<host-default>'}; effort=${direction.effort.value ?? '<host-default>'}; sandbox-permission=${direction.sandbox_permission}; blockers=${direction.blocker_count}; warnings=${direction.warning_count}`);
   }
   lines.push('');
   lines.push('Host CLIs');
@@ -2501,8 +2584,8 @@ export function formatText(report) {
         for (const probe of direction.preflight.probes) lines.push(`  probe ${probe.name}: ${probe.status}; ${probe.evidence}`);
       }
       if (direction.result && direction.execution === 'executed') {
-        lines.push(`  result: peer=${direction.result.peer_host ?? '<unknown>'}; envelope=${direction.result.envelope_status ?? '<none>'}; exit=${direction.result.peer_exit_code ?? direction.result.companion_exit_code ?? '<none>'}; expected-token=${direction.result.expected_token_present}; stdout-bytes=${direction.result.stdout_bytes}; stdout-sha256=${direction.result.stdout_sha256 ?? '<empty>'}; permission-failure=${direction.result.permission_failure}`);
-        if (direction.result.permission_failure_kind) lines.push(`  permission-failure-kind: ${direction.result.permission_failure_kind}`);
+        lines.push(`  result: peer=${direction.result.peer_host ?? '<unknown>'}; envelope=${direction.result.envelope_status ?? '<none>'}; exit=${direction.result.peer_exit_code ?? direction.result.companion_exit_code ?? '<none>'}; expected-token=${direction.result.expected_token_present}; stdout-bytes=${direction.result.stdout_bytes}; stdout-sha256=${direction.result.stdout_sha256 ?? '<empty>'}; operator-action-required=${Boolean(direction.result.operator_action_required)}`);
+        if (direction.result.operator_action_kind) lines.push(`  operator-action-kind: ${direction.result.operator_action_kind}`);
         if (direction.result.metadata?.duration_ms !== null && direction.result.metadata?.duration_ms !== undefined) {
           lines.push(`  duration-ms: ${direction.result.metadata.duration_ms}`);
         }
@@ -2527,6 +2610,8 @@ export function formatText(report) {
       lines.push(`  plan: ${direction.plan}`);
       if (direction.result && direction.execution === 'executed') {
         lines.push(`  result: peer=${direction.result.peer_host ?? '<unknown>'}; envelope=${direction.result.envelope_status ?? '<none>'}; exit=${direction.result.peer_exit_code ?? direction.result.companion_exit_code ?? '<none>'}; expected-token=${direction.result.expected_token_present}; stdout-bytes=${direction.result.stdout_bytes}; stdout-sha256=${direction.result.stdout_sha256 ?? '<empty>'}`);
+        lines.push(`  operator-action-required=${Boolean(direction.result.operator_action_required)}`);
+        if (direction.result.operator_action_kind) lines.push(`  operator-action-kind: ${direction.result.operator_action_kind}`);
         if (direction.result.metadata?.duration_ms !== null && direction.result.metadata?.duration_ms !== undefined) {
           lines.push(`  duration-ms: ${direction.result.metadata.duration_ms}`);
         }
@@ -2561,12 +2646,12 @@ export function formatText(report) {
     const latest = report.consensus_runs.latest;
     lines.push(`- latest: ${latest.run_id}; status=${latest.status}; artifact=${latest.artifact_pointer}; progress=${latest.progress_pointer ?? '<none>'}; round=${latest.round}`);
     lines.push(`  execution: peer-execution=${latest.peer_execution}; executed=${latest.summary.executed}; passed=${latest.summary.passed}; failed=${latest.summary.failed}; skipped=${latest.summary.skipped}; retryable-failed=${latest.summary.failed_retryable}; non-retryable-failed=${latest.summary.failed_non_retryable}`);
-    lines.push(`  failure-summary: timeout=${latest.failure_summary.timeout}; retryable=${latest.failure_summary.retryable}; non-retryable=${latest.failure_summary.non_retryable}`);
+    lines.push(`  failure-summary: timeout=${latest.failure_summary.timeout}; operator-action-required=${latest.failure_summary.operator_action_required}; retryable=${latest.failure_summary.retryable}; non-retryable=${latest.failure_summary.non_retryable}`);
     if (latest.failure_summary.timeout > 0) {
       lines.push(`  warning: latest consensus execution timed out for ${latest.failure_summary.timeout} peer(s); retryable-failed=${latest.summary.failed_retryable}`);
     }
     for (const failure of latest.failures) {
-      lines.push(`  failure: ${failure.peer}; status=${failure.status}; type=${failure.failure_type}; retryable=${failure.retryable}; raw=${failure.raw_output.pointer}; bytes=${failure.raw_output.bytes}; sha256=${failure.raw_output.sha256}`);
+      lines.push(`  failure: ${failure.peer}; status=${failure.status}; type=${failure.failure_type}; operator-action-required=${failure.operator_action_required}; retryable=${failure.retryable}; raw=${failure.raw_output.pointer}; bytes=${failure.raw_output.bytes}; sha256=${failure.raw_output.sha256}`);
       if (failure.retry_after) lines.push(`    retry-after: ${failure.retry_after}`);
       if (failure.retry_command) lines.push(`    retry-command: ${failure.retry_command}`);
     }
