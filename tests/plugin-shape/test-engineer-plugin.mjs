@@ -423,6 +423,34 @@ describe('plugins/engineer — macro skills (skills/<macro>/SKILL.md, per ADR-00
   }
 });
 
+describe('plugins/engineer — start macro host-neutral peer wording', () => {
+  it('documents phase-boundary ensembles as opposite-host peer work, not Codex-only work', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/start/SKILL.md'), 'utf8');
+
+    for (const phrase of [
+      'opposite-host `brainstorm` ensemble',
+      'opposite-host\n`explore` ensemble',
+      'opposite-host `plan-verify` ensemble',
+      'opposite-host\n`review --scope working-tree` ensemble',
+      'peer receives the local draft plan',
+      'peer re-review',
+    ]) {
+      ok(text.includes(phrase), `start SKILL.md missing host-neutral phrase: ${phrase}`);
+    }
+
+    for (const pattern of [
+      /Codex `brainstorm` ensemble/,
+      /Codex `explore` ensemble/,
+      /Codex `plan-verify` ensemble/,
+      /Codex receives Claude's draft plan/,
+      /Codex `review\s+--scope working-tree` ensemble/,
+      /Codex re-review/,
+    ]) {
+      ok(!pattern.test(text), `start SKILL.md must not hard-code Codex-only peer wording: ${pattern}`);
+    }
+  });
+});
+
 describe('plugins/engineer — macro skill Codex agents YAML (skills/<macro>/agents/openai.yaml, per ADR-0021)', () => {
   for (const macro of MACRO_SKILLS) {
     describe(macro, () => {
