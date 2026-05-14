@@ -33,6 +33,8 @@ describe('runtime consensus', () => {
     deepStrictEqual(report.peers.executable, ['claude', 'codex']);
     deepStrictEqual(report.peers.manual, []);
     deepStrictEqual(report.peers.skipped, ['reviewer']);
+    deepStrictEqual(report.peer_lanes.map((lane) => lane.lane), ['companion_execute', 'companion_execute']);
+    ok(report.peer_lanes.every((lane) => lane.peer_execution === true));
     ok(report.limits.some((limit) => /requires the separate runtime:consensus execute command/i.test(limit)));
 
     const manifest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'manifest.json'));
@@ -46,10 +48,16 @@ describe('runtime consensus', () => {
     strictEqual(manifest.policy.limits.max_rounds_cap, 3);
     strictEqual(manifest.policy.limits.max_peers_cap, null);
     ok(manifest.policy.limits.peer_roster_boundary.includes('explicit --peers roster'));
+    strictEqual(manifest.peers.lanes[0].peer, 'claude');
+    strictEqual(manifest.peers.lanes[0].lane, 'companion_execute');
+    strictEqual(manifest.peers.lanes[0].companion_direction, 'codex_to_claude');
+    ok(manifest.peers.lanes[0].command_template.includes('--peers claude --execute'));
 
     const prompt = await readFile(join(root, manifest.rounds[0].prompts[0].pointer), 'utf8');
     ok(prompt.includes('Check the ADR-0024 runtime consensus MVP scope.'));
+    ok(prompt.includes('Lane: companion_execute'));
     ok(formatText(report).includes(`run: ${RUN_ID}`));
+    ok(formatText(report).includes('peer lanes:'));
   });
 
   it('does not impose a fixed small peer cap on an explicit broad roster', async () => {
@@ -100,7 +108,13 @@ describe('runtime consensus', () => {
     deepStrictEqual(manifest.peers.active, ['claude', 'codex', 'security', 'docs', 'release']);
     deepStrictEqual(manifest.peers.executable, ['claude', 'codex']);
     deepStrictEqual(manifest.peers.manual, ['security', 'docs', 'release']);
+    strictEqual(manifest.peers.lanes.find((lane) => lane.peer === 'security').lane, 'manual_subagent_record');
+    strictEqual(manifest.peers.lanes.find((lane) => lane.peer === 'security').peer_execution, false);
+    ok(manifest.peers.lanes.find((lane) => lane.peer === 'security').operator_action.includes('local subagent'));
     strictEqual(manifest.rounds[0].prompts.length, 5);
+    const securityPrompt = await readFile(join(root, manifest.rounds[0].prompts.find((entry) => entry.peer === 'security').pointer), 'utf8');
+    ok(securityPrompt.includes('Lane: manual_subagent_record'));
+    ok(securityPrompt.includes('Run the prompt manually or in a local subagent'));
 
     const report = await runConsensus({
       command: 'execute',
@@ -123,6 +137,7 @@ describe('runtime consensus', () => {
 
     strictEqual(status.status, 'partially-executed');
     strictEqual(status.status_guidance.state, 'record_manual_peers');
+    strictEqual(status.peer_lanes.find((lane) => lane.peer === 'security').lane, 'manual_subagent_record');
     ok(status.next_steps.some((step) => step.includes('--peer security')));
     ok(status.next_steps.some((step) => step.includes('--peer docs')));
     ok(status.next_steps.some((step) => step.includes('--peer release')));

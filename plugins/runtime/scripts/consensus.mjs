@@ -100,6 +100,7 @@ export async function createPlan(options = {}) {
   };
 
   const runId = options.runId ? validateRunId(options.runId) : makeRunId(now);
+  const peerLanes = buildPeerLanes({ runId, activePeers });
   const runDir = consensusRunDir(repoRoot, runId);
   await assertInside(consensusRoot(repoRoot), runDir);
   await mkdir(runDir, { recursive: true });
@@ -116,9 +117,10 @@ export async function createPlan(options = {}) {
     created_at: createdAt,
   };
   for (const peer of activePeers) {
+    const lane = peerLanes.find((entry) => entry.peer === peer);
     const promptPath = resolve(runDir, 'rounds', 'round-1', 'prompts', `${peer}.md`);
     await mkdir(dirname(promptPath), { recursive: true });
-    await writeFile(promptPath, buildFanoutPrompt({ runId, peer, task, policy }));
+    await writeFile(promptPath, buildFanoutPrompt({ runId, peer, task, policy, lane }));
     round.prompts.push({ peer, pointer: pointer(repoRoot, promptPath) });
   }
 
@@ -137,6 +139,7 @@ export async function createPlan(options = {}) {
       executable: executablePeers,
       manual: manualPeers,
       skipped: skippedPeers,
+      lanes: peerLanes,
     },
     rounds: [round],
     consensus_pointer: null,
@@ -160,6 +163,7 @@ export async function createPlan(options = {}) {
     run_pointer: pointer(repoRoot, runDir),
     policy,
     peers: manifest.peers,
+    peer_lanes: peerLanes,
     artifacts: [
       { kind: 'manifest', pointer: pointer(repoRoot, manifestPath) },
       { kind: 'task', pointer: pointer(repoRoot, taskPath) },
@@ -304,9 +308,10 @@ export async function planNextRound(options = {}) {
     created_at: toIso(now),
   };
   for (const peer of manifest.peers.active) {
+    const lane = peerLanesFor(manifest, runId).find((entry) => entry.peer === peer);
     const promptPath = resolve(consensusRunDir(repoRoot, runId), 'rounds', `round-${nextRound}`, 'prompts', `${peer}.md`);
     await mkdir(dirname(promptPath), { recursive: true });
-    await writeFile(promptPath, buildRebuttalPrompt({ runId, peer, disagreements, round: nextRound }));
+    await writeFile(promptPath, buildRebuttalPrompt({ runId, peer, disagreements, round: nextRound, lane }));
     round.prompts.push({ peer, pointer: pointer(repoRoot, promptPath) });
   }
   manifest.rounds.push(round);
@@ -584,6 +589,7 @@ export async function readStatus(options = {}) {
       prompt_count: round.prompts.length,
       raw_output_count: round.raw_outputs.length,
     })),
+    peer_lanes: peerLanesFor(manifest, runId),
     evidence_pointers: evidencePointers,
     status_guidance: statusGuidance,
     next_action: statusGuidance.next_action,
@@ -1134,6 +1140,42 @@ function buildNextRoundAvailability({ manifest, durableDisagreements, runId }) {
   };
 }
 
+function buildPeerLanes({ runId, activePeers }) {
+  return activePeers.map((peer) => {
+    const companionDirection = PEER_DIRECTIONS[peer] ?? null;
+    const lane = companionDirection ? 'companion_execute' : 'manual_subagent_record';
+    return {
+      peer,
+      lane,
+      peer_execution: lane === 'companion_execute',
+      companion_direction: companionDirection,
+      operator_action: lane === 'companion_execute'
+        ? 'Execute through runtime:consensus execute --execute, which invokes the companion contract for this peer.'
+        : 'Run the prompt manually or in a local subagent, then store the output with runtime:consensus record.',
+      command_template: runId ? laneCommandTemplate({ runId, peer, lane }) : null,
+      output_policy: 'artifact-pointer-only',
+      host_session_mutation: false,
+    };
+  });
+}
+
+function peerLanesFor(manifest, runId) {
+  if (Array.isArray(manifest.peers?.lanes) && manifest.peers.lanes.length > 0) {
+    return manifest.peers.lanes.map((lane) => ({
+      ...lane,
+      command_template: lane.command_template ?? laneCommandTemplate({ runId, peer: lane.peer, lane: lane.lane }),
+    }));
+  }
+  return buildPeerLanes({ runId, activePeers: manifest.peers?.active ?? [] });
+}
+
+function laneCommandTemplate({ runId, peer, lane }) {
+  if (lane === 'companion_execute') {
+    return `runtime:consensus execute --run-id ${runId} --round <round> --peers ${peer} --execute`;
+  }
+  return `runtime:consensus record --run-id ${runId} --round <round> --peer ${peer} --input-file <path>`;
+}
+
 function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtifact, consensusArtifact }) {
   const latestRound = findRound(manifest, latestRoundNumber(manifest));
   const summary = executionArtifact?.summary ?? progressArtifact?.summary ?? null;
@@ -1433,6 +1475,13 @@ export function formatText(report) {
       }
     }
   }
+  if (report.peer_lanes?.length) {
+    lines.push('', 'peer lanes:');
+    for (const lane of report.peer_lanes) {
+      lines.push(`- ${lane.peer}: lane=${lane.lane}; peer-execution=${lane.peer_execution}; command=${lane.command_template}`);
+      lines.push(`  action: ${lane.operator_action}`);
+    }
+  }
   if (report.synthesized_summary) {
     lines.push('', 'synthesized summary:', report.synthesized_summary);
   }
@@ -1646,11 +1695,12 @@ function normalizeDisagreement(value) {
   };
 }
 
-function buildFanoutPrompt({ runId, peer, task, policy }) {
+function buildFanoutPrompt({ runId, peer, task, policy, lane }) {
   return `# Runtime Consensus Fanout
 
 Run id: ${runId}
 Peer: ${peer}
+Lane: ${lane?.lane ?? 'unknown'}
 
 Task:
 ${task.trim()}
@@ -1670,10 +1720,14 @@ Budget policy:
 - time_budget_ms: ${policy.time_budget_ms ?? 'unspecified'}
 - process_budget: ${policy.process_budget}
 
+Lane action:
+
+${lane?.operator_action ?? 'Follow the consensus report lane instructions.'}
+
 Do not assume host parity. Note host-specific limits explicitly.`;
 }
 
-function buildRebuttalPrompt({ runId, peer, disagreements, round }) {
+function buildRebuttalPrompt({ runId, peer, disagreements, round, lane }) {
   const body = disagreements.length
     ? disagreements.map((item, index) => `${index + 1}. ${item.summary ?? item}`).join('\n')
     : 'No durable disagreements were provided.';
@@ -1682,10 +1736,15 @@ function buildRebuttalPrompt({ runId, peer, disagreements, round }) {
 Run id: ${runId}
 Peer: ${peer}
 Round: ${round}
+Lane: ${lane?.lane ?? 'unknown'}
 
 Review only these synthesized disagreement summaries:
 
 ${body}
+
+Lane action:
+
+${lane?.operator_action ?? 'Follow the consensus report lane instructions.'}
 
 Respond with resolution evidence, remaining disagreement, and owner decision points. Do not quote or depend on raw peer output unless you have a direct artifact pointer.`;
 }
