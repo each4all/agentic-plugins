@@ -96,6 +96,7 @@ export async function runDoctor({
   const claudePluginList = parseClaudePluginList(claude.plugin?.stdout ?? '');
   const plugins = buildPluginMatrix({ source, catalogs, caches, claudePluginList });
   const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList });
+  const pluginCommandSurface = buildPluginCommandSurface({ claude, codex, plugins });
   const companion = await inspectCompanionContract({
     repoRoot: resolvedRepoRoot,
     homeDir: resolvedHomeDir,
@@ -182,6 +183,7 @@ export async function runDoctor({
       codex: redactCommandDetails(codex),
     },
     plugins,
+    plugin_command_surface: pluginCommandSurface,
     host_parity: hostParity,
     companions: companion,
     model_effort: modelEffort,
@@ -654,6 +656,20 @@ function buildHostParity({ claude, codex, plugins, claudePluginList }) {
     }));
   }
 
+  const runtimePlugin = plugins.runtime;
+  if (runtimePlugin?.cache?.codex?.status !== 'available' && runtimePlugin?.cache?.codex_tmp_marketplace?.status === 'available') {
+    differences.push(parityEntry({
+      id: 'codex_plugin_cache_materialization_manual',
+      severity: 'warning',
+      host: 'codex',
+      area: 'plugin-install',
+      plugin: 'runtime',
+      summary: 'Codex has a marketplace cache for runtime but no per-plugin install cache; this materialization is a host lifecycle step, not a runtime:settings executable action.',
+      evidence: `codex-cache=${runtimePlugin.cache.codex.status}, codex-marketplace-cache=${runtimePlugin.cache.codex_tmp_marketplace.status}/${runtimePlugin.cache.codex_tmp_marketplace.manifest_version ?? 'unknown'}, source-present=${Boolean(runtimePlugin.source?.present)}`,
+      next_step: 'Do not repeat marketplace add when the marketplace cache is current; start a fresh Codex session or invoke the plugin surface, then re-run runtime:doctor.',
+    }));
+  }
+
   if (claude.feature_surface.permission_mode === true || codex.feature_surface.sandbox_flag === true || codex.feature_surface.approval_flag === true) {
     differences.push(parityEntry({
       id: 'host_permission_model_differs',
@@ -758,6 +774,46 @@ function inspectPluginVersionParity(name, plugin) {
   }));
 
   return issues;
+}
+
+function buildPluginCommandSurface({ claude, codex, plugins }) {
+  return {
+    schema_version: 'runtime-plugin-command-surface-1.0',
+    claude: {
+      status: claude.plugin.status,
+      mode: claude.feature_surface.plugin_install_command || claude.feature_surface.plugin_list_command
+        ? 'per-plugin-command'
+        : 'unknown',
+      supports: {
+        install_plugin: Boolean(claude.feature_surface.plugin_install_command),
+        list_plugin: Boolean(claude.feature_surface.plugin_list_command),
+        marketplace_add: false,
+        marketplace_upgrade: false,
+        marketplace_remove: false,
+      },
+      materialization: {
+        status: 'host-native-plugin-command',
+        executable_by_settings: true,
+        reason: 'Claude exposes plugin install/update/list style host commands that can materialize the host plugin cache.',
+      },
+    },
+    codex: {
+      status: codex.plugin.status,
+      mode: codex.feature_surface.plugin_marketplace ? 'marketplace-only' : 'unknown',
+      supports: {
+        install_plugin: Boolean(codex.feature_surface.plugin_install_command),
+        list_plugin: Boolean(codex.feature_surface.plugin_list_command),
+        marketplace_add: Boolean(codex.feature_surface.plugin_marketplace_add),
+        marketplace_upgrade: Boolean(codex.feature_surface.plugin_marketplace_upgrade),
+        marketplace_remove: Boolean(codex.feature_surface.plugin_marketplace_remove),
+      },
+      materialization: buildCodexCacheMaterialization(plugins.runtime),
+      limits: [
+        'Codex marketplace add/upgrade updates marketplace cache evidence, not a per-plugin install cache by itself.',
+        'runtime:settings intentionally keeps Codex cache materialization manual unless the host exposes an explicit per-plugin install/update command.',
+      ],
+    },
+  };
 }
 
 function compareInstalledVersion({ plugin, host, actual, expected, source }) {
@@ -1690,6 +1746,7 @@ function summarizeRuntimeInstallForHost(host, plugin) {
       status: 'installed',
       evidence: 'codex plugin cache contains runtime',
       version: plugin.cache.codex.latest?.manifest_version ?? sourceVersion,
+      materialization: buildCodexCacheMaterialization(plugin),
     };
   }
   if (plugin.source?.present) {
@@ -1697,6 +1754,7 @@ function summarizeRuntimeInstallForHost(host, plugin) {
       status: 'source_available',
       evidence: 'repo source tree contains runtime; host install not proven',
       version: sourceVersion,
+      materialization: buildCodexCacheMaterialization(plugin),
     };
   }
   if (plugin.cache.codex_tmp_marketplace.status === 'available') {
@@ -1704,9 +1762,59 @@ function summarizeRuntimeInstallForHost(host, plugin) {
       status: 'marketplace_cache_only',
       evidence: 'codex temporary marketplace cache is not installation evidence',
       version: plugin.cache.codex_tmp_marketplace.manifest_version ?? null,
+      materialization: buildCodexCacheMaterialization(plugin),
     };
   }
-  return { status: 'not_installed', evidence: 'no codex install cache or source evidence', version: null };
+  return {
+    status: 'not_installed',
+    evidence: 'no codex install cache or source evidence',
+    version: null,
+    materialization: buildCodexCacheMaterialization(plugin),
+  };
+}
+
+function buildCodexCacheMaterialization(plugin) {
+  const installCache = plugin?.cache?.codex ?? {};
+  const marketplaceCache = plugin?.cache?.codex_tmp_marketplace ?? {};
+  const installVersion = installCache.latest?.manifest_version ?? null;
+  const marketplaceVersion = marketplaceCache.manifest_version ?? null;
+  if (installCache.status === 'available') {
+    return {
+      status: 'materialized',
+      executable_by_settings: false,
+      install_cache_status: installCache.status,
+      install_cache_version: installVersion,
+      marketplace_cache_status: marketplaceCache.status ?? 'unknown',
+      marketplace_cache_version: marketplaceVersion,
+      source_available: Boolean(plugin?.source?.present),
+      reason: 'Codex per-plugin install cache exists for runtime.',
+      next_step: null,
+    };
+  }
+  if (marketplaceCache.status === 'available') {
+    return {
+      status: 'manual_session_refresh',
+      executable_by_settings: false,
+      install_cache_status: installCache.status ?? 'unknown',
+      install_cache_version: installVersion,
+      marketplace_cache_status: marketplaceCache.status,
+      marketplace_cache_version: marketplaceVersion,
+      source_available: Boolean(plugin?.source?.present),
+      reason: 'Codex marketplace cache is present, but no per-plugin install cache exists and current Codex CLI exposes marketplace add/upgrade/remove rather than per-plugin install/list.',
+      next_step: 'Start a fresh Codex session or invoke the plugin surface after marketplace refresh, then re-run runtime:doctor to verify cache materialization.',
+    };
+  }
+  return {
+    status: 'not_available',
+    executable_by_settings: false,
+    install_cache_status: installCache.status ?? 'unknown',
+    install_cache_version: installVersion,
+    marketplace_cache_status: marketplaceCache.status ?? 'unknown',
+    marketplace_cache_version: marketplaceVersion,
+    source_available: Boolean(plugin?.source?.present),
+    reason: 'Codex has neither per-plugin install cache nor temporary marketplace cache evidence for runtime.',
+    next_step: 'Use runtime:settings to add or upgrade the Codex marketplace before expecting plugin cache materialization.',
+  };
 }
 
 function buildDirectionReadinessRow({ key, caller, peer, readiness, companion, modelEffort, permissionProof, deepPeerSmoke }) {
@@ -2524,6 +2632,11 @@ export function formatText(report) {
       lines.push(`  hooks: global=${featureFlagEvidence(cli.feature_surface.codex_global_hooks, cli.feature_surface.codex_global_hooks_stage)}; plugin-local=${featureFlagEvidence(cli.feature_surface.codex_plugin_hooks, cli.feature_surface.codex_plugin_hooks_stage)}; automatic-plugin-hooks=${Boolean(cli.feature_surface.automatic_plugin_hooks)}`);
     }
   }
+  lines.push('');
+  lines.push('Plugin Command Surface');
+  const codexSurface = report.plugin_command_surface.codex;
+  lines.push(`- codex: mode=${codexSurface.mode}; marketplace-add=${Boolean(codexSurface.supports.marketplace_add)}; marketplace-upgrade=${Boolean(codexSurface.supports.marketplace_upgrade)}; install=${Boolean(codexSurface.supports.install_plugin)}; list=${Boolean(codexSurface.supports.list_plugin)}; materialization=${codexSurface.materialization.status}`);
+  if (codexSurface.materialization.next_step) lines.push(`  next: ${codexSurface.materialization.next_step}`);
   lines.push('');
   lines.push('Plugins');
   for (const name of PLUGIN_NAMES) {

@@ -156,9 +156,16 @@ describe('runtime settings', () => {
     ok(codexRecommendations.every((rec) => rec.action !== 'add-marketplace'));
     const materialize = codexRecommendations.find((rec) => rec.action === 'materialize-plugin-cache');
     strictEqual(materialize.command, null);
-    ok(materialize.detail.includes('not fixed by repeating marketplace add'));
+    ok(materialize.detail.includes('rather than per-plugin install/list'));
+    ok(materialize.next_step.includes('Do not repeat marketplace add'));
+    strictEqual(materialize.evidence.command_surface, 'marketplace-only');
     ok(report.plugin_management.plans.some((plan) => plan.id === 'runtime:codex:materialize-plugin-cache' && plan.status === 'manual'));
+    const materializePlan = report.plugin_management.plans.find((plan) => plan.id === 'runtime:codex:materialize-plugin-cache');
+    ok(materializePlan.next_step.includes('verify host cache materialization'));
+    strictEqual(report.plugin_command_surface.codex.materialization.status, 'manual_session_refresh');
     ok(formatText(report).includes('codex-marketplace-cache=0.1.0'));
+    ok(formatText(report).includes('codex command surface: mode=marketplace-only'));
+    ok(formatText(report).includes('materialization=manual_session_refresh'));
   });
 
   it('recommends Codex marketplace upgrade when the temporary marketplace cache is stale', async () => {

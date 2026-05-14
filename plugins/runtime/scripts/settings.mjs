@@ -129,6 +129,7 @@ export async function runSettings({
     },
     clis: buildCliPlans(doctor.clis),
     plugins: pluginPlans,
+    plugin_command_surface: doctor.plugin_command_surface,
     plugin_management: pluginManagement,
     config: {
       resolution_order: doctor.model_effort.resolution_order,
@@ -453,7 +454,13 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
         command: null,
         argv: null,
         executable: false,
-        detail: `Codex marketplace cache already has ${name} ${codexTmpVersion}, but no per-plugin install cache was found. This is not fixed by repeating marketplace add; start a fresh Codex session or verify host cache materialization with runtime:doctor.`,
+        detail: `Codex marketplace cache already has ${name} ${codexTmpVersion}, but no per-plugin install cache was found. Current Codex CLI exposes marketplace add/upgrade/remove rather than per-plugin install/list, so runtime cannot execute cache materialization directly.`,
+        next_step: 'Start a fresh Codex session or invoke the plugin surface after marketplace refresh, then verify host cache materialization with runtime:doctor. Do not repeat marketplace add unless the marketplace cache is missing or stale.',
+        evidence: {
+          command_surface: 'marketplace-only',
+          marketplace_cache_version: codexTmpVersion,
+          install_cache_status: 'missing',
+        },
       });
     } else {
       const command = buildPluginCommand({ host: 'codex', action: 'add-marketplace', name });
@@ -553,6 +560,8 @@ function buildPluginManagementCandidates({ plugins, clis, hostFilter }) {
         executed: false,
         result: null,
         detail: recommendation.detail,
+        next_step: recommendation.next_step ?? null,
+        evidence: recommendation.evidence ?? null,
       };
       const status = classifyPluginManagementPlan({ recommendation, hostFilter, clis });
       plans.push({ ...basePlan, ...status });
@@ -1062,11 +1071,16 @@ export function formatText(report) {
   lines.push('');
   lines.push('Plugin Management');
   lines.push(`- mode: ${report.plugin_management.mode}; requested=${report.plugin_management.requested}; host-filter=${report.plugin_management.host_filter}; timeout-ms=${report.plugin_management.timeout_ms}`);
+  if (report.plugin_command_surface?.codex) {
+    const surface = report.plugin_command_surface.codex;
+    lines.push(`- codex command surface: mode=${surface.mode}; marketplace-add=${Boolean(surface.supports.marketplace_add)}; marketplace-upgrade=${Boolean(surface.supports.marketplace_upgrade)}; install=${Boolean(surface.supports.install_plugin)}; list=${Boolean(surface.supports.list_plugin)}; materialization=${surface.materialization.status}`);
+  }
   lines.push(`- summary: planned=${report.plugin_management.summary.planned}; executed=${report.plugin_management.summary.executed}; failed=${report.plugin_management.summary.failed}; retryable-failed=${report.plugin_management.summary.failed_retryable}; non-retryable-failed=${report.plugin_management.summary.failed_non_retryable}; blocked=${report.plugin_management.summary.blocked}; manual=${report.plugin_management.summary.manual}; deduplicated=${report.plugin_management.summary.deduplicated}; skipped=${report.plugin_management.summary.skipped}`);
   for (const plan of report.plugin_management.plans) {
     const command = plan.command ? ` command=${plan.command}` : '';
     lines.push(`- ${plan.plugin}/${plan.host}: ${plan.action}; status=${plan.status}; executable=${plan.executable}; executed=${plan.executed};${command}`);
     if (plan.reason) lines.push(`  reason: ${plan.reason}`);
+    if (plan.next_step) lines.push(`  next: ${plan.next_step}`);
     if (plan.result) {
       lines.push(`  result: ok=${plan.result.ok}; exit=${plan.result.exit_code ?? '<none>'}; stdout-bytes=${plan.result.stdout_bytes}; stderr-bytes=${plan.result.stderr_bytes}; timed-out=${plan.result.timed_out}; failure-type=${plan.result.failure_type ?? '<none>'}; retryable=${plan.result.retryable}`);
       if (plan.result.retry_after) lines.push(`  retry-after: ${plan.result.retry_after}`);
