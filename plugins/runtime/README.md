@@ -38,7 +38,7 @@ It does not own persona-level engineering work or macro planning. Those remain i
 | `/runtime:migrate workflow-storage [--format text\|json] [--plugin all\|engineer\|orchestrator] [--apply]` | shipping | Explicit ADR-0025 workflow storage migration planner. Dry-run reports legacy/canonical state, branch counts, peer-run and lock blockers, and source/destination paths. `--apply` moves only gitignored `.claude/agentic-*` workflow state into `.agentic-plugins/state/<plugin>` and writes a local migration manifest. |
 | `/runtime:consensus plan\|record\|synthesize\|next-round\|execute\|status ...` | shipping | Runtime-owned consensus artifact manager and explicit companion executor. Creates fanout/rebuttal prompts, records or executes raw peer output as files, and emits only sanitized execution metadata, synthesized summary, durable disagreements, evidence pointers, artifact paths, and `status --latest` guidance from the newest readable manifest. |
 | `/runtime:worktree plan [--format text\|json] [--task <text>] [--branch <name>] [--base <ref>] [--worktree-dir <path>]` | shipping scaffold | Read-only dedicated-worktree planner. Reports current branch/dirtiness, existing `git worktree list --porcelain` entries, base-ref resolution, candidate branch/path availability, and suggested `git worktree add` commands without executing them. |
-| `/runtime:context capture\|status\|check ...` | shipping scaffold | Runtime-owned context hygiene artifact manager and read-only explicit budget check. Writes context summary, risk level, artifact pointers, next-session prompt/action, and read-only git source snapshot under `.agentic-plugins/runs/context/`; `status --latest` reads the newest handoff artifact with age stale metadata plus source-freshness state; `check` creates no artifact. |
+| `/runtime:context capture\|status\|check ...` | shipping scaffold | Runtime-owned context hygiene artifact manager and read-only explicit budget check. Writes context summary, risk level, artifact pointers, next-session prompt/action, and read-only git source snapshot under `.agentic-plugins/runs/context/`; `status --latest` reads the newest handoff artifact with age stale metadata, source-freshness state, and explicit reuse-or-refresh guidance; `check` creates no artifact. |
 
 Runtime also ships `scripts/footer.mjs`, a helper used by engineer and orchestrator completion surfaces to render the ADR-0024 advisory footer from explicit fields or a `runtime:context` artifact pointer. It is intentionally not a new slash command.
 The helper can also render advisory PR handling readiness so completion
@@ -191,7 +191,7 @@ Worktree planning is read-only. The command inspects `git worktree list --porcel
 Context is a runtime-owned artifact scaffold and read-only check surface for ADR-0024 context hygiene. It does not inspect or mutate host session context directly. The first flows are:
 
 1. `capture`: create `<repo>/.agentic-plugins/runs/context/<run-id>/context.json`, `summary.md`, and `next-session-prompt.md`; when git is available, record the current commit, branch, and dirty-state as read-only source metadata.
-2. `status`: read the stored artifact by `--run-id`, or read the newest readable artifact with `--latest`, and emit the same bounded handoff fields plus age/stale metadata and source-freshness metadata comparing the artifact commit to the current git commit.
+2. `status`: read the stored artifact by `--run-id`, or read the newest readable artifact with `--latest`, and emit the same bounded handoff fields plus age/stale metadata, source-freshness metadata comparing the artifact commit to the current git commit, and advisory reuse-or-refresh guidance.
 3. `check`: compute an advisory green/yellow/red risk from caller-supplied `--token-budget` plus `--used-tokens` or `--remaining-tokens`, or from caller-supplied `--risk`.
 
 Context output is intentionally limited to:
@@ -201,9 +201,9 @@ Context output is intentionally limited to:
 - artifact pointers;
 - recommended next-session action;
 - generated or caller-supplied next-session prompt preview and pointer.
-- read-only handoff lookup metadata for `status`, including selected artifact age, stale/not-stale state, source-freshness state, and dirty-state hints.
+- read-only handoff lookup metadata for `status`, including selected artifact age, stale/not-stale state, source-freshness state, dirty-state hints, and handoff guidance.
 
-`status --latest` reads existing artifacts only; it does not create, update, or compact anything. `check` does not create a context artifact, trigger `capture`, measure host context automatically, compact the session, or start a new session. This scaffold does not migrate engineer/orchestrator workflow state, run peers, paste consensus raw output into the main session, mutate host-native config/auth/secrets/sandbox state, or claim Codex manual-hook parity.
+`status --latest` reads existing artifacts only; it does not create, update, or compact anything. If the selected handoff is age-stale, source-stale, source-unknown, or the current worktree is dirty, status recommends a fresh capture before relying on the artifact as next-session truth, but it still does not trigger capture automatically. `check` does not create a context artifact, trigger `capture`, measure host context automatically, compact the session, or start a new session. This scaffold does not migrate engineer/orchestrator workflow state, run peers, paste consensus raw output into the main session, mutate host-native config/auth/secrets/sandbox state, or claim Codex manual-hook parity.
 
 ## Completion footer behavior
 

@@ -106,7 +106,11 @@ describe('runtime context', () => {
     strictEqual(report.handoff.latest, true);
     strictEqual(report.handoff.age_minutes, 120);
     strictEqual(report.handoff.stale, true);
+    strictEqual(report.handoff.guidance.state, 'capture_new_context');
+    strictEqual(report.handoff.guidance.reason, 'handoff artifact age exceeds the configured stale threshold');
+    ok(report.handoff.guidance.recommended_action.includes('Capture a new runtime:context artifact'));
     ok(formatText(report).includes('handoff lookup:'));
+    ok(formatText(report).includes('handoff guidance: capture_new_context'));
   });
 
   it('reports source-stale handoffs when the current git commit moved after capture', async () => {
@@ -146,8 +150,13 @@ describe('runtime context', () => {
     strictEqual(report.handoff.source_freshness.artifact_commit, '1111111111111111111111111111111111111111');
     strictEqual(report.handoff.source_freshness.current_commit, '2222222222222222222222222222222222222222');
     strictEqual(report.handoff.source_freshness.reason, 'current git commit differs from the context artifact commit');
+    strictEqual(report.handoff.guidance.state, 'capture_new_context');
+    strictEqual(report.handoff.guidance.recommended_session, 'fresh_or_resumed');
+    ok(report.handoff.guidance.recommended_action.includes('Capture a new runtime:context artifact'));
+    ok(report.handoff.guidance.commands.some((command) => command.includes('runtime:context capture')));
     ok(formatText(report).includes('source freshness:'));
     ok(formatText(report).includes('- source status: stale'));
+    ok(formatText(report).includes('handoff guidance: capture_new_context'));
   });
 
   it('checks explicit context budget without creating artifacts', async () => {

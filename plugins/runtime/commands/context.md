@@ -7,7 +7,7 @@ argument-hint: "capture|status|check [--format text|json] [--summary <text>|--su
 
 $ARGUMENTS
 
-Run the runtime-owned context hygiene artifact scaffold and read-only budget check. This command does not trim, rewrite, or mutate host session context. It also does not compact host session context. `capture` writes a bounded repo-local artifact and records a read-only git source snapshot when available; `status` reads one by explicit run id or latest-artifact lookup and reports age plus source freshness; `check` only computes an advisory green/yellow/red risk from caller-supplied inputs.
+Run the runtime-owned context hygiene artifact scaffold and read-only budget check. This command does not trim, rewrite, or mutate host session context. It also does not compact host session context. `capture` writes a bounded repo-local artifact and records a read-only git source snapshot when available; `status` reads one by explicit run id or latest-artifact lookup and reports age, source freshness, and explicit handoff guidance for whether to reuse the artifact or capture a fresh one; `check` only computes an advisory green/yellow/red risk from caller-supplied inputs.
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -33,7 +33,8 @@ Common flow:
 Notes:
 
 - Context artifacts stay under `<repo>/.agentic-plugins/runs/context/<run-id>/`.
-- `status --latest` reads the newest readable context artifact and reports age/stale handoff metadata plus source-freshness metadata; it does not create or update artifacts.
+- `status --latest` reads the newest readable context artifact and reports age/stale handoff metadata, source-freshness metadata, and bounded handoff guidance; it does not create or update artifacts.
+- Handoff guidance is advisory. Stale age, stale source commits, unknown source metadata, or dirty current worktrees recommend a fresh capture before relying on the artifact as next-session truth.
 - `check` is read-only and does not create a context artifact or trigger `capture`.
 - Main-session output is limited to context summary, risk level, artifact pointers, and recommended next-session prompt/action.
 - Source freshness uses read-only git observation only. If git metadata is unavailable, source freshness is reported as `unknown` rather than inferred.
