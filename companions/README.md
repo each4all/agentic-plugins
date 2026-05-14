@@ -43,12 +43,20 @@ echo '<task>Reply OK</task>' | companions/codex-companion.mjs task
 
 # Claude → Codex (JSON envelope)
 echo '<task>Reply OK</task>' | companions/codex-companion.mjs task --output-format json
+
+# Codex → Claude (text mode)
+echo '<task>Reply OK</task>' | companions/claude-companion.mjs task
+
+# Codex → Claude (JSON envelope)
+echo '<task>Reply OK</task>' | companions/claude-companion.mjs task --output-format json
 ```
 
-`claude-companion.mjs` invocation is symmetric. Both scripts honor the
-five pinned options from contract § 2.2: `--prompt-file`, `--model`,
-`--effort`, `--cwd`, `--output-format`. Exit codes follow contract § 5.1
-(`0` success, `1` peer run error, `2` companion misuse, `3` peer infra error).
+Both directions use the same `task` subcommand, prompt-input
+precedence, JSON envelope option, and exit-code contract. Both scripts
+honor the five pinned options from contract § 2.2: `--prompt-file`,
+`--model`, `--effort`, `--cwd`, `--output-format`. Exit codes follow
+contract § 5.1 (`0` success, `1` peer run error, `2` companion misuse,
+`3` peer infra error).
 
 ## Tests
 
