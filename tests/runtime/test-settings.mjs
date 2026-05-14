@@ -53,6 +53,32 @@ describe('runtime settings', () => {
     ok(formatText(report).includes(`runtime:settings ${RUNTIME_VERSION} (dry-run)`));
   });
 
+  it('reports non-executable host CLI install plans when Claude or Codex is unavailable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-cli-install-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-cli-install-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({}),
+    });
+
+    strictEqual(report.schema_version, 'runtime-settings-1.5');
+    strictEqual(report.clis.claude.status, 'unavailable');
+    strictEqual(report.clis.codex.status, 'unavailable');
+    for (const host of ['claude', 'codex']) {
+      strictEqual(report.clis[host].install_plan.status, 'manual_required');
+      strictEqual(report.clis[host].install_plan.executable, false);
+      strictEqual(report.clis[host].install_plan.command, null);
+      ok(report.clis[host].install_plan.next_step.includes(host === 'claude' ? 'Claude Code' : 'Codex CLI'));
+      ok(report.recommendations.some((rec) => rec.area === 'cli' && rec.host === host && rec.action === 'install-host-cli' && rec.executable === false));
+    }
+    ok(report.plugin_management.plans.some((plan) => plan.host === 'claude' && plan.status === 'blocked' && plan.reason.includes('CLI is not available')));
+    ok(report.plugin_management.plans.some((plan) => plan.host === 'codex' && plan.status === 'blocked' && plan.reason.includes('CLI is not available')));
+    ok(formatText(report).includes('install-plan: manual_required; executable=false'));
+  });
+
   it('applies only selected agentic-plugins-owned config writes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-apply-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-apply-home-'));
@@ -149,7 +175,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.4');
+    strictEqual(report.schema_version, 'runtime-settings-1.5');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
