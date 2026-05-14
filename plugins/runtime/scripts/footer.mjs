@@ -28,6 +28,7 @@ export async function runFooter(options = {}) {
     ? await readContextArtifact(repoRoot, {
         runId: options.contextRunId,
         latest: options.contextLatest === true,
+        host,
         now: options.now ?? new Date(),
         staleAfterMs: options.staleAfterMs ?? DEFAULT_HANDOFF_STALE_AFTER_MS,
         currentSourceSnapshot: options.currentSourceSnapshot,
@@ -37,6 +38,7 @@ export async function runFooter(options = {}) {
     ? await readConsensusStatus(repoRoot, {
         runId: options.consensusRunId,
         latest: options.consensusLatest === true,
+        host,
       })
     : null;
 
@@ -281,15 +283,15 @@ async function readContextArtifact(repoRoot, options) {
   if (!options.runId && !latest) {
     throw new Error('Context lookup requires --context-run-id or --context-latest');
   }
-  const lookup = latest
+  const selection = latest
     ? await findLatestContextArtifact(repoRoot)
     : {
         runId: validateRunId(options.runId),
         contextPath: resolve(contextRoot(repoRoot), validateRunId(options.runId), 'context.json'),
         skippedInvalid: 0,
       };
-  const runId = lookup.runId;
-  const contextPath = lookup.contextPath;
+  const runId = selection.runId;
+  const contextPath = selection.contextPath;
   assertInsideSync(contextRoot(repoRoot), contextPath, 'Context artifact path escapes context root');
   const artifact = JSON.parse(await readFile(contextPath, 'utf8'));
   const currentSourceSnapshot = await resolveSourceSnapshot({
@@ -301,6 +303,15 @@ async function readContextArtifact(repoRoot, options) {
   const promptPointer = artifact.next_session?.prompt_pointer
     ? normalizeRepoPointer(repoRoot, artifact.next_session.prompt_pointer)
     : null;
+  const lookup = buildContextLookup({
+    artifact,
+    runId,
+    latest,
+    now: options.now,
+    staleAfterMs: options.staleAfterMs,
+    skippedInvalid: selection.skippedInvalid,
+    currentSourceSnapshot,
+  });
   return {
     runId,
     contextState: state,
@@ -312,15 +323,7 @@ async function readContextArtifact(repoRoot, options) {
         : defaultNextAction(state),
       promptPointer,
     },
-    lookup: buildContextLookup({
-      artifact,
-      runId,
-      latest,
-      now: options.now,
-      staleAfterMs: options.staleAfterMs,
-      skippedInvalid: lookup.skippedInvalid,
-      currentSourceSnapshot,
-    }),
+    lookup: localizeContextLookupCommands(lookup, options.host ?? 'neutral'),
   };
 }
 
@@ -396,7 +399,7 @@ async function selectLatestConsensusRun(repoRoot) {
   return { ...candidates[0], skippedInvalid };
 }
 
-async function readConsensusStatus(repoRoot, { runId, latest }) {
+async function readConsensusStatus(repoRoot, { runId, latest, host }) {
   const selected = latest
     ? await selectLatestConsensusRun(repoRoot)
     : { runId: validateConsensusRunId(runId), selectedAt: null, skippedInvalid: 0 };
@@ -413,7 +416,7 @@ async function readConsensusStatus(repoRoot, { runId, latest }) {
     consensusPointer: status.consensus_pointer,
     executionPointer: status.execution_pointer,
     progressPointer: status.progress_pointer,
-    statusGuidance: status.status_guidance,
+    statusGuidance: localizeStatusGuidanceCommands(status.status_guidance, host ?? 'neutral'),
     lookup: buildConsensusLookup({
       latest,
       selectedAt: selected.selectedAt,
@@ -693,6 +696,39 @@ function formatConsensusLookup(lookup) {
     `- selected_at: ${selected}`,
     `- skipped_invalid: ${lookup.skipped_invalid}`,
   ].join('\n');
+}
+
+function localizeContextLookupCommands(lookup, host) {
+  if (!lookup?.guidance) return lookup;
+  return {
+    ...lookup,
+    guidance: {
+      ...lookup.guidance,
+      commands: localizeCommandList(lookup.guidance.commands, host),
+    },
+  };
+}
+
+function localizeStatusGuidanceCommands(guidance, host) {
+  if (!guidance) return guidance;
+  return {
+    ...guidance,
+    next_steps: localizeCommandList(guidance.next_steps, host),
+    commands: localizeCommandList(guidance.commands, host),
+  };
+}
+
+function localizeCommandList(values, host) {
+  return (values ?? []).map((value) => localizeRuntimeCommands(value, host));
+}
+
+function localizeRuntimeCommands(value, host) {
+  if (!value || host === 'neutral') return value;
+  const prefix = host === 'claude' ? '/' : '$';
+  return String(value).replace(
+    /(^|[\s`"'([])(runtime:[A-Za-z0-9:_-]+)/g,
+    (_match, leading, command) => `${leading}${prefix}${command}`,
+  );
 }
 
 function artifactTimestampMs(artifact, fallbackRunId) {
