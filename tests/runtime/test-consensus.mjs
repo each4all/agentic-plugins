@@ -255,6 +255,14 @@ describe('runtime consensus', () => {
     strictEqual(await readFile(join(root, codexResult.raw_output.pointer), 'utf8'), codexRaw);
 
     const manifest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'manifest.json'));
+    const claudePrompt = manifest.rounds[0].prompts.find((entry) => entry.peer === 'claude');
+    const codexPrompt = manifest.rounds[0].prompts.find((entry) => entry.peer === 'codex');
+    strictEqual(claudeResult.prompt_pointer, claudePrompt.pointer);
+    strictEqual(codexResult.prompt_pointer, codexPrompt.pointer);
+    ok(report.artifacts.some((artifact) => artifact.kind === 'peer-prompt' && artifact.peer === 'claude' && artifact.pointer === claudePrompt.pointer));
+    ok(formatText(report).includes(`prompt=${claudePrompt.pointer}`));
+    const executionArtifact = await readJson(join(root, report.execution_pointer));
+    strictEqual(executionArtifact.executions.find((entry) => entry.peer === 'claude').prompt_pointer, claudePrompt.pointer);
     strictEqual(manifest.status, 'executed');
     strictEqual(manifest.rounds[0].status, 'executed');
     strictEqual(manifest.rounds[0].execution_results.length, 2);
@@ -356,6 +364,7 @@ describe('runtime consensus', () => {
     ok(report.execution_remediation.retry_commands.every((command) => command.includes('--process-budget 1')));
     ok(report.execution_remediation.peer_actions.every((entry) => entry.suggested_timeout_ms === 180000));
     ok(report.executions.every((entry) => entry.status === 'timed_out'));
+    ok(report.executions.every((entry) => entry.prompt_pointer?.includes('/prompts/')));
     ok(report.executions.every((entry) => entry.failure_type === 'timeout'));
     ok(report.executions.every((entry) => entry.retryable === true));
     ok(report.executions.every((entry) => entry.retry_after.includes('runtime:doctor --deep-peer-smoke')));
@@ -369,6 +378,7 @@ describe('runtime consensus', () => {
     strictEqual(progress.status, 'failed');
     strictEqual(progress.summary.failed_retryable, 2);
     strictEqual(progress.peers.claude.status, 'timed_out');
+    strictEqual(progress.peers.claude.prompt_pointer, report.executions.find((entry) => entry.peer === 'claude').prompt_pointer);
     strictEqual(progress.peers.claude.failure_type, 'timeout');
     strictEqual(progress.peers.claude.retryable, true);
     strictEqual(progress.peers.claude.raw_output.bytes, 0);
