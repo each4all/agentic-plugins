@@ -159,6 +159,49 @@ describe('runtime context', () => {
     ok(formatText(report).includes('handoff guidance: capture_new_context'));
   });
 
+  it('does not treat dirty-captured handoffs as source-verified when the commit still matches', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-context-dirty-artifact-'));
+    await runContext({
+      command: 'capture',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      summary: 'Context captured while source had uncommitted runtime edits.',
+      risk: 'yellow',
+      sourceSnapshot: {
+        status: 'observed',
+        kind: 'git',
+        commit: '3333333333333333333333333333333333333333',
+        branch: 'main',
+        dirty: true,
+      },
+    });
+
+    const report = await runContext({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:15:00.000Z'),
+      currentSourceSnapshot: {
+        status: 'observed',
+        kind: 'git',
+        commit: '3333333333333333333333333333333333333333',
+        branch: 'main',
+        dirty: false,
+      },
+    });
+
+    strictEqual(report.handoff.source_freshness.status, 'dirty_artifact');
+    strictEqual(report.handoff.source_freshness.artifact_dirty, true);
+    strictEqual(report.handoff.source_freshness.current_dirty, false);
+    strictEqual(report.handoff.guidance.state, 'capture_after_source_settled');
+    strictEqual(report.handoff.guidance.recommended_session, 'fresh_or_resumed');
+    ok(report.handoff.guidance.reason.includes('captured from a dirty worktree'));
+    ok(report.handoff.guidance.recommended_action.includes('Capture a new runtime:context artifact'));
+    ok(formatText(report).includes('- source status: dirty_artifact'));
+    ok(formatText(report).includes('handoff guidance: capture_after_source_settled'));
+  });
+
   it('checks explicit context budget without creating artifacts', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-context-check-'));
     const report = await runContext({

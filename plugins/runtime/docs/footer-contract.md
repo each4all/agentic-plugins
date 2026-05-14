@@ -78,12 +78,12 @@ lookup metadata (`mode`, `selected_at`, age, stale state, stale threshold,
 skipped invalid artifacts, source-freshness state when the context artifact
 contains a git source snapshot, and handoff guidance). It is mutually
 exclusive with `--context-run-id`. Source freshness is read-only: the
-helper compares the artifact's recorded git commit with the current git
-commit when both are available, reports `unknown` otherwise, and never
-mutates git or host session context. Guidance is advisory only: it may
-recommend reusing the handoff, inspecting unverifiable source state,
-capturing new context, or settling a dirty worktree before capture, but the
-footer does not perform any of those actions.
+helper compares the artifact's recorded git commit and dirty state with the
+current git commit and dirty state when both are available, reports `unknown`
+otherwise, and never mutates git or host session context. Guidance is advisory
+only: it may recommend reusing the handoff, inspecting unverifiable source
+state, capturing new context, or settling a dirty current or dirty-captured
+worktree before capture, but the footer does not perform any of those actions.
 
 Callers that want to surface consensus progress may use an explicit run id:
 
