@@ -54,6 +54,7 @@ export async function captureContext(options = {}) {
   const recommendedAction = options.nextAction
     ? requireSingleLine(options.nextAction, '--next-action')
     : defaultNextAction(riskLevel);
+  const hostCommands = hostHandoffCommands(runId);
 
   const contextPointer = pointer(repoRoot, resolve(runDir, 'context.json'));
   const prompt = await resolveNextSessionPrompt({
@@ -62,6 +63,7 @@ export async function captureContext(options = {}) {
     riskLevel,
     recommendedAction,
     contextPointer,
+    hostCommands,
   });
   const promptPath = resolve(runDir, 'next-session-prompt.md');
   await writeFile(promptPath, ensureTrailingNewline(prompt));
@@ -94,6 +96,7 @@ export async function captureContext(options = {}) {
     next_session: {
       recommended_action: recommendedAction,
       prompt_pointer: pointer(repoRoot, promptPath),
+      commands: hostCommands,
     },
     source_snapshot: sourceSnapshot,
     limits: contextLimits(),
@@ -259,6 +262,12 @@ export function formatText(report) {
   if (report.risk_level) lines.push(`risk: ${report.risk_level}`);
   if (report.context_pointer) lines.push(`context artifact: ${report.context_pointer}`);
   if (report.next_session?.prompt_pointer) lines.push(`next-session prompt: ${report.next_session.prompt_pointer}`);
+  if (report.next_session?.commands) {
+    lines.push('next-session commands:');
+    for (const [host, command] of Object.entries(report.next_session.commands)) {
+      lines.push(`- ${host}: ${command}`);
+    }
+  }
 
   if (report.context_summary) {
     lines.push('', 'context summary:', report.context_summary);
@@ -311,6 +320,7 @@ function buildReport({ command, repoRoot, artifact, contextPath, prompt, handoff
       recommended_action: artifact.next_session.recommended_action,
       prompt_pointer: artifact.next_session.prompt_pointer,
       prompt_preview: prompt ? preview(prompt) : null,
+      commands: artifact.next_session.commands ?? hostHandoffCommands(artifact.run_id),
     },
     source_snapshot: artifact.source_snapshot ?? null,
     limits: artifact.limits,
@@ -415,7 +425,20 @@ Context summary:
 ${options.summary.trim()}
 
 Risk level: ${options.riskLevel}
-Recommended next action: ${options.recommendedAction}`;
+Recommended next action: ${options.recommendedAction}
+
+Host handoff commands:
+- Claude: ${options.hostCommands.claude}
+- Codex: ${options.hostCommands.codex}
+- Neutral shell: ${options.hostCommands.neutral}`;
+}
+
+function hostHandoffCommands(runId) {
+  return {
+    claude: `/runtime:context status --run-id ${runId}`,
+    codex: `$runtime:context status --run-id ${runId}`,
+    neutral: `runtime:context status --run-id ${runId}`,
+  };
 }
 
 function normalizeArtifacts(repoRoot, values) {

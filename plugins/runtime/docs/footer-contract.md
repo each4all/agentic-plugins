@@ -50,8 +50,8 @@ If `--context-run-id` is supplied, the helper reads:
 ```
 
 It uses only the context risk level, artifact pointers, recommended
-action, and next-session prompt pointer. It does not print the context
-summary body or the next-session prompt body.
+action, next-session prompt pointer, and host-specific handoff commands.
+It does not print the context summary body or the next-session prompt body.
 It also reports the same read-only handoff lookup and guidance used by
 `runtime:context status`: age/stale metadata, source-freshness metadata,
 guidance state, recommended session shape, recommended action, and safe

@@ -35,7 +35,8 @@ Context reports and manages:
 - green/yellow/red context risk level;
 - repo-local artifact pointers for readiness, consensus, workflow, or other handoff evidence;
 - recommended next-session action;
-- generated or caller-supplied next-session prompt artifact.
+- generated or caller-supplied next-session prompt artifact;
+- Claude, Codex, and neutral handoff commands for reopening the same context artifact from either host;
 - read-only latest-artifact handoff lookup with age/stale, source-freshness
   metadata, dirty-artifact detection, and explicit guidance for reusing or
   refreshing the artifact.
