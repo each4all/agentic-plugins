@@ -4,12 +4,11 @@
 // Codex-side Stop helper for the orchestrator plugin per ADR-0019 §5
 // macro completion semantics (PR-E). Mirrors
 // plugins/orchestrator/adapters/claude/hooks/stop.mjs functionally;
-// the only divergence is that Codex CLI exposes host-level hooks but
-// agentic-plugins has not verified plugin-local automatic hook packaging
-// equivalent to Claude Code's plugin Stop binding, so this script is
-// invoked manually as a final step in
-// /orchestrator:finalize, /orchestrator:abort, /orchestrator:next, and
-// /orchestrator:done runbooks under Codex.
+// the main divergence is that Codex bundled plugin hooks require
+// [features].plugin_hooks=true plus host trust/review before they run, so this
+// script remains the manual fallback final step in /orchestrator:finalize,
+// /orchestrator:abort, /orchestrator:next, and /orchestrator:done runbooks
+// under Codex.
 //
 // Equivalent behavior to the Claude adapter:
 //

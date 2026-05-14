@@ -109,18 +109,19 @@ children remain.
 
 ---
 
-## Phase 4 - Codex manual stop helper
+## Phase 4 - Codex Stop hook / manual fallback
 
-Codex does not currently have verified plugin-local automatic Stop hook
-packaging for orchestrator lifecycle events. After a successful Codex
-finalize, run the manual helper when the user wants immediate archive
-parity:
+Codex can load orchestrator's bundled Stop hook when the plugin is enabled,
+`[features].plugin_hooks = true`, and the hook has passed Codex review/trust.
+After a successful Codex finalize, run the manual helper when plugin hooks are
+disabled, not yet trusted, or the user wants immediate archive parity:
 
 ```bash
 node "<orchestrator-plugin-root>/adapters/codex/hooks/stop.mjs"
 ```
 
-Claude runs the Stop hook automatically.
+Claude runs the Stop hook automatically through the Claude plugin hook
+binding.
 
 ---
 
