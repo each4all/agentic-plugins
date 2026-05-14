@@ -167,8 +167,9 @@ Consensus is a runtime-owned artifact scaffold and explicit companion executor f
 2. `execute --execute`: invoke `claude` and/or `codex` peers through `companions/contract.md`, bounded by peer list, process budget, max rounds, and timeout caps. Raw peer stdout is written under the run artifact tree; main output reports pointer, byte count, SHA-256, status, failure type, and retryability only.
 3. `record`: copy manually obtained peer raw output into the run artifact tree and update the manifest with pointer, byte count, and hash.
 4. `synthesize`: write `consensus.json` with `synthesized_summary`, `durable_disagreements`, `evidence_pointers`, `next_action`, and next-round availability.
-5. `next-round`: create targeted rebuttal prompts from synthesized disagreement summaries when budget remains.
-6. `execute --round <n> --execute`: run a bounded rebuttal round after `next-round`.
+5. `status`: read manifest, execution, progress, and consensus-result artifacts to recommend the next bounded operator action: execute/record, retry selected peers, synthesize, plan next-round, or stop for owner decision.
+6. `next-round`: create targeted rebuttal prompts from synthesized disagreement summaries when budget remains.
+7. `execute --round <n> --execute`: run a bounded rebuttal round after `next-round`.
 
 Main-session output intentionally omits raw peer output. It reports artifact pointers, hashes, byte counts, sanitized failure class/retryability, and the bounded consensus result only. Permission, sandbox, approval, and child-process authentication failures are classified as `operator_action_required` with `failure_type` values such as `permission_required`, `sandbox_blocked`, or `auth_required`; they are non-retryable until the operator satisfies the host precondition outside runtime. CLI availability, network, timeout, and transient host failures remain separate classes. `runtime:doctor` reads the latest consensus execution artifact summary and reports failed retryability plus operator-action counts without reading raw peer output. This surface does not migrate engineer/orchestrator workflow state, mutate companion scripts, alter host-native config/auth/secrets/sandbox/permission state, mutate host session context, or claim Codex manual-hook parity. Automatic unbounded loops are forbidden.
 

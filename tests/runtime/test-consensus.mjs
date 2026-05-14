@@ -48,6 +48,22 @@ describe('runtime consensus', () => {
     ok(formatText(report).includes(`run: ${RUN_ID}`));
   });
 
+  it('reports status guidance for a planned round before peer execution', async () => {
+    const root = await seedPlan();
+
+    const report = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(report.status_guidance.state, 'execute_or_record');
+    strictEqual(report.next_action, 'Execute the planned peer prompts, or run them manually and record each raw output as an artifact.');
+    ok(report.next_steps.includes(`runtime:consensus execute --run-id ${RUN_ID} --round 1 --execute`));
+    ok(report.next_steps.some((step) => step.includes('runtime:consensus record')));
+    ok(formatText(report).includes('next action: Execute the planned peer prompts'));
+  });
+
   it('executes a planned round only with --execute and stores raw outputs as artifacts', async () => {
     const root = await seedPlan();
     const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-home-'));
@@ -200,6 +216,38 @@ describe('runtime consensus', () => {
     strictEqual(latest.progress_pointer, report.progress_pointer);
   });
 
+  it('reports status guidance for retryable failed peers from execution artifacts', async () => {
+    const root = await seedPlan();
+    const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-home-'));
+    await seedCompanionCache(homeDir);
+    await runConsensus({
+      command: 'execute',
+      repoRoot: root,
+      homeDir,
+      runId: RUN_ID,
+      execute: true,
+      timeoutMs: 90000,
+      runner: fakeConsensusRunner({
+        claudeTimeout: true,
+        codexTimeout: true,
+      }),
+    });
+
+    const report = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(report.status_guidance.state, 'retry_failed_peers');
+    strictEqual(report.execution_summary.failed_retryable, 2);
+    ok(report.progress_pointer.endsWith('/execution-progress.json'));
+    ok(report.status_guidance.commands.some((command) => command.includes(`--peers claude`) && command.includes('--timeout-ms 180000')));
+    ok(report.status_guidance.commands.some((command) => command.includes(`--peers codex`) && command.includes('--process-budget 1')));
+    ok(report.next_steps.some((step) => step.includes('After retryable peers pass')));
+    ok(formatText(report).includes('next action: Retry only the retryable failed peers'));
+  });
+
   it('records raw peer output as an artifact pointer without leaking content', async () => {
     const root = await seedPlan();
     const rawOutput = 'RAW PEER OUTPUT THAT MUST NOT ENTER THE MAIN REPORT';
@@ -287,6 +335,33 @@ describe('runtime consensus', () => {
     const prompt = await readFile(join(root, report.artifacts.find((artifact) => artifact.peer === 'codex').pointer), 'utf8');
     ok(prompt.includes('Confirm whether a follow-up executor should remain out of scope.'));
     ok(prompt.includes('Do not quote or depend on raw peer output'));
+  });
+
+  it('reports status guidance for synthesized durable disagreements', async () => {
+    const root = await seedPlan();
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.md');
+    await writeFile(summaryFile, 'Summary with remaining disagreement.\n');
+    await writeFile(disagreementsFile, '- Confirm whether retry automation should remain bounded.\n');
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+    });
+
+    const report = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(report.status_guidance.state, 'next_round_available');
+    strictEqual(report.next_action, 'Durable disagreements remain; plan the bounded rebuttal round before executing more peers.');
+    ok(report.status_guidance.commands.includes(`runtime:consensus next-round --run-id ${RUN_ID}`));
+    ok(report.status_guidance.commands.includes(`runtime:consensus execute --run-id ${RUN_ID} --round 2 --execute`));
+    ok(formatText(report).includes('next action: Durable disagreements remain'));
   });
 
   it('explains synthesize and next-round blocked states without executing peers', async () => {

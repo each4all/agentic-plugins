@@ -38,6 +38,7 @@ Notes:
 - Companion dispatch requires the explicit `execute --execute` boundary. Runtime never relaxes sandbox, approval, auth, permission, or host session state.
 - Execution records per-peer progress in `execution-progress.json` plus status, failure type, retryability, byte count, and SHA-256. Raw stdout stays in peer raw-output artifacts.
 - Timeouts are retryable and include bounded remediation metadata. Retry a selected peer with `--peers <peer> --timeout-ms <n> --process-budget 1`, or run `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` when prompt startup latency is unclear.
+- `status` reads manifest, execution, progress, and consensus-result artifacts to recommend the next bounded operator action: execute/record, retry selected peers, synthesize, plan next-round, or stop for owner decision.
 - Permission and sandbox failures are classified as non-retryable until the operator resolves host policy outside runtime.
 - Max rounds, max peers, process budget, and timeout caps prevent automatic unbounded loops.
 - `next-round` requires durable disagreements from `consensus.json` or `--disagreements-file`; it does not create empty rebuttal rounds or execute peers.
