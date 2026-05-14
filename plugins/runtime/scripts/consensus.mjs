@@ -1363,6 +1363,23 @@ function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtif
     : null;
   const synthesizeCommand = `runtime:consensus synthesize --run-id ${runId} --summary-file <summary.md> [--disagreements-file <disagreements.md>]`;
 
+  if (!executionArtifact && progressArtifact?.status === 'running') {
+    const runningPeers = peersWithProgressStatus(progressArtifact, 'running');
+    const pendingPeers = peersWithProgressStatus(progressArtifact, 'pending');
+    return guidance({
+      state: 'execution_running',
+      next_action: runningPeers.length > 0
+        ? `Consensus execution is still running for ${runningPeers.join(', ')}; wait for completion or inspect the progress artifact before retrying.`
+        : 'Consensus execution preflight is still running; wait for completion or inspect the progress artifact before retrying.',
+      next_steps: [
+        `runtime:consensus status --run-id ${runId}`,
+        progressArtifact.progress_pointer ? `Inspect ${progressArtifact.progress_pointer}` : null,
+      ],
+      commands: [`runtime:consensus status --run-id ${runId}`],
+      reason: `execution progress is running; running=${runningPeers.join(',') || '<none>'}; pending=${pendingPeers.join(',') || '<none>'}`,
+    });
+  }
+
   if (consensusArtifact) {
     const nextRound = buildNextRoundAvailability({
       manifest,
@@ -1484,6 +1501,13 @@ function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtif
     commands: [],
     reason: 'no prompts, peer outputs, execution summary, or consensus result were found',
   });
+}
+
+function peersWithProgressStatus(progressArtifact, status) {
+  return Object.values(progressArtifact?.peers ?? {})
+    .filter((peer) => peer?.status === status)
+    .map((peer) => peer.peer)
+    .filter(Boolean);
 }
 
 function collectRetryCommands(executionArtifact, progressArtifact) {
@@ -1636,6 +1660,10 @@ export function formatText(report) {
   if (report.consensus_pointer) lines.push(`consensus: ${report.consensus_pointer}`);
   if (report.execution_pointer) lines.push(`execution: ${report.execution_pointer}`);
   if (report.progress_pointer) lines.push(`progress: ${report.progress_pointer}`);
+  if (report.status_guidance?.state) {
+    lines.push(`guidance state: ${report.status_guidance.state}`);
+    if (report.status_guidance.reason) lines.push(`guidance reason: ${report.status_guidance.reason}`);
+  }
   if (report.execution_summary) {
     lines.push(`execution summary: executed=${report.execution_summary.executed}; passed=${report.execution_summary.passed}; failed=${report.execution_summary.failed}; skipped=${report.execution_summary.skipped}; retryable-failed=${report.execution_summary.failed_retryable}; non-retryable-failed=${report.execution_summary.failed_non_retryable}; operator-action-required=${report.execution_summary.operator_action_required ?? 0}`);
   }
