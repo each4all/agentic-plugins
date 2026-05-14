@@ -62,6 +62,12 @@ describe('runtime doctor', () => {
     strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks, false);
     strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks_stage, 'under development');
     strictEqual(report.clis.codex.feature_surface.automatic_plugin_hooks, false);
+    strictEqual(report.plugin_command_surface.schema_version, 'runtime-plugin-command-surface-1.0');
+    strictEqual(report.plugin_command_surface.codex.mode, 'marketplace-only');
+    strictEqual(report.plugin_command_surface.codex.supports.marketplace_add, true);
+    strictEqual(report.plugin_command_surface.codex.supports.marketplace_upgrade, true);
+    strictEqual(report.plugin_command_surface.codex.supports.install_plugin, false);
+    strictEqual(report.plugin_command_surface.codex.materialization.status, 'materialized');
     ok(report.host_parity.differences.some((issue) => issue.id === 'codex_manual_skill_invocation'));
     ok(report.host_parity.differences.some((issue) => issue.id === 'codex_manual_skill_invocation' && issue.evidence.includes('global_hooks=true/stable')));
     strictEqual(report.readiness_matrix.schema_version, 'runtime-readiness-matrix-1.0');
@@ -88,6 +94,8 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('Readiness Matrix'));
     ok(formatText(report).includes('claude: available=available; installed=installed; authenticated=available'));
     ok(formatText(report).includes('codex: available=available; installed=installed; authenticated=available'));
+    ok(formatText(report).includes('Plugin Command Surface'));
+    ok(formatText(report).includes('codex: mode=marketplace-only'));
     ok(formatText(report).includes('Host Parity'));
   });
 
@@ -160,7 +168,27 @@ describe('runtime doctor', () => {
     strictEqual(report.plugins.runtime.cache.codex_tmp_marketplace.status, 'available');
     strictEqual(report.plugins.runtime.status, 'not_installed');
     strictEqual(report.readiness_matrix.hosts.codex.installed.status, 'marketplace_cache_only');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.materialization.status, 'manual_session_refresh');
+    strictEqual(report.plugin_command_surface.codex.materialization.status, 'manual_session_refresh');
     ok(/not installation evidence/i.test(report.readiness_matrix.hosts.codex.installed.evidence));
+    ok(report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_cache_materialization_manual'));
+  });
+
+  it('surfaces Codex marketplace-cache-only materialization even when repo source is available', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-source-plus-marketplace-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    strictEqual(report.readiness_matrix.hosts.codex.installed.status, 'source_available');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.materialization.status, 'manual_session_refresh');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.materialization.marketplace_cache_version, '0.1.0');
+    ok(report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_cache_materialization_manual'));
   });
 
   it('flags malformed non-terminal peer-run handles as blocked ledger health', async () => {

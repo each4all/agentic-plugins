@@ -34,6 +34,7 @@ Doctor reports:
 - `claude` and `codex` CLI availability and version.
 - Authentication state, sanitized to status and provider/method metadata.
 - agentic-plugins marketplace entries, local source manifests, and known Claude/Codex cache state for `companions`, `engineer`, `orchestrator`, and `runtime`.
+- Codex marketplace-only command shape and cache materialization state when a temporary marketplace cache is current but no per-plugin install cache exists.
 - Companion discovery and `companions/contract.md` compatibility.
 - Current explicit and resolved model/effort inputs according to ADR-0024 order: command flags, workflow/subtask override observation, repo config, user config, host-native default.
 - Codex -> Claude and Claude -> Codex companion sandbox/permission readiness as unknown by default, or as an explicit read-only preflight when `--sandbox-permission-probe` is requested.
