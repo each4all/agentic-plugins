@@ -93,7 +93,7 @@ Readiness output starts with a `readiness_matrix` / `Readiness Matrix` summary t
 
 Doctor also emits a `host_parity` / `Host Parity` section. It makes
 Claude-vs-Codex differences explicit rather than hiding them behind a shared
-abstraction: Codex manual skill invocation versus Claude plugin hooks,
+abstraction: Codex explicit skill surfaces and plugin-hook trust boundaries,
 host-specific plugin install/update command shape, different permission
 surfaces, stale host plugin caches, failed Claude plugin entries, and retired
 agentic-plugins installs such as the old `research` plugin. These findings are
