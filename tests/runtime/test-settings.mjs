@@ -176,7 +176,14 @@ describe('runtime settings', () => {
     strictEqual(plan.action, 'uninstall-retired-plugin');
     strictEqual(plan.executable, false);
     strictEqual(plan.command, 'claude /plugin uninstall research@agentic-plugins');
+    strictEqual(report.plugin_management.manual_followups.length, 1);
+    strictEqual(report.plugin_management.manual_followups[0].id, 'claude-retired-plugin-cleanup');
+    deepStrictEqual(report.plugin_management.manual_followups[0].commands, [
+      '/plugin uninstall research@agentic-plugins',
+    ]);
     ok(report.recommendations.some((rec) => rec.area === 'plugin-cleanup' && rec.plugin === 'research' && rec.executable === false));
+    ok(formatText(report).includes('Manual Follow-ups'));
+    ok(formatText(report).includes('command: /plugin uninstall research@agentic-plugins'));
     ok(formatText(report).includes('Plugin Cleanup'));
     ok(formatText(report).includes('research/claude: uninstall-retired-plugin'));
   });
