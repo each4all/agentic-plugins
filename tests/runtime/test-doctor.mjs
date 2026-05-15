@@ -193,14 +193,42 @@ describe('runtime doctor', () => {
     strictEqual(followup.host, 'codex');
     deepStrictEqual(followup.commands, ['/hooks']);
     ok(followup.verify.includes('engineer, orchestrator'));
+    ok(followup.verify.includes('New hook - review required'));
     ok(followup.verify.includes('Installed counts alone'));
     ok(followup.verify.includes('Active=0'));
     ok(followup.verify.includes('runtime:settings --attest-codex-hook-review'));
     strictEqual(report.experience_parity.status, 'blocked');
     ok(report.experience_parity.criteria.some((entry) => entry.id === 'plugin_management_followups' && entry.status === 'partial' && entry.next_step.includes('runtime:settings --attest-codex-hook-review')));
-    ok(report.experience_parity.criteria.some((entry) => entry.id === 'lifecycle_hook_continuity' && entry.status === 'partial' && entry.next_step.includes('runtime:settings --attest-codex-hook-review')));
+    ok(report.experience_parity.criteria.some((entry) => entry.id === 'lifecycle_hook_continuity' && entry.status === 'partial' && entry.next_step.includes('New hook - review required')));
     ok(report.experience_parity.next_actions.some((entry) => entry.id === 'codex-hook-review' && entry.reason.includes('runtime:settings --attest-codex-hook-review')));
     ok(formatText(report).includes('command: /hooks'));
+  });
+
+  it('reports Codex hook command portability warnings when hook commands still point at Claude adapter paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-command-warning-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    await writeJson(join(root, 'plugins', 'engineer', 'hooks', 'hooks.json'), {
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/stop.mjs"' }] }],
+      },
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    deepStrictEqual(report.codex_plugin_hooks.summary.command_warning_plugins, ['engineer']);
+    deepStrictEqual(report.codex_plugin_hooks.summary.claude_root_command_plugins, ['engineer']);
+    deepStrictEqual(report.codex_plugin_hooks.summary.claude_adapter_command_plugins, ['engineer']);
+    ok(report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'verify-codex-hook-command-portability'));
+    ok(report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_command_portability_unverified'));
+    ok(formatText(report).includes('command-warnings=engineer'));
   });
 
   it('accepts a current Codex hook review attestation artifact', async () => {

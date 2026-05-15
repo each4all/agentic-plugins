@@ -379,10 +379,35 @@ describe('runtime settings', () => {
     strictEqual(followup.host, 'codex');
     deepStrictEqual(followup.commands, ['/hooks']);
     ok(followup.verify.includes('engineer, orchestrator'));
+    ok(followup.verify.includes('New hook - review required'));
     ok(followup.verify.includes('Installed counts alone'));
     ok(followup.verify.includes('Active=0'));
     ok(followup.verify.includes('runtime:settings --attest-codex-hook-review'));
     ok(formatText(report).includes('command: /hooks'));
+  });
+
+  it('carries Codex hook command portability warnings into settings output', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-command-warning-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-command-warning-home-'));
+    await seedRepo(root);
+    await writeJson(join(root, 'plugins', 'engineer', 'hooks', 'hooks.json'), {
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/stop.mjs"' }] }],
+      },
+    });
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    deepStrictEqual(report.hook_settings.packaged_plugins.command_warnings, ['engineer']);
+    ok(report.hook_settings.recommendations.some((rec) => rec.action === 'verify-codex-hook-command-portability'));
+    ok(formatText(report).includes('command-warnings=engineer'));
   });
 
   it('records Codex hook review attestation behind an explicit flag', async () => {

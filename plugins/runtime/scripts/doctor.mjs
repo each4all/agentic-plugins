@@ -741,6 +741,9 @@ function buildCodexPluginHookReport({ codex, plugins }) {
     manifest_exposed_plugins: [],
     default_file_only_plugins: [],
     missing_hooks_file_plugins: [],
+    command_warning_plugins: [],
+    claude_root_command_plugins: [],
+    claude_adapter_command_plugins: [],
   };
 
   for (const [name, plugin] of Object.entries(plugins)) {
@@ -770,6 +773,9 @@ function buildCodexPluginHookReport({ codex, plugins }) {
     if (effective.manifest_declared) summary.manifest_exposed_plugins.push(name);
     if (effective.status === 'default_file_only') summary.default_file_only_plugins.push(name);
     if (effective.status === 'manifest_declared_missing_file') summary.missing_hooks_file_plugins.push(name);
+    if ((effective.hooks_file?.command_analysis?.warnings ?? []).length > 0) summary.command_warning_plugins.push(name);
+    if ((effective.hooks_file?.command_analysis?.claude_plugin_root_references ?? 0) > 0) summary.claude_root_command_plugins.push(name);
+    if ((effective.hooks_file?.command_analysis?.claude_adapter_references ?? 0) > 0) summary.claude_adapter_command_plugins.push(name);
   }
 
   for (const value of Object.values(summary)) value.sort();
@@ -790,6 +796,16 @@ function buildCodexPluginHookReport({ codex, plugins }) {
       action: 'restore-bundled-hooks-file',
       executable: false,
       detail: `Codex manifests declare hooks but hooks/hooks.json is missing for: ${summary.missing_hooks_file_plugins.join(', ')}.`,
+    });
+  }
+  if (summary.command_warning_plugins.length > 0) {
+    recommendations.push({
+      host: 'codex',
+      area: 'hooks',
+      action: 'verify-codex-hook-command-portability',
+      executable: false,
+      detail: `Codex-exposed hooks reference Claude-specific plugin root or adapter command paths for: ${summary.command_warning_plugins.join(', ')}.`,
+      next_step: 'Verify Codex /hooks active execution in-session, or split host-specific hook commands before accepting automatic lifecycle hook parity.',
     });
   }
   if (summary.bundled_plugins.length > 0 && codex.feature_surface.codex_plugin_hooks !== true) {
@@ -879,6 +895,18 @@ function buildHostParity({ claude, codex, plugins, claudePluginList, codexPlugin
         : 'Codex bundled plugin hooks are packaged, but generic hooks and/or plugin_hooks are not enabled in the observed feature surface.',
       evidence: `bundled=${codexPluginHooks.summary.bundled_plugins.join(',')}, codex global_hooks=${featureFlagEvidence(codex.feature_surface.codex_global_hooks, codex.feature_surface.codex_global_hooks_stage)}, codex plugin_hooks=${featureFlagEvidence(codex.feature_surface.codex_plugin_hooks, codex.feature_surface.codex_plugin_hooks_stage)}, codex automatic_plugin_hooks=false`,
       next_step: 'Use runtime:settings to plan plugin_hooks enablement, then review/trust the bundled hooks in Codex with /hooks.',
+    }));
+  }
+
+  if (codexPluginHooks.summary.command_warning_plugins?.length > 0) {
+    differences.push(parityEntry({
+      id: 'codex_plugin_hooks_command_portability_unverified',
+      severity: 'warning',
+      host: 'codex',
+      area: 'hooks',
+      summary: 'Codex-exposed hook commands still reference Claude-specific plugin roots or Claude adapter paths.',
+      evidence: `plugins=${codexPluginHooks.summary.command_warning_plugins.join(',')}; claude-root=${codexPluginHooks.summary.claude_root_command_plugins.join(',') || 'none'}; claude-adapter=${codexPluginHooks.summary.claude_adapter_command_plugins.join(',') || 'none'}`,
+      next_step: 'Verify Codex /hooks active execution in-session, or split host-specific hook commands before accepting automatic lifecycle hook parity.',
     }));
   }
 
@@ -1157,7 +1185,7 @@ function buildCodexHookReviewManualFollowup(codexPluginHooks, surface, settingsR
     reason: `Codex plugin hooks are packaged and plugin_hooks is enabled, but ${surface} cannot verify active-session hook review/trust state.`,
     environment: 'Open the active Codex session for this repository.',
     commands: ['/hooks'],
-    verify: `Review/trust bundled hooks for ${bundled.join(', ')}; do not attest from /hooks Installed counts alone, including Active=0 output. Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
+    verify: `Review/trust bundled hooks for ${bundled.join(', ')}; if /hooks shows "New hook - review required", review each new hook first. Do not attest from /hooks Installed counts alone, including Active=0 output. Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
   };
 }
 
@@ -2575,7 +2603,7 @@ function buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommand
     weight: 15,
     evidence: `codex-plugin-hooks=${codexPluginHooks.status}; bundled=${codexPluginHooks.summary.bundled_plugins.join(',') || 'none'}; manual-hook-review=${Boolean(hookFollowup)}`,
     next_step: hookFollowup
-      ? 'Run /hooks in the active Codex session to review/trust bundled hooks, then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.'
+      ? hookFollowup.verify
       : 'Use runtime:settings to enable plugin_hooks or restore hook packaging, then rerun runtime:doctor.',
   });
 }
@@ -3647,7 +3675,7 @@ export function formatText(report) {
   lines.push('');
   lines.push('Codex Plugin Hooks');
   const codexHooks = report.codex_plugin_hooks;
-  lines.push(`- status=${codexHooks.status}; bundled=${codexHooks.summary.bundled_plugins.join(',') || 'none'}; manifest-exposed=${codexHooks.summary.manifest_exposed_plugins.join(',') || 'none'}; default-file-only=${codexHooks.summary.default_file_only_plugins.join(',') || 'none'}`);
+  lines.push(`- status=${codexHooks.status}; bundled=${codexHooks.summary.bundled_plugins.join(',') || 'none'}; manifest-exposed=${codexHooks.summary.manifest_exposed_plugins.join(',') || 'none'}; default-file-only=${codexHooks.summary.default_file_only_plugins.join(',') || 'none'}; command-warnings=${(codexHooks.summary.command_warning_plugins ?? []).join(',') || 'none'}`);
   for (const recommendation of codexHooks.recommendations) {
     lines.push(`  ${recommendation.action}: ${recommendation.detail}`);
     if (recommendation.next_step) lines.push(`  next: ${recommendation.next_step}`);
@@ -3950,10 +3978,15 @@ async function hooksFileSummary(path) {
     : {};
   const events = Object.keys(hooks).sort();
   let handlerCount = 0;
+  const commands = [];
   for (const groups of Object.values(hooks)) {
     if (!Array.isArray(groups)) continue;
     for (const group of groups) {
-      if (Array.isArray(group?.hooks)) handlerCount += group.hooks.length;
+      if (!Array.isArray(group?.hooks)) continue;
+      handlerCount += group.hooks.length;
+      for (const hook of group.hooks) {
+        if (hook?.type === 'command' && typeof hook.command === 'string') commands.push(hook.command);
+      }
     }
   }
   return {
@@ -3961,6 +3994,23 @@ async function hooksFileSummary(path) {
     path,
     events,
     handler_count: handlerCount,
+    command_analysis: analyzeHookCommands(commands),
+  };
+}
+
+function analyzeHookCommands(commands) {
+  const uniqueCommands = uniqueStrings(commands);
+  const claudePluginRootReferences = uniqueCommands.filter((command) => command.includes('${CLAUDE_PLUGIN_ROOT}') || command.includes('$CLAUDE_PLUGIN_ROOT')).length;
+  const claudeAdapterReferences = uniqueCommands.filter((command) => /\/adapters\/claude\/hooks\//.test(command)).length;
+  const warnings = [];
+  if (claudePluginRootReferences > 0) warnings.push('claude-plugin-root-reference');
+  if (claudeAdapterReferences > 0) warnings.push('claude-adapter-hook-command');
+  return {
+    commands: uniqueCommands,
+    command_count: uniqueCommands.length,
+    claude_plugin_root_references: claudePluginRootReferences,
+    claude_adapter_references: claudeAdapterReferences,
+    warnings,
   };
 }
 
