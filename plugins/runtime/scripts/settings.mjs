@@ -14,7 +14,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor } from './doctor.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.6';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.7';
 export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.0';
 export const CONFIG_KEYS = [
   'model',
@@ -681,6 +681,7 @@ async function buildPluginManagementPlan({ plugins, clis, execute, hostFilter, r
     allowlist: Array.from(EXECUTABLE_PLUGIN_ACTIONS).sort(),
     plans,
     summary: summarizePluginManagementPlans(plans),
+    manual_followups: buildPluginManagementManualFollowups(plans),
     limits: [
       'No shell interpolation is used; executable commands are invoked as argv arrays.',
       'Only install/update/add/upgrade plugin-management actions are executable.',
@@ -725,6 +726,38 @@ function buildPluginManagementCandidates({ plugins, clis, hostFilter }) {
     }
   }
   return plans;
+}
+
+function buildPluginManagementManualFollowups(plans) {
+  const followups = [];
+  const claudeSurfaceBlocked = plans.filter((plan) => (
+    plan.host === 'claude'
+      && plan.status === 'blocked'
+      && /plugin command surface is (?:unavailable|blocked)/i.test(plan.reason ?? '')
+  ));
+  if (claudeSurfaceBlocked.length > 0) {
+    followups.push({
+      id: 'claude-plugin-surface-unavailable',
+      host: 'claude',
+      status: 'manual_required',
+      reason: 'Claude /plugin command surface is unavailable to runtime:settings in this environment.',
+      environment: 'Open an interactive Claude Code session that supports /plugin commands.',
+      commands: uniqueStrings(claudeSurfaceBlocked
+        .map((plan) => claudeSlashCommand(plan.argv?.args))
+        .filter(Boolean)),
+      verify: 'Re-run runtime:settings or runtime:doctor after completing the commands.',
+    });
+  }
+  return followups;
+}
+
+function claudeSlashCommand(args) {
+  if (!Array.isArray(args) || args[0] !== '/plugin') return null;
+  return args.join(' ');
+}
+
+function uniqueStrings(values) {
+  return Array.from(new Set(values));
 }
 
 function classifyPluginManagementPlan({ recommendation, hostFilter, clis }) {
@@ -1491,6 +1524,19 @@ export function formatText(report) {
       lines.push(`  result: ok=${plan.result.ok}; exit=${plan.result.exit_code ?? '<none>'}; stdout-bytes=${plan.result.stdout_bytes}; stderr-bytes=${plan.result.stderr_bytes}; timed-out=${plan.result.timed_out}; failure-type=${plan.result.failure_type ?? '<none>'}; retryable=${plan.result.retryable}`);
       if (plan.result.retry_after) lines.push(`  retry-after: ${plan.result.retry_after}`);
       if (plan.result.doctor_hint) lines.push(`  doctor: ${plan.result.doctor_hint}`);
+    }
+  }
+  if (report.plugin_management.manual_followups?.length > 0) {
+    lines.push('');
+    lines.push('Manual Follow-ups');
+    for (const followup of report.plugin_management.manual_followups) {
+      lines.push(`- ${followup.id}: host=${followup.host}; status=${followup.status}`);
+      lines.push(`  reason: ${followup.reason}`);
+      lines.push(`  environment: ${followup.environment}`);
+      for (const command of followup.commands ?? []) {
+        lines.push(`  command: ${command}`);
+      }
+      lines.push(`  verify: ${followup.verify}`);
     }
   }
   if (report.plugin_cleanup?.plans?.length > 0) {

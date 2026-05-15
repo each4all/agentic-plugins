@@ -98,7 +98,10 @@ per-plugin `codex plugin install` step.
 The executor records only status, exit code, byte counts, timing, and sanitized
 error metadata. It omits raw stdout and stderr. A host command that exits 0 can
 still be marked failed if its sanitized output indicates the plugin command
-surface was unavailable. Executed plugin-management runs write
+surface was unavailable. If the Claude `/plugin` surface is unavailable before
+execution, settings emits a manual follow-up checklist with the interactive
+`/plugin ...` commands to run from a Claude Code session that supports them.
+Executed plugin-management runs write
 `.agentic-plugins/runs/settings/<run-id>/settings.json` and update
 `.agentic-plugins/runs/settings/latest.json`; `runtime:doctor` reads the latest
 artifact and reports failed action types plus retryability.
