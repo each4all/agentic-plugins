@@ -379,6 +379,7 @@ describe('runtime settings', () => {
     strictEqual(followup.host, 'codex');
     deepStrictEqual(followup.commands, ['/hooks']);
     ok(followup.verify.includes('engineer, orchestrator'));
+    ok(followup.verify.includes('runtime:settings --attest-codex-hook-review'));
     ok(formatText(report).includes('command: /hooks'));
   });
 

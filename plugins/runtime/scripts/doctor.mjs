@@ -1156,7 +1156,7 @@ function buildCodexHookReviewManualFollowup(codexPluginHooks, surface, settingsR
     reason: `Codex plugin hooks are packaged and plugin_hooks is enabled, but ${surface} cannot verify active-session hook review/trust state.`,
     environment: 'Open the active Codex session for this repository.',
     commands: ['/hooks'],
-    verify: `Review/trust bundled hooks for ${bundled.join(', ')}, then rerun runtime:doctor or runtime:settings.`,
+    verify: `Review/trust bundled hooks for ${bundled.join(', ')}, then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
   };
 }
 
@@ -2571,7 +2571,7 @@ function buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommand
     weight: 15,
     evidence: `codex-plugin-hooks=${codexPluginHooks.status}; bundled=${codexPluginHooks.summary.bundled_plugins.join(',') || 'none'}; manual-hook-review=${Boolean(hookFollowup)}`,
     next_step: hookFollowup
-      ? 'Run /hooks in the active Codex session to review/trust bundled hooks, then rerun runtime:doctor.'
+      ? 'Run /hooks in the active Codex session to review/trust bundled hooks, then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.'
       : 'Use runtime:settings to enable plugin_hooks or restore hook packaging, then rerun runtime:doctor.',
   });
 }
