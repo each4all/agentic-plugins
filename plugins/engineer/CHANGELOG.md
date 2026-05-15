@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.10.1...plugin-engineer-v0.10.2) (2026-05-15)
+
+
+### Bug Fixes
+
+* add Codex-native lifecycle hook manifests ([b6caba4](https://github.com/each4all/agentic-plugins/commit/b6caba4c195180b9921573ba6ed188a25b29d903))
+* **plugin/engineer:** add Codex-native lifecycle hooks ([a881eb7](https://github.com/each4all/agentic-plugins/commit/a881eb7f261c07fa2960722e1ab1dc4213ea1650))
+
 ## [0.10.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.10.0...plugin-engineer-v0.10.1) (2026-05-14)
 
 
