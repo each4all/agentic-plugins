@@ -13,7 +13,6 @@
 
 ### Bug Fixes
 
-* **plugin/runtime:** surface Codex hook review blockers ([5535281](https://github.com/each4all/agentic-plugins/commit/55352815cd64d6abd109c5deb0468e8e2bfa7929))
 * **plugin/runtime:** surface Codex hook review blockers ([5e0d122](https://github.com/each4all/agentic-plugins/commit/5e0d1229528f660f1174bb688b834ab99ae0f408))
 
 ## [0.31.6](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.31.5...plugin-runtime-v0.31.6) (2026-05-15)
