@@ -295,7 +295,7 @@ async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, f
   const featuresRaw = available && featureArgs ? await runner(name, featureArgs, { cwd, env }) : skipped('not requested');
   const authRaw = available ? await runner(name, authArgs, { cwd, env }) : skipped('cli unavailable');
   const pluginRaw = available ? await runner(name, pluginArgs, { cwd, env }) : skipped('cli unavailable');
-  const auth = name === 'claude' ? parseClaudeAuth(authRaw) : parseCodexAuth(authRaw);
+  const auth = name === 'claude' ? parseClaudeAuth(authRaw, env) : parseCodexAuth(authRaw);
   const featureText = name === 'claude'
     ? `${help.stdout}\n${help.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}`
     : `${help.stdout}\n${help.stderr}\n${extraHelp.stdout}\n${extraHelp.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}`;
@@ -341,19 +341,20 @@ function commandStatus(result) {
   return 'unknown';
 }
 
-function parseClaudeAuth(result) {
-  const jsonAuth = parseClaudeAuthJson(result.stdout) ?? parseClaudeAuthJson(result.stderr);
+function parseClaudeAuth(result, env = {}) {
+  const jsonAuth = parseClaudeAuthJson(result.stdout, env) ?? parseClaudeAuthJson(result.stderr, env);
   if (jsonAuth) return jsonAuth;
-  if (!result.ok) return classifyAuthFailure(result);
+  if (!result.ok) return classifyAuthFailure(result, { host: 'claude', env });
 
   const text = singleLine(`${result.stdout} ${result.stderr}`);
   if (/not logged in|login required|unauth/i.test(text)) {
+    if (isCodexSandboxEnv(env)) return sandboxLimitedAuth({ sensitiveFields: [] });
     return { status: 'unauthenticated', logged_in: false, sensitive_fields_redacted: [] };
   }
   return { status: 'unknown', logged_in: null, detail: redactSecrets(text), sensitive_fields_redacted: [] };
 }
 
-function parseClaudeAuthJson(text) {
+function parseClaudeAuthJson(text, env = {}) {
   if (!text || !text.trim()) return null;
   try {
     const json = JSON.parse(text);
@@ -368,6 +369,9 @@ function parseClaudeAuthJson(text) {
       };
     }
     if (json.loggedIn === false) {
+      if (isCodexSandboxEnv(env)) {
+        return sandboxLimitedAuth({ sensitiveFields: ['email', 'orgId', 'orgName'] });
+      }
       return { status: 'unauthenticated', logged_in: false, sensitive_fields_redacted: ['email', 'orgId', 'orgName'] };
     }
   } catch {
@@ -376,9 +380,24 @@ function parseClaudeAuthJson(text) {
   return null;
 }
 
+function isCodexSandboxEnv(env = {}) {
+  return Boolean(env.CODEX_SANDBOX);
+}
+
+function sandboxLimitedAuth({ sensitiveFields }) {
+  return {
+    status: 'sandbox_limited',
+    logged_in: null,
+    observed_logged_in: false,
+    detail: 'auth status returned loggedIn=false inside the current Codex sandbox; host credentials may be inaccessible to this probe',
+    next_step: 'Verify with an approved direct host auth command or rerun runtime:doctor outside the current sandbox before deciding to login.',
+    sensitive_fields_redacted: sensitiveFields,
+  };
+}
+
 function parseCodexAuth(result) {
   if (!result.ok) {
-    return classifyAuthFailure(result);
+    return classifyAuthFailure(result, { host: 'codex' });
   }
   const text = singleLine(`${result.stdout} ${result.stderr}`);
   if (/logged in/i.test(text) && !/not logged in/i.test(text)) {
@@ -396,11 +415,14 @@ function parseCodexAuth(result) {
   return { status: 'unknown', logged_in: null, detail: redactSecrets(text), sensitive_fields_redacted: [] };
 }
 
-function classifyAuthFailure(result) {
+function classifyAuthFailure(result, { host = 'unknown', env = {} } = {}) {
   const text = singleLine(`${result.stdout} ${result.stderr} ${result.error_message ?? ''}`);
   if (result.error_code === 'ENOENT') return { status: 'unavailable', logged_in: null, detail: 'cli unavailable' };
   if (result.error_code === 'ETIMEDOUT') return { status: 'blocked', logged_in: null, detail: 'auth status probe timed out' };
-  if (/not logged in|login required|unauth/i.test(text)) return { status: 'unauthenticated', logged_in: false };
+  if (/not logged in|login required|unauth/i.test(text)) {
+    if (host === 'claude' && isCodexSandboxEnv(env)) return sandboxLimitedAuth({ sensitiveFields: [] });
+    return { status: 'unauthenticated', logged_in: false };
+  }
   return { status: 'unknown', logged_in: null, detail: redactSecrets(text) };
 }
 
@@ -2815,6 +2837,7 @@ function buildDirectionReadiness({
   if (caller.status !== 'available') blockers.push(`${caller.name} CLI unavailable`);
   if (peer.status !== 'available') blockers.push(`${peer.name} CLI unavailable`);
   if (peer.auth.status === 'unauthenticated') blockers.push(`${peer.name} unauthenticated`);
+  if (peer.auth.status === 'sandbox_limited') blockers.push(`${peer.name} auth probe sandbox-limited`);
   if (peer.auth.status === 'blocked') blockers.push(`${peer.name} auth probe blocked`);
   if (companion.status !== 'available') blockers.push(`companion ${companion.filename} ${companion.status}`);
   for (const feature of requiredPeerFeatures) {
@@ -2952,7 +2975,7 @@ function probeResult({ name, status, evidence }) {
 function classifyPrimaryBlocker(blockers) {
   if (blockers.some((b) => /unavailable/.test(b))) return 'unavailable';
   if (blockers.some((b) => /unauthenticated/.test(b))) return 'unauthenticated';
-  if (blockers.some((b) => /blocked/.test(b))) return 'blocked';
+  if (blockers.some((b) => /blocked|sandbox-limited/.test(b))) return 'blocked';
   return 'not_installed';
 }
 
@@ -2961,6 +2984,7 @@ function summarizeOverall(report) {
   for (const [name, cli] of Object.entries(report.clis)) {
     if (cli.status !== 'available') hardFailures.push(`${name} cli ${cli.status}`);
     if (cli.auth.status === 'unauthenticated') hardFailures.push(`${name} auth unauthenticated`);
+    if (cli.auth.status === 'sandbox_limited') hardFailures.push(`${name} auth sandbox_limited`);
   }
   for (const [direction, readiness] of Object.entries(report.readiness)) {
     if (!['available', 'available_with_warnings'].includes(readiness.status)) hardFailures.push(`${direction} ${readiness.status}`);

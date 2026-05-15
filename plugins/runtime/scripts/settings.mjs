@@ -94,6 +94,7 @@ export async function runSettings({
   });
   applyPluginManagementResults(pluginPlans, pluginManagement);
   const cliPlans = buildCliPlans(doctor.clis);
+  const pluginCleanup = buildPluginCleanupPlans(doctor.host_parity?.issues ?? []);
 
   const companionSettings = buildCompanionSettingPlans({
     currentDirections: doctor.model_effort.directions,
@@ -133,6 +134,7 @@ export async function runSettings({
     },
     clis: cliPlans,
     plugins: pluginPlans,
+    plugin_cleanup: pluginCleanup,
     plugin_command_surface: doctor.plugin_command_surface,
     plugin_management: pluginManagement,
     hook_settings: hookSettings,
@@ -151,6 +153,7 @@ export async function runSettings({
     recommendations: buildTopLevelRecommendations({
       clis: cliPlans,
       plugins: pluginPlans,
+      pluginCleanup,
       desiredConfig,
       companionSettings,
       hookSettings,
@@ -394,8 +397,10 @@ function buildCliAuthPlan(name, cli) {
       limits: ['runtime:settings does not authenticate host CLIs or mutate credentials.'],
     };
   }
-  const command = name === 'claude' ? 'claude auth login' : 'codex login';
+  const loginCommand = name === 'claude' ? 'claude auth login' : 'codex login';
+  const statusCommand = name === 'claude' ? 'claude auth status' : 'codex login status';
   const status = authStatus === 'unauthenticated' ? 'manual_required' : 'manual_check';
+  const command = status === 'manual_required' ? loginCommand : statusCommand;
   return {
     status,
     host: name,
@@ -403,13 +408,48 @@ function buildCliAuthPlan(name, cli) {
     command,
     next_step: authStatus === 'unauthenticated'
       ? `Run ${command} outside runtime:settings, then rerun runtime:doctor.`
-      : `Verify host auth with ${name === 'claude' ? 'claude auth status' : 'codex login status'}, then rerun runtime:doctor.`,
+      : authStatus === 'sandbox_limited'
+        ? `Run or approve ${statusCommand} outside the current sandbox. Only run ${loginCommand} if that direct probe is also unauthenticated.`
+        : `Verify host auth with ${statusCommand}, then rerun runtime:doctor.`,
     evidence: {
       cli_status: cli.status,
       auth_status: authStatus,
       logged_in: cli.auth?.logged_in ?? null,
     },
     limits: ['runtime:settings does not authenticate host CLIs or mutate credentials.'],
+  };
+}
+
+function buildPluginCleanupPlans(hostParityIssues) {
+  const plans = [];
+  for (const issue of hostParityIssues) {
+    if (issue.id !== 'claude_retired_or_unknown_plugin') continue;
+    const plugin = issue.plugin;
+    plans.push({
+      host: issue.host ?? 'claude',
+      plugin,
+      action: 'uninstall-retired-plugin',
+      status: 'manual_required',
+      severity: issue.severity ?? 'warning',
+      executable: false,
+      executed: false,
+      command: `claude /plugin uninstall ${plugin}@agentic-plugins`,
+      detail: issue.summary,
+      evidence: issue.evidence,
+      next_step: issue.next_step,
+      limits: [
+        'runtime:settings does not execute plugin uninstall commands.',
+        'Uninstall retired or unknown plugins only after confirming they are no longer expected in the marketplace.',
+      ],
+    });
+  }
+  return {
+    status: plans.length > 0 ? 'manual_required' : 'not_needed',
+    summary: {
+      planned: plans.length,
+      executable: plans.filter((plan) => plan.executable).length,
+    },
+    plans,
   };
 }
 
@@ -1117,7 +1157,7 @@ function buildHookSettingsPlan({ codexPluginHooks }) {
   };
 }
 
-function buildTopLevelRecommendations({ clis, plugins, desiredConfig, companionSettings, hookSettings }) {
+function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredConfig, companionSettings, hookSettings }) {
   const recommendations = [];
   for (const [name, cli] of Object.entries(clis)) {
     if (cli.status !== 'available') {
@@ -1148,6 +1188,20 @@ function buildTopLevelRecommendations({ clis, plugins, desiredConfig, companionS
       recommendations.push({ area: 'plugin', ...recommendation });
     }
   }
+  for (const plan of pluginCleanup?.plans ?? []) {
+    recommendations.push({
+      area: 'plugin-cleanup',
+      host: plan.host,
+      plugin: plan.plugin,
+      action: plan.action,
+      severity: plan.severity,
+      executable: plan.executable,
+      executed: plan.executed,
+      command: plan.command,
+      detail: plan.detail,
+      next_step: plan.next_step,
+    });
+  }
   if (Object.keys(desiredConfig).length === 0) {
     recommendations.push({
       area: 'config',
@@ -1176,14 +1230,16 @@ function summarizeSettings(report) {
   const hookWarnings = (report.hook_settings?.recommendations ?? []).filter((rec) => rec.severity === 'warning').length;
   const authWarnings = Object.values(report.clis).filter((cli) => ['manual_required', 'manual_check'].includes(cli.auth_plan?.status)).length;
   const pluginManagementFailed = report.plugin_management.summary.failed;
+  const pluginCleanupWarnings = report.plugin_cleanup?.summary?.planned ?? 0;
   return {
-    status: missingCli > 0 || settingWarnings > 0 || hookWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 ? 'warning' : 'pass',
+    status: missingCli > 0 || settingWarnings > 0 || hookWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 || pluginCleanupWarnings > 0 ? 'warning' : 'pass',
     planned_config_writes: writeCount,
     applied_config_targets: appliedCount,
     plugin_recommendations: Object.values(report.plugins).reduce((sum, plugin) => sum + plugin.recommendations.length, 0),
     setting_warnings: settingWarnings,
     hook_warnings: hookWarnings,
     auth_warnings: authWarnings,
+    plugin_cleanup_warnings: pluginCleanupWarnings,
     plugin_management_executed: report.plugin_management.summary.executed,
     plugin_management_failed: pluginManagementFailed,
   };
@@ -1248,6 +1304,15 @@ export function formatText(report) {
       lines.push(`  result: ok=${plan.result.ok}; exit=${plan.result.exit_code ?? '<none>'}; stdout-bytes=${plan.result.stdout_bytes}; stderr-bytes=${plan.result.stderr_bytes}; timed-out=${plan.result.timed_out}; failure-type=${plan.result.failure_type ?? '<none>'}; retryable=${plan.result.retryable}`);
       if (plan.result.retry_after) lines.push(`  retry-after: ${plan.result.retry_after}`);
       if (plan.result.doctor_hint) lines.push(`  doctor: ${plan.result.doctor_hint}`);
+    }
+  }
+  if (report.plugin_cleanup?.plans?.length > 0) {
+    lines.push('');
+    lines.push('Plugin Cleanup');
+    lines.push(`- summary: planned=${report.plugin_cleanup.summary.planned}; executable=${report.plugin_cleanup.summary.executable}`);
+    for (const plan of report.plugin_cleanup.plans) {
+      lines.push(`- ${plan.plugin}/${plan.host}: ${plan.action}; status=${plan.status}; executable=${plan.executable}; executed=${plan.executed}; command=${plan.command}`);
+      lines.push(`  next: ${plan.next_step}`);
     }
   }
   lines.push('');

@@ -90,6 +90,7 @@ describe('runtime settings', () => {
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
+      env: {},
       runner: fakeRunner({
         ...defaultCliMap(),
         'claude auth status': {
@@ -111,6 +112,71 @@ describe('runtime settings', () => {
     ok(report.recommendations.some((rec) => rec.area === 'auth' && rec.host === 'claude' && rec.action === 'authenticate-host-cli'));
     ok(formatText(report).includes('auth=unauthenticated'));
     ok(formatText(report).includes('auth-plan: manual_required; executable=false; command=claude auth login'));
+  });
+
+  it('plans host auth verification instead of login when Claude auth is sandbox-limited', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-auth-sandbox-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-auth-sandbox-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      env: { CODEX_SANDBOX: 'seatbelt' },
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'claude auth status': {
+          ok: false,
+          exit_code: 1,
+          stdout: JSON.stringify({ loggedIn: false, authMethod: 'none', apiProvider: 'firstParty' }),
+          stderr: '',
+          error_code: null,
+          timed_out: false,
+        },
+      }),
+    });
+
+    strictEqual(report.clis.claude.auth.status, 'sandbox_limited');
+    strictEqual(report.clis.claude.auth_plan.status, 'manual_check');
+    strictEqual(report.clis.claude.auth_plan.command, 'claude auth status');
+    ok(report.clis.claude.auth_plan.next_step.includes('outside the current sandbox'));
+    ok(report.recommendations.some((rec) => rec.area === 'auth' && rec.host === 'claude' && rec.action === 'verify-host-auth'));
+    ok(formatText(report).includes('auth=sandbox_limited'));
+    ok(formatText(report).includes('auth-plan: manual_check; executable=false; command=claude auth status'));
+  });
+
+  it('plans retired Claude plugin cleanup without executing uninstall', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-plugin-cleanup-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-plugin-cleanup-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      env: {},
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'claude plugin list': okResult([
+          'Installed plugins:',
+          '',
+          '  > research@agentic-plugins',
+          '    Version: 0.1.0',
+          '    Scope: user',
+          '    Status: failed',
+          '    Error: Plugin research not found in marketplace agentic-plugins',
+        ].join('\n')),
+      }),
+    });
+
+    strictEqual(report.plugin_cleanup.status, 'manual_required');
+    strictEqual(report.plugin_cleanup.summary.planned, 1);
+    const plan = report.plugin_cleanup.plans[0];
+    strictEqual(plan.action, 'uninstall-retired-plugin');
+    strictEqual(plan.executable, false);
+    strictEqual(plan.command, 'claude /plugin uninstall research@agentic-plugins');
+    ok(report.recommendations.some((rec) => rec.area === 'plugin-cleanup' && rec.plugin === 'research' && rec.executable === false));
+    ok(formatText(report).includes('Plugin Cleanup'));
+    ok(formatText(report).includes('research/claude: uninstall-retired-plugin'));
   });
 
   it('applies only selected agentic-plugins-owned config writes', async () => {
