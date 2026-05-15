@@ -244,7 +244,7 @@ opens PRs, updates PR metadata, merges, or marks a PR ready for review.
 
 ```sh
 # Claude Code
-claude /plugin install runtime@agentic-plugins
+claude plugin install runtime@agentic-plugins
 
 # Codex CLI
 codex plugin marketplace add each4all/agentic-plugins

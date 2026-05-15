@@ -320,11 +320,11 @@ release-please automation.
 
 > **User-environment cleanup note**: users of agentic-plugins versions
 > ≤0.3.x may have a stale `research@agentic-plugins 0.1.0` cache from
-> the pre-archive era. Run `claude /plugin uninstall research@agentic-plugins`
+> the pre-archive era. Run `claude plugin uninstall research@agentic-plugins`
 > (or the equivalent Codex command) to remove it — the plugin is no
 > longer in either marketplace catalog (per ADR-0014/0015).
 
-**Stage 3+ (Runtime/operator track)** — accepted by ADR-0024 and actively shipping through `plugins/runtime`. As of `plugin-runtime` v0.28.0, runtime provides the L1 framework primitive for host readiness and operator control: `doctor`, `settings`, explicit consensus execution, context hygiene scaffolding, workflow-storage migration, observed experience-parity scoring, Codex plugin hook readiness diagnosis plus explicit `plugin_hooks` settings apply, sandbox-limited host auth diagnosis, retired plugin cleanup planning, semantic plugin-management failure classification including sandboxed peer proof failures, Claude plugin command-surface preflight/blocking with manual follow-up checklists for host-native `/plugin ...` install/update/cleanup commands in both settings and doctor, Codex `/hooks` manual review/trust follow-ups when packaged hooks are ready, and an advisory completion footer. `plugins/designer` remains possible future work referencing omcc-designer experience under the same 4-layer composition, but it is no longer the active next-step trigger for ADR-0012 condition 3.
+**Stage 3+ (Runtime/operator track)** — accepted by ADR-0024 and actively shipping through `plugins/runtime`. As of `plugin-runtime` v0.28.0, runtime provides the L1 framework primitive for host readiness and operator control: `doctor`, `settings`, explicit consensus execution, context hygiene scaffolding, workflow-storage migration, observed experience-parity scoring, Codex plugin hook readiness diagnosis plus explicit `plugin_hooks` settings apply, sandbox-limited host auth diagnosis, retired plugin cleanup planning, semantic plugin-management failure classification including sandboxed peer proof failures, Claude plugin CLI preflight/execution with slash `/plugin` observed only as host asymmetry, manual follow-up checklists for host-native `claude plugin ...` cleanup commands in both settings and doctor, Codex `/hooks` manual review/trust follow-ups when packaged hooks are ready, and an advisory completion footer. `plugins/designer` remains possible future work referencing omcc-designer experience under the same 4-layer composition, but it is no longer the active next-step trigger for ADR-0012 condition 3.
 
 Next steps:
 

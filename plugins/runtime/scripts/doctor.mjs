@@ -78,6 +78,7 @@ export async function runDoctor({
     inspectCli('claude', {
       versionArgs: ['--version'],
       helpArgs: ['--help'],
+      extraHelpArgs: ['plugin', '--help'],
       authArgs: ['auth', 'status'],
       pluginArgs: ['plugin', 'list'],
       pluginSurfaceArgs: ['/plugin', 'list'],
@@ -313,7 +314,7 @@ async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, f
   const pluginSurfaceRaw = available && pluginSurfaceArgs ? await runner(name, pluginSurfaceArgs, { cwd, env }) : skipped('not requested');
   const auth = name === 'claude' ? parseClaudeAuth(authRaw, env) : parseCodexAuth(authRaw);
   const featureText = name === 'claude'
-    ? `${help.stdout}\n${help.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}\n${pluginSurfaceRaw.stdout}\n${pluginSurfaceRaw.stderr}`
+    ? `${help.stdout}\n${help.stderr}\n${extraHelp.stdout}\n${extraHelp.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}\n${pluginSurfaceRaw.stdout}\n${pluginSurfaceRaw.stderr}`
     : `${help.stdout}\n${help.stderr}\n${extraHelp.stdout}\n${extraHelp.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}`;
   const featureSurface = name === 'claude'
     ? inspectClaudeFeatureSurface(featureText)
@@ -1010,10 +1011,10 @@ function inspectPluginVersionParity(name, plugin) {
 }
 
 function buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPluginHooks }) {
-  const claudeSurfaceStatus = claude.plugin_surface?.status ?? claude.plugin.status;
+  const claudeSurfaceStatus = buildClaudePluginCliSurfaceStatus(claude);
   const claudeSurfaceAvailable = claudeSurfaceStatus === 'available';
   return {
-    schema_version: 'runtime-plugin-command-surface-1.1',
+    schema_version: 'runtime-plugin-command-surface-1.2',
     claude: {
       status: claudeSurfaceStatus,
       mode: claudeSurfaceStatus === 'unavailable'
@@ -1028,17 +1029,21 @@ function buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPl
         marketplace_upgrade: false,
         marketplace_remove: false,
       },
+      observed_surfaces: {
+        cli_plugin: claude.plugin.status,
+        slash_plugin: claude.plugin_surface?.status ?? 'unknown',
+      },
       materialization: claudeSurfaceAvailable
         ? {
             status: 'host-native-plugin-command',
             executable_by_settings: true,
-            reason: 'Claude exposes plugin install/update/list style host commands that can materialize the host plugin cache.',
+            reason: 'Claude exposes plugin install/update/list CLI commands that can materialize the host plugin cache.',
           }
         : {
             status: 'blocked',
             executable_by_settings: false,
-            reason: claude.plugin_surface?.reason ?? 'Claude plugin command surface could not be verified.',
-            next_step: 'Retry plugin management from a Claude Code environment that supports /plugin commands.',
+            reason: claude.plugin?.reason ?? claude.plugin_surface?.reason ?? 'Claude plugin CLI command surface could not be verified.',
+            next_step: 'Retry plugin management from a Claude Code environment that supports claude plugin commands.',
           },
     },
     codex: {
@@ -1066,6 +1071,14 @@ function buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPl
   };
 }
 
+function buildClaudePluginCliSurfaceStatus(claude) {
+  if (claude.status !== 'available') return claude.status;
+  if (claude.plugin.status !== 'available') return claude.plugin.status;
+  if (claude.feature_surface.plugin_install_command || claude.feature_surface.plugin_list_command) return 'available';
+  if (claude.plugin_surface?.status === 'available') return 'available';
+  return 'unknown';
+}
+
 function buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plugins, hostParity, codexPluginHooks }) {
   const followups = [];
   const pluginCommands = claudeSurfaceAvailable ? [] : buildClaudePluginSurfaceCommands(plugins);
@@ -1074,8 +1087,8 @@ function buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plug
       id: 'claude-plugin-surface-unavailable',
       host: 'claude',
       status: 'manual_required',
-      reason: 'Claude /plugin command surface is unavailable to runtime:doctor in this environment.',
-      environment: 'Open an interactive Claude Code session that supports /plugin commands.',
+      reason: 'Claude plugin CLI command surface is unavailable to runtime:doctor in this environment.',
+      environment: 'Open a Claude Code environment that supports claude plugin commands.',
       commands: pluginCommands,
       verify: 'Re-run runtime:doctor or runtime:settings after completing the commands.',
     });
@@ -1087,7 +1100,7 @@ function buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plug
       host: 'claude',
       status: 'manual_required',
       reason: 'Claude has retired or unknown agentic-plugins entries that runtime:doctor will not uninstall automatically.',
-      environment: 'Open an interactive Claude Code session that supports /plugin commands.',
+      environment: 'Open a Claude Code environment that supports claude plugin commands.',
       commands: cleanupCommands,
       verify: 'Re-run runtime:doctor or runtime:settings after completing the commands.',
     });
@@ -1106,9 +1119,9 @@ function buildClaudePluginSurfaceCommands(plugins) {
     const claudeCacheLatest = plugin?.cache?.claude?.latest ?? null;
     const claudeVersion = claudeInstalled?.version ?? claudeCacheLatest?.manifest_version ?? null;
     if (!claudeInstalled && !claudeCacheLatest) {
-      commands.push(`/plugin install ${name}@agentic-plugins`);
+      commands.push(`claude plugin install ${name}@agentic-plugins`);
     } else if (sourceVersion && claudeVersion && semverCompare(String(claudeVersion), String(sourceVersion)) < 0) {
-      commands.push(`/plugin update ${name}@agentic-plugins`);
+      commands.push(`claude plugin update ${name}@agentic-plugins`);
     }
   }
   return uniqueStrings(commands);
@@ -1120,7 +1133,7 @@ function buildClaudeRetiredPluginCleanupCommands(issues) {
     if (issue.id !== 'claude_retired_or_unknown_plugin') continue;
     if (issue.host !== 'claude') continue;
     if (!issue.plugin) continue;
-    commands.push(`/plugin uninstall ${issue.plugin}@agentic-plugins`);
+    commands.push(`claude plugin uninstall ${issue.plugin}@agentic-plugins`);
   }
   return uniqueStrings(commands);
 }
@@ -3517,6 +3530,9 @@ export function formatText(report) {
   lines.push('Plugin Command Surface');
   const claudeSurface = report.plugin_command_surface.claude;
   lines.push(`- claude: mode=${claudeSurface.mode}; install=${Boolean(claudeSurface.supports.install_plugin)}; list=${Boolean(claudeSurface.supports.list_plugin)}; materialization=${claudeSurface.materialization.status}`);
+  if (claudeSurface.observed_surfaces) {
+    lines.push(`  observed: cli-plugin=${claudeSurface.observed_surfaces.cli_plugin}; slash-plugin=${claudeSurface.observed_surfaces.slash_plugin}`);
+  }
   if (claudeSurface.materialization.next_step) lines.push(`  next: ${claudeSurface.materialization.next_step}`);
   const codexSurface = report.plugin_command_surface.codex;
   lines.push(`- codex: mode=${codexSurface.mode}; marketplace-add=${Boolean(codexSurface.supports.marketplace_add)}; marketplace-upgrade=${Boolean(codexSurface.supports.marketplace_upgrade)}; install=${Boolean(codexSurface.supports.install_plugin)}; list=${Boolean(codexSurface.supports.list_plugin)}; materialization=${codexSurface.materialization.status}`);

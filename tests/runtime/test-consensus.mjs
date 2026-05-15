@@ -790,6 +790,7 @@ function fakeConsensusRunner({
       if (args.join(' ') === '--version') return okResult('2.1.140 (Claude Code)\n');
       if (args.join(' ') === '--help') return okResult('Usage: claude --print --output-format --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n');
       if (args.join(' ') === 'auth status') return okResult(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' }));
+      if (args.join(' ') === 'plugin --help') return okResult('Commands:\n  install\n  list\n  update\n  uninstall\n');
       if (args.join(' ') === 'plugin list') return okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.11.0\n    Scope: user\n    Status: enabled\n');
       if (args.join(' ') === '/plugin list') return okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.11.0\n    Scope: user\n    Status: enabled\n');
     }
