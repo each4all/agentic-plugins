@@ -1,8 +1,8 @@
 // plugins/engineer/scripts/stop-archive.mjs
 //
 // ADR-0017 §sub-decision 5 — Stop hook auto-archive orchestration.
-// Host-shared (Claude PreCompact-equivalent Stop + Codex manual-invoke
-// Stop both call this).
+// Host-shared (Claude Stop, trusted Codex Stop, and Codex fallback Stop
+// invocations all call this).
 //
 // Two surfaces:
 //   - evaluateStopArchive() — pure; given frontmatter + git probe values,
