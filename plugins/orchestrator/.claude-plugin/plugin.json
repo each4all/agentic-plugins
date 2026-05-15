@@ -1,6 +1,6 @@
 {
   "name": "orchestrator",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Macro orchestration capability — multi-deliverable plan + Plan-verify ensemble + same-host dispatch into engineer, lifecycle closure, and workflow-continuity meta surfaces for AI-assisted development across Claude Code & Codex CLI. L2 capability plugin per ADR-0010 4-layer composition (ADR-0018 §sub-decision-1, ADR-0019 cross-plugin invocation).",
   "author": {
     "name": "each4all"
