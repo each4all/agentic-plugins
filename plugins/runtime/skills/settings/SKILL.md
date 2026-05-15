@@ -21,7 +21,7 @@ node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--fo
 3. Present the result as a settings plan, not as proof of host parity.
    - Dry-run output is the default and must be safe to run repeatedly.
    - `--apply` may write only `.agentic-plugins/config.toml` in the repo and/or user home.
-   - `--execute-plugin-management` runs only allowlisted host-native plugin install/update/add/upgrade commands. It does not use a shell, does not print raw stdout/stderr, and writes sanitized execution artifacts under `.agentic-plugins/runs/settings/<run-id>/`.
+   - `--execute-plugin-management` runs only allowlisted host-native plugin install/update/add/upgrade commands. It does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts under `.agentic-plugins/runs/settings/<run-id>/`, and treats host "plugin surface unavailable" output as failed even when the host exits 0.
    - Codex bundled plugin hooks are planned separately: report packaged hook plugins, `plugin_hooks` status, and the session/config steps needed to enable them. `--apply-codex-plugin-hooks` may write only `~/.codex/config.toml` `[features].plugin_hooks = true`.
 
 ## Scope
@@ -96,8 +96,10 @@ do not keep retrying `codex plugin marketplace add` and do not invent a
 per-plugin `codex plugin install` step.
 
 The executor records only status, exit code, byte counts, timing, and sanitized
-error metadata. It omits raw stdout and stderr. Executed plugin-management runs
-write `.agentic-plugins/runs/settings/<run-id>/settings.json` and update
+error metadata. It omits raw stdout and stderr. A host command that exits 0 can
+still be marked failed if its sanitized output indicates the plugin command
+surface was unavailable. Executed plugin-management runs write
+`.agentic-plugins/runs/settings/<run-id>/settings.json` and update
 `.agentic-plugins/runs/settings/latest.json`; `runtime:doctor` reads the latest
 artifact and reports failed action types plus retryability.
 
