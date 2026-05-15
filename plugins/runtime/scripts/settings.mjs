@@ -963,7 +963,7 @@ function buildCodexHookReviewManualFollowups(codexPluginHooks, hookSettings, cod
     reason: 'Codex plugin hooks are packaged and plugin_hooks is enabled, but runtime:settings cannot verify active-session hook review/trust state.',
     environment: 'Open the active Codex session for this repository.',
     commands: ['/hooks'],
-    verify: `Review/trust bundled hooks for ${bundled.join(', ')}, then rerun runtime:settings or runtime:doctor.`,
+    verify: `Review/trust bundled hooks for ${bundled.join(', ')}, then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
   }];
 }
 
