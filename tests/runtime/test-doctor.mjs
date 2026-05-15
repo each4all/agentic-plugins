@@ -266,7 +266,12 @@ describe('runtime doctor', () => {
     });
 
     ok(report.host_parity.issues.some((issue) => issue.id === 'claude_retired_or_unknown_plugin' && issue.plugin === 'research'));
+    ok(report.plugin_command_surface.manual_followups.some((followup) => (
+      followup.id === 'claude-retired-plugin-cleanup'
+        && followup.commands.includes('/plugin uninstall research@agentic-plugins')
+    )));
     strictEqual(report.host_parity.status, 'warning');
+    ok(formatText(report).includes('command: /plugin uninstall research@agentic-plugins'));
     ok(formatText(report).includes('claude_retired_or_unknown_plugin'));
   });
 

@@ -97,6 +97,10 @@ export async function runSettings({
   applyPluginManagementResults(pluginPlans, pluginManagement);
   const cliPlans = buildCliPlans(doctor.clis);
   const pluginCleanup = buildPluginCleanupPlans(doctor.host_parity?.issues ?? []);
+  pluginManagement.manual_followups = mergeManualFollowups(
+    pluginManagement.manual_followups,
+    buildPluginCleanupManualFollowups(pluginCleanup.plans),
+  );
 
   const companionSettings = buildCompanionSettingPlans({
     currentDirections: doctor.model_effort.directions,
@@ -751,9 +755,55 @@ function buildPluginManagementManualFollowups(plans) {
   return followups;
 }
 
+function buildPluginCleanupManualFollowups(plans) {
+  const cleanupPlans = plans.filter((plan) => (
+    plan.host === 'claude'
+      && plan.status === 'manual_required'
+      && plan.action === 'uninstall-retired-plugin'
+  ));
+  if (cleanupPlans.length === 0) return [];
+  const commands = uniqueStrings(cleanupPlans
+    .map((plan) => claudeCommandDisplayToSlashCommand(plan.command))
+    .filter(Boolean));
+  if (commands.length === 0) return [];
+  return [{
+    id: 'claude-retired-plugin-cleanup',
+    host: 'claude',
+    status: 'manual_required',
+    reason: 'Claude has retired or unknown agentic-plugins entries that runtime:settings will not uninstall automatically.',
+    environment: 'Open an interactive Claude Code session that supports /plugin commands.',
+    commands,
+    verify: 'Re-run runtime:settings or runtime:doctor after completing the commands.',
+  }];
+}
+
+function mergeManualFollowups(...groups) {
+  const byId = new Map();
+  for (const group of groups) {
+    for (const followup of group ?? []) {
+      const existing = byId.get(followup.id);
+      if (!existing) {
+        byId.set(followup.id, {
+          ...followup,
+          commands: uniqueStrings(followup.commands ?? []),
+        });
+      } else {
+        existing.commands = uniqueStrings([...(existing.commands ?? []), ...(followup.commands ?? [])]);
+      }
+    }
+  }
+  return Array.from(byId.values());
+}
+
 function claudeSlashCommand(args) {
   if (!Array.isArray(args) || args[0] !== '/plugin') return null;
   return args.join(' ');
+}
+
+function claudeCommandDisplayToSlashCommand(command) {
+  if (typeof command !== 'string') return null;
+  const match = command.match(/^claude\s+(\/plugin\s+.+)$/);
+  return match ? match[1] : null;
 }
 
 function uniqueStrings(values) {

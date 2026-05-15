@@ -105,7 +105,7 @@ export async function runDoctor({
   const plugins = buildPluginMatrix({ source, catalogs, caches, claudePluginList });
   const codexPluginHooks = buildCodexPluginHookReport({ codex, plugins });
   const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginHooks });
-  const pluginCommandSurface = buildPluginCommandSurface({ claude, codex, plugins });
+  const pluginCommandSurface = buildPluginCommandSurface({ claude, codex, plugins, hostParity });
   const companion = await inspectCompanionContract({
     repoRoot: resolvedRepoRoot,
     homeDir: resolvedHomeDir,
@@ -996,7 +996,7 @@ function inspectPluginVersionParity(name, plugin) {
   return issues;
 }
 
-function buildPluginCommandSurface({ claude, codex, plugins }) {
+function buildPluginCommandSurface({ claude, codex, plugins, hostParity }) {
   const claudeSurfaceStatus = claude.plugin_surface?.status ?? claude.plugin.status;
   const claudeSurfaceAvailable = claudeSurfaceStatus === 'available';
   return {
@@ -1044,23 +1044,37 @@ function buildPluginCommandSurface({ claude, codex, plugins }) {
         'runtime:settings intentionally keeps Codex cache materialization manual unless the host exposes an explicit per-plugin install/update command.',
       ],
     },
-    manual_followups: buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plugins }),
+    manual_followups: buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plugins, hostParity }),
   };
 }
 
-function buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plugins }) {
-  if (claudeSurfaceAvailable) return [];
-  const commands = buildClaudePluginSurfaceCommands(plugins);
-  if (commands.length === 0) return [];
-  return [{
-    id: 'claude-plugin-surface-unavailable',
-    host: 'claude',
-    status: 'manual_required',
-    reason: 'Claude /plugin command surface is unavailable to runtime:doctor in this environment.',
-    environment: 'Open an interactive Claude Code session that supports /plugin commands.',
-    commands,
-    verify: 'Re-run runtime:doctor or runtime:settings after completing the commands.',
-  }];
+function buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plugins, hostParity }) {
+  const followups = [];
+  const pluginCommands = claudeSurfaceAvailable ? [] : buildClaudePluginSurfaceCommands(plugins);
+  if (pluginCommands.length > 0) {
+    followups.push({
+      id: 'claude-plugin-surface-unavailable',
+      host: 'claude',
+      status: 'manual_required',
+      reason: 'Claude /plugin command surface is unavailable to runtime:doctor in this environment.',
+      environment: 'Open an interactive Claude Code session that supports /plugin commands.',
+      commands: pluginCommands,
+      verify: 'Re-run runtime:doctor or runtime:settings after completing the commands.',
+    });
+  }
+  const cleanupCommands = buildClaudeRetiredPluginCleanupCommands(hostParity?.issues ?? []);
+  if (cleanupCommands.length > 0) {
+    followups.push({
+      id: 'claude-retired-plugin-cleanup',
+      host: 'claude',
+      status: 'manual_required',
+      reason: 'Claude has retired or unknown agentic-plugins entries that runtime:doctor will not uninstall automatically.',
+      environment: 'Open an interactive Claude Code session that supports /plugin commands.',
+      commands: cleanupCommands,
+      verify: 'Re-run runtime:doctor or runtime:settings after completing the commands.',
+    });
+  }
+  return followups;
 }
 
 function buildClaudePluginSurfaceCommands(plugins) {
@@ -1076,6 +1090,17 @@ function buildClaudePluginSurfaceCommands(plugins) {
     } else if (sourceVersion && claudeVersion && semverCompare(String(claudeVersion), String(sourceVersion)) < 0) {
       commands.push(`/plugin update ${name}@agentic-plugins`);
     }
+  }
+  return uniqueStrings(commands);
+}
+
+function buildClaudeRetiredPluginCleanupCommands(issues) {
+  const commands = [];
+  for (const issue of issues) {
+    if (issue.id !== 'claude_retired_or_unknown_plugin') continue;
+    if (issue.host !== 'claude') continue;
+    if (!issue.plugin) continue;
+    commands.push(`/plugin uninstall ${issue.plugin}@agentic-plugins`);
   }
   return uniqueStrings(commands);
 }
