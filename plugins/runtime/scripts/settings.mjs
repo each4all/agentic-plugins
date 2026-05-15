@@ -757,6 +757,13 @@ function classifyPluginManagementPlan({ recommendation, hostFilter, clis }) {
       reason: `${recommendation.host} CLI is not available`,
     };
   }
+  if (recommendation.host === 'claude' && ['unavailable', 'blocked'].includes(cli.plugin_surface?.status)) {
+    return {
+      status: 'blocked',
+      executable: false,
+      reason: `claude plugin command surface is ${cli.plugin_surface.status}`,
+    };
+  }
   return {
     status: 'planned',
     executable: true,
@@ -1466,6 +1473,10 @@ export function formatText(report) {
   lines.push('');
   lines.push('Plugin Management');
   lines.push(`- mode: ${report.plugin_management.mode}; requested=${report.plugin_management.requested}; host-filter=${report.plugin_management.host_filter}; timeout-ms=${report.plugin_management.timeout_ms}`);
+  if (report.plugin_command_surface?.claude) {
+    const surface = report.plugin_command_surface.claude;
+    lines.push(`- claude command surface: mode=${surface.mode}; install=${Boolean(surface.supports.install_plugin)}; list=${Boolean(surface.supports.list_plugin)}; materialization=${surface.materialization.status}`);
+  }
   if (report.plugin_command_surface?.codex) {
     const surface = report.plugin_command_surface.codex;
     lines.push(`- codex command surface: mode=${surface.mode}; marketplace-add=${Boolean(surface.supports.marketplace_add)}; marketplace-upgrade=${Boolean(surface.supports.marketplace_upgrade)}; install=${Boolean(surface.supports.install_plugin)}; list=${Boolean(surface.supports.list_plugin)}; materialization=${surface.materialization.status}`);

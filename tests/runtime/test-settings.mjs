@@ -455,6 +455,35 @@ describe('runtime settings', () => {
     ok(!JSON.stringify(report).includes('RAW /plugin'), 'plugin management report must not include raw command output');
   });
 
+  it('blocks Claude plugin management when slash plugin surface preflight is unavailable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-claude-plugin-preflight-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-claude-plugin-preflight-home-'));
+    await seedRepo(root);
+
+    const calls = [];
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      executePluginManagement: true,
+      pluginManagementHost: 'claude',
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'claude /plugin list': okResult("/plugin isn't available in this environment.\n"),
+      }, calls),
+    });
+
+    const claudePlans = report.plugin_management.plans.filter((plan) => plan.host === 'claude');
+    ok(claudePlans.length > 0);
+    strictEqual(report.plugin_command_surface.claude.mode, 'unavailable');
+    strictEqual(report.plugin_management.summary.blocked, claudePlans.length);
+    strictEqual(report.plugin_management.summary.executed, 0);
+    strictEqual(report.plugin_management.summary.failed, 0);
+    ok(claudePlans.every((plan) => plan.status === 'blocked' && plan.reason.includes('plugin command surface')));
+    ok(calls.includes('claude /plugin list'));
+    ok(!calls.some((call) => call.startsWith('claude /plugin install') || call.startsWith('claude /plugin update')));
+    ok(formatText(report).includes('claude command surface: mode=unavailable'));
+  });
+
   it('persists execution artifacts and classifies failed plugin-management retries', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-artifact-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-artifact-home-'));
@@ -598,6 +627,7 @@ function defaultCliMap() {
     'claude --help': okResult('Usage: claude --print --output-format --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n'),
     'claude auth status': okResult(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' })),
     'claude plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.1.0\n    Scope: user\n    Status: enabled\n'),
+    'claude /plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.1.0\n    Scope: user\n    Status: enabled\n'),
     'codex --version': okResult('codex-cli 0.130.0\n'),
     'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
     'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort="high"\n'),
