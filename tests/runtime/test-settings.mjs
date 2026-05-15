@@ -69,7 +69,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.7');
+    strictEqual(report.schema_version, 'runtime-settings-1.8');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -172,9 +172,11 @@ describe('runtime settings', () => {
 
     strictEqual(report.plugin_cleanup.status, 'manual_required');
     strictEqual(report.plugin_cleanup.summary.planned, 1);
+    strictEqual(report.plugin_cleanup.summary.manual_required, 1);
     const plan = report.plugin_cleanup.plans[0];
     strictEqual(plan.action, 'uninstall-retired-plugin');
     strictEqual(plan.executable, false);
+    strictEqual(plan.executed, false);
     strictEqual(plan.command, 'claude plugin uninstall research@agentic-plugins');
     strictEqual(report.plugin_management.manual_followups.length, 1);
     strictEqual(report.plugin_management.manual_followups[0].id, 'claude-retired-plugin-cleanup');
@@ -186,6 +188,63 @@ describe('runtime settings', () => {
     ok(formatText(report).includes('command: claude plugin uninstall research@agentic-plugins'));
     ok(formatText(report).includes('Plugin Cleanup'));
     ok(formatText(report).includes('research/claude: uninstall-retired-plugin'));
+  });
+
+  it('executes retired Claude plugin cleanup behind an explicit flag', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-plugin-cleanup-execute-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-plugin-cleanup-execute-home-'));
+    await seedRepo(root);
+
+    const calls = [];
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      executePluginCleanup: true,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'claude plugin list': okResult([
+          'Installed plugins:',
+          '',
+          '  > research@agentic-plugins',
+          '    Version: 0.1.0',
+          '    Scope: user',
+          '    Status: failed',
+          '    Error: Plugin research not found in marketplace agentic-plugins',
+        ].join('\n')),
+        'claude plugin uninstall research@agentic-plugins': okResult('RAW CLEANUP OUTPUT MUST NOT LEAK\n'),
+      }, calls),
+    });
+
+    strictEqual(report.dry_run, false);
+    strictEqual(report.execute_plugin_cleanup, true);
+    ok(report.mutation_boundary.writes_allowed.includes('plugin cleanup commands'));
+    deepStrictEqual(report.mutation_boundary.allowed_plugin_cleanup_actions, ['uninstall-retired-plugin']);
+    strictEqual(report.plugin_cleanup.status, 'executed');
+    strictEqual(report.plugin_cleanup.mode, 'explicit-plugin-cleanup-executor');
+    strictEqual(report.plugin_cleanup.summary.planned, 1);
+    strictEqual(report.plugin_cleanup.summary.executable, 1);
+    strictEqual(report.plugin_cleanup.summary.executed, 1);
+    strictEqual(report.plugin_cleanup.summary.failed, 0);
+    strictEqual(report.plugin_cleanup.summary.manual_required, 0);
+    const plan = report.plugin_cleanup.plans[0];
+    strictEqual(plan.status, 'executed');
+    strictEqual(plan.executable, true);
+    strictEqual(plan.executed, true);
+    strictEqual(plan.command, 'claude plugin uninstall research@agentic-plugins');
+    strictEqual(plan.result.ok, true);
+    strictEqual(plan.result.stdout_bytes, 'RAW CLEANUP OUTPUT MUST NOT LEAK\n'.length);
+    strictEqual(report.plugin_management.manual_followups.find((entry) => entry.id === 'claude-retired-plugin-cleanup'), undefined);
+    strictEqual(report.artifacts.settings_execution.written, true);
+    ok(calls.includes('claude plugin uninstall research@agentic-plugins'));
+    ok(!JSON.stringify(report).includes('RAW CLEANUP OUTPUT MUST NOT LEAK'), 'cleanup report must not include raw command output');
+    const artifact = await readJson(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'));
+    strictEqual(artifact.command.execute_plugin_cleanup, true);
+    strictEqual(artifact.plugin_cleanup.summary.executed, 1);
+    strictEqual(artifact.summary.plugin_cleanup_executed, 1);
+    ok(!JSON.stringify(artifact).includes('RAW CLEANUP OUTPUT MUST NOT LEAK'), 'cleanup artifact must not include raw command output');
+    ok(formatText(report).includes(`runtime:settings ${RUNTIME_VERSION} (plugin-cleanup)`));
+    ok(formatText(report).includes('result: ok=true'));
   });
 
   it('applies only selected agentic-plugins-owned config writes', async () => {
@@ -378,7 +437,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.7');
+    strictEqual(report.schema_version, 'runtime-settings-1.8');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -595,6 +654,7 @@ describe('runtime settings', () => {
       '--apply',
       '--apply-codex-plugin-hooks',
       '--execute-plugin-management',
+      '--execute-plugin-cleanup',
       '--plugin-management-host',
       'codex',
       '--plugin-management-timeout-ms',
@@ -609,6 +669,7 @@ describe('runtime settings', () => {
     strictEqual(opts.apply, true);
     strictEqual(opts.applyCodexPluginHooks, true);
     strictEqual(opts.executePluginManagement, true);
+    strictEqual(opts.executePluginCleanup, true);
     strictEqual(opts.pluginManagementHost, 'codex');
     strictEqual(opts.pluginManagementTimeoutMs, 90000);
     strictEqual(opts.runId, SETTINGS_RUN_ID);

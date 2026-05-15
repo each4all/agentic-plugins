@@ -475,6 +475,8 @@ function inspectClaudeFeatureSurface(helpText) {
     plugin_command: /\bplugin\|plugins\b|\bplugins?\s+Manage Claude Code plugins/i.test(helpText),
     plugin_list_command: /\bplugin\s+list\b|\bplugin list\b|Installed plugins/i.test(helpText),
     plugin_install_command: /\bplugin\s+install\b|\binstall\b/i.test(helpText),
+    plugin_update_command: /\bplugin\s+update\b|\bupdate\b/i.test(helpText),
+    plugin_uninstall_command: /\bplugin\s+uninstall\b|\buninstall\b/i.test(helpText),
     auth_status: /\bauth\b[\s\S]*\bstatus\b/i.test(helpText),
     print_mode: /--print|-p,\s*--print/.test(helpText),
     no_session_persistence: /--no-session-persistence/.test(helpText),
@@ -1014,7 +1016,7 @@ function buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPl
   const claudeSurfaceStatus = buildClaudePluginCliSurfaceStatus(claude);
   const claudeSurfaceAvailable = claudeSurfaceStatus === 'available';
   return {
-    schema_version: 'runtime-plugin-command-surface-1.2',
+    schema_version: 'runtime-plugin-command-surface-1.3',
     claude: {
       status: claudeSurfaceStatus,
       mode: claudeSurfaceStatus === 'unavailable'
@@ -1024,6 +1026,8 @@ function buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPl
         : 'unknown',
       supports: {
         install_plugin: claudeSurfaceAvailable && Boolean(claude.feature_surface.plugin_install_command),
+        update_plugin: claudeSurfaceAvailable && Boolean(claude.feature_surface.plugin_update_command),
+        uninstall_plugin: claudeSurfaceAvailable && Boolean(claude.feature_surface.plugin_uninstall_command),
         list_plugin: claudeSurfaceAvailable && Boolean(claude.feature_surface.plugin_list_command),
         marketplace_add: false,
         marketplace_upgrade: false,
@@ -1451,6 +1455,7 @@ async function inspectSettingsRuns({ repoRoot }) {
         selected_at: null,
         selected_at_ms: runIdTimestampMs(entry.name) ?? 0,
         plugin_management: emptySettingsPluginManagement(),
+        plugin_cleanup: emptySettingsPluginCleanup(),
         reason: artifact.reason,
       });
       continue;
@@ -1479,7 +1484,7 @@ async function inspectSettingsRuns({ repoRoot }) {
   const latest = runs[0];
   const status = malformed > 0
     ? 'blocked'
-    : latest.plugin_management.failed > 0
+    : latest.plugin_management.failed > 0 || latest.plugin_cleanup.failed > 0 || latest.plugin_cleanup.blocked > 0
       ? 'needs_attention'
       : 'available';
   return {
@@ -1508,12 +1513,33 @@ function emptySettingsPluginManagement() {
   };
 }
 
+function emptySettingsPluginCleanup() {
+  return {
+    mode: null,
+    requested: false,
+    executed: false,
+    summary: {
+      executed: 0,
+      failed: 0,
+      blocked: 0,
+      failed_retryable: 0,
+      failed_non_retryable: 0,
+    },
+    failed: 0,
+    blocked: 0,
+    failures: [],
+  };
+}
+
 function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifact }) {
   const pluginManagement = artifact.plugin_management ?? {};
-  const summary = pluginManagement.summary ?? {};
+  const pluginManagementSummary = pluginManagement.summary ?? {};
+  const pluginCleanup = artifact.plugin_cleanup ?? {};
+  const pluginCleanupSummary = pluginCleanup.summary ?? {};
   const failures = Array.isArray(artifact.failures)
     ? artifact.failures.map((failure) => ({
         id: sanitizeValue(failure.id),
+        area: sanitizeValue(failure.area),
         plugin: sanitizeValue(failure.plugin),
         host: sanitizeValue(failure.host),
         action: sanitizeValue(failure.action),
@@ -1523,6 +1549,8 @@ function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifact }) 
         doctor_hint: sanitizeValue(failure.doctor_hint),
       }))
     : [];
+  const pluginManagementFailures = failures.filter((failure) => failure.area !== 'plugin-cleanup');
+  const pluginCleanupFailures = failures.filter((failure) => failure.area === 'plugin-cleanup');
   const selectedAt = artifactTimestampMs(artifact, runId);
   return {
     run_id: sanitizeValue(artifact.run_id) ?? runId,
@@ -1536,13 +1564,28 @@ function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifact }) 
       executed: pluginManagement.executed === true,
       host_filter: sanitizeValue(pluginManagement.host_filter),
       summary: {
-        executed: safeCount(summary.executed),
-        failed: safeCount(summary.failed),
-        failed_retryable: safeCount(summary.failed_retryable),
-        failed_non_retryable: safeCount(summary.failed_non_retryable),
+        executed: safeCount(pluginManagementSummary.executed),
+        failed: safeCount(pluginManagementSummary.failed),
+        failed_retryable: safeCount(pluginManagementSummary.failed_retryable),
+        failed_non_retryable: safeCount(pluginManagementSummary.failed_non_retryable),
       },
-      failed: safeCount(summary.failed),
-      failures,
+      failed: safeCount(pluginManagementSummary.failed),
+      failures: pluginManagementFailures,
+    },
+    plugin_cleanup: {
+      mode: sanitizeValue(pluginCleanup.mode),
+      requested: pluginCleanup.requested === true,
+      executed: pluginCleanup.executed === true,
+      summary: {
+        executed: safeCount(pluginCleanupSummary.executed),
+        failed: safeCount(pluginCleanupSummary.failed),
+        blocked: safeCount(pluginCleanupSummary.blocked),
+        failed_retryable: safeCount(pluginCleanupSummary.failed_retryable),
+        failed_non_retryable: safeCount(pluginCleanupSummary.failed_non_retryable),
+      },
+      failed: safeCount(pluginCleanupSummary.failed),
+      blocked: safeCount(pluginCleanupSummary.blocked),
+      failures: pluginCleanupFailures,
     },
   };
 }
@@ -3439,8 +3482,13 @@ function summarizeOverall(report) {
   }
   if (report.settings_runs.status === 'blocked') {
     warnings.push('settings execution artifact health blocked');
-  } else if (report.settings_runs.latest?.plugin_management?.failed > 0) {
-    warnings.push('latest settings plugin-management execution has failures');
+  } else {
+    if (report.settings_runs.latest?.plugin_management?.failed > 0) {
+      warnings.push('latest settings plugin-management execution has failures');
+    }
+    if ((report.settings_runs.latest?.plugin_cleanup?.failed ?? 0) > 0 || (report.settings_runs.latest?.plugin_cleanup?.blocked ?? 0) > 0) {
+      warnings.push('latest settings plugin-cleanup execution has failures');
+    }
   }
   if (report.consensus_runs.status === 'blocked') {
     warnings.push('consensus execution artifact health blocked');
@@ -3529,7 +3577,7 @@ export function formatText(report) {
   lines.push('');
   lines.push('Plugin Command Surface');
   const claudeSurface = report.plugin_command_surface.claude;
-  lines.push(`- claude: mode=${claudeSurface.mode}; install=${Boolean(claudeSurface.supports.install_plugin)}; list=${Boolean(claudeSurface.supports.list_plugin)}; materialization=${claudeSurface.materialization.status}`);
+  lines.push(`- claude: mode=${claudeSurface.mode}; install=${Boolean(claudeSurface.supports.install_plugin)}; update=${Boolean(claudeSurface.supports.update_plugin)}; uninstall=${Boolean(claudeSurface.supports.uninstall_plugin)}; list=${Boolean(claudeSurface.supports.list_plugin)}; materialization=${claudeSurface.materialization.status}`);
   if (claudeSurface.observed_surfaces) {
     lines.push(`  observed: cli-plugin=${claudeSurface.observed_surfaces.cli_plugin}; slash-plugin=${claudeSurface.observed_surfaces.slash_plugin}`);
   }
@@ -3657,8 +3705,14 @@ export function formatText(report) {
     const latest = report.settings_runs.latest;
     lines.push(`- latest: ${latest.run_id}; status=${latest.status}; artifact=${latest.artifact_pointer}`);
     lines.push(`  plugin-management: mode=${latest.plugin_management.mode ?? '<unknown>'}; executed=${latest.plugin_management.summary.executed}; failed=${latest.plugin_management.summary.failed}; retryable-failed=${latest.plugin_management.summary.failed_retryable}; non-retryable-failed=${latest.plugin_management.summary.failed_non_retryable}`);
+    lines.push(`  plugin-cleanup: mode=${latest.plugin_cleanup.mode ?? '<unknown>'}; executed=${latest.plugin_cleanup.summary.executed}; failed=${latest.plugin_cleanup.summary.failed}; blocked=${latest.plugin_cleanup.summary.blocked}; retryable-failed=${latest.plugin_cleanup.summary.failed_retryable}; non-retryable-failed=${latest.plugin_cleanup.summary.failed_non_retryable}`);
     for (const failure of latest.plugin_management.failures) {
       lines.push(`  failure: ${failure.plugin}/${failure.host} ${failure.action}; type=${failure.failure_type}; retryable=${failure.retryable}`);
+      if (failure.retry_after) lines.push(`    retry-after: ${failure.retry_after}`);
+      if (failure.doctor_hint) lines.push(`    doctor: ${failure.doctor_hint}`);
+    }
+    for (const failure of latest.plugin_cleanup.failures) {
+      lines.push(`  cleanup-failure: ${failure.plugin}/${failure.host} ${failure.action}; type=${failure.failure_type}; retryable=${failure.retryable}`);
       if (failure.retry_after) lines.push(`    retry-after: ${failure.retry_after}`);
       if (failure.doctor_hint) lines.push(`    doctor: ${failure.doctor_hint}`);
     }

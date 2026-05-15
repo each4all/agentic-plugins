@@ -65,8 +65,10 @@ describe('runtime doctor', () => {
     strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks, false);
     strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks_stage, 'under development');
     strictEqual(report.clis.codex.feature_surface.automatic_plugin_hooks, false);
-    strictEqual(report.plugin_command_surface.schema_version, 'runtime-plugin-command-surface-1.2');
+    strictEqual(report.plugin_command_surface.schema_version, 'runtime-plugin-command-surface-1.3');
     strictEqual(report.plugin_command_surface.claude.mode, 'per-plugin-command');
+    strictEqual(report.plugin_command_surface.claude.supports.update_plugin, true);
+    strictEqual(report.plugin_command_surface.claude.supports.uninstall_plugin, true);
     strictEqual(report.plugin_command_surface.claude.materialization.status, 'host-native-plugin-command');
     strictEqual(report.plugin_command_surface.claude.observed_surfaces.cli_plugin, 'available');
     deepStrictEqual(report.plugin_command_surface.manual_followups, []);
@@ -139,6 +141,8 @@ describe('runtime doctor', () => {
     strictEqual(report.plugin_command_surface.claude.status, 'available');
     strictEqual(report.plugin_command_surface.claude.mode, 'per-plugin-command');
     strictEqual(report.plugin_command_surface.claude.supports.install_plugin, true);
+    strictEqual(report.plugin_command_surface.claude.supports.update_plugin, true);
+    strictEqual(report.plugin_command_surface.claude.supports.uninstall_plugin, true);
     strictEqual(report.plugin_command_surface.claude.supports.list_plugin, true);
     strictEqual(report.plugin_command_surface.claude.observed_surfaces.slash_plugin, 'unavailable');
     strictEqual(report.plugin_command_surface.claude.materialization.status, 'host-native-plugin-command');
@@ -475,6 +479,73 @@ describe('runtime doctor', () => {
     ok(report.overall.warnings.includes('latest settings plugin-management execution has failures'));
     ok(formatText(report).includes('Settings Execution Artifacts'));
     ok(formatText(report).includes('retryable-failed=1'));
+  });
+
+  it('summarizes latest settings cleanup artifact failures separately', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-settings-cleanup-artifact-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const runId = 'settings-20260513T000000Z-abcdef';
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
+      schema_version: 'runtime-settings-execution-artifact-1.0',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      status: 'failed',
+      created_at: '2026-05-13T00:00:00.000Z',
+      updated_at: '2026-05-13T00:00:05.000Z',
+      plugin_management: {
+        mode: 'dry-run-plan',
+        requested: false,
+        executed: false,
+        host_filter: 'all',
+        summary: {
+          executed: 0,
+          failed: 0,
+          failed_retryable: 0,
+          failed_non_retryable: 0,
+        },
+      },
+      plugin_cleanup: {
+        mode: 'explicit-plugin-cleanup-executor',
+        requested: true,
+        executed: true,
+        summary: {
+          executed: 0,
+          failed: 1,
+          blocked: 0,
+          failed_retryable: 0,
+          failed_non_retryable: 1,
+        },
+      },
+      failures: [{
+        id: 'research:claude:uninstall-retired-plugin',
+        area: 'plugin-cleanup',
+        plugin: 'research',
+        host: 'claude',
+        action: 'uninstall-retired-plugin',
+        failure_type: 'host_command_failed',
+        retryable: false,
+        retry_after: 'inspect the host-native plugin command outside runtime:settings before retrying',
+        doctor_hint: 'runtime:doctor reports retired or unknown plugin cleanup follow-ups',
+      }],
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    strictEqual(report.settings_runs.status, 'needs_attention');
+    strictEqual(report.settings_runs.latest.plugin_management.failed, 0);
+    strictEqual(report.settings_runs.latest.plugin_cleanup.failed, 1);
+    strictEqual(report.settings_runs.latest.plugin_cleanup.summary.failed_non_retryable, 1);
+    strictEqual(report.settings_runs.latest.plugin_cleanup.failures[0].failure_type, 'host_command_failed');
+    strictEqual(report.settings_runs.latest.plugin_cleanup.failures[0].retryable, false);
+    ok(report.overall.warnings.includes('latest settings plugin-cleanup execution has failures'));
+    ok(formatText(report).includes('plugin-cleanup: mode=explicit-plugin-cleanup-executor'));
+    ok(formatText(report).includes('cleanup-failure: research/claude uninstall-retired-plugin'));
   });
 
   it('summarizes latest consensus execution artifact without raw peer output', async () => {
