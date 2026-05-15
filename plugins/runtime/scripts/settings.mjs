@@ -963,7 +963,7 @@ function buildCodexHookReviewManualFollowups(codexPluginHooks, hookSettings, cod
     reason: 'Codex plugin hooks are packaged and plugin_hooks is enabled, but runtime:settings cannot verify active-session hook review/trust state.',
     environment: 'Open the active Codex session for this repository.',
     commands: ['/hooks'],
-    verify: `Review/trust bundled hooks for ${bundled.join(', ')}; do not attest from /hooks Installed counts alone, including Active=0 output. Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
+    verify: `Review/trust bundled hooks for ${bundled.join(', ')}; if /hooks shows "New hook - review required", review each new hook first. Do not attest from /hooks Installed counts alone, including Active=0 output. Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
   }];
 }
 
@@ -1586,6 +1586,7 @@ async function buildHookSettingsPlan({ codexPluginHooks, homeDir, applyCodexPlug
       bundled: hookReport.summary?.bundled_plugins ?? [],
       manifest_exposed: hookReport.summary?.manifest_exposed_plugins ?? [],
       default_file_only: hookReport.summary?.default_file_only_plugins ?? [],
+      command_warnings: hookReport.summary?.command_warning_plugins ?? [],
     },
     recommendations,
     host_config: hostConfig,
@@ -1908,7 +1909,7 @@ export function formatText(report) {
   }
   lines.push('');
   lines.push('Codex Plugin Hooks');
-  lines.push(`- status=${report.hook_settings.status}; bundled=${report.hook_settings.packaged_plugins.bundled.join(',') || 'none'}; manifest-exposed=${report.hook_settings.packaged_plugins.manifest_exposed.join(',') || 'none'}; default-file-only=${report.hook_settings.packaged_plugins.default_file_only.join(',') || 'none'}`);
+  lines.push(`- status=${report.hook_settings.status}; bundled=${report.hook_settings.packaged_plugins.bundled.join(',') || 'none'}; manifest-exposed=${report.hook_settings.packaged_plugins.manifest_exposed.join(',') || 'none'}; default-file-only=${report.hook_settings.packaged_plugins.default_file_only.join(',') || 'none'}; command-warnings=${report.hook_settings.packaged_plugins.command_warnings.join(',') || 'none'}`);
   lines.push(`- session-command: ${report.hook_settings.mutation_boundary.session_command}`);
   lines.push('- persistent-config-snippet: [features] plugin_hooks = true');
   if (report.hook_settings.host_config) {

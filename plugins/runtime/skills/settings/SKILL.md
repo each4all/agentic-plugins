@@ -58,7 +58,9 @@ Settings reports and plans:
 - Manual Codex `/hooks` follow-up when bundled plugin hooks are packaged and
   `plugin_hooks` is enabled but settings cannot verify active-session hook
   review/trust state. Treat `/hooks` `Installed` counts as packaging evidence
-  only; `Active=0` output is not enough to attest.
+  only; `Active=0` output and `Trust: New hook - review required` are not
+  enough to attest. Carry doctor warnings for Codex-exposed commands that
+  still point at Claude-specific plugin root variables or Claude adapter paths.
 - Codex `/hooks` operator attestation, behind `--attest-codex-hook-review`,
   recorded only as a settings artifact. This is not host-native proof and does
   not mutate Codex trust state.
