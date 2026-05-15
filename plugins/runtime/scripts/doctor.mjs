@@ -819,7 +819,7 @@ function buildCodexPluginHookReport({ codex, plugins }) {
       area: 'hooks',
       action: 'verify-codex-hook-command-portability',
       executable: false,
-      detail: `Codex-exposed hooks reference Claude-specific plugin root or adapter command paths for: ${summary.command_warning_plugins.join(', ')}.`,
+      detail: `Codex-exposed hooks reference Claude adapter command paths for: ${summary.command_warning_plugins.join(', ')}.`,
       next_step: 'Verify Codex /hooks active execution in-session, or split host-specific hook commands before accepting automatic lifecycle hook parity.',
     });
   }
@@ -923,7 +923,7 @@ function buildHostParity({ claude, codex, plugins, claudePluginList, codexPlugin
       severity: 'warning',
       host: 'codex',
       area: 'hooks',
-      summary: 'Codex-exposed hook commands still reference Claude-specific plugin roots or Claude adapter paths.',
+      summary: 'Codex-exposed hook commands still reference Claude adapter paths.',
       evidence: `plugins=${codexPluginHooks.summary.command_warning_plugins.join(',')}; claude-root=${codexPluginHooks.summary.claude_root_command_plugins.join(',') || 'none'}; claude-adapter=${codexPluginHooks.summary.claude_adapter_command_plugins.join(',') || 'none'}`,
       next_step: 'Verify Codex /hooks active execution in-session, or split host-specific hook commands before accepting automatic lifecycle hook parity.',
     }));
@@ -4078,7 +4078,6 @@ function analyzeHookCommands(commands) {
   const claudePluginRootReferences = uniqueCommands.filter((command) => command.includes('${CLAUDE_PLUGIN_ROOT}') || command.includes('$CLAUDE_PLUGIN_ROOT')).length;
   const claudeAdapterReferences = uniqueCommands.filter((command) => /\/adapters\/claude\/hooks\//.test(command)).length;
   const warnings = [];
-  if (claudePluginRootReferences > 0) warnings.push('claude-plugin-root-reference');
   if (claudeAdapterReferences > 0) warnings.push('claude-adapter-hook-command');
   return {
     commands: uniqueCommands,

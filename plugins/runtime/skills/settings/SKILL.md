@@ -60,7 +60,9 @@ Settings reports and plans:
   review/trust state. Treat `/hooks` `Installed` counts as packaging evidence
   only; `Active=0` output and `Trust: New hook - review required` are not
   enough to attest. Carry doctor warnings for Codex-exposed commands that
-  still point at Claude-specific plugin root variables or Claude adapter paths.
+  still point at Claude adapter paths. Codex plugin hooks also expose
+  `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` as compatibility aliases, though
+  `PLUGIN_ROOT`/`PLUGIN_DATA` are preferred for new Codex commands.
 - Codex `/hooks` operator attestation, behind `--attest-codex-hook-review`,
   recorded only as a settings artifact. This is not host-native proof and does
   not mutate Codex trust state.

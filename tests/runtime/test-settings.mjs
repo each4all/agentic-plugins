@@ -410,6 +410,30 @@ describe('runtime settings', () => {
     ok(formatText(report).includes('command-warnings=engineer'));
   });
 
+  it('does not warn when Codex hook commands use compatibility root aliases with Codex adapter paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-command-alias-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-command-alias-home-'));
+    await seedRepo(root);
+    await writeJson(join(root, 'plugins', 'engineer', 'hooks', 'hooks.json'), {
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"' }] }],
+      },
+    });
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    deepStrictEqual(report.hook_settings.packaged_plugins.command_warnings, []);
+    ok(!report.hook_settings.recommendations.some((rec) => rec.action === 'verify-codex-hook-command-portability'));
+    ok(formatText(report).includes('command-warnings=none'));
+  });
+
   it('records Codex hook review attestation behind an explicit flag', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-attest-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-attest-home-'));

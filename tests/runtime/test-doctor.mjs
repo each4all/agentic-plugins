@@ -231,6 +231,31 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('command-warnings=engineer'));
   });
 
+  it('does not warn when Codex hook commands use compatibility root aliases with Codex adapter paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-command-alias-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    await writeJson(join(root, 'plugins', 'engineer', 'hooks', 'hooks.json'), {
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"' }] }],
+      },
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    deepStrictEqual(report.codex_plugin_hooks.summary.claude_root_command_plugins, ['engineer']);
+    ok(!report.codex_plugin_hooks.summary.command_warning_plugins.includes('engineer'));
+    ok(!report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'verify-codex-hook-command-portability'));
+    ok(!report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_command_portability_unverified'));
+  });
+
   it('checks the manifest-declared Codex hook file instead of the Claude default hooks file', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-manifest-path-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
