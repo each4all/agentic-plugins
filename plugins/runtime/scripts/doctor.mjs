@@ -2622,6 +2622,13 @@ function classifyOperatorActionKind(summary) {
     summary.error?.kind,
     summary.error?.message,
   ].filter(Boolean).join(' ');
+  const textKind = classifyOperatorActionText(text);
+  if (textKind) return textKind;
+  if (summary.error?.detail_kind) return summary.error.detail_kind;
+  return null;
+}
+
+function classifyOperatorActionText(text) {
   if (!text) return null;
   if (/\b(peer_unauthenticated|not logged in|login required|auth required|authentication required|unauthorized|forbidden|401|403)\b/i.test(text)) {
     return 'auth_required';
@@ -2848,10 +2855,13 @@ function normalizeSmokeMetadata(metadata) {
 
 function normalizeSmokeError({ parsed, result }) {
   if (parsed?.error && typeof parsed.error === 'object') {
-    return {
+    const detailKind = classifyOperatorActionText(parsed.error.detail);
+    const error = {
       kind: sanitizeValue(parsed.error.kind),
       message: sanitizeValue(parsed.error.message),
     };
+    if (detailKind) error.detail_kind = detailKind;
+    return error;
   }
   if (result.ok && parsed) return null;
   return {
