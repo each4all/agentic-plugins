@@ -232,6 +232,7 @@ export async function runDoctor({
     ledgers,
     limits: [
       'Codex bundled plugin hooks require both manifest exposure and [features].plugin_hooks=true; doctor reports those separately from generic hooks.',
+      'Codex hook review/trust is an active-session /hooks UI check; the observed Codex CLI does not expose a non-interactive hook trust query, so doctor requires a current runtime:settings operator attestation to clear that follow-up.',
       'Readiness sandbox/permission status remains unknown unless --sandbox-permission-probe is requested; --permission-proof records separate preflight/execution evidence.',
       'Settings mutation belongs to runtime:settings; dynamic consensus, context hygiene, and completion footer mutation are deferred.',
       'Artifact inventory is read-only; runtime:doctor never deletes or compacts generated artifacts.',
