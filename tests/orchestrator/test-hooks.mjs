@@ -134,6 +134,25 @@ describe('session-start.mjs', () => {
     });
   });
 
+  it('Codex adapter emits orchestrator-active-metadata marker pair', async () => {
+    await withTmpRepo('ss-codex', async (root) => {
+      await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'codex',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'feat',
+      });
+      const r = await runHook(join(HOOKS_CODEX, 'session-start.mjs'), { repoRoot: root });
+      strictEqual(r.code, 0);
+      ok(r.stdout.startsWith('[orchestrator-active-metadata] '));
+      const m = r.stdout.match(
+        /^\[orchestrator-active-metadata\] (\{.*\}) \[\/orchestrator-active-metadata\]$/m,
+      );
+      ok(m, 'stdout has marker pair with JSON payload');
+      const payload = JSON.parse(m[1]);
+      strictEqual(payload.workflow_type, 'macro');
+      strictEqual(payload.canonical_command, '/orchestrator:plan');
+    });
+  });
+
   it('emits empty stdout when no active workflow on current branch', async () => {
     await withTmpRepo('ss-empty', async (root) => {
       const r = await runHook(join(HOOKS_CLAUDE, 'session-start.mjs'), { repoRoot: root });
@@ -173,6 +192,22 @@ describe('pre-compact.mjs', () => {
       ok(frontmatter.last_snapshot, 'last_snapshot recorded');
       strictEqual(frontmatter.last_snapshot.trigger, 'pre-compact');
       ok(frontmatter.host_history.some((e) => e.host === 'claude' && e.event === 'snapshot'));
+    });
+  });
+
+  it('Codex adapter writes last_snapshot with trigger pre-compact + host codex', async () => {
+    await withTmpRepo('pc-codex', async (root) => {
+      const { filePath } = await createWorkflow({
+        repoRoot: root, verb: 'plan', host: 'codex',
+        gitBaseline: MIN_BASELINE(), originalRequest: 'feat',
+      });
+      const r = await runHook(join(HOOKS_CODEX, 'pre-compact.mjs'), { repoRoot: root });
+      strictEqual(r.code, 0);
+
+      const { frontmatter } = await readWorkflow(filePath);
+      ok(frontmatter.last_snapshot, 'last_snapshot recorded');
+      strictEqual(frontmatter.last_snapshot.trigger, 'pre-compact');
+      ok(frontmatter.host_history.some((e) => e.host === 'codex' && e.event === 'snapshot'));
     });
   });
 

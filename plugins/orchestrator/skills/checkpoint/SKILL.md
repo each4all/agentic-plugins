@@ -17,11 +17,12 @@ description: "Records a one-line progress checkpoint on the active orchestrator 
 |-----------|--------|-------|
 | `state.mjs checkpoint-set` | `--host claude` | `--host codex` |
 | Schema preservation | Yes | Yes |
-| Claude SessionStart re-injection | Yes, emits `checkpoint_summary` and `checkpoint_at` | No automatic hook in Codex CLI today |
+| SessionStart re-injection | Yes, emits `checkpoint_summary` and `checkpoint_at` | Yes when Codex plugin hooks are enabled and trusted; otherwise manual resume reads the same durable checkpoint |
 
 Codex can write the checkpoint for a future Claude handoff. The
 checkpoint is durable; the automatic re-injection surface is
-Claude-only until Codex exposes an equivalent plugin-local hook.
+automatic in Codex only after `[features].plugin_hooks = true` and `/hooks`
+review/trust.
 
 ---
 
@@ -78,4 +79,5 @@ The state CLI writes under the per-file lock, sets
 - Do not record an empty checkpoint.
 - Do not advance macro phase or subtask status.
 - Do not edit workflow frontmatter by hand.
-- Do not imply Codex has automatic SessionStart re-injection today.
+- Do not imply Codex has automatic SessionStart re-injection unless
+  `[features].plugin_hooks = true` and `/hooks` review/trust are complete.

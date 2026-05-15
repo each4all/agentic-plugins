@@ -15,11 +15,11 @@
 //     finalize/abort lifecycle commands, 3 meta commands
 //     (resume/checkpoint/peer-now), and an audit follow-up alias
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
-//   - 1 Codex adapter manual stop helper fallback for sessions where Codex
-//     plugin hooks are disabled, untrusted, or inactive
-//   - 1 bundled hooks manifest (hooks/hooks.json) declaring SessionStart,
-//     PreCompact, and Stop, exposed through the Codex manifest's `hooks`
-//     field and Claude's plugin hook binding
+//   - 3 Codex adapter hooks (session-start / pre-compact / stop) plus a
+//     Codex-specific hook manifest
+//   - 1 bundled Claude hooks manifest (hooks/hooks.json) declaring SessionStart,
+//     PreCompact, and Stop. The Codex manifest's `hooks` field points at
+//     adapters/codex/hooks/hooks.json.
 //
 // This verifies manifest + marketplace + hooks + command shape. The
 // tests/orchestrator/ suite covers state.mjs, dispatch-peer.mjs,
@@ -49,7 +49,7 @@ const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...DISPATCH_COMMANDS, ...LIFECYC
 const SHARED_REFS = ['ensemble-protocol.md', 'presentation-protocol.md'];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['_shared.mjs', 'session-start.mjs', 'pre-compact.mjs', 'stop.mjs'];
-const CODEX_HOOK_HELPERS = ['stop.mjs', 'README.md'];
+const CODEX_HOOK_HELPERS = ['session-start.mjs', 'pre-compact.mjs', 'stop.mjs', 'hooks.json', 'README.md'];
 
 // Stale tokens that should NEVER appear in orchestrator SKILL/commands/refs.
 // Mirrors test-engineer-plugin.mjs and reflects the schema-2 ensemble
@@ -99,7 +99,7 @@ describe('plugins/orchestrator manifest pair', () => {
     strictEqual(typeof manifest.version, 'string');
     strictEqual(typeof manifest.description, 'string');
     strictEqual(typeof manifest.skills, 'string');
-    strictEqual(manifest.hooks, './hooks/hooks.json');
+    strictEqual(manifest.hooks, './adapters/codex/hooks/hooks.json');
     ok(manifest.skills.endsWith('/'), 'skills path is directory-shaped');
     ok(manifest.interface, 'interface block present');
     strictEqual(typeof manifest.interface.displayName, 'string');
@@ -262,6 +262,15 @@ describe('plugins/orchestrator adapters/codex/hooks/', () => {
       }
     });
   }
+
+  it('hooks.json routes lifecycle commands to Codex adapter hooks via $PLUGIN_ROOT', async () => {
+    const hooks = await readJSON(resolve(PLUGIN_ROOT, 'adapters/codex/hooks/hooks.json'));
+    const hookCommand = (event) => hooks.hooks[event][0].hooks[0].command;
+    strictEqual(hooks.hooks.SessionStart[0].matcher, 'compact');
+    ok(hookCommand('SessionStart').includes('${PLUGIN_ROOT}/adapters/codex/hooks/session-start.mjs'));
+    ok(hookCommand('PreCompact').includes('${PLUGIN_ROOT}/adapters/codex/hooks/pre-compact.mjs'));
+    ok(hookCommand('Stop').includes('${PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs'));
+  });
 });
 
 describe('plugins/orchestrator skills/', () => {

@@ -24,10 +24,11 @@ work with `orchestrator:plan`.
 | Drift report with git probes | Yes | Yes |
 | Append resume marker | `--host claude` | `--host codex` |
 | Archive macro workflow | `--host claude` | `--host codex` |
-| SessionStart re-injection | Yes, through Claude hook | No automatic hook in Codex CLI today |
+| SessionStart re-injection | Yes, through Claude hook | Yes when Codex plugin hooks are enabled and trusted; otherwise resume reads the same durable workflow file |
 
 Codex can inspect, append, and archive using the same `state.mjs`
-surface. The limitation is only automatic SessionStart re-injection.
+surface. Automatic SessionStart re-injection in Codex additionally requires
+`[features].plugin_hooks = true` and `/hooks` review/trust.
 
 ---
 

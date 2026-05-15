@@ -40,6 +40,10 @@ const CODEX_STOP_PATH = resolve(
   REPO_ROOT,
   'plugins/engineer/adapters/codex/hooks/stop.mjs',
 );
+const CODEX_PRE_COMPACT_PATH = resolve(
+  REPO_ROOT,
+  'plugins/engineer/adapters/codex/hooks/pre-compact.mjs',
+);
 const ORCHESTRATOR_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
 const ORCHESTRATOR_STATE = resolve(ORCHESTRATOR_ROOT, 'scripts/state.mjs');
 
@@ -271,6 +275,35 @@ function makeAdvanceCommit(repoRoot, subject = 'feat(plugins/engineer): work') {
     encoding: 'utf8',
   }).trim();
 }
+
+describe('Codex pre-compact hook — snapshot parity', () => {
+  it('writes last_snapshot trigger=pre-compact with host="codex"', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { filePath } = await createWorkflow({
+        repoRoot,
+        verb: 'compose',
+        originalRequest: 'codex precompact',
+        gitBaseline: {
+          branch: 'main',
+          head: baselineHead,
+          status_digest: MIN_DIGEST,
+        },
+        host: 'codex',
+      });
+
+      const { code, stderr } = spawnStopHook({
+        hostScript: CODEX_PRE_COMPACT_PATH,
+        cwd: repoRoot,
+        payload: JSON.stringify({ cwd: repoRoot }),
+      });
+
+      strictEqual(code, 0, `stderr: ${stderr}`);
+      const { frontmatter } = parseWorkflowFile(await readFile(filePath, 'utf8'));
+      strictEqual(frontmatter.last_snapshot.trigger, 'pre-compact');
+      ok(frontmatter.host_history.some((entry) => entry.host === 'codex' && entry.event === 'snapshot'));
+    });
+  });
+});
 
 describe('Claude stop hook — case (a) all gates pass → archive', () => {
   it('moves the workflow into archive/ and exits 0', async () => {

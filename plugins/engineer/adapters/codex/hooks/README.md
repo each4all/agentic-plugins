@@ -1,20 +1,24 @@
 # Codex hooks
 
 Codex CLI supports bundled plugin hooks behind `[features].plugin_hooks = true`.
-The engineer Codex manifest exposes `./hooks/hooks.json`, so Codex plugin
-management can show the lifecycle hooks packaged by this plugin. Automatic
-execution still depends on the active Codex host enabling plugin hooks and the
-hook passing Codex review/trust.
+The engineer Codex manifest exposes `./adapters/codex/hooks/hooks.json`, so
+Codex plugin management can show host-specific lifecycle commands without
+routing through Claude adapter paths. Automatic execution still depends on the
+active Codex host enabling plugin hooks and the hook passing Codex review/trust.
 
 ## Files
 
+- `session-start.mjs` — emits the same `[engineer-active-metadata]`
+  summary as the Claude SessionStart hook when Codex starts after compact.
+- `pre-compact.mjs` — writes `last_snapshot + host_history` with
+  `host=codex` before compact.
 - `stop.mjs` — runs the same `last_snapshot + host_history` write
-  that Claude's automatic Stop hook performs. Skills may invoke
+  that Claude's automatic Stop hook performs. Skills may still invoke
   this script as a fallback final step on Codex when plugin hooks are
   disabled, not yet trusted, or not active in the current session, e.g.:
 
   ```bash
-  node "${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"
+  node "${PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"
   ```
 
   (Plugin-hook absence is non-fatal per ADR-0011 §4 — the workflow file
@@ -25,4 +29,4 @@ hook passing Codex review/trust.
 
 Use `$runtime:doctor` to verify whether the installed Codex CLI reports
 `hooks` and `plugin_hooks`, whether the engineer manifest exposes hooks, and
-whether the installed plugin cache carries `hooks/hooks.json`.
+whether the installed plugin cache carries the manifest-declared hook file.
