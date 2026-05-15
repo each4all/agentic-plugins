@@ -1,6 +1,6 @@
 ---
-description: Dry-run runtime settings planner for agentic-plugins config, host/plugin readiness, companion model/effort defaults, and explicit plugin-management execution artifacts
-argument-hint: "[--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply] [--execute-plugin-management] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]"
+description: Dry-run runtime settings planner for agentic-plugins config, host/plugin readiness, companion model/effort defaults, Codex plugin_hooks, and explicit plugin-management execution artifacts
+argument-hint: "[--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply] [--apply-codex-plugin-hooks] [--execute-plugin-management] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]"
 ---
 
 # Runtime - Settings
@@ -30,5 +30,5 @@ Notes:
 - Missing Claude Code or Codex CLI is reported as a non-executable host-CLI install plan. Settings gives host-native installation guidance but does not install host CLIs.
 - Plugin install/update is dry-run unless `--execute-plugin-management` is supplied. The executor runs only allowlisted host-native plugin commands as argv arrays, omits raw stdout/stderr, writes sanitized artifacts under `.agentic-plugins/runs/settings/<run-id>/`, and can be scoped with `--plugin-management-host`.
 - Codex temporary marketplace cache is reported separately from the per-plugin install cache. When the marketplace cache is already current but the install cache is missing, settings emits a manual cache-materialization recommendation instead of retrying `codex plugin marketplace add` or inventing a per-plugin `codex plugin install` command.
-- Host-native config, authentication, secrets, and sandbox/permission settings are never written by this command.
-- Settings includes a `Codex Plugin Hooks` plan. It reports bundled hook packaging and recommends `plugin_hooks` enablement with a session command and persistent config snippet, but does not mutate host-native Codex config in the current executor.
+- Host-native Claude config, authentication, secrets, and sandbox/permission settings are never written by this command.
+- Settings includes a `Codex Plugin Hooks` plan. It reports bundled hook packaging and recommends `plugin_hooks` enablement with a session command and persistent config snippet. With `--apply-codex-plugin-hooks`, it may write only `~/.codex/config.toml` `[features].plugin_hooks = true`; hook trust/review remains manual in Codex with `/hooks`.
