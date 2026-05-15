@@ -49,7 +49,7 @@ Local CLI evidence:
 | MCP | Codex supports MCP in the CLI and IDE extension. MCP configuration is stored with other Codex config in `config.toml`, and `codex mcp` manages server entries. | Runtime may diagnose MCP availability and config paths. Runtime must not auto-add MCP servers outside an explicit future executor. |
 | Subagents | Codex subagent workflows are enabled by default, but Codex only spawns subagents when explicitly asked. Custom agents live under `~/.codex/agents/` or `.codex/agents/`, and subagents inherit the current sandbox policy. | Runtime consensus can model manual/subagent lanes, but automatic hidden fanout remains out of bounds. Any Codex subagent use must be an explicit operator or user action. |
 | Hooks | Codex hooks are a documented lifecycle extension, and bundled plugin hooks are gated by the `plugin_hooks` feature flag. Local `codex features list` reports `hooks` as stable/enabled and `plugin_hooks` as under development/disabled, while `codex --enable plugin_hooks features list` reports `plugin_hooks` enabled for that invocation. | Runtime should keep generic hooks, plugin_hooks enablement, manifest hook exposure, and hook trust/review as separate readiness facts. Do not treat plugin-bundled hooks as runtime-ready based only on generic hook support. |
-| Config | Codex reads user config from `~/.codex/config.toml`, trusted project config from `.codex/config.toml`, and system config from `/etc/codex/config.toml` on Unix. | Current `runtime:settings --apply` should continue writing only `.agentic-plugins/config.toml`. Host-native Codex config mutation remains deferred. |
+| Config | Codex reads user config from `~/.codex/config.toml`, trusted project config from `.codex/config.toml`, and system config from `/etc/codex/config.toml` on Unix. | Current `runtime:settings --apply` continues writing only `.agentic-plugins/config.toml`. The only supported host-native Codex config write is the explicit `--apply-codex-plugin-hooks` path for `~/.codex/config.toml` `[features].plugin_hooks = true`; broader Codex config mutation remains deferred. |
 | Sandbox and approvals | Codex separates sandbox boundaries from approval policy. CLI help exposes `read-only`, `workspace-write`, and `danger-full-access`; approval policies include `untrusted`, `on-request`, and `never`. | Runtime doctor/settings may observe and preflight these controls, but must not relax sandbox, approval, permission, or network settings automatically. |
 
 ## Negative Baseline
@@ -58,9 +58,10 @@ Local CLI evidence:
   while the local CLI remains marketplace-only.
 - Do not claim Codex subagents run automatically from runtime consensus,
   footer, context, or doctor output. Subagent fanout must stay explicit.
-- Do not mutate `~/.codex/config.toml`, `.codex/config.toml`, hooks, MCP
-  entries, sandbox policy, approval policy, or permissions from runtime's
-  current settings executor.
+- Do not mutate `~/.codex/config.toml` except the explicit
+  `--apply-codex-plugin-hooks` write to `[features].plugin_hooks = true`.
+  Do not mutate `.codex/config.toml`, hooks, MCP entries, sandbox policy,
+  approval policy, or permissions from runtime's current settings executor.
 - Do not claim automatic plugin-hook parity while local `plugin_hooks` is
   disabled, even though generic Codex hooks and bundled hook metadata are
   available.

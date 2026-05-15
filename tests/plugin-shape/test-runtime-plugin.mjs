@@ -168,11 +168,13 @@ describe('plugins/runtime settings surface', () => {
     ok(command.includes('scripts/settings.mjs'));
     ok(/dry-run/i.test(command));
     ok(command.includes('--apply'));
+    ok(command.includes('--apply-codex-plugin-hooks'));
     const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/SKILL.md'), 'utf-8');
     ok(/^name:\s*settings\s*$/m.test(skill));
     ok(skill.includes('Host-native Claude Code'));
     ok(skill.includes('Non-executable host-CLI install plans'));
     ok(skill.includes('--execute-plugin-management'));
+    ok(skill.includes('--apply-codex-plugin-hooks'));
     const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:settings'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
@@ -201,7 +203,7 @@ describe('plugins/runtime settings surface', () => {
       'plugin_hooks',
       'manifest hook exposure',
       'Do not claim Codex subagents run automatically',
-      'Do not mutate `~/.codex/config.toml`',
+      '--apply-codex-plugin-hooks',
       'host-parity-baseline.md',
     ]) {
       ok(baseline.includes(token), `${token} documented`);
