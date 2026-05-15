@@ -1932,6 +1932,10 @@ export function formatText(report) {
     if (Object.keys(review.plugin_versions ?? {}).length > 0) {
       lines.push(`- plugin-versions: ${Object.entries(review.plugin_versions).map(([name, version]) => `${name}@${version ?? 'unknown'}`).join(', ')}`);
     }
+    if (review.requested && review.assertion) lines.push(`- assertion: ${review.assertion}`);
+    if (review.requested && Array.isArray(review.limits)) {
+      for (const limit of review.limits) lines.push(`- limit: ${limit}`);
+    }
     if (review.reason) lines.push(`- next: ${review.reason}`);
   }
   if (report.artifacts?.settings_execution) {
