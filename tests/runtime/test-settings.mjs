@@ -417,6 +417,44 @@ describe('runtime settings', () => {
     ok(!JSON.stringify(report).includes('RAW OUTPUT MUST NOT LEAK'), 'plugin management report must not include raw command output');
   });
 
+  it('fails zero-exit Claude plugin commands when the plugin surface is unavailable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-claude-plugin-unavailable-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-claude-plugin-unavailable-home-'));
+    await seedRepo(root);
+
+    const unavailable = okResult("RAW /plugin isn't available in this environment.\n");
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      executePluginManagement: true,
+      pluginManagementHost: 'claude',
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'claude /plugin install companions@agentic-plugins': unavailable,
+        'claude /plugin install engineer@agentic-plugins': unavailable,
+        'claude /plugin install orchestrator@agentic-plugins': unavailable,
+        'claude /plugin install runtime@agentic-plugins': unavailable,
+        'claude /plugin update companions@agentic-plugins': unavailable,
+        'claude /plugin update engineer@agentic-plugins': unavailable,
+        'claude /plugin update orchestrator@agentic-plugins': unavailable,
+        'claude /plugin update runtime@agentic-plugins': unavailable,
+      }),
+    });
+
+    const failed = report.plugin_management.plans.filter((plan) => plan.host === 'claude' && plan.status === 'failed');
+    ok(failed.length > 0);
+    strictEqual(report.plugin_management.summary.executed, 0);
+    strictEqual(report.plugin_management.summary.failed, failed.length);
+    for (const plan of failed) {
+      strictEqual(plan.executed, true);
+      strictEqual(plan.result.ok, false);
+      strictEqual(plan.result.exit_code, 0);
+      strictEqual(plan.result.failure_type, 'host_plugin_surface_unavailable');
+      strictEqual(plan.result.retryable, false);
+    }
+    ok(!JSON.stringify(report).includes('RAW /plugin'), 'plugin management report must not include raw command output');
+  });
+
   it('persists execution artifacts and classifies failed plugin-management retries', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-artifact-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-artifact-home-'));

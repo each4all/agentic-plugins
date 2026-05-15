@@ -658,9 +658,18 @@ async function buildPluginManagementPlan({ plugins, clis, execute, hostFilter, r
       const startedAt = new Date();
       const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs });
       const completedAt = new Date();
+      const semanticFailure = classifyPluginManagementSemanticFailure({ plan, result });
+      const effectiveResult = semanticFailure
+        ? {
+            ...result,
+            ok: false,
+            error_code: semanticFailure.error_code,
+            error_message: semanticFailure.error_message,
+          }
+        : result;
       plan.executed = true;
-      plan.status = result.ok ? 'executed' : 'failed';
-      plan.result = sanitizeCommandResult({ result, startedAt, completedAt });
+      plan.status = effectiveResult.ok ? 'executed' : 'failed';
+      plan.result = sanitizeCommandResult({ result: effectiveResult, startedAt, completedAt });
     }
   }
   return {
@@ -755,6 +764,18 @@ function classifyPluginManagementPlan({ recommendation, hostFilter, clis }) {
   };
 }
 
+function classifyPluginManagementSemanticFailure({ plan, result }) {
+  if (!result.ok) return null;
+  const text = `${result.error_code ?? ''}\n${result.error_message ?? ''}\n${result.stderr ?? ''}\n${result.stdout ?? ''}`.toLowerCase();
+  if (plan.host === 'claude' && /\/plugin (?:isn't|is not) available in this environment/.test(text)) {
+    return {
+      error_code: 'HOST_PLUGIN_SURFACE_UNAVAILABLE',
+      error_message: 'Claude /plugin command is not available in this environment',
+    };
+  }
+  return null;
+}
+
 function sanitizeCommandResult({ result, startedAt, completedAt }) {
   const failure = result.ok ? null : classifyPluginManagementFailure(result);
   return {
@@ -811,6 +832,14 @@ function classifyPluginManagementFailure(result) {
       retryable: false,
       retry_after: 'install the missing host CLI before retrying',
       doctor_hint: 'runtime:doctor reports host CLI availability',
+    });
+  }
+  if (errorCode === 'HOST_PLUGIN_SURFACE_UNAVAILABLE' || /\/plugin (?:isn't|is not) available in this environment/.test(text)) {
+    return failureClass({
+      type: 'host_plugin_surface_unavailable',
+      retryable: false,
+      retry_after: 'retry only from a Claude Code environment that supports /plugin commands',
+      doctor_hint: 'runtime:doctor reports host plugin cache state after settings execution',
     });
   }
   if (['EACCES', 'EPERM'].includes(errorCode) || /\b(permission denied|not permitted|operation not permitted|approval required|sandbox)\b/.test(text)) {
