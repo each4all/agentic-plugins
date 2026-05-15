@@ -300,6 +300,29 @@ describe('runtime settings', () => {
     await rejects(readFile(join(home, '.codex', 'config.toml'), 'utf8'), /ENOENT/);
   });
 
+  it('reports Codex hook review as a manual follow-up when plugin hooks are ready', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    strictEqual(report.hook_settings.status, 'ready');
+    const followup = report.plugin_management.manual_followups.find((entry) => entry.id === 'codex-hook-review');
+    strictEqual(followup.status, 'manual_check');
+    strictEqual(followup.host, 'codex');
+    deepStrictEqual(followup.commands, ['/hooks']);
+    ok(followup.verify.includes('engineer, orchestrator'));
+    ok(formatText(report).includes('command: /hooks'));
+  });
+
   it('applies Codex plugin_hooks to user config only behind the explicit flag', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-apply-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-apply-home-'));

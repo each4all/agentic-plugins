@@ -97,10 +97,6 @@ export async function runSettings({
   applyPluginManagementResults(pluginPlans, pluginManagement);
   const cliPlans = buildCliPlans(doctor.clis);
   const pluginCleanup = buildPluginCleanupPlans(doctor.host_parity?.issues ?? []);
-  pluginManagement.manual_followups = mergeManualFollowups(
-    pluginManagement.manual_followups,
-    buildPluginCleanupManualFollowups(pluginCleanup.plans),
-  );
 
   const companionSettings = buildCompanionSettingPlans({
     currentDirections: doctor.model_effort.directions,
@@ -113,6 +109,11 @@ export async function runSettings({
     homeDir: resolvedHomeDir,
     applyCodexPluginHooks,
   });
+  pluginManagement.manual_followups = mergeManualFollowups(
+    pluginManagement.manual_followups,
+    buildPluginCleanupManualFollowups(pluginCleanup.plans),
+    buildCodexHookReviewManualFollowups(doctor.codex_plugin_hooks, hookSettings),
+  );
 
   const report = {
     schema_version: SETTINGS_SCHEMA_VERSION,
@@ -774,6 +775,21 @@ function buildPluginCleanupManualFollowups(plans) {
     environment: 'Open an interactive Claude Code session that supports /plugin commands.',
     commands,
     verify: 'Re-run runtime:settings or runtime:doctor after completing the commands.',
+  }];
+}
+
+function buildCodexHookReviewManualFollowups(codexPluginHooks, hookSettings) {
+  const bundled = hookSettings?.packaged_plugins?.bundled ?? codexPluginHooks?.summary?.bundled_plugins ?? [];
+  const status = hookSettings?.status ?? codexPluginHooks?.status;
+  if (bundled.length === 0 || status !== 'ready') return [];
+  return [{
+    id: 'codex-hook-review',
+    host: 'codex',
+    status: 'manual_check',
+    reason: 'Codex plugin hooks are packaged and plugin_hooks is enabled, but runtime:settings cannot verify active-session hook review/trust state.',
+    environment: 'Open the active Codex session for this repository.',
+    commands: ['/hooks'],
+    verify: `Review/trust bundled hooks for ${bundled.join(', ')}, then rerun runtime:settings or runtime:doctor.`,
   }];
 }
 

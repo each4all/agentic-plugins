@@ -105,7 +105,7 @@ export async function runDoctor({
   const plugins = buildPluginMatrix({ source, catalogs, caches, claudePluginList });
   const codexPluginHooks = buildCodexPluginHookReport({ codex, plugins });
   const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginHooks });
-  const pluginCommandSurface = buildPluginCommandSurface({ claude, codex, plugins, hostParity });
+  const pluginCommandSurface = buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPluginHooks });
   const companion = await inspectCompanionContract({
     repoRoot: resolvedRepoRoot,
     homeDir: resolvedHomeDir,
@@ -996,7 +996,7 @@ function inspectPluginVersionParity(name, plugin) {
   return issues;
 }
 
-function buildPluginCommandSurface({ claude, codex, plugins, hostParity }) {
+function buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPluginHooks }) {
   const claudeSurfaceStatus = claude.plugin_surface?.status ?? claude.plugin.status;
   const claudeSurfaceAvailable = claudeSurfaceStatus === 'available';
   return {
@@ -1044,11 +1044,16 @@ function buildPluginCommandSurface({ claude, codex, plugins, hostParity }) {
         'runtime:settings intentionally keeps Codex cache materialization manual unless the host exposes an explicit per-plugin install/update command.',
       ],
     },
-    manual_followups: buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plugins, hostParity }),
+    manual_followups: buildPluginCommandSurfaceManualFollowups({
+      claudeSurfaceAvailable,
+      plugins,
+      hostParity,
+      codexPluginHooks,
+    }),
   };
 }
 
-function buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plugins, hostParity }) {
+function buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plugins, hostParity, codexPluginHooks }) {
   const followups = [];
   const pluginCommands = claudeSurfaceAvailable ? [] : buildClaudePluginSurfaceCommands(plugins);
   if (pluginCommands.length > 0) {
@@ -1074,6 +1079,8 @@ function buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plug
       verify: 'Re-run runtime:doctor or runtime:settings after completing the commands.',
     });
   }
+  const hookFollowup = buildCodexHookReviewManualFollowup(codexPluginHooks, 'runtime:doctor');
+  if (hookFollowup) followups.push(hookFollowup);
   return followups;
 }
 
@@ -1103,6 +1110,20 @@ function buildClaudeRetiredPluginCleanupCommands(issues) {
     commands.push(`/plugin uninstall ${issue.plugin}@agentic-plugins`);
   }
   return uniqueStrings(commands);
+}
+
+function buildCodexHookReviewManualFollowup(codexPluginHooks, surface) {
+  const bundled = codexPluginHooks?.summary?.bundled_plugins ?? [];
+  if (bundled.length === 0 || codexPluginHooks?.status !== 'ready') return null;
+  return {
+    id: 'codex-hook-review',
+    host: 'codex',
+    status: 'manual_check',
+    reason: `Codex plugin hooks are packaged and plugin_hooks is enabled, but ${surface} cannot verify active-session hook review/trust state.`,
+    environment: 'Open the active Codex session for this repository.',
+    commands: ['/hooks'],
+    verify: `Review/trust bundled hooks for ${bundled.join(', ')}, then rerun runtime:doctor or runtime:settings.`,
+  };
 }
 
 function compareInstalledVersion({ plugin, host, actual, expected, source }) {
