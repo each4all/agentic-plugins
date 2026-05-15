@@ -457,18 +457,22 @@ describe('plugins/orchestrator dispatch + lifecycle Codex skill mirrors/', () =>
     ok(done.includes('status completed'), 'done documents completed subtask-update');
   });
 
-  it('finalize/abort mirrors preserve lifecycle lock order plus Codex manual Stop helper boundary', async () => {
+  it('finalize/abort mirrors preserve lifecycle lock order plus Codex Stop hook fallback boundary', async () => {
     const finalize = await readFile(resolve(PLUGIN_ROOT, 'skills/finalize/SKILL.md'), 'utf-8');
     ok(finalize.includes('--to-status deferred'), 'finalize documents deferred bulk transition');
     ok(finalize.includes('detach-archive'), 'finalize documents detach-archive child path');
     ok(finalize.includes('--terminal-phase finalized'), 'finalize documents finalized terminal phase');
-    ok(finalize.includes('adapters/codex/hooks/stop.mjs'), 'finalize documents Codex manual stop helper');
+    ok(finalize.includes('[features].plugin_hooks = true'), 'finalize documents Codex plugin_hooks requirement');
+    ok(finalize.includes('/hooks` review/trust'), 'finalize documents Codex hook review/trust requirement');
+    ok(finalize.includes('adapters/codex/hooks/stop.mjs'), 'finalize documents Codex stop fallback helper');
 
     const abort = await readFile(resolve(PLUGIN_ROOT, 'skills/abort/SKILL.md'), 'utf-8');
     ok(abort.includes('--to-status abandoned'), 'abort documents abandoned bulk transition');
     ok(abort.includes('detach-archive'), 'abort documents detach-archive child path');
     ok(abort.includes('--terminal-phase aborted'), 'abort documents aborted terminal phase');
-    ok(abort.includes('adapters/codex/hooks/stop.mjs'), 'abort documents Codex manual stop helper');
+    ok(abort.includes('[features].plugin_hooks = true'), 'abort documents Codex plugin_hooks requirement');
+    ok(abort.includes('/hooks` review/trust'), 'abort documents Codex hook review/trust requirement');
+    ok(abort.includes('adapters/codex/hooks/stop.mjs'), 'abort documents Codex stop fallback helper');
   });
 });
 

@@ -245,10 +245,9 @@ export async function runMacroStopArchive({
  * `runMacroStopArchive` on each. Returns an array of per-macro results
  * (same envelope shape, indexed by listAllMacros order).
  *
- * This is the entry point the orchestrator Claude Stop hook calls. It
- * also serves as the manual helper invocation surface for Codex (where
- * the host has no Stop event — the runbook tails or the user invoke
- * the Codex stop hook manually).
+ * This is the entry point the orchestrator Stop hooks call. It also serves
+ * as the fallback invocation surface for Codex sessions where plugin hooks are
+ * disabled, untrusted, or not active in the current host session.
  *
  * Concurrent macro creation during iteration: the readdir snapshot is
  * taken at iteration start; a macro created mid-iteration appears on

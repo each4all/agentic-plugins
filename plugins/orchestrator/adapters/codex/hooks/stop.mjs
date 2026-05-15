@@ -6,7 +6,7 @@
 // plugins/orchestrator/adapters/claude/hooks/stop.mjs functionally;
 // the main divergence is that Codex bundled plugin hooks require
 // [features].plugin_hooks=true plus host trust/review before they run, so this
-// script remains the manual fallback final step in /orchestrator:finalize,
+// script remains the fallback final step in /orchestrator:finalize,
 // /orchestrator:abort, /orchestrator:next, and /orchestrator:done runbooks
 // under Codex.
 //
@@ -17,12 +17,12 @@
 //   2. For each macro: snapshot last_snapshot/host_history + evaluate
 //      A1–A4 gates + archive on pass.
 //
-// Manual invocation contract:
+// Fallback invocation contract:
 //
-//   node "${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"
+//   node "${PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"
 //
-// (CLAUDE_PLUGIN_ROOT is the orchestrator plugin's resolved root in
-// the Codex side; the env-var name is shared with Claude for symmetry.)
+// (Codex plugin hooks also set CLAUDE_PLUGIN_ROOT for compatibility with
+// existing plugin hooks, but PLUGIN_ROOT is the preferred Codex spelling.)
 //
 // Hook absence is non-fatal (ADR-0011 §4 explicit). This script
 // silently no-ops on any error.
