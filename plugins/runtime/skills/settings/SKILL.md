@@ -22,7 +22,7 @@ node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--fo
    - Dry-run output is the default and must be safe to run repeatedly.
    - `--apply` may write only `.agentic-plugins/config.toml` in the repo and/or user home.
    - `--execute-plugin-management` runs only allowlisted host-native plugin install/update/add/upgrade commands. It preflights the relevant host plugin command surface first, blocks unavailable surfaces before execution, does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts under `.agentic-plugins/runs/settings/<run-id>/`, and treats host "plugin surface unavailable" output as failed even when the host exits 0.
-   - Codex bundled plugin hooks are planned separately: report packaged hook plugins, `plugin_hooks` status, and the session/config steps needed to enable them. `--apply-codex-plugin-hooks` may write only `~/.codex/config.toml` `[features].plugin_hooks = true`.
+   - Codex bundled plugin hooks are planned separately: report packaged hook plugins, `plugin_hooks` status, the session/config steps needed to enable them, and the `/hooks` manual follow-up when active-session review/trust cannot be verified. `--apply-codex-plugin-hooks` may write only `~/.codex/config.toml` `[features].plugin_hooks = true`.
 
 ## Scope
 
@@ -50,6 +50,9 @@ Settings reports and plans:
 - Dry-run Codex plugin hook enablement plans and, behind
   `--apply-codex-plugin-hooks`, the narrow user config write for
   `~/.codex/config.toml` `[features].plugin_hooks = true`.
+- Manual Codex `/hooks` follow-up when bundled plugin hooks are packaged and
+  `plugin_hooks` is enabled but settings cannot verify active-session hook
+  review/trust state.
 
 ## Apply Boundary
 
@@ -87,7 +90,8 @@ Allowed Codex host config write:
 
 This does not trust hooks, change sandbox/approval/auth settings, or enable any
 other Codex feature. Start a fresh Codex session or use the reported session
-command, then review/trust hooks with `/hooks`.
+command, then review/trust hooks with `/hooks`; when plugin hooks are already
+ready, settings reports that `/hooks` step in `Manual Follow-ups`.
 
 If Codex already has a current temporary marketplace cache but no per-plugin
 install cache, report that as manual cache materialization. The observed Codex
@@ -99,9 +103,10 @@ The executor records only status, exit code, byte counts, timing, and sanitized
 error metadata. It omits raw stdout and stderr. A host command that exits 0 can
 still be marked failed if its sanitized output indicates the plugin command
 surface was unavailable. If the Claude `/plugin` surface is unavailable before
-execution, or retired Claude plugin cleanup is required, settings emits a
-manual follow-up checklist with the interactive `/plugin ...` commands to run
-from a Claude Code session that supports them.
+execution, retired Claude plugin cleanup is required, or Codex packaged hooks
+need active-session review/trust, settings emits a manual follow-up checklist
+with the interactive `/plugin ...` or `/hooks` commands to run from the relevant
+host session.
 Executed plugin-management runs write
 `.agentic-plugins/runs/settings/<run-id>/settings.json` and update
 `.agentic-plugins/runs/settings/latest.json`; `runtime:doctor` reads the latest

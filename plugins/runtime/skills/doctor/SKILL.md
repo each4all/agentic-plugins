@@ -20,8 +20,8 @@ node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--form
 
 3. Present the result without hiding host asymmetry. In particular:
    - Start from the `Readiness Matrix` / `readiness_matrix` summary when explaining whether Claude/Codex are available, installed, authenticated, which model/effort would be used, and where hook parity differs.
-   - If the Claude `/plugin` surface is unavailable to doctor, or retired Claude plugin cleanup is required, surface the `Manual Follow-ups` checklist and its interactive `/plugin ...` commands instead of implying runtime can apply Claude plugin changes automatically.
-   - Codex bundled plugin hooks require both manifest exposure and `[features].plugin_hooks = true`; surface those as separate readiness facts.
+   - If the Claude `/plugin` surface is unavailable to doctor, retired Claude plugin cleanup is required, or Codex packaged hooks still need active-session review/trust, surface the `Manual Follow-ups` checklist and its interactive `/plugin ...` or `/hooks` commands instead of implying runtime can apply host-native changes automatically.
+   - Codex bundled plugin hooks require manifest exposure, `[features].plugin_hooks = true`, and active-session `/hooks` review/trust; surface those as separate readiness facts.
    - The readiness summary reports sandbox/permission status as unknown unless `--sandbox-permission-probe` is requested. `--permission-proof` records separate preflight/execution evidence under `permission_proof`.
    - `--permission-proof` remains plan-only unless the user also supplies `--execute-permission-proof`. The executor uses the existing companion contract, does not pass sandbox/approval/permission-mode relaxation flags, classifies permission failures, and omits raw peer stdout from doctor output.
    - `--deep-peer-smoke` remains plan-only unless the user also supplies `--execute-deep-peer-smoke`. The executor uses the existing companion contract and omits raw peer stdout from doctor output.
@@ -37,6 +37,7 @@ Doctor reports:
 - Authentication state, sanitized to status and provider/method metadata.
 - agentic-plugins marketplace entries, local source manifests, and known Claude/Codex cache state for `companions`, `engineer`, `orchestrator`, and `runtime`.
 - Manual Claude Code `/plugin ...` follow-up commands when the host-native Claude slash surface is unavailable to doctor but source/cache state indicates install/update work remains, or when retired Claude plugin cleanup is required.
+- Manual Codex `/hooks` follow-up when bundled plugin hooks are packaged and `plugin_hooks` is enabled but runtime cannot verify active-session hook review/trust state.
 - Codex marketplace-only command shape and cache materialization state when a temporary marketplace cache is current but no per-plugin install cache exists.
 - Companion discovery and `companions/contract.md` compatibility.
 - Current explicit and resolved model/effort inputs according to ADR-0024 order: command flags, workflow/subtask override observation, repo config, user config, host-native default.

@@ -168,6 +168,27 @@ describe('runtime doctor', () => {
     ok(report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_packaging_gap'));
   });
 
+  it('reports Codex hook review as a manual follow-up when plugin hooks are ready', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-review-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    const followup = report.plugin_command_surface.manual_followups.find((entry) => entry.id === 'codex-hook-review');
+    strictEqual(followup.status, 'manual_check');
+    strictEqual(followup.host, 'codex');
+    deepStrictEqual(followup.commands, ['/hooks']);
+    ok(followup.verify.includes('engineer, orchestrator'));
+    ok(formatText(report).includes('command: /hooks'));
+  });
+
   it('classifies nonzero Claude auth JSON as unauthenticated', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-claude-auth-json-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));

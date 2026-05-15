@@ -23,7 +23,7 @@ Notes:
 
 - `--format json` emits the machine-readable report.
 - Default output starts with a `Readiness Matrix` that separates CLI availability, runtime installation evidence, authentication state, direction-specific peer model/effort inputs, hook evidence, companion readiness, and sandbox/permission status for Claude and Codex.
-- The `Plugin Command Surface` section reports whether Claude's slash `/plugin` surface and Codex's marketplace surface are actually usable before settings suggests executable plugin-management steps. When Claude's slash surface is unavailable to doctor, or retired Claude plugin cleanup is required, output includes a `Manual Follow-ups` checklist with the interactive `/plugin ...` commands to run in Claude Code.
+- The `Plugin Command Surface` section reports whether Claude's slash `/plugin` surface and Codex's marketplace surface are actually usable before settings suggests executable plugin-management steps. When Claude's slash surface is unavailable to doctor, retired Claude plugin cleanup is required, or Codex packaged hooks still need active-session review/trust, output includes a `Manual Follow-ups` checklist with the interactive `/plugin ...` or `/hooks` commands to run in the relevant host.
 - The `Codex Plugin Hooks` section separates generic `hooks`, the `plugin_hooks` feature flag, `.codex-plugin/plugin.json` hook exposure, and installed/source `hooks/hooks.json` packaging.
 - `--model` and `--effort` are observed as explicit ADR-0024 resolution inputs; companion invocation still uses `companions/contract.md` `--model` and `--effort`.
 - `--sandbox-permission-probe` is an explicit opt-in read-only preflight. It reports CLI/auth/permission-surface/companion-script evidence for both companion directions and records `peer_execution=false`.
@@ -35,4 +35,4 @@ Notes:
 - `--deep-peer-smoke-timeout-ms <n>` bounds each companion process when the executor flag is used.
 - `--artifact-inventory` is an explicit opt-in read-only inventory of `.agentic-plugins/runs` generated artifacts. It reports per-family counts, bytes, age metadata, and retention pressure without reading raw artifact bodies or deleting anything.
 - `--artifact-retention-cap <n>` and `--artifact-max-bytes <n>` tune the advisory inventory thresholds.
-- Codex CLI supports bundled plugin hooks behind `plugin_hooks`; doctor reports whether hook-bearing agentic-plugins are packaged and exposed before claiming automatic hook parity.
+- Codex CLI supports bundled plugin hooks behind `plugin_hooks`; doctor reports whether hook-bearing agentic-plugins are packaged and exposed before claiming automatic hook parity, and surfaces `/hooks` as a manual follow-up when runtime cannot verify the active-session review/trust state.

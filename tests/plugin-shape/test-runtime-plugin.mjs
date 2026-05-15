@@ -150,11 +150,13 @@ describe('plugins/runtime doctor surface', () => {
     ok(/read-only/i.test(command));
     ok(command.includes('--execute-deep-peer-smoke'));
     ok(command.includes('Manual Follow-ups'));
+    ok(command.includes('/hooks'));
     const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/doctor/SKILL.md'), 'utf-8');
     ok(/^name:\s*doctor\s*$/m.test(skill));
     ok(skill.includes('Authentication output must stay sanitized'));
     ok(skill.includes('--execute-deep-peer-smoke'));
     ok(skill.includes('Manual Follow-ups'));
+    ok(skill.includes('/hooks'));
     const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/doctor/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:doctor'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
@@ -171,12 +173,14 @@ describe('plugins/runtime settings surface', () => {
     ok(/dry-run/i.test(command));
     ok(command.includes('--apply'));
     ok(command.includes('--apply-codex-plugin-hooks'));
+    ok(command.includes('/hooks'));
     const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/SKILL.md'), 'utf-8');
     ok(/^name:\s*settings\s*$/m.test(skill));
     ok(skill.includes('Host-native Claude Code'));
     ok(skill.includes('Non-executable host-CLI install plans'));
     ok(skill.includes('--execute-plugin-management'));
     ok(skill.includes('--apply-codex-plugin-hooks'));
+    ok(skill.includes('/hooks'));
     const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:settings'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
