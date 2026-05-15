@@ -23,6 +23,7 @@ Notes:
 
 - `--format json` emits the machine-readable report.
 - Default output starts with a `Readiness Matrix` that separates CLI availability, runtime installation evidence, authentication state, direction-specific peer model/effort inputs, hook evidence, companion readiness, and sandbox/permission status for Claude and Codex.
+- The `Plugin Command Surface` section reports whether Claude's slash `/plugin` surface and Codex's marketplace surface are actually usable before settings suggests executable plugin-management steps.
 - The `Codex Plugin Hooks` section separates generic `hooks`, the `plugin_hooks` feature flag, `.codex-plugin/plugin.json` hook exposure, and installed/source `hooks/hooks.json` packaging.
 - `--model` and `--effort` are observed as explicit ADR-0024 resolution inputs; companion invocation still uses `companions/contract.md` `--model` and `--effort`.
 - `--sandbox-permission-probe` is an explicit opt-in read-only preflight. It reports CLI/auth/permission-surface/companion-script evidence for both companion directions and records `peer_execution=false`.

@@ -41,6 +41,7 @@ const DEFAULT_ARTIFACT_RETENTION_MAX_BYTES = 50 * 1024 * 1024;
 const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const CONSENSUS_RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const RUNTIME_ARTIFACT_FAMILIES = ['consensus', 'context', 'settings', 'doctor'];
+const CLAUDE_PLUGIN_SURFACE_UNAVAILABLE_RE = /\/plugin (?:isn't|is not) available in this environment/i;
 
 export async function runDoctor({
   repoRoot = process.cwd(),
@@ -79,6 +80,7 @@ export async function runDoctor({
       helpArgs: ['--help'],
       authArgs: ['auth', 'status'],
       pluginArgs: ['plugin', 'list'],
+      pluginSurfaceArgs: ['/plugin', 'list'],
       runner,
       cwd: resolvedRepoRoot,
       env,
@@ -287,7 +289,7 @@ export async function runCommand(command, args = [], { cwd = process.cwd(), env 
   });
 }
 
-async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, featureArgs = null, authArgs, pluginArgs, runner, cwd, env }) {
+async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, featureArgs = null, authArgs, pluginArgs, pluginSurfaceArgs = null, runner, cwd, env }) {
   const version = await runner(name, versionArgs, { cwd, env });
   const available = version.ok || version.exit_code !== null;
   const help = available ? await runner(name, helpArgs, { cwd, env }) : skipped('cli unavailable');
@@ -295,9 +297,10 @@ async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, f
   const featuresRaw = available && featureArgs ? await runner(name, featureArgs, { cwd, env }) : skipped('not requested');
   const authRaw = available ? await runner(name, authArgs, { cwd, env }) : skipped('cli unavailable');
   const pluginRaw = available ? await runner(name, pluginArgs, { cwd, env }) : skipped('cli unavailable');
+  const pluginSurfaceRaw = available && pluginSurfaceArgs ? await runner(name, pluginSurfaceArgs, { cwd, env }) : skipped('not requested');
   const auth = name === 'claude' ? parseClaudeAuth(authRaw, env) : parseCodexAuth(authRaw);
   const featureText = name === 'claude'
-    ? `${help.stdout}\n${help.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}`
+    ? `${help.stdout}\n${help.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}\n${pluginSurfaceRaw.stdout}\n${pluginSurfaceRaw.stderr}`
     : `${help.stdout}\n${help.stderr}\n${extraHelp.stdout}\n${extraHelp.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}`;
   const featureSurface = name === 'claude'
     ? inspectClaudeFeatureSurface(featureText)
@@ -326,6 +329,33 @@ async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, f
       exit_code: pluginRaw.exit_code,
       error_code: pluginRaw.error_code,
     },
+    plugin_surface: inspectHostPluginSurface({ host: name, result: pluginSurfaceRaw }),
+  };
+}
+
+function inspectHostPluginSurface({ host, result }) {
+  if (result.error_code === 'skipped') {
+    return {
+      status: 'unknown',
+      exit_code: null,
+      error_code: 'skipped',
+      reason: 'not requested',
+    };
+  }
+  const text = singleLine(`${result.stdout} ${result.stderr} ${result.error_message ?? ''}`);
+  if (host === 'claude' && CLAUDE_PLUGIN_SURFACE_UNAVAILABLE_RE.test(text)) {
+    return {
+      status: 'unavailable',
+      exit_code: result.exit_code,
+      error_code: 'HOST_PLUGIN_SURFACE_UNAVAILABLE',
+      reason: 'host plugin command surface is unavailable in this environment',
+    };
+  }
+  return {
+    status: commandStatus(result),
+    exit_code: result.exit_code,
+    error_code: result.error_code,
+    reason: result.ok ? null : redactSecrets(text),
   };
 }
 
@@ -967,25 +997,36 @@ function inspectPluginVersionParity(name, plugin) {
 }
 
 function buildPluginCommandSurface({ claude, codex, plugins }) {
+  const claudeSurfaceStatus = claude.plugin_surface?.status ?? claude.plugin.status;
+  const claudeSurfaceAvailable = claudeSurfaceStatus === 'available';
   return {
     schema_version: 'runtime-plugin-command-surface-1.0',
     claude: {
-      status: claude.plugin.status,
-      mode: claude.feature_surface.plugin_install_command || claude.feature_surface.plugin_list_command
+      status: claudeSurfaceStatus,
+      mode: claudeSurfaceStatus === 'unavailable'
+        ? 'unavailable'
+        : claude.feature_surface.plugin_install_command || claude.feature_surface.plugin_list_command
         ? 'per-plugin-command'
         : 'unknown',
       supports: {
-        install_plugin: Boolean(claude.feature_surface.plugin_install_command),
-        list_plugin: Boolean(claude.feature_surface.plugin_list_command),
+        install_plugin: claudeSurfaceAvailable && Boolean(claude.feature_surface.plugin_install_command),
+        list_plugin: claudeSurfaceAvailable && Boolean(claude.feature_surface.plugin_list_command),
         marketplace_add: false,
         marketplace_upgrade: false,
         marketplace_remove: false,
       },
-      materialization: {
-        status: 'host-native-plugin-command',
-        executable_by_settings: true,
-        reason: 'Claude exposes plugin install/update/list style host commands that can materialize the host plugin cache.',
-      },
+      materialization: claudeSurfaceAvailable
+        ? {
+            status: 'host-native-plugin-command',
+            executable_by_settings: true,
+            reason: 'Claude exposes plugin install/update/list style host commands that can materialize the host plugin cache.',
+          }
+        : {
+            status: 'blocked',
+            executable_by_settings: false,
+            reason: claude.plugin_surface?.reason ?? 'Claude plugin command surface could not be verified.',
+            next_step: 'Retry plugin management from a Claude Code environment that supports /plugin commands.',
+          },
     },
     codex: {
       status: codex.plugin.status,
@@ -3077,6 +3118,9 @@ export function formatText(report) {
   }
   lines.push('');
   lines.push('Plugin Command Surface');
+  const claudeSurface = report.plugin_command_surface.claude;
+  lines.push(`- claude: mode=${claudeSurface.mode}; install=${Boolean(claudeSurface.supports.install_plugin)}; list=${Boolean(claudeSurface.supports.list_plugin)}; materialization=${claudeSurface.materialization.status}`);
+  if (claudeSurface.materialization.next_step) lines.push(`  next: ${claudeSurface.materialization.next_step}`);
   const codexSurface = report.plugin_command_surface.codex;
   lines.push(`- codex: mode=${codexSurface.mode}; marketplace-add=${Boolean(codexSurface.supports.marketplace_add)}; marketplace-upgrade=${Boolean(codexSurface.supports.marketplace_upgrade)}; install=${Boolean(codexSurface.supports.install_plugin)}; list=${Boolean(codexSurface.supports.list_plugin)}; materialization=${codexSurface.materialization.status}`);
   if (codexSurface.materialization.next_step) lines.push(`  next: ${codexSurface.materialization.next_step}`);
@@ -3254,6 +3298,7 @@ function redactCommandDetails(cli) {
       exit_code: cli.plugin.exit_code,
       error_code: cli.plugin.error_code,
     },
+    plugin_surface: cli.plugin_surface,
   };
 }
 

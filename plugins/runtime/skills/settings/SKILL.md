@@ -21,7 +21,7 @@ node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--fo
 3. Present the result as a settings plan, not as proof of host parity.
    - Dry-run output is the default and must be safe to run repeatedly.
    - `--apply` may write only `.agentic-plugins/config.toml` in the repo and/or user home.
-   - `--execute-plugin-management` runs only allowlisted host-native plugin install/update/add/upgrade commands. It does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts under `.agentic-plugins/runs/settings/<run-id>/`, and treats host "plugin surface unavailable" output as failed even when the host exits 0.
+   - `--execute-plugin-management` runs only allowlisted host-native plugin install/update/add/upgrade commands. It preflights the relevant host plugin command surface first, blocks unavailable surfaces before execution, does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts under `.agentic-plugins/runs/settings/<run-id>/`, and treats host "plugin surface unavailable" output as failed even when the host exits 0.
    - Codex bundled plugin hooks are planned separately: report packaged hook plugins, `plugin_hooks` status, and the session/config steps needed to enable them. `--apply-codex-plugin-hooks` may write only `~/.codex/config.toml` `[features].plugin_hooks = true`.
 
 ## Scope

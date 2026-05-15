@@ -31,6 +31,7 @@ describe('runtime doctor', () => {
           subscriptionType: 'max',
         })),
         'claude plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.1.0\n    Scope: user\n    Status: enabled\n'),
+        'claude /plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.1.0\n    Scope: user\n    Status: enabled\n'),
         'codex --version': okResult('codex-cli 0.130.0\n'),
         'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
         'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort=\"high\"\n'),
@@ -46,6 +47,7 @@ describe('runtime doctor', () => {
     strictEqual(report.clis.claude.auth.method, 'claude.ai');
     strictEqual(report.clis.claude.auth.provider, 'firstParty');
     strictEqual(report.clis.claude.auth.subscription, 'max');
+    strictEqual(report.clis.claude.plugin_surface.status, 'available');
     strictEqual(report.model_effort.directions.claude_to_codex.model.source, 'explicit command flags');
     strictEqual(report.model_effort.directions.codex_to_claude.effort.value, 'high');
     strictEqual(report.companions.directions.claude_to_codex.status, 'available');
@@ -63,6 +65,8 @@ describe('runtime doctor', () => {
     strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks_stage, 'under development');
     strictEqual(report.clis.codex.feature_surface.automatic_plugin_hooks, false);
     strictEqual(report.plugin_command_surface.schema_version, 'runtime-plugin-command-surface-1.0');
+    strictEqual(report.plugin_command_surface.claude.mode, 'per-plugin-command');
+    strictEqual(report.plugin_command_surface.claude.materialization.status, 'host-native-plugin-command');
     strictEqual(report.plugin_command_surface.codex.mode, 'marketplace-only');
     strictEqual(report.plugin_command_surface.codex.supports.marketplace_add, true);
     strictEqual(report.plugin_command_surface.codex.supports.marketplace_upgrade, true);
@@ -102,8 +106,32 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('Plugin Command Surface'));
     ok(formatText(report).includes('Codex Plugin Hooks'));
     ok(formatText(report).includes('status=feature_disabled'));
+    ok(formatText(report).includes('claude: mode=per-plugin-command'));
     ok(formatText(report).includes('codex: mode=marketplace-only'));
     ok(formatText(report).includes('Host Parity'));
+  });
+
+  it('reports unavailable Claude slash plugin surface separately from plugin list parsing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-claude-plugin-surface-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'claude /plugin list': okResult("/plugin isn't available in this environment.\n"),
+      }),
+    });
+
+    strictEqual(report.clis.claude.plugin_surface.status, 'unavailable');
+    strictEqual(report.clis.claude.plugin_surface.error_code, 'HOST_PLUGIN_SURFACE_UNAVAILABLE');
+    strictEqual(report.plugin_command_surface.claude.mode, 'unavailable');
+    strictEqual(report.plugin_command_surface.claude.supports.install_plugin, false);
+    strictEqual(report.plugin_command_surface.claude.supports.list_plugin, false);
+    strictEqual(report.plugin_command_surface.claude.materialization.status, 'blocked');
+    strictEqual(report.plugin_command_surface.claude.materialization.executable_by_settings, false);
+    ok(formatText(report).includes('claude: mode=unavailable'));
   });
 
   it('flags hook-bearing Codex plugins that do not expose hooks in their manifest', async () => {
@@ -920,6 +948,7 @@ function defaultRuntimeProbeMap() {
     'claude --help': okResult('Usage: claude --print --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n'),
     'claude auth status': okResult(JSON.stringify({ loggedIn: true })),
     'claude plugin list': okResult(''),
+    'claude /plugin list': okResult('Installed plugins:\n'),
     'codex --version': okResult('codex-cli 0.130.0\n'),
     'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
     'codex exec --help': okResult('Usage: codex exec --cd <DIR> --model <MODEL> --config model_reasoning_effort="high"\n'),
