@@ -8,6 +8,13 @@
 - Add `runtime:context check`, a read-only explicit context budget check that computes green/yellow/red risk without creating artifacts or mutating host session context.
 - Add `runtime:context status --latest`, a read-only latest handoff lookup with artifact age and stale-state reporting.
 
+## [0.27.4](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.27.3...plugin-runtime-v0.27.4) (2026-05-15)
+
+
+### Bug Fixes
+
+* **plugin/runtime:** surface Claude plugin manual followups ([1bce17c](https://github.com/each4all/agentic-plugins/commit/1bce17c4dc737c72b14cee1ca349bf2ad2cf012e))
+
 ## [0.27.3](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.27.2...plugin-runtime-v0.27.3) (2026-05-15)
 
 
