@@ -379,6 +379,8 @@ describe('runtime settings', () => {
     strictEqual(followup.host, 'codex');
     deepStrictEqual(followup.commands, ['/hooks']);
     ok(followup.verify.includes('engineer, orchestrator'));
+    ok(followup.verify.includes('Installed counts alone'));
+    ok(followup.verify.includes('Active=0'));
     ok(followup.verify.includes('runtime:settings --attest-codex-hook-review'));
     ok(formatText(report).includes('command: /hooks'));
   });
@@ -412,6 +414,7 @@ describe('runtime settings', () => {
     strictEqual(artifact.codex_hook_review.status, 'attested');
     ok(artifact.codex_hook_review.assertion.includes('/hooks was opened'));
     ok(artifact.codex_hook_review.limits.some((limit) => limit.includes('not host-native proof')));
+    ok(artifact.codex_hook_review.limits.some((limit) => limit.includes('Active=0')));
     strictEqual(artifact.summary.codex_hook_review_attested, true);
     ok(formatText(report).includes('Codex Hook Review'));
     ok(formatText(report).includes(`runtime:settings ${RUNTIME_VERSION} (codex-hook-review)`));

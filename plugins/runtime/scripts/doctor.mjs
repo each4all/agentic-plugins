@@ -232,7 +232,8 @@ export async function runDoctor({
     ledgers,
     limits: [
       'Codex bundled plugin hooks require both manifest exposure and [features].plugin_hooks=true; doctor reports those separately from generic hooks.',
-      'Codex hook review/trust is an active-session /hooks UI check; the observed Codex CLI does not expose a non-interactive hook trust query, so doctor requires a current runtime:settings operator attestation to clear that follow-up.',
+      'Codex hook review/trust is an active-session /hooks UI check; /hooks Installed counts are packaging evidence only, and Active=0 output is not enough to attest.',
+      'The observed Codex CLI does not expose a non-interactive hook trust query, so doctor requires a current runtime:settings operator attestation to clear that follow-up.',
       'Readiness sandbox/permission status remains unknown unless --sandbox-permission-probe is requested; --permission-proof records separate preflight/execution evidence.',
       'Settings mutation belongs to runtime:settings; dynamic consensus, context hygiene, and completion footer mutation are deferred.',
       'Artifact inventory is read-only; runtime:doctor never deletes or compacts generated artifacts.',
@@ -1156,7 +1157,7 @@ function buildCodexHookReviewManualFollowup(codexPluginHooks, surface, settingsR
     reason: `Codex plugin hooks are packaged and plugin_hooks is enabled, but ${surface} cannot verify active-session hook review/trust state.`,
     environment: 'Open the active Codex session for this repository.',
     commands: ['/hooks'],
-    verify: `Review/trust bundled hooks for ${bundled.join(', ')}, then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
+    verify: `Review/trust bundled hooks for ${bundled.join(', ')}; do not attest from /hooks Installed counts alone, including Active=0 output. Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
   };
 }
 

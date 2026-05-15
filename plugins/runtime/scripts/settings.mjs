@@ -963,7 +963,7 @@ function buildCodexHookReviewManualFollowups(codexPluginHooks, hookSettings, cod
     reason: 'Codex plugin hooks are packaged and plugin_hooks is enabled, but runtime:settings cannot verify active-session hook review/trust state.',
     environment: 'Open the active Codex session for this repository.',
     commands: ['/hooks'],
-    verify: `Review/trust bundled hooks for ${bundled.join(', ')}, then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
+    verify: `Review/trust bundled hooks for ${bundled.join(', ')}; do not attest from /hooks Installed counts alone, including Active=0 output. Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
   }];
 }
 
@@ -997,6 +997,7 @@ function buildCodexHookReviewAttestation({ codexPluginHooks, hookSettings, plugi
       : 'run runtime:settings --attest-codex-hook-review after reviewing/trusting bundled hooks with /hooks in the active Codex session',
     limits: [
       'This is an operator attestation artifact, not host-native proof of Codex trust state.',
+      '/hooks Installed counts are packaging evidence only; Active=0 output or no trusted-active indication is not enough to attest.',
       'The attestation is considered current only while the hook-bearing plugin set and source versions match the observed checkout.',
       'Re-run /hooks and refresh this attestation after hook-bearing plugin upgrades or hook packaging changes.',
     ],

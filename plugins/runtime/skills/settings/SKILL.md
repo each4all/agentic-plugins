@@ -57,7 +57,8 @@ Settings reports and plans:
   `~/.codex/config.toml` `[features].plugin_hooks = true`.
 - Manual Codex `/hooks` follow-up when bundled plugin hooks are packaged and
   `plugin_hooks` is enabled but settings cannot verify active-session hook
-  review/trust state.
+  review/trust state. Treat `/hooks` `Installed` counts as packaging evidence
+  only; `Active=0` output is not enough to attest.
 - Codex `/hooks` operator attestation, behind `--attest-codex-hook-review`,
   recorded only as a settings artifact. This is not host-native proof and does
   not mutate Codex trust state.
