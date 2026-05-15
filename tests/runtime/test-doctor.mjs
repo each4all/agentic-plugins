@@ -197,7 +197,7 @@ describe('runtime doctor', () => {
     strictEqual(report.experience_parity.status, 'blocked');
     ok(report.experience_parity.criteria.some((entry) => entry.id === 'plugin_management_followups' && entry.status === 'partial' && entry.next_step.includes('runtime:settings --attest-codex-hook-review')));
     ok(report.experience_parity.criteria.some((entry) => entry.id === 'lifecycle_hook_continuity' && entry.status === 'partial' && entry.next_step.includes('runtime:settings --attest-codex-hook-review')));
-    ok(report.experience_parity.next_actions.some((entry) => entry.id === 'codex-hook-review'));
+    ok(report.experience_parity.next_actions.some((entry) => entry.id === 'codex-hook-review' && entry.reason.includes('runtime:settings --attest-codex-hook-review')));
     ok(formatText(report).includes('command: /hooks'));
   });
 

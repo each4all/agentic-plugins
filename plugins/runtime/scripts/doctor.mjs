@@ -2629,7 +2629,7 @@ function buildExperienceParityNextActions(criteria, manualFollowups = []) {
       id: followup.id,
       host: followup.host,
       commands: followup.commands ?? [],
-      reason: followup.reason,
+      reason: followup.verify ?? followup.reason,
     });
   }
   for (const item of criteria) {
