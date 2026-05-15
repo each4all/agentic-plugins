@@ -2456,13 +2456,16 @@ function buildPluginCommandExperienceCriterion(pluginCommandSurface) {
       next_step: null,
     });
   }
+  const hookReviewFollowup = followups.find((item) => item.id === 'codex-hook-review');
   return parityCriterion({
     id: 'plugin_management_followups',
     label: 'Host plugin management gaps are visible as operator follow-ups',
     status: 'partial',
     weight: 10,
     evidence: `${commandModes}; manual-followups=${followups.map((item) => `${item.host}:${item.id}`).join(',')}`,
-    next_step: 'Complete the listed Manual Follow-ups in the relevant host session and rerun runtime:doctor.',
+    next_step: hookReviewFollowup
+      ? hookReviewFollowup.verify
+      : 'Complete the listed Manual Follow-ups in the relevant host session and rerun runtime:doctor.',
   });
 }
 
