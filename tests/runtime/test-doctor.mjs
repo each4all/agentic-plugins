@@ -121,6 +121,7 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('claude: mode=per-plugin-command'));
     ok(formatText(report).includes('codex: mode=marketplace-only'));
     ok(formatText(report).includes('Host Parity'));
+    ok(formatText(report).includes('non-interactive hook trust query'));
   });
 
   it('reports unavailable Claude slash plugin surface without blocking Claude plugin CLI management', async () => {

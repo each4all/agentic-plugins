@@ -29,8 +29,11 @@ Local CLI evidence:
 - `codex --version` -> `codex-cli 0.130.0`
 - `codex --help`
 - `codex exec --help`
+- `codex hooks --help` (observed to fall back to top-level help; no
+  `hooks` subcommand is listed)
 - `codex plugin --help`
 - `codex plugin marketplace --help`
+- `codex debug --help`
 - `codex plugin marketplace add --help`
 - `codex plugin marketplace upgrade --help`
 - `codex plugin marketplace remove --help`
@@ -48,7 +51,7 @@ Local CLI evidence:
 | Local plugin command shape | In CLI `0.130.0`, `codex plugin` only exposes `marketplace`, and `codex plugin marketplace` exposes `add`, `upgrade`, and `remove`. | `runtime:settings --execute-plugin-management --plugin-management-host codex` should stay marketplace-scoped. Do not claim Claude-style per-plugin `install`, `list`, or `update` commands for Codex unless the local CLI grows them. |
 | MCP | Codex supports MCP in the CLI and IDE extension. MCP configuration is stored with other Codex config in `config.toml`, and `codex mcp` manages server entries. | Runtime may diagnose MCP availability and config paths. Runtime must not auto-add MCP servers outside an explicit future executor. |
 | Subagents | Codex subagent workflows are enabled by default, but Codex only spawns subagents when explicitly asked. Custom agents live under `~/.codex/agents/` or `.codex/agents/`, and subagents inherit the current sandbox policy. | Runtime consensus can model manual/subagent lanes, but automatic hidden fanout remains out of bounds. Any Codex subagent use must be an explicit operator or user action. |
-| Hooks | Codex hooks are a documented lifecycle extension, and bundled plugin hooks are gated by the `plugin_hooks` feature flag. Local `codex features list` reports `hooks` as stable/enabled and `plugin_hooks` as under development/disabled, while `codex --enable plugin_hooks features list` reports `plugin_hooks` enabled for that invocation. | Runtime should keep generic hooks, plugin_hooks enablement, manifest hook exposure, and hook trust/review as separate readiness facts. Do not treat plugin-bundled hooks as runtime-ready based only on generic hook support. After the operator reviews/trusts hooks with `/hooks`, `runtime:settings --attest-codex-hook-review` may record a sanitized artifact for doctor to consume; it does not mutate or independently prove Codex trust state. |
+| Hooks | Codex hooks are a documented lifecycle extension, and bundled plugin hooks are gated by the `plugin_hooks` feature flag. Local `codex features list` reports `hooks` as stable/enabled and reports `plugin_hooks` with stage `under development`; its effective value depends on config or `--enable plugin_hooks`. Local non-interactive help does not expose a `codex hooks` trust/query command. | Runtime should keep generic hooks, plugin_hooks enablement, manifest hook exposure, and hook trust/review as separate readiness facts. Do not treat plugin-bundled hooks as runtime-ready based only on generic hook support. After the operator reviews/trusts hooks with `/hooks`, `runtime:settings --attest-codex-hook-review` may record a sanitized artifact for doctor to consume; it does not mutate or independently prove Codex trust state. |
 | Config | Codex reads user config from `~/.codex/config.toml`, trusted project config from `.codex/config.toml`, and system config from `/etc/codex/config.toml` on Unix. | Current `runtime:settings --apply` continues writing only `.agentic-plugins/config.toml`. The only supported host-native Codex config write is the explicit `--apply-codex-plugin-hooks` path for `~/.codex/config.toml` `[features].plugin_hooks = true`; broader Codex config mutation remains deferred. |
 | Sandbox and approvals | Codex separates sandbox boundaries from approval policy. CLI help exposes `read-only`, `workspace-write`, and `danger-full-access`; approval policies include `untrusted`, `on-request`, and `never`. | Runtime doctor/settings may observe and preflight these controls, but must not relax sandbox, approval, permission, or network settings automatically. |
 
@@ -65,6 +68,11 @@ Local CLI evidence:
 - Do not claim automatic plugin-hook parity while local `plugin_hooks` is
   disabled, even though generic Codex hooks and bundled hook metadata are
   available.
+- Do not claim runtime can independently verify Codex hook trust/review from
+  CLI state. In local CLI `0.130.0`, `/hooks` is an active-session UI command:
+  top-level help does not list a `hooks` subcommand, `codex plugin marketplace`
+  remains add/upgrade/remove only, and `~/.codex/config.toml` exposes
+  `plugin_hooks` enablement but not per-hook trust state.
 - Do not treat Codex marketplace cache freshness as equivalent to source truth.
   Doctor/settings should continue reporting marketplace state, per-plugin cache
   state, and stale cache/materialization guidance separately.
