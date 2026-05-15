@@ -28,6 +28,10 @@ const SESSION_START = resolve(
   REPO_ROOT,
   'plugins/engineer/adapters/claude/hooks/session-start.mjs',
 );
+const CODEX_SESSION_START = resolve(
+  REPO_ROOT,
+  'plugins/engineer/adapters/codex/hooks/session-start.mjs',
+);
 const STATE_PATH = resolve(REPO_ROOT, 'plugins/engineer/scripts/state.mjs');
 const { createWorkflow } = await import(STATE_PATH);
 
@@ -58,9 +62,9 @@ function runCmd(cmd, args, opts = {}) {
   });
 }
 
-function runHook(payload) {
+function runHook(payload, script = SESSION_START) {
   return new Promise((resolveP, reject) => {
-    const child = spawn('node', [SESSION_START], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn('node', [script], { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => (stdout += d));
@@ -139,6 +143,29 @@ describe('session-start.mjs — marker pair + JSON shape (Phase 6 MAJOR #12 + MI
       strictEqual(r.code, 0);
       ok(r.stdout.startsWith('[engineer-active-metadata] '), `stdout: ${r.stdout}`);
       ok(r.stdout.includes(' [/engineer-active-metadata]'), `stdout: ${r.stdout}`);
+    });
+  });
+
+  it('Codex adapter emits the same engineer-active-metadata marker pair', async () => {
+    await withTmpRepo(async (dir) => {
+      await createWorkflow({
+        repoRoot: dir,
+        verb: 'compose',
+        host: 'codex',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'codex session-start',
+        currentPhase: 'phase-3',
+      });
+      const r = await runHook({ cwd: dir }, CODEX_SESSION_START);
+      strictEqual(r.code, 0);
+      ok(r.stdout.startsWith('[engineer-active-metadata] '));
+      ok(r.stdout.trimEnd().endsWith('[/engineer-active-metadata]'));
+      const jsonPart = r.stdout
+        .replace('[engineer-active-metadata] ', '')
+        .replace(' [/engineer-active-metadata]\n', '');
+      const payload = JSON.parse(jsonPart);
+      strictEqual(payload.canonical_command, '/engineer:compose');
+      strictEqual(payload.phase, 'phase-3');
     });
   });
 

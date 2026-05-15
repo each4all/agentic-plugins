@@ -22,9 +22,10 @@
 //     + 1 lifecycle macro `start` per ADR-0020 §Sub-decision 1
 //     §sub-decisions 1+2+3)
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
-//   - 1 Codex adapter hook (stop helper)
-//   - 1 bundled hooks manifest (hooks/hooks.json), exposed through the Codex
-//     manifest's `hooks` field and through Claude's plugin hook binding
+//   - 3 Codex adapter hooks (session-start / pre-compact / stop) plus a
+//     Codex-specific hook manifest
+//   - 1 bundled Claude hooks manifest (hooks/hooks.json), while the Codex
+//     manifest's `hooks` field points at adapters/codex/hooks/hooks.json
 //   - 9 ensemble point types in skills/_shared/references/ensemble-protocol.md
 //     (added Research-scan for cited-brief profile per ADR-0014)
 //   - 3 references/ files under skills/investigate/ (cited-brief-spec,
@@ -107,6 +108,7 @@ const SHARED_REFS = [
 ];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['pre-compact.mjs', 'stop.mjs', 'session-start.mjs', '_shared.mjs'];
+const CODEX_HOOKS = ['pre-compact.mjs', 'stop.mjs', 'session-start.mjs', 'hooks.json', 'README.md'];
 
 // Stale tokens that should NEVER appear in engineer SKILL/commands/refs.
 // Mirrors test-research-plugin.mjs and reflects ADR-0007 redesign stance —
@@ -220,7 +222,7 @@ describe('plugins/engineer — Codex manifest (.codex-plugin/plugin.json)', () =
 
   it('exposes bundled lifecycle hooks to Codex plugin metadata', async () => {
     const json = await readJSON(path);
-    strictEqual(json.hooks, './hooks/hooks.json');
+    strictEqual(json.hooks, './adapters/codex/hooks/hooks.json');
   });
 
   it('has interface block with engineer-specific values', async () => {
@@ -801,14 +803,31 @@ describe('plugins/engineer — Claude adapter hooks (adapters/claude/hooks/*.mjs
 });
 
 describe('plugins/engineer — Codex adapter (adapters/codex/hooks/)', () => {
-  it('stop.mjs exists with executable bit', async () => {
-    const path = resolve(PLUGIN_ROOT, 'adapters/codex/hooks/stop.mjs');
-    const st = await stat(path);
-    ok(st.isFile(), 'adapters/codex/hooks/stop.mjs not a regular file');
-    ok(
-      (st.mode & 0o111) !== 0,
-      `adapters/codex/hooks/stop.mjs executable bit not set (mode=${(st.mode & 0o777).toString(8)})`,
-    );
+  for (const name of CODEX_HOOKS) {
+    it(`${name} exists${name.endsWith('.mjs') ? ' with executable bit' : ''}`, async () => {
+      const path = resolve(PLUGIN_ROOT, 'adapters/codex/hooks', name);
+      const st = await stat(path);
+      ok(st.isFile(), `adapters/codex/hooks/${name} not a regular file`);
+      if (name.endsWith('.mjs')) {
+        ok(
+          (st.mode & 0o111) !== 0,
+          `adapters/codex/hooks/${name} executable bit not set (mode=${(st.mode & 0o777).toString(8)})`,
+        );
+      }
+    });
+  }
+
+  it('hooks.json routes lifecycle commands to Codex adapter hooks via $PLUGIN_ROOT', async () => {
+    const json = await readJSON(resolve(PLUGIN_ROOT, 'adapters/codex/hooks/hooks.json'));
+    for (const event of ['SessionStart', 'PreCompact', 'Stop']) {
+      const entry = json.hooks[event][0].hooks[0];
+      strictEqual(entry.type, 'command');
+      ok(
+        entry.command.includes('${PLUGIN_ROOT}/adapters/codex/hooks/'),
+        `${event} command does not reference $PLUGIN_ROOT Codex adapter path: ${entry.command}`,
+      );
+    }
+    strictEqual(json.hooks.SessionStart[0].matcher, 'compact');
   });
 
   it('README.md documents Codex hook fallback scope', async () => {

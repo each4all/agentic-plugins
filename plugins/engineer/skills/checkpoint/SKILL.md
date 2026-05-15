@@ -1,6 +1,6 @@
 ---
 name: checkpoint
-description: "Records a one-line progress checkpoint summary on the active engineer workflow for SessionStart re-injection — the engineer plugin's checkpoint meta skill (ADR-0017 §sub-decision-2). A workflow-continuity meta operation, not a cognitive verb and not a lifecycle macro. Use when the user wants to leave a short, durable progress note that a future session will re-surface. Trigger phrases include 'checkpoint', 'mark progress', 'save where I am', 'note for next session', '체크포인트', '진행 메모', '다음 세션에 남길 메모'. Cross-host handoff (Codex writing a checkpoint, next Claude session re-injecting it) is the canonical Codex use case — the write is durable, the re-injection is Claude-only today."
+description: "Records a one-line progress checkpoint summary on the active engineer workflow for SessionStart re-injection — the engineer plugin's checkpoint meta skill (ADR-0017 §sub-decision-2). A workflow-continuity meta operation, not a cognitive verb and not a lifecycle macro. Use when the user wants to leave a short, durable progress note that a future session will re-surface. Trigger phrases include 'checkpoint', 'mark progress', 'save where I am', 'note for next session', '체크포인트', '진행 메모', '다음 세션에 남길 메모'. Cross-host handoff works through durable state; Codex re-injection additionally requires `[features].plugin_hooks = true` and `/hooks` review/trust."
 ---
 
 # Checkpoint (engineer persona, meta skill)
@@ -31,14 +31,13 @@ verb skills (`/engineer:investigate / :frame / :decide / :compose /
 |-----------|--------|-------|
 | `state.mjs checkpoint-set` (write `latest_checkpoint`) | `--host claude` | `--host codex` — same on-disk schema; the host flag distinguishes write provenance in `host_history` |
 | Schema preservation (schema 1 keeps 1; '1.1' keeps '1.1' per ADR-0017 schema versioning policy) | Yes | Yes — `state.mjs` is host-agnostic |
-| SessionStart re-injection of the summary into a new session | Yes (next Claude session, via the SessionStart hook surfacing `[engineer-active-metadata]` with `checkpoint_summary` + `checkpoint_at`) | No — Codex CLI does not expose a SessionStart hook today |
+| SessionStart re-injection of the summary into a new session | Yes (next Claude session, via the SessionStart hook surfacing `[engineer-active-metadata]` with `checkpoint_summary` + `checkpoint_at`) | Yes when Codex plugin hooks are enabled and trusted; otherwise manual resume reads the same durable checkpoint |
 
 The Codex use case is **cross-host handoff**: a user on Codex who
 leaves a checkpoint summary will see it re-injected on the next
-Claude Code session. The Codex session itself does not re-inject.
-This is honest partial parity — Codex can durably *write* the
-checkpoint; the *re-injection* is Claude-only until Codex exposes
-an equivalent hook.
+Claude Code session, and on Codex sessions where plugin hooks are
+enabled and trusted. Without that active-session trust, Codex can still
+durably *write* the checkpoint and `$engineer:resume` reads it manually.
 
 ---
 
