@@ -69,7 +69,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.6');
+    strictEqual(report.schema_version, 'runtime-settings-1.7');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -348,7 +348,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.6');
+    strictEqual(report.schema_version, 'runtime-settings-1.7');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -479,9 +479,19 @@ describe('runtime settings', () => {
     strictEqual(report.plugin_management.summary.executed, 0);
     strictEqual(report.plugin_management.summary.failed, 0);
     ok(claudePlans.every((plan) => plan.status === 'blocked' && plan.reason.includes('plugin command surface')));
+    strictEqual(report.plugin_management.manual_followups.length, 1);
+    strictEqual(report.plugin_management.manual_followups[0].id, 'claude-plugin-surface-unavailable');
+    strictEqual(report.plugin_management.manual_followups[0].status, 'manual_required');
+    deepStrictEqual(
+      report.plugin_management.manual_followups[0].commands,
+      claudePlans.map((plan) => plan.argv.args.join(' ')),
+    );
+    ok(report.plugin_management.manual_followups[0].commands.every((command) => command.startsWith('/plugin ')));
     ok(calls.includes('claude /plugin list'));
     ok(!calls.some((call) => call.startsWith('claude /plugin install') || call.startsWith('claude /plugin update')));
     ok(formatText(report).includes('claude command surface: mode=unavailable'));
+    ok(formatText(report).includes('Manual Follow-ups'));
+    ok(formatText(report).includes(`command: ${report.plugin_management.manual_followups[0].commands[0]}`));
   });
 
   it('persists execution artifacts and classifies failed plugin-management retries', async () => {
