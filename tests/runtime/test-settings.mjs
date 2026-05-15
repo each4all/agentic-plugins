@@ -410,9 +410,13 @@ describe('runtime settings', () => {
     const artifact = JSON.parse(await readFile(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'), 'utf8'));
     strictEqual(artifact.command.attest_codex_hook_review, true);
     strictEqual(artifact.codex_hook_review.status, 'attested');
+    ok(artifact.codex_hook_review.assertion.includes('/hooks was opened'));
+    ok(artifact.codex_hook_review.limits.some((limit) => limit.includes('not host-native proof')));
     strictEqual(artifact.summary.codex_hook_review_attested, true);
     ok(formatText(report).includes('Codex Hook Review'));
     ok(formatText(report).includes(`runtime:settings ${RUNTIME_VERSION} (codex-hook-review)`));
+    ok(formatText(report).includes('operator confirms /hooks was opened'));
+    ok(formatText(report).includes('not host-native proof'));
   });
 
   it('applies Codex plugin_hooks to user config only behind the explicit flag', async () => {
