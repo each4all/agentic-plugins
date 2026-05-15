@@ -13,7 +13,6 @@
 
 ### Bug Fixes
 
-* **plugin/runtime:** clarify Codex hook active count boundary ([4d1eb52](https://github.com/each4all/agentic-plugins/commit/4d1eb52113777bfc2085fa0c69a74a7065cb7cee))
 * **plugin/runtime:** clarify Codex hook active count boundary ([28b5d87](https://github.com/each4all/agentic-plugins/commit/28b5d87662bdc00beb8f52d3e5f1811fb970556e))
 
 ## [0.31.5](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.31.4...plugin-runtime-v0.31.5) (2026-05-15)
