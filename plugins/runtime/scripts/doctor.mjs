@@ -545,6 +545,10 @@ async function inspectSourcePluginState(repoRoot) {
       present: Boolean(claudeManifest.ok || codexManifest.ok),
       claude_manifest: manifestSummary(claudeManifest),
       codex_manifest: manifestSummary(codexManifest),
+      codex_manifest_hooks_file: await manifestHooksFileSummary({
+        pluginRoot,
+        manifestHooks: summarizeManifestHookField(codexManifest.ok ? codexManifest.json.hooks : undefined),
+      }),
       codex_default_hooks_file: await hooksFileSummary(join(pluginRoot, 'hooks', 'hooks.json')),
     };
   }
@@ -634,6 +638,10 @@ async function scanVersionedManifestDir({ baseDir, manifestRel }) {
       manifest_name: manifest.json.name ?? null,
       path: pluginRoot,
       manifest_hooks: summarizeManifestHookField(manifest.json.hooks),
+      manifest_hooks_file: await manifestHooksFileSummary({
+        pluginRoot,
+        manifestHooks: summarizeManifestHookField(manifest.json.hooks),
+      }),
       default_hooks_file: await hooksFileSummary(join(pluginRoot, 'hooks', 'hooks.json')),
     });
   }
@@ -656,6 +664,10 @@ async function readSingleManifest({ manifestPath }) {
     manifest_version: manifest.json.version ?? null,
     path: dirname(dirname(manifestPath)),
     manifest_hooks: summarizeManifestHookField(manifest.json.hooks),
+    manifest_hooks_file: await manifestHooksFileSummary({
+      pluginRoot: dirname(dirname(manifestPath)),
+      manifestHooks: summarizeManifestHookField(manifest.json.hooks),
+    }),
     default_hooks_file: await hooksFileSummary(join(dirname(dirname(manifestPath)), 'hooks', 'hooks.json')),
   };
 }
@@ -749,16 +761,19 @@ function buildCodexPluginHookReport({ codex, plugins }) {
   for (const [name, plugin] of Object.entries(plugins)) {
     const source = buildCodexHookLocation({
       manifestHooks: plugin.source?.codex_manifest?.hooks,
+      manifestHooksFile: plugin.source?.codex_manifest_hooks_file,
       defaultHooksFile: plugin.source?.codex_default_hooks_file,
       origin: 'source',
     });
     const cache = buildCodexHookLocation({
       manifestHooks: plugin.cache?.codex?.latest?.manifest_hooks,
+      manifestHooksFile: plugin.cache?.codex?.latest?.manifest_hooks_file,
       defaultHooksFile: plugin.cache?.codex?.latest?.default_hooks_file,
       origin: 'codex_cache',
     });
     const marketplaceCache = buildCodexHookLocation({
       manifestHooks: plugin.cache?.codex_tmp_marketplace?.manifest_hooks,
+      manifestHooksFile: plugin.cache?.codex_tmp_marketplace?.manifest_hooks_file,
       defaultHooksFile: plugin.cache?.codex_tmp_marketplace?.default_hooks_file,
       origin: 'codex_tmp_marketplace',
     });
@@ -786,7 +801,7 @@ function buildCodexPluginHookReport({ codex, plugins }) {
       area: 'hooks',
       action: 'expose-bundled-hooks-in-manifest',
       executable: false,
-      detail: `Add "hooks": "./hooks/hooks.json" to .codex-plugin/plugin.json for: ${summary.default_file_only_plugins.join(', ')}.`,
+      detail: `Add a host-appropriate "hooks" path to .codex-plugin/plugin.json for: ${summary.default_file_only_plugins.join(', ')}.`,
     });
   }
   if (summary.missing_hooks_file_plugins.length > 0) {
@@ -795,7 +810,7 @@ function buildCodexPluginHookReport({ codex, plugins }) {
       area: 'hooks',
       action: 'restore-bundled-hooks-file',
       executable: false,
-      detail: `Codex manifests declare hooks but hooks/hooks.json is missing for: ${summary.missing_hooks_file_plugins.join(', ')}.`,
+      detail: `Codex manifests declare hooks but the referenced hook file is missing for: ${summary.missing_hooks_file_plugins.join(', ')}.`,
     });
   }
   if (summary.command_warning_plugins.length > 0) {
@@ -847,9 +862,12 @@ function buildCodexPluginHookReport({ codex, plugins }) {
   };
 }
 
-function buildCodexHookLocation({ manifestHooks, defaultHooksFile, origin }) {
+function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooksFile, origin }) {
   const declared = Boolean(manifestHooks?.declared);
-  const bundled = defaultHooksFile?.status === 'available';
+  const declaredFile = manifestHooksFile ?? { status: 'missing' };
+  const bundled = declared
+    ? declaredFile.status === 'available'
+    : defaultHooksFile?.status === 'available';
   const status = declared && bundled
     ? 'exposed'
     : declared
@@ -864,7 +882,8 @@ function buildCodexHookLocation({ manifestHooks, defaultHooksFile, origin }) {
     manifest_type: manifestHooks?.type ?? null,
     manifest_paths: manifestHooks?.paths ?? [],
     bundled,
-    hooks_file: defaultHooksFile ?? { status: 'missing' },
+    hooks_file: declared ? declaredFile : defaultHooksFile ?? { status: 'missing' },
+    default_hooks_file: defaultHooksFile ?? { status: 'missing' },
   };
 }
 
@@ -3959,6 +3978,62 @@ function summarizeManifestHookField(value) {
     declared: true,
     type: typeof value,
     paths: [],
+  };
+}
+
+async function manifestHooksFileSummary({ pluginRoot, manifestHooks }) {
+  if (!manifestHooks?.declared) {
+    return {
+      status: 'not_declared',
+      path: null,
+      events: [],
+      handler_count: 0,
+    };
+  }
+  if (!Array.isArray(manifestHooks.paths) || manifestHooks.paths.length === 0) {
+    return {
+      status: 'missing',
+      path: null,
+      error: `manifest hooks field is ${manifestHooks.type ?? 'declared'}; no file path is available`,
+      events: [],
+      handler_count: 0,
+    };
+  }
+  const summaries = [];
+  for (const path of manifestHooks.paths) {
+    const resolved = resolve(pluginRoot, path);
+    const rel = relative(pluginRoot, resolved);
+    if (rel.startsWith('..') || rel === '..' || rel.startsWith(`..${sep}`)) {
+      summaries.push({
+        status: 'missing',
+        path: resolved,
+        error: 'manifest hooks path escapes plugin root',
+        events: [],
+        handler_count: 0,
+      });
+      continue;
+    }
+    summaries.push(await hooksFileSummary(resolved));
+  }
+  if (summaries.length === 1) return summaries[0];
+
+  const available = summaries.filter((entry) => entry.status === 'available');
+  if (available.length === 0) {
+    return {
+      ...summaries[0],
+      paths: summaries.map((entry) => entry.path).filter(Boolean),
+      summaries,
+    };
+  }
+  const commands = available.flatMap((entry) => entry.command_analysis?.commands ?? []);
+  return {
+    status: 'available',
+    path: available[0].path,
+    paths: available.map((entry) => entry.path).filter(Boolean),
+    events: uniqueStrings(available.flatMap((entry) => entry.events ?? [])).sort(),
+    handler_count: available.reduce((sum, entry) => sum + (entry.handler_count ?? 0), 0),
+    command_analysis: analyzeHookCommands(commands),
+    summaries,
   };
 }
 
