@@ -811,10 +811,12 @@ auto-detect heuristics.
 - **`/orchestrator:next` and `/done` are slash-command runbooks**,
   not new host-runtime APIs. Same pattern as existing
   `/orchestrator:plan`. No host-runtime contract change required.
-- **Codex hook auto-packaging unchanged**: orchestrator stop-archive
+- **Codex hook packaging follows host capability**: orchestrator stop-archive
   (PR-E) inherits engineer's pattern — Claude auto via
-  `adapters/claude/hooks/stop.mjs`; Codex manual helper via
-  `adapters/codex/hooks/stop.mjs`. ADR-0017 §sub-5 precedent.
+  `adapters/claude/hooks/stop.mjs`; Codex automatic plugin hook execution
+  when `[features].plugin_hooks = true` and `/hooks` review/trust are
+  complete, with `adapters/codex/hooks/stop.mjs` retained as the fallback
+  helper. ADR-0017 §sub-5 precedent.
 
 ## Alternatives Considered
 
@@ -909,7 +911,7 @@ timeline. Each PR ships when its trigger fires.
 | **PR-C0** | orchestrator single-subtask update API (atomic mutation of one `subtasks[i]` entry without rewriting the whole plan; needed by PR-C and PR-D) | PR-A + PR-B merged |
 | **PR-C** | engineer-local `parent-writeback.mjs` helper + integration into `runStopArchive` (post-archive parent writeback) | PR-C0 merged |
 | **PR-D** | `/orchestrator:next` (same-host default, runbook prompt template) + `/orchestrator:done` (idempotent backup) + Phase 0 boilerplate updates in engineer commands to receive parent metadata | PR-C merged |
-| **PR-E** | `/orchestrator:finalize` + `/orchestrator:abort` + orchestrator stop-archive A1-A4 macro adaptation. Both Claude auto (`adapters/claude/hooks/stop.mjs`) and Codex manual helper (`adapters/codex/hooks/stop.mjs`) parity. | PR-D merged |
+| **PR-E** | `/orchestrator:finalize` + `/orchestrator:abort` + orchestrator stop-archive A1-A4 macro adaptation. Claude auto (`adapters/claude/hooks/stop.mjs`) plus Codex automatic plugin hook execution after `plugin_hooks` + `/hooks` trust, with Codex fallback helper (`adapters/codex/hooks/stop.mjs`) parity. | PR-D merged |
 | **PR-F** | `--peer` flag + companions cross-host dispatch path (XML prompt template owned by orchestrator per `companions/contract.md` §6.5; graceful degradation when peer unavailable per §7) | Cross-host need surfaces (user request or first concrete cross-host workflow) |
 
 ## References
