@@ -1,7 +1,7 @@
 interface:
   display_name: "Runtime - Settings"
   short_description: "Dry-run host/plugin settings planner and model/effort config writer"
-  default_prompt: "Use $runtime:settings to inspect agentic-plugins setup and plan repo/user model-effort config. Add --apply only for agentic-plugins-owned config writes; add --execute-plugin-management only for explicit allowlisted plugin install/update execution."
+  default_prompt: "Use $runtime:settings to inspect agentic-plugins setup and plan repo/user model-effort config. Add --apply only for agentic-plugins-owned config writes; add --execute-plugin-management only for explicit allowlisted plugin install/update execution; add --execute-plugin-cleanup only for doctor-detected retired agentic-plugins cleanup."
 
 policy:
   allow_implicit_invocation: false

@@ -14,7 +14,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor } from './doctor.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.7';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.8';
 export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.0';
 export const CONFIG_KEYS = [
   'model',
@@ -28,6 +28,7 @@ export const CONFIG_KEYS = [
 const TARGETS = new Set(['repo', 'user', 'both']);
 const PLUGIN_MANAGEMENT_HOSTS = new Set(['all', 'claude', 'codex']);
 const EXECUTABLE_PLUGIN_ACTIONS = new Set(['install-plugin', 'update-plugin', 'add-marketplace', 'upgrade-marketplace']);
+const EXECUTABLE_PLUGIN_CLEANUP_ACTIONS = new Set(['uninstall-retired-plugin']);
 const DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS = 120000;
 const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const DEFAULT_HOST_INSTALL_COMMANDS = {
@@ -47,6 +48,7 @@ export async function runSettings({
   target = 'both',
   desired = {},
   executePluginManagement = false,
+  executePluginCleanup = false,
   pluginManagementHost = 'all',
   pluginManagementTimeoutMs = DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS,
   applyCodexPluginHooks = false,
@@ -57,7 +59,7 @@ export async function runSettings({
   const resolvedRepoRoot = resolve(repoRoot);
   const resolvedHomeDir = resolve(homeDir);
   const startedAt = now.toISOString();
-  const settingsExecutionRequested = executePluginManagement || applyCodexPluginHooks;
+  const settingsExecutionRequested = executePluginManagement || executePluginCleanup || applyCodexPluginHooks;
   const settingsRunId = runId ? validateSettingsRunId(runId) : settingsExecutionRequested ? makeSettingsRunId(now) : null;
   const desiredConfig = normalizeDesiredConfig(desired);
   const commandRunner = runner ?? runCommand;
@@ -96,7 +98,15 @@ export async function runSettings({
   });
   applyPluginManagementResults(pluginPlans, pluginManagement);
   const cliPlans = buildCliPlans(doctor.clis);
-  const pluginCleanup = buildPluginCleanupPlans(doctor.host_parity?.issues ?? []);
+  const pluginCleanup = await buildPluginCleanupPlans({
+    hostParityIssues: doctor.host_parity?.issues ?? [],
+    clis: doctor.clis,
+    execute: executePluginCleanup,
+    runner: commandRunner,
+    cwd: resolvedRepoRoot,
+    env,
+    timeoutMs: pluginManagementTimeoutMs,
+  });
 
   const companionSettings = buildCompanionSettingPlans({
     currentDirections: doctor.model_effort.directions,
@@ -122,19 +132,23 @@ export async function runSettings({
     repo_root: resolvedRepoRoot,
     host,
     output_format: format,
-    dry_run: !(apply || executePluginManagement || applyCodexPluginHooks),
+    dry_run: !(apply || executePluginManagement || executePluginCleanup || applyCodexPluginHooks),
     apply,
     config_apply: apply,
     execute_plugin_management: executePluginManagement,
+    execute_plugin_cleanup: executePluginCleanup,
     apply_codex_plugin_hooks: applyCodexPluginHooks,
     mutation_boundary: {
-      writes_allowed: mutationBoundaryWritesAllowed({ apply, executePluginManagement, applyCodexPluginHooks }),
+      writes_allowed: mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, applyCodexPluginHooks }),
       allowed_paths: [
         ...configPlans.targets.filter((plan) => plan.selected).map((plan) => plan.path),
         ...(applyCodexPluginHooks ? [hookSettings.host_config.path] : []),
       ],
       allowed_plugin_management_actions: executePluginManagement
         ? Array.from(EXECUTABLE_PLUGIN_ACTIONS).sort()
+        : [],
+      allowed_plugin_cleanup_actions: executePluginCleanup
+        ? Array.from(EXECUTABLE_PLUGIN_CLEANUP_ACTIONS).sort()
         : [],
       plugin_management_host_filter: pluginManagementHost,
       forbidden: [
@@ -145,7 +159,9 @@ export async function runSettings({
         'authentication state or secrets',
         'sandbox or permission relaxation',
         ...(executePluginManagement ? [] : ['plugin install/update execution']),
-        'plugin uninstall execution',
+        ...(executePluginCleanup
+          ? ['general plugin uninstall execution outside retired/unknown agentic-plugins cleanup']
+          : ['plugin uninstall execution']),
       ],
     },
     clis: cliPlans,
@@ -165,6 +181,7 @@ export async function runSettings({
       runId: settingsRunId,
       written: false,
       executePluginManagement,
+      executePluginCleanup,
       applyCodexPluginHooks,
     }),
     recommendations: buildTopLevelRecommendations({
@@ -179,6 +196,8 @@ export async function runSettings({
       'Plugin install/update execution is dry-run unless --execute-plugin-management is supplied.',
       'Plugin management execution runs only allowlisted host-native plugin commands without shell interpolation.',
       'Plugin management output omits raw stdout/stderr and records only status, exit code, byte counts, timing, and sanitized error metadata.',
+      'Retired/unknown plugin cleanup execution is dry-run unless --execute-plugin-cleanup is supplied.',
+      'Plugin cleanup execution is limited to doctor-detected retired/unknown agentic-plugins Claude plugin uninstall commands.',
       'Codex plugin_hooks host config writes require --apply-codex-plugin-hooks and only update ~/.codex/config.toml [features].plugin_hooks.',
       'Claude host-native config, auth, secrets, and sandbox/permission settings are not written.',
       'Companion invocation still uses companions/contract.md --model and --effort.',
@@ -214,10 +233,11 @@ function normalizeConfigValue(value, key) {
   return text;
 }
 
-function mutationBoundaryWritesAllowed({ apply, executePluginManagement, applyCodexPluginHooks }) {
+function mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, applyCodexPluginHooks }) {
   const allowed = [];
   if (apply) allowed.push('agentic-plugins-owned config files');
   if (executePluginManagement) allowed.push('allowlisted host-native plugin install/update commands');
+  if (executePluginCleanup) allowed.push('allowlisted retired/unknown agentic-plugins plugin cleanup commands');
   if (applyCodexPluginHooks) allowed.push('Codex user config [features].plugin_hooks');
   return allowed.length > 0 ? allowed.join('; ') : 'none; dry-run only';
 }
@@ -438,37 +458,172 @@ function buildCliAuthPlan(name, cli) {
   };
 }
 
-function buildPluginCleanupPlans(hostParityIssues) {
+async function buildPluginCleanupPlans({ hostParityIssues, clis, execute, runner, cwd, env, timeoutMs }) {
   const plans = [];
   for (const issue of hostParityIssues) {
     if (issue.id !== 'claude_retired_or_unknown_plugin') continue;
+    const host = issue.host ?? 'claude';
     const plugin = issue.plugin;
+    const command = buildPluginCleanupCommand({ host, plugin });
+    const planStatus = classifyPluginCleanupPlan({
+      host,
+      action: 'uninstall-retired-plugin',
+      argv: command?.argv ?? null,
+      clis,
+      execute,
+    });
     plans.push({
-      host: issue.host ?? 'claude',
+      host,
       plugin,
       action: 'uninstall-retired-plugin',
-      status: 'manual_required',
+      status: planStatus.status,
       severity: issue.severity ?? 'warning',
-      executable: false,
+      executable: planStatus.executable,
       executed: false,
-      command: `claude plugin uninstall ${plugin}@agentic-plugins`,
+      command: command?.display ?? null,
+      argv: command?.argv ?? null,
       detail: issue.summary,
       evidence: issue.evidence,
-      next_step: issue.next_step,
+      next_step: execute
+        ? planStatus.next_step ?? issue.next_step
+        : 'Add --execute-plugin-cleanup to run this narrow cleanup executor, or run the host-native command manually.',
+      reason: planStatus.reason,
+      result: null,
       limits: [
-        'runtime:settings does not execute plugin uninstall commands.',
+        execute
+          ? 'runtime:settings executes only doctor-detected retired/unknown agentic-plugins cleanup commands.'
+          : 'runtime:settings does not execute plugin cleanup unless --execute-plugin-cleanup is supplied.',
         'Uninstall retired or unknown plugins only after confirming they are no longer expected in the marketplace.',
       ],
     });
   }
+  if (execute) {
+    for (const plan of plans) {
+      if (plan.status !== 'planned') continue;
+      const startedAt = new Date();
+      const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs });
+      const completedAt = new Date();
+      const semanticFailure = classifyPluginManagementSemanticFailure({ plan, result });
+      const effectiveResult = semanticFailure
+        ? {
+            ...result,
+            ok: false,
+            error_code: semanticFailure.error_code,
+            error_message: semanticFailure.error_message,
+          }
+        : result;
+      plan.executed = true;
+      plan.status = effectiveResult.ok ? 'executed' : 'failed';
+      plan.result = sanitizeCommandResult({ result: effectiveResult, startedAt, completedAt });
+    }
+  }
+  const summary = summarizePluginCleanupPlans(plans);
   return {
-    status: plans.length > 0 ? 'manual_required' : 'not_needed',
-    summary: {
-      planned: plans.length,
-      executable: plans.filter((plan) => plan.executable).length,
-    },
+    requested: execute,
+    executed: execute,
+    mode: execute ? 'explicit-plugin-cleanup-executor' : 'dry-run-plan',
+    timeout_ms: timeoutMs,
+    allowlist: Array.from(EXECUTABLE_PLUGIN_CLEANUP_ACTIONS).sort(),
+    status: summarizePluginCleanupStatus(plans, summary),
+    summary,
     plans,
+    limits: [
+      'No shell interpolation is used; cleanup commands are invoked as argv arrays.',
+      'Only retired/unknown agentic-plugins Claude plugin uninstall commands surfaced by runtime:doctor are executable.',
+      'Raw stdout and stderr are omitted from settings output.',
+    ],
   };
+}
+
+function buildPluginCleanupCommand({ host, plugin }) {
+  if (host !== 'claude' || typeof plugin !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(plugin)) return null;
+  return commandSpec('claude', ['plugin', 'uninstall', `${plugin}@agentic-plugins`]);
+}
+
+function classifyPluginCleanupPlan({ host, action, argv, clis, execute }) {
+  if (!execute) {
+    return {
+      status: 'manual_required',
+      executable: false,
+      reason: 'dry-run; cleanup executor requires --execute-plugin-cleanup',
+    };
+  }
+  if (!EXECUTABLE_PLUGIN_CLEANUP_ACTIONS.has(action)) {
+    return {
+      status: 'blocked',
+      executable: false,
+      reason: 'action is not in the plugin-cleanup executor allowlist',
+      next_step: 'Run the host-native cleanup command manually only after confirming it is expected.',
+    };
+  }
+  if (!argv?.command || !Array.isArray(argv?.args)) {
+    return {
+      status: 'blocked',
+      executable: false,
+      reason: 'cleanup recommendation has no argv command spec',
+      next_step: 'Run the host-native cleanup command manually only after confirming it is expected.',
+    };
+  }
+  if (host !== 'claude') {
+    return {
+      status: 'blocked',
+      executable: false,
+      reason: 'only Claude retired plugin cleanup is supported',
+      next_step: 'Use that host-native plugin manager manually.',
+    };
+  }
+  const cli = clis[host];
+  if (cli?.status !== 'available') {
+    return {
+      status: 'blocked',
+      executable: false,
+      reason: `${host} CLI is not available`,
+      next_step: 'Install or open the host CLI before retrying cleanup.',
+    };
+  }
+  if (['unavailable', 'blocked'].includes(cli.plugin?.status)) {
+    return {
+      status: 'blocked',
+      executable: false,
+      reason: `claude plugin CLI is ${cli.plugin.status}`,
+      next_step: 'Retry cleanup from a Claude Code environment that supports claude plugin commands.',
+    };
+  }
+  if (!cli.feature_surface?.plugin_uninstall_command) {
+    return {
+      status: 'blocked',
+      executable: false,
+      reason: 'claude plugin CLI uninstall surface is not available',
+      next_step: 'Run cleanup manually in a Claude Code environment that supports claude plugin uninstall.',
+    };
+  }
+  return {
+    status: 'planned',
+    executable: true,
+    reason: 'allowlisted retired/unknown agentic-plugins cleanup command',
+  };
+}
+
+function summarizePluginCleanupPlans(plans) {
+  return {
+    planned: plans.length,
+    executable: plans.filter((plan) => plan.executable).length,
+    executed: plans.filter((plan) => plan.status === 'executed').length,
+    failed: plans.filter((plan) => plan.status === 'failed').length,
+    blocked: plans.filter((plan) => plan.status === 'blocked').length,
+    manual_required: plans.filter((plan) => plan.status === 'manual_required').length,
+    failed_retryable: plans.filter((plan) => plan.status === 'failed' && plan.result?.retryable === true).length,
+    failed_non_retryable: plans.filter((plan) => plan.status === 'failed' && plan.result?.retryable !== true).length,
+  };
+}
+
+function summarizePluginCleanupStatus(plans, summary) {
+  if (plans.length === 0) return 'not_needed';
+  if (summary.failed > 0) return 'failed';
+  if (summary.blocked > 0) return 'blocked';
+  if (summary.manual_required > 0) return 'manual_required';
+  if (summary.executed > 0) return 'executed';
+  return 'planned';
 }
 
 function buildPluginPlans(plugins) {
@@ -759,7 +914,7 @@ function buildPluginManagementManualFollowups(plans) {
 function buildPluginCleanupManualFollowups(plans) {
   const cleanupPlans = plans.filter((plan) => (
     plan.host === 'claude'
-      && plan.status === 'manual_required'
+      && ['manual_required', 'blocked', 'failed'].includes(plan.status)
       && plan.action === 'uninstall-retired-plugin'
   ));
   if (cleanupPlans.length === 0) return [];
@@ -770,8 +925,10 @@ function buildPluginCleanupManualFollowups(plans) {
   return [{
     id: 'claude-retired-plugin-cleanup',
     host: 'claude',
-    status: 'manual_required',
-    reason: 'Claude has retired or unknown agentic-plugins entries that runtime:settings will not uninstall automatically.',
+    status: cleanupPlans.some((plan) => plan.status === 'failed') ? 'manual_required' : cleanupPlans.some((plan) => plan.status === 'blocked') ? 'manual_check' : 'manual_required',
+    reason: cleanupPlans.some((plan) => ['blocked', 'failed'].includes(plan.status))
+      ? 'Claude retired or unknown agentic-plugins cleanup could not be completed by runtime:settings.'
+      : 'Claude has retired or unknown agentic-plugins entries that require explicit cleanup execution or a manual host-native uninstall.',
     environment: 'Open a Claude Code environment that supports claude plugin commands.',
     commands,
     verify: 'Re-run runtime:settings or runtime:doctor after completing the commands.',
@@ -1017,11 +1174,11 @@ function applyPluginManagementResults(plugins, pluginManagement) {
   }
 }
 
-function buildSettingsArtifactReport({ repoRoot, runId, written, executePluginManagement, applyCodexPluginHooks }) {
+function buildSettingsArtifactReport({ repoRoot, runId, written, executePluginManagement, executePluginCleanup, applyCodexPluginHooks }) {
   const settingsRoot = settingsArtifactRoot(repoRoot);
   const reportPath = runId ? settingsArtifactFile(repoRoot, runId) : null;
   const latestPath = resolve(settingsRoot, 'latest.json');
-  const writesArtifact = executePluginManagement || applyCodexPluginHooks;
+  const writesArtifact = executePluginManagement || executePluginCleanup || applyCodexPluginHooks;
   return {
     settings_execution: {
       schema_version: SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION,
@@ -1044,7 +1201,10 @@ async function writeSettingsExecutionArtifact({ repoRoot, runId, report, now }) 
   await mkdir(runDir, { recursive: true });
   const reportPath = settingsArtifactFile(repoRoot, validRunId);
   const latestPath = resolve(settingsArtifactRoot(repoRoot), 'latest.json');
-  const status = report.plugin_management.summary.failed > 0 ? 'failed' : 'completed';
+  const failedCount = report.plugin_management.summary.failed
+    + report.plugin_cleanup.summary.failed
+    + report.plugin_cleanup.summary.blocked;
+  const status = failedCount > 0 ? 'failed' : 'completed';
   const artifact = {
     schema_version: SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION,
     runtime_version: RUNTIME_VERSION,
@@ -1055,6 +1215,7 @@ async function writeSettingsExecutionArtifact({ repoRoot, runId, report, now }) 
     repo_root_pointer: '.',
     command: {
       execute_plugin_management: report.execute_plugin_management,
+      execute_plugin_cleanup: report.execute_plugin_cleanup,
       plugin_management_host: report.plugin_management.host_filter,
       plugin_management_timeout_ms: report.plugin_management.timeout_ms,
       apply_codex_plugin_hooks: report.apply_codex_plugin_hooks,
@@ -1062,6 +1223,7 @@ async function writeSettingsExecutionArtifact({ repoRoot, runId, report, now }) 
       target: report.config.targets.filter((target) => target.selected).map((target) => target.kind),
     },
     plugin_management: report.plugin_management,
+    plugin_cleanup: report.plugin_cleanup,
     codex_plugin_hooks: report.hook_settings.host_config,
     summary: {
       overall_status: report.overall.status,
@@ -1069,9 +1231,15 @@ async function writeSettingsExecutionArtifact({ repoRoot, runId, report, now }) 
       failed: report.plugin_management.summary.failed,
       failed_retryable: report.plugin_management.summary.failed_retryable,
       failed_non_retryable: report.plugin_management.summary.failed_non_retryable,
+      plugin_cleanup_executed: report.plugin_cleanup.summary.executed,
+      plugin_cleanup_failed: report.plugin_cleanup.summary.failed,
+      plugin_cleanup_blocked: report.plugin_cleanup.summary.blocked,
       codex_plugin_hooks_applied: Boolean(report.hook_settings.host_config?.applied),
     },
-    failures: extractPluginManagementFailures(report.plugin_management.plans),
+    failures: [
+      ...extractPluginManagementFailures(report.plugin_management.plans),
+      ...extractPluginCleanupFailures(report.plugin_cleanup.plans),
+    ],
     doctor_integration: {
       status: 'readable_by_runtime_doctor',
       command: 'runtime:doctor --format json',
@@ -1080,7 +1248,7 @@ async function writeSettingsExecutionArtifact({ repoRoot, runId, report, now }) 
     limits: [
       'Raw stdout and stderr are not stored in settings execution artifacts.',
       'Artifacts record command status, exit code, byte counts, timing, failure type, retryability, and doctor hints only.',
-      'Artifacts do not authorize automatic retry, install, update, auth, sandbox, or permission mutation.',
+      'Artifacts do not authorize automatic retry, install, update, general uninstall, auth, sandbox, or permission mutation.',
     ],
   };
   await writeJson(reportPath, artifact);
@@ -1098,6 +1266,7 @@ async function writeSettingsExecutionArtifact({ repoRoot, runId, report, now }) 
     runId: validRunId,
     written: true,
     executePluginManagement: report.execute_plugin_management,
+    executePluginCleanup: report.execute_plugin_cleanup,
     applyCodexPluginHooks: report.apply_codex_plugin_hooks,
   });
 }
@@ -1107,6 +1276,7 @@ function extractPluginManagementFailures(plans) {
     .filter((plan) => plan.status === 'failed')
     .map((plan) => ({
       id: plan.id,
+      area: 'plugin-management',
       plugin: plan.plugin,
       host: plan.host,
       action: plan.action,
@@ -1115,6 +1285,23 @@ function extractPluginManagementFailures(plans) {
       retryable: plan.result?.retryable === true,
       retry_after: plan.result?.retry_after ?? null,
       doctor_hint: plan.result?.doctor_hint ?? null,
+    }));
+}
+
+function extractPluginCleanupFailures(plans) {
+  return plans
+    .filter((plan) => ['failed', 'blocked'].includes(plan.status))
+    .map((plan) => ({
+      id: `${plan.plugin}:${plan.host}:${plan.action}`,
+      area: 'plugin-cleanup',
+      plugin: plan.plugin,
+      host: plan.host,
+      action: plan.action,
+      command: plan.command,
+      failure_type: plan.status === 'blocked' ? 'blocked' : plan.result?.failure_type ?? 'host_command_failed',
+      retryable: plan.result?.retryable === true,
+      retry_after: plan.result?.retry_after ?? plan.next_step ?? null,
+      doctor_hint: plan.result?.doctor_hint ?? 'runtime:doctor reports retired or unknown plugin cleanup follow-ups',
     }));
 }
 
@@ -1523,7 +1710,9 @@ function summarizeSettings(report) {
   const hookWarnings = (report.hook_settings?.recommendations ?? []).filter((rec) => rec.severity === 'warning').length;
   const authWarnings = Object.values(report.clis).filter((cli) => ['manual_required', 'manual_check'].includes(cli.auth_plan?.status)).length;
   const pluginManagementFailed = report.plugin_management.summary.failed;
-  const pluginCleanupWarnings = report.plugin_cleanup?.summary?.planned ?? 0;
+  const pluginCleanupWarnings = (report.plugin_cleanup?.summary?.manual_required ?? 0)
+    + (report.plugin_cleanup?.summary?.blocked ?? 0)
+    + (report.plugin_cleanup?.summary?.failed ?? 0);
   return {
     status: missingCli > 0 || settingWarnings > 0 || hookWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 || pluginCleanupWarnings > 0 ? 'warning' : 'pass',
     planned_config_writes: writeCount,
@@ -1585,7 +1774,7 @@ export function formatText(report) {
   lines.push(`- mode: ${report.plugin_management.mode}; requested=${report.plugin_management.requested}; host-filter=${report.plugin_management.host_filter}; timeout-ms=${report.plugin_management.timeout_ms}`);
   if (report.plugin_command_surface?.claude) {
     const surface = report.plugin_command_surface.claude;
-    lines.push(`- claude command surface: mode=${surface.mode}; install=${Boolean(surface.supports.install_plugin)}; list=${Boolean(surface.supports.list_plugin)}; materialization=${surface.materialization.status}`);
+    lines.push(`- claude command surface: mode=${surface.mode}; install=${Boolean(surface.supports.install_plugin)}; update=${Boolean(surface.supports.update_plugin)}; uninstall=${Boolean(surface.supports.uninstall_plugin)}; list=${Boolean(surface.supports.list_plugin)}; materialization=${surface.materialization.status}`);
     if (surface.observed_surfaces) {
       lines.push(`  observed: cli-plugin=${surface.observed_surfaces.cli_plugin}; slash-plugin=${surface.observed_surfaces.slash_plugin}`);
     }
@@ -1622,10 +1811,17 @@ export function formatText(report) {
   if (report.plugin_cleanup?.plans?.length > 0) {
     lines.push('');
     lines.push('Plugin Cleanup');
-    lines.push(`- summary: planned=${report.plugin_cleanup.summary.planned}; executable=${report.plugin_cleanup.summary.executable}`);
+    lines.push(`- mode: ${report.plugin_cleanup.mode}; requested=${report.plugin_cleanup.requested}; timeout-ms=${report.plugin_cleanup.timeout_ms}`);
+    lines.push(`- summary: planned=${report.plugin_cleanup.summary.planned}; executable=${report.plugin_cleanup.summary.executable}; executed=${report.plugin_cleanup.summary.executed}; failed=${report.plugin_cleanup.summary.failed}; blocked=${report.plugin_cleanup.summary.blocked}; manual-required=${report.plugin_cleanup.summary.manual_required}`);
     for (const plan of report.plugin_cleanup.plans) {
       lines.push(`- ${plan.plugin}/${plan.host}: ${plan.action}; status=${plan.status}; executable=${plan.executable}; executed=${plan.executed}; command=${plan.command}`);
+      if (plan.reason) lines.push(`  reason: ${plan.reason}`);
       lines.push(`  next: ${plan.next_step}`);
+      if (plan.result) {
+        lines.push(`  result: ok=${plan.result.ok}; exit=${plan.result.exit_code ?? '<none>'}; stdout-bytes=${plan.result.stdout_bytes}; stderr-bytes=${plan.result.stderr_bytes}; timed-out=${plan.result.timed_out}; failure-type=${plan.result.failure_type ?? '<none>'}; retryable=${plan.result.retryable}`);
+        if (plan.result.retry_after) lines.push(`  retry-after: ${plan.result.retry_after}`);
+        if (plan.result.doctor_hint) lines.push(`  doctor: ${plan.result.doctor_hint}`);
+      }
     }
   }
   lines.push('');
@@ -1678,14 +1874,12 @@ export function formatText(report) {
 }
 
 function formatSettingsMode(report) {
-  if (report.config_apply && report.execute_plugin_management && report.apply_codex_plugin_hooks) return 'config-apply+plugin-management+codex-plugin-hooks';
-  if (report.config_apply && report.execute_plugin_management) return 'config-apply+plugin-management';
-  if (report.config_apply && report.apply_codex_plugin_hooks) return 'config-apply+codex-plugin-hooks';
-  if (report.execute_plugin_management && report.apply_codex_plugin_hooks) return 'plugin-management+codex-plugin-hooks';
-  if (report.config_apply) return 'config-apply';
-  if (report.execute_plugin_management) return 'plugin-management';
-  if (report.apply_codex_plugin_hooks) return 'codex-plugin-hooks';
-  return 'dry-run';
+  const modes = [];
+  if (report.config_apply) modes.push('config-apply');
+  if (report.execute_plugin_management) modes.push('plugin-management');
+  if (report.execute_plugin_cleanup) modes.push('plugin-cleanup');
+  if (report.apply_codex_plugin_hooks) modes.push('codex-plugin-hooks');
+  return modes.length > 0 ? modes.join('+') : 'dry-run';
 }
 
 function semverCompare(a, b) {
@@ -1759,7 +1953,7 @@ function usage() {
     'Usage: settings.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex]',
     '  [--target repo|user|both] [--model <id>] [--effort <level>]',
     '  [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>]',
-    '  [--apply] [--apply-codex-plugin-hooks] [--execute-plugin-management] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>] [--run-id <settings-run-id>]',
+    '  [--apply] [--apply-codex-plugin-hooks] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>] [--run-id <settings-run-id>]',
     '',
   ].join('\n');
 }
@@ -1772,6 +1966,7 @@ export function parseArgs(argv) {
     target: 'both',
     apply: false,
     executePluginManagement: false,
+    executePluginCleanup: false,
     applyCodexPluginHooks: false,
     pluginManagementHost: 'all',
     pluginManagementTimeoutMs: DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS,
@@ -1799,6 +1994,8 @@ export function parseArgs(argv) {
       opts.applyCodexPluginHooks = true;
     } else if (arg === '--execute-plugin-management') {
       opts.executePluginManagement = true;
+    } else if (arg === '--execute-plugin-cleanup') {
+      opts.executePluginCleanup = true;
     } else if (arg === '--plugin-management-host') {
       opts.pluginManagementHost = requireValue(argv, ++i, arg);
       if (!PLUGIN_MANAGEMENT_HOSTS.has(opts.pluginManagementHost)) throw new Error('--plugin-management-host must be all, claude, or codex');
