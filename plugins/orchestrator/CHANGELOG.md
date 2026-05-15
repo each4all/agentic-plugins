@@ -5,7 +5,7 @@
 ### Features
 
 - **Meta-command parity**: `/orchestrator:resume`, `/orchestrator:checkpoint`, and `/orchestrator:peer-now` now ship as Claude command runbooks plus Codex meta skills. They mirror engineer continuity patterns while staying in the macro workflow namespace (`.claude/agentic-orchestrator`, `workflow_type: macro`).
-- **Checkpoint persistence**: orchestrator `state.mjs` now supports `latest_checkpoint` and `checkpoint-set`; Claude SessionStart re-injects `checkpoint_summary` / `checkpoint_at`, while Codex remains a manual write surface with no automatic SessionStart hook.
+- **Checkpoint persistence**: orchestrator `state.mjs` now supports `latest_checkpoint` and `checkpoint-set`; Claude SessionStart re-injects `checkpoint_summary` / `checkpoint_at`, and Codex does the same after plugin hooks are enabled and reviewed/trusted in `/hooks`.
 - **`/orchestrator:audit` follow-up alias**: audit findings can be turned into a macro remediation plan via canonical `/orchestrator:plan Audit follow-up: ...`; the state verb remains `plan` and workflow ids remain `macro-plan-...`.
 - **ADR-0019 PR-E — macro completion lifecycle**: `/orchestrator:finalize` + `/orchestrator:abort` slash-command runbooks implement the §5 three-step ritual (bulk subtask status transition → active-children detach pass → terminal markers). Engineer children are routed cross-plugin via the new `state.mjs` `stop-archive` / `detach-archive` CLIs (PR-E engineer side; orchestrator probes the child's `git_baseline.branch` HEAD via `git rev-parse` and passes it as explicit `--head-sha` per ADR-0019 §5 D-ε′).
 - **Macro auto-archive A1–A4** on `Stop`: orchestrator hooks (Claude auto + Codex manual helper) now invoke `runMacroStopArchiveAll` which iterates every non-archived macro under `workflows/`, snapshots each, evaluates the four hard gates (terminal_marker / macro terminal_phase / all_subtasks_terminal / no_active_engineer_children), and atomically moves passing macros into `archive/`. Branch-agnostic discovery — the Stop event firing on a subtask branch still archives the parent macro on its own branch.
@@ -23,7 +23,6 @@
 
 ### Bug Fixes
 
-* add Codex-native lifecycle hook manifests ([b6caba4](https://github.com/each4all/agentic-plugins/commit/b6caba4c195180b9921573ba6ed188a25b29d903))
 * **plugin/orchestrator:** add Codex-native lifecycle hooks ([53de0f1](https://github.com/each4all/agentic-plugins/commit/53de0f11a3302da91013551ed4d538178d2cfdd0))
 
 ## [0.7.1](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.7.0...plugin-orchestrator-v0.7.1) (2026-05-14)
