@@ -1,6 +1,6 @@
 ---
 name: settings
-description: "Dry-run runtime settings planner for agentic-plugins. Use when the user wants to inspect marketplace/plugin/CLI readiness, plan repo-local or user-global model/effort defaults, explicitly execute allowlisted plugin install/update commands, explicitly clean up retired agentic-plugins Claude plugins, or explicitly enable Codex plugin_hooks. Mutates only agentic-plugins-owned config when --apply is explicit; writes Codex plugin_hooks only when --apply-codex-plugin-hooks is explicit; runs plugin management only when --execute-plugin-management is explicit; runs retired plugin cleanup only when --execute-plugin-cleanup is explicit."
+description: "Dry-run runtime settings planner for agentic-plugins. Use when the user wants to inspect marketplace/plugin/CLI readiness, plan repo-local or user-global model/effort defaults, explicitly execute allowlisted plugin install/update commands, explicitly clean up retired agentic-plugins Claude plugins, explicitly enable Codex plugin_hooks, or record a Codex /hooks review attestation. Mutates only agentic-plugins-owned config when --apply is explicit; writes Codex plugin_hooks only when --apply-codex-plugin-hooks is explicit; runs plugin management only when --execute-plugin-management is explicit; runs retired plugin cleanup only when --execute-plugin-cleanup is explicit; records hook-review attestation only when --attest-codex-hook-review is explicit."
 ---
 
 # Settings (runtime framework primitive)
@@ -15,7 +15,7 @@ description: "Dry-run runtime settings planner for agentic-plugins. Use when the
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply] [--apply-codex-plugin-hooks] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]
+node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply] [--apply-codex-plugin-hooks] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]
 ```
 
 3. Present the result as a settings plan, not as proof of host parity.
@@ -23,7 +23,7 @@ node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--fo
    - `--apply` may write only `.agentic-plugins/config.toml` in the repo and/or user home.
    - `--execute-plugin-management` runs only allowlisted host-native plugin install/update/add/upgrade commands. It preflights the relevant host plugin command surface first, uses Claude's non-slash `claude plugin install/update` CLI when available, blocks unavailable CLI surfaces before execution, does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts under `.agentic-plugins/runs/settings/<run-id>/`, and treats host "plugin surface unavailable" output as failed even when the host exits 0.
    - `--execute-plugin-cleanup` runs only `claude plugin uninstall <plugin>@agentic-plugins` commands generated from `runtime:doctor` retired/unknown `agentic-plugins` findings. It blocks unavailable Claude plugin surfaces, does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts, and does not authorize general plugin uninstall.
-   - Codex bundled plugin hooks are planned separately: report packaged hook plugins, `plugin_hooks` status, the session/config steps needed to enable them, and the `/hooks` manual follow-up when active-session review/trust cannot be verified. `--apply-codex-plugin-hooks` may write only `~/.codex/config.toml` `[features].plugin_hooks = true`.
+   - Codex bundled plugin hooks are planned separately: report packaged hook plugins, `plugin_hooks` status, the session/config steps needed to enable them, and the `/hooks` manual follow-up when active-session review/trust cannot be verified. `--apply-codex-plugin-hooks` may write only `~/.codex/config.toml` `[features].plugin_hooks = true`. After the operator reviews/trusts hooks in Codex with `/hooks`, `--attest-codex-hook-review` records a sanitized settings artifact that doctor can use while the hook-bearing plugin set and source versions still match.
 
 ## Scope
 
@@ -58,6 +58,9 @@ Settings reports and plans:
 - Manual Codex `/hooks` follow-up when bundled plugin hooks are packaged and
   `plugin_hooks` is enabled but settings cannot verify active-session hook
   review/trust state.
+- Codex `/hooks` operator attestation, behind `--attest-codex-hook-review`,
+  recorded only as a settings artifact. This is not host-native proof and does
+  not mutate Codex trust state.
 
 ## Apply Boundary
 
@@ -108,6 +111,17 @@ This does not trust hooks, change sandbox/approval/auth settings, or enable any
 other Codex feature. Start a fresh Codex session or use the reported session
 command, then review/trust hooks with `/hooks`; when plugin hooks are already
 ready, settings reports that `/hooks` step in `Manual Follow-ups`.
+
+Codex hook review attestation is explicit and artifact-only:
+
+```bash
+$runtime:settings --attest-codex-hook-review
+```
+
+Run it only after the active Codex session has opened `/hooks` and the operator
+has reviewed/trusted the bundled agentic-plugins hooks. It records the current
+hook-bearing plugin set and source versions so `runtime:doctor` can clear the
+manual follow-up until those change.
 
 If Codex already has a current temporary marketplace cache but no per-plugin
 install cache, report that as manual cache materialization. The observed Codex

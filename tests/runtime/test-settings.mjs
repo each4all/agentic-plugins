@@ -69,7 +69,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.8');
+    strictEqual(report.schema_version, 'runtime-settings-1.9');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -382,6 +382,38 @@ describe('runtime settings', () => {
     ok(formatText(report).includes('command: /hooks'));
   });
 
+  it('records Codex hook review attestation behind an explicit flag', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-attest-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-attest-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      attestCodexHookReview: true,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    strictEqual(report.dry_run, false);
+    strictEqual(report.attest_codex_hook_review, true);
+    strictEqual(report.codex_hook_review.status, 'attested');
+    strictEqual(report.codex_hook_review.attested, true);
+    deepStrictEqual(report.codex_hook_review.bundled_plugins, ['engineer', 'orchestrator']);
+    strictEqual(report.plugin_management.manual_followups.find((entry) => entry.id === 'codex-hook-review'), undefined);
+    strictEqual(report.artifacts.settings_execution.written, true);
+
+    const artifact = JSON.parse(await readFile(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'), 'utf8'));
+    strictEqual(artifact.command.attest_codex_hook_review, true);
+    strictEqual(artifact.codex_hook_review.status, 'attested');
+    strictEqual(artifact.summary.codex_hook_review_attested, true);
+    ok(formatText(report).includes('Codex Hook Review'));
+    ok(formatText(report).includes(`runtime:settings ${RUNTIME_VERSION} (codex-hook-review)`));
+  });
+
   it('applies Codex plugin_hooks to user config only behind the explicit flag', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-apply-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-apply-home-'));
@@ -437,7 +469,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.8');
+    strictEqual(report.schema_version, 'runtime-settings-1.9');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -653,6 +685,7 @@ describe('runtime settings', () => {
       'high',
       '--apply',
       '--apply-codex-plugin-hooks',
+      '--attest-codex-hook-review',
       '--execute-plugin-management',
       '--execute-plugin-cleanup',
       '--plugin-management-host',
@@ -668,6 +701,7 @@ describe('runtime settings', () => {
     strictEqual(opts.target, 'user');
     strictEqual(opts.apply, true);
     strictEqual(opts.applyCodexPluginHooks, true);
+    strictEqual(opts.attestCodexHookReview, true);
     strictEqual(opts.executePluginManagement, true);
     strictEqual(opts.executePluginCleanup, true);
     strictEqual(opts.pluginManagementHost, 'codex');
