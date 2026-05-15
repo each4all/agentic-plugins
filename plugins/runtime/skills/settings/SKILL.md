@@ -21,7 +21,7 @@ node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--fo
 3. Present the result as a settings plan, not as proof of host parity.
    - Dry-run output is the default and must be safe to run repeatedly.
    - `--apply` may write only `.agentic-plugins/config.toml` in the repo and/or user home.
-   - `--execute-plugin-management` runs only allowlisted host-native plugin install/update/add/upgrade commands. It preflights the relevant host plugin command surface first, blocks unavailable surfaces before execution, does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts under `.agentic-plugins/runs/settings/<run-id>/`, and treats host "plugin surface unavailable" output as failed even when the host exits 0.
+   - `--execute-plugin-management` runs only allowlisted host-native plugin install/update/add/upgrade commands. It preflights the relevant host plugin command surface first, uses Claude's non-slash `claude plugin install/update` CLI when available, blocks unavailable CLI surfaces before execution, does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts under `.agentic-plugins/runs/settings/<run-id>/`, and treats host "plugin surface unavailable" output as failed even when the host exits 0.
    - Codex bundled plugin hooks are planned separately: report packaged hook plugins, `plugin_hooks` status, the session/config steps needed to enable them, and the `/hooks` manual follow-up when active-session review/trust cannot be verified. `--apply-codex-plugin-hooks` may write only `~/.codex/config.toml` `[features].plugin_hooks = true`.
 
 ## Scope
@@ -102,11 +102,13 @@ per-plugin `codex plugin install` step.
 The executor records only status, exit code, byte counts, timing, and sanitized
 error metadata. It omits raw stdout and stderr. A host command that exits 0 can
 still be marked failed if its sanitized output indicates the plugin command
-surface was unavailable. If the Claude `/plugin` surface is unavailable before
-execution, retired Claude plugin cleanup is required, or Codex packaged hooks
-need active-session review/trust, settings emits a manual follow-up checklist
-with the interactive `/plugin ...` or `/hooks` commands to run from the relevant
-host session.
+surface was unavailable. If the Claude `claude plugin ...` CLI surface is
+unavailable before execution, retired Claude plugin cleanup is required, or
+Codex packaged hooks need active-session review/trust, settings emits a manual
+follow-up checklist with the host-native `claude plugin ...` or `/hooks`
+commands to run from the relevant host session. A failed slash `/plugin` probe
+is reported as host asymmetry but does not block execution when the non-slash
+Claude plugin CLI is available.
 Executed plugin-management runs write
 `.agentic-plugins/runs/settings/<run-id>/settings.json` and update
 `.agentic-plugins/runs/settings/latest.json`; `runtime:doctor` reads the latest

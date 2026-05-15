@@ -82,11 +82,11 @@ cited-brief contract is now folded into `engineer:investigate`.
 
 ```sh
 # Claude Code
-/plugin marketplace add each4all/agentic-plugins
-/plugin install companions@agentic-plugins
-/plugin install engineer@agentic-plugins
-/plugin install orchestrator@agentic-plugins
-/plugin install runtime@agentic-plugins
+claude plugin marketplace add each4all/agentic-plugins
+claude plugin install companions@agentic-plugins
+claude plugin install engineer@agentic-plugins
+claude plugin install orchestrator@agentic-plugins
+claude plugin install runtime@agentic-plugins
 
 # OpenAI Codex CLI
 codex plugin marketplace add each4all/agentic-plugins

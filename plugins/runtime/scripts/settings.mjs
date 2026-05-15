@@ -451,7 +451,7 @@ function buildPluginCleanupPlans(hostParityIssues) {
       severity: issue.severity ?? 'warning',
       executable: false,
       executed: false,
-      command: `claude /plugin uninstall ${plugin}@agentic-plugins`,
+      command: `claude plugin uninstall ${plugin}@agentic-plugins`,
       detail: issue.summary,
       evidence: issue.evidence,
       next_step: issue.next_step,
@@ -634,10 +634,10 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
 
 function buildPluginCommand({ host, action, name }) {
   if (host === 'claude' && action === 'install-plugin') {
-    return commandSpec('claude', ['/plugin', 'install', `${name}@agentic-plugins`]);
+    return commandSpec('claude', ['plugin', 'install', `${name}@agentic-plugins`]);
   }
   if (host === 'claude' && action === 'update-plugin') {
-    return commandSpec('claude', ['/plugin', 'update', `${name}@agentic-plugins`]);
+    return commandSpec('claude', ['plugin', 'update', `${name}@agentic-plugins`]);
   }
   if (host === 'codex' && action === 'add-marketplace') {
     return commandSpec('codex', ['plugin', 'marketplace', 'add', 'each4all/agentic-plugins']);
@@ -738,17 +738,17 @@ function buildPluginManagementManualFollowups(plans) {
   const claudeSurfaceBlocked = plans.filter((plan) => (
     plan.host === 'claude'
       && plan.status === 'blocked'
-      && /plugin command surface is (?:unavailable|blocked)/i.test(plan.reason ?? '')
+      && /claude plugin CLI (?:is unavailable|install\/update surface is not available)|plugin command surface is (?:unavailable|blocked)/i.test(plan.reason ?? '')
   ));
   if (claudeSurfaceBlocked.length > 0) {
     followups.push({
       id: 'claude-plugin-surface-unavailable',
       host: 'claude',
       status: 'manual_required',
-      reason: 'Claude /plugin command surface is unavailable to runtime:settings in this environment.',
-      environment: 'Open an interactive Claude Code session that supports /plugin commands.',
+      reason: 'Claude plugin CLI command surface is unavailable to runtime:settings in this environment.',
+      environment: 'Open a Claude Code environment that supports claude plugin commands.',
       commands: uniqueStrings(claudeSurfaceBlocked
-        .map((plan) => claudeSlashCommand(plan.argv?.args))
+        .map((plan) => claudePluginCommand(plan.argv?.args))
         .filter(Boolean)),
       verify: 'Re-run runtime:settings or runtime:doctor after completing the commands.',
     });
@@ -764,7 +764,7 @@ function buildPluginCleanupManualFollowups(plans) {
   ));
   if (cleanupPlans.length === 0) return [];
   const commands = uniqueStrings(cleanupPlans
-    .map((plan) => claudeCommandDisplayToSlashCommand(plan.command))
+    .map((plan) => claudeCommandDisplay(plan.command))
     .filter(Boolean));
   if (commands.length === 0) return [];
   return [{
@@ -772,7 +772,7 @@ function buildPluginCleanupManualFollowups(plans) {
     host: 'claude',
     status: 'manual_required',
     reason: 'Claude has retired or unknown agentic-plugins entries that runtime:settings will not uninstall automatically.',
-    environment: 'Open an interactive Claude Code session that supports /plugin commands.',
+    environment: 'Open a Claude Code environment that supports claude plugin commands.',
     commands,
     verify: 'Re-run runtime:settings or runtime:doctor after completing the commands.',
   }];
@@ -811,14 +811,14 @@ function mergeManualFollowups(...groups) {
   return Array.from(byId.values());
 }
 
-function claudeSlashCommand(args) {
-  if (!Array.isArray(args) || args[0] !== '/plugin') return null;
-  return args.join(' ');
+function claudePluginCommand(args) {
+  if (!Array.isArray(args) || args[0] !== 'plugin') return null;
+  return ['claude', ...args].join(' ');
 }
 
-function claudeCommandDisplayToSlashCommand(command) {
+function claudeCommandDisplay(command) {
   if (typeof command !== 'string') return null;
-  const match = command.match(/^claude\s+(\/plugin\s+.+)$/);
+  const match = command.match(/^(claude\s+plugin\s+.+)$/);
   return match ? match[1] : null;
 }
 
@@ -856,11 +856,22 @@ function classifyPluginManagementPlan({ recommendation, hostFilter, clis }) {
       reason: `${recommendation.host} CLI is not available`,
     };
   }
-  if (recommendation.host === 'claude' && ['unavailable', 'blocked'].includes(cli.plugin_surface?.status)) {
+  if (recommendation.host === 'claude' && ['unavailable', 'blocked'].includes(cli.plugin?.status)) {
     return {
       status: 'blocked',
       executable: false,
-      reason: `claude plugin command surface is ${cli.plugin_surface.status}`,
+      reason: `claude plugin CLI is ${cli.plugin.status}`,
+    };
+  }
+  if (
+    recommendation.host === 'claude'
+      && ['install-plugin', 'update-plugin'].includes(recommendation.action)
+      && !cli.feature_surface?.plugin_install_command
+  ) {
+    return {
+      status: 'blocked',
+      executable: false,
+      reason: 'claude plugin CLI install/update surface is not available',
     };
   }
   return {
@@ -873,10 +884,10 @@ function classifyPluginManagementPlan({ recommendation, hostFilter, clis }) {
 function classifyPluginManagementSemanticFailure({ plan, result }) {
   if (!result.ok) return null;
   const text = `${result.error_code ?? ''}\n${result.error_message ?? ''}\n${result.stderr ?? ''}\n${result.stdout ?? ''}`.toLowerCase();
-  if (plan.host === 'claude' && /\/plugin (?:isn't|is not) available in this environment/.test(text)) {
+  if (plan.host === 'claude' && /(?:\/plugin|plugin) (?:isn't|is not) available in this environment/.test(text)) {
     return {
       error_code: 'HOST_PLUGIN_SURFACE_UNAVAILABLE',
-      error_message: 'Claude /plugin command is not available in this environment',
+      error_message: 'Claude plugin command is not available in this environment',
     };
   }
   return null;
@@ -940,11 +951,11 @@ function classifyPluginManagementFailure(result) {
       doctor_hint: 'runtime:doctor reports host CLI availability',
     });
   }
-  if (errorCode === 'HOST_PLUGIN_SURFACE_UNAVAILABLE' || /\/plugin (?:isn't|is not) available in this environment/.test(text)) {
+  if (errorCode === 'HOST_PLUGIN_SURFACE_UNAVAILABLE' || /(?:\/plugin|plugin) (?:isn't|is not) available in this environment/.test(text)) {
     return failureClass({
       type: 'host_plugin_surface_unavailable',
       retryable: false,
-      retry_after: 'retry only from a Claude Code environment that supports /plugin commands',
+      retry_after: 'retry only from a Claude Code environment that supports claude plugin commands',
       doctor_hint: 'runtime:doctor reports host plugin cache state after settings execution',
     });
   }
@@ -1575,6 +1586,9 @@ export function formatText(report) {
   if (report.plugin_command_surface?.claude) {
     const surface = report.plugin_command_surface.claude;
     lines.push(`- claude command surface: mode=${surface.mode}; install=${Boolean(surface.supports.install_plugin)}; list=${Boolean(surface.supports.list_plugin)}; materialization=${surface.materialization.status}`);
+    if (surface.observed_surfaces) {
+      lines.push(`  observed: cli-plugin=${surface.observed_surfaces.cli_plugin}; slash-plugin=${surface.observed_surfaces.slash_plugin}`);
+    }
   }
   if (report.plugin_command_surface?.codex) {
     const surface = report.plugin_command_surface.codex;

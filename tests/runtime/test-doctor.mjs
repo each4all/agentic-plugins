@@ -30,6 +30,7 @@ describe('runtime doctor', () => {
           orgName: 'private org',
           subscriptionType: 'max',
         })),
+        'claude plugin --help': okResult('Commands:\n  install\n  list\n  update\n  uninstall\n'),
         'claude plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.1.0\n    Scope: user\n    Status: enabled\n'),
         'claude /plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.1.0\n    Scope: user\n    Status: enabled\n'),
         'codex --version': okResult('codex-cli 0.130.0\n'),
@@ -64,9 +65,10 @@ describe('runtime doctor', () => {
     strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks, false);
     strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks_stage, 'under development');
     strictEqual(report.clis.codex.feature_surface.automatic_plugin_hooks, false);
-    strictEqual(report.plugin_command_surface.schema_version, 'runtime-plugin-command-surface-1.1');
+    strictEqual(report.plugin_command_surface.schema_version, 'runtime-plugin-command-surface-1.2');
     strictEqual(report.plugin_command_surface.claude.mode, 'per-plugin-command');
     strictEqual(report.plugin_command_surface.claude.materialization.status, 'host-native-plugin-command');
+    strictEqual(report.plugin_command_surface.claude.observed_surfaces.cli_plugin, 'available');
     deepStrictEqual(report.plugin_command_surface.manual_followups, []);
     strictEqual(report.plugin_command_surface.codex.mode, 'marketplace-only');
     strictEqual(report.plugin_command_surface.codex.supports.marketplace_add, true);
@@ -119,7 +121,7 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('Host Parity'));
   });
 
-  it('reports unavailable Claude slash plugin surface separately from plugin list parsing', async () => {
+  it('reports unavailable Claude slash plugin surface without blocking Claude plugin CLI management', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-claude-plugin-surface-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
@@ -134,23 +136,16 @@ describe('runtime doctor', () => {
 
     strictEqual(report.clis.claude.plugin_surface.status, 'unavailable');
     strictEqual(report.clis.claude.plugin_surface.error_code, 'HOST_PLUGIN_SURFACE_UNAVAILABLE');
-    strictEqual(report.plugin_command_surface.claude.mode, 'unavailable');
-    strictEqual(report.plugin_command_surface.claude.supports.install_plugin, false);
-    strictEqual(report.plugin_command_surface.claude.supports.list_plugin, false);
-    strictEqual(report.plugin_command_surface.claude.materialization.status, 'blocked');
-    strictEqual(report.plugin_command_surface.claude.materialization.executable_by_settings, false);
-    strictEqual(report.plugin_command_surface.manual_followups.length, 1);
-    strictEqual(report.plugin_command_surface.manual_followups[0].id, 'claude-plugin-surface-unavailable');
-    strictEqual(report.plugin_command_surface.manual_followups[0].status, 'manual_required');
-    deepStrictEqual(report.plugin_command_surface.manual_followups[0].commands, [
-      '/plugin install companions@agentic-plugins',
-      '/plugin install engineer@agentic-plugins',
-      '/plugin install orchestrator@agentic-plugins',
-      '/plugin install runtime@agentic-plugins',
-    ]);
-    ok(formatText(report).includes('claude: mode=unavailable'));
-    ok(formatText(report).includes('Manual Follow-ups'));
-    ok(formatText(report).includes('command: /plugin install runtime@agentic-plugins'));
+    strictEqual(report.plugin_command_surface.claude.status, 'available');
+    strictEqual(report.plugin_command_surface.claude.mode, 'per-plugin-command');
+    strictEqual(report.plugin_command_surface.claude.supports.install_plugin, true);
+    strictEqual(report.plugin_command_surface.claude.supports.list_plugin, true);
+    strictEqual(report.plugin_command_surface.claude.observed_surfaces.slash_plugin, 'unavailable');
+    strictEqual(report.plugin_command_surface.claude.materialization.status, 'host-native-plugin-command');
+    strictEqual(report.plugin_command_surface.claude.materialization.executable_by_settings, true);
+    deepStrictEqual(report.plugin_command_surface.manual_followups, []);
+    ok(formatText(report).includes('claude: mode=per-plugin-command'));
+    ok(formatText(report).includes('observed: cli-plugin=available; slash-plugin=unavailable'));
   });
 
   it('flags hook-bearing Codex plugins that do not expose hooks in their manifest', async () => {
@@ -299,10 +294,10 @@ describe('runtime doctor', () => {
     ok(report.host_parity.issues.some((issue) => issue.id === 'claude_retired_or_unknown_plugin' && issue.plugin === 'research'));
     ok(report.plugin_command_surface.manual_followups.some((followup) => (
       followup.id === 'claude-retired-plugin-cleanup'
-        && followup.commands.includes('/plugin uninstall research@agentic-plugins')
+        && followup.commands.includes('claude plugin uninstall research@agentic-plugins')
     )));
     strictEqual(report.host_parity.status, 'warning');
-    ok(formatText(report).includes('command: /plugin uninstall research@agentic-plugins'));
+    ok(formatText(report).includes('command: claude plugin uninstall research@agentic-plugins'));
     ok(formatText(report).includes('claude_retired_or_unknown_plugin'));
   });
 
@@ -1048,6 +1043,7 @@ function defaultRuntimeProbeMap() {
     'claude --version': okResult('2.1.140 (Claude Code)\n'),
     'claude --help': okResult('Usage: claude --print --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n'),
     'claude auth status': okResult(JSON.stringify({ loggedIn: true })),
+    'claude plugin --help': okResult('Commands:\n  install\n  list\n  update\n  uninstall\n'),
     'claude plugin list': okResult(''),
     'claude /plugin list': okResult('Installed plugins:\n'),
     'codex --version': okResult('codex-cli 0.130.0\n'),

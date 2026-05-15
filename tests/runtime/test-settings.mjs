@@ -175,15 +175,15 @@ describe('runtime settings', () => {
     const plan = report.plugin_cleanup.plans[0];
     strictEqual(plan.action, 'uninstall-retired-plugin');
     strictEqual(plan.executable, false);
-    strictEqual(plan.command, 'claude /plugin uninstall research@agentic-plugins');
+    strictEqual(plan.command, 'claude plugin uninstall research@agentic-plugins');
     strictEqual(report.plugin_management.manual_followups.length, 1);
     strictEqual(report.plugin_management.manual_followups[0].id, 'claude-retired-plugin-cleanup');
     deepStrictEqual(report.plugin_management.manual_followups[0].commands, [
-      '/plugin uninstall research@agentic-plugins',
+      'claude plugin uninstall research@agentic-plugins',
     ]);
     ok(report.recommendations.some((rec) => rec.area === 'plugin-cleanup' && rec.plugin === 'research' && rec.executable === false));
     ok(formatText(report).includes('Manual Follow-ups'));
-    ok(formatText(report).includes('command: /plugin uninstall research@agentic-plugins'));
+    ok(formatText(report).includes('command: claude plugin uninstall research@agentic-plugins'));
     ok(formatText(report).includes('Plugin Cleanup'));
     ok(formatText(report).includes('research/claude: uninstall-retired-plugin'));
   });
@@ -447,12 +447,12 @@ describe('runtime settings', () => {
     ok(!JSON.stringify(report).includes('RAW OUTPUT MUST NOT LEAK'), 'plugin management report must not include raw command output');
   });
 
-  it('fails zero-exit Claude plugin commands when the plugin surface is unavailable', async () => {
+  it('fails zero-exit Claude plugin commands when the plugin CLI reports unavailable', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-claude-plugin-unavailable-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-claude-plugin-unavailable-home-'));
     await seedRepo(root);
 
-    const unavailable = okResult("RAW /plugin isn't available in this environment.\n");
+    const unavailable = okResult("RAW plugin isn't available in this environment.\n");
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
@@ -460,14 +460,14 @@ describe('runtime settings', () => {
       pluginManagementHost: 'claude',
       runner: fakeRunner({
         ...defaultCliMap(),
-        'claude /plugin install companions@agentic-plugins': unavailable,
-        'claude /plugin install engineer@agentic-plugins': unavailable,
-        'claude /plugin install orchestrator@agentic-plugins': unavailable,
-        'claude /plugin install runtime@agentic-plugins': unavailable,
-        'claude /plugin update companions@agentic-plugins': unavailable,
-        'claude /plugin update engineer@agentic-plugins': unavailable,
-        'claude /plugin update orchestrator@agentic-plugins': unavailable,
-        'claude /plugin update runtime@agentic-plugins': unavailable,
+        'claude plugin install companions@agentic-plugins': unavailable,
+        'claude plugin install engineer@agentic-plugins': unavailable,
+        'claude plugin install orchestrator@agentic-plugins': unavailable,
+        'claude plugin install runtime@agentic-plugins': unavailable,
+        'claude plugin update companions@agentic-plugins': unavailable,
+        'claude plugin update engineer@agentic-plugins': unavailable,
+        'claude plugin update orchestrator@agentic-plugins': unavailable,
+        'claude plugin update runtime@agentic-plugins': unavailable,
       }),
     });
 
@@ -482,10 +482,10 @@ describe('runtime settings', () => {
       strictEqual(plan.result.failure_type, 'host_plugin_surface_unavailable');
       strictEqual(plan.result.retryable, false);
     }
-    ok(!JSON.stringify(report).includes('RAW /plugin'), 'plugin management report must not include raw command output');
+    ok(!JSON.stringify(report).includes('RAW plugin'), 'plugin management report must not include raw command output');
   });
 
-  it('blocks Claude plugin management when slash plugin surface preflight is unavailable', async () => {
+  it('executes Claude plugin management when only the slash plugin surface is unavailable', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-claude-plugin-preflight-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-claude-plugin-preflight-home-'));
     await seedRepo(root);
@@ -499,29 +499,25 @@ describe('runtime settings', () => {
       runner: fakeRunner({
         ...defaultCliMap(),
         'claude /plugin list': okResult("/plugin isn't available in this environment.\n"),
+        'claude plugin install companions@agentic-plugins': okResult('installed companions\n'),
+        'claude plugin install engineer@agentic-plugins': okResult('installed engineer\n'),
+        'claude plugin install orchestrator@agentic-plugins': okResult('installed orchestrator\n'),
       }, calls),
     });
 
     const claudePlans = report.plugin_management.plans.filter((plan) => plan.host === 'claude');
     ok(claudePlans.length > 0);
-    strictEqual(report.plugin_command_surface.claude.mode, 'unavailable');
-    strictEqual(report.plugin_management.summary.blocked, claudePlans.length);
-    strictEqual(report.plugin_management.summary.executed, 0);
+    strictEqual(report.plugin_command_surface.claude.mode, 'per-plugin-command');
+    strictEqual(report.plugin_command_surface.claude.observed_surfaces.slash_plugin, 'unavailable');
+    strictEqual(report.plugin_management.summary.blocked, 0);
+    strictEqual(report.plugin_management.summary.executed, 3);
     strictEqual(report.plugin_management.summary.failed, 0);
-    ok(claudePlans.every((plan) => plan.status === 'blocked' && plan.reason.includes('plugin command surface')));
-    strictEqual(report.plugin_management.manual_followups.length, 1);
-    strictEqual(report.plugin_management.manual_followups[0].id, 'claude-plugin-surface-unavailable');
-    strictEqual(report.plugin_management.manual_followups[0].status, 'manual_required');
-    deepStrictEqual(
-      report.plugin_management.manual_followups[0].commands,
-      claudePlans.map((plan) => plan.argv.args.join(' ')),
-    );
-    ok(report.plugin_management.manual_followups[0].commands.every((command) => command.startsWith('/plugin ')));
+    ok(claudePlans.some((plan) => plan.status === 'executed' && plan.command === 'claude plugin install companions@agentic-plugins'));
+    strictEqual(report.plugin_management.manual_followups.length, 0);
     ok(calls.includes('claude /plugin list'));
+    ok(calls.includes('claude plugin install companions@agentic-plugins'));
     ok(!calls.some((call) => call.startsWith('claude /plugin install') || call.startsWith('claude /plugin update')));
-    ok(formatText(report).includes('claude command surface: mode=unavailable'));
-    ok(formatText(report).includes('Manual Follow-ups'));
-    ok(formatText(report).includes(`command: ${report.plugin_management.manual_followups[0].commands[0]}`));
+    ok(formatText(report).includes('claude command surface: mode=per-plugin-command'));
   });
 
   it('persists execution artifacts and classifies failed plugin-management retries', async () => {
@@ -666,6 +662,7 @@ function defaultCliMap() {
     'claude --version': okResult('2.1.140 (Claude Code)\n'),
     'claude --help': okResult('Usage: claude --print --output-format --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n'),
     'claude auth status': okResult(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' })),
+    'claude plugin --help': okResult('Commands:\n  install\n  list\n  update\n  uninstall\n'),
     'claude plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.1.0\n    Scope: user\n    Status: enabled\n'),
     'claude /plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.1.0\n    Scope: user\n    Status: enabled\n'),
     'codex --version': okResult('codex-cli 0.130.0\n'),
