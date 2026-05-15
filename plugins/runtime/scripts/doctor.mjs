@@ -189,6 +189,18 @@ export async function runDoctor({
     permissionProof: permissionProofSection,
     deepPeerSmoke: deepPeerSmokeSection,
   });
+  const experienceParity = buildExperienceParity({
+    readinessMatrix,
+    pluginCommandSurface,
+    codexPluginHooks,
+    companion,
+    readiness,
+    ledgers,
+    settingsRuns,
+    consensusRuns,
+    permissionProof: permissionProofSection,
+    deepPeerSmoke: deepPeerSmokeSection,
+  });
 
   const report = {
     schema_version: 'runtime-doctor-1.0',
@@ -214,6 +226,7 @@ export async function runDoctor({
     consensus_runs: consensusRuns,
     artifact_inventory: artifactInventorySection,
     readiness_matrix: readinessMatrix,
+    experience_parity: experienceParity,
     readiness,
     ledgers,
     limits: [
@@ -2224,6 +2237,284 @@ function buildReadinessMatrix({
   };
 }
 
+function buildExperienceParity({
+  readinessMatrix,
+  pluginCommandSurface,
+  codexPluginHooks,
+  companion,
+  readiness,
+  ledgers,
+  settingsRuns,
+  consensusRuns,
+  permissionProof,
+  deepPeerSmoke,
+}) {
+  const criteria = [
+    buildHostPluginExperienceCriterion(readinessMatrix),
+    buildPluginCommandExperienceCriterion(pluginCommandSurface),
+    buildCompanionExperienceCriterion(companion),
+    buildPeerExecutionExperienceCriterion({ readiness, permissionProof, deepPeerSmoke }),
+    buildWorkflowContinuityExperienceCriterion(ledgers),
+    buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommandSurface }),
+    buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns }),
+  ];
+  const totalWeight = criteria.reduce((sum, item) => sum + item.weight, 0);
+  const earnedWeight = criteria.reduce((sum, item) => sum + item.earned_weight, 0);
+  const counts = {
+    satisfied: criteria.filter((item) => item.status === 'satisfied').length,
+    partial: criteria.filter((item) => item.status === 'partial').length,
+    not_verified: criteria.filter((item) => item.status === 'not_verified').length,
+    blocked: criteria.filter((item) => item.status === 'blocked').length,
+  };
+  const nextActions = buildExperienceParityNextActions(criteria, pluginCommandSurface.manual_followups);
+  return {
+    schema_version: 'runtime-experience-parity-1.0',
+    status: counts.blocked > 0
+      ? 'blocked'
+      : counts.partial > 0 || counts.not_verified > 0
+        ? 'partial'
+        : 'ready',
+    score_percent: totalWeight === 0 ? 0 : Math.round((earnedWeight / totalWeight) * 100),
+    weight: {
+      earned: earnedWeight,
+      total: totalWeight,
+    },
+    counts,
+    criteria,
+    manual_followup_count: pluginCommandSurface.manual_followups?.length ?? 0,
+    next_actions: nextActions,
+    limits: [
+      'This score is an observed runtime experience-readiness summary, not a declaration that the overall project goal is complete.',
+      'Manual follow-ups and not-requested peer executors deliberately reduce the score until verified in the active host session.',
+      'Codex hook review/trust state is not host-verifiable here; /hooks remains an explicit operator check.',
+    ],
+  };
+}
+
+function buildHostPluginExperienceCriterion(readinessMatrix) {
+  const claude = readinessMatrix.hosts.claude.installed;
+  const codex = readinessMatrix.hosts.codex.installed;
+  const statuses = [claude.status, codex.status];
+  if (statuses.every((status) => status === 'installed')) {
+    return parityCriterion({
+      id: 'host_plugin_availability',
+      label: 'Runtime plugin available in both hosts',
+      status: 'satisfied',
+      weight: 15,
+      evidence: `claude=${claude.status}/${claude.version ?? 'unknown'}, codex=${codex.status}/${codex.version ?? 'unknown'}`,
+      next_step: null,
+    });
+  }
+  const blocked = statuses.some((status) => ['blocked', 'not_installed'].includes(status));
+  return parityCriterion({
+    id: 'host_plugin_availability',
+    label: 'Runtime plugin available in both hosts',
+    status: blocked ? 'blocked' : 'partial',
+    weight: 15,
+    evidence: `claude=${claude.status}/${claude.version ?? 'unknown'}, codex=${codex.status}/${codex.version ?? 'unknown'}`,
+    next_step: 'Install/update runtime in the host that lacks installed cache evidence, then rerun runtime:doctor.',
+  });
+}
+
+function buildPluginCommandExperienceCriterion(pluginCommandSurface) {
+  const followups = pluginCommandSurface.manual_followups ?? [];
+  const commandModes = `claude=${pluginCommandSurface.claude.mode}, codex=${pluginCommandSurface.codex.mode}`;
+  if (followups.length === 0) {
+    return parityCriterion({
+      id: 'plugin_management_followups',
+      label: 'Host plugin management gaps are either resolved or not required',
+      status: 'satisfied',
+      weight: 10,
+      evidence: `${commandModes}; manual-followups=0`,
+      next_step: null,
+    });
+  }
+  return parityCriterion({
+    id: 'plugin_management_followups',
+    label: 'Host plugin management gaps are visible as operator follow-ups',
+    status: 'partial',
+    weight: 10,
+    evidence: `${commandModes}; manual-followups=${followups.map((item) => `${item.host}:${item.id}`).join(',')}`,
+    next_step: 'Complete the listed Manual Follow-ups in the relevant host session and rerun runtime:doctor.',
+  });
+}
+
+function buildCompanionExperienceCriterion(companion) {
+  const directions = [companion.directions.claude_to_codex, companion.directions.codex_to_claude];
+  const unavailable = directions.filter((direction) => direction.status !== 'available');
+  return parityCriterion({
+    id: 'bidirectional_companion_contract',
+    label: 'Opposite-host companion contract is available both directions',
+    status: unavailable.length === 0 ? 'satisfied' : 'blocked',
+    weight: 15,
+    evidence: directions.map((direction) => `${direction.label}=${direction.status}/contract=${direction.selected?.contract_version ?? 'unknown'}`).join(', '),
+    next_step: unavailable.length === 0 ? null : 'Repair companion script discovery or contract compatibility before relying on cross-host handoff.',
+  });
+}
+
+function buildPeerExecutionExperienceCriterion({ readiness, permissionProof, deepPeerSmoke }) {
+  const blocked = Object.values(readiness).some((direction) => !['available', 'available_with_warnings'].includes(direction.status));
+  if (blocked) {
+    return parityCriterion({
+      id: 'bidirectional_peer_execution',
+      label: 'Bidirectional peer execution has no readiness blockers',
+      status: 'blocked',
+      weight: 15,
+      evidence: Object.values(readiness).map((direction) => `${direction.direction}=${direction.status}`).join(', '),
+      next_step: 'Resolve readiness blockers, then rerun runtime:doctor with explicit peer execution proof.',
+    });
+  }
+  const proofPassed = permissionProof?.executed && permissionProof.status === 'passed';
+  const smokePassed = deepPeerSmoke?.executed && deepPeerSmoke.status === 'passed';
+  if (proofPassed && smokePassed) {
+    return parityCriterion({
+      id: 'bidirectional_peer_execution',
+      label: 'Bidirectional peer execution is explicitly verified',
+      status: 'satisfied',
+      weight: 15,
+      evidence: `permission-proof=${permissionProof.status}, deep-peer-smoke=${deepPeerSmoke.status}`,
+      next_step: null,
+    });
+  }
+  const operatorAction = [permissionProof, deepPeerSmoke].some((section) => section?.executed && section.status === 'operator_action_required');
+  return parityCriterion({
+    id: 'bidirectional_peer_execution',
+    label: 'Bidirectional peer execution is ready but not fully verified',
+    status: operatorAction ? 'partial' : 'not_verified',
+    weight: 15,
+    evidence: `permission-proof=${permissionProof?.status ?? 'not_requested'}/${permissionProof?.executed ?? false}, deep-peer-smoke=${deepPeerSmoke?.status ?? 'not_requested'}/${deepPeerSmoke?.executed ?? false}`,
+    next_step: 'Run runtime:doctor with --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke to refresh execution evidence.',
+  });
+}
+
+function buildWorkflowContinuityExperienceCriterion(ledgers) {
+  const entries = Object.entries(ledgers);
+  const blocked = entries.filter(([, ledger]) => (
+    ['blocked', 'ambiguous', 'migration_blocked'].includes(ledger.storage.status) ||
+    ledger.workflows.status === 'blocked' ||
+    ledger.peer_runs.status === 'blocked'
+  ));
+  if (blocked.length > 0) {
+    return parityCriterion({
+      id: 'workflow_continuity_storage',
+      label: 'Shared workflow continuity storage is safe to read',
+      status: 'blocked',
+      weight: 15,
+      evidence: entries.map(([name, ledger]) => `${name}=storage:${ledger.storage.status}/workflows:${ledger.workflows.status}/peer-runs:${ledger.peer_runs.status}`).join(', '),
+      next_step: 'Resolve malformed or ambiguous workflow/peer-run state before relying on cross-host continuation.',
+    });
+  }
+  const legacy = entries.filter(([, ledger]) => ledger.storage.status === 'legacy');
+  return parityCriterion({
+    id: 'workflow_continuity_storage',
+    label: 'Shared workflow continuity storage is safe to read',
+    status: legacy.length > 0 ? 'partial' : 'satisfied',
+    weight: 15,
+    evidence: entries.map(([name, ledger]) => `${name}=storage:${ledger.storage.status}/workflows:${ledger.workflows.status}/peer-runs:${ledger.peer_runs.status}`).join(', '),
+    next_step: legacy.length > 0 ? 'Migrate legacy workflow state into .agentic-plugins/state when ready.' : null,
+  });
+}
+
+function buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommandSurface }) {
+  const hookFollowup = (pluginCommandSurface.manual_followups ?? []).find((item) => item.id === 'codex-hook-review');
+  if (codexPluginHooks.status === 'packaging_gap') {
+    return parityCriterion({
+      id: 'lifecycle_hook_continuity',
+      label: 'Lifecycle hooks are packaged for cross-host continuity',
+      status: 'blocked',
+      weight: 15,
+      evidence: `codex-plugin-hooks=${codexPluginHooks.status}; default-file-only=${codexPluginHooks.summary.default_file_only_plugins.join(',') || 'none'}; missing-file=${codexPluginHooks.summary.missing_hooks_file_plugins.join(',') || 'none'}`,
+      next_step: 'Expose bundled hooks in each hook-bearing Codex plugin manifest and package hooks/hooks.json.',
+    });
+  }
+  if (codexPluginHooks.status === 'ready' && !hookFollowup) {
+    return parityCriterion({
+      id: 'lifecycle_hook_continuity',
+      label: 'Lifecycle hooks are packaged and enabled',
+      status: 'satisfied',
+      weight: 15,
+      evidence: `codex-plugin-hooks=${codexPluginHooks.status}; bundled=${codexPluginHooks.summary.bundled_plugins.join(',') || 'none'}`,
+      next_step: null,
+    });
+  }
+  return parityCriterion({
+    id: 'lifecycle_hook_continuity',
+    label: 'Lifecycle hooks are packaged but still require host-specific confirmation',
+    status: 'partial',
+    weight: 15,
+    evidence: `codex-plugin-hooks=${codexPluginHooks.status}; bundled=${codexPluginHooks.summary.bundled_plugins.join(',') || 'none'}; manual-hook-review=${Boolean(hookFollowup)}`,
+    next_step: hookFollowup
+      ? 'Run /hooks in the active Codex session to review/trust bundled hooks, then rerun runtime:doctor.'
+      : 'Use runtime:settings to enable plugin_hooks or restore hook packaging, then rerun runtime:doctor.',
+  });
+}
+
+function buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns }) {
+  const status = `settings=${settingsRuns.status}, consensus=${consensusRuns.status}`;
+  if (settingsRuns.status === 'blocked' || consensusRuns.status === 'blocked') {
+    return parityCriterion({
+      id: 'runtime_handoff_artifacts',
+      label: 'Runtime execution artifacts are readable for handoff and comparison',
+      status: 'blocked',
+      weight: 15,
+      evidence: status,
+      next_step: 'Repair malformed runtime artifacts before relying on handoff and consensus history.',
+    });
+  }
+  const missing = [settingsRuns.status, consensusRuns.status].some((value) => value === 'missing');
+  return parityCriterion({
+    id: 'runtime_handoff_artifacts',
+    label: 'Runtime execution artifacts are readable for handoff and comparison',
+    status: missing ? 'partial' : 'satisfied',
+    weight: 15,
+    evidence: `${status}; latest-settings=${settingsRuns.latest?.run_id ?? 'none'}; latest-consensus=${consensusRuns.latest?.run_id ?? 'none'}`,
+    next_step: missing ? 'Run settings/consensus flows when needed so future host handoffs have artifact evidence.' : null,
+  });
+}
+
+function parityCriterion({ id, label, status, weight, evidence, next_step }) {
+  return {
+    id,
+    label,
+    status,
+    weight,
+    earned_weight: earnedParityWeight(status, weight),
+    evidence,
+    next_step,
+  };
+}
+
+function earnedParityWeight(status, weight) {
+  if (status === 'satisfied') return weight;
+  if (status === 'partial') return Math.ceil(weight * 0.6);
+  if (status === 'not_verified') return Math.ceil(weight * 0.4);
+  return 0;
+}
+
+function buildExperienceParityNextActions(criteria, manualFollowups = []) {
+  const actions = [];
+  for (const followup of manualFollowups) {
+    actions.push({
+      source: 'manual_followup',
+      id: followup.id,
+      host: followup.host,
+      commands: followup.commands ?? [],
+      reason: followup.reason,
+    });
+  }
+  for (const item of criteria) {
+    if (item.status === 'satisfied' || !item.next_step) continue;
+    actions.push({
+      source: 'criterion',
+      id: item.id,
+      host: 'both',
+      commands: [],
+      reason: item.next_step,
+    });
+  }
+  return actions;
+}
+
 function buildHostReadinessRow({ host, cli, plugin, modelEffort, hooks }) {
   return {
     host,
@@ -3188,6 +3479,23 @@ export function formatText(report) {
     const direction = report.readiness_matrix.directions[key];
     lines.push(`- ${direction.direction}: readiness=${direction.status}; companion=${direction.companion.status}; execution-readiness=${direction.execution_readiness.status}; model=${direction.model.value ?? '<host-default>'}; effort=${direction.effort.value ?? '<host-default>'}; sandbox-permission=${direction.sandbox_permission}; blockers=${direction.blocker_count}; warnings=${direction.warning_count}`);
   }
+  lines.push('');
+  lines.push('Experience Parity');
+  const experience = report.experience_parity;
+  lines.push(`- status: ${experience.status}; score=${experience.score_percent}%; satisfied=${experience.counts.satisfied}; partial=${experience.counts.partial}; not-verified=${experience.counts.not_verified}; blocked=${experience.counts.blocked}; manual-followups=${experience.manual_followup_count}`);
+  for (const criterion of experience.criteria) {
+    lines.push(`- ${criterion.status}: ${criterion.id}; weight=${criterion.earned_weight}/${criterion.weight}; ${criterion.label}`);
+    lines.push(`  evidence: ${criterion.evidence}`);
+    if (criterion.next_step) lines.push(`  next: ${criterion.next_step}`);
+  }
+  if (experience.next_actions.length > 0) {
+    lines.push('- next-actions:');
+    for (const action of experience.next_actions.slice(0, 8)) {
+      const commandText = action.commands?.length > 0 ? `; commands=${action.commands.join(' | ')}` : '';
+      lines.push(`  - ${action.source}:${action.id}; host=${action.host}${commandText}; reason=${action.reason}`);
+    }
+  }
+  for (const limit of experience.limits) lines.push(`- limit: ${limit}`);
   lines.push('');
   lines.push('Host CLIs');
   for (const name of ['claude', 'codex']) {

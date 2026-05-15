@@ -20,6 +20,7 @@ node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--form
 
 3. Present the result without hiding host asymmetry. In particular:
    - Start from the `Readiness Matrix` / `readiness_matrix` summary when explaining whether Claude/Codex are available, installed, authenticated, which model/effort would be used, and where hook parity differs.
+   - Use `Experience Parity` / `experience_parity` when the user asks for current goal progress. Treat its score as observed runtime readiness, not a completion claim for the entire project goal.
    - If the Claude `/plugin` surface is unavailable to doctor, retired Claude plugin cleanup is required, or Codex packaged hooks still need active-session review/trust, surface the `Manual Follow-ups` checklist and its interactive `/plugin ...` or `/hooks` commands instead of implying runtime can apply host-native changes automatically.
    - Codex bundled plugin hooks require manifest exposure, `[features].plugin_hooks = true`, and active-session `/hooks` review/trust; surface those as separate readiness facts.
    - The readiness summary reports sandbox/permission status as unknown unless `--sandbox-permission-probe` is requested. `--permission-proof` records separate preflight/execution evidence under `permission_proof`.
@@ -33,6 +34,7 @@ node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--form
 Doctor reports:
 
 - A top-level readiness matrix for Claude and Codex host availability, runtime installation evidence, authentication, direction-specific peer model/effort inputs, hook evidence, companion readiness, and sandbox/permission status.
+- A top-level experience parity summary that scores observed cross-host readiness criteria and lists next actions without claiming the overall goal is complete.
 - `claude` and `codex` CLI availability and version.
 - Authentication state, sanitized to status and provider/method metadata.
 - agentic-plugins marketplace entries, local source manifests, and known Claude/Codex cache state for `companions`, `engineer`, `orchestrator`, and `runtime`.

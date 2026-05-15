@@ -95,6 +95,11 @@ describe('runtime doctor', () => {
     strictEqual(report.readiness_matrix.directions.claude_to_codex.companion.status, 'available');
     strictEqual(report.readiness_matrix.directions.claude_to_codex.model.value, 'gpt-5.4');
     strictEqual(report.readiness_matrix.directions.codex_to_claude.effort.value, 'high');
+    strictEqual(report.experience_parity.schema_version, 'runtime-experience-parity-1.0');
+    strictEqual(report.experience_parity.status, 'blocked');
+    ok(report.experience_parity.score_percent > 0);
+    ok(report.experience_parity.criteria.some((item) => item.id === 'workflow_continuity_storage' && item.status === 'blocked'));
+    ok(report.experience_parity.criteria.some((item) => item.id === 'bidirectional_companion_contract' && item.status === 'satisfied'));
 
     const serialized = JSON.stringify(report);
     ok(!serialized.includes('person@example.com'), 'email must be redacted');
@@ -102,6 +107,8 @@ describe('runtime doctor', () => {
     ok(!serialized.includes('sk-proj-abcdefghijklmnopqrstuvwxyz1234567890'), 'hyphenated provider token must be redacted');
     ok(formatText(report).includes(`runtime:doctor ${RUNTIME_VERSION}`));
     ok(formatText(report).includes('Readiness Matrix'));
+    ok(formatText(report).includes('Experience Parity'));
+    ok(formatText(report).includes('workflow_continuity_storage'));
     ok(formatText(report).includes('claude: available=available; installed=installed; authenticated=available'));
     ok(formatText(report).includes('codex: available=available; installed=installed; authenticated=available'));
     ok(formatText(report).includes('Plugin Command Surface'));
@@ -186,6 +193,9 @@ describe('runtime doctor', () => {
     strictEqual(followup.host, 'codex');
     deepStrictEqual(followup.commands, ['/hooks']);
     ok(followup.verify.includes('engineer, orchestrator'));
+    strictEqual(report.experience_parity.status, 'blocked');
+    ok(report.experience_parity.criteria.some((entry) => entry.id === 'lifecycle_hook_continuity' && entry.status === 'partial'));
+    ok(report.experience_parity.next_actions.some((entry) => entry.id === 'codex-hook-review'));
     ok(formatText(report).includes('command: /hooks'));
   });
 
