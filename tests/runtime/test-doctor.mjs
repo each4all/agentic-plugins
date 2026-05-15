@@ -198,6 +198,79 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('command: /hooks'));
   });
 
+  it('accepts a current Codex hook review attestation artifact', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-review-attested-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const runId = 'settings-20260513T000000Z-abcdef';
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
+      schema_version: 'runtime-settings-execution-artifact-1.0',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      status: 'completed',
+      created_at: '2026-05-13T00:00:00.000Z',
+      updated_at: '2026-05-13T00:00:05.000Z',
+      plugin_management: {
+        mode: 'dry-run-plan',
+        requested: false,
+        executed: false,
+        host_filter: 'all',
+        summary: {
+          executed: 0,
+          failed: 0,
+          failed_retryable: 0,
+          failed_non_retryable: 0,
+        },
+      },
+      plugin_cleanup: {
+        mode: 'dry-run-plan',
+        requested: false,
+        executed: false,
+        summary: {
+          executed: 0,
+          failed: 0,
+          blocked: 0,
+          failed_retryable: 0,
+          failed_non_retryable: 0,
+        },
+      },
+      codex_hook_review: {
+        mode: 'operator-attestation',
+        requested: true,
+        attested: true,
+        status: 'attested',
+        host: 'codex',
+        command: '/hooks',
+        attested_at: '2026-05-13T00:00:05.000Z',
+        bundled_plugins: ['engineer', 'orchestrator'],
+        manifest_exposed_plugins: ['engineer', 'orchestrator'],
+        plugin_versions: {
+          engineer: '1.0.0',
+          orchestrator: '1.0.0',
+        },
+        plugin_hooks_enabled: true,
+        plugin_hooks_stage: 'under development',
+      },
+      failures: [],
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    strictEqual(report.plugin_command_surface.manual_followups.find((entry) => entry.id === 'codex-hook-review'), undefined);
+    strictEqual(report.settings_runs.codex_hook_review.status, 'attested');
+    strictEqual(report.settings_runs.codex_hook_review.latest.run_id, runId);
+    ok(report.experience_parity.criteria.some((entry) => entry.id === 'lifecycle_hook_continuity' && entry.status === 'satisfied'));
+    ok(formatText(report).includes('latest-codex-hook-review: status=attested'));
+  });
+
   it('classifies nonzero Claude auth JSON as unauthenticated', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-claude-auth-json-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));

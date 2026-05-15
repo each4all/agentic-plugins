@@ -106,7 +106,10 @@ export async function runDoctor({
   const plugins = buildPluginMatrix({ source, catalogs, caches, claudePluginList });
   const codexPluginHooks = buildCodexPluginHookReport({ codex, plugins });
   const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginHooks });
-  const pluginCommandSurface = buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPluginHooks });
+  const settingsRuns = await inspectSettingsRuns({
+    repoRoot: resolvedRepoRoot,
+  });
+  const pluginCommandSurface = buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPluginHooks, settingsRuns });
   const companion = await inspectCompanionContract({
     repoRoot: resolvedRepoRoot,
     homeDir: resolvedHomeDir,
@@ -121,9 +124,6 @@ export async function runDoctor({
     repoRoot: resolvedRepoRoot,
     now,
     staleGraceMs: parseNonNegativeInt(env.PEER_RUN_STALE_GRACE_MS, DEFAULT_STALE_GRACE_MS),
-  });
-  const settingsRuns = await inspectSettingsRuns({
-    repoRoot: resolvedRepoRoot,
   });
   const consensusRuns = await inspectConsensusRuns({
     repoRoot: resolvedRepoRoot,
@@ -1012,7 +1012,7 @@ function inspectPluginVersionParity(name, plugin) {
   return issues;
 }
 
-function buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPluginHooks }) {
+function buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPluginHooks, settingsRuns }) {
   const claudeSurfaceStatus = buildClaudePluginCliSurfaceStatus(claude);
   const claudeSurfaceAvailable = claudeSurfaceStatus === 'available';
   return {
@@ -1071,6 +1071,7 @@ function buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPl
       plugins,
       hostParity,
       codexPluginHooks,
+      settingsRuns,
     }),
   };
 }
@@ -1083,7 +1084,7 @@ function buildClaudePluginCliSurfaceStatus(claude) {
   return 'unknown';
 }
 
-function buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plugins, hostParity, codexPluginHooks }) {
+function buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plugins, hostParity, codexPluginHooks, settingsRuns }) {
   const followups = [];
   const pluginCommands = claudeSurfaceAvailable ? [] : buildClaudePluginSurfaceCommands(plugins);
   if (pluginCommands.length > 0) {
@@ -1109,7 +1110,7 @@ function buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plug
       verify: 'Re-run runtime:doctor or runtime:settings after completing the commands.',
     });
   }
-  const hookFollowup = buildCodexHookReviewManualFollowup(codexPluginHooks, 'runtime:doctor');
+  const hookFollowup = buildCodexHookReviewManualFollowup(codexPluginHooks, 'runtime:doctor', settingsRuns, plugins);
   if (hookFollowup) followups.push(hookFollowup);
   return followups;
 }
@@ -1142,9 +1143,11 @@ function buildClaudeRetiredPluginCleanupCommands(issues) {
   return uniqueStrings(commands);
 }
 
-function buildCodexHookReviewManualFollowup(codexPluginHooks, surface) {
+function buildCodexHookReviewManualFollowup(codexPluginHooks, surface, settingsRuns = null, plugins = null) {
   const bundled = codexPluginHooks?.summary?.bundled_plugins ?? [];
   if (bundled.length === 0 || codexPluginHooks?.status !== 'ready') return null;
+  const attestation = getCurrentCodexHookReviewAttestation(settingsRuns, codexPluginHooks, plugins);
+  if (attestation.current) return null;
   return {
     id: 'codex-hook-review',
     host: 'codex',
@@ -1154,6 +1157,31 @@ function buildCodexHookReviewManualFollowup(codexPluginHooks, surface) {
     commands: ['/hooks'],
     verify: `Review/trust bundled hooks for ${bundled.join(', ')}, then rerun runtime:doctor or runtime:settings.`,
   };
+}
+
+function getCurrentCodexHookReviewAttestation(settingsRuns, codexPluginHooks, plugins) {
+  const attestation = settingsRuns?.codex_hook_review?.latest ?? null;
+  if (!attestation || attestation.attested !== true || attestation.status !== 'attested') {
+    return { current: false, reason: 'missing' };
+  }
+  const expectedPlugins = codexPluginHooks?.summary?.bundled_plugins ?? [];
+  const attestedPlugins = attestation.bundled_plugins ?? [];
+  if (!sameStringSet(expectedPlugins, attestedPlugins)) {
+    return { current: false, reason: 'plugin_set_changed', attestation };
+  }
+  const expectedVersions = {};
+  for (const pluginName of expectedPlugins) {
+    const plugin = plugins?.[pluginName];
+    expectedVersions[pluginName] = plugin?.source?.claude_manifest?.version ?? plugin?.source?.codex_manifest?.version ?? null;
+  }
+  for (const pluginName of expectedPlugins) {
+    const expected = expectedVersions[pluginName] ?? null;
+    const actual = attestation.plugin_versions?.[pluginName] ?? null;
+    if (expected !== actual) {
+      return { current: false, reason: 'plugin_version_changed', attestation };
+    }
+  }
+  return { current: true, reason: null, attestation };
 }
 
 function compareInstalledVersion({ plugin, host, actual, expected, source }) {
@@ -1436,6 +1464,7 @@ async function inspectSettingsRuns({ repoRoot }) {
       count: 0,
       malformed: 0,
       latest: null,
+      codex_hook_review: { status: 'missing', latest: null },
       error: err.code ?? err.message,
     };
   }
@@ -1456,6 +1485,7 @@ async function inspectSettingsRuns({ repoRoot }) {
         selected_at_ms: runIdTimestampMs(entry.name) ?? 0,
         plugin_management: emptySettingsPluginManagement(),
         plugin_cleanup: emptySettingsPluginCleanup(),
+        codex_hook_review: emptySettingsCodexHookReview(),
         reason: artifact.reason,
       });
       continue;
@@ -1477,14 +1507,19 @@ async function inspectSettingsRuns({ repoRoot }) {
       count: 0,
       malformed,
       latest: null,
+      codex_hook_review: { status: 'missing', latest: null },
     };
   }
 
   runs.sort((a, b) => b.selected_at_ms - a.selected_at_ms || b.run_id.localeCompare(a.run_id));
   const latest = runs[0];
+  const latestCodexHookReview = runs.find((run) => run.codex_hook_review?.attested === true && run.codex_hook_review?.status === 'attested')?.codex_hook_review ?? null;
   const status = malformed > 0
     ? 'blocked'
-    : latest.plugin_management.failed > 0 || latest.plugin_cleanup.failed > 0 || latest.plugin_cleanup.blocked > 0
+    : latest.plugin_management.failed > 0
+      || latest.plugin_cleanup.failed > 0
+      || latest.plugin_cleanup.blocked > 0
+      || (latest.codex_hook_review.requested && latest.codex_hook_review.status !== 'attested')
       ? 'needs_attention'
       : 'available';
   return {
@@ -1493,6 +1528,10 @@ async function inspectSettingsRuns({ repoRoot }) {
     count: runs.length,
     malformed,
     latest,
+    codex_hook_review: {
+      status: latestCodexHookReview ? 'attested' : 'missing',
+      latest: latestCodexHookReview,
+    },
   };
 }
 
@@ -1531,11 +1570,26 @@ function emptySettingsPluginCleanup() {
   };
 }
 
+function emptySettingsCodexHookReview() {
+  return {
+    mode: null,
+    requested: false,
+    attested: false,
+    status: 'not_recorded',
+    host: 'codex',
+    command: '/hooks',
+    attested_at: null,
+    bundled_plugins: [],
+    plugin_versions: {},
+  };
+}
+
 function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifact }) {
   const pluginManagement = artifact.plugin_management ?? {};
   const pluginManagementSummary = pluginManagement.summary ?? {};
   const pluginCleanup = artifact.plugin_cleanup ?? {};
   const pluginCleanupSummary = pluginCleanup.summary ?? {};
+  const codexHookReview = artifact.codex_hook_review ?? {};
   const failures = Array.isArray(artifact.failures)
     ? artifact.failures.map((failure) => ({
         id: sanitizeValue(failure.id),
@@ -1586,6 +1640,22 @@ function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifact }) 
       failed: safeCount(pluginCleanupSummary.failed),
       blocked: safeCount(pluginCleanupSummary.blocked),
       failures: pluginCleanupFailures,
+    },
+    codex_hook_review: {
+      run_id: sanitizeValue(artifact.run_id) ?? runId,
+      mode: sanitizeValue(codexHookReview.mode),
+      requested: codexHookReview.requested === true,
+      attested: codexHookReview.attested === true,
+      status: sanitizeValue(codexHookReview.status) ?? 'not_recorded',
+      host: sanitizeValue(codexHookReview.host) ?? 'codex',
+      command: sanitizeValue(codexHookReview.command) ?? '/hooks',
+      attested_at: sanitizeValue(codexHookReview.attested_at),
+      bundled_plugins: Array.isArray(codexHookReview.bundled_plugins) ? uniqueStrings(codexHookReview.bundled_plugins.map((value) => sanitizeValue(value)).filter(Boolean)).sort() : [],
+      manifest_exposed_plugins: Array.isArray(codexHookReview.manifest_exposed_plugins) ? uniqueStrings(codexHookReview.manifest_exposed_plugins.map((value) => sanitizeValue(value)).filter(Boolean)).sort() : [],
+      plugin_versions: sanitizeStringMap(codexHookReview.plugin_versions),
+      plugin_hooks_enabled: codexHookReview.plugin_hooks_enabled === true,
+      plugin_hooks_stage: sanitizeValue(codexHookReview.plugin_hooks_stage),
+      artifact_pointer: pointer(repoRoot, artifactPath),
     },
   };
 }
@@ -2342,7 +2412,7 @@ function buildExperienceParity({
     limits: [
       'This score is an observed runtime experience-readiness summary, not a declaration that the overall project goal is complete.',
       'Manual follow-ups and not-requested peer executors deliberately reduce the score until verified in the active host session.',
-      'Codex hook review/trust state is not host-verifiable here; /hooks remains an explicit operator check.',
+      'Codex hook review/trust state is not host-verifiable here; /hooks remains an explicit operator check unless a current runtime:settings operator attestation artifact is present.',
     ],
   };
 }
@@ -3489,6 +3559,9 @@ function summarizeOverall(report) {
     if ((report.settings_runs.latest?.plugin_cleanup?.failed ?? 0) > 0 || (report.settings_runs.latest?.plugin_cleanup?.blocked ?? 0) > 0) {
       warnings.push('latest settings plugin-cleanup execution has failures');
     }
+    if (report.settings_runs.latest?.codex_hook_review?.requested && report.settings_runs.latest.codex_hook_review.status !== 'attested') {
+      warnings.push('latest settings Codex hook review attestation was not accepted');
+    }
   }
   if (report.consensus_runs.status === 'blocked') {
     warnings.push('consensus execution artifact health blocked');
@@ -3706,6 +3779,7 @@ export function formatText(report) {
     lines.push(`- latest: ${latest.run_id}; status=${latest.status}; artifact=${latest.artifact_pointer}`);
     lines.push(`  plugin-management: mode=${latest.plugin_management.mode ?? '<unknown>'}; executed=${latest.plugin_management.summary.executed}; failed=${latest.plugin_management.summary.failed}; retryable-failed=${latest.plugin_management.summary.failed_retryable}; non-retryable-failed=${latest.plugin_management.summary.failed_non_retryable}`);
     lines.push(`  plugin-cleanup: mode=${latest.plugin_cleanup.mode ?? '<unknown>'}; executed=${latest.plugin_cleanup.summary.executed}; failed=${latest.plugin_cleanup.summary.failed}; blocked=${latest.plugin_cleanup.summary.blocked}; retryable-failed=${latest.plugin_cleanup.summary.failed_retryable}; non-retryable-failed=${latest.plugin_cleanup.summary.failed_non_retryable}`);
+    lines.push(`  codex-hook-review: status=${latest.codex_hook_review.status}; attested=${latest.codex_hook_review.attested}; bundled=${latest.codex_hook_review.bundled_plugins.join(',') || 'none'}`);
     for (const failure of latest.plugin_management.failures) {
       lines.push(`  failure: ${failure.plugin}/${failure.host} ${failure.action}; type=${failure.failure_type}; retryable=${failure.retryable}`);
       if (failure.retry_after) lines.push(`    retry-after: ${failure.retry_after}`);
@@ -3716,6 +3790,10 @@ export function formatText(report) {
       if (failure.retry_after) lines.push(`    retry-after: ${failure.retry_after}`);
       if (failure.doctor_hint) lines.push(`    doctor: ${failure.doctor_hint}`);
     }
+  }
+  if (report.settings_runs.codex_hook_review?.latest) {
+    const review = report.settings_runs.codex_hook_review.latest;
+    lines.push(`  latest-codex-hook-review: status=${review.status}; attested-at=${review.attested_at ?? '<unknown>'}; plugins=${Object.entries(review.plugin_versions ?? {}).map(([name, version]) => `${name}@${version ?? 'unknown'}`).join(',') || 'none'}`);
   }
   lines.push('');
   lines.push('Consensus Execution Artifacts');
@@ -3940,6 +4018,17 @@ function sanitizeValue(value) {
   return redactSecrets(singleLine(String(value)));
 }
 
+function sanitizeStringMap(value) {
+  const result = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+  for (const [key, mapValue] of Object.entries(value)) {
+    const safeKey = sanitizeValue(key);
+    if (!safeKey) continue;
+    result[safeKey] = sanitizeValue(mapValue);
+  }
+  return result;
+}
+
 function singleLine(value) {
   return String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -3964,6 +4053,12 @@ function truncate(value, maxLength) {
 
 function uniqueStrings(values) {
   return [...new Set(values.filter((value) => typeof value === 'string' && value.length > 0))];
+}
+
+function sameStringSet(left, right) {
+  const a = uniqueStrings(left ?? []).sort();
+  const b = uniqueStrings(right ?? []).sort();
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 function semverCompare(a, b) {
