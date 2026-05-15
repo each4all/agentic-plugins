@@ -10,15 +10,13 @@
 // that Claude's automatic Stop hook produces, AND triggering the same four-gate
 // auto-archive evaluation when the workflow has crossed into a terminal state.
 //
-// SKILL.md's "When invoked by command" mode SHOULD include a final
-// step:
+// SKILL.md's "When invoked by command" fallback mode SHOULD include a final
+// step when plugin hooks are disabled, untrusted, or not active:
 //
-//   node "${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"
+//   node "${PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"
 //
-// (CLAUDE_PLUGIN_ROOT here is the engineer plugin's resolved root
-// in the Codex side; the env-var name is shared with Claude for
-// symmetry but is set by the Codex skill agent's environment, not
-// Claude Code.)
+// (Codex plugin hooks also set CLAUDE_PLUGIN_ROOT for compatibility with
+// existing plugin hooks, but PLUGIN_ROOT is the preferred Codex spelling.)
 //
 // Hook absence is non-fatal (ADR-0011 §4 explicit). This script
 // silently no-ops on any error.

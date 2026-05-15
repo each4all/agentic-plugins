@@ -27,7 +27,7 @@ command file as the canonical Claude runbook.
 | Bulk subtask transition to `abandoned` | `--host claude` | `--host codex` |
 | Engineer child `stop-archive` / `detach-archive` pass | Yes | Yes |
 | Set macro terminal markers | `--host claude` | `--host codex` |
-| Macro auto-archive Stop hook | Automatic on Claude Stop | Manual helper: `adapters/codex/hooks/stop.mjs` |
+| Macro auto-archive Stop hook | Automatic on Claude Stop | Automatic after `plugin_hooks` + `/hooks` review/trust; manual helper fallback: `adapters/codex/hooks/stop.mjs` |
 
 ---
 
@@ -99,24 +99,29 @@ node "<orchestrator-plugin-root>/scripts/state.mjs" set-terminal \
 
 ---
 
-## Phase 4 - Codex manual stop helper
+## Phase 4 - Codex Stop hook / fallback
 
-After a successful Codex abort, run the manual stop helper when the user
+Codex can load orchestrator's bundled Stop hook when the plugin is enabled,
+`[features].plugin_hooks = true`, and the hook has passed Codex review/trust.
+After a successful Codex abort, run the fallback helper when plugin hooks are
+disabled, not yet trusted, not active in the current host session, or the user
 wants immediate archive parity:
 
 ```bash
 node "<orchestrator-plugin-root>/adapters/codex/hooks/stop.mjs"
 ```
 
-Claude runs the Stop hook automatically.
+Claude runs the Stop hook automatically through the Claude plugin hook
+binding.
 
 ---
 
 ## Completion
 
 Report the macro id, abandoned subtask count, child archive/detach
-summary, and whether the manual Codex stop helper was run. Append the
-runtime completion footer when available.
+summary, whether Codex Stop hook automation is expected for the active session,
+and whether the fallback helper was run. Append the runtime completion footer
+when available.
 
 ---
 
@@ -125,4 +130,6 @@ runtime completion footer when available.
 - Do not use abort for merely postponed work; use finalize/deferred.
 - Do not set terminal markers if child archive/detach failed.
 - Do not hold the parent lock while archiving children.
-- Do not claim Codex Stop hook auto-archive runs automatically.
+- Do not claim Codex Stop hook auto-archive runs automatically unless
+  `[features].plugin_hooks = true` and `/hooks` review/trust are complete for
+  the active session.
