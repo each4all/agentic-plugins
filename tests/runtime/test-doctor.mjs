@@ -892,6 +892,59 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('operator-action-kind: auth_required'));
   });
 
+  it('classifies child companion sandbox detail without leaking raw peer stderr', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-child-sandbox-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const rawDetail = [
+      'WARNING: proceeding, even though we could not update PATH: Operation not permitted (os error 1)',
+      'Reading prompt from stdin...',
+      'Error: failed to initialize in-process app-server client: Operation not permitted (os error 1)',
+    ].join('\n');
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      deepPeerSmoke: true,
+      executeDeepPeerSmoke: true,
+      runner: async (command, args) => {
+        if (args[0]?.endsWith('codex-companion.mjs')) {
+          return {
+            ok: false,
+            exit_code: 1,
+            stdout: JSON.stringify({
+              status: 'peer_error',
+              peer_host: 'codex',
+              stdout: '',
+              exit_code: 1,
+              error: {
+                kind: 'peer_run_error',
+                message: 'peer exited with code 1',
+                detail: rawDetail,
+              },
+            }),
+            stderr: '',
+            error_code: null,
+            timed_out: false,
+          };
+        }
+        if (args[0]?.endsWith('claude-companion.mjs')) {
+          return okResult(JSON.stringify(smokeEnvelope('claude', 'RUNTIME_DOCTOR_SMOKE_OK claude\n', 12)));
+        }
+        return fakeRuntimeProbeRunner(command, args);
+      },
+    });
+
+    strictEqual(report.deep_peer_smoke.status, 'operator_action_required');
+    strictEqual(report.deep_peer_smoke.directions.claude_to_codex.result.status, 'operator_action_required');
+    strictEqual(report.deep_peer_smoke.directions.claude_to_codex.result.operator_action_kind, 'sandbox_blocked');
+    strictEqual(report.deep_peer_smoke.directions.claude_to_codex.result.error.detail_kind, 'sandbox_blocked');
+    strictEqual(report.readiness_matrix.directions.claude_to_codex.execution_readiness.deep_peer_smoke.operator_action_kind, 'sandbox_blocked');
+    const serialized = JSON.stringify(report);
+    ok(!serialized.includes('failed to initialize in-process app-server client'), 'doctor report must not leak raw peer stderr detail');
+    ok(!serialized.includes('Reading prompt from stdin'), 'doctor report must not leak raw prompt transport detail');
+    ok(formatText(report).includes('operator-action-kind: sandbox_blocked'));
+  });
+
   it('parses CLI arguments and rejects unknown or malformed flags', () => {
     const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--execute-deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '90000', '--sandbox-permission-probe', '--permission-proof', '--execute-permission-proof', '--permission-proof-timeout-ms', '45000', '--artifact-inventory', '--artifact-retention-cap', '30', '--artifact-max-bytes', '1024']);
     strictEqual(opts.repoRoot, '/tmp/repo');
