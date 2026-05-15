@@ -211,7 +211,7 @@ describe('plugins/orchestrator README + CHANGELOG', () => {
     ok(/\[features\]\.plugin_hooks\s*=\s*true/i.test(readme),
       'README documents Codex plugin_hooks feature flag');
     ok(/manual fallback/i.test(readme),
-      'README documents Codex manual fallback');
+      'README documents Codex fallback helper');
   });
 
   it('CHANGELOG exists with 0.1.0 initial entry', async () => {

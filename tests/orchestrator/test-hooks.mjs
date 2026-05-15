@@ -345,9 +345,9 @@ describe('Claude stop.mjs — snapshot + macro auto-archive', () => {
 });
 
 // ---------------------------------------------------------------------------
-// stop.mjs (Codex) — manual helper, snapshot + macro auto-archive parity
+// stop.mjs (Codex) — fallback helper, snapshot + macro auto-archive parity
 
-describe('Codex stop.mjs — manual helper with macro auto-archive parity', () => {
+describe('Codex stop.mjs — fallback helper with macro auto-archive parity', () => {
   async function runCodexStop(root) {
     return new Promise((resolveP, rejectP) => {
       const child = spawn(process.execPath, [join(HOOKS_CODEX, 'stop.mjs')], {
