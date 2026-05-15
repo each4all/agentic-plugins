@@ -64,9 +64,10 @@ describe('runtime doctor', () => {
     strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks, false);
     strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks_stage, 'under development');
     strictEqual(report.clis.codex.feature_surface.automatic_plugin_hooks, false);
-    strictEqual(report.plugin_command_surface.schema_version, 'runtime-plugin-command-surface-1.0');
+    strictEqual(report.plugin_command_surface.schema_version, 'runtime-plugin-command-surface-1.1');
     strictEqual(report.plugin_command_surface.claude.mode, 'per-plugin-command');
     strictEqual(report.plugin_command_surface.claude.materialization.status, 'host-native-plugin-command');
+    deepStrictEqual(report.plugin_command_surface.manual_followups, []);
     strictEqual(report.plugin_command_surface.codex.mode, 'marketplace-only');
     strictEqual(report.plugin_command_surface.codex.supports.marketplace_add, true);
     strictEqual(report.plugin_command_surface.codex.supports.marketplace_upgrade, true);
@@ -131,7 +132,18 @@ describe('runtime doctor', () => {
     strictEqual(report.plugin_command_surface.claude.supports.list_plugin, false);
     strictEqual(report.plugin_command_surface.claude.materialization.status, 'blocked');
     strictEqual(report.plugin_command_surface.claude.materialization.executable_by_settings, false);
+    strictEqual(report.plugin_command_surface.manual_followups.length, 1);
+    strictEqual(report.plugin_command_surface.manual_followups[0].id, 'claude-plugin-surface-unavailable');
+    strictEqual(report.plugin_command_surface.manual_followups[0].status, 'manual_required');
+    deepStrictEqual(report.plugin_command_surface.manual_followups[0].commands, [
+      '/plugin install companions@agentic-plugins',
+      '/plugin install engineer@agentic-plugins',
+      '/plugin install orchestrator@agentic-plugins',
+      '/plugin install runtime@agentic-plugins',
+    ]);
     ok(formatText(report).includes('claude: mode=unavailable'));
+    ok(formatText(report).includes('Manual Follow-ups'));
+    ok(formatText(report).includes('command: /plugin install runtime@agentic-plugins'));
   });
 
   it('flags hook-bearing Codex plugins that do not expose hooks in their manifest', async () => {

@@ -1000,7 +1000,7 @@ function buildPluginCommandSurface({ claude, codex, plugins }) {
   const claudeSurfaceStatus = claude.plugin_surface?.status ?? claude.plugin.status;
   const claudeSurfaceAvailable = claudeSurfaceStatus === 'available';
   return {
-    schema_version: 'runtime-plugin-command-surface-1.0',
+    schema_version: 'runtime-plugin-command-surface-1.1',
     claude: {
       status: claudeSurfaceStatus,
       mode: claudeSurfaceStatus === 'unavailable'
@@ -1044,7 +1044,40 @@ function buildPluginCommandSurface({ claude, codex, plugins }) {
         'runtime:settings intentionally keeps Codex cache materialization manual unless the host exposes an explicit per-plugin install/update command.',
       ],
     },
+    manual_followups: buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plugins }),
   };
+}
+
+function buildPluginCommandSurfaceManualFollowups({ claudeSurfaceAvailable, plugins }) {
+  if (claudeSurfaceAvailable) return [];
+  const commands = buildClaudePluginSurfaceCommands(plugins);
+  if (commands.length === 0) return [];
+  return [{
+    id: 'claude-plugin-surface-unavailable',
+    host: 'claude',
+    status: 'manual_required',
+    reason: 'Claude /plugin command surface is unavailable to runtime:doctor in this environment.',
+    environment: 'Open an interactive Claude Code session that supports /plugin commands.',
+    commands,
+    verify: 'Re-run runtime:doctor or runtime:settings after completing the commands.',
+  }];
+}
+
+function buildClaudePluginSurfaceCommands(plugins) {
+  const commands = [];
+  for (const name of PLUGIN_NAMES) {
+    const plugin = plugins[name];
+    const sourceVersion = plugin?.source?.claude_manifest?.version ?? plugin?.source?.codex_manifest?.version ?? null;
+    const claudeInstalled = plugin?.installed?.claude_plugin_list ?? null;
+    const claudeCacheLatest = plugin?.cache?.claude?.latest ?? null;
+    const claudeVersion = claudeInstalled?.version ?? claudeCacheLatest?.manifest_version ?? null;
+    if (!claudeInstalled && !claudeCacheLatest) {
+      commands.push(`/plugin install ${name}@agentic-plugins`);
+    } else if (sourceVersion && claudeVersion && semverCompare(String(claudeVersion), String(sourceVersion)) < 0) {
+      commands.push(`/plugin update ${name}@agentic-plugins`);
+    }
+  }
+  return uniqueStrings(commands);
 }
 
 function compareInstalledVersion({ plugin, host, actual, expected, source }) {
@@ -3134,6 +3167,17 @@ export function formatText(report) {
   const codexSurface = report.plugin_command_surface.codex;
   lines.push(`- codex: mode=${codexSurface.mode}; marketplace-add=${Boolean(codexSurface.supports.marketplace_add)}; marketplace-upgrade=${Boolean(codexSurface.supports.marketplace_upgrade)}; install=${Boolean(codexSurface.supports.install_plugin)}; list=${Boolean(codexSurface.supports.list_plugin)}; materialization=${codexSurface.materialization.status}`);
   if (codexSurface.materialization.next_step) lines.push(`  next: ${codexSurface.materialization.next_step}`);
+  if (report.plugin_command_surface.manual_followups?.length > 0) {
+    lines.push('');
+    lines.push('Manual Follow-ups');
+    for (const followup of report.plugin_command_surface.manual_followups) {
+      lines.push(`- ${followup.id}: host=${followup.host}; status=${followup.status}`);
+      lines.push(`  reason: ${followup.reason}`);
+      lines.push(`  environment: ${followup.environment}`);
+      for (const command of followup.commands ?? []) lines.push(`  command: ${command}`);
+      lines.push(`  verify: ${followup.verify}`);
+    }
+  }
   lines.push('');
   lines.push('Plugins');
   for (const name of PLUGIN_NAMES) {
