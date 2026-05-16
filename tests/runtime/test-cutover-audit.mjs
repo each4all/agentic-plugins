@@ -298,6 +298,39 @@ describe('runtime cutover audit', () => {
     strictEqual(report.checks.find((check) => check.id === 'omcc_dev_daily_workflow').status, 'not-active');
   });
 
+  it('uses runtime local dates for dogfood records and audit windows', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T17:30:00.000Z',
+      cutoverEvidenceDates: ['2026-05-16'],
+    });
+    await recordCutoverEvidence({
+      repoRoot: root,
+      now: new Date('2026-05-16T17:45:00.000Z'),
+      timeZone: 'Asia/Seoul',
+      runId: 'cutover-20260516T174500Z-bbbbbb',
+      footerState: 'closed',
+      footerReason: 'KST date closeout is done',
+      omccDevActive: 'no',
+      omccDevNote: 'runtime-only workflow after KST midnight',
+    });
+
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: new Date('2026-05-16T17:50:00.000Z'),
+      timeZone: 'Asia/Seoul',
+      doctorReport: doctorReport(),
+      dogfoodWindowDays: 2,
+    });
+
+    const dogfood = report.checks.find((check) => check.id === 'dogfood_evidence_window');
+    strictEqual(dogfood.status, 'satisfied');
+    strictEqual(dogfood.evidence.covered_days, 2);
+    strictEqual(dogfood.evidence.latest_date, '2026-05-17');
+    strictEqual(dogfood.evidence.accepted_dates.join(','), '2026-05-16,2026-05-17');
+  });
+
   it('counts explicit current-run evidence without writing a dogfood artifact', async () => {
     const root = await seedRepo({
       scorecardStatus: 'satisfied',
