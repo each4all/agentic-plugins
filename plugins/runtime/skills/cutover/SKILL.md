@@ -9,6 +9,11 @@ description: "Read-only omcc cutover readiness audit. Use when the user wants AD
 state. It can report `cutover-ready-candidate`, but final omcc archival/removal
 requires explicit user declaration per ADR-0007.
 
+The report should make the strengthened cutover gate visible. When the result is
+not ready, preserve the unresolved ADR-0012 condition numbers and unresolved
+scorecard rows in the user-facing output instead of collapsing them to a generic
+`partial` status.
+
 ## When invoked by command (`/runtime:cutover` or `$runtime:cutover`)
 
 1. Resolve the plugin root.
