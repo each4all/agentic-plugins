@@ -22,6 +22,13 @@ const FOOTER_STATES = new Set([
   'blocked',
   'closed',
 ]);
+const CUTOVER_GATE = [
+  'ADR-0012 conditions 1-4 satisfied',
+  'omcc replacement scorecard has no partial/missing rows',
+  'at least one week of omcc-dev-free dogfood evidence',
+  'latest completion footer is closed',
+  'explicit user cutover declaration per ADR-0007',
+];
 
 export async function runCutoverAudit(options = {}) {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
@@ -59,6 +66,10 @@ export async function runCutoverAudit(options = {}) {
     ready_candidate: readyCandidate,
     generated_at: now.toISOString(),
     repo_root: repoRoot,
+    cutover_gate: {
+      required: CUTOVER_GATE,
+      note: 'runtime:cutover-audit reports readiness evidence only; it cannot declare cutover.',
+    },
     checks,
     next_actions: checks
       .filter((check) => CHECK_UNREADY.has(check.status))
@@ -83,6 +94,7 @@ function checkAdr0012Conditions(text) {
     status: missing.length > 0 ? 'missing' : notSatisfied.length === 0 ? 'satisfied' : 'partial',
     evidence: {
       statuses,
+      unresolved_conditions: notSatisfied,
       missing_conditions: missing,
     },
     next_action: missing.length > 0
@@ -362,8 +374,12 @@ export function formatText(report) {
     `repo: ${report.repo_root}`,
     `ready-candidate: ${report.ready_candidate}`,
   ];
+  if (report.cutover_gate?.required?.length) {
+    lines.push(`gate: ${report.cutover_gate.required.join('; ')}`);
+  }
   for (const check of report.checks ?? []) {
     lines.push(`- ${check.id}: ${check.status}; ${check.label}`);
+    for (const evidenceLine of formatCheckEvidence(check)) lines.push(`  ${evidenceLine}`);
     if (check.next_action) lines.push(`  next: ${check.next_action}`);
   }
   if (report.next_actions?.length) {
@@ -375,6 +391,32 @@ export function formatText(report) {
     for (const limit of report.limits) lines.push(`- ${limit}`);
   }
   return lines.join('\n');
+}
+
+function formatCheckEvidence(check) {
+  switch (check.id) {
+    case 'adr0012_conditions': {
+      const statuses = check.evidence?.statuses ?? [];
+      const unresolved = check.evidence?.unresolved_conditions ?? [];
+      const missing = check.evidence?.missing_conditions ?? [];
+      const lines = [];
+      if (statuses.length) lines.push(`conditions: ${statuses.map((row) => `${row.condition}:${row.status}`).join(', ')}`);
+      if (unresolved.length) lines.push(`unresolved: ${unresolved.map((row) => `${row.condition}:${row.status}`).join(', ')}`);
+      if (missing.length) lines.push(`missing: ${missing.join(', ')}`);
+      return lines;
+    }
+    case 'omcc_replacement_scorecard': {
+      const total = check.evidence?.total ?? 0;
+      const satisfied = check.evidence?.satisfied ?? 0;
+      const unresolved = check.evidence?.unresolved ?? [];
+      const summary = `scorecard: satisfied=${satisfied}/${total}`;
+      return unresolved.length
+        ? [`${summary}; unresolved=${unresolved.map((row) => `${row.requirement}:${row.status}`).join(', ')}`]
+        : [summary];
+    }
+    default:
+      return [];
+  }
 }
 
 export function parseArgs(argv) {

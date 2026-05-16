@@ -54,6 +54,11 @@ describe('runtime cutover audit', () => {
     strictEqual(report.checks.find((check) => check.id === 'latest_completion_footer_state').status, 'not-verified');
     strictEqual(report.checks.find((check) => check.id === 'omcc_dev_daily_workflow').status, 'not-verified');
     ok(report.next_actions.some((entry) => entry.id === 'omcc_dev_daily_workflow'));
+    const text = formatText(report);
+    ok(text.includes('gate: ADR-0012 conditions 1-4 satisfied'));
+    ok(text.includes('conditions: 1:partial, 2:partial, 3:partial, 4:partial'));
+    ok(text.includes('unresolved: 1:partial, 2:partial, 3:partial, 4:partial'));
+    ok(text.includes('scorecard: satisfied=0/12; unresolved=R1:partial'));
   });
 
   it('reports plugin version drift as blocked', async () => {

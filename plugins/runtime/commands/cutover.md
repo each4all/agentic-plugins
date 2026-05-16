@@ -11,6 +11,11 @@ Build a read-only cutover readiness report. This command does not declare final
 cutover. It can only report `cutover-ready-candidate`; ADR-0007 still requires
 an explicit user declaration before omcc is archived or removed.
 
+The text report starts with the strengthened cutover gate and, when the audit
+is not ready, prints the unresolved ADR-0012 condition numbers plus unresolved
+scorecard rows so the next work item is visible without opening the source
+documents first.
+
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 RUNTIME_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
