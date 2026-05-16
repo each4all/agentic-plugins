@@ -181,8 +181,11 @@ the readiness matrix and host-parity diagnostics.
 
 It invokes commands as argv arrays, never through a shell, and records only status, exit code, byte counts, timing, retry classification, and sanitized error metadata. Raw stdout and stderr are omitted from settings output and artifacts. `--plugin-management-host all|claude|codex` scopes install/update execution. Settings writes `.agentic-plugins/runs/settings/<run-id>/settings.json` plus `.agentic-plugins/runs/settings/latest.json` for explicit plugin-management, plugin-cleanup, Codex plugin-hook config writes, or Codex hook-review attestations; `runtime:doctor` reads those artifacts and reports failed action types, retryability, and the newest current hook-review attestation. Settings still does not write host-native Claude config, mutate Codex hook trust state, change auth, secrets, sandbox/permission settings, or execute general plugin uninstall commands.
 
-Codex hook trust remains an active-session UI operation. After opening `/hooks`
-in Codex and reviewing/trusting the bundled agentic-plugins hooks, the operator
+Codex hook trust remains an active-session UI operation. Settings prints a
+per-plugin review target checklist for the bundled hooks, including the hook
+file path, events, handler count, hook commands, and portability warnings to
+compare against the active Codex `/hooks` view. After opening `/hooks` in Codex
+and reviewing/trusting those listed bundled agentic-plugins hooks, the operator
 can record that manual step with:
 
 ```sh
@@ -190,7 +193,8 @@ $runtime:settings --attest-codex-hook-review
 ```
 
 The attestation is not host-native proof and does not mutate Codex trust state.
-It records the current hook-bearing plugin set and source versions, and
+It records the current hook-bearing plugin set, source versions, and review
+target checklist, and
 `runtime:doctor` treats it as current only while those still match the observed
 checkout.
 

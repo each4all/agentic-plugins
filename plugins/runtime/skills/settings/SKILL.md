@@ -57,10 +57,12 @@ Settings reports and plans:
   `~/.codex/config.toml` `[features].plugin_hooks = true`.
 - Manual Codex `/hooks` follow-up when bundled plugin hooks are packaged and
   `plugin_hooks` is enabled but settings cannot verify active-session hook
-  review/trust state. Treat `/hooks` `Installed` counts as packaging evidence
-  only; `Active=0` output and `Trust: New hook - review required` are not
-  enough to attest. Carry doctor warnings for Codex-exposed commands that
-  still point at Claude adapter paths. Codex plugin hooks also expose
+  review/trust state. Include the review target checklist: plugin version,
+  hook file path, events, handler count, hook commands, and portability
+  warnings. Treat `/hooks` `Installed` counts as packaging evidence only;
+  `Active=0` output and `Trust: New hook - review required` are not enough to
+  attest. Carry doctor warnings for Codex-exposed commands that still point at
+  Claude adapter paths. Codex plugin hooks also expose
   `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` as compatibility aliases, though
   `PLUGIN_ROOT`/`PLUGIN_DATA` are preferred for new Codex commands.
 - Codex `/hooks` operator attestation, behind `--attest-codex-hook-review`,
@@ -124,9 +126,10 @@ $runtime:settings --attest-codex-hook-review
 ```
 
 Run it only after the active Codex session has opened `/hooks` and the operator
-has reviewed/trusted the bundled agentic-plugins hooks. It records the current
-hook-bearing plugin set and source versions so `runtime:doctor` can clear the
-manual follow-up until those change.
+has reviewed/trusted every listed bundled agentic-plugins hook review target.
+It records the current hook-bearing plugin set, source versions, and review
+target checklist so `runtime:doctor` can clear the manual follow-up until those
+change.
 
 If Codex already has a current temporary marketplace cache but no per-plugin
 install cache, report that as manual cache materialization. The observed Codex

@@ -69,7 +69,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.9');
+    strictEqual(report.schema_version, 'runtime-settings-1.10');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -379,11 +379,24 @@ describe('runtime settings', () => {
     strictEqual(followup.host, 'codex');
     deepStrictEqual(followup.commands, ['/hooks']);
     ok(followup.verify.includes('engineer, orchestrator'));
+    ok(followup.verify.includes('2 review target(s)'));
     ok(followup.verify.includes('New hook - review required'));
     ok(followup.verify.includes('Installed counts alone'));
     ok(followup.verify.includes('Active=0'));
     ok(followup.verify.includes('runtime:settings --attest-codex-hook-review'));
+    strictEqual(followup.review_targets.length, 2);
+    const engineerTarget = followup.review_targets.find((target) => target.plugin === 'engineer');
+    strictEqual(engineerTarget.version, '1.0.0');
+    strictEqual(engineerTarget.manifest_exposed, true);
+    ok(engineerTarget.hooks_path.endsWith(join('plugins', 'engineer', 'hooks', 'hooks.json')));
+    deepStrictEqual(engineerTarget.events, ['PreCompact', 'SessionStart', 'Stop']);
+    strictEqual(engineerTarget.handler_count, 3);
+    strictEqual(engineerTarget.command_count, 1);
+    deepStrictEqual(engineerTarget.commands, ['node hook.mjs']);
     ok(formatText(report).includes('command: /hooks'));
+    ok(formatText(report).includes('review-target: engineer@1.0.0'));
+    ok(formatText(report).includes(`path=${engineerTarget.hooks_path}`));
+    ok(formatText(report).includes('hook-command: node hook.mjs'));
   });
 
   it('carries Codex hook command portability warnings into settings output', async () => {
@@ -462,6 +475,13 @@ describe('runtime settings', () => {
     strictEqual(artifact.command.attest_codex_hook_review, true);
     strictEqual(artifact.codex_hook_review.status, 'attested');
     ok(artifact.codex_hook_review.assertion.includes('/hooks was opened'));
+    ok(artifact.codex_hook_review.assertion.includes('all listed'));
+    strictEqual(artifact.codex_hook_review.review_targets.length, 2);
+    const artifactEngineerTarget = artifact.codex_hook_review.review_targets.find((target) => target.plugin === 'engineer');
+    strictEqual(artifactEngineerTarget.version, '1.0.0');
+    deepStrictEqual(artifactEngineerTarget.events, ['PreCompact', 'SessionStart', 'Stop']);
+    strictEqual(artifactEngineerTarget.command_count, 1);
+    deepStrictEqual(artifactEngineerTarget.command_warnings, []);
     ok(artifact.codex_hook_review.limits.some((limit) => limit.includes('not host-native proof')));
     ok(artifact.codex_hook_review.limits.some((limit) => limit.includes('Active=0')));
     strictEqual(artifact.summary.codex_hook_review_attested, true);
@@ -526,7 +546,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.9');
+    strictEqual(report.schema_version, 'runtime-settings-1.10');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
