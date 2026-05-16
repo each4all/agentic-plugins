@@ -23,6 +23,20 @@ const EXECUTION_SCHEMA = 'runtime-consensus-execution-1.0';
 const LATEST_EXECUTION_SCHEMA = 'runtime-consensus-execution-latest-1.0';
 const PROGRESS_SCHEMA = 'runtime-consensus-progress-1.0';
 const VALID_COMMANDS = new Set(['plan', 'record', 'synthesize', 'next-round', 'execute', 'status']);
+const VALID_CONVERGENCE_STATES = new Set([
+  'aligned',
+  'complementary',
+  'contradiction',
+  'insufficient-evidence',
+  'owner-decision-required',
+  'non-consensus',
+]);
+const VALID_DISAGREEMENT_KINDS = new Set([
+  'complementary',
+  'contradiction',
+  'insufficient-evidence',
+  'non-consensus',
+]);
 const DEFAULT_PEERS = ['claude', 'codex'];
 const DEFAULT_MAX_ROUNDS = 2;
 const MAX_ROUNDS_CAP = 3;
@@ -243,21 +257,26 @@ export async function synthesizeConsensus(options = {}) {
   const summary = await resolveSummary(options, runId);
   const durableDisagreements = await resolveDisagreements(options, repoRoot, manifest);
   const evidencePointers = collectEvidencePointers(manifest);
-  const converged = options.converged === true;
-  const nextRound = buildNextRoundAvailability({ manifest, durableDisagreements, runId });
+  const convergenceState = classifyConvergenceState({ options, durableDisagreements, manifest });
+  const contradictions = await resolveContradictions(options, durableDisagreements, convergenceState);
+  validateConvergenceResult({ convergenceState, durableDisagreements, contradictions });
+  const nextRound = buildNextRoundAvailability({ manifest, durableDisagreements, runId, convergenceState });
   const result = {
     schema_version: RESULT_SCHEMA,
     run_id: runId,
-    status: converged ? 'converged' : 'durable-disagreement',
+    status: statusForConvergence(convergenceState),
+    convergence_state: convergenceState,
     created_at: toIso(now),
     synthesized_summary: summary.trim(),
     durable_disagreements: durableDisagreements,
+    contradictions,
     evidence_pointers: evidencePointers,
     next_round: nextRound,
-    next_action: options.nextAction ?? (converged ? 'Proceed with the synthesized decision.' : 'Owner decision required for durable disagreements.'),
+    next_action: options.nextAction ?? defaultNextActionForConvergence({ convergenceState, nextRound }),
     limits: [
       'Peer raw outputs remain in artifact files.',
       'This result is intentionally limited to synthesis, durable disagreements, and evidence pointers.',
+      'The synthesis must not average incompatible recommendations; it must converge on evidence, request owner decision, or preserve non-consensus.',
     ],
   };
   const resultPath = resolve(consensusRunDir(repoRoot, runId), 'consensus.json');
@@ -272,8 +291,10 @@ export async function synthesizeConsensus(options = {}) {
     version: VERSION,
     run_id: runId,
     status: result.status,
+    convergence_state: result.convergence_state,
     synthesized_summary: result.synthesized_summary,
     durable_disagreements: result.durable_disagreements,
+    contradictions: result.contradictions,
     evidence_pointers: result.evidence_pointers,
     next_round: result.next_round,
     consensus_pointer: manifest.consensus_pointer,
@@ -295,9 +316,12 @@ export async function planNextRound(options = {}) {
   if (manifest.rounds.some((round) => round.round === nextRound)) {
     throw new Error(`Round ${nextRound} already exists; choose a new --round or inspect runtime:consensus status --run-id ${runId}`);
   }
-  const disagreements = await resolveNextRoundDisagreements(options, repoRoot, manifest);
+  const { disagreements, convergenceState } = await resolveNextRoundInput(options, repoRoot, manifest);
   if (disagreements.length === 0) {
     throw new Error(`next-round requires at least one durable disagreement; no next-round prompt was written and no peers were executed`);
+  }
+  if (convergenceState !== 'contradiction') {
+    throw new Error(`next-round requires convergence_state=contradiction or an explicit --disagreements-file; observed ${convergenceState}. No next-round prompt was written and no peers were executed`);
   }
   const round = {
     round: nextRound,
@@ -601,6 +625,7 @@ export async function readStatus(options = {}) {
     run_id: runId,
     lookup: selection.lookup,
     status: manifest.status,
+    convergence_state: consensusArtifact ? convergenceStateFromArtifact(consensusArtifact) : null,
     run_pointer: pointer(repoRoot, consensusRunDir(repoRoot, runId)),
     manifest_pointer: pointer(repoRoot, manifestPath),
     consensus_pointer: manifest.consensus_pointer,
@@ -622,6 +647,8 @@ export async function readStatus(options = {}) {
       raw_output_count: round.raw_outputs.length,
     })),
     peer_lanes: peerLanesFor(manifest, runId),
+    durable_disagreements: consensusArtifact?.durable_disagreements ?? [],
+    contradictions: consensusArtifact?.contradictions ?? [],
     evidence_pointers: evidencePointers,
     status_guidance: statusGuidance,
     next_action: statusGuidance.next_action,
@@ -1297,23 +1324,86 @@ function mergePeerEntries(existing, updates) {
   return [...byPeer.values()];
 }
 
-function buildNextRoundAvailability({ manifest, durableDisagreements, runId }) {
+function buildNextRoundAvailability({ manifest, durableDisagreements, runId, convergenceState = null }) {
   const latestRound = latestRoundNumber(manifest);
   const hasDisagreements = durableDisagreements.length > 0;
+  const contradiction = convergenceState === 'contradiction';
   const budgetRemaining = latestRound < manifest.policy.max_rounds;
   const hasExecutablePeers = executablePeersFor(manifest).length > 0;
   return {
-    available: hasDisagreements && budgetRemaining,
-    reason: !hasDisagreements
+    available: contradiction && hasDisagreements && budgetRemaining,
+    reason: convergenceState === 'owner-decision-required'
+      ? `max_rounds ${manifest.policy.max_rounds} exhausted; owner decision is required`
+      : !contradiction
+      ? `convergence_state ${convergenceState ?? '<unknown>'} does not require a rebuttal round`
+      : !hasDisagreements
       ? 'no durable disagreements were synthesized'
       : budgetRemaining
         ? 'durable disagreements remain and max_rounds budget is available'
         : `max_rounds ${manifest.policy.max_rounds} exhausted`,
     current_round: latestRound,
     max_rounds: manifest.policy.max_rounds,
-    command: hasDisagreements && budgetRemaining ? `runtime:consensus next-round --run-id ${runId}` : null,
-    execute_command: hasDisagreements && budgetRemaining && hasExecutablePeers ? `runtime:consensus execute --run-id ${runId} --round ${latestRound + 1} --execute` : null,
+    command: contradiction && hasDisagreements && budgetRemaining ? `runtime:consensus next-round --run-id ${runId}` : null,
+    execute_command: contradiction && hasDisagreements && budgetRemaining && hasExecutablePeers ? `runtime:consensus execute --run-id ${runId} --round ${latestRound + 1} --execute` : null,
   };
+}
+
+function classifyConvergenceState({ options, durableDisagreements, manifest }) {
+  if (options.convergenceState) return validateConvergenceState(options.convergenceState);
+  if (options.converged === true) return 'aligned';
+  if (durableDisagreements.length === 0) return 'aligned';
+  const kinds = durableDisagreements.map(disagreementKind).filter(Boolean);
+  if (kinds.length > 0 && kinds.every((kind) => kind === 'complementary')) return 'complementary';
+  if (kinds.length > 0 && kinds.every((kind) => kind === 'insufficient-evidence')) return 'insufficient-evidence';
+  if (kinds.length > 0 && kinds.every((kind) => kind === 'non-consensus')) return 'non-consensus';
+  if (latestRoundNumber(manifest) >= manifest.policy.max_rounds) return 'owner-decision-required';
+  return 'contradiction';
+}
+
+function convergenceStateFromArtifact(consensusArtifact) {
+  if (consensusArtifact.convergence_state) {
+    return validateConvergenceState(consensusArtifact.convergence_state);
+  }
+  if (consensusArtifact.status === 'converged' || (consensusArtifact.durable_disagreements ?? []).length === 0) {
+    return 'aligned';
+  }
+  return 'contradiction';
+}
+
+function disagreementKind(disagreement) {
+  return disagreement?.kind ?? null;
+}
+
+function statusForConvergence(convergenceState) {
+  return ['aligned', 'complementary'].includes(convergenceState)
+    ? 'converged'
+    : 'durable-disagreement';
+}
+
+function defaultNextActionForConvergence({ convergenceState, nextRound }) {
+  if (convergenceState === 'aligned') return 'Proceed with the synthesized decision.';
+  if (convergenceState === 'complementary') return 'Proceed with the synthesized decision while preserving the complementary perspectives as caveats.';
+  if (convergenceState === 'contradiction') {
+    return nextRound.available
+      ? 'Plan the bounded rebuttal round before executing more peers.'
+      : 'Direct contradictions remain but the bounded rebuttal budget is exhausted; ask the owner for a decision.';
+  }
+  if (convergenceState === 'insufficient-evidence') return 'Collect the missing evidence or ask the owner to choose the evidence standard before deciding.';
+  if (convergenceState === 'owner-decision-required') return 'Ask the owner to decide between the preserved alternatives; do not run more rebuttal rounds without explicit approval.';
+  return 'Preserve the non-consensus result with evidence and ask the owner whether to choose, defer, or narrow scope.';
+}
+
+function validateConvergenceResult({ convergenceState, durableDisagreements, contradictions }) {
+  const unresolved = durableDisagreements.length + contradictions.length;
+  if (convergenceState === 'aligned' && unresolved > 0) {
+    throw new Error('convergence_state aligned cannot include durable disagreements or contradictions');
+  }
+  if (convergenceState === 'complementary' && contradictions.length > 0) {
+    throw new Error('convergence_state complementary cannot include contradiction summaries');
+  }
+  if (['contradiction', 'insufficient-evidence', 'owner-decision-required', 'non-consensus'].includes(convergenceState) && unresolved === 0) {
+    throw new Error(`convergence_state ${convergenceState} requires at least one durable disagreement or contradiction summary`);
+  }
 }
 
 function buildPeerLanes({ runId, activePeers }) {
@@ -1406,24 +1496,44 @@ function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtif
   }
 
   if (consensusArtifact) {
+    const convergenceState = convergenceStateFromArtifact(consensusArtifact);
     const nextRound = buildNextRoundAvailability({
       manifest,
       durableDisagreements: consensusArtifact.durable_disagreements ?? [],
       runId,
+      convergenceState,
     });
-    if (consensusArtifact.status === 'converged' || (consensusArtifact.durable_disagreements ?? []).length === 0) {
+    if (['aligned', 'complementary'].includes(convergenceState)) {
       return guidance({
         state: 'complete',
         next_action: consensusArtifact.next_action ?? 'Consensus is converged; proceed with the synthesized decision.',
         next_steps: [],
         commands: [],
-        reason: 'consensus artifact has no durable disagreements',
+        reason: `convergence_state=${convergenceState}`,
+      });
+    }
+    if (convergenceState === 'insufficient-evidence') {
+      return guidance({
+        state: 'evidence_required',
+        next_action: consensusArtifact.next_action ?? 'Consensus cannot converge because required evidence is missing; collect evidence or ask the owner to choose the evidence standard.',
+        next_steps: [],
+        commands: [],
+        reason: 'convergence_state=insufficient-evidence',
+      });
+    }
+    if (convergenceState === 'non-consensus') {
+      return guidance({
+        state: 'non_consensus',
+        next_action: consensusArtifact.next_action ?? 'Irreducible disagreement remains; preserve the non-consensus evidence and ask the owner for a decision.',
+        next_steps: [],
+        commands: [],
+        reason: 'convergence_state=non-consensus',
       });
     }
     if (nextRound.available) {
       return guidance({
         state: 'next_round_available',
-        next_action: 'Durable disagreements remain; plan the bounded rebuttal round before executing more peers.',
+        next_action: 'Direct contradictions remain; plan the bounded rebuttal round before executing more peers.',
         next_steps: [
           nextRound.command,
           nextRound.execute_command,
@@ -1434,7 +1544,7 @@ function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtif
     }
     return guidance({
       state: 'owner_decision_required',
-      next_action: 'Durable disagreements remain but max_rounds is exhausted; ask the owner for a decision instead of running more peers.',
+      next_action: consensusArtifact.next_action ?? 'Direct contradictions remain but max_rounds is exhausted; ask the owner for a decision instead of running more peers.',
       next_steps: [],
       commands: [],
       reason: nextRound.reason,
@@ -1677,11 +1787,18 @@ export function parseArgs(argv) {
       case '--disagreements-file':
         options.disagreementsFile = requireValue(args, arg);
         break;
+      case '--contradictions-file':
+        options.contradictionsFile = requireValue(args, arg);
+        break;
+      case '--convergence-state':
+        options.convergenceState = validateConvergenceState(requireValue(args, arg));
+        break;
       case '--next-action':
         options.nextAction = requireSingleLine(requireValue(args, arg), arg);
         break;
       case '--converged':
         options.converged = true;
+        options.convergenceState = options.convergenceState ?? 'aligned';
         break;
       case '--durable-disagreement':
         options.converged = false;
@@ -1710,6 +1827,7 @@ export function formatText(report) {
   const lines = [`runtime:consensus ${report.version ?? VERSION} (${report.command})`];
   if (report.run_id) lines.push(`run: ${report.run_id}`);
   if (report.status) lines.push(`status: ${report.status}`);
+  if (report.convergence_state) lines.push(`convergence state: ${report.convergence_state}`);
   if (report.run_pointer) lines.push(`run artifact: ${report.run_pointer}`);
   if (report.consensus_pointer) lines.push(`consensus: ${report.consensus_pointer}`);
   if (report.execution_pointer) lines.push(`execution: ${report.execution_pointer}`);
@@ -1763,6 +1881,13 @@ export function formatText(report) {
       lines.push(`- ${disagreement.summary ?? disagreement}`);
     }
   }
+  if (report.contradictions?.length) {
+    lines.push('', 'contradictions:');
+    for (const contradiction of report.contradictions) {
+      lines.push(`- ${contradiction.summary ?? contradiction}`);
+      if (contradiction.evidence_standard) lines.push(`  evidence-standard: ${contradiction.evidence_standard}`);
+    }
+  }
   if (report.evidence_pointers?.length) {
     lines.push('', 'evidence pointers:');
     for (const evidence of report.evidence_pointers) {
@@ -1803,13 +1928,13 @@ function helpText() {
 Usage:
   runtime:consensus plan --task <text> [--peers claude,codex,reviewer] [--max-rounds N] [--max-peers N] [--timeout-ms N]
   runtime:consensus record --run-id <id> --peer <peer> --input-file <path>
-  runtime:consensus synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>]
+  runtime:consensus synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>] [--convergence-state aligned|complementary|contradiction|insufficient-evidence|owner-decision-required|non-consensus]
   runtime:consensus next-round --run-id <id> [--disagreements-file <path>]
   runtime:consensus execute --run-id <id> [--round N] [--peers claude,codex] --execute [--timeout-ms N] [--process-budget N]
   runtime:consensus status --run-id <id>
   runtime:consensus status --latest
 
-Planning and synthesis never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record.`;
+Planning and synthesis never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record. Contradiction rebuttal rounds are bounded by --max-rounds and require durable disagreement summaries.`;
 }
 
 async function resolveStatusRunSelection({ repoRoot, runId, latest }) {
@@ -1919,15 +2044,31 @@ async function resolveDisagreements(options) {
   return parseDisagreements(text);
 }
 
-async function resolveNextRoundDisagreements(options, repoRoot, manifest) {
+async function resolveContradictions(options, durableDisagreements, convergenceState) {
+  if (options.contradictionsFile) {
+    return parseDisagreements(await readFile(resolve(options.contradictionsFile), 'utf8')).map(toContradictionSummary);
+  }
+  if (['contradiction', 'owner-decision-required', 'non-consensus'].includes(convergenceState)) {
+    return durableDisagreements.map(toContradictionSummary);
+  }
+  return [];
+}
+
+async function resolveNextRoundInput(options, repoRoot, manifest) {
   if (options.disagreementsFile) {
-    return parseDisagreements(await readFile(resolve(options.disagreementsFile), 'utf8'));
+    return {
+      disagreements: parseDisagreements(await readFile(resolve(options.disagreementsFile), 'utf8')),
+      convergenceState: 'contradiction',
+    };
   }
   if (!manifest.consensus_pointer) {
     throw new Error(`next-round requires consensus.json or --disagreements-file; run runtime:consensus synthesize --run-id ${manifest.run_id} --summary-file <summary.md> [--disagreements-file <disagreements.md>] first. No next-round prompt was written and no peers were executed`);
   }
   const result = await readJson(resolve(repoRoot, manifest.consensus_pointer));
-  return result.durable_disagreements ?? [];
+  return {
+    disagreements: result.durable_disagreements ?? [],
+    convergenceState: convergenceStateFromArtifact(result),
+  };
 }
 
 function parseDisagreements(text) {
@@ -1951,7 +2092,7 @@ function parseDisagreements(text) {
 
 function normalizeDisagreement(value) {
   if (typeof value === 'string') {
-    return { summary: value, status: 'durable' };
+    return { summary: value, status: 'durable', kind: null };
   }
   if (!value || typeof value !== 'object') {
     throw new Error('Disagreements must be strings or objects');
@@ -1959,11 +2100,29 @@ function normalizeDisagreement(value) {
   if (!value.summary || typeof value.summary !== 'string') {
     throw new Error('Disagreement objects require a string summary');
   }
+  const kind = value.kind ?? value.type ?? null;
   return {
     summary: value.summary,
     status: value.status ?? 'durable',
+    kind: kind ? validateDisagreementKind(kind) : null,
     owner_decision: value.owner_decision ?? null,
+    issue_framing: typeof value.issue_framing === 'string' ? value.issue_framing : null,
+    opposing_views: Array.isArray(value.opposing_views)
+      ? value.opposing_views.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim())
+      : [],
+    evidence_standard: typeof value.evidence_standard === 'string' ? value.evidence_standard : null,
     evidence_pointers: Array.isArray(value.evidence_pointers) ? value.evidence_pointers : [],
+  };
+}
+
+function toContradictionSummary(value) {
+  const normalized = normalizeDisagreement(value);
+  return {
+    summary: normalized.summary,
+    issue_framing: normalized.issue_framing ?? normalized.summary,
+    opposing_views: normalized.opposing_views,
+    evidence_standard: normalized.evidence_standard ?? 'Resolve with artifact-backed evidence; identify missing evidence explicitly; do not average incompatible recommendations.',
+    evidence_pointers: normalized.evidence_pointers,
   };
 }
 
@@ -2001,7 +2160,7 @@ Do not assume host parity. Note host-specific limits explicitly.`;
 
 function buildRebuttalPrompt({ runId, peer, disagreements, round, lane }) {
   const body = disagreements.length
-    ? disagreements.map((item, index) => `${index + 1}. ${item.summary ?? item}`).join('\n')
+    ? disagreements.map((item, index) => formatRebuttalIssue(item, index)).join('\n\n')
     : 'No durable disagreements were provided.';
   return `# Runtime Consensus Targeted Rebuttal
 
@@ -2019,6 +2178,20 @@ Lane action:
 ${lane?.operator_action ?? 'Follow the consensus report lane instructions.'}
 
 Respond with resolution evidence, remaining disagreement, and owner decision points. Do not quote or depend on raw peer output unless you have a direct artifact pointer.`;
+}
+
+function formatRebuttalIssue(item, index) {
+  const normalized = normalizeDisagreement(item);
+  const opposingViews = normalized.opposing_views.length > 0
+    ? normalized.opposing_views.map((view) => `  - ${view}`).join('\n')
+    : '  - Use the disagreement summary as the opposing view; do not invent raw claims.';
+  const evidenceStandard = normalized.evidence_standard
+    ?? 'Resolve with artifact-backed evidence; identify missing evidence explicitly; do not average incompatible recommendations.';
+  return `${index + 1}. Issue framing: ${normalized.issue_framing ?? normalized.summary}
+   Synthesized disagreement: ${normalized.summary}
+   Opposing views:
+${opposingViews}
+   Requested evidence standard: ${evidenceStandard}`;
 }
 
 function collectEvidencePointers(manifest) {
@@ -2089,6 +2262,20 @@ function validateRunId(runId) {
     throw new Error('Invalid --run-id; expected consensus-YYYYMMDDTHHMMSSZ-abcdef');
   }
   return runId;
+}
+
+function validateConvergenceState(value) {
+  if (!VALID_CONVERGENCE_STATES.has(value)) {
+    throw new Error('--convergence-state must be aligned, complementary, contradiction, insufficient-evidence, owner-decision-required, or non-consensus');
+  }
+  return value;
+}
+
+function validateDisagreementKind(value) {
+  if (!VALID_DISAGREEMENT_KINDS.has(value)) {
+    throw new Error('Disagreement kind must be complementary, contradiction, insufficient-evidence, or non-consensus');
+  }
+  return value;
 }
 
 function positiveInt(value, label) {
