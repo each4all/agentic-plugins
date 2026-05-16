@@ -1,6 +1,6 @@
 ---
 name: doctor
-description: "Read-only runtime operator diagnostic for agentic-plugins. Use when the user wants to inspect Claude/Codex CLI availability, auth state, plugin marketplace/cache state, companion contract compatibility, model/effort observation, sandbox/permission readiness, workflow/peer-run ledger health, latest runtime:compat drift artifacts, generated runtime artifact inventory, or explicitly opted-in permission proof / deep peer smoke execution. Does not mutate settings."
+description: "Read-only runtime operator diagnostic for agentic-plugins. Use when the user wants to inspect Claude/Codex CLI availability, auth state, plugin marketplace/cache state, companion contract compatibility, model/effort observation, sandbox/permission readiness, workflow/peer-run ledger health, latest runtime:compat drift artifacts, generated runtime artifact inventory, or explicitly opted-in permission proof / deep peer smoke / workflow continuation proof execution. Does not mutate settings."
 ---
 
 # Doctor (runtime framework primitive)
@@ -15,7 +15,7 @@ description: "Read-only runtime operator diagnostic for agentic-plugins. Use whe
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>]
+node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>]
 ```
 
 3. Present the result without hiding host asymmetry. In particular:
@@ -26,6 +26,7 @@ node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--form
    - The readiness summary reports sandbox/permission status as unknown unless `--sandbox-permission-probe` is requested. `--permission-proof` records separate preflight/execution evidence under `permission_proof`.
    - `--permission-proof` remains plan-only unless the user also supplies `--execute-permission-proof`. The executor uses the existing companion contract, does not pass sandbox/approval/permission-mode relaxation flags, classifies permission failures, and omits raw peer stdout from doctor output.
    - `--deep-peer-smoke` remains plan-only unless the user also supplies `--execute-deep-peer-smoke`. The executor uses the existing companion contract and omits raw peer stdout from doctor output.
+   - `--workflow-continuation-proof` remains plan-only unless the user also supplies `--execute-workflow-continuation-proof`. The executor creates only ephemeral temp-repo engineer state, runs engineer `state.mjs` plus `dispatch-peer.mjs`, verifies pending/commit bookkeeping, and omits raw peer stdout and workflow bodies from doctor output.
    - `--artifact-inventory` is opt-in and read-only. It reports generated `.agentic-plugins/runs` counts, bytes, age metadata, and retention pressure without reading raw artifact bodies or deleting/compacting anything.
    - Authentication output must stay sanitized. Do not expose email, org id, token, or account secrets.
 
@@ -49,6 +50,8 @@ Doctor reports:
 - Optional `--permission-proof --execute-permission-proof` execution proof through the companion contract under host-native permission defaults. Output is bounded to status, exit codes, peer host/model metadata, timing, stdout byte count, stdout SHA-256, and sanitized permission-failure class; raw peer stdout is not printed into the main session.
 - Optional `--deep-peer-smoke` plan-only preflight, including per-direction readiness, model/effort inputs, blockers, warnings, and next-step guidance without executing peers.
 - Optional `--deep-peer-smoke --execute-deep-peer-smoke` execution proof through the companion contract. Output is bounded to status, exit codes, peer host/model metadata, timing, stdout byte count, and stdout SHA-256; raw peer stdout is not printed into the main session.
+- Optional `--workflow-continuation-proof` plan-only preflight, including per-direction engineer workflow state/dispatch readiness without executing peers.
+- Optional `--workflow-continuation-proof --execute-workflow-continuation-proof` execution proof through engineer state creation, engineer dispatch-peer, pending ensemble verification, ensemble commit, and committed-result verification. Output is bounded to status, exit codes, peer host/model metadata, timing, stdout byte count, stdout SHA-256, and state-check booleans; raw peer stdout and temp workflow bodies are not printed into the main session.
 - Latest `runtime:compat` snapshot/gap/plan metadata, including host-version drift, release-note requirement status, host gaps, and next actions. Doctor reads only bounded metadata and does not read raw release-note bodies or raw host help output.
 - Optional `--artifact-inventory` output, including per-family `.agentic-plugins/runs` counts, bytes, oldest/newest metadata, and advisory retention pressure. Inventory uses filesystem metadata only and does not read artifact bodies.
 - Basic workflow and peer-run ledger health for canonical `.agentic-plugins/state/<plugin>` and legacy `.claude/agentic-*` homes, including migration ambiguity/blocker status.

@@ -9,8 +9,8 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, lstat, readdir, readFile, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { access, lstat, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_VERSION } from './version.mjs';
@@ -36,6 +36,7 @@ const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_STALE_GRACE_MS = 60000;
 const DEFAULT_DEEP_PEER_SMOKE_TIMEOUT_MS = 120000;
 const DEFAULT_PERMISSION_PROOF_TIMEOUT_MS = 120000;
+const DEFAULT_WORKFLOW_CONTINUATION_PROOF_TIMEOUT_MS = 120000;
 const DEFAULT_ARTIFACT_RETENTION_CAP = 20;
 const DEFAULT_ARTIFACT_RETENTION_MAX_BYTES = 50 * 1024 * 1024;
 const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
@@ -61,6 +62,9 @@ export async function runDoctor({
   permissionProof = false,
   executePermissionProof = false,
   permissionProofTimeoutMs = DEFAULT_PERMISSION_PROOF_TIMEOUT_MS,
+  workflowContinuationProof = false,
+  executeWorkflowContinuationProof = false,
+  workflowContinuationProofTimeoutMs = DEFAULT_WORKFLOW_CONTINUATION_PROOF_TIMEOUT_MS,
   artifactInventory = false,
   artifactRetentionCap = DEFAULT_ARTIFACT_RETENTION_CAP,
   artifactMaxBytes = DEFAULT_ARTIFACT_RETENTION_MAX_BYTES,
@@ -70,6 +74,9 @@ export async function runDoctor({
   }
   if (executePermissionProof && !permissionProof) {
     throw new Error('--execute-permission-proof requires --permission-proof');
+  }
+  if (executeWorkflowContinuationProof && !workflowContinuationProof) {
+    throw new Error('--execute-workflow-continuation-proof requires --workflow-continuation-proof');
   }
   const resolvedRepoRoot = resolve(repoRoot);
   const resolvedHomeDir = resolve(homeDir);
@@ -154,6 +161,8 @@ export async function runDoctor({
     sandboxPermissionProbe,
     permissionProof,
     executePermissionProof,
+    workflowContinuationProof,
+    executeWorkflowContinuationProof,
   });
   const sandboxPermissionProbeSection = buildSandboxPermissionProbeSection({
     requested: sandboxPermissionProbe,
@@ -183,6 +192,16 @@ export async function runDoctor({
     runner,
     timeoutMs: deepPeerSmokeTimeoutMs,
   });
+  const workflowContinuationProofSection = await buildWorkflowContinuationProofSection({
+    requested: workflowContinuationProof,
+    execute: executeWorkflowContinuationProof,
+    readiness,
+    modelEffort,
+    repoRoot: resolvedRepoRoot,
+    env,
+    runner,
+    timeoutMs: workflowContinuationProofTimeoutMs,
+  });
   const readinessMatrix = buildReadinessMatrix({
     claude,
     codex,
@@ -193,6 +212,7 @@ export async function runDoctor({
     readiness,
     permissionProof: permissionProofSection,
     deepPeerSmoke: deepPeerSmokeSection,
+    workflowContinuationProof: workflowContinuationProofSection,
   });
   const experienceParity = buildExperienceParity({
     readinessMatrix,
@@ -206,6 +226,7 @@ export async function runDoctor({
     compatRuns,
     permissionProof: permissionProofSection,
     deepPeerSmoke: deepPeerSmokeSection,
+    workflowContinuationProof: workflowContinuationProofSection,
   });
 
   const report = {
@@ -218,6 +239,7 @@ export async function runDoctor({
     sandbox_permission_probe: sandboxPermissionProbeSection,
     permission_proof: permissionProofSection,
     deep_peer_smoke: deepPeerSmokeSection,
+    workflow_continuation_proof: workflowContinuationProofSection,
     clis: {
       claude: redactCommandDetails(claude),
       codex: redactCommandDetails(codex),
@@ -2505,6 +2527,8 @@ function buildReadiness({
   sandboxPermissionProbe,
   permissionProof,
   executePermissionProof,
+  workflowContinuationProof,
+  executeWorkflowContinuationProof,
 }) {
   return {
     claude_to_codex: buildDirectionReadiness({
@@ -2519,6 +2543,8 @@ function buildReadiness({
       sandboxPermissionProbe,
       permissionProof,
       executePermissionProof,
+      workflowContinuationProof,
+      executeWorkflowContinuationProof,
     }),
     codex_to_claude: buildDirectionReadiness({
       direction: 'Codex -> Claude',
@@ -2532,6 +2558,8 @@ function buildReadiness({
       sandboxPermissionProbe,
       permissionProof,
       executePermissionProof,
+      workflowContinuationProof,
+      executeWorkflowContinuationProof,
     }),
   };
 }
@@ -2546,6 +2574,7 @@ function buildReadinessMatrix({
   readiness,
   permissionProof,
   deepPeerSmoke,
+  workflowContinuationProof,
 }) {
   const runtimePlugin = plugins.runtime;
   return {
@@ -2591,6 +2620,7 @@ function buildReadinessMatrix({
         modelEffort: modelEffort.directions.claude_to_codex,
         permissionProof,
         deepPeerSmoke,
+        workflowContinuationProof,
       }),
       codex_to_claude: buildDirectionReadinessRow({
         key: 'codex_to_claude',
@@ -2601,6 +2631,7 @@ function buildReadinessMatrix({
         modelEffort: modelEffort.directions.codex_to_claude,
         permissionProof,
         deepPeerSmoke,
+        workflowContinuationProof,
       }),
     },
     limits: [
@@ -2624,12 +2655,14 @@ function buildExperienceParity({
   compatRuns,
   permissionProof,
   deepPeerSmoke,
+  workflowContinuationProof,
 }) {
   const criteria = [
     buildHostPluginExperienceCriterion(readinessMatrix),
     buildPluginCommandExperienceCriterion(pluginCommandSurface),
     buildCompanionExperienceCriterion(companion),
     buildPeerExecutionExperienceCriterion({ readiness, permissionProof, deepPeerSmoke }),
+    buildEngineerWorkflowExecutionExperienceCriterion({ readiness, workflowContinuationProof }),
     buildWorkflowContinuityExperienceCriterion(ledgers),
     buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommandSurface }),
     buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns, compatRuns }),
@@ -2763,6 +2796,40 @@ function buildPeerExecutionExperienceCriterion({ readiness, permissionProof, dee
     weight: 15,
     evidence: `permission-proof=${permissionProof?.status ?? 'not_requested'}/${permissionProof?.executed ?? false}, deep-peer-smoke=${deepPeerSmoke?.status ?? 'not_requested'}/${deepPeerSmoke?.executed ?? false}`,
     next_step: 'Run runtime:doctor with --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke to refresh execution evidence.',
+  });
+}
+
+function buildEngineerWorkflowExecutionExperienceCriterion({ readiness, workflowContinuationProof }) {
+  const blocked = Object.values(readiness).some((direction) => !['available', 'available_with_warnings'].includes(direction.status));
+  if (blocked) {
+    return parityCriterion({
+      id: 'engineer_workflow_continuation_execution',
+      label: 'Engineer workflow continuation is verified through dispatch and state',
+      status: 'blocked',
+      weight: 15,
+      evidence: Object.values(readiness).map((direction) => `${direction.direction}=${direction.status}`).join(', '),
+      next_step: 'Resolve readiness blockers, then rerun runtime:doctor with explicit workflow continuation proof.',
+    });
+  }
+  const passed = workflowContinuationProof?.executed && workflowContinuationProof.status === 'passed';
+  if (passed) {
+    return parityCriterion({
+      id: 'engineer_workflow_continuation_execution',
+      label: 'Engineer workflow continuation is verified through dispatch and state',
+      status: 'satisfied',
+      weight: 15,
+      evidence: `workflow-continuation-proof=${workflowContinuationProof.status}`,
+      next_step: null,
+    });
+  }
+  const operatorAction = workflowContinuationProof?.executed && workflowContinuationProof.status === 'operator_action_required';
+  return parityCriterion({
+    id: 'engineer_workflow_continuation_execution',
+    label: 'Engineer workflow continuation is ready but not verified',
+    status: operatorAction ? 'partial' : 'not_verified',
+    weight: 15,
+    evidence: `workflow-continuation-proof=${workflowContinuationProof?.status ?? 'not_requested'}/${workflowContinuationProof?.executed ?? false}`,
+    next_step: 'Run runtime:doctor with --workflow-continuation-proof --execute-workflow-continuation-proof to prove engineer state and dispatch continuation from current hosts.',
   });
 }
 
@@ -3038,7 +3105,7 @@ function buildCodexCacheMaterialization(plugin) {
   };
 }
 
-function buildDirectionReadinessRow({ key, caller, peer, readiness, companion, modelEffort, permissionProof, deepPeerSmoke }) {
+function buildDirectionReadinessRow({ key, caller, peer, readiness, companion, modelEffort, permissionProof, deepPeerSmoke, workflowContinuationProof }) {
   return {
     key,
     direction: readiness.direction,
@@ -3058,17 +3125,18 @@ function buildDirectionReadinessRow({ key, caller, peer, readiness, companion, m
       source: modelEffort.effort.source,
     },
     sandbox_permission: readiness.sandbox_permission.status,
-    execution_readiness: buildDirectionExecutionReadiness({ key, permissionProof, deepPeerSmoke }),
+    execution_readiness: buildDirectionExecutionReadiness({ key, permissionProof, deepPeerSmoke, workflowContinuationProof }),
     blocker_count: readiness.blockers.length,
     warning_count: readiness.warnings.length,
   };
 }
 
-function buildDirectionExecutionReadiness({ key, permissionProof, deepPeerSmoke }) {
+function buildDirectionExecutionReadiness({ key, permissionProof, deepPeerSmoke, workflowContinuationProof }) {
   const permission = summarizeExecutorEvidence(permissionProof, key);
   const smoke = summarizeExecutorEvidence(deepPeerSmoke, key);
-  const executed = [permission, smoke].filter((entry) => entry.executed);
-  const requested = [permission, smoke].filter((entry) => entry.requested);
+  const workflow = summarizeExecutorEvidence(workflowContinuationProof, key);
+  const executed = [permission, smoke, workflow].filter((entry) => entry.executed);
+  const requested = [permission, smoke, workflow].filter((entry) => entry.requested);
   let status = 'not_requested';
   if (executed.length > 0) {
     status = summarizeExecutorEvidenceStatus(executed);
@@ -3079,8 +3147,9 @@ function buildDirectionExecutionReadiness({ key, permissionProof, deepPeerSmoke 
     status,
     permission_proof: permission,
     deep_peer_smoke: smoke,
+    workflow_continuation_proof: workflow,
     evidence: executed.length > 0
-      ? 'explicit companion executor evidence recorded in runtime:doctor output'
+      ? 'explicit peer/workflow executor evidence recorded in runtime:doctor output'
       : requested.length > 0
         ? 'plan-only preflight evidence; no companion executor ran'
         : 'no explicit companion executor evidence requested',
@@ -3558,6 +3627,501 @@ function buildDeepPeerSmokePrompt({ key, peer, expectedToken }) {
   ].join('\n');
 }
 
+async function buildWorkflowContinuationProofSection({
+  requested,
+  execute,
+  readiness,
+  modelEffort,
+  repoRoot,
+  env,
+  runner,
+  timeoutMs,
+}) {
+  const directionSpecs = {
+    claude_to_codex: {
+      host: 'claude',
+      peer: 'codex',
+      branch: 'runtime-workflow-proof-claude-to-codex',
+      expectedToken: 'RUNTIME_WORKFLOW_CONTINUATION_OK codex',
+    },
+    codex_to_claude: {
+      host: 'codex',
+      peer: 'claude',
+      branch: 'runtime-workflow-proof-codex-to-claude',
+      expectedToken: 'RUNTIME_WORKFLOW_CONTINUATION_OK claude',
+    },
+  };
+  const directions = {};
+  for (const key of ['claude_to_codex', 'codex_to_claude']) {
+    const directionReadiness = readiness[key];
+    const directionSettings = modelEffort.directions[key];
+    const spec = directionSpecs[key];
+    const blocked = directionReadiness.blockers.length > 0;
+    const direction = {
+      direction: directionReadiness.direction,
+      requested,
+      execution: execute && requested && !blocked ? 'pending' : 'not_executed',
+      status: !requested ? 'not_requested' : blocked ? directionReadiness.status : 'ready_with_warnings',
+      plan: requested
+        ? execute
+          ? 'explicit workflow continuation executor requested; runtime creates temporary engineer state, dispatches a peer through engineer dispatch-peer, then commits the ensemble result'
+          : 'plan-only workflow continuation preflight; no peer agent or workflow state mutation is executed by runtime:doctor'
+        : 'not requested',
+      model: directionSettings.model,
+      effort: directionSettings.effort,
+      workflow: {
+        host: spec.host,
+        peer: spec.peer,
+        branch: spec.branch,
+        temp_repo: execute && requested && !blocked ? 'ephemeral_tmpdir' : null,
+      },
+      blockers: directionReadiness.blockers,
+      warnings: [
+        ...directionReadiness.warnings,
+        execute
+          ? 'workflow continuation executor requested; engineer state writes are confined to an ephemeral temp repo'
+          : 'workflow continuation proof is plan-only until --execute-workflow-continuation-proof is supplied',
+      ],
+      result: null,
+      next_step: requested
+        ? blocked
+          ? 'resolve blockers before executing workflow continuation proof'
+          : execute
+            ? 'inspect sanitized workflow continuation metadata; raw peer output and prompt text are intentionally omitted'
+            : 'rerun with --workflow-continuation-proof --execute-workflow-continuation-proof to prove engineer workflow state and dispatch'
+        : 'rerun with --workflow-continuation-proof to include this workflow continuation preflight',
+    };
+    if (requested && execute && blocked) {
+      direction.execution = 'skipped';
+      direction.result = {
+        status: 'skipped',
+        reason: 'readiness blockers prevent workflow continuation proof execution',
+      };
+    } else if (requested && execute) {
+      direction.result = await executeWorkflowContinuationProofDirection({
+        key,
+        spec,
+        repoRoot,
+        directionSettings,
+        runner,
+        env,
+        timeoutMs,
+      });
+      direction.execution = 'executed';
+      direction.status = direction.result.status;
+      if (direction.result.operator_action_required) {
+        direction.next_step = 'operator must satisfy host permission or auth preconditions outside runtime:doctor, then rerun workflow continuation proof';
+      }
+    }
+    directions[key] = direction;
+  }
+  return {
+    requested,
+    executed: Boolean(requested && execute),
+    peer_execution: Boolean(requested && execute),
+    workflow_state: requested && execute ? 'ephemeral_temp_repo' : 'none',
+    mode: !requested ? 'not_requested' : execute ? 'explicit_engineer_workflow_executor' : 'plan_only_preflight',
+    status: execute
+      ? summarizeWorkflowContinuationProofExecutionStatus({ requested, directions })
+      : summarizeWorkflowContinuationProofPlanStatus({ requested, directions }),
+    reason: requested
+      ? execute
+        ? 'runtime:doctor executed an engineer workflow continuation proof behind an explicit executor flag'
+        : 'runtime:doctor plans the workflow continuation preflight but does not execute peer agents or mutate workflow state'
+      : 'not requested',
+    directions,
+    limits: [
+      execute
+        ? 'Explicit executor; peer agents are invoked only when --workflow-continuation-proof and --execute-workflow-continuation-proof are both supplied.'
+        : 'Plan-only preflight; runtime:doctor does not execute peer agents or mutate workflow state.',
+      'The executor creates workflow files only inside an ephemeral temp repo, then removes that temp repo best-effort.',
+      'The executor uses engineer state.mjs create/read/ensemble-commit and engineer dispatch-peer.mjs; direct companion smoke alone is insufficient for this proof.',
+      'Raw peer stdout and prompt text are not included in doctor output; only status, exit codes, byte count, SHA-256, timing metadata, and state-check booleans are reported.',
+      'No host-native config, auth, secrets, sandbox, permission, or repository source state is mutated.',
+    ],
+  };
+}
+
+function summarizeWorkflowContinuationProofPlanStatus({ requested, directions }) {
+  if (!requested) return 'not_requested';
+  const statuses = Object.values(directions).map((direction) => direction.status);
+  if (statuses.every((status) => !['ready_with_warnings', 'available'].includes(status))) return 'blocked';
+  if (statuses.some((status) => !['ready_with_warnings', 'available'].includes(status))) return 'partially_blocked';
+  return 'ready_with_warnings';
+}
+
+function summarizeWorkflowContinuationProofExecutionStatus({ requested, directions }) {
+  if (!requested) return 'not_requested';
+  const statuses = Object.values(directions).map((direction) => direction.status);
+  if (statuses.every((status) => status === 'passed')) return 'passed';
+  if (statuses.some((status) => status === 'operator_action_required')) return 'operator_action_required';
+  if (statuses.some((status) => status === 'timed_out')) return 'timed_out';
+  if (statuses.some((status) => ['skipped', 'blocked', 'unavailable', 'unauthenticated', 'not_installed'].includes(status))) return 'blocked';
+  return 'failed';
+}
+
+async function executeWorkflowContinuationProofDirection({
+  key,
+  spec,
+  repoRoot,
+  directionSettings,
+  runner,
+  env,
+  timeoutMs,
+}) {
+  const statePath = resolve(repoRoot, 'plugins/engineer/scripts/state.mjs');
+  const dispatchPath = resolve(repoRoot, 'plugins/engineer/scripts/dispatch-peer.mjs');
+  const missingScript = await firstMissingReadablePath([
+    { label: 'engineer state script', path: statePath },
+    { label: 'engineer dispatch script', path: dispatchPath },
+  ]);
+  if (missingScript) {
+    return {
+      status: 'blocked',
+      reason: `${missingScript.label} is not readable`,
+      missing_path: relative(repoRoot, missingScript.path),
+    };
+  }
+
+  const tempRepo = await mkdtemp(join(tmpdir(), 'runtime-workflow-proof-'));
+  const runId = `workflow-proof-${key}`;
+  const stateChecks = {
+    workflow_created: false,
+    pending_recorded: false,
+    commit_recorded: false,
+    pending_cleared: false,
+  };
+  let workflowId = null;
+  try {
+    const gitInit = await runner('git', ['init', '-q', '-b', spec.branch], {
+      cwd: tempRepo,
+      env,
+      timeoutMs,
+    });
+    if (!gitInit.ok) {
+      return summarizeWorkflowContinuationCommandFailure({
+        command: 'git init',
+        result: gitInit,
+        status: gitInit.timed_out ? 'timed_out' : 'blocked',
+        reason: 'temporary proof repo could not be initialized',
+        stateChecks,
+      });
+    }
+
+    const createResult = await runner(process.execPath, [
+      statePath,
+      'create',
+      '--repo-root',
+      tempRepo,
+      '--verb',
+      'compose',
+      '--host',
+      spec.host,
+      '--git-baseline-branch',
+      spec.branch,
+      '--git-baseline-head',
+      'workflow-continuation-proof',
+      '--original-request',
+      'runtime doctor workflow continuation proof',
+      '--current-phase',
+      'compose',
+      '--next-action',
+      'dispatch workflow continuation proof',
+    ], {
+      cwd: tempRepo,
+      env,
+      timeoutMs,
+    });
+    if (!createResult.ok) {
+      return summarizeWorkflowContinuationCommandFailure({
+        command: 'state create',
+        result: createResult,
+        status: createResult.timed_out ? 'timed_out' : 'failed',
+        reason: 'engineer state create failed',
+        stateChecks,
+      });
+    }
+    const workflowPath = extractWorkflowPath(createResult.stdout);
+    workflowId = workflowPath ? basename(workflowPath).replace(/\.md$/, '') : null;
+    stateChecks.workflow_created = Boolean(workflowPath);
+    if (!workflowPath) {
+      return summarizeWorkflowContinuationCommandFailure({
+        command: 'state create',
+        result: createResult,
+        status: 'failed',
+        reason: 'engineer state create did not return a workflow path',
+        stateChecks,
+      });
+    }
+
+    const expectedToken = spec.expectedToken;
+    const dispatchArgs = [
+      dispatchPath,
+      '--peer',
+      spec.peer,
+      '--prompt-text',
+      buildWorkflowContinuationProofPrompt({ key, peer: spec.peer, expectedToken }),
+      '--output-format',
+      'json',
+      '--cwd',
+      tempRepo,
+      '--workflow-path',
+      workflowPath,
+      '--phase',
+      'compose',
+      '--ensemble-type',
+      'workflow-continuation-proof',
+      '--run-id',
+      runId,
+    ];
+    if (directionSettings.model.value) dispatchArgs.push('--model', directionSettings.model.value);
+    if (directionSettings.effort.value) dispatchArgs.push('--effort', directionSettings.effort.value);
+    const dispatchResult = await runner(process.execPath, dispatchArgs, {
+      cwd: tempRepo,
+      env,
+      timeoutMs,
+    });
+    const dispatchSummary = summarizeCompanionSmokeResult({
+      result: dispatchResult,
+      companionPath: relative(repoRoot, dispatchPath),
+      expectedToken,
+    });
+
+    const pendingRead = await readWorkflowFrontmatterWithRunner({
+      runner,
+      statePath,
+      workflowPath,
+      cwd: tempRepo,
+      env,
+      timeoutMs,
+      stateChecks,
+      command: 'state read after dispatch',
+    });
+    if (!pendingRead.ok) {
+      return {
+        ...dispatchSummary,
+        ...pendingRead.failure,
+        status: pendingRead.failure.status,
+        workflow: workflowProofWorkflowSummary({ spec, runId, workflowId }),
+      };
+    }
+    stateChecks.pending_recorded = hasWorkflowPendingRun(pendingRead.frontmatter, runId);
+
+    if (dispatchSummary.status !== 'passed') {
+      return {
+        ...dispatchSummary,
+        status: dispatchSummary.status,
+        workflow: workflowProofWorkflowSummary({ spec, runId, workflowId }),
+        state_checks: stateChecks,
+      };
+    }
+
+    const commitResult = await runner(process.execPath, [
+      statePath,
+      'ensemble-commit',
+      '--workflow-path',
+      workflowPath,
+      '--run-id',
+      runId,
+      '--phase',
+      'compose',
+      '--ensemble-type',
+      'workflow-continuation-proof',
+      '--verdict',
+      'passed',
+      '--summary',
+      'runtime doctor workflow continuation proof passed',
+    ], {
+      cwd: tempRepo,
+      env,
+      timeoutMs,
+    });
+    if (!commitResult.ok) {
+      return summarizeWorkflowContinuationCommandFailure({
+        command: 'state ensemble-commit',
+        result: commitResult,
+        status: commitResult.timed_out ? 'timed_out' : 'failed',
+        reason: 'engineer ensemble commit failed',
+        workflow: workflowProofWorkflowSummary({ spec, runId, workflowId }),
+        stateChecks,
+      });
+    }
+
+    const committedRead = await readWorkflowFrontmatterWithRunner({
+      runner,
+      statePath,
+      workflowPath,
+      cwd: tempRepo,
+      env,
+      timeoutMs,
+      stateChecks,
+      command: 'state read after commit',
+    });
+    if (!committedRead.ok) {
+      return {
+        ...dispatchSummary,
+        ...committedRead.failure,
+        status: committedRead.failure.status,
+        workflow: workflowProofWorkflowSummary({ spec, runId, workflowId }),
+      };
+    }
+    stateChecks.pending_cleared = !hasWorkflowPendingRun(committedRead.frontmatter, runId);
+    stateChecks.commit_recorded = hasWorkflowEnsembleResult(committedRead.frontmatter, runId);
+    const passed = stateChecks.workflow_created &&
+      stateChecks.pending_recorded &&
+      stateChecks.pending_cleared &&
+      stateChecks.commit_recorded;
+    return {
+      ...dispatchSummary,
+      status: passed ? 'passed' : 'failed',
+      workflow: workflowProofWorkflowSummary({ spec, runId, workflowId }),
+      state_checks: stateChecks,
+      state_failure: passed ? null : 'engineer state did not record pending and committed ensemble continuation as expected',
+    };
+  } finally {
+    try {
+      await rm(tempRepo, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup; temp proof state is explicitly non-authoritative.
+    }
+  }
+}
+
+function buildWorkflowContinuationProofPrompt({ key, peer, expectedToken }) {
+  return [
+    '<task>',
+    `Runtime doctor workflow continuation proof for ${key}. Reply with exactly one short line: ${expectedToken}.`,
+    '</task>',
+    '',
+    '<grounding_rules>',
+    '<rule>Do not inspect or modify repository source files.</rule>',
+    '<rule>Do not include secrets, account details, environment values, or prompt text.</rule>',
+    '<rule>This proves the engineer workflow dispatch path only; do not perform broader analysis.</rule>',
+    '</grounding_rules>',
+    '',
+    '<expected_output>',
+    expectedToken,
+    '</expected_output>',
+  ].join('\n');
+}
+
+async function firstMissingReadablePath(entries) {
+  for (const entry of entries) {
+    try {
+      await access(entry.path, fsConstants.R_OK);
+    } catch {
+      return entry;
+    }
+  }
+  return null;
+}
+
+function extractWorkflowPath(stdout) {
+  const line = String(stdout ?? '').trim().split(/\r?\n/).filter(Boolean).at(-1);
+  return line || null;
+}
+
+async function readWorkflowFrontmatterWithRunner({
+  runner,
+  statePath,
+  workflowPath,
+  cwd,
+  env,
+  timeoutMs,
+  stateChecks,
+  command,
+}) {
+  const result = await runner(process.execPath, [
+    statePath,
+    'read',
+    '--workflow-path',
+    workflowPath,
+  ], {
+    cwd,
+    env,
+    timeoutMs,
+  });
+  if (!result.ok) {
+    return {
+      ok: false,
+      failure: summarizeWorkflowContinuationCommandFailure({
+        command,
+        result,
+        status: result.timed_out ? 'timed_out' : 'failed',
+        reason: 'engineer state read failed',
+        stateChecks,
+      }),
+    };
+  }
+  const frontmatter = parseJsonObject(result.stdout);
+  if (!frontmatter) {
+    return {
+      ok: false,
+      failure: summarizeWorkflowContinuationCommandFailure({
+        command,
+        result,
+        status: 'failed',
+        reason: 'engineer state read did not return frontmatter JSON',
+        stateChecks,
+      }),
+    };
+  }
+  return { ok: true, frontmatter };
+}
+
+function summarizeWorkflowContinuationCommandFailure({
+  command,
+  result,
+  status,
+  reason,
+  workflow = null,
+  stateChecks,
+}) {
+  const summary = {
+    status,
+    command,
+    reason,
+    companion_exit_code: result.exit_code,
+    companion_error_code: result.error_code,
+    timed_out: Boolean(result.timed_out),
+    stderr_summary: result.stderr ? truncate(sanitizeValue(result.stderr), 200) : null,
+    error: {
+      kind: sanitizeValue(result.error_code ?? `${command.replace(/\s+/g, '_')}_failed`),
+      message: sanitizeValue(result.error_message ?? result.stderr ?? reason),
+    },
+    workflow,
+    state_checks: stateChecks,
+  };
+  const operatorActionKind = classifyOperatorActionKind(summary);
+  return {
+    ...summary,
+    status: operatorActionKind ? 'operator_action_required' : summary.status,
+    operator_action_required: Boolean(operatorActionKind),
+    operator_action_kind: operatorActionKind,
+  };
+}
+
+function workflowProofWorkflowSummary({ spec, runId, workflowId }) {
+  return {
+    host: spec.host,
+    peer: spec.peer,
+    branch: spec.branch,
+    run_id: runId,
+    workflow_id: workflowId,
+    temp_repo: 'ephemeral_tmpdir',
+  };
+}
+
+function hasWorkflowPendingRun(frontmatter, runId) {
+  return Array.isArray(frontmatter?.pending_ensemble) &&
+    frontmatter.pending_ensemble.some((entry) => entry?.run_id === runId);
+}
+
+function hasWorkflowEnsembleResult(frontmatter, runId) {
+  return Array.isArray(frontmatter?.ensemble_results) &&
+    frontmatter.ensemble_results.some((entry) => entry?.run_id === runId);
+}
+
 function summarizeCompanionSmokeResult({ result, companionPath, expectedToken }) {
   const parsed = parseJsonObject(result.stdout);
   const peerStdout = typeof parsed?.stdout === 'string' ? parsed.stdout : '';
@@ -3636,6 +4200,8 @@ function buildDirectionReadiness({
   sandboxPermissionProbe,
   permissionProof,
   executePermissionProof,
+  workflowContinuationProof,
+  executeWorkflowContinuationProof,
 }) {
   const blockers = [];
   const warnings = [];
@@ -3681,6 +4247,13 @@ function buildDirectionReadiness({
     warnings.push('deep peer smoke executor requested; sanitized execution evidence appears under deep_peer_smoke');
   } else {
     warnings.push('deep peer smoke requested but not executed by runtime:doctor v0.1');
+  }
+  if (!workflowContinuationProof) {
+    warnings.push('engineer workflow continuation proof not requested');
+  } else if (executeWorkflowContinuationProof) {
+    warnings.push('workflow continuation proof executor requested; sanitized execution evidence appears under workflow_continuation_proof');
+  } else {
+    warnings.push('workflow continuation proof requested but not executed by runtime:doctor');
   }
   return {
     direction,
@@ -3800,6 +4373,9 @@ function summarizeOverall(report) {
   if (report.permission_proof.executed && !['passed', 'operator_action_required'].includes(report.permission_proof.status)) {
     hardFailures.push(`permission proof ${report.permission_proof.status}`);
   }
+  if (report.workflow_continuation_proof.executed && !['passed', 'operator_action_required'].includes(report.workflow_continuation_proof.status)) {
+    hardFailures.push(`workflow continuation proof ${report.workflow_continuation_proof.status}`);
+  }
   const warnings = [];
   for (const [name, plugin] of Object.entries(report.plugins)) {
     if (!['available', 'source_available'].includes(plugin.status)) warnings.push(`${name} plugin ${plugin.status}`);
@@ -3851,6 +4427,9 @@ function summarizeOverall(report) {
   }
   if (report.permission_proof.executed && report.permission_proof.status === 'operator_action_required') {
     warnings.push('permission proof requires operator action outside runtime:doctor');
+  }
+  if (report.workflow_continuation_proof.executed && report.workflow_continuation_proof.status === 'operator_action_required') {
+    warnings.push('workflow continuation proof requires operator action outside runtime:doctor');
   }
   return {
     status: hardFailures.length > 0 ? 'fail' : warnings.length > 0 ? 'warning' : 'pass',
@@ -4035,6 +4614,39 @@ export function formatText(report) {
       lines.push(`  next: ${direction.next_step}`);
     }
     for (const limit of report.deep_peer_smoke.limits) lines.push(`- limit: ${limit}`);
+    lines.push('');
+  }
+  if (report.workflow_continuation_proof.requested) {
+    lines.push('Workflow Continuation Proof');
+    lines.push(`- mode: ${report.workflow_continuation_proof.mode}; requested=${report.workflow_continuation_proof.requested}; executed=${report.workflow_continuation_proof.executed}; peer-execution=${report.workflow_continuation_proof.peer_execution}; workflow-state=${report.workflow_continuation_proof.workflow_state}; status=${report.workflow_continuation_proof.status}`);
+    for (const key of ['claude_to_codex', 'codex_to_claude']) {
+      const direction = report.workflow_continuation_proof.directions[key];
+      lines.push(`- ${direction.direction}: ${direction.status}; execution=${direction.execution}; model=${direction.model.value ?? '<host-default>'}; effort=${direction.effort.value ?? '<host-default>'}`);
+      lines.push(`  plan: ${direction.plan}`);
+      lines.push(`  workflow: host=${direction.workflow.host}; peer=${direction.workflow.peer}; branch=${direction.workflow.branch}; temp-repo=${direction.workflow.temp_repo ?? 'none'}`);
+      if (direction.result && direction.execution === 'executed') {
+        lines.push(`  result: peer=${direction.result.peer_host ?? '<unknown>'}; envelope=${direction.result.envelope_status ?? '<none>'}; exit=${direction.result.peer_exit_code ?? direction.result.companion_exit_code ?? '<none>'}; expected-token=${direction.result.expected_token_present}; stdout-bytes=${direction.result.stdout_bytes ?? '<none>'}; stdout-sha256=${direction.result.stdout_sha256 ?? '<empty>'}; operator-action-required=${Boolean(direction.result.operator_action_required)}`);
+        if (direction.result.workflow) {
+          lines.push(`  state-workflow: id=${direction.result.workflow.workflow_id ?? '<unknown>'}; run-id=${direction.result.workflow.run_id}; temp-repo=${direction.result.workflow.temp_repo}`);
+        }
+        if (direction.result.state_checks) {
+          lines.push(`  state-checks: workflow-created=${Boolean(direction.result.state_checks.workflow_created)}; pending-recorded=${Boolean(direction.result.state_checks.pending_recorded)}; pending-cleared=${Boolean(direction.result.state_checks.pending_cleared)}; commit-recorded=${Boolean(direction.result.state_checks.commit_recorded)}`);
+        }
+        if (direction.result.operator_action_kind) lines.push(`  operator-action-kind: ${direction.result.operator_action_kind}`);
+        if (direction.result.metadata?.duration_ms !== null && direction.result.metadata?.duration_ms !== undefined) {
+          lines.push(`  duration-ms: ${direction.result.metadata.duration_ms}`);
+        }
+        if (direction.result.error?.message) lines.push(`  error: ${direction.result.error.message}`);
+        if (direction.result.state_failure) lines.push(`  state-failure: ${direction.result.state_failure}`);
+      } else if (direction.result?.reason) {
+        lines.push(`  result: ${direction.result.reason}`);
+      }
+      if (direction.blockers.length > 0) {
+        for (const blocker of direction.blockers) lines.push(`  blocker: ${blocker}`);
+      }
+      lines.push(`  next: ${direction.next_step}`);
+    }
+    for (const limit of report.workflow_continuation_proof.limits) lines.push(`- limit: ${limit}`);
     lines.push('');
   }
   lines.push('Settings Execution Artifacts');
@@ -4446,7 +5058,7 @@ function escapeRegExp(value) {
 }
 
 function usage() {
-  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>]\n`;
+  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>]\n`;
 }
 
 export function parseArgs(argv) {
@@ -4463,6 +5075,9 @@ export function parseArgs(argv) {
     permissionProof: false,
     executePermissionProof: false,
     permissionProofTimeoutMs: DEFAULT_PERMISSION_PROOF_TIMEOUT_MS,
+    workflowContinuationProof: false,
+    executeWorkflowContinuationProof: false,
+    workflowContinuationProofTimeoutMs: DEFAULT_WORKFLOW_CONTINUATION_PROOF_TIMEOUT_MS,
     artifactInventory: false,
     artifactRetentionCap: DEFAULT_ARTIFACT_RETENTION_CAP,
     artifactMaxBytes: DEFAULT_ARTIFACT_RETENTION_MAX_BYTES,
@@ -4497,6 +5112,12 @@ export function parseArgs(argv) {
       opts.executePermissionProof = true;
     } else if (arg === '--permission-proof-timeout-ms') {
       opts.permissionProofTimeoutMs = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
+    } else if (arg === '--workflow-continuation-proof') {
+      opts.workflowContinuationProof = true;
+    } else if (arg === '--execute-workflow-continuation-proof') {
+      opts.executeWorkflowContinuationProof = true;
+    } else if (arg === '--workflow-continuation-proof-timeout-ms') {
+      opts.workflowContinuationProofTimeoutMs = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--artifact-inventory') {
       opts.artifactInventory = true;
     } else if (arg === '--artifact-retention-cap') {
@@ -4512,6 +5133,9 @@ export function parseArgs(argv) {
   }
   if (opts.executePermissionProof && !opts.permissionProof) {
     throw new Error('--execute-permission-proof requires --permission-proof');
+  }
+  if (opts.executeWorkflowContinuationProof && !opts.workflowContinuationProof) {
+    throw new Error('--execute-workflow-continuation-proof requires --workflow-continuation-proof');
   }
   return opts;
 }
