@@ -1202,6 +1202,116 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('execution-readiness=passed'));
   });
 
+  it('plans workflow continuation proof without executing peers or mutating workflow state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-workflow-proof-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      explicitModel: 'gpt-5.4',
+      explicitEffort: 'high',
+      workflowContinuationProof: true,
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    strictEqual(report.workflow_continuation_proof.mode, 'plan_only_preflight');
+    strictEqual(report.workflow_continuation_proof.requested, true);
+    strictEqual(report.workflow_continuation_proof.executed, false);
+    strictEqual(report.workflow_continuation_proof.peer_execution, false);
+    strictEqual(report.workflow_continuation_proof.workflow_state, 'none');
+    strictEqual(report.workflow_continuation_proof.status, 'ready_with_warnings');
+    strictEqual(report.workflow_continuation_proof.directions.claude_to_codex.execution, 'not_executed');
+    ok(report.workflow_continuation_proof.limits.some((limit) => /does not execute peer agents or mutate workflow state/i.test(limit)));
+    ok(report.experience_parity.criteria.some((entry) => entry.id === 'engineer_workflow_continuation_execution' && entry.status === 'not_verified'));
+    ok(formatText(report).includes('Workflow Continuation Proof'));
+    ok(formatText(report).includes('workflow-state=none'));
+  });
+
+  it('executes workflow continuation proof through engineer dispatch and state bookkeeping', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-workflow-proof-execute-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const calls = [];
+    const readCounts = new Map();
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      explicitModel: 'gpt-5.4',
+      explicitEffort: 'high',
+      workflowContinuationProof: true,
+      executeWorkflowContinuationProof: true,
+      workflowContinuationProofTimeoutMs: 60000,
+      runner: async (command, args, options = {}) => {
+        calls.push({ command, args, options });
+        if (command === 'git' && args[0] === 'init') {
+          strictEqual(options.timeoutMs, 60000);
+          return okResult('');
+        }
+        if (args[0]?.endsWith('state.mjs') && args[1] === 'create') {
+          strictEqual(options.timeoutMs, 60000);
+          const host = args[args.indexOf('--host') + 1];
+          return okResult(`${options.cwd}/.agentic-plugins/state/engineer/workflows/compose-${host}.md\n`);
+        }
+        if (args[0]?.endsWith('dispatch-peer.mjs')) {
+          strictEqual(options.timeoutMs, 60000);
+          const peer = args[args.indexOf('--peer') + 1];
+          const workflowPath = args[args.indexOf('--workflow-path') + 1];
+          const runId = args[args.indexOf('--run-id') + 1];
+          strictEqual(args[args.indexOf('--ensemble-type') + 1], 'workflow-continuation-proof');
+          strictEqual(runId, peer === 'codex' ? 'workflow-proof-claude_to_codex' : 'workflow-proof-codex_to_claude');
+          ok(workflowPath.includes('/.agentic-plugins/state/engineer/workflows/'));
+          return okResult(JSON.stringify(smokeEnvelope(peer, `RUNTIME_WORKFLOW_CONTINUATION_OK ${peer}\nRAW DETAILS MUST NOT LEAK`, 222)));
+        }
+        if (args[0]?.endsWith('state.mjs') && args[1] === 'read') {
+          strictEqual(options.timeoutMs, 60000);
+          const workflowPath = args[args.indexOf('--workflow-path') + 1];
+          const count = (readCounts.get(workflowPath) ?? 0) + 1;
+          readCounts.set(workflowPath, count);
+          const runId = workflowPath.endsWith('compose-claude.md')
+            ? 'workflow-proof-claude_to_codex'
+            : 'workflow-proof-codex_to_claude';
+          if (count === 1) {
+            return okResult(JSON.stringify({
+              workflow_id: workflowPath.split('/').at(-1).replace(/\.md$/, ''),
+              pending_ensemble: [{ phase: 'compose', ensemble_type: 'workflow-continuation-proof', run_id: runId }],
+            }));
+          }
+          return okResult(JSON.stringify({
+            workflow_id: workflowPath.split('/').at(-1).replace(/\.md$/, ''),
+            pending_ensemble: [],
+            ensemble_results: [{ phase: 'compose', ensemble_type: 'workflow-continuation-proof', run_id: runId, verdict: 'passed' }],
+          }));
+        }
+        if (args[0]?.endsWith('state.mjs') && args[1] === 'ensemble-commit') {
+          strictEqual(options.timeoutMs, 60000);
+          return okResult(`${args[args.indexOf('--workflow-path') + 1]}\n`);
+        }
+        return fakeRuntimeProbeRunner(command, args);
+      },
+    });
+
+    strictEqual(report.workflow_continuation_proof.mode, 'explicit_engineer_workflow_executor');
+    strictEqual(report.workflow_continuation_proof.executed, true);
+    strictEqual(report.workflow_continuation_proof.peer_execution, true);
+    strictEqual(report.workflow_continuation_proof.workflow_state, 'ephemeral_temp_repo');
+    strictEqual(report.workflow_continuation_proof.status, 'passed');
+    strictEqual(report.workflow_continuation_proof.directions.claude_to_codex.result.status, 'passed');
+    strictEqual(report.workflow_continuation_proof.directions.claude_to_codex.result.state_checks.pending_recorded, true);
+    strictEqual(report.workflow_continuation_proof.directions.claude_to_codex.result.state_checks.pending_cleared, true);
+    strictEqual(report.workflow_continuation_proof.directions.claude_to_codex.result.state_checks.commit_recorded, true);
+    strictEqual(report.readiness_matrix.directions.claude_to_codex.execution_readiness.workflow_continuation_proof.status, 'passed');
+    ok(report.experience_parity.criteria.some((entry) => entry.id === 'engineer_workflow_continuation_execution' && entry.status === 'satisfied'));
+    ok(calls.some((call) => call.args[0]?.endsWith('dispatch-peer.mjs') && call.args.includes('--workflow-path')));
+    ok(calls.some((call) => call.args[0]?.endsWith('state.mjs') && call.args[1] === 'ensemble-commit'));
+
+    const serialized = JSON.stringify(report);
+    ok(!serialized.includes('RAW DETAILS MUST NOT LEAK'), 'doctor report must not include raw peer stdout');
+    ok(formatText(report).includes('Workflow Continuation Proof'));
+    ok(formatText(report).includes('state-checks: workflow-created=true; pending-recorded=true; pending-cleared=true; commit-recorded=true'));
+    ok(!formatText(report).includes('RAW DETAILS MUST NOT LEAK'), 'text report must not include raw peer stdout');
+  });
+
   it('keeps host auth separate from child companion auth failures', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-child-auth-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
@@ -1300,7 +1410,7 @@ describe('runtime doctor', () => {
   });
 
   it('parses CLI arguments and rejects unknown or malformed flags', () => {
-    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--execute-deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '90000', '--sandbox-permission-probe', '--permission-proof', '--execute-permission-proof', '--permission-proof-timeout-ms', '45000', '--artifact-inventory', '--artifact-retention-cap', '30', '--artifact-max-bytes', '1024']);
+    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--execute-deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '90000', '--sandbox-permission-probe', '--permission-proof', '--execute-permission-proof', '--permission-proof-timeout-ms', '45000', '--workflow-continuation-proof', '--execute-workflow-continuation-proof', '--workflow-continuation-proof-timeout-ms', '60000', '--artifact-inventory', '--artifact-retention-cap', '30', '--artifact-max-bytes', '1024']);
     strictEqual(opts.repoRoot, '/tmp/repo');
     strictEqual(opts.format, 'json');
     strictEqual(opts.host, 'codex');
@@ -1313,14 +1423,19 @@ describe('runtime doctor', () => {
     strictEqual(opts.permissionProof, true);
     strictEqual(opts.executePermissionProof, true);
     strictEqual(opts.permissionProofTimeoutMs, 45000);
+    strictEqual(opts.workflowContinuationProof, true);
+    strictEqual(opts.executeWorkflowContinuationProof, true);
+    strictEqual(opts.workflowContinuationProofTimeoutMs, 60000);
     strictEqual(opts.artifactInventory, true);
     strictEqual(opts.artifactRetentionCap, 30);
     strictEqual(opts.artifactMaxBytes, 1024);
     rejects(async () => parseArgs(['--format', 'xml']), /--format must be text or json/);
     rejects(async () => parseArgs(['--execute-deep-peer-smoke']), /requires --deep-peer-smoke/);
     rejects(async () => parseArgs(['--execute-permission-proof']), /requires --permission-proof/);
+    rejects(async () => parseArgs(['--execute-workflow-continuation-proof']), /requires --workflow-continuation-proof/);
     rejects(async () => parseArgs(['--deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '0']), /positive integer/);
     rejects(async () => parseArgs(['--permission-proof', '--permission-proof-timeout-ms', '0']), /positive integer/);
+    rejects(async () => parseArgs(['--workflow-continuation-proof', '--workflow-continuation-proof-timeout-ms', '0']), /positive integer/);
     rejects(async () => parseArgs(['--artifact-retention-cap', '0']), /positive integer/);
     rejects(async () => parseArgs(['--artifact-max-bytes', '0']), /positive integer/);
   });
@@ -1419,6 +1534,9 @@ async function seedRepo(root) {
   await mkdir(join(root, 'plugins', 'companions', 'scripts'), { recursive: true });
   await writeFile(join(root, 'plugins', 'companions', 'scripts', 'codex-companion.mjs'), "const CONTRACT_VERSION = '0.1.1'; // --prompt-file\n");
   await writeFile(join(root, 'plugins', 'companions', 'scripts', 'claude-companion.mjs'), "const CONTRACT_VERSION = '0.1.1'; // --prompt-file\n");
+  await mkdir(join(root, 'plugins', 'engineer', 'scripts'), { recursive: true });
+  await writeFile(join(root, 'plugins', 'engineer', 'scripts', 'state.mjs'), '// test state script\n');
+  await writeFile(join(root, 'plugins', 'engineer', 'scripts', 'dispatch-peer.mjs'), '// test dispatch script\n');
   await mkdir(join(root, '.claude-plugin'), { recursive: true });
   await writeJson(join(root, '.claude-plugin', 'marketplace.json'), {
     name: 'agentic-plugins',
