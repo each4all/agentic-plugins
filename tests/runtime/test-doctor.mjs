@@ -834,6 +834,78 @@ describe('runtime doctor', () => {
     ok(!JSON.stringify(report).includes('TIMED OUT RAW OUTPUT'), 'doctor must not read raw timeout output');
   });
 
+  it('summarizes latest compatibility drift artifacts without reading release-note bodies', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-compat-artifact-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const runId = 'compat-20260516T000000Z-abcdef';
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'release-notes'), { recursive: true });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'snapshot.json'), {
+      schema_version: 'runtime-compat-snapshot-1.0',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      created_at: '2026-05-16T00:00:00.000Z',
+      updated_at: '2026-05-16T00:00:00.000Z',
+      hosts: {
+        claude: { available: true, version: '2.1.150', version_text: '2.1.150 (Claude Code)' },
+        codex: { available: true, version: '0.130.0', version_text: 'codex-cli 0.130.0' },
+      },
+      remembered_baseline: {
+        claude: { version: '2.1.141' },
+        codex: { version: '0.130.0' },
+      },
+    });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'gap-analysis.json'), {
+      schema_version: 'runtime-compat-gap-1.0',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      created_at: '2026-05-16T00:01:00.000Z',
+      updated_at: '2026-05-16T00:01:00.000Z',
+      overall: {
+        status: 'release_notes_required',
+        drift_class: 'host-version-changed',
+        release_notes_required: true,
+      },
+      host_gaps: [
+        { host: 'claude', status: 'version_changed', observed_version: '2.1.150', baseline_version: '2.1.141' },
+        { host: 'codex', status: 'matches', observed_version: '0.130.0', baseline_version: '0.130.0' },
+      ],
+      next_steps: [`runtime:compat ingest-release-notes --run-id ${runId} --release-notes-file <path>`],
+    });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'release-notes', 'index.json'), {
+      schema_version: 'runtime-compat-release-notes-1.0',
+      run_id: runId,
+      notes: [{
+        id: 'claude-notes',
+        kind: 'url',
+        source: 'https://example.test/notes',
+        pointer: `.agentic-plugins/runs/compat/${runId}/release-notes/claude-notes.json`,
+        status: 'not_fetched',
+      }],
+    });
+    await writeFile(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'release-notes', 'raw.md'), 'RAW RELEASE NOTES MUST NOT LEAK\n');
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    strictEqual(report.compat_runs.status, 'release_notes_required');
+    strictEqual(report.compat_runs.latest.run_id, runId);
+    strictEqual(report.compat_runs.latest.drift_class, 'host-version-changed');
+    strictEqual(report.compat_runs.latest.release_notes.url_pointers, 1);
+    ok(report.experience_parity.criteria.some((entry) => entry.id === 'runtime_handoff_artifacts' && entry.status === 'blocked' && entry.evidence.includes('compat=release_notes_required')));
+    ok(report.overall.warnings.includes('latest compatibility check requires release notes'));
+
+    const text = formatText(report);
+    ok(text.includes('Compatibility Artifacts'));
+    ok(text.includes('host-gap: claude; status=version_changed'));
+    ok(text.includes(`runtime:compat ingest-release-notes --run-id ${runId}`));
+    ok(!JSON.stringify(report).includes('RAW RELEASE NOTES MUST NOT LEAK'), 'doctor must not read raw compatibility release-note bodies');
+    ok(!text.includes('RAW RELEASE NOTES'), 'doctor must not print raw compatibility release-note bodies');
+  });
+
   it('reports runtime artifact inventory pressure without reading artifact bodies', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-artifact-inventory-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));

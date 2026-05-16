@@ -40,7 +40,8 @@ const DEFAULT_ARTIFACT_RETENTION_CAP = 20;
 const DEFAULT_ARTIFACT_RETENTION_MAX_BYTES = 50 * 1024 * 1024;
 const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const CONSENSUS_RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
-const RUNTIME_ARTIFACT_FAMILIES = ['consensus', 'context', 'settings', 'doctor'];
+const COMPAT_RUN_ID_RE = /^compat-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+const RUNTIME_ARTIFACT_FAMILIES = ['compat', 'consensus', 'context', 'settings', 'doctor'];
 const CLAUDE_PLUGIN_SURFACE_UNAVAILABLE_RE = /\/plugin (?:isn't|is not) available in this environment/i;
 
 export async function runDoctor({
@@ -128,6 +129,9 @@ export async function runDoctor({
   const consensusRuns = await inspectConsensusRuns({
     repoRoot: resolvedRepoRoot,
   });
+  const compatRuns = await inspectCompatRuns({
+    repoRoot: resolvedRepoRoot,
+  });
   const artifactInventorySection = artifactInventory
     ? await inspectRuntimeArtifactInventory({
         repoRoot: resolvedRepoRoot,
@@ -199,6 +203,7 @@ export async function runDoctor({
     ledgers,
     settingsRuns,
     consensusRuns,
+    compatRuns,
     permissionProof: permissionProofSection,
     deepPeerSmoke: deepPeerSmokeSection,
   });
@@ -225,6 +230,7 @@ export async function runDoctor({
     model_effort: modelEffort,
     settings_runs: settingsRuns,
     consensus_runs: consensusRuns,
+    compat_runs: compatRuns,
     artifact_inventory: artifactInventorySection,
     readiness_matrix: readinessMatrix,
     experience_parity: experienceParity,
@@ -1770,6 +1776,193 @@ async function inspectConsensusRuns({ repoRoot }) {
   };
 }
 
+async function inspectCompatRuns({ repoRoot }) {
+  const root = join(repoRoot, '.agentic-plugins', 'runs', 'compat');
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (err) {
+    return {
+      status: 'missing',
+      root,
+      count: 0,
+      malformed: 0,
+      latest: null,
+      error: err.code ?? err.message,
+    };
+  }
+
+  const runs = [];
+  let malformed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !COMPAT_RUN_ID_RE.test(entry.name)) continue;
+    const snapshotPath = join(root, entry.name, 'snapshot.json');
+    const snapshot = await readJsonIfExists(snapshotPath);
+    if (!snapshot.ok) {
+      malformed++;
+      runs.push({
+        run_id: entry.name,
+        status: 'blocked',
+        artifact_pointer: pointer(repoRoot, snapshotPath),
+        selected_at: null,
+        selected_at_ms: runIdTimestampMs(entry.name) ?? 0,
+        drift_class: 'unknown',
+        release_notes_required: false,
+        host_gaps: [],
+        release_notes: emptyCompatReleaseNotes(repoRoot, entry.name),
+        reason: snapshot.reason,
+        next_steps: ['Repair malformed runtime:compat snapshot artifacts before relying on compatibility drift checks.'],
+      });
+      continue;
+    }
+    const summary = await summarizeCompatArtifact({
+      repoRoot,
+      runId: entry.name,
+      snapshotPath,
+      snapshot: snapshot.json,
+    });
+    if (summary.status === 'blocked') malformed++;
+    runs.push(summary);
+  }
+
+  if (runs.length === 0) {
+    return {
+      status: 'empty',
+      root,
+      count: 0,
+      malformed,
+      latest: null,
+    };
+  }
+
+  runs.sort((a, b) => b.selected_at_ms - a.selected_at_ms || b.run_id.localeCompare(a.run_id));
+  const latest = runs[0];
+  const status = malformed > 0
+    ? 'blocked'
+    : latest.status === 'release_notes_required'
+      ? 'release_notes_required'
+      : ['snapshot_only', 'gap_analysis_ready', 'plan_ready'].includes(latest.status)
+        ? 'needs_attention'
+        : 'available';
+  return {
+    status,
+    root,
+    count: runs.length,
+    malformed,
+    latest,
+  };
+}
+
+async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot }) {
+  const gapPath = join(dirname(snapshotPath), 'gap-analysis.json');
+  const planPath = join(dirname(snapshotPath), 'plan.json');
+  const releaseNotesPath = join(dirname(snapshotPath), 'release-notes', 'index.json');
+  const [gap, plan, releaseNotes] = await Promise.all([
+    readOptionalJson(gapPath),
+    readOptionalJson(planPath),
+    readOptionalJson(releaseNotesPath),
+  ]);
+  const selectedAt = artifactTimestampMs(snapshot, runId);
+  const malformed = [gap, plan, releaseNotes].filter((item) => item.status === 'malformed');
+  const gapOverall = gap.json?.overall ?? {};
+  const planStatus = sanitizeValue(plan.json?.status);
+  const releaseNotesSummary = summarizeCompatReleaseNotes({
+    repoRoot,
+    runId,
+    releaseNotesPath,
+    releaseNotes,
+  });
+  const status = malformed.length > 0
+    ? 'blocked'
+    : plan.status === 'available'
+      ? planStatus === 'blocked_release_notes_required'
+        ? 'release_notes_required'
+        : 'plan_ready'
+      : gap.status === 'available'
+        ? gapOverall.status === 'release_notes_required' || gapOverall.release_notes_required === true
+          ? 'release_notes_required'
+          : gapOverall.status === 'current'
+            ? 'current'
+            : 'gap_analysis_ready'
+        : 'snapshot_only';
+  return {
+    run_id: sanitizeValue(snapshot.run_id) ?? runId,
+    status,
+    artifact_pointer: pointer(repoRoot, snapshotPath),
+    gap_pointer: gap.status === 'available' || gap.status === 'malformed' ? pointer(repoRoot, gapPath) : null,
+    plan_pointer: plan.status === 'available' || plan.status === 'malformed' ? pointer(repoRoot, planPath) : null,
+    selected_at: selectedAt === null ? null : new Date(selectedAt).toISOString(),
+    selected_at_ms: selectedAt ?? 0,
+    drift_class: sanitizeValue(gapOverall.drift_class) ?? 'unchecked',
+    release_notes_required: gapOverall.release_notes_required === true || status === 'release_notes_required',
+    host_gaps: Array.isArray(gap.json?.host_gaps)
+      ? gap.json.host_gaps.map((item) => ({
+          host: sanitizeValue(item.host),
+          status: sanitizeValue(item.status),
+          observed_version: sanitizeValue(item.observed_version),
+          baseline_version: sanitizeValue(item.baseline_version),
+        }))
+      : [],
+    release_notes: releaseNotesSummary,
+    malformed_artifacts: malformed.map((item) => pointer(repoRoot, item.path)),
+    next_steps: compatNextSteps({ runId, status, gap, plan }),
+  };
+}
+
+function summarizeCompatReleaseNotes({ repoRoot, runId, releaseNotesPath, releaseNotes }) {
+  if (releaseNotes.status === 'missing') return emptyCompatReleaseNotes(repoRoot, runId);
+  if (releaseNotes.status === 'malformed') {
+    return {
+      pointer: pointer(repoRoot, releaseNotesPath),
+      status: 'malformed',
+      count: 0,
+      content_backed: 0,
+      url_pointers: 0,
+      stored: 0,
+      not_fetched: 0,
+    };
+  }
+  const notes = Array.isArray(releaseNotes.json?.notes) ? releaseNotes.json.notes : [];
+  return {
+    pointer: pointer(repoRoot, releaseNotesPath),
+    status: 'available',
+    count: notes.length,
+    content_backed: notes.filter((note) => note.kind === 'file' && note.status === 'stored').length,
+    url_pointers: notes.filter((note) => note.kind === 'url').length,
+    stored: notes.filter((note) => note.status === 'stored').length,
+    not_fetched: notes.filter((note) => note.status === 'not_fetched').length,
+  };
+}
+
+function emptyCompatReleaseNotes(repoRoot, runId) {
+  return {
+    pointer: pointer(repoRoot, join(repoRoot, '.agentic-plugins', 'runs', 'compat', runId, 'release-notes', 'index.json')),
+    status: 'missing',
+    count: 0,
+    content_backed: 0,
+    url_pointers: 0,
+    stored: 0,
+    not_fetched: 0,
+  };
+}
+
+function compatNextSteps({ runId, status, gap, plan }) {
+  if (status === 'blocked') return ['Repair malformed runtime:compat artifacts, then rerun runtime:compat check.'];
+  if (status === 'snapshot_only') return [`runtime:compat check --run-id ${runId}`];
+  if (status === 'release_notes_required') {
+    const steps = Array.isArray(gap.json?.next_steps) ? gap.json.next_steps : [];
+    return steps.length > 0 ? steps.map((step) => sanitizeValue(step)).filter(Boolean) : [`runtime:compat ingest-release-notes --run-id ${runId} --release-notes-file <path>`];
+  }
+  if (status === 'gap_analysis_ready') return [`runtime:compat plan --run-id ${runId}`];
+  if (status === 'plan_ready') {
+    const steps = Array.isArray(plan.json?.recommended_sequence)
+      ? plan.json.recommended_sequence.map((item) => sanitizeValue(item.step)).filter(Boolean)
+      : [];
+    return steps.length > 0 ? steps : ['Review the runtime:compat update plan before changing compatibility-sensitive surfaces.'];
+  }
+  return [];
+}
+
 function summarizeConsensusArtifact({ repoRoot, runId, artifactPath, artifact }) {
   const summary = artifact.summary ?? {};
   const failures = Array.isArray(artifact.failures)
@@ -2421,6 +2614,7 @@ function buildExperienceParity({
   ledgers,
   settingsRuns,
   consensusRuns,
+  compatRuns,
   permissionProof,
   deepPeerSmoke,
 }) {
@@ -2431,7 +2625,7 @@ function buildExperienceParity({
     buildPeerExecutionExperienceCriterion({ readiness, permissionProof, deepPeerSmoke }),
     buildWorkflowContinuityExperienceCriterion(ledgers),
     buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommandSurface }),
-    buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns }),
+    buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns, compatRuns }),
   ];
   const totalWeight = criteria.reduce((sum, item) => sum + item.weight, 0);
   const earnedWeight = criteria.reduce((sum, item) => sum + item.earned_weight, 0);
@@ -2627,26 +2821,31 @@ function buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommand
   });
 }
 
-function buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns }) {
-  const status = `settings=${settingsRuns.status}, consensus=${consensusRuns.status}`;
-  if (settingsRuns.status === 'blocked' || consensusRuns.status === 'blocked') {
+function buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns, compatRuns }) {
+  const status = `settings=${settingsRuns.status}, consensus=${consensusRuns.status}, compat=${compatRuns.status}`;
+  if (settingsRuns.status === 'blocked' || consensusRuns.status === 'blocked' || ['blocked', 'release_notes_required'].includes(compatRuns.status)) {
     return parityCriterion({
       id: 'runtime_handoff_artifacts',
-      label: 'Runtime execution artifacts are readable for handoff and comparison',
+      label: 'Runtime execution and compatibility artifacts are readable for handoff and comparison',
       status: 'blocked',
       weight: 15,
       evidence: status,
-      next_step: 'Repair malformed runtime artifacts before relying on handoff and consensus history.',
+      next_step: compatRuns.status === 'release_notes_required'
+        ? compatRuns.latest?.next_steps?.[0] ?? 'Ingest content-backed release notes for the latest runtime:compat run before relying on host compatibility.'
+        : 'Repair malformed runtime artifacts before relying on handoff, consensus, and compatibility history.',
     });
   }
-  const missing = [settingsRuns.status, consensusRuns.status].some((value) => value === 'missing');
+  const missing = [settingsRuns.status, consensusRuns.status, compatRuns.status].some((value) => value === 'missing');
+  const needsAttention = ['empty', 'needs_attention'].includes(compatRuns.status);
   return parityCriterion({
     id: 'runtime_handoff_artifacts',
-    label: 'Runtime execution artifacts are readable for handoff and comparison',
-    status: missing ? 'partial' : 'satisfied',
+    label: 'Runtime execution and compatibility artifacts are readable for handoff and comparison',
+    status: missing || needsAttention ? 'partial' : 'satisfied',
     weight: 15,
-    evidence: `${status}; latest-settings=${settingsRuns.latest?.run_id ?? 'none'}; latest-consensus=${consensusRuns.latest?.run_id ?? 'none'}`,
-    next_step: missing ? 'Run settings/consensus flows when needed so future host handoffs have artifact evidence.' : null,
+    evidence: `${status}; latest-settings=${settingsRuns.latest?.run_id ?? 'none'}; latest-consensus=${consensusRuns.latest?.run_id ?? 'none'}; latest-compat=${compatRuns.latest?.run_id ?? 'none'}`,
+    next_step: missing || needsAttention
+      ? compatRuns.latest?.next_steps?.[0] ?? 'Run settings/consensus/compat flows when needed so future host handoffs have artifact evidence.'
+      : null,
   });
 }
 
@@ -3625,6 +3824,13 @@ function summarizeOverall(report) {
       warnings.push('latest consensus execution has failures');
     }
   }
+  if (report.compat_runs.status === 'blocked') {
+    warnings.push('compatibility artifact health blocked');
+  } else if (report.compat_runs.status === 'release_notes_required') {
+    warnings.push('latest compatibility check requires release notes');
+  } else if (report.compat_runs.status === 'needs_attention') {
+    warnings.push('latest compatibility check needs follow-up');
+  }
   if (report.artifact_inventory?.executed && report.artifact_inventory.status === 'blocked') {
     warnings.push('runtime artifact inventory blocked');
   } else if (report.artifact_inventory?.executed && report.artifact_inventory.status === 'needs_attention') {
@@ -3865,6 +4071,23 @@ export function formatText(report) {
     }
   }
   lines.push('');
+  lines.push('Compatibility Artifacts');
+  lines.push(`- status: ${report.compat_runs.status}; count=${report.compat_runs.count}; malformed=${report.compat_runs.malformed}`);
+  if (report.compat_runs.latest) {
+    const latest = report.compat_runs.latest;
+    lines.push(`- latest: ${latest.run_id}; status=${latest.status}; snapshot=${latest.artifact_pointer}; gap=${latest.gap_pointer ?? '<none>'}; plan=${latest.plan_pointer ?? '<none>'}`);
+    lines.push(`  drift=${latest.drift_class}; release-notes-required=${latest.release_notes_required}; notes=${latest.release_notes.count}; content-backed=${latest.release_notes.content_backed}; urls=${latest.release_notes.url_pointers}`);
+    for (const gap of latest.host_gaps) {
+      lines.push(`  host-gap: ${gap.host}; status=${gap.status}; observed=${gap.observed_version ?? 'unknown'}; baseline=${gap.baseline_version ?? 'unknown'}`);
+    }
+    for (const malformed of latest.malformed_artifacts ?? []) {
+      lines.push(`  malformed-artifact: ${malformed}`);
+    }
+    for (const step of latest.next_steps ?? []) {
+      lines.push(`  next: ${step}`);
+    }
+  }
+  lines.push('');
   if (report.artifact_inventory?.requested) {
     lines.push('Runtime Artifact Inventory');
     lines.push(`- status: ${report.artifact_inventory.status}; total-runs=${report.artifact_inventory.total.run_count}; total-files=${report.artifact_inventory.total.file_count}; total-bytes=${report.artifact_inventory.total.bytes}; unreadable=${report.artifact_inventory.total.unreadable}`);
@@ -3922,6 +4145,16 @@ async function readJsonIfExists(path) {
     return { ok: true, path, json: JSON.parse(text) };
   } catch (err) {
     return { ok: false, path, reason: err.code ?? err.message };
+  }
+}
+
+async function readOptionalJson(path) {
+  try {
+    const text = await readFile(path, 'utf8');
+    return { status: 'available', path, json: JSON.parse(text) };
+  } catch (err) {
+    if (err.code === 'ENOENT') return { status: 'missing', path, reason: err.code };
+    return { status: 'malformed', path, reason: err.code ?? err.message };
   }
 }
 
@@ -4120,7 +4353,7 @@ function artifactTimestampMs(artifact, fallbackRunId) {
 }
 
 function runIdTimestampMs(runId) {
-  const match = String(runId ?? '').match(/^settings-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/);
+  const match = String(runId ?? '').match(/^(?:settings|consensus|compat)-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/);
   if (!match) return null;
   const [, year, month, day, hour, minute, second] = match;
   const parsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
