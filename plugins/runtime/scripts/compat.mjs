@@ -2,6 +2,8 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { copyFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import http from 'node:http';
+import https from 'node:https';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,6 +20,8 @@ const VALID_COMMANDS = new Set(['snapshot', 'check', 'ingest-release-notes', 'pl
 const RUN_ID_RE = /^compat-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_TIMEOUT_MS = 60000;
+const MAX_RELEASE_NOTES_BYTES = 1024 * 1024;
+const MAX_RELEASE_NOTES_REDIRECTS = 3;
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = dirname(SCRIPT_DIR);
 
@@ -121,11 +125,17 @@ export async function ingestReleaseNotes(options = {}) {
   if (files.length === 0 && urls.length === 0) {
     throw new Error('ingest-release-notes requires --release-notes-file or --release-notes-url');
   }
+  const fetchUrls = Boolean(options.fetchReleaseNotesUrls);
+  if (fetchUrls && urls.length === 0) {
+    throw new Error('--fetch-release-notes-url requires --release-notes-url');
+  }
+  const timeoutMs = positiveInt(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, '--timeout-ms', MAX_TIMEOUT_MS);
   const runDir = compatRunDir(repoRoot, selected.runId);
   const notesDir = resolve(runDir, 'release-notes');
   await mkdir(notesDir, { recursive: true });
   const now = toIso(options.now ?? new Date());
   const entries = [];
+  const urlFetcher = options.urlFetcher ?? fetchReleaseNotesUrl;
 
   for (const file of files) {
     const sourcePath = resolve(file);
@@ -148,7 +158,38 @@ export async function ingestReleaseNotes(options = {}) {
   for (const url of urls) {
     if (!/^https?:\/\//i.test(url)) throw new Error('--release-notes-url must be http(s)');
     const id = noteId(url, entries.length + 1);
-    const target = resolve(notesDir, `${id}.json`);
+    const metadataTarget = resolve(notesDir, `${id}.json`);
+    if (fetchUrls) {
+      const fetched = await urlFetcher(url, { timeoutMs });
+      const contentTarget = resolve(notesDir, `${id}.md`);
+      await writeFile(contentTarget, fetched.body);
+      const metadata = {
+        schema_version: RELEASE_NOTES_SCHEMA,
+        id,
+        kind: 'url',
+        url,
+        final_url: fetched.finalUrl,
+        status: 'stored',
+        fetched_at: now,
+        content_type: fetched.contentType,
+        content_pointer: pointer(repoRoot, contentTarget),
+        bytes: Buffer.byteLength(fetched.body, 'utf8'),
+        sha256: sha256(fetched.body),
+      };
+      await writeJson(metadataTarget, metadata);
+      entries.push({
+        id,
+        kind: 'url',
+        source: url,
+        pointer: pointer(repoRoot, metadataTarget),
+        content_pointer: pointer(repoRoot, contentTarget),
+        bytes: metadata.bytes,
+        sha256: metadata.sha256,
+        status: 'stored',
+        final_url: fetched.finalUrl,
+      });
+      continue;
+    }
     const metadata = {
       schema_version: RELEASE_NOTES_SCHEMA,
       id,
@@ -158,12 +199,12 @@ export async function ingestReleaseNotes(options = {}) {
       reason: 'Network fetch is explicit follow-up scope; provide --release-notes-file for content-backed planning.',
       recorded_at: now,
     };
-    await writeJson(target, metadata);
+    await writeJson(metadataTarget, metadata);
     entries.push({
       id,
       kind: 'url',
       source: url,
-      pointer: pointer(repoRoot, target),
+      pointer: pointer(repoRoot, metadataTarget),
       bytes: 0,
       sha256: null,
       status: 'not_fetched',
@@ -182,8 +223,8 @@ export async function ingestReleaseNotes(options = {}) {
     updated_at: now,
     notes: [...(previous.notes ?? []), ...entries],
     limits: [
-      'Release note ingestion stores explicit files or URL pointers only.',
-      'Network fetching is not automatic.',
+      'Release note ingestion stores explicit files, URL pointers, or explicitly fetched URL content.',
+      'Network fetching is not automatic; --fetch-release-notes-url is required for URL content.',
       'Raw release-note text is stored as an artifact and not printed into the main report.',
     ],
   };
@@ -195,7 +236,14 @@ export async function ingestReleaseNotes(options = {}) {
     run_id: selected.runId,
     status: 'ingested',
     release_notes_pointer: pointer(repoRoot, indexPath),
-    notes: entries.map(({ id, kind, source, pointer: notePointer, status }) => ({ id, kind, source, pointer: notePointer, status })),
+    notes: entries.map(({ id, kind, source, pointer: notePointer, content_pointer: contentPointer, status }) => ({
+      id,
+      kind,
+      source,
+      pointer: notePointer,
+      content_pointer: contentPointer ?? null,
+      status,
+    })),
     next_steps: [
       `runtime:compat check --run-id ${selected.runId}`,
       `runtime:compat plan --run-id ${selected.runId}`,
@@ -289,7 +337,7 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
     };
   });
   const driftClass = classifyDrift(hostGaps);
-  const hasContentBackedNotes = releaseNotes.notes.some((note) => note.kind === 'file' && note.status === 'stored');
+  const hasContentBackedNotes = releaseNotes.notes.some(isContentBackedReleaseNote);
   const releaseNotesRequired = driftClass !== 'none' && !hasContentBackedNotes;
   const overallStatus = releaseNotesRequired
     ? 'release_notes_required'
@@ -310,7 +358,7 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
     host_gaps: hostGaps,
     release_notes: releaseNotes,
     next_steps: releaseNotesRequired
-      ? [`runtime:compat ingest-release-notes --run-id ${snapshot.run_id} --release-notes-file <path>`]
+      ? [`runtime:compat ingest-release-notes --run-id ${snapshot.run_id} --release-notes-file <path> or --release-notes-url <url> --fetch-release-notes-url`]
       : [`runtime:compat plan --run-id ${snapshot.run_id}`],
   };
 }
@@ -442,9 +490,11 @@ async function readReleaseNoteBodies(repoRoot, runId) {
   const texts = [];
   let contentBacked = 0;
   for (const note of releaseNotes.notes) {
-    if (note.kind !== 'file' || note.status !== 'stored' || !note.pointer) continue;
+    if (!isContentBackedReleaseNote(note)) continue;
+    const bodyPointer = note.kind === 'url' ? note.content_pointer : note.pointer;
+    if (!bodyPointer) continue;
     try {
-      const text = await readFile(resolve(repoRoot, note.pointer), 'utf8');
+      const text = await readFile(resolve(repoRoot, bodyPointer), 'utf8');
       texts.push(text);
       contentBacked++;
     } catch {
@@ -456,6 +506,81 @@ async function readReleaseNoteBodies(repoRoot, runId) {
     content_backed_count: contentBacked,
     combined_text: texts.join('\n\n'),
   };
+}
+
+function isContentBackedReleaseNote(note) {
+  if (!note || note.status !== 'stored') return false;
+  if (note.kind === 'file') return Boolean(note.pointer);
+  if (note.kind === 'url') return Boolean(note.content_pointer);
+  return false;
+}
+
+async function fetchReleaseNotesUrl(url, options = {}) {
+  return fetchReleaseNotesUrlInternal(url, {
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    redirectsRemaining: MAX_RELEASE_NOTES_REDIRECTS,
+  });
+}
+
+async function fetchReleaseNotesUrlInternal(url, { timeoutMs, redirectsRemaining }) {
+  const parsed = new URL(url);
+  const client = parsed.protocol === 'http:' ? http : https;
+  return new Promise((resolveFetch, rejectFetch) => {
+    const request = client.get(parsed, {
+      timeout: timeoutMs,
+      headers: {
+        'user-agent': `agentic-plugins-runtime-compat/${VERSION}`,
+        accept: 'text/markdown,text/plain,text/html,application/json,*/*;q=0.5',
+      },
+    }, (response) => {
+      const statusCode = response.statusCode ?? 0;
+      const location = response.headers.location;
+      if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
+        response.resume();
+        if (redirectsRemaining <= 0) {
+          rejectFetch(new Error(`release notes URL redirected too many times: ${url}`));
+          return;
+        }
+        const nextUrl = new URL(location, parsed).toString();
+        fetchReleaseNotesUrlInternal(nextUrl, { timeoutMs, redirectsRemaining: redirectsRemaining - 1 })
+          .then(resolveFetch, rejectFetch);
+        return;
+      }
+      if (statusCode < 200 || statusCode >= 300) {
+        response.resume();
+        rejectFetch(new Error(`release notes URL fetch failed with HTTP ${statusCode}: ${url}`));
+        return;
+      }
+      const chunks = [];
+      let bytes = 0;
+      response.on('data', (chunk) => {
+        bytes += chunk.length;
+        if (bytes > MAX_RELEASE_NOTES_BYTES) {
+          request.destroy(new Error(`release notes URL body exceeds ${MAX_RELEASE_NOTES_BYTES} bytes: ${url}`));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        if (!body.trim()) {
+          rejectFetch(new Error(`release notes URL returned an empty body: ${url}`));
+          return;
+        }
+        resolveFetch({
+          body,
+          finalUrl: response.url ?? url,
+          contentType: Array.isArray(response.headers['content-type'])
+            ? response.headers['content-type'].join(', ')
+            : response.headers['content-type'] ?? null,
+        });
+      });
+    });
+    request.on('timeout', () => {
+      request.destroy(new Error(`release notes URL fetch timed out after ${timeoutMs}ms: ${url}`));
+    });
+    request.on('error', rejectFetch);
+  });
 }
 
 async function readPluginVersions(repoRoot) {
@@ -518,7 +643,7 @@ function hostSummary(hosts) {
 function compatLimits() {
   return [
     'runtime:compat records host-version and release-note artifacts only; it does not install, update, authenticate, or mutate host CLIs.',
-    'Release-note URL fetch is not automatic. Provide --release-notes-file for content-backed planning.',
+    'Release-note URL fetch is not automatic. Provide --release-notes-file or explicit --release-notes-url with --fetch-release-notes-url for content-backed planning.',
     'Raw command help output and release-note bodies stay in artifacts; main-session output is limited to metadata, hashes, gaps, and pointers.',
   ];
 }
@@ -566,6 +691,9 @@ export function parseArgs(argv) {
         break;
       case '--release-notes-url':
         options.releaseNotesUrls.push(requireValue(args, arg));
+        break;
+      case '--fetch-release-notes-url':
+        options.fetchReleaseNotesUrls = true;
         break;
       case '--help':
         options.help = true;
@@ -626,10 +754,10 @@ Usage:
   runtime:compat snapshot [--format text|json] [--timeout-ms <n>]
   runtime:compat check (--run-id <id>|--latest) [--format text|json]
   runtime:compat ingest-release-notes (--run-id <id>|--latest) --release-notes-file <path>
-  runtime:compat ingest-release-notes (--run-id <id>|--latest) --release-notes-url <url>
+  runtime:compat ingest-release-notes (--run-id <id>|--latest) --release-notes-url <url> [--fetch-release-notes-url] [--timeout-ms <n>]
   runtime:compat plan (--run-id <id>|--latest) [--format text|json]
 
-Records Claude Code and Codex CLI version snapshots, compares them to the remembered host-parity baseline, stores explicit release-note artifacts, and emits compatibility update plans. It does not fetch URLs by default and never mutates host config or plugin state.`;
+Records Claude Code and Codex CLI version snapshots, compares them to the remembered host-parity baseline, stores explicit release-note artifacts, and emits compatibility update plans. It does not fetch URLs by default; URL fetch requires --fetch-release-notes-url and never mutates host config or plugin state.`;
 }
 
 function validateRunId(value) {

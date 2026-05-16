@@ -1,6 +1,6 @@
 ---
 description: Runtime host-version compatibility snapshot, release-note gap analysis, and update planning
-argument-hint: "snapshot|check|ingest-release-notes|plan [--format text|json] [--run-id <id>|--latest] [--release-notes-file <path>] [--release-notes-url <url>] [--timeout-ms <n>]"
+argument-hint: "snapshot|check|ingest-release-notes|plan [--format text|json] [--run-id <id>|--latest] [--release-notes-file <path>] [--release-notes-url <url>] [--fetch-release-notes-url] [--timeout-ms <n>]"
 ---
 
 # Runtime - Compat
@@ -25,6 +25,7 @@ Examples:
 /runtime:compat snapshot
 /runtime:compat check --latest
 /runtime:compat ingest-release-notes --latest --release-notes-file /tmp/claude-code-release-notes.md
+/runtime:compat ingest-release-notes --latest --release-notes-url https://example.com/release-notes --fetch-release-notes-url
 /runtime:compat plan --latest
 ```
 
@@ -32,5 +33,7 @@ Notes:
 
 - Snapshot artifacts live under `.agentic-plugins/runs/compat/<run-id>/`.
 - Main-session output is limited to metadata, hashes, gaps, pointers, and update-plan summaries.
-- `--release-notes-url` records a URL pointer only; provide `--release-notes-file` for content-backed planning.
+- `--release-notes-url` records a URL pointer only by default; add
+  `--fetch-release-notes-url` to explicitly fetch and store URL content for
+  content-backed planning.
 - Use this before claiming host parity after Claude Code or Codex CLI changes.

@@ -268,8 +268,8 @@ Remaining follow-up:
      not own all of it.
 
 2. Should release notes be fetched automatically?
-   - Recommendation: no by default. Use explicit files/URLs first; add explicit
-     fetch later if needed.
+   - Recommendation: no by default. Use explicit files/URLs first; URL content
+     fetch is allowed only when the operator adds `--fetch-release-notes-url`.
 
 3. What is the bounded consensus default?
    - Recommendation: default `max_rounds=2`, hard cap `3`, with explicit owner
