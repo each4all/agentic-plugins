@@ -101,7 +101,7 @@ a manual active-session follow-up.
 | R5 | Optimize for best results, not token minimization. | Engineer uses phase-boundary ensembles; runtime consensus supports broad explicit peer rosters without a hidden fixed product cap. | partial | Quality policy is explicit: default peer breadth, model/effort defaults, and review depth are chosen for result quality unless the user requests constraints. |
 | R6 | Context engineering should improve output quality; decisions requested from the user must be concrete, comparative, and evidence-based. | Runtime context artifacts, footer guidance, and engineer/orchestrator presentation protocols exist. | partial | Decision prompts have a shared contract: options, tradeoffs, risks, recommendation, confidence, and evidence pointers. This contract is tested or linted in user-facing command/skill docs. |
 | R7a | Work must prioritize standards, root cause, quality, and recommended practice over short-term fixes. | ADRs enforce hexagonal architecture, adapter boundaries, explicit storage contracts, and no hidden permission/session mutation. | partial | Review and implementation workflows include a standards/root-cause gate before accepting quick fixes. |
-| R7b | Completion must guide the next action, or confidently say there is nothing left. | Runtime footer is pointer-only and exposes context/consensus/PR readiness guidance. | partial | Footer emits a completion-state enum such as `review-needed`, `publish-needed`, `cleanup-needed`, `next-work-available`, or `closed`; commands render next action from that state. |
+| R7b | Completion must guide the next action, or confidently say there is nothing left. | Runtime footer is pointer-only and exposes context/consensus/PR readiness guidance plus a conservative completion-state enum with state-derived next actions. Engineer/orchestrator completion runbooks require that state in footer output. | satisfied | Keep future completion surfaces on the same state contract; do not infer `closed` without explicit PR, release, cleanup, and planned-follow-up evidence. |
 | R8 | Domain entry should start with engineer when appropriate, and propose orchestrator/worktree/parallelization when useful. | ADR-0020 defines `/engineer:start` vs `/orchestrator:plan` entry routing; runtime has read-only worktree planning. | partial | Entry prompts include a routing recommendation: single deliverable, multi-deliverable, worktree/parallel, runtime readiness, or pure single-verb analysis. |
 | R9 | Track Claude Code and Codex CLI version history; when latest host versions differ from remembered versions, use release notes to plan compatibility updates. | Runtime host parity baselines record observed CLI versions and drift policy. `runtime:compat` records snapshots, compares remembered baseline versions, ingests explicit release-note artifacts, and emits update plans; `runtime:doctor` now reads latest compat metadata into the handoff artifact criterion. Claude Code `2.1.142`/`2.1.143` release notes were ingested as explicit content-backed notes and the host parity baseline was refreshed to Claude Code `2.1.143`. | partial | Add richer release-note parsing and cutover-scorecard verification. |
 | R10 | Claude and Codex should be used as complementary perspectives; same-issue opinion collection is valuable. | Companions and runtime consensus provide cross-host peer collection. | partial | Consensus plans can include both companion-backed peers and manual/subagent lanes with explicit roles and artifact pointers. |
@@ -152,7 +152,7 @@ Current and remaining acceptance evidence:
 Extend the runtime footer from advisory text to an explicit state contract.
 The footer must still be pointer-only and must not mutate host session context.
 
-Proposed states:
+States:
 
 - `review-needed`: local changes exist or peer/review results need owner review.
 - `publish-needed`: commit/PR/release work is ready but not complete.
@@ -236,7 +236,7 @@ Landed slices:
    - Implement explicit release-note ingestion.
    - Generate compatibility update plans.
 
-Remaining follow-up:
+R9 remaining follow-up:
 
 - Richer release-note parsing.
 - Cutover-scorecard verification that marks R9 satisfied only when the latest
@@ -246,6 +246,8 @@ Remaining follow-up:
 4. **PR D: completion-state footer**
    - Add footer state enum and tests.
    - Update engineer/orchestrator completion surfaces.
+
+Remaining follow-up:
 
 5. **PR E: consensus convergence taxonomy**
    - Add convergence state to `runtime:consensus`.

@@ -33,6 +33,9 @@ describe('runtime footer', () => {
 
     strictEqual(report.advisory, true);
     strictEqual(report.context_state, 'green');
+    strictEqual(report.completion_state, 'next-work-available');
+    strictEqual(report.completion.source, 'inferred');
+    strictEqual(report.completion.next_action, 'Open the pull request and watch CI.');
     strictEqual(report.workflow.kind, 'engineer');
     ok(report.artifacts.some((artifact) => artifact.kind === 'workflow'));
     ok(report.artifacts.some((artifact) => artifact.kind === 'diff'));
@@ -42,7 +45,30 @@ describe('runtime footer', () => {
     const text = formatText(report);
     ok(text.includes('Runtime completion footer (advisory)'));
     ok(text.includes('context state: green'));
+    ok(text.includes('completion state: next-work-available'));
+    ok(text.includes('completion next action: Open the pull request'));
     ok(text.includes('recommended next work: Open the pull request'));
+  });
+
+  it('allows callers to explicitly mark a fully closed completion state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-closed-'));
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'neutral',
+      contextState: 'green',
+      completionState: 'closed',
+      completionReason: 'All PR, release, installed-state, and cleanup evidence is complete.',
+    });
+
+    strictEqual(report.completion_state, 'closed');
+    strictEqual(report.completion.source, 'explicit');
+    ok(report.completion.next_action.includes('No further repo, PR, release, cleanup'));
+    strictEqual(report.recommended_next_work, report.completion.next_action);
+    strictEqual(report.next_session.action, 'No next session is required from this footer evidence.');
+
+    const text = formatText(report);
+    ok(text.includes('completion state: closed'));
+    ok(text.includes('All PR, release, installed-state, and cleanup evidence is complete.'));
   });
 
   it('links a runtime context artifact without leaking summary or prompt bodies', async () => {
@@ -256,7 +282,9 @@ describe('runtime footer', () => {
     strictEqual(report.consensus.run_id, CONSENSUS_RUN_ID);
     strictEqual(report.consensus.status, 'planned');
     strictEqual(report.consensus.status_guidance.state, 'execute_or_record');
+    strictEqual(report.completion_state, 'next-work-available');
     strictEqual(report.recommended_next_work, 'Execute the planned peer prompts, or run them manually and record each raw output as an artifact.');
+    strictEqual(report.completion.next_action, report.recommended_next_work);
     strictEqual(report.next_session.command, `$runtime:consensus status --run-id ${CONSENSUS_RUN_ID}`);
     ok(report.consensus.status_guidance.next_steps.some((step) => step === `$runtime:consensus execute --run-id ${CONSENSUS_RUN_ID} --round 1 --execute`));
     ok(report.artifacts.some((artifact) => artifact.kind === 'consensus-run'));
@@ -317,6 +345,8 @@ describe('runtime footer', () => {
     });
 
     strictEqual(report.pr_handling.recommendation, 'ask-user');
+    strictEqual(report.completion_state, 'publish-needed');
+    ok(report.completion.next_action.includes('Ask the user whether to commit'));
     strictEqual(report.pr_handling.should_ask_user, true);
     ok(report.pr_handling.prompt.includes('Ask the user'));
     ok(report.pr_handling.criteria.every((criterion) => criterion.status === 'pass'));
@@ -324,6 +354,7 @@ describe('runtime footer', () => {
     const text = formatText(report);
     ok(text.includes('PR handling:'));
     ok(text.includes('- recommendation: ask-user'));
+    ok(text.includes('completion state: publish-needed'));
     ok(text.includes('deliverable_boundary: pass (reached)'));
   });
 
@@ -340,6 +371,8 @@ describe('runtime footer', () => {
     });
 
     strictEqual(report.pr_handling.recommendation, 'block');
+    strictEqual(report.completion_state, 'blocked');
+    ok(report.completion.next_action.includes('Resolve failed PR handling criteria'));
     strictEqual(report.pr_handling.should_ask_user, false);
     strictEqual(report.pr_handling.prompt, null);
     ok(report.pr_handling.criteria.some((criterion) => criterion.name === 'context_risk' && criterion.status === 'fail'));
@@ -360,6 +393,7 @@ describe('runtime footer', () => {
     });
 
     strictEqual(report.pr_handling.recommendation, 'defer');
+    strictEqual(report.completion_state, 'review-needed');
     strictEqual(report.pr_handling.should_ask_user, false);
     ok(report.pr_handling.criteria.some((criterion) => criterion.name === 'blocking_reviews' && criterion.status === 'unknown'));
   });
@@ -375,6 +409,12 @@ describe('runtime footer', () => {
       'neutral',
       '--context-state',
       'yellow',
+      '--completion-state',
+      'cleanup-needed',
+      '--completion-reason',
+      'Merged branch remains to clean up.',
+      '--completion-next-action',
+      'Delete merged local and remote branches.',
       '--consensus-run-id',
       'consensus-20260513T010000Z-abcdef',
       '--workflow-kind',
@@ -398,6 +438,9 @@ describe('runtime footer', () => {
     strictEqual(opts.format, 'json');
     strictEqual(opts.host, 'neutral');
     strictEqual(opts.contextState, 'yellow');
+    strictEqual(opts.completionState, 'cleanup-needed');
+    strictEqual(opts.completionReason, 'Merged branch remains to clean up.');
+    strictEqual(opts.completionNextAction, 'Delete merged local and remote branches.');
     strictEqual(opts.consensusRunId, 'consensus-20260513T010000Z-abcdef');
     strictEqual(opts.workflowKind, 'engineer');
     strictEqual(opts.prHandling, true);
@@ -412,6 +455,7 @@ describe('runtime footer', () => {
     throws(() => parseArgs(['render', '--consensus-run-id', '../bad']), /Invalid --consensus-run-id/);
     throws(() => parseArgs(['render', '--stale-after-hours', 'soon']), /non-negative integer/);
     throws(() => parseArgs(['render', '--context-state', 'orange']), /green, yellow, or red/);
+    throws(() => parseArgs(['render', '--completion-state', 'done-ish']), /review-needed, publish-needed, cleanup-needed, next-work-available, blocked, or closed/);
     throws(() => parseArgs(['render', '--pr-completion-boundary', 'maybe']), /reached, not-reached, or unknown/);
     throws(() => parseArgs(['render', '--pr-validation-state', 'maybe']), /passed, waived, failed, not-run, or unknown/);
     throws(() => parseArgs(['render', '--pr-review-state', 'maybe']), /clear, blocking, or unknown/);
