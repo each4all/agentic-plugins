@@ -34,6 +34,9 @@ node "<runtime-plugin-root>/scripts/cutover-audit.mjs" --repo-root "$REPO_ROOT" 
    - Use proof execution flags only when the operator wants current
      peer/workflow evidence; they invoke the same bounded executors as
      `runtime:doctor` and do not relax host permissions or trust hooks.
+   - If a matching `runtime:doctor --record` artifact exists, doctor may report
+     `recorded_doctor_proof.status=reusable`; cutover can then use that
+     version-matched proof evidence without re-running peers.
 
 ## When recording daily dogfood evidence
 
@@ -56,6 +59,7 @@ The audit reads:
 - `docs/assurance/omcc-cutover-scorecard.md` requirement statuses;
 - `docs/assurance/omcc-legacy-pattern-map.md` D1-D20 disposition statuses;
 - observed Claude/Codex runtime experience parity from `runtime:doctor`;
+  matching recorded doctor proof artifacts can satisfy the proof-only criteria;
 - `plugins/runtime/docs/host-parity-baseline.md`;
 - `.release-please-manifest.json` plus runtime doctor plugin install/cache evidence;
 - latest runtime compat, consensus, and context artifacts;

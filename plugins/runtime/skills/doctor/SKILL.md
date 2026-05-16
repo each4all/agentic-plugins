@@ -15,7 +15,7 @@ description: "Read-only runtime operator diagnostic for agentic-plugins. Use whe
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>]
+node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--record]
 ```
 
 3. Present the result without hiding host asymmetry. In particular:
@@ -28,6 +28,7 @@ node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--form
    - `--deep-peer-smoke` remains plan-only unless the user also supplies `--execute-deep-peer-smoke`. The executor uses the existing companion contract and omits raw peer stdout from doctor output.
    - `--workflow-continuation-proof` remains plan-only unless the user also supplies `--execute-workflow-continuation-proof`. The executor creates only ephemeral temp-repo engineer state, runs engineer `state.mjs` plus `dispatch-peer.mjs`, verifies pending/commit bookkeeping, and omits raw peer stdout and workflow bodies from doctor output.
    - `--artifact-inventory` is opt-in and read-only. It reports generated `.agentic-plugins/runs` counts, bytes, age metadata, and retention pressure without reading raw artifact bodies or deleting/compacting anything.
+   - `--record` writes a sanitized `.agentic-plugins/runs/doctor/<run-id>/doctor.json` artifact. Treat it as reusable proof evidence only when doctor reports `recorded_doctor_proof.status=reusable`; runtime rejects reuse when runtime, host CLI, or plugin source/cache versions drift.
    - Authentication output must stay sanitized. Do not expose email, org id, token, or account secrets.
 
 ## Scope
@@ -54,6 +55,7 @@ Doctor reports:
 - Optional `--workflow-continuation-proof --execute-workflow-continuation-proof` execution proof through engineer state creation, engineer dispatch-peer, pending ensemble verification, ensemble commit, and committed-result verification. Output is bounded to status, exit codes, peer host/model metadata, timing, stdout byte count, stdout SHA-256, and state-check booleans; raw peer stdout and temp workflow bodies are not printed into the main session.
 - Latest `runtime:compat` snapshot/gap/plan metadata, including host-version drift, release-note requirement status, host gaps, and next actions. Doctor reads only bounded metadata and does not read raw release-note bodies or raw host help output.
 - Optional `--artifact-inventory` output, including per-family `.agentic-plugins/runs` counts, bytes, oldest/newest metadata, and advisory retention pressure. Inventory uses filesystem metadata only and does not read artifact bodies.
+- Optional `--record` output, including a sanitized doctor artifact pointer and latest pointer. Recorded proof artifacts can satisfy experience-parity proof criteria in later runs only while current runtime, host CLI, and plugin source/cache versions match the recorded report.
 - Basic workflow and peer-run ledger health for canonical `.agentic-plugins/state/<plugin>` and legacy `.claude/agentic-*` homes, including migration ambiguity/blocker status.
 
 ## Out of Scope

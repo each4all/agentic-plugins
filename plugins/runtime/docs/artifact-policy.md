@@ -49,4 +49,7 @@ marketplace validation workflow runs the same check in CI.
 For local operator visibility, `runtime:doctor --artifact-inventory` reports
 metadata-only counts, byte totals, age metadata, and retention pressure for
 generated `.agentic-plugins/runs/` families. It does not read raw artifact
-bodies and does not delete or compact anything.
+bodies and does not delete or compact anything. `runtime:doctor --record`
+writes sanitized doctor proof/report artifacts under `.agentic-plugins/runs/doctor/`;
+these artifacts contain proof metadata, hashes, byte counts, and version
+matching data, not raw peer output or prompt text.

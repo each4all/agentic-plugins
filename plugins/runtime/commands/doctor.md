@@ -1,6 +1,6 @@
 ---
 description: Read-only runtime readiness diagnosis for Claude/Codex hosts, plugins, companions, model/effort, permissions, artifacts, and workflow ledgers
-argument-hint: "[--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--artifact-inventory]"
+argument-hint: "[--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--artifact-inventory] [--record]"
 ---
 
 # Runtime - Doctor
@@ -40,4 +40,6 @@ Notes:
 - `--workflow-continuation-proof-timeout-ms <n>` bounds each subprocess when the workflow continuation executor flag is used.
 - `--artifact-inventory` is an explicit opt-in read-only inventory of `.agentic-plugins/runs` generated artifacts. It reports per-family counts, bytes, age metadata, and retention pressure without reading raw artifact bodies or deleting anything.
 - `--artifact-retention-cap <n>` and `--artifact-max-bytes <n>` tune the advisory inventory thresholds.
+- `--record` writes a sanitized doctor artifact under `.agentic-plugins/runs/doctor/<run-id>/doctor.json`. It stores report metadata and proof hashes/byte counts, not raw peer stdout/stderr or prompt text. Later doctor/cutover runs may reuse the recorded proof only when runtime, host CLI, and plugin source/cache versions still match.
+- `--run-id <doctor-run-id>` is accepted only with `--record` for deterministic test or operator-controlled artifact naming.
 - Codex CLI supports bundled plugin hooks behind `plugin_hooks`; doctor reports whether hook-bearing agentic-plugins are packaged and exposed before claiming automatic hook parity, and surfaces `/hooks` as a manual follow-up when runtime cannot verify the active-session review/trust state. `/hooks` `Installed` counts are packaging evidence only; `Active=0` output and `Trust: New hook - review required` are not enough to record attestation. Doctor also warns when Codex-exposed hook commands still point at Claude adapter paths, since installed metadata alone does not prove active Codex execution; `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` are Codex plugin-hook compatibility aliases, while `PLUGIN_ROOT`/`PLUGIN_DATA` are preferred for new Codex commands. Current local Codex CLI evidence exposes no non-interactive hook trust query, so a current `runtime:settings --attest-codex-hook-review` artifact is the only runtime-owned way to clear that follow-up.
