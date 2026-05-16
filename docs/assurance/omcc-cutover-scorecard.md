@@ -81,9 +81,12 @@ For each runtime/engineer/orchestrator slice, use this continuity loop:
    plugin installs.
 5. Run `runtime:doctor`, `runtime:settings`, and when host versions moved,
    `runtime:compat snapshot/check/plan` from the updated installed state.
-6. Clean up merged branches/worktrees only after the release and installed-state
+6. Record the day's dogfood evidence with `runtime:cutover record` only after
+   the operator can explicitly say whether `omcc-dev` was active and what the
+   current completion footer state is.
+7. Clean up merged branches/worktrees only after the release and installed-state
    checks are recorded.
-7. Start the next development slice from the updated main branch and installed
+8. Start the next development slice from the updated main branch and installed
    plugin state, not from the pre-release checkout.
 
 Current local dry-run evidence on 2026-05-16: `runtime:settings` reports Claude
@@ -217,7 +220,10 @@ It should check:
 - Current installed plugin versions vs release-please manifest versions.
 - Latest compat snapshot freshness.
 - Latest consensus and context artifact state.
-- Footer state from the most recent completion surface.
+- One-week omcc-dev-free dogfood evidence from recorded runtime cutover
+  artifacts.
+- Footer state from the latest explicit cutover evidence or current completion
+  surface.
 - Whether any daily workflow is still being completed through omcc-dev.
 
 The verifier must not declare cutover by itself. It can only report

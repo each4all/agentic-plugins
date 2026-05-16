@@ -1,13 +1,15 @@
 ---
 name: cutover
-description: "Read-only omcc cutover readiness audit. Use when the user wants ADR-0012, scorecard, host parity, installed-version, compat, consensus/context, footer, and omcc-dev activity evidence summarized without declaring final cutover."
+description: "omcc cutover readiness audit and explicit dogfood evidence recorder. Use when the user wants ADR-0012, scorecard, host parity, installed-version, compat, consensus/context, footer, one-week dogfood, and omcc-dev activity evidence summarized without declaring final cutover."
 ---
 
 # Cutover Audit (runtime framework primitive)
 
-`runtime:cutover` aggregates cutover evidence without mutating host or repo
-state. It can report `cutover-ready-candidate`, but final omcc archival/removal
-requires explicit user declaration per ADR-0007.
+`runtime:cutover` aggregates cutover evidence without mutating host state.
+Audit mode is read-only. `record` mode writes only explicit cutover evidence
+artifacts under `.agentic-plugins/runs/cutover/`. It can report
+`cutover-ready-candidate`, but final omcc archival/removal requires explicit
+user declaration per ADR-0007.
 
 The report should make the strengthened cutover gate visible. When the result is
 not ready, preserve the unresolved ADR-0012 condition numbers, unresolved
@@ -29,6 +31,19 @@ node "<runtime-plugin-root>/scripts/cutover-audit.mjs" --repo-root "$REPO_ROOT" 
    - Do not claim final cutover unless the user explicitly declares it.
    - Treat unknown footer state or omcc-dev activity as not verified.
 
+## When recording daily dogfood evidence
+
+Run only when the operator explicitly wants to record the current cutover
+evidence:
+
+```bash
+node "<runtime-plugin-root>/scripts/cutover-audit.mjs" --repo-root "$REPO_ROOT" record --footer-state <state> --omcc-dev-active yes|no|unknown [--dogfood-date YYYY-MM-DD] [--footer-reason "..."] [--omcc-dev-note "..."]
+```
+
+This writes a sanitized artifact under `.agentic-plugins/runs/cutover/` and a
+`latest.json` pointer. Do not infer `--omcc-dev-active no`; record it only when
+the current work really avoided `omcc-dev`.
+
 ## Scope
 
 The audit reads:
@@ -39,11 +54,14 @@ The audit reads:
 - `plugins/runtime/docs/host-parity-baseline.md`;
 - `.release-please-manifest.json` plus runtime doctor plugin install/cache evidence;
 - latest runtime compat, consensus, and context artifacts;
-- explicit operator-provided footer and omcc-dev activity evidence.
+- one-week omcc-dev-free dogfood evidence from recorded cutover artifacts;
+- latest recorded or explicit operator-provided footer and omcc-dev activity evidence.
 
 ## Boundaries
 
 - No plugin install/update/uninstall.
-- No host config, auth, permission, sandbox, hook trust, git, artifact, or workflow mutation.
+- Audit mode: no host config, auth, permission, sandbox, hook trust, git,
+  artifact, or workflow mutation.
+- Record mode: writes only explicit cutover evidence artifacts.
 - No automatic final cutover declaration.
 - No inference that omcc-dev is inactive without explicit evidence.

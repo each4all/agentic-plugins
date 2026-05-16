@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import {
   formatText,
   parseArgs,
+  recordCutoverEvidence,
   runCutoverAudit,
 } from '../../plugins/runtime/scripts/cutover-audit.mjs';
 
@@ -18,6 +19,7 @@ describe('runtime cutover audit', () => {
       scorecardStatus: 'satisfied',
       conditionStatus: 'satisfied',
       contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
     });
     const report = await runCutoverAudit({
       repoRoot: root,
@@ -34,7 +36,7 @@ describe('runtime cutover audit', () => {
     ok(formatText(report).includes('ready-candidate: true'));
   });
 
-  it('blocks readiness on partial ADR/scorecard status, stale context, missing footer, and unknown omcc activity', async () => {
+  it('blocks readiness on partial ADR/scorecard status, stale context, missing dogfood window, missing footer, and unknown omcc activity', async () => {
     const root = await seedRepo({
       scorecardStatus: 'partial',
       conditionStatus: 'partial',
@@ -52,6 +54,7 @@ describe('runtime cutover audit', () => {
     strictEqual(report.checks.find((check) => check.id === 'omcc_replacement_scorecard').status, 'partial');
     strictEqual(report.checks.find((check) => check.id === 'legacy_omcc_pattern_map').status, 'satisfied');
     strictEqual(report.checks.find((check) => check.id === 'latest_consensus_context_artifacts').status, 'stale');
+    strictEqual(report.checks.find((check) => check.id === 'dogfood_evidence_window').status, 'not-verified');
     strictEqual(report.checks.find((check) => check.id === 'latest_completion_footer_state').status, 'not-verified');
     strictEqual(report.checks.find((check) => check.id === 'omcc_dev_daily_workflow').status, 'not-verified');
     ok(report.next_actions.some((entry) => entry.id === 'omcc_dev_daily_workflow'));
@@ -61,6 +64,7 @@ describe('runtime cutover audit', () => {
     ok(text.includes('unresolved: 1:partial, 2:partial, 3:partial, 4:partial'));
     ok(text.includes('scorecard: satisfied=0/12; unresolved=R1:partial'));
     ok(text.includes('legacy map: patterns=20; improved=14; retained=1; rejected=2; deferred=3'));
+    ok(text.includes('dogfood window: covered=0/7; latest=<none>; records=0'));
   });
 
   it('blocks readiness when the legacy omcc pattern map is incomplete or load-bearing', async () => {
@@ -69,6 +73,7 @@ describe('runtime cutover audit', () => {
       conditionStatus: 'satisfied',
       contextCreatedAt: '2026-05-16T07:30:00.000Z',
       legacyPatternMap: incompleteLegacyPatternMap(),
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
     });
     const report = await runCutoverAudit({
       repoRoot: root,
@@ -93,6 +98,7 @@ describe('runtime cutover audit', () => {
       scorecardStatus: 'satisfied',
       conditionStatus: 'satisfied',
       contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
     });
     const doctor = doctorReport();
     doctor.plugins.runtime.cache.codex.latest.manifest_version = '0.34.0';
@@ -114,22 +120,87 @@ describe('runtime cutover audit', () => {
     const opts = parseArgs([
       '--repo-root',
       '/tmp/repo',
+      'record',
       '--format',
       'json',
       '--footer-state',
       'closed',
       '--omcc-dev-active',
       'no',
+      '--dogfood-date',
+      '2026-05-16',
+      '--artifact',
+      'audit=docs/assurance/omcc-cutover-scorecard.md',
       '--max-artifact-age-hours',
       '6',
     ]);
+    strictEqual(opts.command, 'record');
     strictEqual(opts.repoRoot, '/tmp/repo');
     strictEqual(opts.format, 'json');
     strictEqual(opts.footerState, 'closed');
     strictEqual(opts.omccDevActive, 'no');
+    strictEqual(opts.dogfoodDate, '2026-05-16');
+    strictEqual(opts.artifacts[0], 'audit=docs/assurance/omcc-cutover-scorecard.md');
     strictEqual(opts.maxArtifactAgeHours, 6);
     throws(() => parseArgs(['--footer-state', 'done-ish']), /--footer-state is invalid/);
     throws(() => parseArgs(['--omcc-dev-active', 'maybe']), /yes, no, or unknown/);
+    throws(() => parseArgs(['--dogfood-window-days', '0']), /positive integer/);
+  });
+
+  it('records cutover evidence and lets audit consume latest footer and omcc activity', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+    });
+    const result = await recordCutoverEvidence({
+      repoRoot: root,
+      now: new Date('2026-05-16T07:45:00.000Z'),
+      runId: 'cutover-20260516T074500Z-abcdef',
+      footerState: 'closed',
+      footerReason: 'all closeout work is done',
+      omccDevActive: 'no',
+      omccDevNote: 'runtime-only workflow',
+      dogfoodDate: '2026-05-16',
+      summary: 'record one day',
+      artifacts: ['audit=docs/assurance/omcc-cutover-scorecard.md'],
+    });
+
+    strictEqual(result.status, 'recorded');
+    strictEqual(result.evidence_pointer, '.agentic-plugins/runs/cutover/cutover-20260516T074500Z-abcdef/evidence.json');
+
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport(),
+      dogfoodWindowDays: 1,
+    });
+    strictEqual(report.checks.find((check) => check.id === 'dogfood_evidence_window').status, 'satisfied');
+    strictEqual(report.checks.find((check) => check.id === 'latest_completion_footer_state').status, 'satisfied');
+    strictEqual(report.checks.find((check) => check.id === 'omcc_dev_daily_workflow').status, 'not-active');
+  });
+
+  it('counts explicit current-run evidence without writing a dogfood artifact', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+    });
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport(),
+      dogfoodWindowDays: 1,
+      footerState: 'next-work-available',
+      footerReason: 'follow-up remains open',
+      omccDevActive: 'no',
+      omccDevNote: 'current run avoided omcc-dev',
+      dogfoodDate: '2026-05-16',
+    });
+
+    strictEqual(report.checks.find((check) => check.id === 'dogfood_evidence_window').status, 'satisfied');
+    strictEqual(report.checks.find((check) => check.id === 'latest_completion_footer_state').status, 'partial');
+    strictEqual(report.checks.find((check) => check.id === 'omcc_dev_daily_workflow').status, 'not-active');
   });
 });
 
@@ -138,6 +209,7 @@ async function seedRepo({
   conditionStatus,
   contextCreatedAt,
   legacyPatternMap = completeLegacyPatternMap(),
+  cutoverEvidenceDates = [],
 }) {
   const root = await mkdtemp(join(tmpdir(), 'runtime-cutover-audit-'));
   await mkdir(join(root, 'docs', 'assurance'), { recursive: true });
@@ -163,7 +235,32 @@ async function seedRepo({
     run_id: 'context-20260516T073000Z-abc123',
     created_at: contextCreatedAt,
   }));
+  for (const [index, date] of cutoverEvidenceDates.entries()) {
+    const isLatest = index === cutoverEvidenceDates.length - 1;
+    await recordCutoverEvidence({
+      repoRoot: root,
+      now: new Date(`${date}T07:45:00.000Z`),
+      runId: `cutover-${date.replace(/-/g, '')}T074500Z-${String(index).padStart(6, '0')}`,
+      footerState: isLatest ? 'closed' : 'next-work-available',
+      footerReason: isLatest ? 'all closeout work is done' : 'dogfood day still in progress',
+      omccDevActive: 'no',
+      omccDevNote: 'seeded test dogfood without omcc-dev',
+      dogfoodDate: date,
+    });
+  }
   return root;
+}
+
+function oneWeekDogfoodDates() {
+  return [
+    '2026-05-10',
+    '2026-05-11',
+    '2026-05-12',
+    '2026-05-13',
+    '2026-05-14',
+    '2026-05-15',
+    '2026-05-16',
+  ];
 }
 
 function completeLegacyPatternMap() {
