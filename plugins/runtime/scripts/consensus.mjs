@@ -42,6 +42,7 @@ const DEFAULT_MAX_ROUNDS = 2;
 const MAX_ROUNDS_CAP = 3;
 const DEFAULT_EXECUTION_TIMEOUT_MS = 120000;
 const MAX_EXECUTION_TIMEOUT_MS = 600000;
+const RESULT_QUALITY_OBJECTIVE = 'best-results-over-token-minimization';
 const RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const PEER_ID_RE = /^[A-Za-z0-9._-]+$/;
 const PEER_DIRECTIONS = {
@@ -93,6 +94,11 @@ export async function createPlan(options = {}) {
   const processBudget = boundedPositiveInt(options.processBudget ?? processBudgetCap, '--process-budget', processBudgetCap);
   const executionTimeoutMs = boundedPositiveInt(options.timeoutMs ?? DEFAULT_EXECUTION_TIMEOUT_MS, '--timeout-ms', MAX_EXECUTION_TIMEOUT_MS);
   const policy = {
+    quality_policy: buildQualityPolicy({
+      maxPeersConstrained: options.maxPeers !== undefined,
+      tokenBudgetConstrained: options.tokenBudget !== undefined,
+      timeBudgetConstrained: options.timeBudgetMs !== undefined,
+    }),
     max_rounds: maxRounds,
     max_peers: maxPeers,
     token_budget: optionalPositiveInt(options.tokenBudget, '--token-budget'),
@@ -1426,6 +1432,23 @@ function buildPeerLanes({ runId, activePeers }) {
   });
 }
 
+function buildQualityPolicy({ maxPeersConstrained, tokenBudgetConstrained, timeBudgetConstrained }) {
+  return {
+    objective: RESULT_QUALITY_OBJECTIVE,
+    default_peer_breadth: maxPeersConstrained
+      ? 'operator-constrained-max-peers'
+      : 'all-requested-peers',
+    default_companion_peers: DEFAULT_PEERS,
+    model_effort_default: 'host-native-default-or-runtime-settings; consensus does not downshift model or effort for token saving',
+    review_depth_default: 'independent peer fanout plus synthesized disagreements, with bounded contradiction rebuttal rounds',
+    user_constraints: {
+      max_peers: maxPeersConstrained ? 'explicit-operator-constraint' : 'not-constrained-by-default',
+      token_budget: tokenBudgetConstrained ? 'explicit-operator-constraint' : 'not-constrained-by-default',
+      time_budget_ms: timeBudgetConstrained ? 'explicit-operator-constraint' : 'not-constrained-by-default',
+    },
+  };
+}
+
 function peerLanesFor(manifest, runId) {
   if (Array.isArray(manifest.peers?.lanes) && manifest.peers.lanes.length > 0) {
     return manifest.peers.lanes.map((lane) => ({
@@ -1848,6 +1871,14 @@ export function formatText(report) {
   if (report.execution_summary) {
     lines.push(`execution summary: executed=${report.execution_summary.executed}; passed=${report.execution_summary.passed}; failed=${report.execution_summary.failed}; skipped=${report.execution_summary.skipped}; retryable-failed=${report.execution_summary.failed_retryable}; non-retryable-failed=${report.execution_summary.failed_non_retryable}; operator-action-required=${report.execution_summary.operator_action_required ?? 0}`);
   }
+  if (report.policy?.quality_policy) {
+    const quality = report.policy.quality_policy;
+    lines.push('', 'quality policy:');
+    lines.push(`- objective=${quality.objective}`);
+    lines.push(`- default-peer-breadth=${quality.default_peer_breadth}; default-companion-peers=${quality.default_companion_peers.join(',')}`);
+    lines.push(`- model-effort-default=${quality.model_effort_default}`);
+    lines.push(`- review-depth-default=${quality.review_depth_default}`);
+  }
   if (report.execution_remediation) {
     lines.push(`remediation: ${report.execution_remediation.status}`);
     lines.push(`remediation next action: ${report.execution_remediation.next_action}`);
@@ -2142,6 +2173,13 @@ Run id: ${runId}
 Peer: ${peer}
 Lane: ${lane?.lane ?? 'unknown'}
 Role: ${lane?.role ?? 'unknown'}
+
+Quality policy:
+
+- objective: ${policy.quality_policy.objective}
+- default_peer_breadth: ${policy.quality_policy.default_peer_breadth}
+- model_effort_default: ${policy.quality_policy.model_effort_default}
+- review_depth_default: ${policy.quality_policy.review_depth_default}
 
 Task:
 ${task.trim()}
