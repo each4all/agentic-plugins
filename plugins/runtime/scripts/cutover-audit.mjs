@@ -28,6 +28,7 @@ const FOOTER_STATES = new Set([
 const CUTOVER_GATE = [
   'ADR-0012 conditions 1-4 satisfied',
   'omcc replacement scorecard has no partial/missing rows',
+  'observed runtime experience parity is ready and 100%',
   'at least one week of omcc-dev-free dogfood evidence',
   'latest completion footer is closed',
   'explicit user cutover declaration per ADR-0007',
@@ -50,6 +51,15 @@ export async function runCutoverAudit(options = {}) {
     env: options.env ?? process.env,
     now,
     format: 'json',
+    permissionProof: options.permissionProof,
+    executePermissionProof: options.executePermissionProof,
+    permissionProofTimeoutMs: options.permissionProofTimeoutMs,
+    deepPeerSmoke: options.deepPeerSmoke,
+    executeDeepPeerSmoke: options.executeDeepPeerSmoke,
+    deepPeerSmokeTimeoutMs: options.deepPeerSmokeTimeoutMs,
+    workflowContinuationProof: options.workflowContinuationProof,
+    executeWorkflowContinuationProof: options.executeWorkflowContinuationProof,
+    workflowContinuationProofTimeoutMs: options.workflowContinuationProofTimeoutMs,
   });
   const storedCutoverEvidence = await readCutoverEvidence(repoRoot);
   const inlineEvidence = buildInlineCutoverEvidence({ options, now });
@@ -73,6 +83,7 @@ export async function runCutoverAudit(options = {}) {
     checkAdr0012Conditions(developmentText),
     checkScorecardRequirements(scorecardText),
     checkLegacyPatternMap({ repoRoot, text: legacyPatternText }),
+    checkObservedExperienceParity(doctor),
     checkHostParityBaseline(hostParityText, doctor),
     checkPluginVersions({ repoRoot, manifest, doctor }),
     checkCompatFreshness({ doctor, now, maxArtifactAgeHours }),
@@ -82,6 +93,11 @@ export async function runCutoverAudit(options = {}) {
     checkOmccActivity({ options, latestEvidence }),
   ];
   const readyCandidate = checks.every((check) => CHECK_PASS.has(check.status));
+  const proofExecutionRequested = Boolean(
+    options.executePermissionProof
+      || options.executeDeepPeerSmoke
+      || options.executeWorkflowContinuationProof
+  );
   return {
     command: 'cutover-audit',
     version: VERSION,
@@ -99,7 +115,9 @@ export async function runCutoverAudit(options = {}) {
       .map((check) => ({ id: check.id, next_action: check.next_action }))
       .filter((entry) => entry.next_action),
     limits: [
-      'This audit is read-only and does not install, uninstall, update, authenticate, mutate host config, mutate git state, or delete artifacts.',
+      proofExecutionRequested
+        ? 'This audit does not install, uninstall, update, authenticate, mutate host config, mutate git state, or delete artifacts; explicit proof flags can invoke bounded peer/workflow commands without relaxing host permissions.'
+        : 'This audit is read-only and does not install, uninstall, update, authenticate, mutate host config, mutate git state, invoke peer/workflow executors, or delete artifacts.',
       'cutover-ready-candidate is not final cutover; ADR-0007 still requires explicit user declaration.',
       'Dogfood evidence is accepted only from explicit runtime:cutover record artifacts or explicit current-run flags.',
       'Unknown dogfood or omcc-dev usage evidence blocks readiness rather than being inferred.',
@@ -253,6 +271,40 @@ function checkScorecardRequirements(text) {
     next_action: unresolved.length > 0
       ? 'Resolve remaining scorecard rows before declaring cutover readiness.'
       : null,
+  };
+}
+
+function checkObservedExperienceParity(doctor) {
+  const experience = doctor.experience_parity ?? null;
+  const score = Number.isFinite(experience?.score_percent) ? experience.score_percent : null;
+  const manualFollowups = Number.isFinite(experience?.manual_followup_count)
+    ? experience.manual_followup_count
+    : null;
+  const status = experience?.status ?? null;
+  const ready = status === 'ready' && score === 100 && manualFollowups === 0;
+  const blocked = status === 'blocked' || (experience?.counts?.blocked ?? 0) > 0;
+  return {
+    id: 'observed_experience_parity',
+    label: 'Observed Claude/Codex runtime experience parity',
+    status: experience ? ready ? 'satisfied' : blocked ? 'blocked' : 'partial' : 'not-verified',
+    evidence: {
+      status,
+      score_percent: score,
+      manual_followup_count: manualFollowups,
+      counts: experience?.counts ?? null,
+      unresolved_criteria: (experience?.criteria ?? [])
+        .filter((item) => item.status !== 'satisfied')
+        .map((item) => ({ id: item.id, status: item.status })),
+      next_actions: (experience?.next_actions ?? []).map((item) => ({
+        id: item.id ?? item.criterion ?? item.type ?? '<unknown>',
+        reason: item.reason ?? item.next_step ?? null,
+      })),
+    },
+    next_action: experience
+      ? ready
+        ? null
+        : 'Clear observed experience parity follow-ups with runtime:settings/runtime:doctor before declaring cutover readiness.'
+      : 'Run runtime:doctor and provide experience_parity evidence before declaring cutover readiness.',
   };
 }
 
@@ -818,6 +870,19 @@ function formatCheckEvidence(check) {
       if (evidence.active_dependency_blockers?.length) lines.push(`active dependency blockers: ${evidence.active_dependency_blockers.map((row) => row.id).join(', ')}`);
       return lines;
     }
+    case 'observed_experience_parity': {
+      const evidence = check.evidence ?? {};
+      const lines = [
+        `experience parity: status=${evidence.status ?? '<none>'}; score=${evidence.score_percent ?? '<none>'}%; manual-followups=${evidence.manual_followup_count ?? '<none>'}`,
+      ];
+      if (evidence.unresolved_criteria?.length) {
+        lines.push(`unresolved criteria: ${evidence.unresolved_criteria.map((row) => `${row.id}:${row.status}`).join(', ')}`);
+      }
+      if (evidence.next_actions?.length) {
+        lines.push(`manual next actions: ${evidence.next_actions.map((row) => row.id).join(', ')}`);
+      }
+      return lines;
+    }
     case 'dogfood_evidence_window': {
       const evidence = check.evidence ?? {};
       const lines = [
@@ -878,6 +943,33 @@ export function parseArgs(argv) {
       case '--dogfood-window-days':
         options.dogfoodWindowDays = positiveInteger(requireValue(args, arg), arg);
         break;
+      case '--permission-proof':
+        options.permissionProof = true;
+        break;
+      case '--execute-permission-proof':
+        options.executePermissionProof = true;
+        break;
+      case '--permission-proof-timeout-ms':
+        options.permissionProofTimeoutMs = positiveInteger(requireValue(args, arg), arg);
+        break;
+      case '--deep-peer-smoke':
+        options.deepPeerSmoke = true;
+        break;
+      case '--execute-deep-peer-smoke':
+        options.executeDeepPeerSmoke = true;
+        break;
+      case '--deep-peer-smoke-timeout-ms':
+        options.deepPeerSmokeTimeoutMs = positiveInteger(requireValue(args, arg), arg);
+        break;
+      case '--workflow-continuation-proof':
+        options.workflowContinuationProof = true;
+        break;
+      case '--execute-workflow-continuation-proof':
+        options.executeWorkflowContinuationProof = true;
+        break;
+      case '--workflow-continuation-proof-timeout-ms':
+        options.workflowContinuationProofTimeoutMs = positiveInteger(requireValue(args, arg), arg);
+        break;
       case '--dogfood-date':
         options.dogfoodDate = validateDate(requireValue(args, arg), arg);
         break;
@@ -916,6 +1008,11 @@ export function parseArgs(argv) {
         throw new Error(`Unknown argument: ${arg}`);
     }
   }
+  if (options.executePermissionProof && !options.permissionProof) options.permissionProof = true;
+  if (options.executeDeepPeerSmoke && !options.deepPeerSmoke) options.deepPeerSmoke = true;
+  if (options.executeWorkflowContinuationProof && !options.workflowContinuationProof) {
+    options.workflowContinuationProof = true;
+  }
   return options;
 }
 
@@ -941,11 +1038,16 @@ function helpText() {
 
 Usage:
   runtime:cutover-audit [--format text|json] [--max-artifact-age-hours N]
+    [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms N]
+    [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms N]
+    [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms N]
   runtime:cutover-audit --footer-state <state> --omcc-dev-active yes|no|unknown
   runtime:cutover-audit record --footer-state <state> --omcc-dev-active yes|no|unknown [--dogfood-date YYYY-MM-DD]
 
 Builds an omcc cutover readiness report. Audit mode is read-only. Record mode
 writes only an explicit cutover evidence artifact under .agentic-plugins/runs.
+Proof flags are passed through to runtime:doctor and execute peer/workflow
+proofs only when the corresponding --execute-* flag is provided.
 The report can only emit cutover-ready-candidate; final cutover still requires
 explicit user declaration.`;
 }

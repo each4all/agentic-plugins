@@ -53,6 +53,7 @@ describe('runtime cutover audit', () => {
     strictEqual(report.checks.find((check) => check.id === 'adr0012_conditions').status, 'partial');
     strictEqual(report.checks.find((check) => check.id === 'omcc_replacement_scorecard').status, 'partial');
     strictEqual(report.checks.find((check) => check.id === 'legacy_omcc_pattern_map').status, 'satisfied');
+    strictEqual(report.checks.find((check) => check.id === 'observed_experience_parity').status, 'satisfied');
     strictEqual(report.checks.find((check) => check.id === 'latest_consensus_context_artifacts').status, 'stale');
     strictEqual(report.checks.find((check) => check.id === 'dogfood_evidence_window').status, 'not-verified');
     strictEqual(report.checks.find((check) => check.id === 'latest_completion_footer_state').status, 'not-verified');
@@ -63,8 +64,51 @@ describe('runtime cutover audit', () => {
     ok(text.includes('conditions: 1:partial, 2:partial, 3:partial, 4:partial'));
     ok(text.includes('unresolved: 1:partial, 2:partial, 3:partial, 4:partial'));
     ok(text.includes('scorecard: satisfied=0/12; unresolved=R1:partial'));
+    ok(text.includes('experience parity: status=ready; score=100%; manual-followups=0'));
     ok(text.includes('legacy map: patterns=20; improved=14; retained=1; rejected=2; deferred=3'));
     ok(text.includes('dogfood window: covered=0/7; latest=<none>; records=0'));
+  });
+
+  it('blocks readiness on partial observed experience parity even when docs and dogfood are otherwise ready', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
+    });
+    const doctor = doctorReport({
+      experienceParity: {
+        status: 'partial',
+        score_percent: 91,
+        manual_followup_count: 1,
+        counts: { satisfied: 6, partial: 2, not_verified: 0, blocked: 0 },
+        criteria: [
+          { id: 'plugin_management_followups', status: 'partial' },
+          { id: 'lifecycle_hook_continuity', status: 'partial' },
+        ],
+        next_actions: [
+          { id: 'codex-hook-review', reason: 'Review/trust bundled hooks with /hooks.' },
+        ],
+      },
+    });
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctor,
+      footerState: 'closed',
+      omccDevActive: 'no',
+    });
+
+    const parity = report.checks.find((check) => check.id === 'observed_experience_parity');
+    strictEqual(report.status, 'not-ready');
+    strictEqual(parity.status, 'partial');
+    strictEqual(parity.evidence.score_percent, 91);
+    strictEqual(parity.evidence.manual_followup_count, 1);
+    ok(parity.evidence.unresolved_criteria.some((entry) => entry.id === 'lifecycle_hook_continuity'));
+    const text = formatText(report);
+    ok(text.includes('experience parity: status=partial; score=91%; manual-followups=1'));
+    ok(text.includes('unresolved criteria: plugin_management_followups:partial, lifecycle_hook_continuity:partial'));
+    ok(text.includes('manual next actions: codex-hook-review'));
   });
 
   it('reports dogfood windows forward from the first accepted no-omcc-dev day', async () => {
@@ -187,6 +231,16 @@ describe('runtime cutover audit', () => {
       'audit=docs/assurance/omcc-cutover-scorecard.md',
       '--max-artifact-age-hours',
       '6',
+      '--execute-permission-proof',
+      '--permission-proof-timeout-ms',
+      '60000',
+      '--deep-peer-smoke',
+      '--execute-deep-peer-smoke',
+      '--deep-peer-smoke-timeout-ms',
+      '60000',
+      '--execute-workflow-continuation-proof',
+      '--workflow-continuation-proof-timeout-ms',
+      '60000',
     ]);
     strictEqual(opts.command, 'record');
     strictEqual(opts.repoRoot, '/tmp/repo');
@@ -196,9 +250,19 @@ describe('runtime cutover audit', () => {
     strictEqual(opts.dogfoodDate, '2026-05-16');
     strictEqual(opts.artifacts[0], 'audit=docs/assurance/omcc-cutover-scorecard.md');
     strictEqual(opts.maxArtifactAgeHours, 6);
+    strictEqual(opts.permissionProof, true);
+    strictEqual(opts.executePermissionProof, true);
+    strictEqual(opts.permissionProofTimeoutMs, 60000);
+    strictEqual(opts.deepPeerSmoke, true);
+    strictEqual(opts.executeDeepPeerSmoke, true);
+    strictEqual(opts.deepPeerSmokeTimeoutMs, 60000);
+    strictEqual(opts.workflowContinuationProof, true);
+    strictEqual(opts.executeWorkflowContinuationProof, true);
+    strictEqual(opts.workflowContinuationProofTimeoutMs, 60000);
     throws(() => parseArgs(['--footer-state', 'done-ish']), /--footer-state is invalid/);
     throws(() => parseArgs(['--omcc-dev-active', 'maybe']), /yes, no, or unknown/);
     throws(() => parseArgs(['--dogfood-window-days', '0']), /positive integer/);
+    throws(() => parseArgs(['--deep-peer-smoke-timeout-ms', '0']), /positive integer/);
   });
 
   it('records cutover evidence and lets audit consume latest footer and omcc activity', async () => {
@@ -385,12 +449,29 @@ function scorecardRows(status) {
 `;
 }
 
-function doctorReport() {
+function doctorReport(overrides = {}) {
   const pluginVersions = {
     companions: '0.4.0',
     engineer: '0.10.2',
     orchestrator: '0.7.2',
     runtime: '0.35.0',
+  };
+  const experienceParity = overrides.experienceParity ?? {
+    status: 'ready',
+    score_percent: 100,
+    manual_followup_count: 0,
+    counts: { satisfied: 8, partial: 0, not_verified: 0, blocked: 0 },
+    criteria: [
+      { id: 'host_plugin_availability', status: 'satisfied' },
+      { id: 'plugin_management_followups', status: 'satisfied' },
+      { id: 'bidirectional_companion_contract', status: 'satisfied' },
+      { id: 'bidirectional_peer_execution', status: 'satisfied' },
+      { id: 'engineer_workflow_continuation_execution', status: 'satisfied' },
+      { id: 'workflow_continuity_storage', status: 'satisfied' },
+      { id: 'lifecycle_hook_continuity', status: 'satisfied' },
+      { id: 'runtime_handoff_artifacts', status: 'satisfied' },
+    ],
+    next_actions: [],
   };
   return {
     clis: {
@@ -420,5 +501,6 @@ function doctorReport() {
         artifact_pointer: '.agentic-plugins/runs/consensus/consensus-20260516T073000Z-abc123/execution.json',
       },
     },
+    experience_parity: experienceParity,
   };
 }
