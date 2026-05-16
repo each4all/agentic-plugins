@@ -7,7 +7,7 @@ argument-hint: "snapshot|check|ingest-release-notes|plan [--format text|json] [-
 
 $ARGUMENTS
 
-Record Claude Code and Codex CLI version snapshots, compare them to the remembered runtime host-parity baseline, attach explicit release-note artifacts, require content-backed notes to cover changed host/version pairs, and plan compatibility updates. This command does not fetch release-note URLs by default, install host CLIs, mutate host config, or update plugins.
+Record Claude Code and Codex CLI version snapshots under ADR-0026, compare them to the remembered runtime host-parity baseline, attach explicit release-note artifacts, require content-backed notes to cover changed host/version pairs, and plan compatibility updates. This command does not fetch release-note URLs by default, install host CLIs, mutate host config, or update plugins.
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -32,6 +32,7 @@ Examples:
 Notes:
 
 - Snapshot artifacts live under `.agentic-plugins/runs/compat/<run-id>/`.
+- Artifact policy is governed by `docs/adr/0026-runtime-compatibility-drift-and-release-notes.md`.
 - Main-session output is limited to metadata, hashes, gaps, pointers, and update-plan summaries.
 - `--release-notes-url` records a URL pointer only by default; add
   `--fetch-release-notes-url` to explicitly fetch and store URL content for
