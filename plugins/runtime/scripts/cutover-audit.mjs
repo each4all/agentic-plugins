@@ -473,12 +473,44 @@ function buildDogfoodWindow({ records, now, requiredDays }) {
     if (!byDate.has(record.date)) byDate.set(record.date, []);
     byDate.get(record.date).push(record);
   }
-  const latestDate = [...byDate.keys()].sort().at(-1);
+  const sortedDates = [...byDate.keys()].sort();
+  const latestDate = sortedDates.at(-1);
+  const latestBlockedDate = sortedDates
+    .filter((date) => (byDate.get(date) ?? []).some((entry) => entry.omcc_dev_active === 'yes'))
+    .at(-1) ?? null;
+  const startDate = sortedDates.find((date) => {
+    if (latestBlockedDate && date <= latestBlockedDate) return false;
+    return (byDate.get(date) ?? []).some((entry) => entry.omcc_dev_active === 'no');
+  }) ?? null;
+
+  if (!startDate) {
+    return {
+      status: latestBlockedDate ? 'blocked' : 'not-verified',
+      required_days: requiredDays,
+      covered_days: 0,
+      window_start_date: latestBlockedDate ? addUtcDays(latestBlockedDate, 1) : null,
+      window_end_date: latestBlockedDate ? addUtcDays(addUtcDays(latestBlockedDate, 1), requiredDays - 1) : null,
+      latest_date: latestDate,
+      latest_blocked_date: latestBlockedDate,
+      missing_dates: [],
+      remaining_dates: [],
+      blocked_dates: latestBlockedDate ? [latestBlockedDate] : [],
+      accepted_dates: [],
+      total_records: records.length,
+    };
+  }
+
+  const endDate = addUtcDays(startDate, requiredDays - 1);
   const acceptedDates = [];
   const missingDates = [];
+  const remainingDates = [];
   const blockedDates = [];
   for (let offset = 0; offset < requiredDays; offset += 1) {
-    const date = addUtcDays(latestDate, -offset);
+    const date = addUtcDays(startDate, offset);
+    if (date > today) {
+      remainingDates.push(date);
+      continue;
+    }
     const entries = byDate.get(date) ?? [];
     if (entries.some((entry) => entry.omcc_dev_active === 'yes')) {
       blockedDates.push(date);
@@ -492,17 +524,22 @@ function buildDogfoodWindow({ records, now, requiredDays }) {
   }
   acceptedDates.sort();
   missingDates.sort();
+  remainingDates.sort();
   blockedDates.sort();
   return {
     status: blockedDates.length > 0
       ? 'blocked'
-      : acceptedDates.length >= requiredDays && missingDates.length === 0
+      : acceptedDates.length >= requiredDays && missingDates.length === 0 && remainingDates.length === 0
         ? 'satisfied'
         : 'partial',
     required_days: requiredDays,
     covered_days: acceptedDates.length,
+    window_start_date: startDate,
+    window_end_date: endDate,
     latest_date: latestDate,
+    latest_blocked_date: latestBlockedDate,
     missing_dates: missingDates,
+    remaining_dates: remainingDates,
     blocked_dates: blockedDates,
     accepted_dates: acceptedDates,
     total_records: records.length,
@@ -786,7 +823,11 @@ function formatCheckEvidence(check) {
       const lines = [
         `dogfood window: covered=${evidence.covered_days ?? 0}/${evidence.required_days ?? 0}; latest=${evidence.latest_date ?? '<none>'}; records=${evidence.total_records ?? 0}`,
       ];
+      if (evidence.window_start_date || evidence.window_end_date) {
+        lines.push(`window: ${evidence.window_start_date ?? '<none>'}..${evidence.window_end_date ?? '<none>'}`);
+      }
       if (evidence.missing_dates?.length) lines.push(`missing dates: ${evidence.missing_dates.join(', ')}`);
+      if (evidence.remaining_dates?.length) lines.push(`remaining dates: ${evidence.remaining_dates.join(', ')}`);
       if (evidence.blocked_dates?.length) lines.push(`blocked dates: ${evidence.blocked_dates.join(', ')}`);
       return lines;
     }

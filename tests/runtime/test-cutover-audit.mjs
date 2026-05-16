@@ -67,6 +67,60 @@ describe('runtime cutover audit', () => {
     ok(text.includes('dogfood window: covered=0/7; latest=<none>; records=0'));
   });
 
+  it('reports dogfood windows forward from the first accepted no-omcc-dev day', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: ['2026-05-16'],
+    });
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport(),
+      footerState: 'next-work-available',
+      omccDevActive: 'no',
+    });
+
+    const dogfood = report.checks.find((check) => check.id === 'dogfood_evidence_window');
+    strictEqual(dogfood.status, 'partial');
+    strictEqual(dogfood.evidence.window_start_date, '2026-05-16');
+    strictEqual(dogfood.evidence.window_end_date, '2026-05-22');
+    strictEqual(dogfood.evidence.covered_days, 1);
+    strictEqual(dogfood.evidence.missing_dates.length, 0);
+    strictEqual(dogfood.evidence.remaining_dates.length, 6);
+    strictEqual(dogfood.evidence.remaining_dates[0], '2026-05-17');
+
+    const text = formatText(report);
+    ok(text.includes('window: 2026-05-16..2026-05-22'));
+    ok(text.includes('remaining dates: 2026-05-17, 2026-05-18, 2026-05-19, 2026-05-20, 2026-05-21, 2026-05-22'));
+    ok(!text.includes('missing dates: 2026-05-10'));
+  });
+
+  it('reports elapsed gaps as missing once a forward dogfood window has started', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-18T07:30:00.000Z',
+      cutoverEvidenceDates: ['2026-05-16', '2026-05-18'],
+    });
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: new Date('2026-05-18T08:00:00.000Z'),
+      doctorReport: doctorReport(),
+      footerState: 'next-work-available',
+      omccDevActive: 'no',
+    });
+
+    const dogfood = report.checks.find((check) => check.id === 'dogfood_evidence_window');
+    strictEqual(dogfood.status, 'partial');
+    strictEqual(dogfood.evidence.window_start_date, '2026-05-16');
+    strictEqual(dogfood.evidence.window_end_date, '2026-05-22');
+    strictEqual(dogfood.evidence.covered_days, 2);
+    strictEqual(dogfood.evidence.missing_dates.join(','), '2026-05-17');
+    strictEqual(dogfood.evidence.remaining_dates.at(-1), '2026-05-22');
+  });
+
   it('blocks readiness when the legacy omcc pattern map is incomplete or load-bearing', async () => {
     const root = await seedRepo({
       scorecardStatus: 'satisfied',
