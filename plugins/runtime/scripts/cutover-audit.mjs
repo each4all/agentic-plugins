@@ -41,6 +41,7 @@ const ARTIFACT_KIND_RE = /^[A-Za-z0-9._-]+$/;
 export async function runCutoverAudit(options = {}) {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
   const now = options.now ?? new Date();
+  const timeZone = options.timeZone;
   const maxArtifactAgeHours = options.maxArtifactAgeHours ?? DEFAULT_MAX_ARTIFACT_AGE_HOURS;
   const dogfoodWindowDays = options.dogfoodWindowDays
     ? positiveInteger(options.dogfoodWindowDays, '--dogfood-window-days')
@@ -62,7 +63,7 @@ export async function runCutoverAudit(options = {}) {
     workflowContinuationProofTimeoutMs: options.workflowContinuationProofTimeoutMs,
   });
   const storedCutoverEvidence = await readCutoverEvidence(repoRoot);
-  const inlineEvidence = buildInlineCutoverEvidence({ options, now });
+  const inlineEvidence = buildInlineCutoverEvidence({ options, now, timeZone });
   const cutoverEvidence = {
     ...storedCutoverEvidence,
     records: inlineEvidence
@@ -88,7 +89,7 @@ export async function runCutoverAudit(options = {}) {
     checkPluginVersions({ repoRoot, manifest, doctor }),
     checkCompatFreshness({ doctor, now, maxArtifactAgeHours }),
     await checkConsensusAndContext({ repoRoot, doctor, now, maxArtifactAgeHours }),
-    checkDogfoodEvidenceWindow({ evidence: cutoverEvidence, now, requiredDays: dogfoodWindowDays }),
+    checkDogfoodEvidenceWindow({ evidence: cutoverEvidence, now, requiredDays: dogfoodWindowDays, timeZone }),
     checkFooterState({ options, latestEvidence }),
     checkOmccActivity({ options, latestEvidence }),
   ];
@@ -128,13 +129,14 @@ export async function runCutoverAudit(options = {}) {
 export async function recordCutoverEvidence(options = {}) {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
   const now = options.now ?? new Date();
+  const timeZone = options.timeZone;
   const createdAt = now.toISOString();
   const runId = options.runId ? validateCutoverRunId(options.runId) : makeCutoverRunId(now);
   const footerState = options.footerState;
   const omccDevActive = options.omccDevActive;
   if (!FOOTER_STATES.has(footerState)) throw new Error('record requires --footer-state');
   if (!OMCC_ACTIVITY.has(omccDevActive)) throw new Error('record requires --omcc-dev-active yes|no|unknown');
-  const dogfoodDate = validateDate(options.dogfoodDate ?? createdAt.slice(0, 10), '--dogfood-date');
+  const dogfoodDate = validateDate(options.dogfoodDate ?? localDateString(now, timeZone), '--dogfood-date');
   const runDir = resolve(cutoverEvidenceRoot(repoRoot), runId);
   await assertInside(cutoverEvidenceRoot(repoRoot), runDir);
   await mkdir(runDir, { recursive: true });
@@ -443,8 +445,8 @@ async function checkConsensusAndContext({ repoRoot, doctor, now, maxArtifactAgeH
   };
 }
 
-function checkDogfoodEvidenceWindow({ evidence, now, requiredDays }) {
-  const window = buildDogfoodWindow({ records: evidence.records, now, requiredDays });
+function checkDogfoodEvidenceWindow({ evidence, now, requiredDays, timeZone }) {
+  const window = buildDogfoodWindow({ records: evidence.records, now, requiredDays, timeZone });
   return {
     id: 'dogfood_evidence_window',
     label: 'One-week omcc-dev-free dogfood evidence',
@@ -497,8 +499,8 @@ function checkOmccActivity({ options, latestEvidence }) {
   };
 }
 
-function buildDogfoodWindow({ records, now, requiredDays }) {
-  const today = now.toISOString().slice(0, 10);
+function buildDogfoodWindow({ records, now, requiredDays, timeZone }) {
+  const today = localDateString(now, timeZone);
   const usable = records
     .map((record) => ({
       run_id: record.run_id,
@@ -598,7 +600,7 @@ function buildDogfoodWindow({ records, now, requiredDays }) {
   };
 }
 
-function buildInlineCutoverEvidence({ options, now }) {
+function buildInlineCutoverEvidence({ options, now, timeZone }) {
   const hasFooter = options.footerState || options.footerReason;
   const hasDogfood = options.omccDevActive || options.omccDevNote || options.dogfoodDate;
   if (!hasFooter && !hasDogfood) return null;
@@ -609,7 +611,7 @@ function buildInlineCutoverEvidence({ options, now }) {
     status: 'inline',
     created_at: now.toISOString(),
     dogfood: {
-      date: validateDate(options.dogfoodDate ?? now.toISOString().slice(0, 10), '--dogfood-date'),
+      date: validateDate(options.dogfoodDate ?? localDateString(now, timeZone), '--dogfood-date'),
       omcc_dev_active: OMCC_ACTIVITY.has(options.omccDevActive) ? options.omccDevActive : 'unknown',
       note: options.omccDevNote ?? null,
     },
@@ -795,6 +797,16 @@ function validateDate(value, label) {
     throw new Error(`${label} must be YYYY-MM-DD`);
   }
   return text;
+}
+
+function localDateString(now, timeZone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 function addUtcDays(date, offset) {
