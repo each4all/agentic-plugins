@@ -21,6 +21,14 @@ const COMMAND_PATH = resolve(
   REPO_ROOT,
   'plugins/engineer/commands/start.md',
 );
+const SKILL_PATH = resolve(
+  REPO_ROOT,
+  'plugins/engineer/skills/start/SKILL.md',
+);
+const ROUTING_CONTRACT_PATH = resolve(
+  REPO_ROOT,
+  'plugins/engineer/skills/_shared/references/entry-routing-contract.md',
+);
 
 function frontmatter(text) {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -155,6 +163,90 @@ describe('/engineer:start — Phase 1-7 sequencing (ADR-0020 §Sub-decision 2)',
       /state\.mjs[\s\S]{0,200}set-terminal/.test(text),
       'Phase 7 must call state.mjs set-terminal for auto-archive (ADR-0017 §sub-5)',
     );
+  });
+});
+
+describe('/engineer:start — entry routing and decision contract', () => {
+  it('ships a shared entry-routing contract with all required route categories', async () => {
+    const text = await readFile(ROUTING_CONTRACT_PATH, 'utf8');
+    for (const token of [
+      'engineer:start',
+      'orchestrator:plan',
+      'runtime:worktree',
+      'runtime:*',
+      'Single verb',
+      'outcome, state, recovery path, and evidence',
+    ]) {
+      ok(text.includes(token), `routing contract missing ${token}`);
+    }
+  });
+
+  it('requires concrete decision prompts with tradeoffs, risks, recommendation, confidence, and evidence', async () => {
+    const text = await readFile(ROUTING_CONTRACT_PATH, 'utf8');
+    for (const token of [
+      'Options',
+      'Tradeoffs',
+      'Risks',
+      'Recommendation',
+      'Confidence',
+      'Evidence pointers',
+      'Default next command',
+    ]) {
+      ok(text.includes(token), `decision contract missing ${token}`);
+    }
+  });
+
+  it('requires a standards and root-cause quality gate before quick implementation paths', async () => {
+    const text = await readFile(ROUTING_CONTRACT_PATH, 'utf8');
+    for (const token of ['source of truth', 'standard', 'root cause', 'verification evidence', 'rollback']) {
+      ok(text.includes(token), `quality gate missing ${token}`);
+    }
+  });
+
+  it('mirrors the routing recommendation in both Claude command and Codex skill surfaces', async () => {
+    const command = await readFile(COMMAND_PATH, 'utf8');
+    const skill = await readFile(SKILL_PATH, 'utf8');
+    for (const text of [command, skill]) {
+      ok(text.includes('Entry routing recommendation'), 'surface missing Entry routing recommendation');
+      for (const token of [
+        '/engineer:start',
+        '$engineer:start',
+        '/orchestrator:plan',
+        '$orchestrator:plan',
+        '/runtime:worktree plan',
+        '$runtime:worktree',
+        '/runtime:doctor',
+        '/runtime:settings',
+        '/runtime:compat',
+        '/runtime:context',
+        '/runtime:cutover',
+        '/engineer:<verb>',
+        '$engineer:<verb>',
+      ]) {
+        ok(text.includes(token), `surface missing ${token}`);
+      }
+    }
+  });
+
+  it('mirrors the decision prompt and quality-gate fields in both command and skill surfaces', async () => {
+    const command = await readFile(COMMAND_PATH, 'utf8');
+    const skill = await readFile(SKILL_PATH, 'utf8');
+    for (const text of [command, skill]) {
+      for (const token of [
+        'Options',
+        'Tradeoffs',
+        'Risks',
+        'Recommendation',
+        'Confidence',
+        'Evidence pointers',
+        'Default next command',
+        'standards',
+        'root-cause',
+        'verification evidence',
+      ]) {
+        ok(text.includes(token), `surface missing ${token}`);
+      }
+    }
   });
 });
 

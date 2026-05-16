@@ -28,6 +28,11 @@ the orchestrator persona's equivalent on Codex (ADR-0020 §Sub-decision
 6 — manual escalation; no automatic cross-plugin routing). `start` is
 single-pass only.
 
+`skills/_shared/references/entry-routing-contract.md` is the shared
+operator-facing contract for routing and decision prompts. It keeps
+Claude and Codex behavior equivalent by requiring the same outcome,
+state, recovery path, and evidence even when command syntax differs.
+
 ---
 
 ## When invoked by command (`/engineer:start` Claude command or `$engineer:start` Codex skill mention)
@@ -44,6 +49,32 @@ are an orchestrator concern, not a skill concern — see
 `skills/_shared/references/ensemble-protocol.md` § State Bookkeeping
 and `skills/_shared/references/orchestration.md` for the canonical
 state-write pattern shared with the verb skills.
+
+Before Phase 1, present an **Entry routing recommendation**:
+
+- continue with `/engineer:start` / `$engineer:start` for one coherent
+  deliverable on the current branch;
+- switch to `/orchestrator:plan` / `$orchestrator:plan` for 2+
+  independently completable deliverables, PRs, branches, owners, or
+  dependency edges;
+- run `/runtime:worktree plan` / `$runtime:worktree` when isolation or
+  parallelization is likely because the checkout is dirty, risky,
+  long-running, or suitable for parallel branches;
+- run `/runtime:doctor`, `/runtime:settings`, `/runtime:compat`,
+  `/runtime:context`, or `/runtime:cutover` when the task is runtime
+  readiness, install/update, compatibility, handoff, or cutover
+  evidence;
+- use a single `/engineer:<verb>` / `$engineer:<verb>` when the user
+  only needs investigate/frame/decide/compose/critique/refine without
+  lifecycle state.
+
+Every proceed/abort, direction approval, plan approval, and route-switch
+prompt must include **Options**, **Tradeoffs**, **Risks**,
+**Recommendation**, **Confidence**, **Evidence pointers**, and the
+**Default next command**. Before recommending a quick implementation or
+refinement path, state the standards/root-cause quality gate: source of
+truth or standard, invariant or root cause, verification evidence, and
+rollback/defer/escalation path.
 
 ### Phase 1 — Brainstorm composite (investigate → frame → decide)
 

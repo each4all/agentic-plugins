@@ -228,6 +228,44 @@ ACTIVE_TYPE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" read \
 
 ---
 
+## Phase 0d — Entry routing and decision contract
+
+Before Phase 1, present an **Entry routing recommendation** using
+`skills/_shared/references/entry-routing-contract.md`. This is a
+user-facing contract, not a hidden classifier. The recommendation must
+name the selected route and the plausible alternatives:
+
+- continue with `/engineer:start` / `$engineer:start` for one coherent
+  deliverable on the current branch;
+- switch to `/orchestrator:plan` / `$orchestrator:plan` for 2+
+  independently completable deliverables, PRs, branches, owners, or
+  dependency edges;
+- run `/runtime:worktree plan` / `$runtime:worktree` when isolation or
+  parallelization is likely because the checkout is dirty, risky,
+  long-running, or suitable for parallel branches;
+- run `/runtime:doctor`, `/runtime:settings`, `/runtime:compat`,
+  `/runtime:context`, or `/runtime:cutover` when the task is runtime
+  readiness, install/update, compatibility, handoff, or cutover
+  evidence;
+- use a single `/engineer:<verb>` / `$engineer:<verb>` when the user
+  only needs investigate/frame/decide/compose/critique/refine without
+  lifecycle state.
+
+Whenever `/engineer:start` asks the user to proceed, abort, approve a
+direction, approve a plan, or switch to another route, use this
+decision prompt shape: **Options**, **Tradeoffs**, **Risks**,
+**Recommendation**, **Confidence**, **Evidence pointers**, and the
+**Default next command**.
+
+Before recommending a quick implementation/refinement path, state the
+standards and root-cause quality gate: the source of truth or standard,
+the invariant or root cause, the required verification evidence, and the
+rollback/defer/escalation path. If that gate cannot be met, route back
+to `engineer:investigate`, `engineer:decide`, or `orchestrator:plan`
+instead of patching symptoms.
+
+---
+
 ## Phase 1 — Brainstorm composite (investigate → frame → decide)
 
 Composite of three verbs per ADR-0020 §Sub-decision 2; rotate the
