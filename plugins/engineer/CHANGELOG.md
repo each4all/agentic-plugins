@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.11.0...plugin-engineer-v0.12.0) (2026-05-16)
+
+
+### Features
+
+* **engineer:** add quality-first start defaults ([e92cbb3](https://github.com/each4all/agentic-plugins/commit/e92cbb3031ecb590ee8202674ef1aa84cab8d577))
+
 ## [0.11.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.10.2...plugin-engineer-v0.11.0) (2026-05-16)
 
 
