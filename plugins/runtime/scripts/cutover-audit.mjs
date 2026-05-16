@@ -29,6 +29,8 @@ const CUTOVER_GATE = [
   'latest completion footer is closed',
   'explicit user cutover declaration per ADR-0007',
 ];
+const REQUIRED_LEGACY_PATTERN_IDS = Array.from({ length: 20 }, (_, index) => `D${index + 1}`);
+const LEGACY_PATTERN_STATUSES = new Set(['improved', 'retained', 'rejected', 'deferred']);
 
 export async function runCutoverAudit(options = {}) {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
@@ -41,8 +43,9 @@ export async function runCutoverAudit(options = {}) {
     now,
     format: 'json',
   });
-  const [scorecardText, developmentText, hostParityText, manifest] = await Promise.all([
+  const [scorecardText, legacyPatternText, developmentText, hostParityText, manifest] = await Promise.all([
     readOptionalText(resolve(repoRoot, 'docs/assurance/omcc-cutover-scorecard.md')),
+    readOptionalText(resolve(repoRoot, 'docs/assurance/omcc-legacy-pattern-map.md')),
     readOptionalText(resolve(repoRoot, 'docs/DEVELOPMENT.md')),
     readOptionalText(resolve(repoRoot, 'plugins/runtime/docs/host-parity-baseline.md')),
     readOptionalJson(resolve(repoRoot, '.release-please-manifest.json')),
@@ -51,6 +54,7 @@ export async function runCutoverAudit(options = {}) {
   const checks = [
     checkAdr0012Conditions(developmentText),
     checkScorecardRequirements(scorecardText),
+    checkLegacyPatternMap({ repoRoot, text: legacyPatternText }),
     checkHostParityBaseline(hostParityText, doctor),
     checkPluginVersions({ repoRoot, manifest, doctor }),
     checkCompatFreshness({ doctor, now, maxArtifactAgeHours }),
@@ -80,6 +84,54 @@ export async function runCutoverAudit(options = {}) {
       'cutover-ready-candidate is not final cutover; ADR-0007 still requires explicit user declaration.',
       'Unknown dogfood or omcc-dev usage evidence blocks readiness rather than being inferred.',
     ],
+  };
+}
+
+function checkLegacyPatternMap({ repoRoot, text }) {
+  const rows = parseMarkdownRows(text).filter((row) => /^D\d+$/.test(row[0]));
+  const entries = rows.map((row) => {
+    const id = row[0];
+    const status = normalizeLegacyPatternStatus(row[5]);
+    const impact = row[6] ?? '';
+    return {
+      id,
+      status,
+      active_daily_dependency: /active daily dependency/i.test(impact)
+        && !/no active daily dependency/i.test(impact),
+    };
+  });
+  const present = new Set(entries.map((entry) => entry.id));
+  const missing = REQUIRED_LEGACY_PATTERN_IDS.filter((id) => !present.has(id));
+  const invalidStatuses = entries.filter((entry) => !LEGACY_PATTERN_STATUSES.has(entry.status));
+  const activeDependencyBlockers = entries.filter((entry) => (
+    (entry.status === 'rejected' || entry.status === 'deferred')
+      && entry.active_daily_dependency
+  ));
+  const counts = Object.fromEntries([...LEGACY_PATTERN_STATUSES].map((status) => [
+    status,
+    entries.filter((entry) => entry.status === status).length,
+  ]));
+  const satisfied = text
+    && missing.length === 0
+    && invalidStatuses.length === 0
+    && activeDependencyBlockers.length === 0;
+  return {
+    id: 'legacy_omcc_pattern_map',
+    label: 'legacy omcc-dev pattern disposition map',
+    status: text ? satisfied ? 'satisfied' : 'partial' : 'missing',
+    evidence: {
+      pointer: relativePointer(repoRoot, resolve(repoRoot, 'docs/assurance/omcc-legacy-pattern-map.md')),
+      total: entries.length,
+      counts,
+      missing_patterns: missing,
+      invalid_statuses: invalidStatuses,
+      active_dependency_blockers: activeDependencyBlockers,
+    },
+    next_action: text
+      ? satisfied
+        ? null
+        : 'Complete docs/assurance/omcc-legacy-pattern-map.md with D1-D20 statuses and no active dependency on rejected/deferred rows.'
+      : 'Create docs/assurance/omcc-legacy-pattern-map.md before declaring cutover readiness.',
   };
 }
 
@@ -340,6 +392,14 @@ function normalizeStatus(value) {
   return normalized || 'not-verified';
 }
 
+function normalizeLegacyPatternStatus(value) {
+  const normalized = String(value ?? '').toLowerCase().replace(/[`*_]/g, '').trim();
+  for (const status of LEGACY_PATTERN_STATUSES) {
+    if (normalized === status || normalized.includes(status)) return status;
+  }
+  return normalized || 'missing';
+}
+
 function ageHoursSince(iso, now) {
   const timestamp = Date.parse(iso);
   if (!Number.isFinite(timestamp)) return null;
@@ -413,6 +473,17 @@ function formatCheckEvidence(check) {
       return unresolved.length
         ? [`${summary}; unresolved=${unresolved.map((row) => `${row.requirement}:${row.status}`).join(', ')}`]
         : [summary];
+    }
+    case 'legacy_omcc_pattern_map': {
+      const evidence = check.evidence ?? {};
+      const counts = evidence.counts ?? {};
+      const lines = [
+        `legacy map: patterns=${evidence.total ?? 0}; improved=${counts.improved ?? 0}; retained=${counts.retained ?? 0}; rejected=${counts.rejected ?? 0}; deferred=${counts.deferred ?? 0}`,
+      ];
+      if (evidence.missing_patterns?.length) lines.push(`missing patterns: ${evidence.missing_patterns.join(', ')}`);
+      if (evidence.invalid_statuses?.length) lines.push(`invalid statuses: ${evidence.invalid_statuses.map((row) => `${row.id}:${row.status}`).join(', ')}`);
+      if (evidence.active_dependency_blockers?.length) lines.push(`active dependency blockers: ${evidence.active_dependency_blockers.map((row) => row.id).join(', ')}`);
+      return lines;
     }
     default:
       return [];

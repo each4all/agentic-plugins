@@ -10,9 +10,9 @@ state. It can report `cutover-ready-candidate`, but final omcc archival/removal
 requires explicit user declaration per ADR-0007.
 
 The report should make the strengthened cutover gate visible. When the result is
-not ready, preserve the unresolved ADR-0012 condition numbers and unresolved
-scorecard rows in the user-facing output instead of collapsing them to a generic
-`partial` status.
+not ready, preserve the unresolved ADR-0012 condition numbers, unresolved
+scorecard rows, and legacy pattern-map gaps in the user-facing output instead
+of collapsing them to a generic `partial` status.
 
 ## When invoked by command (`/runtime:cutover` or `$runtime:cutover`)
 
@@ -35,6 +35,7 @@ The audit reads:
 
 - `docs/DEVELOPMENT.md` ADR-0012 condition matrix;
 - `docs/assurance/omcc-cutover-scorecard.md` requirement statuses;
+- `docs/assurance/omcc-legacy-pattern-map.md` D1-D20 disposition statuses;
 - `plugins/runtime/docs/host-parity-baseline.md`;
 - `.release-please-manifest.json` plus runtime doctor plugin install/cache evidence;
 - latest runtime compat, consensus, and context artifacts;

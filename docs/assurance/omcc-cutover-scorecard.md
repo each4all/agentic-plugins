@@ -25,11 +25,12 @@ The repo already has the right architectural direction:
 - `plugins/runtime` is the L1 runtime/operator control plane.
 - `plugins/companions` is the L1 script-only companion bridge library.
 
-The remaining gap is assurance depth: superior-compatibility mapping,
-overbuild/drop rationale, real bidirectional peer execution, current-host UX
-parity, complementary consensus-lane coverage, self-hosted dogfood evidence,
-and final completion state need to be measurable enough that omcc can be
-removed without a fallback.
+The remaining gap is assurance depth: real bidirectional peer execution,
+current-host UX parity, self-hosted dogfood evidence, and final completion
+state need to be measurable enough that omcc can be removed without a fallback.
+The legacy omcc-dev behavior map is now repo-verifiable through
+[`omcc-legacy-pattern-map.md`](omcc-legacy-pattern-map.md) and
+`runtime:cutover`.
 
 ## Cutover Gate Terms
 
@@ -95,8 +96,8 @@ a manual active-session follow-up.
 
 | Req | User requirement | Current repo evidence | Status | Cutover gate |
 |---|---|---|---|---|
-| R1 | agentic-plugins must be superior-compatible with omcc/omcc-dev, not a simple baseline copy. | ADR-0007 mandates redesign-over-port; ADR-0010 maps omcc experience into a 4-layer/6-verb model; ADR-0019 and ADR-0020 replace omcc-dev single and multi-deliverable workflow shapes with engineer plus orchestrator. | partial | Every retained omcc-dev behavior has an agentic-plugins equivalent, improvement, or documented rejection with rationale. |
-| R2 | Overbuilt or unnecessary parts should be improved or removed. | `plugins/research` was retired and cited-brief moved into `engineer:investigate`; `plugins/designer` is deferred rather than shipped prematurely. | partial | A cutover audit lists all legacy omcc patterns as retained, improved, rejected, or deferred; no active daily workflow depends on a rejected/deferred pattern. |
+| R1 | agentic-plugins must be superior-compatible with omcc/omcc-dev, not a simple baseline copy. | ADR-0007 mandates redesign-over-port; ADR-0010 maps omcc experience into a 4-layer/6-verb model; ADR-0019 and ADR-0020 replace omcc-dev single and multi-deliverable workflow shapes with engineer plus orchestrator. `omcc-legacy-pattern-map.md` inventories D1-D20 legacy surfaces and maps each to an agentic-plugins improvement, retained behavior, or explicit rejection/deferment rationale. | satisfied | Every retained omcc-dev behavior has an agentic-plugins equivalent, improvement, or documented rejection with rationale. |
+| R2 | Overbuilt or unnecessary parts should be improved or removed. | `plugins/research` was retired and cited-brief moved into `engineer:investigate`; `plugins/designer` is deferred rather than shipped prematurely; hidden automatic ensembles and raw peer output are rejected. `runtime:cutover` reads `omcc-legacy-pattern-map.md` and blocks readiness when required D1-D20 rows are missing, statuses are invalid, or a rejected/deferred row is still an active daily dependency. | satisfied | A cutover audit lists all legacy omcc patterns as retained, improved, rejected, or deferred; no active daily workflow depends on a rejected/deferred pattern. |
 | R3 | Switching development tools must work in both directions: Claude Code to Codex and Codex to Claude. | Cross-host tests cover resume and stop-archive behavior for engineer/orchestrator; companions exist in both directions. | partial | Real companion execution and workflow continuation are verified in both directions from current installed host versions, not only in-process fixtures. |
 | R4 | Claude Code and Codex user experience must be equivalent where possible; non-portable host-specific features must not become hard dependencies. | Architecture documents host-specific adapter boundaries; runtime baseline documents command/hook/subagent differences; Codex macro/meta skill mirrors exist. | partial | A parity baseline is refreshed for current host versions and all command surfaces publish equivalent outcome, state, and recovery behavior even when syntax differs. |
 | R5 | Optimize for best results, not token minimization. | Engineer now publishes a tested quality-first default contract: phase-boundary ensembles are the default peer breadth, model/effort defaults stay host-native or `runtime:settings` configured without token-saving downshift, and review depth follows the workflow phase through `parallel-review` and re-review after refine. `runtime:consensus` also records `best-results-over-token-minimization` in manifest, prompt artifacts, and text output with all-requested-peer breadth by default unless the operator constrains it. `tests/engineer/test-start-command.mjs` and `tests/runtime/test-consensus.mjs` cover these fields. | satisfied | Keep quality-first defaults explicit; budget, latency, model, effort, or peer limits must be user constraints with stated quality tradeoffs. |
