@@ -37,6 +37,8 @@ Consensus reports and manages:
 - companion-executable peers (`claude`, `codex`) versus manual/subagent peer labels that are record-only;
 - peer lane metadata (`companion_execute` versus `manual_subagent_record`) with
   explicit peer roles, operator actions, and command templates;
+- quality-first policy metadata (`best-results-over-token-minimization`,
+  default peer breadth, model/effort defaults, and review-depth defaults);
 - budget policy fields (`max_rounds`, optional `max_peers`, token/time/process budget);
 - raw peer output pointers, byte counts, and hashes;
 - per-peer execution progress pointer and status;

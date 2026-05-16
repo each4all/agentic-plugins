@@ -43,6 +43,11 @@ describe('runtime consensus', () => {
     strictEqual(manifest.rounds[0].kind, 'independent-fanout');
     strictEqual(manifest.rounds[0].prompts.length, 2);
     strictEqual(manifest.policy.peer_selection, 'explicit-companion-peers-plus-manual-peer-labels');
+    strictEqual(manifest.policy.quality_policy.objective, 'best-results-over-token-minimization');
+    strictEqual(manifest.policy.quality_policy.default_peer_breadth, 'operator-constrained-max-peers');
+    deepStrictEqual(manifest.policy.quality_policy.default_companion_peers, ['claude', 'codex']);
+    ok(manifest.policy.quality_policy.model_effort_default.includes('does not downshift'));
+    ok(manifest.policy.quality_policy.review_depth_default.includes('independent peer fanout'));
     strictEqual(manifest.policy.raw_output_policy, 'artifact-pointer-only');
     strictEqual(manifest.policy.execution_timeout_ms, 120000);
     strictEqual(manifest.policy.limits.max_rounds_cap, 3);
@@ -58,9 +63,14 @@ describe('runtime consensus', () => {
     ok(prompt.includes('Check the ADR-0024 runtime consensus MVP scope.'));
     ok(prompt.includes('Lane: companion_execute'));
     ok(prompt.includes('Role: claude_companion_peer'));
+    ok(prompt.includes('objective: best-results-over-token-minimization'));
+    ok(prompt.includes('model_effort_default: host-native-default-or-runtime-settings'));
+    ok(prompt.includes('review_depth_default: independent peer fanout'));
     ok(formatText(report).includes(`run: ${RUN_ID}`));
     ok(formatText(report).includes('peer lanes:'));
     ok(formatText(report).includes('role=claude_companion_peer'));
+    ok(formatText(report).includes('quality policy:'));
+    ok(formatText(report).includes('objective=best-results-over-token-minimization'));
   });
 
   it('does not impose a fixed small peer cap on an explicit broad roster', async () => {
@@ -84,6 +94,8 @@ describe('runtime consensus', () => {
     deepStrictEqual(report.peers.manual, manualPeers);
     strictEqual(report.policy.max_peers, peers.length);
     strictEqual(report.policy.limits.max_peers_cap, null);
+    strictEqual(report.policy.quality_policy.default_peer_breadth, 'all-requested-peers');
+    strictEqual(report.policy.quality_policy.user_constraints.max_peers, 'not-constrained-by-default');
 
     const manifest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'manifest.json'));
     strictEqual(manifest.rounds[0].prompts.length, peers.length);

@@ -45,6 +45,12 @@ Notes:
   for `execute --execute`; `manual_subagent_record` lanes use
   `<peer>_manual_subagent_peer` roles and should be run manually or through
   local subagents before collection with `record`.
+- The manifest, prompt artifacts, and text output include a quality policy:
+  objective `best-results-over-token-minimization`, all requested peers active
+  by default unless `--max-peers` constrains breadth, host-native/runtime
+  settings model-effort defaults without token-saving downshift, and
+  independent fanout plus bounded contradiction rebuttal as the default review
+  depth.
 - Execution records per-peer progress in `execution-progress.json` plus status, failure type, retryability, byte count, and SHA-256. Raw stdout stays in peer raw-output artifacts.
 - `execute` and `status` include an `execution_remediation` block when execution has run. It lists sanitized failure counts, per-peer retry commands, suggested timeout increases for timeout failures, proof commands, and artifact pointers. It is advisory only and never auto-retries peers.
 - Timeouts are retryable and include bounded remediation metadata. Retry a selected peer with `--peers <peer> --timeout-ms <n> --process-budget 1`, or run `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` when prompt startup latency is unclear.
