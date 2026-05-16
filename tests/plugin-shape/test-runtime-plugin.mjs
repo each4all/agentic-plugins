@@ -12,6 +12,7 @@ const RUNTIME_COMMAND_SURFACES = [
   { name: 'compat', script: 'compat.mjs' },
   { name: 'consensus', script: 'consensus.mjs' },
   { name: 'context', script: 'context.mjs' },
+  { name: 'cutover', script: 'cutover-audit.mjs' },
   { name: 'doctor', script: 'doctor.mjs' },
   { name: 'migrate', script: 'migrate-workflow-storage.mjs' },
   { name: 'settings', script: 'settings.mjs' },
@@ -37,6 +38,7 @@ describe('plugins/runtime manifest pair', () => {
     ok(manifest.keywords.includes('compat'));
     ok(manifest.keywords.includes('worktree'));
     ok(manifest.keywords.includes('context'));
+    ok(manifest.keywords.includes('cutover'));
     ok(manifest.keywords.includes('footer'));
     ok(manifest.keywords.includes('L1'));
   });
@@ -340,6 +342,25 @@ describe('plugins/runtime context surface', () => {
   });
 });
 
+describe('plugins/runtime cutover surface', () => {
+  it('ships cutover command, skill wrapper, agent yaml, and executable script', async () => {
+    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/cutover.md'), 'utf-8');
+    ok(command.startsWith('---\n'));
+    ok(command.includes('scripts/cutover-audit.mjs'));
+    ok(/read-only/i.test(command));
+    ok(command.includes('cutover-ready-candidate'));
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/cutover/SKILL.md'), 'utf-8');
+    ok(/^name:\s*cutover\s*$/m.test(skill));
+    ok(skill.includes('No automatic final cutover declaration'));
+    ok(skill.includes('No inference that omcc-dev is inactive'));
+    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/cutover/agents/openai.yaml'), 'utf-8');
+    ok(agent.includes('$runtime:cutover'));
+    ok(/allow_implicit_invocation:\s*false/.test(agent));
+    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/cutover-audit.mjs'));
+    ok((scriptStat.mode & 0o111) !== 0, 'cutover-audit.mjs has executable bit');
+  });
+});
+
 describe('plugins/runtime footer helper', () => {
   it('ships footer helper and pointer-only contract docs', async () => {
     const contract = await readFile(resolve(PLUGIN_ROOT, 'docs/footer-contract.md'), 'utf-8');
@@ -380,6 +401,7 @@ describe('plugins/runtime repo documentation freshness', () => {
       'runtime:compat',
       'runtime:worktree',
       'runtime:context',
+      'runtime:cutover',
       'workflow-storage migration',
       'completion footer',
     ]) {

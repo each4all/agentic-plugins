@@ -52,7 +52,8 @@ Four installable plugins ship in this repository:
   `runtime:settings`, explicit `runtime:consensus` companion execution
   artifacts, `runtime:compat` host-version drift planning, read-only
   `runtime:worktree` planning, `runtime:context` handoff/check artifacts,
-  workflow-storage migration, and the pointer-only completion footer.
+  read-only `runtime:cutover` readiness evidence, workflow-storage migration,
+  and the pointer-only completion footer.
 
 See each plugin's README for install commands, invocation, and
 environment details.

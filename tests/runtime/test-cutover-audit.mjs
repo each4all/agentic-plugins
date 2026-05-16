@@ -1,0 +1,195 @@
+import { describe, it } from 'node:test';
+import { ok, strictEqual, throws } from 'node:assert/strict';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import {
+  formatText,
+  parseArgs,
+  runCutoverAudit,
+} from '../../plugins/runtime/scripts/cutover-audit.mjs';
+
+const NOW = new Date('2026-05-16T08:00:00.000Z');
+
+describe('runtime cutover audit', () => {
+  it('reports cutover-ready-candidate only when every evidence check is satisfied', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+    });
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport(),
+      footerState: 'closed',
+      footerReason: 'All PR, release, cleanup, and follow-up evidence is closed.',
+      omccDevActive: 'no',
+    });
+
+    strictEqual(report.status, 'cutover-ready-candidate');
+    strictEqual(report.ready_candidate, true);
+    ok(report.checks.every((check) => ['satisfied', 'current', 'fresh', 'not-active'].includes(check.status)));
+    ok(formatText(report).includes('ready-candidate: true'));
+  });
+
+  it('blocks readiness on partial ADR/scorecard status, stale context, missing footer, and unknown omcc activity', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'partial',
+      conditionStatus: 'partial',
+      contextCreatedAt: '2026-05-14T07:30:00.000Z',
+    });
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport(),
+    });
+
+    strictEqual(report.status, 'not-ready');
+    strictEqual(report.ready_candidate, false);
+    strictEqual(report.checks.find((check) => check.id === 'adr0012_conditions').status, 'partial');
+    strictEqual(report.checks.find((check) => check.id === 'omcc_replacement_scorecard').status, 'partial');
+    strictEqual(report.checks.find((check) => check.id === 'latest_consensus_context_artifacts').status, 'stale');
+    strictEqual(report.checks.find((check) => check.id === 'latest_completion_footer_state').status, 'not-verified');
+    strictEqual(report.checks.find((check) => check.id === 'omcc_dev_daily_workflow').status, 'not-verified');
+    ok(report.next_actions.some((entry) => entry.id === 'omcc_dev_daily_workflow'));
+  });
+
+  it('reports plugin version drift as blocked', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+    });
+    const doctor = doctorReport();
+    doctor.plugins.runtime.cache.codex.latest.manifest_version = '0.34.0';
+
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctor,
+      footerState: 'closed',
+      omccDevActive: 'no',
+    });
+
+    const versionCheck = report.checks.find((check) => check.id === 'installed_plugin_versions');
+    strictEqual(versionCheck.status, 'blocked');
+    strictEqual(versionCheck.evidence.entries.find((entry) => entry.plugin === 'runtime').codex_cache, '0.34.0');
+  });
+
+  it('parses CLI arguments and rejects invalid explicit evidence', () => {
+    const opts = parseArgs([
+      '--repo-root',
+      '/tmp/repo',
+      '--format',
+      'json',
+      '--footer-state',
+      'closed',
+      '--omcc-dev-active',
+      'no',
+      '--max-artifact-age-hours',
+      '6',
+    ]);
+    strictEqual(opts.repoRoot, '/tmp/repo');
+    strictEqual(opts.format, 'json');
+    strictEqual(opts.footerState, 'closed');
+    strictEqual(opts.omccDevActive, 'no');
+    strictEqual(opts.maxArtifactAgeHours, 6);
+    throws(() => parseArgs(['--footer-state', 'done-ish']), /--footer-state is invalid/);
+    throws(() => parseArgs(['--omcc-dev-active', 'maybe']), /yes, no, or unknown/);
+  });
+});
+
+async function seedRepo({ scorecardStatus, conditionStatus, contextCreatedAt }) {
+  const root = await mkdtemp(join(tmpdir(), 'runtime-cutover-audit-'));
+  await mkdir(join(root, 'docs', 'assurance'), { recursive: true });
+  await mkdir(join(root, 'plugins', 'runtime', 'docs'), { recursive: true });
+  await mkdir(join(root, 'plugins', 'runtime', '.claude-plugin'), { recursive: true });
+  await mkdir(join(root, 'plugins', 'runtime', '.codex-plugin'), { recursive: true });
+  await mkdir(join(root, 'plugins', 'companions', '.claude-plugin'), { recursive: true });
+  await mkdir(join(root, 'plugins', 'engineer', '.claude-plugin'), { recursive: true });
+  await mkdir(join(root, 'plugins', 'orchestrator', '.claude-plugin'), { recursive: true });
+  await writeFile(join(root, 'docs', 'DEVELOPMENT.md'), conditionRows(conditionStatus));
+  await writeFile(join(root, 'docs', 'assurance', 'omcc-cutover-scorecard.md'), scorecardRows(scorecardStatus));
+  await writeFile(join(root, 'plugins', 'runtime', 'docs', 'host-parity-baseline.md'), 'Observed on 2026-05-16 with Claude Code `2.1.143`, Codex CLI\n`0.130.0`, official docs.\n');
+  await writeFile(join(root, '.release-please-manifest.json'), JSON.stringify({
+    'plugins/companions': '0.4.0',
+    'plugins/engineer': '0.10.2',
+    'plugins/orchestrator': '0.7.2',
+    'plugins/runtime': '0.35.0',
+  }));
+  const contextDir = join(root, '.agentic-plugins', 'runs', 'context', 'context-20260516T073000Z-abc123');
+  await mkdir(contextDir, { recursive: true });
+  await writeFile(join(contextDir, 'context.json'), JSON.stringify({
+    run_id: 'context-20260516T073000Z-abc123',
+    created_at: contextCreatedAt,
+  }));
+  return root;
+}
+
+function conditionRows(status) {
+  return `| # | Condition | Status | Notes |
+|---|---|---|---|
+| 1 | parity | ${status} | ok |
+| 2 | switching | ${status} | ok |
+| 3 | dogfood | ${status} | ok |
+| 4 | scaffolding | ${status} | ok |
+`;
+}
+
+function scorecardRows(status) {
+  return `| ID | Requirement | Evidence | Status | Exit |
+|---|---|---|---|---|
+| R1 | superior compatible | evidence | ${status} | ok |
+| R2 | remove overbuild | evidence | ${status} | ok |
+| R3 | tool switching | evidence | ${status} | ok |
+| R4 | same UX | evidence | ${status} | ok |
+| R5 | best result | evidence | ${status} | ok |
+| R6 | context decisions | evidence | ${status} | ok |
+| R7a | quality | evidence | ${status} | ok |
+| R7b | completion | evidence | ${status} | ok |
+| R8 | entry routing | evidence | ${status} | ok |
+| R9 | compat | evidence | ${status} | ok |
+| R10 | dual perspective | evidence | ${status} | ok |
+| R11 | convergence | evidence | ${status} | ok |
+`;
+}
+
+function doctorReport() {
+  const pluginVersions = {
+    companions: '0.4.0',
+    engineer: '0.10.2',
+    orchestrator: '0.7.2',
+    runtime: '0.35.0',
+  };
+  return {
+    clis: {
+      claude: { version: { text: '2.1.143 (Claude Code)' } },
+      codex: { version: { text: 'codex-cli 0.130.0' } },
+    },
+    plugins: Object.fromEntries(Object.entries(pluginVersions).map(([name, version]) => [name, {
+      source: { claude_manifest: { version } },
+      cache: {
+        claude: { latest: { manifest_version: version } },
+        codex: { latest: { manifest_version: version } },
+      },
+    }])),
+    compat_runs: {
+      latest: {
+        run_id: 'compat-20260516T073000Z-abc123',
+        status: 'current',
+        drift_class: 'none',
+        selected_at: '2026-05-16T07:30:00.000Z',
+      },
+    },
+    consensus_runs: {
+      latest: {
+        run_id: 'consensus-20260516T073000Z-abc123',
+        status: 'passed',
+        selected_at: '2026-05-16T07:30:00.000Z',
+        artifact_pointer: '.agentic-plugins/runs/consensus/consensus-20260516T073000Z-abc123/execution.json',
+      },
+    },
+  };
+}
