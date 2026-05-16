@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.10.2...plugin-engineer-v0.11.0) (2026-05-16)
+
+
+### Features
+
+* **engineer:** add entry routing decision contract ([8ad960c](https://github.com/each4all/agentic-plugins/commit/8ad960cf8ba9c5dcd3477e77117d89ae126bc642))
+
 ## [0.10.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.10.1...plugin-engineer-v0.10.2) (2026-05-15)
 
 
