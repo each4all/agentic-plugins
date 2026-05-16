@@ -35,7 +35,8 @@ Consensus reports and manages:
 
 - independent fanout prompt artifacts;
 - companion-executable peers (`claude`, `codex`) versus manual/subagent peer labels that are record-only;
-- peer lane metadata (`companion_execute` versus `manual_subagent_record`) with explicit operator actions and command templates;
+- peer lane metadata (`companion_execute` versus `manual_subagent_record`) with
+  explicit peer roles, operator actions, and command templates;
 - budget policy fields (`max_rounds`, optional `max_peers`, token/time/process budget);
 - raw peer output pointers, byte counts, and hashes;
 - per-peer execution progress pointer and status;

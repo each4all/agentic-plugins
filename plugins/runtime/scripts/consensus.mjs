@@ -1413,6 +1413,7 @@ function buildPeerLanes({ runId, activePeers }) {
     return {
       peer,
       lane,
+      role: peerLaneRole({ peer, lane }),
       peer_execution: lane === 'companion_execute',
       companion_direction: companionDirection,
       operator_action: lane === 'companion_execute'
@@ -1429,10 +1430,18 @@ function peerLanesFor(manifest, runId) {
   if (Array.isArray(manifest.peers?.lanes) && manifest.peers.lanes.length > 0) {
     return manifest.peers.lanes.map((lane) => ({
       ...lane,
+      role: lane.role ?? peerLaneRole({ peer: lane.peer, lane: lane.lane }),
       command_template: lane.command_template ?? laneCommandTemplate({ runId, peer: lane.peer, lane: lane.lane }),
     }));
   }
   return buildPeerLanes({ runId, activePeers: manifest.peers?.active ?? [] });
+}
+
+function peerLaneRole({ peer, lane }) {
+  if (lane === 'companion_execute') {
+    return `${peer}_companion_peer`;
+  }
+  return `${peer}_manual_subagent_peer`;
 }
 
 function laneCommandTemplate({ runId, peer, lane }) {
@@ -1868,7 +1877,7 @@ export function formatText(report) {
   if (report.peer_lanes?.length) {
     lines.push('', 'peer lanes:');
     for (const lane of report.peer_lanes) {
-      lines.push(`- ${lane.peer}: lane=${lane.lane}; peer-execution=${lane.peer_execution}; command=${lane.command_template}`);
+      lines.push(`- ${lane.peer}: role=${lane.role}; lane=${lane.lane}; peer-execution=${lane.peer_execution}; command=${lane.command_template}`);
       lines.push(`  action: ${lane.operator_action}`);
     }
   }
@@ -2132,6 +2141,7 @@ function buildFanoutPrompt({ runId, peer, task, policy, lane }) {
 Run id: ${runId}
 Peer: ${peer}
 Lane: ${lane?.lane ?? 'unknown'}
+Role: ${lane?.role ?? 'unknown'}
 
 Task:
 ${task.trim()}
@@ -2168,6 +2178,7 @@ Run id: ${runId}
 Peer: ${peer}
 Round: ${round}
 Lane: ${lane?.lane ?? 'unknown'}
+Role: ${lane?.role ?? 'unknown'}
 
 Review only these synthesized disagreement summaries:
 

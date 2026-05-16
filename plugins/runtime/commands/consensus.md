@@ -40,7 +40,11 @@ Notes:
 - Main-session output is limited to synthesized summary, convergence state, durable disagreements, contradiction summaries, evidence pointers, artifact paths, and next action.
 - Companion dispatch requires the explicit `execute --execute` boundary. Runtime never relaxes sandbox, approval, auth, permission, or host session state.
 - Only companion-backed peers (`claude`, `codex`) are executable by `execute --execute`; any other peer id in `--peers` is a manual/subagent lane with prompt artifacts that must be collected through `record`.
-- The manifest and status output include peer lane metadata: `companion_execute` lanes are eligible for `execute --execute`; `manual_subagent_record` lanes should be run manually or through local subagents and then collected with `record`.
+- The manifest and status output include peer lane metadata and explicit roles:
+  `companion_execute` lanes use `<peer>_companion_peer` roles and are eligible
+  for `execute --execute`; `manual_subagent_record` lanes use
+  `<peer>_manual_subagent_peer` roles and should be run manually or through
+  local subagents before collection with `record`.
 - Execution records per-peer progress in `execution-progress.json` plus status, failure type, retryability, byte count, and SHA-256. Raw stdout stays in peer raw-output artifacts.
 - `execute` and `status` include an `execution_remediation` block when execution has run. It lists sanitized failure counts, per-peer retry commands, suggested timeout increases for timeout failures, proof commands, and artifact pointers. It is advisory only and never auto-retries peers.
 - Timeouts are retryable and include bounded remediation metadata. Retry a selected peer with `--peers <peer> --timeout-ms <n> --process-budget 1`, or run `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` when prompt startup latency is unclear.
