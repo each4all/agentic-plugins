@@ -54,8 +54,14 @@ The audit reads:
 - `plugins/runtime/docs/host-parity-baseline.md`;
 - `.release-please-manifest.json` plus runtime doctor plugin install/cache evidence;
 - latest runtime compat, consensus, and context artifacts;
-- one-week omcc-dev-free dogfood evidence from recorded cutover artifacts;
+- forward-looking one-week omcc-dev-free dogfood evidence from recorded
+  cutover artifacts;
 - latest recorded or explicit operator-provided footer and omcc-dev activity evidence.
+
+The dogfood window starts at the first accepted no-omcc-dev evidence record
+after the candidate point. Elapsed dates without records are reported as
+`missing`; future dates still needed are reported as `remaining`. Do not ask the
+operator to backfill dates before the candidate point.
 
 ## Boundaries
 

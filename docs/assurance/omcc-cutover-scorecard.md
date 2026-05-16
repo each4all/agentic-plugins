@@ -53,6 +53,10 @@ stability window and this scorecard's broader product-quality checks.
   agentic-plugins surfaces remained the primary workflow. Any `omcc-dev`
   fallback must either restart the window or be recorded as a blocker with a
   follow-up fix.
+- The dogfood window is forward-looking: it starts from the first accepted
+  no-omcc-dev evidence record after the candidate point, reports elapsed gaps as
+  `missing`, and reports future dates still needed as `remaining`. It should not
+  require backfilling dates before the candidate point.
 - **Scorecard 100%** means every requirement row below is either `satisfied` or
   explicitly rejected/deferred with a rationale the user accepts. It does not
   mean every imaginable future plugin feature exists; it means no listed

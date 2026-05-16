@@ -36,9 +36,15 @@ Checks:
 - host parity baseline freshness against current `runtime:doctor` evidence;
 - installed/cache plugin versions against `.release-please-manifest.json`;
 - latest compat, consensus, and context artifacts;
-- one-week omcc-dev-free dogfood evidence from recorded cutover artifacts;
+- forward-looking one-week omcc-dev-free dogfood evidence from recorded
+  cutover artifacts;
 - latest recorded or explicit footer state evidence;
 - latest recorded or explicit omcc-dev daily-workflow evidence.
+
+The dogfood window starts at the first accepted no-omcc-dev evidence record
+after the candidate point. Elapsed dates without records are reported as
+`missing`; future dates still needed are reported as `remaining`. The audit
+does not ask operators to backfill dates before the candidate point.
 
 Recording example:
 
