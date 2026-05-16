@@ -1,6 +1,6 @@
 ---
 name: doctor
-description: "Read-only runtime operator diagnostic for agentic-plugins. Use when the user wants to inspect Claude/Codex CLI availability, auth state, plugin marketplace/cache state, companion contract compatibility, model/effort observation, sandbox/permission readiness, workflow/peer-run ledger health, generated runtime artifact inventory, or explicitly opted-in permission proof / deep peer smoke execution. Does not mutate settings."
+description: "Read-only runtime operator diagnostic for agentic-plugins. Use when the user wants to inspect Claude/Codex CLI availability, auth state, plugin marketplace/cache state, companion contract compatibility, model/effort observation, sandbox/permission readiness, workflow/peer-run ledger health, latest runtime:compat drift artifacts, generated runtime artifact inventory, or explicitly opted-in permission proof / deep peer smoke execution. Does not mutate settings."
 ---
 
 # Doctor (runtime framework primitive)
@@ -20,7 +20,7 @@ node "<runtime-plugin-root>/scripts/doctor.mjs" --repo-root "$REPO_ROOT" [--form
 
 3. Present the result without hiding host asymmetry. In particular:
    - Start from the `Readiness Matrix` / `readiness_matrix` summary when explaining whether Claude/Codex are available, installed, authenticated, which model/effort would be used, and where hook parity differs.
-   - Use `Experience Parity` / `experience_parity` when the user asks for current goal progress. Treat its score as observed runtime readiness, not a completion claim for the entire project goal.
+   - Use `Experience Parity` / `experience_parity` when the user asks for current goal progress. Treat its score as observed runtime readiness, not a completion claim for the entire project goal. The runtime handoff criterion includes `runtime:compat` state, so unresolved host-version drift can block the score until release-note evidence is attached.
    - If the Claude `claude plugin ...` CLI surface is unavailable to doctor, retired Claude plugin cleanup is required, or Codex packaged hooks still need active-session review/trust, surface the `Manual Follow-ups` checklist and its host-native `claude plugin ...` or `/hooks` commands instead of implying runtime can apply host-native changes automatically. The slash `/plugin` probe is observed separately and should not block management when the non-slash CLI is available.
    - Codex bundled plugin hooks require manifest exposure, `[features].plugin_hooks = true`, and active-session `/hooks` review/trust; surface those as separate readiness facts. Do not treat `plugin_hooks=true`, marketplace/cache metadata, `/hooks` `Installed` counts, `Active=0`, or `Trust: New hook - review required` as proof of hook trust. Warn when Codex-exposed hook commands still point at Claude adapter paths; `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` are compatibility aliases in Codex plugin hooks, while `PLUGIN_ROOT`/`PLUGIN_DATA` are preferred for new Codex commands. Remember the observed Codex CLI does not expose a non-interactive hook trust query.
    - The readiness summary reports sandbox/permission status as unknown unless `--sandbox-permission-probe` is requested. `--permission-proof` records separate preflight/execution evidence under `permission_proof`.
@@ -49,6 +49,7 @@ Doctor reports:
 - Optional `--permission-proof --execute-permission-proof` execution proof through the companion contract under host-native permission defaults. Output is bounded to status, exit codes, peer host/model metadata, timing, stdout byte count, stdout SHA-256, and sanitized permission-failure class; raw peer stdout is not printed into the main session.
 - Optional `--deep-peer-smoke` plan-only preflight, including per-direction readiness, model/effort inputs, blockers, warnings, and next-step guidance without executing peers.
 - Optional `--deep-peer-smoke --execute-deep-peer-smoke` execution proof through the companion contract. Output is bounded to status, exit codes, peer host/model metadata, timing, stdout byte count, and stdout SHA-256; raw peer stdout is not printed into the main session.
+- Latest `runtime:compat` snapshot/gap/plan metadata, including host-version drift, release-note requirement status, host gaps, and next actions. Doctor reads only bounded metadata and does not read raw release-note bodies or raw host help output.
 - Optional `--artifact-inventory` output, including per-family `.agentic-plugins/runs` counts, bytes, oldest/newest metadata, and advisory retention pressure. Inventory uses filesystem metadata only and does not read artifact bodies.
 - Basic workflow and peer-run ledger health for canonical `.agentic-plugins/state/<plugin>` and legacy `.claude/agentic-*` homes, including migration ambiguity/blocker status.
 

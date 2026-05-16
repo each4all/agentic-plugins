@@ -103,7 +103,7 @@ a manual active-session follow-up.
 | R7a | Work must prioritize standards, root cause, quality, and recommended practice over short-term fixes. | ADRs enforce hexagonal architecture, adapter boundaries, explicit storage contracts, and no hidden permission/session mutation. | partial | Review and implementation workflows include a standards/root-cause gate before accepting quick fixes. |
 | R7b | Completion must guide the next action, or confidently say there is nothing left. | Runtime footer is pointer-only and exposes context/consensus/PR readiness guidance. | partial | Footer emits a completion-state enum such as `review-needed`, `publish-needed`, `cleanup-needed`, `next-work-available`, or `closed`; commands render next action from that state. |
 | R8 | Domain entry should start with engineer when appropriate, and propose orchestrator/worktree/parallelization when useful. | ADR-0020 defines `/engineer:start` vs `/orchestrator:plan` entry routing; runtime has read-only worktree planning. | partial | Entry prompts include a routing recommendation: single deliverable, multi-deliverable, worktree/parallel, runtime readiness, or pure single-verb analysis. |
-| R9 | Track Claude Code and Codex CLI version history; when latest host versions differ from remembered versions, use release notes to plan compatibility updates. | Runtime host parity baselines record observed CLI versions and drift policy. `runtime:compat` now records snapshots, compares remembered baseline versions, ingests explicit release-note artifacts, and emits update plans. Doctor integration and automated baseline freshness warnings remain follow-up. | partial | Add doctor-visible stale compat status, richer release-note parsing, and cutover-scorecard verification. |
+| R9 | Track Claude Code and Codex CLI version history; when latest host versions differ from remembered versions, use release notes to plan compatibility updates. | Runtime host parity baselines record observed CLI versions and drift policy. `runtime:compat` records snapshots, compares remembered baseline versions, ingests explicit release-note artifacts, and emits update plans; `runtime:doctor` now reads latest compat metadata into the handoff artifact criterion. | partial | Add richer release-note parsing, baseline-refresh verification, and cutover-scorecard verification. |
 | R10 | Claude and Codex should be used as complementary perspectives; same-issue opinion collection is valuable. | Companions and runtime consensus provide cross-host peer collection. | partial | Consensus plans can include both companion-backed peers and manual/subagent lanes with explicit roles and artifact pointers. |
 | R11 | When Claude and Codex conflict, loop opinions back until there is a well-converged, non-compromise synthesis. | `runtime:consensus next-round` can create targeted rebuttal rounds from durable disagreements; automatic unbounded loops are forbidden. | partial | Consensus distinguishes perspective diversity from direct contradiction, requires rebuttal prompts for contradictions, and records `converged`, `owner-decision-required`, or `non-consensus` with evidence. |
 
@@ -139,6 +139,8 @@ Current and remaining acceptance evidence:
 
 - Unit tests for snapshot schema, drift classification, release-note file
   ingestion, URL pointer recording, and update-plan generation.
+- Unit tests and live doctor output for latest compat snapshot/gap metadata,
+  release-note-required blocking, and raw release-note body non-disclosure.
 - A docs update to `plugins/runtime/docs/host-parity-baseline.md` whenever
   `claude --version`, `codex --version`, or documented host behavior changes.
 - `runtime:doctor` reads the latest compat status and reports stale baselines.
@@ -216,6 +218,8 @@ The verifier must not declare cutover by itself. It can only report
 
 ## Recommended PR Sequence
 
+Landed slices:
+
 1. **PR A: scorecard + compatibility ADR/design**
    - Land this scorecard.
    - Decide whether the surface is named `runtime:compat` or folded into
@@ -229,6 +233,13 @@ The verifier must not declare cutover by itself. It can only report
 3. **PR C: release-note gap planner**
    - Implement explicit release-note ingestion.
    - Generate compatibility update plans.
+
+Remaining follow-up:
+
+- Richer release-note parsing and baseline-refresh verification.
+- Cutover-scorecard verification that marks R9 satisfied only when the latest
+  current host versions have content-backed release-note evidence or an updated
+  accepted baseline.
 
 4. **PR D: completion-state footer**
    - Add footer state enum and tests.
