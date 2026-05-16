@@ -32,8 +32,13 @@ describe('runtime cutover audit', () => {
 
     strictEqual(report.status, 'cutover-ready-candidate');
     strictEqual(report.ready_candidate, true);
+    ok(report.cutover_gate.candidate_required.includes('ADR-0012 conditions 1-4 satisfied'));
+    ok(report.cutover_gate.final_required.includes('explicit user cutover declaration per ADR-0007'));
     ok(report.checks.every((check) => ['satisfied', 'current', 'fresh', 'not-active'].includes(check.status)));
-    ok(formatText(report).includes('ready-candidate: true'));
+    const text = formatText(report);
+    ok(text.includes('ready-candidate: true'));
+    ok(text.includes('candidate gate: ADR-0012 conditions 1-4 satisfied'));
+    ok(text.includes('final gate: explicit user cutover declaration per ADR-0007'));
   });
 
   it('blocks readiness on partial ADR/scorecard status, stale context, missing dogfood window, missing footer, and unknown omcc activity', async () => {
@@ -60,7 +65,8 @@ describe('runtime cutover audit', () => {
     strictEqual(report.checks.find((check) => check.id === 'omcc_dev_daily_workflow').status, 'not-verified');
     ok(report.next_actions.some((entry) => entry.id === 'omcc_dev_daily_workflow'));
     const text = formatText(report);
-    ok(text.includes('gate: ADR-0012 conditions 1-4 satisfied'));
+    ok(text.includes('candidate gate: ADR-0012 conditions 1-4 satisfied'));
+    ok(text.includes('final gate: explicit user cutover declaration per ADR-0007'));
     ok(text.includes('conditions: 1:partial, 2:partial, 3:partial, 4:partial'));
     ok(text.includes('unresolved: 1:partial, 2:partial, 3:partial, 4:partial'));
     ok(text.includes('scorecard: satisfied=0/12; unresolved=R1:partial'));
@@ -109,6 +115,42 @@ describe('runtime cutover audit', () => {
     ok(text.includes('experience parity: status=partial; score=91%; manual-followups=1'));
     ok(text.includes('unresolved criteria: plugin_management_followups:partial, lifecycle_hook_continuity:partial'));
     ok(text.includes('manual next actions: codex-hook-review'));
+  });
+
+  it('applies reusable recorded doctor proof to proof-only parity criteria', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
+    });
+    const doctor = doctorReport({
+      experienceParity: blockedExperienceParity(),
+      recordedDoctorProof: reusableRecordedDoctorProof(),
+    });
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctor,
+      footerState: 'closed',
+      omccDevActive: 'no',
+    });
+
+    const parity = report.checks.find((check) => check.id === 'observed_experience_parity');
+    strictEqual(report.status, 'not-ready');
+    strictEqual(parity.status, 'partial');
+    strictEqual(parity.evidence.status, 'partial');
+    strictEqual(parity.evidence.score_percent, 91);
+    strictEqual(parity.evidence.recorded_doctor_proof.status, 'reusable');
+    strictEqual(
+      parity.evidence.recorded_doctor_proof.applied_criteria.join(','),
+      'bidirectional_peer_execution,engineer_workflow_continuation_execution',
+    );
+    ok(!parity.evidence.unresolved_criteria.some((entry) => entry.id === 'bidirectional_peer_execution'));
+    ok(!parity.evidence.next_actions.some((entry) => entry.id === 'engineer_workflow_continuation_execution'));
+    const text = formatText(report);
+    ok(text.includes('experience parity: status=partial; score=91%; manual-followups=1'));
+    ok(text.includes('recorded proof applied: bidirectional_peer_execution, engineer_workflow_continuation_execution; run=doctor-20260516T073000Z-abc123'));
   });
 
   it('reports dogfood windows forward from the first accepted no-omcc-dev day', async () => {
@@ -535,5 +577,45 @@ function doctorReport(overrides = {}) {
       },
     },
     experience_parity: experienceParity,
+    recorded_doctor_proof: overrides.recordedDoctorProof ?? null,
+  };
+}
+
+function blockedExperienceParity() {
+  return {
+    status: 'blocked',
+    score_percent: 65,
+    manual_followup_count: 1,
+    weight: { earned: 75, total: 115 },
+    counts: { satisfied: 4, partial: 2, not_verified: 0, blocked: 2 },
+    criteria: [
+      { id: 'host_plugin_availability', status: 'satisfied', weight: 15, earned_weight: 15 },
+      { id: 'plugin_management_followups', status: 'partial', weight: 10, earned_weight: 6 },
+      { id: 'bidirectional_companion_contract', status: 'satisfied', weight: 15, earned_weight: 15 },
+      { id: 'bidirectional_peer_execution', status: 'blocked', weight: 15, earned_weight: 0 },
+      { id: 'engineer_workflow_continuation_execution', status: 'blocked', weight: 15, earned_weight: 0 },
+      { id: 'workflow_continuity_storage', status: 'satisfied', weight: 15, earned_weight: 15 },
+      { id: 'lifecycle_hook_continuity', status: 'partial', weight: 15, earned_weight: 9 },
+      { id: 'runtime_handoff_artifacts', status: 'satisfied', weight: 15, earned_weight: 15 },
+    ],
+    next_actions: [
+      { id: 'codex-hook-review', source: 'manual_followup', reason: 'Review/trust bundled hooks with /hooks.' },
+      { id: 'plugin_management_followups', source: 'criterion', reason: 'Review/trust bundled hooks with /hooks.' },
+      { id: 'bidirectional_peer_execution', source: 'criterion', reason: 'Run explicit peer execution proof.' },
+      { id: 'engineer_workflow_continuation_execution', source: 'criterion', reason: 'Run explicit workflow continuation proof.' },
+      { id: 'lifecycle_hook_continuity', source: 'criterion', reason: 'Review/trust bundled hooks with /hooks.' },
+    ],
+  };
+}
+
+function reusableRecordedDoctorProof() {
+  return {
+    status: 'reusable',
+    reusable: true,
+    run_id: 'doctor-20260516T073000Z-abc123',
+    artifact_pointer: '.agentic-plugins/runs/doctor/doctor-20260516T073000Z-abc123/doctor.json',
+    permission_proof: { status: 'passed' },
+    deep_peer_smoke: { status: 'passed' },
+    workflow_continuation_proof: { status: 'passed' },
   };
 }

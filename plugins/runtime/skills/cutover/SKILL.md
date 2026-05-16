@@ -12,10 +12,12 @@ artifacts under `.agentic-plugins/runs/cutover/`. It can report
 `cutover-ready-candidate`, but final omcc archival/removal requires explicit
 user declaration per ADR-0007.
 
-The report should make the strengthened cutover gate visible. When the result is
-not ready, preserve the unresolved ADR-0012 condition numbers, unresolved
-scorecard rows, and legacy pattern-map gaps in the user-facing output instead
-of collapsing them to a generic `partial` status.
+The report should make the strengthened candidate gate and separate final gate
+visible. `cutover-ready-candidate` means the evidence threshold passed; it is
+not final cutover because ADR-0007 still requires an explicit user declaration.
+When the result is not ready, preserve the unresolved ADR-0012 condition
+numbers, unresolved scorecard rows, and legacy pattern-map gaps in the
+user-facing output instead of collapsing them to a generic `partial` status.
 
 ## When invoked by command (`/runtime:cutover` or `$runtime:cutover`)
 

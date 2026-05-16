@@ -13,8 +13,11 @@ is read-only. `record` mode writes only a cutover evidence artifact under
 It can only report `cutover-ready-candidate`; ADR-0007 still requires an
 explicit user declaration before omcc is archived or removed.
 
-The text report starts with the strengthened cutover gate and, when the audit
-is not ready, prints the unresolved ADR-0012 condition numbers, unresolved
+The text report starts with the strengthened candidate gate and the separate
+final gate. The candidate gate is the evidence threshold for
+`cutover-ready-candidate`; the final gate is the explicit user declaration
+required by ADR-0007 before omcc is archived or removed. When the audit is not
+ready, the report prints the unresolved ADR-0012 condition numbers, unresolved
 scorecard rows, and legacy pattern-map gaps so the next work item is visible
 without opening the source documents first.
 

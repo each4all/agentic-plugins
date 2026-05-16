@@ -25,12 +25,14 @@ const FOOTER_STATES = new Set([
   'blocked',
   'closed',
 ]);
-const CUTOVER_GATE = [
+const CUTOVER_CANDIDATE_GATE = [
   'ADR-0012 conditions 1-4 satisfied',
   'omcc replacement scorecard has no partial/missing rows',
   'observed runtime experience parity is ready and 100%',
   'at least one week of omcc-dev-free dogfood evidence',
   'latest completion footer is closed',
+];
+const CUTOVER_FINAL_GATE = [
   'explicit user cutover declaration per ADR-0007',
 ];
 const REQUIRED_LEGACY_PATTERN_IDS = Array.from({ length: 20 }, (_, index) => `D${index + 1}`);
@@ -107,8 +109,10 @@ export async function runCutoverAudit(options = {}) {
     generated_at: now.toISOString(),
     repo_root: repoRoot,
     cutover_gate: {
-      required: CUTOVER_GATE,
-      note: 'runtime:cutover-audit reports readiness evidence only; it cannot declare cutover.',
+      candidate_required: CUTOVER_CANDIDATE_GATE,
+      final_required: CUTOVER_FINAL_GATE,
+      required: [...CUTOVER_CANDIDATE_GATE, ...CUTOVER_FINAL_GATE],
+      note: 'runtime:cutover-audit reports candidate readiness evidence only; final cutover still requires explicit user declaration.',
     },
     checks,
     next_actions: checks
@@ -119,7 +123,7 @@ export async function runCutoverAudit(options = {}) {
       proofExecutionRequested
         ? 'This audit does not install, uninstall, update, authenticate, mutate host config, mutate git state, or delete artifacts; explicit proof flags can invoke bounded peer/workflow commands without relaxing host permissions.'
         : 'This audit is read-only and does not install, uninstall, update, authenticate, mutate host config, mutate git state, invoke peer/workflow executors, or delete artifacts.',
-      'cutover-ready-candidate is not final cutover; ADR-0007 still requires explicit user declaration.',
+      'cutover-ready-candidate means the evidence gate passed; it is not final cutover because ADR-0007 still requires explicit user declaration.',
       'Dogfood evidence is accepted only from explicit runtime:cutover record artifacts or explicit current-run flags.',
       'Unknown dogfood or omcc-dev usage evidence blocks readiness rather than being inferred.',
     ],
@@ -277,7 +281,10 @@ function checkScorecardRequirements(text) {
 }
 
 function checkObservedExperienceParity(doctor) {
-  const experience = doctor.experience_parity ?? null;
+  const { experience, appliedRecordedProofCriteria } = applyReusableDoctorProofToExperienceParity({
+    experience: doctor.experience_parity ?? null,
+    recordedProof: doctor.recorded_doctor_proof ?? null,
+  });
   const score = Number.isFinite(experience?.score_percent) ? experience.score_percent : null;
   const manualFollowups = Number.isFinite(experience?.manual_followup_count)
     ? experience.manual_followup_count
@@ -294,6 +301,14 @@ function checkObservedExperienceParity(doctor) {
       score_percent: score,
       manual_followup_count: manualFollowups,
       counts: experience?.counts ?? null,
+      recorded_doctor_proof: doctor.recorded_doctor_proof
+        ? {
+            status: doctor.recorded_doctor_proof.status ?? null,
+            run_id: doctor.recorded_doctor_proof.run_id ?? null,
+            artifact_pointer: doctor.recorded_doctor_proof.artifact_pointer ?? null,
+            applied_criteria: appliedRecordedProofCriteria,
+          }
+        : null,
       unresolved_criteria: (experience?.criteria ?? [])
         .filter((item) => item.status !== 'satisfied')
         .map((item) => ({ id: item.id, status: item.status })),
@@ -307,6 +322,89 @@ function checkObservedExperienceParity(doctor) {
         ? null
         : 'Clear observed experience parity follow-ups with runtime:settings/runtime:doctor before declaring cutover readiness.'
       : 'Run runtime:doctor and provide experience_parity evidence before declaring cutover readiness.',
+  };
+}
+
+function applyReusableDoctorProofToExperienceParity({ experience, recordedProof }) {
+  if (!experience || recordedProof?.status !== 'reusable' || recordedProof?.reusable !== true) {
+    return { experience, appliedRecordedProofCriteria: [] };
+  }
+  const appliedCriteria = [];
+  const criteria = (experience.criteria ?? []).map((criterion) => {
+    if (
+      criterion.id === 'bidirectional_peer_execution'
+      && recordedProof.permission_proof?.status === 'passed'
+      && recordedProof.deep_peer_smoke?.status === 'passed'
+    ) {
+      appliedCriteria.push(criterion.id);
+      return {
+        ...criterion,
+        status: 'satisfied',
+        earned_weight: criterion.weight,
+        evidence: `permission-proof=passed, deep-peer-smoke=passed; source=recorded-doctor-proof:${recordedProof.run_id}`,
+        next_step: null,
+      };
+    }
+    if (
+      criterion.id === 'engineer_workflow_continuation_execution'
+      && recordedProof.workflow_continuation_proof?.status === 'passed'
+    ) {
+      appliedCriteria.push(criterion.id);
+      return {
+        ...criterion,
+        status: 'satisfied',
+        earned_weight: criterion.weight,
+        evidence: `workflow-continuation-proof=passed; source=recorded-doctor-proof:${recordedProof.run_id}`,
+        next_step: null,
+      };
+    }
+    return criterion;
+  });
+  if (appliedCriteria.length === 0) return { experience, appliedRecordedProofCriteria: [] };
+
+  const weightTotal = criteria.reduce((sum, criterion) => (
+    sum + (Number.isFinite(criterion.weight) ? criterion.weight : 0)
+  ), 0);
+  const weightEarned = criteria.reduce((sum, criterion) => {
+    const weight = Number.isFinite(criterion.weight) ? criterion.weight : 0;
+    const earned = Number.isFinite(criterion.earned_weight)
+      ? criterion.earned_weight
+      : criterion.status === 'satisfied'
+        ? weight
+        : 0;
+    return sum + earned;
+  }, 0);
+  const counts = {
+    satisfied: criteria.filter((criterion) => criterion.status === 'satisfied').length,
+    partial: criteria.filter((criterion) => criterion.status === 'partial').length,
+    not_verified: criteria.filter((criterion) => (
+      criterion.status === 'not-verified' || criterion.status === 'not_verified'
+    )).length,
+    blocked: criteria.filter((criterion) => criterion.status === 'blocked').length,
+  };
+  const adjustedStatus = counts.blocked > 0
+    ? 'blocked'
+    : counts.partial > 0 || counts.not_verified > 0
+      ? 'partial'
+      : 'ready';
+  const applied = new Set(appliedCriteria);
+  return {
+    experience: {
+      ...experience,
+      status: adjustedStatus,
+      score_percent: weightTotal > 0
+        ? Math.round((weightEarned / weightTotal) * 100)
+        : experience.score_percent,
+      weight: weightTotal > 0
+        ? { earned: weightEarned, total: weightTotal }
+        : experience.weight,
+      counts,
+      criteria,
+      next_actions: (experience.next_actions ?? []).filter((action) => !applied.has(
+        action.id ?? action.criterion ?? action.type
+      )),
+    },
+    appliedRecordedProofCriteria: appliedCriteria,
   };
 }
 
@@ -831,7 +929,12 @@ export function formatText(report) {
     `repo: ${report.repo_root}`,
     `ready-candidate: ${report.ready_candidate}`,
   ];
-  if (report.cutover_gate?.required?.length) {
+  if (report.cutover_gate?.candidate_required?.length) {
+    lines.push(`candidate gate: ${report.cutover_gate.candidate_required.join('; ')}`);
+    if (report.cutover_gate.final_required?.length) {
+      lines.push(`final gate: ${report.cutover_gate.final_required.join('; ')}`);
+    }
+  } else if (report.cutover_gate?.required?.length) {
     lines.push(`gate: ${report.cutover_gate.required.join('; ')}`);
   }
   for (const check of report.checks ?? []) {
@@ -892,6 +995,9 @@ function formatCheckEvidence(check) {
       }
       if (evidence.next_actions?.length) {
         lines.push(`manual next actions: ${evidence.next_actions.map((row) => row.id).join(', ')}`);
+      }
+      if (evidence.recorded_doctor_proof?.applied_criteria?.length) {
+        lines.push(`recorded proof applied: ${evidence.recorded_doctor_proof.applied_criteria.join(', ')}; run=${evidence.recorded_doctor_proof.run_id}`);
       }
       return lines;
     }
@@ -1060,8 +1166,8 @@ Builds an omcc cutover readiness report. Audit mode is read-only. Record mode
 writes only an explicit cutover evidence artifact under .agentic-plugins/runs.
 Proof flags are passed through to runtime:doctor and execute peer/workflow
 proofs only when the corresponding --execute-* flag is provided.
-The report can only emit cutover-ready-candidate; final cutover still requires
-explicit user declaration.`;
+The report can only emit cutover-ready-candidate for the evidence gate; final
+cutover still requires explicit user declaration.`;
 }
 
 async function main() {
