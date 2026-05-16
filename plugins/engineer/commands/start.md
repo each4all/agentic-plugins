@@ -364,8 +364,9 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
 
 Append the runtime completion footer after the commit summary and workflow
 path. Use the runtime footer helper when available, or render the same
-fields manually: context state, workflow id/path, artifact pointers,
-recommended next work, and next-session action/command or prompt pointer.
+fields manually: context state, completion state plus state-derived next
+action, workflow id/path, artifact pointers, recommended next work, and
+next-session action/command or prompt pointer.
 The footer is advisory and pointer-only; do not mutate host session
 context or paste raw peer / consensus output into the main session.
 When the deliverable boundary is reached, include PR handling readiness
