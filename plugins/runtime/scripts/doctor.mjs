@@ -7,9 +7,9 @@
 // unless a named, explicit executor flag is supplied.
 
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, lstat, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +42,9 @@ const DEFAULT_ARTIFACT_RETENTION_MAX_BYTES = 50 * 1024 * 1024;
 const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const CONSENSUS_RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const COMPAT_RUN_ID_RE = /^compat-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+const DOCTOR_RUN_ID_RE = /^doctor-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+const DOCTOR_ARTIFACT_SCHEMA_VERSION = 'runtime-doctor-artifact-1.0';
+const DOCTOR_LATEST_SCHEMA_VERSION = 'runtime-doctor-latest-1.0';
 const RUNTIME_ARTIFACT_FAMILIES = ['compat', 'consensus', 'context', 'settings', 'doctor'];
 const CLAUDE_PLUGIN_SURFACE_UNAVAILABLE_RE = /\/plugin (?:isn't|is not) available in this environment/i;
 
@@ -68,6 +71,8 @@ export async function runDoctor({
   artifactInventory = false,
   artifactRetentionCap = DEFAULT_ARTIFACT_RETENTION_CAP,
   artifactMaxBytes = DEFAULT_ARTIFACT_RETENTION_MAX_BYTES,
+  recordArtifact = false,
+  runId = null,
 } = {}) {
   if (executeDeepPeerSmoke && !deepPeerSmoke) {
     throw new Error('--execute-deep-peer-smoke requires --deep-peer-smoke');
@@ -139,6 +144,10 @@ export async function runDoctor({
   const compatRuns = await inspectCompatRuns({
     repoRoot: resolvedRepoRoot,
   });
+  const inspectedDoctorRuns = await inspectDoctorRuns({
+    repoRoot: resolvedRepoRoot,
+  });
+  const { internal_runs: recordedDoctorRuns, ...doctorRuns } = inspectedDoctorRuns;
   const artifactInventorySection = artifactInventory
     ? await inspectRuntimeArtifactInventory({
         repoRoot: resolvedRepoRoot,
@@ -151,6 +160,13 @@ export async function runDoctor({
         executed: false,
         status: 'not_requested',
       };
+  const recordedDoctorProof = buildRecordedDoctorProof({
+    runs: recordedDoctorRuns,
+    latest: doctorRuns.latest,
+    plugins,
+    claude,
+    codex,
+  });
 
   const readiness = buildReadiness({
     claude,
@@ -227,6 +243,7 @@ export async function runDoctor({
     permissionProof: permissionProofSection,
     deepPeerSmoke: deepPeerSmokeSection,
     workflowContinuationProof: workflowContinuationProofSection,
+    recordedDoctorProof,
   });
 
   const report = {
@@ -253,6 +270,8 @@ export async function runDoctor({
     settings_runs: settingsRuns,
     consensus_runs: consensusRuns,
     compat_runs: compatRuns,
+    doctor_runs: doctorRuns,
+    recorded_doctor_proof: recordedDoctorProof,
     artifact_inventory: artifactInventorySection,
     readiness_matrix: readinessMatrix,
     experience_parity: experienceParity,
@@ -269,6 +288,18 @@ export async function runDoctor({
   };
   report.overall = summarizeOverall(report);
   report.output_format = format;
+  report.doctor_artifact = recordArtifact
+    ? await writeDoctorArtifact({
+        repoRoot: resolvedRepoRoot,
+        now,
+        runId,
+        report,
+      })
+    : {
+        written: false,
+        requested: false,
+        status: 'not_requested',
+      };
   return report;
 }
 
@@ -1612,6 +1643,190 @@ async function inspectSettingsRuns({ repoRoot }) {
   };
 }
 
+async function inspectDoctorRuns({ repoRoot }) {
+  const root = join(repoRoot, '.agentic-plugins', 'runs', 'doctor');
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (err) {
+    return {
+      status: 'missing',
+      root,
+      count: 0,
+      malformed: 0,
+      latest: null,
+      latest_report: null,
+      error: err.code ?? err.message,
+    };
+  }
+
+  const runs = [];
+  let malformed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !DOCTOR_RUN_ID_RE.test(entry.name)) continue;
+    const artifactPath = join(root, entry.name, 'doctor.json');
+    const artifact = await readJsonIfExists(artifactPath);
+    if (!artifact.ok || !isDoctorArtifact(artifact.json)) {
+      malformed++;
+      runs.push({
+        run_id: entry.name,
+        status: 'blocked',
+        artifact_pointer: pointer(repoRoot, artifactPath),
+        selected_at: null,
+        selected_at_ms: runIdTimestampMs(entry.name) ?? 0,
+        reason: artifact.ok ? 'invalid doctor artifact schema' : artifact.reason,
+      });
+      continue;
+    }
+    const selectedAt = artifactTimestampMs(artifact.json, entry.name);
+    runs.push({
+      run_id: sanitizeValue(artifact.json.run_id) ?? entry.name,
+      status: sanitizeValue(artifact.json.status) ?? 'recorded',
+      artifact_pointer: pointer(repoRoot, artifactPath),
+      selected_at: selectedAt === null ? null : new Date(selectedAt).toISOString(),
+      selected_at_ms: selectedAt ?? 0,
+      runtime_version: sanitizeValue(artifact.json.runtime_version),
+      report: artifact.json.report,
+    });
+  }
+
+  if (runs.length === 0) {
+    return {
+      status: malformed > 0 ? 'blocked' : 'empty',
+      root,
+      count: 0,
+      malformed,
+      latest: null,
+      latest_report: null,
+    };
+  }
+
+  runs.sort((a, b) => b.selected_at_ms - a.selected_at_ms || b.run_id.localeCompare(a.run_id));
+  const latest = runs[0];
+  return {
+    status: malformed > 0 ? 'blocked' : 'available',
+    root,
+    count: runs.length,
+    malformed,
+      latest: summarizeDoctorRun(latest),
+      internal_runs: runs.filter((run) => run.report),
+    };
+}
+
+function summarizeDoctorRun(run) {
+  if (!run) return null;
+  return {
+    run_id: run.run_id,
+    status: run.status,
+    artifact_pointer: run.artifact_pointer,
+    selected_at: run.selected_at,
+    selected_at_ms: run.selected_at_ms,
+    runtime_version: run.runtime_version,
+  };
+}
+
+function isDoctorArtifact(value) {
+  return value
+    && typeof value === 'object'
+    && value.schema_version === DOCTOR_ARTIFACT_SCHEMA_VERSION
+    && DOCTOR_RUN_ID_RE.test(value.run_id ?? '')
+    && value.report
+    && value.report.schema_version === 'runtime-doctor-1.0';
+}
+
+function buildRecordedDoctorProof({ runs = [], latest = null, plugins, claude, codex }) {
+  if (!Array.isArray(runs) || runs.length === 0) {
+    return {
+      status: 'missing',
+      reusable: false,
+      run_id: null,
+      artifact_pointer: null,
+      reasons: ['no recorded runtime:doctor artifact'],
+    };
+  }
+  const evaluated = runs.map((run) => evaluateRecordedDoctorProofRun({ run, plugins, claude, codex }));
+  const reusable = evaluated.find((entry) => entry.reusable);
+  if (reusable) return reusable;
+  const latestRunId = latest?.run_id ?? runs[0]?.run_id;
+  return evaluated.find((entry) => entry.run_id === latestRunId) ?? evaluated[0];
+}
+
+function evaluateRecordedDoctorProofRun({ run, plugins, claude, codex }) {
+  const latestReport = run.report;
+  const reasons = [];
+  if (latestReport.runtime_version !== RUNTIME_VERSION) {
+    reasons.push(`runtime version mismatch: recorded=${latestReport.runtime_version ?? '<unknown>'}, current=${RUNTIME_VERSION}`);
+  }
+
+  for (const name of PLUGIN_NAMES) {
+    const current = summarizePluginVersions(plugins?.[name]);
+    const recorded = summarizePluginVersions(latestReport.plugins?.[name]);
+    for (const key of ['source', 'claude_cache', 'codex_cache']) {
+      if (current[key] !== recorded[key]) {
+        reasons.push(`${name} ${key} mismatch: recorded=${recorded[key] ?? '<unknown>'}, current=${current[key] ?? '<unknown>'}`);
+      }
+    }
+  }
+
+  const currentCliVersions = {
+    claude: observedVersionText(claude.version),
+    codex: observedVersionText(codex.version),
+  };
+  const recordedCliVersions = {
+    claude: observedVersionText(latestReport.clis?.claude?.version),
+    codex: observedVersionText(latestReport.clis?.codex?.version),
+  };
+  for (const name of ['claude', 'codex']) {
+    if (currentCliVersions[name] !== recordedCliVersions[name]) {
+      reasons.push(`${name} version mismatch: recorded=${recordedCliVersions[name] ?? '<unknown>'}, current=${currentCliVersions[name] ?? '<unknown>'}`);
+    }
+  }
+
+  const permission = reusableProofSection(latestReport.permission_proof, run);
+  const smoke = reusableProofSection(latestReport.deep_peer_smoke, run);
+  const workflow = reusableProofSection(latestReport.workflow_continuation_proof, run);
+  if (!permission) reasons.push('recorded permission proof is not passed');
+  if (!smoke) reasons.push('recorded deep peer smoke is not passed');
+  if (!workflow) reasons.push('recorded workflow continuation proof is not passed');
+
+  const reusable = reasons.length === 0;
+  return {
+    status: reusable ? 'reusable' : 'not_reusable',
+    reusable,
+    run_id: run.run_id,
+    artifact_pointer: run.artifact_pointer,
+    selected_at: run.selected_at,
+    reasons,
+    permission_proof: reusable ? permission : null,
+    deep_peer_smoke: reusable ? smoke : null,
+    workflow_continuation_proof: reusable ? workflow : null,
+  };
+}
+
+function summarizePluginVersions(plugin) {
+  return {
+    source: plugin?.source?.claude_manifest?.version ?? null,
+    claude_cache: plugin?.cache?.claude?.latest?.manifest_version ?? null,
+    codex_cache: plugin?.cache?.codex?.latest?.manifest_version ?? null,
+  };
+}
+
+function observedVersionText(version) {
+  if (typeof version === 'string') return version;
+  if (typeof version?.text === 'string' && version.text.length > 0) return version.text;
+  return null;
+}
+
+function reusableProofSection(section, latest) {
+  if (!section?.executed || section.status !== 'passed') return null;
+  return {
+    ...section,
+    recorded: true,
+    recorded_run_id: latest.run_id,
+    recorded_artifact_pointer: latest.artifact_pointer,
+  };
+}
+
 function emptySettingsPluginManagement() {
   return {
     mode: null,
@@ -2656,13 +2871,14 @@ function buildExperienceParity({
   permissionProof,
   deepPeerSmoke,
   workflowContinuationProof,
+  recordedDoctorProof,
 }) {
   const criteria = [
     buildHostPluginExperienceCriterion(readinessMatrix),
     buildPluginCommandExperienceCriterion(pluginCommandSurface),
     buildCompanionExperienceCriterion(companion),
-    buildPeerExecutionExperienceCriterion({ readiness, permissionProof, deepPeerSmoke }),
-    buildEngineerWorkflowExecutionExperienceCriterion({ readiness, workflowContinuationProof }),
+    buildPeerExecutionExperienceCriterion({ readiness, permissionProof, deepPeerSmoke, recordedDoctorProof }),
+    buildEngineerWorkflowExecutionExperienceCriterion({ readiness, workflowContinuationProof, recordedDoctorProof }),
     buildWorkflowContinuityExperienceCriterion(ledgers),
     buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommandSurface }),
     buildRuntimeArtifactExperienceCriterion({ settingsRuns, consensusRuns, compatRuns }),
@@ -2764,7 +2980,7 @@ function buildCompanionExperienceCriterion(companion) {
   });
 }
 
-function buildPeerExecutionExperienceCriterion({ readiness, permissionProof, deepPeerSmoke }) {
+function buildPeerExecutionExperienceCriterion({ readiness, permissionProof, deepPeerSmoke, recordedDoctorProof }) {
   const blocked = Object.values(readiness).some((direction) => !['available', 'available_with_warnings'].includes(direction.status));
   if (blocked) {
     return parityCriterion({
@@ -2776,15 +2992,20 @@ function buildPeerExecutionExperienceCriterion({ readiness, permissionProof, dee
       next_step: 'Resolve readiness blockers, then rerun runtime:doctor with explicit peer execution proof.',
     });
   }
-  const proofPassed = permissionProof?.executed && permissionProof.status === 'passed';
-  const smokePassed = deepPeerSmoke?.executed && deepPeerSmoke.status === 'passed';
+  const effectivePermissionProof = permissionProof?.executed ? permissionProof : recordedDoctorProof?.permission_proof;
+  const effectiveDeepPeerSmoke = deepPeerSmoke?.executed ? deepPeerSmoke : recordedDoctorProof?.deep_peer_smoke;
+  const proofPassed = effectivePermissionProof?.executed && effectivePermissionProof.status === 'passed';
+  const smokePassed = effectiveDeepPeerSmoke?.executed && effectiveDeepPeerSmoke.status === 'passed';
   if (proofPassed && smokePassed) {
+    const source = effectivePermissionProof?.recorded || effectiveDeepPeerSmoke?.recorded
+      ? `recorded-doctor=${recordedDoctorProof.run_id}`
+      : 'current-run';
     return parityCriterion({
       id: 'bidirectional_peer_execution',
       label: 'Bidirectional peer execution is explicitly verified',
       status: 'satisfied',
       weight: 15,
-      evidence: `permission-proof=${permissionProof.status}, deep-peer-smoke=${deepPeerSmoke.status}`,
+      evidence: `permission-proof=${effectivePermissionProof.status}, deep-peer-smoke=${effectiveDeepPeerSmoke.status}; source=${source}`,
       next_step: null,
     });
   }
@@ -2794,12 +3015,12 @@ function buildPeerExecutionExperienceCriterion({ readiness, permissionProof, dee
     label: 'Bidirectional peer execution is ready but not fully verified',
     status: operatorAction ? 'partial' : 'not_verified',
     weight: 15,
-    evidence: `permission-proof=${permissionProof?.status ?? 'not_requested'}/${permissionProof?.executed ?? false}, deep-peer-smoke=${deepPeerSmoke?.status ?? 'not_requested'}/${deepPeerSmoke?.executed ?? false}`,
-    next_step: 'Run runtime:doctor with --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke to refresh execution evidence.',
+    evidence: `permission-proof=${permissionProof?.status ?? 'not_requested'}/${permissionProof?.executed ?? false}, deep-peer-smoke=${deepPeerSmoke?.status ?? 'not_requested'}/${deepPeerSmoke?.executed ?? false}; recorded-doctor=${recordedDoctorProof?.status ?? 'missing'}`,
+    next_step: 'Run runtime:doctor with --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --record to refresh reusable execution evidence.',
   });
 }
 
-function buildEngineerWorkflowExecutionExperienceCriterion({ readiness, workflowContinuationProof }) {
+function buildEngineerWorkflowExecutionExperienceCriterion({ readiness, workflowContinuationProof, recordedDoctorProof }) {
   const blocked = Object.values(readiness).some((direction) => !['available', 'available_with_warnings'].includes(direction.status));
   if (blocked) {
     return parityCriterion({
@@ -2811,14 +3032,18 @@ function buildEngineerWorkflowExecutionExperienceCriterion({ readiness, workflow
       next_step: 'Resolve readiness blockers, then rerun runtime:doctor with explicit workflow continuation proof.',
     });
   }
-  const passed = workflowContinuationProof?.executed && workflowContinuationProof.status === 'passed';
+  const effectiveWorkflowProof = workflowContinuationProof?.executed
+    ? workflowContinuationProof
+    : recordedDoctorProof?.workflow_continuation_proof;
+  const passed = effectiveWorkflowProof?.executed && effectiveWorkflowProof.status === 'passed';
   if (passed) {
+    const source = effectiveWorkflowProof?.recorded ? `recorded-doctor=${recordedDoctorProof.run_id}` : 'current-run';
     return parityCriterion({
       id: 'engineer_workflow_continuation_execution',
       label: 'Engineer workflow continuation is verified through dispatch and state',
       status: 'satisfied',
       weight: 15,
-      evidence: `workflow-continuation-proof=${workflowContinuationProof.status}`,
+      evidence: `workflow-continuation-proof=${effectiveWorkflowProof.status}; source=${source}`,
       next_step: null,
     });
   }
@@ -2828,8 +3053,8 @@ function buildEngineerWorkflowExecutionExperienceCriterion({ readiness, workflow
     label: 'Engineer workflow continuation is ready but not verified',
     status: operatorAction ? 'partial' : 'not_verified',
     weight: 15,
-    evidence: `workflow-continuation-proof=${workflowContinuationProof?.status ?? 'not_requested'}/${workflowContinuationProof?.executed ?? false}`,
-    next_step: 'Run runtime:doctor with --workflow-continuation-proof --execute-workflow-continuation-proof to prove engineer state and dispatch continuation from current hosts.',
+    evidence: `workflow-continuation-proof=${workflowContinuationProof?.status ?? 'not_requested'}/${workflowContinuationProof?.executed ?? false}; recorded-doctor=${recordedDoctorProof?.status ?? 'missing'}`,
+    next_step: 'Run runtime:doctor with --workflow-continuation-proof --execute-workflow-continuation-proof --record to prove engineer state and dispatch continuation from current hosts.',
   });
 }
 
@@ -3447,6 +3672,7 @@ function classifyOperatorActionKind(summary) {
   ].filter(Boolean).join(' ');
   const textKind = classifyOperatorActionText(text);
   if (textKind) return textKind;
+  if (summary.peer_stdout_operator_action_kind) return summary.peer_stdout_operator_action_kind;
   if (summary.error?.detail_kind) return summary.error.detail_kind;
   return null;
 }
@@ -4140,6 +4366,7 @@ function summarizeCompanionSmokeResult({ result, companionPath, expectedToken })
     expected_token_present: expectedTokenPresent,
     stdout_bytes: Buffer.byteLength(peerStdout, 'utf8'),
     stdout_sha256: peerStdout ? sha256(peerStdout) : null,
+    peer_stdout_operator_action_kind: passed ? null : classifyOperatorActionText(peerStdout),
     metadata: normalizeSmokeMetadata(parsed?.metadata),
     stderr_summary: result.stderr ? truncate(sanitizeValue(result.stderr), 200) : null,
     error: normalizeSmokeError({ parsed, result }),
@@ -4443,6 +4670,9 @@ export function formatText(report) {
   lines.push(`runtime:doctor ${report.runtime_version} (${report.overall.status})`);
   lines.push(`repo: ${report.repo_root}`);
   lines.push('read-only: true');
+  if (report.doctor_artifact?.written) {
+    lines.push(`doctor-artifact: ${report.doctor_artifact.artifact_pointer}; latest=${report.doctor_artifact.latest_pointer}`);
+  }
   lines.push('');
   lines.push('Readiness Matrix');
   for (const name of ['claude', 'codex']) {
@@ -4474,6 +4704,12 @@ export function formatText(report) {
     }
   }
   for (const limit of experience.limits) lines.push(`- limit: ${limit}`);
+  if (report.recorded_doctor_proof?.status && report.recorded_doctor_proof.status !== 'missing') {
+    lines.push(`- recorded-doctor-proof: ${report.recorded_doctor_proof.status}; run=${report.recorded_doctor_proof.run_id}; artifact=${report.recorded_doctor_proof.artifact_pointer}`);
+    for (const reason of report.recorded_doctor_proof.reasons ?? []) {
+      lines.push(`  reason: ${reason}`);
+    }
+  }
   lines.push('');
   lines.push('Host CLIs');
   for (const name of ['claude', 'codex']) {
@@ -4972,7 +5208,7 @@ function artifactTimestampMs(artifact, fallbackRunId) {
 }
 
 function runIdTimestampMs(runId) {
-  const match = String(runId ?? '').match(/^(?:settings|consensus|compat)-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/);
+  const match = String(runId ?? '').match(/^(?:settings|consensus|compat|doctor)-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/);
   if (!match) return null;
   const [, year, month, day, hour, minute, second] = match;
   const parsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
@@ -4987,6 +5223,76 @@ function safeCount(value) {
 function pointer(repoRoot, path) {
   const rel = relative(repoRoot, path).split(sep).join('/');
   return rel || basename(path);
+}
+
+async function writeDoctorArtifact({ repoRoot, now, runId, report }) {
+  const id = runId ? validateDoctorRunId(runId) : makeDoctorRunId(now);
+  const root = join(repoRoot, '.agentic-plugins', 'runs', 'doctor');
+  const runDir = resolve(root, id);
+  await assertInside(root, runDir);
+  await mkdir(runDir, { recursive: true });
+  const reportForArtifact = JSON.parse(JSON.stringify(report));
+  if (reportForArtifact.doctor_runs) delete reportForArtifact.doctor_runs.latest_report;
+  reportForArtifact.doctor_artifact = {
+    written: false,
+    requested: false,
+    status: 'not_written_inside_artifact_snapshot',
+  };
+  const artifact = {
+    schema_version: DOCTOR_ARTIFACT_SCHEMA_VERSION,
+    runtime_version: RUNTIME_VERSION,
+    run_id: id,
+    status: 'recorded',
+    created_at: now.toISOString(),
+    repo_root_pointer: '.',
+    report: reportForArtifact,
+    limits: [
+      'This artifact is sanitized runtime:doctor output; raw peer stdout/stderr and prompt text are not stored here.',
+      'The artifact records observed proof evidence only; it does not mutate host trust, auth, sandbox, permission, or config state.',
+      'Consumers must reject this artifact when runtime, host, or plugin versions no longer match the current report.',
+    ],
+  };
+  const artifactPath = join(runDir, 'doctor.json');
+  const latestPath = join(root, 'latest.json');
+  await writeJson(artifactPath, artifact);
+  await writeJson(latestPath, {
+    schema_version: DOCTOR_LATEST_SCHEMA_VERSION,
+    runtime_version: RUNTIME_VERSION,
+    run_id: id,
+    artifact_pointer: pointer(repoRoot, artifactPath),
+    updated_at: now.toISOString(),
+  });
+  return {
+    written: true,
+    requested: true,
+    status: 'recorded',
+    run_id: id,
+    run_pointer: pointer(repoRoot, runDir),
+    artifact_pointer: pointer(repoRoot, artifactPath),
+    latest_pointer: pointer(repoRoot, latestPath),
+  };
+}
+
+function makeDoctorRunId(now) {
+  const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  return `doctor-${stamp}-${randomBytes(3).toString('hex')}`;
+}
+
+function validateDoctorRunId(value) {
+  if (!DOCTOR_RUN_ID_RE.test(String(value ?? ''))) throw new Error(`Invalid doctor run id: ${value}`);
+  return value;
+}
+
+async function writeJson(path, value) {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function assertInside(root, target) {
+  const rel = relative(resolve(root), resolve(target));
+  if (rel === '..' || rel.startsWith(`..${sep}`) || rel === '') {
+    if (rel !== '') throw new Error(`Refusing to write outside doctor artifact root: ${target}`);
+  }
 }
 
 function parseNonNegativeInt(value, fallback) {
@@ -5058,7 +5364,7 @@ function escapeRegExp(value) {
 }
 
 function usage() {
-  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>]\n`;
+  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--record] [--run-id <doctor-run-id>]\n`;
 }
 
 export function parseArgs(argv) {
@@ -5081,6 +5387,8 @@ export function parseArgs(argv) {
     artifactInventory: false,
     artifactRetentionCap: DEFAULT_ARTIFACT_RETENTION_CAP,
     artifactMaxBytes: DEFAULT_ARTIFACT_RETENTION_MAX_BYTES,
+    recordArtifact: false,
+    runId: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -5124,9 +5432,16 @@ export function parseArgs(argv) {
       opts.artifactRetentionCap = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--artifact-max-bytes') {
       opts.artifactMaxBytes = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
+    } else if (arg === '--record') {
+      opts.recordArtifact = true;
+    } else if (arg === '--run-id') {
+      opts.runId = validateDoctorRunId(requireValue(argv, ++i, arg));
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
+  }
+  if (opts.runId && !opts.recordArtifact) {
+    throw new Error('--run-id requires --record');
   }
   if (opts.executeDeepPeerSmoke && !opts.deepPeerSmoke) {
     throw new Error('--execute-deep-peer-smoke requires --deep-peer-smoke');

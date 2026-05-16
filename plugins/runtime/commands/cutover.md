@@ -22,7 +22,10 @@ Audit mode is read-only unless the operator passes runtime doctor proof
 execution flags. `--permission-proof`, `--deep-peer-smoke`, and
 `--workflow-continuation-proof` only collect requested proof sections; the
 matching `--execute-*` flags explicitly invoke the same bounded peer/workflow
-executors used by `runtime:doctor`.
+executors used by `runtime:doctor`. If a prior `runtime:doctor --record`
+artifact exists and its runtime, host CLI, and plugin source/cache versions
+still match the current report, audit can reuse that recorded proof for the
+experience-parity proof criteria without re-running peers.
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -40,6 +43,8 @@ Checks:
 - omcc replacement scorecard rows in `docs/assurance/omcc-cutover-scorecard.md`;
 - legacy omcc-dev pattern-map rows in `docs/assurance/omcc-legacy-pattern-map.md`;
 - observed Claude/Codex runtime experience parity from `runtime:doctor`;
+  recorded doctor proof is accepted only when version-matched and reported as
+  reusable by doctor;
 - host parity baseline freshness against current `runtime:doctor` evidence;
 - installed/cache plugin versions against `.release-please-manifest.json`;
 - latest compat, consensus, and context artifacts;
@@ -78,6 +83,19 @@ node "$RUNTIME_ROOT/scripts/cutover-audit.mjs" \
   --workflow-continuation-proof \
   --execute-workflow-continuation-proof \
   --workflow-continuation-proof-timeout-ms 60000
+```
+
+Reusable proof example:
+
+```bash
+node "$RUNTIME_ROOT/scripts/doctor.mjs" \
+  --repo-root "$REPO_ROOT" \
+  --permission-proof --execute-permission-proof \
+  --deep-peer-smoke --execute-deep-peer-smoke \
+  --workflow-continuation-proof --execute-workflow-continuation-proof \
+  --record
+
+node "$RUNTIME_ROOT/scripts/cutover-audit.mjs" --repo-root "$REPO_ROOT"
 ```
 
 Limits:

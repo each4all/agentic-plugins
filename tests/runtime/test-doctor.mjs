@@ -1312,6 +1312,65 @@ describe('runtime doctor', () => {
     ok(!formatText(report).includes('RAW DETAILS MUST NOT LEAK'), 'text report must not include raw peer stdout');
   });
 
+  it('records reusable doctor proof artifacts and reuses them when current versions match', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-recorded-proof-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    await seedHome(home);
+    const runId = 'doctor-20260513T000000Z-abc123';
+    const first = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      permissionProof: true,
+      executePermissionProof: true,
+      deepPeerSmoke: true,
+      executeDeepPeerSmoke: true,
+      workflowContinuationProof: true,
+      executeWorkflowContinuationProof: true,
+      recordArtifact: true,
+      runId,
+      runner: successfulProofRunner(),
+    });
+
+    strictEqual(first.doctor_artifact.written, true);
+    strictEqual(first.doctor_artifact.run_id, runId);
+    strictEqual(first.permission_proof.status, 'passed');
+    strictEqual(first.deep_peer_smoke.status, 'passed');
+    strictEqual(first.workflow_continuation_proof.status, 'passed');
+    ok(formatText(first).includes('doctor-artifact: .agentic-plugins/runs/doctor/doctor-20260513T000000Z-abc123/doctor.json'));
+
+    const failedRunId = 'doctor-20260513T000100Z-def456';
+    const failedLatest = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-05-13T00:01:00.000Z'),
+      recordArtifact: true,
+      runId: failedRunId,
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+    strictEqual(failedLatest.doctor_artifact.written, true);
+    strictEqual(failedLatest.recorded_doctor_proof.status, 'reusable');
+    strictEqual(failedLatest.recorded_doctor_proof.run_id, runId);
+
+    const second = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-05-13T00:05:00.000Z'),
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    strictEqual(second.permission_proof.executed, false);
+    strictEqual(second.deep_peer_smoke.executed, false);
+    strictEqual(second.workflow_continuation_proof.executed, false);
+    strictEqual(second.doctor_runs.latest.run_id, failedRunId);
+    strictEqual(second.recorded_doctor_proof.status, 'reusable');
+    strictEqual(second.recorded_doctor_proof.run_id, runId);
+    ok(second.experience_parity.criteria.some((entry) => entry.id === 'bidirectional_peer_execution' && entry.status === 'satisfied' && entry.evidence.includes(`recorded-doctor=${runId}`)));
+    ok(second.experience_parity.criteria.some((entry) => entry.id === 'engineer_workflow_continuation_execution' && entry.status === 'satisfied' && entry.evidence.includes(`recorded-doctor=${runId}`)));
+    ok(formatText(second).includes(`recorded-doctor-proof: reusable; run=${runId}`));
+  });
+
   it('keeps host auth separate from child companion auth failures', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-child-auth-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
@@ -1354,6 +1413,49 @@ describe('runtime doctor', () => {
     ok(!JSON.stringify(report).includes('AUTH RAW DETAILS'), 'doctor must not include raw auth failure stdout');
     ok(formatText(report).includes('authenticated=available'));
     ok(formatText(report).includes('operator-action-kind: auth_required'));
+  });
+
+  it('classifies auth wording in failed peer stdout without leaking raw output', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-child-auth-stdout-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const rawAuthOutput = 'Not logged in. Please run /login. AUTH RAW DETAILS MUST NOT LEAK';
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      deepPeerSmoke: true,
+      executeDeepPeerSmoke: true,
+      runner: async (command, args) => {
+        if (args[0]?.endsWith('codex-companion.mjs')) {
+          return okResult(JSON.stringify(smokeEnvelope('codex', 'RUNTIME_DOCTOR_SMOKE_OK codex\n', 12)));
+        }
+        if (args[0]?.endsWith('claude-companion.mjs')) {
+          return {
+            ok: false,
+            exit_code: 1,
+            stdout: JSON.stringify({
+              status: 'peer_error',
+              peer_host: 'claude',
+              stdout: rawAuthOutput,
+              exit_code: 1,
+              error: { kind: 'peer_run_error', message: 'peer exited with code 1' },
+            }),
+            stderr: 'peer exited with code 1',
+            error_code: null,
+            timed_out: false,
+          };
+        }
+        return fakeRuntimeProbeRunner(command, args);
+      },
+    });
+
+    const result = report.deep_peer_smoke.directions.codex_to_claude.result;
+    strictEqual(result.status, 'operator_action_required');
+    strictEqual(result.operator_action_kind, 'auth_required');
+    strictEqual(result.peer_stdout_operator_action_kind, 'auth_required');
+    strictEqual(report.readiness_matrix.directions.codex_to_claude.execution_readiness.deep_peer_smoke.operator_action_kind, 'auth_required');
+    ok(!JSON.stringify(report).includes('AUTH RAW DETAILS'), 'doctor must not include raw auth failure stdout');
+    ok(!formatText(report).includes('AUTH RAW DETAILS'), 'text report must not include raw auth failure stdout');
   });
 
   it('classifies child companion sandbox detail without leaking raw peer stderr', async () => {
@@ -1410,7 +1512,7 @@ describe('runtime doctor', () => {
   });
 
   it('parses CLI arguments and rejects unknown or malformed flags', () => {
-    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--execute-deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '90000', '--sandbox-permission-probe', '--permission-proof', '--execute-permission-proof', '--permission-proof-timeout-ms', '45000', '--workflow-continuation-proof', '--execute-workflow-continuation-proof', '--workflow-continuation-proof-timeout-ms', '60000', '--artifact-inventory', '--artifact-retention-cap', '30', '--artifact-max-bytes', '1024']);
+    const opts = parseArgs(['--repo-root', '/tmp/repo', '--format', 'json', '--host', 'codex', '--model', 'm', '--effort', 'high', '--deep-peer-smoke', '--execute-deep-peer-smoke', '--deep-peer-smoke-timeout-ms', '90000', '--sandbox-permission-probe', '--permission-proof', '--execute-permission-proof', '--permission-proof-timeout-ms', '45000', '--workflow-continuation-proof', '--execute-workflow-continuation-proof', '--workflow-continuation-proof-timeout-ms', '60000', '--artifact-inventory', '--artifact-retention-cap', '30', '--artifact-max-bytes', '1024', '--record', '--run-id', 'doctor-20260513T000000Z-abc123']);
     strictEqual(opts.repoRoot, '/tmp/repo');
     strictEqual(opts.format, 'json');
     strictEqual(opts.host, 'codex');
@@ -1429,6 +1531,8 @@ describe('runtime doctor', () => {
     strictEqual(opts.artifactInventory, true);
     strictEqual(opts.artifactRetentionCap, 30);
     strictEqual(opts.artifactMaxBytes, 1024);
+    strictEqual(opts.recordArtifact, true);
+    strictEqual(opts.runId, 'doctor-20260513T000000Z-abc123');
     rejects(async () => parseArgs(['--format', 'xml']), /--format must be text or json/);
     rejects(async () => parseArgs(['--execute-deep-peer-smoke']), /requires --deep-peer-smoke/);
     rejects(async () => parseArgs(['--execute-permission-proof']), /requires --permission-proof/);
@@ -1438,6 +1542,8 @@ describe('runtime doctor', () => {
     rejects(async () => parseArgs(['--workflow-continuation-proof', '--workflow-continuation-proof-timeout-ms', '0']), /positive integer/);
     rejects(async () => parseArgs(['--artifact-retention-cap', '0']), /positive integer/);
     rejects(async () => parseArgs(['--artifact-max-bytes', '0']), /positive integer/);
+    rejects(async () => parseArgs(['--run-id', 'doctor-20260513T000000Z-abc123']), /requires --record/);
+    rejects(async () => parseArgs(['--record', '--run-id', 'bad']), /Invalid doctor run id/);
   });
 });
 
@@ -1483,6 +1589,51 @@ function defaultRuntimeProbeMap() {
 
 function fakeRuntimeProbeRunner(command, args) {
   return fakeRunner(defaultRuntimeProbeMap())(command, args);
+}
+
+function successfulProofRunner() {
+  const readCounts = new Map();
+  return async (command, args, options = {}) => {
+    if (command === 'git' && args[0] === 'init') return okResult('');
+    if (args[0]?.endsWith('codex-companion.mjs') || args[0]?.endsWith('claude-companion.mjs')) {
+      const peer = args[0].endsWith('codex-companion.mjs') ? 'codex' : 'claude';
+      const prompt = args.at(-1) ?? '';
+      const expected = prompt.match(/RUNTIME_DOCTOR_PERMISSION_OK (claude|codex)/)?.[0]
+        ?? prompt.match(/RUNTIME_DOCTOR_SMOKE_OK (claude|codex)/)?.[0];
+      if (expected) return okResult(JSON.stringify(smokeEnvelope(peer, `${expected}\nRAW DETAILS MUST NOT LEAK`, 123)));
+    }
+    if (args[0]?.endsWith('state.mjs') && args[1] === 'create') {
+      const host = args[args.indexOf('--host') + 1];
+      return okResult(`${options.cwd}/.agentic-plugins/state/engineer/workflows/compose-${host}.md\n`);
+    }
+    if (args[0]?.endsWith('dispatch-peer.mjs')) {
+      const peer = args[args.indexOf('--peer') + 1];
+      return okResult(JSON.stringify(smokeEnvelope(peer, `RUNTIME_WORKFLOW_CONTINUATION_OK ${peer}\nRAW DETAILS MUST NOT LEAK`, 222)));
+    }
+    if (args[0]?.endsWith('state.mjs') && args[1] === 'read') {
+      const workflowPath = args[args.indexOf('--workflow-path') + 1];
+      const count = (readCounts.get(workflowPath) ?? 0) + 1;
+      readCounts.set(workflowPath, count);
+      const runId = workflowPath.endsWith('compose-claude.md')
+        ? 'workflow-proof-claude_to_codex'
+        : 'workflow-proof-codex_to_claude';
+      if (count === 1) {
+        return okResult(JSON.stringify({
+          workflow_id: workflowPath.split('/').at(-1).replace(/\.md$/, ''),
+          pending_ensemble: [{ phase: 'compose', ensemble_type: 'workflow-continuation-proof', run_id: runId }],
+        }));
+      }
+      return okResult(JSON.stringify({
+        workflow_id: workflowPath.split('/').at(-1).replace(/\.md$/, ''),
+        pending_ensemble: [],
+        ensemble_results: [{ phase: 'compose', ensemble_type: 'workflow-continuation-proof', run_id: runId, verdict: 'passed' }],
+      }));
+    }
+    if (args[0]?.endsWith('state.mjs') && args[1] === 'ensemble-commit') {
+      return okResult(`${args[args.indexOf('--workflow-path') + 1]}\n`);
+    }
+    return fakeRuntimeProbeRunner(command, args);
+  };
 }
 
 function smokeEnvelope(peer, stdout, durationMs) {
