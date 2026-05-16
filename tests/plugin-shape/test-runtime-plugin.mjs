@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
 const RUNTIME_COMMAND_SURFACES = [
+  { name: 'compat', script: 'compat.mjs' },
   { name: 'consensus', script: 'consensus.mjs' },
   { name: 'context', script: 'context.mjs' },
   { name: 'doctor', script: 'doctor.mjs' },
@@ -33,6 +34,7 @@ describe('plugins/runtime manifest pair', () => {
     ok(manifest.keywords.includes('settings'));
     ok(manifest.keywords.includes('migration'));
     ok(manifest.keywords.includes('consensus'));
+    ok(manifest.keywords.includes('compat'));
     ok(manifest.keywords.includes('worktree'));
     ok(manifest.keywords.includes('context'));
     ok(manifest.keywords.includes('footer'));
@@ -281,6 +283,25 @@ describe('plugins/runtime consensus surface', () => {
   });
 });
 
+describe('plugins/runtime compat surface', () => {
+  it('ships compat command, skill wrapper, agent yaml, and executable script', async () => {
+    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/compat.md'), 'utf-8');
+    ok(command.startsWith('---\n'));
+    ok(command.includes('scripts/compat.mjs'));
+    ok(command.includes('release-note'));
+    ok(command.includes('does not fetch release-note URLs by default'));
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/compat/SKILL.md'), 'utf-8');
+    ok(/^name:\s*compat\s*$/m.test(skill));
+    ok(skill.includes('No automatic URL fetch'));
+    ok(skill.includes('No host-native config writes'));
+    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/compat/agents/openai.yaml'), 'utf-8');
+    ok(agent.includes('$runtime:compat'));
+    ok(/allow_implicit_invocation:\s*false/.test(agent));
+    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/compat.mjs'));
+    ok((scriptStat.mode & 0o111) !== 0, 'compat.mjs has executable bit');
+  });
+});
+
 describe('plugins/runtime worktree surface', () => {
   it('ships worktree command, skill wrapper, agent yaml, and executable script', async () => {
     const command = await readFile(resolve(PLUGIN_ROOT, 'commands/worktree.md'), 'utf-8');
@@ -352,6 +373,7 @@ describe('plugins/runtime repo documentation freshness', () => {
       'runtime:doctor',
       'runtime:settings',
       'runtime:consensus',
+      'runtime:compat',
       'runtime:worktree',
       'runtime:context',
       'workflow-storage migration',

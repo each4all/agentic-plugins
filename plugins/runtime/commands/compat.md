@@ -1,0 +1,36 @@
+---
+description: Runtime host-version compatibility snapshot, release-note gap analysis, and update planning
+argument-hint: "snapshot|check|ingest-release-notes|plan [--format text|json] [--run-id <id>|--latest] [--release-notes-file <path>] [--release-notes-url <url>] [--timeout-ms <n>]"
+---
+
+# Runtime - Compat
+
+$ARGUMENTS
+
+Record Claude Code and Codex CLI version snapshots, compare them to the remembered runtime host-parity baseline, attach explicit release-note artifacts, and plan compatibility updates. This command does not fetch release-note URLs by default, install host CLIs, mutate host config, or update plugins.
+
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+RUNTIME_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+if [ -z "$RUNTIME_ROOT" ]; then
+  RUNTIME_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
+
+node "$RUNTIME_ROOT/scripts/compat.mjs" --repo-root "$REPO_ROOT" $ARGUMENTS
+```
+
+Examples:
+
+```bash
+/runtime:compat snapshot
+/runtime:compat check --latest
+/runtime:compat ingest-release-notes --latest --release-notes-file /tmp/claude-code-release-notes.md
+/runtime:compat plan --latest
+```
+
+Notes:
+
+- Snapshot artifacts live under `.agentic-plugins/runs/compat/<run-id>/`.
+- Main-session output is limited to metadata, hashes, gaps, pointers, and update-plan summaries.
+- `--release-notes-url` records a URL pointer only; provide `--release-notes-file` for content-backed planning.
+- Use this before claiming host parity after Claude Code or Codex CLI changes.

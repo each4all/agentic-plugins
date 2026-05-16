@@ -104,7 +104,8 @@ non-trivial self-hosted workflow evidence, **agentic-plugins
 development still permits `omcc-dev` as a fallback workflow
 framework**. Engineer and orchestrator are the intended dogfood path;
 condition 3 is not satisfied until that path handles substantial work
-without an escape hatch.
+without an escape hatch. The current cutover assurance map lives in
+[`assurance/omcc-cutover-scorecard.md`](assurance/omcc-cutover-scorecard.md).
 
 Concrete:
 - New dogfood-targeted work should start with `/engineer:start`,
@@ -447,7 +448,10 @@ or Stage 3 work makes the design choice tractable.
 
 Cutover happens after Stage 3 exit criteria are met. See
 [`adr/0007-migration-cutover-plan.md`](adr/0007-migration-cutover-plan.md)
-for the cutover plan.
+for the cutover plan and
+[`assurance/omcc-cutover-scorecard.md`](assurance/omcc-cutover-scorecard.md)
+for the requirement-to-evidence gates that must be cleared before the user
+declares cutover.
 
 ---
 
