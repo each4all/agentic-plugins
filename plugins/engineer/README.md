@@ -46,8 +46,8 @@ current release ships:
 - 10 SKILL.md bodies — 6 cognitive verb skills + 1 macro skill
   (`start` per ADR-0021) + 3 meta skills
   (`resume` / `checkpoint` / `peer-now` per ADR-0022)
-- 4 shared protocol references (presentation / ensemble /
-  orchestration / agent-taxonomy)
+- 5 shared protocol references (presentation / ensemble /
+  orchestration / agent-taxonomy / entry-routing)
 - 10 Codex agent definitions (`agents/openai.yaml` per skill — one
   per verb / macro / meta skill, with
   `policy.allow_implicit_invocation: false` on each)
@@ -172,7 +172,10 @@ enabled = true
 /engineer:start <feature> [--base-branch <ref>]
     # Sequences Phase 0 (continuity + diagnose-redundancy) through
     # Phase 7 (commit) using the six verb skills intra-document.
-    # Single-pass only; for multi-deliverable use /orchestrator:plan.
+    # Starts by presenting an entry routing recommendation:
+    # continue engineer:start, switch to orchestrator:plan,
+    # plan a runtime:worktree, use runtime:* readiness/handoff tools,
+    # or drop to a single engineer verb.
 ```
 
 Each slash command runs:
@@ -222,6 +225,9 @@ $engineer:refine <feedback or bug context>
 
 # Macro skill (lifecycle sequencer — Phase 0 continuity → Phase 7 commit)
 $engineer:start <feature description>
+    # Includes the same entry routing recommendation as /engineer:start:
+    # engineer:start / orchestrator:plan / runtime:worktree /
+    # runtime:* / single engineer verb.
 
 # Meta skills (workflow-continuity ops on the active workflow)
 $engineer:resume [archive [<workflow-id>]]

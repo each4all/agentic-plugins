@@ -14,7 +14,8 @@
 //     (skills/<meta>/ × {SKILL.md, agents/openai.yaml}) per ADR-0022
 //     (ADR-0010 §3 cascade — closes ADR-0021 §6; formalizes the
 //     `skills/<plugin>/` three-category split: verb / macro / meta)
-//   - 4 shared references (presentation / ensemble / orchestration / agent-taxonomy)
+//   - 5 shared references (presentation / ensemble / orchestration /
+//     agent-taxonomy / entry-routing)
 //   - 4 host-shared canonical scripts (state.mjs, dispatch-peer.mjs,
 //     peer-runner.mjs, stop-archive.mjs)
 //   - 11 commands (6 canonical verbs + 1 sugar alias `audit` per ADR-0010 §3
@@ -41,7 +42,7 @@
 //   - verb→ensemble mapping cross-check: each ensemble type named in
 //     plugins/engineer/README.md verb table is a section heading in
 //     skills/_shared/references/ensemble-protocol.md (and vice versa)
-//   - 4 shared references pass stale-token audit (no omcc / [Claude] /
+//   - 5 shared references pass stale-token audit (no omcc / [Claude] /
 //     [Codex] / CODEX_HOME / CLAUDE-ONLY / CODEX-ONLY leaks)
 //   - companion contract version freshness across all engineer .md files
 //   - cited-brief profile contract: SKILL.md profile table, references/
@@ -105,6 +106,7 @@ const SHARED_REFS = [
   'ensemble-protocol.md',
   'orchestration.md',
   'agent-taxonomy.md',
+  'entry-routing-contract.md',
 ];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['pre-compact.mjs', 'stop.mjs', 'session-start.mjs', '_shared.mjs'];
@@ -632,7 +634,7 @@ describe('plugins/engineer — meta command delegation pointer (commands/<meta>.
   }
 });
 
-describe('plugins/engineer — 4 shared references (skills/_shared/references/*.md)', () => {
+describe('plugins/engineer — 5 shared references (skills/_shared/references/*.md)', () => {
   for (const name of SHARED_REFS) {
     describe(name, () => {
       const path = resolve(PLUGIN_ROOT, 'skills/_shared/references', name);
