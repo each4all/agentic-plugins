@@ -27,9 +27,9 @@ The repo already has the right architectural direction:
 
 The remaining gap is assurance depth: superior-compatibility mapping,
 overbuild/drop rationale, real bidirectional peer execution, current-host UX
-parity, result-quality defaults, release-note scoring, complementary
-consensus-lane coverage, self-hosted dogfood evidence, and final completion
-state need to be measurable enough that omcc can be removed without a fallback.
+parity, complementary consensus-lane coverage, self-hosted dogfood evidence,
+and final completion state need to be measurable enough that omcc can be
+removed without a fallback.
 
 ## Cutover Gate Terms
 
@@ -104,7 +104,7 @@ a manual active-session follow-up.
 | R7a | Work must prioritize standards, root cause, quality, and recommended practice over short-term fixes. | ADRs enforce hexagonal architecture, adapter boundaries, explicit storage contracts, and no hidden permission/session mutation. The engineer entry-routing contract now requires a standards/root-cause quality gate before quick implementation/refinement paths, and refine already blocks bug fixes until root cause is confirmed. | satisfied | Keep implementation/refinement flows routed back to investigate/decide/orchestrator when the standards/root-cause/evidence gate cannot be met. |
 | R7b | Completion must guide the next action, or confidently say there is nothing left. | Runtime footer is pointer-only and exposes context/consensus/PR readiness guidance plus a conservative completion-state enum with state-derived next actions. Engineer/orchestrator completion runbooks require that state in footer output. | satisfied | Keep future completion surfaces on the same state contract; do not infer `closed` without explicit PR, release, cleanup, and planned-follow-up evidence. |
 | R8 | Domain entry should start with engineer when appropriate, and propose orchestrator/worktree/parallelization when useful. | ADR-0020 defines `/engineer:start` vs `/orchestrator:plan` entry routing; runtime has read-only worktree planning; `/engineer:start` and `$engineer:start` now present a tested entry routing recommendation covering engineer, orchestrator, runtime worktree, runtime readiness/handoff, and single-verb routes. | satisfied | Keep new domain entrypoints on the same routing recommendation contract rather than adding implicit auto-routing. |
-| R9 | Track Claude Code and Codex CLI version history; when latest host versions differ from remembered versions, use release notes to plan compatibility updates. | Runtime host parity baselines record observed CLI versions and drift policy. `runtime:compat` records snapshots, compares remembered baseline versions, ingests explicit release-note artifacts, and emits update plans; `runtime:doctor` now reads latest compat metadata into the handoff artifact criterion. Claude Code `2.1.142`/`2.1.143` release notes were ingested as explicit content-backed notes and the host parity baseline was refreshed to Claude Code `2.1.143`. `runtime:cutover` now includes latest compat freshness and installed-version evidence in its read-only scorecard audit. | partial | Add richer release-note parsing and require content-backed release-note evidence or an accepted baseline refresh whenever host versions drift. |
+| R9 | Track Claude Code and Codex CLI version history; when latest host versions differ from remembered versions, use release notes to plan compatibility updates. | Runtime host parity baselines record observed CLI versions and drift policy. `runtime:compat` records snapshots, compares remembered baseline versions, ingests explicit release-note artifacts, requires content-backed notes to mention the changed host and observed version before detailed planning, and emits update plans; `runtime:doctor` reads latest compat metadata into the handoff artifact criterion. Claude Code `2.1.142`/`2.1.143` release notes were ingested as explicit content-backed notes and the host parity baseline was refreshed to Claude Code `2.1.143`. `runtime:cutover` includes latest compat freshness and installed-version evidence in its read-only scorecard audit. `tests/runtime/test-compat.mjs` verifies that a note for the wrong host/version does not clear a drift gap. | satisfied | Keep content-backed release-note coverage or an accepted baseline refresh mandatory whenever host versions drift. |
 | R10 | Claude and Codex should be used as complementary perspectives; same-issue opinion collection is valuable. | Companions and runtime consensus provide cross-host peer collection. `runtime:consensus` plans explicit companion-backed lanes and manual/subagent lanes, writes per-peer prompt/output pointers, and records peer roles such as `claude_companion_peer` and `security_manual_subagent_peer`; `tests/runtime/test-consensus.mjs` covers those manifest, prompt, status, and text-output fields. | satisfied | Keep consensus lanes role-explicit, artifact-pointer-only, and bounded by explicit peer rosters rather than hidden peer caps. |
 | R11 | When Claude and Codex conflict, loop opinions back until there is a well-converged, non-compromise synthesis. | `runtime:consensus` records convergence state, contradiction summaries, bounded next-round availability, and contradiction-aware rebuttal prompts with issue framing, opposing views, and evidence standards. Automatic unbounded loops are forbidden. | satisfied | Keep future consensus surfaces on the same no-false-compromise taxonomy and require explicit user approval for any expansion beyond the max-round cap. |
 
@@ -237,11 +237,12 @@ Landed slices:
    - Implement explicit release-note ingestion.
    - Generate compatibility update plans.
 
-R9 remaining follow-up:
+R9 maintenance follow-up:
 
-- Richer release-note parsing.
-- R9 remains partial until the latest current host versions have content-backed
-  release-note evidence or an updated accepted baseline.
+- Future compatibility slices may add automated baseline freshness warnings and
+  deeper source-specific release-note taxonomies, but R9's cutover gate is
+  satisfied by changed-host/version release-note coverage plus the accepted
+  current host baseline.
 
 4. **PR D: completion-state footer**
    - Add footer state enum and tests.

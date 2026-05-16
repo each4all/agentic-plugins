@@ -121,6 +121,9 @@ describe('runtime compat', () => {
     });
     strictEqual(check.status, 'gap_analysis_ready');
     strictEqual(check.release_notes_required, false);
+    strictEqual(check.release_note_coverage.hosts.claude.required, true);
+    strictEqual(check.release_note_coverage.hosts.claude.covered, true);
+    deepStrictEqual(check.release_note_coverage.missing_required_hosts, []);
 
     const plan = await runCompat({
       command: 'plan',
@@ -136,6 +139,54 @@ describe('runtime compat', () => {
     const planText = await readFile(join(root, plan.plan_pointer), 'utf8');
     ok(planText.includes('Runtime Compatibility Update Plan'));
     ok(planText.includes('review-hooks'));
+  });
+
+  it('requires content-backed release notes to cover the changed host and observed version', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-note-coverage-'));
+    const notePath = join(root, 'codex-release-notes.md');
+    await writeFile(notePath, [
+      'Codex CLI 0.130.0',
+      'No Claude Code release note content is present here.',
+      '',
+    ].join('\n'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({
+        claude: '2.1.150 (Claude Code)',
+        codex: 'codex-cli 0.130.0',
+      }),
+    });
+    await runCompat({
+      command: 'ingest-release-notes',
+      repoRoot: root,
+      runId: RUN_ID,
+      releaseNotesFiles: [notePath],
+    });
+
+    const check = await runCompat({
+      command: 'check',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+    });
+    strictEqual(check.status, 'release_notes_required');
+    strictEqual(check.release_notes_required, true);
+    strictEqual(check.release_note_coverage.content_backed_count, 1);
+    strictEqual(check.release_note_coverage.hosts.claude.required, true);
+    strictEqual(check.release_note_coverage.hosts.claude.covered, false);
+    deepStrictEqual(check.release_note_coverage.missing_required_hosts, ['claude']);
+    ok(formatText(check).includes('missing-required-hosts=claude'));
+
+    const plan = await runCompat({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+    });
+    strictEqual(plan.status, 'blocked_release_notes_required');
   });
 
   it('records release-note URLs as pointers only and blocks content-backed planning', async () => {

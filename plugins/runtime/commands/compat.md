@@ -7,7 +7,7 @@ argument-hint: "snapshot|check|ingest-release-notes|plan [--format text|json] [-
 
 $ARGUMENTS
 
-Record Claude Code and Codex CLI version snapshots, compare them to the remembered runtime host-parity baseline, attach explicit release-note artifacts, and plan compatibility updates. This command does not fetch release-note URLs by default, install host CLIs, mutate host config, or update plugins.
+Record Claude Code and Codex CLI version snapshots, compare them to the remembered runtime host-parity baseline, attach explicit release-note artifacts, require content-backed notes to cover changed host/version pairs, and plan compatibility updates. This command does not fetch release-note URLs by default, install host CLIs, mutate host config, or update plugins.
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -36,4 +36,7 @@ Notes:
 - `--release-notes-url` records a URL pointer only by default; add
   `--fetch-release-notes-url` to explicitly fetch and store URL content for
   content-backed planning.
+- Changed host versions require release-note content that mentions both the
+  changed host and observed version. A note for the wrong host or version stays
+  a stored artifact but does not clear the gap.
 - Use this before claiming host parity after Claude Code or Codex CLI changes.
