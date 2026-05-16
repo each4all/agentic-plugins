@@ -193,15 +193,29 @@ describe('runtime doctor', () => {
     strictEqual(followup.host, 'codex');
     deepStrictEqual(followup.commands, ['/hooks']);
     ok(followup.verify.includes('engineer, orchestrator'));
+    ok(followup.verify.includes('2 review target(s)'));
     ok(followup.verify.includes('New hook - review required'));
     ok(followup.verify.includes('Installed counts alone'));
     ok(followup.verify.includes('Active=0'));
     ok(followup.verify.includes('runtime:settings --attest-codex-hook-review'));
+    strictEqual(report.codex_plugin_hooks.review_targets.length, 2);
+    const engineerTarget = report.codex_plugin_hooks.review_targets.find((target) => target.plugin === 'engineer');
+    strictEqual(engineerTarget.version, '1.0.0');
+    strictEqual(engineerTarget.manifest_exposed, true);
+    ok(engineerTarget.hooks_path.endsWith(join('plugins', 'engineer', 'hooks', 'hooks.json')));
+    deepStrictEqual(engineerTarget.events, ['PreCompact', 'SessionStart', 'Stop']);
+    strictEqual(engineerTarget.handler_count, 3);
+    strictEqual(engineerTarget.command_count, 1);
+    deepStrictEqual(engineerTarget.commands, ['node hook.mjs']);
+    deepStrictEqual(followup.review_targets, report.codex_plugin_hooks.review_targets);
     strictEqual(report.experience_parity.status, 'blocked');
     ok(report.experience_parity.criteria.some((entry) => entry.id === 'plugin_management_followups' && entry.status === 'partial' && entry.next_step.includes('runtime:settings --attest-codex-hook-review')));
     ok(report.experience_parity.criteria.some((entry) => entry.id === 'lifecycle_hook_continuity' && entry.status === 'partial' && entry.next_step.includes('New hook - review required')));
     ok(report.experience_parity.next_actions.some((entry) => entry.id === 'codex-hook-review' && entry.reason.includes('runtime:settings --attest-codex-hook-review')));
     ok(formatText(report).includes('command: /hooks'));
+    ok(formatText(report).includes('review-target: engineer@1.0.0'));
+    ok(formatText(report).includes(`path=${engineerTarget.hooks_path}`));
+    ok(formatText(report).includes('hook-command: node hook.mjs'));
   });
 
   it('reports Codex hook command portability warnings when hook commands still point at Claude adapter paths', async () => {

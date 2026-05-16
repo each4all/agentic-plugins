@@ -917,8 +917,33 @@ function buildCodexPluginHookReport({ codex, plugins }) {
     },
     summary,
     plugin_entries,
+    review_targets: buildCodexHookReviewTargets({ summary, plugin_entries, plugins }),
     recommendations,
   };
+}
+
+function buildCodexHookReviewTargets({ summary, plugin_entries, plugins }) {
+  const targets = [];
+  for (const pluginName of summary?.bundled_plugins ?? []) {
+    const effective = plugin_entries?.[pluginName]?.effective ?? {};
+    const hooksFile = effective.hooks_file ?? {};
+    const commandAnalysis = hooksFile.command_analysis ?? {};
+    const plugin = plugins?.[pluginName];
+    targets.push({
+      plugin: pluginName,
+      version: plugin?.source?.claude_manifest?.version ?? plugin?.source?.codex_manifest?.version ?? null,
+      origin: effective.origin ?? null,
+      manifest_exposed: effective.manifest_declared === true,
+      hooks_path: sanitizeValue(hooksFile.path),
+      events: Array.isArray(hooksFile.events) ? hooksFile.events.map((event) => sanitizeValue(event)).filter(Boolean).sort() : [],
+      handler_count: Number.isFinite(hooksFile.handler_count) ? hooksFile.handler_count : 0,
+      command_count: Number.isFinite(commandAnalysis.command_count) ? commandAnalysis.command_count : 0,
+      commands: Array.isArray(commandAnalysis.commands) ? commandAnalysis.commands.map((command) => sanitizeValue(command)).filter(Boolean).sort() : [],
+      command_warnings: Array.isArray(commandAnalysis.warnings) ? commandAnalysis.warnings.map((warning) => sanitizeValue(warning)).filter(Boolean).sort() : [],
+      expected_review: 'Open /hooks, review this plugin hook set, trust it if the listed commands match expectations, then record runtime:settings --attest-codex-hook-review.',
+    });
+  }
+  return targets.sort((a, b) => a.plugin.localeCompare(b.plugin));
 }
 
 function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooksFile, origin }) {
@@ -1256,6 +1281,7 @@ function buildCodexHookReviewManualFollowup(codexPluginHooks, surface, settingsR
   if (bundled.length === 0 || codexPluginHooks?.status !== 'ready') return null;
   const attestation = getCurrentCodexHookReviewAttestation(settingsRuns, codexPluginHooks, plugins);
   if (attestation.current) return null;
+  const reviewTargets = codexPluginHooks?.review_targets ?? [];
   return {
     id: 'codex-hook-review',
     host: 'codex',
@@ -1263,7 +1289,8 @@ function buildCodexHookReviewManualFollowup(codexPluginHooks, surface, settingsR
     reason: `Codex plugin hooks are packaged and plugin_hooks is enabled, but ${surface} cannot verify active-session hook review/trust state.`,
     environment: 'Open the active Codex session for this repository.',
     commands: ['/hooks'],
-    verify: `Review/trust bundled hooks for ${bundled.join(', ')}; if /hooks shows "New hook - review required", review each new hook first. Do not attest from /hooks Installed counts alone, including Active=0 output. Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
+    verify: `Review/trust bundled hooks for ${bundled.join(', ')} (${reviewTargets.length} review target(s)); if /hooks shows "New hook - review required", review each new hook first. Do not attest from /hooks Installed counts alone, including Active=0 output. Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
+    review_targets: reviewTargets,
   };
 }
 
@@ -4723,6 +4750,13 @@ export function formatText(report) {
   lines.push('Codex Plugin Hooks');
   const codexHooks = report.codex_plugin_hooks;
   lines.push(`- status=${codexHooks.status}; bundled=${codexHooks.summary.bundled_plugins.join(',') || 'none'}; manifest-exposed=${codexHooks.summary.manifest_exposed_plugins.join(',') || 'none'}; default-file-only=${codexHooks.summary.default_file_only_plugins.join(',') || 'none'}; command-warnings=${(codexHooks.summary.command_warning_plugins ?? []).join(',') || 'none'}`);
+  for (const target of codexHooks.review_targets ?? []) {
+    lines.push(`  review-target: ${target.plugin}@${target.version ?? 'unknown'}; origin=${target.origin ?? '<unknown>'}; manifest-exposed=${target.manifest_exposed}; path=${target.hooks_path ?? '<unknown>'}; events=${target.events.join(',') || 'none'}; handlers=${target.handler_count}; commands=${target.command_count}; warnings=${target.command_warnings.join(',') || 'none'}`);
+    for (const command of target.commands ?? []) {
+      lines.push(`    hook-command: ${command}`);
+    }
+    lines.push(`    expected: ${target.expected_review}`);
+  }
   for (const recommendation of codexHooks.recommendations) {
     lines.push(`  ${recommendation.action}: ${recommendation.detail}`);
     if (recommendation.next_step) lines.push(`  next: ${recommendation.next_step}`);
@@ -4747,6 +4781,9 @@ export function formatText(report) {
       lines.push(`  environment: ${followup.environment}`);
       for (const command of followup.commands ?? []) lines.push(`  command: ${command}`);
       lines.push(`  verify: ${followup.verify}`);
+      for (const target of followup.review_targets ?? []) {
+        lines.push(`  review-target: ${target.plugin}@${target.version ?? 'unknown'}; events=${target.events.join(',') || 'none'}; commands=${target.command_count}; warnings=${target.command_warnings.join(',') || 'none'}`);
+      }
     }
   }
   lines.push('');
