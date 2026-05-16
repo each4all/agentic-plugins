@@ -6,7 +6,8 @@ description: "omcc cutover readiness audit and explicit dogfood evidence recorde
 # Cutover Audit (runtime framework primitive)
 
 `runtime:cutover` aggregates cutover evidence without mutating host state.
-Audit mode is read-only. `record` mode writes only explicit cutover evidence
+Audit mode is read-only unless the operator explicitly passes runtime doctor
+proof execution flags. `record` mode writes only explicit cutover evidence
 artifacts under `.agentic-plugins/runs/cutover/`. It can report
 `cutover-ready-candidate`, but final omcc archival/removal requires explicit
 user declaration per ADR-0007.
@@ -24,12 +25,15 @@ of collapsing them to a generic `partial` status.
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/cutover-audit.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--max-artifact-age-hours <n>] [--footer-state <state>] [--omcc-dev-active yes|no|unknown]
+node "<runtime-plugin-root>/scripts/cutover-audit.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--max-artifact-age-hours <n>] [--permission-proof] [--execute-permission-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--footer-state <state>] [--omcc-dev-active yes|no|unknown]
 ```
 
 3. Present the report as readiness evidence only.
    - Do not claim final cutover unless the user explicitly declares it.
    - Treat unknown footer state or omcc-dev activity as not verified.
+   - Use proof execution flags only when the operator wants current
+     peer/workflow evidence; they invoke the same bounded executors as
+     `runtime:doctor` and do not relax host permissions or trust hooks.
 
 ## When recording daily dogfood evidence
 
@@ -51,6 +55,7 @@ The audit reads:
 - `docs/DEVELOPMENT.md` ADR-0012 condition matrix;
 - `docs/assurance/omcc-cutover-scorecard.md` requirement statuses;
 - `docs/assurance/omcc-legacy-pattern-map.md` D1-D20 disposition statuses;
+- observed Claude/Codex runtime experience parity from `runtime:doctor`;
 - `plugins/runtime/docs/host-parity-baseline.md`;
 - `.release-please-manifest.json` plus runtime doctor plugin install/cache evidence;
 - latest runtime compat, consensus, and context artifacts;
@@ -66,8 +71,9 @@ operator to backfill dates before the candidate point.
 ## Boundaries
 
 - No plugin install/update/uninstall.
-- Audit mode: no host config, auth, permission, sandbox, hook trust, git,
-  artifact, or workflow mutation.
+- Audit mode: no host config, auth, permission, sandbox, hook trust, git, or
+  artifact mutation. Proof execution flags can run bounded peer/workflow
+  commands but do not mutate host trust or relax permissions.
 - Record mode: writes only explicit cutover evidence artifacts.
 - No automatic final cutover declaration.
 - No inference that omcc-dev is inactive without explicit evidence.
