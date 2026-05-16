@@ -50,6 +50,7 @@ describe('runtime cutover audit', () => {
     strictEqual(report.ready_candidate, false);
     strictEqual(report.checks.find((check) => check.id === 'adr0012_conditions').status, 'partial');
     strictEqual(report.checks.find((check) => check.id === 'omcc_replacement_scorecard').status, 'partial');
+    strictEqual(report.checks.find((check) => check.id === 'legacy_omcc_pattern_map').status, 'satisfied');
     strictEqual(report.checks.find((check) => check.id === 'latest_consensus_context_artifacts').status, 'stale');
     strictEqual(report.checks.find((check) => check.id === 'latest_completion_footer_state').status, 'not-verified');
     strictEqual(report.checks.find((check) => check.id === 'omcc_dev_daily_workflow').status, 'not-verified');
@@ -59,6 +60,32 @@ describe('runtime cutover audit', () => {
     ok(text.includes('conditions: 1:partial, 2:partial, 3:partial, 4:partial'));
     ok(text.includes('unresolved: 1:partial, 2:partial, 3:partial, 4:partial'));
     ok(text.includes('scorecard: satisfied=0/12; unresolved=R1:partial'));
+    ok(text.includes('legacy map: patterns=20; improved=14; retained=1; rejected=2; deferred=3'));
+  });
+
+  it('blocks readiness when the legacy omcc pattern map is incomplete or load-bearing', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      legacyPatternMap: incompleteLegacyPatternMap(),
+    });
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport(),
+      footerState: 'closed',
+      omccDevActive: 'no',
+    });
+
+    const mapCheck = report.checks.find((check) => check.id === 'legacy_omcc_pattern_map');
+    strictEqual(report.status, 'not-ready');
+    strictEqual(mapCheck.status, 'partial');
+    ok(mapCheck.evidence.missing_patterns.includes('D3'));
+    strictEqual(mapCheck.evidence.active_dependency_blockers[0].id, 'D2');
+    const text = formatText(report);
+    ok(text.includes('missing patterns: D3'));
+    ok(text.includes('active dependency blockers: D2'));
   });
 
   it('reports plugin version drift as blocked', async () => {
@@ -106,7 +133,12 @@ describe('runtime cutover audit', () => {
   });
 });
 
-async function seedRepo({ scorecardStatus, conditionStatus, contextCreatedAt }) {
+async function seedRepo({
+  scorecardStatus,
+  conditionStatus,
+  contextCreatedAt,
+  legacyPatternMap = completeLegacyPatternMap(),
+}) {
   const root = await mkdtemp(join(tmpdir(), 'runtime-cutover-audit-'));
   await mkdir(join(root, 'docs', 'assurance'), { recursive: true });
   await mkdir(join(root, 'plugins', 'runtime', 'docs'), { recursive: true });
@@ -117,6 +149,7 @@ async function seedRepo({ scorecardStatus, conditionStatus, contextCreatedAt }) 
   await mkdir(join(root, 'plugins', 'orchestrator', '.claude-plugin'), { recursive: true });
   await writeFile(join(root, 'docs', 'DEVELOPMENT.md'), conditionRows(conditionStatus));
   await writeFile(join(root, 'docs', 'assurance', 'omcc-cutover-scorecard.md'), scorecardRows(scorecardStatus));
+  await writeFile(join(root, 'docs', 'assurance', 'omcc-legacy-pattern-map.md'), legacyPatternMap);
   await writeFile(join(root, 'plugins', 'runtime', 'docs', 'host-parity-baseline.md'), 'Observed on 2026-05-16 with Claude Code `2.1.143`, Codex CLI\n`0.130.0`, official docs.\n');
   await writeFile(join(root, '.release-please-manifest.json'), JSON.stringify({
     'plugins/companions': '0.4.0',
@@ -131,6 +164,46 @@ async function seedRepo({ scorecardStatus, conditionStatus, contextCreatedAt }) 
     created_at: contextCreatedAt,
   }));
   return root;
+}
+
+function completeLegacyPatternMap() {
+  const rows = [
+    ['D1', 'improved', 'Active daily workflow has a replacement.'],
+    ['D2', 'improved', 'Active daily workflow has a replacement.'],
+    ['D3', 'improved', 'Active daily workflow has a replacement.'],
+    ['D4', 'improved', 'Active daily workflow has a replacement.'],
+    ['D5', 'retained', 'Active daily workflow has a replacement.'],
+    ['D6', 'improved', 'Active daily workflow has a replacement.'],
+    ['D7', 'improved', 'Active daily workflow has a replacement.'],
+    ['D8', 'improved', 'Active daily workflow has a replacement.'],
+    ['D9', 'improved', 'Active daily workflow has a replacement.'],
+    ['D10', 'improved', 'Active daily workflow has a replacement.'],
+    ['D11', 'improved', 'Active daily workflow has a replacement.'],
+    ['D12', 'improved', 'Active daily workflow has a replacement.'],
+    ['D13', 'improved', 'Active daily workflow has a replacement.'],
+    ['D14', 'improved', 'Active daily workflow has a replacement.'],
+    ['D15', 'improved', 'Active daily workflow has a replacement.'],
+    ['D16', 'rejected', 'No active daily dependency; explicit peer surfaces replace it.'],
+    ['D17', 'deferred', 'No active daily dependency; future typed intake can revisit it.'],
+    ['D18', 'deferred', 'No active daily dependency; cited brief is available through engineer.'],
+    ['D19', 'deferred', 'No active daily dependency; designer remains future domain scope.'],
+    ['D20', 'rejected', 'No active daily dependency; artifact pointers replace raw peer output.'],
+  ];
+  return legacyPatternRows(rows);
+}
+
+function incompleteLegacyPatternMap() {
+  return legacyPatternRows([
+    ['D1', 'improved', 'Active daily workflow has a replacement.'],
+    ['D2', 'deferred', 'Active daily dependency remains for typed intake.'],
+  ]);
+}
+
+function legacyPatternRows(rows) {
+  return `| ID | Legacy surface | Legacy evidence | Agentic-plugins disposition | Replacement evidence | Status | Cutover impact |
+|---|---|---|---|---|---|---|
+${rows.map(([id, status, impact]) => `| ${id} | legacy | evidence | disposition | replacement | ${status} | ${impact} |`).join('\n')}
+`;
 }
 
 function conditionRows(status) {
