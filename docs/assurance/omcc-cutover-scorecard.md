@@ -100,10 +100,12 @@ plugin-management recommendations after the `plugin-runtime` `0.46.0` release
 and installed-state refresh. Current runtime execution evidence on 2026-05-16
 from installed `plugin-runtime` `0.46.0` reports permission proof, deep peer
 smoke, and workflow continuation proof passed in both directions; experience
-parity is 91%. The latest dogfood evidence was recorded through footer-guided
-`runtime:cutover record` after PR #277, release PR #278, release tag
-`plugin-runtime-v0.46.0`, and installed-cache refresh. Codex hook review/trust
-attestation remains a manual active-session follow-up.
+parity is 91%. The `plugin-runtime` `0.46.0` release/install proof loop was
+recorded through footer-guided `runtime:cutover record` after PR #277, release
+PR #278, release tag `plugin-runtime-v0.46.0`, and installed-cache refresh.
+Subsequent docs/test-only dogfood records, including PR #279, are intentionally
+tracked in runtime cutover artifacts rather than hand-maintained here. Codex
+hook review/trust attestation remains a manual active-session follow-up.
 
 ## Requirement Scorecard
 
