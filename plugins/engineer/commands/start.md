@@ -26,6 +26,14 @@ The plugin root in shell snippets below is `$CLAUDE_PLUGIN_ROOT`
 reason, fall back to
 `$(find ~/.claude/plugins/cache/agentic-plugins/engineer -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)`.
 
+**Quality-first defaults**: optimize for
+`best-results-over-token-minimization`, not token saving. Default peer breadth
+is the documented phase-boundary ensemble; model/effort defaults are
+host-native or explicit `runtime:settings` values and must not be downshifted
+for token saving without a user constraint; review depth follows the workflow
+phase, including Phase 5 `parallel-review` and re-review after refine until
+findings converge or a design-level issue is surfaced.
+
 ---
 
 ## Phase 0 — Argument parsing

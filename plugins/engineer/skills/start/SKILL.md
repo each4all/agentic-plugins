@@ -76,6 +76,15 @@ refinement path, state the standards/root-cause quality gate: source of
 truth or standard, invariant or root cause, verification evidence, and
 rollback/defer/escalation path.
 
+Apply the shared **Quality-first defaults** from the entry-routing contract:
+optimize for `best-results-over-token-minimization`; use the documented
+phase-boundary ensemble as default peer breadth; keep model/effort defaults at
+host-native or explicit `runtime:settings` values without downshift for token saving;
+and choose review depth from the workflow phase, including Phase 5
+`parallel-review` plus re-review after refine until findings converge or a
+design-level issue is surfaced. Treat budget, latency, model, effort, or peer
+limits as user constraints and state the quality tradeoff before proceeding.
+
 ### Phase 1 — Brainstorm composite (investigate → frame → decide)
 
 Per ADR-0020 §Sub-decision 2, Phase 1 is a **composite** of three

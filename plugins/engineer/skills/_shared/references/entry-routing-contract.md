@@ -51,3 +51,22 @@ quality gate:
 This gate is not optional. A fast change that does not preserve the
 standard/root-cause/evidence line should be routed back to
 `engineer:investigate`, `engineer:decide`, or `orchestrator:plan`.
+
+## Quality-First Defaults
+
+Engineer optimizes for result quality, not token minimization, unless the
+user explicitly constrains budget, latency, or peer breadth. The default
+policy is:
+
+- **Default peer breadth**: run the documented phase-boundary peer ensemble
+  when the phase calls for it; do not skip Claude/Codex peer collection merely
+  to save tokens.
+- **Model/effort defaults**: use host-native defaults or explicit
+  `runtime:settings` model/effort configuration. Do not downshift model or
+  effort for token saving without a user-supplied constraint.
+- **Review depth**: use the deepest review surface implied by the workflow
+  phase, including `parallel-review` for Phase 5 and re-review after refine
+  until findings converge or a design-level issue is surfaced.
+- **User constraints**: when the user requests budget, latency, model, effort,
+  or peer limits, treat those as explicit constraints and state the quality
+  tradeoff before proceeding.
