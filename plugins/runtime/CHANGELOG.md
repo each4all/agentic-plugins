@@ -14,7 +14,6 @@
 ### Features
 
 * **plugin/runtime:** codify compat policy ADR ([86609de](https://github.com/each4all/agentic-plugins/commit/86609de2fd3560eef4434954a27aad0be532f5ed))
-* **plugin/runtime:** codify compat policy ADR ([86609de](https://github.com/each4all/agentic-plugins/commit/86609de2fd3560eef4434954a27aad0be532f5ed))
 
 ## [0.47.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.46.0...plugin-runtime-v0.47.0) (2026-05-16)
 
