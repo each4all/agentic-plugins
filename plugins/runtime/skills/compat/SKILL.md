@@ -18,13 +18,13 @@ description: "Runtime compatibility snapshot and release-note gap planner for Cl
 node "<runtime-plugin-root>/scripts/compat.mjs" --repo-root "$REPO_ROOT" snapshot [--format text|json] [--timeout-ms <n>]
 node "<runtime-plugin-root>/scripts/compat.mjs" --repo-root "$REPO_ROOT" check (--run-id <id>|--latest) [--format text|json]
 node "<runtime-plugin-root>/scripts/compat.mjs" --repo-root "$REPO_ROOT" ingest-release-notes (--run-id <id>|--latest) --release-notes-file <path>
-node "<runtime-plugin-root>/scripts/compat.mjs" --repo-root "$REPO_ROOT" ingest-release-notes (--run-id <id>|--latest) --release-notes-url <url>
+node "<runtime-plugin-root>/scripts/compat.mjs" --repo-root "$REPO_ROOT" ingest-release-notes (--run-id <id>|--latest) --release-notes-url <url> [--fetch-release-notes-url] [--timeout-ms <n>]
 node "<runtime-plugin-root>/scripts/compat.mjs" --repo-root "$REPO_ROOT" plan (--run-id <id>|--latest) [--format text|json]
 ```
 
 3. Present the returned artifact pointers and next steps.
    - Treat `release_notes_required` as a blocker for detailed compatibility planning.
-   - Do not fetch URLs unless a future explicit fetch mode is added and the operator requests it.
+   - Do not fetch URLs unless `--fetch-release-notes-url` is explicitly present.
    - Do not mutate Claude/Codex config, auth, sandbox, approvals, or plugin installs from this surface.
 
 ## Scope
@@ -45,7 +45,7 @@ Compat reports:
 - No host CLI install, update, or authentication.
 - No host-native config writes.
 - No plugin install/update execution.
-- No automatic URL fetch.
+- No automatic URL fetch; URL content fetch requires `--fetch-release-notes-url`.
 - No raw command help output in the main session.
 - No claim that a plan proves parity; it only identifies update work.
 
@@ -55,5 +55,6 @@ Compat reports:
 $runtime:compat snapshot
 $runtime:compat check --latest
 $runtime:compat ingest-release-notes --latest --release-notes-file /tmp/codex-release-notes.md
+$runtime:compat ingest-release-notes --latest --release-notes-url https://example.com/codex-release-notes --fetch-release-notes-url
 $runtime:compat plan --latest
 ```

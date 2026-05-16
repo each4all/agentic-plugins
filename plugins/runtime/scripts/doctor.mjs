@@ -1927,11 +1927,18 @@ function summarizeCompatReleaseNotes({ repoRoot, runId, releaseNotesPath, releas
     pointer: pointer(repoRoot, releaseNotesPath),
     status: 'available',
     count: notes.length,
-    content_backed: notes.filter((note) => note.kind === 'file' && note.status === 'stored').length,
+    content_backed: notes.filter((note) => isContentBackedCompatReleaseNote(note)).length,
     url_pointers: notes.filter((note) => note.kind === 'url').length,
     stored: notes.filter((note) => note.status === 'stored').length,
     not_fetched: notes.filter((note) => note.status === 'not_fetched').length,
   };
+}
+
+function isContentBackedCompatReleaseNote(note) {
+  if (!note || note.status !== 'stored') return false;
+  if (note.kind === 'file') return Boolean(note.pointer);
+  if (note.kind === 'url') return Boolean(note.content_pointer);
+  return false;
 }
 
 function emptyCompatReleaseNotes(repoRoot, runId) {

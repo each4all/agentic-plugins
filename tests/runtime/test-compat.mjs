@@ -79,7 +79,7 @@ describe('runtime compat', () => {
 
     const gap = await readJson(join(root, report.gap_pointer));
     strictEqual(gap.schema_version, 'runtime-compat-gap-1.0');
-    strictEqual(gap.next_steps[0], `runtime:compat ingest-release-notes --run-id ${RUN_ID} --release-notes-file <path>`);
+    strictEqual(gap.next_steps[0], `runtime:compat ingest-release-notes --run-id ${RUN_ID} --release-notes-file <path> or --release-notes-url <url> --fetch-release-notes-url`);
   });
 
   it('ingests explicit release-note files and plans affected compatibility surfaces', async () => {
@@ -167,11 +167,81 @@ describe('runtime compat', () => {
     ok(plan.next_steps[0].includes('ingest-release-notes'));
   });
 
+  it('fetches release-note URLs only when explicitly requested and treats them as content-backed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-url-fetch-'));
+    const url = 'https://example.test/release-notes';
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({
+        claude: '2.1.150 (Claude Code)',
+        codex: 'codex-cli 0.130.0',
+      }),
+    });
+
+    const ingest = await runCompat({
+      command: 'ingest-release-notes',
+      repoRoot: root,
+      runId: RUN_ID,
+      releaseNotesUrls: [url],
+      fetchReleaseNotesUrls: true,
+      timeoutMs: 5000,
+      now: new Date('2026-05-16T00:03:00.000Z'),
+      urlFetcher: async (actualUrl, { timeoutMs }) => {
+        strictEqual(actualUrl, url);
+        strictEqual(timeoutMs, 5000);
+        return {
+          body: [
+            '# Claude Code 2.1.150',
+            '',
+            'Plugin hooks changed Stop behavior.',
+            'Model effort, sandbox, and permission handling changed.',
+            '',
+          ].join('\n'),
+          finalUrl: actualUrl,
+          contentType: 'text/markdown; charset=utf-8',
+        };
+      },
+    });
+    strictEqual(ingest.notes[0].kind, 'url');
+    strictEqual(ingest.notes[0].status, 'stored');
+    ok(ingest.notes[0].pointer.endsWith('.json'));
+    ok(ingest.notes[0].content_pointer.endsWith('.md'));
+    const rawText = await readFile(join(root, ingest.notes[0].content_pointer), 'utf8');
+    ok(rawText.includes('Plugin hooks changed Stop behavior'));
+
+    const check = await runCompat({
+      command: 'check',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+    });
+    strictEqual(check.status, 'gap_analysis_ready');
+    strictEqual(check.release_notes_required, false);
+
+    const plan = await runCompat({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+    strictEqual(plan.status, 'planned');
+    ok(plan.affected_surfaces.includes('hooks'));
+    ok(plan.affected_surfaces.includes('model-effort'));
+    ok(plan.affected_surfaces.includes('sandbox-permissions'));
+  });
+
   it('parses arguments and rejects unsupported shapes', async () => {
     deepStrictEqual(parseArgs(['snapshot', '--timeout-ms', '60000']).command, 'snapshot');
     strictEqual(parseArgs(['check', '--latest']).latest, true);
+    strictEqual(parseArgs(['ingest-release-notes', '--release-notes-url', 'https://example.test/notes', '--fetch-release-notes-url']).fetchReleaseNotesUrls, true);
     await rejects(
       () => runCompat({ command: 'ingest-release-notes', repoRoot: '/tmp', runId: RUN_ID }),
+      /requires --release-notes-file or --release-notes-url/,
+    );
+    await rejects(
+      () => runCompat({ command: 'ingest-release-notes', repoRoot: '/tmp', runId: RUN_ID, fetchReleaseNotesUrls: true }),
       /requires --release-notes-file or --release-notes-url/,
     );
   });
