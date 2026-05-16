@@ -203,6 +203,21 @@ describe('/engineer:start — entry routing and decision contract', () => {
     }
   });
 
+  it('requires quality-first defaults for peer breadth, model effort, and review depth', async () => {
+    const text = await readFile(ROUTING_CONTRACT_PATH, 'utf8');
+    for (const token of [
+      'Quality-First Defaults',
+      'result quality, not token minimization',
+      'Default peer breadth',
+      'Model/effort defaults',
+      'Review depth',
+      'User constraints',
+      'parallel-review',
+    ]) {
+      ok(text.includes(token), `quality-first defaults missing ${token}`);
+    }
+  });
+
   it('mirrors the routing recommendation in both Claude command and Codex skill surfaces', async () => {
     const command = await readFile(COMMAND_PATH, 'utf8');
     const skill = await readFile(SKILL_PATH, 'utf8');
@@ -243,6 +258,24 @@ describe('/engineer:start — entry routing and decision contract', () => {
         'standards',
         'root-cause',
         'verification evidence',
+      ]) {
+        ok(text.includes(token), `surface missing ${token}`);
+      }
+    }
+  });
+
+  it('mirrors quality-first defaults in both command and skill surfaces', async () => {
+    const command = await readFile(COMMAND_PATH, 'utf8');
+    const skill = await readFile(SKILL_PATH, 'utf8');
+    for (const text of [command, skill]) {
+      for (const token of [
+        'Quality-first defaults',
+        'best-results-over-token-minimization',
+        'peer breadth',
+        'model/effort defaults',
+        'review depth',
+        'parallel-review',
+        'token saving',
       ]) {
         ok(text.includes(token), `surface missing ${token}`);
       }
