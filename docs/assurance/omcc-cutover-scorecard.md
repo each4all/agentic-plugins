@@ -1,0 +1,268 @@
+# omcc Cutover Assurance Scorecard
+
+Status: Draft
+Last reviewed: 2026-05-16
+
+This scorecard translates the user's omcc replacement requirements into
+repo-verifiable assurance gates. It does not replace
+[`adr/0007-migration-cutover-plan.md`](../adr/0007-migration-cutover-plan.md)
+or [`adr/0012-omcc-removal-preconditions.md`](../adr/0012-omcc-removal-preconditions.md).
+It is the operator-facing checklist for deciding whether agentic-plugins is
+ready to replace omcc in daily development.
+
+Cutover is not complete while any gate below is `partial` or `missing`.
+Passing tests, synced manifests, or green release automation are evidence, not
+completion by themselves.
+
+## Current Verdict
+
+Overall status: **not cutover-ready**.
+
+The repo already has the right architectural direction:
+
+- `plugins/engineer` is the primary L3 development workbench.
+- `plugins/orchestrator` is the L2 multi-deliverable coordination surface.
+- `plugins/runtime` is the L1 runtime/operator control plane.
+- `plugins/companions` is the L1 script-only companion bridge library.
+
+The remaining gap is assurance depth: version-drift strategy, disagreement
+convergence quality, self-hosted dogfood evidence, and explicit completion
+state need to be made measurable enough that omcc can be removed without a
+fallback.
+
+## Cutover Gate Terms
+
+The strengthened removal gate is intentionally stricter than "the replacement
+features exist." It combines ADR-0012 capability evidence with a short real-use
+stability window and this scorecard's broader product-quality checks.
+
+- **Condition 2 satisfied** means engineer's real companion path can complete
+  both `claude -> codex` and `codex -> claude` round-trips from the currently
+  installed host versions. Fixture-only tests and historical `plugins/research`
+  evidence do not satisfy this gate because engineer adds its own state,
+  dispatch, and adapter code on the peer path.
+- **Condition 3 satisfied** means agentic-plugins can be advanced through
+  non-trivial repo work using agentic-plugins surfaces only: engineer,
+  orchestrator, runtime, companions, git, and GitHub. A task does not count if
+  it falls back to `omcc-dev` for planning, continuity, peer review, PR
+  handling, or recovery.
+- **One week of dogfood** means a calendar week of normal development after the
+  condition 2/3 candidate point, with daily or task-level evidence that the
+  agentic-plugins surfaces remained the primary workflow. Any `omcc-dev`
+  fallback must either restart the window or be recorded as a blocker with a
+  follow-up fix.
+- **Scorecard 100%** means every requirement row below is either `satisfied` or
+  explicitly rejected/deferred with a rationale the user accepts. It does not
+  mean every imaginable future plugin feature exists; it means no listed
+  omcc-replacement requirement remains `partial` or `missing`.
+
+The verifier can only report `cutover-ready-candidate`. The final cutover still
+requires the user to explicitly declare that omcc can be archived or removed,
+per ADR-0007.
+
+## PR, Release, and Installed-State Continuity
+
+Cutover evidence is only trustworthy if development continues from the same
+published and installed surfaces that the user will actually use. A finished
+implementation PR is therefore not the end of a slice.
+
+For each runtime/engineer/orchestrator slice, use this continuity loop:
+
+1. Develop on a non-default branch and open a draft PR with validation evidence.
+2. After review and merge, let release-please open the package release PR when
+   the commit touches a release-managed package path.
+3. Merge the release PR, then verify manifest, plugin manifest, and marketplace
+   version sync with `validate:versions` and `sync:marketplace --check`.
+4. Refresh the locally installed agentic-plugins surfaces through
+   `runtime:settings --execute-plugin-management` or the host-native commands it
+   recommends. This must stay explicit; runtime must not silently mutate host
+   plugin installs.
+5. Run `runtime:doctor`, `runtime:settings`, and when host versions moved,
+   `runtime:compat snapshot/check/plan` from the updated installed state.
+6. Clean up merged branches/worktrees only after the release and installed-state
+   checks are recorded.
+7. Start the next development slice from the updated main branch and installed
+   plugin state, not from the pre-release checkout.
+
+Current local dry-run evidence on 2026-05-16: `runtime:settings` reports Claude
+Code `2.1.142`, Codex CLI `0.130.0`, all four agentic-plugins surfaces
+available, source/cache versions matching the current repo manifest, and zero
+plugin-management recommendations. Codex hook review/trust attestation remains
+a manual active-session follow-up.
+
+## Requirement Scorecard
+
+| Req | User requirement | Current repo evidence | Status | Cutover gate |
+|---|---|---|---|---|
+| R1 | agentic-plugins must be superior-compatible with omcc/omcc-dev, not a simple baseline copy. | ADR-0007 mandates redesign-over-port; ADR-0010 maps omcc experience into a 4-layer/6-verb model; ADR-0019 and ADR-0020 replace omcc-dev single and multi-deliverable workflow shapes with engineer plus orchestrator. | partial | Every retained omcc-dev behavior has an agentic-plugins equivalent, improvement, or documented rejection with rationale. |
+| R2 | Overbuilt or unnecessary parts should be improved or removed. | `plugins/research` was retired and cited-brief moved into `engineer:investigate`; `plugins/designer` is deferred rather than shipped prematurely. | partial | A cutover audit lists all legacy omcc patterns as retained, improved, rejected, or deferred; no active daily workflow depends on a rejected/deferred pattern. |
+| R3 | Switching development tools must work in both directions: Claude Code to Codex and Codex to Claude. | Cross-host tests cover resume and stop-archive behavior for engineer/orchestrator; companions exist in both directions. | partial | Real companion execution and workflow continuation are verified in both directions from current installed host versions, not only in-process fixtures. |
+| R4 | Claude Code and Codex user experience must be equivalent where possible; non-portable host-specific features must not become hard dependencies. | Architecture documents host-specific adapter boundaries; runtime baseline documents command/hook/subagent differences; Codex macro/meta skill mirrors exist. | partial | A parity baseline is refreshed for current host versions and all command surfaces publish equivalent outcome, state, and recovery behavior even when syntax differs. |
+| R5 | Optimize for best results, not token minimization. | Engineer uses phase-boundary ensembles; runtime consensus supports broad explicit peer rosters without a hidden fixed product cap. | partial | Quality policy is explicit: default peer breadth, model/effort defaults, and review depth are chosen for result quality unless the user requests constraints. |
+| R6 | Context engineering should improve output quality; decisions requested from the user must be concrete, comparative, and evidence-based. | Runtime context artifacts, footer guidance, and engineer/orchestrator presentation protocols exist. | partial | Decision prompts have a shared contract: options, tradeoffs, risks, recommendation, confidence, and evidence pointers. This contract is tested or linted in user-facing command/skill docs. |
+| R7a | Work must prioritize standards, root cause, quality, and recommended practice over short-term fixes. | ADRs enforce hexagonal architecture, adapter boundaries, explicit storage contracts, and no hidden permission/session mutation. | partial | Review and implementation workflows include a standards/root-cause gate before accepting quick fixes. |
+| R7b | Completion must guide the next action, or confidently say there is nothing left. | Runtime footer is pointer-only and exposes context/consensus/PR readiness guidance. | partial | Footer emits a completion-state enum such as `review-needed`, `publish-needed`, `cleanup-needed`, `next-work-available`, or `closed`; commands render next action from that state. |
+| R8 | Domain entry should start with engineer when appropriate, and propose orchestrator/worktree/parallelization when useful. | ADR-0020 defines `/engineer:start` vs `/orchestrator:plan` entry routing; runtime has read-only worktree planning. | partial | Entry prompts include a routing recommendation: single deliverable, multi-deliverable, worktree/parallel, runtime readiness, or pure single-verb analysis. |
+| R9 | Track Claude Code and Codex CLI version history; when latest host versions differ from remembered versions, use release notes to plan compatibility updates. | Runtime host parity baselines record observed CLI versions and drift policy. `runtime:compat` now records snapshots, compares remembered baseline versions, ingests explicit release-note artifacts, and emits update plans. Doctor integration and automated baseline freshness warnings remain follow-up. | partial | Add doctor-visible stale compat status, richer release-note parsing, and cutover-scorecard verification. |
+| R10 | Claude and Codex should be used as complementary perspectives; same-issue opinion collection is valuable. | Companions and runtime consensus provide cross-host peer collection. | partial | Consensus plans can include both companion-backed peers and manual/subagent lanes with explicit roles and artifact pointers. |
+| R11 | When Claude and Codex conflict, loop opinions back until there is a well-converged, non-compromise synthesis. | `runtime:consensus next-round` can create targeted rebuttal rounds from durable disagreements; automatic unbounded loops are forbidden. | partial | Consensus distinguishes perspective diversity from direct contradiction, requires rebuttal prompts for contradictions, and records `converged`, `owner-decision-required`, or `non-consensus` with evidence. |
+
+## Required Design Extensions
+
+### 1. Runtime Compatibility Surface
+
+The first runtime-owned surface is `runtime:compat`, with these commands:
+
+- `snapshot`: record local `claude --version`, `codex --version`, selected
+  help surfaces, plugin versions, and baseline source hashes.
+- `check`: compare the latest snapshot with the stored baseline and classify
+  drift as `none`, `host-version-changed`, `plugin-surface-changed`,
+  `docs-baseline-stale`, or `release-notes-required`.
+- `ingest-release-notes`: attach release notes from explicit files or URLs.
+  Network fetch, if added, must be explicit and must not be the default.
+- `plan`: produce a compatibility update plan that maps release-note changes to
+  affected surfaces: companions, hooks, skills, subagents, plugin management,
+  model/effort resolution, sandbox/permissions, and docs/tests.
+
+Artifacts should live under:
+
+```text
+.agentic-plugins/runs/compat/<run-id>/
+  snapshot.json
+  release-notes/
+  gap-analysis.json
+  update-plan.md
+  latest.json
+```
+
+Current and remaining acceptance evidence:
+
+- Unit tests for snapshot schema, drift classification, release-note file
+  ingestion, URL pointer recording, and update-plan generation.
+- A docs update to `plugins/runtime/docs/host-parity-baseline.md` whenever
+  `claude --version`, `codex --version`, or documented host behavior changes.
+- `runtime:doctor` reads the latest compat status and reports stale baselines.
+
+### 2. Completion State Contract
+
+Extend the runtime footer from advisory text to an explicit state contract.
+The footer must still be pointer-only and must not mutate host session context.
+
+Proposed states:
+
+- `review-needed`: local changes exist or peer/review results need owner review.
+- `publish-needed`: commit/PR/release work is ready but not complete.
+- `cleanup-needed`: branch/worktree/plugin/cache cleanup is the next action.
+- `next-work-available`: requested work is complete, but planned follow-up work
+  remains and should be offered with a concrete entry command.
+- `blocked`: operator action, auth, permission, sandbox, or external review is
+  required.
+- `closed`: no repo, PR, release, cleanup, or planned follow-up work remains.
+
+Acceptance evidence:
+
+- Footer helper emits the state in text and JSON.
+- Engineer/orchestrator completion commands include the state and next command
+  or "no further action" guidance.
+- Tests verify that raw peer/consensus output is never printed in the footer.
+
+### 3. Consensus Convergence Contract
+
+Extend `runtime:consensus` with a convergence taxonomy:
+
+- `aligned`: peers agree on the recommendation and risk framing.
+- `complementary`: peers emphasize different dimensions without contradiction.
+- `contradiction`: peers recommend mutually exclusive actions or incompatible
+  facts.
+- `insufficient-evidence`: peers disagree because evidence is missing.
+- `owner-decision-required`: disagreement remains after bounded rebuttal rounds.
+- `non-consensus`: irreducible disagreement is preserved with evidence and no
+  false compromise.
+
+Rules:
+
+- `next-round` is required for `contradiction` unless the user explicitly stops.
+- Rebuttal prompts must include the opposing view, synthesized issue framing,
+  and requested evidence standard.
+- Automatic unbounded loops stay forbidden. Default max rounds should remain
+  bounded; further rounds require explicit user approval.
+- A synthesis must not average incompatible recommendations. It should either
+  converge on evidence, ask the owner to choose, or record non-consensus.
+
+Acceptance evidence:
+
+- `consensus.json` records convergence state and contradiction summaries.
+- `next-round` prompts are generated only from durable disagreements.
+- Tests cover contradiction, complementary disagreement, empty disagreement, and
+  owner-decision-required states.
+
+### 4. Cutover Audit Command or Script
+
+Add a lightweight verifier after the contracts above land. It may be a runtime
+command (`runtime:doctor --cutover-scorecard`) or a repo script.
+
+It should check:
+
+- ADR-0012 condition statuses.
+- Host parity baseline freshness.
+- Current installed plugin versions vs release-please manifest versions.
+- Latest compat snapshot freshness.
+- Latest consensus and context artifact state.
+- Footer state from the most recent completion surface.
+- Whether any daily workflow is still being completed through omcc-dev.
+
+The verifier must not declare cutover by itself. It can only report
+`cutover-ready-candidate`; the user declares cutover per ADR-0007.
+
+## Recommended PR Sequence
+
+1. **PR A: scorecard + compatibility ADR/design**
+   - Land this scorecard.
+   - Decide whether the surface is named `runtime:compat` or folded into
+     `runtime:doctor`.
+   - Define artifact schemas before implementation.
+
+2. **PR B: runtime compatibility snapshot/check**
+   - Implement version snapshot and drift classification.
+   - Wire stale compat status into `runtime:doctor`.
+
+3. **PR C: release-note gap planner**
+   - Implement explicit release-note ingestion.
+   - Generate compatibility update plans.
+
+4. **PR D: completion-state footer**
+   - Add footer state enum and tests.
+   - Update engineer/orchestrator completion surfaces.
+
+5. **PR E: consensus convergence taxonomy**
+   - Add convergence state to `runtime:consensus`.
+   - Add contradiction-aware next-round prompts.
+
+6. **PR F: cutover audit**
+   - Add the non-mutating cutover readiness report.
+   - Update `docs/DEVELOPMENT.md` ADR-0012 rows only when real evidence exists.
+
+## Open Decisions
+
+1. Should the host-version tool be a new `runtime:compat` command, or a
+   `runtime:doctor` sub-mode?
+   - Recommendation: new `runtime:compat`. Version/release-note analysis has
+     durable artifacts and planning behavior; doctor should consume its status,
+     not own all of it.
+
+2. Should release notes be fetched automatically?
+   - Recommendation: no by default. Use explicit files/URLs first; add explicit
+     fetch later if needed.
+
+3. What is the bounded consensus default?
+   - Recommendation: default `max_rounds=2`, hard cap `3`, with explicit owner
+     approval for any further round.
+
+4. What counts as same user experience across Claude and Codex?
+   - Recommendation: equivalent outcome, state, recovery path, and evidence,
+     not identical invocation syntax.
+
+5. When can omcc be removed?
+   - Recommendation: only after ADR-0012 conditions 1-4 are satisfied, this
+     scorecard has no `partial` or `missing` gate, at least one week of
+     sustained daily use is recorded, and the user explicitly declares cutover.

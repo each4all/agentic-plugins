@@ -1,0 +1,7 @@
+interface:
+  display_name: "Runtime - Compat"
+  short_description: "Host-version drift snapshots and compatibility update planning"
+  default_prompt: "Use $runtime:compat to snapshot Claude/Codex versions, ingest release-note artifacts, and plan compatibility updates without mutating host state."
+
+policy:
+  allow_implicit_invocation: false
