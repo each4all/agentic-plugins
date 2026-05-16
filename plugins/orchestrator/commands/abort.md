@@ -288,7 +288,8 @@ echo "  Next Stop event will evaluate A1-A4 and auto-archive the macro file."
 
 Append the runtime completion footer after the abort summary. Use the
 runtime footer helper when available, or render the same fields manually:
-context state, workflow id/path, artifact pointers, recommended next work,
-and next-session action/command or prompt pointer. The footer is advisory
+context state, completion state plus state-derived next action, workflow
+id/path, artifact pointers, recommended next work, and next-session
+action/command or prompt pointer. The footer is advisory
 and pointer-only; do not mutate host session context or paste raw peer /
 consensus output into the main session.
