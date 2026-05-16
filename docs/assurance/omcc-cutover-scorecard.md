@@ -85,7 +85,7 @@ For each runtime/engineer/orchestrator slice, use this continuity loop:
    plugin state, not from the pre-release checkout.
 
 Current local dry-run evidence on 2026-05-16: `runtime:settings` reports Claude
-Code `2.1.142`, Codex CLI `0.130.0`, all four agentic-plugins surfaces
+Code `2.1.143`, Codex CLI `0.130.0`, all four agentic-plugins surfaces
 available, source/cache versions matching the current repo manifest, and zero
 plugin-management recommendations. Codex hook review/trust attestation remains
 a manual active-session follow-up.
@@ -103,7 +103,7 @@ a manual active-session follow-up.
 | R7a | Work must prioritize standards, root cause, quality, and recommended practice over short-term fixes. | ADRs enforce hexagonal architecture, adapter boundaries, explicit storage contracts, and no hidden permission/session mutation. | partial | Review and implementation workflows include a standards/root-cause gate before accepting quick fixes. |
 | R7b | Completion must guide the next action, or confidently say there is nothing left. | Runtime footer is pointer-only and exposes context/consensus/PR readiness guidance. | partial | Footer emits a completion-state enum such as `review-needed`, `publish-needed`, `cleanup-needed`, `next-work-available`, or `closed`; commands render next action from that state. |
 | R8 | Domain entry should start with engineer when appropriate, and propose orchestrator/worktree/parallelization when useful. | ADR-0020 defines `/engineer:start` vs `/orchestrator:plan` entry routing; runtime has read-only worktree planning. | partial | Entry prompts include a routing recommendation: single deliverable, multi-deliverable, worktree/parallel, runtime readiness, or pure single-verb analysis. |
-| R9 | Track Claude Code and Codex CLI version history; when latest host versions differ from remembered versions, use release notes to plan compatibility updates. | Runtime host parity baselines record observed CLI versions and drift policy. `runtime:compat` records snapshots, compares remembered baseline versions, ingests explicit release-note artifacts, and emits update plans; `runtime:doctor` now reads latest compat metadata into the handoff artifact criterion. | partial | Add richer release-note parsing, baseline-refresh verification, and cutover-scorecard verification. |
+| R9 | Track Claude Code and Codex CLI version history; when latest host versions differ from remembered versions, use release notes to plan compatibility updates. | Runtime host parity baselines record observed CLI versions and drift policy. `runtime:compat` records snapshots, compares remembered baseline versions, ingests explicit release-note artifacts, and emits update plans; `runtime:doctor` now reads latest compat metadata into the handoff artifact criterion. Claude Code `2.1.142`/`2.1.143` release notes were ingested as explicit content-backed notes and the host parity baseline was refreshed to Claude Code `2.1.143`. | partial | Add richer release-note parsing and cutover-scorecard verification. |
 | R10 | Claude and Codex should be used as complementary perspectives; same-issue opinion collection is valuable. | Companions and runtime consensus provide cross-host peer collection. | partial | Consensus plans can include both companion-backed peers and manual/subagent lanes with explicit roles and artifact pointers. |
 | R11 | When Claude and Codex conflict, loop opinions back until there is a well-converged, non-compromise synthesis. | `runtime:consensus next-round` can create targeted rebuttal rounds from durable disagreements; automatic unbounded loops are forbidden. | partial | Consensus distinguishes perspective diversity from direct contradiction, requires rebuttal prompts for contradictions, and records `converged`, `owner-decision-required`, or `non-consensus` with evidence. |
 
@@ -143,7 +143,9 @@ Current and remaining acceptance evidence:
   release-note-required blocking, and raw release-note body non-disclosure.
 - A docs update to `plugins/runtime/docs/host-parity-baseline.md` whenever
   `claude --version`, `codex --version`, or documented host behavior changes.
-- `runtime:doctor` reads the latest compat status and reports stale baselines.
+- `runtime:doctor` reads the latest compat status and reports stale baselines;
+  the Claude Code `2.1.143` baseline refresh produces a `current`
+  `runtime:compat check` result from the refreshed checkout.
 
 ### 2. Completion State Contract
 
@@ -236,7 +238,7 @@ Landed slices:
 
 Remaining follow-up:
 
-- Richer release-note parsing and baseline-refresh verification.
+- Richer release-note parsing.
 - Cutover-scorecard verification that marks R9 satisfied only when the latest
   current host versions have content-backed release-note evidence or an updated
   accepted baseline.
