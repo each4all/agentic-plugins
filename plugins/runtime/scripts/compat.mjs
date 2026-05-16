@@ -97,7 +97,7 @@ export async function checkSnapshot(options = {}) {
   const selected = await selectRun(repoRoot, options);
   const snapshot = await readJson(resolve(repoRoot, selected.snapshotPointer));
   const baseline = options.baseline ?? snapshot.remembered_baseline ?? await loadBaselineVersions();
-  const releaseNotes = await listReleaseNotes(repoRoot, selected.runId);
+  const releaseNotes = await readReleaseNoteBodies(repoRoot, selected.runId);
   const gap = buildGapAnalysis({ snapshot, baseline, releaseNotes, now: options.now ?? new Date() });
   const gapPath = resolve(compatRunDir(repoRoot, selected.runId), 'gap-analysis.json');
   await writeJson(gapPath, gap);
@@ -112,6 +112,7 @@ export async function checkSnapshot(options = {}) {
     gap_pointer: pointer(repoRoot, gapPath),
     host_gaps: gap.host_gaps,
     release_notes: gap.release_notes,
+    release_note_coverage: gap.release_note_coverage,
     next_steps: gap.next_steps,
     limits: compatLimits(),
   };
@@ -257,21 +258,21 @@ export async function planCompatibility(options = {}) {
   const selected = await selectRun(repoRoot, options);
   const gapPath = resolve(compatRunDir(repoRoot, selected.runId), 'gap-analysis.json');
   const snapshot = await readJson(resolve(repoRoot, selected.snapshotPointer));
+  const releaseNotes = await readReleaseNoteBodies(repoRoot, selected.runId);
   const gap = buildGapAnalysis({
     snapshot,
     baseline: options.baseline ?? snapshot.remembered_baseline ?? await loadBaselineVersions(),
-    releaseNotes: await listReleaseNotes(repoRoot, selected.runId),
+    releaseNotes,
     now: options.now ?? new Date(),
   });
   await writeJson(gapPath, gap);
-  const releaseNotes = await readReleaseNoteBodies(repoRoot, selected.runId);
   const surfaces = classifySurfaces({ gap, releaseNotes });
   const plan = {
     schema_version: PLAN_SCHEMA,
     runtime_version: VERSION,
     run_id: selected.runId,
     created_at: toIso(options.now ?? new Date()),
-    status: gap.overall.release_notes_required && releaseNotes.content_backed_count === 0
+    status: gap.overall.release_notes_required
       ? 'blocked_release_notes_required'
       : 'planned',
     gap_pointer: pointer(repoRoot, gapPath),
@@ -337,8 +338,9 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
     };
   });
   const driftClass = classifyDrift(hostGaps);
-  const hasContentBackedNotes = releaseNotes.notes.some(isContentBackedReleaseNote);
-  const releaseNotesRequired = driftClass !== 'none' && !hasContentBackedNotes;
+  const releaseNoteCoverage = buildReleaseNoteCoverage({ hostGaps, releaseNotes });
+  const releaseNotesRequired = driftClass !== 'none'
+    && (releaseNotes.content_backed_count === 0 || releaseNoteCoverage.missing_required_hosts.length > 0);
   const overallStatus = releaseNotesRequired
     ? 'release_notes_required'
     : driftClass === 'none'
@@ -356,10 +358,59 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
       release_notes_required: releaseNotesRequired,
     },
     host_gaps: hostGaps,
-    release_notes: releaseNotes,
+    release_notes: summarizeReleaseNotes(releaseNotes),
+    release_note_coverage: releaseNoteCoverage,
     next_steps: releaseNotesRequired
       ? [`runtime:compat ingest-release-notes --run-id ${snapshot.run_id} --release-notes-file <path> or --release-notes-url <url> --fetch-release-notes-url`]
       : [`runtime:compat plan --run-id ${snapshot.run_id}`],
+  };
+}
+
+function summarizeReleaseNotes(releaseNotes) {
+  return {
+    pointer: releaseNotes.pointer,
+    count: releaseNotes.count,
+    content_backed_count: releaseNotes.content_backed_count ?? 0,
+    notes: (releaseNotes.notes ?? []).map((note) => ({
+      id: note.id,
+      kind: note.kind,
+      source: note.source,
+      pointer: note.pointer,
+      content_pointer: note.content_pointer ?? null,
+      status: note.status,
+      bytes: note.bytes ?? 0,
+      sha256: note.sha256 ?? null,
+    })),
+  };
+}
+
+function buildReleaseNoteCoverage({ hostGaps, releaseNotes }) {
+  const noteAnalyses = releaseNotes.note_analyses ?? [];
+  const hosts = {};
+  for (const gap of hostGaps) {
+    const required = gap.status === 'version_changed';
+    const coveringNotes = required
+      ? noteAnalyses
+        .filter((note) => note.hosts.includes(gap.host) && note.versions.includes(gap.observed_version))
+        .map((note) => note.id)
+      : [];
+    hosts[gap.host] = {
+      required,
+      covered: !required || coveringNotes.length > 0,
+      observed_version: gap.observed_version,
+      baseline_version: gap.baseline_version,
+      covering_notes: coveringNotes,
+    };
+  }
+  const missingRequiredHosts = Object.entries(hosts)
+    .filter(([, coverage]) => coverage.required && !coverage.covered)
+    .map(([host]) => host);
+  return {
+    required: missingRequiredHosts.length > 0 || Object.values(hosts).some((coverage) => coverage.required),
+    content_backed_count: releaseNotes.content_backed_count ?? 0,
+    missing_required_hosts: missingRequiredHosts,
+    hosts,
+    rule: 'Changed host versions require content-backed release notes mentioning both the changed host and observed version, unless the accepted baseline has already been refreshed.',
   };
 }
 
@@ -374,21 +425,7 @@ function classifySurfaces({ gap, releaseNotes }) {
   const text = releaseNotes.combined_text.toLowerCase();
   const surfaces = new Set();
   if (gap.overall.drift_class !== 'none') surfaces.add('host-version-baseline');
-  const rules = [
-    ['companions', /\b(companion|claude -p|codex exec|prompt-file|json envelope|stdout)\b/],
-    ['hooks', /\b(hook|plugin_hooks|precompact|postcompact|sessionstart|stop)\b/],
-    ['skills', /\b(skill|agent skill|skill\.md)\b/],
-    ['subagents', /\b(subagents?|agent team|team mode|agents\.max_threads)\b/],
-    ['plugin-management', /\b(plugin|marketplace|install|upgrade|update|uninstall)\b/],
-    ['model-effort', /\b(model|effort|reasoning)\b/],
-    ['sandbox-permissions', /\b(sandbox|approval|permission|network)\b/],
-    ['auth', /\b(auth|login|credential|token)\b/],
-    ['mcp', /\bmcp\b/],
-    ['config', /\b(config|settings|toml|json)\b/],
-  ];
-  for (const [surface, pattern] of rules) {
-    if (pattern.test(text)) surfaces.add(surface);
-  }
+  for (const surface of classifyReleaseNoteSurfaces(text)) surfaces.add(surface);
   return [...surfaces].sort();
 }
 
@@ -488,6 +525,7 @@ async function listReleaseNotes(repoRoot, runId) {
 async function readReleaseNoteBodies(repoRoot, runId) {
   const releaseNotes = await listReleaseNotes(repoRoot, runId);
   const texts = [];
+  const noteAnalyses = [];
   let contentBacked = 0;
   for (const note of releaseNotes.notes) {
     if (!isContentBackedReleaseNote(note)) continue;
@@ -496,6 +534,7 @@ async function readReleaseNoteBodies(repoRoot, runId) {
     try {
       const text = await readFile(resolve(repoRoot, bodyPointer), 'utf8');
       texts.push(text);
+      noteAnalyses.push(analyzeReleaseNote({ note, text }));
       contentBacked++;
     } catch {
       // Missing release-note bodies are treated as absent content.
@@ -504,8 +543,44 @@ async function readReleaseNoteBodies(repoRoot, runId) {
   return {
     ...releaseNotes,
     content_backed_count: contentBacked,
+    note_analyses: noteAnalyses,
     combined_text: texts.join('\n\n'),
   };
+}
+
+function analyzeReleaseNote({ note, text }) {
+  const body = String(text ?? '');
+  const lower = body.toLowerCase();
+  const hosts = [];
+  if (/\bclaude(?:\s+code)?\b/i.test(body)) hosts.push('claude');
+  if (/\bcodex(?:\s+cli)?\b/i.test(body)) hosts.push('codex');
+  const versions = [...new Set([...body.matchAll(/[0-9]+(?:\.[0-9]+){1,3}/g)].map((match) => match[0]))];
+  const surfaces = classifyReleaseNoteSurfaces(lower);
+  return {
+    id: note.id,
+    kind: note.kind,
+    hosts: [...new Set(hosts)],
+    versions,
+    surfaces,
+  };
+}
+
+function classifyReleaseNoteSurfaces(lowerText) {
+  const rules = [
+    ['companions', /\b(companion|claude -p|codex exec|prompt-file|json envelope|stdout)\b/],
+    ['hooks', /\b(hook|plugin_hooks|precompact|postcompact|sessionstart|stop)\b/],
+    ['skills', /\b(skill|agent skill|skill\.md)\b/],
+    ['subagents', /\b(subagents?|agent team|team mode|agents\.max_threads)\b/],
+    ['plugin-management', /\b(plugin|marketplace|install|upgrade|update|uninstall)\b/],
+    ['model-effort', /\b(model|effort|reasoning)\b/],
+    ['sandbox-permissions', /\b(sandbox|approval|permission|network)\b/],
+    ['auth', /\b(auth|login|credential|token)\b/],
+    ['mcp', /\bmcp\b/],
+    ['config', /\b(config|settings|toml|json)\b/],
+  ];
+  return rules
+    .filter(([, pattern]) => pattern.test(lowerText))
+    .map(([surface]) => surface);
 }
 
 function isContentBackedReleaseNote(note) {
@@ -726,6 +801,14 @@ export function formatText(report) {
     lines.push('', 'host gaps:');
     for (const gap of report.host_gaps) {
       lines.push(`- ${gap.host}: ${gap.status}; observed=${gap.observed_version ?? 'unknown'}; baseline=${gap.baseline_version ?? 'unknown'}`);
+    }
+  }
+  if (report.release_note_coverage) {
+    const coverage = report.release_note_coverage;
+    lines.push('', 'release-note coverage:');
+    lines.push(`- content-backed=${coverage.content_backed_count}; missing-required-hosts=${coverage.missing_required_hosts.join(',') || 'none'}`);
+    for (const [host, hostCoverage] of Object.entries(coverage.hosts ?? {})) {
+      lines.push(`- ${host}: required=${hostCoverage.required}; covered=${hostCoverage.covered}; observed=${hostCoverage.observed_version ?? 'unknown'}; notes=${hostCoverage.covering_notes.join(',') || 'none'}`);
     }
   }
   if (report.affected_surfaces?.length) {

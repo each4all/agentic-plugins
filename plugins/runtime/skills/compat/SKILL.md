@@ -5,7 +5,7 @@ description: "Runtime compatibility snapshot and release-note gap planner for Cl
 
 # Compat (runtime framework primitive)
 
-`runtime:compat` records host-version truth for Claude Code and Codex CLI, attaches explicit release-note artifacts, and creates compatibility update plans. It is artifact-first and does not install, update, authenticate, or mutate host settings.
+`runtime:compat` records host-version truth for Claude Code and Codex CLI, attaches explicit release-note artifacts, requires changed host/version coverage from content-backed release notes, and creates compatibility update plans. It is artifact-first and does not install, update, authenticate, or mutate host settings.
 
 ## When invoked by command (`/runtime:compat` or `$runtime:compat`)
 
@@ -24,6 +24,8 @@ node "<runtime-plugin-root>/scripts/compat.mjs" --repo-root "$REPO_ROOT" plan (-
 
 3. Present the returned artifact pointers and next steps.
    - Treat `release_notes_required` as a blocker for detailed compatibility planning.
+   - Treat a missing changed-host/version coverage row as still requiring release
+     notes, even when another content-backed note was stored.
    - Do not fetch URLs unless `--fetch-release-notes-url` is explicitly present.
    - Do not mutate Claude/Codex config, auth, sandbox, approvals, or plugin installs from this surface.
 
