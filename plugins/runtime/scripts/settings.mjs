@@ -16,7 +16,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor } from './doctor.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.9';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.10';
 export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.0';
 export const CONFIG_KEYS = [
   'model',
@@ -119,6 +119,7 @@ export async function runSettings({
   });
   const hookSettings = await buildHookSettingsPlan({
     codexPluginHooks: doctor.codex_plugin_hooks,
+    plugins: pluginPlans,
     homeDir: resolvedHomeDir,
     applyCodexPluginHooks,
   });
@@ -955,6 +956,7 @@ function buildCodexHookReviewManualFollowups(codexPluginHooks, hookSettings, cod
   if (codexHookReview?.attested === true && codexHookReview.status === 'attested') return [];
   const bundled = hookSettings?.packaged_plugins?.bundled ?? codexPluginHooks?.summary?.bundled_plugins ?? [];
   const status = hookSettings?.status ?? codexPluginHooks?.status;
+  const targets = hookSettings?.review_targets ?? [];
   if (bundled.length === 0 || status !== 'ready') return [];
   return [{
     id: 'codex-hook-review',
@@ -963,7 +965,8 @@ function buildCodexHookReviewManualFollowups(codexPluginHooks, hookSettings, cod
     reason: 'Codex plugin hooks are packaged and plugin_hooks is enabled, but runtime:settings cannot verify active-session hook review/trust state.',
     environment: 'Open the active Codex session for this repository.',
     commands: ['/hooks'],
-    verify: `Review/trust bundled hooks for ${bundled.join(', ')}; if /hooks shows "New hook - review required", review each new hook first. Do not attest from /hooks Installed counts alone, including Active=0 output. Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
+    verify: `Review/trust bundled hooks for ${bundled.join(', ')} (${targets.length} review target(s)); if /hooks shows "New hook - review required", review each new hook first. Do not attest from /hooks Installed counts alone, including Active=0 output. Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
+    review_targets: targets,
   }];
 }
 
@@ -987,10 +990,11 @@ function buildCodexHookReviewAttestation({ codexPluginHooks, hookSettings, plugi
     bundled_plugins: bundled,
     manifest_exposed_plugins: manifestExposed,
     plugin_versions: pluginVersions,
+    review_targets: hookSettings?.review_targets ?? [],
     plugin_hooks_enabled: codexPluginHooks?.feature_flags?.plugin_hooks === true,
     plugin_hooks_stage: codexPluginHooks?.feature_flags?.plugin_hooks_stage ?? null,
     assertion: requested
-      ? 'operator confirms /hooks was opened in the active Codex session and bundled agentic-plugins hooks were reviewed/trusted'
+      ? 'operator confirms /hooks was opened in the active Codex session and all listed bundled agentic-plugins hook review targets were reviewed/trusted'
       : null,
     reason: requested
       ? null
@@ -1535,7 +1539,7 @@ function resolveProjectedSetting({ keys, projection }) {
   };
 }
 
-async function buildHookSettingsPlan({ codexPluginHooks, homeDir, applyCodexPluginHooks }) {
+async function buildHookSettingsPlan({ codexPluginHooks, plugins = {}, homeDir, applyCodexPluginHooks }) {
   const hookReport = codexPluginHooks ?? {
     status: 'unknown',
     feature_flags: {},
@@ -1588,6 +1592,7 @@ async function buildHookSettingsPlan({ codexPluginHooks, homeDir, applyCodexPlug
       default_file_only: hookReport.summary?.default_file_only_plugins ?? [],
       command_warnings: hookReport.summary?.command_warning_plugins ?? [],
     },
+    review_targets: buildCodexHookReviewTargets({ codexPluginHooks: hookReport, plugins }),
     recommendations,
     host_config: hostConfig,
     mutation_boundary: {
@@ -1601,6 +1606,29 @@ async function buildHookSettingsPlan({ codexPluginHooks, homeDir, applyCodexPlug
       session_command: 'codex --enable plugin_hooks',
     },
   };
+}
+
+function buildCodexHookReviewTargets({ codexPluginHooks, plugins }) {
+  const targets = [];
+  for (const pluginName of codexPluginHooks?.summary?.bundled_plugins ?? []) {
+    const effective = codexPluginHooks?.plugin_entries?.[pluginName]?.effective ?? {};
+    const hooksFile = effective.hooks_file ?? {};
+    const commandAnalysis = hooksFile.command_analysis ?? {};
+    targets.push({
+      plugin: pluginName,
+      version: plugins?.[pluginName]?.source_version ?? null,
+      origin: effective.origin ?? null,
+      manifest_exposed: effective.manifest_declared === true,
+      hooks_path: sanitizeValue(hooksFile.path),
+      events: Array.isArray(hooksFile.events) ? hooksFile.events.map((event) => sanitizeValue(event)).filter(Boolean).sort() : [],
+      handler_count: Number.isFinite(hooksFile.handler_count) ? hooksFile.handler_count : 0,
+      command_count: Number.isFinite(commandAnalysis.command_count) ? commandAnalysis.command_count : 0,
+      commands: Array.isArray(commandAnalysis.commands) ? commandAnalysis.commands.map((command) => sanitizeValue(command)).filter(Boolean).sort() : [],
+      command_warnings: Array.isArray(commandAnalysis.warnings) ? commandAnalysis.warnings.map((warning) => sanitizeValue(warning)).filter(Boolean).sort() : [],
+      expected_review: 'Open /hooks, review this plugin hook set, trust it if the listed commands match expectations, then record runtime:settings --attest-codex-hook-review.',
+    });
+  }
+  return targets.sort((a, b) => a.plugin.localeCompare(b.plugin));
 }
 
 async function buildCodexPluginHooksHostConfigPlan({ homeDir, hookReport, applyCodexPluginHooks }) {
@@ -1934,6 +1962,13 @@ export function formatText(report) {
     if (Object.keys(review.plugin_versions ?? {}).length > 0) {
       lines.push(`- plugin-versions: ${Object.entries(review.plugin_versions).map(([name, version]) => `${name}@${version ?? 'unknown'}`).join(', ')}`);
     }
+    for (const target of review.review_targets ?? []) {
+      lines.push(`- review-target: ${target.plugin}@${target.version ?? 'unknown'}; origin=${target.origin ?? '<unknown>'}; manifest-exposed=${target.manifest_exposed}; path=${target.hooks_path ?? '<unknown>'}; events=${target.events.join(',') || 'none'}; handlers=${target.handler_count}; commands=${target.command_count}; warnings=${target.command_warnings.join(',') || 'none'}`);
+      for (const command of target.commands ?? []) {
+        lines.push(`  hook-command: ${command}`);
+      }
+      lines.push(`  expected: ${target.expected_review}`);
+    }
     if (review.requested && review.assertion) lines.push(`- assertion: ${review.assertion}`);
     if (review.requested && Array.isArray(review.limits)) {
       for (const limit of review.limits) lines.push(`- limit: ${limit}`);
@@ -1979,6 +2014,11 @@ function formatSettingsMode(report) {
   if (report.apply_codex_plugin_hooks) modes.push('codex-plugin-hooks');
   if (report.attest_codex_hook_review) modes.push('codex-hook-review');
   return modes.length > 0 ? modes.join('+') : 'dry-run';
+}
+
+function sanitizeValue(value) {
+  if (value === null || value === undefined) return null;
+  return String(value).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function semverCompare(a, b) {
