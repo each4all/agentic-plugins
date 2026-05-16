@@ -398,6 +398,58 @@ describe('runtime footer', () => {
     ok(report.pr_handling.criteria.some((criterion) => criterion.name === 'blocking_reviews' && criterion.status === 'unknown'));
   });
 
+  it('renders advisory cutover record guidance without writing evidence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-cutover-ready-'));
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      completionState: 'next-work-available',
+      completionReason: 'release/install loop complete; R4 remains open',
+      cutoverRecord: true,
+      cutoverOmccDevActive: 'no',
+      cutoverOmccDevNote: 'runtime-only dogfood',
+      cutoverDogfoodDate: '2026-05-16',
+    });
+
+    strictEqual(report.cutover_record.status, 'ready');
+    strictEqual(report.cutover_record.recommended, true);
+    strictEqual(report.cutover_record.footer_state, 'next-work-available');
+    strictEqual(report.cutover_record.omcc_dev_active, 'no');
+    ok(report.cutover_record.command.includes('$runtime:cutover record'));
+    ok(report.cutover_record.command.includes('--footer-state next-work-available'));
+    ok(report.cutover_record.command.includes('--footer-reason "release/install loop complete; R4 remains open"'));
+    ok(report.cutover_record.command.includes('--omcc-dev-active no'));
+    ok(report.cutover_record.command.includes('--omcc-dev-note "runtime-only dogfood"'));
+    ok(report.cutover_record.command.includes('--dogfood-date 2026-05-16'));
+    ok(report.cutover_record.limits.some((limit) => /does not write cutover evidence/i.test(limit)));
+
+    const text = formatText(report);
+    ok(text.includes('cutover record:'));
+    ok(text.includes('- status: ready'));
+    ok(text.includes('$runtime:cutover record'));
+    ok(text.includes('does not write cutover evidence'));
+  });
+
+  it('requires explicit omcc-dev activity evidence before suggesting cutover record', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-cutover-missing-'));
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'neutral',
+      cutoverRecord: true,
+    });
+
+    strictEqual(report.cutover_record.status, 'needs-operator-evidence');
+    strictEqual(report.cutover_record.recommended, false);
+    strictEqual(report.cutover_record.omcc_dev_active, null);
+    strictEqual(report.cutover_record.command, null);
+    ok(report.cutover_record.next_action.includes('--cutover-omcc-dev-active'));
+
+    const text = formatText(report);
+    ok(text.includes('- status: needs-operator-evidence'));
+    ok(text.includes('- recommended: false'));
+    ok(!text.includes('runtime:cutover record --footer-state'));
+  });
+
   it('parses CLI arguments and rejects unsafe pointers or context ids', async () => {
     const opts = parseArgs([
       'render',
@@ -432,6 +484,13 @@ describe('runtime footer', () => {
       'clear',
       '--pr-branch-state',
       'pushable',
+      '--cutover-record',
+      '--cutover-omcc-dev-active',
+      'unknown',
+      '--cutover-omcc-dev-note',
+      'operator will verify activity',
+      '--cutover-dogfood-date',
+      '2026-05-16',
       '--recommended-next-work',
       'Commit after review.',
     ]);
@@ -448,6 +507,10 @@ describe('runtime footer', () => {
     strictEqual(opts.prValidationState, 'passed');
     strictEqual(opts.prReviewState, 'clear');
     strictEqual(opts.prBranchState, 'pushable');
+    strictEqual(opts.cutoverRecord, true);
+    strictEqual(opts.cutoverOmccDevActive, 'unknown');
+    strictEqual(opts.cutoverOmccDevNote, 'operator will verify activity');
+    strictEqual(opts.cutoverDogfoodDate, '2026-05-16');
 
     throws(() => parseArgs(['render', '--context-latest', '--context-run-id', RUN_ID]), /Use either --context-run-id or --context-latest/);
     throws(() => parseArgs(['render', '--consensus-latest', '--consensus-run-id', CONSENSUS_RUN_ID]), /Use either --consensus-run-id or --consensus-latest/);
@@ -460,6 +523,9 @@ describe('runtime footer', () => {
     throws(() => parseArgs(['render', '--pr-validation-state', 'maybe']), /passed, waived, failed, not-run, or unknown/);
     throws(() => parseArgs(['render', '--pr-review-state', 'maybe']), /clear, blocking, or unknown/);
     throws(() => parseArgs(['render', '--pr-branch-state', 'maybe']), /pushable, not-pushable, or unknown/);
+    throws(() => parseArgs(['render', '--cutover-omcc-dev-active', 'maybe']), /yes, no, or unknown/);
+    throws(() => parseArgs(['render', '--cutover-dogfood-date', '2026-02-30']), /valid calendar date/);
+    throws(() => parseArgs(['render', '--cutover-dogfood-date', '05-16-2026']), /YYYY-MM-DD/);
     throws(() => parseArgs(['render', '--artifact', 'bad\npath']), /single-line/);
 
     const root = await mkdtemp(join(tmpdir(), 'runtime-footer-reject-'));
