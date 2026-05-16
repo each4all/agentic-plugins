@@ -41,6 +41,8 @@ describe('runtime compat', () => {
 
     const snapshot = await readJson(join(root, report.snapshot_pointer));
     strictEqual(snapshot.schema_version, 'runtime-compat-snapshot-1.0');
+    strictEqual(snapshot.policy.adr, 'ADR-0026');
+    strictEqual(report.policy.adr_pointer, 'docs/adr/0026-runtime-compatibility-drift-and-release-notes.md');
     strictEqual(snapshot.hosts.claude.probes.help.stdout_bytes > 0, true);
     strictEqual(snapshot.hosts.claude.probes.help.stdout_sha256.length, 64);
     strictEqual(snapshot.plugin_versions['plugins/runtime'], '0.31.9');
@@ -76,9 +78,11 @@ describe('runtime compat', () => {
     strictEqual(report.host_gaps.find((gap) => gap.host === 'claude').status, 'version_changed');
     strictEqual(report.host_gaps.find((gap) => gap.host === 'codex').status, 'matches');
     ok(formatText(report).includes('release_notes_required'));
+    ok(formatText(report).includes('policy: ADR-0026'));
 
     const gap = await readJson(join(root, report.gap_pointer));
     strictEqual(gap.schema_version, 'runtime-compat-gap-1.0');
+    strictEqual(gap.policy.changed_version_rule.includes('changed host version'), true);
     strictEqual(gap.next_steps[0], `runtime:compat ingest-release-notes --run-id ${RUN_ID} --release-notes-file <path> or --release-notes-url <url> --fetch-release-notes-url`);
   });
 
@@ -110,6 +114,7 @@ describe('runtime compat', () => {
       now: new Date('2026-05-16T00:02:00.000Z'),
     });
     strictEqual(ingest.status, 'ingested');
+    strictEqual(ingest.policy.adr, 'ADR-0026');
     strictEqual(ingest.notes[0].kind, 'file');
     strictEqual(ingest.notes[0].status, 'stored');
 
@@ -131,6 +136,7 @@ describe('runtime compat', () => {
       runId: RUN_ID,
     });
     strictEqual(plan.status, 'planned');
+    strictEqual(plan.policy.mutation_boundary.includes('artifact-only'), true);
     ok(plan.affected_surfaces.includes('hooks'));
     ok(plan.affected_surfaces.includes('model-effort'));
     ok(plan.affected_surfaces.includes('sandbox-permissions'));

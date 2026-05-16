@@ -16,6 +16,9 @@ const GAP_SCHEMA = 'runtime-compat-gap-1.0';
 const RELEASE_NOTES_SCHEMA = 'runtime-compat-release-notes-1.0';
 const PLAN_SCHEMA = 'runtime-compat-plan-1.0';
 const LATEST_SCHEMA = 'runtime-compat-latest-1.0';
+const POLICY_SCHEMA = 'runtime-compat-policy-1.0';
+const POLICY_ADR = 'ADR-0026';
+const POLICY_ADR_POINTER = 'docs/adr/0026-runtime-compatibility-drift-and-release-notes.md';
 const VALID_COMMANDS = new Set(['snapshot', 'check', 'ingest-release-notes', 'plan']);
 const RUN_ID_RE = /^compat-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -64,6 +67,7 @@ export async function createSnapshot(options = {}) {
     hosts: { claude, codex },
     remembered_baseline: baseline,
     plugin_versions: pluginVersions,
+    policy: compatibilityPolicy(),
     artifacts: [],
     limits: compatLimits(),
   };
@@ -84,6 +88,7 @@ export async function createSnapshot(options = {}) {
     hosts: hostSummary(snapshot.hosts),
     remembered_baseline: baseline,
     plugin_versions: pluginVersions,
+    policy: snapshot.policy,
     next_steps: [
       `runtime:compat check --run-id ${runId}`,
       `runtime:compat ingest-release-notes --run-id ${runId} --release-notes-file <path>`,
@@ -113,6 +118,7 @@ export async function checkSnapshot(options = {}) {
     host_gaps: gap.host_gaps,
     release_notes: gap.release_notes,
     release_note_coverage: gap.release_note_coverage,
+    policy: gap.policy,
     next_steps: gap.next_steps,
     limits: compatLimits(),
   };
@@ -222,6 +228,7 @@ export async function ingestReleaseNotes(options = {}) {
     schema_version: RELEASE_NOTES_SCHEMA,
     run_id: selected.runId,
     updated_at: now,
+    policy: compatibilityPolicy(),
     notes: [...(previous.notes ?? []), ...entries],
     limits: [
       'Release note ingestion stores explicit files, URL pointers, or explicitly fetched URL content.',
@@ -237,6 +244,7 @@ export async function ingestReleaseNotes(options = {}) {
     run_id: selected.runId,
     status: 'ingested',
     release_notes_pointer: pointer(repoRoot, indexPath),
+    policy: index.policy,
     notes: entries.map(({ id, kind, source, pointer: notePointer, content_pointer: contentPointer, status }) => ({
       id,
       kind,
@@ -278,6 +286,7 @@ export async function planCompatibility(options = {}) {
     gap_pointer: pointer(repoRoot, gapPath),
     affected_surfaces: surfaces,
     recommended_sequence: buildRecommendedSequence({ gap, surfaces, releaseNotes }),
+    policy: compatibilityPolicy(),
     limits: [
       'Compatibility plans are advisory and do not mutate host CLIs, host config, or plugin artifacts.',
       'Release-note URLs without ingested file content are pointers only and cannot support detailed gap planning.',
@@ -296,6 +305,7 @@ export async function planCompatibility(options = {}) {
     plan_pointer: pointer(repoRoot, planPath),
     affected_surfaces: surfaces,
     recommended_sequence: plan.recommended_sequence,
+    policy: plan.policy,
     next_steps: nextStepsForPlan(plan),
     limits: plan.limits,
   };
@@ -360,6 +370,7 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
     host_gaps: hostGaps,
     release_notes: summarizeReleaseNotes(releaseNotes),
     release_note_coverage: releaseNoteCoverage,
+    policy: compatibilityPolicy(),
     next_steps: releaseNotesRequired
       ? [`runtime:compat ingest-release-notes --run-id ${snapshot.run_id} --release-notes-file <path> or --release-notes-url <url> --fetch-release-notes-url`]
       : [`runtime:compat plan --run-id ${snapshot.run_id}`],
@@ -723,6 +734,18 @@ function compatLimits() {
   ];
 }
 
+function compatibilityPolicy() {
+  return {
+    schema_version: POLICY_SCHEMA,
+    adr: POLICY_ADR,
+    adr_pointer: POLICY_ADR_POINTER,
+    evidence_model: 'explicit-file-or-url-pointer',
+    fetch_boundary: 'Release-note URLs are not fetched unless --fetch-release-notes-url is supplied.',
+    changed_version_rule: 'A changed host version requires content-backed release notes mentioning both the changed host and observed version unless the accepted baseline is intentionally refreshed.',
+    mutation_boundary: 'runtime:compat is artifact-only and must not install, update, authenticate, mutate host config, or relax host permissions.',
+  };
+}
+
 export function parseArgs(argv) {
   const args = [...argv];
   let command = null;
@@ -791,6 +814,9 @@ export function formatText(report) {
   if (report.gap_pointer) lines.push(`gap analysis: ${report.gap_pointer}`);
   if (report.release_notes_pointer) lines.push(`release notes: ${report.release_notes_pointer}`);
   if (report.plan_pointer) lines.push(`plan: ${report.plan_pointer}`);
+  if (report.policy) {
+    lines.push(`policy: ${report.policy.adr} (${report.policy.adr_pointer})`);
+  }
   if (report.hosts) {
     lines.push('', 'hosts:');
     for (const [host, value] of Object.entries(report.hosts)) {
@@ -840,7 +866,7 @@ Usage:
   runtime:compat ingest-release-notes (--run-id <id>|--latest) --release-notes-url <url> [--fetch-release-notes-url] [--timeout-ms <n>]
   runtime:compat plan (--run-id <id>|--latest) [--format text|json]
 
-Records Claude Code and Codex CLI version snapshots, compares them to the remembered host-parity baseline, stores explicit release-note artifacts, and emits compatibility update plans. It does not fetch URLs by default; URL fetch requires --fetch-release-notes-url and never mutates host config or plugin state.`;
+Records Claude Code and Codex CLI version snapshots under ${POLICY_ADR}, compares them to the remembered host-parity baseline, stores explicit release-note artifacts, and emits compatibility update plans. It does not fetch URLs by default; URL fetch requires --fetch-release-notes-url and never mutates host config or plugin state.`;
 }
 
 function validateRunId(value) {

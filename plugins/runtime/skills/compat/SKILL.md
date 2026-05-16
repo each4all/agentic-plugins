@@ -5,7 +5,7 @@ description: "Runtime compatibility snapshot and release-note gap planner for Cl
 
 # Compat (runtime framework primitive)
 
-`runtime:compat` records host-version truth for Claude Code and Codex CLI, attaches explicit release-note artifacts, requires changed host/version coverage from content-backed release notes, and creates compatibility update plans. It is artifact-first and does not install, update, authenticate, or mutate host settings.
+`runtime:compat` records host-version truth for Claude Code and Codex CLI under ADR-0026, attaches explicit release-note artifacts, requires changed host/version coverage from content-backed release notes, and creates compatibility update plans. It is artifact-first and does not install, update, authenticate, or mutate host settings.
 
 ## When invoked by command (`/runtime:compat` or `$runtime:compat`)
 
@@ -38,6 +38,7 @@ Compat reports:
 - remembered host-parity baseline versions from runtime docs;
 - release-please plugin versions from the current repo;
 - release-note artifact pointers;
+- the governing ADR-0026 policy block;
 - host-version drift classification;
 - affected compatibility surfaces inferred from release-note content;
 - a non-mutating compatibility update plan.
