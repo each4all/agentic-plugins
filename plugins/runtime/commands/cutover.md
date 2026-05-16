@@ -1,15 +1,17 @@
 ---
-description: Read-only omcc cutover readiness audit for ADR-0012 and scorecard evidence
-argument-hint: "[--format text|json] [--max-artifact-age-hours <n>] [--footer-state <state>] [--omcc-dev-active yes|no|unknown]"
+description: omcc cutover readiness audit and explicit dogfood evidence recorder
+argument-hint: "[record] [--format text|json] [--max-artifact-age-hours <n>] [--footer-state <state>] [--omcc-dev-active yes|no|unknown] [--dogfood-date YYYY-MM-DD]"
 ---
 
-# Runtime - Cutover Audit
+# Runtime - Cutover
 
 $ARGUMENTS
 
-Build a read-only cutover readiness report. This command does not declare final
-cutover. It can only report `cutover-ready-candidate`; ADR-0007 still requires
-an explicit user declaration before omcc is archived or removed.
+Build a cutover readiness report or record explicit dogfood evidence. Audit mode
+is read-only. `record` mode writes only a cutover evidence artifact under
+`.agentic-plugins/runs/cutover/`. This command does not declare final cutover.
+It can only report `cutover-ready-candidate`; ADR-0007 still requires an
+explicit user declaration before omcc is archived or removed.
 
 The text report starts with the strengthened cutover gate and, when the audit
 is not ready, prints the unresolved ADR-0012 condition numbers, unresolved
@@ -34,11 +36,27 @@ Checks:
 - host parity baseline freshness against current `runtime:doctor` evidence;
 - installed/cache plugin versions against `.release-please-manifest.json`;
 - latest compat, consensus, and context artifacts;
-- explicit footer state evidence when supplied;
-- explicit omcc-dev daily-workflow evidence when supplied.
+- one-week omcc-dev-free dogfood evidence from recorded cutover artifacts;
+- latest recorded or explicit footer state evidence;
+- latest recorded or explicit omcc-dev daily-workflow evidence.
+
+Recording example:
+
+```bash
+node "$RUNTIME_ROOT/scripts/cutover-audit.mjs" \
+  --repo-root "$REPO_ROOT" \
+  record \
+  --footer-state next-work-available \
+  --footer-reason "release/install loop complete; R4 remains open" \
+  --omcc-dev-active no \
+  --omcc-dev-note "runtime/git/GitHub workflow used without omcc-dev"
+```
 
 Limits:
 
-- No host config, auth, plugin, git, artifact, or workflow mutation.
+- Audit mode performs no host config, auth, plugin, git, artifact, or workflow
+  mutation.
+- Record mode writes only explicit cutover evidence artifacts under
+  `.agentic-plugins/runs/cutover/`.
 - Unknown omcc-dev usage or missing footer evidence blocks readiness.
 - This report is evidence aggregation, not the final cutover decision.

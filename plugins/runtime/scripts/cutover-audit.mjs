@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 
+import { randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, readdir, readFile } from 'node:fs/promises';
+import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runDoctor } from './doctor.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
+const CUTOVER_EVIDENCE_SCHEMA_VERSION = 'runtime-cutover-evidence-1.0';
 const DEFAULT_MAX_ARTIFACT_AGE_HOURS = 24;
+const DEFAULT_DOGFOOD_WINDOW_DAYS = 7;
 const CHECK_PASS = new Set(['satisfied', 'current', 'fresh', 'not-active']);
 const CHECK_UNREADY = new Set(['partial', 'blocked', 'stale', 'not-verified', 'missing']);
 const OMCC_ACTIVITY = new Set(['yes', 'no', 'unknown']);
@@ -31,11 +34,16 @@ const CUTOVER_GATE = [
 ];
 const REQUIRED_LEGACY_PATTERN_IDS = Array.from({ length: 20 }, (_, index) => `D${index + 1}`);
 const LEGACY_PATTERN_STATUSES = new Set(['improved', 'retained', 'rejected', 'deferred']);
+const CUTOVER_RUN_ID_RE = /^cutover-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+const ARTIFACT_KIND_RE = /^[A-Za-z0-9._-]+$/;
 
 export async function runCutoverAudit(options = {}) {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
   const now = options.now ?? new Date();
   const maxArtifactAgeHours = options.maxArtifactAgeHours ?? DEFAULT_MAX_ARTIFACT_AGE_HOURS;
+  const dogfoodWindowDays = options.dogfoodWindowDays
+    ? positiveInteger(options.dogfoodWindowDays, '--dogfood-window-days')
+    : DEFAULT_DOGFOOD_WINDOW_DAYS;
   const doctor = options.doctorReport ?? await runDoctor({
     repoRoot,
     homeDir: resolve(options.homeDir ?? homedir()),
@@ -43,6 +51,16 @@ export async function runCutoverAudit(options = {}) {
     now,
     format: 'json',
   });
+  const storedCutoverEvidence = await readCutoverEvidence(repoRoot);
+  const inlineEvidence = buildInlineCutoverEvidence({ options, now });
+  const cutoverEvidence = {
+    ...storedCutoverEvidence,
+    records: inlineEvidence
+      ? [...storedCutoverEvidence.records, inlineEvidence]
+      : storedCutoverEvidence.records,
+    latest: inlineEvidence ?? storedCutoverEvidence.latest,
+  };
+  const latestEvidence = cutoverEvidence.latest;
   const [scorecardText, legacyPatternText, developmentText, hostParityText, manifest] = await Promise.all([
     readOptionalText(resolve(repoRoot, 'docs/assurance/omcc-cutover-scorecard.md')),
     readOptionalText(resolve(repoRoot, 'docs/assurance/omcc-legacy-pattern-map.md')),
@@ -59,8 +77,9 @@ export async function runCutoverAudit(options = {}) {
     checkPluginVersions({ repoRoot, manifest, doctor }),
     checkCompatFreshness({ doctor, now, maxArtifactAgeHours }),
     await checkConsensusAndContext({ repoRoot, doctor, now, maxArtifactAgeHours }),
-    checkFooterState(options),
-    checkOmccActivity(options),
+    checkDogfoodEvidenceWindow({ evidence: cutoverEvidence, now, requiredDays: dogfoodWindowDays }),
+    checkFooterState({ options, latestEvidence }),
+    checkOmccActivity({ options, latestEvidence }),
   ];
   const readyCandidate = checks.every((check) => CHECK_PASS.has(check.status));
   return {
@@ -82,8 +101,69 @@ export async function runCutoverAudit(options = {}) {
     limits: [
       'This audit is read-only and does not install, uninstall, update, authenticate, mutate host config, mutate git state, or delete artifacts.',
       'cutover-ready-candidate is not final cutover; ADR-0007 still requires explicit user declaration.',
+      'Dogfood evidence is accepted only from explicit runtime:cutover record artifacts or explicit current-run flags.',
       'Unknown dogfood or omcc-dev usage evidence blocks readiness rather than being inferred.',
     ],
+  };
+}
+
+export async function recordCutoverEvidence(options = {}) {
+  const repoRoot = resolve(options.repoRoot ?? process.cwd());
+  const now = options.now ?? new Date();
+  const createdAt = now.toISOString();
+  const runId = options.runId ? validateCutoverRunId(options.runId) : makeCutoverRunId(now);
+  const footerState = options.footerState;
+  const omccDevActive = options.omccDevActive;
+  if (!FOOTER_STATES.has(footerState)) throw new Error('record requires --footer-state');
+  if (!OMCC_ACTIVITY.has(omccDevActive)) throw new Error('record requires --omcc-dev-active yes|no|unknown');
+  const dogfoodDate = validateDate(options.dogfoodDate ?? createdAt.slice(0, 10), '--dogfood-date');
+  const runDir = resolve(cutoverEvidenceRoot(repoRoot), runId);
+  await assertInside(cutoverEvidenceRoot(repoRoot), runDir);
+  await mkdir(runDir, { recursive: true });
+  const artifact = {
+    schema_version: CUTOVER_EVIDENCE_SCHEMA_VERSION,
+    runtime_version: VERSION,
+    run_id: runId,
+    status: 'recorded',
+    created_at: createdAt,
+    repo_root_pointer: '.',
+    dogfood: {
+      date: dogfoodDate,
+      omcc_dev_active: omccDevActive,
+      note: options.omccDevNote ?? null,
+    },
+    footer: {
+      state: footerState,
+      reason: options.footerReason ?? null,
+    },
+    summary: options.summary ?? null,
+    artifacts: normalizeArtifactPointers(repoRoot, options.artifacts ?? []),
+    limits: [
+      'This artifact records operator-provided cutover evidence; it does not declare final cutover.',
+      'Codex hook trust state is not mutated or independently verified by this artifact.',
+      'A no-omcc-dev dogfood claim is evidence for the recorded date only; runtime:cutover audit evaluates the full window separately.',
+    ],
+  };
+  const evidencePath = resolve(runDir, 'evidence.json');
+  await writeJson(evidencePath, artifact);
+  const latestPath = resolve(cutoverEvidenceRoot(repoRoot), 'latest.json');
+  await writeJson(latestPath, {
+    schema_version: 'runtime-cutover-latest-1.0',
+    runtime_version: VERSION,
+    run_id: runId,
+    evidence_pointer: relativePointer(repoRoot, evidencePath),
+    updated_at: createdAt,
+  });
+  return {
+    command: 'record',
+    version: VERSION,
+    status: 'recorded',
+    repo_root: repoRoot,
+    run_id: runId,
+    dogfood_date: dogfoodDate,
+    evidence_pointer: relativePointer(repoRoot, evidencePath),
+    latest_pointer: relativePointer(repoRoot, latestPath),
+    artifact,
   };
 }
 
@@ -311,15 +391,32 @@ async function checkConsensusAndContext({ repoRoot, doctor, now, maxArtifactAgeH
   };
 }
 
-function checkFooterState(options) {
-  const footerState = options.footerState ?? null;
+function checkDogfoodEvidenceWindow({ evidence, now, requiredDays }) {
+  const window = buildDogfoodWindow({ records: evidence.records, now, requiredDays });
+  return {
+    id: 'dogfood_evidence_window',
+    label: 'One-week omcc-dev-free dogfood evidence',
+    status: window.status,
+    evidence: window,
+    next_action: window.status === 'satisfied'
+      ? null
+      : window.status === 'blocked'
+        ? 'Restart or extend the dogfood window after recording omcc-dev-free evidence.'
+        : 'Record daily runtime:cutover record artifacts until the dogfood window reaches one calendar week.',
+  };
+}
+
+function checkFooterState({ options, latestEvidence }) {
+  const footerState = options.footerState ?? latestEvidence?.footer?.state ?? null;
+  const footerReason = options.footerReason ?? latestEvidence?.footer?.reason ?? null;
   return {
     id: 'latest_completion_footer_state',
     label: 'Latest completion footer state',
     status: footerState ? footerState === 'closed' ? 'satisfied' : 'partial' : 'not-verified',
     evidence: {
       footer_state: footerState,
-      reason: options.footerReason ?? null,
+      reason: footerReason,
+      source_run_id: footerState ? latestEvidence?.run_id ?? null : null,
     },
     next_action: footerState
       ? footerState === 'closed'
@@ -329,21 +426,108 @@ function checkFooterState(options) {
   };
 }
 
-function checkOmccActivity(options) {
-  const active = options.omccDevActive ?? 'unknown';
+function checkOmccActivity({ options, latestEvidence }) {
+  const active = options.omccDevActive ?? latestEvidence?.dogfood?.omcc_dev_active ?? 'unknown';
   return {
     id: 'omcc_dev_daily_workflow',
     label: 'Daily workflow still depends on omcc-dev',
     status: active === 'no' ? 'not-active' : active === 'yes' ? 'blocked' : 'not-verified',
     evidence: {
       omcc_dev_active: active,
-      note: options.omccDevNote ?? null,
+      note: options.omccDevNote ?? latestEvidence?.dogfood?.note ?? null,
+      source_run_id: active !== 'unknown' ? latestEvidence?.run_id ?? null : null,
     },
     next_action: active === 'no'
       ? null
       : active === 'yes'
         ? 'Continue agentic-plugins dogfood until daily workflow no longer depends on omcc-dev.'
         : 'Record explicit --omcc-dev-active yes|no evidence for the current dogfood period.',
+  };
+}
+
+function buildDogfoodWindow({ records, now, requiredDays }) {
+  const today = now.toISOString().slice(0, 10);
+  const usable = records
+    .map((record) => ({
+      run_id: record.run_id,
+      date: record.dogfood?.date ?? null,
+      omcc_dev_active: record.dogfood?.omcc_dev_active ?? 'unknown',
+      created_at: record.created_at ?? null,
+    }))
+    .filter((record) => record.date && record.date <= today);
+  if (usable.length === 0) {
+    return {
+      status: 'not-verified',
+      required_days: requiredDays,
+      covered_days: 0,
+      latest_date: null,
+      missing_dates: [],
+      blocked_dates: [],
+      accepted_dates: [],
+      total_records: records.length,
+    };
+  }
+
+  const byDate = new Map();
+  for (const record of usable) {
+    if (!byDate.has(record.date)) byDate.set(record.date, []);
+    byDate.get(record.date).push(record);
+  }
+  const latestDate = [...byDate.keys()].sort().at(-1);
+  const acceptedDates = [];
+  const missingDates = [];
+  const blockedDates = [];
+  for (let offset = 0; offset < requiredDays; offset += 1) {
+    const date = addUtcDays(latestDate, -offset);
+    const entries = byDate.get(date) ?? [];
+    if (entries.some((entry) => entry.omcc_dev_active === 'yes')) {
+      blockedDates.push(date);
+      continue;
+    }
+    if (entries.some((entry) => entry.omcc_dev_active === 'no')) {
+      acceptedDates.push(date);
+      continue;
+    }
+    missingDates.push(date);
+  }
+  acceptedDates.sort();
+  missingDates.sort();
+  blockedDates.sort();
+  return {
+    status: blockedDates.length > 0
+      ? 'blocked'
+      : acceptedDates.length >= requiredDays && missingDates.length === 0
+        ? 'satisfied'
+        : 'partial',
+    required_days: requiredDays,
+    covered_days: acceptedDates.length,
+    latest_date: latestDate,
+    missing_dates: missingDates,
+    blocked_dates: blockedDates,
+    accepted_dates: acceptedDates,
+    total_records: records.length,
+  };
+}
+
+function buildInlineCutoverEvidence({ options, now }) {
+  const hasFooter = options.footerState || options.footerReason;
+  const hasDogfood = options.omccDevActive || options.omccDevNote || options.dogfoodDate;
+  if (!hasFooter && !hasDogfood) return null;
+  return {
+    schema_version: CUTOVER_EVIDENCE_SCHEMA_VERSION,
+    runtime_version: VERSION,
+    run_id: 'current-run',
+    status: 'inline',
+    created_at: now.toISOString(),
+    dogfood: {
+      date: validateDate(options.dogfoodDate ?? now.toISOString().slice(0, 10), '--dogfood-date'),
+      omcc_dev_active: OMCC_ACTIVITY.has(options.omccDevActive) ? options.omccDevActive : 'unknown',
+      note: options.omccDevNote ?? null,
+    },
+    footer: {
+      state: FOOTER_STATES.has(options.footerState) ? options.footerState : null,
+      reason: options.footerReason ?? null,
+    },
   };
 }
 
@@ -427,8 +611,120 @@ async function readOptionalJson(path) {
   }
 }
 
+async function readCutoverEvidence(repoRoot) {
+  const root = cutoverEvidenceRoot(repoRoot);
+  const records = [];
+  let skippedInvalid = 0;
+  try {
+    await access(root, fsConstants.R_OK);
+  } catch {
+    return { records, latest: null, skipped_invalid: 0 };
+  }
+  const entries = await readdir(root, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !CUTOVER_RUN_ID_RE.test(entry.name)) continue;
+    const evidencePath = resolve(root, entry.name, 'evidence.json');
+    const artifact = await readOptionalJson(evidencePath);
+    if (!isCutoverEvidenceArtifact(artifact)) {
+      skippedInvalid += 1;
+      continue;
+    }
+    records.push({
+      ...artifact,
+      evidence_pointer: relativePointer(repoRoot, evidencePath),
+      selected_at_ms: Date.parse(artifact.created_at ?? ''),
+    });
+  }
+  const sorted = records
+    .filter((entry) => Number.isFinite(entry.selected_at_ms))
+    .sort((a, b) => a.selected_at_ms - b.selected_at_ms);
+  return {
+    records: sorted,
+    latest: sorted.at(-1) ?? null,
+    skipped_invalid: skippedInvalid,
+  };
+}
+
+function isCutoverEvidenceArtifact(value) {
+  return value
+    && typeof value === 'object'
+    && value.schema_version === CUTOVER_EVIDENCE_SCHEMA_VERSION
+    && CUTOVER_RUN_ID_RE.test(value.run_id ?? '')
+    && FOOTER_STATES.has(value.footer?.state)
+    && OMCC_ACTIVITY.has(value.dogfood?.omcc_dev_active)
+    && /^\d{4}-\d{2}-\d{2}$/.test(value.dogfood?.date ?? '');
+}
+
+function cutoverEvidenceRoot(repoRoot) {
+  return resolve(repoRoot, '.agentic-plugins/runs/cutover');
+}
+
+async function writeJson(path, value) {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function assertInside(root, target) {
+  const normalizedRoot = resolve(root);
+  const normalizedTarget = resolve(target);
+  if (normalizedTarget !== normalizedRoot && !normalizedTarget.startsWith(`${normalizedRoot}/`)) {
+    throw new Error(`Refusing to write outside cutover evidence root: ${target}`);
+  }
+}
+
+function normalizeArtifactPointers(repoRoot, values) {
+  return values.map((value) => {
+    const [kind, rawPointer] = String(value).split('=', 2);
+    const pointer = rawPointer ?? kind;
+    const normalizedKind = rawPointer ? kind : 'artifact';
+    if (!ARTIFACT_KIND_RE.test(normalizedKind)) throw new Error(`Invalid artifact kind: ${normalizedKind}`);
+    if (/[\r\n\u0000]/.test(pointer)) throw new Error('Artifact pointer must be a single line');
+    return {
+      kind: normalizedKind,
+      pointer: pointer.startsWith('/') ? relativePointer(repoRoot, resolve(pointer)) : pointer,
+    };
+  });
+}
+
+function makeCutoverRunId(now) {
+  return `cutover-${timestampForRunId(now)}-${randomBytes(3).toString('hex')}`;
+}
+
+function validateCutoverRunId(value) {
+  const text = String(value ?? '').trim();
+  if (!CUTOVER_RUN_ID_RE.test(text)) throw new Error('--run-id is invalid');
+  return text;
+}
+
+function timestampForRunId(now) {
+  return now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+function validateDate(value, label) {
+  const text = String(value ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || Number.isNaN(Date.parse(`${text}T00:00:00.000Z`))) {
+    throw new Error(`${label} must be YYYY-MM-DD`);
+  }
+  return text;
+}
+
+function addUtcDays(date, offset) {
+  const timestamp = Date.parse(`${date}T00:00:00.000Z`);
+  return new Date(timestamp + offset * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
 export function formatText(report) {
   if (report.help) return helpText();
+  if (report.command === 'record') {
+    return [
+      `runtime:cutover record ${report.version} (${report.status})`,
+      `repo: ${report.repo_root}`,
+      `run-id: ${report.run_id}`,
+      `dogfood-date: ${report.dogfood_date}`,
+      `evidence: ${report.evidence_pointer}`,
+      `latest: ${report.latest_pointer}`,
+    ].join('\n');
+  }
   const lines = [
     `runtime:cutover-audit ${report.version} (${report.status})`,
     `repo: ${report.repo_root}`,
@@ -485,6 +781,19 @@ function formatCheckEvidence(check) {
       if (evidence.active_dependency_blockers?.length) lines.push(`active dependency blockers: ${evidence.active_dependency_blockers.map((row) => row.id).join(', ')}`);
       return lines;
     }
+    case 'dogfood_evidence_window': {
+      const evidence = check.evidence ?? {};
+      const lines = [
+        `dogfood window: covered=${evidence.covered_days ?? 0}/${evidence.required_days ?? 0}; latest=${evidence.latest_date ?? '<none>'}; records=${evidence.total_records ?? 0}`,
+      ];
+      if (evidence.missing_dates?.length) lines.push(`missing dates: ${evidence.missing_dates.join(', ')}`);
+      if (evidence.blocked_dates?.length) lines.push(`blocked dates: ${evidence.blocked_dates.join(', ')}`);
+      return lines;
+    }
+    case 'latest_completion_footer_state':
+      return [`footer: state=${check.evidence?.footer_state ?? '<none>'}; source=${check.evidence?.source_run_id ?? '<explicit-or-none>'}`];
+    case 'omcc_dev_daily_workflow':
+      return [`omcc-dev-active: ${check.evidence?.omcc_dev_active ?? 'unknown'}; source=${check.evidence?.source_run_id ?? '<explicit-or-none>'}`];
     default:
       return [];
   }
@@ -493,9 +802,25 @@ function formatCheckEvidence(check) {
 export function parseArgs(argv) {
   const args = [...argv];
   const options = {};
-  if (args[0] === 'audit' || args[0] === 'cutover-audit') args.shift();
+  if (args[0] === 'audit' || args[0] === 'cutover-audit') {
+    options.command = 'audit';
+    args.shift();
+  } else if (args[0] === 'record') {
+    options.command = 'record';
+    args.shift();
+  } else {
+    options.command = 'audit';
+  }
   while (args.length > 0) {
     const arg = args.shift();
+    if (arg === 'record') {
+      options.command = 'record';
+      continue;
+    }
+    if (arg === 'audit' || arg === 'cutover-audit') {
+      options.command = 'audit';
+      continue;
+    }
     switch (arg) {
       case '--repo-root':
         options.repoRoot = requireValue(args, arg);
@@ -508,6 +833,12 @@ export function parseArgs(argv) {
       }
       case '--max-artifact-age-hours':
         options.maxArtifactAgeHours = positiveNumber(requireValue(args, arg), arg);
+        break;
+      case '--dogfood-window-days':
+        options.dogfoodWindowDays = positiveInteger(requireValue(args, arg), arg);
+        break;
+      case '--dogfood-date':
+        options.dogfoodDate = validateDate(requireValue(args, arg), arg);
         break;
       case '--footer-state': {
         const value = requireValue(args, arg);
@@ -526,6 +857,16 @@ export function parseArgs(argv) {
       }
       case '--omcc-dev-note':
         options.omccDevNote = requireValue(args, arg);
+        break;
+      case '--summary':
+        options.summary = requireValue(args, arg);
+        break;
+      case '--artifact':
+        if (!options.artifacts) options.artifacts = [];
+        options.artifacts.push(requireValue(args, arg));
+        break;
+      case '--run-id':
+        options.runId = validateCutoverRunId(requireValue(args, arg));
         break;
       case '--help':
         options.help = true;
@@ -548,21 +889,34 @@ function positiveNumber(value, label) {
   return number;
 }
 
+function positiveInteger(value, label) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 1) throw new Error(`${label} must be a positive integer`);
+  return number;
+}
+
 function helpText() {
   return `runtime:cutover-audit ${VERSION}
 
 Usage:
   runtime:cutover-audit [--format text|json] [--max-artifact-age-hours N]
   runtime:cutover-audit --footer-state <state> --omcc-dev-active yes|no|unknown
+  runtime:cutover-audit record --footer-state <state> --omcc-dev-active yes|no|unknown [--dogfood-date YYYY-MM-DD]
 
-Builds a read-only omcc cutover readiness report. The report can only emit
-cutover-ready-candidate; final cutover still requires explicit user declaration.`;
+Builds an omcc cutover readiness report. Audit mode is read-only. Record mode
+writes only an explicit cutover evidence artifact under .agentic-plugins/runs.
+The report can only emit cutover-ready-candidate; final cutover still requires
+explicit user declaration.`;
 }
 
 async function main() {
   try {
     const options = parseArgs(process.argv.slice(2));
-    const report = options.help ? { help: true, version: VERSION } : await runCutoverAudit(options);
+    const report = options.help
+      ? { help: true, version: VERSION }
+      : options.command === 'record'
+        ? await recordCutoverEvidence(options)
+        : await runCutoverAudit(options);
     const format = options.format ?? 'text';
     process.stdout.write(format === 'json' ? `${JSON.stringify(report, null, 2)}\n` : `${formatText(report)}\n`);
   } catch (error) {

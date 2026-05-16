@@ -1,8 +1,9 @@
 display_name: Runtime Cutover
-description: Read-only omcc cutover readiness audit for ADR-0012 and scorecard evidence.
+description: omcc cutover readiness audit and explicit dogfood evidence recorder for ADR-0012 and scorecard evidence.
 allow_implicit_invocation: false
 prompt: |
   Use $runtime:cutover only when explicitly requested. Resolve the runtime plugin
-  root, run scripts/cutover-audit.mjs with --repo-root, and present the readiness
-  report as evidence only. Do not declare final omcc cutover without explicit user
-  approval.
+  root, run scripts/cutover-audit.mjs with --repo-root, and present the audit or
+  record result as evidence only. Audit mode is read-only; record mode writes only
+  explicit cutover evidence artifacts. Do not declare final omcc cutover without
+  explicit user approval.
