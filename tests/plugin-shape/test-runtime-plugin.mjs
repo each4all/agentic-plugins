@@ -387,12 +387,23 @@ describe('plugins/runtime repo documentation freshness', () => {
     const readme = await readFile(resolve(REPO_ROOT, 'README.md'), 'utf-8');
     const architecture = await readFile(resolve(REPO_ROOT, 'docs/ARCHITECTURE.md'), 'utf-8');
     const development = await readFile(resolve(REPO_ROOT, 'docs/DEVELOPMENT.md'), 'utf-8');
+    const scorecard = await readFile(resolve(REPO_ROOT, 'docs/assurance/omcc-cutover-scorecard.md'), 'utf-8');
     const currentRuntimeToken = `plugin-runtime\` v${manifest.version}`;
+    const scorecardRuntimeToken = `\`plugin-runtime\` \`${manifest.version}\``;
+    const runtimeReleaseTag = `plugin-runtime-v${manifest.version}`;
 
     ok(architecture.includes(currentRuntimeToken), 'ARCHITECTURE.md documents the current runtime version');
     ok(development.includes(currentRuntimeToken), 'DEVELOPMENT.md documents the current runtime version');
+    ok(scorecard.includes(scorecardRuntimeToken), 'omcc cutover scorecard documents the current installed runtime proof version');
+    ok(scorecard.includes(runtimeReleaseTag), 'omcc cutover scorecard documents the current runtime release tag');
     ok(!architecture.includes('plugin-runtime` v0.12.0'), 'ARCHITECTURE.md must not describe runtime as v0.12.0');
     ok(!development.includes('plugin-runtime` v0.12.0'), 'DEVELOPMENT.md must not describe runtime as v0.12.0');
+    const scorecardRuntimeVersions = [...scorecard.matchAll(/`plugin-runtime` `([^`]+)`/g)].map((match) => match[1]);
+    const scorecardRuntimeTags = [...scorecard.matchAll(/`plugin-runtime-v([^`]+)`/g)].map((match) => match[1]);
+    ok(scorecardRuntimeVersions.length > 0, 'omcc cutover scorecard includes runtime proof versions');
+    ok(scorecardRuntimeTags.length > 0, 'omcc cutover scorecard includes runtime release tags');
+    deepStrictEqual([...new Set(scorecardRuntimeVersions)], [manifest.version], 'omcc cutover scorecard runtime proof versions match the current manifest');
+    deepStrictEqual([...new Set(scorecardRuntimeTags)], [manifest.version], 'omcc cutover scorecard runtime release tags match the current manifest');
 
     for (const token of [
       'runtime:doctor',
