@@ -586,7 +586,10 @@ describe('runtime consensus', () => {
     });
 
     strictEqual(report.status, 'durable-disagreement');
+    strictEqual(report.convergence_state, 'contradiction');
     strictEqual(report.durable_disagreements.length, 1);
+    strictEqual(report.contradictions.length, 1);
+    strictEqual(report.contradictions[0].issue_framing, 'Whether next-round prompts should be generated before owner review.');
     ok(report.evidence_pointers.some((pointer) => pointer.kind === 'peer-output' && pointer.peer === 'claude'));
     ok(!JSON.stringify(report).includes('CLAUDE RAW OUTPUT'));
     ok(!formatText(report).includes('CODEX RAW OUTPUT'));
@@ -594,6 +597,7 @@ describe('runtime consensus', () => {
     const manifest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'manifest.json'));
     const result = await readJson(join(root, manifest.consensus_pointer));
     strictEqual(result.schema_version, 'runtime-consensus-result-1.0');
+    strictEqual(result.convergence_state, 'contradiction');
     strictEqual(result.synthesized_summary, 'Keep the MVP artifact-only and do not execute peers.');
     strictEqual(result.next_action, 'Owner decides whether to run round 2.');
   });
@@ -625,7 +629,98 @@ describe('runtime consensus', () => {
     strictEqual(report.execution.command, `runtime:consensus execute --run-id ${RUN_ID} --round 2 --execute`);
     const prompt = await readFile(join(root, report.artifacts.find((artifact) => artifact.peer === 'codex').pointer), 'utf8');
     ok(prompt.includes('Confirm whether a follow-up executor should remain out of scope.'));
+    ok(prompt.includes('Issue framing:'));
+    ok(prompt.includes('Opposing views:'));
+    ok(prompt.includes('Requested evidence standard:'));
     ok(prompt.includes('Do not quote or depend on raw peer output'));
+  });
+
+  it('treats complementary disagreement as converged without a rebuttal round', async () => {
+    const root = await seedPlan();
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    await writeFile(summaryFile, 'Both peers agree on the direction but emphasize different risks.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      {
+        summary: 'Claude emphasized release safety while Codex emphasized operator UX.',
+        kind: 'complementary',
+      },
+    ]));
+
+    const report = await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+      convergenceState: 'complementary',
+    });
+
+    strictEqual(report.status, 'converged');
+    strictEqual(report.convergence_state, 'complementary');
+    strictEqual(report.next_round.available, false);
+    strictEqual(report.contradictions.length, 0);
+
+    const status = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(status.status_guidance.state, 'complete');
+    strictEqual(status.status_guidance.reason, 'convergence_state=complementary');
+    await rejects(
+      () => runConsensus({ command: 'next-round', repoRoot: root, runId: RUN_ID }),
+      /observed complementary/,
+    );
+  });
+
+  it('records owner-decision-required when contradiction remains after bounded rounds', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-consensus-owner-decision-'));
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      task: 'Evaluate a bounded one-round contradiction.',
+      peers: ['claude', 'codex'],
+      maxRounds: 1,
+    });
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    await writeFile(summaryFile, 'The peers still recommend incompatible actions.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      {
+        summary: 'Claude recommends shipping now; Codex recommends blocking on a verifier.',
+        kind: 'contradiction',
+        opposing_views: [
+          'Ship now with manual review.',
+          'Block release until a verifier exists.',
+        ],
+        evidence_standard: 'Choose based on test coverage, release risk, and rollback evidence.',
+      },
+    ]));
+
+    const report = await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+    });
+
+    strictEqual(report.convergence_state, 'owner-decision-required');
+    strictEqual(report.status, 'durable-disagreement');
+    strictEqual(report.next_round.available, false);
+    strictEqual(report.contradictions.length, 1);
+
+    const status = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(status.status_guidance.state, 'owner_decision_required');
+    ok(status.next_action.includes('owner'));
   });
 
   it('reports status guidance for synthesized durable disagreements', async () => {
@@ -649,10 +744,10 @@ describe('runtime consensus', () => {
     });
 
     strictEqual(report.status_guidance.state, 'next_round_available');
-    strictEqual(report.next_action, 'Durable disagreements remain; plan the bounded rebuttal round before executing more peers.');
+    strictEqual(report.next_action, 'Direct contradictions remain; plan the bounded rebuttal round before executing more peers.');
     ok(report.status_guidance.commands.includes(`runtime:consensus next-round --run-id ${RUN_ID}`));
     ok(report.status_guidance.commands.includes(`runtime:consensus execute --run-id ${RUN_ID} --round 2 --execute`));
-    ok(formatText(report).includes('next action: Durable disagreements remain'));
+    ok(formatText(report).includes('next action: Direct contradictions remain'));
   });
 
   it('explains synthesize and next-round blocked states without executing peers', async () => {
@@ -670,13 +765,15 @@ describe('runtime consensus', () => {
 
     const summaryFile = join(root, 'summary.md');
     await writeFile(summaryFile, 'No durable disagreement remains.\n');
-    await runConsensus({
+    const convergedReport = await runConsensus({
       command: 'synthesize',
       repoRoot: root,
       runId: RUN_ID,
       summaryFile,
       converged: true,
     });
+    strictEqual(convergedReport.convergence_state, 'aligned');
+    strictEqual(convergedReport.next_round.available, false);
 
     await rejects(
       () => runConsensus({ command: 'next-round', repoRoot: root, runId: RUN_ID }),
@@ -699,12 +796,15 @@ describe('runtime consensus', () => {
       '2',
       '--token-budget',
       '1000',
+      '--convergence-state',
+      'contradiction',
     ]);
     strictEqual(opts.command, 'plan');
     strictEqual(opts.format, 'json');
     deepStrictEqual(opts.peers, ['claude', 'codex']);
     strictEqual(opts.maxRounds, 2);
     strictEqual(opts.tokenBudget, 1000);
+    strictEqual(opts.convergenceState, 'contradiction');
 
     const commandStyle = parseArgs(['--repo-root', '/tmp/repo', 'record', '--run-id', RUN_ID, '--peer', 'claude', '--input-file', 'out.txt']);
     strictEqual(commandStyle.command, 'record');
@@ -725,6 +825,7 @@ describe('runtime consensus', () => {
     throws(() => parseArgs(['status', '--latest', '--run-id', RUN_ID]), /Use either --run-id or --latest/);
     throws(() => parseArgs(['execute', '--latest']), /--latest is only supported by status/);
     throws(() => parseArgs(['plan', '--max-rounds', '0']), /positive integer/);
+    throws(() => parseArgs(['synthesize', '--convergence-state', 'mixed']), /aligned, complementary, contradiction/);
     await rejects(() => runConsensus({ command: 'execute', repoRoot: '/tmp/repo', runId: RUN_ID }), /requires --execute/);
     await rejects(() => runConsensus({ command: 'plan', repoRoot: '/tmp/repo', runId: RUN_ID, task: 'x', maxRounds: 4 }), /--max-rounds must be <= 3/);
   });

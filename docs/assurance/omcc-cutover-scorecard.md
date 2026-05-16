@@ -105,7 +105,7 @@ a manual active-session follow-up.
 | R8 | Domain entry should start with engineer when appropriate, and propose orchestrator/worktree/parallelization when useful. | ADR-0020 defines `/engineer:start` vs `/orchestrator:plan` entry routing; runtime has read-only worktree planning. | partial | Entry prompts include a routing recommendation: single deliverable, multi-deliverable, worktree/parallel, runtime readiness, or pure single-verb analysis. |
 | R9 | Track Claude Code and Codex CLI version history; when latest host versions differ from remembered versions, use release notes to plan compatibility updates. | Runtime host parity baselines record observed CLI versions and drift policy. `runtime:compat` records snapshots, compares remembered baseline versions, ingests explicit release-note artifacts, and emits update plans; `runtime:doctor` now reads latest compat metadata into the handoff artifact criterion. Claude Code `2.1.142`/`2.1.143` release notes were ingested as explicit content-backed notes and the host parity baseline was refreshed to Claude Code `2.1.143`. | partial | Add richer release-note parsing and cutover-scorecard verification. |
 | R10 | Claude and Codex should be used as complementary perspectives; same-issue opinion collection is valuable. | Companions and runtime consensus provide cross-host peer collection. | partial | Consensus plans can include both companion-backed peers and manual/subagent lanes with explicit roles and artifact pointers. |
-| R11 | When Claude and Codex conflict, loop opinions back until there is a well-converged, non-compromise synthesis. | `runtime:consensus next-round` can create targeted rebuttal rounds from durable disagreements; automatic unbounded loops are forbidden. | partial | Consensus distinguishes perspective diversity from direct contradiction, requires rebuttal prompts for contradictions, and records `converged`, `owner-decision-required`, or `non-consensus` with evidence. |
+| R11 | When Claude and Codex conflict, loop opinions back until there is a well-converged, non-compromise synthesis. | `runtime:consensus` records convergence state, contradiction summaries, bounded next-round availability, and contradiction-aware rebuttal prompts with issue framing, opposing views, and evidence standards. Automatic unbounded loops are forbidden. | satisfied | Keep future consensus surfaces on the same no-false-compromise taxonomy and require explicit user approval for any expansion beyond the max-round cap. |
 
 ## Required Design Extensions
 
@@ -247,11 +247,11 @@ R9 remaining follow-up:
    - Add footer state enum and tests.
    - Update engineer/orchestrator completion surfaces.
 
-Remaining follow-up:
-
-5. **PR E: consensus convergence taxonomy**
+5. **PR E: consensus convergence taxonomy** (landed)
    - Add convergence state to `runtime:consensus`.
    - Add contradiction-aware next-round prompts.
+
+Remaining follow-up:
 
 6. **PR F: cutover audit**
    - Add the non-mutating cutover readiness report.

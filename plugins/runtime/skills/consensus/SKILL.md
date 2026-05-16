@@ -18,7 +18,7 @@ description: "ADR-0024 runtime consensus scaffold with an explicit companion exe
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" plan --task <text> [--format text|json] [--peers claude,codex,reviewer] [--max-rounds <n>] [--max-peers <n>] [--token-budget <n>] [--time-budget-ms <n>] [--process-budget <n>]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" execute --run-id <id> [--round <n>] [--peers claude,codex] --execute [--timeout-ms <n>] [--process-budget <n>] [--model <id>] [--effort <level>]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" record --run-id <id> --peer <peer> --input-file <path>
-node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>]
+node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>] [--contradictions-file <path>] [--convergence-state aligned|complementary|contradiction|insufficient-evidence|owner-decision-required|non-consensus]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" next-round --run-id <id>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" status --run-id <id>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" status --latest
@@ -43,7 +43,9 @@ Consensus reports and manages:
   preconditions, proof commands, suggested timeout increases, and artifact
   pointers;
 - synthesized summary;
+- convergence state;
 - durable disagreements;
+- contradiction summaries;
 - evidence pointers;
 - targeted rebuttal prompt artifacts for a next round.
 - explicit companion execution metadata, including status, failure type, retryability, byte counts, hashes, and artifact pointers.
@@ -65,7 +67,8 @@ Consensus reports and manages:
 - No host-native config, authentication, secret, sandbox, or permission writes.
 - No claim that Codex plugin-hook feature/trust state or permission limits are host parity.
 - No automatic unbounded loops; max rounds, process budget, and timeout caps bound companion execution, while peer breadth is bounded by the explicit `--peers` roster and optional `--max-peers` with no hidden fixed peer-count cap.
-- No empty rebuttal rounds; `next-round` requires durable disagreements and still never executes peers.
+- No false compromise: synthesis must classify peer output as `aligned`, `complementary`, `contradiction`, `insufficient-evidence`, `owner-decision-required`, or `non-consensus`.
+- No empty rebuttal rounds; `next-round` requires direct-contradiction durable disagreements and still never executes peers.
 
 ## Example
 
@@ -74,7 +77,7 @@ $runtime:consensus plan --task "Review this risky runtime change" --peers claude
 $runtime:consensus execute --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --execute
 $runtime:consensus record --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --peer claude --input-file claude.txt
 $runtime:consensus record --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --peer security --input-file security.txt
-$runtime:consensus synthesize --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --summary-file summary.md --disagreements-file disagreements.md
+$runtime:consensus synthesize --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --summary-file summary.md --disagreements-file disagreements.md --convergence-state contradiction
 $runtime:consensus next-round --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef
 $runtime:consensus execute --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --round 2 --execute
 $runtime:consensus status --latest

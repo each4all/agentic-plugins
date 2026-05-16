@@ -666,8 +666,10 @@ function inferCompletionState({ contextState, consensus, prHandling, recommended
 function isBlockingConsensusGuidance(state) {
   return [
     'blocked',
+    'evidence_required',
     'execution_stalled',
     'inspect_failure',
+    'non_consensus',
     'operator_action_required',
     'owner_decision_required',
   ].includes(state);
