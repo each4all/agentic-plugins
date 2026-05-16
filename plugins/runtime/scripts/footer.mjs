@@ -12,6 +12,14 @@ import { RUNTIME_VERSION } from './version.mjs';
 const VERSION = RUNTIME_VERSION;
 const VALID_HOSTS = new Set(['claude', 'codex', 'neutral']);
 const VALID_CONTEXT_STATES = new Set(['green', 'yellow', 'red']);
+const VALID_COMPLETION_STATES = new Set([
+  'review-needed',
+  'publish-needed',
+  'cleanup-needed',
+  'next-work-available',
+  'blocked',
+  'closed',
+]);
 const VALID_PR_COMPLETION_BOUNDARIES = new Set(['reached', 'not-reached', 'unknown']);
 const VALID_PR_VALIDATION_STATES = new Set(['passed', 'waived', 'failed', 'not-run', 'unknown']);
 const VALID_PR_REVIEW_STATES = new Set(['clear', 'blocking', 'unknown']);
@@ -57,12 +65,29 @@ export async function runFooter(options = {}) {
   const prHandling = shouldIncludePrHandling(options)
     ? buildPrHandlingReadiness({ contextState, options })
     : null;
+  const recommendedNextWork = normalizeRecommendedNextWork(options, consensus);
+  const completion = buildCompletionState({
+    options,
+    contextState,
+    consensus,
+    prHandling,
+    recommendedNextWork,
+  });
+  const effectiveRecommendedNextWork = isDefaultRecommendedNextWork({
+    options,
+    consensus,
+    recommendedNextWork,
+  })
+    ? completion.next_action
+    : recommendedNextWork;
 
   return {
     command: 'render',
     version: VERSION,
     advisory: true,
     context_state: contextState,
+    completion_state: completion.state,
+    completion,
     context: context
       ? {
           run_id: context.runId,
@@ -85,7 +110,7 @@ export async function runFooter(options = {}) {
       : null,
     workflow,
     artifacts,
-    recommended_next_work: normalizeRecommendedNextWork(options, consensus),
+    recommended_next_work: effectiveRecommendedNextWork,
     next_session: nextSession,
     pr_handling: prHandling,
     limits: footerLimits(),
@@ -143,6 +168,15 @@ export function parseArgs(argv) {
         break;
       case '--context-state':
         options.contextState = validateContextState(requireValue(args, arg));
+        break;
+      case '--completion-state':
+        options.completionState = validateCompletionState(requireValue(args, arg));
+        break;
+      case '--completion-reason':
+        options.completionReason = requireSingleLine(requireValue(args, arg), arg);
+        break;
+      case '--completion-next-action':
+        options.completionNextAction = requireSingleLine(requireValue(args, arg), arg);
         break;
       case '--pr-handling':
         options.prHandling = true;
@@ -210,6 +244,9 @@ export function formatText(report) {
   if (report.help) return helpText();
   const lines = ['Runtime completion footer (advisory)'];
   lines.push(`context state: ${report.context_state}`);
+  lines.push(`completion state: ${report.completion_state}`);
+  if (report.completion?.reason) lines.push(`completion reason: ${report.completion.reason}`);
+  if (report.completion?.next_action) lines.push(`completion next action: ${report.completion.next_action}`);
   if (report.context?.pointer) lines.push(`context artifact: ${report.context.pointer}`);
   if (report.context?.lookup) {
     lines.push('context lookup:');
@@ -509,13 +546,25 @@ function normalizeRecommendedNextWork(options, consensus) {
   if (consensus?.statusGuidance?.next_action) {
     return requireSingleLine(consensus.statusGuidance.next_action, 'consensus next action');
   }
+  return defaultRecommendedNextWork();
+}
+
+function isDefaultRecommendedNextWork({ options, consensus, recommendedNextWork }) {
+  return !options.recommendedNextWork
+    && !consensus?.statusGuidance?.next_action
+    && recommendedNextWork === defaultRecommendedNextWork();
+}
+
+function defaultRecommendedNextWork() {
   return 'Review the completion result and choose the next command explicitly.';
 }
 
 function normalizeNextSession({ host, context, consensus, options }) {
   const action = options.nextSessionAction
     ? requireSingleLine(options.nextSessionAction, '--next-session-action')
-    : context?.nextSession.action ?? defaultNextAction(options.contextState ?? context?.contextState ?? 'yellow');
+    : options.completionState === 'closed'
+      ? 'No next session is required from this footer evidence.'
+      : context?.nextSession.action ?? defaultNextAction(options.contextState ?? context?.contextState ?? 'yellow');
   const command = options.nextSessionCommand
     ? requireSingleLine(options.nextSessionCommand, '--next-session-command')
     : context
@@ -583,6 +632,89 @@ function buildPrHandlingReadiness({ contextState, options }) {
       : null,
     criteria,
   };
+}
+
+function buildCompletionState({ options, contextState, consensus, prHandling, recommendedNextWork }) {
+  const state = options.completionState
+    ? validateCompletionState(options.completionState)
+    : inferCompletionState({ contextState, consensus, prHandling, recommendedNextWork });
+  const reason = options.completionReason
+    ? requireSingleLine(options.completionReason, '--completion-reason')
+    : defaultCompletionReason({ state, contextState, consensus, prHandling, recommendedNextWork });
+  const nextAction = options.completionNextAction
+    ? requireSingleLine(options.completionNextAction, '--completion-next-action')
+    : defaultCompletionNextAction({ state, consensus, prHandling, recommendedNextWork });
+  return {
+    state,
+    source: options.completionState ? 'explicit' : 'inferred',
+    reason,
+    next_action: nextAction,
+  };
+}
+
+function inferCompletionState({ contextState, consensus, prHandling, recommendedNextWork }) {
+  if (prHandling?.recommendation === 'block') return 'blocked';
+  if (isBlockingConsensusGuidance(consensus?.statusGuidance?.state)) return 'blocked';
+  if (prHandling?.recommendation === 'ask-user') return 'publish-needed';
+  if (prHandling?.recommendation === 'defer') return 'review-needed';
+  if (contextState === 'red') return 'review-needed';
+  if (isActionableConsensusGuidance(consensus?.statusGuidance?.state)) return 'next-work-available';
+  if (recommendedNextWork !== defaultRecommendedNextWork()) return 'next-work-available';
+  return 'review-needed';
+}
+
+function isBlockingConsensusGuidance(state) {
+  return [
+    'blocked',
+    'execution_stalled',
+    'inspect_failure',
+    'operator_action_required',
+    'owner_decision_required',
+  ].includes(state);
+}
+
+function isActionableConsensusGuidance(state) {
+  return [
+    'complete',
+    'execute_or_record',
+    'execution_running',
+    'next_round_available',
+    'record_manual_peers',
+    'retry_failed_peers',
+    'synthesize',
+  ].includes(state);
+}
+
+function defaultCompletionReason({ state, contextState, consensus, prHandling, recommendedNextWork }) {
+  if (state === 'blocked') {
+    if (prHandling?.recommendation === 'block') return 'PR handling has a failed readiness criterion.';
+    if (consensus?.statusGuidance?.state) return `Consensus guidance is ${consensus.statusGuidance.state}.`;
+    return 'A required operator, validation, review, permission, or evidence precondition is blocked.';
+  }
+  if (state === 'publish-needed') return 'PR handling readiness passed and the user should decide whether to publish.';
+  if (state === 'cleanup-needed') return 'Caller reported that cleanup is the next required action.';
+  if (state === 'next-work-available') {
+    if (consensus?.statusGuidance?.state) return `Consensus guidance is ${consensus.statusGuidance.state}.`;
+    if (recommendedNextWork !== defaultRecommendedNextWork()) return 'Caller supplied recommended next work.';
+    return 'Follow-up work is available from the current runtime evidence.';
+  }
+  if (state === 'closed') return 'Caller explicitly reported that no repo, PR, release, cleanup, or planned follow-up work remains.';
+  if (contextState === 'red') return 'Context risk is red; review or fresh-session handoff is needed before substantial follow-up.';
+  if (prHandling?.recommendation === 'defer') return 'PR handling evidence is incomplete.';
+  return 'Completion evidence should be reviewed before choosing the next action.';
+}
+
+function defaultCompletionNextAction({ state, consensus, prHandling, recommendedNextWork }) {
+  if (state === 'blocked') {
+    if (consensus?.statusGuidance?.next_action) return consensus.statusGuidance.next_action;
+    if (prHandling?.recommendation === 'block') return 'Resolve failed PR handling criteria before publishing or closing the slice.';
+    return 'Resolve the blocking precondition, then rerun the relevant runtime check.';
+  }
+  if (state === 'publish-needed') return 'Ask the user whether to commit, push, open or update a PR, defer publishing, or continue without PR handling.';
+  if (state === 'cleanup-needed') return 'Clean up merged branches, stale worktrees, plugin/cache drift, or release follow-ups before starting the next slice.';
+  if (state === 'next-work-available') return recommendedNextWork;
+  if (state === 'closed') return 'No further repo, PR, release, cleanup, or planned follow-up action is known from this footer evidence.';
+  return 'Review validation, artifacts, context, consensus, and PR readiness evidence before choosing the next command.';
 }
 
 function criterion(name, observed, rule) {
@@ -801,6 +933,13 @@ function validateContextState(value) {
   return value;
 }
 
+function validateCompletionState(value) {
+  if (!VALID_COMPLETION_STATES.has(value)) {
+    throw new Error('--completion-state must be review-needed, publish-needed, cleanup-needed, next-work-available, blocked, or closed');
+  }
+  return value;
+}
+
 function validateEnum(value, valid, message) {
   if (!valid.has(value)) throw new Error(message);
   return value;
@@ -876,12 +1015,14 @@ Usage:
   runtime footer render --consensus-run-id <consensus-run-id>
   runtime footer render --consensus-latest
   runtime footer render --context-state green|yellow|red --recommended-next-work <text>
+  runtime footer render --completion-state review-needed|publish-needed|cleanup-needed|next-work-available|blocked|closed
   runtime footer render --pr-handling --pr-completion-boundary reached --pr-validation-state passed --pr-review-state clear --pr-branch-state pushable
 
 Renders an advisory, pointer-only completion footer. It reads optional
 runtime:context artifacts and runtime:consensus status guidance when available, but
 does not mutate host session context, workflow state, git state, or pull
-request state.`;
+request state. Completion state is advisory; closed is emitted only when the
+caller supplies --completion-state closed.`;
 }
 
 async function main() {

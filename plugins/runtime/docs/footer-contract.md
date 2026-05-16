@@ -11,6 +11,9 @@ state.
 Every footer contains:
 
 - context state: `green`, `yellow`, or `red`;
+- completion state: `review-needed`, `publish-needed`, `cleanup-needed`,
+  `next-work-available`, `blocked`, or `closed`;
+- completion reason and state-derived next action;
 - workflow kind, id, and repo-relative workflow path when known;
 - artifact pointers, including a runtime context artifact pointer when one
   exists;
@@ -115,8 +118,33 @@ consensus raw output, or consensus body text. If the caller did not provide
 recommended next work.
 
 Without a context artifact, callers may supply `--context-state`,
+`--completion-state`, `--completion-reason`, `--completion-next-action`,
 `--artifact`, `--next-session-action`, `--next-session-command`, and
 `--next-session-prompt-pointer` directly.
+
+### Completion state
+
+The helper emits a completion-state contract so callers can guide the next
+action without guessing:
+
+| State | Meaning |
+|---|---|
+| `review-needed` | Evidence, validation, context, or review state still needs inspection before choosing the next command. |
+| `publish-needed` | Work is ready for a user decision about commit, push, PR creation/update, or deferring publish. |
+| `cleanup-needed` | The next action is cleanup of merged branches, stale worktrees, plugin/cache drift, or release follow-ups. |
+| `next-work-available` | The current slice has an actionable next command or follow-up. |
+| `blocked` | A validation, review, permission, sandbox, auth, owner-decision, or other operator precondition is blocking progress. |
+| `closed` | No repo, PR, release, cleanup, or planned follow-up action remains. |
+
+Inference is intentionally conservative. The helper can infer
+`publish-needed` from passing PR handling readiness, `blocked` from failed
+PR handling or blocking consensus guidance, `next-work-available` from
+actionable consensus guidance or caller-supplied recommended next work, and
+`review-needed` when evidence is incomplete. It does not infer
+`cleanup-needed` or `closed`; callers must supply `--completion-state` for
+those outcomes. A caller that emits `closed` is asserting that PR, release,
+installed-state, cleanup, and planned follow-up evidence has already been
+checked outside the footer.
 
 ### PR handling readiness
 

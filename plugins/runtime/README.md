@@ -252,6 +252,9 @@ The footer helper renders the standard ADR-0024 completion footer:
 - linked consensus run and bounded status guidance when a consensus run is supplied;
 - workflow kind/id/path;
 - artifact pointers, including `.agentic-plugins/runs/context/<run-id>/context.json` and `.agentic-plugins/runs/consensus/<run-id>/` when linked;
+- completion state (`review-needed`, `publish-needed`, `cleanup-needed`,
+  `next-work-available`, `blocked`, or `closed`) plus a state-derived next
+  action;
 - recommended next work;
 - next-session action and command or prompt pointer;
 - explicit advisory/pointer-only limits.
@@ -263,6 +266,15 @@ When supplied `--context-run-id`, the helper reads only bounded fields from the 
 When supplied `--context-latest`, the helper reads the newest existing readable `runtime:context` artifact and reports read-only lookup metadata, including selected timestamp, age, stale state, stale threshold, skipped invalid artifacts, source-freshness state when a git source snapshot is available, and handoff guidance. Guidance can recommend reusing the handoff, inspecting unverifiable source state, capturing new context, or settling a dirty worktree before capture. `--stale-after-hours <n>` sets the age-based stale threshold. The latest lookup does not create, update, or compact context.
 
 When supplied `--consensus-run-id` or `--consensus-latest`, the helper calls `runtime:consensus status` and includes only run/result/execution/progress pointers plus `status_guidance` next action/steps. Latest consensus lookup selects the newest readable consensus manifest. The footer does not execute peers, synthesize, plan another round, print peer prompts, print peer raw output, or print consensus body text.
+
+Completion state is conservative by default. The helper infers
+`publish-needed` only when PR handling readiness passes, `blocked` when PR
+or consensus evidence is blocked, `next-work-available` when consensus or
+caller-supplied follow-up work is actionable, and `review-needed` when
+evidence is incomplete or should be inspected. `cleanup-needed` and `closed`
+are explicit caller states; `closed` is never inferred from partial runtime
+evidence. Callers may use `--completion-state`, `--completion-reason`, and
+`--completion-next-action` to report a fully known completion outcome.
 
 Embedded `runtime:*` guidance commands are rendered with the selected host's invocation syntax when `--host claude` or `--host codex` is supplied, while stored context and consensus artifacts remain host-neutral.
 

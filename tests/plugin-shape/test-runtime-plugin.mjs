@@ -346,9 +346,13 @@ describe('plugins/runtime footer helper', () => {
     ok(contract.includes('Completion Footer Contract'));
     ok(/advisory/i.test(contract));
     ok(/pointer-only/i.test(contract));
+    ok(contract.includes('completion state'));
+    ok(contract.includes('review-needed'));
+    ok(contract.includes('closed'));
     ok(contract.includes('scripts/footer.mjs'));
     const script = await readFile(resolve(PLUGIN_ROOT, 'scripts/footer.mjs'), 'utf-8');
     ok(script.includes('Runtime completion footer (advisory)'));
+    ok(script.includes('completion_state'));
     ok(script.includes('context-run-id'));
     ok(script.includes('does not mutate host session context'));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/footer.mjs'));
