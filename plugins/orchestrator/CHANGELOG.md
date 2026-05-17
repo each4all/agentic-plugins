@@ -24,7 +24,6 @@
 ### Bug Fixes
 
 * resolve Codex hook Node lookup ([b68d17c](https://github.com/each4all/agentic-plugins/commit/b68d17cdc495977719332eb7a3734dfa4dd1c8e9))
-* resolve Codex hook Node lookup ([b68d17c](https://github.com/each4all/agentic-plugins/commit/b68d17cdc495977719332eb7a3734dfa4dd1c8e9))
 
 ## [0.7.2](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.7.1...plugin-orchestrator-v0.7.2) (2026-05-15)
 
