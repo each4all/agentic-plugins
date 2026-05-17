@@ -16,7 +16,7 @@
 //     (resume/checkpoint/peer-now), and an audit follow-up alias
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
 //   - 3 Codex adapter hooks (session-start / pre-compact / stop) plus a
-//     Codex-specific hook manifest
+//     Node resolver wrapper and Codex-specific hook manifest
 //   - 1 bundled Claude hooks manifest (hooks/hooks.json) declaring SessionStart,
 //     PreCompact, and Stop. The Codex manifest's `hooks` field points at
 //     adapters/codex/hooks/hooks.json.
@@ -50,7 +50,7 @@ const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...DISPATCH_COMMANDS, ...LIFECYC
 const SHARED_REFS = ['ensemble-protocol.md', 'presentation-protocol.md'];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['_shared.mjs', 'session-start.mjs', 'pre-compact.mjs', 'stop.mjs'];
-const CODEX_HOOK_HELPERS = ['session-start.mjs', 'pre-compact.mjs', 'stop.mjs', 'hooks.json', 'README.md'];
+const CODEX_HOOK_HELPERS = ['session-start.mjs', 'pre-compact.mjs', 'stop.mjs', 'run-node-hook.sh', 'hooks.json', 'README.md'];
 
 // Stale tokens that should NEVER appear in orchestrator SKILL/commands/refs.
 // Mirrors test-engineer-plugin.mjs and reflects the schema-2 ensemble
@@ -281,6 +281,9 @@ describe('plugins/orchestrator adapters/codex/hooks/', () => {
     const hooks = await readJSON(resolve(PLUGIN_ROOT, 'adapters/codex/hooks/hooks.json'));
     const hookCommand = (event) => hooks.hooks[event][0].hooks[0].command;
     strictEqual(hooks.hooks.SessionStart[0].matcher, 'compact');
+    ok(hookCommand('SessionStart').startsWith('/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh"'));
+    ok(hookCommand('PreCompact').startsWith('/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh"'));
+    ok(hookCommand('Stop').startsWith('/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh"'));
     ok(hookCommand('SessionStart').includes('${PLUGIN_ROOT}/adapters/codex/hooks/session-start.mjs'));
     ok(hookCommand('PreCompact').includes('${PLUGIN_ROOT}/adapters/codex/hooks/pre-compact.mjs'));
     ok(hookCommand('Stop').includes('${PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs'));
