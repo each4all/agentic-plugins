@@ -1,6 +1,6 @@
 ---
 description: Runtime consensus scaffold and explicit companion executor for ADR-0024 peer fanout, disagreement tracking, synthesis, owner decisions, and artifact-only cancellation
-argument-hint: "plan|record|synthesize|decide|cancel|next-round|execute|status [--format text|json] [--task <text>|--task-file <path>] [--run-id <id>|--latest] [--peer <id>] [--peers <ids>] [--input-file <path>] [--summary-file <path>] [--decision-file <path>] [--reason <text>|--reason-file <path>] [--confirm-no-active-process] [--disagreements-file <path>] [--contradictions-file <path>] [--convergence-state <state>] [--max-rounds <n>] [--max-peers <n>] [--token-budget <n>] [--time-budget-ms <n>] [--process-budget <n>] [--timeout-ms <n>] [--execute]"
+argument-hint: "plan|record|synthesize|decide|cancel|next-round|execute|status [--format text|json] [--task <text>|--task-file <path>] [--run-id <id>|--latest|--latest-open] [--peer <id>] [--peers <ids>] [--input-file <path>] [--summary-file <path>] [--decision-file <path>] [--reason <text>|--reason-file <path>] [--confirm-no-active-process] [--disagreements-file <path>] [--contradictions-file <path>] [--convergence-state <state>] [--max-rounds <n>] [--max-peers <n>] [--token-budget <n>] [--time-budget-ms <n>] [--process-budget <n>] [--timeout-ms <n>] [--execute]"
 ---
 
 # Runtime - Consensus
@@ -34,6 +34,7 @@ Common flow:
 /runtime:consensus decide --run-id <id> --decision-file <owner-decision.md> --decided-by owner
 /runtime:consensus cancel --run-id <id> --reason-file <cancellation-reason.md> --confirm-no-active-process
 /runtime:consensus status --latest
+/runtime:consensus status --latest-open
 ```
 
 Notes:
@@ -57,7 +58,7 @@ Notes:
 - `execute` and `status` include an `execution_remediation` block when execution has run. It lists sanitized failure counts, per-peer retry commands, suggested timeout increases for timeout failures, proof commands, and artifact pointers. It is advisory only and never auto-retries peers.
 - Timeouts are retryable and include bounded remediation metadata. Retry a selected peer with `--peers <peer> --timeout-ms <n> --process-budget 1`, or run `runtime:doctor --deep-peer-smoke --execute-deep-peer-smoke` when prompt startup latency is unclear.
 - If `status` sees a running progress artifact whose peer `started_at + timeout_ms` has elapsed without a final `execution.json`, it reports `execution_stalled`; inspect the progress artifact and confirm no original execute process is still active before retrying the guarded selected-peer command.
-- `status` reads manifest, execution, progress, and consensus-result artifacts to recommend the next bounded operator action: execute/record, retry selected peers, synthesize, plan next-round for direct contradictions, stop for owner decision, or preserve non-consensus. `status --latest` picks the newest readable consensus manifest by `updated_at`/`created_at` without reading raw peer output.
+- `status` reads manifest, execution, progress, and consensus-result artifacts to recommend the next bounded operator action: execute/record, retry selected peers, synthesize, plan next-round for direct contradictions, stop for owner decision, or preserve non-consensus. `status --latest` picks the newest readable consensus manifest by `updated_at`/`created_at` without reading raw peer output. `status --latest-open` uses the same manifest-only lookup but skips cancelled, converged, and owner-decided runs so terminal artifacts stay preserved without hiding the next open run.
 - Permission and sandbox failures are classified as non-retryable until the operator resolves host policy outside runtime.
 - Max rounds default to 2 total rounds and are hard-capped at 3. When direct contradictions remain after the configured round budget is exhausted, consensus reports `owner-decision-required` instead of creating another loop. Process budget and timeout caps bound execution; broader manual peer fanout is artifact-bounded by the explicit `--peers` roster and optional `--max-peers`, with no hidden fixed peer-count cap.
 - `decide` records the owner decision that resolves `owner-decision-required`, `contradiction`, `insufficient-evidence`, or `non-consensus` outcomes. It stores the decision body as an artifact pointer, preserves the prior consensus pointer and evidence pointers, and does not print the decision text into status or footer output.

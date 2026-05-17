@@ -268,6 +268,55 @@ describe('runtime consensus', () => {
     ok(!JSON.stringify(report).includes('latest consensus task'), 'status report must not include task body');
   });
 
+  it('reports latest-open status by skipping terminal consensus runs', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-consensus-latest-open-status-'));
+    const openRunId = 'consensus-20260513T000000Z-111111';
+    const cancelledRunId = 'consensus-20260513T010000Z-222222';
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: openRunId,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      task: 'open consensus task must stay hidden.',
+    });
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: cancelledRunId,
+      now: new Date('2026-05-13T01:00:00.000Z'),
+      task: 'cancelled consensus task must stay hidden.',
+    });
+    await runConsensus({
+      command: 'cancel',
+      repoRoot: root,
+      runId: cancelledRunId,
+      now: new Date('2026-05-13T02:00:00.000Z'),
+      reason: 'No longer needed.',
+    });
+
+    const latest = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      latest: true,
+    });
+    strictEqual(latest.run_id, cancelledRunId);
+    strictEqual(latest.lookup.mode, 'latest');
+    strictEqual(latest.status_guidance.state, 'cancelled');
+
+    const latestOpen = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      latestOpen: true,
+    });
+    strictEqual(latestOpen.run_id, openRunId);
+    strictEqual(latestOpen.lookup.mode, 'latest-open');
+    strictEqual(latestOpen.lookup.latest_open, true);
+    strictEqual(latestOpen.lookup.skipped_terminal, 1);
+    strictEqual(latestOpen.status_guidance.state, 'execute_or_record');
+    ok(!JSON.stringify(latestOpen).includes('open consensus task'), 'status report must not include task body');
+    ok(!JSON.stringify(latestOpen).includes('cancelled consensus task'), 'status report must not include skipped task body');
+  });
+
   it('executes a planned round only with --execute and stores raw outputs as artifacts', async () => {
     const root = await seedPlan();
     const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-home-'));
@@ -1060,16 +1109,23 @@ describe('runtime consensus', () => {
     strictEqual(latestStyle.command, 'status');
     strictEqual(latestStyle.latest, true);
 
+    const latestOpenStyle = parseArgs(['status', '--latest-open']);
+    strictEqual(latestOpenStyle.command, 'status');
+    strictEqual(latestOpenStyle.latestOpen, true);
+
     throws(() => parseArgs(['record', '--run-id', '../bad']), /Invalid --run-id/);
     throws(() => parseArgs(['record', '--peer', 'bad/peer']), /Peer ids/);
     throws(() => parseArgs(['status', '--latest', '--run-id', RUN_ID]), /Use either --run-id or --latest/);
+    throws(() => parseArgs(['status', '--latest', '--latest-open']), /Use either --latest or --latest-open/);
     throws(() => parseArgs(['execute', '--latest']), /--latest is only supported by status/);
+    throws(() => parseArgs(['execute', '--latest-open']), /--latest-open is only supported by status/);
     throws(() => parseArgs(['plan', '--max-rounds', '0']), /positive integer/);
     throws(() => parseArgs(['synthesize', '--convergence-state', 'mixed']), /aligned, complementary, contradiction/);
     throws(() => parseArgs(['decide', '--decided-by', 'two\nlines']), /--decided-by must be a single-line value/);
     throws(() => parseArgs(['cancel', '--cancelled-by', 'two\nlines']), /--cancelled-by must be a single-line value/);
     ok(formatText({ help: true }).includes('default to 2 total rounds'));
     ok(formatText({ help: true }).includes('hard-capped at 3'));
+    ok(formatText({ help: true }).includes('status --latest-open'));
     await rejects(() => runConsensus({ command: 'execute', repoRoot: '/tmp/repo', runId: RUN_ID }), /requires --execute/);
     await rejects(() => runConsensus({ command: 'plan', repoRoot: '/tmp/repo', runId: RUN_ID, task: 'x', maxRounds: 4 }), /--max-rounds must be <= 3/);
   });
