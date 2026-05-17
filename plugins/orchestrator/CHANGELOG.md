@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.7.3](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.7.2...plugin-orchestrator-v0.7.3) (2026-05-17)
+
+
+### Bug Fixes
+
+* resolve Codex hook Node lookup ([b68d17c](https://github.com/each4all/agentic-plugins/commit/b68d17cdc495977719332eb7a3734dfa4dd1c8e9))
+
 ## [0.7.2](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.7.1...plugin-orchestrator-v0.7.2) (2026-05-15)
 
 
