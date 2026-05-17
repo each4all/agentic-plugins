@@ -34,11 +34,17 @@ describe('runtime cutover audit', () => {
     strictEqual(report.ready_candidate, true);
     ok(report.cutover_gate.candidate_required.includes('ADR-0012 conditions 1-4 satisfied'));
     ok(report.cutover_gate.final_required.includes('explicit user cutover declaration per ADR-0007'));
+    strictEqual(report.cutover_gate.details.find((detail) => detail.id === 'adr0012_condition_gate').status, 'satisfied');
+    strictEqual(report.cutover_gate.details.find((detail) => detail.id === 'scorecard_gate').current, '12/12 satisfied');
+    strictEqual(report.cutover_gate.details.find((detail) => detail.id === 'final_owner_declaration').status, 'manual');
     ok(report.checks.every((check) => ['satisfied', 'current', 'fresh', 'not-active'].includes(check.status)));
     const text = formatText(report);
     ok(text.includes('ready-candidate: true'));
     ok(text.includes('candidate gate: ADR-0012 conditions 1-4 satisfied'));
     ok(text.includes('final gate: explicit user cutover declaration per ADR-0007'));
+    ok(text.includes('gate details:'));
+    ok(text.includes('candidate:scorecard_gate: satisfied; required=omcc replacement scorecard 100%'));
+    ok(text.includes('final:final_owner_declaration: manual'));
   });
 
   it('blocks readiness on partial ADR/scorecard status, stale context, missing dogfood window, missing footer, and unknown omcc activity', async () => {
@@ -70,6 +76,10 @@ describe('runtime cutover audit', () => {
     const text = formatText(report);
     ok(text.includes('candidate gate: ADR-0012 conditions 1-4 satisfied'));
     ok(text.includes('final gate: explicit user cutover declaration per ADR-0007'));
+    ok(text.includes('candidate:adr0012_condition_gate: partial'));
+    ok(text.includes('current=1:partial, 2:partial, 3:partial, 4:partial'));
+    ok(text.includes('candidate:scorecard_gate: partial'));
+    ok(text.includes('blocker=R1:partial'));
     ok(text.includes('conditions: 1:partial, 2:partial, 3:partial, 4:partial'));
     ok(text.includes('unresolved: 1:partial, 2:partial, 3:partial, 4:partial'));
     ok(text.includes('scorecard: satisfied=0/12; unresolved=R1:partial'));
@@ -122,6 +132,10 @@ describe('runtime cutover audit', () => {
     ok(parity.evidence.unresolved_criteria.some((entry) => entry.id === 'lifecycle_hook_continuity'));
     const text = formatText(report);
     ok(text.includes('experience parity: status=partial; score=91%; manual-followups=1'));
+    ok(text.includes('candidate:observed_experience_parity_gate: partial'));
+    ok(text.includes('required=observed runtime experience parity ready, score 100%, and zero manual follow-ups'));
+    ok(text.includes('current=status=partial; score=91%; manual-followups=1'));
+    ok(text.includes('blocker=plugin_management_followups:partial, lifecycle_hook_continuity:partial; followups=codex-hook-review'));
     ok(text.includes('unresolved criteria: plugin_management_followups:partial, lifecycle_hook_continuity:partial'));
     ok(text.includes('manual next actions: codex-hook-review'));
     ok(text.includes('follow-up detail: codex-hook-review; host=codex; commands=/hooks'));
@@ -189,6 +203,11 @@ describe('runtime cutover audit', () => {
 
     const text = formatText(report);
     ok(text.includes('window: 2026-05-16..2026-05-22'));
+    ok(text.includes('candidate:dogfood_window_gate: partial'));
+    ok(text.includes('current=covered=1/7; window=2026-05-16..2026-05-22'));
+    ok(text.includes('blocker=remaining=2026-05-17, 2026-05-18'));
+    ok(text.includes('candidate:completion_footer_gate: partial'));
+    ok(text.includes('current=state=next-work-available'));
     ok(text.includes('remaining dates: 2026-05-17, 2026-05-18, 2026-05-19, 2026-05-20, 2026-05-21, 2026-05-22'));
     ok(!text.includes('missing dates: 2026-05-10'));
   });
