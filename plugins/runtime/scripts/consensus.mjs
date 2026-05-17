@@ -818,6 +818,8 @@ export async function readStatus(options = {}) {
     ? await readJsonIfExists(resolve(repoRoot, manifest.cancellation_pointer))
     : null;
   const evidencePointers = collectEvidencePointers(manifest);
+  const latestRound = findRound(manifest, latestRoundNumber(manifest));
+  const roundOutputSummary = summarizeRoundOutputs({ round: latestRound, activePeers: manifest.peers.active });
   const statusGuidance = buildStatusGuidance({
     runId,
     manifest,
@@ -864,6 +866,7 @@ export async function readStatus(options = {}) {
     execution_pointer: executionPointer,
     progress_pointer: progressPointer,
     execution_summary: executionArtifact?.summary ?? progressArtifact?.summary ?? null,
+    round_output_summary: roundOutputSummary,
     execution_remediation: resolveExecutionRemediation({
       runId,
       executionArtifact,
@@ -877,6 +880,7 @@ export async function readStatus(options = {}) {
       status: round.status,
       prompt_count: round.prompts.length,
       raw_output_count: round.raw_outputs.length,
+      output_summary: summarizeRoundOutputs({ round, activePeers: manifest.peers.active }),
     })),
     peer_lanes: peerLanesFor(manifest, runId),
     durable_disagreements: consensusArtifact?.durable_disagreements ?? [],
@@ -886,6 +890,33 @@ export async function readStatus(options = {}) {
     next_action: statusGuidance.next_action,
     next_steps: statusGuidance.next_steps,
     limits: manifest.limits,
+  };
+}
+
+function summarizeRoundOutputs({ round, activePeers }) {
+  const outputs = Array.isArray(round?.raw_outputs) ? round.raw_outputs : [];
+  const byPeer = new Map(outputs.map((entry) => [entry.peer, entry]));
+  const active = Array.isArray(activePeers) ? activePeers : [];
+  const recordedPeers = active.filter((peer) => byPeer.has(peer));
+  const missingPeers = active.filter((peer) => !byPeer.has(peer));
+  const passedExecutionPeers = recordedPeers.filter((peer) => byPeer.get(peer)?.status === 'passed');
+  const failedExecutionPeers = recordedPeers.filter((peer) => {
+    const status = byPeer.get(peer)?.status;
+    return Boolean(status) && status !== 'passed';
+  });
+  const manualRecordedPeers = recordedPeers.filter((peer) => !byPeer.get(peer)?.status);
+  return {
+    round: round?.round ?? null,
+    active_peers: active.length,
+    recorded: recordedPeers.length,
+    complete: missingPeers.length === 0 && failedExecutionPeers.length === 0,
+    passed_execution: passedExecutionPeers.length,
+    manual_recorded: manualRecordedPeers.length,
+    failed_execution: failedExecutionPeers.length,
+    missing: missingPeers.length,
+    recorded_peers: recordedPeers,
+    missing_peers: missingPeers,
+    failed_execution_peers: failedExecutionPeers,
   };
 }
 
@@ -2189,6 +2220,10 @@ export function formatText(report) {
   }
   if (report.execution_summary) {
     lines.push(`execution summary: executed=${report.execution_summary.executed}; passed=${report.execution_summary.passed}; failed=${report.execution_summary.failed}; skipped=${report.execution_summary.skipped}; retryable-failed=${report.execution_summary.failed_retryable}; non-retryable-failed=${report.execution_summary.failed_non_retryable}; operator-action-required=${report.execution_summary.operator_action_required ?? 0}`);
+  }
+  if (report.round_output_summary) {
+    const summary = report.round_output_summary;
+    lines.push(`round outputs: round=${summary.round}; recorded=${summary.recorded}/${summary.active_peers}; complete=${summary.complete}; passed-execution=${summary.passed_execution}; manual-recorded=${summary.manual_recorded}; failed-execution=${summary.failed_execution}; missing=${summary.missing_peers.join(',') || 'none'}`);
   }
   if (report.policy?.quality_policy) {
     const quality = report.policy.quality_policy;

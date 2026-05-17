@@ -525,6 +525,51 @@ describe('runtime consensus', () => {
     ok(formatText(report).includes('next action: Retry only the retryable failed peers'));
   });
 
+  it('reports aggregate round-output completeness after staged peer retries', async () => {
+    const root = await seedPlan();
+    const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-home-'));
+    await seedCompanionCache(homeDir);
+
+    await runConsensus({
+      command: 'execute',
+      repoRoot: root,
+      homeDir,
+      runId: RUN_ID,
+      execute: true,
+      peers: ['claude'],
+      processBudget: 1,
+      runner: fakeConsensusRunner({ claudeRaw: 'CLAUDE STAGED RAW' }),
+    });
+    await runConsensus({
+      command: 'execute',
+      repoRoot: root,
+      homeDir,
+      runId: RUN_ID,
+      execute: true,
+      peers: ['codex'],
+      processBudget: 1,
+      runner: fakeConsensusRunner({ codexRaw: 'CODEX STAGED RAW' }),
+    });
+
+    const report = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(report.execution_summary.executed, 1);
+    strictEqual(report.execution_summary.passed, 1);
+    strictEqual(report.round_output_summary.recorded, 2);
+    strictEqual(report.round_output_summary.active_peers, 2);
+    strictEqual(report.round_output_summary.complete, true);
+    strictEqual(report.round_output_summary.passed_execution, 2);
+    strictEqual(report.round_output_summary.failed_execution, 0);
+    deepStrictEqual(report.round_output_summary.missing_peers, []);
+    strictEqual(report.rounds[0].output_summary.complete, true);
+    ok(formatText(report).includes('execution summary: executed=1; passed=1'));
+    ok(formatText(report).includes('round outputs: round=1; recorded=2/2; complete=true; passed-execution=2; manual-recorded=0; failed-execution=0; missing=none'));
+  });
+
   it('reports running execution progress instead of suggesting duplicate execution', async () => {
     const root = await seedPlan();
     const progressPointer = `.agentic-plugins/runs/consensus/${RUN_ID}/execution-progress.json`;

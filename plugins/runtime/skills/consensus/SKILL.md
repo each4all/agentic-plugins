@@ -43,6 +43,8 @@ Consensus reports and manages:
   default peer breadth, model/effort defaults, and review-depth defaults);
 - budget policy fields (`max_rounds`, optional `max_peers`, token/time/process budget);
 - raw peer output pointers, byte counts, and hashes;
+- aggregate round-output completeness, separate from the latest execution
+  command summary, so staged single-peer retries are readable before synthesis;
 - per-peer execution progress pointer and status;
 - advisory `execution_remediation` for retryable failures, operator-action
   preconditions, proof commands, suggested timeout increases, and artifact
