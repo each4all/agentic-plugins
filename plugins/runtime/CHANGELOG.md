@@ -8,6 +8,13 @@
 - Add `runtime:context check`, a read-only explicit context budget check that computes green/yellow/red risk without creating artifacts or mutating host session context.
 - Add `runtime:context status --latest`, a read-only latest handoff lookup with artifact age and stale-state reporting.
 
+## [0.51.3](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.51.2...plugin-runtime-v0.51.3) (2026-05-17)
+
+
+### Bug Fixes
+
+* **plugin/runtime:** show scorecard blocker details ([466981d](https://github.com/each4all/agentic-plugins/commit/466981d21a74926169140ee5a7d6874b16f42872))
+
 ## [0.51.2](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.51.1...plugin-runtime-v0.51.2) (2026-05-17)
 
 
