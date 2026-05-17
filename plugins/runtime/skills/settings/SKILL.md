@@ -23,7 +23,7 @@ node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--fo
    - `--apply` may write only `.agentic-plugins/config.toml` in the repo and/or user home.
    - `--execute-plugin-management` runs only allowlisted host-native plugin install/update/add/upgrade commands. It preflights the relevant host plugin command surface first, uses Claude's non-slash `claude plugin install/update` CLI when available, blocks unavailable CLI surfaces before execution, does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts under `.agentic-plugins/runs/settings/<run-id>/`, and treats host "plugin surface unavailable" output as failed even when the host exits 0.
    - `--execute-plugin-cleanup` runs only `claude plugin uninstall <plugin>@agentic-plugins` commands generated from `runtime:doctor` retired/unknown `agentic-plugins` findings. It blocks unavailable Claude plugin surfaces, does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts, and does not authorize general plugin uninstall.
-   - Codex bundled plugin hooks are planned separately: report packaged hook plugins, `plugin_hooks` status, the session/config steps needed to enable them, and the `/hooks` manual follow-up when active-session review/trust cannot be verified. `--apply-codex-plugin-hooks` may write only `~/.codex/config.toml` `[features].plugin_hooks = true`. After the operator reviews/trusts hooks in Codex with `/hooks`, `--attest-codex-hook-review` records a sanitized settings artifact that doctor can use while the hook-bearing plugin set and source versions still match.
+   - Codex bundled plugin hooks are planned separately: report packaged hook plugins, `plugin_hooks` status, `~/.codex/config.toml` `[hooks.state]` enabled/disabled state for expected bundled hooks, the session/config steps needed to enable plugin hooks, and the `/hooks` manual follow-up when active-session review/trust cannot be verified. `--apply-codex-plugin-hooks` may write only `~/.codex/config.toml` `[features].plugin_hooks = true`. After the operator reviews/trusts hooks in Codex with `/hooks`, `--attest-codex-hook-review` records a sanitized settings artifact that doctor can use while the hook-bearing plugin set and source versions still match and expected bundled hook state is not explicitly disabled.
 
 ## Scope
 
@@ -59,16 +59,19 @@ Settings reports and plans:
   `plugin_hooks` is enabled but settings cannot verify active-session hook
   review/trust state. Include the review target checklist: plugin version,
   hook file path, events, handler count, hook commands, and portability
-  warnings. Treat `/hooks` `Installed` counts as packaging evidence only;
-  `Active=0` output and `Trust: New hook - review required` are not enough to
-  attest. Carry doctor warnings for Codex-exposed commands that still point at
-  Claude adapter paths or rely on a bare `node` command that may not exist in
-  the hook runner PATH. Codex plugin hooks also expose
+  warnings. Include expected bundled hook entries from `~/.codex/config.toml`
+  `[hooks.state]` that are explicitly disabled. Treat `/hooks` `Installed`
+  counts as packaging evidence only; `Active=0` output, disabled hook state,
+  and `Trust: New hook - review required` are not enough to attest. Carry
+  doctor warnings for Codex-exposed commands that still point at Claude adapter
+  paths or rely on a bare `node` command that may not exist in the hook runner
+  PATH. Codex plugin hooks also expose
   `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` as compatibility aliases, though
   `PLUGIN_ROOT`/`PLUGIN_DATA` are preferred for new Codex commands.
 - Codex `/hooks` operator attestation, behind `--attest-codex-hook-review`,
   recorded only as a settings artifact. This is not host-native proof and does
-  not mutate Codex trust state.
+  not mutate Codex trust state. Attestation is blocked while expected bundled
+  hook entries remain explicitly disabled in Codex hook state.
 
 ## Apply Boundary
 

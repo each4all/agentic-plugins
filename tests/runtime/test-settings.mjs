@@ -492,6 +492,35 @@ describe('runtime settings', () => {
     ok(formatText(report).includes('not host-native proof'));
   });
 
+  it('blocks Codex hook review attestation while expected hook states are disabled', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-state-disabled-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-state-disabled-home-'));
+    await seedRepo(root);
+    await writeDisabledCodexHookStateConfig(home);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      attestCodexHookReview: true,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    strictEqual(report.codex_hook_review.status, 'blocked');
+    ok(report.codex_hook_review.reason.includes('6/6 expected bundled hook entries are disabled'));
+    strictEqual(report.hook_settings.hook_state.summary.expected_disabled, 6);
+    ok(report.hook_settings.recommendations.some((rec) => rec.action === 'enable-codex-hook-state'));
+    const followup = report.plugin_management.manual_followups.find((entry) => entry.id === 'codex-hook-review');
+    ok(followup.verify.includes('6/6 expected bundled hook entries disabled'));
+    const artifact = JSON.parse(await readFile(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'), 'utf8'));
+    strictEqual(artifact.codex_hook_review.status, 'blocked');
+    ok(formatText(report).includes('hook-state: config=available; expected=6; enabled=0; disabled=6'));
+    ok(formatText(report).includes('disabled-hook-state: engineer; event=pre_compact; path=hooks/hooks.json'));
+  });
+
   it('applies Codex plugin_hooks to user config only behind the explicit flag', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-apply-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-apply-home-'));
@@ -927,6 +956,26 @@ async function seedRepo(root) {
       category: 'Productivity',
     })),
   });
+}
+
+async function writeDisabledCodexHookStateConfig(home, hooksPath = 'hooks/hooks.json') {
+  await mkdir(join(home, '.codex'), { recursive: true });
+  const lines = [
+    '[features]',
+    'plugin_hooks = true',
+    '',
+    '[hooks.state]',
+    '',
+  ];
+  for (const plugin of ['engineer', 'orchestrator']) {
+    for (const event of ['pre_compact', 'session_start', 'stop']) {
+      lines.push(`[hooks.state."${plugin}@agentic-plugins:${hooksPath}:${event}:0:0"]`);
+      lines.push('enabled = false');
+      lines.push('trusted_hash = "sha256:abc123"');
+      lines.push('');
+    }
+  }
+  await writeFile(join(home, '.codex', 'config.toml'), lines.join('\n'));
 }
 
 async function seedCodexTmpMarketplace(home, name, version) {

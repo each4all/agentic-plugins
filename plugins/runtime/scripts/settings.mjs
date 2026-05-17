@@ -958,6 +958,10 @@ function buildCodexHookReviewManualFollowups(codexPluginHooks, hookSettings, cod
   const status = hookSettings?.status ?? codexPluginHooks?.status;
   const targets = hookSettings?.review_targets ?? [];
   if (bundled.length === 0 || status !== 'ready') return [];
+  const hookState = hookSettings?.hook_state?.summary ?? codexPluginHooks?.hook_state?.summary ?? {};
+  const hookStateHint = hookState.expected_disabled > 0
+    ? ` Current Codex config reports ${hookState.expected_disabled}/${hookState.expected} expected bundled hook entries disabled; enable them in /hooks before attesting.`
+    : '';
   return [{
     id: 'codex-hook-review',
     host: 'codex',
@@ -965,7 +969,7 @@ function buildCodexHookReviewManualFollowups(codexPluginHooks, hookSettings, cod
     reason: 'Codex plugin hooks are packaged and plugin_hooks is enabled, but runtime:settings cannot verify active-session hook review/trust state.',
     environment: 'Open the active Codex session for this repository.',
     commands: ['/hooks'],
-    verify: `Review/trust bundled hooks for ${bundled.join(', ')} (${targets.length} review target(s)); if /hooks shows "New hook - review required", review each new hook first. Do not attest from /hooks Installed counts alone, including Active=0 output. Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
+    verify: `Review/trust bundled hooks for ${bundled.join(', ')} (${targets.length} review target(s)); if /hooks shows "New hook - review required", review each new hook first. Do not attest from /hooks Installed counts alone, including Active=0 output.${hookStateHint} Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
     review_targets: targets,
   }];
 }
@@ -1019,6 +1023,15 @@ function buildCodexHookReviewAttestation({ codexPluginHooks, hookSettings, plugi
       ...base,
       status: 'blocked',
       reason: 'No bundled Codex plugin hooks were observed for attestation.',
+    };
+  }
+  const disabledExpected = hookSettings?.hook_state?.summary?.expected_disabled ?? codexPluginHooks?.hook_state?.summary?.expected_disabled ?? 0;
+  const expected = hookSettings?.hook_state?.summary?.expected ?? codexPluginHooks?.hook_state?.summary?.expected ?? 0;
+  if (disabledExpected > 0) {
+    return {
+      ...base,
+      status: 'blocked',
+      reason: `Codex hook review cannot be attested while ${disabledExpected}/${expected} expected bundled hook entries are disabled in Codex hook state. Open /hooks, enable/trust them, then rerun attestation.`,
     };
   }
   return {
@@ -1592,6 +1605,7 @@ async function buildHookSettingsPlan({ codexPluginHooks, plugins = {}, homeDir, 
       default_file_only: hookReport.summary?.default_file_only_plugins ?? [],
       command_warnings: hookReport.summary?.command_warning_plugins ?? [],
     },
+    hook_state: hookReport.hook_state ?? null,
     review_targets: buildCodexHookReviewTargets({ codexPluginHooks: hookReport, plugins }),
     recommendations,
     host_config: hostConfig,
@@ -1938,6 +1952,13 @@ export function formatText(report) {
   lines.push('');
   lines.push('Codex Plugin Hooks');
   lines.push(`- status=${report.hook_settings.status}; bundled=${report.hook_settings.packaged_plugins.bundled.join(',') || 'none'}; manifest-exposed=${report.hook_settings.packaged_plugins.manifest_exposed.join(',') || 'none'}; default-file-only=${report.hook_settings.packaged_plugins.default_file_only.join(',') || 'none'}; command-warnings=${report.hook_settings.packaged_plugins.command_warnings.join(',') || 'none'}`);
+  if (report.hook_settings.hook_state) {
+    const state = report.hook_settings.hook_state;
+    lines.push(`- hook-state: config=${state.config_status}; expected=${state.summary.expected}; enabled=${state.summary.expected_enabled}; disabled=${state.summary.expected_disabled}; missing=${state.summary.expected_missing}; untrusted=${state.summary.expected_untrusted}; unexpected-agentic=${state.summary.unexpected_agentic_entries}`);
+    for (const entry of state.disabled_expected ?? []) {
+      lines.push(`  disabled-hook-state: ${entry.plugin}; event=${entry.event}; path=${entry.hooks_path}; ids=${entry.ids.join(',') || 'none'}`);
+    }
+  }
   lines.push(`- session-command: ${report.hook_settings.mutation_boundary.session_command}`);
   lines.push('- persistent-config-snippet: [features] plugin_hooks = true');
   if (report.hook_settings.host_config) {
