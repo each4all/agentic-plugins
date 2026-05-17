@@ -14,7 +14,6 @@
 ### Bug Fixes
 
 * **plugin/runtime:** show cutover footer reason ([44833f0](https://github.com/each4all/agentic-plugins/commit/44833f03e486b6997dd96defa870b60b2507b55a))
-* **plugin/runtime:** show cutover footer reason ([44833f0](https://github.com/each4all/agentic-plugins/commit/44833f03e486b6997dd96defa870b60b2507b55a))
 
 ## [0.51.3](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.51.2...plugin-runtime-v0.51.3) (2026-05-17)
 
