@@ -65,6 +65,8 @@ Consensus reports and manages:
   final execution artifact, guarded by an inspect-before-retry instruction.
 - latest-run lookup for `status --latest`, selected from readable manifest
   timestamps without reading raw peer output.
+- latest-open lookup for `status --latest-open`, which skips cancelled,
+  converged, and owner-decided runs while preserving them as artifacts.
 
 ## Boundaries
 

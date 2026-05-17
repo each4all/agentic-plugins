@@ -45,6 +45,7 @@ const MAX_ROUNDS_CAP = 3;
 const DEFAULT_EXECUTION_TIMEOUT_MS = 120000;
 const MAX_EXECUTION_TIMEOUT_MS = 600000;
 const RESULT_QUALITY_OBJECTIVE = 'best-results-over-token-minimization';
+const TERMINAL_MANIFEST_STATUSES = new Set(['cancelled', 'converged', 'owner-decided']);
 const RUN_ID_RE = /^consensus-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const PEER_ID_RE = /^[A-Za-z0-9._-]+$/;
 const PEER_DIRECTIONS = {
@@ -795,6 +796,7 @@ export async function readStatus(options = {}) {
     repoRoot,
     runId: options.runId,
     latest: options.latest,
+    latestOpen: options.latestOpen,
   });
   const runId = selection.runId;
   const manifestPath = manifestFile(repoRoot, runId);
@@ -2086,6 +2088,9 @@ export function parseArgs(argv) {
       case '--latest':
         options.latest = true;
         break;
+      case '--latest-open':
+        options.latestOpen = true;
+        break;
       case '--peer':
         options.peer = validatePeerId(requireValue(args, arg));
         break;
@@ -2149,11 +2154,17 @@ export function parseArgs(argv) {
     }
   }
   options.command = command ?? 'plan';
-  if (options.runId && options.latest) {
-    throw new Error('Use either --run-id or --latest, not both');
+  if (options.runId && (options.latest || options.latestOpen)) {
+    throw new Error('Use either --run-id or --latest/--latest-open, not both');
+  }
+  if (options.latest && options.latestOpen) {
+    throw new Error('Use either --latest or --latest-open, not both');
   }
   if (options.latest && options.command !== 'status') {
     throw new Error('--latest is only supported by status');
+  }
+  if (options.latestOpen && options.command !== 'status') {
+    throw new Error('--latest-open is only supported by status');
   }
   return options;
 }
@@ -2300,14 +2311,19 @@ Usage:
   runtime:consensus execute --run-id <id> [--round N] [--peers claude,codex] --execute [--timeout-ms N] [--process-budget N]
   runtime:consensus status --run-id <id>
   runtime:consensus status --latest
+  runtime:consensus status --latest-open
 
-Planning, synthesis, owner-decision recording, and cancellation never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record. Contradiction rebuttal rounds default to ${DEFAULT_MAX_ROUNDS} total rounds, --max-rounds is hard-capped at ${MAX_ROUNDS_CAP}, and exhausted contradictions become owner-decision-required instead of creating another loop. Cancellation is artifact-only; if progress is running, use --confirm-no-active-process only after verifying no original execute process is still active.`;
+Planning, synthesis, owner-decision recording, and cancellation never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record. Contradiction rebuttal rounds default to ${DEFAULT_MAX_ROUNDS} total rounds, --max-rounds is hard-capped at ${MAX_ROUNDS_CAP}, and exhausted contradictions become owner-decision-required instead of creating another loop. Cancellation is artifact-only; if progress is running, use --confirm-no-active-process only after verifying no original execute process is still active. Use status --latest-open to select the newest non-terminal run while preserving cancelled, converged, and owner-decided runs as audit artifacts.`;
 }
 
-async function resolveStatusRunSelection({ repoRoot, runId, latest }) {
-  if (runId && latest) {
-    throw new Error('Use either --run-id or --latest, not both');
+async function resolveStatusRunSelection({ repoRoot, runId, latest, latestOpen }) {
+  if (runId && (latest || latestOpen)) {
+    throw new Error('Use either --run-id or --latest/--latest-open, not both');
   }
+  if (latest && latestOpen) {
+    throw new Error('Use either --latest or --latest-open, not both');
+  }
+  if (latestOpen) return findLatestConsensusRun(repoRoot, { openOnly: true });
   if (latest) return findLatestConsensusRun(repoRoot);
   const validated = validateRunId(required(runId, '--run-id'));
   return {
@@ -2315,32 +2331,40 @@ async function resolveStatusRunSelection({ repoRoot, runId, latest }) {
     lookup: {
       mode: 'run-id',
       latest: false,
+      latest_open: false,
       selected_at: null,
       skipped_invalid: 0,
+      skipped_terminal: 0,
     },
   };
 }
 
-async function findLatestConsensusRun(repoRoot) {
+async function findLatestConsensusRun(repoRoot, { openOnly = false } = {}) {
   const root = consensusRoot(repoRoot);
   let entries;
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch (error) {
     if (error?.code === 'ENOENT') {
-      throw new Error('status --latest requires at least one consensus run; no consensus run artifacts found');
+      const mode = openOnly ? '--latest-open' : '--latest';
+      throw new Error(`status ${mode} requires at least one consensus run; no consensus run artifacts found`);
     }
     throw error;
   }
 
   let selected = null;
   let skippedInvalid = 0;
+  let skippedTerminal = 0;
   for (const entry of entries) {
     if (!entry.isDirectory() || !RUN_ID_RE.test(entry.name)) continue;
     try {
       const manifest = await readJson(manifestFile(repoRoot, entry.name));
       if (manifest.run_id !== entry.name) {
         skippedInvalid += 1;
+        continue;
+      }
+      if (openOnly && !isOpenConsensusManifest(manifest)) {
+        skippedTerminal += 1;
         continue;
       }
       const timestampMs = consensusTimestampMs(manifest, entry.name);
@@ -2361,17 +2385,25 @@ async function findLatestConsensusRun(repoRoot) {
   }
 
   if (!selected) {
-    throw new Error('status --latest found no readable consensus manifest artifacts');
+    const mode = openOnly ? '--latest-open' : '--latest';
+    throw new Error(`status ${mode} found no readable${openOnly ? ' open' : ''} consensus manifest artifacts`);
   }
   return {
     runId: selected.runId,
     lookup: {
-      mode: 'latest',
+      mode: openOnly ? 'latest-open' : 'latest',
       latest: true,
+      latest_open: openOnly,
       selected_at: selected.selectedAt,
       skipped_invalid: skippedInvalid,
+      skipped_terminal: skippedTerminal,
     },
   };
+}
+
+function isOpenConsensusManifest(manifest) {
+  if (manifest.cancellation_pointer || manifest.owner_decision_pointer) return false;
+  return !TERMINAL_MANIFEST_STATUSES.has(manifest.status);
 }
 
 async function resolveTask(options) {
