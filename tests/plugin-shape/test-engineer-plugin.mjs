@@ -24,7 +24,7 @@
 //     §sub-decisions 1+2+3)
 //   - 4 Claude adapter hooks (pre-compact, stop, session-start, _shared)
 //   - 3 Codex adapter hooks (session-start / pre-compact / stop) plus a
-//     Codex-specific hook manifest
+//     Node resolver wrapper and Codex-specific hook manifest
 //   - 1 bundled Claude hooks manifest (hooks/hooks.json), while the Codex
 //     manifest's `hooks` field points at adapters/codex/hooks/hooks.json
 //   - 9 ensemble point types in skills/_shared/references/ensemble-protocol.md
@@ -110,7 +110,7 @@ const SHARED_REFS = [
 ];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['pre-compact.mjs', 'stop.mjs', 'session-start.mjs', '_shared.mjs'];
-const CODEX_HOOKS = ['pre-compact.mjs', 'stop.mjs', 'session-start.mjs', 'hooks.json', 'README.md'];
+const CODEX_HOOKS = ['pre-compact.mjs', 'stop.mjs', 'session-start.mjs', 'run-node-hook.sh', 'hooks.json', 'README.md'];
 
 // Stale tokens that should NEVER appear in engineer SKILL/commands/refs.
 // Mirrors test-research-plugin.mjs and reflects ADR-0007 redesign stance —
@@ -827,6 +827,10 @@ describe('plugins/engineer — Codex adapter (adapters/codex/hooks/)', () => {
       ok(
         entry.command.includes('${PLUGIN_ROOT}/adapters/codex/hooks/'),
         `${event} command does not reference $PLUGIN_ROOT Codex adapter path: ${entry.command}`,
+      );
+      ok(
+        entry.command.startsWith('/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh"'),
+        `${event} command does not route through the Node resolver wrapper: ${entry.command}`,
       );
     }
     strictEqual(json.hooks.SessionStart[0].matcher, 'compact');

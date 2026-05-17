@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/adapters/codex/hooks/session-start.mjs\""
+            "command": "/bin/sh \"${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh\" \"${PLUGIN_ROOT}/adapters/codex/hooks/session-start.mjs\""
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/adapters/codex/hooks/pre-compact.mjs\""
+            "command": "/bin/sh \"${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh\" \"${PLUGIN_ROOT}/adapters/codex/hooks/pre-compact.mjs\""
           }
         ]
       }
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs\""
+            "command": "/bin/sh \"${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh\" \"${PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs\""
           }
         ]
       }
