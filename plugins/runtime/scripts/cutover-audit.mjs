@@ -416,6 +416,7 @@ function buildCompletionAudit({ repoRoot, checks, cutoverGate }) {
   }));
   const conditions = (adrConditions?.evidence?.statuses ?? []).map((row) => ({
     id: `ADR-0012 condition ${row.condition}`,
+    condition: row.condition,
     status: row.status,
     source: adrConditions.evidence.pointer,
   }));
@@ -542,10 +543,114 @@ function buildCompletionAudit({ repoRoot, checks, cutoverGate }) {
     repo_root: repoRoot,
     requirements,
     adr0012_conditions: conditions,
+    adr0012_transition_advice: buildAdr0012TransitionAdvice({ byId, conditions }),
     artifact_checklist: artifactChecklist,
     gate_checklist: gateChecklist,
     missing_or_weak: dedupeAuditFindings(missingOrWeak),
   };
+}
+
+function buildAdr0012TransitionAdvice({ byId, conditions }) {
+  const conditionStatus = new Map(conditions.map((row) => [row.condition, row.status]));
+  const dogfood = byId.get('dogfood_evidence_window');
+  const parity = byId.get('observed_experience_parity');
+  const scorecard = byId.get('omcc_replacement_scorecard');
+  const legacyMap = byId.get('legacy_omcc_pattern_map');
+  const installedVersions = byId.get('installed_plugin_versions');
+  const omccActivity = byId.get('omcc_dev_daily_workflow');
+  const footer = byId.get('latest_completion_footer_state');
+  return [
+    transitionAdviceItem({
+      condition: '1',
+      status: conditionStatus.get('1') ?? 'missing',
+      required: 'engineer reaches omcc-dev parity',
+      evidence: ['orchestrator + engineer composition shipped', 'legacy pattern map complete'],
+      blockers: conditionStatus.get('1') === 'satisfied' ? [] : ['condition row is not satisfied in docs/DEVELOPMENT.md'],
+      next: conditionStatus.get('1') === 'satisfied' ? null : 'Review ADR-0019/ADR-0020 parity evidence, then update the condition row only if still valid.',
+    }),
+    transitionAdviceItem({
+      condition: '2',
+      status: conditionStatus.get('2') ?? 'missing',
+      required: 'bidirectional engineer companion round-trip proof',
+      evidence: [parity?.evidence?.recorded_doctor_proof?.run_id ?? null].filter(Boolean),
+      blockers: conditionStatus.get('2') === 'satisfied' ? [] : ['condition row is not satisfied in docs/DEVELOPMENT.md'],
+      next: conditionStatus.get('2') === 'satisfied' ? null : 'Run runtime:doctor proof execution and update the condition row only when both directions pass.',
+    }),
+    transitionAdviceItem({
+      condition: '3',
+      status: conditionStatus.get('3') ?? 'missing',
+      required: 'agentic-plugins-only development sufficiency after sustained no-omcc-dev dogfood',
+      evidence: [
+        dogfoodChecklistEvidence(dogfood),
+        `omcc-dev-active=${omccActivity?.evidence?.omcc_dev_active ?? 'unknown'}`,
+        parity?.evidence?.recorded_doctor_proof?.run_id ?? null,
+      ].filter(Boolean),
+      blockers: conditionStatus.get('3') === 'satisfied'
+        ? []
+        : condition3Blockers({ dogfood, omccActivity, parity }),
+      next: conditionStatus.get('3') === 'satisfied'
+        ? null
+        : 'Wait for the dogfood window to satisfy, keep omcc-dev inactive, then update docs/DEVELOPMENT.md condition 3 with the cutover evidence pointers.',
+    }),
+    transitionAdviceItem({
+      condition: '4',
+      status: conditionStatus.get('4') ?? 'missing',
+      required: 'self-contained scaffolding with no remaining load-bearing omcc dependency',
+      evidence: [
+        `scorecard=${scorecard?.evidence?.satisfied ?? 0}/${scorecard?.evidence?.total ?? 0}`,
+        `legacy-map=${legacyMap?.status ?? 'not-verified'}`,
+        `installed-versions=${installedVersions?.status ?? 'not-verified'}`,
+        `footer=${footer?.evidence?.footer_state ?? 'not-verified'}`,
+      ],
+      blockers: conditionStatus.get('4') === 'satisfied'
+        ? []
+        : condition4Blockers({ conditionStatus, scorecard, legacyMap, installedVersions, footer }),
+      next: conditionStatus.get('4') === 'satisfied'
+        ? null
+        : 'After condition 3 is satisfied and final closeout evidence is closed, update condition 4 only if no rejected/deferred omcc pattern remains load-bearing.',
+    }),
+  ];
+}
+
+function transitionAdviceItem({ condition, status, required, evidence, blockers, next }) {
+  return {
+    condition,
+    status,
+    required,
+    evidence: evidence.filter(Boolean),
+    blockers,
+    next,
+  };
+}
+
+function condition3Blockers({ dogfood, omccActivity, parity }) {
+  const blockers = [];
+  if (dogfood?.status !== 'satisfied') {
+    const remaining = dogfood?.evidence?.remaining_dates ?? [];
+    const missing = dogfood?.evidence?.missing_dates ?? [];
+    const blocked = dogfood?.evidence?.blocked_dates ?? [];
+    if (remaining.length) blockers.push(`dogfood remaining dates: ${remaining.join(', ')}`);
+    if (missing.length) blockers.push(`dogfood missing dates: ${missing.join(', ')}`);
+    if (blocked.length) blockers.push(`dogfood blocked dates: ${blocked.join(', ')}`);
+    if (!remaining.length && !missing.length && !blocked.length) blockers.push('dogfood window is not satisfied');
+  }
+  if (omccActivity?.status !== 'not-active') {
+    blockers.push(`omcc-dev activity is ${omccActivity?.evidence?.omcc_dev_active ?? 'unknown'}`);
+  }
+  if (parity?.status !== 'satisfied') {
+    blockers.push(`observed experience parity is ${parity?.status ?? 'not-verified'}`);
+  }
+  return blockers;
+}
+
+function condition4Blockers({ conditionStatus, scorecard, legacyMap, installedVersions, footer }) {
+  const blockers = [];
+  if (conditionStatus.get('3') !== 'satisfied') blockers.push('ADR-0012 condition 3 is not satisfied yet');
+  if (scorecard?.status !== 'satisfied') blockers.push(`scorecard is ${scorecard?.status ?? 'not-verified'}`);
+  if (legacyMap?.status !== 'satisfied') blockers.push(`legacy pattern map is ${legacyMap?.status ?? 'not-verified'}`);
+  if (installedVersions?.status !== 'satisfied') blockers.push(`installed versions are ${installedVersions?.status ?? 'not-verified'}`);
+  if (footer?.status !== 'satisfied') blockers.push(`completion footer is ${footer?.evidence?.footer_state ?? 'not-verified'}`);
+  return blockers;
 }
 
 function checklistItem({ id, kind, status, source, covers, evidence = null }) {
@@ -1266,6 +1371,15 @@ export function formatText(report) {
       lines.push('  adr0012 conditions:');
       for (const row of report.completion_audit.adr0012_conditions) {
         lines.push(`    - ${row.id}: ${row.status}; source=${row.source}`);
+      }
+    }
+    if (report.completion_audit.adr0012_transition_advice?.length) {
+      lines.push('  adr0012 transition advice:');
+      for (const item of report.completion_audit.adr0012_transition_advice) {
+        lines.push(`    - condition ${item.condition}: ${item.status}; required=${compactCell(item.required, 180)}`);
+        if (item.evidence?.length) lines.push(`      evidence=${compactCell(item.evidence.join('; '), 220)}`);
+        if (item.blockers?.length) lines.push(`      blockers=${compactCell(item.blockers.join('; '), 220)}`);
+        if (item.next) lines.push(`      next=${compactCell(item.next, 220)}`);
       }
     }
     if (report.completion_audit.artifact_checklist?.length) {

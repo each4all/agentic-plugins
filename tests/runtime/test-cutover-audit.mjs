@@ -71,6 +71,14 @@ describe('runtime cutover audit', () => {
     ok(report.completion_audit.adr0012_conditions.some((row) => (
       row.id === 'ADR-0012 condition 3' && row.status === 'partial'
     )));
+    const condition3Advice = report.completion_audit.adr0012_transition_advice.find((row) => row.condition === '3');
+    strictEqual(condition3Advice.status, 'partial');
+    ok(condition3Advice.required.includes('agentic-plugins-only development sufficiency'));
+    ok(condition3Advice.evidence.includes('covered=1/7; window=2026-05-16..2026-05-22'));
+    ok(condition3Advice.blockers.some((blocker) => blocker.includes('dogfood remaining dates')));
+    const condition4Advice = report.completion_audit.adr0012_transition_advice.find((row) => row.condition === '4');
+    ok(condition4Advice.blockers.includes('ADR-0012 condition 3 is not satisfied yet'));
+    ok(condition4Advice.blockers.includes('completion footer is next-work-available'));
     ok(report.completion_audit.artifact_checklist.some((item) => (
       item.id === 'runtime-doctor-proof'
         && item.kind === 'command'
@@ -93,6 +101,9 @@ describe('runtime cutover audit', () => {
     ok(text.includes('completion audit:'));
     ok(text.includes('requirements:'));
     ok(text.includes('- R1: satisfied; source=docs/assurance/omcc-cutover-scorecard.md; requirement=superior compatible'));
+    ok(text.includes('adr0012 transition advice:'));
+    ok(text.includes('- condition 3: partial; required=agentic-plugins-only development sufficiency after sustained no-omcc-dev dogfood'));
+    ok(text.includes('blockers=dogfood remaining dates: 2026-05-17'));
     ok(text.includes('artifact checklist:'));
     ok(text.includes('- runtime-doctor-proof: satisfied; kind=command; source=runtime:doctor --permission-proof'));
     ok(text.includes('missing or weak:'));

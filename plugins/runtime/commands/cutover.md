@@ -26,7 +26,9 @@ or equivalent manual review work is visible directly in the cutover report.
 Pass `--completion-audit` when preparing a final or near-final cutover review;
 it adds a prompt-to-artifact checklist mapping requirement rows, ADR condition
 rows, runtime commands, evidence artifacts, candidate/final gates, and any
-weak or missing evidence.
+weak or missing evidence. It also includes ADR-0012 transition advice that
+spells out which condition rows can remain satisfied and which evidence blocks
+condition 3/4 promotion.
 
 Audit mode is read-only unless the operator passes runtime doctor proof
 execution flags. `--permission-proof`, `--deep-peer-smoke`, and
@@ -70,6 +72,7 @@ With `--completion-audit`, the report also includes:
 - command/artifact checklist entries for `runtime:doctor`, `runtime:settings`,
   `runtime:compat`, consensus/context artifacts, cutover records, footer state,
   omcc-dev activity, and the manual final owner declaration;
+- ADR-0012 transition advice for condition 3/4 promotion blockers;
 - a deduplicated `missing or weak` list for unresolved requirements, conditions,
   artifacts, or gates.
 
