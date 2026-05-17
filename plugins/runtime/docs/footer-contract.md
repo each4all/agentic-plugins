@@ -114,8 +114,19 @@ node <runtime-plugin-root>/scripts/footer.mjs render \
   --consensus-latest
 ```
 
+Or they may select the newest non-terminal consensus run while preserving
+cancelled, converged, and owner-decided runs as audit artifacts:
+
+```bash
+node <runtime-plugin-root>/scripts/footer.mjs render \
+  --repo-root "$REPO_ROOT" \
+  --host codex \
+  --consensus-latest-open
+```
+
 Consensus lookup is read-only and mutually exclusive between
-`--consensus-run-id` and `--consensus-latest`. The helper calls
+`--consensus-run-id`, `--consensus-latest`, and `--consensus-latest-open`.
+The helper calls
 `runtime:consensus status` internally and includes only status, run/result/
 execution/progress/owner-decision/cancellation pointers, status guidance,
 recommended next action, and safe follow-up commands. It does not print peer

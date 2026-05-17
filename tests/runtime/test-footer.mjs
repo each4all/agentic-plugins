@@ -421,6 +421,54 @@ describe('runtime footer', () => {
     ok(!text.includes('latest consensus task'));
   });
 
+  it('can link the latest open consensus run without selecting terminal artifacts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-latest-open-'));
+    const openRunId = 'consensus-20260513T000000Z-111111';
+    const cancelledRunId = CONSENSUS_RUN_ID;
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: openRunId,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      task: 'open consensus task must stay hidden.',
+    });
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: cancelledRunId,
+      now: new Date('2026-05-13T01:00:00.000Z'),
+      task: 'cancelled consensus task must stay hidden.',
+    });
+    await runConsensus({
+      command: 'cancel',
+      repoRoot: root,
+      runId: cancelledRunId,
+      now: new Date('2026-05-13T02:00:00.000Z'),
+      reason: 'No longer needed.',
+    });
+
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      consensusLatestOpen: true,
+    });
+
+    strictEqual(report.consensus.run_id, openRunId);
+    strictEqual(report.consensus.lookup.mode, 'latest-open');
+    strictEqual(report.consensus.lookup.latest_open, true);
+    strictEqual(report.consensus.lookup.skipped_terminal, 1);
+    strictEqual(report.consensus.status_guidance.state, 'execute_or_record');
+    strictEqual(report.next_session.command, `$runtime:consensus status --run-id ${openRunId}`);
+
+    const text = formatText(report);
+    ok(text.includes('consensus lookup:'));
+    ok(text.includes('- mode: latest-open'));
+    ok(text.includes('consensus guidance: execute_or_record'));
+    ok(!text.includes('open consensus task'));
+    ok(!text.includes('cancelled consensus task'));
+    ok(!JSON.stringify(report).includes('cancelled consensus task'));
+  });
+
   it('recommends asking the user about PR handling only when readiness criteria pass', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-footer-pr-ready-'));
     const report = await runFooter({
@@ -602,7 +650,11 @@ describe('runtime footer', () => {
     strictEqual(opts.cutoverDogfoodDate, '2026-05-16');
 
     throws(() => parseArgs(['render', '--context-latest', '--context-run-id', RUN_ID]), /Use either --context-run-id or --context-latest/);
-    throws(() => parseArgs(['render', '--consensus-latest', '--consensus-run-id', CONSENSUS_RUN_ID]), /Use either --consensus-run-id or --consensus-latest/);
+    const latestOpenOpts = parseArgs(['render', '--consensus-latest-open']);
+    strictEqual(latestOpenOpts.consensusLatestOpen, true);
+
+    throws(() => parseArgs(['render', '--consensus-latest', '--consensus-run-id', CONSENSUS_RUN_ID]), /Use only one of --consensus-run-id, --consensus-latest, or --consensus-latest-open/);
+    throws(() => parseArgs(['render', '--consensus-latest', '--consensus-latest-open']), /Use only one of --consensus-run-id, --consensus-latest, or --consensus-latest-open/);
     throws(() => parseArgs(['render', '--context-run-id', '../bad']), /Invalid --context-run-id/);
     throws(() => parseArgs(['render', '--consensus-run-id', '../bad']), /Invalid --consensus-run-id/);
     throws(() => parseArgs(['render', '--stale-after-hours', 'soon']), /non-negative integer/);
@@ -616,6 +668,7 @@ describe('runtime footer', () => {
     throws(() => parseArgs(['render', '--cutover-dogfood-date', '2026-02-30']), /valid calendar date/);
     throws(() => parseArgs(['render', '--cutover-dogfood-date', '05-16-2026']), /YYYY-MM-DD/);
     throws(() => parseArgs(['render', '--artifact', 'bad\npath']), /single-line/);
+    ok(formatText({ help: true }).includes('--consensus-latest-open'));
 
     const root = await mkdtemp(join(tmpdir(), 'runtime-footer-reject-'));
     await rejectsAsync(
