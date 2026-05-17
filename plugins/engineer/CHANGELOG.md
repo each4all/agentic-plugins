@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.12.0...plugin-engineer-v0.12.1) (2026-05-17)
+
+
+### Bug Fixes
+
+* resolve Codex hook Node lookup ([b68d17c](https://github.com/each4all/agentic-plugins/commit/b68d17cdc495977719332eb7a3734dfa4dd1c8e9))
+* resolve Codex hook Node lookup ([b68d17c](https://github.com/each4all/agentic-plugins/commit/b68d17cdc495977719332eb7a3734dfa4dd1c8e9))
+
 ## [0.12.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.11.0...plugin-engineer-v0.12.0) (2026-05-16)
 
 
