@@ -69,7 +69,7 @@ Consensus reports and manages:
 - No engineer/orchestrator workflow state migration.
 - No host-native config, authentication, secret, sandbox, or permission writes.
 - No claim that Codex plugin-hook feature/trust state or permission limits are host parity.
-- No automatic unbounded loops; max rounds, process budget, and timeout caps bound companion execution, while peer breadth is bounded by the explicit `--peers` roster and optional `--max-peers` with no hidden fixed peer-count cap.
+- No automatic unbounded loops; max rounds default to 2 total rounds and are hard-capped at 3. If direct contradictions remain after the configured round budget is exhausted, report `owner-decision-required` instead of creating another rebuttal loop. Process budget and timeout caps bound companion execution, while peer breadth is bounded by the explicit `--peers` roster and optional `--max-peers` with no hidden fixed peer-count cap.
 - No false compromise: synthesis must classify peer output as `aligned`, `complementary`, `contradiction`, `insufficient-evidence`, `owner-decision-required`, or `non-consensus`.
 - No empty rebuttal rounds; `next-round` requires direct-contradiction durable disagreements and still never executes peers.
 
