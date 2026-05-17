@@ -15,6 +15,7 @@ import {
 import { RUNTIME_VERSION } from '../../plugins/runtime/scripts/version.mjs';
 
 const SETTINGS_RUN_ID = 'settings-20260513T000000Z-abcdef';
+const PORTABLE_HOOK_COMMAND = '/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${PLUGIN_ROOT}/adapters/codex/hooks/hook.mjs"';
 
 describe('runtime settings', () => {
   it('builds a dry-run settings plan without mutating config or running install commands', async () => {
@@ -392,11 +393,11 @@ describe('runtime settings', () => {
     deepStrictEqual(engineerTarget.events, ['PreCompact', 'SessionStart', 'Stop']);
     strictEqual(engineerTarget.handler_count, 3);
     strictEqual(engineerTarget.command_count, 1);
-    deepStrictEqual(engineerTarget.commands, ['node hook.mjs']);
+    deepStrictEqual(engineerTarget.commands, [PORTABLE_HOOK_COMMAND]);
     ok(formatText(report).includes('command: /hooks'));
     ok(formatText(report).includes('review-target: engineer@1.0.0'));
     ok(formatText(report).includes(`path=${engineerTarget.hooks_path}`));
-    ok(formatText(report).includes('hook-command: node hook.mjs'));
+    ok(formatText(report).includes(`hook-command: ${PORTABLE_HOOK_COMMAND}`));
   });
 
   it('carries Codex hook command portability warnings into settings output', async () => {
@@ -429,7 +430,7 @@ describe('runtime settings', () => {
     await seedRepo(root);
     await writeJson(join(root, 'plugins', 'engineer', 'hooks', 'hooks.json'), {
       hooks: {
-        Stop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"' }] }],
+        Stop: [{ hooks: [{ type: 'command', command: '/bin/sh "${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"' }] }],
       },
     });
 
@@ -890,9 +891,9 @@ async function seedRepo(root) {
       await mkdir(join(root, 'plugins', name, 'hooks'), { recursive: true });
       await writeJson(join(root, 'plugins', name, 'hooks', 'hooks.json'), {
         hooks: {
-          SessionStart: [{ matcher: 'compact', hooks: [{ type: 'command', command: 'node hook.mjs' }] }],
-          PreCompact: [{ hooks: [{ type: 'command', command: 'node hook.mjs' }] }],
-          Stop: [{ hooks: [{ type: 'command', command: 'node hook.mjs' }] }],
+          SessionStart: [{ matcher: 'compact', hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
+          PreCompact: [{ hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
+          Stop: [{ hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
         },
       });
     }
