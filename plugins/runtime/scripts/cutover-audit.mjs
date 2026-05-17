@@ -96,6 +96,7 @@ export async function runCutoverAudit(options = {}) {
     checkOmccActivity({ options, latestEvidence }),
   ];
   const readyCandidate = checks.every((check) => CHECK_PASS.has(check.status));
+  const cutoverGate = buildCutoverGateDetails(checks);
   const proofExecutionRequested = Boolean(
     options.executePermissionProof
       || options.executeDeepPeerSmoke
@@ -108,12 +109,7 @@ export async function runCutoverAudit(options = {}) {
     ready_candidate: readyCandidate,
     generated_at: now.toISOString(),
     repo_root: repoRoot,
-    cutover_gate: {
-      candidate_required: CUTOVER_CANDIDATE_GATE,
-      final_required: CUTOVER_FINAL_GATE,
-      required: [...CUTOVER_CANDIDATE_GATE, ...CUTOVER_FINAL_GATE],
-      note: 'runtime:cutover-audit reports candidate readiness evidence only; final cutover still requires explicit user declaration.',
-    },
+    cutover_gate: cutoverGate,
     checks,
     next_actions: checks
       .filter((check) => CHECK_UNREADY.has(check.status))
@@ -127,6 +123,119 @@ export async function runCutoverAudit(options = {}) {
       'Dogfood evidence is accepted only from explicit runtime:cutover record artifacts or explicit current-run flags.',
       'Unknown dogfood or omcc-dev usage evidence blocks readiness rather than being inferred.',
     ],
+  };
+}
+
+function buildCutoverGateDetails(checks) {
+  const byId = new Map(checks.map((check) => [check.id, check]));
+  return {
+    candidate_required: CUTOVER_CANDIDATE_GATE,
+    final_required: CUTOVER_FINAL_GATE,
+    required: [...CUTOVER_CANDIDATE_GATE, ...CUTOVER_FINAL_GATE],
+    note: 'runtime:cutover-audit reports candidate readiness evidence only; final cutover still requires explicit user declaration.',
+    details: [
+      adrConditionGateDetail(byId.get('adr0012_conditions')),
+      scorecardGateDetail(byId.get('omcc_replacement_scorecard')),
+      experienceParityGateDetail(byId.get('observed_experience_parity')),
+      dogfoodGateDetail(byId.get('dogfood_evidence_window')),
+      footerGateDetail(byId.get('latest_completion_footer_state')),
+      {
+        id: 'final_owner_declaration',
+        phase: 'final',
+        status: 'manual',
+        required: 'explicit user declaration that omcc can be archived or removed per ADR-0007',
+        current: 'not machine-verifiable; runtime can only report cutover-ready-candidate',
+        blocker: 'owner decision remains required after every candidate evidence gate passes',
+      },
+    ],
+  };
+}
+
+function adrConditionGateDetail(check) {
+  const statuses = check?.evidence?.statuses ?? [];
+  const statusText = statuses.length
+    ? statuses.map((row) => `${row.condition}:${row.status}`).join(', ')
+    : '<missing>';
+  const unresolved = (check?.evidence?.unresolved_conditions ?? [])
+    .map((row) => `${row.condition}:${row.status}`);
+  const missing = check?.evidence?.missing_conditions ?? [];
+  const blockers = [
+    ...unresolved,
+    ...missing.map((condition) => `${condition}:missing`),
+  ];
+  return {
+    id: 'adr0012_condition_gate',
+    phase: 'candidate',
+    status: check?.status ?? 'not-verified',
+    required: 'ADR-0012 conditions 1-4 satisfied; conditions 2/3 prove bidirectional engineer execution and agentic-plugins-only development sufficiency',
+    current: statusText,
+    blocker: blockers.length ? blockers.join(', ') : null,
+  };
+}
+
+function scorecardGateDetail(check) {
+  const total = check?.evidence?.total ?? 0;
+  const satisfied = check?.evidence?.satisfied ?? 0;
+  const unresolved = (check?.evidence?.unresolved ?? []).map((row) => `${row.requirement}:${row.status}`);
+  return {
+    id: 'scorecard_gate',
+    phase: 'candidate',
+    status: check?.status ?? 'not-verified',
+    required: 'omcc replacement scorecard 100%; no partial or missing requirement rows',
+    current: total ? `${satisfied}/${total} satisfied` : '<missing>',
+    blocker: unresolved.length ? unresolved.join(', ') : null,
+  };
+}
+
+function experienceParityGateDetail(check) {
+  const evidence = check?.evidence ?? {};
+  const current = [
+    `status=${evidence.status ?? '<none>'}`,
+    `score=${evidence.score_percent ?? '<none>'}%`,
+    `manual-followups=${evidence.manual_followup_count ?? '<none>'}`,
+  ].join('; ');
+  const blockers = [];
+  if (evidence.unresolved_criteria?.length) {
+    blockers.push(evidence.unresolved_criteria.map((row) => `${row.id}:${row.status}`).join(', '));
+  }
+  if (evidence.next_actions?.length) {
+    blockers.push(`followups=${evidence.next_actions.map((row) => row.id).join(', ')}`);
+  }
+  return {
+    id: 'observed_experience_parity_gate',
+    phase: 'candidate',
+    status: check?.status ?? 'not-verified',
+    required: 'observed runtime experience parity ready, score 100%, and zero manual follow-ups',
+    current,
+    blocker: blockers.length ? blockers.join('; ') : null,
+  };
+}
+
+function dogfoodGateDetail(check) {
+  const evidence = check?.evidence ?? {};
+  const blockers = [];
+  if (evidence.missing_dates?.length) blockers.push(`missing=${evidence.missing_dates.join(', ')}`);
+  if (evidence.remaining_dates?.length) blockers.push(`remaining=${evidence.remaining_dates.join(', ')}`);
+  if (evidence.blocked_dates?.length) blockers.push(`blocked=${evidence.blocked_dates.join(', ')}`);
+  return {
+    id: 'dogfood_window_gate',
+    phase: 'candidate',
+    status: check?.status ?? 'not-verified',
+    required: 'one forward-looking calendar week of explicit no-omcc-dev dogfood evidence',
+    current: `covered=${evidence.covered_days ?? 0}/${evidence.required_days ?? DEFAULT_DOGFOOD_WINDOW_DAYS}; window=${evidence.window_start_date ?? '<none>'}..${evidence.window_end_date ?? '<none>'}`,
+    blocker: blockers.length ? blockers.join('; ') : null,
+  };
+}
+
+function footerGateDetail(check) {
+  const state = check?.evidence?.footer_state ?? '<none>';
+  return {
+    id: 'completion_footer_gate',
+    phase: 'candidate',
+    status: check?.status ?? 'not-verified',
+    required: 'latest completion footer state is closed',
+    current: `state=${state}`,
+    blocker: state === 'closed' ? null : 'outstanding work remains according to the latest completion footer',
   };
 }
 
@@ -945,6 +1054,10 @@ export function formatText(report) {
     if (report.cutover_gate.final_required?.length) {
       lines.push(`final gate: ${report.cutover_gate.final_required.join('; ')}`);
     }
+    if (report.cutover_gate.details?.length) {
+      lines.push('gate details:');
+      for (const detail of report.cutover_gate.details) lines.push(`  ${formatGateDetail(detail)}`);
+    }
   } else if (report.cutover_gate?.required?.length) {
     lines.push(`gate: ${report.cutover_gate.required.join('; ')}`);
   }
@@ -962,6 +1075,19 @@ export function formatText(report) {
     for (const limit of report.limits) lines.push(`- ${limit}`);
   }
   return lines.join('\n');
+}
+
+function formatGateDetail(detail) {
+  const parts = [
+    `${detail.phase ?? 'candidate'}:${detail.id ?? '<unknown>'}: ${detail.status ?? '<unknown>'}`,
+  ];
+  const required = compactCell(detail.required, 180);
+  const current = compactCell(detail.current, 180);
+  const blocker = compactCell(detail.blocker, 220);
+  if (required) parts.push(`required=${required}`);
+  if (current) parts.push(`current=${current}`);
+  if (blocker) parts.push(`blocker=${blocker}`);
+  return `- ${parts.join('; ')}`;
 }
 
 function formatCheckEvidence(check) {
