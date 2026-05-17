@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { ok, strictEqual, throws } from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -296,6 +296,58 @@ describe('runtime footer', () => {
     ok(text.includes(`$runtime:consensus execute --run-id ${CONSENSUS_RUN_ID} --round 1 --execute`));
     ok(!text.includes('RAW CONSENSUS PROMPT BODY'));
     ok(!JSON.stringify(report).includes('RAW CONSENSUS PROMPT BODY'));
+  });
+
+  it('links consensus owner decisions without leaking decision text', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-decision-'));
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: CONSENSUS_RUN_ID,
+      task: 'Choose between unresolved consensus outcomes.',
+      maxRounds: 1,
+    });
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    const decisionFile = join(root, 'owner-decision.md');
+    await writeFile(summaryFile, 'The consensus remains unresolved.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      { summary: 'One path ships now; the other waits for verifier coverage.', kind: 'contradiction' },
+    ]));
+    await writeFile(decisionFile, 'RAW OWNER DECISION BODY must stay hidden from the footer.\n');
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: CONSENSUS_RUN_ID,
+      summaryFile,
+      disagreementsFile,
+    });
+    await runConsensus({
+      command: 'decide',
+      repoRoot: root,
+      runId: CONSENSUS_RUN_ID,
+      decisionFile,
+      nextAction: 'Proceed with the verifier-backed path.',
+    });
+
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      consensusRunId: CONSENSUS_RUN_ID,
+    });
+
+    strictEqual(report.consensus.status, 'owner-decided');
+    strictEqual(report.consensus.status_guidance.state, 'owner_decided');
+    strictEqual(report.completion_state, 'next-work-available');
+    strictEqual(report.recommended_next_work, 'Proceed with the verifier-backed path.');
+    ok(report.consensus.owner_decision_pointer.endsWith('/owner-decision.json'));
+    ok(report.artifacts.some((artifact) => artifact.kind === 'consensus-owner-decision'));
+
+    const text = formatText(report);
+    ok(text.includes('consensus owner decision:'));
+    ok(text.includes('consensus guidance: owner_decided'));
+    ok(!text.includes('RAW OWNER DECISION BODY'));
+    ok(!JSON.stringify(report).includes('RAW OWNER DECISION BODY'));
   });
 
   it('can link the latest consensus run by manifest freshness', async () => {

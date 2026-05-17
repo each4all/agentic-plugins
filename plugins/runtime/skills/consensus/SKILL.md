@@ -1,6 +1,6 @@
 ---
 name: consensus
-description: "ADR-0024 runtime consensus scaffold with an explicit companion executor. Use when the user wants to plan peer fanout, execute companions only behind --execute, record peer outputs as artifacts, synthesize disagreements, or create a targeted rebuttal round."
+description: "ADR-0024 runtime consensus scaffold with an explicit companion executor. Use when the user wants to plan peer fanout, execute companions only behind --execute, record peer outputs as artifacts, synthesize disagreements, record owner decisions, or create a targeted rebuttal round."
 ---
 
 # Consensus (runtime framework primitive)
@@ -19,6 +19,7 @@ node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" plan
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" execute --run-id <id> [--round <n>] [--peers claude,codex] --execute [--timeout-ms <n>] [--process-budget <n>] [--model <id>] [--effort <level>]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" record --run-id <id> --peer <peer> --input-file <path>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>] [--contradictions-file <path>] [--convergence-state aligned|complementary|contradiction|insufficient-evidence|owner-decision-required|non-consensus]
+node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" decide --run-id <id> --decision-file <path> [--decided-by owner]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" next-round --run-id <id>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" status --run-id <id>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" status --latest
@@ -49,6 +50,8 @@ Consensus reports and manages:
 - convergence state;
 - durable disagreements;
 - contradiction summaries;
+- owner decision artifacts that close exhausted or otherwise unresolved
+  consensus without running another peer round;
 - evidence pointers;
 - targeted rebuttal prompt artifacts for a next round.
 - explicit companion execution metadata, including status, failure type, retryability, byte counts, hashes, and artifact pointers.
@@ -70,6 +73,9 @@ Consensus reports and manages:
 - No host-native config, authentication, secret, sandbox, or permission writes.
 - No claim that Codex plugin-hook feature/trust state or permission limits are host parity.
 - No automatic unbounded loops; max rounds default to 2 total rounds and are hard-capped at 3. If direct contradictions remain after the configured round budget is exhausted, report `owner-decision-required` instead of creating another rebuttal loop. Process budget and timeout caps bound companion execution, while peer breadth is bounded by the explicit `--peers` roster and optional `--max-peers` with no hidden fixed peer-count cap.
+- Owner decisions are explicit artifacts. `decide` records a decision pointer,
+  prior consensus pointer, evidence pointers, byte count, and hash; it does not
+  print decision text, execute peers, or create another rebuttal round.
 - No false compromise: synthesis must classify peer output as `aligned`, `complementary`, `contradiction`, `insufficient-evidence`, `owner-decision-required`, or `non-consensus`.
 - No empty rebuttal rounds; `next-round` requires direct-contradiction durable disagreements and still never executes peers.
 
@@ -83,5 +89,6 @@ $runtime:consensus record --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --peer secu
 $runtime:consensus synthesize --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --summary-file summary.md --disagreements-file disagreements.md --convergence-state contradiction
 $runtime:consensus next-round --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef
 $runtime:consensus execute --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --round 2 --execute
+$runtime:consensus decide --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --decision-file owner-decision.md
 $runtime:consensus status --latest
 ```

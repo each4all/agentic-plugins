@@ -117,11 +117,11 @@ node <runtime-plugin-root>/scripts/footer.mjs render \
 Consensus lookup is read-only and mutually exclusive between
 `--consensus-run-id` and `--consensus-latest`. The helper calls
 `runtime:consensus status` internally and includes only status, run/result/
-execution/progress pointers, status guidance, recommended next action, and
-safe follow-up commands. It does not print peer prompts, peer raw outputs,
-consensus raw output, or consensus body text. If the caller did not provide
-`--recommended-next-work`, consensus `next_action` becomes the footer's
-recommended next work.
+execution/progress/owner-decision pointers, status guidance, recommended next
+action, and safe follow-up commands. It does not print peer prompts, peer raw
+outputs, consensus raw output, consensus body text, or owner decision text. If
+the caller did not provide `--recommended-next-work`, consensus `next_action`
+becomes the footer's recommended next work.
 
 Without a context artifact, callers may supply `--context-state`,
 `--completion-state`, `--completion-reason`, `--completion-next-action`,
@@ -145,8 +145,9 @@ action without guessing:
 Inference is intentionally conservative. The helper can infer
 `publish-needed` from passing PR handling readiness, `blocked` from failed
 PR handling or blocking consensus guidance, `next-work-available` from
-actionable consensus guidance or caller-supplied recommended next work, and
-`review-needed` when evidence is incomplete. It does not infer
+actionable consensus guidance, recorded owner-decision guidance, or
+caller-supplied recommended next work, and `review-needed` when evidence is
+incomplete. It does not infer
 `cleanup-needed` or `closed`; callers must supply `--completion-state` for
 those outcomes. A caller that emits `closed` is asserting that PR, release,
 installed-state, cleanup, and planned follow-up evidence has already been

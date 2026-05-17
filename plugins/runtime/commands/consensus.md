@@ -1,13 +1,13 @@
 ---
-description: Runtime consensus scaffold and explicit companion executor for ADR-0024 peer fanout, disagreement tracking, and synthesis
-argument-hint: "plan|record|synthesize|next-round|execute|status [--format text|json] [--task <text>|--task-file <path>] [--run-id <id>|--latest] [--peer <id>] [--peers <ids>] [--input-file <path>] [--summary-file <path>] [--disagreements-file <path>] [--contradictions-file <path>] [--convergence-state <state>] [--max-rounds <n>] [--max-peers <n>] [--token-budget <n>] [--time-budget-ms <n>] [--process-budget <n>] [--timeout-ms <n>] [--execute]"
+description: Runtime consensus scaffold and explicit companion executor for ADR-0024 peer fanout, disagreement tracking, synthesis, and owner decisions
+argument-hint: "plan|record|synthesize|decide|next-round|execute|status [--format text|json] [--task <text>|--task-file <path>] [--run-id <id>|--latest] [--peer <id>] [--peers <ids>] [--input-file <path>] [--summary-file <path>] [--decision-file <path>] [--disagreements-file <path>] [--contradictions-file <path>] [--convergence-state <state>] [--max-rounds <n>] [--max-peers <n>] [--token-budget <n>] [--time-budget-ms <n>] [--process-budget <n>] [--timeout-ms <n>] [--execute]"
 ---
 
 # Runtime - Consensus
 
 $ARGUMENTS
 
-Run the runtime-owned consensus artifact scaffold and its explicit companion executor. Planning, recording, synthesis, next-round, and status do not execute peer agents. The only execution path is `execute --execute`, which dispatches companions through `companions/contract.md`, stores raw peer stdout as artifact files, and prints only artifact pointers plus sanitized execution or synthesized consensus state.
+Run the runtime-owned consensus artifact scaffold and its explicit companion executor. Planning, recording, synthesis, owner-decision recording, next-round, and status do not execute peer agents. The only execution path is `execute --execute`, which dispatches companions through `companions/contract.md`, stores raw peer stdout as artifact files, and prints only artifact pointers plus sanitized execution or synthesized consensus state.
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -31,6 +31,7 @@ Common flow:
 /runtime:consensus synthesize --run-id <id> --summary-file <summary.md> --disagreements-file <disagreements.md> --convergence-state contradiction
 /runtime:consensus next-round --run-id <id>
 /runtime:consensus execute --run-id <id> --round 2 --execute
+/runtime:consensus decide --run-id <id> --decision-file <owner-decision.md> --decided-by owner
 /runtime:consensus status --latest
 ```
 
@@ -58,6 +59,7 @@ Notes:
 - `status` reads manifest, execution, progress, and consensus-result artifacts to recommend the next bounded operator action: execute/record, retry selected peers, synthesize, plan next-round for direct contradictions, stop for owner decision, or preserve non-consensus. `status --latest` picks the newest readable consensus manifest by `updated_at`/`created_at` without reading raw peer output.
 - Permission and sandbox failures are classified as non-retryable until the operator resolves host policy outside runtime.
 - Max rounds default to 2 total rounds and are hard-capped at 3. When direct contradictions remain after the configured round budget is exhausted, consensus reports `owner-decision-required` instead of creating another loop. Process budget and timeout caps bound execution; broader manual peer fanout is artifact-bounded by the explicit `--peers` roster and optional `--max-peers`, with no hidden fixed peer-count cap.
+- `decide` records the owner decision that resolves `owner-decision-required`, `contradiction`, `insufficient-evidence`, or `non-consensus` outcomes. It stores the decision body as an artifact pointer, preserves the prior consensus pointer and evidence pointers, and does not print the decision text into status or footer output.
 - `synthesize` records `convergence_state` as `aligned`, `complementary`, `contradiction`, `insufficient-evidence`, `owner-decision-required`, or `non-consensus`.
 - `next-round` requires direct-contradiction durable disagreements from `consensus.json` or an explicit `--disagreements-file`; it does not create empty rebuttal rounds or execute peers.
 - This command does not migrate engineer/orchestrator workflow state.
