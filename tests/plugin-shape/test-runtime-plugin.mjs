@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
+const RELEASE_PLEASE_PR = process.env.AGENTIC_RELEASE_PLEASE_PR === '1';
 const RUNTIME_COMMAND_SURFACES = [
   { name: 'compat', script: 'compat.mjs' },
   { name: 'consensus', script: 'consensus.mjs' },
@@ -22,6 +23,15 @@ const RUNTIME_COMMAND_SURFACES = [
 async function readJSON(path) {
   const text = await readFile(path, 'utf-8');
   return JSON.parse(text);
+}
+
+function compareSemver(a, b) {
+  const left = String(a).split('.').map((part) => Number(part));
+  const right = String(b).split('.').map((part) => Number(part));
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] < right[index] ? -1 : 1;
+  }
+  return 0;
 }
 
 describe('plugins/runtime manifest pair', () => {
@@ -115,7 +125,11 @@ describe('plugins/runtime marketplace and release registration', () => {
     ok(entry, 'runtime entry present in Claude catalog');
     strictEqual(entry.source, './plugins/runtime');
     const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
-    strictEqual(entry.version, manifest.version, 'catalog version matches manifest');
+    if (RELEASE_PLEASE_PR && entry.version !== manifest.version) {
+      ok(compareSemver(entry.version, manifest.version) <= 0, 'release-please PR may have catalog version lag until post-release sync');
+    } else {
+      strictEqual(entry.version, manifest.version, 'catalog version matches manifest');
+    }
     strictEqual(entry.category, 'Productivity');
   });
 
@@ -393,11 +407,19 @@ describe('plugins/runtime repo documentation freshness', () => {
     const scorecardRuntimeToken = `\`plugin-runtime\` \`${manifest.version}\``;
     const runtimeReleaseTag = `plugin-runtime-v${manifest.version}`;
 
-    ok(architecture.includes(currentRuntimeToken), 'ARCHITECTURE.md documents the current runtime version');
-    ok(development.includes(currentRuntimeToken), 'DEVELOPMENT.md documents the current runtime version');
-    ok(development.includes(developmentLatestRuntimeProofToken), 'DEVELOPMENT.md ADR-0012 tracking documents the current installed runtime proof version');
-    ok(scorecard.includes(scorecardRuntimeToken), 'omcc cutover scorecard documents the current installed runtime proof version');
-    ok(scorecard.includes(runtimeReleaseTag), 'omcc cutover scorecard documents the current runtime release tag');
+    if (RELEASE_PLEASE_PR) {
+      ok(/plugin-runtime` v\d+\.\d+\.\d+/.test(architecture), 'ARCHITECTURE.md documents a runtime version');
+      ok(/plugin-runtime` v\d+\.\d+\.\d+/.test(development), 'DEVELOPMENT.md documents a runtime version');
+      ok(/Latest installed proof: `plugin-runtime` `\d+\.\d+\.\d+`/.test(development), 'DEVELOPMENT.md ADR-0012 tracking documents installed runtime proof version');
+      ok(/`plugin-runtime` `\d+\.\d+\.\d+`/.test(scorecard), 'omcc cutover scorecard documents installed runtime proof version');
+      ok(/`plugin-runtime-v\d+\.\d+\.\d+`/.test(scorecard), 'omcc cutover scorecard documents a runtime release tag');
+    } else {
+      ok(architecture.includes(currentRuntimeToken), 'ARCHITECTURE.md documents the current runtime version');
+      ok(development.includes(currentRuntimeToken), 'DEVELOPMENT.md documents the current runtime version');
+      ok(development.includes(developmentLatestRuntimeProofToken), 'DEVELOPMENT.md ADR-0012 tracking documents the current installed runtime proof version');
+      ok(scorecard.includes(scorecardRuntimeToken), 'omcc cutover scorecard documents the current installed runtime proof version');
+      ok(scorecard.includes(runtimeReleaseTag), 'omcc cutover scorecard documents the current runtime release tag');
+    }
     ok(!scorecard.includes('latest dogfood evidence'), 'omcc cutover scorecard must leave latest dogfood state to runtime cutover artifacts');
     ok(!architecture.includes('plugin-runtime` v0.12.0'), 'ARCHITECTURE.md must not describe runtime as v0.12.0');
     ok(!development.includes('plugin-runtime` v0.12.0'), 'DEVELOPMENT.md must not describe runtime as v0.12.0');
@@ -405,8 +427,13 @@ describe('plugins/runtime repo documentation freshness', () => {
     const scorecardRuntimeTags = [...scorecard.matchAll(/`plugin-runtime-v([^`]+)`/g)].map((match) => match[1]);
     ok(scorecardRuntimeVersions.length > 0, 'omcc cutover scorecard includes runtime proof versions');
     ok(scorecardRuntimeTags.length > 0, 'omcc cutover scorecard includes runtime release tags');
-    deepStrictEqual([...new Set(scorecardRuntimeVersions)], [manifest.version], 'omcc cutover scorecard runtime proof versions match the current manifest');
-    deepStrictEqual([...new Set(scorecardRuntimeTags)], [manifest.version], 'omcc cutover scorecard runtime release tags match the current manifest');
+    if (RELEASE_PLEASE_PR) {
+      ok(scorecardRuntimeVersions.every((version) => compareSemver(version, manifest.version) <= 0), 'release-please PR may have scorecard proof versions lag until installed-state proof is recorded');
+      ok(scorecardRuntimeTags.every((version) => compareSemver(version, manifest.version) <= 0), 'release-please PR may have scorecard release tags lag until installed-state proof is recorded');
+    } else {
+      deepStrictEqual([...new Set(scorecardRuntimeVersions)], [manifest.version], 'omcc cutover scorecard runtime proof versions match the current manifest');
+      deepStrictEqual([...new Set(scorecardRuntimeTags)], [manifest.version], 'omcc cutover scorecard runtime release tags match the current manifest');
+    }
 
     for (const token of [
       'runtime:doctor',

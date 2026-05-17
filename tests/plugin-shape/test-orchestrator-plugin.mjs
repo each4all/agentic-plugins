@@ -35,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
+const RELEASE_PLEASE_PR = process.env.AGENTIC_RELEASE_PLEASE_PR === '1';
 
 const VERBS = ['plan'];
 const ALIAS_VERBS = ['audit'];
@@ -68,6 +69,15 @@ const STALE_TOKENS = [
 async function readJSON(path) {
   const text = await readFile(path, 'utf-8');
   return JSON.parse(text);
+}
+
+function compareSemver(a, b) {
+  const left = String(a).split('.').map((part) => Number(part));
+  const right = String(b).split('.').map((part) => Number(part));
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] < right[index] ? -1 : 1;
+  }
+  return 0;
 }
 
 async function exists(path) {
@@ -134,7 +144,11 @@ describe('plugins/orchestrator marketplace registration', () => {
     ok(entry, 'orchestrator entry present in Claude catalog');
     strictEqual(entry.source, './plugins/orchestrator');
     const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
-    strictEqual(entry.version, manifest.version, 'catalog version matches manifest');
+    if (RELEASE_PLEASE_PR && entry.version !== manifest.version) {
+      ok(compareSemver(entry.version, manifest.version) <= 0, 'release-please PR may have catalog version lag until post-release sync');
+    } else {
+      strictEqual(entry.version, manifest.version, 'catalog version matches manifest');
+    }
     strictEqual(entry.category, 'Productivity');
   });
 

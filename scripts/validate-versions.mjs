@@ -13,6 +13,11 @@
 //   - plugins/<name>/.codex-plugin/plugin.json  $.version
 //   - .claude-plugin/marketplace.json plugins[name=<name>].version
 //
+// Release-please PRs are a special intermediate state: package manifests
+// intentionally move ahead first, and the root marketplace catalog is synced
+// after the release merge by .github/workflows/release-please.yml. Use
+// --allow-marketplace-lag only in that release-please PR context.
+//
 // Codex marketplace catalog has no per-entry version field, so it is
 // intentionally not checked. Canonical "companions" (the non-plugin entry)
 // is also skipped — it has no plugin.json or marketplace presence.
@@ -24,8 +29,10 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../..');
 const MANIFEST_PATH = '.release-please-manifest.json';
 const CLAUDE_MARKETPLACE_PATH = '.claude-plugin/marketplace.json';
+const allowMarketplaceLag = process.argv.includes('--allow-marketplace-lag');
 
 const errors = [];
+const warnings = [];
 
 function loadJSON(relPath, label) {
   try {
@@ -73,9 +80,12 @@ for (const [pkgPath, expectedVersion] of Object.entries(manifest)) {
 
   const entry = claudeEntries.find((p) => p.name === pluginName);
   if (entry && entry.version !== expectedVersion) {
-    errors.push(
-      `${CLAUDE_MARKETPLACE_PATH} entry "${pluginName}": version "${entry.version}" != release-please-manifest "${expectedVersion}"`,
-    );
+    const message = `${CLAUDE_MARKETPLACE_PATH} entry "${pluginName}": version "${entry.version}" != release-please-manifest "${expectedVersion}"`;
+    if (allowMarketplaceLag) {
+      warnings.push(`${message} (allowed release-please PR lag)`);
+    } else {
+      errors.push(message);
+    }
   }
 }
 
@@ -85,7 +95,13 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
-console.log('OK — versions in sync across release-please-manifest, plugin manifests, and Claude marketplace');
+console.log(warnings.length > 0
+  ? 'OK — plugin manifests match release-please-manifest; marketplace lag allowed for release-please PR'
+  : 'OK — versions in sync across release-please-manifest, plugin manifests, and Claude marketplace');
+if (warnings.length > 0) {
+  console.log('Warnings:');
+  for (const w of warnings) console.log(`  - ${w}`);
+}
 for (const [pkg, ver] of Object.entries(manifest)) {
   console.log(`  ${pkg}: ${ver}`);
 }
