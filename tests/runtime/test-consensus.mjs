@@ -50,6 +50,13 @@ describe('runtime consensus', () => {
     ok(manifest.policy.quality_policy.review_depth_default.includes('independent peer fanout'));
     strictEqual(manifest.policy.raw_output_policy, 'artifact-pointer-only');
     strictEqual(manifest.policy.execution_timeout_ms, 120000);
+    strictEqual(manifest.policy.max_rounds, 2);
+    deepStrictEqual(manifest.policy.round_policy, {
+      default_max_rounds: 2,
+      configured_max_rounds: 2,
+      hard_cap: 3,
+      exhaustion_behavior: 'owner-decision-required; do not run another rebuttal round without an explicit new owner decision',
+    });
     strictEqual(manifest.policy.limits.max_rounds_cap, 3);
     strictEqual(manifest.policy.limits.max_peers_cap, null);
     ok(manifest.policy.limits.peer_roster_boundary.includes('explicit --peers roster'));
@@ -66,11 +73,17 @@ describe('runtime consensus', () => {
     ok(prompt.includes('objective: best-results-over-token-minimization'));
     ok(prompt.includes('model_effort_default: host-native-default-or-runtime-settings'));
     ok(prompt.includes('review_depth_default: independent peer fanout'));
+    ok(prompt.includes('default_max_rounds: 2'));
+    ok(prompt.includes('max_rounds_hard_cap: 3'));
+    ok(prompt.includes('exhausted_rounds_behavior: owner-decision-required'));
     ok(formatText(report).includes(`run: ${RUN_ID}`));
     ok(formatText(report).includes('peer lanes:'));
     ok(formatText(report).includes('role=claude_companion_peer'));
     ok(formatText(report).includes('quality policy:'));
     ok(formatText(report).includes('objective=best-results-over-token-minimization'));
+    ok(formatText(report).includes('round policy:'));
+    ok(formatText(report).includes('configured-max-rounds=2; default=2; hard-cap=3'));
+    ok(formatText(report).includes('exhaustion-behavior=owner-decision-required'));
   });
 
   it('does not impose a fixed small peer cap on an explicit broad roster', async () => {
@@ -102,6 +115,23 @@ describe('runtime consensus', () => {
     strictEqual(manifest.peers.active.length, 16);
     strictEqual(manifest.policy.limits.peer_roster_boundary, 'explicit --peers roster; no hard-coded max peer cap');
     ok(manifest.limits.some((limit) => /explicit roster and optional --max-peers/i.test(limit)));
+  });
+
+  it('defaults consensus rebuttal policy to 2 rounds with a 3-round hard cap', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-consensus-default-round-policy-'));
+    const report = await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      task: 'Verify the default consensus round policy is visible to operators.',
+      peers: ['claude', 'codex'],
+    });
+
+    strictEqual(report.policy.max_rounds, 2);
+    strictEqual(report.policy.round_policy.default_max_rounds, 2);
+    strictEqual(report.policy.round_policy.configured_max_rounds, 2);
+    strictEqual(report.policy.round_policy.hard_cap, 3);
+    ok(report.policy.round_policy.exhaustion_behavior.includes('owner-decision-required'));
   });
 
   it('plans manual peer labels as record-only lanes and excludes them from default execution', async () => {
@@ -845,6 +875,8 @@ describe('runtime consensus', () => {
     throws(() => parseArgs(['execute', '--latest']), /--latest is only supported by status/);
     throws(() => parseArgs(['plan', '--max-rounds', '0']), /positive integer/);
     throws(() => parseArgs(['synthesize', '--convergence-state', 'mixed']), /aligned, complementary, contradiction/);
+    ok(formatText({ help: true }).includes('default to 2 total rounds'));
+    ok(formatText({ help: true }).includes('hard-capped at 3'));
     await rejects(() => runConsensus({ command: 'execute', repoRoot: '/tmp/repo', runId: RUN_ID }), /requires --execute/);
     await rejects(() => runConsensus({ command: 'plan', repoRoot: '/tmp/repo', runId: RUN_ID, task: 'x', maxRounds: 4 }), /--max-rounds must be <= 3/);
   });

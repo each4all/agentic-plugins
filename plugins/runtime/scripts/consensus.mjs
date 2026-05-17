@@ -100,6 +100,7 @@ export async function createPlan(options = {}) {
       timeBudgetConstrained: options.timeBudgetMs !== undefined,
     }),
     max_rounds: maxRounds,
+    round_policy: buildRoundPolicy(maxRounds),
     max_peers: maxPeers,
     token_budget: optionalPositiveInt(options.tokenBudget, '--token-budget'),
     time_budget_ms: optionalPositiveInt(options.timeBudgetMs, '--time-budget-ms'),
@@ -169,6 +170,7 @@ export async function createPlan(options = {}) {
       'Consensus output is limited to synthesized summary, durable disagreements, and evidence pointers.',
       'Runtime never relaxes host permissions, sandbox, authentication, secrets, or host session context.',
       'Consensus rounds, companion execution process budget, and timeouts are capped; peer breadth is bounded by the explicit roster and optional --max-peers rather than a hard-coded product cap.',
+      `Consensus rebuttal defaults to ${DEFAULT_MAX_ROUNDS} total rounds, hard-caps at ${MAX_ROUNDS_CAP}, and moves to owner-decision-required after the configured round budget is exhausted.`,
       'Automatic unbounded retry loops are forbidden.',
     ],
   };
@@ -1879,6 +1881,12 @@ export function formatText(report) {
     lines.push(`- model-effort-default=${quality.model_effort_default}`);
     lines.push(`- review-depth-default=${quality.review_depth_default}`);
   }
+  if (report.policy?.round_policy) {
+    const roundPolicy = report.policy.round_policy;
+    lines.push('', 'round policy:');
+    lines.push(`- configured-max-rounds=${roundPolicy.configured_max_rounds}; default=${roundPolicy.default_max_rounds}; hard-cap=${roundPolicy.hard_cap}`);
+    lines.push(`- exhaustion-behavior=${roundPolicy.exhaustion_behavior}`);
+  }
   if (report.execution_remediation) {
     lines.push(`remediation: ${report.execution_remediation.status}`);
     lines.push(`remediation next action: ${report.execution_remediation.next_action}`);
@@ -1974,7 +1982,7 @@ Usage:
   runtime:consensus status --run-id <id>
   runtime:consensus status --latest
 
-Planning and synthesis never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record. Contradiction rebuttal rounds are bounded by --max-rounds and require durable disagreement summaries.`;
+Planning and synthesis never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record. Contradiction rebuttal rounds default to ${DEFAULT_MAX_ROUNDS} total rounds, --max-rounds is hard-capped at ${MAX_ROUNDS_CAP}, and exhausted contradictions become owner-decision-required instead of creating another loop.`;
 }
 
 async function resolveStatusRunSelection({ repoRoot, runId, latest }) {
@@ -2195,6 +2203,9 @@ Respond with concise independent analysis. Include:
 Budget policy:
 
 - max_rounds: ${policy.max_rounds}
+- default_max_rounds: ${policy.round_policy.default_max_rounds}
+- max_rounds_hard_cap: ${policy.round_policy.hard_cap}
+- exhausted_rounds_behavior: ${policy.round_policy.exhaustion_behavior}
 - token_budget: ${policy.token_budget ?? 'unspecified'}
 - time_budget_ms: ${policy.time_budget_ms ?? 'unspecified'}
 - process_budget: ${policy.process_budget}
@@ -2495,8 +2506,17 @@ function executionLimits() {
     'Raw peer stdout is written under .agentic-plugins/runs/consensus/<run-id>/ and omitted from main output.',
     'Main output exposes only pointers, byte counts, hashes, status, failure class, and retryability.',
     'No host-native config, auth, secrets, sandbox, permission policy, or host session context is mutated.',
-    'No automatic unbounded loop is allowed; max_rounds, max_peers, process_budget, and timeout caps bound execution.',
+    `No automatic unbounded loop is allowed; max_rounds defaults to ${DEFAULT_MAX_ROUNDS}, is hard-capped at ${MAX_ROUNDS_CAP}, and max_peers, process_budget, and timeout caps bound execution.`,
   ];
+}
+
+function buildRoundPolicy(configuredMaxRounds) {
+  return {
+    default_max_rounds: DEFAULT_MAX_ROUNDS,
+    configured_max_rounds: configuredMaxRounds,
+    hard_cap: MAX_ROUNDS_CAP,
+    exhaustion_behavior: 'owner-decision-required; do not run another rebuttal round without an explicit new owner decision',
+  };
 }
 
 async function main() {
