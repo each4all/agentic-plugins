@@ -263,7 +263,12 @@ function checkAdr0012Conditions(text) {
 
 function checkScorecardRequirements(text) {
   const rows = parseMarkdownRows(text).filter((row) => /^R\d+[a-z]?$/.test(row[0]));
-  const statuses = rows.map((row) => ({ requirement: row[0], status: normalizeStatus(row[3]) }));
+  const statuses = rows.map((row) => ({
+    requirement: row[0],
+    summary: row[1] ?? null,
+    status: normalizeStatus(row[3]),
+    gate: row[4] ?? null,
+  }));
   const unresolved = statuses.filter((row) => row.status !== 'satisfied');
   return {
     id: 'omcc_replacement_scorecard',
@@ -976,9 +981,11 @@ function formatCheckEvidence(check) {
       const satisfied = check.evidence?.satisfied ?? 0;
       const unresolved = check.evidence?.unresolved ?? [];
       const summary = `scorecard: satisfied=${satisfied}/${total}`;
-      return unresolved.length
+      const lines = unresolved.length
         ? [`${summary}; unresolved=${unresolved.map((row) => `${row.requirement}:${row.status}`).join(', ')}`]
         : [summary];
+      for (const row of unresolved) lines.push(formatScorecardDetail(row));
+      return lines;
     }
     case 'legacy_omcc_pattern_map': {
       const evidence = check.evidence ?? {};
@@ -1038,6 +1045,25 @@ function formatNextActionDetail(action) {
   const hasActionableTarget = Boolean(action.host || action.commands?.length);
   if (action.reason && (!hasActionableTarget || action.reason.length <= 120)) parts.push(`reason=${action.reason}`);
   return `follow-up detail: ${parts.join('; ')}`;
+}
+
+function formatScorecardDetail(row) {
+  const parts = [`${row.requirement ?? '<unknown>'}:${row.status ?? '<unknown>'}`];
+  const requirement = compactCell(row.summary, 220);
+  const gate = compactCell(row.gate, 180);
+  if (requirement) parts.push(`requirement=${requirement}`);
+  if (gate) parts.push(`gate=${gate}`);
+  return `unresolved scorecard detail: ${parts.join('; ')}`;
+}
+
+function compactCell(value, maxLength) {
+  const text = String(value ?? '').replace(/`/g, '').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  if (text.length <= maxLength) return text;
+  const slice = text.slice(0, Math.max(0, maxLength - 3));
+  const boundary = slice.lastIndexOf(' ');
+  const trimmed = boundary > 80 ? slice.slice(0, boundary) : slice;
+  return `${trimmed.trimEnd()}...`;
 }
 
 export function parseArgs(argv) {

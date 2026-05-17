@@ -63,6 +63,9 @@ describe('runtime cutover audit', () => {
     strictEqual(report.checks.find((check) => check.id === 'dogfood_evidence_window').status, 'not-verified');
     strictEqual(report.checks.find((check) => check.id === 'latest_completion_footer_state').status, 'not-verified');
     strictEqual(report.checks.find((check) => check.id === 'omcc_dev_daily_workflow').status, 'not-verified');
+    const scorecard = report.checks.find((check) => check.id === 'omcc_replacement_scorecard');
+    strictEqual(scorecard.evidence.unresolved[0].summary, 'superior compatible');
+    strictEqual(scorecard.evidence.unresolved[0].gate, 'ok');
     ok(report.next_actions.some((entry) => entry.id === 'omcc_dev_daily_workflow'));
     const text = formatText(report);
     ok(text.includes('candidate gate: ADR-0012 conditions 1-4 satisfied'));
@@ -70,6 +73,7 @@ describe('runtime cutover audit', () => {
     ok(text.includes('conditions: 1:partial, 2:partial, 3:partial, 4:partial'));
     ok(text.includes('unresolved: 1:partial, 2:partial, 3:partial, 4:partial'));
     ok(text.includes('scorecard: satisfied=0/12; unresolved=R1:partial'));
+    ok(text.includes('unresolved scorecard detail: R1:partial; requirement=superior compatible; gate=ok'));
     ok(text.includes('experience parity: status=ready; score=100%; manual-followups=0'));
     ok(text.includes('legacy map: patterns=20; improved=14; retained=1; rejected=2; deferred=3'));
     ok(text.includes('dogfood window: covered=0/7; latest=<none>; records=0'));
