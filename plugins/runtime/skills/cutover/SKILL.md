@@ -71,7 +71,7 @@ The audit reads:
 - latest runtime compat, consensus, and context artifacts;
 - forward-looking one-week omcc-dev-free dogfood evidence from recorded
   cutover artifacts;
-- latest recorded or explicit operator-provided footer and omcc-dev activity evidence.
+- latest recorded or explicit operator-provided footer state/reason and omcc-dev activity evidence.
 
 The dogfood window starts at the first accepted no-omcc-dev evidence record
 after the candidate point. Elapsed dates without records are reported as

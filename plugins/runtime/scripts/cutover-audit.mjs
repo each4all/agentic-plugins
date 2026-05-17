@@ -1028,8 +1028,12 @@ function formatCheckEvidence(check) {
       if (evidence.blocked_dates?.length) lines.push(`blocked dates: ${evidence.blocked_dates.join(', ')}`);
       return lines;
     }
-    case 'latest_completion_footer_state':
-      return [`footer: state=${check.evidence?.footer_state ?? '<none>'}; source=${check.evidence?.source_run_id ?? '<explicit-or-none>'}`];
+    case 'latest_completion_footer_state': {
+      const lines = [`footer: state=${check.evidence?.footer_state ?? '<none>'}; source=${check.evidence?.source_run_id ?? '<explicit-or-none>'}`];
+      const reason = compactCell(check.evidence?.reason, 240);
+      if (reason) lines.push(`footer reason: ${reason}`);
+      return lines;
+    }
     case 'omcc_dev_daily_workflow':
       return [`omcc-dev-active: ${check.evidence?.omcc_dev_active ?? 'unknown'}; source=${check.evidence?.source_run_id ?? '<explicit-or-none>'}`];
     default:
