@@ -13,7 +13,6 @@
 
 ### Bug Fixes
 
-* **plugin/runtime:** surface consensus round policy ([293fdff](https://github.com/each4all/agentic-plugins/commit/293fdff2cf53b69124e063858dfaae3108797e47))
 * **plugin/runtime:** surface consensus round policy ([#309](https://github.com/each4all/agentic-plugins/issues/309)) ([293fdff](https://github.com/each4all/agentic-plugins/commit/293fdff2cf53b69124e063858dfaae3108797e47))
 
 ## [0.51.4](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.51.3...plugin-runtime-v0.51.4) (2026-05-17)
