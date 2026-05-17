@@ -43,10 +43,11 @@ export async function runFooter(options = {}) {
         currentSourceSnapshot: options.currentSourceSnapshot,
       })
     : null;
-  const consensus = options.consensusRunId || options.consensusLatest
+  const consensus = options.consensusRunId || options.consensusLatest || options.consensusLatestOpen
     ? await readConsensusStatus(repoRoot, {
         runId: options.consensusRunId,
         latest: options.consensusLatest === true,
+        latestOpen: options.consensusLatestOpen === true,
         host,
       })
     : null;
@@ -170,6 +171,9 @@ export function parseArgs(argv) {
       case '--consensus-latest':
         options.consensusLatest = true;
         break;
+      case '--consensus-latest-open':
+        options.consensusLatestOpen = true;
+        break;
       case '--stale-after-hours':
         options.staleAfterMs = parseNonNegativeInteger(requireValue(args, arg), arg) * 60 * 60 * 1000;
         break;
@@ -257,8 +261,13 @@ export function parseArgs(argv) {
   if (options.contextRunId && options.contextLatest) {
     throw new Error('Use either --context-run-id or --context-latest, not both');
   }
-  if (options.consensusRunId && options.consensusLatest) {
-    throw new Error('Use either --consensus-run-id or --consensus-latest, not both');
+  const consensusSelectionCount = [
+    options.consensusRunId,
+    options.consensusLatest,
+    options.consensusLatestOpen,
+  ].filter(Boolean).length;
+  if (consensusSelectionCount > 1) {
+    throw new Error('Use only one of --consensus-run-id, --consensus-latest, or --consensus-latest-open');
   }
   return options;
 }
@@ -439,47 +448,13 @@ async function findLatestContextArtifact(repoRoot) {
   return { ...candidates[0], skippedInvalid };
 }
 
-async function selectLatestConsensusRun(repoRoot) {
-  const root = consensusRoot(repoRoot);
-  const entries = await readdir(root, { withFileTypes: true });
-  const candidates = [];
-  let skippedInvalid = 0;
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !CONSENSUS_RUN_ID_RE.test(entry.name)) continue;
-    const manifestPath = resolve(root, entry.name, 'manifest.json');
-    try {
-      const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-      const selectedAt = consensusTimestampMs(manifest, entry.name);
-      if (selectedAt === null) {
-        skippedInvalid++;
-        continue;
-      }
-      candidates.push({
-        runId: entry.name,
-        manifestPath,
-        selectedAt,
-      });
-    } catch {
-      skippedInvalid++;
-    }
-  }
-
-  if (candidates.length === 0) {
-    throw new Error(`No readable consensus runs found under ${pointer(repoRoot, root)}`);
-  }
-
-  candidates.sort((a, b) => b.selectedAt - a.selectedAt || b.runId.localeCompare(a.runId));
-  return { ...candidates[0], skippedInvalid };
-}
-
-async function readConsensusStatus(repoRoot, { runId, latest, host }) {
-  const selected = latest
-    ? await selectLatestConsensusRun(repoRoot)
-    : { runId: validateConsensusRunId(runId), selectedAt: null, skippedInvalid: 0 };
+async function readConsensusStatus(repoRoot, { runId, latest, latestOpen, host }) {
   const status = await runConsensus({
     command: 'status',
     repoRoot,
-    runId: selected.runId,
+    runId: latest || latestOpen ? undefined : validateConsensusRunId(runId),
+    latest: latest === true,
+    latestOpen: latestOpen === true,
   });
   return {
     runId: status.run_id,
@@ -492,11 +467,7 @@ async function readConsensusStatus(repoRoot, { runId, latest, host }) {
     executionPointer: status.execution_pointer,
     progressPointer: status.progress_pointer,
     statusGuidance: localizeStatusGuidanceCommands(status.status_guidance, host ?? 'neutral'),
-    lookup: buildConsensusLookup({
-      latest,
-      selectedAt: selected.selectedAt,
-      skippedInvalid: selected.skippedInvalid,
-    }),
+    lookup: status.lookup,
   };
 }
 
@@ -528,15 +499,6 @@ function buildContextLookup({
     skipped_invalid: skippedInvalid,
     source_freshness: sourceFreshness,
     guidance: buildHandoffGuidance({ runId, stale, sourceFreshness }),
-  };
-}
-
-function buildConsensusLookup({ latest, selectedAt, skippedInvalid }) {
-  return {
-    mode: latest ? 'latest' : 'run-id',
-    latest,
-    selected_at: selectedAt === null ? null : new Date(selectedAt).toISOString(),
-    skipped_invalid: skippedInvalid,
   };
 }
 
@@ -940,8 +902,10 @@ function formatConsensusLookup(lookup) {
   return [
     `- mode: ${lookup.mode}`,
     `- latest: ${lookup.latest}`,
+    `- latest_open: ${lookup.latest_open ?? false}`,
     `- selected_at: ${selected}`,
     `- skipped_invalid: ${lookup.skipped_invalid}`,
+    `- skipped_terminal: ${lookup.skipped_terminal ?? 0}`,
   ].join('\n');
 }
 
@@ -988,22 +952,6 @@ function artifactTimestampMs(artifact, fallbackRunId) {
 
 function runIdTimestampMs(runId) {
   const match = String(runId ?? '').match(/^context-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/);
-  if (!match) return null;
-  const [, year, month, day, hour, minute, second] = match;
-  const parsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function consensusTimestampMs(manifest, fallbackRunId) {
-  for (const value of [manifest.updated_at, manifest.created_at]) {
-    const parsed = Date.parse(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return consensusRunIdTimestampMs(fallbackRunId);
-}
-
-function consensusRunIdTimestampMs(runId) {
-  const match = String(runId ?? '').match(/^consensus-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/);
   if (!match) return null;
   const [, year, month, day, hour, minute, second] = match;
   const parsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
@@ -1146,6 +1094,7 @@ Usage:
   runtime footer render --context-latest [--stale-after-hours <n>] --workflow-id <id>
   runtime footer render --consensus-run-id <consensus-run-id>
   runtime footer render --consensus-latest
+  runtime footer render --consensus-latest-open
   runtime footer render --context-state green|yellow|red --recommended-next-work <text>
   runtime footer render --completion-state review-needed|publish-needed|cleanup-needed|next-work-available|blocked|closed
   runtime footer render --pr-handling --pr-completion-boundary reached --pr-validation-state passed --pr-review-state clear --pr-branch-state pushable
