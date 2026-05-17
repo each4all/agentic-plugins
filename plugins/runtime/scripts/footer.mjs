@@ -106,6 +106,7 @@ export async function runFooter(options = {}) {
           run_pointer: consensus.runPointer,
           manifest_pointer: consensus.manifestPointer,
           consensus_pointer: consensus.consensusPointer,
+          owner_decision_pointer: consensus.ownerDecisionPointer,
           execution_pointer: consensus.executionPointer,
           progress_pointer: consensus.progressPointer,
           lookup: consensus.lookup,
@@ -282,6 +283,7 @@ export function formatText(report) {
     if (report.consensus.run_pointer) lines.push(`consensus run: ${report.consensus.run_pointer}`);
     if (report.consensus.manifest_pointer) lines.push(`consensus manifest: ${report.consensus.manifest_pointer}`);
     if (report.consensus.consensus_pointer) lines.push(`consensus result: ${report.consensus.consensus_pointer}`);
+    if (report.consensus.owner_decision_pointer) lines.push(`consensus owner decision: ${report.consensus.owner_decision_pointer}`);
     if (report.consensus.execution_pointer) lines.push(`consensus execution: ${report.consensus.execution_pointer}`);
     if (report.consensus.progress_pointer) lines.push(`consensus progress: ${report.consensus.progress_pointer}`);
     if (report.consensus.status_guidance) {
@@ -483,6 +485,7 @@ async function readConsensusStatus(repoRoot, { runId, latest, host }) {
     runPointer: status.run_pointer,
     manifestPointer: status.manifest_pointer,
     consensusPointer: status.consensus_pointer,
+    ownerDecisionPointer: status.owner_decision_pointer,
     executionPointer: status.execution_pointer,
     progressPointer: status.progress_pointer,
     statusGuidance: localizeStatusGuidanceCommands(status.status_guidance, host ?? 'neutral'),
@@ -548,6 +551,7 @@ function consensusArtifacts(consensus) {
     { kind: 'consensus-run', pointer: consensus.runPointer },
     { kind: 'consensus-manifest', pointer: consensus.manifestPointer },
     consensus.consensusPointer ? { kind: 'consensus-result', pointer: consensus.consensusPointer } : null,
+    consensus.ownerDecisionPointer ? { kind: 'consensus-owner-decision', pointer: consensus.ownerDecisionPointer } : null,
     consensus.executionPointer ? { kind: 'consensus-execution', pointer: consensus.executionPointer } : null,
     consensus.progressPointer ? { kind: 'consensus-progress', pointer: consensus.progressPointer } : null,
   ].filter(Boolean);
@@ -785,6 +789,7 @@ function isActionableConsensusGuidance(state) {
     'execute_or_record',
     'execution_running',
     'next_round_available',
+    'owner_decided',
     'record_manual_peers',
     'retry_failed_peers',
     'synthesize',

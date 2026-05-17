@@ -19,10 +19,11 @@ import { RUNTIME_VERSION } from './version.mjs';
 const VERSION = RUNTIME_VERSION;
 const MANIFEST_SCHEMA = 'runtime-consensus-run-1.0';
 const RESULT_SCHEMA = 'runtime-consensus-result-1.0';
+const OWNER_DECISION_SCHEMA = 'runtime-consensus-owner-decision-1.0';
 const EXECUTION_SCHEMA = 'runtime-consensus-execution-1.0';
 const LATEST_EXECUTION_SCHEMA = 'runtime-consensus-execution-latest-1.0';
 const PROGRESS_SCHEMA = 'runtime-consensus-progress-1.0';
-const VALID_COMMANDS = new Set(['plan', 'record', 'synthesize', 'next-round', 'execute', 'status']);
+const VALID_COMMANDS = new Set(['plan', 'record', 'synthesize', 'decide', 'next-round', 'execute', 'status']);
 const VALID_CONVERGENCE_STATES = new Set([
   'aligned',
   'complementary',
@@ -66,6 +67,9 @@ export async function runConsensus(options = {}) {
   }
   if (command === 'synthesize') {
     return synthesizeConsensus({ ...options, repoRoot });
+  }
+  if (command === 'decide') {
+    return decideConsensus({ ...options, repoRoot });
   }
   if (command === 'next-round') {
     return planNextRound({ ...options, repoRoot });
@@ -308,6 +312,87 @@ export async function synthesizeConsensus(options = {}) {
     consensus_pointer: manifest.consensus_pointer,
     next_action: result.next_action,
     limits: result.limits,
+  };
+}
+
+export async function decideConsensus(options = {}) {
+  const repoRoot = resolve(options.repoRoot ?? process.cwd());
+  const runId = validateRunId(required(options.runId, '--run-id'));
+  const now = options.now ?? new Date();
+  const manifestPath = manifestFile(repoRoot, runId);
+  const manifest = await readJson(manifestPath);
+  if (!manifest.consensus_pointer) {
+    throw new Error(`decide requires consensus.json; run runtime:consensus synthesize --run-id ${runId} --summary-file <summary.md> first`);
+  }
+  const consensusArtifact = await readJson(resolve(repoRoot, manifest.consensus_pointer));
+  const convergenceState = convergenceStateFromArtifact(consensusArtifact);
+  if (['aligned', 'complementary'].includes(convergenceState)) {
+    throw new Error(`decide requires unresolved consensus; observed convergence_state=${convergenceState}`);
+  }
+  const decision = await resolveDecision(options, runId);
+  const decisionText = `${decision.trim()}\n`;
+  const decisionBuffer = Buffer.from(decisionText, 'utf8');
+  const runDir = consensusRunDir(repoRoot, runId);
+  const decisionPath = resolve(runDir, 'owner-decision.md');
+  await assertInside(runDir, decisionPath);
+  await writeFile(decisionPath, decisionBuffer);
+
+  const decidedBy = options.decidedBy
+    ? requireSingleLine(options.decidedBy, '--decided-by')
+    : 'owner';
+  const decisionPointer = pointer(repoRoot, decisionPath);
+  const ownerDecision = {
+    schema_version: OWNER_DECISION_SCHEMA,
+    runtime_version: VERSION,
+    run_id: runId,
+    status: 'owner-decided',
+    created_at: toIso(now),
+    decided_by: decidedBy,
+    previous_consensus_pointer: manifest.consensus_pointer,
+    previous_convergence_state: convergenceState,
+    decision_pointer: decisionPointer,
+    decision_bytes: decisionBuffer.byteLength,
+    decision_sha256: sha256(decisionBuffer),
+    durable_disagreement_count: (consensusArtifact.durable_disagreements ?? []).length,
+    contradiction_count: (consensusArtifact.contradictions ?? []).length,
+    evidence_pointers: consensusArtifact.evidence_pointers ?? [],
+    next_action: options.nextAction
+      ? requireSingleLine(options.nextAction, '--next-action')
+      : 'Proceed with the recorded owner decision while preserving the consensus evidence pointers.',
+    limits: [
+      'Owner decision text is stored as an artifact pointer and is not printed by status or footer output.',
+      'Recording an owner decision does not execute peers, relax host policy, mutate host session context, or create another rebuttal round.',
+      'The previous consensus artifact and evidence pointers remain the audit trail for the decision.',
+    ],
+  };
+  const ownerDecisionPath = resolve(runDir, 'owner-decision.json');
+  await assertInside(runDir, ownerDecisionPath);
+  await writeJson(ownerDecisionPath, ownerDecision);
+  manifest.owner_decision_pointer = pointer(repoRoot, ownerDecisionPath);
+  manifest.status = 'owner-decided';
+  manifest.updated_at = toIso(now);
+  await writeJson(manifestPath, manifest);
+
+  return {
+    command: 'decide',
+    version: VERSION,
+    run_id: runId,
+    status: manifest.status,
+    previous_convergence_state: convergenceState,
+    owner_decision_pointer: manifest.owner_decision_pointer,
+    decision_pointer: decisionPointer,
+    decision_bytes: ownerDecision.decision_bytes,
+    decision_sha256: ownerDecision.decision_sha256,
+    decided_by: decidedBy,
+    durable_disagreement_count: ownerDecision.durable_disagreement_count,
+    contradiction_count: ownerDecision.contradiction_count,
+    next_action: ownerDecision.next_action,
+    artifacts: [
+      { kind: 'manifest', pointer: pointer(repoRoot, manifestPath) },
+      { kind: 'owner-decision', pointer: manifest.owner_decision_pointer },
+      { kind: 'owner-decision-text', pointer: decisionPointer, bytes: ownerDecision.decision_bytes, sha256: ownerDecision.decision_sha256 },
+    ],
+    limits: ownerDecision.limits,
   };
 }
 
@@ -618,6 +703,9 @@ export async function readStatus(options = {}) {
   const consensusArtifact = manifest.consensus_pointer
     ? await readJsonIfExists(resolve(repoRoot, manifest.consensus_pointer))
     : null;
+  const ownerDecisionArtifact = manifest.owner_decision_pointer
+    ? await readJsonIfExists(resolve(repoRoot, manifest.owner_decision_pointer))
+    : null;
   const evidencePointers = collectEvidencePointers(manifest);
   const statusGuidance = buildStatusGuidance({
     runId,
@@ -625,6 +713,7 @@ export async function readStatus(options = {}) {
     executionArtifact,
     progressArtifact,
     consensusArtifact,
+    ownerDecisionArtifact,
     now,
   });
   return {
@@ -637,6 +726,17 @@ export async function readStatus(options = {}) {
     run_pointer: pointer(repoRoot, consensusRunDir(repoRoot, runId)),
     manifest_pointer: pointer(repoRoot, manifestPath),
     consensus_pointer: manifest.consensus_pointer,
+    owner_decision_pointer: manifest.owner_decision_pointer ?? null,
+    owner_decision: ownerDecisionArtifact ? {
+      status: ownerDecisionArtifact.status,
+      decided_by: ownerDecisionArtifact.decided_by,
+      created_at: ownerDecisionArtifact.created_at,
+      previous_convergence_state: ownerDecisionArtifact.previous_convergence_state,
+      decision_pointer: ownerDecisionArtifact.decision_pointer,
+      decision_bytes: ownerDecisionArtifact.decision_bytes,
+      decision_sha256: ownerDecisionArtifact.decision_sha256,
+      next_action: ownerDecisionArtifact.next_action,
+    } : null,
     execution_pointer: executionPointer,
     progress_pointer: progressPointer,
     execution_summary: executionArtifact?.summary ?? progressArtifact?.summary ?? null,
@@ -1476,7 +1576,7 @@ function laneCommandTemplate({ runId, peer, lane }) {
   return `runtime:consensus record --run-id ${runId} --round <round> --peer ${peer} --input-file <path>`;
 }
 
-function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtifact, consensusArtifact, now }) {
+function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtifact, consensusArtifact, ownerDecisionArtifact, now }) {
   const latestRound = findRound(manifest, latestRoundNumber(manifest));
   const summary = executionArtifact?.summary ?? progressArtifact?.summary ?? null;
   const retryCommands = collectRetryCommands(executionArtifact, progressArtifact);
@@ -1488,6 +1588,16 @@ function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtif
     ? `runtime:consensus execute --run-id ${runId} --round ${latestRound.round} --execute`
     : null;
   const synthesizeCommand = `runtime:consensus synthesize --run-id ${runId} --summary-file <summary.md> [--disagreements-file <disagreements.md>]`;
+
+  if (ownerDecisionArtifact) {
+    return guidance({
+      state: 'owner_decided',
+      next_action: ownerDecisionArtifact.next_action ?? 'Proceed with the recorded owner decision while preserving consensus evidence pointers.',
+      next_steps: [],
+      commands: [],
+      reason: `owner decision recorded; previous_convergence_state=${ownerDecisionArtifact.previous_convergence_state ?? '<unknown>'}`,
+    });
+  }
 
   if (!executionArtifact && progressArtifact?.status === 'running') {
     const runningPeers = peersWithProgressStatus(progressArtifact, 'running');
@@ -1579,8 +1689,12 @@ function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtif
     return guidance({
       state: 'owner_decision_required',
       next_action: consensusArtifact.next_action ?? 'Direct contradictions remain but max_rounds is exhausted; ask the owner for a decision instead of running more peers.',
-      next_steps: [],
-      commands: [],
+      next_steps: [
+        `runtime:consensus decide --run-id ${runId} --decision-file <owner-decision.md>`,
+      ],
+      commands: [
+        `runtime:consensus decide --run-id ${runId} --decision-file <owner-decision.md>`,
+      ],
       reason: nextRound.reason,
     });
   }
@@ -1818,6 +1932,15 @@ export function parseArgs(argv) {
       case '--summary-file':
         options.summaryFile = requireValue(args, arg);
         break;
+      case '--decision':
+        options.decision = requireValue(args, arg);
+        break;
+      case '--decision-file':
+        options.decisionFile = requireValue(args, arg);
+        break;
+      case '--decided-by':
+        options.decidedBy = requireSingleLine(requireValue(args, arg), arg);
+        break;
       case '--disagreements-file':
         options.disagreementsFile = requireValue(args, arg);
         break;
@@ -1864,6 +1987,7 @@ export function formatText(report) {
   if (report.convergence_state) lines.push(`convergence state: ${report.convergence_state}`);
   if (report.run_pointer) lines.push(`run artifact: ${report.run_pointer}`);
   if (report.consensus_pointer) lines.push(`consensus: ${report.consensus_pointer}`);
+  if (report.owner_decision_pointer) lines.push(`owner decision: ${report.owner_decision_pointer}`);
   if (report.execution_pointer) lines.push(`execution: ${report.execution_pointer}`);
   if (report.progress_pointer) lines.push(`progress: ${report.progress_pointer}`);
   if (report.status_guidance?.state) {
@@ -1902,6 +2026,11 @@ export function formatText(report) {
     for (const command of report.execution_remediation.retry_commands ?? []) {
       lines.push(`retry-command: ${command}`);
     }
+  }
+  if (report.owner_decision) {
+    lines.push('', 'owner decision:');
+    lines.push(`- status=${report.owner_decision.status}; decided-by=${report.owner_decision.decided_by}; previous-convergence-state=${report.owner_decision.previous_convergence_state}`);
+    lines.push(`- decision=${report.owner_decision.decision_pointer}; bytes=${report.owner_decision.decision_bytes}; sha256=${report.owner_decision.decision_sha256}`);
   }
   if (report.executions?.length) {
     lines.push('', 'executions:');
@@ -1977,12 +2106,13 @@ Usage:
   runtime:consensus plan --task <text> [--peers claude,codex,reviewer] [--max-rounds N] [--max-peers N] [--timeout-ms N]
   runtime:consensus record --run-id <id> --peer <peer> --input-file <path>
   runtime:consensus synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>] [--convergence-state aligned|complementary|contradiction|insufficient-evidence|owner-decision-required|non-consensus]
+  runtime:consensus decide --run-id <id> --decision-file <path> [--decided-by owner]
   runtime:consensus next-round --run-id <id> [--disagreements-file <path>]
   runtime:consensus execute --run-id <id> [--round N] [--peers claude,codex] --execute [--timeout-ms N] [--process-budget N]
   runtime:consensus status --run-id <id>
   runtime:consensus status --latest
 
-Planning and synthesis never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record. Contradiction rebuttal rounds default to ${DEFAULT_MAX_ROUNDS} total rounds, --max-rounds is hard-capped at ${MAX_ROUNDS_CAP}, and exhausted contradictions become owner-decision-required instead of creating another loop.`;
+Planning, synthesis, and owner-decision recording never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record. Contradiction rebuttal rounds default to ${DEFAULT_MAX_ROUNDS} total rounds, --max-rounds is hard-capped at ${MAX_ROUNDS_CAP}, and exhausted contradictions become owner-decision-required instead of creating another loop.`;
 }
 
 async function resolveStatusRunSelection({ repoRoot, runId, latest }) {
@@ -2084,6 +2214,22 @@ async function resolveSummary(options, runId) {
     return text;
   }
   throw new Error(`synthesize requires --summary or --summary-file; write a bounded summary from artifact pointers, then retry: runtime:consensus synthesize --run-id ${runId} --summary-file <summary.md> [--disagreements-file <disagreements.md>]`);
+}
+
+async function resolveDecision(options, runId) {
+  if (options.decision && options.decisionFile) {
+    throw new Error('Use either --decision or --decision-file, not both');
+  }
+  if (options.decision) {
+    if (!options.decision.trim()) throw new Error('--decision must not be empty');
+    return options.decision;
+  }
+  if (options.decisionFile) {
+    const text = await readFile(resolve(options.decisionFile), 'utf8');
+    if (!text.trim()) throw new Error('--decision-file must not be empty');
+    return text;
+  }
+  throw new Error(`decide requires --decision or --decision-file; retry: runtime:consensus decide --run-id ${runId} --decision-file <owner-decision.md>`);
 }
 
 async function resolveDisagreements(options) {

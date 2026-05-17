@@ -770,6 +770,80 @@ describe('runtime consensus', () => {
 
     strictEqual(status.status_guidance.state, 'owner_decision_required');
     ok(status.next_action.includes('owner'));
+    ok(status.next_steps.some((step) => step.includes('runtime:consensus decide')));
+  });
+
+  it('records an owner decision artifact to close an exhausted consensus without leaking decision text', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-consensus-owner-decision-record-'));
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      task: 'Choose between incompatible release gates.',
+      peers: ['claude', 'codex'],
+      maxRounds: 1,
+    });
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    const decisionFile = join(root, 'owner-decision-source.md');
+    await writeFile(summaryFile, 'The peers still recommend incompatible release gates.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      {
+        summary: 'Claude recommends shipping with manual review; Codex recommends blocking on verifier coverage.',
+        kind: 'contradiction',
+      },
+    ]));
+    await writeFile(decisionFile, 'OWNER DECISION BODY THAT MUST STAY IN THE ARTIFACT\n');
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+    });
+
+    const report = await runConsensus({
+      command: 'decide',
+      repoRoot: root,
+      runId: RUN_ID,
+      decisionFile,
+      decidedBy: 'owner',
+      nextAction: 'Proceed with the verifier gate.',
+      now: new Date('2026-05-13T00:05:00.000Z'),
+    });
+
+    strictEqual(report.status, 'owner-decided');
+    strictEqual(report.previous_convergence_state, 'owner-decision-required');
+    strictEqual(report.decided_by, 'owner');
+    strictEqual(report.durable_disagreement_count, 1);
+    strictEqual(report.contradiction_count, 1);
+    ok(report.owner_decision_pointer.endsWith('/owner-decision.json'));
+    ok(report.decision_pointer.endsWith('/owner-decision.md'));
+    ok(!JSON.stringify(report).includes('OWNER DECISION BODY'), 'decision text must not be in json report');
+    ok(!formatText(report).includes('OWNER DECISION BODY'), 'decision text must not be in text report');
+
+    const manifest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'manifest.json'));
+    strictEqual(manifest.status, 'owner-decided');
+    strictEqual(manifest.owner_decision_pointer, report.owner_decision_pointer);
+    const ownerDecision = await readJson(join(root, report.owner_decision_pointer));
+    strictEqual(ownerDecision.schema_version, 'runtime-consensus-owner-decision-1.0');
+    strictEqual(ownerDecision.previous_consensus_pointer, manifest.consensus_pointer);
+    strictEqual(ownerDecision.previous_convergence_state, 'owner-decision-required');
+    strictEqual(ownerDecision.next_action, 'Proceed with the verifier gate.');
+    strictEqual(await readFile(join(root, ownerDecision.decision_pointer), 'utf8'), 'OWNER DECISION BODY THAT MUST STAY IN THE ARTIFACT\n');
+
+    const status = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(status.status, 'owner-decided');
+    strictEqual(status.status_guidance.state, 'owner_decided');
+    strictEqual(status.owner_decision.decision_pointer, report.decision_pointer);
+    strictEqual(status.next_action, 'Proceed with the verifier gate.');
+    ok(formatText(status).includes('guidance state: owner_decided'));
+    ok(!JSON.stringify(status).includes('OWNER DECISION BODY'), 'status json must not include decision text');
   });
 
   it('reports status guidance for synthesized durable disagreements', async () => {
@@ -865,6 +939,11 @@ describe('runtime consensus', () => {
     strictEqual(executeStyle.execute, true);
     strictEqual(executeStyle.timeoutMs, 60000);
 
+    const decideStyle = parseArgs(['decide', '--run-id', RUN_ID, '--decision-file', 'owner.md', '--decided-by', 'owner']);
+    strictEqual(decideStyle.command, 'decide');
+    strictEqual(decideStyle.decisionFile, 'owner.md');
+    strictEqual(decideStyle.decidedBy, 'owner');
+
     const latestStyle = parseArgs(['status', '--latest']);
     strictEqual(latestStyle.command, 'status');
     strictEqual(latestStyle.latest, true);
@@ -875,6 +954,7 @@ describe('runtime consensus', () => {
     throws(() => parseArgs(['execute', '--latest']), /--latest is only supported by status/);
     throws(() => parseArgs(['plan', '--max-rounds', '0']), /positive integer/);
     throws(() => parseArgs(['synthesize', '--convergence-state', 'mixed']), /aligned, complementary, contradiction/);
+    throws(() => parseArgs(['decide', '--decided-by', 'two\nlines']), /--decided-by must be a single-line value/);
     ok(formatText({ help: true }).includes('default to 2 total rounds'));
     ok(formatText({ help: true }).includes('hard-capped at 3'));
     await rejects(() => runConsensus({ command: 'execute', repoRoot: '/tmp/repo', runId: RUN_ID }), /requires --execute/);
