@@ -350,6 +350,43 @@ describe('runtime footer', () => {
     ok(!JSON.stringify(report).includes('RAW OWNER DECISION BODY'));
   });
 
+  it('links consensus cancellation without leaking cancellation reason text', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-cancel-'));
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: CONSENSUS_RUN_ID,
+      task: 'Cancel this consensus run without exposing reason text.',
+    });
+    const reasonFile = join(root, 'cancel-reason.md');
+    await writeFile(reasonFile, 'RAW CANCELLATION REASON must stay hidden from the footer.\n');
+    await runConsensus({
+      command: 'cancel',
+      repoRoot: root,
+      runId: CONSENSUS_RUN_ID,
+      reasonFile,
+      nextAction: 'Start a new consensus run only if the issue still needs peer review.',
+    });
+
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      consensusRunId: CONSENSUS_RUN_ID,
+    });
+
+    strictEqual(report.consensus.status, 'cancelled');
+    strictEqual(report.consensus.status_guidance.state, 'cancelled');
+    strictEqual(report.recommended_next_work, 'Start a new consensus run only if the issue still needs peer review.');
+    ok(report.consensus.cancellation_pointer.endsWith('/cancellation.json'));
+    ok(report.artifacts.some((artifact) => artifact.kind === 'consensus-cancellation'));
+
+    const text = formatText(report);
+    ok(text.includes('consensus cancellation:'));
+    ok(text.includes('consensus guidance: cancelled'));
+    ok(!text.includes('RAW CANCELLATION REASON'));
+    ok(!JSON.stringify(report).includes('RAW CANCELLATION REASON'));
+  });
+
   it('can link the latest consensus run by manifest freshness', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-latest-'));
     await runConsensus({

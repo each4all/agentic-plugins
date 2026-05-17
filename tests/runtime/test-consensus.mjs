@@ -587,6 +587,112 @@ describe('runtime consensus', () => {
     ok(formatText(report).includes('guidance state: execution_stalled'));
   });
 
+  it('records artifact-only cancellation with explicit running-process confirmation', async () => {
+    const root = await seedPlan();
+    const progressPointer = `.agentic-plugins/runs/consensus/${RUN_ID}/execution-progress.json`;
+    const reasonFile = join(root, 'cancel-reason.md');
+    await writeFile(reasonFile, 'CANCEL REASON BODY THAT MUST STAY IN THE ARTIFACT\n');
+    await writeFile(join(root, progressPointer), JSON.stringify({
+      schema_version: 'runtime-consensus-progress-1.0',
+      runtime_version: '0.0.0-test',
+      run_id: RUN_ID,
+      status: 'running',
+      created_at: '2026-05-13T00:02:00.000Z',
+      updated_at: '2026-05-13T00:02:00.000Z',
+      round: 1,
+      peer_execution: true,
+      execution_boundary: {
+        execute_flag_required: true,
+        execute_flag_supplied: true,
+        timeout_ms: 90000,
+        process_budget: 2,
+      },
+      preflight: {
+        status: 'completed',
+        completed_at: '2026-05-13T00:02:01.000Z',
+      },
+      peers: {
+        claude: {
+          peer: 'claude',
+          status: 'running',
+          scheduled: true,
+          started_at: '2026-05-13T00:02:00.000Z',
+          timeout_ms: 90000,
+          prompt_pointer: `.agentic-plugins/runs/consensus/${RUN_ID}/rounds/round-1/prompts/claude.md`,
+        },
+        codex: {
+          peer: 'codex',
+          status: 'pending',
+          scheduled: true,
+          started_at: null,
+          timeout_ms: 90000,
+          prompt_pointer: `.agentic-plugins/runs/consensus/${RUN_ID}/rounds/round-1/prompts/codex.md`,
+        },
+      },
+      summary: null,
+      progress_pointer: progressPointer,
+    }, null, 2));
+
+    await rejects(
+      () => runConsensus({
+        command: 'cancel',
+        repoRoot: root,
+        runId: RUN_ID,
+        reasonFile,
+      }),
+      /confirm no original execute process is still active/,
+    );
+
+    const report = await runConsensus({
+      command: 'cancel',
+      repoRoot: root,
+      runId: RUN_ID,
+      reasonFile,
+      cancelledBy: 'operator',
+      confirmNoActiveProcess: true,
+      nextAction: 'Start a new consensus run if the issue still needs peer review.',
+      now: new Date('2026-05-13T00:06:00.000Z'),
+    });
+
+    strictEqual(report.status, 'cancelled');
+    strictEqual(report.previous_status, 'planned');
+    strictEqual(report.operator_confirmed_no_active_process, true);
+    ok(report.cancellation_pointer.endsWith('/cancellation.json'));
+    ok(report.reason_pointer.endsWith('/cancellation-reason.md'));
+    ok(!JSON.stringify(report).includes('CANCEL REASON BODY'), 'cancel report must not include cancellation reason text');
+    ok(!formatText(report).includes('CANCEL REASON BODY'), 'cancel text report must not include cancellation reason text');
+
+    const manifest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'manifest.json'));
+    strictEqual(manifest.status, 'cancelled');
+    strictEqual(manifest.cancellation_pointer, report.cancellation_pointer);
+    strictEqual(manifest.rounds[0].status, 'cancelled');
+    const cancellation = await readJson(join(root, report.cancellation_pointer));
+    strictEqual(cancellation.schema_version, 'runtime-consensus-cancellation-1.0');
+    strictEqual(cancellation.reason_pointer, report.reason_pointer);
+    strictEqual(cancellation.operator_confirmed_no_active_process, true);
+    strictEqual(await readFile(join(root, cancellation.reason_pointer), 'utf8'), 'CANCEL REASON BODY THAT MUST STAY IN THE ARTIFACT\n');
+    const progress = await readJson(join(root, progressPointer));
+    strictEqual(progress.status, 'cancelled');
+    strictEqual(progress.cancellation_pointer, report.cancellation_pointer);
+    strictEqual(progress.peers.claude.status, 'cancelled');
+    strictEqual(progress.peers.codex.status, 'cancelled');
+    strictEqual(progress.summary.executed, 0);
+    strictEqual(progress.summary.cancelled, 2);
+
+    const status = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(status.status, 'cancelled');
+    strictEqual(status.status_guidance.state, 'cancelled');
+    strictEqual(status.cancellation.reason_pointer, report.reason_pointer);
+    strictEqual(status.next_action, 'Start a new consensus run if the issue still needs peer review.');
+    ok(formatText(status).includes('guidance state: cancelled'));
+    ok(!JSON.stringify(status).includes('CANCEL REASON BODY'), 'status json must not include cancellation reason text');
+  });
+
   it('records raw peer output as an artifact pointer without leaking content', async () => {
     const root = await seedPlan();
     const rawOutput = 'RAW PEER OUTPUT THAT MUST NOT ENTER THE MAIN REPORT';
@@ -944,6 +1050,12 @@ describe('runtime consensus', () => {
     strictEqual(decideStyle.decisionFile, 'owner.md');
     strictEqual(decideStyle.decidedBy, 'owner');
 
+    const cancelStyle = parseArgs(['cancel', '--run-id', RUN_ID, '--reason-file', 'reason.md', '--cancelled-by', 'operator', '--confirm-no-active-process']);
+    strictEqual(cancelStyle.command, 'cancel');
+    strictEqual(cancelStyle.reasonFile, 'reason.md');
+    strictEqual(cancelStyle.cancelledBy, 'operator');
+    strictEqual(cancelStyle.confirmNoActiveProcess, true);
+
     const latestStyle = parseArgs(['status', '--latest']);
     strictEqual(latestStyle.command, 'status');
     strictEqual(latestStyle.latest, true);
@@ -955,6 +1067,7 @@ describe('runtime consensus', () => {
     throws(() => parseArgs(['plan', '--max-rounds', '0']), /positive integer/);
     throws(() => parseArgs(['synthesize', '--convergence-state', 'mixed']), /aligned, complementary, contradiction/);
     throws(() => parseArgs(['decide', '--decided-by', 'two\nlines']), /--decided-by must be a single-line value/);
+    throws(() => parseArgs(['cancel', '--cancelled-by', 'two\nlines']), /--cancelled-by must be a single-line value/);
     ok(formatText({ help: true }).includes('default to 2 total rounds'));
     ok(formatText({ help: true }).includes('hard-capped at 3'));
     await rejects(() => runConsensus({ command: 'execute', repoRoot: '/tmp/repo', runId: RUN_ID }), /requires --execute/);

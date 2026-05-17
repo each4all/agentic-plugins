@@ -20,10 +20,11 @@ const VERSION = RUNTIME_VERSION;
 const MANIFEST_SCHEMA = 'runtime-consensus-run-1.0';
 const RESULT_SCHEMA = 'runtime-consensus-result-1.0';
 const OWNER_DECISION_SCHEMA = 'runtime-consensus-owner-decision-1.0';
+const CANCELLATION_SCHEMA = 'runtime-consensus-cancellation-1.0';
 const EXECUTION_SCHEMA = 'runtime-consensus-execution-1.0';
 const LATEST_EXECUTION_SCHEMA = 'runtime-consensus-execution-latest-1.0';
 const PROGRESS_SCHEMA = 'runtime-consensus-progress-1.0';
-const VALID_COMMANDS = new Set(['plan', 'record', 'synthesize', 'decide', 'next-round', 'execute', 'status']);
+const VALID_COMMANDS = new Set(['plan', 'record', 'synthesize', 'decide', 'cancel', 'next-round', 'execute', 'status']);
 const VALID_CONVERGENCE_STATES = new Set([
   'aligned',
   'complementary',
@@ -70,6 +71,9 @@ export async function runConsensus(options = {}) {
   }
   if (command === 'decide') {
     return decideConsensus({ ...options, repoRoot });
+  }
+  if (command === 'cancel') {
+    return cancelConsensus({ ...options, repoRoot });
   }
   if (command === 'next-round') {
     return planNextRound({ ...options, repoRoot });
@@ -120,7 +124,7 @@ export async function createPlan(options = {}) {
       max_peers_cap: null,
       peer_roster_boundary: 'explicit --peers roster; no hard-coded max peer cap',
       max_execution_timeout_ms: MAX_EXECUTION_TIMEOUT_MS,
-      cancellation: 'per-peer timeout sends SIGTERM through the command runner; no async cancellation subcommand is added in this PR',
+      cancellation: 'runtime:consensus cancel records an operator-confirmed cancellation artifact; it does not kill host processes',
     },
   };
 
@@ -393,6 +397,108 @@ export async function decideConsensus(options = {}) {
       { kind: 'owner-decision-text', pointer: decisionPointer, bytes: ownerDecision.decision_bytes, sha256: ownerDecision.decision_sha256 },
     ],
     limits: ownerDecision.limits,
+  };
+}
+
+export async function cancelConsensus(options = {}) {
+  const repoRoot = resolve(options.repoRoot ?? process.cwd());
+  const runId = validateRunId(required(options.runId, '--run-id'));
+  const now = options.now ?? new Date();
+  const cancelledAt = toIso(now);
+  const manifestPath = manifestFile(repoRoot, runId);
+  const manifest = await readJson(manifestPath);
+  if (manifest.cancellation_pointer) {
+    throw new Error(`cancel refused: consensus run already has cancellation artifact ${manifest.cancellation_pointer}`);
+  }
+  if (manifest.status === 'owner-decided') {
+    throw new Error('cancel refused: consensus run already has an owner decision; preserve the owner-decision artifact instead');
+  }
+  const runDir = consensusRunDir(repoRoot, runId);
+  const executionPath = resolve(runDir, 'execution.json');
+  const progressPath = resolve(runDir, 'execution-progress.json');
+  const executionArtifact = await readJsonIfExists(executionPath);
+  const progressArtifact = await readJsonIfExists(progressPath);
+  const progressRunning = !executionArtifact && progressArtifact?.status === 'running';
+  if (progressRunning && options.confirmNoActiveProcess !== true) {
+    throw new Error('cancel refused: execution progress is running; confirm no original execute process is still active with --confirm-no-active-process before recording cancellation');
+  }
+
+  const reason = await resolveCancellationReason(options, runId);
+  const reasonText = `${reason.trim()}\n`;
+  const reasonBuffer = Buffer.from(reasonText, 'utf8');
+  const reasonPath = resolve(runDir, 'cancellation-reason.md');
+  await assertInside(runDir, reasonPath);
+  await writeFile(reasonPath, reasonBuffer);
+  const reasonPointer = pointer(repoRoot, reasonPath);
+  const cancellationPath = resolve(runDir, 'cancellation.json');
+  await assertInside(runDir, cancellationPath);
+  const cancellation = {
+    schema_version: CANCELLATION_SCHEMA,
+    runtime_version: VERSION,
+    run_id: runId,
+    status: 'cancelled',
+    created_at: cancelledAt,
+    cancelled_by: options.cancelledBy
+      ? requireSingleLine(options.cancelledBy, '--cancelled-by')
+      : 'operator',
+    reason_pointer: reasonPointer,
+    reason_bytes: reasonBuffer.byteLength,
+    reason_sha256: sha256(reasonBuffer),
+    previous_status: manifest.status ?? null,
+    previous_consensus_pointer: manifest.consensus_pointer ?? null,
+    previous_owner_decision_pointer: manifest.owner_decision_pointer ?? null,
+    execution_pointer: executionArtifact ? pointer(repoRoot, executionPath) : null,
+    progress_pointer: progressArtifact ? pointer(repoRoot, progressPath) : null,
+    operator_confirmed_no_active_process: progressRunning ? true : Boolean(options.confirmNoActiveProcess),
+    next_action: options.nextAction
+      ? requireSingleLine(options.nextAction, '--next-action')
+      : 'Preserve the cancelled consensus run as evidence; create a new consensus run before restarting peer collection.',
+    limits: [
+      'Cancellation is artifact-only and does not kill, interrupt, or signal host CLI processes.',
+      'If execution progress was running, the operator must confirm no original execute process is still active before cancellation is recorded.',
+      'Cancellation reason text is stored as an artifact pointer and is not printed by status or footer output.',
+    ],
+  };
+  await writeJson(cancellationPath, cancellation);
+  const cancellationPointer = pointer(repoRoot, cancellationPath);
+
+  if (progressArtifact) {
+    markProgressCancelled({
+      progress: progressArtifact,
+      cancelledAt,
+      cancellationPointer,
+      confirmNoActiveProcess: cancellation.operator_confirmed_no_active_process,
+    });
+    await writeJson(progressPath, progressArtifact);
+  }
+  const latestRound = findRound(manifest, latestRoundNumber(manifest));
+  latestRound.status = 'cancelled';
+  manifest.cancellation_pointer = cancellationPointer;
+  manifest.status = 'cancelled';
+  manifest.updated_at = cancelledAt;
+  await writeJson(manifestPath, manifest);
+
+  return {
+    command: 'cancel',
+    version: VERSION,
+    run_id: runId,
+    status: manifest.status,
+    cancellation_pointer: cancellationPointer,
+    reason_pointer: reasonPointer,
+    reason_bytes: cancellation.reason_bytes,
+    reason_sha256: cancellation.reason_sha256,
+    cancelled_by: cancellation.cancelled_by,
+    previous_status: cancellation.previous_status,
+    operator_confirmed_no_active_process: cancellation.operator_confirmed_no_active_process,
+    next_action: cancellation.next_action,
+    artifacts: [
+      { kind: 'manifest', pointer: pointer(repoRoot, manifestPath) },
+      { kind: 'consensus-cancellation', pointer: cancellationPointer },
+      { kind: 'consensus-cancellation-reason', pointer: reasonPointer, bytes: cancellation.reason_bytes, sha256: cancellation.reason_sha256 },
+      cancellation.execution_pointer ? { kind: 'consensus-execution', pointer: cancellation.execution_pointer } : null,
+      cancellation.progress_pointer ? { kind: 'consensus-progress', pointer: cancellation.progress_pointer } : null,
+    ].filter(Boolean),
+    limits: cancellation.limits,
   };
 }
 
@@ -706,6 +812,9 @@ export async function readStatus(options = {}) {
   const ownerDecisionArtifact = manifest.owner_decision_pointer
     ? await readJsonIfExists(resolve(repoRoot, manifest.owner_decision_pointer))
     : null;
+  const cancellationArtifact = manifest.cancellation_pointer
+    ? await readJsonIfExists(resolve(repoRoot, manifest.cancellation_pointer))
+    : null;
   const evidencePointers = collectEvidencePointers(manifest);
   const statusGuidance = buildStatusGuidance({
     runId,
@@ -714,6 +823,7 @@ export async function readStatus(options = {}) {
     progressArtifact,
     consensusArtifact,
     ownerDecisionArtifact,
+    cancellationArtifact,
     now,
   });
   return {
@@ -727,6 +837,7 @@ export async function readStatus(options = {}) {
     manifest_pointer: pointer(repoRoot, manifestPath),
     consensus_pointer: manifest.consensus_pointer,
     owner_decision_pointer: manifest.owner_decision_pointer ?? null,
+    cancellation_pointer: manifest.cancellation_pointer ?? null,
     owner_decision: ownerDecisionArtifact ? {
       status: ownerDecisionArtifact.status,
       decided_by: ownerDecisionArtifact.decided_by,
@@ -736,6 +847,17 @@ export async function readStatus(options = {}) {
       decision_bytes: ownerDecisionArtifact.decision_bytes,
       decision_sha256: ownerDecisionArtifact.decision_sha256,
       next_action: ownerDecisionArtifact.next_action,
+    } : null,
+    cancellation: cancellationArtifact ? {
+      status: cancellationArtifact.status,
+      cancelled_by: cancellationArtifact.cancelled_by,
+      created_at: cancellationArtifact.created_at,
+      previous_status: cancellationArtifact.previous_status,
+      reason_pointer: cancellationArtifact.reason_pointer,
+      reason_bytes: cancellationArtifact.reason_bytes,
+      reason_sha256: cancellationArtifact.reason_sha256,
+      operator_confirmed_no_active_process: cancellationArtifact.operator_confirmed_no_active_process === true,
+      next_action: cancellationArtifact.next_action,
     } : null,
     execution_pointer: executionPointer,
     progress_pointer: progressPointer,
@@ -1139,6 +1261,43 @@ function markProgressFromExecution(progress, execution) {
   entry.retry_after = execution.retry_after;
   entry.retry_command = execution.retry_command;
   progress.updated_at = execution.completed_at;
+}
+
+function markProgressCancelled({
+  progress,
+  cancelledAt,
+  cancellationPointer,
+  confirmNoActiveProcess,
+}) {
+  progress.status = 'cancelled';
+  progress.cancelled_at = cancelledAt;
+  progress.cancellation_pointer = cancellationPointer;
+  progress.operator_confirmed_no_active_process = confirmNoActiveProcess === true;
+  let cancelled = 0;
+  for (const peer of Object.values(progress.peers ?? {})) {
+    if (['running', 'pending'].includes(peer.status)) {
+      peer.status = 'cancelled';
+      peer.completed_at = cancelledAt;
+      peer.failure_type = 'operator_cancelled';
+      peer.operator_action_required = false;
+      peer.retryable = false;
+      peer.retry_after = 'create a new consensus run before restarting peer collection';
+      peer.retry_command = null;
+      cancelled += 1;
+    }
+  }
+  const previousSummary = progress.summary ?? {};
+  progress.summary = {
+    executed: previousSummary.executed ?? 0,
+    passed: previousSummary.passed ?? 0,
+    failed: previousSummary.failed ?? 0,
+    skipped: previousSummary.skipped ?? 0,
+    failed_retryable: previousSummary.failed_retryable ?? 0,
+    failed_non_retryable: previousSummary.failed_non_retryable ?? 0,
+    operator_action_required: previousSummary.operator_action_required ?? 0,
+    cancelled: (previousSummary.cancelled ?? 0) + cancelled,
+  };
+  progress.updated_at = cancelledAt;
 }
 
 function buildRetryCommand({ failure, runId, roundNumber, peer, timeoutMs }) {
@@ -1576,7 +1735,7 @@ function laneCommandTemplate({ runId, peer, lane }) {
   return `runtime:consensus record --run-id ${runId} --round <round> --peer ${peer} --input-file <path>`;
 }
 
-function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtifact, consensusArtifact, ownerDecisionArtifact, now }) {
+function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtifact, consensusArtifact, ownerDecisionArtifact, cancellationArtifact, now }) {
   const latestRound = findRound(manifest, latestRoundNumber(manifest));
   const summary = executionArtifact?.summary ?? progressArtifact?.summary ?? null;
   const retryCommands = collectRetryCommands(executionArtifact, progressArtifact);
@@ -1588,6 +1747,16 @@ function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtif
     ? `runtime:consensus execute --run-id ${runId} --round ${latestRound.round} --execute`
     : null;
   const synthesizeCommand = `runtime:consensus synthesize --run-id ${runId} --summary-file <summary.md> [--disagreements-file <disagreements.md>]`;
+
+  if (cancellationArtifact) {
+    return guidance({
+      state: 'cancelled',
+      next_action: cancellationArtifact.next_action ?? 'Consensus run is cancelled; create a new consensus run before restarting peer collection.',
+      next_steps: [],
+      commands: [],
+      reason: `cancellation recorded; previous_status=${cancellationArtifact.previous_status ?? '<unknown>'}; operator_confirmed_no_active_process=${cancellationArtifact.operator_confirmed_no_active_process === true}`,
+    });
+  }
 
   if (ownerDecisionArtifact) {
     return guidance({
@@ -1941,6 +2110,18 @@ export function parseArgs(argv) {
       case '--decided-by':
         options.decidedBy = requireSingleLine(requireValue(args, arg), arg);
         break;
+      case '--reason':
+        options.reason = requireValue(args, arg);
+        break;
+      case '--reason-file':
+        options.reasonFile = requireValue(args, arg);
+        break;
+      case '--cancelled-by':
+        options.cancelledBy = requireSingleLine(requireValue(args, arg), arg);
+        break;
+      case '--confirm-no-active-process':
+        options.confirmNoActiveProcess = true;
+        break;
       case '--disagreements-file':
         options.disagreementsFile = requireValue(args, arg);
         break;
@@ -1988,6 +2169,7 @@ export function formatText(report) {
   if (report.run_pointer) lines.push(`run artifact: ${report.run_pointer}`);
   if (report.consensus_pointer) lines.push(`consensus: ${report.consensus_pointer}`);
   if (report.owner_decision_pointer) lines.push(`owner decision: ${report.owner_decision_pointer}`);
+  if (report.cancellation_pointer) lines.push(`cancellation: ${report.cancellation_pointer}`);
   if (report.execution_pointer) lines.push(`execution: ${report.execution_pointer}`);
   if (report.progress_pointer) lines.push(`progress: ${report.progress_pointer}`);
   if (report.status_guidance?.state) {
@@ -2031,6 +2213,12 @@ export function formatText(report) {
     lines.push('', 'owner decision:');
     lines.push(`- status=${report.owner_decision.status}; decided-by=${report.owner_decision.decided_by}; previous-convergence-state=${report.owner_decision.previous_convergence_state}`);
     lines.push(`- decision=${report.owner_decision.decision_pointer}; bytes=${report.owner_decision.decision_bytes}; sha256=${report.owner_decision.decision_sha256}`);
+  }
+  if (report.cancellation) {
+    lines.push('', 'cancellation:');
+    lines.push(`- status=${report.cancellation.status}; cancelled-by=${report.cancellation.cancelled_by}; previous-status=${report.cancellation.previous_status}`);
+    lines.push(`- reason=${report.cancellation.reason_pointer}; bytes=${report.cancellation.reason_bytes}; sha256=${report.cancellation.reason_sha256}`);
+    lines.push(`- operator-confirmed-no-active-process=${report.cancellation.operator_confirmed_no_active_process}`);
   }
   if (report.executions?.length) {
     lines.push('', 'executions:');
@@ -2107,12 +2295,13 @@ Usage:
   runtime:consensus record --run-id <id> --peer <peer> --input-file <path>
   runtime:consensus synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>] [--convergence-state aligned|complementary|contradiction|insufficient-evidence|owner-decision-required|non-consensus]
   runtime:consensus decide --run-id <id> --decision-file <path> [--decided-by owner]
+  runtime:consensus cancel --run-id <id> --reason <text>|--reason-file <path> [--confirm-no-active-process]
   runtime:consensus next-round --run-id <id> [--disagreements-file <path>]
   runtime:consensus execute --run-id <id> [--round N] [--peers claude,codex] --execute [--timeout-ms N] [--process-budget N]
   runtime:consensus status --run-id <id>
   runtime:consensus status --latest
 
-Planning, synthesis, and owner-decision recording never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record. Contradiction rebuttal rounds default to ${DEFAULT_MAX_ROUNDS} total rounds, --max-rounds is hard-capped at ${MAX_ROUNDS_CAP}, and exhausted contradictions become owner-decision-required instead of creating another loop.`;
+Planning, synthesis, owner-decision recording, and cancellation never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record. Contradiction rebuttal rounds default to ${DEFAULT_MAX_ROUNDS} total rounds, --max-rounds is hard-capped at ${MAX_ROUNDS_CAP}, and exhausted contradictions become owner-decision-required instead of creating another loop. Cancellation is artifact-only; if progress is running, use --confirm-no-active-process only after verifying no original execute process is still active.`;
 }
 
 async function resolveStatusRunSelection({ repoRoot, runId, latest }) {
@@ -2230,6 +2419,22 @@ async function resolveDecision(options, runId) {
     return text;
   }
   throw new Error(`decide requires --decision or --decision-file; retry: runtime:consensus decide --run-id ${runId} --decision-file <owner-decision.md>`);
+}
+
+async function resolveCancellationReason(options, runId) {
+  if (options.reason && options.reasonFile) {
+    throw new Error('Use either --reason or --reason-file, not both');
+  }
+  if (options.reason) {
+    if (!options.reason.trim()) throw new Error('--reason must not be empty');
+    return options.reason;
+  }
+  if (options.reasonFile) {
+    const text = await readFile(resolve(options.reasonFile), 'utf8');
+    if (!text.trim()) throw new Error('--reason-file must not be empty');
+    return text;
+  }
+  throw new Error(`cancel requires --reason or --reason-file; retry: runtime:consensus cancel --run-id ${runId} --reason-file <cancellation-reason.md>`);
 }
 
 async function resolveDisagreements(options) {

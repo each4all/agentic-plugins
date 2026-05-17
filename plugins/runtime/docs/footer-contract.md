@@ -117,11 +117,12 @@ node <runtime-plugin-root>/scripts/footer.mjs render \
 Consensus lookup is read-only and mutually exclusive between
 `--consensus-run-id` and `--consensus-latest`. The helper calls
 `runtime:consensus status` internally and includes only status, run/result/
-execution/progress/owner-decision pointers, status guidance, recommended next
-action, and safe follow-up commands. It does not print peer prompts, peer raw
-outputs, consensus raw output, consensus body text, or owner decision text. If
-the caller did not provide `--recommended-next-work`, consensus `next_action`
-becomes the footer's recommended next work.
+execution/progress/owner-decision/cancellation pointers, status guidance,
+recommended next action, and safe follow-up commands. It does not print peer
+prompts, peer raw outputs, consensus raw output, consensus body text, owner
+decision text, or cancellation reason text. If the caller did not provide
+`--recommended-next-work`, consensus `next_action` becomes the footer's
+recommended next work.
 
 Without a context artifact, callers may supply `--context-state`,
 `--completion-state`, `--completion-reason`, `--completion-next-action`,
@@ -223,8 +224,9 @@ writes sanitized cutover evidence under `.agentic-plugins/runs/cutover/`.
   creation, PR metadata update, merge, or ready-for-review transition.
 - Cutover record guidance is advisory only: no automatic dogfood evidence
   write and no automatic omcc-dev activity declaration.
-- Pointer-only: raw peer output, consensus raw output, prompt bodies, and
-  large artifacts stay in runtime-owned files.
+- Pointer-only: raw peer output, consensus raw output, prompt bodies, owner
+  decision text, cancellation reason text, and large artifacts stay in
+  runtime-owned files.
 - Consensus status is advisory only: no peer execution, synthesis,
   next-round planning, or artifact mutation happens through the footer.
 - Existing engineer and orchestrator workflow state remains in its current
