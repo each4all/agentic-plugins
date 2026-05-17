@@ -25,7 +25,8 @@ work is actionable from the cutover report itself.
 When the operator asks for final-readiness evidence, pass `--completion-audit`
 so the output includes the prompt-to-artifact checklist across requirements,
 ADR conditions, runtime commands, evidence artifacts, candidate/final gates, and
-weak or missing evidence.
+weak or missing evidence, plus ADR-0012 transition advice for condition 3/4
+promotion blockers.
 
 ## When invoked by command (`/runtime:cutover` or `$runtime:cutover`)
 
@@ -78,7 +79,8 @@ The audit reads:
 - latest recorded or explicit operator-provided footer state/reason and omcc-dev activity evidence.
 - optional `--completion-audit` prompt-to-artifact checklist that maps
   requirements, ADR conditions, runtime command surfaces, artifacts, gates, and
-  weak/missing evidence.
+  weak/missing evidence, including ADR-0012 transition advice for condition 3/4
+  promotion blockers.
 
 The dogfood window starts at the first accepted no-omcc-dev evidence record
 after the candidate point. Elapsed dates without records are reported as
