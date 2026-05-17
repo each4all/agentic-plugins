@@ -37,6 +37,9 @@ describe('runtime cutover audit', () => {
     strictEqual(report.cutover_gate.details.find((detail) => detail.id === 'adr0012_condition_gate').status, 'satisfied');
     strictEqual(report.cutover_gate.details.find((detail) => detail.id === 'scorecard_gate').current, '12/12 satisfied');
     strictEqual(report.cutover_gate.details.find((detail) => detail.id === 'final_owner_declaration').status, 'manual');
+    strictEqual(report.operator_verification.length, 1);
+    strictEqual(report.operator_verification[0].id, 'final-owner-declaration');
+    strictEqual(report.operator_verification[0].status, 'manual');
     ok(report.checks.every((check) => ['satisfied', 'current', 'fresh', 'not-active'].includes(check.status)));
     const text = formatText(report);
     ok(text.includes('ready-candidate: true'));
@@ -45,6 +48,8 @@ describe('runtime cutover audit', () => {
     ok(text.includes('gate details:'));
     ok(text.includes('candidate:scorecard_gate: satisfied; required=omcc replacement scorecard 100%'));
     ok(text.includes('final:final_owner_declaration: manual'));
+    ok(text.includes('operator verification:'));
+    ok(text.includes('- final-owner-declaration: manual; owner=owner'));
   });
 
   it('builds a prompt-to-artifact completion audit checklist on request', async () => {
@@ -193,12 +198,23 @@ describe('runtime cutover audit', () => {
     strictEqual(parity.evidence.score_percent, 91);
     strictEqual(parity.evidence.manual_followup_count, 1);
     ok(parity.evidence.unresolved_criteria.some((entry) => entry.id === 'lifecycle_hook_continuity'));
+    const hookCheck = report.operator_verification.find((entry) => entry.id === 'codex-hook-review');
+    strictEqual(hookCheck.status, 'pending');
+    strictEqual(hookCheck.command, '/hooks');
+    ok(hookCheck.verify.includes('active Codex session'));
+    ok(hookCheck.pass_condition.includes('score 100%'));
+    ok(hookCheck.fail_condition.includes('old cache-version command path'));
+    ok(hookCheck.after.includes('runtime:settings --attest-codex-hook-review'));
     const text = formatText(report);
     ok(text.includes('experience parity: status=partial; score=91%; manual-followups=1'));
     ok(text.includes('candidate:observed_experience_parity_gate: partial'));
     ok(text.includes('required=observed runtime experience parity ready, score 100%, and zero manual follow-ups'));
     ok(text.includes('current=status=partial; score=91%; manual-followups=1'));
     ok(text.includes('blocker=plugin_management_followups:partial, lifecycle_hook_continuity:partial; followups=codex-hook-review'));
+    ok(text.includes('operator verification:'));
+    ok(text.includes('- codex-hook-review: pending; owner=operator; command=/hooks'));
+    ok(text.includes('pass=runtime:doctor reports observed experience parity ready, score 100%, and zero manual follow-ups.'));
+    ok(text.includes('fail=Any bundled hook remains disabled, untrusted, inactive, or still points at an old cache-version command path.'));
     ok(text.includes('unresolved criteria: plugin_management_followups:partial, lifecycle_hook_continuity:partial'));
     ok(text.includes('manual next actions: codex-hook-review'));
     ok(text.includes('follow-up detail: codex-hook-review; host=codex; commands=/hooks'));

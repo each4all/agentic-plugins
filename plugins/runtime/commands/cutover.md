@@ -20,9 +20,13 @@ required by ADR-0007 before omcc is archived or removed. When the audit is not
 ready, the report prints the unresolved ADR-0012 condition numbers, unresolved
 scorecard row IDs with their requirement/gate summary, and legacy pattern-map
 gaps so the next work item is visible without opening the source documents
-first. Observed experience-parity
-follow-ups retain their source host and host-native commands, so Codex `/hooks`
-or equivalent manual review work is visible directly in the cutover report.
+first. Observed experience-parity follow-ups retain their source host and
+host-native commands, so Codex `/hooks` or equivalent manual review work is
+visible directly in the cutover report. The report also includes an operator
+verification checklist with the active manual checks, their command, pass
+condition, fail condition, and follow-up command sequence. This keeps Codex
+`/hooks`, daily dogfood records, and the final owner declaration separate from
+machine-verified gates.
 Pass `--completion-audit` when preparing a final or near-final cutover review;
 it adds a prompt-to-artifact checklist mapping requirement rows, ADR condition
 rows, runtime commands, evidence artifacts, candidate/final gates, and any
@@ -75,6 +79,10 @@ With `--completion-audit`, the report also includes:
 - ADR-0012 transition advice for condition 3/4 promotion blockers;
 - a deduplicated `missing or weak` list for unresolved requirements, conditions,
   artifacts, or gates.
+
+The operator verification checklist is emitted in normal audit output as well
+as JSON. It is intentionally advisory: it does not enable hooks, mutate trust
+state, record dogfood, or declare final cutover.
 
 The dogfood window starts at the first accepted no-omcc-dev evidence record
 after the candidate point. Elapsed dates without records are reported as
