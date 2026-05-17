@@ -22,6 +22,10 @@ a generic `partial` status.
 Observed experience-parity follow-ups should also preserve the source host and
 host-native commands, so manual Codex `/hooks` review or equivalent operator
 work is actionable from the cutover report itself.
+When the operator asks for final-readiness evidence, pass `--completion-audit`
+so the output includes the prompt-to-artifact checklist across requirements,
+ADR conditions, runtime commands, evidence artifacts, candidate/final gates, and
+weak or missing evidence.
 
 ## When invoked by command (`/runtime:cutover` or `$runtime:cutover`)
 
@@ -31,7 +35,7 @@ work is actionable from the cutover report itself.
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/cutover-audit.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--max-artifact-age-hours <n>] [--permission-proof] [--execute-permission-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--footer-state <state>] [--omcc-dev-active yes|no|unknown]
+node "<runtime-plugin-root>/scripts/cutover-audit.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--max-artifact-age-hours <n>] [--completion-audit] [--permission-proof] [--execute-permission-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--footer-state <state>] [--omcc-dev-active yes|no|unknown]
 ```
 
 3. Present the report as readiness evidence only.
@@ -72,6 +76,9 @@ The audit reads:
 - forward-looking one-week omcc-dev-free dogfood evidence from recorded
   cutover artifacts;
 - latest recorded or explicit operator-provided footer state/reason and omcc-dev activity evidence.
+- optional `--completion-audit` prompt-to-artifact checklist that maps
+  requirements, ADR conditions, runtime command surfaces, artifacts, gates, and
+  weak/missing evidence.
 
 The dogfood window starts at the first accepted no-omcc-dev evidence record
 after the candidate point. Elapsed dates without records are reported as

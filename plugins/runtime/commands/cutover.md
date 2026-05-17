@@ -1,6 +1,6 @@
 ---
 description: omcc cutover readiness audit and explicit dogfood evidence recorder
-argument-hint: "[record] [--format text|json] [--max-artifact-age-hours <n>] [--permission-proof] [--execute-permission-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--footer-state <state>] [--omcc-dev-active yes|no|unknown] [--dogfood-date YYYY-MM-DD]"
+argument-hint: "[record] [--format text|json] [--max-artifact-age-hours <n>] [--completion-audit] [--permission-proof] [--execute-permission-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--footer-state <state>] [--omcc-dev-active yes|no|unknown] [--dogfood-date YYYY-MM-DD]"
 ---
 
 # Runtime - Cutover
@@ -23,6 +23,10 @@ gaps so the next work item is visible without opening the source documents
 first. Observed experience-parity
 follow-ups retain their source host and host-native commands, so Codex `/hooks`
 or equivalent manual review work is visible directly in the cutover report.
+Pass `--completion-audit` when preparing a final or near-final cutover review;
+it adds a prompt-to-artifact checklist mapping requirement rows, ADR condition
+rows, runtime commands, evidence artifacts, candidate/final gates, and any
+weak or missing evidence.
 
 Audit mode is read-only unless the operator passes runtime doctor proof
 execution flags. `--permission-proof`, `--deep-peer-smoke`, and
@@ -58,6 +62,16 @@ Checks:
   cutover artifacts;
 - latest recorded or explicit footer state and reason evidence;
 - latest recorded or explicit omcc-dev daily-workflow evidence.
+
+With `--completion-audit`, the report also includes:
+
+- each R1-R11/R7a/R7b scorecard row with its source document and evidence cell;
+- each ADR-0012 condition row with source document and status;
+- command/artifact checklist entries for `runtime:doctor`, `runtime:settings`,
+  `runtime:compat`, consensus/context artifacts, cutover records, footer state,
+  omcc-dev activity, and the manual final owner declaration;
+- a deduplicated `missing or weak` list for unresolved requirements, conditions,
+  artifacts, or gates.
 
 The dogfood window starts at the first accepted no-omcc-dev evidence record
 after the candidate point. Elapsed dates without records are reported as
