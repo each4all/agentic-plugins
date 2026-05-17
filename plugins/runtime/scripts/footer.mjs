@@ -107,6 +107,7 @@ export async function runFooter(options = {}) {
           manifest_pointer: consensus.manifestPointer,
           consensus_pointer: consensus.consensusPointer,
           owner_decision_pointer: consensus.ownerDecisionPointer,
+          cancellation_pointer: consensus.cancellationPointer,
           execution_pointer: consensus.executionPointer,
           progress_pointer: consensus.progressPointer,
           lookup: consensus.lookup,
@@ -284,6 +285,7 @@ export function formatText(report) {
     if (report.consensus.manifest_pointer) lines.push(`consensus manifest: ${report.consensus.manifest_pointer}`);
     if (report.consensus.consensus_pointer) lines.push(`consensus result: ${report.consensus.consensus_pointer}`);
     if (report.consensus.owner_decision_pointer) lines.push(`consensus owner decision: ${report.consensus.owner_decision_pointer}`);
+    if (report.consensus.cancellation_pointer) lines.push(`consensus cancellation: ${report.consensus.cancellation_pointer}`);
     if (report.consensus.execution_pointer) lines.push(`consensus execution: ${report.consensus.execution_pointer}`);
     if (report.consensus.progress_pointer) lines.push(`consensus progress: ${report.consensus.progress_pointer}`);
     if (report.consensus.status_guidance) {
@@ -486,6 +488,7 @@ async function readConsensusStatus(repoRoot, { runId, latest, host }) {
     manifestPointer: status.manifest_pointer,
     consensusPointer: status.consensus_pointer,
     ownerDecisionPointer: status.owner_decision_pointer,
+    cancellationPointer: status.cancellation_pointer,
     executionPointer: status.execution_pointer,
     progressPointer: status.progress_pointer,
     statusGuidance: localizeStatusGuidanceCommands(status.status_guidance, host ?? 'neutral'),
@@ -552,6 +555,7 @@ function consensusArtifacts(consensus) {
     { kind: 'consensus-manifest', pointer: consensus.manifestPointer },
     consensus.consensusPointer ? { kind: 'consensus-result', pointer: consensus.consensusPointer } : null,
     consensus.ownerDecisionPointer ? { kind: 'consensus-owner-decision', pointer: consensus.ownerDecisionPointer } : null,
+    consensus.cancellationPointer ? { kind: 'consensus-cancellation', pointer: consensus.cancellationPointer } : null,
     consensus.executionPointer ? { kind: 'consensus-execution', pointer: consensus.executionPointer } : null,
     consensus.progressPointer ? { kind: 'consensus-progress', pointer: consensus.progressPointer } : null,
   ].filter(Boolean);
@@ -1025,7 +1029,7 @@ function footerLimits() {
   return [
     'Advisory only; this footer does not mutate host session context or workflow state.',
     'Artifact and prompt bodies are pointer-only in the footer.',
-    'Peer raw output and consensus raw output must stay in runtime artifacts, not in the main session footer.',
+    'Peer raw output, consensus raw output, owner decision text, and cancellation reason text must stay in runtime artifacts, not in the main session footer.',
     'Codex plugin-hook feature/trust state and permission limits are not represented as host parity.',
   ];
 }

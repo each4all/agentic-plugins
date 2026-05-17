@@ -1,6 +1,6 @@
 ---
 name: consensus
-description: "ADR-0024 runtime consensus scaffold with an explicit companion executor. Use when the user wants to plan peer fanout, execute companions only behind --execute, record peer outputs as artifacts, synthesize disagreements, record owner decisions, or create a targeted rebuttal round."
+description: "ADR-0024 runtime consensus scaffold with an explicit companion executor. Use when the user wants to plan peer fanout, execute companions only behind --execute, record peer outputs as artifacts, synthesize disagreements, record owner decisions, cancel consensus as artifacts, or create a targeted rebuttal round."
 ---
 
 # Consensus (runtime framework primitive)
@@ -20,6 +20,7 @@ node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" exec
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" record --run-id <id> --peer <peer> --input-file <path>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>] [--contradictions-file <path>] [--convergence-state aligned|complementary|contradiction|insufficient-evidence|owner-decision-required|non-consensus]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" decide --run-id <id> --decision-file <path> [--decided-by owner]
+node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" cancel --run-id <id> --reason <text>|--reason-file <path> [--confirm-no-active-process]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" next-round --run-id <id>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" status --run-id <id>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" status --latest
@@ -52,6 +53,8 @@ Consensus reports and manages:
 - contradiction summaries;
 - owner decision artifacts that close exhausted or otherwise unresolved
   consensus without running another peer round;
+- cancellation artifacts that close abandoned or intentionally stopped
+  consensus runs without killing host processes;
 - evidence pointers;
 - targeted rebuttal prompt artifacts for a next round.
 - explicit companion execution metadata, including status, failure type, retryability, byte counts, hashes, and artifact pointers.
@@ -76,6 +79,10 @@ Consensus reports and manages:
 - Owner decisions are explicit artifacts. `decide` records a decision pointer,
   prior consensus pointer, evidence pointers, byte count, and hash; it does not
   print decision text, execute peers, or create another rebuttal round.
+- Cancellation is an explicit artifact. `cancel` records a reason pointer, byte
+  count, hash, previous status, and optional progress pointer; if progress is
+  running, require `--confirm-no-active-process` after operator verification.
+  It does not kill, interrupt, or signal host CLI processes.
 - No false compromise: synthesis must classify peer output as `aligned`, `complementary`, `contradiction`, `insufficient-evidence`, `owner-decision-required`, or `non-consensus`.
 - No empty rebuttal rounds; `next-round` requires direct-contradiction durable disagreements and still never executes peers.
 
@@ -90,5 +97,6 @@ $runtime:consensus synthesize --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --summa
 $runtime:consensus next-round --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef
 $runtime:consensus execute --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --round 2 --execute
 $runtime:consensus decide --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --decision-file owner-decision.md
+$runtime:consensus cancel --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --reason-file cancellation-reason.md --confirm-no-active-process
 $runtime:consensus status --latest
 ```
