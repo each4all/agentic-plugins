@@ -83,8 +83,8 @@ export async function runCutoverAudit(options = {}) {
   ]);
 
   const checks = [
-    checkAdr0012Conditions(developmentText),
-    checkScorecardRequirements(scorecardText),
+    checkAdr0012Conditions({ repoRoot, text: developmentText }),
+    checkScorecardRequirements({ repoRoot, text: scorecardText }),
     checkLegacyPatternMap({ repoRoot, text: legacyPatternText }),
     checkObservedExperienceParity(doctor),
     checkHostParityBaseline(hostParityText, doctor),
@@ -102,7 +102,7 @@ export async function runCutoverAudit(options = {}) {
       || options.executeDeepPeerSmoke
       || options.executeWorkflowContinuationProof
   );
-  return {
+  const report = {
     command: 'cutover-audit',
     version: VERSION,
     status: readyCandidate ? 'cutover-ready-candidate' : 'not-ready',
@@ -124,6 +124,10 @@ export async function runCutoverAudit(options = {}) {
       'Unknown dogfood or omcc-dev usage evidence blocks readiness rather than being inferred.',
     ],
   };
+  if (options.completionAudit) {
+    report.completion_audit = buildCompletionAudit({ repoRoot, checks, cutoverGate });
+  }
+  return report;
 }
 
 function buildCutoverGateDetails(checks) {
@@ -348,7 +352,7 @@ function checkLegacyPatternMap({ repoRoot, text }) {
   };
 }
 
-function checkAdr0012Conditions(text) {
+function checkAdr0012Conditions({ repoRoot, text }) {
   const rows = parseMarkdownRows(text).filter((row) => /^[1-4]$/.test(row[0]));
   const statuses = rows.map((row) => ({ condition: row[0], status: normalizeStatus(row[2]) }));
   const missing = [1, 2, 3, 4].filter((condition) => !statuses.some((row) => row.condition === String(condition)));
@@ -358,6 +362,7 @@ function checkAdr0012Conditions(text) {
     label: 'ADR-0012 condition statuses',
     status: missing.length > 0 ? 'missing' : notSatisfied.length === 0 ? 'satisfied' : 'partial',
     evidence: {
+      pointer: relativePointer(repoRoot, resolve(repoRoot, 'docs/DEVELOPMENT.md')),
       statuses,
       unresolved_conditions: notSatisfied,
       missing_conditions: missing,
@@ -370,11 +375,12 @@ function checkAdr0012Conditions(text) {
   };
 }
 
-function checkScorecardRequirements(text) {
+function checkScorecardRequirements({ repoRoot, text }) {
   const rows = parseMarkdownRows(text).filter((row) => /^R\d+[a-z]?$/.test(row[0]));
   const statuses = rows.map((row) => ({
     requirement: row[0],
     summary: row[1] ?? null,
+    evidence_summary: row[2] ?? null,
     status: normalizeStatus(row[3]),
     gate: row[4] ?? null,
   }));
@@ -384,14 +390,191 @@ function checkScorecardRequirements(text) {
     label: 'omcc replacement requirement scorecard',
     status: rows.length === 0 ? 'missing' : unresolved.length === 0 ? 'satisfied' : 'partial',
     evidence: {
+      pointer: relativePointer(repoRoot, resolve(repoRoot, 'docs/assurance/omcc-cutover-scorecard.md')),
       total: rows.length,
       satisfied: statuses.filter((row) => row.status === 'satisfied').length,
+      requirements: statuses,
       unresolved,
     },
     next_action: unresolved.length > 0
       ? 'Resolve remaining scorecard rows before declaring cutover readiness.'
       : null,
   };
+}
+
+function buildCompletionAudit({ repoRoot, checks, cutoverGate }) {
+  const byId = new Map(checks.map((check) => [check.id, check]));
+  const scorecard = byId.get('omcc_replacement_scorecard');
+  const adrConditions = byId.get('adr0012_conditions');
+  const requirements = (scorecard?.evidence?.requirements ?? []).map((row) => ({
+    id: row.requirement,
+    status: row.status,
+    requirement: compactCell(row.summary, 180),
+    evidence: compactCell(row.evidence_summary, 220),
+    gate: compactCell(row.gate, 180),
+    source: scorecard.evidence.pointer,
+  }));
+  const conditions = (adrConditions?.evidence?.statuses ?? []).map((row) => ({
+    id: `ADR-0012 condition ${row.condition}`,
+    status: row.status,
+    source: adrConditions.evidence.pointer,
+  }));
+  const artifactChecklist = [
+    checklistItem({
+      id: 'adr0012-condition-matrix',
+      kind: 'file',
+      status: adrConditions?.status,
+      source: adrConditions?.evidence?.pointer ?? 'docs/DEVELOPMENT.md',
+      covers: 'ADR-0012 conditions 1-4 and omcc removal precondition bookkeeping',
+    }),
+    checklistItem({
+      id: 'omcc-replacement-scorecard',
+      kind: 'file',
+      status: scorecard?.status,
+      source: scorecard?.evidence?.pointer ?? 'docs/assurance/omcc-cutover-scorecard.md',
+      covers: 'User requirements R1-R11, including R7a/R7b split',
+    }),
+    checklistItem({
+      id: 'legacy-omcc-pattern-map',
+      kind: 'file',
+      status: byId.get('legacy_omcc_pattern_map')?.status,
+      source: byId.get('legacy_omcc_pattern_map')?.evidence?.pointer ?? 'docs/assurance/omcc-legacy-pattern-map.md',
+      covers: 'D1-D20 legacy omcc-dev pattern disposition and active-dependency blockers',
+    }),
+    checklistItem({
+      id: 'host-parity-baseline',
+      kind: 'file',
+      status: byId.get('host_parity_baseline')?.status,
+      source: 'plugins/runtime/docs/host-parity-baseline.md',
+      covers: 'Remembered Claude Code and Codex CLI behavior/version baseline',
+    }),
+    checklistItem({
+      id: 'runtime-doctor-proof',
+      kind: 'command',
+      status: byId.get('observed_experience_parity')?.status,
+      source: 'runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof',
+      covers: 'Observed Claude/Codex parity, bidirectional peer execution, and engineer workflow continuation',
+      evidence: byId.get('observed_experience_parity')?.evidence?.recorded_doctor_proof?.run_id ?? null,
+    }),
+    checklistItem({
+      id: 'runtime-settings-installed-state',
+      kind: 'command',
+      status: byId.get('installed_plugin_versions')?.status,
+      source: 'runtime:settings --execute-plugin-management',
+      covers: 'Installed/cache plugin versions match the release manifest',
+      evidence: byId.get('installed_plugin_versions')?.evidence?.manifest_pointer ?? null,
+    }),
+    checklistItem({
+      id: 'runtime-compat-freshness',
+      kind: 'command',
+      status: byId.get('latest_compat_snapshot')?.status,
+      source: 'runtime:compat snapshot/check/plan',
+      covers: 'Host CLI version drift and release-note coverage freshness',
+      evidence: byId.get('latest_compat_snapshot')?.evidence?.run_id ?? null,
+    }),
+    checklistItem({
+      id: 'runtime-consensus-context',
+      kind: 'artifact',
+      status: byId.get('latest_consensus_context_artifacts')?.status,
+      source: '.agentic-plugins/runs/{consensus,context}/',
+      covers: 'Latest consensus and context handoff evidence',
+      evidence: [
+        byId.get('latest_consensus_context_artifacts')?.evidence?.consensus?.run_id,
+        byId.get('latest_consensus_context_artifacts')?.evidence?.context?.run_id,
+      ].filter(Boolean).join(', ') || null,
+    }),
+    checklistItem({
+      id: 'runtime-cutover-dogfood-records',
+      kind: 'artifact',
+      status: byId.get('dogfood_evidence_window')?.status,
+      source: '.agentic-plugins/runs/cutover/',
+      covers: 'Forward-looking no-omcc-dev dogfood window',
+      evidence: dogfoodChecklistEvidence(byId.get('dogfood_evidence_window')),
+    }),
+    checklistItem({
+      id: 'completion-footer-state',
+      kind: 'artifact',
+      status: byId.get('latest_completion_footer_state')?.status,
+      source: '.agentic-plugins/runs/cutover/latest.json',
+      covers: 'Latest completion footer state and next-action closure',
+      evidence: byId.get('latest_completion_footer_state')?.evidence?.source_run_id ?? null,
+    }),
+    checklistItem({
+      id: 'omcc-dev-activity',
+      kind: 'artifact',
+      status: byId.get('omcc_dev_daily_workflow')?.status,
+      source: '.agentic-plugins/runs/cutover/latest.json',
+      covers: 'Explicit yes/no/unknown daily omcc-dev activity claim',
+      evidence: byId.get('omcc_dev_daily_workflow')?.evidence?.source_run_id ?? null,
+    }),
+    checklistItem({
+      id: 'final-owner-declaration',
+      kind: 'manual-gate',
+      status: 'manual',
+      source: 'ADR-0007 explicit user declaration',
+      covers: 'Final omcc archival/removal decision after candidate gates pass',
+    }),
+  ];
+  const gateChecklist = (cutoverGate.details ?? []).map((detail) => ({
+    id: detail.id,
+    phase: detail.phase,
+    status: detail.status,
+    required: detail.required,
+    current: detail.current,
+    blocker: detail.blocker ?? null,
+  }));
+  const missingOrWeak = [
+    ...requirements
+      .filter((row) => row.status !== 'satisfied')
+      .map((row) => ({ id: row.id, status: row.status, source: row.source, blocker: row.gate })),
+    ...conditions
+      .filter((row) => row.status !== 'satisfied')
+      .map((row) => ({ id: row.id, status: row.status, source: row.source, blocker: 'ADR-0012 condition is not fully satisfied' })),
+    ...artifactChecklist
+      .filter((item) => !CHECK_PASS.has(item.status) && item.status !== 'manual')
+      .map((item) => ({ id: item.id, status: item.status, source: item.source, blocker: item.covers })),
+    ...gateChecklist
+      .filter((item) => item.status !== 'satisfied')
+      .map((item) => ({ id: item.id, status: item.status, source: item.phase, blocker: item.blocker ?? item.required })),
+  ];
+  return {
+    objective: 'Replace omcc/omcc-dev daily development dependency with superior-compatible agentic-plugins workflows and explicit final cutover evidence.',
+    repo_root: repoRoot,
+    requirements,
+    adr0012_conditions: conditions,
+    artifact_checklist: artifactChecklist,
+    gate_checklist: gateChecklist,
+    missing_or_weak: dedupeAuditFindings(missingOrWeak),
+  };
+}
+
+function checklistItem({ id, kind, status, source, covers, evidence = null }) {
+  return {
+    id,
+    kind,
+    status: status ?? 'not-verified',
+    source,
+    covers,
+    evidence,
+  };
+}
+
+function dogfoodChecklistEvidence(check) {
+  const evidence = check?.evidence ?? {};
+  if (!evidence.required_days) return null;
+  return `covered=${evidence.covered_days}/${evidence.required_days}; window=${evidence.window_start_date ?? '<none>'}..${evidence.window_end_date ?? '<none>'}`;
+}
+
+function dedupeAuditFindings(findings) {
+  const seen = new Set();
+  const deduped = [];
+  for (const finding of findings) {
+    const key = `${finding.id}:${finding.status}:${finding.source}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(finding);
+  }
+  return deduped;
 }
 
 function checkObservedExperienceParity(doctor) {
@@ -1066,6 +1249,50 @@ export function formatText(report) {
     for (const evidenceLine of formatCheckEvidence(check)) lines.push(`  ${evidenceLine}`);
     if (check.next_action) lines.push(`  next: ${check.next_action}`);
   }
+  if (report.completion_audit) {
+    lines.push('', 'completion audit:');
+    lines.push(`  objective: ${report.completion_audit.objective}`);
+    if (report.completion_audit.requirements?.length) {
+      lines.push('  requirements:');
+      for (const row of report.completion_audit.requirements) {
+        lines.push(`    - ${row.id}: ${row.status}; source=${row.source}; requirement=${compactCell(row.requirement, 120)}`);
+        const evidence = compactCell(row.evidence, 180);
+        if (evidence) lines.push(`      evidence=${evidence}`);
+        const gate = compactCell(row.gate, 160);
+        if (gate) lines.push(`      gate=${gate}`);
+      }
+    }
+    if (report.completion_audit.adr0012_conditions?.length) {
+      lines.push('  adr0012 conditions:');
+      for (const row of report.completion_audit.adr0012_conditions) {
+        lines.push(`    - ${row.id}: ${row.status}; source=${row.source}`);
+      }
+    }
+    if (report.completion_audit.artifact_checklist?.length) {
+      lines.push('  artifact checklist:');
+      for (const item of report.completion_audit.artifact_checklist) {
+        lines.push(`    - ${item.id}: ${item.status}; kind=${item.kind}; source=${item.source}`);
+        lines.push(`      covers=${compactCell(item.covers, 180)}`);
+        if (item.evidence) lines.push(`      evidence=${compactCell(item.evidence, 180)}`);
+      }
+    }
+    if (report.completion_audit.gate_checklist?.length) {
+      lines.push('  gate checklist:');
+      for (const gate of report.completion_audit.gate_checklist) {
+        lines.push(`    - ${gate.phase}:${gate.id}: ${gate.status}; required=${compactCell(gate.required, 180)}`);
+        lines.push(`      current=${compactCell(gate.current, 180)}`);
+        if (gate.blocker) lines.push(`      blocker=${compactCell(gate.blocker, 180)}`);
+      }
+    }
+    if (report.completion_audit.missing_or_weak?.length) {
+      lines.push('  missing or weak:');
+      for (const item of report.completion_audit.missing_or_weak) {
+        lines.push(`    - ${item.id}: ${item.status}; source=${item.source}; blocker=${compactCell(item.blocker, 180)}`);
+      }
+    } else {
+      lines.push('  missing or weak: none');
+    }
+  }
   if (report.next_actions?.length) {
     lines.push('', 'next actions:');
     for (const action of report.next_actions) lines.push(`- ${action.id}: ${action.next_action}`);
@@ -1234,6 +1461,9 @@ export function parseArgs(argv) {
       case '--dogfood-window-days':
         options.dogfoodWindowDays = positiveInteger(requireValue(args, arg), arg);
         break;
+      case '--completion-audit':
+        options.completionAudit = true;
+        break;
       case '--permission-proof':
         options.permissionProof = true;
         break;
@@ -1328,7 +1558,7 @@ function helpText() {
   return `runtime:cutover-audit ${VERSION}
 
 Usage:
-  runtime:cutover-audit [--format text|json] [--max-artifact-age-hours N]
+  runtime:cutover-audit [--format text|json] [--max-artifact-age-hours N] [--completion-audit]
     [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms N]
     [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms N]
     [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms N]
@@ -1339,6 +1569,9 @@ Builds an omcc cutover readiness report. Audit mode is read-only. Record mode
 writes only an explicit cutover evidence artifact under .agentic-plugins/runs.
 Proof flags are passed through to runtime:doctor and execute peer/workflow
 proofs only when the corresponding --execute-* flag is provided.
+Use --completion-audit to include the prompt-to-artifact checklist that maps
+requirements, ADR conditions, commands, artifacts, gates, and weak/missing
+evidence before a cutover decision.
 The report can only emit cutover-ready-candidate for the evidence gate; final
 cutover still requires explicit user declaration.`;
 }

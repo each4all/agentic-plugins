@@ -47,6 +47,58 @@ describe('runtime cutover audit', () => {
     ok(text.includes('final:final_owner_declaration: manual'));
   });
 
+  it('builds a prompt-to-artifact completion audit checklist on request', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'partial',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: ['2026-05-16'],
+    });
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport(),
+      footerState: 'next-work-available',
+      footerReason: 'follow-up remains open',
+      omccDevActive: 'no',
+      completionAudit: true,
+    });
+
+    strictEqual(report.status, 'not-ready');
+    strictEqual(report.completion_audit.requirements.length, 12);
+    strictEqual(report.completion_audit.requirements[0].id, 'R1');
+    strictEqual(report.completion_audit.requirements[0].source, 'docs/assurance/omcc-cutover-scorecard.md');
+    ok(report.completion_audit.adr0012_conditions.some((row) => (
+      row.id === 'ADR-0012 condition 3' && row.status === 'partial'
+    )));
+    ok(report.completion_audit.artifact_checklist.some((item) => (
+      item.id === 'runtime-doctor-proof'
+        && item.kind === 'command'
+        && item.source.includes('runtime:doctor --permission-proof')
+    )));
+    ok(report.completion_audit.artifact_checklist.some((item) => (
+      item.id === 'host-parity-baseline'
+        && item.kind === 'file'
+        && item.status === 'current'
+    )));
+    ok(report.completion_audit.artifact_checklist.some((item) => (
+      item.id === 'runtime-cutover-dogfood-records'
+        && item.evidence === 'covered=1/7; window=2026-05-16..2026-05-22'
+    )));
+    ok(report.completion_audit.gate_checklist.some((item) => item.id === 'final_owner_declaration'));
+    ok(report.completion_audit.missing_or_weak.some((item) => item.id === 'ADR-0012 condition 3'));
+    ok(report.completion_audit.missing_or_weak.some((item) => item.id === 'completion_footer_gate'));
+
+    const text = formatText(report);
+    ok(text.includes('completion audit:'));
+    ok(text.includes('requirements:'));
+    ok(text.includes('- R1: satisfied; source=docs/assurance/omcc-cutover-scorecard.md; requirement=superior compatible'));
+    ok(text.includes('artifact checklist:'));
+    ok(text.includes('- runtime-doctor-proof: satisfied; kind=command; source=runtime:doctor --permission-proof'));
+    ok(text.includes('missing or weak:'));
+    ok(text.includes('- ADR-0012 condition 3: partial; source=docs/DEVELOPMENT.md'));
+  });
+
   it('blocks readiness on partial ADR/scorecard status, stale context, missing dogfood window, missing footer, and unknown omcc activity', async () => {
     const root = await seedRepo({
       scorecardStatus: 'partial',
@@ -330,6 +382,7 @@ describe('runtime cutover audit', () => {
     strictEqual(opts.workflowContinuationProof, true);
     strictEqual(opts.executeWorkflowContinuationProof, true);
     strictEqual(opts.workflowContinuationProofTimeoutMs, 60000);
+    strictEqual(parseArgs(['--completion-audit']).completionAudit, true);
     throws(() => parseArgs(['--footer-state', 'done-ish']), /--footer-state is invalid/);
     throws(() => parseArgs(['--omcc-dev-active', 'maybe']), /yes, no, or unknown/);
     throws(() => parseArgs(['--dogfood-window-days', '0']), /positive integer/);
