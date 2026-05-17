@@ -314,6 +314,12 @@ function checkObservedExperienceParity(doctor) {
         .map((item) => ({ id: item.id, status: item.status })),
       next_actions: (experience?.next_actions ?? []).map((item) => ({
         id: item.id ?? item.criterion ?? item.type ?? '<unknown>',
+        source: item.source ?? null,
+        host: item.host ?? null,
+        commands: Array.isArray(item.commands)
+          ? item.commands.filter((command) => typeof command === 'string' && command.trim().length > 0)
+            .map((command) => command.trim())
+          : [],
         reason: item.reason ?? item.next_step ?? null,
       })),
     },
@@ -995,6 +1001,7 @@ function formatCheckEvidence(check) {
       }
       if (evidence.next_actions?.length) {
         lines.push(`manual next actions: ${evidence.next_actions.map((row) => row.id).join(', ')}`);
+        for (const action of evidence.next_actions) lines.push(formatNextActionDetail(action));
       }
       if (evidence.recorded_doctor_proof?.applied_criteria?.length) {
         lines.push(`recorded proof applied: ${evidence.recorded_doctor_proof.applied_criteria.join(', ')}; run=${evidence.recorded_doctor_proof.run_id}`);
@@ -1021,6 +1028,16 @@ function formatCheckEvidence(check) {
     default:
       return [];
   }
+}
+
+function formatNextActionDetail(action) {
+  const parts = [action.id ?? '<unknown>'];
+  if (action.host) parts.push(`host=${action.host}`);
+  if (action.commands?.length) parts.push(`commands=${action.commands.join(', ')}`);
+  if (action.source) parts.push(`source=${action.source}`);
+  const hasActionableTarget = Boolean(action.host || action.commands?.length);
+  if (action.reason && (!hasActionableTarget || action.reason.length <= 120)) parts.push(`reason=${action.reason}`);
+  return `follow-up detail: ${parts.join('; ')}`;
 }
 
 export function parseArgs(argv) {

@@ -93,7 +93,12 @@ describe('runtime cutover audit', () => {
           { id: 'lifecycle_hook_continuity', status: 'partial' },
         ],
         next_actions: [
-          { id: 'codex-hook-review', reason: 'Review/trust bundled hooks with /hooks.' },
+          {
+            id: 'codex-hook-review',
+            host: 'codex',
+            commands: ['/hooks'],
+            reason: 'Review/trust bundled hooks with /hooks.',
+          },
         ],
       },
     });
@@ -115,6 +120,7 @@ describe('runtime cutover audit', () => {
     ok(text.includes('experience parity: status=partial; score=91%; manual-followups=1'));
     ok(text.includes('unresolved criteria: plugin_management_followups:partial, lifecycle_hook_continuity:partial'));
     ok(text.includes('manual next actions: codex-hook-review'));
+    ok(text.includes('follow-up detail: codex-hook-review; host=codex; commands=/hooks'));
   });
 
   it('applies reusable recorded doctor proof to proof-only parity criteria', async () => {
@@ -599,11 +605,29 @@ function blockedExperienceParity() {
       { id: 'runtime_handoff_artifacts', status: 'satisfied', weight: 15, earned_weight: 15 },
     ],
     next_actions: [
-      { id: 'codex-hook-review', source: 'manual_followup', reason: 'Review/trust bundled hooks with /hooks.' },
-      { id: 'plugin_management_followups', source: 'criterion', reason: 'Review/trust bundled hooks with /hooks.' },
+      {
+        id: 'codex-hook-review',
+        source: 'manual_followup',
+        host: 'codex',
+        commands: ['/hooks'],
+        reason: 'Review/trust bundled hooks with /hooks.',
+      },
+      {
+        id: 'plugin_management_followups',
+        source: 'criterion',
+        host: 'codex',
+        commands: ['/hooks'],
+        reason: 'Review/trust bundled hooks with /hooks.',
+      },
       { id: 'bidirectional_peer_execution', source: 'criterion', reason: 'Run explicit peer execution proof.' },
       { id: 'engineer_workflow_continuation_execution', source: 'criterion', reason: 'Run explicit workflow continuation proof.' },
-      { id: 'lifecycle_hook_continuity', source: 'criterion', reason: 'Review/trust bundled hooks with /hooks.' },
+      {
+        id: 'lifecycle_hook_continuity',
+        source: 'criterion',
+        host: 'codex',
+        commands: ['/hooks'],
+        reason: 'Review/trust bundled hooks with /hooks.',
+      },
     ],
   };
 }
