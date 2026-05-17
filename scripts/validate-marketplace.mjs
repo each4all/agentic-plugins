@@ -18,6 +18,8 @@
 //     exists and parses, with `name` matching the marketplace entry's `name`
 //     AND with `version` matching the entry's `version` when both are present
 //     (Codex schema has no per-entry version, so this asymmetry is by-design)
+//     Release-please PRs may pass --allow-version-lag because package manifests
+//     are bumped before the root Claude catalog is synced after release merge.
 //
 // What this does NOT check:
 //   - schema-by-host beyond the shared minimal subset (each host validates
@@ -31,8 +33,10 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../..');
 const CLAUDE_PATH = '.claude-plugin/marketplace.json';
 const CODEX_PATH = '.agents/plugins/marketplace.json';
+const allowVersionLag = process.argv.includes('--allow-version-lag');
 
 const errors = [];
+const warnings = [];
 
 function loadCatalog(path) {
   try {
@@ -110,7 +114,12 @@ if (Array.isArray(claude.plugins) && Array.isArray(codex.plugins)) {
     // Claude per-entry version check (Codex schema lacks per-entry version,
     // so the asymmetry below is by-design — see Codex validation block)
     if (manifest && typeof entry.version === 'string' && typeof manifest.version === 'string' && manifest.version !== entry.version) {
-      errors.push(`${CLAUDE_PATH}.plugins[${i}] (${entry.name}): catalog version "${entry.version}" != manifest version "${manifest.version}"`);
+      const message = `${CLAUDE_PATH}.plugins[${i}] (${entry.name}): catalog version "${entry.version}" != manifest version "${manifest.version}"`;
+      if (allowVersionLag) {
+        warnings.push(`${message} (allowed release-please PR lag)`);
+      } else {
+        errors.push(message);
+      }
     }
   }
 
@@ -162,6 +171,10 @@ if (errors.length > 0) {
 }
 
 console.log(`OK — ${claude.plugins.length} plugin(s) in both catalogs`);
+if (warnings.length > 0) {
+  console.log('Warnings:');
+  for (const warning of warnings) console.log(`  - ${warning}`);
+}
 console.log(`  name:        ${claude.name}`);
 console.log(`  description: ${claude.description}`);
 if (claude.plugins.length > 0) {
