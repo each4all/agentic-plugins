@@ -110,6 +110,7 @@ export async function runCutoverAudit(options = {}) {
     generated_at: now.toISOString(),
     repo_root: repoRoot,
     cutover_gate: cutoverGate,
+    operator_verification: buildOperatorVerification({ checks, cutoverGate, readyCandidate }),
     checks,
     next_actions: checks
       .filter((check) => CHECK_UNREADY.has(check.status))
@@ -241,6 +242,90 @@ function footerGateDetail(check) {
     current: `state=${state}`,
     blocker: state === 'closed' ? null : 'outstanding work remains according to the latest completion footer',
   };
+}
+
+function buildOperatorVerification({ checks, cutoverGate, readyCandidate }) {
+  const byId = new Map(checks.map((check) => [check.id, check]));
+  const parity = byId.get('observed_experience_parity');
+  const dogfood = byId.get('dogfood_evidence_window');
+  const ownerDeclaration = cutoverGate.details?.find((detail) => detail.id === 'final_owner_declaration');
+  const items = [];
+
+  const hookFollowups = (parity?.evidence?.next_actions ?? []).filter((action) => (
+    action.id === 'codex-hook-review'
+      || action.id === 'lifecycle_hook_continuity'
+      || action.id === 'plugin_management_followups'
+      || action.commands?.includes('/hooks')
+  ));
+  const hookCriteria = (parity?.evidence?.unresolved_criteria ?? []).filter((criterion) => (
+    criterion.id === 'lifecycle_hook_continuity'
+      || criterion.id === 'plugin_management_followups'
+  ));
+  if (hookFollowups.length > 0 || hookCriteria.length > 0) {
+    const hookCommands = uniqueStrings(hookFollowups.flatMap((action) => action.commands ?? []));
+    const hookReason = hookFollowups.find((action) => action.reason)?.reason ?? (
+      parity?.status === 'satisfied'
+        ? 'Codex hook review has no outstanding runtime follow-up.'
+        : 'Observed experience parity is not ready; inspect Codex hook review/trust state.'
+    );
+    items.push({
+      id: 'codex-hook-review',
+      status: parity?.status === 'satisfied' ? 'satisfied' : 'pending',
+      owner: 'operator',
+      command: hookCommands.length ? hookCommands.join(', ') : '/hooks',
+      verify: 'In the active Codex session, review and enable/trust bundled engineer and orchestrator hooks.',
+      pass_condition: 'runtime:doctor reports observed experience parity ready, score 100%, and zero manual follow-ups.',
+      fail_condition: 'Any bundled hook remains disabled, untrusted, inactive, or still points at an old cache-version command path.',
+      after: 'Run runtime:settings --attest-codex-hook-review, then rerun runtime:doctor and runtime:cutover audit.',
+      reason: hookReason,
+    });
+  }
+
+  if (dogfood?.status !== 'satisfied') {
+    const evidence = dogfood?.evidence ?? {};
+    const missingDates = evidence.missing_dates ?? [];
+    const remainingDates = evidence.remaining_dates ?? [];
+    const blockedDates = evidence.blocked_dates ?? [];
+    const nextDate = missingDates[0] ?? remainingDates[0] ?? null;
+    const dateText = [
+      missingDates.length ? `missing=${missingDates.join(', ')}` : null,
+      remainingDates.length ? `remaining=${remainingDates.join(', ')}` : null,
+      blockedDates.length ? `blocked=${blockedDates.join(', ')}` : null,
+    ].filter(Boolean).join('; ');
+    items.push({
+      id: 'dogfood-window',
+      status: dogfood?.status ?? 'not-verified',
+      owner: 'operator',
+      command: nextDate
+        ? `runtime:cutover record --footer-state closed --omcc-dev-active no --dogfood-date ${nextDate}`
+        : 'runtime:cutover record --footer-state closed --omcc-dev-active no',
+      verify: 'Record each calendar day only after normal agentic-plugins development completed without omcc-dev fallback.',
+      pass_condition: `runtime:cutover audit reports dogfood covered=${evidence.required_days ?? DEFAULT_DOGFOOD_WINDOW_DAYS}/${evidence.required_days ?? DEFAULT_DOGFOOD_WINDOW_DAYS}.`,
+      fail_condition: 'Any day is missing, future, blocked, or records omcc-dev-active=yes/unknown.',
+      after: 'Continue daily records until the forward-looking window is complete.',
+      reason: dateText || dogfood?.next_action || null,
+    });
+  }
+
+  items.push({
+    id: 'final-owner-declaration',
+    status: readyCandidate ? 'manual' : 'blocked',
+    owner: 'owner',
+    command: '<explicit owner cutover declaration>',
+    verify: 'Declare omcc archival/removal only after runtime reports cutover-ready-candidate.',
+    pass_condition: 'Owner explicitly declares final cutover per ADR-0007.',
+    fail_condition: 'Any candidate gate remains partial, blocked, stale, missing, or not-verified.',
+    after: readyCandidate
+      ? 'Proceed with the owner-approved omcc archive/removal runbook.'
+      : 'Wait until candidate gates pass; do not ask for final cutover yet.',
+    reason: ownerDeclaration?.blocker ?? null,
+  });
+
+  return items;
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.filter((value) => typeof value === 'string' && value.trim()).map((value) => value.trim()))];
 }
 
 export async function recordCutoverEvidence(options = {}) {
@@ -1348,6 +1433,17 @@ export function formatText(report) {
     }
   } else if (report.cutover_gate?.required?.length) {
     lines.push(`gate: ${report.cutover_gate.required.join('; ')}`);
+  }
+  if (report.operator_verification?.length) {
+    lines.push('operator verification:');
+    for (const item of report.operator_verification) {
+      lines.push(`  - ${item.id}: ${item.status}; owner=${item.owner}; command=${compactCell(item.command, 180)}`);
+      lines.push(`    verify=${compactCell(item.verify, 220)}`);
+      lines.push(`    pass=${compactCell(item.pass_condition, 220)}`);
+      lines.push(`    fail=${compactCell(item.fail_condition, 220)}`);
+      if (item.after) lines.push(`    after=${compactCell(item.after, 220)}`);
+      if (item.reason) lines.push(`    reason=${compactCell(item.reason, 220)}`);
+    }
   }
   for (const check of report.checks ?? []) {
     lines.push(`- ${check.id}: ${check.status}; ${check.label}`);

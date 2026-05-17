@@ -21,7 +21,10 @@ legacy pattern-map gaps in the user-facing output instead of collapsing them to
 a generic `partial` status.
 Observed experience-parity follow-ups should also preserve the source host and
 host-native commands, so manual Codex `/hooks` review or equivalent operator
-work is actionable from the cutover report itself.
+work is actionable from the cutover report itself. Preserve the operator
+verification checklist in user-facing summaries when it is present; it names the
+active manual checks, command, pass condition, fail condition, and post-check
+commands for Codex `/hooks`, dogfood records, and final owner declaration.
 When the operator asks for final-readiness evidence, pass `--completion-audit`
 so the output includes the prompt-to-artifact checklist across requirements,
 ADR conditions, runtime commands, evidence artifacts, candidate/final gates, and
