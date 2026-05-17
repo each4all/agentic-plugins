@@ -815,6 +815,7 @@ function buildCodexPluginHookReport({ codex, plugins }) {
     command_warning_plugins: [],
     claude_root_command_plugins: [],
     claude_adapter_command_plugins: [],
+    bare_node_command_plugins: [],
   };
 
   for (const [name, plugin] of Object.entries(plugins)) {
@@ -850,6 +851,7 @@ function buildCodexPluginHookReport({ codex, plugins }) {
     if ((effective.hooks_file?.command_analysis?.warnings ?? []).length > 0) summary.command_warning_plugins.push(name);
     if ((effective.hooks_file?.command_analysis?.claude_plugin_root_references ?? 0) > 0) summary.claude_root_command_plugins.push(name);
     if ((effective.hooks_file?.command_analysis?.claude_adapter_references ?? 0) > 0) summary.claude_adapter_command_plugins.push(name);
+    if ((effective.hooks_file?.command_analysis?.bare_node_command_references ?? 0) > 0) summary.bare_node_command_plugins.push(name);
   }
 
   for (const value of Object.values(summary)) value.sort();
@@ -878,8 +880,8 @@ function buildCodexPluginHookReport({ codex, plugins }) {
       area: 'hooks',
       action: 'verify-codex-hook-command-portability',
       executable: false,
-      detail: `Codex-exposed hooks reference Claude adapter command paths for: ${summary.command_warning_plugins.join(', ')}.`,
-      next_step: 'Verify Codex /hooks active execution in-session, or split host-specific hook commands before accepting automatic lifecycle hook parity.',
+      detail: `Codex-exposed hooks have command portability warnings for: ${summary.command_warning_plugins.join(', ')}.`,
+      next_step: 'Verify Codex /hooks active execution in-session, or route hook commands through a host-appropriate wrapper before accepting automatic lifecycle hook parity.',
     });
   }
   if (summary.bundled_plugins.length > 0 && codex.feature_surface.codex_plugin_hooks !== true) {
@@ -1007,9 +1009,9 @@ function buildHostParity({ claude, codex, plugins, claudePluginList, codexPlugin
       severity: 'warning',
       host: 'codex',
       area: 'hooks',
-      summary: 'Codex-exposed hook commands still reference Claude adapter paths.',
-      evidence: `plugins=${codexPluginHooks.summary.command_warning_plugins.join(',')}; claude-root=${codexPluginHooks.summary.claude_root_command_plugins.join(',') || 'none'}; claude-adapter=${codexPluginHooks.summary.claude_adapter_command_plugins.join(',') || 'none'}`,
-      next_step: 'Verify Codex /hooks active execution in-session, or split host-specific hook commands before accepting automatic lifecycle hook parity.',
+      summary: 'Codex-exposed hook commands have portability warnings.',
+      evidence: `plugins=${codexPluginHooks.summary.command_warning_plugins.join(',')}; claude-root=${codexPluginHooks.summary.claude_root_command_plugins.join(',') || 'none'}; claude-adapter=${codexPluginHooks.summary.claude_adapter_command_plugins.join(',') || 'none'}; bare-node=${codexPluginHooks.summary.bare_node_command_plugins.join(',') || 'none'}`,
+      next_step: 'Verify Codex /hooks active execution in-session, or route hook commands through a host-appropriate wrapper before accepting automatic lifecycle hook parity.',
     }));
   }
 
@@ -5202,13 +5204,16 @@ function analyzeHookCommands(commands) {
   const uniqueCommands = uniqueStrings(commands);
   const claudePluginRootReferences = uniqueCommands.filter((command) => command.includes('${CLAUDE_PLUGIN_ROOT}') || command.includes('$CLAUDE_PLUGIN_ROOT')).length;
   const claudeAdapterReferences = uniqueCommands.filter((command) => /\/adapters\/claude\/hooks\//.test(command)).length;
+  const bareNodeCommandReferences = uniqueCommands.filter((command) => /^node(?:\s|$)/.test(command.trim())).length;
   const warnings = [];
   if (claudeAdapterReferences > 0) warnings.push('claude-adapter-hook-command');
+  if (bareNodeCommandReferences > 0) warnings.push('bare-node-hook-command');
   return {
     commands: uniqueCommands,
     command_count: uniqueCommands.length,
     claude_plugin_root_references: claudePluginRootReferences,
     claude_adapter_references: claudeAdapterReferences,
+    bare_node_command_references: bareNodeCommandReferences,
     warnings,
   };
 }

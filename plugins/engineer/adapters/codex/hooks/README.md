@@ -24,6 +24,9 @@ active Codex host enabling plugin hooks and the hook passing Codex review/trust.
   (Plugin-hook absence is non-fatal per ADR-0011 §4 — the workflow file
   itself is the authoritative state; this manual invocation is the
   Codex-side fallback accelerator.)
+- `run-node-hook.sh` — hook-entry wrapper used by `hooks.json` so automatic
+  Codex hook execution can find Node from common version-manager locations
+  even when the host hook runner does not inherit a login-shell `PATH`.
 
 ## Diagnostics
 

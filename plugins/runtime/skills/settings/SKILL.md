@@ -62,7 +62,8 @@ Settings reports and plans:
   warnings. Treat `/hooks` `Installed` counts as packaging evidence only;
   `Active=0` output and `Trust: New hook - review required` are not enough to
   attest. Carry doctor warnings for Codex-exposed commands that still point at
-  Claude adapter paths. Codex plugin hooks also expose
+  Claude adapter paths or rely on a bare `node` command that may not exist in
+  the hook runner PATH. Codex plugin hooks also expose
   `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` as compatibility aliases, though
   `PLUGIN_ROOT`/`PLUGIN_DATA` are preferred for new Codex commands.
 - Codex `/hooks` operator attestation, behind `--attest-codex-hook-review`,

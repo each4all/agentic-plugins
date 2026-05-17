@@ -6,6 +6,8 @@ import { join } from 'node:path';
 
 import { formatText, parseArgs, runDoctor, RUNTIME_VERSION } from '../../plugins/runtime/scripts/doctor.mjs';
 
+const PORTABLE_HOOK_COMMAND = '/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${PLUGIN_ROOT}/adapters/codex/hooks/hook.mjs"';
+
 describe('runtime doctor', () => {
   it('builds a sanitized read-only report from source, CLI, companion, config, and ledger probes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-repo-'));
@@ -206,7 +208,7 @@ describe('runtime doctor', () => {
     deepStrictEqual(engineerTarget.events, ['PreCompact', 'SessionStart', 'Stop']);
     strictEqual(engineerTarget.handler_count, 3);
     strictEqual(engineerTarget.command_count, 1);
-    deepStrictEqual(engineerTarget.commands, ['node hook.mjs']);
+    deepStrictEqual(engineerTarget.commands, [PORTABLE_HOOK_COMMAND]);
     deepStrictEqual(followup.review_targets, report.codex_plugin_hooks.review_targets);
     strictEqual(report.experience_parity.status, 'blocked');
     ok(report.experience_parity.criteria.some((entry) => entry.id === 'plugin_management_followups' && entry.status === 'partial' && entry.next_step.includes('runtime:settings --attest-codex-hook-review')));
@@ -215,7 +217,7 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('command: /hooks'));
     ok(formatText(report).includes('review-target: engineer@1.0.0'));
     ok(formatText(report).includes(`path=${engineerTarget.hooks_path}`));
-    ok(formatText(report).includes('hook-command: node hook.mjs'));
+    ok(formatText(report).includes(`hook-command: ${PORTABLE_HOOK_COMMAND}`));
   });
 
   it('reports Codex hook command portability warnings when hook commands still point at Claude adapter paths', async () => {
@@ -238,6 +240,7 @@ describe('runtime doctor', () => {
     });
 
     deepStrictEqual(report.codex_plugin_hooks.summary.command_warning_plugins, ['engineer']);
+    deepStrictEqual(report.codex_plugin_hooks.summary.bare_node_command_plugins, ['engineer']);
     deepStrictEqual(report.codex_plugin_hooks.summary.claude_root_command_plugins, ['engineer']);
     deepStrictEqual(report.codex_plugin_hooks.summary.claude_adapter_command_plugins, ['engineer']);
     ok(report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'verify-codex-hook-command-portability'));
@@ -251,7 +254,7 @@ describe('runtime doctor', () => {
     await seedRepo(root);
     await writeJson(join(root, 'plugins', 'engineer', 'hooks', 'hooks.json'), {
       hooks: {
-        Stop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"' }] }],
+        Stop: [{ hooks: [{ type: 'command', command: '/bin/sh "${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"' }] }],
       },
     });
 
@@ -288,7 +291,7 @@ describe('runtime doctor', () => {
     await mkdir(join(root, 'plugins', 'engineer', 'adapters', 'codex', 'hooks'), { recursive: true });
     await writeJson(join(root, 'plugins', 'engineer', 'adapters', 'codex', 'hooks', 'hooks.json'), {
       hooks: {
-        Stop: [{ hooks: [{ type: 'command', command: 'node "${PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"' }] }],
+        Stop: [{ hooks: [{ type: 'command', command: '/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs"' }] }],
       },
     });
 
@@ -1685,9 +1688,9 @@ async function seedRepo(root) {
       await mkdir(join(root, 'plugins', name, 'hooks'), { recursive: true });
       await writeJson(join(root, 'plugins', name, 'hooks', 'hooks.json'), {
         hooks: {
-          SessionStart: [{ matcher: 'compact', hooks: [{ type: 'command', command: 'node hook.mjs' }] }],
-          PreCompact: [{ hooks: [{ type: 'command', command: 'node hook.mjs' }] }],
-          Stop: [{ hooks: [{ type: 'command', command: 'node hook.mjs' }] }],
+          SessionStart: [{ matcher: 'compact', hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
+          PreCompact: [{ hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
+          Stop: [{ hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
         },
       });
     }
