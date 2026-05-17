@@ -16,8 +16,9 @@ The report should make the strengthened candidate gate and separate final gate
 visible. `cutover-ready-candidate` means the evidence threshold passed; it is
 not final cutover because ADR-0007 still requires an explicit user declaration.
 When the result is not ready, preserve the unresolved ADR-0012 condition
-numbers, unresolved scorecard rows, and legacy pattern-map gaps in the
-user-facing output instead of collapsing them to a generic `partial` status.
+numbers, unresolved scorecard row IDs with their requirement/gate summary, and
+legacy pattern-map gaps in the user-facing output instead of collapsing them to
+a generic `partial` status.
 Observed experience-parity follow-ups should also preserve the source host and
 host-native commands, so manual Codex `/hooks` review or equivalent operator
 work is actionable from the cutover report itself.

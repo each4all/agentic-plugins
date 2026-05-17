@@ -18,8 +18,9 @@ final gate. The candidate gate is the evidence threshold for
 `cutover-ready-candidate`; the final gate is the explicit user declaration
 required by ADR-0007 before omcc is archived or removed. When the audit is not
 ready, the report prints the unresolved ADR-0012 condition numbers, unresolved
-scorecard rows, and legacy pattern-map gaps so the next work item is visible
-without opening the source documents first. Observed experience-parity
+scorecard row IDs with their requirement/gate summary, and legacy pattern-map
+gaps so the next work item is visible without opening the source documents
+first. Observed experience-parity
 follow-ups retain their source host and host-native commands, so Codex `/hooks`
 or equivalent manual review work is visible directly in the cutover report.
 
