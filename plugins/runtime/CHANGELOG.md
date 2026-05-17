@@ -13,7 +13,6 @@
 
 ### Features
 
-* **runtime:** add cutover operator verification ([5b84e93](https://github.com/each4all/agentic-plugins/commit/5b84e93553fe7380fe7c55b88b4d2ff455dc44f8))
 * **runtime:** add cutover operator verification ([#342](https://github.com/each4all/agentic-plugins/issues/342)) ([5b84e93](https://github.com/each4all/agentic-plugins/commit/5b84e93553fe7380fe7c55b88b4d2ff455dc44f8))
 
 ## [0.59.1](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.59.0...plugin-runtime-v0.59.1) (2026-05-17)
