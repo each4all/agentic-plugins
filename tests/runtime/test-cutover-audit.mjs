@@ -348,6 +348,7 @@ describe('runtime cutover audit', () => {
     strictEqual(report.checks.find((check) => check.id === 'dogfood_evidence_window').status, 'satisfied');
     strictEqual(report.checks.find((check) => check.id === 'latest_completion_footer_state').status, 'satisfied');
     strictEqual(report.checks.find((check) => check.id === 'omcc_dev_daily_workflow').status, 'not-active');
+    ok(formatText(report).includes('footer reason: all closeout work is done'));
   });
 
   it('uses runtime local dates for dogfood records and audit windows', async () => {
@@ -404,6 +405,7 @@ describe('runtime cutover audit', () => {
     strictEqual(report.checks.find((check) => check.id === 'dogfood_evidence_window').status, 'satisfied');
     strictEqual(report.checks.find((check) => check.id === 'latest_completion_footer_state').status, 'partial');
     strictEqual(report.checks.find((check) => check.id === 'omcc_dev_daily_workflow').status, 'not-active');
+    ok(formatText(report).includes('footer reason: follow-up remains open'));
   });
 });
 
