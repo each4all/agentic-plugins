@@ -117,7 +117,11 @@ export async function runDoctor({
   const caches = await inspectPluginCaches(resolvedHomeDir);
   const claudePluginList = parseClaudePluginList(claude.plugin?.stdout ?? '');
   const plugins = buildPluginMatrix({ source, catalogs, caches, claudePluginList });
-  const codexPluginHooks = buildCodexPluginHookReport({ codex, plugins });
+  const codexPluginHooks = await buildCodexPluginHookReport({
+    codex,
+    plugins,
+    homeDir: resolvedHomeDir,
+  });
   const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginHooks });
   const settingsRuns = await inspectSettingsRuns({
     repoRoot: resolvedRepoRoot,
@@ -805,7 +809,7 @@ function parseClaudePluginList(stdout) {
   return result;
 }
 
-function buildCodexPluginHookReport({ codex, plugins }) {
+async function buildCodexPluginHookReport({ codex, plugins, homeDir }) {
   const plugin_entries = {};
   const summary = {
     bundled_plugins: [],
@@ -855,6 +859,8 @@ function buildCodexPluginHookReport({ codex, plugins }) {
   }
 
   for (const value of Object.values(summary)) value.sort();
+  const reviewTargets = buildCodexHookReviewTargets({ summary, plugin_entries, plugins });
+  const hookState = await buildCodexHookStateReport({ homeDir, reviewTargets });
   const recommendations = [];
   if (summary.default_file_only_plugins.length > 0) {
     recommendations.push({
@@ -896,6 +902,16 @@ function buildCodexPluginHookReport({ codex, plugins }) {
       next_step: 'Enable plugin_hooks for a test session or in Codex config, then review/trust hooks with /hooks and rerun runtime:doctor.',
     });
   }
+  if (hookState.summary.expected_disabled > 0) {
+    recommendations.push({
+      host: 'codex',
+      area: 'hooks',
+      action: 'enable-codex-hook-state',
+      executable: false,
+      detail: `Codex user config has disabled hook state for ${hookState.summary.expected_disabled}/${hookState.summary.expected} expected bundled hook entries.`,
+      next_step: 'Open /hooks, enable and trust the listed agentic-plugins hooks. If /hooks still shows old cache-version node commands, restart Codex so the latest plugin registry is loaded, then review again.',
+    });
+  }
 
   const status = summary.default_file_only_plugins.length > 0 || summary.missing_hooks_file_plugins.length > 0
     ? 'packaging_gap'
@@ -918,8 +934,9 @@ function buildCodexPluginHookReport({ codex, plugins }) {
       automatic_plugin_hooks: Boolean(codex.feature_surface.automatic_plugin_hooks),
     },
     summary,
+    hook_state: hookState,
     plugin_entries,
-    review_targets: buildCodexHookReviewTargets({ summary, plugin_entries, plugins }),
+    review_targets: reviewTargets,
     recommendations,
   };
 }
@@ -946,6 +963,163 @@ function buildCodexHookReviewTargets({ summary, plugin_entries, plugins }) {
     });
   }
   return targets.sort((a, b) => a.plugin.localeCompare(b.plugin));
+}
+
+async function buildCodexHookStateReport({ homeDir, reviewTargets }) {
+  const configPath = join(homeDir, '.codex', 'config.toml');
+  const currentText = await readTextIfExists(configPath);
+  const parsed = currentText.ok
+    ? parseCodexHookStateConfigToml(currentText.text)
+    : { entries: [] };
+  const entries = parsed.entries.map((entry) => ({
+    id: entry.id,
+    plugin_id: entry.plugin_id,
+    plugin: entry.plugin,
+    marketplace: entry.marketplace,
+    hooks_path: entry.hooks_path,
+    event: entry.event,
+    enabled: entry.enabled,
+    trusted: Boolean(entry.trusted_hash),
+  }));
+  const expected = [];
+  for (const target of reviewTargets ?? []) {
+    const hooksPath = normalizeCodexHookStatePath(target.hooks_path, target.plugin);
+    for (const event of target.events ?? []) {
+      const normalizedEvent = normalizeCodexHookStateEvent(event);
+      if (!target.plugin || !hooksPath || !normalizedEvent) continue;
+      const matches = entries.filter((entry) => (
+        entry.plugin === target.plugin
+        && entry.marketplace === 'agentic-plugins'
+        && entry.hooks_path === hooksPath
+        && entry.event === normalizedEvent
+      ));
+      const enabledMatches = matches.filter((entry) => entry.enabled === true);
+      const disabledMatches = matches.filter((entry) => entry.enabled === false);
+      const trustedMatches = matches.filter((entry) => entry.trusted === true);
+      const state = matches.length === 0
+        ? 'missing'
+        : enabledMatches.length > 0
+          ? trustedMatches.length > 0 ? 'enabled_trusted' : 'enabled_untrusted'
+          : 'disabled';
+      expected.push({
+        plugin: target.plugin,
+        hooks_path: hooksPath,
+        event: normalizedEvent,
+        state,
+        configured: matches.length,
+        enabled: enabledMatches.length,
+        disabled: disabledMatches.length,
+        trusted: trustedMatches.length,
+        ids: matches.map((entry) => entry.id).sort(),
+      });
+    }
+  }
+  const expectedKey = new Set(expected.map((entry) => `${entry.plugin}:${entry.hooks_path}:${entry.event}`));
+  const unexpectedAgenticEntries = entries.filter((entry) => (
+    entry.marketplace === 'agentic-plugins'
+    && !expectedKey.has(`${entry.plugin}:${entry.hooks_path}:${entry.event}`)
+  ));
+  const disabledExpected = expected.filter((entry) => entry.state === 'disabled');
+  const enabledExpected = expected.filter((entry) => entry.state === 'enabled_trusted' || entry.state === 'enabled_untrusted');
+  const untrustedExpected = expected.filter((entry) => entry.state === 'enabled_untrusted');
+  const missingExpected = expected.filter((entry) => entry.state === 'missing');
+  return {
+    schema_version: 'runtime-codex-hook-state-1.0',
+    config_path: configPath,
+    config_status: currentText.ok ? 'available' : 'missing',
+    read_error: currentText.ok ? null : currentText.reason,
+    summary: {
+      total_entries: entries.length,
+      agentic_entries: entries.filter((entry) => entry.marketplace === 'agentic-plugins').length,
+      expected: expected.length,
+      expected_configured: expected.filter((entry) => entry.configured > 0).length,
+      expected_enabled: enabledExpected.length,
+      expected_disabled: disabledExpected.length,
+      expected_untrusted: untrustedExpected.length,
+      expected_missing: missingExpected.length,
+      unexpected_agentic_entries: unexpectedAgenticEntries.length,
+    },
+    expected,
+    disabled_expected: disabledExpected,
+    untrusted_expected: untrustedExpected,
+    unexpected_agentic_entries: unexpectedAgenticEntries,
+  };
+}
+
+export function parseCodexHookStateConfigToml(text) {
+  const entries = [];
+  let current = null;
+  const commit = () => {
+    if (current) entries.push(current);
+  };
+  for (const raw of String(text ?? '').replace(/\r\n/g, '\n').split('\n')) {
+    const section = raw.match(/^\s*\[hooks\.state\."([^"]+)"]\s*(?:#.*)?$/);
+    if (section) {
+      commit();
+      current = parseCodexHookStateId(section[1]);
+      continue;
+    }
+    if (/^\s*\[[^\]]+]\s*(?:#.*)?$/.test(raw)) {
+      commit();
+      current = null;
+      continue;
+    }
+    if (!current) continue;
+    const withoutComment = raw.replace(/#.*/, '').trim();
+    const enabled = withoutComment.match(/^enabled\s*=\s*(true|false)\s*$/);
+    if (enabled) {
+      current.enabled = enabled[1] === 'true';
+      continue;
+    }
+    const trustedHash = withoutComment.match(/^trusted_hash\s*=\s*"([^"]+)"\s*$/);
+    if (trustedHash) current.trusted_hash = trustedHash[1];
+  }
+  commit();
+  return { entries };
+}
+
+function parseCodexHookStateId(id) {
+  const parts = String(id ?? '').split(':');
+  const pluginId = parts[0] ?? null;
+  const pluginMatch = pluginId?.match(/^([^@]+)@(.+)$/);
+  return {
+    id,
+    plugin_id: pluginId,
+    plugin: pluginMatch?.[1] ?? null,
+    marketplace: pluginMatch?.[2] ?? null,
+    hooks_path: normalizeCodexHookStatePath(parts[1] ?? null, pluginMatch?.[1] ?? null),
+    event: normalizeCodexHookStateEvent(parts[2] ?? null),
+    group_index: parts[3] ?? null,
+    hook_index: parts[4] ?? null,
+    enabled: null,
+    trusted_hash: null,
+  };
+}
+
+function normalizeCodexHookStatePath(path, plugin) {
+  const text = sanitizeValue(path);
+  if (!text) return null;
+  const normalized = text.replaceAll('\\', '/').replace(/^\.\//, '');
+  if (plugin) {
+    const marker = `/plugins/${plugin}/`;
+    const markerIndex = normalized.indexOf(marker);
+    if (markerIndex >= 0) return normalized.slice(markerIndex + marker.length);
+    const bareMarker = `plugins/${plugin}/`;
+    if (normalized.startsWith(bareMarker)) return normalized.slice(bareMarker.length);
+  }
+  return normalized;
+}
+
+function normalizeCodexHookStateEvent(event) {
+  const text = sanitizeValue(event);
+  if (!text) return null;
+  if (text === 'PreCompact') return 'pre_compact';
+  if (text === 'SessionStart') return 'session_start';
+  if (text === 'Stop') return 'stop';
+  return text
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[-\s]+/g, '_')
+    .toLowerCase();
 }
 
 function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooksFile, origin }) {
@@ -1284,6 +1458,10 @@ function buildCodexHookReviewManualFollowup(codexPluginHooks, surface, settingsR
   const attestation = getCurrentCodexHookReviewAttestation(settingsRuns, codexPluginHooks, plugins);
   if (attestation.current) return null;
   const reviewTargets = codexPluginHooks?.review_targets ?? [];
+  const hookState = codexPluginHooks?.hook_state?.summary ?? {};
+  const hookStateHint = hookState.expected_disabled > 0
+    ? ` Current Codex config reports ${hookState.expected_disabled}/${hookState.expected} expected bundled hook entries disabled; enable them in /hooks before attesting.`
+    : '';
   return {
     id: 'codex-hook-review',
     host: 'codex',
@@ -1291,7 +1469,7 @@ function buildCodexHookReviewManualFollowup(codexPluginHooks, surface, settingsR
     reason: `Codex plugin hooks are packaged and plugin_hooks is enabled, but ${surface} cannot verify active-session hook review/trust state.`,
     environment: 'Open the active Codex session for this repository.',
     commands: ['/hooks'],
-    verify: `Review/trust bundled hooks for ${bundled.join(', ')} (${reviewTargets.length} review target(s)); if /hooks shows "New hook - review required", review each new hook first. Do not attest from /hooks Installed counts alone, including Active=0 output. Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
+    verify: `Review/trust bundled hooks for ${bundled.join(', ')} (${reviewTargets.length} review target(s)); if /hooks shows "New hook - review required", review each new hook first. Do not attest from /hooks Installed counts alone, including Active=0 output.${hookStateHint} Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
     review_targets: reviewTargets,
   };
 }
@@ -1300,6 +1478,9 @@ function getCurrentCodexHookReviewAttestation(settingsRuns, codexPluginHooks, pl
   const attestation = settingsRuns?.codex_hook_review?.latest ?? null;
   if (!attestation || attestation.attested !== true || attestation.status !== 'attested') {
     return { current: false, reason: 'missing' };
+  }
+  if ((codexPluginHooks?.hook_state?.summary?.expected_disabled ?? 0) > 0) {
+    return { current: false, reason: 'disabled_hook_state', attestation };
   }
   const expectedPlugins = codexPluginHooks?.summary?.bundled_plugins ?? [];
   const attestedPlugins = attestation.bundled_plugins ?? [];
@@ -4752,6 +4933,13 @@ export function formatText(report) {
   lines.push('Codex Plugin Hooks');
   const codexHooks = report.codex_plugin_hooks;
   lines.push(`- status=${codexHooks.status}; bundled=${codexHooks.summary.bundled_plugins.join(',') || 'none'}; manifest-exposed=${codexHooks.summary.manifest_exposed_plugins.join(',') || 'none'}; default-file-only=${codexHooks.summary.default_file_only_plugins.join(',') || 'none'}; command-warnings=${(codexHooks.summary.command_warning_plugins ?? []).join(',') || 'none'}`);
+  if (codexHooks.hook_state) {
+    const state = codexHooks.hook_state;
+    lines.push(`- hook-state: config=${state.config_status}; expected=${state.summary.expected}; enabled=${state.summary.expected_enabled}; disabled=${state.summary.expected_disabled}; missing=${state.summary.expected_missing}; untrusted=${state.summary.expected_untrusted}; unexpected-agentic=${state.summary.unexpected_agentic_entries}`);
+    for (const entry of state.disabled_expected ?? []) {
+      lines.push(`  disabled-hook-state: ${entry.plugin}; event=${entry.event}; path=${entry.hooks_path}; ids=${entry.ids.join(',') || 'none'}`);
+    }
+  }
   for (const target of codexHooks.review_targets ?? []) {
     lines.push(`  review-target: ${target.plugin}@${target.version ?? 'unknown'}; origin=${target.origin ?? '<unknown>'}; manifest-exposed=${target.manifest_exposed}; path=${target.hooks_path ?? '<unknown>'}; events=${target.events.join(',') || 'none'}; handlers=${target.handler_count}; commands=${target.command_count}; warnings=${target.command_warnings.join(',') || 'none'}`);
     for (const command of target.commands ?? []) {

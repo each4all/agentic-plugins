@@ -220,6 +220,34 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes(`hook-command: ${PORTABLE_HOOK_COMMAND}`));
   });
 
+  it('reports disabled Codex hook state for bundled hooks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-state-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-state-home-'));
+    await seedRepo(root);
+    await writeDisabledCodexHookStateConfig(home);
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    strictEqual(report.codex_plugin_hooks.status, 'ready');
+    strictEqual(report.codex_plugin_hooks.hook_state.summary.expected, 6);
+    strictEqual(report.codex_plugin_hooks.hook_state.summary.expected_enabled, 0);
+    strictEqual(report.codex_plugin_hooks.hook_state.summary.expected_disabled, 6);
+    ok(report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'enable-codex-hook-state'));
+    const followup = report.plugin_command_surface.manual_followups.find((entry) => entry.id === 'codex-hook-review');
+    ok(followup.verify.includes('6/6 expected bundled hook entries disabled'));
+    const text = formatText(report);
+    ok(text.includes('hook-state: config=available; expected=6; enabled=0; disabled=6'));
+    ok(text.includes('disabled-hook-state: engineer; event=pre_compact; path=hooks/hooks.json'));
+    ok(text.includes('enable-codex-hook-state'));
+  });
+
   it('reports Codex hook command portability warnings when hook commands still point at Claude adapter paths', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-command-warning-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
@@ -1750,6 +1778,26 @@ async function seedRepo(root) {
     effort: 'high',
     updated_at: '2026-05-12T23:00:00.000Z',
   });
+}
+
+async function writeDisabledCodexHookStateConfig(home, hooksPath = 'hooks/hooks.json') {
+  await mkdir(join(home, '.codex'), { recursive: true });
+  const lines = [
+    '[features]',
+    'plugin_hooks = true',
+    '',
+    '[hooks.state]',
+    '',
+  ];
+  for (const plugin of ['engineer', 'orchestrator']) {
+    for (const event of ['pre_compact', 'session_start', 'stop']) {
+      lines.push(`[hooks.state."${plugin}@agentic-plugins:${hooksPath}:${event}:0:0"]`);
+      lines.push('enabled = false');
+      lines.push('trusted_hash = "sha256:abc123"');
+      lines.push('');
+    }
+  }
+  await writeFile(join(home, '.codex', 'config.toml'), lines.join('\n'));
 }
 
 async function seedHome(home) {
