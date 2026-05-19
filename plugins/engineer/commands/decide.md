@@ -86,13 +86,75 @@ rm -f "$FIND_ERR"
 
 ---
 
+## Phase 0.5 — Resolve decision axes from the registry (ADR-0027 §5.6)
+
+Parse `$ARGUMENTS` into flags + body and resolve the preset from
+`skills/decide/references/decision-axes.yml`. The resulting
+`ResolvedDecisionContext` JSON is stashed at
+`$AGENTIC_DECIDE_CONTEXT_FILE` for the skill body to consume.
+
+The CLI reuses `scripts/lib/decide-args.mjs` internally so the same
+§2.3 flag grammar applies: unknown flags or invalid `--size=<tier>`
+values produce a parser error and exit 2 (we halt). Body tokens go
+after a `--` separator and are threaded into `context.body` per §5.6.
+
+```bash
+AGENTIC_DECIDE_CONTEXT_FILE="$(mktemp -t engineer-decide-context.XXXXXX).json"
+DECIDE_RESOLVE_ERR="$(mktemp -t engineer-decide-resolve.XXXXXX).err"
+export AGENTIC_DECIDE_CONTEXT_FILE
+
+# `$ARGUMENTS` is the verbatim user input from the slash command.
+# We expand it unquoted so the shell word-tokenizes flags / body
+# tokens for the CLI; quoted body words in the user's input are
+# preserved by shell quoting rules. `set -f` disables pathname
+# expansion (globbing) during the expansion so body tokens like
+# `*.md` reach the CLI literally instead of being expanded against
+# the cwd — restore globbing immediately after.
+set -f
+node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve $ARGUMENTS \
+  > "$AGENTIC_DECIDE_CONTEXT_FILE" 2>"$DECIDE_RESOLVE_ERR"
+RESOLVE_RC=$?
+set +f
+
+# Surface warnings + diagnostics on stderr for the LLM and user.
+[ -s "$DECIDE_RESOLVE_ERR" ] && cat "$DECIDE_RESOLVE_ERR" >&2
+rm -f "$DECIDE_RESOLVE_ERR"
+
+if [ "$RESOLVE_RC" -eq 2 ]; then
+  # Parser error per §2.3(3-4) — halt before the skill body runs so
+  # the user can fix the invocation. The diagnostic lines above
+  # already identified the offending flag.
+  echo "✗ decide-registry rejected the argument list — fix the invocation and rerun." >&2
+  rm -f "$AGENTIC_DECIDE_CONTEXT_FILE"
+  exit 1
+elif [ "$RESOLVE_RC" -ne 0 ]; then
+  echo "✗ decide-registry failed with exit $RESOLVE_RC; see diagnostics above." >&2
+  exit 1
+fi
+```
+
+The skill body reads `$AGENTIC_DECIDE_CONTEXT_FILE` to obtain:
+
+- `axes[]` — ordered axis descriptors (id, en/ko labels, question, role) for the resolved preset
+- `preset_id` — the active preset id (default | nine-axis | …)
+- `size` / `size_explicit` — reserved slots populated by PR3 once it lands
+- `weights` — reserved slot populated by PR4 once it lands
+
+If the file is missing or the JSON is unparseable, fall back to the
+in-code default preset (5-axis essence + foundation + standards +
+best-practice + practical-fit) — the registry is a graceful-degradation
+artifact per ADR-0027 §1.6.
+
+---
+
 ## Phase 1 — Execute decide
 
 Follow the decide skill's command-invoked mode at
 `$CLAUDE_PLUGIN_ROOT/skills/decide/SKILL.md`. The skill performs
-2+ option generation, evidence-based comparison across multiple
-axes (tradeoffs, risks, scope, fit-with-frame), and recommends a
-direction with explicit rationale. The user makes the final call.
+2+ option generation, evidence-based comparison across **the axes
+resolved from `$AGENTIC_DECIDE_CONTEXT_FILE`** (tradeoffs, risks,
+scope, fit-with-frame), and recommends a direction with explicit
+rationale. The user makes the final call.
 
 Decide is single-mode (no `--profile` argument). Sub-discipline
 context flows through the orchestrator-level Task Profile.

@@ -1003,6 +1003,118 @@ describe('plugins/engineer — investigate cited-brief profile (ADR-0014 absorpt
   });
 });
 
+// =====================
+// ADR-0027 §3.5 — extension-marker validation for skills/decide/SKILL.md
+// =====================
+//
+// Structural checks (every marker pair present, paired, non-nested,
+// canonical id, exact wording) + content-sanity checks (first non-empty
+// line inside each pair matches the §3.5 sentinel regex).
+
+const DECIDE_MARKER_IDS = [
+  'axis-table',
+  'per-option-output',
+  'comparison-table',
+  'recommendation-rule',
+];
+
+// First-non-empty-line sentinel regex per ADR-0027 §3.5 table. These
+// patterns are conservative (anchored) — they catch "marker pair
+// exists but wraps the wrong content" without over-fitting to
+// byte-exact wording (peer P-14).
+const DECIDE_MARKER_SENTINELS = {
+  'axis-table':         /^\| # \| Perspective \| Core question \|/,
+  'per-option-output':  /^#### REQUIRED output format — for each option:/,
+  'comparison-table':   /^#### REQUIRED output format — after all options:/,
+  'recommendation-rule': /^When /,
+};
+
+const MARKER_LINE_RE = /^<!-- @decide:([a-z][a-z0-9-]*):(begin|end) -->$/;
+
+describe('plugins/engineer — decide skill extension markers (ADR-0027 §3.5)', () => {
+  it('all four marker pairs are present, paired, non-nested, with canonical wording', async () => {
+    const skillPath = resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md');
+    const text = await readFile(skillPath, 'utf8');
+    const lines = text.split('\n');
+
+    const stack = [];            // open begin markers, FIFO-as-stack
+    const pairs = {};            // id -> { beginLine, endLine }
+    const seenBegin = new Set();
+    const seenEnd = new Set();
+
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(MARKER_LINE_RE);
+      if (!m) continue;
+      const id = m[1];
+      const side = m[2];
+      strictEqual(
+        DECIDE_MARKER_IDS.includes(id),
+        true,
+        `${skillPath}:${i + 1}: marker id "${id}" is not in the canonical set ${DECIDE_MARKER_IDS.join(', ')}`,
+      );
+      if (side === 'begin') {
+        ok(!seenBegin.has(id), `${skillPath}:${i + 1}: duplicate :begin for "${id}"`);
+        ok(stack.length === 0, `${skillPath}:${i + 1}: nested marker (open: ${stack.map((s) => s.id).join(',')}); markers must not nest`);
+        stack.push({ id, line: i + 1 });
+        seenBegin.add(id);
+      } else {
+        ok(stack.length > 0, `${skillPath}:${i + 1}: :end for "${id}" with no preceding :begin`);
+        const top = stack.pop();
+        strictEqual(top.id, id, `${skillPath}:${i + 1}: :end mismatch — expected "${top.id}" got "${id}"`);
+        pairs[id] = { beginLine: top.line, endLine: i + 1 };
+        seenEnd.add(id);
+      }
+    }
+    strictEqual(stack.length, 0, `${skillPath}: unclosed marker(s): ${stack.map((s) => s.id).join(', ')}`);
+
+    for (const id of DECIDE_MARKER_IDS) {
+      ok(seenBegin.has(id), `${skillPath}: missing :begin marker for "${id}"`);
+      ok(seenEnd.has(id), `${skillPath}: missing :end marker for "${id}"`);
+    }
+  });
+
+  it('content-sanity: first non-empty line inside each marker matches the §3.5 sentinel', async () => {
+    const skillPath = resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md');
+    const text = await readFile(skillPath, 'utf8');
+    const lines = text.split('\n');
+
+    // Re-scan to find pair line ranges.
+    const stack = [];
+    const pairs = {};
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(MARKER_LINE_RE);
+      if (!m) continue;
+      if (m[2] === 'begin') stack.push({ id: m[1], line: i + 1 });
+      else {
+        const top = stack.pop();
+        pairs[m[1]] = { beginLine: top.line, endLine: i + 1 };
+      }
+    }
+
+    for (const id of DECIDE_MARKER_IDS) {
+      const range = pairs[id];
+      ok(range, `${skillPath}: no pair found for "${id}"`);
+      const sentinel = DECIDE_MARKER_SENTINELS[id];
+      // Find first non-empty line strictly between begin and end.
+      let found = false;
+      for (let i = range.beginLine; i < range.endLine - 1; i++) {
+        // beginLine is the begin-marker line (1-indexed); content is
+        // lines[range.beginLine] (0-indexed line after the begin
+        // marker). Iterate until just before lines[range.endLine - 1].
+        const line = lines[i];
+        if (line.trim() === '') continue;
+        if (sentinel.test(line)) {
+          found = true;
+          break;
+        }
+        // First non-empty content line that did NOT match the sentinel.
+        ok(false, `${skillPath}:${i + 1}: first non-empty line inside @decide:${id} marker pair does not match ADR-0027 §3.5 sentinel\n  expected: ${sentinel}\n  got: ${line}`);
+      }
+      ok(found, `${skillPath}: @decide:${id} pair contains no content matching the §3.5 sentinel ${sentinel}`);
+    }
+  });
+});
+
 describe('plugins/engineer — contract version freshness', () => {
   it('all references to companions/contract.md cite the current version', async () => {
     // Extract current version from contract Status block.
