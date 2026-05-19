@@ -247,7 +247,9 @@ describe('state.mjs — parseWorkflowFile + validateFrontmatter (Phase 6 fix #7)
       const [filePath] = await listWorkflowFiles(repoRoot);
       ok(filePath, 'no workflow file found');
       const { frontmatter, body } = await readWorkflow(filePath);
-      strictEqual(frontmatter.schema, '1.1');
+      // ADR-0028 §Layer-2 bumped emit to schema "1.2"; legacy 1/1.1 readers
+      // still accepted (SUPPORTED_SCHEMA_VERSIONS).
+      strictEqual(frontmatter.schema, '1.2');
       strictEqual(frontmatter.verb, 'investigate');
       strictEqual(frontmatter.persona, 'engineer');
       strictEqual(frontmatter.original_request, 'test request');
@@ -910,14 +912,15 @@ describe('state.mjs — withFileLock serialization (Phase 6 fix #1 ownership pro
 // bookkeeping helpers, archive helper, gate helpers.
 // ============================================================================
 
-describe('state.mjs — ADR-0017 schema 1.1 constants', () => {
-  it('SCHEMA_VERSION is "1.1" (PR3 emit flip per ADR-0017 §"Schema versioning policy")', () => {
-    strictEqual(SCHEMA_VERSION, '1.1');
+describe('state.mjs — ADR-0017 schema 1.1 + ADR-0028 schema 1.2 constants', () => {
+  it('SCHEMA_VERSION is "1.2" (ADR-0028 §Layer-2 commit_manifest bump)', () => {
+    strictEqual(SCHEMA_VERSION, '1.2');
   });
 
-  it('SUPPORTED_SCHEMA_VERSIONS accepts both 1 and "1.1"', () => {
+  it('SUPPORTED_SCHEMA_VERSIONS accepts 1, "1.1", and "1.2" (read backward compat)', () => {
     ok(SUPPORTED_SCHEMA_VERSIONS.has(1));
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.1'));
+    ok(SUPPORTED_SCHEMA_VERSIONS.has('1.2'));
     strictEqual(SUPPORTED_SCHEMA_VERSIONS.has(2), false);
     strictEqual(SUPPORTED_SCHEMA_VERSIONS.has('1.0'), false);
   });
@@ -957,7 +960,9 @@ describe('state.mjs — ADR-0017 frontmatter accept (read-side, schema 1 + "1.1"
       const [filePath] = await listWorkflowFiles(repoRoot);
       const { readFile, writeFile } = await import('node:fs/promises');
       const raw = await readFile(filePath, 'utf8');
-      const downgraded = raw.replace(/^schema: "1\.1"\s*$/m, 'schema: 1');
+      // ADR-0028 §Layer-2 — createWorkflow now emits schema "1.2"; the
+      // legacy backward-compat test still hand-downgrades to integer 1.
+      const downgraded = raw.replace(/^schema: "1\.2"\s*$/m, 'schema: 1');
       await writeFile(filePath, downgraded, { mode: 0o600 });
 
       const { frontmatter } = await readWorkflow(filePath);
@@ -1475,39 +1480,76 @@ describe('state.mjs — gate helpers (ADR-0017 §sub-5)', () => {
 // ============================================================================
 
 describe('state.mjs — schema-version preservation on mutation round-trip', () => {
-  it('createWorkflow emits schema="1.1" (PR3 emit flip per ADR-0017)', async () => {
+  it('createWorkflow emits schema="1.2" (ADR-0028 §Layer-2 emit bump)', async () => {
     await withTmpRepo(async (repoRoot) => {
       await createWorkflow({
         repoRoot,
         verb: 'investigate',
         host: 'claude',
         gitBaseline: MIN_BASELINE,
-        originalRequest: 'pr3 flips emit to 1.1',
+        originalRequest: 'ADR-0028 bumps emit to 1.2',
       });
       const [filePath] = await listWorkflowFiles(repoRoot);
       const { frontmatter } = await readWorkflow(filePath);
-      strictEqual(frontmatter.schema, '1.1');
+      strictEqual(frontmatter.schema, '1.2');
     });
   });
 
-  it('setCheckpoint preserves schema="1.1" on disk (no silent downgrade)', async () => {
+  it('setCheckpoint preserves schema="1.2" on disk (no silent downgrade)', async () => {
     await withTmpRepo(async (repoRoot) => {
       await createWorkflow({
         repoRoot,
         verb: 'investigate',
         host: 'claude',
         gitBaseline: MIN_BASELINE,
-        originalRequest: 'mutator preserves 1.1',
+        originalRequest: 'mutator preserves 1.2',
       });
       const [filePath] = await listWorkflowFiles(repoRoot);
       await setCheckpoint({
         workflowPath: filePath,
         host: 'claude',
-        summary: 'after PR3 emit flip',
+        summary: 'after ADR-0028 emit bump',
+      });
+      const { frontmatter } = await readWorkflow(filePath);
+      strictEqual(frontmatter.schema, '1.2');
+      strictEqual(frontmatter.latest_checkpoint.summary, 'after ADR-0028 emit bump');
+    });
+  });
+
+  it('setCheckpoint preserves legacy schema="1.1" on disk (no silent promotion to 1.2)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      await createWorkflow({
+        repoRoot,
+        verb: 'investigate',
+        host: 'claude',
+        gitBaseline: MIN_BASELINE,
+        originalRequest: 'legacy schema 1.1 stays at 1.1',
+      });
+      const [filePath] = await listWorkflowFiles(repoRoot);
+      // ADR-0028 §Layer-2: 1.1 → 1.2 transition mirrors the 1 → 1.1
+      // policy — mutation helpers preserve the disk-recorded schema and
+      // never silently promote to 1.2. Workflow files created before the
+      // emit bump (still on schema "1.1") must continue to read/write at
+      // 1.1 across mutation.
+      const { readFile, writeFile } = await import('node:fs/promises');
+      const original = await readFile(filePath, 'utf8');
+      const downgraded = original.replace(/^schema: "1\.2"\s*$/m, 'schema: "1.1"');
+      strictEqual(
+        downgraded.includes('\nschema: "1.1"\n'),
+        true,
+        'expected the test fixture to start at schema "1.1"; ' +
+          'check assembleWorkflowFile output if this assertion fails',
+      );
+      await writeFile(filePath, downgraded, { mode: 0o600 });
+
+      await setCheckpoint({
+        workflowPath: filePath,
+        host: 'claude',
+        summary: 'on legacy schema 1.1',
       });
       const { frontmatter } = await readWorkflow(filePath);
       strictEqual(frontmatter.schema, '1.1');
-      strictEqual(frontmatter.latest_checkpoint.summary, 'after PR3 emit flip');
+      strictEqual(frontmatter.latest_checkpoint.summary, 'on legacy schema 1.1');
     });
   });
 
@@ -1521,15 +1563,12 @@ describe('state.mjs — schema-version preservation on mutation round-trip', () 
         originalRequest: 'legacy schema 1 stays at 1',
       });
       const [filePath] = await listWorkflowFiles(repoRoot);
-      // Hand-downgrade the on-disk file to legacy schema=1 (numeric) so
-      // we can verify that adding a 1.1-only field via setCheckpoint does
-      // NOT silently promote the schema to '1.1'. Schema-1.0 readers
-      // tolerantly skip unknown fields per ADR-0017 "additive
-      // non-breaking"; auto-promotion would surprise existing pipelines
-      // that key on `schema === 1`.
+      // Hand-downgrade further to legacy integer schema=1 (pre-1.1 PR3
+      // era). ADR-0017 + ADR-0028 §Layer-2 — auto-promotion to "1.2"
+      // would surprise existing pipelines that key on `schema === 1`.
       const { readFile, writeFile } = await import('node:fs/promises');
       const original = await readFile(filePath, 'utf8');
-      const downgraded = original.replace(/^schema: "1\.1"\s*$/m, 'schema: 1');
+      const downgraded = original.replace(/^schema: "1\.2"\s*$/m, 'schema: 1');
       strictEqual(
         downgraded.includes('\nschema: 1\n'),
         true,

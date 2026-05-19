@@ -409,7 +409,7 @@ describe('schema 1.0 → 1.1 tolerance for ensemble_results writers', () => {
       });
       const [workflowPath] = await listWorkflowFiles(repoRoot);
       let text = await readFile(workflowPath, 'utf8');
-      text = text.replace(/^schema:\s*['"]?1\.1['"]?$/m, 'schema: 1');
+      text = text.replace(/^schema:\s*['"]?1\.[12]['"]?$/m, 'schema: 1');
       await writeFile(workflowPath, text);
 
       const { frontmatter } = await readWorkflow(workflowPath);
@@ -430,7 +430,7 @@ describe('schema 1.0 → 1.1 tolerance for ensemble_results writers', () => {
       });
       const [workflowPath] = await listWorkflowFiles(repoRoot);
       let text = await readFile(workflowPath, 'utf8');
-      text = text.replace(/^schema:\s*['"]?1\.1['"]?$/m, 'schema: 1');
+      text = text.replace(/^schema:\s*['"]?1\.[12]['"]?$/m, 'schema: 1');
       await writeFile(workflowPath, text);
 
       const c = spawnSync(
