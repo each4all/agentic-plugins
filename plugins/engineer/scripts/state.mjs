@@ -50,19 +50,21 @@ import { execFileSync } from 'node:child_process';
 
 // SCHEMA_VERSION names the version that `createWorkflow` emits today.
 // PR3 (`/engineer:checkpoint` — first sub-decision-2 frontmatter write)
-// flipped emit to the string '1.1' per ADR-0017 §"Schema versioning policy".
-// String form is required because the YAML parser (`parseScalar`) does not
-// emit a JS Number for `1.1` — bare `1.1` round-trips through Number, which
-// loses precision and changes type.
-export const SCHEMA_VERSION = '1.1';
+// flipped emit to the string '1.1' per ADR-0017 §"Schema versioning policy";
+// ADR-0028 §Layer-2 bumps the emit to '1.2' for the additive `commit_manifest`
+// field. String form is required because the YAML parser (`parseScalar`) does
+// not emit a JS Number for `1.1` / `1.2` — bare `1.2` round-trips through
+// Number, which loses precision and changes type.
+export const SCHEMA_VERSION = '1.2';
 
 // Versions accepted on read. ADR-0017 §"Schema versioning policy" mandates
 // schema-1.0 readers tolerantly accept 1.1 frontmatter; 1.1 readers must
-// continue to read legacy schema-1 files. Mutation helpers (`setCheckpoint`,
-// `setTerminal`, `appendPhaseNote`, …) preserve the disk-recorded schema —
-// no silent promotion of legacy `1` files and no silent downgrade of `'1.1'`
-// files.
-export const SUPPORTED_SCHEMA_VERSIONS = new Set([1, '1.1']);
+// continue to read legacy schema-1 files; ADR-0028 §Layer-2 extends the same
+// rule across the 1.1 → 1.2 boundary so legacy 1.1 readers and writers keep
+// working. Mutation helpers (`setCheckpoint`, `setTerminal`, `appendPhaseNote`,
+// …) preserve the disk-recorded schema — no silent promotion of legacy `1` or
+// `'1.1'` files, no silent downgrade of `'1.2'` files.
+export const SUPPORTED_SCHEMA_VERSIONS = new Set([1, '1.1', '1.2']);
 
 export const STATE_DIR_REL = '.agentic-plugins/state/engineer';
 export const LEGACY_STATE_DIR_REL = '.claude/agentic-engineer';
@@ -798,24 +800,19 @@ const FRONTMATTER_KEY_ORDER = [
   // Always-written at create-time with 'verb-chain' default; lifecycle
   // macro workflows (PR 3 `/engineer:start`) write 'start'.
   'workflow_type',
+  // ADR-0028 §Layer-2 schema 1.2 commit_manifest (additive optional).
+  // Written by recordComposedFile / recordRefineFile; consumed by
+  // Phase 7 staging (Layer 3) to intersect against `git_changes`.
+  'commit_manifest',
 ];
 
-// ADR-0017 + ADR-0019 keys are optional. They MUST NOT appear in
-// REQUIRED, and a schema-1 workflow file may have none of them — that
-// is normal.
-const SCHEMA_1_1_OPTIONAL_KEYS = new Set([
-  'latest_checkpoint',
-  'pending_ensemble',
-  'ensemble_results',
-  'terminal_marker',
-  'child_completions',
-  // ADR-0019 PR-A
-  'parent_workflow',
-  'originating_subtask',
-  'parent_detached',
-  // ADR-0020 PR 2
-  'workflow_type',
-]);
+// The optional-key set across schemas 1.1 (ADR-0017 + ADR-0019 + ADR-0020)
+// and 1.2 (ADR-0028 §Layer-2 `commit_manifest`) is enforced implicitly by
+// `FRONTMATTER_KEY_ORDER` (closed-schema gate) + the per-field validators in
+// `validateSchema11Fields`. A separately maintained "optional keys" set
+// previously lived here as `SCHEMA_1_1_OPTIONAL_KEYS` but was unreferenced
+// dead code (Codex peer review G4); deleting it removes a stale parallel
+// source of truth.
 
 // Per-entry field order for list-of-objects schema 1.1 frontmatter keys.
 // The first field name doubles as the discriminator that opens a `- ` list
@@ -834,18 +831,26 @@ const ENTRY_KEYS_BY_LIST_KEY = Object.freeze({
     'codex_session_id',
   ],
   child_completions: ['child_id', 'spawned_at', 'commit', 'closed_at'],
+  // ADR-0028 §Layer-2 schema 1.2 — commit_manifest entries record which
+  // verb sub-step touched each file so Phase 7 staging can intersect the
+  // manifest against `git_changes`. All four keys are required at write
+  // time (no optional subkeys); see OPTIONAL_ENTRY_KEYS_BY_LIST_KEY below.
+  commit_manifest: ['path', 'phase', 'op', 'recorded_at'],
 });
 
-// Subkeys that may legitimately be missing per ADR-0017:
+// Subkeys that may legitimately be missing per ADR-0017 + ADR-0028:
 // - `child_completions[*].commit` and `.closed_at` — present only after
 //   the child workflow terminates.
 // - `ensemble_results[*].codex_session_id` — best-effort surface; nullable.
+// - `commit_manifest[*]` — all keys required (no optional subkeys); the
+//   record helpers fill all four at write time.
 // Co-located with ENTRY_KEYS_BY_LIST_KEY so the two pieces of the spec
 // stay together (Codex review M2 — schema-correctness perspective).
 const OPTIONAL_ENTRY_KEYS_BY_LIST_KEY = Object.freeze({
   pending_ensemble: new Set(),
   ensemble_results: new Set(['codex_session_id']),
   child_completions: new Set(['commit', 'closed_at']),
+  commit_manifest: new Set(),
 });
 
 function yamlScalar(value) {
@@ -911,9 +916,11 @@ function serializeFrontmatter(fm) {
     if (
       key === 'pending_ensemble' ||
       key === 'ensemble_results' ||
-      key === 'child_completions'
+      key === 'child_completions' ||
+      key === 'commit_manifest'                                       // ADR-0028 §Layer-2
     ) {
-      // ADR-0017 sub-decisions 4/5 — list-of-objects (host_history pattern).
+      // ADR-0017 sub-decisions 4/5 + ADR-0028 §Layer-2 — list-of-objects
+      // (host_history pattern).
       // Field order per entry is fixed below. Optional subkeys (per
       // OPTIONAL_ENTRY_KEYS_BY_LIST_KEY) whose value is `null` /
       // `undefined` are omitted from emit so the parsed shape preserves
@@ -944,7 +951,8 @@ function serializeFrontmatter(fm) {
               // round-trip (Codex MAJOR M3/M4 — required field gate at
               // write boundary).
               throw new Error(
-                `Missing required entry key ${key}[*].${k} (required by ADR-0017)`,
+                `Missing required entry key ${key}[*].${k} ` +
+                `(required by ADR-0017 / ADR-0028 §Layer-2)`,
               );
             }
             if (!opened) {
@@ -997,13 +1005,13 @@ function serializeFrontmatter(fm) {
     lines.push(`${key}: ${yamlScalar(value)}`);
   }
 
-  // Drop frontmatter keys not in canonical order — schemas 1 and 1.1 are
-  // both closed (ADR-0011 §2 + ADR-0017). Unknown keys would silently
-  // drop on round-trip, so we surface them.
+  // Drop frontmatter keys not in canonical order — schemas 1, 1.1, and
+  // 1.2 are all closed (ADR-0011 §2 + ADR-0017 + ADR-0028 §Layer-2).
+  // Unknown keys would silently drop on round-trip, so we surface them.
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
       throw new Error(
-        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 are closed.`,
+        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 are closed.`,
       );
     }
   }
@@ -1082,7 +1090,8 @@ export function parseWorkflowFile(text) {
         key === 'tasks' ||
         key === 'pending_ensemble' ||                                // ADR-0017 sub-4
         key === 'ensemble_results' ||                                // ADR-0017 sub-4
-        key === 'child_completions'                                  // ADR-0017 sub-5
+        key === 'child_completions' ||                               // ADR-0017 sub-5
+        key === 'commit_manifest'                                    // ADR-0028 §Layer-2
       ) {
         // Block-style list
         const list = [];
@@ -1134,7 +1143,8 @@ export function parseWorkflowFile(text) {
         key === 'host_history' ||
         key === 'pending_ensemble' ||                                // ADR-0017 sub-4
         key === 'ensemble_results' ||                                // ADR-0017 sub-4
-        key === 'child_completions')                                 // ADR-0017 sub-5
+        key === 'child_completions' ||                               // ADR-0017 sub-5
+        key === 'commit_manifest')                                   // ADR-0028 §Layer-2
     ) {
       fm[key] = [];
       i += 1;
@@ -1144,13 +1154,13 @@ export function parseWorkflowFile(text) {
     i += 1;
   }
 
-  // Surface unknown keys per closed-schema rule. Schema 1.1 expands the
-  // known set additively per ADR-0017; the rule still rejects keys that
-  // are neither schema-1 nor schema-1.1 known.
+  // Surface unknown keys per closed-schema rule. Schema 1.1 (ADR-0017) and
+  // 1.2 (ADR-0028 §Layer-2 `commit_manifest`) expand the known set additively;
+  // the rule still rejects keys that are not in any of the three known sets.
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
       throw new Error(
-        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 are closed.`,
+        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 are closed.`,
       );
     }
   }
@@ -1165,10 +1175,11 @@ export function parseWorkflowFile(text) {
 }
 
 /**
- * Strict ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 validation. Called at
- * parse-before-mutate boundaries. Throws on any deviation from the closed
- * schema set. Schema 1.1 is additive; the schema-1 required key set is
- * unchanged, and 1.1 keys are all optional.
+ * Strict ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2
+ * validation. Called at parse-before-mutate boundaries. Throws on any
+ * deviation from the closed schema set. Schemas 1.1 and 1.2 are additive;
+ * the schema-1 required key set is unchanged, and 1.1/1.2 keys are all
+ * optional.
  */
 function validateFrontmatter(fm) {
   if (!SUPPORTED_SCHEMA_VERSIONS.has(fm.schema)) {
@@ -1177,7 +1188,7 @@ function validateFrontmatter(fm) {
       .join(', ');
     throw new Error(
       `Unsupported schema version: ${JSON.stringify(fm.schema)} ` +
-      `(supported: ${accepted}). ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 are closed; ` +
+      `(supported: ${accepted}). ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 are closed; ` +
       `cross-schema mutation is rejected.`,
     );
   }
@@ -1269,6 +1280,8 @@ function validateSchema11Fields(fm) {
   validateListOfObjectsField(fm, 'pending_ensemble');
   validateListOfObjectsField(fm, 'ensemble_results');
   validateListOfObjectsField(fm, 'child_completions');
+  // ADR-0028 §Layer-2 schema 1.2
+  validateListOfObjectsField(fm, 'commit_manifest');
 
   // ADR-0019 PR-A — cross-plugin parent-linkage fields. All three are
   // optional top-level scalars. parent_workflow + originating_subtask
@@ -1933,6 +1946,189 @@ export async function commitEnsemble({
       { lockPath, token },
     );
     return { frontmatter, workflowPath, idempotentSkip: alreadyCommitted };
+  });
+}
+
+// -----------------------------------------------------------------------------
+// ADR-0028 §Layer-2 — commit_manifest record helpers (T3b)
+//
+// SCOPE — wiring-pending notice (Codex critique M1):
+// These helpers ship the WRITE primitive for `commit_manifest`. The
+// compose/refine command flows (`commands/compose.md` + `commands/refine.md`)
+// do NOT yet invoke them — that wiring is the responsibility of a follow-up
+// PR co-landing with the ADR-0028 §Layer-3 Phase 7 driver
+// (`plugins/engineer/scripts/phase7-commit.mjs`). Until that PR lands,
+// `frontmatter.commit_manifest` will be empty on every workflow, and
+// Phase 7 Layer 3's `manifest_paths = []` branch will trigger the
+// "ASK the user to approve all of git_changes" fallback path. This split
+// is intentional per ADR-0028 §Layer-3 PR sequencing: Layer 2 helpers
+// land first so the schema migration is non-breaking; Layer 3 ships the
+// staging logic and the command-side Write/Edit hooks atomically together.
+//
+// Command-mode boundary (per `skills/compose/SKILL.md` line 148 +
+// `skills/refine/SKILL.md` line 156): the workflow file is mutated only
+// when the verb skill is invoked as a sub-step of an engineer workflow
+// command. The helpers respect that boundary by no-op'ing when
+// `workflowPath` is falsy — the CLI shim passes `--workflow-path "$ACTIVE"`
+// verbatim, and `$ACTIVE` is empty when no engineer workflow is on the
+// current branch. Standalone invocations therefore do not mutate.
+//
+// Append-only and non-deduplicating: a path may legitimately be touched
+// in compose, edited in refine, and then re-edited in another refine
+// sub-step. The Phase 7 staging gate (Layer 3) reads the union of
+// `commit_manifest` paths via `frontmatter.commit_manifest.map(e => e.path)`
+// and intersects with `git_changes`, so duplicate entries are harmless
+// and accurately reflect provenance.
+//
+// Pathspec injection defense (Codex critique M2 + Refine-verify N1):
+// `path` is stored verbatim for Phase 7 Layer 3 to consume via
+// `git add <path>`. To prevent injection vectors the helper rejects four
+// patterns at the WRITE boundary: leading `-` (flag injection: -A / -f),
+// leading `:` (git pathspec magic: `:(top)`, `:!exclude`, `:/from-root`),
+// absolute paths (`/etc/passwd` etc.), and `..` traversal segments.
+//
+// READ-side defense — Layer 3 re-validation contract: the parser
+// (`parseWorkflowFile` + `validateListOfObjectsField`) does NOT re-run
+// the four pathspec checks on entries READ BACK from disk. A workflow
+// file that is hand-edited or originated outside the helper code path
+// can therefore carry a malicious `path` value. Layer 3's Phase 7
+// staging code (`plugins/engineer/scripts/phase7-commit.mjs`, lands
+// in a follow-up PR) MUST re-validate each `commit_manifest[*].path`
+// before passing to `git add`. The read-side parser stays permissive
+// so legitimate user edits (e.g., fixing a typo in `path`) keep
+// working; write-side hardening + Layer 3 re-validation is the
+// two-layer defense.
+//
+// Legacy-schema policy (Codex compose-time review G2): a workflow file on
+// the disk-recorded schema `"1.1"` is permitted to receive a
+// `commit_manifest` entry without bumping the schema marker. ADR-0017
+// §"Schema versioning policy" mandates that mutation helpers preserve the
+// disk-recorded schema (no silent promotion); the parser tolerantly accepts
+// the 1.2-only key on a 1.1 file because `FRONTMATTER_KEY_ORDER` is the
+// single closed-schema gate (not the schema-version field). This preserves
+// in-flight workflow UX — a 1.1 workflow bootstrapped before the emit bump
+// (a5cbace) can still call into Phase 7 helpers without an explicit upgrade
+// step. Tools that key on the literal `schema === "1.2"` marker to detect
+// feature availability should instead probe `'commit_manifest' in frontmatter`.
+// -----------------------------------------------------------------------------
+
+const VALID_MANIFEST_OPS = new Set(['create', 'edit']);
+
+async function recordManifestEntry({
+  workflowPath,
+  path: filePath,
+  op,
+  phase,
+  recorded_at,
+  now,
+}) {
+  // Command-mode boundary — see helper-section header above.
+  if (workflowPath === undefined || workflowPath === null || workflowPath === '') {
+    return { skipped: true, reason: 'no-active-workflow' };
+  }
+  if (typeof filePath !== 'string' || filePath.length === 0) {
+    throw new Error(
+      `recordManifestEntry: path must be a non-empty string (got ${JSON.stringify(filePath)})`,
+    );
+  }
+  // Codex critique M2 [security] — recordManifestEntry stores `path` for
+  // future `git add <path>` consumption in Phase 7 Layer 3. Reject the
+  // three known pathspec injection vectors at the helper boundary so the
+  // hardening does not depend on Layer 3 implementation details. The
+  // checks mirror what `git add -- <safe-pathspec>` would protect against
+  // when the `--` separator is absent.
+  if (filePath.startsWith('-')) {
+    throw new Error(
+      `recordManifestEntry: path must not start with "-" (leading dash is a flag injection vector: -A / -f); ` +
+      `got ${JSON.stringify(filePath)}`,
+    );
+  }
+  if (filePath.startsWith(':')) {
+    // Covers `:(...)`, `:!`, `:/` — all git pathspec magic prefixes.
+    throw new Error(
+      `recordManifestEntry: path must not start with ":" (git pathspec magic prefix broadens scope); ` +
+      `got ${JSON.stringify(filePath)}`,
+    );
+  }
+  if (filePath.startsWith('/')) {
+    throw new Error(
+      `recordManifestEntry: path must be repo-relative, not absolute; got ${JSON.stringify(filePath)}`,
+    );
+  }
+  // Path-traversal rejection — consistent with the "repo-relative" error
+  // wording above. Without this guard a `../escape` segment slips past
+  // Layer 2 and Layer 3's git_changes intersection is the only defense
+  // (Codex Refine-verify regression risk note).
+  if (filePath === '..' || filePath.startsWith('../') || filePath.includes('/../')) {
+    throw new Error(
+      `recordManifestEntry: path must not contain ".." traversal segments; got ${JSON.stringify(filePath)}`,
+    );
+  }
+  if (!VALID_MANIFEST_OPS.has(op)) {
+    throw new Error(
+      `recordManifestEntry: op must be one of ${[...VALID_MANIFEST_OPS].join(', ')} (got ${JSON.stringify(op)})`,
+    );
+  }
+  if (recorded_at !== undefined && typeof recorded_at !== 'string') {
+    throw new Error(
+      `recordManifestEntry: recorded_at must be a string (got ${typeof recorded_at})`,
+    );
+  }
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const nowIso = isoUtc(now ?? new Date());
+    const entry = {
+      path: filePath,
+      phase,
+      op,
+      recorded_at: recorded_at ?? nowIso,
+    };
+    const existing = Array.isArray(frontmatter.commit_manifest)
+      ? frontmatter.commit_manifest
+      : [];
+    frontmatter.commit_manifest = [...existing, entry];
+    frontmatter.updated_at = nowIso;
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath, entry };
+  });
+}
+
+/**
+ * ADR-0028 §Layer-2 — append a `{path, phase: 'compose', op, recorded_at}`
+ * entry to `commit_manifest`. Called by `commands/compose.md` after a
+ * Write/Edit during a workflow-command sub-step; no-ops when
+ * `workflowPath` is empty (standalone-invocation boundary).
+ */
+export async function recordComposedFile({ workflowPath, path, op, recorded_at, now } = {}) {
+  return recordManifestEntry({
+    workflowPath,
+    path,
+    op,
+    phase: 'compose',
+    recorded_at,
+    now,
+  });
+}
+
+/**
+ * ADR-0028 §Layer-2 — append a `{path, phase: 'refine', op, recorded_at}`
+ * entry to `commit_manifest`. Called by `commands/refine.md` after a
+ * Write/Edit during a workflow-command sub-step; no-ops when
+ * `workflowPath` is empty (standalone-invocation boundary).
+ */
+export async function recordRefineFile({ workflowPath, path, op, recorded_at, now } = {}) {
+  return recordManifestEntry({
+    workflowPath,
+    path,
+    op,
+    phase: 'refine',
+    recorded_at,
+    now,
   });
 }
 
@@ -2603,6 +2799,18 @@ function cliPrintHelp() {
       '  checkpoint-set --workflow-path <path> --host <host> --summary <text>',
       '    ADR-0017 sub-2 — set latest_checkpoint and append host_history checkpointed.',
       '',
+      '  record-composed-file --workflow-path <path> --path <p> --op create|edit',
+      '                       [--recorded-at <iso>]',
+      '    ADR-0028 §Layer-2 — append a {path, phase: "compose", op, recorded_at}',
+      '    entry to commit_manifest. Command-mode boundary: --workflow-path ""',
+      '    no-ops and exits 0 (standalone invocation does not mutate).',
+      '',
+      '  record-refine-file --workflow-path <path> --path <p> --op create|edit',
+      '                     [--recorded-at <iso>]',
+      '    ADR-0028 §Layer-2 — append a {path, phase: "refine", op, recorded_at}',
+      '    entry to commit_manifest. Command-mode boundary: --workflow-path ""',
+      '    no-ops and exits 0 (standalone invocation does not mutate).',
+      '',
       '  set-terminal --workflow-path <path> --host <host>',
       '               --terminal-phase commit-complete|summary-complete|fix-complete',
       '               [--terminal-marker true|false] [--next-action <text>]',
@@ -2797,6 +3005,40 @@ async function cliMain(argv) {
           summary: flags.summary,
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      // ADR-0028 §Layer-2 — commit_manifest record subcommands (T3b).
+      // Command-mode boundary: --workflow-path "" → no-op exit 0 (the
+      // helper short-circuits). The flag MUST be present (cliRequire
+      // checks key presence in flags, not non-empty value) so a caller
+      // that forgets the flag entirely fails loudly — silent no-op on
+      // missing flag would hide broken callers (Codex peer review G1).
+      case 'record-composed-file': {
+        cliRequire(flags, ['workflow-path', 'path', 'op']);
+        const result = await recordComposedFile({
+          workflowPath: flags['workflow-path'],
+          path: flags.path,
+          op: flags.op,
+          recorded_at: flags['recorded-at'],
+        });
+        if (!result.skipped) {
+          process.stdout.write(`${flags['workflow-path']}\n`);
+        }
+        return 0;
+      }
+
+      case 'record-refine-file': {
+        cliRequire(flags, ['workflow-path', 'path', 'op']);
+        const result = await recordRefineFile({
+          workflowPath: flags['workflow-path'],
+          path: flags.path,
+          op: flags.op,
+          recorded_at: flags['recorded-at'],
+        });
+        if (!result.skipped) {
+          process.stdout.write(`${flags['workflow-path']}\n`);
+        }
         return 0;
       }
 

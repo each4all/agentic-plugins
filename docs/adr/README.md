@@ -91,3 +91,4 @@ operatively accurate?* If no, write a new ADR (Supersede).
 | [0025](0025-workflow-storage-migration.md) | Workflow storage migration to `.agentic-plugins` | Accepted |
 | [0026](0026-runtime-compatibility-drift-and-release-notes.md) | Runtime compatibility drift and release-note evidence | Accepted |
 | [0027](0027-decide-skill-multi-axis-evolution.md) | Decide skill multi-axis evolution — axis registry, sizing, weighting/sensitivity, and the parallel-edit contract | Proposed |
+| [0028](0028-engineer-phase7-commit-automation.md) | Engineer Phase 7 commit automation — 3-layer defense + 14 policy sections + centralized validate-commit.mjs | Proposed |

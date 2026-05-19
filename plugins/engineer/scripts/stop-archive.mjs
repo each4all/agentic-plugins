@@ -28,6 +28,7 @@ import {
   terminalPhaseCheck,
 } from './state.mjs';
 import { writebackParent } from './parent-writeback.mjs';
+import { CONVENTIONAL_COMMIT_RE } from './validate-commit.mjs';
 import { readFile } from 'node:fs/promises';
 
 /**
@@ -220,15 +221,6 @@ export async function runStopArchive({
 
   return { archived: true, to: archiveResult.to };
 }
-
-// Inline copy of the conventional-commit pattern used in the Claude
-// _shared.mjs helper. Duplicated here so `evaluateStopArchive` is pure
-// (no transitive dependency on the Claude adapter helpers, which are
-// not on the Codex import path). Both copies must stay in sync —
-// AGENTS.md's Conventional Commits subset is the single canonical
-// source of truth they both implement.
-const CONVENTIONAL_COMMIT_RE =
-  /^(feat|fix|docs|ci|refactor|chore|test)(\([^)]+\))?:/;
 
 function isConventionalCommitSubjectInline(subject) {
   if (typeof subject !== 'string' || subject.length === 0) return false;
