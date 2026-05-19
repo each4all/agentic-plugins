@@ -1,0 +1,104 @@
+schema: "1.0"
+
+# engineer:decide registry — ADR-0027 §1.1 canonical artifact.
+#
+# Each preset declares an ordered list of axes; the reader (decide-registry.mjs)
+# resolves a preset at command dispatch time per the §1.5 precedence ladder.
+#
+# Axes carry `role: decisive` or `role: supporting`. The recommendation rule
+# (SKILL.md @decide:recommendation-rule) honors decisive axes when picking a
+# winner. Every preset MUST declare at least two decisive axes.
+
+presets:
+
+  default:
+    description: "5-axis preset — backwards-compatible with the pre-registry SKILL.md surface"
+    axes:
+      - id: "essence"
+        labels:
+          en: "Essence"
+          ko: "본질"
+        question: "Does this solve the fundamental problem, or just a symptom?"
+        role: "decisive"
+      - id: "foundation"
+        labels:
+          en: "Foundation"
+          ko: "근본"
+        question: "Is this architecturally sound as a long-term base?"
+        role: "decisive"
+      - id: "standards"
+        labels:
+          en: "Standards"
+          ko: "표준"
+        question: "Does it align with industry standards and specifications?"
+        role: "supporting"
+      - id: "best-practice"
+        labels:
+          en: "Best Practice"
+          ko: "정석"
+        question: "Is it the canonical approach recommended by authoritative sources?"
+        role: "supporting"
+      - id: "practical-fit"
+        labels:
+          en: "Practical Fit"
+          ko: "실용성"
+        question: "Is it the best choice for this project's specific constraints?"
+        role: "supporting"
+
+  nine-axis:
+    description: "9-axis preset — user's full quality matrix"
+    axes:
+      - id: "standards"
+        labels:
+          en: "Standards"
+          ko: "표준"
+        question: "Does it align with industry standards and specifications?"
+        role: "supporting"
+      - id: "recommendation"
+        labels:
+          en: "Recommendation"
+          ko: "권장"
+        question: "Is it the official recommendation from the framework or community?"
+        role: "supporting"
+      - id: "canonical-precedent"
+        labels:
+          en: "Canonical Precedent"
+          ko: "정석"
+        question: "Is this the canonical established pattern with proven precedent?"
+        role: "supporting"
+      - id: "essence"
+        labels:
+          en: "Essence"
+          ko: "본질"
+        question: "Does this solve the fundamental problem, or just a symptom?"
+        role: "decisive"
+      - id: "foundation"
+        labels:
+          en: "Foundation"
+          ko: "근본"
+        question: "Is this architecturally sound as a long-term base?"
+        role: "decisive"
+      - id: "extensibility"
+        labels:
+          en: "Extensibility"
+          ko: "확장"
+        question: "Can this evolve to handle future use cases without rework?"
+        role: "supporting"
+      - id: "maintainability"
+        labels:
+          en: "Maintainability"
+          ko: "유지보수"
+        question: "Is this approach easy to maintain and modify over time?"
+        role: "supporting"
+      - id: "maturation"
+        labels:
+          en: "Maturation"
+          ko: "고도화"
+        question: "Will this approach support increasing sophistication and advanced capability?"
+        role: "supporting"
+      - id: "practical-fit"
+        labels:
+          en: "Practical Fit"
+          ko: "실용성"
+        question: "Is it the best choice for this project's specific constraints?"
+        role: "supporting"

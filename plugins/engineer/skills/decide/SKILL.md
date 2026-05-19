@@ -80,6 +80,16 @@ Evaluate each option from these perspectives. Not all carry equal
 weight in every decision — state which are most decisive for this
 choice and why.
 
+When invoked by command (`/engineer:decide`), the active axis set is
+the **resolved preset** from `$AGENTIC_DECIDE_CONTEXT_FILE` (built
+in commands/decide.md Phase 0.5 from
+`skills/decide/references/decision-axes.yml` per ADR-0027 §1).
+Render the comparison using those axes in document order. The axis
+table below is the `default` preset's documentation rendering and is
+unchanged by registry updates — it shows the **fallback** axes when
+the registry is missing or invalid (graceful-degradation per §1.6).
+
+<!-- @decide:axis-table:begin -->
 | # | Perspective | Core question |
 |---|-------------|---------------|
 | 1 | **Essence** | Does this solve the fundamental problem, or just a symptom? |
@@ -88,17 +98,25 @@ choice and why.
 | 4 | **Best Practice** | Is it the canonical approach recommended by authoritative sources? |
 | 5 | **Practical Fit** | Is it the best choice for this project's specific constraints? |
 
-These five anchors are the same as omcc-dev/brainstorm's. They map
-directly to the user's stated quality axes (표준 / 정석 / 권장 /
-근본 / 본질) — the decision-support quality the engineer plugin
-targets.
+These five anchors are the `default` preset. They map directly to
+the user's stated quality axes (표준 / 정석 / 권장 / 근본 / 본질) —
+the decision-support quality the engineer plugin targets. The
+`nine-axis` preset extends the mapping to the full 9-axis matrix
+(see `references/decision-axes.yml`).
+<!-- @decide:axis-table:end -->
 
 Follow the Presentation Mode Protocol
 (`../_shared/references/presentation-protocol.md`) before presenting
 the comparison. In interview mode, one decision item = one option
 with its multi-perspective analysis.
 
+<!-- @decide:per-option-output:begin -->
 #### REQUIRED output format — for each option:
+
+For command-invoked mode, render one bullet per axis in the resolved
+preset (from `$AGENTIC_DECIDE_CONTEXT_FILE`), in document order, with
+the axis's English label. The five-bullet template below is the
+`default` preset's rendering.
 
 ```
 ### Option [letter]: [name]
@@ -116,8 +134,14 @@ with its multi-perspective analysis.
 - **Practical Fit**: [substantive assessment — evaluate against
   THIS project's tech stack, team, timeline, existing patterns]
 ```
+<!-- @decide:per-option-output:end -->
 
+<!-- @decide:comparison-table:begin -->
 #### REQUIRED output format — after all options:
+
+For command-invoked mode, render one row per axis in the resolved
+preset, in document order. The five-row template below is the
+`default` preset's rendering.
 
 ```
 ### Key Differences
@@ -129,15 +153,24 @@ with its multi-perspective analysis.
 | Best Practice | ...    | ...      |     |
 | Practical Fit | ...    | ...      |     |
 ```
+<!-- @decide:comparison-table:end -->
 
 ### Step 4: Recommend
 
 Always provide a recommendation. Never leave the user with only a
 comparison.
 
-When Essence and Foundation clearly favor one option, recommend it.
-Do not downgrade to a different option due to Practical Fit alone —
-address practical concerns in the execution plan instead.
+<!-- @decide:recommendation-rule:begin -->
+When the **decisive** axes (axes with `role: decisive` in the
+resolved preset) clearly favor one option, recommend it. Do not
+downgrade based on supporting axes alone — address practical
+concerns in the execution plan instead.
+
+In the `default` preset the decisive axes are Essence and Foundation;
+in the `nine-axis` preset they are also Essence and Foundation
+(per ADR-0027 §1.3 minimum-decisive-axis invariant: every preset
+declares at least two decisive axes, and these two remain decisive
+across presets to preserve the cross-preset recommendation rule).
 
 #### REQUIRED output format:
 
@@ -152,6 +185,7 @@ Sources: [key references that support the recommendation]
 Choose [other option] instead if: [specific conditions under which
 a different option becomes the better choice]
 ```
+<!-- @decide:recommendation-rule:end -->
 
 **Confidence levels:**
 - **HIGH** — Strong evidence, clear standards alignment, consensus
