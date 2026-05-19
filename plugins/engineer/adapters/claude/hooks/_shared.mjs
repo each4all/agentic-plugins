@@ -12,6 +12,7 @@
 
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { CONVENTIONAL_COMMIT_RE } from '../../../scripts/validate-commit.mjs';
 
 export async function readStdinJson() {
   const chunks = [];
@@ -73,16 +74,10 @@ export function gitHeadSubject(repoRoot) {
   }
 }
 
-// ADR-0017 §sub-decision 5 conventional-commit warning gate.
-// Pattern is the project's Conventional Commits subset declared in
-// AGENTS.md `## Conventions § Commits — Conventional Commits`:
-//   feat | fix | docs | ci | refactor | chore | test
-// followed by an optional `(scope)` and a colon. Anything else is
-// treated as non-conventional → archive proceeds, but stop.mjs emits
-// a stderr warning so the user can spot a misconfigured terminal write.
-const CONVENTIONAL_COMMIT_RE =
-  /^(feat|fix|docs|ci|refactor|chore|test)(\([^)]+\))?:/;
-
+// ADR-0017 §sub-decision 5 conventional-commit warning gate. The regex
+// itself is centralized in plugins/engineer/scripts/validate-commit.mjs
+// (ADR-0028 §Centralization); this helper re-uses it so the
+// stop.mjs hook can warn on misconfigured terminal writes.
 export function isConventionalCommitSubject(subject) {
   if (typeof subject !== 'string' || subject.length === 0) return false;
   return CONVENTIONAL_COMMIT_RE.test(subject);
