@@ -60,9 +60,41 @@ test("loadRegistry: default real registry loads cleanly", () => {
   assert.equal(fallbackTriggered, false);
   assert.deepEqual(diagnostics, []);
   assert.equal(registry.schema, "1.0");
-  assert.deepEqual(Object.keys(registry.presets).sort(), ["default", "nine-axis"]);
+  // ADR-0027 PR3 added the `compact` preset alongside default + nine-axis.
+  assert.deepEqual(Object.keys(registry.presets).sort(), ["compact", "default", "nine-axis"]);
   assert.equal(registry.presets.default.axes.length, 5);
   assert.equal(registry.presets["nine-axis"].axes.length, 9);
+  assert.equal(registry.presets.compact.axes.length, 4);
+});
+
+test("loadRegistry: compact preset (ADR-0027 PR3) has 4 axes, 2 decisive, and entry-routing-guarantee covers all 4 contract guarantees", () => {
+  const { registry } = loadRegistry();
+  const compact = registry.presets.compact;
+  const ids = compact.axes.map((a) => a.id);
+  assert.deepEqual(ids, ["essence", "foundation", "practical-fit", "entry-routing-guarantee"]);
+
+  // §1.3 invariant: every preset declares >= 2 decisive axes; essence + foundation
+  // remain decisive across all shipped presets per ADR-0027 §1.3.
+  const decisive = compact.axes.filter((a) => a.role === "decisive").map((a) => a.id);
+  assert.deepEqual(decisive.sort(), ["essence", "foundation"]);
+
+  // entry-routing-guarantee is supporting per §1.3 BUT its question must
+  // cover all 4 entry-routing-contract.md:46-49 guarantees (source-of-truth,
+  // root cause, verification evidence, rollback path). Match on
+  // case-insensitive keyword presence — the question prose may evolve but
+  // every guarantee keyword must remain.
+  const erg = compact.axes.find((a) => a.id === "entry-routing-guarantee");
+  assert.ok(erg, "entry-routing-guarantee axis must exist in compact preset");
+  assert.equal(erg.role, "supporting");
+  const q = erg.question.toLowerCase();
+  assert.ok(/source/.test(q) && /truth|standard/.test(q),
+    `entry-routing-guarantee question must reference source-of-truth/standard; got: ${erg.question}`);
+  assert.ok(/root cause|invariant/.test(q),
+    `entry-routing-guarantee question must reference root cause / invariant; got: ${erg.question}`);
+  assert.ok(/verification|evidence/.test(q),
+    `entry-routing-guarantee question must reference verification evidence; got: ${erg.question}`);
+  assert.ok(/rollback|defer|escalat/.test(q),
+    `entry-routing-guarantee question must reference rollback / defer / escalation; got: ${erg.question}`);
 });
 
 test("loadRegistry: 9-axis canonical content matches user matrix exactly", () => {
@@ -516,11 +548,132 @@ test("§1.5(2) explicit --size implies preset", () => {
   // --size=standard → default
   const { context: c2 } = resolvePreset({ sizeExplicit: true, sizeValue: "standard" });
   assert.equal(c2.preset_id, "default");
+  // ADR-0027 PR3: --size=minor → compact (4-axis preset shipped in PR3)
+  const { context: c3, fallbackTriggered: fb3, diagnostics: d3 } = resolvePreset({
+    sizeExplicit: true,
+    sizeValue: "minor",
+  });
+  assert.equal(c3.preset_id, "compact");
+  assert.equal(c3.axes.length, 4);
+  // [peer risk #5]: --size=minor → compact must NOT trigger fallback. PR5
+  // axis-awareness (Brainstorm <axis_awareness>) gates on this — a fallback
+  // here would silently strip the block.
+  assert.equal(fb3, false);
+  assert.deepEqual(d3, []);
 });
 
 test("§1.5 precedence: --preset wins over --size implication", () => {
   const { context } = resolvePreset({ presetId: "default", sizeExplicit: true, sizeValue: "major" });
   assert.equal(context.preset_id, "default");
+});
+
+test("[peer edge #1] combined --preset=nine-axis --size=minor: preset wins, size retained on context", () => {
+  // Per ADR-0027 §1.5(1) > §1.5(2): --preset wins over --size implication.
+  // But §1.5 also says "size independently controls ritual verbosity" — so
+  // context.size MUST retain the --size value even when --preset overrides
+  // the preset implication. This protects PR3 ritual rendering when both
+  // flags are passed.
+  const { context, fallbackTriggered } = resolvePreset({
+    presetId: "nine-axis",
+    sizeExplicit: true,
+    sizeValue: "minor",
+  });
+  assert.equal(context.preset_id, "nine-axis");
+  assert.equal(context.axes.length, 9);
+  assert.equal(context.size, "minor");
+  assert.equal(context.size_explicit, true);
+  assert.equal(fallbackTriggered, false);
+});
+
+test("[peer edge #3] --preset=bad --size=minor: fallback to default with size=minor retained", () => {
+  // Unknown preset triggers §1.6 fallback (graceful degradation, not halt).
+  // ADR-0027 §1.5(1) precedence stops at the first valid resolution, so
+  // unknown --preset short-circuits the §1.5(2) size implication — minor
+  // does NOT silently re-attempt as compact. context.size still carries
+  // the explicit user input so the ritual layer can render minor-depth
+  // against the fallback default axes.
+  const { context, fallbackTriggered, diagnostics } = resolvePreset({
+    presetId: "nonexistent",
+    sizeExplicit: true,
+    sizeValue: "minor",
+  });
+  assert.equal(context.preset_id, "default");
+  assert.equal(fallbackTriggered, true);
+  assert.equal(context.size, "minor");
+  assert.equal(context.size_explicit, true);
+  assert.ok(
+    diagnostics.some((d) => /unknown preset id "nonexistent"/.test(d)),
+    `expected unknown-preset diagnostic; got: ${diagnostics.join(" | ")}`,
+  );
+});
+
+test("[peer edge #2] malformed compact preset → §1.6 fallback + --size=minor still retains size on context", () => {
+  // Fixture: a registry where compact is malformed (missing required axis.role).
+  // The reader skips that preset (per validatePreset) but keeps default usable;
+  // --size=minor then implies the missing compact, falls back to default, and
+  // emits a diagnostic. context.size is preserved so the minor ritual depth
+  // still applies over the default axes (with the entry-routing-guarantee
+  // hard-gate becoming ADVISORY per SKILL.md @decide:recommendation-rule).
+  // yaml-mini parser is block-style only — flow markers `{}`/`[]` not supported.
+  const yaml = `schema: "1.0"
+presets:
+  default:
+    description: "Default"
+    axes:
+      - id: "essence"
+        labels:
+          en: "Essence"
+          ko: "본질"
+        question: "Fundamental?"
+        role: "decisive"
+      - id: "foundation"
+        labels:
+          en: "Foundation"
+          ko: "근본"
+        question: "Sound?"
+        role: "decisive"
+      - id: "practical-fit"
+        labels:
+          en: "Practical Fit"
+          ko: "실용성"
+        question: "Fits?"
+        role: "supporting"
+  compact:
+    description: "malformed compact — axis missing role"
+    axes:
+      - id: "essence"
+        labels:
+          en: "Essence"
+          ko: "본질"
+        question: "Fundamental?"
+        # NOTE: role intentionally omitted to trigger validatePreset rejection.
+`;
+  const { path, cleanup } = tmpYaml(yaml);
+  try {
+    const { context, fallbackTriggered, diagnostics } = resolvePreset({
+      path,
+      sizeExplicit: true,
+      sizeValue: "minor",
+    });
+    // compact was skipped during load; --size=minor still implies "compact"
+    // but it's not present → fallback to default per §1.5(2) "implied but
+    // missing" row.
+    assert.equal(context.preset_id, "default");
+    assert.equal(fallbackTriggered, true);
+    assert.equal(context.size, "minor", "minor ritual must still apply over fallback default axes");
+    assert.equal(context.size_explicit, true);
+    // Tightened per critique peer review: the diagnostic must specifically
+    // prove the validatePreset rejection path was exercised (axis missing
+    // role triggers "invalid role …"). Match BOTH the "compact" preset id
+    // AND the "invalid role" wording so the assertion can't pass on
+    // unrelated fallback diagnostics.
+    assert.ok(
+      diagnostics.some((d) => /preset "compact".*invalid role/i.test(d)),
+      `expected malformed-compact 'invalid role' rejection diagnostic; got: ${diagnostics.join(" | ")}`,
+    );
+  } finally {
+    cleanup();
+  }
 });
 
 test("§1.5(4) default → default preset when no flags", () => {
@@ -655,6 +808,28 @@ test("regression (peer M5): CLI --size=bogus halts with exit 2 (§2.3(4))", () =
   assert.equal(r.status, 2);
   assert.ok(/--size=bogus not in/.test(r.stderr),
     `expected --size whitelist error; got: ${r.stderr}`);
+});
+
+test("[peer gap #2 — ADR-0027 PR3] CLI --size=minor happy-path: preset_id=compact, axes=4, size=minor, no stale deferred-warning", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--size=minor"], { encoding: "utf8" });
+  assert.equal(r.status, 0);
+  // PR3 removed the "ritual-sizing deferred to PR3" warning; the only stderr
+  // permissible here is empty (no warnings, no fallback diagnostics).
+  assert.ok(
+    !/deferred to PR3|ritual-sizing.*deferred/.test(r.stderr),
+    `unexpected stale deferred-to-PR3 warning on stderr: ${r.stderr}`,
+  );
+  const ctx = JSON.parse(r.stdout);
+  assert.equal(ctx.preset_id, "compact");
+  assert.equal(ctx.axes.length, 4);
+  assert.equal(ctx.size, "minor");
+  assert.equal(ctx.size_explicit, true);
+  // entry-routing-guarantee axis is part of the resolved context.
+  const ids = ctx.axes.map((a) => a.id);
+  assert.ok(
+    ids.includes("entry-routing-guarantee"),
+    `compact axes must include entry-routing-guarantee; got: ${ids.join(",")}`,
+  );
 });
 
 test("regression (peer M5): CLI unknown flag halts with exit 2", () => {

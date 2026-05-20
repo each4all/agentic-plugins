@@ -74,12 +74,27 @@ test("§2.3(6): -- hard separator — body begins after --", () => {
   assert.equal(r.body, "--size=major in CSS?");
 });
 
-test("§2.5/§2.6 partial: --size warning distinguishes active preset implication (PR2) from deferred ritual sizing (PR3)", () => {
+test("§1.5(2) + ADR-0027 PR3: --size is fully active — accepted without a deferred-to-PR3 warning", () => {
   const r = parseArgs(["--size=major", "body"]);
   assert.equal(r.flags.size, "major");
-  assert.ok(r.warnings.some((w) => /preset implication.*active.*ritual-sizing.*deferred to PR3/.test(w)),
-    `unexpected warning text: ${r.warnings.join(" | ")}`);
+  // PR3 wires ritual sizing in SKILL.md; the parser no longer needs to
+  // warn that ritual sizing is deferred. The only --size warnings that
+  // may fire now are repeat-flag last-wins, which is not the case here.
+  assert.ok(
+    !r.warnings.some((w) => /deferred to PR3|ritual-sizing.*deferred/.test(w)),
+    `expected no 'deferred to PR3' warning; got: ${r.warnings.join(" | ")}`,
+  );
   // No error — accepted gracefully.
+  assert.deepEqual(r.errors, []);
+});
+
+test("§2.3(5) [peer ADR-0027 PR3 edge case #4]: repeated --size last-wins + warning", () => {
+  const r = parseArgs(["--size=minor", "--size=major", "body"]);
+  assert.equal(r.flags.size, "major");
+  assert.ok(
+    r.warnings.some((w) => /--size appeared 2 times/.test(w)),
+    `expected repeat-flag warning; got: ${r.warnings.join(" | ")}`,
+  );
   assert.deepEqual(r.errors, []);
 });
 
@@ -101,8 +116,13 @@ test("combined: --preset + --size + --weights + body", () => {
   assert.equal(r.flags.size, "major");
   assert.equal(r.flags.weights, "essence:2");
   assert.equal(r.body, "compare options for X");
-  // Two warnings expected (size + weights).
-  assert.equal(r.warnings.filter((w) => /deferred to PR[34]|active in PR2/.test(w)).length, 2);
+  // ADR-0027 PR3 wired --size; only --weights remains a deferred stub.
+  // Exactly one "deferred to PR4" warning is expected (weights only).
+  assert.equal(
+    r.warnings.filter((w) => /deferred to PR4/.test(w)).length,
+    1,
+    `expected exactly 1 deferred warning (weights only); got: ${r.warnings.join(" | ")}`,
+  );
 });
 
 test("malformed flag (--= or --key with no value) → error", () => {

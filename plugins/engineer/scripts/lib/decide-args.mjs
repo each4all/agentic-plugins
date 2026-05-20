@@ -15,12 +15,18 @@
 // Grammar (per ADR-0027 §2.2):
 //   /engineer:decide [--size=<tier>] [--preset=<id>] [--weights=<spec>] [--] <decision body>
 //
-// PR2 registers:
-//   --preset   passes through (the reader validates the id)
-//   --size     stub — accepts value but emits a warning "not yet implemented (PR3)"
-//   --weights  stub — accepts value but emits a warning "not yet implemented (PR4)"
+// Flags registered:
+//   --preset   passes through (the registry reader validates the id and
+//              falls back gracefully per ADR-0027 §1.6 on unknown ids)
+//   --size     active — tier whitelist {minor, standard, major}; implies a
+//              preset per §1.5(2) and selects the ritual depth (per-option
+//              output depth, comparison-table density, recommendation rigor)
+//              consumed by `plugins/engineer/skills/decide/SKILL.md` inside
+//              the four @decide:* marker regions.
+//   --weights  stub — accepts the value but emits a warning that weighting
+//              + sensitivity-flip semantics ship with PR4.
 //
-// PR3 will replace the --size stub; PR4 will replace the --weights stub.
+// PR4 will replace the --weights stub.
 
 const KNOWN_FLAGS = new Set(["preset", "size", "weights"]);
 const SIZE_TIERS = new Set(["minor", "standard", "major"]);
@@ -89,13 +95,14 @@ export function parseArgs(argv) {
         break;
 
       case "size":
-        // PR2 partial-implementation per peer P-16 + N2.
-        // The axis-preset implication path (§1.5(2)) is ACTIVE in PR2:
-        //   --size=minor    → preset=compact (when present in registry)
-        //   --size=standard → preset=default
-        //   --size=major    → preset=nine-axis
-        // The ritual-sizing behavior (per-option output depth, comparison
-        // table density) is deferred to PR3.
+        // ADR-0027 §1.5(2) preset implication + ritual depth. Both are
+        // active: the registry reader resolves the preset
+        //   --size=minor    → preset=compact (4-axis, entry-routing-guarantee)
+        //   --size=standard → preset=default (5-axis)
+        //   --size=major    → preset=nine-axis (9-axis)
+        // and the skill body reads `context.size` to render the matching
+        // per-option / comparison-table / recommendation depth per the
+        // `@decide:*` marker regions in `skills/decide/SKILL.md`.
         if (!SIZE_TIERS.has(value)) {
           errors.push(
             `--size=${value} not in {minor, standard, major}`,
@@ -103,9 +110,6 @@ export function parseArgs(argv) {
           return { flags: {}, body: "", errors, warnings };
         }
         flags.size = value;
-        warnings.push(
-          "--size accepted; preset implication (§1.5(2)) active in PR2, ritual-sizing behavior deferred to PR3",
-        );
         break;
 
       case "weights":

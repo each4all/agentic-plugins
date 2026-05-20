@@ -45,6 +45,34 @@ presets:
         question: "Is it the best choice for this project's specific constraints?"
         role: "supporting"
 
+  compact:
+    description: "4-axis compact preset for minor-size decisions — preserves entry-routing-contract guarantees (source-of-truth, root cause, verification evidence, rollback path) as a single combined axis. See `plugins/engineer/skills/_shared/references/entry-routing-contract.md` lines 46-49 for the canonical 4-guarantee list."
+    axes:
+      - id: "essence"
+        labels:
+          en: "Essence"
+          ko: "본질"
+        question: "Does this solve the fundamental problem, or just a symptom?"
+        role: "decisive"
+      - id: "foundation"
+        labels:
+          en: "Foundation"
+          ko: "근본"
+        question: "Is this architecturally sound as a long-term base?"
+        role: "decisive"
+      - id: "practical-fit"
+        labels:
+          en: "Practical Fit"
+          ko: "실용성"
+        question: "Is it the best choice for this project's specific constraints?"
+        role: "supporting"
+      - id: "entry-routing-guarantee"
+        labels:
+          en: "Entry-Routing Guarantee"
+          ko: "진입경로보증"
+        question: "Does the change preserve all 4 entry-routing-contract guarantees: (1) source-of-truth/standard being followed, (2) invariant/root cause being preserved or addressed, (3) verification evidence required, (4) rollback or defer or escalation path? Per entry-routing-contract.md:46-49 this gate is NOT optional — missing any of the 4 must lower confidence or route back."
+        role: "supporting"
+
   nine-axis:
     description: "9-axis preset — user's full quality matrix"
     axes:
