@@ -101,6 +101,13 @@ confirms the change addresses the root cause without regressions.
 Refine is single-mode (no `--profile` argument). Sub-discipline
 context flows through the orchestrator-level Task Profile.
 
+In command-mode (`$ACTIVE` bound), the skill's **Layer 2
+commit-manifest recording** step requires
+`state.mjs record-refine-file --workflow-path "$ACTIVE" --path <p>
+--op edit|create` after each Write/Edit on a tracked path. See
+`skills/refine/SKILL.md` § Layer 2 commit-manifest recording for the
+full pattern (ADR-0028 §Layer-2).
+
 ### Ensemble dispatch (Refine-verify point type)
 
 Build the Refine-verify prompt per

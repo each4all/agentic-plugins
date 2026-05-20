@@ -175,6 +175,49 @@ elif [ "$DIAG_STATUS" = "redundancy" ]; then
 fi
 ```
 
+### Layer 1 clean-baseline gate (ADR-0028 §Layer-1)
+
+Before `state.mjs create`, inspect the working tree. The Phase 7 commit
+automation relies on the post-baseline manifest delta to know which paths
+the workflow intended to touch — that signal only holds when the
+baseline itself was clean (or the user explicitly bypassed the gate via
+`ACCEPT_CURRENT_TREE=1`). A dirty baseline plus an unmodified resolution
+would let phase7-commit.mjs sweep adjacent unrelated changes into the
+workflow's commit.
+
+```bash
+BASELINE_ARGS=()
+if [ "${ACCEPT_CURRENT_TREE:-}" = "1" ]; then
+  BASELINE_ARGS=(--accept-current-tree true)
+fi
+BASELINE_ERR="$(mktemp -t engineer-start-baseline.XXXXXX)"
+BASELINE="$(node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" check-clean-baseline \
+  --repo-root "$REPO_ROOT" "${BASELINE_ARGS[@]}" 2>"$BASELINE_ERR")"
+BASELINE_RC=$?
+if [ "$BASELINE_RC" -ne 0 ]; then
+  echo "✗ check-clean-baseline failed (exit $BASELINE_RC):" >&2
+  cat "$BASELINE_ERR" >&2
+  rm -f "$BASELINE_ERR"
+  exit "$BASELINE_RC"
+fi
+rm -f "$BASELINE_ERR"
+BASELINE_STATUS="$(echo "$BASELINE" | jq -r .status)"
+if [ "$BASELINE_STATUS" = "dirty" ]; then
+  echo "✗ Working tree is dirty — /engineer:start requires a clean baseline (ADR-0028 §Layer-1)." >&2
+  echo "$BASELINE" | jq .categories >&2
+  echo >&2
+  echo "  Resolutions:" >&2
+  echo "    - clean:                git restore . ; git clean -fd  (then re-run)" >&2
+  echo "    - stash:                git stash push --include-untracked  (re-run, then git stash pop)" >&2
+  echo "    - worktree:             /runtime:worktree apply  (ADR-0029)" >&2
+  echo "    - accept-current-tree:  ACCEPT_CURRENT_TREE=1 /engineer:start ...  (sweep current tree into the workflow's commit)" >&2
+  exit 1
+fi
+# BASELINE_STATUS is 'clean' (empty tree) or 'accepted' (dirty + bypass).
+# Both proceed; phase7-commit.mjs honors the accept-current-tree mode by
+# staging all of git_changes rather than the manifest intersection.
+```
+
 Bootstrap the new workflow with `--workflow-type start`, recording
 `verb: investigate` as the Phase 1 brainstorm entry point. Subsequent
 phase boundaries rotate `verb` to the phase-primary value via
@@ -389,24 +432,77 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
 
 ---
 
-## Phase 7 — Commit
+## Phase 7 — Commit (ADR-0028 §Layer-3)
 
-Terminal runbook. Commit + optional PR creation, then the terminal
-state write below flips the workflow into the auto-archive whitelist
-(ADR-0017 §sub-decision-5):
+Terminal runbook. Phase 7 invokes the `phase7-commit.mjs` driver
+(host-shared per ADR-0022 commands-hold-bootstrap / skills-hold-cognition
+split): the driver computes the staging set from `commit_manifest` ∩
+`git_changes`, splits per release-please package boundary (ADR-0016 +
+P8), commits with the user-confirmed subject(s), runs post-commit gates
+(P11 pending-ensemble, no-active-children, clean-after-commit, P10
+sync writebackParent), and finally writes `set-terminal` LAST per the
+P5 terminal-marker-last invariant.
+
+Phase 7 NEVER auto-commits (P6). The flow is two-step: first the agent
+invokes `--mode plan` to get suggested subjects, presents them to the
+user, gets approval; then invokes `--mode execute --subject "..."`
+with the user-confirmed text.
 
 ```bash
-# (commit + optional gh pr create — verb=refine is the last cognitive
-#  activity; Phase 7 itself has no cognitive verb update, only a
-#  terminal state write per ADR-0017 §sub-decision-5)
+# Step 1 — plan mode: read workflow + git state, suggest subjects.
+PHASE7_PLAN_ERR="$(mktemp -t phase7-plan.XXXXXX)"
+PHASE7_PLAN="$(node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
+  --mode plan \
+  --workflow-path "$ACTIVE" \
+  --repo-root "$REPO_ROOT" \
+  --host "${AGENTIC_HOST:-claude}" \
+  2>"$PHASE7_PLAN_ERR")"
+PHASE7_PLAN_RC=$?
+if [ "$PHASE7_PLAN_RC" -ne 0 ]; then
+  echo "✗ phase7-commit --mode plan failed (exit $PHASE7_PLAN_RC):" >&2
+  cat "$PHASE7_PLAN_ERR" >&2
+  rm -f "$PHASE7_PLAN_ERR"
+  exit "$PHASE7_PLAN_RC"
+fi
+rm -f "$PHASE7_PLAN_ERR"
+# Agent: parse $PHASE7_PLAN (JSON), present commits[].suggested_subject
+# to the user with [a]ccept / [e]dit / [c]ancel. If ask_user=true also
+# confirm the staging_set + extras with the user before proceeding.
 
-node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
-  --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
-  --terminal-phase commit-complete \
-  --terminal-marker true \
-  --next-action archive \
-  --event updated
+# Step 2 — execute mode: receive the approved subject(s), commit + gate.
+# Single-commit form:
+node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
+  --mode execute \
+  --workflow-path "$ACTIVE" \
+  --repo-root "$REPO_ROOT" \
+  --host "${AGENTIC_HOST:-claude}" \
+  --subject "$APPROVED_SUBJECT" \
+  --confirm-non-interactive
+# Or, when shouldSplit=true (multi-package), repeat --subject-pkg:
+# node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
+#   --mode execute --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" \
+#   --host "$AGENTIC_HOST" --confirm-non-interactive \
+#   --subject-pkg 'plugins/engineer=feat(engineer): ...' \
+#   --subject-pkg 'plugins/runtime=docs(runtime): ...'
+
+PHASE7_RC=$?
+if [ "$PHASE7_RC" -ne 0 ]; then
+  # Driver already emitted the refine-fallback message on stderr.
+  # The workflow remains active (terminal_marker unset); recovery is
+  # via /engineer:refine + a follow-up /engineer:start that resumes
+  # at Phase 7.
+  exit "$PHASE7_RC"
+fi
+# On success the driver wrote set-terminal internally; the Stop hook
+# auto-archive (ADR-0017 §sub-decision 5) takes over.
 ```
+
+For multi-package splits the body composition (P1 + P9 trailer
+allowlist) is shared across all per-package commits; only the subject
+varies per `--subject-pkg`. Layer 1 forwarding: when the bootstrap was
+flagged `accept-current-tree`, re-pass `ACCEPT_CURRENT_TREE=1` (or
+`--accept-current-tree`) into the execute step so the driver stages all
+of `git_changes` rather than the manifest intersection.
 
 Append the runtime completion footer after the commit summary and workflow
 path. Use the runtime footer helper when available, or render the same

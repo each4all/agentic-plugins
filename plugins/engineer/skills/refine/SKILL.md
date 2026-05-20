@@ -169,6 +169,30 @@ it hands the result to the invoking command, which owns the write.
 
 When invoked standalone, no workflow file write occurs.
 
+### Layer 2 commit-manifest recording (command-mode only — ADR-0028 §Layer-2)
+
+When this skill is invoked as a sub-step of a workflow command (i.e.,
+`$ACTIVE` is bound to the workflow file), record every Write/Edit on a
+tracked path into the workflow's `commit_manifest` so Phase 7 can
+intersect the manifest with `git_changes` and stage only the
+workflow-intended files:
+
+```bash
+# After each Write or Edit operation on a tracked path during the
+# apply-fix loop, append a manifest entry:
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" record-refine-file \
+  --workflow-path "$ACTIVE" \
+  --path "<repo-relative path>" \
+  --op edit   # or "create" if the refine adds a new file
+```
+
+The CLI subcommand is a no-op when `--workflow-path ""` is passed
+(standalone-mode boundary). `--op` is `edit` for a modification of an
+existing tracked file (the common refine case) and `create` for a
+newly added file. The helper re-uses
+`validate-commit.mjs#assertSafePath` to reject pathspec injection at
+the write boundary (ADR-0028 N1).
+
 ---
 
 ## Anti-patterns (do not produce)
