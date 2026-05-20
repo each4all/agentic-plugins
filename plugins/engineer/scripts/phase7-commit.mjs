@@ -193,12 +193,45 @@ function suggestType(frontmatter) {
   return 'chore';
 }
 
-function packageScope(packageKey) {
-  if (!packageKey) return null;
-  // 'plugins/engineer' → 'engineer', 'plugins/runtime' → 'runtime',
-  // 'companions' → 'companions'.
+/**
+ * Convert a release-please package key to a conventional-commit scope.
+ *
+ * Default: lastSegment heuristic ('plugins/engineer' → 'engineer',
+ * 'companions' → 'companions') — matches the dominant convention in
+ * the existing repo (e.g. `feat(engineer): ...` on commit 80b6770).
+ *
+ * Disambiguation (Phase 5 M1 — `packages/companions` vs root
+ * `companions` both produce 'companions'): when a second packageKey
+ * in `packageMap` shares the lastSegment, the `plugins/<name>` form
+ * uses the slash-disambiguating scope `plugin/<name>` (matches commit
+ * 91d1de9 `feat(plugin/engineer): ...`), and the root form keeps the
+ * bare lastSegment. With no packageMap supplied the helper degrades
+ * to the lastSegment heuristic — safe for callers that have not yet
+ * adopted the disambiguation path.
+ */
+function lastSegment(packageKey) {
   const slash = packageKey.lastIndexOf('/');
   return slash === -1 ? packageKey : packageKey.slice(slash + 1);
+}
+
+export function packageScope(packageKey, packageMap = null) {
+  if (!packageKey) return null;
+  const seg = lastSegment(packageKey);
+  if (!Array.isArray(packageMap) || packageMap.length === 0) {
+    return seg;
+  }
+  const collides = packageMap.some(
+    (k) => k !== packageKey && lastSegment(k) === seg,
+  );
+  if (!collides) return seg;
+  // Disambiguate: 'plugins/<name>' adopts the slash-form scope
+  // 'plugin/<name>' (matches the explicit-prefix convention used on
+  // 91d1de9); non-plugins keys keep the bare lastSegment, leaving the
+  // explicit form to the plugins/* variant.
+  if (packageKey.startsWith('plugins/')) {
+    return `plugin/${seg}`;
+  }
+  return seg;
 }
 
 function trimSubjectDescription(text) {
@@ -212,9 +245,9 @@ function trimSubjectDescription(text) {
   return firstLine.length > 60 ? `${firstLine.slice(0, 57)}...` : firstLine;
 }
 
-export function inferSubject({ packageKey, frontmatter }) {
+export function inferSubject({ packageKey, frontmatter, packageMap = null }) {
   const type = suggestType(frontmatter);
-  const scope = packageScope(packageKey);
+  const scope = packageScope(packageKey, packageMap);
   const desc = trimSubjectDescription(frontmatter.original_request);
   return scope ? `${type}(${scope}): ${desc}` : `${type}: ${desc}`;
 }
@@ -333,6 +366,22 @@ export function decideStagingBranch({
 // =============================================================================
 
 export function detectMixedHunk({ repoRoot, path }) {
+  // ADR-0028 §Layer-3 — mixed-hunk detection is meaningful ONLY before
+  // Phase 7's own `git add` runs, because `git add <path>` (without
+  // `--patch`) stages everything in the working tree's delta and
+  // collapses cached == HEAD trivially (Codex peer review A3).
+  //
+  // The detection catches: user partially pre-staged file X via
+  // `git add --patch X` (some hunks staged, some not) before Phase 7
+  // ran. Phase 7's bulk `git add X` would then sweep the unstaged
+  // hunks — contrary to the user's pre-stage intent. We refuse the
+  // path so the user resolves via `git add --patch` interactively or
+  // unstages first.
+  //
+  // Predicate:
+  //   pre_cached > 0 AND pre_cached < HEAD delta
+  // The "pre_cached > 0" guard distinguishes "no pre-stage" (the
+  // normal Phase 7 flow) from "partial pre-stage" (the refuse case).
   const cached =
     gitSync(repoRoot, ['diff', '--cached', '--numstat', '--', path], { allowFailure: true }) ?? '';
   const head =
@@ -350,8 +399,9 @@ export function detectMixedHunk({ repoRoot, path }) {
   };
   const c = parseRow(cached);
   const h = parseRow(head);
-  // Mixed hunk iff cached strictly undercounts HEAD totals.
-  return c.add < h.add || c.del < h.del;
+  const hasPreStage = c.add > 0 || c.del > 0;
+  const undercountsHead = c.add < h.add || c.del < h.del;
+  return hasPreStage && undercountsHead;
 }
 
 // =============================================================================
@@ -446,7 +496,11 @@ async function planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree
   const suggestedSubjects = shape.commits.map((c) => ({
     package: c.package,
     files: c.files,
-    suggested_subject: inferSubject({ packageKey: c.package, frontmatter }),
+    suggested_subject: inferSubject({
+      packageKey: c.package,
+      frontmatter,
+      packageMap,
+    }),
   }));
   const phase7Config = await readPhase7Config(repoRoot);
   return {
@@ -499,12 +553,17 @@ function pickSubjectForCommit({ commit, flags, requiresSplit }) {
       }
       map.set(raw.slice(0, eq), raw.slice(eq + 1));
     }
-    // Docs commit uses the special key 'docs' OR `null`. We accept both.
-    const key = pkg === null ? (map.has('docs') ? 'docs' : null) : pkg;
-    if (key === null || !map.has(key)) {
+    // ADR-0028 Codex peer review A6 — docs-only commit (package=null)
+    // uses the literal CLI key 'docs'. CLI values are strings; a
+    // bare `null` token has no useful encoding here. Plan-mode JSON
+    // emits package=null for docs commits and the agent loop is
+    // expected to translate that to `--subject-pkg docs=<text>`.
+    const key = pkg === null ? 'docs' : pkg;
+    if (!map.has(key)) {
       throw new Error(
-        `--subject-pkg missing for commit ${pkg ?? 'docs'} ` +
-        `(saw keys: ${[...map.keys()].join(', ') || 'none'})`,
+        `--subject-pkg missing for commit '${key}' ` +
+        `(saw keys: ${[...map.keys()].join(', ') || 'none'}). ` +
+        `For docs-only commits use --subject-pkg docs=<text>.`,
       );
     }
     return map.get(key);
@@ -536,6 +595,21 @@ async function commitOnce({ repoRoot, paths, subject, body, stderr }) {
   // add invocation. Hand-edited workflow files would be rejected here
   // even if the planMode re-validation was bypassed.
   for (const p of paths) assertSafePath(p);
+  // ADR-0028 §Layer-3 + Codex peer review A3 — mixed-hunk detection
+  // must run BEFORE `git add` so the cached column reflects the
+  // user's pre-stage state. After a bulk `git add <path>`, cached ==
+  // HEAD trivially and the refusal is defeated. See detectMixedHunk
+  // header for the partial-pre-stage predicate.
+  const mixed = paths.filter((p) => detectMixedHunk({ repoRoot, path: p }));
+  if (mixed.length > 0) {
+    stderr.write(
+      `⚠ mixed-hunk paths detected (user pre-staged a partial subset against HEAD): ${mixed.join(', ')}\n` +
+      `   Run \`git add --patch <path>\` to finish staging the intended hunks, ` +
+      `or \`git reset HEAD -- <path>\` to clear the pre-stage and let Phase 7 ` +
+      `commit the full file delta.\n`,
+    );
+    return { ok: false, reason: 'mixed-hunk', mixed };
+  }
   // Use `--` separator so any path that begins with `-` despite the
   // earlier assertion is still safe at the argv boundary. The catch
   // converts git-add failure into a structured refine-fallback row
@@ -551,27 +625,21 @@ async function commitOnce({ repoRoot, paths, subject, body, stderr }) {
       message: err.message,
     };
   }
-  // Mixed-hunk detection per staged path (ADR-0028 §Layer-3).
-  const mixed = paths.filter((p) => detectMixedHunk({ repoRoot, path: p }));
-  if (mixed.length > 0) {
-    stderr.write(
-      `⚠ mixed-hunk paths detected (HEAD delta larger than staged): ${mixed.join(', ')}\n` +
-      `   Run \`git add --patch <path>\` interactively or split before retrying.\n`,
-    );
-    // Unstage everything we just staged so the user can address the
-    // mixed-hunk manually (refuse-and-ask).
-    gitSync(repoRoot, ['reset', 'HEAD', '--', ...paths], { allowFailure: true });
-    return { ok: false, reason: 'mixed-hunk', mixed };
-  }
-  // git commit -m subject -F body-file. The body lives in a tmp file
-  // to avoid shell-escape issues on multi-line / special-character
-  // bodies.
+  // git commit -F message-file. We pass subject + body as a single
+  // file because git rejects `-m` and `-F` together (Phase 5 e2e
+  // smoke caught the prior `-m subject -F body` combination). The
+  // file contains the subject line, a blank separator, and the body
+  // — matching git's standard "summary, blank, details" commit
+  // message layout. The temp file isolates multi-line / special-char
+  // bodies from shell escape rules.
   const tmpDir = await mkdtemp(join(tmpdir(), 'phase7-body-'));
-  const bodyPath = join(tmpDir, 'BODY');
+  const msgPath = join(tmpDir, 'COMMIT_EDITMSG');
   try {
-    await writeFile(bodyPath, body ?? '');
+    const trimmedBody = (body ?? '').replace(/^\s+|\s+$/g, '');
+    const message = trimmedBody.length > 0 ? `${subject}\n\n${trimmedBody}\n` : `${subject}\n`;
+    await writeFile(msgPath, message);
     try {
-      gitSync(repoRoot, ['commit', '-m', subject, '-F', bodyPath]);
+      gitSync(repoRoot, ['commit', '-F', msgPath]);
       return { ok: true };
     } catch (err) {
       // Pre-commit / commit-msg hook failures land here. ADR §P4: both
@@ -745,7 +813,11 @@ async function executeMode({
       repoRoot,
       parentWorkflowId: fresh.parent_workflow,
       originatingSubtaskId: fresh.originating_subtask,
-      engineerWorkflowId: fresh.id,
+      // ADR-0028 Codex peer review A1 — engineer workflow frontmatter
+      // uses `workflow_id` (state.mjs:1583), not `id`. The earlier
+      // `fresh.id` reference would throw on every orchestrator-linked
+      // workflow before set-terminal landed.
+      engineerWorkflowId: fresh.workflow_id,
       commit: commitSha,
       closedAt: closedAtIso,
       host: flags.host,

@@ -504,6 +504,18 @@ describe('assertSafePath — pathspec injection defense (ADR-0028 N1)', () => {
     throws(() => assertSafePath('../escape'), /traversal/);
     throws(() => assertSafePath('foo/../bar'), /traversal/);
   });
+
+  it('rejects "." current-dir pathspec and trailing /. or /.. variants (A7)', () => {
+    // ADR-0028 Codex peer review A7 — current-dir-equivalent forms
+    // resolve to broad git pathspecs and must be rejected alongside
+    // the .. variants.
+    throws(() => assertSafePath('.'), /traversal/);
+    throws(() => assertSafePath('./'), /traversal/);
+    throws(() => assertSafePath('./escape'), /traversal/);
+    throws(() => assertSafePath('foo/..'), /traversal/);
+    throws(() => assertSafePath('foo/.'), /traversal/);
+    throws(() => assertSafePath('foo/./bar'), /traversal/);
+  });
 });
 
 // -----------------------------------------------------------------------------

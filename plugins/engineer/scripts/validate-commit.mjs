@@ -124,9 +124,23 @@ export function assertSafePath(filePath) {
       `assertSafePath: path must be repo-relative, not absolute; got ${JSON.stringify(filePath)}`,
     );
   }
-  if (filePath === '..' || filePath.startsWith('../') || filePath.includes('/../')) {
+  // ADR-0028 Codex peer review A7 — reject every form that resolves to
+  // the current directory or above. Earlier draft only caught `..`
+  // prefix forms; the trailing `/..` and the bare `.` (current dir)
+  // are equally broad pathspecs that would sweep adjacent staged
+  // work.
+  if (
+    filePath === '..' ||
+    filePath === '.' ||
+    filePath.startsWith('../') ||
+    filePath.startsWith('./') ||
+    filePath.endsWith('/..') ||
+    filePath.endsWith('/.') ||
+    filePath.includes('/../') ||
+    filePath.includes('/./')
+  ) {
     throw new Error(
-      `assertSafePath: path must not contain ".." traversal segments; got ${JSON.stringify(filePath)}`,
+      `assertSafePath: path must not contain "." or ".." traversal segments; got ${JSON.stringify(filePath)}`,
     );
   }
 }

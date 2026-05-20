@@ -12,7 +12,8 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, deepStrictEqual, ok, throws } from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +26,7 @@ const {
   stripTrailers,
   composeBody,
   inferSubject,
+  packageScope,
   parseSimpleToml,
   readPhase7Config,
   decideStagingBranch,
@@ -208,6 +210,263 @@ describe('inferSubject — P6 subject inference', () => {
     });
     ok(s.endsWith('...'));
     ok(s.length <= 'fix(engineer): '.length + 60);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// packageScope — M1 disambiguation (Phase 5 critique)
+
+describe('packageScope — last-segment + collision disambiguation (M1)', () => {
+  it('returns null for null / empty packageKey', () => {
+    strictEqual(packageScope(null), null);
+    strictEqual(packageScope(''), null);
+  });
+
+  it('default heuristic returns the last segment without a packageMap', () => {
+    strictEqual(packageScope('plugins/engineer'), 'engineer');
+    strictEqual(packageScope('plugins/runtime'), 'runtime');
+    strictEqual(packageScope('companions'), 'companions');
+  });
+
+  it('keeps the bare last segment when there is no collision in packageMap', () => {
+    const map = ['plugins/engineer', 'plugins/runtime', 'plugins/orchestrator'];
+    strictEqual(packageScope('plugins/engineer', map), 'engineer');
+    strictEqual(packageScope('plugins/runtime', map), 'runtime');
+  });
+
+  it('uses plugin/<name> disambiguation when plugins/<name> collides with a root <name>', () => {
+    // M1 — root `companions` vs `plugins/companions` both produce
+    // 'companions' under the default heuristic; the plugins/* variant
+    // adopts the slash form per the existing convention (commit
+    // 91d1de9 feat(plugin/engineer): ...).
+    const map = ['companions', 'plugins/companions', 'plugins/engineer'];
+    strictEqual(packageScope('plugins/companions', map), 'plugin/companions');
+    strictEqual(packageScope('companions', map), 'companions');
+    // Unrelated entries unaffected.
+    strictEqual(packageScope('plugins/engineer', map), 'engineer');
+  });
+
+  it('returns the bare last segment for the non-plugins side of a collision', () => {
+    const map = ['foo', 'sub/foo'];
+    strictEqual(packageScope('foo', map), 'foo');
+    // Non-plugins-prefix collision keeps the bare segment for the
+    // shorter key; the longer key is left bare too (no plugin/ prefix
+    // applies because the path is not `plugins/...`).
+    strictEqual(packageScope('sub/foo', map), 'foo');
+  });
+});
+
+describe('inferSubject — disambiguation pass-through', () => {
+  it('forwards packageMap to packageScope and produces plugin/companions on collision', () => {
+    const map = ['companions', 'plugins/companions'];
+    const s = inferSubject({
+      packageKey: 'plugins/companions',
+      packageMap: map,
+      frontmatter: { verb: 'compose', profile: 'code', original_request: 'wire X' },
+    });
+    strictEqual(s, 'feat(plugin/companions): wire X');
+  });
+
+  it('keeps the short scope when no collision', () => {
+    const map = ['companions', 'plugins/engineer'];
+    const s = inferSubject({
+      packageKey: 'plugins/engineer',
+      packageMap: map,
+      frontmatter: { verb: 'compose', profile: 'code', original_request: 'wire Y' },
+    });
+    strictEqual(s, 'feat(engineer): wire Y');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// e2e smoke — driver pipeline against a sandbox git repo (Phase 5 critique
+// gap closure). One happy path: empty-manifest + workflow + accept-current-tree.
+// We do NOT spin up a full schema-1.2 workflow file here (that exercises
+// state.mjs's frontmatter validators which have their own coverage); instead
+// we hand-craft the minimum frontmatter the driver needs and verify the
+// end-to-end planMode and executeMode pipelines move HEAD and write
+// terminal_marker.
+
+const PHASE7_BIN = resolve(REPO_ROOT, 'plugins/engineer/scripts/phase7-commit.mjs');
+const STATE_BIN = resolve(REPO_ROOT, 'plugins/engineer/scripts/state.mjs');
+const REL_PLEASE_CFG = resolve(REPO_ROOT, 'release-please-config.json');
+
+function shell(cwd, cmd, args) {
+  return execFileSync(cmd, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
+}
+
+async function makeSandboxRepo() {
+  const dir = await mkdtemp(join(tmpdir(), 'phase7-e2e-'));
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+  execFileSync('git', ['config', 'user.name', 'phase7-e2e'], { cwd: dir });
+  execFileSync('git', ['config', 'user.email', 'phase7-e2e@example.invalid'], { cwd: dir });
+  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+  // Copy the real release-please-config.json so detectCrossPackageRoutes
+  // recognizes the same package layout as the production repo.
+  await writeFile(join(dir, 'release-please-config.json'), await readFile(REL_PLEASE_CFG, 'utf8'));
+  // .gitignore so .agentic-plugins/state/ stays out of git_changes.
+  await writeFile(join(dir, '.gitignore'), '.agentic-plugins/state/\n');
+  await writeFile(join(dir, 'README.md'), '# sandbox\n');
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  execFileSync('git', ['commit', '-qm', 'chore: sandbox baseline', '--no-verify'], { cwd: dir });
+  return dir;
+}
+
+/**
+ * Bootstrap a workflow file via state.mjs create + optional
+ * record-composed-file calls. Returns the workflow path. Using the
+ * production state.mjs CLI guarantees schema 1.2 frontmatter that
+ * yaml-mini parses cleanly.
+ */
+function bootstrapWorkflow(dir, { manifest = [] } = {}) {
+  const head = shell(dir, 'git', ['rev-parse', 'HEAD']);
+  const statusDigest = execFileSync('shasum', ['-a', '256'], {
+    input: execFileSync('git', ['status', '--porcelain=v1', '-z'], { cwd: dir }),
+    encoding: 'utf8',
+  }).trim().split(/\s+/)[0];
+  const wfPath = shell(dir, 'node', [
+    STATE_BIN, 'create',
+    '--repo-root', dir,
+    '--verb', 'compose',
+    '--profile', 'code',
+    '--persona', 'engineer',
+    '--host', 'claude',
+    '--workflow-type', 'start',
+    '--git-baseline-branch', 'main',
+    '--git-baseline-head', head,
+    '--status-digest', statusDigest,
+    '--current-phase', 'phase-4-implement',
+    '--next-action', 'phase 7 sandbox',
+    '--original-request', 'e2e sandbox subject',
+  ]);
+  for (const entry of manifest) {
+    shell(dir, 'node', [
+      STATE_BIN, 'record-composed-file',
+      '--workflow-path', wfPath,
+      '--path', entry.path,
+      '--op', entry.op,
+    ]);
+  }
+  return wfPath;
+}
+
+function runDriver(cwd, args) {
+  try {
+    const stdout = execFileSync('node', [PHASE7_BIN, ...args], {
+      cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { code: 0, stdout: stdout.trimEnd(), stderr: '' };
+  } catch (err) {
+    return {
+      code: err.status ?? 1,
+      stdout: err.stdout ? String(err.stdout).trimEnd() : '',
+      stderr: err.stderr ? String(err.stderr).trimEnd() : '',
+    };
+  }
+}
+
+describe('phase7-commit driver — sandbox e2e (Phase 5 critique gap closure)', () => {
+  it('plan mode JSON emits ask_user=true for empty-manifest', async () => {
+    const dir = await makeSandboxRepo();
+    try {
+      const wf = bootstrapWorkflow(dir);
+      // Add a tracked-file modification + an untracked file AFTER
+      // bootstrap so they show up in git_changes (status_digest was
+      // captured pre-mutation).
+      await writeFile(join(dir, 'README.md'), '# sandbox\nmod\n');
+      await writeFile(join(dir, 'new.md'), 'untracked\n');
+      const result = runDriver(dir, [
+        '--mode', 'plan',
+        '--workflow-path', wf,
+        '--repo-root', dir,
+        '--host', 'claude',
+      ]);
+      strictEqual(result.code, 0, `expected exit 0; stderr=${result.stderr}`);
+      const plan = JSON.parse(result.stdout);
+      strictEqual(plan.mode, 'plan');
+      strictEqual(plan.branch, 'empty-manifest');
+      strictEqual(plan.ask_user, true);
+      ok(plan.git_changes.includes('README.md'));
+      ok(plan.git_changes.includes('new.md'));
+      // README + new.md → both are root (exempt) → docs-only.
+      strictEqual(plan.classification, 'docs-only');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('execute mode lands a commit and writes terminal_marker=true', async () => {
+    const dir = await makeSandboxRepo();
+    try {
+      // bootstrapWorkflow with the manifest entry so the staging branch
+      // is manifest-intersects-git (no ask_user gate). The write
+      // happens AFTER bootstrap so the file shows up in git_changes.
+      const wf = bootstrapWorkflow(dir, {
+        manifest: [{ path: 'README.md', op: 'edit' }],
+      });
+      await writeFile(join(dir, 'README.md'), '# sandbox\ne2e change\n');
+      const before = shell(dir, 'git', ['rev-parse', 'HEAD']);
+      const result = runDriver(dir, [
+        '--mode', 'execute',
+        '--workflow-path', wf,
+        '--repo-root', dir,
+        '--host', 'claude',
+        '--subject', 'docs: e2e sandbox README update',
+        '--confirm-non-interactive',
+        '--lenient-cc',
+      ]);
+      strictEqual(result.code, 0, `expected exit 0; stderr=${result.stderr}`);
+      const after = shell(dir, 'git', ['rev-parse', 'HEAD']);
+      ok(after !== before, 'HEAD must move after execute mode');
+      // Verify commit subject + clean working tree.
+      const subject = shell(dir, 'git', ['log', '-1', '--format=%s']);
+      strictEqual(subject, 'docs: e2e sandbox README update');
+      const porcelain = shell(dir, 'git', ['status', '--porcelain=v1']);
+      strictEqual(porcelain, '', 'working tree must be clean after commit');
+      // Verify workflow frontmatter has terminal_marker: true and
+      // current_phase: commit-complete after the driver wrote set-terminal.
+      const wfText = await readFile(wf, 'utf8');
+      ok(/terminal_marker:\s*true/.test(wfText), 'terminal_marker must be true');
+      ok(/current_phase:\s*"?commit-complete/.test(wfText), 'current_phase must be commit-complete');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects --subject when shouldSplit (multi-package staging set)', async () => {
+    const dir = await makeSandboxRepo();
+    try {
+      // bootstrapWorkflow records the manifest entries via
+      // record-composed-file; assertSafePath gates pathspec injection
+      // at the write boundary, which is the same hardening Layer 3
+      // re-runs before each git add.
+      const wf = bootstrapWorkflow(dir, {
+        manifest: [
+          { path: 'plugins/engineer/a.mjs', op: 'create' },
+          { path: 'plugins/runtime/b.mjs', op: 'create' },
+        ],
+      });
+      await mkdir(join(dir, 'plugins', 'engineer'), { recursive: true });
+      await mkdir(join(dir, 'plugins', 'runtime'), { recursive: true });
+      await writeFile(join(dir, 'plugins', 'engineer', 'a.mjs'), 'export const a = 1;\n');
+      await writeFile(join(dir, 'plugins', 'runtime', 'b.mjs'), 'export const b = 2;\n');
+      const result = runDriver(dir, [
+        '--mode', 'execute',
+        '--workflow-path', wf,
+        '--repo-root', dir,
+        '--host', 'claude',
+        '--subject', 'feat: should be rejected',
+        '--confirm-non-interactive',
+        '--lenient-cc',
+      ]);
+      ok(result.code !== 0, 'driver must reject --subject when requiresSplit=true');
+      ok(
+        /not allowed when the staging set requires a split/.test(result.stderr),
+        `stderr should mention split policy: ${result.stderr}`,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 
