@@ -36,6 +36,7 @@ const {
   isExemptPath,
   detectCrossPackageRoutes,
   classifyMixedCase,
+  assertSafePath,
 } = await import(VALIDATE_COMMIT_PATH);
 
 // -----------------------------------------------------------------------------
@@ -458,6 +459,62 @@ describe('classifyMixedCase — explicit enum surface', () => {
       classifyMixedCase({ packageCount: 0, hasExempt: false }),
       'empty',
     );
+  });
+});
+
+// -----------------------------------------------------------------------------
+// assertSafePath — pathspec injection defense shared by Layer 2 write-side
+// (state.mjs recordManifestEntry) and Layer 3 read-side (phase7-commit.mjs
+// pre-stage re-validation) per ADR-0028 §Layer-2 helper header.
+
+describe('assertSafePath — pathspec injection defense (ADR-0028 N1)', () => {
+  it('accepts ordinary repo-relative paths', () => {
+    assertSafePath('plugins/engineer/scripts/validate-commit.mjs');
+    assertSafePath('docs/adr/0028-engineer-phase7-commit-automation.md');
+    assertSafePath('AGENTS.md');
+    assertSafePath('a');
+  });
+
+  it('rejects empty / non-string input', () => {
+    throws(() => assertSafePath(''), /non-empty string/);
+    throws(() => assertSafePath(null), /non-empty string/);
+    throws(() => assertSafePath(undefined), /non-empty string/);
+    throws(() => assertSafePath(42), /non-empty string/);
+  });
+
+  it('rejects leading dash (flag injection: -A / -f / --force)', () => {
+    throws(() => assertSafePath('-A'), /leading dash/);
+    throws(() => assertSafePath('-rf'), /leading dash/);
+    throws(() => assertSafePath('--force'), /leading dash/);
+  });
+
+  it('rejects leading colon (git pathspec magic prefix)', () => {
+    throws(() => assertSafePath(':(top)'), /pathspec magic/);
+    throws(() => assertSafePath(':!exclude'), /pathspec magic/);
+    throws(() => assertSafePath(':/from-root'), /pathspec magic/);
+  });
+
+  it('rejects absolute paths', () => {
+    throws(() => assertSafePath('/etc/passwd'), /repo-relative/);
+    throws(() => assertSafePath('/tmp/x.mjs'), /repo-relative/);
+  });
+
+  it('rejects ".." traversal segments', () => {
+    throws(() => assertSafePath('..'), /traversal/);
+    throws(() => assertSafePath('../escape'), /traversal/);
+    throws(() => assertSafePath('foo/../bar'), /traversal/);
+  });
+
+  it('rejects "." current-dir pathspec and trailing /. or /.. variants (A7)', () => {
+    // ADR-0028 Codex peer review A7 — current-dir-equivalent forms
+    // resolve to broad git pathspecs and must be rejected alongside
+    // the .. variants.
+    throws(() => assertSafePath('.'), /traversal/);
+    throws(() => assertSafePath('./'), /traversal/);
+    throws(() => assertSafePath('./escape'), /traversal/);
+    throws(() => assertSafePath('foo/..'), /traversal/);
+    throws(() => assertSafePath('foo/.'), /traversal/);
+    throws(() => assertSafePath('foo/./bar'), /traversal/);
   });
 });
 

@@ -83,6 +83,69 @@ export async function readPackageMap(configPath, { strict = false } = {}) {
 }
 
 // -----------------------------------------------------------------------------
+// assertSafePath — pathspec injection defense (ADR-0028 N1).
+//
+// Single source of truth for the four checks that protect every `git add
+// <path>` consumer of a stored path (Layer 2 write helpers in state.mjs
+// and Layer 3 phase7-commit.mjs read-side pre-stage re-validation). The
+// helper throws on any of:
+//
+//   - empty / non-string input
+//   - leading "-"  (flag injection vector: -A / -f / --force)
+//   - leading ":"  (git pathspec magic: `:(top)`, `:!exclude`, `:/from-root`)
+//   - absolute     (`/etc/passwd`, `/tmp/...`)
+//   - ".." traversal segments (`..`, `../escape`, `foo/../bar`)
+//
+// PR1 (ADR-0028 §Layer-2) inlined these checks in state.mjs
+// recordManifestEntry; the N1 deferral filed in PR1's merge commit body
+// promoted the checks into a shared helper for Layer 3 to re-use without
+// duplication.
+
+export function assertSafePath(filePath) {
+  if (typeof filePath !== 'string' || filePath.length === 0) {
+    throw new Error(
+      `assertSafePath: path must be a non-empty string (got ${JSON.stringify(filePath)})`,
+    );
+  }
+  if (filePath.startsWith('-')) {
+    throw new Error(
+      `assertSafePath: path must not start with "-" (leading dash is a flag injection vector: -A / -f); ` +
+      `got ${JSON.stringify(filePath)}`,
+    );
+  }
+  if (filePath.startsWith(':')) {
+    throw new Error(
+      `assertSafePath: path must not start with ":" (git pathspec magic prefix broadens scope); ` +
+      `got ${JSON.stringify(filePath)}`,
+    );
+  }
+  if (filePath.startsWith('/')) {
+    throw new Error(
+      `assertSafePath: path must be repo-relative, not absolute; got ${JSON.stringify(filePath)}`,
+    );
+  }
+  // ADR-0028 Codex peer review A7 — reject every form that resolves to
+  // the current directory or above. Earlier draft only caught `..`
+  // prefix forms; the trailing `/..` and the bare `.` (current dir)
+  // are equally broad pathspecs that would sweep adjacent staged
+  // work.
+  if (
+    filePath === '..' ||
+    filePath === '.' ||
+    filePath.startsWith('../') ||
+    filePath.startsWith('./') ||
+    filePath.endsWith('/..') ||
+    filePath.endsWith('/.') ||
+    filePath.includes('/../') ||
+    filePath.includes('/./')
+  ) {
+    throw new Error(
+      `assertSafePath: path must not contain "." or ".." traversal segments; got ${JSON.stringify(filePath)}`,
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
 // isExemptPath — STRUCTURAL "not in any package prefix" predicate.
 
 export function isExemptPath(path, packageMap) {

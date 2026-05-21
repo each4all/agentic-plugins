@@ -44,6 +44,11 @@ import { hrtime, pid } from 'node:process';
 // the only `child_process` use in state.mjs; all other modules
 // continue to inject the branch via `gitBaseline.branch`.
 import { execFileSync } from 'node:child_process';
+// ADR-0028 N1 — shared pathspec injection defense for Layer 2 write-side
+// (recordManifestEntry) and Layer 3 read-side (phase7-commit.mjs
+// pre-stage re-validation). Single source of truth in validate-commit.mjs
+// per PR1 deferral.
+import { assertSafePath } from './validate-commit.mjs';
 
 // -----------------------------------------------------------------------------
 // Constants — ADR-0011 §1, §2, §3 + ADR-0017 schema 1.1
@@ -1982,22 +1987,23 @@ export async function commitEnsemble({
 //
 // Pathspec injection defense (Codex critique M2 + Refine-verify N1):
 // `path` is stored verbatim for Phase 7 Layer 3 to consume via
-// `git add <path>`. To prevent injection vectors the helper rejects four
-// patterns at the WRITE boundary: leading `-` (flag injection: -A / -f),
-// leading `:` (git pathspec magic: `:(top)`, `:!exclude`, `:/from-root`),
-// absolute paths (`/etc/passwd` etc.), and `..` traversal segments.
+// `git add <path>`. The four checks (leading `-` / `:` / `/`, `..`
+// traversal) live in the shared `assertSafePath` helper at
+// `plugins/engineer/scripts/validate-commit.mjs` so the WRITE boundary
+// here and the Layer 3 READ-side gate in `phase7-commit.mjs` share a
+// single source of truth (PR1 N1 deferral closure, ADR-0028 §Layer-3).
 //
 // READ-side defense — Layer 3 re-validation contract: the parser
 // (`parseWorkflowFile` + `validateListOfObjectsField`) does NOT re-run
 // the four pathspec checks on entries READ BACK from disk. A workflow
 // file that is hand-edited or originated outside the helper code path
 // can therefore carry a malicious `path` value. Layer 3's Phase 7
-// staging code (`plugins/engineer/scripts/phase7-commit.mjs`, lands
-// in a follow-up PR) MUST re-validate each `commit_manifest[*].path`
-// before passing to `git add`. The read-side parser stays permissive
-// so legitimate user edits (e.g., fixing a typo in `path`) keep
-// working; write-side hardening + Layer 3 re-validation is the
-// two-layer defense.
+// staging code (`plugins/engineer/scripts/phase7-commit.mjs`) MUST
+// re-validate each `commit_manifest[*].path` (via the same
+// `assertSafePath`) before passing to `git add`. The read-side parser
+// stays permissive so legitimate user edits (e.g., fixing a typo in
+// `path`) keep working; write-side hardening + Layer 3 re-validation
+// is the two-layer defense.
 //
 // Legacy-schema policy (Codex compose-time review G2): a workflow file on
 // the disk-recorded schema `"1.1"` is permitted to receive a
@@ -2026,42 +2032,18 @@ async function recordManifestEntry({
   if (workflowPath === undefined || workflowPath === null || workflowPath === '') {
     return { skipped: true, reason: 'no-active-workflow' };
   }
-  if (typeof filePath !== 'string' || filePath.length === 0) {
+  // Pathspec injection defense — shared helper covers the four checks
+  // (leading `-`, leading `:`, absolute, `..` traversal). The same helper
+  // is re-used by phase7-commit.mjs's read-side pre-stage gate so the
+  // hardening lives in one place (ADR-0028 N1 — PR1 deferral promoted to
+  // shared via validate-commit.mjs#assertSafePath).
+  try {
+    assertSafePath(filePath);
+  } catch (err) {
+    // Preserve the original recordManifestEntry-prefixed error surface
+    // (test assertions and external callers key on this).
     throw new Error(
-      `recordManifestEntry: path must be a non-empty string (got ${JSON.stringify(filePath)})`,
-    );
-  }
-  // Codex critique M2 [security] — recordManifestEntry stores `path` for
-  // future `git add <path>` consumption in Phase 7 Layer 3. Reject the
-  // three known pathspec injection vectors at the helper boundary so the
-  // hardening does not depend on Layer 3 implementation details. The
-  // checks mirror what `git add -- <safe-pathspec>` would protect against
-  // when the `--` separator is absent.
-  if (filePath.startsWith('-')) {
-    throw new Error(
-      `recordManifestEntry: path must not start with "-" (leading dash is a flag injection vector: -A / -f); ` +
-      `got ${JSON.stringify(filePath)}`,
-    );
-  }
-  if (filePath.startsWith(':')) {
-    // Covers `:(...)`, `:!`, `:/` — all git pathspec magic prefixes.
-    throw new Error(
-      `recordManifestEntry: path must not start with ":" (git pathspec magic prefix broadens scope); ` +
-      `got ${JSON.stringify(filePath)}`,
-    );
-  }
-  if (filePath.startsWith('/')) {
-    throw new Error(
-      `recordManifestEntry: path must be repo-relative, not absolute; got ${JSON.stringify(filePath)}`,
-    );
-  }
-  // Path-traversal rejection — consistent with the "repo-relative" error
-  // wording above. Without this guard a `../escape` segment slips past
-  // Layer 2 and Layer 3's git_changes intersection is the only defense
-  // (Codex Refine-verify regression risk note).
-  if (filePath === '..' || filePath.startsWith('../') || filePath.includes('/../')) {
-    throw new Error(
-      `recordManifestEntry: path must not contain ".." traversal segments; got ${JSON.stringify(filePath)}`,
+      `recordManifestEntry: ${err.message.replace(/^assertSafePath:\s*/, '')}`,
     );
   }
   if (!VALID_MANIFEST_OPS.has(op)) {
@@ -2471,6 +2453,19 @@ export function noActiveChildrenCheck(frontmatter) {
 }
 
 /**
+ * ADR-0028 §P11 — pending_ensemble gate (phase7-commit.mjs uses this
+ * before set-terminal). A workflow may simultaneously hold
+ * `pending_ensemble: [...]` AND `terminal_marker: true` while a peer is
+ * still running; the four Stop hook gates do NOT detect that race. This
+ * check closes the gap. Returns true when `pending_ensemble` is absent
+ * or empty, false otherwise.
+ */
+export function noPendingEnsembleCheck(frontmatter) {
+  const list = frontmatter?.pending_ensemble;
+  return !Array.isArray(list) || list.length === 0;
+}
+
+/**
  * ADR-0019 §5 PR-E — mid-flight detach path invoked by orchestrator
  * /finalize / /abort step 2 when a child engineer workflow has NOT
  * reached a terminal commit. Two operations in one logical action:
@@ -2713,6 +2708,118 @@ export async function diagnoseRedundancy({
 }
 
 // -----------------------------------------------------------------------------
+// Public API: evaluateCleanBaseline + runCleanBaselineCheck (ADR-0028 §Layer-1)
+//
+// Phase 0 clean-baseline gate. Inspects the working tree at workflow
+// START — before `state.mjs create` — and refuses to bootstrap when the
+// tree carries tracked modifications, staged changes, or untracked files
+// (excluding the `.agentic-plugins/state/**` workflow storage, which the
+// engineer plugin itself writes during normal operation).
+//
+// The pure decision function is `evaluateCleanBaseline({statusPorcelain,
+// acceptCurrentTree})`; the CLI wrapper `runCleanBaselineCheck` shells
+// out to `git status --porcelain=v1` and forwards the parsed result. The
+// `ACCEPT_CURRENT_TREE=1` env-var (or `--accept-current-tree` CLI flag)
+// flips the status to `'accepted'` — the workflow's commit will sweep
+// whatever was in the tree; the user acknowledges that.
+
+const WORKFLOW_STORAGE_PREFIX = '.agentic-plugins/state/';
+
+/**
+ * Pure decision: classify a `git status --porcelain=v1` blob.
+ *
+ * @param {object}  args
+ * @param {string}  args.statusPorcelain — verbatim porcelain v1 output
+ * @param {boolean} [args.acceptCurrentTree=false] — accept-current-tree bypass
+ * @returns {{
+ *   status: 'clean' | 'dirty' | 'accepted',
+ *   categories: { modified: string[], staged: string[], untracked: string[] },
+ * }}
+ */
+export function evaluateCleanBaseline({
+  statusPorcelain = '',
+  acceptCurrentTree = false,
+} = {}) {
+  const categories = { modified: [], staged: [], untracked: [] };
+
+  if (typeof statusPorcelain === 'string' && statusPorcelain.length > 0) {
+    const lines = statusPorcelain.split('\n').filter((l) => l.length > 0);
+    for (const line of lines) {
+      // Porcelain v1 line shape: "XY <path>" or "R  <old> -> <new>".
+      // X = index column, Y = working-tree column.
+      if (line.length < 3) continue;
+      const indexCh = line[0];
+      const workCh = line[1];
+      let path = line.slice(3);
+      // Rename rows surface "old -> new" in the path column.
+      const arrowIdx = path.indexOf(' -> ');
+      if (arrowIdx !== -1) {
+        path = path.slice(arrowIdx + 4);
+      }
+      // Exclude workflow-storage entries entirely — these are engineer's
+      // own bookkeeping and never belong on the dirty list.
+      if (path.startsWith(WORKFLOW_STORAGE_PREFIX)) continue;
+      if (indexCh === '?' && workCh === '?') {
+        categories.untracked.push(path);
+        continue;
+      }
+      if (indexCh !== ' ' && indexCh !== '?') {
+        categories.staged.push(path);
+      }
+      if (workCh !== ' ' && workCh !== '?') {
+        categories.modified.push(path);
+      }
+    }
+  }
+
+  const isDirty =
+    categories.modified.length > 0 ||
+    categories.staged.length > 0 ||
+    categories.untracked.length > 0;
+
+  let status;
+  if (!isDirty) status = 'clean';
+  else if (acceptCurrentTree) status = 'accepted';
+  else status = 'dirty';
+
+  return { status, categories };
+}
+
+/**
+ * CLI wrapper: run `git status --porcelain=v1` under `repoRoot`, then
+ * delegate to `evaluateCleanBaseline`. Returns the same shape as the
+ * pure function plus a `git_present` flag so the bash caller can
+ * distinguish "no overlap" from "git missing → probe blind".
+ */
+export function runCleanBaselineCheck({ repoRoot, acceptCurrentTree = false } = {}) {
+  if (!repoRoot || typeof repoRoot !== 'string') {
+    throw new Error('runCleanBaselineCheck: repoRoot must be a non-empty string');
+  }
+  let statusPorcelain = '';
+  let gitPresent = true;
+  try {
+    statusPorcelain = execFileSync('git', ['status', '--porcelain=v1'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      gitPresent = false;
+    } else {
+      // Any other `git status` failure is reported back to the caller
+      // so the gate prose can surface it rather than masquerading as
+      // a clean tree.
+      throw new Error(
+        `runCleanBaselineCheck: git status failed (${err && err.message ? err.message : 'unknown error'})`,
+      );
+    }
+  }
+  const decision = evaluateCleanBaseline({ statusPorcelain, acceptCurrentTree });
+  return { ...decision, git_present: gitPresent };
+}
+
+// -----------------------------------------------------------------------------
 // CLI mode
 
 function cliParseFlags(argv) {
@@ -2838,6 +2945,13 @@ function cliPrintHelp() {
       '    Emits JSON: { status: "no-redundancy" | "redundancy", scanned: {...},',
       '    evidence: {kind, ref} | null, recommended_action: "archive" | null }. Caller',
       '    surfaces evidence; user decides proceed/abort. Never auto-archives.',
+      '',
+      '  check-clean-baseline --repo-root <path> [--accept-current-tree true|false]',
+      '    ADR-0028 §Layer-1 — Phase 0 clean-baseline gate. Runs `git status',
+      '    --porcelain=v1` and classifies the tree as clean / dirty / accepted',
+      '    (excluding .agentic-plugins/state/** workflow storage). Bash callers also',
+      '    honor ACCEPT_CURRENT_TREE=1 in the environment for the same bypass. Emits',
+      '    JSON: { status, categories: {modified, staged, untracked}, git_present }.',
       '',
       '  stop-archive --workflow-path <path> --host <host> --repo-root <path>',
       '               [--head-sha <sha>] [--head-subject <text>] [--status-digest <hex>]',
@@ -3111,6 +3225,24 @@ async function cliMain(argv) {
         const result = await diagnoseRedundancy({
           repoRoot: flags['repo-root'],
           baseBranch: flags['base-branch'] ?? 'origin/main',
+        });
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        return 0;
+      }
+
+      // ADR-0028 §Layer-1 — Phase 0 clean-baseline gate. Shells out to
+      // `git status --porcelain=v1` and classifies dirty/clean/accepted
+      // with workflow-storage entries excluded. JSON-only stdout so the
+      // bash caller in commands/start.md can parse via jq.
+      case 'check-clean-baseline': {
+        cliRequire(flags, ['repo-root']);
+        const acceptCurrentTree =
+          flags['accept-current-tree'] === true ||
+          flags['accept-current-tree'] === 'true' ||
+          process.env.ACCEPT_CURRENT_TREE === '1';
+        const result = runCleanBaselineCheck({
+          repoRoot: flags['repo-root'],
+          acceptCurrentTree,
         });
         process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
         return 0;

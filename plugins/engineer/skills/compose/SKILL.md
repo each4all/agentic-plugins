@@ -154,6 +154,33 @@ implementation progress to its workflow file per
 
 When invoked standalone, no workflow file write occurs.
 
+### Layer 2 commit-manifest recording (`code` profile only, command-mode only — ADR-0028 §Layer-2)
+
+When this skill runs in `code` profile **and** is invoked as a sub-step
+of a workflow command (i.e., `$ACTIVE` is bound to the workflow file),
+record every Write/Edit on a tracked path into the workflow's
+`commit_manifest` so Phase 7 can intersect the manifest with
+`git_changes` and stage only the workflow-intended files:
+
+```bash
+# After each Write or Edit operation on a tracked path during the
+# RED-GREEN-REFACTOR loop, append a manifest entry:
+node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" record-composed-file \
+  --workflow-path "$ACTIVE" \
+  --path "<repo-relative path>" \
+  --op create   # or "edit" for an existing file
+```
+
+The CLI subcommand is a no-op when `--workflow-path ""` is passed
+(standalone-mode boundary). `--op` is `create` for a newly added file
+and `edit` for a modification of an existing tracked file. The helper
+re-uses `validate-commit.mjs#assertSafePath` to reject pathspec
+injection at the write boundary (ADR-0028 N1).
+
+`plan` profile composes the plan artifact itself (a state-write through
+`state.mjs append`, not a commit-manifest entry). Only `code` profile's
+file edits produce commit_manifest rows.
+
 ---
 
 ## Anti-patterns (do not produce)

@@ -11,7 +11,7 @@
 // Run via `node --test tests/engineer/test-start-command.mjs`.
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok, match } from 'node:assert/strict';
+import { strictEqual, ok, match, deepStrictEqual } from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +29,8 @@ const ROUTING_CONTRACT_PATH = resolve(
   REPO_ROOT,
   'plugins/engineer/skills/_shared/references/entry-routing-contract.md',
 );
+const STATE_PATH = resolve(REPO_ROOT, 'plugins/engineer/scripts/state.mjs');
+const { evaluateCleanBaseline } = await import(STATE_PATH);
 
 function frontmatter(text) {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -157,12 +159,22 @@ describe('/engineer:start — Phase 1-7 sequencing (ADR-0020 §Sub-decision 2)',
     );
   });
 
-  it('Phase 7 commits and sets terminal state via state.mjs set-terminal', async () => {
+  it('Phase 7 invokes the phase7-commit.mjs driver (ADR-0028 §Layer-3)', async () => {
     const text = await readFile(COMMAND_PATH, 'utf8');
     ok(
-      /state\.mjs[\s\S]{0,200}set-terminal/.test(text),
-      'Phase 7 must call state.mjs set-terminal for auto-archive (ADR-0017 §sub-5)',
+      /phase7-commit\.mjs/.test(text),
+      'Phase 7 must invoke phase7-commit.mjs (the driver writes set-terminal internally)',
     );
+    // Driver is invoked in two steps: --mode plan first, then --mode execute.
+    ok(/--mode plan/.test(text), 'Phase 7 must invoke --mode plan first');
+    ok(/--mode execute/.test(text), 'Phase 7 must invoke --mode execute after user approval');
+  });
+
+  it('Phase 7 surface in SKILL.md narrates the same two-step driver flow (Codex parity)', async () => {
+    const text = await readFile(SKILL_PATH, 'utf8');
+    ok(/phase7-commit\.mjs/.test(text), 'SKILL.md Phase 7 must reference phase7-commit.mjs');
+    ok(/--mode plan/.test(text) && /--mode execute/.test(text),
+       'SKILL.md must narrate the two-step plan + execute flow');
   });
 });
 
@@ -301,5 +313,138 @@ describe('/engineer:start — provenance citations', () => {
       /(investigate.{0,200}frame.{0,200}decide|six.{0,30}verb|6.{0,30}verb)/i.test(text),
       'body must reference the six canonical verbs',
     );
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Layer 1 — Phase 0 clean-baseline gate (ADR-0028 §Layer-1)
+//
+// `evaluateCleanBaseline` is the pure decision function: given the
+// porcelain output and the accept-current-tree bypass flag, it returns
+// {status, categories}. The CLI wrapper in state.mjs runs
+// `git status --porcelain=v1` and forwards the result.
+
+describe('evaluateCleanBaseline — pure decision function (ADR-0028 §Layer-1)', () => {
+  it('returns status=clean for empty porcelain output', () => {
+    const r = evaluateCleanBaseline({ statusPorcelain: '' });
+    strictEqual(r.status, 'clean');
+    deepStrictEqual(r.categories, { modified: [], staged: [], untracked: [] });
+  });
+
+  it('classifies a modified tracked file (" M") as modified', () => {
+    const r = evaluateCleanBaseline({ statusPorcelain: ' M plugins/engineer/scripts/state.mjs\n' });
+    strictEqual(r.status, 'dirty');
+    deepStrictEqual(r.categories.modified, ['plugins/engineer/scripts/state.mjs']);
+    deepStrictEqual(r.categories.staged, []);
+    deepStrictEqual(r.categories.untracked, []);
+  });
+
+  it('classifies a staged-add ("A ") as staged', () => {
+    const r = evaluateCleanBaseline({ statusPorcelain: 'A  docs/new.md\n' });
+    strictEqual(r.status, 'dirty');
+    deepStrictEqual(r.categories.staged, ['docs/new.md']);
+  });
+
+  it('classifies a staged-modify ("M ") as staged', () => {
+    const r = evaluateCleanBaseline({ statusPorcelain: 'M  AGENTS.md\n' });
+    strictEqual(r.status, 'dirty');
+    deepStrictEqual(r.categories.staged, ['AGENTS.md']);
+  });
+
+  it('classifies an untracked file ("??") as untracked', () => {
+    const r = evaluateCleanBaseline({ statusPorcelain: '?? scratch.txt\n' });
+    strictEqual(r.status, 'dirty');
+    deepStrictEqual(r.categories.untracked, ['scratch.txt']);
+  });
+
+  it('excludes .agentic-plugins/state/** from all categories (workflow storage)', () => {
+    // ADR-0028 §Layer-1: "tracked modifications, staged changes, or
+    // untracked files **excluding** the `.agentic-plugins/state` workflow
+    // storage". A workflow file change does NOT make the baseline dirty.
+    const r = evaluateCleanBaseline({
+      statusPorcelain:
+        '?? .agentic-plugins/state/engineer/workflows/x.md\n' +
+        ' M .agentic-plugins/state/engineer/workflows/y.md\n' +
+        'A  .agentic-plugins/state/engineer/workflows/z.md\n',
+    });
+    strictEqual(r.status, 'clean');
+    deepStrictEqual(r.categories, { modified: [], staged: [], untracked: [] });
+  });
+
+  it('preserves non-workflow-storage dirty entries alongside excluded workflow entries', () => {
+    const r = evaluateCleanBaseline({
+      statusPorcelain:
+        ' M plugins/engineer/scripts/state.mjs\n' +
+        ' M .agentic-plugins/state/engineer/workflows/x.md\n',
+    });
+    strictEqual(r.status, 'dirty');
+    deepStrictEqual(r.categories.modified, ['plugins/engineer/scripts/state.mjs']);
+  });
+
+  it('returns status=accepted when acceptCurrentTree=true overrides a dirty tree', () => {
+    // ADR-0028 §Layer-1 accept-current-tree bypass: ACCEPT_CURRENT_TREE=1
+    // env-var lets the workflow sweep the current tree into its commit.
+    // The categories field still surfaces what is dirty so phase7-commit.mjs
+    // can act on it.
+    const r = evaluateCleanBaseline({
+      statusPorcelain: ' M plugins/engineer/scripts/state.mjs\n',
+      acceptCurrentTree: true,
+    });
+    strictEqual(r.status, 'accepted');
+    deepStrictEqual(r.categories.modified, ['plugins/engineer/scripts/state.mjs']);
+  });
+
+  it('returns status=clean when acceptCurrentTree=true but tree is clean (idempotent)', () => {
+    const r = evaluateCleanBaseline({ statusPorcelain: '', acceptCurrentTree: true });
+    strictEqual(r.status, 'clean');
+  });
+
+  it('handles rename ("R ") porcelain entries with the renamed-to path', () => {
+    // `git status --porcelain=v1` rename format: "R  old -> new"
+    const r = evaluateCleanBaseline({
+      statusPorcelain: 'R  old.md -> docs/renamed.md\n',
+    });
+    strictEqual(r.status, 'dirty');
+    deepStrictEqual(r.categories.staged, ['docs/renamed.md']);
+  });
+});
+
+describe('/engineer:start — Layer 1 clean-baseline gate (ADR-0028)', () => {
+  it('invokes state.mjs check-clean-baseline before state.mjs create on the bootstrap path', async () => {
+    const text = await readFile(COMMAND_PATH, 'utf8');
+    ok(
+      /state\.mjs[\s\S]{0,200}check-clean-baseline/.test(text),
+      'Phase 0 bootstrap must call state.mjs check-clean-baseline',
+    );
+    // Gate fires BEFORE the bootstrap state.mjs create. The verb-chain
+    // typed-conflict branch also references "state.mjs create" in prose
+    // so we anchor on the workflow-type=start bootstrap site explicitly.
+    const gateIdx = text.indexOf('check-clean-baseline');
+    const createIdx = text.indexOf('--workflow-type start');
+    ok(gateIdx >= 0, 'check-clean-baseline must appear');
+    ok(createIdx >= 0, '--workflow-type start bootstrap must appear');
+    ok(
+      gateIdx < createIdx,
+      'clean-baseline gate must precede the workflow-type=start bootstrap',
+    );
+  });
+
+  it('cites ADR-0028 §Layer-1 in the gate prose', async () => {
+    const text = await readFile(COMMAND_PATH, 'utf8');
+    ok(/ADR-0028/.test(text), 'Layer 1 gate must cite ADR-0028');
+  });
+
+  it('surfaces all four ADR-0028 §Layer-1 resolutions to the user', async () => {
+    const text = await readFile(COMMAND_PATH, 'utf8');
+    // The four resolutions per ADR §Layer-1: clean, stash, worktree, accept-current-tree.
+    for (const resolution of ['stash', 'worktree', 'accept-current-tree', 'ACCEPT_CURRENT_TREE']) {
+      ok(text.includes(resolution), `Layer 1 gate must offer ${resolution} resolution`);
+    }
+  });
+
+  it('mirrors the Layer 1 gate description in the SKILL.md Codex parity surface', async () => {
+    const skill = await readFile(SKILL_PATH, 'utf8');
+    ok(/clean.{0,30}baseline|Layer.?1/.test(skill), 'SKILL.md must describe the Layer 1 clean-baseline gate');
+    ok(/ACCEPT_CURRENT_TREE/.test(skill), 'SKILL.md must mention the ACCEPT_CURRENT_TREE bypass');
   });
 });

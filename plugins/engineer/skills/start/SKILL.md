@@ -38,11 +38,32 @@ state, recovery path, and evidence even when command syntax differs.
 ## When invoked by command (`/engineer:start` Claude command or `$engineer:start` Codex skill mention)
 
 Phase 0 host-side bootstrap (argument parsing, detached-HEAD guard,
-redundancy probe, active-workflow branching) is owned by the entry
-path: `commands/start.md` on the Claude side carries the canonical
-bash. Direct `$engineer:start` invocation on Codex follows the
-equivalent operational sequence inline using the same engineer
-`scripts/state.mjs` CLI (the state writer is host-agnostic).
+redundancy probe, **Layer 1 clean-baseline gate**, active-workflow
+branching) is owned by the entry path: `commands/start.md` on the
+Claude side carries the canonical bash. Direct `$engineer:start`
+invocation on Codex follows the equivalent operational sequence inline
+using the same engineer `scripts/state.mjs` CLI (the state writer is
+host-agnostic).
+
+The **Layer 1 clean-baseline gate** (ADR-0028 §Layer-1) runs on the
+bootstrap branch — i.e., when `find-active` returns empty and a new
+workflow is about to be created — before `state.mjs create`. It calls
+`state.mjs check-clean-baseline --repo-root <root>` and inspects the
+returned `status` (`clean` / `dirty` / `accepted`). On `dirty` the gate
+refuses to bootstrap and presents four resolutions to the user:
+
+- **clean** — `git restore . ; git clean -fd` and re-run;
+- **stash** — `git stash push --include-untracked`, re-run, then `git stash pop`;
+- **worktree** — escalate to `/runtime:worktree apply` (ADR-0029);
+- **accept-current-tree** — set `ACCEPT_CURRENT_TREE=1` in the environment
+  before re-running. The workflow's commit will sweep whatever was in
+  the tree; the user acknowledges this.
+
+`.agentic-plugins/state/**` is excluded from the dirty check — workflow
+storage is engineer's own bookkeeping and never counts. On `clean` or
+`accepted` the bootstrap proceeds; Phase 7 honors the
+`ACCEPT_CURRENT_TREE` flag by staging all of `git_changes` rather than
+the manifest intersection.
 
 State writes at each phase boundary (`state.mjs append --verb …`)
 are an orchestrator concern, not a skill concern — see
@@ -177,15 +198,46 @@ surface to the user as a design-level issue and discuss whether to
 address now or defer to a separate `/engineer:refine` follow-up
 workflow.
 
-### Phase 7 — Commit
+### Phase 7 — Commit (ADR-0028 §Layer-3)
 
-Terminal runbook: create the commit (and an optional PR if the
-user requests one). Phase 7 itself has no cognitive verb update —
-`refine` is the last cognitive activity recorded. The orchestrator
-writes the workflow's terminal state per
-`skills/_shared/references/orchestration.md` § Terminal write, which
-flips the workflow into the auto-archive whitelist for the next
-Stop hook pass (ADR-0017 §sub-decision-5).
+Terminal runbook: invoke the host-shared `phase7-commit.mjs` driver to
+compose, stage, commit, gate, and set-terminal in one atomic pass.
+Phase 7 itself has no cognitive verb update — `refine` is the last
+cognitive activity recorded.
+
+The driver is invoked in two steps (the agent loop has no stdin to
+prompt the user from inside Node, so the user-approval gate runs in
+the agent dialog between the two CLI invocations):
+
+1. `phase7-commit.mjs --mode plan --workflow-path "$ACTIVE" --repo-root
+   "$REPO_ROOT" --host "$AGENTIC_HOST"` — driver reads the workflow's
+   `commit_manifest`, computes `git_changes` (tracked + untracked
+   minus workflow storage), intersects, classifies cross-package
+   routes (ADR-0028 §P12), and emits a JSON plan with suggested
+   subjects + ask-user signals. NO git mutations.
+2. Codex (or Claude) presents the suggested subjects + staging set to
+   the user; the user accepts / edits the subjects and confirms the
+   set (especially when `ask_user=true` because the manifest is empty
+   or a subset of `git_changes`).
+3. `phase7-commit.mjs --mode execute --workflow-path "$ACTIVE"
+   --repo-root "$REPO_ROOT" --host "$AGENTIC_HOST" --subject "<text>"
+   --confirm-non-interactive` — driver stages with explicit pathspecs
+   (`git add <paths>`, never `-A`), commits per package (P8 split via
+   repeated `--subject-pkg <pkg>=<subj>`), runs P11 / no-children /
+   clean-after-commit / P10 synchronous `writebackParent`, and writes
+   set-terminal LAST (P5 terminal-marker-last invariant).
+
+Layer 3 read-side defense: every `commit_manifest[*].path` is
+re-validated via `assertSafePath` before each `git add` — a workflow
+file hand-edited with an injected path is rejected at the driver
+boundary even though the parser left the field permissive (ADR-0028
+N1).
+
+Hook failures (pre-commit, commit-msg, partial split) emit a
+refine-fallback message on stderr and exit non-zero. The workflow
+remains active (terminal_marker unset); recovery is via
+`/engineer:refine "<failure>"` followed by a fresh `/engineer:start`
+that resumes at Phase 7.
 
 The Stop hook gates auto-archive on four conditions (A1–A4):
 terminal marker, terminal phase, HEAD movement (real commit progress),

@@ -106,6 +106,13 @@ fallback to `plan` with one-line warning.
 Core principle: a plan precedes code. Code without a confirmed plan
 is speculation; code with a plan is verifiable task-by-task.
 
+For `code` profile in command-mode (`$ACTIVE` bound), the skill's
+**Layer 2 commit-manifest recording** step requires
+`state.mjs record-composed-file --workflow-path "$ACTIVE" --path <p>
+--op create|edit` after each Write/Edit on a tracked path. See
+`skills/compose/SKILL.md` § Layer 2 commit-manifest recording for the
+full pattern (ADR-0028 §Layer-2).
+
 ### Ensemble dispatch (Plan-verify point type)
 
 Build the Plan-verify prompt per
