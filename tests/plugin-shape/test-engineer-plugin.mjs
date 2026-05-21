@@ -1115,6 +1115,84 @@ describe('plugins/engineer — decide skill extension markers (ADR-0027 §3.5)',
   });
 });
 
+// =====================
+// ADR-0027 PR3 — size-aware ritual prose presence inside marked regions
+// =====================
+//
+// Per peer Plan-verify gap #5 + Refine-verify follow-up: ritual depth is
+// LLM-prose only with no programmatic test of "depth varies by size".
+// Without this content-sanity lint, a future SKILL.md edit could silently
+// strip the size-aware rendering rules inside any of the four marker
+// regions. The check requires each marked region to mention the literal
+// word `size` AND ALL THREE ritual tier names (`minor`, `standard`,
+// `major`) — the "all three" gate beats a weaker "any one tier" rule
+// where unrelated phrases like "size of this table is minor" could mask
+// the actual ritual contract going missing.
+
+describe('plugins/engineer — decide skill size-contract prose (ADR-0027 PR3 ritual sizing)', () => {
+  it('each @decide:* marker region mentions `size` and all three ritual tier names', async () => {
+    const skillPath = resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md');
+    const text = await readFile(skillPath, 'utf8');
+    const lines = text.split('\n');
+
+    // Re-scan to find pair line ranges (same shape as the §3.5 tests above).
+    const stack = [];
+    const pairs = {};
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(MARKER_LINE_RE);
+      if (!m) continue;
+      if (m[2] === 'begin') stack.push({ id: m[1], line: i + 1 });
+      else {
+        const top = stack.pop();
+        pairs[m[1]] = { beginLine: top.line, endLine: i + 1 };
+      }
+    }
+
+    // Tightened per critique peer review: require BOTH the `size` surface
+    // term AND all three tier names (minor, standard, major) per region.
+    // The original "size + any one tier" check could pass on unrelated
+    // phrases like "size of this table is minor"; requiring all three
+    // tiers makes the lint a meaningful drift detector against future
+    // SKILL.md edits that silently drop the size-aware ritual rules.
+    const SIZE_RE = /\bsize\b/i;
+    const REQUIRED_TIERS = ['minor', 'standard', 'major'];
+
+    for (const id of DECIDE_MARKER_IDS) {
+      const range = pairs[id];
+      ok(range, `${skillPath}: no pair found for "${id}"`);
+      // Body is everything strictly between the begin and end marker
+      // (exclusive of marker lines themselves).
+      const body = lines.slice(range.beginLine, range.endLine - 1).join('\n');
+      ok(
+        SIZE_RE.test(body),
+        `${skillPath}: @decide:${id} marker region must mention "size" so the ADR-0027 PR3 ritual contract remains visible to LLM readers (peer gap #5).`,
+      );
+      const missingTiers = REQUIRED_TIERS.filter(
+        (t) => !new RegExp(`\\b${t}\\b`, 'i').test(body),
+      );
+      ok(
+        missingTiers.length === 0,
+        `${skillPath}: @decide:${id} marker region must mention all three ritual tiers (minor|standard|major) so size-aware rendering does not silently regress (peer gap #5). Missing: ${missingTiers.join(', ')}.`,
+      );
+    }
+  });
+
+  it('compact preset shipped (ADR-0027 PR3 §1.2) and decision-axes.yml has 3 presets', async () => {
+    const yamlPath = resolve(PLUGIN_ROOT, 'skills/decide/references/decision-axes.yml');
+    const text = await readFile(yamlPath, 'utf8');
+    // Coarse YAML-shape check (the registry reader tests cover the parsed
+    // semantics; this lint just guards against the YAML being accidentally
+    // truncated / unshipped).
+    ok(/^\s*compact:\s*$/m.test(text), `${yamlPath}: missing top-level "compact:" preset key`);
+    ok(/^\s*default:\s*$/m.test(text), `${yamlPath}: missing top-level "default:" preset key`);
+    ok(/^\s*nine-axis:\s*$/m.test(text), `${yamlPath}: missing top-level "nine-axis:" preset key`);
+    ok(
+      /entry-routing-guarantee/.test(text),
+      `${yamlPath}: compact preset must include the entry-routing-guarantee axis (ADR-0027 §1.2)`,
+    );
+  });
+});
+
 describe('plugins/engineer — contract version freshness', () => {
   it('all references to companions/contract.md cite the current version', async () => {
     // Extract current version from contract Status block.

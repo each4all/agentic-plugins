@@ -276,10 +276,11 @@ export function resolvePreset({
   const resolved = chosen ?? DEFAULT_FALLBACK;
   if (chosen === null) fallback = true;
 
-  // Construct the ResolvedDecisionContext (§5.6). PR2 populates body /
-  // preset_id / axes / resolved_at. The size / size_explicit / weights
-  // slots are reserved-and-writable so PR3/PR4 can populate them later
-  // without re-shaping the object.
+  // Construct the ResolvedDecisionContext (§5.6). PR2 populated
+  // body / preset_id / axes / resolved_at; PR3 populates
+  // size / size_explicit from the parser (writable for the SKILL.md
+  // marker regions that consume them). PR4 will populate weights from
+  // the --weights parser (still a reserved-and-writable slot).
   const context = {
     body: body ?? "",
     preset_id: resolved.preset_id ?? resolved.id ?? "default",
@@ -312,12 +313,12 @@ async function main(argv) {
   }
 
   // Reuse the shared argument-parser skeleton so the CLI honors the
-  // same §2.3 grammar + --size tier whitelist + --size/--weights stub
-  // warnings as `/engineer:decide`. (peer P-9 / M5 fix)
+  // same §2.3 grammar + --size tier whitelist + --weights stub
+  // warning as `/engineer:decide`. (peer P-9 / M5 fix)
   const { parseArgs } = await import("./lib/decide-args.mjs");
   const parsed = parseArgs(args.slice(1));
 
-  // Surface warnings (last-wins repeats, --size deferred, etc.).
+  // Surface warnings (last-wins repeats, --weights deferred, etc.).
   for (const w of parsed.warnings) process.stderr.write(`warning: ${w}\n`);
 
   // §2.3(3-4): hard halt on parser errors.

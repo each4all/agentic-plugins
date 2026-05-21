@@ -103,6 +103,38 @@ the user's stated quality axes (표준 / 정석 / 권장 / 근본 / 본질) —
 the decision-support quality the engineer plugin targets. The
 `nine-axis` preset extends the mapping to the full 9-axis matrix
 (see `references/decision-axes.yml`).
+
+**Axis selection and ritual size (command-invoked mode, per
+ADR-0027 §1.5)**:
+
+Axis-set resolution follows §1.5 precedence — `--preset=<id>` wins
+outright; absent `--preset`, `--size=<tier>` implies the axis-set
+per §1.5(2):
+
+- `--size=minor` (no `--preset`) → `compact` preset (4 axes —
+  essence, foundation, practical-fit, entry-routing-guarantee). The
+  `entry-routing-guarantee` axis is a single combined check covering
+  the 4 entry-routing-contract guarantees (source-of-truth, root
+  cause, verification evidence, rollback path) per
+  `../_shared/references/entry-routing-contract.md` lines 46-49.
+- `--size=standard` (or no `--size`, no `--preset`) → `default`
+  preset (5 axes; shown in the table above).
+- `--size=major` (no `--preset`) → `nine-axis` preset (9 axes; see
+  `references/decision-axes.yml`).
+
+When both `--preset` and `--size` are passed, `--preset` controls the
+axis-set and `--size` independently controls per-axis rendering depth
+— see `@decide:per-option-output`, `@decide:comparison-table`, and
+`@decide:recommendation-rule` for the size-aware depth rules.
+Example: `--size=minor --preset=nine-axis` renders **9 axes at minor
+depth** — NOT 4 axes at minor depth.
+
+In auto-activated mode (no command, no `$AGENTIC_DECIDE_CONTEXT_FILE`),
+the skill MAY read `--size`-style hints from the user's prose per
+ADR-0027 §2.6 (e.g., "compare these as a minor decision" → minor
+ritual; "this is a major architectural choice" → major ritual). Absent
+any such prose hint, the skill uses the `default` preset at `standard`
+depth.
 <!-- @decide:axis-table:end -->
 
 Follow the Presentation Mode Protocol
@@ -116,7 +148,7 @@ with its multi-perspective analysis.
 For command-invoked mode, render one bullet per axis in the resolved
 preset (from `$AGENTIC_DECIDE_CONTEXT_FILE`), in document order, with
 the axis's English label. The five-bullet template below is the
-`default` preset's rendering.
+`default` preset's rendering at `size=standard`.
 
 ```
 ### Option [letter]: [name]
@@ -132,8 +164,32 @@ the axis's English label. The five-bullet template below is the
   authoritative sources, framework recommendations, community
   consensus] — [source]
 - **Practical Fit**: [substantive assessment — evaluate against
-  THIS project's tech stack, team, timeline, existing patterns]
+  THIS project's tech stack, team, timeline, existing patterns] — [source]
 ```
+
+**Size-aware per-axis depth (per ADR-0027 ritual-sizing ownership)**:
+
+- `size=minor` → 1-2 line assessment per axis. The evidence rule is
+  NOT relaxed — every assessment still carries a short `[source]`
+  parenthetical (file path, doc anchor, or `[uncited inference]` when
+  the assessment is the LLM's own synthesis without an external
+  source). Only the prose verbosity shrinks. For the
+  `entry-routing-guarantee` axis in the `compact` preset, the
+  assessment MUST address all 4 guarantees explicitly (one phrase per
+  guarantee is sufficient at minor size) — see
+  `@decide:recommendation-rule` for the hard-gate behavior when any
+  guarantee is missing.
+- `size=standard` → the template above (substantive WHY + `[source]`
+  per bullet). Absent a prose-hinted size (per ADR-0027 §2.6),
+  auto-activated mode renders at standard depth.
+- `size=major` → the standard template PLUS a `- **2nd-order risks**:`
+  bullet per axis listing second-order dependencies, failure modes,
+  or consumer impact specific to that axis.
+
+If `size=minor` triggered a ritual-fallback (compact preset missing
+or malformed per ADR-0027 §1.6), render the resolved fallback
+preset's axes at minor depth; the entry-routing-guarantee hard-gate
+becomes ADVISORY because the axis is no longer in the resolved set.
 <!-- @decide:per-option-output:end -->
 
 <!-- @decide:comparison-table:begin -->
@@ -141,7 +197,7 @@ the axis's English label. The five-bullet template below is the
 
 For command-invoked mode, render one row per axis in the resolved
 preset, in document order. The five-row template below is the
-`default` preset's rendering.
+`default` preset's rendering at `size=standard`.
 
 ```
 ### Key Differences
@@ -153,6 +209,22 @@ preset, in document order. The five-row template below is the
 | Best Practice | ...    | ...      |     |
 | Practical Fit | ...    | ...      |     |
 ```
+
+**Size-aware cell density (per ADR-0027 ritual-sizing ownership)**:
+
+- `size=minor` → terse cell text (a phrase, not a full sentence per
+  cell). Evidence pointers may collapse to a single short reference
+  per cell when material to the cell's verdict.
+- `size=standard` → the template above (one-sentence-equivalent per
+  cell). Absent a prose-hinted size (per ADR-0027 §2.6),
+  auto-activated mode uses this density.
+- `size=major` → after each axis row, append one **italicized risk
+  note** as a separate row directly beneath the axis row, prefixed
+  with the axis name in italics (e.g., `| _Essence — risk_ | _<note
+  per option>_ | ... |`). Use this single cohesive shape across
+  every major-size comparison table — do NOT introduce a separate
+  risk column, so the comparison-table region stays stable for PR4
+  weighting/sensitivity and PR5 validation surfaces.
 <!-- @decide:comparison-table:end -->
 
 ### Step 4: Recommend
@@ -167,10 +239,32 @@ downgrade based on supporting axes alone — address practical
 concerns in the execution plan instead.
 
 In the `default` preset the decisive axes are Essence and Foundation;
-in the `nine-axis` preset they are also Essence and Foundation
-(per ADR-0027 §1.3 minimum-decisive-axis invariant: every preset
-declares at least two decisive axes, and these two remain decisive
-across presets to preserve the cross-preset recommendation rule).
+in the `nine-axis` preset they are also Essence and Foundation; in
+the `compact` preset they are also Essence and Foundation (per
+ADR-0027 §1.3 minimum-decisive-axis invariant: every preset declares
+at least two decisive axes, and these two remain decisive across all
+shipped presets to preserve the cross-preset recommendation rule).
+
+**Entry-routing hard gate (compact preset only — overrides the
+"supporting axes don't downgrade" rule above)**: when the resolved
+preset is `compact` (i.e. `--size=minor` resolved through ADR-0027
+§1.5(2) without fallback), the `entry-routing-guarantee` axis is
+nominally `role: supporting`, BUT the underlying gate is NOT
+optional — see
+`../_shared/references/entry-routing-contract.md` lines 46-49
+("This gate is not optional"). If the recommended option's
+`entry-routing-guarantee` axis assessment finds that any of the 4
+guarantees (source-of-truth/standard, invariant/root cause,
+verification evidence, rollback/defer/escalation path) is missing
+or unmet, treat it as a hard gate: lower the recommendation
+confidence to MEDIUM or LOW, recommend defer, or route back to
+`/engineer:investigate`, `/engineer:decide`, or
+`/orchestrator:plan`. Do NOT fold the failing guarantee into
+"execution-plan concerns" or assume it can be addressed after the
+recommendation. This rule applies only when the resolved preset
+includes `entry-routing-guarantee` — if `--size=minor` triggered a
+ritual-fallback (compact missing/malformed per §1.6), the hard
+gate becomes ADVISORY because the axis is not in the resolved set.
 
 #### REQUIRED output format:
 
@@ -185,6 +279,24 @@ Sources: [key references that support the recommendation]
 Choose [other option] instead if: [specific conditions under which
 a different option becomes the better choice]
 ```
+
+**Size-aware recommendation rigor (per ADR-0027 ritual-sizing
+ownership)**:
+
+- `size=minor` → 1-sentence rationale + Decisive factors +
+  Choose-other-if + (when compact preset is resolved) the explicit
+  entry-routing-guarantee hard-gate verdict above. The Sources line
+  may collapse to a brief `Sources: [file or link]` pointer but MUST
+  remain present — the evidence rule from `@decide:per-option-output`
+  is preserved.
+- `size=standard` → the template above (2-3 sentence rationale +
+  Sources + Choose-other). Absent a prose-hinted size (per ADR-0027
+  §2.6), auto-activated mode uses this depth.
+- `size=major` → the standard template PLUS a `Decisive-axis
+  ranking:` block listing the recommended option's per-decisive-axis
+  ranking versus alternatives (e.g.,
+  `essence: A > C > B; foundation: A = C > B`). PR4 (weighting +
+  sensitivity) will extend this block; PR3 ships ranking only.
 <!-- @decide:recommendation-rule:end -->
 
 **Confidence levels:**

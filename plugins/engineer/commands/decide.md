@@ -1,6 +1,6 @@
 ---
 description: Compare 2+ approaches under constraints, recommend a direction with rationale — engineer's decision verb
-argument-hint: (decision question or list of options)
+argument-hint: "[--size=<minor|standard|major>] [--preset=<id>] [--weights=<spec>] [--] <decision question or list of options>"
 ---
 
 # Engineer · Decide
@@ -136,8 +136,13 @@ fi
 The skill body reads `$AGENTIC_DECIDE_CONTEXT_FILE` to obtain:
 
 - `axes[]` — ordered axis descriptors (id, en/ko labels, question, role) for the resolved preset
-- `preset_id` — the active preset id (default | nine-axis | …)
-- `size` / `size_explicit` — reserved slots populated by PR3 once it lands
+- `preset_id` — the active preset id (default | nine-axis | compact | …)
+- `size` / `size_explicit` — the resolved ritual tier (minor | standard | major)
+  populated from `--size=<tier>` per ADR-0027 §1.5(2). When `--size` was not
+  passed, `size` defaults to `"standard"` and `size_explicit` is `false`. The
+  ritual mapping (per-option output depth, comparison-table density,
+  recommendation rigor) is documented in `skills/decide/SKILL.md` inside the
+  four `@decide:*` marker regions.
 - `weights` — reserved slot populated by PR4 once it lands
 
 If the file is missing or the JSON is unparseable, fall back to the
