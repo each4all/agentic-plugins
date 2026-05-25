@@ -467,7 +467,11 @@ fi
 rm -f "$PHASE7_PLAN_ERR"
 # Agent: parse $PHASE7_PLAN (JSON), present commits[].suggested_subject
 # to the user with [a]ccept / [e]dit / [c]ancel. If ask_user=true also
-# confirm the staging_set + extras with the user before proceeding.
+# confirm the staging_set + extras with the user. The user picks ONE of:
+#   - intersection only (default; no extra flag)
+#   - opt specific extras back in (PR4 A4 — repeat --include-extra <path>
+#     for each extras-list entry the user wants in this commit)
+#   - sweep the entire working tree (--accept-current-tree; all-or-nothing)
 
 # Step 2 — execute mode: receive the approved subject(s), commit + gate.
 # Single-commit form:
@@ -484,6 +488,13 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
 #   --host "$AGENTIC_HOST" --confirm-non-interactive \
 #   --subject-pkg 'plugins/engineer=feat(engineer): ...' \
 #   --subject-pkg 'plugins/runtime=docs(runtime): ...'
+# Or, when manifest-subset-of-git extras need to be opted in (PR4 A4):
+# node "$CLAUDE_PLUGIN_ROOT/scripts/phase7-commit.mjs" \
+#   --mode execute --workflow-path "$ACTIVE" --repo-root "$REPO_ROOT" \
+#   --host "$AGENTIC_HOST" --subject "$APPROVED_SUBJECT" \
+#   --confirm-non-interactive \
+#   --include-extra docs/intro.md \
+#   --include-extra docs/migration.md
 
 PHASE7_RC=$?
 if [ "$PHASE7_RC" -ne 0 ]; then

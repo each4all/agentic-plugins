@@ -32,6 +32,9 @@ const {
   decideStagingBranch,
   commitShapeFor,
   isAgenticPluginsRepo,
+  pickSubjectForCommit,
+  checkSubjectAgainstCC,
+  evaluateLandedRecovery,
 } = await import(PHASE7_PATH);
 
 // -----------------------------------------------------------------------------
@@ -54,6 +57,22 @@ describe('parseFlags — CLI argv parser', () => {
       'plugins/engineer=feat(engineer): a',
       'plugins/runtime=docs(runtime): b',
     ]);
+  });
+
+  // ADR-0028 PR4 A4 — `--include-extra` is repeatable so the user can
+  // opt specific extras back into the staging set after seeing the
+  // plan-mode extras list.
+  it('repeats --include-extra into an array (PR4 A4)', () => {
+    const f = parseFlags([
+      '--include-extra', 'docs/new.md',
+      '--include-extra', 'docs/another.md',
+    ]);
+    deepStrictEqual(f['include-extra'], ['docs/new.md', 'docs/another.md']);
+  });
+
+  it('defaults --include-extra to empty array when absent (PR4 A4)', () => {
+    const f = parseFlags(['--mode', 'plan']);
+    deepStrictEqual(f['include-extra'], []);
   });
 
   it('handles boolean flags with optional explicit true/false', () => {
@@ -102,6 +121,27 @@ describe('stripTrailers — P9 trailer allowlist (ADR-0028)', () => {
     strictEqual(out, 'body');
   });
 
+  // PR4 review F2 (Phase 5 Angle E) — `Workflow-ID:` is in the trailer
+  // allowlist so a stale Workflow-ID riding into `original_request` (e.g.
+  // user pastes a prior commit message into the feature description)
+  // does NOT survive the strip. The fresh Workflow-ID for THIS workflow
+  // is re-appended by composeBody after stripTrailers, so the only
+  // Workflow-ID that lands in the commit body is the current one — this
+  // closes the A2 false-positive recovery vector.
+  it('strips stale Workflow-ID trailer (PR4 review F2)', () => {
+    const out = stripTrailers(
+      'body line\n' +
+      'Workflow-ID: investigate-OLD-stale\n',
+    );
+    ok(!/Workflow-ID/.test(out), `Workflow-ID must be stripped; got ${JSON.stringify(out)}`);
+    strictEqual(out, 'body line');
+  });
+
+  it('case-insensitive Workflow-ID strip', () => {
+    const out = stripTrailers('workflow-id: x\nbody\n');
+    strictEqual(out, 'body');
+  });
+
   it('returns empty string for empty / non-string input', () => {
     strictEqual(stripTrailers(''), '');
     strictEqual(stripTrailers(null), '');
@@ -111,6 +151,127 @@ describe('stripTrailers — P9 trailer allowlist (ADR-0028)', () => {
 
 // -----------------------------------------------------------------------------
 // composeBody — P1 three-source composition
+
+describe('composeBody — Workflow-ID trailer (ADR-0028 PR4 A2)', () => {
+  it('appends `Workflow-ID: <id>` as the last block when workflowId is provided', () => {
+    const body = composeBody({
+      originalRequest: 'ship something',
+      diffStat: '',
+      ensembleSummary: '',
+      workflowId: 'investigate-20260525T040653Z-3f5a26',
+    });
+    ok(/Workflow-ID: investigate-20260525T040653Z-3f5a26$/m.test(body),
+      `expected trailer at end of body; got: ${JSON.stringify(body)}`);
+    // Trailer is the LAST block (after a blank separator); body ends
+    // with the trailer line, no further text.
+    ok(body.endsWith('Workflow-ID: investigate-20260525T040653Z-3f5a26'));
+  });
+
+  it('omits the trailer when workflowId is absent / empty (backward compat)', () => {
+    const body = composeBody({
+      originalRequest: 'ship something',
+      diffStat: '',
+      ensembleSummary: '',
+    });
+    ok(!/Workflow-ID:/.test(body), `unexpected trailer in body: ${JSON.stringify(body)}`);
+    // The pre-PR4 shape is preserved when no workflowId is supplied —
+    // important because the helper is shared across executeMode (which
+    // now passes workflowId) and any future caller that may not.
+    strictEqual(body, 'ship something');
+  });
+
+  it('still appends trailer when all other inputs are empty', () => {
+    const body = composeBody({
+      originalRequest: '',
+      diffStat: '',
+      ensembleSummary: '',
+      workflowId: 'wf-abc',
+    });
+    strictEqual(body, 'Workflow-ID: wf-abc');
+  });
+
+  // PR4 review F2 — closure of the A2 false-positive recovery vector.
+  // A user pasting a prior commit's message into `original_request`
+  // would otherwise leak a stale Workflow-ID trailer into the new
+  // commit. stripTrailers (now Workflow-ID-aware) removes the stale
+  // trailer first; composeBody re-appends the workflow's current id.
+  it('replaces a stale Workflow-ID trailer in original_request with the current one', () => {
+    const body = composeBody({
+      originalRequest:
+        'feature description\n' +
+        'Workflow-ID: investigate-PRIOR-stale',
+      diffStat: '',
+      ensembleSummary: '',
+      workflowId: 'investigate-CURRENT-fresh',
+    });
+    ok(!body.includes('PRIOR-stale'), `stale Workflow-ID must be stripped; got ${JSON.stringify(body)}`);
+    ok(body.endsWith('Workflow-ID: investigate-CURRENT-fresh'));
+  });
+});
+
+describe('evaluateLandedRecovery — idempotent fast-path predicate (PR4 A2)', () => {
+  it('returns landed=true when union of touched-paths covers every manifestPath', () => {
+    const r = evaluateLandedRecovery({
+      workflowId: 'wf-1',
+      manifestPaths: ['a.mjs', 'b.mjs', 'c.md'],
+      markedCommits: [
+        { sha: 'abc1234', touched: ['a.mjs', 'b.mjs'] },
+        { sha: 'def5678', touched: ['c.md'] },
+      ],
+    });
+    strictEqual(r.landed, true);
+    deepStrictEqual(r.coveredBy, ['abc1234', 'def5678']);
+    deepStrictEqual(r.missingManifest, []);
+  });
+
+  it('returns landed=false when even one manifest path is uncovered', () => {
+    const r = evaluateLandedRecovery({
+      workflowId: 'wf-1',
+      manifestPaths: ['a.mjs', 'b.mjs', 'c.md'],
+      markedCommits: [
+        { sha: 'abc1234', touched: ['a.mjs', 'b.mjs'] },
+        // c.md was never touched by a marked commit.
+      ],
+    });
+    strictEqual(r.landed, false);
+    deepStrictEqual(r.missingManifest, ['c.md']);
+  });
+
+  it('returns landed=false when there are no marked commits', () => {
+    const r = evaluateLandedRecovery({
+      workflowId: 'wf-1',
+      manifestPaths: ['a.mjs'],
+      markedCommits: [],
+    });
+    strictEqual(r.landed, false);
+    deepStrictEqual(r.coveredBy, []);
+    deepStrictEqual(r.missingManifest, ['a.mjs']);
+  });
+
+  it('returns landed=false when workflowId is missing (fail-safe)', () => {
+    // No marker → no way to attribute commits → must NOT fire the
+    // fast-path. The caller falls back to the legacy no-changes error.
+    const r = evaluateLandedRecovery({
+      workflowId: '',
+      manifestPaths: ['a.mjs'],
+      markedCommits: [{ sha: 'abc1234', touched: ['a.mjs'] }],
+    });
+    strictEqual(r.landed, false);
+  });
+
+  it('tolerates an empty manifestPaths list (landed=true degenerate, no work to verify)', () => {
+    // A workflow that ran with an empty commit_manifest is a separate
+    // class — the caller guards on manifestPaths.length > 0 before
+    // probing — but the pure predicate should still answer the
+    // "every path covered" question truthfully on the empty set.
+    const r = evaluateLandedRecovery({
+      workflowId: 'wf-1',
+      manifestPaths: [],
+      markedCommits: [{ sha: 'abc1234', touched: ['x'] }],
+    });
+    strictEqual(r.landed, true);
+  });
+});
 
 describe('composeBody — P1 source composition (ADR-0028)', () => {
   it('concatenates original_request + diff stat + ensemble summary in order', () => {
@@ -679,6 +840,69 @@ describe('decideStagingBranch — staging set branch decision (ADR-0028 §Layer-
     strictEqual(r.askUser, false);
     deepStrictEqual(r.stagingSet, ['a.mjs', 'extra.mjs']);
   });
+
+  // ADR-0028 PR4 A4 — manifest-subset-of-git extras flow.
+  //
+  // Background: plan-mode reports the manifest∩git intersection as the
+  // staging set and lists the extras (git_changes − manifest) for the
+  // user. Previously the user could only accept ALL extras (via
+  // `--accept-current-tree`) or NONE (via `--confirm-non-interactive`
+  // alone). A4 adds a middle path: per-path opt-in extras via the
+  // repeatable `--include-extra <path>` flag. The decideStagingBranch
+  // contract gains an `includeExtras?: string[]` param that, when
+  // present, unions only the listed paths back into stagingSet
+  // (intersection ∪ includeExtras). An includeExtras entry that is
+  // NOT a member of the extras set is a programmer error and throws
+  // — the caller should validate paths from the user dialog against
+  // the plan-mode extras list before passing them.
+  describe('manifest-subset-of-git + includeExtras (PR4 A4)', () => {
+    it('unions includeExtras back into stagingSet when subset of extras', () => {
+      const r = decideStagingBranch({
+        gitChanges: ['a.mjs', 'b.mjs', 'extra1.mjs', 'extra2.mjs'],
+        manifestPaths: ['a.mjs', 'b.mjs'],
+        includeExtras: ['extra1.mjs'],
+      });
+      strictEqual(r.branch, 'manifest-subset-of-git');
+      // stagingSet contains both intersection AND the opted-in extras.
+      deepStrictEqual([...r.stagingSet].sort(), ['a.mjs', 'b.mjs', 'extra1.mjs']);
+      // extras still surfaces what was NOT chosen.
+      deepStrictEqual(r.extras, ['extra1.mjs', 'extra2.mjs']);
+    });
+
+    it('empty includeExtras behaves like before (intersection only)', () => {
+      const r = decideStagingBranch({
+        gitChanges: ['a.mjs', 'b.mjs', 'extra.mjs'],
+        manifestPaths: ['a.mjs', 'b.mjs'],
+        includeExtras: [],
+      });
+      strictEqual(r.branch, 'manifest-subset-of-git');
+      deepStrictEqual(r.stagingSet, ['a.mjs', 'b.mjs']);
+    });
+
+    it('throws when includeExtras contains a path NOT in extras', () => {
+      throws(
+        () => decideStagingBranch({
+          gitChanges: ['a.mjs', 'b.mjs', 'extra.mjs'],
+          manifestPaths: ['a.mjs', 'b.mjs'],
+          includeExtras: ['not-an-extra.mjs'],
+        }),
+        /include-extra.*not.*in.*extras|includeExtras.*subset/i,
+      );
+    });
+
+    it('ignores includeExtras when branch is NOT manifest-subset-of-git', () => {
+      // accept-current-tree already stages everything; includeExtras
+      // is a no-op (would be confusing if it threw).
+      const r = decideStagingBranch({
+        gitChanges: ['a.mjs', 'extra.mjs'],
+        manifestPaths: ['a.mjs'],
+        acceptCurrentTree: true,
+        includeExtras: ['extra.mjs'],
+      });
+      strictEqual(r.branch, 'accept-current-tree');
+      deepStrictEqual(r.stagingSet, ['a.mjs', 'extra.mjs']);
+    });
+  });
 });
 
 // -----------------------------------------------------------------------------
@@ -756,6 +980,97 @@ describe('commitShapeFor — P12 classifyMixedCase exhaustive switch (ADR-0028)'
     throws(
       () => commitShapeFor({ classification: 'not-a-real-case', perPackageCommits: [] }),
       /unknown classification/,
+    );
+  });
+});
+
+// -----------------------------------------------------------------------------
+// pickSubjectForCommit — single-commit + split-commit subject resolution
+// (ADR-0028 PR4 N2 — multiline reject defense).
+
+describe('pickSubjectForCommit — newline-bearing subjects (ADR-0028 PR4 N2)', () => {
+  it('rejects single-commit --subject containing \\n', () => {
+    throws(
+      () => pickSubjectForCommit({
+        commit: { package: 'plugins/engineer', files: ['a.mjs'] },
+        flags: { subject: 'feat(engineer): a\nfix(x): b', 'subject-pkg': [] },
+        requiresSplit: false,
+      }),
+      /multiline subject|newline|line break/i,
+    );
+  });
+
+  it('rejects single-commit --subject containing \\r', () => {
+    throws(
+      () => pickSubjectForCommit({
+        commit: { package: 'plugins/engineer', files: ['a.mjs'] },
+        flags: { subject: 'feat: a\rstray', 'subject-pkg': [] },
+        requiresSplit: false,
+      }),
+      /multiline subject|newline|line break/i,
+    );
+  });
+
+  it('rejects split --subject-pkg whose value contains \\n', () => {
+    throws(
+      () => pickSubjectForCommit({
+        commit: { package: 'plugins/engineer', files: ['a.mjs'] },
+        flags: { 'subject-pkg': ['plugins/engineer=feat(engineer): a\nfix(x): b'] },
+        requiresSplit: true,
+      }),
+      /multiline subject|newline|line break/i,
+    );
+  });
+
+  it('accepts a normal single-line subject (regression guard)', () => {
+    const got = pickSubjectForCommit({
+      commit: { package: 'plugins/engineer', files: ['a.mjs'] },
+      flags: { subject: 'feat(engineer): a single line', 'subject-pkg': [] },
+      requiresSplit: false,
+    });
+    strictEqual(got, 'feat(engineer): a single line');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// checkSubjectAgainstCC — multiline subject must be rejected by the
+// CC regex AND the explicit `/[\r\n]/` guard (defense in depth).
+
+describe('checkSubjectAgainstCC — multiline reject (ADR-0028 PR4 N2)', () => {
+  const stderr = { write: () => {} };
+
+  it('strict mode: throws on multiline subject', () => {
+    throws(
+      () => checkSubjectAgainstCC({
+        subject: 'feat(x): a\nfix(y): b',
+        strictCC: true,
+        stderr,
+      }),
+      // Either the explicit newline reject OR the CC mismatch path is
+      // an acceptable error — both close the body-injection vector.
+      /multiline|newline|line break|Conventional Commit/i,
+    );
+  });
+
+  it('lenient mode: still rejects multiline subject (security gate, not style)', () => {
+    throws(
+      () => checkSubjectAgainstCC({
+        subject: 'feat(x): a\r\nfix(y): b',
+        strictCC: false,
+        stderr,
+      }),
+      /multiline|newline|line break/i,
+    );
+  });
+
+  it('accepts a single-line CC subject in both modes', () => {
+    strictEqual(
+      checkSubjectAgainstCC({
+        subject: 'feat(engineer): add Phase 7 driver',
+        strictCC: true,
+        stderr,
+      }),
+      true,
     );
   });
 });
