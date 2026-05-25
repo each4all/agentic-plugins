@@ -1011,10 +1011,15 @@ describe('plugins/engineer — investigate cited-brief profile (ADR-0014 absorpt
 // canonical id, exact wording) + content-sanity checks (first non-empty
 // line inside each pair matches the §3.5 sentinel regex).
 
+// Marker order in SKILL.md document order — PR4 adds the new fifth pair
+// `weighting-sensitivity-output` between `comparison-table` and
+// `recommendation-rule` per ADR-0027 §3.4 disjoint-region contract.
+// The order is enforced by the dedicated test below (peer G8).
 const DECIDE_MARKER_IDS = [
   'axis-table',
   'per-option-output',
   'comparison-table',
+  'weighting-sensitivity-output',
   'recommendation-rule',
 ];
 
@@ -1026,13 +1031,14 @@ const DECIDE_MARKER_SENTINELS = {
   'axis-table':         /^\| # \| Perspective \| Core question \|/,
   'per-option-output':  /^#### REQUIRED output format — for each option:/,
   'comparison-table':   /^#### REQUIRED output format — after all options:/,
+  'weighting-sensitivity-output': /^#### REQUIRED output format — weighting/,
   'recommendation-rule': /^When /,
 };
 
 const MARKER_LINE_RE = /^<!-- @decide:([a-z][a-z0-9-]*):(begin|end) -->$/;
 
 describe('plugins/engineer — decide skill extension markers (ADR-0027 §3.5)', () => {
-  it('all four marker pairs are present, paired, non-nested, with canonical wording', async () => {
+  it('all marker pairs are present, paired, non-nested, with canonical wording', async () => {
     const skillPath = resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md');
     const text = await readFile(skillPath, 'utf8');
     const lines = text.split('\n');
@@ -1070,6 +1076,40 @@ describe('plugins/engineer — decide skill extension markers (ADR-0027 §3.5)',
     for (const id of DECIDE_MARKER_IDS) {
       ok(seenBegin.has(id), `${skillPath}: missing :begin marker for "${id}"`);
       ok(seenEnd.has(id), `${skillPath}: missing :end marker for "${id}"`);
+    }
+  });
+
+  it('marker ORDER assertion (peer G8): pairs appear in DECIDE_MARKER_IDS document order', async () => {
+    // Per ADR-0027 §3.4 disjoint-region contract: PR4 inserts the new
+    // weighting-sensitivity-output region AFTER comparison-table:end and
+    // BEFORE recommendation-rule:begin. Order drift (e.g., a future edit
+    // that moves the new region above comparison-table) would silently
+    // break the "weighted aggregate appended AFTER all axis rows" guarantee
+    // documented in the new region's prose. This test pins the canonical
+    // order so any reordering becomes a CI failure.
+    const skillPath = resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md');
+    const text = await readFile(skillPath, 'utf8');
+    const lines = text.split('\n');
+
+    const beginLineById = new Map();
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(MARKER_LINE_RE);
+      if (!m || m[2] !== 'begin') continue;
+      beginLineById.set(m[1], i + 1);
+    }
+
+    // Build the (id, beginLine) sequence in the order they appear in
+    // the file, then assert it matches DECIDE_MARKER_IDS canonical order.
+    const observedOrder = [...beginLineById.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .map(([id]) => id);
+
+    for (let k = 0; k < DECIDE_MARKER_IDS.length; k++) {
+      strictEqual(
+        observedOrder[k],
+        DECIDE_MARKER_IDS[k],
+        `${skillPath}: marker position ${k} expected "${DECIDE_MARKER_IDS[k]}" but found "${observedOrder[k]}"\n  observed full order: ${observedOrder.join(' → ')}\n  expected canonical:  ${DECIDE_MARKER_IDS.join(' → ')}`,
+      );
     }
   });
 
@@ -1175,6 +1215,61 @@ describe('plugins/engineer — decide skill size-contract prose (ADR-0027 PR3 ri
         `${skillPath}: @decide:${id} marker region must mention all three ritual tiers (minor|standard|major) so size-aware rendering does not silently regress (peer gap #5). Missing: ${missingTiers.join(', ')}.`,
       );
     }
+  });
+
+  it('PR4 refine M5: SKILL.md @decide:weighting-sensitivity-output region pins backward-compat + §1.3 advisory invariants in prose', async () => {
+    // Peer M5: the PR4 output invariants (default invocation MUST NOT
+    // emit weighting/sensitivity output; §1.3 winner stability under
+    // advisory cases) are LLM-prose contract only — subprocess tests
+    // can't observe LLM markdown rendering. To keep the prose from
+    // silently drifting, lint the region body for the load-bearing
+    // invariant phrases.
+    const skillPath = resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md');
+    const text = await readFile(skillPath, 'utf8');
+    const lines = text.split('\n');
+
+    // Locate the weighting-sensitivity-output region body.
+    let beginLine = -1, endLine = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i] === '<!-- @decide:weighting-sensitivity-output:begin -->') beginLine = i + 1;
+      else if (lines[i] === '<!-- @decide:weighting-sensitivity-output:end -->') { endLine = i + 1; break; }
+    }
+    ok(beginLine > 0 && endLine > beginLine, 'weighting-sensitivity-output marker pair must exist (covered by ORDER assertion above; redundant safety)');
+    const body = lines.slice(beginLine, endLine - 1).join('\n');
+
+    // Invariant 1 — backward-compat: default invocation must NOT emit
+    // the region. Phrase pinned: "byte-identical to the pre-PR4 baseline"
+    // OR "backward-compat invariant" OR "stay prose-only".
+    ok(
+      /byte.identical|backward.compat|prose.only/i.test(body),
+      `${skillPath}: @decide:weighting-sensitivity-output region must pin the backward-compat invariant in prose (one of: "byte-identical to the pre-PR4 baseline" / "backward-compat invariant" / "stays prose-only")`,
+    );
+
+    // Invariant 2 — advisory-only: the region must explicitly say the
+    // weighted aggregate is advisory, NOT the recommendation winner.
+    ok(
+      /advisory[\s-]+only|advisory information/i.test(body),
+      `${skillPath}: @decide:weighting-sensitivity-output region must pin the "advisory only" invariant in prose`,
+    );
+
+    // Invariant 3 — §1.3 winner stability: prose must reference the
+    // decisive-axis rule as the winner-picker and explicitly state the
+    // recommendation does not flip on aggregate/sensitivity advisory.
+    ok(
+      /§1\.3|decisive[\s-]+axis/i.test(body),
+      `${skillPath}: @decide:weighting-sensitivity-output region must reference §1.3 decisive-axis rule as the winner-picker`,
+    );
+    ok(
+      /does NOT flip|sole winner-picker|recommendation .*stays|stays bound to/i.test(body),
+      `${skillPath}: @decide:weighting-sensitivity-output region must pin "recommendation does not flip on advisory" invariant`,
+    );
+
+    // Invariant 4 — opt-in gate observable signals: prose must reference
+    // the on-wire JSON context fields (snake_case) not just JS-API names.
+    ok(
+      /context\.weights_explicit|weights_explicit/.test(body),
+      `${skillPath}: @decide:weighting-sensitivity-output region must reference the snake_case "weights_explicit" on-wire field (peer M1 refine)`,
+    );
   });
 
   it('compact preset shipped (ADR-0027 PR3 §1.2) and decision-axes.yml has 3 presets', async () => {

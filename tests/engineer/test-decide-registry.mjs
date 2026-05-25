@@ -699,7 +699,21 @@ test("§5.6 context shape: PR2 fields populated, reserved slots writable", () =>
   assert.equal(context.size, "standard");
   assert.equal(context.size_explicit, false);
   assert.deepEqual(context.weights, {});
+  // PR4 refine M1 — weights_explicit (snake_case on-wire) mirrors size_explicit
+  assert.equal(context.weights_explicit, false);
   assert.ok(/^\d{4}-\d{2}-\d{2}T/.test(context.resolved_at));
+});
+
+test("§5.6 + PR4 M1: weights_explicit=true when --weights passed", () => {
+  const { context } = resolvePreset({ weights: "essence:3", weightsExplicit: true });
+  assert.equal(context.weights_explicit, true);
+  assert.equal(context.weights.essence, 3);
+});
+
+test("§5.6 + PR4 M1: weights_explicit=false when only --size=major (uniform sentinel)", () => {
+  const { context } = resolvePreset({ sizeExplicit: true, sizeValue: "major" });
+  assert.equal(context.weights_explicit, false);
+  assert.deepEqual(context.weights, {});
 });
 
 test("§5.6 freeze granularity: axes frozen; size/weights writable (PR3/PR4 ownership)", () => {
@@ -854,4 +868,160 @@ test("regression: --preset= with empty value falls back to default (graceful)", 
   assert.equal(r.status, 0);
   const ctx = JSON.parse(r.stdout);
   assert.equal(ctx.preset_id, "default");
+});
+
+// =====================
+// PR4 — weights wiring (ADR-0027 §5.6 + Task 3)
+// =====================
+
+test("PR4 library: weights + weightsExplicit → context.weights normalized over resolved axes", () => {
+  const { context, diagnostics } = resolvePreset({
+    weights: "essence:3",
+    weightsExplicit: true,
+  });
+  assert.equal(context.preset_id, "default");
+  // Every default-preset axis is present in weights map
+  assert.equal(context.weights.essence, 3);
+  assert.equal(context.weights.foundation, 1);
+  assert.equal(context.weights.standards, 1);
+  assert.equal(context.weights["best-practice"], 1);
+  assert.equal(context.weights["practical-fit"], 1);
+  assert.equal(Object.keys(context.weights).length, 5);
+  // No normalization diagnostics (all axes known)
+  assert.deepEqual(diagnostics, []);
+});
+
+test("PR4 library: weightsExplicit=false (default) → uniform sentinel {} preserved", () => {
+  const { context } = resolvePreset({ body: "compare X and Y" });
+  // No weights flag → empty sentinel; downstream score module treats this
+  // as uniform 1.0 weights per ADR-0027 §5.6.
+  assert.deepEqual(context.weights, {});
+});
+
+test("PR4 library: weights on 9-axis preset fills 9 entries in document order", () => {
+  const { context } = resolvePreset({
+    presetId: "nine-axis",
+    weights: "essence:3,foundation:2",
+    weightsExplicit: true,
+  });
+  assert.equal(context.preset_id, "nine-axis");
+  assert.equal(Object.keys(context.weights).length, 9);
+  // Document order — standards is first per nine-axis preset definition
+  assert.deepEqual(Object.keys(context.weights), [
+    "standards", "recommendation", "canonical-precedent",
+    "essence", "foundation",
+    "extensibility", "maintainability", "maturation", "practical-fit",
+  ]);
+  assert.equal(context.weights.essence, 3);
+  assert.equal(context.weights.foundation, 2);
+});
+
+test("PR4 library (peer G5 fallback path): unknown preset → fallback default + weights normalized over fallback axes", () => {
+  const { context, fallbackTriggered, diagnostics } = resolvePreset({
+    presetId: "nonexistent",
+    weights: "essence:3",
+    weightsExplicit: true,
+  });
+  assert.equal(fallbackTriggered, true);
+  assert.equal(context.preset_id, "default");
+  // Weights still normalized — PR4's fallback-aware contract per peer G5
+  assert.equal(context.weights.essence, 3);
+  assert.equal(context.weights.foundation, 1);
+  assert.equal(Object.keys(context.weights).length, 5);
+  // Two diagnostics: unknown preset + (no weights-side diagnostic since
+  // essence IS in fallback default axes)
+  assert.ok(diagnostics.some((d) => /unknown preset id "nonexistent"/.test(d)));
+});
+
+test("PR4 library: unknown weight axis-id dropped + diagnostic emitted", () => {
+  const { context, diagnostics } = resolvePreset({
+    weights: "ghost:2",
+    weightsExplicit: true,
+  });
+  // ghost not in default preset → dropped; known axes filled with 1.0
+  assert.equal(context.weights.ghost, undefined);
+  assert.equal(context.weights.essence, 1);
+  assert.equal(Object.keys(context.weights).length, 5);
+  assert.ok(diagnostics.some((d) => /ghost/.test(d) && /dropped/.test(d)));
+});
+
+test("PR4 library: mixed known + unknown — known preserved, unknown dropped", () => {
+  const { context, diagnostics } = resolvePreset({
+    weights: "essence:3,ghost:2",
+    weightsExplicit: true,
+  });
+  assert.equal(context.weights.essence, 3);
+  assert.equal(context.weights.ghost, undefined);
+  assert.equal(context.weights.foundation, 1); // unmentioned known → 1.0
+  assert.ok(diagnostics.some((d) => /ghost/.test(d)));
+});
+
+test("PR4 CLI: --weights=essence:3 → JSON stdout has 5-axis weights map", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--weights=essence:3"], { encoding: "utf8" });
+  assert.equal(r.status, 0);
+  const ctx = JSON.parse(r.stdout);
+  assert.equal(ctx.preset_id, "default");
+  assert.equal(ctx.weights.essence, 3);
+  assert.equal(ctx.weights.foundation, 1);
+  assert.equal(Object.keys(ctx.weights).length, 5);
+});
+
+test("PR4 CLI: --weights=ghost:2 → unknown-axis diagnostic on stderr + ghost absent from stdout JSON", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--weights=ghost:2"], { encoding: "utf8" });
+  assert.equal(r.status, 0);
+  assert.ok(/ghost/.test(r.stderr), `expected ghost diagnostic on stderr; got: ${r.stderr}`);
+  const ctx = JSON.parse(r.stdout);
+  assert.equal(ctx.weights.ghost, undefined);
+  assert.equal(ctx.weights.essence, 1);
+});
+
+test("PR4 CLI: --weights=essence:1,essence:2 (parser-rejected dup) → exit 2", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--weights=essence:1,essence:2"], { encoding: "utf8" });
+  assert.equal(r.status, 2);
+  assert.ok(/duplicate|dup/i.test(r.stderr));
+});
+
+test("PR4 CLI: --size=major --weights=essence:3 combined → nine-axis preset + 9-entry weights", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--size=major", "--weights=essence:3"], { encoding: "utf8" });
+  assert.equal(r.status, 0);
+  const ctx = JSON.parse(r.stdout);
+  assert.equal(ctx.preset_id, "nine-axis");
+  assert.equal(Object.keys(ctx.weights).length, 9);
+  assert.equal(ctx.weights.essence, 3);
+});
+
+test("PR4 CLI backward-compat: no flags → weights still {} (uniform sentinel)", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve"], { encoding: "utf8" });
+  assert.equal(r.status, 0);
+  const ctx = JSON.parse(r.stdout);
+  assert.deepEqual(ctx.weights, {});
+});
+
+test("[L4.3 refine] PR4 library: --preset=compact + --weights=<axis-only-in-default> → axis dropped against compact axis set", () => {
+  // The unknown-axis drop must be evaluated against the RESOLVED preset's
+  // axes[], not the default preset's. `compact` declares 4 axes (essence,
+  // foundation, practical-fit, entry-routing-guarantee); `best-practice`
+  // is in `default` and `nine-axis` but NOT in `compact`. Passing it via
+  // --weights with --preset=compact must drop it with a diagnostic — not
+  // silently keep it because it was in some other preset.
+  const { context, diagnostics } = resolvePreset({
+    presetId: "compact",
+    weights: "best-practice:5,essence:3",
+    weightsExplicit: true,
+  });
+  assert.equal(context.preset_id, "compact");
+  // best-practice dropped (not in compact's axes)
+  assert.equal(context.weights["best-practice"], undefined);
+  // essence kept
+  assert.equal(context.weights.essence, 3);
+  // compact axes filled with defaults
+  assert.equal(context.weights.foundation, 1);
+  assert.equal(context.weights["practical-fit"], 1);
+  assert.equal(context.weights["entry-routing-guarantee"], 1);
+  assert.equal(Object.keys(context.weights).length, 4);
+  // diagnostic mentions best-practice dropped
+  assert.ok(
+    diagnostics.some((d) => /best-practice/.test(d) && /dropped/.test(d)),
+    `expected best-practice drop diagnostic; got: ${diagnostics.join(" | ")}`,
+  );
 });

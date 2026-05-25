@@ -98,14 +98,140 @@ test("§2.3(5) [peer ADR-0027 PR3 edge case #4]: repeated --size last-wins + war
   assert.deepEqual(r.errors, []);
 });
 
-test("§2.5/§2.6 stub: --weights deferred to PR4", () => {
+// ─── ADR-0027 PR4 weights parser (active, no longer stub) ──────────
+
+test("PR4 GREEN: --weights=essence:2,foundation:1 accepted; flags.weightsExplicit=true; no deferred warning", () => {
   const r = parseArgs(["--weights=essence:2,foundation:1", "body"]);
   assert.equal(r.flags.weights, "essence:2,foundation:1");
-  assert.ok(r.warnings.some((w) => /--weights .*deferred to PR4/.test(w)));
+  assert.equal(r.weightsExplicit, true);
+  assert.ok(
+    !r.warnings.some((w) => /deferred to PR4/.test(w)),
+    `expected no deferred-to-PR4 warning; got: ${r.warnings.join(" | ")}`,
+  );
   assert.deepEqual(r.errors, []);
 });
 
-test("combined: --preset + --size + --weights + body", () => {
+test("PR4 GREEN: --weights absent → weightsExplicit is false (top-level result field)", () => {
+  const r = parseArgs(["compare", "X", "and", "Y"]);
+  // explicit-flag presence — peer G3 fix (avoid `weights !== {}` object-identity bug)
+  // weightsExplicit is a top-level result field so flags.deepEqual({}) tests stay clean.
+  assert.equal(r.weightsExplicit, false);
+  assert.equal(r.flags.weights, undefined);
+});
+
+test("PR4 GREEN: --weights=essence:2.5,foundation:1 decimal accepted", () => {
+  const r = parseArgs(["--weights=essence:2.5,foundation:1", "body"]);
+  assert.equal(r.flags.weights, "essence:2.5,foundation:1");
+  assert.equal(r.weightsExplicit, true);
+  assert.deepEqual(r.errors, []);
+});
+
+test("PR4 GREEN: --weights=essence:0 zero weight allowed", () => {
+  const r = parseArgs(["--weights=essence:0", "body"]);
+  assert.equal(r.flags.weights, "essence:0");
+  assert.deepEqual(r.errors, []);
+});
+
+test("PR4 GREEN: --weights=essence:3 single pair accepted", () => {
+  const r = parseArgs(["--weights=essence:3"]);
+  assert.equal(r.flags.weights, "essence:3");
+  assert.deepEqual(r.errors, []);
+});
+
+test("PR4 RED: --weights= (empty spec) → halt", () => {
+  const r = parseArgs(["--weights="]);
+  assert.notEqual(r.errors.length, 0, "expected error for empty --weights=");
+  assert.ok(/--weights/.test(r.errors[0]), `unexpected diagnostic: ${r.errors[0]}`);
+});
+
+test("PR4 RED: --weights=essence (missing colon) → halt", () => {
+  const r = parseArgs(["--weights=essence"]);
+  assert.notEqual(r.errors.length, 0);
+  assert.ok(/--weights/.test(r.errors[0]));
+});
+
+test("PR4 RED: --weights=essence:abc (non-numeric weight) → halt", () => {
+  const r = parseArgs(["--weights=essence:abc"]);
+  assert.notEqual(r.errors.length, 0);
+});
+
+test("PR4 RED: --weights=essence:-1 (negative weight) → halt", () => {
+  const r = parseArgs(["--weights=essence:-1"]);
+  assert.notEqual(r.errors.length, 0);
+});
+
+test("PR4 RED: --weights=essence:NaN → halt", () => {
+  const r = parseArgs(["--weights=essence:NaN"]);
+  assert.notEqual(r.errors.length, 0);
+});
+
+test("PR4 RED: --weights=essence:Infinity → halt", () => {
+  const r = parseArgs(["--weights=essence:Infinity"]);
+  assert.notEqual(r.errors.length, 0);
+});
+
+test("PR4 RED: --weights=essence:1e3 (exponent notation) → halt — finite decimal only per peer G6", () => {
+  const r = parseArgs(["--weights=essence:1e3"]);
+  assert.notEqual(r.errors.length, 0);
+});
+
+test("PR4 RED: --weights=Essence:1 (uppercase axis-id) → halt — registry axis-id shape [a-z][a-z0-9-]*", () => {
+  const r = parseArgs(["--weights=Essence:1"]);
+  assert.notEqual(r.errors.length, 0);
+});
+
+test("PR4 RED: --weights= essence:1 (leading whitespace in value) → halt per peer G6", () => {
+  // Single token whose value begins with a space — token shape valid;
+  // value content has whitespace, which the strict grammar rejects.
+  const r = parseArgs(["--weights= essence:1"]);
+  assert.notEqual(r.errors.length, 0);
+});
+
+test("PR4 RED: --weights=essence:1,essence:2 (duplicate axis within spec) → halt per peer (b)", () => {
+  const r = parseArgs(["--weights=essence:1,essence:2"]);
+  assert.notEqual(r.errors.length, 0);
+  assert.ok(/duplicate|dup/i.test(r.errors[0]), `expected duplicate diagnostic; got: ${r.errors[0]}`);
+});
+
+test("PR4 RED: --weights=,essence:1 (leading comma) → halt", () => {
+  const r = parseArgs(["--weights=,essence:1"]);
+  assert.notEqual(r.errors.length, 0);
+});
+
+test("PR4 RED: --weights=essence:1, (trailing comma) → halt", () => {
+  const r = parseArgs(["--weights=essence:1,"]);
+  assert.notEqual(r.errors.length, 0);
+});
+
+test("PR4 edge (a): -- --weights=bad → body, NOT parsed as flag", () => {
+  const r = parseArgs(["--", "--weights=bad"]);
+  // After `--` separator, everything is body — even bogus weights syntax
+  assert.deepEqual(r.errors, [], `expected no errors; got: ${r.errors.join(" | ")}`);
+  assert.equal(r.body, "--weights=bad");
+  assert.equal(r.flags.weights, undefined);
+  assert.equal(r.weightsExplicit, false);
+});
+
+test("PR4 edge (a): compare --weights=bad → body, NOT parsed as flag (first non-flag starts body)", () => {
+  const r = parseArgs(["compare", "--weights=bad"]);
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.body, "compare --weights=bad");
+  assert.equal(r.flags.weights, undefined);
+  assert.equal(r.weightsExplicit, false);
+});
+
+test("PR4 edge (b): --weights=a:1 --weights=b:2 → last-wins + warning per :83-87", () => {
+  const r = parseArgs(["--weights=essence:1", "--weights=foundation:2", "body"]);
+  assert.equal(r.flags.weights, "foundation:2");
+  assert.equal(r.weightsExplicit, true);
+  assert.ok(
+    r.warnings.some((w) => /--weights appeared 2 times/.test(w)),
+    `expected repeat warning; got: ${r.warnings.join(" | ")}`,
+  );
+  assert.deepEqual(r.errors, []);
+});
+
+test("PR4 combined: --preset + --size + --weights + body — all active, NO deferred warning", () => {
   const r = parseArgs([
     "--preset=nine-axis",
     "--size=major",
@@ -115,13 +241,13 @@ test("combined: --preset + --size + --weights + body", () => {
   assert.equal(r.flags.preset, "nine-axis");
   assert.equal(r.flags.size, "major");
   assert.equal(r.flags.weights, "essence:2");
+  assert.equal(r.weightsExplicit, true);
   assert.equal(r.body, "compare options for X");
-  // ADR-0027 PR3 wired --size; only --weights remains a deferred stub.
-  // Exactly one "deferred to PR4" warning is expected (weights only).
+  // Both --size and --weights are now active; no deferred warnings expected.
   assert.equal(
-    r.warnings.filter((w) => /deferred to PR4/.test(w)).length,
-    1,
-    `expected exactly 1 deferred warning (weights only); got: ${r.warnings.join(" | ")}`,
+    r.warnings.filter((w) => /deferred to (PR3|PR4)/.test(w)).length,
+    0,
+    `expected zero deferred warnings; got: ${r.warnings.join(" | ")}`,
   );
 });
 
