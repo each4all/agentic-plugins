@@ -60,7 +60,7 @@ import { assertSafePath } from './validate-commit.mjs';
 // field. String form is required because the YAML parser (`parseScalar`) does
 // not emit a JS Number for `1.1` / `1.2` — bare `1.2` round-trips through
 // Number, which loses precision and changes type.
-export const SCHEMA_VERSION = '1.2';
+export const SCHEMA_VERSION = '1.3';
 
 // Versions accepted on read. ADR-0017 §"Schema versioning policy" mandates
 // schema-1.0 readers tolerantly accept 1.1 frontmatter; 1.1 readers must
@@ -69,7 +69,7 @@ export const SCHEMA_VERSION = '1.2';
 // working. Mutation helpers (`setCheckpoint`, `setTerminal`, `appendPhaseNote`,
 // …) preserve the disk-recorded schema — no silent promotion of legacy `1` or
 // `'1.1'` files, no silent downgrade of `'1.2'` files.
-export const SUPPORTED_SCHEMA_VERSIONS = new Set([1, '1.1', '1.2']);
+export const SUPPORTED_SCHEMA_VERSIONS = new Set([1, '1.1', '1.2', '1.3']);
 
 export const STATE_DIR_REL = '.agentic-plugins/state/engineer';
 export const LEGACY_STATE_DIR_REL = '.claude/agentic-engineer';
@@ -809,6 +809,12 @@ const FRONTMATTER_KEY_ORDER = [
   // Written by recordComposedFile / recordRefineFile; consumed by
   // Phase 7 staging (Layer 3) to intersect against `git_changes`.
   'commit_manifest',
+  // ADR-0028 §P10 schema 1.3 parent_writeback_at (additive optional).
+  // ISO-8601 UTC timestamp scalar written BEFORE writebackParent fires
+  // and cleared on writeback failure. Stop hook's deferred-writeback
+  // path treats the marker as an idempotency gate (already-fired skip).
+  // PR3 M3.
+  'parent_writeback_at',
 ];
 
 // The optional-key set across schemas 1.1 (ADR-0017 + ADR-0019 + ADR-0020)
@@ -1016,7 +1022,7 @@ function serializeFrontmatter(fm) {
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
       throw new Error(
-        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 are closed.`,
+        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 / ADR-0028 PR3 schema=1.3 are closed.`,
       );
     }
   }
@@ -1165,7 +1171,7 @@ export function parseWorkflowFile(text) {
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
       throw new Error(
-        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 are closed.`,
+        `Unknown frontmatter key: ${key}. ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 / ADR-0028 PR3 schema=1.3 are closed.`,
       );
     }
   }
@@ -1180,7 +1186,7 @@ export function parseWorkflowFile(text) {
 }
 
 /**
- * Strict ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2
+ * Strict ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2/1.3
  * validation. Called at parse-before-mutate boundaries. Throws on any
  * deviation from the closed schema set. Schemas 1.1 and 1.2 are additive;
  * the schema-1 required key set is unchanged, and 1.1/1.2 keys are all
@@ -1193,7 +1199,7 @@ function validateFrontmatter(fm) {
       .join(', ');
     throw new Error(
       `Unsupported schema version: ${JSON.stringify(fm.schema)} ` +
-      `(supported: ${accepted}). ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 are closed; ` +
+      `(supported: ${accepted}). ADR-0011 §2 schema=1 / ADR-0017 schema=1.1 / ADR-0028 schema=1.2 / ADR-0028 PR3 schema=1.3 are closed; ` +
       `cross-schema mutation is rejected.`,
     );
   }
@@ -1287,6 +1293,13 @@ function validateSchema11Fields(fm) {
   validateListOfObjectsField(fm, 'child_completions');
   // ADR-0028 §Layer-2 schema 1.2
   validateListOfObjectsField(fm, 'commit_manifest');
+  // ADR-0028 §P10 schema 1.3 — parent_writeback_at write-ahead marker.
+  // Optional scalar; non-empty string when present.
+  if ('parent_writeback_at' in fm) {
+    if (typeof fm.parent_writeback_at !== 'string' || fm.parent_writeback_at.length === 0) {
+      throw new Error('parent_writeback_at must be a non-empty string when present');
+    }
+  }
 
   // ADR-0019 PR-A — cross-plugin parent-linkage fields. All three are
   // optional top-level scalars. parent_workflow + originating_subtask
@@ -2115,6 +2128,78 @@ export async function recordRefineFile({ workflowPath, path, op, recorded_at, no
 }
 
 /**
+ * ADR-0028 §P10 — set the parent_writeback_at write-ahead marker.
+ *
+ * Phase 7 invokes this immediately BEFORE calling writebackParent so
+ * that a crash between writeback and set-terminal leaves a durable
+ * "writeback already attempted" signal. The Stop hook's deferred-
+ * writeback path treats the marker as an idempotency gate (skip when
+ * present) to avoid double-firing in the common case. The
+ * `subtask-update` `if_match` ownership check on the orchestrator
+ * side remains the correctness backstop per ADR-0028 §P10 second
+ * paragraph.
+ */
+export async function setParentWritebackMarker({
+  workflowPath, host, at, now = new Date(),
+}) {
+  validateHost(host);
+  if (typeof at !== 'string' || at.length === 0) {
+    throw new Error('setParentWritebackMarker: at must be a non-empty string');
+  }
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    const nowIso = isoUtc(now);
+    frontmatter.parent_writeback_at = at;
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'updated' },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath };
+  });
+}
+
+/**
+ * ADR-0028 §P10 — clear the parent_writeback_at write-ahead marker on
+ * writeback failure. Idempotent: a missing marker leaves the file
+ * unchanged. Phase 7 calls this when writebackParent returns a non-
+ * skipped failure so a subsequent Stop hook retry sees the open slot
+ * and re-attempts the writeback.
+ */
+export async function clearParentWritebackMarker({
+  workflowPath, host, now = new Date(),
+}) {
+  validateHost(host);
+  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+    const text = await readFile(workflowPath, 'utf8');
+    const { frontmatter, body } = parseWorkflowFile(text);
+    if (!('parent_writeback_at' in frontmatter)) {
+      // Idempotent — nothing to clear, no host_history churn.
+      return { frontmatter, workflowPath, skipped: true };
+    }
+    const nowIso = isoUtc(now);
+    delete frontmatter.parent_writeback_at;
+    frontmatter.updated_at = nowIso;
+    frontmatter.host_history = [
+      ...(frontmatter.host_history ?? []),
+      { host, at: nowIso, event: 'updated' },
+    ];
+    await atomicWrite(
+      workflowPath,
+      assembleWorkflowFile(frontmatter, body),
+      { lockPath, token },
+    );
+    return { frontmatter, workflowPath };
+  });
+}
+
+/**
  * ADR-0017 §sub-decision 2 — set `latest_checkpoint` and append a
  * `checkpointed` `host_history` entry under the per-file lock.
  */
@@ -2726,10 +2811,20 @@ export async function diagnoseRedundancy({
 const WORKFLOW_STORAGE_PREFIX = '.agentic-plugins/state/';
 
 /**
- * Pure decision: classify a `git status --porcelain=v1` blob.
+ * Pure decision: classify a `git status --porcelain=v1 -z` blob
+ * (ADR-0028 PR4 N4-quoted — NUL-separated wire format).
+ *
+ * The `-z` mode delivers paths as raw bytes (no C-quoting around
+ * special characters like spaces or quotes), and uses NUL terminators
+ * between entries. Rename and copy rows occupy TWO NUL chunks: the
+ * `R  <new>` row carries the new path, and the immediately following
+ * chunk is the old path (newpath first under -z, opposite of the
+ * plain-v1 `R  <old> -> <new>` form). This makes the workflow-storage
+ * exclusion prefix check robust against paths with spaces / quotes /
+ * tabs that would otherwise come back quoted under plain v1.
  *
  * @param {object}  args
- * @param {string}  args.statusPorcelain — verbatim porcelain v1 output
+ * @param {string}  args.statusPorcelain — verbatim porcelain v1 -z output
  * @param {boolean} [args.acceptCurrentTree=false] — accept-current-tree bypass
  * @returns {{
  *   status: 'clean' | 'dirty' | 'accepted',
@@ -2743,31 +2838,60 @@ export function evaluateCleanBaseline({
   const categories = { modified: [], staged: [], untracked: [] };
 
   if (typeof statusPorcelain === 'string' && statusPorcelain.length > 0) {
-    const lines = statusPorcelain.split('\n').filter((l) => l.length > 0);
-    for (const line of lines) {
-      // Porcelain v1 line shape: "XY <path>" or "R  <old> -> <new>".
-      // X = index column, Y = working-tree column.
-      if (line.length < 3) continue;
-      const indexCh = line[0];
-      const workCh = line[1];
-      let path = line.slice(3);
-      // Rename rows surface "old -> new" in the path column.
-      const arrowIdx = path.indexOf(' -> ');
-      if (arrowIdx !== -1) {
-        path = path.slice(arrowIdx + 4);
+    // -z splits on NUL. A trailing NUL produces an empty tail chunk we
+    // drop. Empty middle chunks are skipped defensively.
+    const chunks = statusPorcelain.split('\0');
+    if (chunks.length > 0 && chunks[chunks.length - 1] === '') chunks.pop();
+
+    for (let i = 0; i < chunks.length; i++) {
+      const cur = chunks[i];
+      // Each entry is "XY <path>" — needs at least the two status
+      // columns plus a separator and one byte of path.
+      if (typeof cur !== 'string' || cur.length < 3) continue;
+
+      const indexCh = cur[0];
+      const workCh = cur[1];
+      const rawPath = cur.slice(3);
+
+      // ADR-0028 PR3 N4 + PR4 N4-quoted — rename/copy rows carry both
+      // OLD and NEW paths across two consecutive NUL chunks. Under -z
+      // the NEW path is on the `R` / `C` row and the OLD path is the
+      // NEXT chunk (opposite of plain-v1's `R  <old> -> <new>`). The
+      // workflow-storage exclusion must check BOTH endpoints; only a
+      // rename that stays entirely inside the workflow-storage tree
+      // counts as engineer's own bookkeeping movement.
+      let pathForReport;
+      let bothInsideWorkflowStorage;
+      if (indexCh === 'R' || indexCh === 'C') {
+        const newPath = rawPath;
+        const oldPath = chunks[i + 1] ?? '';
+        i += 1; // consume the old-path chunk so it is not re-parsed as an entry
+        const oldInside = oldPath.startsWith(WORKFLOW_STORAGE_PREFIX);
+        const newInside = newPath.startsWith(WORKFLOW_STORAGE_PREFIX);
+        bothInsideWorkflowStorage = oldInside && newInside;
+        // PR3 N4: surface the OUTSIDE endpoint when exactly one side
+        // crosses the workflow-storage boundary; otherwise default to
+        // the NEW path (PR2-compatible normal-rename behavior).
+        if (oldInside && !newInside) pathForReport = newPath;
+        else if (!oldInside && newInside) pathForReport = oldPath;
+        else pathForReport = newPath;
+      } else {
+        bothInsideWorkflowStorage = rawPath.startsWith(WORKFLOW_STORAGE_PREFIX);
+        pathForReport = rawPath;
       }
-      // Exclude workflow-storage entries entirely — these are engineer's
-      // own bookkeeping and never belong on the dirty list.
-      if (path.startsWith(WORKFLOW_STORAGE_PREFIX)) continue;
+      // Exclude entries entirely — these are engineer's own bookkeeping
+      // and never belong on the dirty list. Non-rename rows fall back
+      // to the simple startsWith check via bothInsideWorkflowStorage.
+      if (bothInsideWorkflowStorage) continue;
       if (indexCh === '?' && workCh === '?') {
-        categories.untracked.push(path);
+        categories.untracked.push(pathForReport);
         continue;
       }
       if (indexCh !== ' ' && indexCh !== '?') {
-        categories.staged.push(path);
+        categories.staged.push(pathForReport);
       }
       if (workCh !== ' ' && workCh !== '?') {
-        categories.modified.push(path);
+        categories.modified.push(pathForReport);
       }
     }
   }
@@ -2798,7 +2922,10 @@ export function runCleanBaselineCheck({ repoRoot, acceptCurrentTree = false } = 
   let statusPorcelain = '';
   let gitPresent = true;
   try {
-    statusPorcelain = execFileSync('git', ['status', '--porcelain=v1'], {
+    // ADR-0028 PR4 N4-quoted — `-z` returns paths verbatim (no quoting
+    // around spaces / quotes / tabs) and separates entries with NUL.
+    // The parser in evaluateCleanBaseline consumes that wire format.
+    statusPorcelain = execFileSync('git', ['status', '--porcelain=v1', '-z'], {
       cwd: repoRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -2952,6 +3079,16 @@ function cliPrintHelp() {
       '    (excluding .agentic-plugins/state/** workflow storage). Bash callers also',
       '    honor ACCEPT_CURRENT_TREE=1 in the environment for the same bypass. Emits',
       '    JSON: { status, categories: {modified, staged, untracked}, git_present }.',
+      '',
+      '  set-parent-writeback-marker --workflow-path <path> --host <host> --at <iso>',
+      '    ADR-0028 §P10 (PR3 M3) — write-ahead marker. Phase 7 driver sets the',
+      '    parent_writeback_at frontmatter scalar BEFORE writebackParent fires; the',
+      '    Stop hook deferred-writeback path skips when the marker is set so the',
+      '    common happy path does not double-fire.',
+      '',
+      '  clear-parent-writeback-marker --workflow-path <path> --host <host>',
+      '    ADR-0028 §P10 (PR3 M3) — clear the marker on writeback failure so a',
+      '    subsequent Stop hook re-attempts. Idempotent: missing marker is a no-op.',
       '',
       '  stop-archive --workflow-path <path> --host <host> --repo-root <path>',
       '               [--head-sha <sha>] [--head-subject <text>] [--status-digest <hex>]',
@@ -3153,6 +3290,28 @@ async function cliMain(argv) {
         if (!result.skipped) {
           process.stdout.write(`${flags['workflow-path']}\n`);
         }
+        return 0;
+      }
+
+      // ADR-0028 §P10 — parent_writeback_at write-ahead marker (PR3 M3).
+      case 'set-parent-writeback-marker': {
+        cliRequire(flags, ['workflow-path', 'host', 'at']);
+        await setParentWritebackMarker({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+          at: flags.at,
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
+        return 0;
+      }
+
+      case 'clear-parent-writeback-marker': {
+        cliRequire(flags, ['workflow-path', 'host']);
+        await clearParentWritebackMarker({
+          workflowPath: flags['workflow-path'],
+          host: flags.host,
+        });
+        process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;
       }
 
