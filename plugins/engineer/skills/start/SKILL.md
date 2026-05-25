@@ -218,14 +218,22 @@ the agent dialog between the two CLI invocations):
 2. Codex (or Claude) presents the suggested subjects + staging set to
    the user; the user accepts / edits the subjects and confirms the
    set (especially when `ask_user=true` because the manifest is empty
-   or a subset of `git_changes`).
+   or a subset of `git_changes`). When the branch is
+   `manifest-subset-of-git` with non-empty extras, the user picks ONE
+   of three resolutions per ADR-0028 PR4 A4: (a) intersection only
+   (default — no flag), (b) opt specific extras back in via repeated
+   `--include-extra <path>` per chosen extras entry, or (c) sweep the
+   entire working tree with `--accept-current-tree` (all-or-nothing).
 3. `phase7-commit.mjs --mode execute --workflow-path "$ACTIVE"
    --repo-root "$REPO_ROOT" --host "$AGENTIC_HOST" --subject "<text>"
    --confirm-non-interactive` — driver stages with explicit pathspecs
    (`git add <paths>`, never `-A`), commits per package (P8 split via
    repeated `--subject-pkg <pkg>=<subj>`), runs P11 / no-children /
    clean-after-commit / P10 synchronous `writebackParent`, and writes
-   set-terminal LAST (P5 terminal-marker-last invariant).
+   set-terminal LAST (P5 terminal-marker-last invariant). Per-path
+   extras opt-in (option b above) is forwarded as repeated
+   `--include-extra <path>`; each path MUST appear in the plan-mode
+   extras list AND clear `assertSafePath` — invalid entries throw.
 
 Layer 3 read-side defense: every `commit_manifest[*].path` is
 re-validated via `assertSafePath` before each `git add` — a workflow

@@ -15,15 +15,26 @@ import { readFile } from 'node:fs/promises';
 
 // -----------------------------------------------------------------------------
 // CONVENTIONAL_COMMIT_RE — the single canonical regex.
+//
+// ADR-0028 PR4 N2 — start AND end anchored, and the trailing description
+// excludes CR/LF. A multi-line subject like "feat(x): a\nfix(y): b"
+// must NOT match: git treats the first line as the subject and the
+// rest as body, so a forged trailer-shaped line (e.g. `Co-Authored-By:
+// attacker`) on line 2 could otherwise slip past stripTrailers and
+// land in the commit message.
 
 export const CONVENTIONAL_COMMIT_RE =
-  /^(feat|fix|docs|ci|refactor|chore|test)(\([^)]+\))?!?:/;
+  /^(feat|fix|docs|ci|refactor|chore|test)(\([^)]+\))?!?:[^\r\n]*$/;
 
 // -----------------------------------------------------------------------------
 // parseCommitSubject — structured parse with `!` breaking awareness.
+//
+// Description capture is `[^\r\n]*` (was `.*` which by default already
+// stops at \n but matches \r); the explicit char class keeps STRUCTURED_RE
+// and CONVENTIONAL_COMMIT_RE in lockstep on the multiline reject.
 
 const STRUCTURED_RE =
-  /^(feat|fix|docs|ci|refactor|chore|test)(\(([^)]+)\))?(!)?:\s?(.*)$/;
+  /^(feat|fix|docs|ci|refactor|chore|test)(\(([^)]+)\))?(!)?:\s?([^\r\n]*)$/;
 
 export function parseCommitSubject(subject) {
   if (typeof subject !== 'string' || subject.length === 0) return null;

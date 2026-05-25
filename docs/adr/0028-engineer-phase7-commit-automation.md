@@ -389,6 +389,72 @@ not worth the first-dogfood ergonomic. The first non-PR1 invocation of
 end to end and serve as the first observed-parity dogfood data point
 for ADR-0024 §observed-experience-parity scoring.
 
+### Forward-compat — minor-version schema evolution policy (PR4)
+
+The engineer workflow frontmatter has accreted several closed
+schema versions: `1` (ADR-0011 §2), `1.1` (ADR-0017), `1.2`
+(ADR-0028 PR1 — `commit_manifest`), `1.3` (ADR-0028 PR3 —
+`parent_writeback_at` write-ahead marker per §P10). All four
+versions share the same required-key set; minor bumps add purely
+optional keys.
+
+**Context (the cache vs. main divergence window).** The
+agentic-plugins marketplace cache lags `main` between releases
+(e.g. cached `engineer@0.12.1` emits/reads schema 1.2 while `main`
+has already shipped 1.3 emitters in PR3). In a single working
+directory this is a non-issue because the cache and the in-repo
+helpers are the same code path. The divergence becomes load-bearing
+when a user runs multi-worktree dev with a `.agentic-plugins/state`
+symlink that points back to the main worktree's state directory
+(per `[[feedback_worktree_state_single_home]]`): a `main`-side
+write of a 1.3 file can then be observed by a worktree using the
+cached 1.2 reader, and the closed schema gate
+(`state.mjs:1019`/`state.mjs:1168`/`state.mjs:1195-1204`) would
+throw on the unknown additive key.
+
+**Policy (this PR's contribution).** Minor bumps are
+contractually **additive-only** — they MAY add optional frontmatter
+keys but MUST NOT change the meaning of an existing key or add a
+required key. Combined with that contract:
+
+1. **Read tolerance** — a schema `1.x` reader that meets a `1.y`
+   file with `y > x` accepts the schema version field as a known
+   minor, accepts unknown additive frontmatter keys as a future
+   minor's contribution, and surfaces them through the parsed
+   object so downstream code can preserve them.
+2. **Round-trip preserve attempt (lossless intent)** — on write,
+   the older reader carries the unknown keys through verbatim
+   when possible, preserving the original disk-recorded schema
+   field (no silent promotion). Where a write helper has no
+   structural place to surface an unknown key, it documents the
+   intentional drop in its caller-facing return shape.
+3. **No reverse compat** — an older-major or unknown-major schema
+   is REJECTED. The policy only relaxes the *additive-minor* case.
+4. **No promotion on read** — observing a higher minor does NOT
+   bump the reader's schema field; the existing
+   ADR-0017 §"Schema versioning policy" no-silent-promotion rule
+   stands.
+
+This policy generalizes the existing
+`state.mjs:2021-2030` Legacy-schema comment (PR1 Codex compose-time
+review G2) — that note documented the 1.1→1.2 forward-additive case
+specifically; this sub-decision extends the same tolerance to every
+minor pair going forward.
+
+**Scope split (Codex peer plan-verify, run-id
+`peer-now-20260525T043242Z-69109b3`).** This PR4 commits the
+**policy text only** (the ADR sub-decision above). The behavior
+change in `state.mjs` (`validateFrontmatter` future-minor
+tolerance, serialize-side preserve attempt for unknown keys) is
+**split into a follow-up PR (PR5)**. Codex flagged the behavior
+change as non-trivial: the current parser/serializer is intentionally
+closed and rejects unknown keys at parse and serialize boundaries;
+"preserved on write" for unknown additive keys requires explicit
+raw-preservation semantics (block values, key ordering, comment
+preservation) that exceed a small tolerant-read tweak. Splitting
+keeps PR4 scope bounded and gives the behavior change a clean
+commit boundary in PR5 with its own RED-GREEN coverage.
+
 ### Centralization
 
 All conventional-commit regex usage centralizes in

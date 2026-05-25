@@ -72,6 +72,19 @@ describe('CONVENTIONAL_COMMIT_RE — matches Conventional Commit subjects', () =
     strictEqual(CONVENTIONAL_COMMIT_RE.test('feat(unclosed: x'), false);
     strictEqual(CONVENTIONAL_COMMIT_RE.test('feat scope: x'), false);
   });
+
+  // ADR-0028 PR4 N2 — end-anchor + multiline reject. A multiline
+  // subject like "feat(x): a\nfix(y): b" must NOT pass: git treats the
+  // first line as the subject and the rest as body, so trailer-shaped
+  // body lines could slip past stripTrailers (e.g. "Co-Authored-By:"
+  // forged via line 2). The regex is start-AND-end-anchored so the
+  // entire string must be a single-line CC subject.
+  it('rejects subjects containing newline (N2: multiline subject is body-injection vector)', () => {
+    strictEqual(CONVENTIONAL_COMMIT_RE.test('feat(x): a\nfix(y): b'), false);
+    strictEqual(CONVENTIONAL_COMMIT_RE.test('fix: a\r\nfeat: b'), false);
+    strictEqual(CONVENTIONAL_COMMIT_RE.test('feat: ok\n'), false);
+    strictEqual(CONVENTIONAL_COMMIT_RE.test('feat: ok\r'), false);
+  });
 });
 
 // -----------------------------------------------------------------------------
@@ -130,6 +143,17 @@ describe('parseCommitSubject — structured parse', () => {
       breaking: false,
       description: 'add validate-commit.mjs: centralize regex',
     });
+  });
+
+  // ADR-0028 PR4 N2 — end-anchored STRUCTURED_RE rejects multi-line
+  // input. parseCommitSubject must return null rather than parsing
+  // only the first line and silently dropping the rest as if it were
+  // the body — that would let a forged `Co-Authored-By:` line on
+  // line 2 slip through stripTrailers.
+  it('returns null for multiline subjects (N2: end-anchored)', () => {
+    strictEqual(parseCommitSubject('feat(x): a\nfix(y): b'), null);
+    strictEqual(parseCommitSubject('fix: x\r\nfeat: y'), null);
+    strictEqual(parseCommitSubject('feat: ok\n'), null);
   });
 });
 

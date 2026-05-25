@@ -2811,10 +2811,20 @@ export async function diagnoseRedundancy({
 const WORKFLOW_STORAGE_PREFIX = '.agentic-plugins/state/';
 
 /**
- * Pure decision: classify a `git status --porcelain=v1` blob.
+ * Pure decision: classify a `git status --porcelain=v1 -z` blob
+ * (ADR-0028 PR4 N4-quoted — NUL-separated wire format).
+ *
+ * The `-z` mode delivers paths as raw bytes (no C-quoting around
+ * special characters like spaces or quotes), and uses NUL terminators
+ * between entries. Rename and copy rows occupy TWO NUL chunks: the
+ * `R  <new>` row carries the new path, and the immediately following
+ * chunk is the old path (newpath first under -z, opposite of the
+ * plain-v1 `R  <old> -> <new>` form). This makes the workflow-storage
+ * exclusion prefix check robust against paths with spaces / quotes /
+ * tabs that would otherwise come back quoted under plain v1.
  *
  * @param {object}  args
- * @param {string}  args.statusPorcelain — verbatim porcelain v1 output
+ * @param {string}  args.statusPorcelain — verbatim porcelain v1 -z output
  * @param {boolean} [args.acceptCurrentTree=false] — accept-current-tree bypass
  * @returns {{
  *   status: 'clean' | 'dirty' | 'accepted',
@@ -2828,31 +2838,38 @@ export function evaluateCleanBaseline({
   const categories = { modified: [], staged: [], untracked: [] };
 
   if (typeof statusPorcelain === 'string' && statusPorcelain.length > 0) {
-    const lines = statusPorcelain.split('\n').filter((l) => l.length > 0);
-    for (const line of lines) {
-      // Porcelain v1 line shape: "XY <path>" or "R  <old> -> <new>".
-      // X = index column, Y = working-tree column.
-      if (line.length < 3) continue;
-      const indexCh = line[0];
-      const workCh = line[1];
-      const rawPath = line.slice(3);
-      // ADR-0028 PR3 N4 — rename rows carry both OLD and NEW paths
-      // ("R  old -> new"). The workflow-storage exclusion must check
-      // BOTH endpoints; a rename outside→inside is still a real change
-      // (the OLD path disappears) and a rename inside→outside surfaces
-      // a new tracked file. Only rename that stays entirely inside the
-      // workflow-storage tree counts as engineer's own bookkeeping
-      // movement and may be excluded as clean.
+    // -z splits on NUL. A trailing NUL produces an empty tail chunk we
+    // drop. Empty middle chunks are skipped defensively.
+    const chunks = statusPorcelain.split('\0');
+    if (chunks.length > 0 && chunks[chunks.length - 1] === '') chunks.pop();
+
+    for (let i = 0; i < chunks.length; i++) {
+      const cur = chunks[i];
+      // Each entry is "XY <path>" — needs at least the two status
+      // columns plus a separator and one byte of path.
+      if (typeof cur !== 'string' || cur.length < 3) continue;
+
+      const indexCh = cur[0];
+      const workCh = cur[1];
+      const rawPath = cur.slice(3);
+
+      // ADR-0028 PR3 N4 + PR4 N4-quoted — rename/copy rows carry both
+      // OLD and NEW paths across two consecutive NUL chunks. Under -z
+      // the NEW path is on the `R` / `C` row and the OLD path is the
+      // NEXT chunk (opposite of plain-v1's `R  <old> -> <new>`). The
+      // workflow-storage exclusion must check BOTH endpoints; only a
+      // rename that stays entirely inside the workflow-storage tree
+      // counts as engineer's own bookkeeping movement.
       let pathForReport;
       let bothInsideWorkflowStorage;
-      const arrowIdx = rawPath.indexOf(' -> ');
-      if (arrowIdx !== -1) {
-        const oldPath = rawPath.slice(0, arrowIdx);
-        const newPath = rawPath.slice(arrowIdx + 4);
+      if (indexCh === 'R' || indexCh === 'C') {
+        const newPath = rawPath;
+        const oldPath = chunks[i + 1] ?? '';
+        i += 1; // consume the old-path chunk so it is not re-parsed as an entry
         const oldInside = oldPath.startsWith(WORKFLOW_STORAGE_PREFIX);
         const newInside = newPath.startsWith(WORKFLOW_STORAGE_PREFIX);
         bothInsideWorkflowStorage = oldInside && newInside;
-        // N4: surface the OUTSIDE endpoint when exactly one side
+        // PR3 N4: surface the OUTSIDE endpoint when exactly one side
         // crosses the workflow-storage boundary; otherwise default to
         // the NEW path (PR2-compatible normal-rename behavior).
         if (oldInside && !newInside) pathForReport = newPath;
@@ -2905,7 +2922,10 @@ export function runCleanBaselineCheck({ repoRoot, acceptCurrentTree = false } = 
   let statusPorcelain = '';
   let gitPresent = true;
   try {
-    statusPorcelain = execFileSync('git', ['status', '--porcelain=v1'], {
+    // ADR-0028 PR4 N4-quoted — `-z` returns paths verbatim (no quoting
+    // around spaces / quotes / tabs) and separates entries with NUL.
+    // The parser in evaluateCleanBaseline consumes that wire format.
+    statusPorcelain = execFileSync('git', ['status', '--porcelain=v1', '-z'], {
       cwd: repoRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
