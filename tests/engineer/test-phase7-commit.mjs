@@ -31,6 +31,7 @@ const {
   readPhase7Config,
   decideStagingBranch,
   commitShapeFor,
+  isAgenticPluginsRepo,
 } = await import(PHASE7_PATH);
 
 // -----------------------------------------------------------------------------
@@ -256,6 +257,70 @@ describe('packageScope — last-segment + collision disambiguation (M1)', () => 
   });
 });
 
+// -----------------------------------------------------------------------------
+// isAgenticPluginsRepo — A5 self-detection for ADR-0028 §P3 strict mode.
+
+describe('isAgenticPluginsRepo — package.json name self-detection (A5)', () => {
+  it('returns true when package.json name is "agentic-plugins"', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'a5-detect-'));
+    try {
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'agentic-plugins', version: '0.1.0' }),
+      );
+      strictEqual(await isAgenticPluginsRepo(dir), true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false when package.json name is a fork or unrelated', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'a5-detect-'));
+    try {
+      await writeFile(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: 'consumer-repo', version: '1.0.0' }),
+      );
+      strictEqual(await isAgenticPluginsRepo(dir), false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false when package.json is absent (lenient default)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'a5-detect-'));
+    try {
+      strictEqual(await isAgenticPluginsRepo(dir), false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false when package.json is malformed JSON (lenient default)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'a5-detect-'));
+    try {
+      await writeFile(join(dir, 'package.json'), '{ not valid json');
+      strictEqual(await isAgenticPluginsRepo(dir), false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false when package.json lacks a name field', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'a5-detect-'));
+    try {
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ version: '0.1.0' }));
+      strictEqual(await isAgenticPluginsRepo(dir), false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false when repoRoot is missing', async () => {
+    strictEqual(await isAgenticPluginsRepo('/nonexistent/repo'), false);
+  });
+});
+
 describe('inferSubject — disambiguation pass-through', () => {
   it('forwards packageMap to packageScope and produces plugin/companions on collision', () => {
     const map = ['companions', 'plugins/companions'];
@@ -464,6 +529,35 @@ describe('phase7-commit driver — sandbox e2e (Phase 5 critique gap closure)', 
         /not allowed when the staging set requires a split/.test(result.stderr),
         `stderr should mention split policy: ${result.stderr}`,
       );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('M3 — execute with no parent_workflow leaves parent_writeback_at unset', async () => {
+    // PR3 Codex peer review MINOR M3-e2e — sandbox proof that the
+    // marker logic is gated on parent_workflow linkage. A direct
+    // /engineer:start workflow (no orchestrator parent) writes no
+    // marker; the writeback branch is skipped entirely.
+    const dir = await makeSandboxRepo();
+    try {
+      const wf = bootstrapWorkflow(dir, {
+        manifest: [{ path: 'README.md', op: 'edit' }],
+      });
+      await writeFile(join(dir, 'README.md'), '# sandbox\nM3-e2e\n');
+      const result = runDriver(dir, [
+        '--mode', 'execute',
+        '--workflow-path', wf,
+        '--repo-root', dir,
+        '--host', 'claude',
+        '--subject', 'docs: M3-e2e marker absent path',
+        '--confirm-non-interactive',
+        '--lenient-cc',
+      ]);
+      strictEqual(result.code, 0, `expected exit 0; stderr=${result.stderr}`);
+      const wfText = await readFile(wf, 'utf8');
+      ok(!/^parent_writeback_at:/m.test(wfText),
+         'marker must NOT be written when workflow has no parent_workflow linkage');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

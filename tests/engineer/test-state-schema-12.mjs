@@ -68,36 +68,42 @@ const MIN_BASELINE = {
 // -----------------------------------------------------------------------------
 
 describe('state.mjs — ADR-0028 §Layer-2 schema 1.2 constants', () => {
-  it('SCHEMA_VERSION is "1.2" (ADR-0028 §Layer-2 commit_manifest bump)', () => {
-    strictEqual(SCHEMA_VERSION, '1.2');
+  it('SCHEMA_VERSION is the latest schema (bumped to "1.3" by ADR-0028 PR3 M3 parent_writeback_at)', () => {
+    // PR1 (#349) emitted "1.2" with commit_manifest; PR3 M3 bumps to
+    // "1.3" with parent_writeback_at write-ahead marker. Older schema
+    // 1.2 files still parse via SUPPORTED_SCHEMA_VERSIONS.
+    strictEqual(SCHEMA_VERSION, '1.3');
   });
 
-  it('SUPPORTED_SCHEMA_VERSIONS accepts 1, "1.1", "1.2" (read backward compat)', () => {
+  it('SUPPORTED_SCHEMA_VERSIONS accepts 1, "1.1", "1.2", "1.3" (additive read backward compat)', () => {
     ok(SUPPORTED_SCHEMA_VERSIONS.has(1));
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.1'));
     ok(SUPPORTED_SCHEMA_VERSIONS.has('1.2'));
+    ok(SUPPORTED_SCHEMA_VERSIONS.has('1.3'));
     strictEqual(SUPPORTED_SCHEMA_VERSIONS.has(2), false);
-    strictEqual(SUPPORTED_SCHEMA_VERSIONS.has('1.3'), false);
+    strictEqual(SUPPORTED_SCHEMA_VERSIONS.has('1.4'), false);
   });
 });
 
 describe('state.mjs — ADR-0028 schema 1.2 file emit + round-trip', () => {
-  it('createWorkflow writes schema: "1.2" on disk', async () => {
+  it('createWorkflow writes schema: "1.3" on disk (PR3 M3 bump from 1.2)', async () => {
     await withTmpRepo(async (repoRoot) => {
       await createWorkflow({
         repoRoot,
         verb: 'compose',
         host: 'claude',
         gitBaseline: MIN_BASELINE,
-        originalRequest: 'schema 1.2 emit test',
+        originalRequest: 'schema 1.3 emit test',
       });
       const [filePath] = await listWorkflowFiles(repoRoot);
       const raw = await readFile(filePath, 'utf8');
-      ok(/^schema: "1\.2"$/m.test(raw), `expected schema: "1.2" on disk, got:\n${raw.split('\n').slice(0, 5).join('\n')}`);
+      ok(/^schema: "1\.3"$/m.test(raw), `expected schema: "1.3" on disk, got:\n${raw.split('\n').slice(0, 5).join('\n')}`);
     });
   });
 
-  it('schema 1.2 file with commit_manifest absent reads OK (additive optional)', async () => {
+  it('emitted file with commit_manifest absent reads OK (additive optional)', async () => {
+    // PR3 M3 bumped emit to 1.3; the additive-optional behavior is the
+    // same as 1.2: commit_manifest is absent on a fresh workflow file.
     await withTmpRepo(async (repoRoot) => {
       await createWorkflow({
         repoRoot,
@@ -108,7 +114,7 @@ describe('state.mjs — ADR-0028 schema 1.2 file emit + round-trip', () => {
       });
       const [filePath] = await listWorkflowFiles(repoRoot);
       const { frontmatter } = await readWorkflow(filePath);
-      strictEqual(frontmatter.schema, '1.2');
+      strictEqual(frontmatter.schema, SCHEMA_VERSION);
       strictEqual('commit_manifest' in frontmatter, false);
     });
   });
@@ -191,10 +197,11 @@ describe('state.mjs — schema 1.1 → 1.2 backward compatibility', () => {
     strictEqual('commit_manifest' in frontmatter, false);
   });
 
-  it('mutation of a schema "1.1" file preserves disk schema ("1.1", not silently bumped to "1.2")', async () => {
+  it('mutation of a schema "1.1" file preserves disk schema ("1.1", not silently bumped)', async () => {
     // ADR-0017 §"Schema versioning policy" — mutation helpers preserve
     // the disk-recorded schema; no silent promotion of legacy files.
-    // Equally applies to the 1.1 → 1.2 boundary introduced by ADR-0028.
+    // Equally applies to every schema boundary (1.1 → 1.2 by ADR-0028
+    // PR1, 1.2 → 1.3 by ADR-0028 PR3).
     await withTmpRepo(async (repoRoot) => {
       await createWorkflow({
         repoRoot,
@@ -204,9 +211,10 @@ describe('state.mjs — schema 1.1 → 1.2 backward compatibility', () => {
         originalRequest: 'baseline',
       });
       const [filePath] = await listWorkflowFiles(repoRoot);
-      // Hand-downgrade the on-disk schema to "1.1"
+      // Hand-downgrade the on-disk schema to "1.1" — match whatever
+      // current SCHEMA_VERSION ('1.2', '1.3', ...) the emit wrote.
       const raw = await readFile(filePath, 'utf8');
-      const downgraded = raw.replace(/^schema: "1\.2"$/m, 'schema: "1.1"');
+      const downgraded = raw.replace(/^schema: "[^"]+"$/m, 'schema: "1.1"');
       await writeFile(filePath, downgraded, { mode: 0o600 });
 
       // Mutate via setCheckpoint
@@ -548,7 +556,7 @@ describe('state.mjs — recordComposedFile on legacy schema 1.1 file (Codex G2)'
       const [filePath] = await listWorkflowFiles(repoRoot);
       // Hand-downgrade disk schema to "1.1"
       const raw = await readFile(filePath, 'utf8');
-      const downgraded = raw.replace(/^schema: "1\.2"$/m, 'schema: "1.1"');
+      const downgraded = raw.replace(/^schema: "[^"]+"$/m, 'schema: "1.1"');
       await writeFile(filePath, downgraded, { mode: 0o600 });
 
       await recordComposedFile({

@@ -193,6 +193,24 @@ export async function runStopArchive({
       && typeof frontmatter.workflow_id === 'string'
       && typeof headSha === 'string'
       && headSha.length > 0) {
+    // ADR-0028 §P10 (PR3 M3) — write-ahead marker is an INFORMATIONAL
+    // signal, not a hard skip. PR3 Codex peer review M3-race: if Phase 7
+    // crashed BETWEEN marker set and writeback completion, an
+    // unconditional skip here would orphan the subtask. The
+    // subtask-update CLI's `if_match` ownership check is the actual
+    // correctness backstop (idempotent: already-completed → no-op,
+    // still-open → completes). We log the marker for observability but
+    // always call writebackParent — the cost is one redundant CLI spawn
+    // on the happy path, the benefit is closing the crash-window orphan.
+    if (typeof frontmatter.parent_writeback_at === 'string'
+        && frontmatter.parent_writeback_at.length > 0) {
+      stderr.write(
+        `engineer/stop-archive: parent_writeback_at marker present ` +
+        `(${frontmatter.parent_writeback_at}); proceeding with deferred ` +
+        `writeback anyway (subtask-update if_match is idempotent — ` +
+        `already-completed becomes a no-op).\n`,
+      );
+    }
     const closedAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
     try {
       await writebackParent({

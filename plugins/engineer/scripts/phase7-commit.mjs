@@ -48,6 +48,8 @@ import {
   noPendingEnsembleCheck,
   noActiveChildrenCheck,
   setTerminal,
+  setParentWritebackMarker,
+  clearParentWritebackMarker,
 } from './state.mjs';
 import { writebackParent } from './parent-writeback.mjs';
 
@@ -299,6 +301,41 @@ export async function readPhase7Config(repoRoot) {
 }
 
 // =============================================================================
+// A5 — agentic-plugins self-detection (ADR-0028 §P3 strict mode)
+// =============================================================================
+//
+// The `readPackageMap(configPath, {strict})` helper degrades gracefully in
+// consumer repos but MUST throw on malformed config inside agentic-plugins
+// itself — that is exactly the bug class ADR-0016 was written to prevent.
+// PR2 always passed `{strict: false}` regardless of repo; PR3 closes the
+// gap by detecting the in-repo case from `package.json` `name` and
+// flipping strict on automatically. Consumer repos keep the lenient
+// default; fork repos that rename `package.json` opt out (intentional —
+// they choose their own enforcement).
+//
+// Lenient on every failure mode (absent file, malformed JSON, missing
+// name field) — false-positive strict would block legitimate consumer
+// repos. The trade-off favors consumer safety; the in-repo strict path
+// fires only when the marker is unambiguous.
+
+export async function isAgenticPluginsRepo(repoRoot) {
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) return false;
+  let text;
+  try {
+    text = await readFile(join(repoRoot, 'package.json'), 'utf8');
+  } catch {
+    return false;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  return parsed && typeof parsed === 'object' && parsed.name === 'agentic-plugins';
+}
+
+// =============================================================================
 // Staging set computation (Layer 3 core)
 // =============================================================================
 
@@ -483,9 +520,14 @@ async function planMode({ workflowPath, repoRoot, frontmatter, acceptCurrentTree
     acceptCurrentTree,
   });
   const stagingSet = branchDecision.stagingSet;
+  // A5 — ADR-0028 §P3 strict mode flips on automatically inside the
+  // agentic-plugins repo (self-detection via package.json name); consumer
+  // repos keep the lenient default so a missing or malformed
+  // release-please-config.json does not block their workflow.
+  const strictPackageMap = await isAgenticPluginsRepo(repoRoot);
   const packageMap = await readPackageMap(
     join(repoRoot, 'release-please-config.json'),
-    { strict: false },
+    { strict: strictPackageMap },
   );
   const routes = detectCrossPackageRoutes(stagingSet, packageMap);
   const shape = commitShapeFor({
@@ -697,9 +739,13 @@ async function executeMode({
     );
   }
   const stagingSet = branchDecision.stagingSet;
+  // A5 — same self-detection as plan-mode (the in-repo strict path
+  // throws on malformed/missing release-please-config.json so the
+  // ADR-0016 routing convention cannot silently degrade).
+  const strictPackageMap = await isAgenticPluginsRepo(repoRoot);
   const packageMap = await readPackageMap(
     join(repoRoot, 'release-please-config.json'),
-    { strict: false },
+    { strict: strictPackageMap },
   );
   const routes = detectCrossPackageRoutes(stagingSet, packageMap);
   const shape = commitShapeFor({
@@ -801,6 +847,11 @@ async function executeMode({
 
   // P10 — synchronous writebackParent. Skipped when this workflow has
   // no orchestrator parent linkage (direct /engineer:start invocation).
+  // PR3 M3 — write-ahead marker set BEFORE writebackParent so a crash
+  // between the writeback and set-terminal leaves a durable
+  // "writeback already attempted" signal. The Stop hook's deferred
+  // path skips when the marker is set; subtask-update if_match remains
+  // the correctness backstop.
   if (
     typeof fresh.parent_workflow === 'string' &&
     fresh.parent_workflow.length > 0 &&
@@ -809,6 +860,10 @@ async function executeMode({
   ) {
     const commitSha = gitSync(repoRoot, ['rev-parse', 'HEAD']);
     const closedAtIso = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+    // PR3 M3 — write-ahead marker.
+    await setParentWritebackMarker({
+      workflowPath, host: flags.host, at: closedAtIso,
+    });
     const wbResult = await writebackParent({
       repoRoot,
       parentWorkflowId: fresh.parent_workflow,
@@ -823,7 +878,17 @@ async function executeMode({
       host: flags.host,
       stderr,
     });
-    if (wbResult && wbResult.ok === false && wbResult.skipped !== true) {
+    if (wbResult && wbResult.ok === false) {
+      // PR3 M3 / Codex peer review M3-skipped — clear the marker on
+      // ANY non-OK result so the Stop hook deferred path can retry.
+      // The earlier `skipped !== true` guard mis-bucketed environmental
+      // skips (missing orchestrator root, CLI not found) as terminal
+      // success-skips; that suppressed the deferred retry permanently
+      // and orphaned the subtask. Letting clear fire on every failure
+      // keeps the system honest: if the writeback actually landed, a
+      // subsequent Stop hook retry is an idempotent no-op via
+      // subtask-update if_match.
+      await clearParentWritebackMarker({ workflowPath, host: flags.host });
       stderr.write(
         `⚠ parent-writeback failed but Phase 7 will continue: ${wbResult.reason}\n` +
         `  The Stop hook deferred-writeback path is the backstop ` +
