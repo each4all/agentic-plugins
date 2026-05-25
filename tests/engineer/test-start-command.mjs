@@ -407,6 +407,52 @@ describe('evaluateCleanBaseline — pure decision function (ADR-0028 §Layer-1)'
     strictEqual(r.status, 'dirty');
     deepStrictEqual(r.categories.staged, ['docs/renamed.md']);
   });
+
+  it('N4 — inside-to-inside workflow-storage rename stays clean', () => {
+    // Both OLD and NEW are workflow storage → engineer's own bookkeeping
+    // moving between workflows/ and archive/. Counts as clean.
+    const r = evaluateCleanBaseline({
+      statusPorcelain:
+        'R  .agentic-plugins/state/engineer/workflows/x.md -> ' +
+        '.agentic-plugins/state/engineer/archive/x.md\n',
+    });
+    strictEqual(r.status, 'clean');
+    deepStrictEqual(r.categories, { modified: [], staged: [], untracked: [] });
+  });
+
+  it('N4 — outside-into-workflow-storage rename is dirty (surfaces the OLD outside path)', () => {
+    // OLD is outside workflow-storage → user is moving a real source file
+    // into the engineer state tree. The OLD path disappears from the
+    // working tree; phase7 must surface that endpoint so the user can
+    // resolve. PR3 Codex peer review MINOR N4-assert: explicit endpoint
+    // check (length-only was too weak).
+    const r = evaluateCleanBaseline({
+      statusPorcelain:
+        'R  AGENTS.md -> .agentic-plugins/state/engineer/workflows/AGENTS.md\n',
+    });
+    strictEqual(r.status, 'dirty');
+    const allSurfaced = [...r.categories.staged, ...r.categories.modified];
+    ok(
+      allSurfaced.includes('AGENTS.md'),
+      `rename outside→inside must surface OLD path 'AGENTS.md' (got: ${JSON.stringify(allSurfaced)})`,
+    );
+  });
+
+  it('N4 — workflow-storage-into-outside rename is dirty (surfaces the NEW outside path)', () => {
+    // OLD inside, NEW outside → workflow-storage content is being moved
+    // out into the tracked tree. Dirty so phase7 stages or refuses.
+    // PR3 N4-assert: explicit endpoint check.
+    const r = evaluateCleanBaseline({
+      statusPorcelain:
+        'R  .agentic-plugins/state/engineer/workflows/y.md -> docs/y.md\n',
+    });
+    strictEqual(r.status, 'dirty');
+    const allSurfaced = [...r.categories.staged, ...r.categories.modified];
+    ok(
+      allSurfaced.includes('docs/y.md'),
+      `rename inside→outside must surface NEW path 'docs/y.md' (got: ${JSON.stringify(allSurfaced)})`,
+    );
+  });
 });
 
 describe('/engineer:start — Layer 1 clean-baseline gate (ADR-0028)', () => {
