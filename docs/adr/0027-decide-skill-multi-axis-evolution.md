@@ -904,9 +904,22 @@ ResolvedDecisionContext = {
   size: "minor" | "standard" | "major",  // §2.2 resolved tier (defaults to "standard")
   size_explicit: boolean,        // §1.5(2) explicit-vs-default discriminator
   weights: Record<string, number>, // §2.2 weighting map; empty {} means "no --weights flag passed"
+  weights_explicit: boolean,     // PR4 refine M1 amendment — LLM-observable explicit-presence signal (mirrors size_explicit pattern)
   resolved_at: ISO8601-string,   // for snapshot diagnostics
 }
 ```
+
+**PR4 refine M1 amendment** (2026-05-25): `weights_explicit` is added
+to the on-wire context as a snake_case top-level field mirroring
+`size_explicit`. The SKILL.md `@decide:weighting-sensitivity-output`
+opt-in gate references `context.weights_explicit === true` directly so
+the LLM body consumer reads it from `$AGENTIC_DECIDE_CONTEXT_FILE` rather
+than inferring "explicit" from `Object.keys(context.weights).length > 0`,
+which would re-introduce the `weights !== {}` object-identity trap peer
+G3 had warded off at the JS-API layer. The JS-API parser result retains
+its top-level `weightsExplicit` camelCase field (peer G3 placement);
+the two names are intentional — JS-API conventions inside the parser
+versus JSON-on-wire snake_case for the LLM consumer.
 
 **Weights internal representation is canonical**: `weights` is
 always `Record<string, number>`. An empty object `{}` is the

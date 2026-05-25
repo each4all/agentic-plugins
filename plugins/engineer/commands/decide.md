@@ -94,9 +94,12 @@ Parse `$ARGUMENTS` into flags + body and resolve the preset from
 `$AGENTIC_DECIDE_CONTEXT_FILE` for the skill body to consume.
 
 The CLI reuses `scripts/lib/decide-args.mjs` internally so the same
-§2.3 flag grammar applies: unknown flags or invalid `--size=<tier>`
-values produce a parser error and exit 2 (we halt). Body tokens go
-after a `--` separator and are threaded into `context.body` per §5.6.
+§2.3 flag grammar applies: unknown flags, invalid `--size=<tier>`
+values, or malformed `--weights=<spec>` (non-numeric weight, negative
+weight, exponent notation, uppercase axis-id, duplicate axis-id, empty
+spec, whitespace) produce a parser error and exit 2 (we halt). Body
+tokens go after a `--` separator and are threaded into `context.body`
+per §5.6.
 
 ```bash
 AGENTIC_DECIDE_CONTEXT_FILE="$(mktemp -t engineer-decide-context.XXXXXX).json"
@@ -142,8 +145,19 @@ The skill body reads `$AGENTIC_DECIDE_CONTEXT_FILE` to obtain:
   passed, `size` defaults to `"standard"` and `size_explicit` is `false`. The
   ritual mapping (per-option output depth, comparison-table density,
   recommendation rigor) is documented in `skills/decide/SKILL.md` inside the
-  four `@decide:*` marker regions.
-- `weights` — reserved slot populated by PR4 once it lands
+  five `@decide:*` marker regions (PR4 added `@decide:weighting-sensitivity-output`).
+- `weights` — `Record<string, number>` populated from `--weights=<spec>`.
+  Empty `{}` is the sentinel for "no `--weights` flag" (treated as
+  uniform 1.0 by downstream normalization). When `--weights=…` was passed,
+  the map carries the normalized per-axis weights (missing axes filled to
+  1.0, unknown axis-ids dropped with diagnostic).
+- `weights_explicit` — boolean. `true` iff the user passed `--weights=<spec>`.
+  This is the LLM-observable explicit-presence signal (ADR-0027 §5.6 PR4
+  amendment) — SKILL.md surfaces gate weighting/sensitivity rendering on
+  this field directly rather than inferring from `Object.keys(weights).length`,
+  avoiding the object-identity trap peer G3 warded off. At the JS parser
+  layer the same signal is also surfaced as a top-level `weightsExplicit`
+  field on the parser result (not under `flags`).
 
 If the file is missing or the JSON is unparseable, fall back to the
 in-code default preset (5-axis essence + foundation + standards +

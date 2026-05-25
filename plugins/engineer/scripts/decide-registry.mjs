@@ -3,20 +3,32 @@
 //
 // Public API:
 //   loadRegistry({ path?: string }) -> { registry: object|null, diagnostics: string[], fallbackTriggered: boolean }
-//   resolvePreset({ path?, presetId?, sizeExplicit?, sizeValue?, profileOverride?, body? })
-//       -> { context: ResolvedDecisionContext, diagnostics: string[], fallbackTriggered: boolean }
+//   resolvePreset({
+//     path?: string,
+//     presetId?: string,
+//     sizeExplicit?: boolean,
+//     sizeValue?: "minor" | "standard" | "major",
+//     profileOverride?: string,        // §1.5(3) reserved slot
+//     body?: string,                   // threaded into context.body per §5.6
+//     weights?: string,                // PR4 — raw --weights=<spec> string
+//     weightsExplicit?: boolean,       // PR4 — top-level parser explicit-presence signal
+//   }) -> { context: ResolvedDecisionContext, diagnostics: string[], fallbackTriggered: boolean }
 //
 // CLI:
-//   node decide-registry.mjs resolve [--preset=<id>] [--size=<tier>]
-//     stdout — JSON ResolvedDecisionContext
-//     stderr — fallback diagnostics (one line per row triggered)
-//     exit 0 always (registry is a graceful-degradation artifact per §1.6)
+//   node decide-registry.mjs resolve
+//     [--preset=<id>] [--size=<tier>] [--weights=<spec>] [-- <decision body>]
+//     stdout — JSON ResolvedDecisionContext (§5.6 + PR4 amendment fields)
+//     stderr — fallback diagnostics + chosen-source diagnostic (one line each)
+//     exit 0 — registry resolved (with or without graceful-degradation diagnostics)
+//     exit 2 — argument-parser errors (unknown flag, invalid --size, malformed
+//              --weights) per ADR-0027 §2.3(3-4)
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
 
 import { parse as parseYaml, YamlParseError } from "./lib/yaml-mini.mjs";
+import { normalizeWeights } from "./lib/decide-weights.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PATH = resolve(HERE, "..", "skills", "decide", "references", "decision-axes.yml");
@@ -203,6 +215,13 @@ export function loadRegistry({ path } = {}) {
 //   2. sizeExplicit && sizeValue (explicit `--size=<tier>`) → implied preset
 //   3. profileOverride (reserved; no consumers ship in PR2)
 //   4. default → `default` preset
+//
+// PR4 (Task 3): `weights` (raw spec string from --weights=<spec>) +
+// `weightsExplicit` (top-level parser signal) are normalized over the
+// resolved axes via `normalizeWeights(...)`. Empty-flag path → `{}` sentinel
+// (uniform). Fallback paths (registry rejected, unknown preset, size-implied
+// missing) all share the same normalization step — peer G5 fallback-aware
+// invariant.
 export function resolvePreset({
   path,
   presetId,
@@ -210,6 +229,11 @@ export function resolvePreset({
   sizeValue,
   profileOverride,
   body = "",
+  // PR4 refine M5 — internal alias is now `rawSpec`, matching the
+  // downstream `normalizeWeights({rawSpec, ...})` contract. The public
+  // caller-side name remains `weights` (the raw --weights=<spec> string).
+  weights: rawSpec,
+  weightsExplicit = false,
 } = {}) {
   const { registry, diagnostics, fallbackTriggered } = loadRegistry({ path });
   const diags = diagnostics.slice();
@@ -276,21 +300,52 @@ export function resolvePreset({
   const resolved = chosen ?? DEFAULT_FALLBACK;
   if (chosen === null) fallback = true;
 
-  // Construct the ResolvedDecisionContext (§5.6). PR2 populated
-  // body / preset_id / axes / resolved_at; PR3 populates
-  // size / size_explicit from the parser (writable for the SKILL.md
-  // marker regions that consume them). PR4 will populate weights from
-  // the --weights parser (still a reserved-and-writable slot).
+  // PR4 (Task 3): normalize weights over the resolved (or fallback) axes.
+  // The normalizer is path-agnostic — same shape for happy preset, unknown
+  // preset fallback, malformed-registry fallback, etc. Diagnostics from
+  // weight normalization (unknown axis-id drops, empty-axes edge) merge
+  // into the existing diags list.
+  const weightsResult = normalizeWeights({
+    rawSpec,
+    axes: resolved.axes,
+    weightsExplicit,
+  });
+  for (const d of weightsResult.diagnostics) diags.push(d);
+
+  // Construct the ResolvedDecisionContext (§5.6 + PR4 amendment).
+  //
+  // PR2 populated body / preset_id / axes / resolved_at; PR3 populates
+  // size / size_explicit from the parser. PR4 populates weights via
+  // normalizeWeights above AND adds `weights_explicit` (snake_case to
+  // match `size_explicit`) so the on-wire JSON context carries the
+  // explicit-presence signal — the SKILL.md gate at
+  // `@decide:weighting-sensitivity-output` consumes this directly
+  // (peer M1: previously `weightsExplicit` was JS-API-only, leaving
+  // the LLM body consumer to infer "explicit" from `weights !== {}`,
+  // the precise object-identity trap peer G3 had warded off).
   const context = {
     body: body ?? "",
     preset_id: resolved.preset_id ?? resolved.id ?? "default",
     axes: resolved.axes,                  // frozen per peer P-13
     size: sizeExplicit && sizeValue ? sizeValue : "standard",
     size_explicit: !!sizeExplicit,
-    weights: {},                          // PR4 will populate
+    weights: weightsResult.weights,       // PR4 normalized (empty {} = uniform sentinel)
+    weights_explicit: !!weightsExplicit,  // PR4 (M1 refine): LLM-observable explicit-presence signal
     resolved_at: new Date().toISOString(),
-    _chosenSource: chosenSource,          // for diagnostics; PR5 may consume
   };
+
+  // PR4 refine M4 — the previously-undocumented `_chosenSource` field
+  // leaked into the §5.6 on-wire schema (Co3 finding: ADR §5.6 lists
+  // exactly the eight canonical fields above; `_chosenSource` was not
+  // one of them, and the leading underscore signals "private" without
+  // any actual JSON-output privacy boundary). The field is dropped.
+  // Fallback events are already reported through the structured
+  // diagnostics array (unknown-preset, size-implied-missing, etc.), so
+  // no diagnostic visibility is lost. PR5 may re-introduce a structured
+  // chosen-source surface through a §5.6 amendment if needed.
+  // `chosenSource` is referenced here so the unused-variable linter
+  // does not warn (the branches above assign it for future use).
+  void chosenSource;
 
   return { context, diagnostics: diags, fallbackTriggered: fallback };
 }
@@ -313,12 +368,12 @@ async function main(argv) {
   }
 
   // Reuse the shared argument-parser skeleton so the CLI honors the
-  // same §2.3 grammar + --size tier whitelist + --weights stub
-  // warning as `/engineer:decide`. (peer P-9 / M5 fix)
+  // same §2.3 grammar + --size tier whitelist + --weights validation
+  // (PR4 active) as `/engineer:decide`. (peer P-9 / M5 fix)
   const { parseArgs } = await import("./lib/decide-args.mjs");
   const parsed = parseArgs(args.slice(1));
 
-  // Surface warnings (last-wins repeats, --weights deferred, etc.).
+  // Surface warnings (last-wins repeats, etc.).
   for (const w of parsed.warnings) process.stderr.write(`warning: ${w}\n`);
 
   // §2.3(3-4): hard halt on parser errors.
@@ -332,6 +387,8 @@ async function main(argv) {
     sizeExplicit: parsed.flags.size !== undefined,
     sizeValue: parsed.flags.size,
     body: parsed.body,                        // peer M2 fix — thread body into §5.6 context
+    weights: parsed.flags.weights,            // PR4: raw spec from --weights=<spec>
+    weightsExplicit: parsed.weightsExplicit,  // PR4: top-level explicit-presence signal
   });
   for (const line of diagnostics) process.stderr.write(`registry: ${line}\n`);
   process.stdout.write(JSON.stringify(context, null, 2) + "\n");

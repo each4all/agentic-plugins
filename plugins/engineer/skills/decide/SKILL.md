@@ -227,6 +227,107 @@ preset, in document order. The five-row template below is the
   weighting/sensitivity and PR5 validation surfaces.
 <!-- @decide:comparison-table:end -->
 
+<!-- @decide:weighting-sensitivity-output:begin -->
+#### REQUIRED output format — weighting + sensitivity (ADR-0027 §1.3 + PR4)
+
+This region renders ONLY when the sensitivity opt-in gate fires:
+`context.weights_explicit === true` (user passed `--weights=<spec>`,
+emitted by `decide-registry.mjs` per ADR-0027 §5.6 PR4 amendment)
+OR `context.size === "major"`. Both signals are top-level fields of
+`$AGENTIC_DECIDE_CONTEXT_FILE`, so the LLM reads them directly — do
+NOT infer explicit-presence from `Object.keys(context.weights).length > 0`,
+which would re-introduce the object-identity bug peer G3 warded off
+at the JS API. In all other cases, omit this entire section so
+default `/engineer:decide <prose>` output stays byte-identical to
+the pre-PR4 baseline (backward-compat invariant).
+
+**Grade emission contract (size-aware)**:
+
+When this region renders, each per-option bullet in
+`@decide:per-option-output` MUST carry a `[grade: ◎|○|△|×]` suffix.
+The 4-grade scale maps to numeric scores (◎=3, ○=2, △=1, ×=0) — single
+source of truth lives in the `GRADE_MARKERS` exported constant at
+`scripts/lib/decide-scores.mjs` (the same module supplies the
+`gradeToScore()` function consumers use to convert). The MUST is
+load-bearing because the weighted aggregate row below cannot be
+computed without per-axis grades — omitting them produces `(n/a)` in
+every cell (PR4 refine M7: strengthened from "MAY carry an optional"
+since the aggregate row's presence is non-optional when the region
+renders, per the unified opt-in gate above). PR4 refine A1: explicit
+`GRADE_MARKERS` reference pins the prose-code contract — changing the
+marker set in code requires touching this prose, preventing silent
+drift.
+
+Auto-activated mode and default invocation (no `--weights`,
+`size !== "major"`) do NOT emit grades — the output stays prose-only
+to preserve the backward-compat invariant.
+
+- `size=minor` (+ `--weights=…`) → emit `[grade: X]` per bullet using
+  the compact preset's axes; the weighted aggregate row still applies.
+- `size=standard` (+ `--weights=…`) → emit `[grade: X]` per bullet so
+  the weighted aggregate row can be computed.
+- `size=major` → emit `[grade: X]` per bullet AND the sensitivity
+  flip summary below (sensitivity auto-enables in major mode even
+  without explicit `--weights`).
+
+**Weighted aggregate row** (appended to `@decide:comparison-table`
+after all axis rows AND any size=major italicized risk-note rows):
+
+```
+| _Weighted aggregate_ | <option-A score> | <option-B score> | ... |
+```
+
+Per-option score formula: `Σ(grade_i × weight_i) / Σ(weight_i)` over
+scored axes. Uniform `{}` weights are expanded to 1.0 per axis before
+aggregation. Zero-weight axes are excluded from both numerator and
+denominator. All-zero weights or all-missing grades produce `(n/a)`
+in the cell with a diagnostic note beneath the row.
+
+**ADR §1.3 advisory-only invariant**: the weighted aggregate row is
+**advisory information**, NOT the recommendation winner. The
+`@decide:recommendation-rule` rule (decisive axes win) remains the
+sole winner-picker. When the aggregate row indicates a different top
+option than the §1.3 rule, the recommendation block adds a
+`Sensitivity-aggregate divergence:` line (per
+`@decide:recommendation-rule` size=major rigor below) and lowers
+confidence by one tier — but does NOT flip the recommendation itself.
+
+**Sensitivity flip summary** (renders when sensitivity opt-in gate
+fires — `context.weights_explicit === true` OR `context.size === "major"`;
+matches `analyzeSensitivity()` in `scripts/lib/decide-sensitivity.mjs`):
+
+```
+### Sensitivity (±20% per-axis weight perturbation)
+- _unperturbed_top_: <option-letter>
+- _flipped_: <true | false>
+- _flips_:
+  - axis=<axis-id>, direction=<+20% | -20%>, → option <letter>
+  - ...
+```
+
+`_unperturbed_top_` is the aggregate top BEFORE any perturbation
+(internally computed by `analyzeSensitivity`; exposed so the LLM can
+compare it against the §1.3 decisive-axis winner — when the two differ
+this is the "Sensitivity-aggregate divergence" case described in
+`@decide:recommendation-rule` size=major rigor below). When
+`flipped: false`, the recommendation is stable under weight
+perturbation. When `flipped: true`, each entry names the axis and
+direction that produces a different top option under the
+advisory-only aggregate view. The two-option single-differentiator
+case emits `_flips_: []` with a diagnostic explaining that
+perturbation cannot reverse order on positive weights (peer (f)
+sanity invariant pinned by `tests/engineer/test-decide-scores.mjs`).
+
+**Size-aware rendering**:
+
+- `size=minor` + `--weights=…` → render this summary in compact form
+  (header + `_flipped_` + `_unperturbed_top_` lines only; omit the
+  `_flips_` list if `flipped: false`).
+- `size=standard` + `--weights=…` → render in full as shown above.
+- `size=major` (with or without `--weights`) → render in full AND
+  trigger the recommendation-rule sensitivity rigor below.
+<!-- @decide:weighting-sensitivity-output:end -->
+
 ### Step 4: Recommend
 
 Always provide a recommendation. Never leave the user with only a
@@ -295,8 +396,24 @@ ownership)**:
 - `size=major` → the standard template PLUS a `Decisive-axis
   ranking:` block listing the recommended option's per-decisive-axis
   ranking versus alternatives (e.g.,
-  `essence: A > C > B; foundation: A = C > B`). PR4 (weighting +
-  sensitivity) will extend this block; PR3 ships ranking only.
+  `essence: A > C > B; foundation: A = C > B`). When the
+  `@decide:weighting-sensitivity-output` region also renders (per its
+  presence rule), TWO advisory lines are appended below the ranking
+  block — both informational, NEITHER flips the §1.3 recommendation:
+  - If the weighted aggregate top option ≠ the §1.3 recommendation
+    winner, add `Sensitivity-aggregate divergence: aggregate favors
+    option <X>; recommendation stays option <Y> per §1.3 decisive-axis
+    rule.` AND lower Confidence by one tier (HIGH → MEDIUM → LOW;
+    LOW stays LOW).
+  - If the sensitivity flip summary reports `flipped: true`, add
+    `Sensitivity: perturbation flips top to <Z> on axis <axis-id>
+    <direction>.` listing every flip entry from the summary. Same
+    one-tier Confidence downgrade applies (combined with the
+    divergence downgrade, but capped at a single downgrade per
+    recommendation — never two stacked).
+  The recommendation winner stays bound to the §1.3 rule across all
+  size=major sensitivity / divergence cases — the user reads the
+  advisory lines and decides whether to override.
 <!-- @decide:recommendation-rule:end -->
 
 **Confidence levels:**

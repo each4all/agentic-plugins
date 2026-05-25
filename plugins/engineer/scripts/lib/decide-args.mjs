@@ -8,9 +8,26 @@
 //   parseArgs(argv) -> {
 //     flags: { preset?: string, size?: string, weights?: string },
 //     body: string,
-//     errors:   string[],   // halts when non-empty
-//     warnings: string[],   // advisory only
+//     errors:           string[],   // halts when non-empty
+//     warnings:         string[],   // advisory only
+//     weightsExplicit:  boolean,    // peer G3: avoid `weights !== {}` object-identity bug
 //   }
+//
+// `weightsExplicit` is a top-level result field (not a `flags.*` entry) so
+// callers that compare `r.flags === {}` for "no flags" semantics are not
+// broken by the explicit-flag-presence signal.
+//
+// **API asymmetry note (peer A5 refine)**: `weightsExplicit` lives at the
+// top level while `--size` / `--preset` explicit-presence is detected via
+// `parsed.flags.size !== undefined` (caller-side check in
+// decide-registry.mjs). This asymmetry is intentional — peer G3 required
+// the weights signal to be observable WITHOUT inspecting the `weights`
+// map's identity (`weights !== {}` would be an object-identity trap).
+// Future maintainers SHOULD NOT (a) move `weightsExplicit` under `flags`
+// (would break the `r.flags === {}` assertion at test line ~11) or
+// (b) add parallel `sizeExplicit` / `presetExplicit` top-level fields
+// absent a concrete consumer demand. Symmetric explicit-presence tracking,
+// if ever needed, deserves an ADR amendment.
 //
 // Grammar (per ADR-0027 §2.2):
 //   /engineer:decide [--size=<tier>] [--preset=<id>] [--weights=<spec>] [--] <decision body>
@@ -23,13 +40,24 @@
 //              output depth, comparison-table density, recommendation rigor)
 //              consumed by `plugins/engineer/skills/decide/SKILL.md` inside
 //              the four @decide:* marker regions.
-//   --weights  stub — accepts the value but emits a warning that weighting
-//              + sensitivity-flip semantics ship with PR4.
-//
-// PR4 will replace the --weights stub.
+//   --weights  active (PR4) — strict comma-separated `axis-id:weight` pairs.
+//              Shape: axis-id matches registry pattern `[a-z][a-z0-9-]*`;
+//              weight is a non-negative finite decimal (no exponent, no
+//              whitespace, no NaN/Infinity). Per-spec duplicate axis-id
+//              halts. Empty spec halts. Normalization, uniform-sentinel
+//              expansion, and per-axis missing-fill happen downstream
+//              (`scripts/lib/decide-weights.mjs`).
 
 const KNOWN_FLAGS = new Set(["preset", "size", "weights"]);
 const SIZE_TIERS = new Set(["minor", "standard", "major"]);
+
+// ADR-0027 §2.2 + peer G6 + PR4 RED test matrix.
+//   - axis-id: registry shape [a-z][a-z0-9-]* (matches decide-registry.mjs:24)
+//   - weight: non-negative finite decimal; integer or integer.fraction;
+//     no exponent (peer G6 — `1e3` rejected), no NaN/Infinity (alpha
+//     rejected by the digit-only branch), no negative (no leading `-`).
+//   - pairs: comma-joined; no leading/trailing comma; no internal whitespace.
+const WEIGHT_SPEC_RE = /^[a-z][a-z0-9-]*:(0|[1-9][0-9]*)(\.[0-9]+)?(,[a-z][a-z0-9-]*:(0|[1-9][0-9]*)(\.[0-9]+)?)*$/;
 
 export function parseArgs(argv) {
   if (!Array.isArray(argv)) {
@@ -40,6 +68,12 @@ export function parseArgs(argv) {
   const errors = [];
   const warnings = [];
   const repeats = {};
+  // Top-level explicit-presence signal for --weights (peer G3 fix).
+  // True when the user passed --weights=… (regardless of whether validation
+  // accepted the spec); false when the flag was absent. Downstream
+  // normalization keys off this to decide between sentinel `{}` (uniform)
+  // and the parsed map.
+  let weightsExplicit = false;
 
   let bodyStart = -1;
 
@@ -67,7 +101,7 @@ export function parseArgs(argv) {
       errors.push(
         `unrecognized flag "${token}" — flags must use --key=value form; known flags: --preset, --size, --weights. Escape with -- if the body literally starts with -- text.`,
       );
-      return { flags: {}, body: "", errors, warnings };
+      return { flags: {}, body: "", errors, warnings, weightsExplicit };
     }
 
     const name = m[1];
@@ -77,7 +111,7 @@ export function parseArgs(argv) {
       errors.push(
         `unknown flag "--${name}=…" — known flags: --preset, --size, --weights. Escape with -- if the body literally starts with --${name}=.`,
       );
-      return { flags: {}, body: "", errors, warnings };
+      return { flags: {}, body: "", errors, warnings, weightsExplicit };
     }
 
     // §2.3(5): repeat detection.
@@ -107,18 +141,44 @@ export function parseArgs(argv) {
           errors.push(
             `--size=${value} not in {minor, standard, major}`,
           );
-          return { flags: {}, body: "", errors, warnings };
+          return { flags: {}, body: "", errors, warnings, weightsExplicit };
         }
         flags.size = value;
         break;
 
-      case "weights":
-        // PR2 stub per peer P-16. Weight grammar / normalization /
-        // sensitivity-flip semantics belong to PR4; PR2 only reserves
-        // the slot.
+      case "weights": {
+        // ADR-0027 §2.2 + PR4. Strict shape validation: see WEIGHT_SPEC_RE
+        // above. Per-spec duplicate axis-id rejected explicitly (regex
+        // cannot express uniqueness across captures). The top-level
+        // `weightsExplicit` signal is set ONLY after the spec passes
+        // ALL validation gates (peer L2.4 refine — pre-validation
+        // assignment leaked "user attempted --weights" as if validated).
+        // Normalization, uniform-sentinel expansion, missing-axis fill,
+        // unknown-axis drop, and post-parse magnitude drop (Number()
+        // coercion to Infinity for unbounded-digit strings — peer M2
+        // refine) all happen downstream in
+        // `scripts/lib/decide-weights.mjs` via graceful library-side
+        // degradation rather than parser-level halt.
+        if (!WEIGHT_SPEC_RE.test(value)) {
+          errors.push(
+            `--weights=${value} invalid — expected comma-separated axis-id:weight pairs (non-negative finite decimal in canonical form: no leading zero, no leading or trailing dot, no exponent, no whitespace; axis-id matches [a-z][a-z0-9-]*).`,
+          );
+          return { flags: {}, body: "", errors, warnings, weightsExplicit };
+        }
+        const seenAxes = new Set();
+        for (const pair of value.split(",")) {
+          const axisId = pair.split(":")[0];
+          if (seenAxes.has(axisId)) {
+            errors.push(`--weights=${value} invalid — duplicate axis id "${axisId}" in spec.`);
+            return { flags: {}, body: "", errors, warnings, weightsExplicit };
+          }
+          seenAxes.add(axisId);
+        }
+        // All validation gates passed — record explicit-presence.
+        weightsExplicit = true;
         flags.weights = value;
-        warnings.push("--weights accepted; weighting + sensitivity behavior deferred to PR4");
         break;
+      }
 
       default:
         // Unreachable — KNOWN_FLAGS gate above blocks anything else.
@@ -132,5 +192,5 @@ export function parseArgs(argv) {
     body = argv.slice(bodyStart).join(" ");
   }
 
-  return { flags, body, errors, warnings };
+  return { flags, body, errors, warnings, weightsExplicit };
 }
