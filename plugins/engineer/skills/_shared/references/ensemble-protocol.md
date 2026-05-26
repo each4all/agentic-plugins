@@ -167,15 +167,22 @@ locations**:
    `pending_ensemble` and `ensemble_results` fields (additive optional
    keys per
    [ADR-0017 §sub-decision 4](../../../../../docs/adr/0017-stage25-continuity-and-schema-roadmap.md)).
-   The schema-1.1 reader in `plugins/engineer/scripts/state.mjs` accepts
-   both legacy `schema: 1` (no 1.1 fields) and `schema: '1.1'` (with any
-   subset of the 1.1 fields populated) per `SUPPORTED_SCHEMA_VERSIONS`.
-   The frontmatter parser remains closed-schema: unknown top-level keys
-   that are neither schema-1 nor schema-1.1 known throw at parse time.
-   Older parsers (in earlier engineer builds without the ADR-0017 keys
-   in `FRONTMATTER_KEY_ORDER`) cannot read schema-1.1 frontmatter and
-   will reject it as an unknown-key violation — there is no shared
-   on-disk format with engineer < ADR-0017. All readers / writers in
+   The reader in `plugins/engineer/scripts/state.mjs` accepts legacy
+   `schema: 1` (no 1.1 fields), `schema: '1.1'`, `schema: '1.2'`, and
+   `schema: '1.3'` (with any subset of the additive optional keys
+   populated) — `SUPPORTED_SCHEMA_VERSIONS` documents the explicitly
+   known minors. ADR-0028 §Forward-compat (PR5) extends the gate to
+   open-ended `1.x` minors via the `isSupportedSchema()` predicate, so a
+   1.x reader meeting a 1.y file with `y > x` accepts the schema field
+   and silent-skips unknown scalar additive frontmatter keys (stashed
+   under the `FORWARD_COMPAT_UNKNOWNS` Symbol carrier so round-trip
+   writes preserve them). Closed-schema rejection still applies to
+   block-style unknown keys, non-additive type errors on known keys,
+   and unknown majors (e.g., `schema: '2.0'`). Cache-window note: the
+   marketplace-installed cache lags `main`; until release-please syncs,
+   cached older readers continue to gate via the closed `Set.has` check
+   and will reject future-minor files even though the source-of-truth
+   reader on `main` accepts them. All readers / writers in
    this build go through the helpers in
    `plugins/engineer/scripts/state.mjs`:
    - `recordPendingEnsemble(...)` — idempotent on `run_id`; replaces
