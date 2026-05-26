@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (5-PR series complete: PR1 #347, PR2 #350-equiv, PR3 #351, PR4 #354, PR5 #355)
 
 <!--
 For revisions to an Accepted ADR, see README.md §"Amendments vs

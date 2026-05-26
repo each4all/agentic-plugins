@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (5-PR series complete: PR1 #349, PR2 #350, PR3 #352, PR4 #353, PR5 #356; orchestrator forward-compat port #357)
 
 > ADR number 0027 was ceded to
 > [`0027-decide-skill-multi-axis-evolution.md`](0027-decide-skill-multi-axis-evolution.md)
