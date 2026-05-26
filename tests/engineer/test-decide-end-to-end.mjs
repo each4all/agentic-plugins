@@ -168,17 +168,22 @@ test("[matrix] --weights=essence:2 -- 'compare X and Y' → body threaded into c
 // Backward-compat regression assertions (peer (h) gate)
 // =====================
 
-test("[backward-compat] default invocation produces structurally identical context to pre-PR4 (modulo weights={} + weights_explicit)", () => {
+test("[backward-compat] default invocation produces structurally identical context to pre-PR4 (modulo weights={} + weights_explicit + registry_fallback)", () => {
   // The pre-PR4 baseline emitted context.weights = {} (reserved slot).
   // PR4 must preserve this for the no-flags case so any pre-PR4 consumer
   // continues to parse the JSON without change. PR4 refine M1 also adds
   // `weights_explicit` (additive) which the LLM gate consumes; this is an
-  // ADR §5.6 amendment, not a removal of any pre-PR4 field.
+  // ADR §5.6 amendment, not a removal of any pre-PR4 field. PR5 adds
+  // `registry_fallback` (additive) per the §5.6 PR5 amendment so the
+  // §4.3 axis_awareness presence rule can be enforced. The 9-field exact
+  // schema lock-down lives in tests/engineer/test-decide-registry.mjs at
+  // the test labeled `PR5 §5.6 schema: registry_fallback is exactly the
+  // 9th canonical field` — extend that test if the field set evolves.
   const r = run([]);
   assert.equal(r.status, 0);
   const ctx = JSON.parse(r.stdout);
-  // ADR-0027 §5.6 invariant fields all present (plus PR4 refine M1's weights_explicit)
-  const requiredFields = ["body", "preset_id", "axes", "size", "size_explicit", "weights", "weights_explicit", "resolved_at"];
+  // ADR-0027 §5.6 invariant fields all present (plus PR4 refine M1's weights_explicit + PR5 amendment's registry_fallback)
+  const requiredFields = ["body", "preset_id", "axes", "size", "size_explicit", "weights", "weights_explicit", "resolved_at", "registry_fallback"];
   for (const f of requiredFields) {
     assert.ok(f in ctx, `pre-PR4 baseline field "${f}" must remain in context`);
   }
@@ -186,6 +191,8 @@ test("[backward-compat] default invocation produces structurally identical conte
   assert.deepEqual(ctx.weights, {});
   // PR4 refine M1: weights_explicit=false on the no-flags path (mirrors size_explicit=false default)
   assert.equal(ctx.weights_explicit, false);
+  // PR5 amendment: registry_fallback=false on a healthy registry load (no §1.6 fallback)
+  assert.equal(ctx.registry_fallback, false);
   // Backward-compat: size defaults to standard with size_explicit=false
   assert.equal(ctx.size, "standard");
   assert.equal(ctx.size_explicit, false);

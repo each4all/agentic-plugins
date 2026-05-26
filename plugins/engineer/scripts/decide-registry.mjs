@@ -332,6 +332,16 @@ export function resolvePreset({
     weights: weightsResult.weights,       // PR4 normalized (empty {} = uniform sentinel)
     weights_explicit: !!weightsExplicit,  // PR4 (M1 refine): LLM-observable explicit-presence signal
     resolved_at: new Date().toISOString(),
+    // PR5 (validation-contract): ADR-0027 §5.6 amendment. The §4.3
+    // Brainstorm `<axis_awareness>` presence rule fires only when no
+    // §1.6 fallback was triggered. Without an on-wire signal,
+    // preset_id="default" is ambiguous between "user requested default"
+    // (no fallback) and "registry rejected and fell back" (fallback) —
+    // exactly the disambiguation §4.3 hinges on. Surface the JS-internal
+    // `fallbackTriggered` as a snake_case context field so the LLM
+    // body consumer (commands/decide.md Phase 1 prompt builder) can
+    // gate axis_awareness emission directly from $AGENTIC_DECIDE_CONTEXT_FILE.
+    registry_fallback: !!fallback,
   };
 
   // PR4 refine M4 — the previously-undocumented `_chosenSource` field

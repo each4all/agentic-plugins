@@ -135,6 +135,36 @@ order). `role` distinguishes axes that may trigger the
 recommendation-rule privilege (`decisive`) from axes that contribute
 only to comparison (`supporting`); see §1.3 below.
 
+**PR5 amendment — XML escaping for axis labels and questions**
+(2026-05-26): `labels.en` / `labels.ko` / `question` are free-text
+YAML strings written by registry authors. They are interpolated
+verbatim into the `<axis_awareness>` XML block emitted by the
+Brainstorm prompt builder (§4.2). Authors MUST keep these fields
+free of the text-node-breaking XML characters **`&` and `<`**
+(and, where the field appears immediately before a `]]>` token,
+`>`). Apostrophes and double-quotes are intentionally NOT covered
+by this rule — XML's `'` and `"` predefined entities are only
+required inside attribute values, not inside element text, and
+the `<axis_awareness>` block places `labels` / `question` strictly
+in element-text positions. Phase 5 dual review (parallel-review
+MAJOR-2 + Codex --scope branch MAJOR-4 of run_ids
+`parallel-review-20260526T015850Z-1c906f44` /
+`codex-scope-branch-20260526T015850Z-1c906f44`) caught the
+original draft of this rule listing all five predefined entities,
+which would have flagged the shipped `default` and `nine-axis`
+presets (`"project's specific constraints?"` at
+`decision-axes.yml:45, 67, 131`) as violations even though they
+render safely. All presets shipped in PR2 are now correctly
+escape-free under the narrowed rule; future preset authors must
+keep `&` and `<` out of these fields, or pre-escape them as
+`&amp;` / `&lt;` if they are required for the user-facing label.
+The reader's §1.6 validation matrix is not extended for this
+check — the rule is editorial, enforceable by hand-review or a
+future lint rather than a runtime gate (Codex Plan-verify E5 +
+Phase 5 dual review — accepted as a documentation-only deterrent
+rather than runtime validation, since the registry's load-time
+semantics remain graceful-degradation per §1.6).
+
 **1.2 — Canonical presets**
 
 The schema ships with three presets:
@@ -906,6 +936,7 @@ ResolvedDecisionContext = {
   weights: Record<string, number>, // §2.2 weighting map; empty {} means "no --weights flag passed"
   weights_explicit: boolean,     // PR4 refine M1 amendment — LLM-observable explicit-presence signal (mirrors size_explicit pattern)
   resolved_at: ISO8601-string,   // for snapshot diagnostics
+  registry_fallback: boolean,    // PR5 amendment — true when any §1.6 fallback path fired; gates §4.3 axis_awareness emission
 }
 ```
 
@@ -920,6 +951,30 @@ G3 had warded off at the JS-API layer. The JS-API parser result retains
 its top-level `weightsExplicit` camelCase field (peer G3 placement);
 the two names are intentional — JS-API conventions inside the parser
 versus JSON-on-wire snake_case for the LLM consumer.
+
+**PR5 amendment — `registry_fallback` on-wire signal** (2026-05-26):
+`registry_fallback: boolean` is added as the ninth canonical field on
+the §5.6 ResolvedDecisionContext. It surfaces the in-process
+`fallbackTriggered` boolean (already returned by
+`resolvePreset()` for JS callers) onto the JSON written to
+`$AGENTIC_DECIDE_CONTEXT_FILE`, so the §4.3 Brainstorm
+`<axis_awareness>` presence rule can be enforced deterministically by
+the LLM prompt-builder in `commands/decide.md` Phase 1. Without this
+field, `preset_id: "default"` is ambiguous between **intentional
+default** (no flag passed, registry healthy) and **fallback default**
+(§1.6 row 1/2/3/etc. fired, registry rejected) — and the §4.3 rule
+hinges precisely on that branch. Codex Plan-verify (run_id
+`plan-verify-20260526T012732Z-1a205273`) raised this as G2/G3 + E2
+critical gap: stderr-only fallback diagnostics are consumed and removed
+by the bash boilerplate at `commands/decide.md:122-124`, leaving the
+LLM with no signal at prompt-construction time. The field is
+snake_case to match `size_explicit` / `weights_explicit` and is
+populated for every resolution path — happy registry load
+(`false`), §1.5(1)/(2)/(4) successful resolution (`false`), and any
+§1.6 fallback (`true`), including the E2 edge `--preset=bad
+--size=minor` where `preset_id="default"` + `size="minor"` would
+otherwise look identical to a healthy compact-preset resolution from
+the consumer's perspective.
 
 **Weights internal representation is canonical**: `weights` is
 always `Record<string, number>`. An empty object `{}` is the

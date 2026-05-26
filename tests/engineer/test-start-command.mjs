@@ -293,6 +293,78 @@ describe('/engineer:start — entry routing and decision contract', () => {
       }
     }
   });
+
+  // ===========================================================================
+  // PR5 (ADR-0027 §1.5 sizing + §4 axis-awareness) — axis-aware decide
+  // routing prose mirrors across (entry-routing-contract.md → commands/start.md →
+  // skills/start/SKILL.md). Codex Plan-verify G5 + G6 — extend the existing
+  // surface-mirror tests with scope-bounded region extraction (NOT whole-file
+  // text.includes) per parallel-review MINOR-3. Tokens are asserted inside
+  // the routing-recommendation prose block specifically — the section that
+  // begins at the `Standards and Root-Cause Gate` heading (for the contract)
+  // and at the `## Phase 0d — Entry routing and decision contract` heading
+  // (for commands/start.md) / equivalent area (for skills/start/SKILL.md).
+  //
+  // Reusable extractor: pull lines between `start` and `end` (line-anchored
+  // boundary substrings). Asserts the section bounds exist and excludes
+  // false-positive tokens from unrelated prose like the bash boilerplate.
+  // ===========================================================================
+
+  function extractBetween(text, startBoundary, endBoundary) {
+    const lines = text.split('\n');
+    const s = lines.findIndex((l) => l.includes(startBoundary));
+    if (s === -1) return null;
+    const e = lines.findIndex((l, i) => i > s && l.includes(endBoundary));
+    if (e === -1) return lines.slice(s).join('\n');
+    return lines.slice(s, e).join('\n');
+  }
+
+  it('PR5: entry-routing-contract registry/sizing-aware decide guidance scoped to the Standards/Root-Cause sub-section', async () => {
+    const text = await readFile(ROUTING_CONTRACT_PATH, 'utf8');
+    // Scope to the new "### Routing into `engineer:decide` — decision sizing"
+    // sub-section that lives under "## Standards and Root-Cause Gate" — the
+    // section ends at the next top-level heading (## Quality-First Defaults).
+    const section = extractBetween(text, '## Standards and Root-Cause Gate', '## Quality-First Defaults');
+    ok(section, 'entry-routing-contract.md missing Standards/Root-Cause section bounds');
+    for (const token of [
+      '--size=',
+      'minor',
+      'standard',
+      'major',
+      'compact',
+      'nine-axis',
+      'entry-routing-guarantee',
+      'sensitivity',
+      'ADR-0027',
+    ]) {
+      ok(section.includes(token), `Standards/Root-Cause sub-section missing axis-aware decide routing token ${token}`);
+    }
+  });
+
+  it('PR5: commands/start.md Phase 0d entry-routing area mirrors axis-aware decide routing tokens', async () => {
+    const command = await readFile(COMMAND_PATH, 'utf8');
+    // Scope to "## Phase 0d — Entry routing and decision contract" through
+    // the next "---" rule (start of Phase 1) — avoids matching unrelated
+    // tokens elsewhere in start.md (e.g., the Phase 7 phase7-commit.mjs
+    // boilerplate).
+    const phase0d = extractBetween(command, '## Phase 0d', '---');
+    ok(phase0d, 'commands/start.md missing Phase 0d section bounds');
+    for (const token of ['--size=', 'compact', 'nine-axis', 'ADR-0027']) {
+      ok(phase0d.includes(token), `commands/start.md Phase 0d missing axis-aware decide routing token ${token}`);
+    }
+  });
+
+  it('PR5: skills/start/SKILL.md routing-recommendation area mirrors axis-aware decide routing tokens', async () => {
+    const skill = await readFile(SKILL_PATH, 'utf8');
+    // SKILL.md's routing-recommendation block lives between
+    // "Before Phase 1, present an **Entry routing recommendation**" and
+    // the next "### Phase" sub-heading.
+    const routing = extractBetween(skill, 'Entry routing recommendation', '### Phase 1');
+    ok(routing, 'skills/start/SKILL.md missing routing-recommendation section bounds');
+    for (const token of ['--size=', 'compact', 'nine-axis', 'ADR-0027']) {
+      ok(routing.includes(token), `skills/start/SKILL.md routing area missing axis-aware decide routing token ${token}`);
+    }
+  });
 });
 
 describe('/engineer:start — provenance citations', () => {

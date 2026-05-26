@@ -448,6 +448,23 @@ recommendation and confirm before proceeding.
 Full decision support with Task Profile + peer ensemble +
 state-write integration.
 
+**Cross-host scope note (ADR-0001 §5 honest scope)**: the Phase 0.5
+flag-parser bootstrap that writes `$AGENTIC_DECIDE_CONTEXT_FILE` lives
+in `commands/decide.md` on the Claude side. Codex `$engineer:decide`
+skill mentions reach this SKILL.md directly without the Claude command
+file (Codex's plugin manifest currently exposes only `skills/`; a
+Codex equivalent of `commands/*.md` awaits the ADR-0013 trigger).
+The full-fidelity axis-awareness contract (ADR-0027 §1.5 sizing,
+§2.2 flag grammar, §4 Brainstorm `<axis_awareness>` block) is
+therefore **Claude-command-mode** today. Codex skill-mention LLM
+serving `$engineer:decide` MAY replicate the contract by invoking
+`scripts/decide-registry.mjs resolve` itself with the user's flag
+string and reading the resulting `ResolvedDecisionContext` before
+emitting the Brainstorm prompt — best-effort cross-host equivalence
+per ADR-0001 §5. Absent that step, Codex falls back to free-form
+2-3 approaches (axis-awareness omitted), matching the §4.3
+presence-rule omit branch.
+
 ### Pre-decide: Task Profile
 
 Build the Task Profile per
@@ -464,10 +481,26 @@ Before Step 4 Recommend, launch the peer ensemble per
 ensemble point type. The peer independently proposes 2-3 approaches
 with tradeoffs.
 
+**ADR-0027 §4 axis-awareness contract**: the Brainstorm prompt
+template emits an optional `<axis_awareness>` block carrying the
+resolved preset's axes, size, and weights so the peer's tradeoff
+vocabulary aligns with the orchestrator's comparison frame. The
+block is present only in command mode AND when
+`context.registry_fallback === false` (per ADR-0027 §4.3 presence
+rule + §5.6 PR5 amendment); auto-activated invocation never
+dispatches a peer (see `## When auto-activated` above — "no peer
+ensemble dispatch"), so the standalone-skill path NEVER emits
+`<axis_awareness>`. The full template, presence rule, snapshot
+rule, and [Peer · unmapped] synthesis sub-label live in
+`../_shared/references/ensemble-protocol.md` § Brainstorm.
+
 Synthesize per `../_shared/references/ensemble-protocol.md`:
 - Add any peer-proposed approaches the orchestrator did not consider.
 - Elevate confidence for AGREED approaches.
 - Label unique approaches by source ([Local] / [Peer]).
+- When `<axis_awareness>` was present at dispatch, additionally
+  tag PEER-ONLY approaches whose tradeoff vocabulary is orthogonal
+  to the snapshotted axes as `[Peer · unmapped]` per ADR-0027 §4.4.
 
 ### Approval gate
 

@@ -97,6 +97,15 @@ refinement path, state the standards/root-cause quality gate: source of
 truth or standard, invariant or root cause, verification evidence, and
 rollback/defer/escalation path.
 
+When the recommended route is `engineer:decide`, also surface the
+**decision size** per ADR-0027 §1.5: `--size=minor` → `compact`
+4-axis preset with the `entry-routing-guarantee` hard-gate;
+`--size=standard` → `default` 5-axis (backward-compatible);
+`--size=major` → `nine-axis` 9-axis preset + auto-enabled
+sensitivity. The full sizing taxonomy lives in the entry-routing
+contract reference (§"Routing into `engineer:decide` — decision
+sizing").
+
 Apply the shared **Quality-first defaults** from the entry-routing contract:
 optimize for `best-results-over-token-minimization`; use the documented
 phase-boundary ensemble as default peer breadth; keep model/effort defaults at

@@ -52,6 +52,41 @@ This gate is not optional. A fast change that does not preserve the
 standard/root-cause/evidence line should be routed back to
 `engineer:investigate`, `engineer:decide`, or `orchestrator:plan`.
 
+### Routing into `engineer:decide` — decision sizing (ADR-0027 §1.5)
+
+When the route is `engineer:decide`, surface the **decision size** as
+part of the route. `engineer:decide` accepts a `--size=<tier>` flag
+that simultaneously controls the ritual depth and the axis preset
+per ADR-0027 §1.5(2):
+
+- `--size=minor` → `compact` 4-axis preset (essence, foundation,
+  practical-fit, **entry-routing-guarantee**). The
+  `entry-routing-guarantee` axis is the axis-aware encoding of the
+  Standards/Root-Cause gate above and is **hard-gated** for the
+  compact preset per ADR-0027 §1.3: if any of the 4 guarantees
+  (source-of-truth, root-cause/invariant, verification evidence,
+  rollback path) is missing or unmet, lower confidence or route
+  back. Use for config flips, small fixes, and other "minor"
+  granularity decisions.
+- `--size=standard` (or no `--size` flag) → `default` 5-axis preset
+  (essence, foundation, standards, best-practice, practical-fit).
+  This is the backward-compatible default; the Standards/Root-Cause
+  gate above remains the prose-level check.
+- `--size=major` → `nine-axis` 9-axis preset (standards,
+  recommendation, canonical-precedent, essence, foundation,
+  extensibility, maintainability, maturation, practical-fit) +
+  auto-enabled **sensitivity** analysis (±20% per-axis weight
+  perturbation flip detection). Use for architectural forks and
+  decisions whose ritual depth justifies a 9-axis comparison.
+
+`--preset=<id>` overrides the size→preset implication for axis-set
+identity but keeps `--size` as the ritual depth (per ADR-0027 §1.5
+combined-flag rule). `--weights=<spec>` opts into sensitivity
+analysis at any size. The Brainstorm peer ensemble inherits the
+same axis frame via the `<axis_awareness>` prompt block per
+ADR-0027 §4 — the peer's tradeoff vocabulary aligns with the
+orchestrator's resolved preset.
+
 ## Quality-First Defaults
 
 Engineer optimizes for result quality, not token minimization, unless the

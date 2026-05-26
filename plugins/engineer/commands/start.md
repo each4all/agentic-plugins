@@ -315,6 +315,15 @@ rollback/defer/escalation path. If that gate cannot be met, route back
 to `engineer:investigate`, `engineer:decide`, or `orchestrator:plan`
 instead of patching symptoms.
 
+When the recommended route is `engineer:decide`, also surface the
+**decision size** per ADR-0027 §1.5: `--size=minor` → `compact`
+4-axis preset with the `entry-routing-guarantee` hard-gate;
+`--size=standard` → `default` 5-axis (backward-compatible);
+`--size=major` → `nine-axis` 9-axis preset + auto-enabled
+sensitivity. The full sizing taxonomy lives in
+`skills/_shared/references/entry-routing-contract.md` §"Routing into
+`engineer:decide` — decision sizing".
+
 ---
 
 ## Phase 1 — Brainstorm composite (investigate → frame → decide)

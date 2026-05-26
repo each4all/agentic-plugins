@@ -1025,3 +1025,109 @@ test("[L4.3 refine] PR4 library: --preset=compact + --weights=<axis-only-in-defa
     `expected best-practice drop diagnostic; got: ${diagnostics.join(" | ")}`,
   );
 });
+
+// =============================================================================
+// PR5 (validation-contract) — ADR-0027 §5.6 amendment:
+//   `registry_fallback: boolean` added to ResolvedDecisionContext so the
+//   §4.3 Brainstorm <axis_awareness> presence rule has a deterministic
+//   on-wire signal. Without this field the LLM cannot tell "intentional
+//   default preset" (preset_id="default") apart from "fallback after
+//   §1.6 failure" (preset_id="default" because registry rejected) —
+//   the very branch §4.3 hinges on.
+//
+//   The internal `resolvePreset()` already returns `fallbackTriggered`
+//   for JS callers (decide-registry.mjs:350); PR5 lifts it onto the
+//   §5.6 context shape so the CLI JSON carries it too.
+// =============================================================================
+
+test("PR5: ResolvedDecisionContext.registry_fallback is FALSE on happy registry load (no §1.6 fallback)", () => {
+  const { context, fallbackTriggered } = resolvePreset({});
+  assert.equal(context.registry_fallback, false, "happy path → registry_fallback === false");
+  assert.equal(fallbackTriggered, false, "internal fallbackTriggered mirrors context.registry_fallback");
+});
+
+test("PR5: ResolvedDecisionContext.registry_fallback is TRUE on §1.6 row 1 (file missing)", () => {
+  const { context, fallbackTriggered } = resolvePreset({ path: "/nonexistent/path/decision-axes.yml" });
+  assert.equal(context.registry_fallback, true, "missing file → registry_fallback === true");
+  assert.equal(fallbackTriggered, true);
+  // preset_id remains "default" so the disambiguation requires the new field.
+  assert.equal(context.preset_id, "default");
+});
+
+test("PR5: ResolvedDecisionContext.registry_fallback is TRUE on §1.6 row 13 (unknown --preset id; E2 edge from Codex Plan-verify)", () => {
+  const { context, fallbackTriggered } = resolvePreset({ presetId: "no-such-preset" });
+  assert.equal(context.registry_fallback, true, "unknown preset → registry_fallback === true (fallback-to-default IS fallback)");
+  assert.equal(fallbackTriggered, true);
+  assert.equal(context.preset_id, "default");
+});
+
+test("PR5: ResolvedDecisionContext.registry_fallback is TRUE on Codex E2 edge — `--preset=bad --size=minor`", () => {
+  // Codex Plan-verify E2: context.preset_id="default" + size="minor" + fallback=true.
+  // The Brainstorm <axis_awareness> block MUST be omitted (presence rule §4.3) even
+  // though the context has apparently usable axes (the fallback's 5-axis default).
+  const { context } = resolvePreset({
+    presetId: "no-such-preset",
+    sizeExplicit: true,
+    sizeValue: "minor",
+  });
+  assert.equal(context.preset_id, "default", "fallback-to-default on unknown preset");
+  assert.equal(context.size, "minor", "size remains as user typed");
+  assert.equal(context.size_explicit, true);
+  assert.equal(context.registry_fallback, true, "fallback signal MUST survive to gate axis_awareness emission");
+});
+
+test("PR5: ResolvedDecisionContext.registry_fallback is FALSE on §1.5(2) size-implied preset resolution (compact via --size=minor)", () => {
+  const { context } = resolvePreset({ sizeExplicit: true, sizeValue: "minor" });
+  assert.equal(context.preset_id, "compact");
+  assert.equal(context.registry_fallback, false, "successful size-implied resolution is NOT fallback");
+});
+
+test("PR5: ResolvedDecisionContext.registry_fallback is FALSE on §1.5(1) explicit --preset success (nine-axis)", () => {
+  const { context } = resolvePreset({ presetId: "nine-axis" });
+  assert.equal(context.preset_id, "nine-axis");
+  assert.equal(context.registry_fallback, false);
+});
+
+test("PR5: ResolvedDecisionContext.registry_fallback is TRUE on §1.6 row 3 (invalid YAML)", () => {
+  const fixture = tmpYaml("schema: \"1.0\"\npresets: [this-is-not-a-map");
+  try {
+    const { context } = resolvePreset({ path: fixture.path });
+    assert.equal(context.registry_fallback, true);
+    assert.equal(context.preset_id, "default");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("PR5 CLI: stdout JSON carries registry_fallback: false on happy resolve", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve"], { encoding: "utf8" });
+  assert.equal(r.status, 0);
+  const ctx = JSON.parse(r.stdout);
+  assert.equal(Object.prototype.hasOwnProperty.call(ctx, "registry_fallback"), true,
+    "registry_fallback MUST be a top-level §5.6 field, not hidden under `_meta`");
+  assert.equal(ctx.registry_fallback, false);
+});
+
+test("PR5 CLI: stdout JSON carries registry_fallback: true on §1.6 unknown-preset fallback", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--preset=ghost"], { encoding: "utf8" });
+  assert.equal(r.status, 0);
+  const ctx = JSON.parse(r.stdout);
+  assert.equal(ctx.preset_id, "default");
+  assert.equal(ctx.registry_fallback, true);
+});
+
+test("PR5 §5.6 schema: registry_fallback is exactly the 9th canonical field (8 prior + 1 PR5)", () => {
+  // Locks down the schema so future field additions force an explicit ADR
+  // amendment — peer Co3 schema-stability requirement.
+  const { context } = resolvePreset({});
+  const expected = new Set([
+    "body", "preset_id", "axes",
+    "size", "size_explicit",
+    "weights", "weights_explicit",
+    "resolved_at",
+    "registry_fallback",       // PR5 addition
+  ]);
+  const actual = new Set(Object.keys(context));
+  assert.deepEqual(actual, expected,
+    `ResolvedDecisionContext shape drift; expected: ${[...expected].join(", ")}; actual: ${[...actual].join(", ")}`);
+});
