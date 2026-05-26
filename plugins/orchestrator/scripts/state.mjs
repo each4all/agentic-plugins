@@ -23,14 +23,23 @@
 //   directories: 0o700
 //   files:       0o600 (workflows + locks)
 //
-// File format: YAML frontmatter (schema='1.0') + Markdown body.
+// File format: YAML frontmatter (emit schema='1.1', current) + Markdown body.
+//
+// Schema acceptance per ADR-0028 §Forward-compat (PR5 ported from engineer
+// #356): the validateFrontmatter gate is `isSupportedSchema(s)`, a string-
+// only `1.x` predicate (orchestrator never had a legacy number form; every
+// orchestrator workflow since ADR-0018 has been '1.0' or '1.1'). Explicit
+// known minors are documented in `SUPPORTED_SCHEMA_VERSIONS` for telemetry.
+// Unknown scalar additive top-level keys are silent-skipped on read and
+// surfaced via the `FORWARD_COMPAT_UNKNOWNS` Symbol carrier so round-trip
+// writes preserve them.
 //
 // Schema divergence from plugins/engineer (intentional):
-//   engineer  schema='1.1'
-//   orchestrator schema='1.0'
-//   The two schema lines evolve independently; orchestrator rejects
-//   engineer-shape files (schema 1 / '1.1' / 2) cleanly to keep namespaces
-//   separate.
+//   engineer     accepts legacy number `1` plus any `1.y` string
+//   orchestrator accepts any `1.y` string only (no legacy number form)
+//   Namespace separation is enforced downstream by orchestrator's required-
+//   key set (workflow_type 'macro', plan.subtasks block); an engineer file
+//   carrying matching schema would still fail at those gates.
 
 import {
   readFile,
@@ -54,8 +63,29 @@ import { execFileSync } from 'node:child_process';
 // existing '1.0' files read OK but mutations are refused (legacy
 // archive + re-plan required). Engineer schema 1 / '1.1' / 2 still
 // rejected — orchestrator and engineer namespaces stay separate.
+//
+// This Set documents the minors this build explicitly knows about. It is no
+// longer the validateFrontmatter accept gate — that uses `isSupportedSchema`
+// below (ADR-0028 §Forward-compat) so a 1.x reader meeting a 1.y file with
+// y > x can still parse via the predicate's open-ended 1.x match.
 export const SCHEMA_VERSION = '1.1';
 export const SUPPORTED_SCHEMA_VERSIONS = new Set(['1.0', '1.1']);
+
+// ADR-0028 §Forward-compat (PR5 #356 ported from engineer) read-tolerance
+// predicate. Accepts any `1.y` minor as a string (y ≥ 0, no leading
+// zeros). Rejects unknown majors (`'2.0'`), the bare `'1'` (no minor
+// digit), the number form of any value (orchestrator has emitted only
+// the string form since '1.0'), and malformed strings.
+//
+// Difference from engineer's predicate (plugins/engineer/scripts/state.mjs
+// `isSupportedSchema`): engineer accepts the legacy number `1` for
+// pre-ADR-0017 files; orchestrator has no such legacy — every workflow
+// since orchestrator's introduction at ADR-0018 has been schema `'1.0'`
+// or `'1.1'` (string form). The predicate is therefore string-only.
+export function isSupportedSchema(s) {
+  if (typeof s !== 'string') return false;
+  return /^1\.(0|[1-9]\d*)$/.test(s);
+}
 
 export const STATE_DIR_REL = '.agentic-plugins/state/orchestrator';
 export const LEGACY_STATE_DIR_REL = '.claude/agentic-orchestrator';
@@ -955,6 +985,33 @@ const FRONTMATTER_KEY_ORDER = [
   'terminal_marker',
 ];
 
+// ADR-0028 §Forward-compat (PR5 #356 ported from engineer) — invisible
+// carrier for unknown additive scalar frontmatter keys observed when a
+// 1.x reader meets a 1.y file with y > x. The parser stashes
+// `[{key, value, raw}]` in file-encounter order; the serializer re-emits
+// them at the tail (after all known FRONTMATTER_KEY_ORDER entries, before
+// the closing `---`). Symbol-keyed so `Object.keys(fm)` and `key in fm`
+// checks remain blind to it — existing closed-schema gates keep rejecting
+// truly-malformed non-additive deviations without false-positives.
+//
+// Carrier entry shape: `{key, value, raw}`. `value` is the parsed scalar
+// for consumer-side typed access (e.g. diagnostic CLI `read` JSON output
+// surfaces it as `_forward_compat_unknowns`). `raw` is the original post-
+// colon line tail (verbatim YAML scalar literal) — the serializer emits
+// `${key}: ${raw}` to round-trip byte-identical for inline forms the
+// parseScalar/yamlScalar pipeline does not preserve (notably bare `[]`
+// and `{}` which permissive-fallback to strings then re-emit as quoted).
+//
+// Scope: scalar inline values only. Block-style unknown keys (list-of-
+// objects, nested object) remain rejected at parse time with a forward-
+// compat-aware error.
+//
+// Position fidelity: tail-emit. All current orchestrator additives
+// (ADR-0017 sub-decisions ported per orchestrator parity, plus ADR-0019
+// PR-B `terminal_marker`) cluster at the end of FRONTMATTER_KEY_ORDER,
+// so tail-emit matches the disk shape for every realistic 1.x → 1.y pair.
+export const FORWARD_COMPAT_UNKNOWNS = Symbol('forward_compat_unknowns');
+
 const ENTRY_KEYS_BY_LIST_KEY = Object.freeze({
   pending_ensemble: ['phase', 'ensemble_type', 'run_id', 'started_at'],
   ensemble_results: [
@@ -1142,10 +1199,27 @@ function serializeFrontmatter(fm) {
     lines.push(`${key}: ${yamlScalar(value)}`);
   }
 
+  // ADR-0028 §Forward-compat (PR5 ported) — re-emit unknown additive
+  // scalar keys stashed by parseWorkflowFile. Tail position matches the
+  // disk shape for every realistic 1.x → 1.y pair. Emit prefers `raw`
+  // (verbatim line tail) over re-serializing `value` — this keeps inline
+  // `[]`, `{}`, and any future YAML scalar literal that parseScalar/
+  // yamlScalar do not round-trip byte-identical. When carrier entries
+  // are constructed programmatically (no parser-side `raw`), fall back
+  // to yamlScalar(value).
+  const unknowns = fm[FORWARD_COMPAT_UNKNOWNS];
+  if (Array.isArray(unknowns)) {
+    for (const entry of unknowns) {
+      const { key, value, raw } = entry;
+      const lineTail = typeof raw === 'string' ? raw : yamlScalar(value);
+      lines.push(`${key}: ${lineTail}`);
+    }
+  }
+
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
       throw new Error(
-        `Unknown frontmatter key: ${key}. orchestrator schema '1.0'/'1.1' is closed.`,
+        `Unknown frontmatter key: ${key}. orchestrator schema '1.0'/'1.1' is closed; ADR-0028 §Forward-compat (PR5 ported) routes scalar unknowns to FORWARD_COMPAT_UNKNOWNS Symbol carrier.`,
       );
     }
   }
@@ -1345,7 +1419,14 @@ export function parseWorkflowFile(text) {
         fm[key] = list;
         continue;
       }
-      throw new Error(`Empty value for unrecognized block key: ${key}`);
+      // ADR-0028 §Forward-compat (PR5 ported) — block-style unknown keys
+      // remain rejected. The current parser is line-oriented (split on
+      // `\n`, no comment handling), so verbatim raw-line preservation
+      // for a block value requires structural changes outside this PR's
+      // scope.
+      throw new Error(
+        `Empty value for unrecognized block key: ${key}. ADR-0028 §Forward-compat read-tolerance supports scalar additive keys only; block-style unknown keys remain a closed-schema rejection.`,
+      );
     }
 
     // Inline scalar
@@ -1359,6 +1440,31 @@ export function parseWorkflowFile(text) {
       i += 1;
       continue;
     }
+    // ADR-0028 §Forward-compat (PR5 ported) — unknown scalar additive
+    // keys are stashed under the Symbol carrier so the post-loop closed-
+    // schema gate doesn't false-positive. Schema-version acceptance
+    // happens later in validateFrontmatter via isSupportedSchema();
+    // closed-schema rejection still applies to non-additive deviations
+    // and unknown majors per ADR-0028 §Forward-compat rule 3.
+    //
+    // Empty key gate — `: value` produces `key === ''`; reject explicitly
+    // so a malformed line cannot smuggle a nameless entry into the
+    // carrier and round-trip out as invalid YAML.
+    if (key === '') {
+      throw new Error(
+        `Empty frontmatter key (line ${i}). orchestrator schema closed-rejection still applies to nameless keys; ADR-0028 §Forward-compat does not relax this.`,
+      );
+    }
+    if (!FRONTMATTER_KEY_ORDER.includes(key)) {
+      const carrier = fm[FORWARD_COMPAT_UNKNOWNS] ??= [];
+      // Preserve the raw post-colon line tail so round-trip emit matches
+      // the original byte-for-byte (parseScalar('[]') would coerce an
+      // inline empty-list additive to the string '[]' which yamlScalar
+      // then re-emits as '"[]"' — a semantic type change).
+      carrier.push({ key, value: parseScalar(rest), raw: rest });
+      i += 1;
+      continue;
+    }
     fm[key] = parseScalar(rest);
     i += 1;
   }
@@ -1366,7 +1472,7 @@ export function parseWorkflowFile(text) {
   for (const key of Object.keys(fm)) {
     if (!FRONTMATTER_KEY_ORDER.includes(key)) {
       throw new Error(
-        `Unknown frontmatter key: ${key}. orchestrator schema '1.0'/'1.1' is closed.`,
+        `Unknown frontmatter key: ${key}. orchestrator schema '1.0'/'1.1' is closed; ADR-0028 §Forward-compat (PR5 ported) routes scalar unknowns to FORWARD_COMPAT_UNKNOWNS Symbol carrier.`,
       );
     }
   }
@@ -1455,14 +1561,24 @@ export function assembleWorkflowFile(frontmatter, body) {
  * 2 cleanly to keep namespaces separate.
  */
 function validateFrontmatter(fm) {
-  if (!SUPPORTED_SCHEMA_VERSIONS.has(fm.schema)) {
-    const accepted = [...SUPPORTED_SCHEMA_VERSIONS]
+  // ADR-0028 §Forward-compat (PR5 ported) — accept via predicate, not
+  // closed Set. The Set continues to enumerate explicitly-known minors
+  // for telemetry / diagnostic purposes (and existing tests assert its
+  // contents); the gate that the parser actually runs is the open-ended
+  // 1.x predicate.
+  if (!isSupportedSchema(fm.schema)) {
+    const knownMinors = [...SUPPORTED_SCHEMA_VERSIONS]
       .map((v) => JSON.stringify(v))
       .join(', ');
     throw new Error(
-      `Unsupported schema version: ${JSON.stringify(fm.schema)} ` +
-      `(supported: ${accepted}). orchestrator schema '1.0'/'1.1' is closed; ` +
-      `engineer schema 1 / '1.1' / 2 files must not be mutated by orchestrator.`,
+      `Unsupported schema version: ${JSON.stringify(fm.schema)}. ` +
+      `ADR-0028 §Forward-compat accepts any "1.y" minor string; unknown majors ` +
+      `(e.g., "2.0"), the bare string "1", the number form of any value, and ` +
+      `malformed minors are rejected. Engineer schema 1 (legacy number form) ` +
+      `is rejected at this gate; engineer 1.x string forms pass the schema ` +
+      `predicate but are then rejected downstream by orchestrator's required-` +
+      `key set (workflow_type 'macro', plan.subtasks block). Explicitly-known ` +
+      `minors as of this build: ${knownMinors}.`,
     );
   }
   const REQUIRED = [
@@ -3508,7 +3624,19 @@ async function cliMain(argv) {
       case 'read': {
         cliRequire(flags, ['workflow-path']);
         const { frontmatter } = await readWorkflow(flags['workflow-path']);
-        process.stdout.write(`${JSON.stringify(frontmatter, null, 2)}\n`);
+        // ADR-0028 §Forward-compat (PR5 ported) — Symbol-keyed unknown
+        // additive keys are invisible to JSON.stringify. The CLI `read`
+        // output is a diagnostic projection (not a canonical round-trip
+        // artifact; round-trip MUST go through parseWorkflowFile +
+        // assembleWorkflowFile to preserve the Symbol carrier). Surface
+        // the carrier under an underscored sibling key so an operator
+        // inspecting the JSON sees future-minor unknowns without having
+        // to import the Symbol.
+        const unknowns = frontmatter[FORWARD_COMPAT_UNKNOWNS];
+        const projection = Array.isArray(unknowns) && unknowns.length > 0
+          ? { ...frontmatter, _forward_compat_unknowns: unknowns }
+          : frontmatter;
+        process.stdout.write(`${JSON.stringify(projection, null, 2)}\n`);
         return 0;
       }
 
