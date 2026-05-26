@@ -241,6 +241,11 @@ avoid the `ARG_MAX` ceiling.
 - **Investigate** (analysis profile): add `<research_mode>`
 - **Investigate** (root-cause profile): add `<verification_loop>`,
   `<missing_context_gating>`
+- **Brainstorm** (decide phase): optional `<axis_awareness>` per
+  ADR-0027 §4.2. Present only when both §4.3 conditions hold:
+  `context.registry_fallback === false` AND command mode (the
+  Claude `/engineer:decide` command file is the canonical emit
+  site; Codex skill-mention follows ADR-0001 §5 honest scope).
 - **Plan-verify** (compose phase): add `<dig_deeper_nudge>`,
   `<completeness_contract>`
 - **Review** (critique phase, default profile): add
@@ -339,10 +344,20 @@ per the Bidirectional invocation pattern above.
   Repository: {repo context}
   </task>
 
+  <axis_awareness>
+  Preset: {preset-id resolved per ADR-0027 §1.5}
+  Size: {minor | standard | major}
+  Axes:
+    - id: <axis-id>; label: <en-label>; question: <core question>; role: <decisive | supporting>
+    - ...
+  Weights: {comma-separated id:weight | "uniform"}
+  </axis_awareness>
+
   <structured_output_contract>
   For each approach:
   1. Name and one-sentence summary
-  2. Key tradeoffs (pros and cons)
+  2. Key tradeoffs (pros and cons) — when <axis_awareness> is present,
+     express each tradeoff against the named axes' labels and roles
   3. Risk areas
   4. Estimated scope (files/layers affected)
   </structured_output_contract>
@@ -354,8 +369,96 @@ per the Bidirectional invocation pattern above.
   </grounding_rules>
   ```
 
-- **Synthesis**: Merge option sets. New PEER-ONLY approaches → add.
-  AGREED approaches → elevate confidence.
+- **Presence rule (ADR-0027 §4.3)**: The `<axis_awareness>` block is
+  emitted in the prompt only when **both** conditions hold:
+
+  1. The orchestrator successfully resolved a preset — i.e.,
+     `context.registry_fallback === false` on the resolved
+     ResolvedDecisionContext written to `$AGENTIC_DECIDE_CONTEXT_FILE`
+     by `decide-registry.mjs resolve` (per ADR-0027 §5.6 PR5
+     amendment; the field disambiguates `preset_id: "default"` because
+     no flag was passed from `preset_id: "default"` because a §1.6
+     fallback path fired).
+  2. The orchestrator is in **command mode** (`/engineer:decide` or
+     `$engineer:decide` slash invocation). Auto-activated /
+     standalone-skill mode does NOT have a registry-resolved preset
+     and the block is omitted unconditionally — strict-grammar
+     argument parsing is a command-mode contract per ADR-0027 §2.6.
+
+  When either condition fails, the block is omitted entirely. The
+  peer falls back to free-form 2-3 approaches per the original
+  axis-agnostic shape — graceful degradation per the §Failure
+  Handling rules below. The `commands/decide.md` Phase 1 prompt
+  builder is the single emit point; auto-activated mode never
+  reaches a peer-runner dispatch (per SKILL.md "## When
+  auto-activated" — "no peer ensemble dispatch"), closing the
+  E4 guardrail at the call-site rather than the template.
+
+- **Snapshot rule (ADR-0027 §4.3)**: When `<axis_awareness>` is
+  present, the orchestrator captures the corresponding subset of
+  ResolvedDecisionContext — `{preset_id, axes, size, weights}` — in
+  memory before dispatching the peer. Synthesis consumes this
+  in-memory snapshot, NOT a re-read of `decision-axes.yml`. If the
+  registry file changes mid-dispatch, or the CLI environment
+  changes between dispatch and synthesis, the snapshot
+  authoritatively describes the axis frame both sides shared. The
+  snapshot is **in-memory for the duration of the command**; it
+  does NOT need to persist to disk across sessions (the
+  `$AGENTIC_DECIDE_CONTEXT_FILE` temp file acts as the natural
+  in-process carrier, and is cleaned up at command completion).
+  Cross-session resume after host exit cannot reconstruct the
+  exact original snapshot — that case re-runs preset resolution
+  against the current registry, and any drift surfaces through
+  the registry's §1.6 graceful-degradation diagnostics.
+
+- **Weights serialization convention**: the `Weights:` line uses the
+  word `uniform` when `context.weights === {}` (the empty-sentinel
+  from PR4 normalization). When `context.weights_explicit === true`,
+  the line is rendered as comma-separated `axis-id:weight` pairs in
+  **document order** (ADR-0027 §1.4 axis-ordering invariant), e.g.
+  `Weights: essence:2,foundation:2,practical-fit:1`. Unknown axes
+  passed by the user (`--weights=ghost:2`) are NOT emitted — the
+  PR4 normalizer drops them at parse time and surfaces a stderr
+  diagnostic; the snapshot's `weights` map only contains axes
+  that exist in the resolved preset's axes list.
+
+- **Synthesis**: Merge option sets per the AGREED / LOCAL-ONLY /
+  PEER-ONLY / CONFLICT base categories defined in §Step 3. When
+  `<axis_awareness>` was present at dispatch (per the presence
+  rule above), additionally evaluate each PEER-ONLY approach
+  against the snapshotted axis set per ADR-0027 §4.4:
+
+  1. Tag the approach `[Peer · unmapped]` (extending the standard
+     `[Peer]` label) when its tradeoff vocabulary uses concepts
+     orthogonal to the snapshot's axes — for example, the peer
+     proposed an approach justified by "operator cognitive load"
+     when the snapshot's preset is `default` (5-axis) and that
+     concept does not map cleanly to any of essence / foundation /
+     standards / best-practice / practical-fit.
+  2. Attempt local axis assessment — the orchestrator looks at the
+     peer's approach and rates it against the snapshot's axes from
+     its own analysis before merging.
+  3. If local mapping fails (the approach is genuinely outside the
+     axis frame), present as PEER-ONLY with reduced confidence and
+     surface the unmapped-vocabulary list to the user. The user MAY
+     then choose to widen the preset (re-invoke with
+     `--preset=nine-axis`, for example) or accept the unmapped
+     approach as a frame-incompatibility signal.
+
+  This is a quality refinement on top of the base categorization —
+  AGREED / LOCAL-ONLY / PEER-ONLY / CONFLICT remain the four base
+  buckets; `[Peer · unmapped]` is a presentation sub-label, not a
+  fifth category. New PEER-ONLY approaches still get added;
+  AGREED approaches still get confidence elevated.
+
+- **XML escaping** (ADR-0027 §1.1 PR5 amendment, editorial rule):
+  axis labels and questions are free-text YAML fields. Registry
+  authors MUST keep them free of the XML predefined entities
+  (`&`, `<`, `>`, `"`, `'`) since the `<axis_awareness>` block
+  emitter (the LLM prompt-builder in `commands/decide.md` Phase 1)
+  does NOT escape on emission. All presets shipped in PR2
+  (`default`, `compact`, `nine-axis`) are escape-free; future
+  presets must follow the same constraint.
 
 ### Explore (investigate phase, analysis profile)
 

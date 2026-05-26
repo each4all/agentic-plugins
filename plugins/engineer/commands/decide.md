@@ -97,9 +97,13 @@ The CLI reuses `scripts/lib/decide-args.mjs` internally so the same
 §2.3 flag grammar applies: unknown flags, invalid `--size=<tier>`
 values, or malformed `--weights=<spec>` (non-numeric weight, negative
 weight, exponent notation, uppercase axis-id, duplicate axis-id, empty
-spec, whitespace) produce a parser error and exit 2 (we halt). Body
-tokens go after a `--` separator and are threaded into `context.body`
-per §5.6.
+spec, whitespace) produce a parser error and exit 2 (we halt).
+`--preset=<id>` is shape-validated by the parser but semantically
+resolved by the registry per ADR-0027 §1.6 graceful-degradation —
+an unknown preset id triggers `context.registry_fallback = true` +
+fall-back to the `default` preset (no halt, peer dispatch still
+proceeds with `<axis_awareness>` omitted per §4.3). Body tokens go
+after a `--` separator and are threaded into `context.body` per §5.6.
 
 ```bash
 AGENTIC_DECIDE_CONTEXT_FILE="$(mktemp -t engineer-decide-context.XXXXXX).json"
@@ -188,7 +192,48 @@ dispatch in background:
 PROMPT_FILE="$(mktemp -t engineer-decide-prompt.XXXXXX).xml"
 # ADR-0017 §sub-decision 4 — stable run-id BEFORE dispatch.
 RUN_ID="brainstorm-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%06x' $((RANDOM*RANDOM & 0xffffff)))"
-# ... LLM writes the Brainstorm XML prompt to $PROMPT_FILE ...
+
+# LLM-authored Brainstorm prompt — write to $PROMPT_FILE per the
+# template at skills/_shared/references/ensemble-protocol.md § Brainstorm.
+#
+# ADR-0027 §4 axis-awareness contract — the prompt-builder MUST read
+# $AGENTIC_DECIDE_CONTEXT_FILE (the ResolvedDecisionContext JSON written by
+# Phase 0.5) and decide whether to emit the `<axis_awareness>` block:
+#
+#   - When `context.registry_fallback === false` AND this dispatch runs
+#     in command mode (always true on this code path; auto-activated
+#     mode never reaches a peer-runner dispatch per SKILL.md
+#     "## When auto-activated" → "no peer ensemble dispatch"),
+#     emit the `<axis_awareness>` block populated from
+#     `context.{preset_id, size, axes, weights, weights_explicit}` per
+#     ADR-0027 §4.2. The `Weights:` line uses `uniform` when
+#     `context.weights_explicit === false` (PR4 empty-sentinel signal —
+#     avoids the `weights !== {}` object-identity trap peer G3 warded
+#     off at the JS-API layer) and renders explicit weights in document
+#     order otherwise.
+#
+#   - When `context.registry_fallback === true` (a §1.6 fallback fired —
+#     missing file, malformed YAML, unknown preset id, etc.), OMIT the
+#     `<axis_awareness>` block entirely. The peer falls back to free-form
+#     2-3 approaches per the ensemble-protocol.md §Failure Handling rule.
+#     Do NOT emit a fallback-filled `<axis_awareness>` block (ADR-0027 §4
+#     alternative 1 rejection — fallback-default-axes confuse the peer
+#     when the user's actual registry was broken).
+#
+#   - When $AGENTIC_DECIDE_CONTEXT_FILE is missing or unparseable (the
+#     Phase 0.5 graceful-degradation path per ADR-0027 §1.6 cascade —
+#     the skill body itself falls back to the in-code default preset
+#     per commands/decide.md Phase 0.5 prose), proceed with the
+#     free-form prompt (axis_awareness omitted) and surface a one-line
+#     diagnostic in the workflow phase note. This is the E1 edge case
+#     called out by Codex Plan-verify.
+#
+# This `commands/decide.md` Phase 1 surface is the single emit site for
+# the axis_awareness block on the Claude side; Codex's SKILL.md path
+# delegates wholly to ensemble-protocol.md § Brainstorm. Updates to the
+# axis_awareness contract land in both `ensemble-protocol.md` § Brainstorm
+# and this comment in lockstep per ADR-0027 §4.5.
+
 node "$CLAUDE_PLUGIN_ROOT/scripts/peer-runner.mjs" run \
   --repo-root "$REPO_ROOT" --kind ensemble \
   --peer codex --prompt-file "$PROMPT_FILE" --output-format json \
@@ -255,6 +300,14 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --terminal-marker true \
   --next-action "Compose the artifact for the chosen direction" \
   --event updated
+
+# ADR-0027 §4.3 snapshot rule — honor the in-memory boundary by removing
+# the temp context file once the skill body has consumed it. Phase 0.5
+# also rm's on parser error; the dual review (run_ids
+# parallel-review-20260526T015850Z-1c906f44 / codex-scope-branch-...
+# MAJOR-3) caught that the normal-completion path lacked symmetric
+# cleanup, leaving the resolved decision JSON on /tmp.
+rm -f "$AGENTIC_DECIDE_CONTEXT_FILE"
 ```
 
 ---
