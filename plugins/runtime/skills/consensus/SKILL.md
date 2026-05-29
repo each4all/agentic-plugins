@@ -55,6 +55,13 @@ Consensus reports and manages:
 - contradiction summaries;
 - owner decision artifacts that close exhausted or otherwise unresolved
   consensus without running another peer round;
+- an `owner_decision_briefing` in `status` output when convergence is
+  unresolved (`owner-decision-required`, round-budget-exhausted
+  `contradiction`, `insufficient-evidence`, or `non-consensus`): the
+  synthesized durable disagreements (type, summary, evidence pointers), the
+  `decide` command to run, and the `owner-decision.md` template sections. It is
+  derived from synthesized durable disagreements only and never surfaces raw
+  peer output (pointer-only invariant);
 - cancellation artifacts that close abandoned or intentionally stopped
   consensus runs without killing host processes;
 - evidence pointers;
@@ -82,7 +89,13 @@ Consensus reports and manages:
 - No automatic unbounded loops; max rounds default to 2 total rounds and are hard-capped at 3. If direct contradictions remain after the configured round budget is exhausted, report `owner-decision-required` instead of creating another rebuttal loop. Process budget and timeout caps bound companion execution, while peer breadth is bounded by the explicit `--peers` roster and optional `--max-peers` with no hidden fixed peer-count cap.
 - Owner decisions are explicit artifacts. `decide` records a decision pointer,
   prior consensus pointer, evidence pointers, byte count, and hash; it does not
-  print decision text, execute peers, or create another rebuttal round.
+  print decision text, execute peers, or create another rebuttal round. When
+  `status` reports an unresolved run it emits an `owner_decision_briefing` (text:
+  an "Owner decision required:" section) listing the synthesized disagreements,
+  the `decide` command, and the `owner-decision.md` template sections. Author the
+  `owner-decision.md` from those briefing disagreements (never from raw peer
+  output) with the sections: Context, Open Question, Considered Options,
+  Decision, Rationale, Rollback.
 - Cancellation is an explicit artifact. `cancel` records a reason pointer, byte
   count, hash, previous status, and optional progress pointer; if progress is
   running, require `--confirm-no-active-process` after operator verification.

@@ -830,7 +830,7 @@ export async function readStatus(options = {}) {
     cancellationArtifact,
     now,
   });
-  return {
+  const report = {
     command: 'status',
     version: VERSION,
     run_id: runId,
@@ -891,6 +891,8 @@ export async function readStatus(options = {}) {
     next_steps: statusGuidance.next_steps,
     limits: manifest.limits,
   };
+  report.owner_decision_briefing = buildOwnerDecisionBriefing(report);
+  return report;
 }
 
 function summarizeRoundOutputs({ round, activePeers }) {
@@ -1656,7 +1658,7 @@ function classifyConvergenceState({ options, durableDisagreements, manifest }) {
   if (kinds.length > 0 && kinds.every((kind) => kind === 'complementary')) return 'complementary';
   if (kinds.length > 0 && kinds.every((kind) => kind === 'insufficient-evidence')) return 'insufficient-evidence';
   if (kinds.length > 0 && kinds.every((kind) => kind === 'non-consensus')) return 'non-consensus';
-  if (latestRoundNumber(manifest) >= manifest.policy.max_rounds) return 'owner-decision-required';
+  if (hasReachedRoundLimit(manifest)) return 'owner-decision-required';
   return 'contradiction';
 }
 
@@ -1766,6 +1768,51 @@ function laneCommandTemplate({ runId, peer, lane }) {
     return `runtime:consensus execute --run-id ${runId} --round <round> --peers ${peer} --execute`;
   }
   return `runtime:consensus record --run-id ${runId} --round <round> --peer ${peer} --input-file <path>`;
+}
+
+const KNOWN_DISAGREEMENT_KINDS = new Set([
+  'contradiction',
+  'complementary',
+  'insufficient-evidence',
+  'non-consensus',
+  'unspecified',
+]);
+
+function normalizeEvidencePointers(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry) => typeof entry === 'string' && entry.length > 0);
+}
+
+function buildOwnerDecisionBriefing(report) {
+  // Gate strictly on the authoritative status guidance state machine, NOT on the
+  // persisted convergence_state. After `decide`/`cancel`, the consensus.json still
+  // carries the unresolved convergence_state (e.g. owner-decision-required), but
+  // status_guidance correctly resolves to owner_decided/cancelled — so trusting
+  // the raw state would keep printing a stale "Owner decision required" + a fresh
+  // decide command for an already-terminal run (peer review MAJOR). guidance also
+  // already routes contradiction to owner_decision_required only when no rebuttal
+  // round is available, so this single signal subsumes the round-budget check too.
+  if (report?.status_guidance?.state !== 'owner_decision_required') return null;
+  const disagreements = (Array.isArray(report.durable_disagreements) ? report.durable_disagreements : [])
+    .map((dd) => {
+      const rawType = dd?.type || dd?.kind || 'unspecified';
+      return {
+        type: KNOWN_DISAGREEMENT_KINDS.has(rawType) ? rawType : 'unspecified',
+        summary: typeof dd?.summary === 'string' ? dd.summary : '',
+        evidence_pointers: normalizeEvidencePointers(dd?.evidence_pointers),
+      };
+    });
+  return {
+    state: report.convergence_state ?? null,
+    disagreements,
+    decide_command: `runtime:consensus decide --run-id ${report.run_id} --decision-file <owner-decision.md> --decided-by owner`,
+    template_hint: ['Context', 'Open Question', 'Considered Options', 'Decision', 'Rationale', 'Rollback'],
+    note: 'Derived from synthesized durable disagreements; raw peer output stays in artifacts.',
+  };
+}
+
+function hasReachedRoundLimit(manifest) {
+  return latestRoundNumber(manifest) >= manifest.policy.max_rounds;
 }
 
 function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtifact, consensusArtifact, ownerDecisionArtifact, cancellationArtifact, now }) {
@@ -2313,6 +2360,18 @@ export function formatText(report) {
       const round = artifact.round ? ` round-${artifact.round}` : '';
       lines.push(`- ${artifact.kind}${peer}${round}: ${artifact.pointer}`);
     }
+  }
+  if (report.owner_decision_briefing) {
+    const briefing = report.owner_decision_briefing;
+    lines.push('', 'Owner decision required:');
+    for (const disagreement of briefing.disagreements) {
+      lines.push(`  - [${disagreement.type}] ${disagreement.summary}`);
+      for (const ptr of disagreement.evidence_pointers) {
+        lines.push(`      evidence: ${ptr}`);
+      }
+    }
+    lines.push(`  Decide: ${briefing.decide_command}`);
+    lines.push(`  Template sections: ${briefing.template_hint.join(', ')}`);
   }
   if (report.next_steps?.length) {
     lines.push('', 'next steps:');

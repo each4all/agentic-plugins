@@ -1073,6 +1073,305 @@ describe('runtime consensus', () => {
     ok(formatText(report).includes('next action: Direct contradictions remain'));
   });
 
+  it('includes an owner_decision_briefing in status json for an owner-decision-required run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-consensus-briefing-json-'));
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      task: 'Bounded one-round contradiction for owner briefing.',
+      peers: ['claude', 'codex'],
+      maxRounds: 1,
+    });
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    await writeFile(summaryFile, 'The peers still recommend incompatible actions.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      {
+        summary: 'Claude recommends shipping now; Codex recommends blocking on a verifier.',
+        kind: 'contradiction',
+        evidence_pointers: ['ptr/claude-position.md', 'ptr/codex-position.md'],
+      },
+    ]));
+    const synth = await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+    });
+    strictEqual(synth.convergence_state, 'owner-decision-required');
+
+    const status = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    const briefing = status.owner_decision_briefing;
+    ok(briefing, 'status should include owner_decision_briefing');
+    strictEqual(briefing.state, 'owner-decision-required');
+    strictEqual(briefing.disagreements.length, 1);
+    strictEqual(briefing.disagreements[0].type, 'contradiction');
+    strictEqual(briefing.disagreements[0].summary, 'Claude recommends shipping now; Codex recommends blocking on a verifier.');
+    deepStrictEqual(briefing.disagreements[0].evidence_pointers, ['ptr/claude-position.md', 'ptr/codex-position.md']);
+    strictEqual(briefing.decide_command, `runtime:consensus decide --run-id ${RUN_ID} --decision-file <owner-decision.md> --decided-by owner`);
+    deepStrictEqual(briefing.template_hint, ['Context', 'Open Question', 'Considered Options', 'Decision', 'Rationale', 'Rollback']);
+    ok(briefing.note.includes('raw peer output stays in artifacts'));
+  });
+
+  it('omits owner_decision_briefing for a converged (aligned) consensus run', async () => {
+    const root = await seedPlan();
+    const summaryFile = join(root, 'summary.md');
+    await writeFile(summaryFile, 'Both peers converged on the same recommendation.\n');
+    const synth = await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+    });
+    strictEqual(synth.convergence_state, 'aligned');
+
+    const status = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(status.owner_decision_briefing, null);
+    ok(!formatText(status).includes('Owner decision required:'));
+  });
+
+  it('omits owner_decision_briefing for a converged (complementary) consensus run', async () => {
+    const root = await seedPlan();
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    await writeFile(summaryFile, 'Both peers agree on the direction but emphasize different risks.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      {
+        summary: 'Claude emphasized release safety while Codex emphasized operator UX.',
+        kind: 'complementary',
+      },
+    ]));
+    const synth = await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+      convergenceState: 'complementary',
+    });
+    strictEqual(synth.convergence_state, 'complementary');
+
+    const status = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(status.status_guidance.state, 'complete');
+    strictEqual(status.owner_decision_briefing, null);
+    ok(!formatText(status).includes('Owner decision required:'));
+  });
+
+  it('omits owner_decision_briefing after a terminal owner decision despite persisted owner-decision-required state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-consensus-briefing-decided-'));
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      task: 'Bounded one-round contradiction closed by an owner decision.',
+      peers: ['claude', 'codex'],
+      maxRounds: 1,
+    });
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    await writeFile(summaryFile, 'The peers still recommend incompatible actions.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      {
+        summary: 'Claude recommends shipping now; Codex recommends blocking on a verifier.',
+        kind: 'contradiction',
+      },
+    ]));
+    const synth = await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+    });
+    strictEqual(synth.convergence_state, 'owner-decision-required');
+
+    const decisionFile = join(root, 'owner-decision.md');
+    await writeFile(decisionFile, 'OWNER DECISION BODY THAT MUST STAY IN THE ARTIFACT\n');
+    await runConsensus({
+      command: 'decide',
+      repoRoot: root,
+      runId: RUN_ID,
+      decisionFile,
+      decidedBy: 'owner',
+      nextAction: 'Proceed with the verifier gate.',
+      now: new Date('2026-05-13T00:05:00.000Z'),
+    });
+
+    const consensus = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'consensus.json'));
+    strictEqual(consensus.convergence_state, 'owner-decision-required');
+
+    const status = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(status.status_guidance.state, 'owner_decided');
+    strictEqual(status.owner_decision_briefing, null);
+    ok(!formatText(status).includes('Owner decision required:'));
+  });
+
+  it('omits owner_decision_briefing after artifact-only cancellation despite persisted owner-decision-required state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-consensus-briefing-cancelled-'));
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      task: 'Bounded one-round contradiction cancelled as an artifact.',
+      peers: ['claude', 'codex'],
+      maxRounds: 1,
+    });
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    await writeFile(summaryFile, 'The peers still recommend incompatible actions.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      {
+        summary: 'Claude recommends shipping now; Codex recommends blocking on a verifier.',
+        kind: 'contradiction',
+      },
+    ]));
+    const synth = await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+    });
+    strictEqual(synth.convergence_state, 'owner-decision-required');
+
+    const reasonFile = join(root, 'cancel-reason.md');
+    await writeFile(reasonFile, 'CANCEL REASON BODY THAT MUST STAY IN THE ARTIFACT\n');
+    await runConsensus({
+      command: 'cancel',
+      repoRoot: root,
+      runId: RUN_ID,
+      reasonFile,
+      cancelledBy: 'operator',
+      confirmNoActiveProcess: true,
+      now: new Date('2026-05-13T00:06:00.000Z'),
+    });
+
+    const consensus = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'consensus.json'));
+    strictEqual(consensus.convergence_state, 'owner-decision-required');
+
+    const status = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(status.status_guidance.state, 'cancelled');
+    strictEqual(status.owner_decision_briefing, null);
+    ok(!formatText(status).includes('Owner decision required:'));
+  });
+
+  it('renders the owner decision briefing section in status text output', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-consensus-briefing-text-'));
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      task: 'Bounded one-round contradiction for owner briefing text.',
+      peers: ['claude', 'codex'],
+      maxRounds: 1,
+    });
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    await writeFile(summaryFile, 'The peers still recommend incompatible actions.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      {
+        summary: 'Claude recommends shipping now; Codex recommends blocking on a verifier.',
+        kind: 'contradiction',
+        evidence_pointers: ['ptr/claude-position.md'],
+      },
+    ]));
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+    });
+
+    const status = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+    const text = formatText(status);
+    ok(text.includes('Owner decision required:'));
+    ok(text.includes('- [contradiction] Claude recommends shipping now; Codex recommends blocking on a verifier.'));
+    ok(text.includes('evidence: ptr/claude-position.md'));
+    ok(text.includes(`Decide: runtime:consensus decide --run-id ${RUN_ID} --decision-file <owner-decision.md> --decided-by owner`));
+    ok(text.includes('Template sections: Context, Open Question, Considered Options, Decision, Rationale, Rollback'));
+  });
+
+  it('derives the owner decision briefing from synthesized summaries without leaking raw peer output', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-consensus-briefing-no-raw-'));
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      task: 'Bounded one-round contradiction guarding raw output.',
+      peers: ['claude', 'codex'],
+      maxRounds: 1,
+    });
+    const claudeRaw = join(root, 'claude.txt');
+    const codexRaw = join(root, 'codex.txt');
+    await writeFile(claudeRaw, 'CLAUDE RAW OUTPUT THAT MUST STAY IN ARTIFACTS');
+    await writeFile(codexRaw, 'CODEX RAW OUTPUT THAT MUST STAY IN ARTIFACTS');
+    await runConsensus({ command: 'record', repoRoot: root, runId: RUN_ID, peer: 'claude', inputFile: claudeRaw });
+    await runConsensus({ command: 'record', repoRoot: root, runId: RUN_ID, peer: 'codex', inputFile: codexRaw });
+
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    await writeFile(summaryFile, 'Operator-synthesized summary of the contradiction.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      {
+        summary: 'Synthesized disagreement: ship-now versus block-on-verifier.',
+        kind: 'contradiction',
+      },
+    ]));
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+    });
+
+    const status = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    const briefing = status.owner_decision_briefing;
+    ok(briefing, 'status should include owner_decision_briefing');
+    strictEqual(briefing.disagreements[0].summary, 'Synthesized disagreement: ship-now versus block-on-verifier.');
+    ok(!JSON.stringify(status).includes('CLAUDE RAW OUTPUT'), 'briefing json must not include raw peer output');
+    ok(!JSON.stringify(status).includes('CODEX RAW OUTPUT'), 'briefing json must not include raw peer output');
+    ok(!formatText(status).includes('CLAUDE RAW OUTPUT'), 'briefing text must not include raw peer output');
+    ok(!formatText(status).includes('CODEX RAW OUTPUT'), 'briefing text must not include raw peer output');
+  });
+
   it('explains synthesize and next-round blocked states without executing peers', async () => {
     const root = await seedPlan();
 
