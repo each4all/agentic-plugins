@@ -38,6 +38,46 @@ Do not ask the user to choose from raw implementation details without this
 comparison. If evidence is weak, say what evidence would change the
 recommendation.
 
+## Active Next-Action Proposal (standalone verb completion)
+
+This contract applies not only to `engineer:start` lifecycle entry but
+to **every standalone verb completion** (`/engineer:<verb>` or
+`$engineer:<verb>` invoked without the lifecycle macro). A verb MUST NOT
+end with a fixed lifecycle-table literal (e.g. always "next:
+`/engineer:decide`"). It MUST instead emit an evidence-based proposal
+derived from the verb's actual result and the current workflow state:
+
+- **selected_next**: the recommended next step — a verb, `commit`, or
+  `owner decision`. Chosen from the verb's result, not from a fixed
+  table.
+- **rejected_alternatives**: 1-2 plausible next steps that were
+  considered, each with a one-line why-not.
+- **rationale**: why `selected_next` is best, grounded in the decisive
+  quality axes (본질 essence / 근본 foundation) and the
+  Standards/Root-Cause Gate result below.
+- **evidence_pointers**: workflow phase notes, files, or artifact
+  pointers that support the recommendation (pointers only — never raw
+  peer output or full comparison dumps).
+- **confidence**: HIGH / MEDIUM / LOW, based on available evidence.
+- **next_command**: the exact `/engineer:<verb> …` (Claude) or
+  `$engineer:<verb>` (Codex) to run.
+
+The default verb sequence (Routing Recommendation table above) remains
+the **fallback** when evidence is genuinely neutral — but a fixed
+literal is no longer the default output. When a verb surfaces 2+ viable
+next branches, surface the compact multi-axis lens per the decision
+sizing below (sized to the decision's weight, not the full 9-axis
+matrix for a trivial reversible step).
+
+Anti-pattern (explicitly forbidden): **static lifecycle table** —
+ending a verb with a hardcoded "next: X" instead of reasoning about the
+best next action given the current result and state.
+
+The durable `state.mjs --next-action` write SHOULD carry the compact
+form (selected_next + one-line rationale + next_command); the fuller
+proposal (alternatives + evidence + confidence) belongs in the
+completion output and the phase note.
+
 ## Standards and Root-Cause Gate
 
 Before recommending a quick implementation or refinement path, state the
