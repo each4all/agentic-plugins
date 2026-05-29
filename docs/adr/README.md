@@ -92,4 +92,4 @@ operatively accurate?* If no, write a new ADR (Supersede).
 | [0026](0026-runtime-compatibility-drift-and-release-notes.md) | Runtime compatibility drift and release-note evidence | Accepted |
 | [0027](0027-decide-skill-multi-axis-evolution.md) | Decide skill multi-axis evolution — axis registry, sizing, weighting/sensitivity, and the parallel-edit contract | Accepted |
 | [0028](0028-engineer-phase7-commit-automation.md) | Engineer Phase 7 commit automation — 3-layer defense + 14 policy sections + centralized validate-commit.mjs | Accepted |
-| [0029](0029-entry-routing-contract-enforcement.md) | Extend entry-routing contract enforcement to standalone verbs — active, evidence-based next-action guidance | Proposed |
+| [0029](0029-entry-routing-contract-enforcement.md) | Extend entry-routing contract enforcement to standalone verbs — active, evidence-based next-action guidance | Accepted |
