@@ -270,11 +270,23 @@ NOTE="### Ensemble launched: decide at <iso-utc>
 
 <chosen direction + rationale + risks>
 
-### Recommended next verb
+### Active next-action proposal
 
-/engineer:compose
+(per skills/_shared/references/entry-routing-contract.md
+ § Active Next-Action Proposal — derived from this decision, not a fixed table)
+- selected_next:         <verb | commit | owner decision>
+- rejected_alternatives: <1-2 alternatives, each + one-line why-not>
+- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
+- evidence_pointers:     <phase notes / files / artifacts — pointers only>
+- confidence:            <HIGH | MEDIUM | LOW>
+- next_command:          <exact /engineer:<verb> … or \$engineer:<verb>>
 "
 
+# ADR-0029 §1 — set --next-action (both writes below) to the compact form
+# of the proposal above (selected_next + one-line why + next_command) so the
+# durable state and the state-derived completion footer agree with the Active
+# Next-Action Proposal. The value shown is the typical-case default; override
+# it when the verb's result selects a different next step (e.g. commit).
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase-label "Phase 1: Decide (synthesized)" \
@@ -316,11 +328,24 @@ rm -f "$AGENTIC_DECIDE_CONTEXT_FILE"
 
 Output the comparison and one of:
 
-- `✓ Decision recommended.` + chosen direction. Recommend
-  `/engineer:compose` to produce the artifact (plan or code).
+- `✓ Decision recommended.` + chosen direction.
 - `✓ Decision pending user input.` — when CONFLICT remained in the
   recommendation. Surface both options with evidence; pause until
   the user selects.
+
+Then emit an **Active Next-Action Proposal** instead of a fixed next
+verb, per `skills/_shared/references/entry-routing-contract.md`
+§ Active Next-Action Proposal: **selected_next**, **rejected_alternatives**
+(1-2 + why-not), **rationale** (decisive axes 본질/근본 essence/foundation +
+the Standards/Root-Cause gate), **evidence_pointers** (pointers only),
+**confidence** (HIGH/MEDIUM/LOW), and **next_command** (`/engineer:<verb> …`
+or `$engineer:<verb>`). Typical `selected_next` candidates for decide:
+`/engineer:compose` to produce the artifact for the chosen direction —
+or `/engineer:investigate` if a decisive evidence gap surfaced, or
+`/engineer:frame` if deciding reframed the problem; the routing table is
+the fallback only when evidence is genuinely neutral — do not end with a
+hardcoded "next: X". When `selected_next` is `engineer:decide`, also name
+the decision size (`--size=minor|standard|major`) per the contract.
 
 Always include the workflow path.
 

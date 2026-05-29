@@ -200,7 +200,10 @@ per the protocol's *Failure Handling*.
 After Phase 1 returns synthesized findings, append a phase note that
 captures (a) the synthesis verdict, (b) ensemble launch + result
 markers per `ensemble-protocol.md` § State Bookkeeping (Stage 2), and
-(c) the recommended next verb. For the cited-brief profile, also
+(c) the active next-action proposal (per
+`skills/_shared/references/entry-routing-contract.md`
+§ Active Next-Action Proposal, not a fixed next-verb literal). For the
+cited-brief profile, also
 include the saved brief's absolute path under a `### Brief saved`
 heading so future workflow consumers can locate the artifact (the
 brief itself stays orthogonal to the workflow body — referenced by
@@ -221,11 +224,23 @@ NOTE="### Ensemble launched: investigate at <iso-utc>
 
 <top findings with file paths and line numbers>
 
-### Recommended next verb
+### Active next-action proposal
 
-/engineer:<decide|frame|refine>
+(per skills/_shared/references/entry-routing-contract.md
+ § Active Next-Action Proposal — derived from these findings, not a fixed table)
+- selected_next:         <verb | commit | owner decision>
+- rejected_alternatives: <1-2 alternatives, each + one-line why-not>
+- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
+- evidence_pointers:     <phase notes / files / artifacts — pointers only>
+- confidence:            <HIGH | MEDIUM | LOW>
+- next_command:          <exact /engineer:<verb> … or \$engineer:<verb>>
 "
 
+# ADR-0029 §1 — set --next-action (both writes below) to the compact form
+# of the proposal above (selected_next + one-line why + next_command) so the
+# durable state and the state-derived completion footer agree with the Active
+# Next-Action Proposal. The value shown is the typical-case default; override
+# it when the verb's result selects a different next step (e.g. commit).
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase-label "Phase 1: Investigate (synthesized)" \
@@ -259,10 +274,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
 
 Output the synthesized findings and one of:
 
-- `✓ Investigation complete.` — typical case. State the recommended
-  next verb (most often `/engineer:decide` for 2+ approaches,
-  `/engineer:refine` for an obvious fix, or `/engineer:frame` to
-  reformulate the question).
+- `✓ Investigation complete.` — typical case.
 - `✓ Investigation complete (full strike).` — when all local
   hypotheses AND the peer ensemble's diagnosis were refuted under the
   `root-cause` profile. Surface the user-facing prompt for additional
@@ -271,17 +283,31 @@ Output the synthesized findings and one of:
 - `✓ Cited brief saved.` — `cited-brief` profile, audit passed, file
   written to `<resolved-root>/YYYY-MM-DD_<topic-slug>/research_brief.md`.
   Show the saved path, sub-question coverage, source-tier breakdown,
-  overall confidence, and any degraded-ensemble note. Recommended next
-  verb depends on the user's intent — `/engineer:frame` to scope a
-  decision from the brief, `/engineer:decide` to choose between 2+
-  approaches surveyed in the brief, `/engineer:compose` to draft from
-  it.
+  overall confidence, and any degraded-ensemble note.
 - `✗ Cited brief aborted at save.` — `cited-brief` profile, the user
   declined at the existing-directory gate or final review. No file
   written; the synthesized brief is shown inline only.
 - `✗ Cited brief aborted at scoping.` — `cited-brief` profile, the
   user declined the topic, sub-questions, or privacy gate before
   dispatch. No web search / peer dispatch ran.
+
+For every successful completion (the `✓` cases), emit an **Active
+Next-Action Proposal** instead of a fixed next verb, per
+`skills/_shared/references/entry-routing-contract.md`
+§ Active Next-Action Proposal: **selected_next**, **rejected_alternatives**
+(1-2 + why-not), **rationale** (decisive axes 본질/근본 essence/foundation +
+the Standards/Root-Cause gate), **evidence_pointers** (pointers only),
+**confidence** (HIGH/MEDIUM/LOW), and **next_command** (`/engineer:<verb> …`
+or `$engineer:<verb>`). Typical `selected_next` candidates for investigate:
+for the analysis/root-cause profiles, `/engineer:decide` (2+ approaches),
+`/engineer:refine` (an obvious fix), or `/engineer:frame` (reformulate);
+for the `cited-brief` profile, `/engineer:frame` (scope a decision from
+the brief), `/engineer:decide` (choose between surveyed approaches), or
+`/engineer:compose` (draft from it). The routing table is the fallback
+only when evidence is genuinely neutral — do not end with a hardcoded
+"next: X". When `selected_next` is `engineer:decide`, also name the
+decision size (`--size=minor|standard|major`) per the contract. The two
+`✗` aborted cases have no forward result, so they skip the proposal.
 
 Always include the workflow path so the user can inspect or resume:
 
