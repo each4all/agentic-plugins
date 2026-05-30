@@ -760,6 +760,79 @@ describe('plugins/engineer — 11 commands (commands/<verb>.md — 6 verbs + aud
       ok(/do not mutate host session\s+context/i.test(text), `commands/${cmd}.md must forbid context mutation`);
     }
   });
+
+  it('six verb commands consult the entry-routing contract for an active next-action proposal (ADR-0029 §1, PR-B)', async () => {
+    // ADR-0029 W1 — a standalone verb completion must replace the fixed
+    // `### Recommended next verb` literal with the contract's evidence-based
+    // Active Next-Action Proposal. This per-completion consult IS the
+    // enforcement point that keeps the contract's reach from regressing to
+    // /engineer:start-only — the drift ADR-0029 Consequences §Negative warns
+    // about. PR-B wires the six verb commands; the skills/<verb>/SKILL.md
+    // mirror is PR-D. The assertions below are deliberately strict (all six
+    // proposal fields + both loci) so the test cannot pass on a 2-field stub.
+    // The guard is STRUCTURAL (per-locus), not mere text-presence: the full
+    // proposal skeleton must live in the Phase 2 region (the durable NOTE
+    // phase note) AND the Completion display must instruct emitting it — each
+    // citing the contract. This prevents a half-wired completion (or fields
+    // scattered across the file) from satisfying the check.
+    const PROPOSAL_FIELDS = [
+      'selected_next',
+      'rejected_alternatives',
+      'rationale',
+      'evidence_pointers',
+      'confidence',
+      'next_command',
+    ];
+    for (const verb of VERBS) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
+
+      // The fixed-literal anti-pattern must be gone entirely.
+      ok(
+        !/###\s+Recommended next verb/.test(text),
+        `commands/${verb}.md still carries the fixed "### Recommended next verb" literal — the ADR-0029 W1 anti-pattern must be removed`,
+      );
+
+      // Split into the Phase 2 region (durable NOTE phase note) and the
+      // Completion display, then check each locus independently.
+      const compIdx = text.indexOf('## Completion');
+      ok(compIdx !== -1, `commands/${verb}.md has no "## Completion" section to host the proposal (ADR-0029 §1)`);
+      const phase2Region = text.slice(0, compIdx);
+      const completionRegion = text.slice(compIdx);
+
+      // Locus 1 — the durable phase note records a full proposal skeleton.
+      ok(
+        /###\s+Active next-action proposal/i.test(phase2Region),
+        `commands/${verb}.md Phase 2 NOTE must record the "### Active next-action proposal" skeleton (ADR-0029 §1)`,
+      );
+      ok(
+        /entry-routing-contract\.md/.test(phase2Region),
+        `commands/${verb}.md Phase 2 NOTE must cite entry-routing-contract.md (ADR-0029 §1)`,
+      );
+      for (const field of PROPOSAL_FIELDS) {
+        ok(
+          new RegExp(`-\\s+${field}:`).test(phase2Region),
+          `commands/${verb}.md Phase 2 NOTE skeleton is missing the "${field}" line (ADR-0029 §1 proposal shape)`,
+        );
+      }
+
+      // Locus 2 — the Completion display names the contract section, cites the
+      // file, and surfaces all six proposal fields.
+      ok(
+        /Active Next-Action Proposal/i.test(completionRegion),
+        `commands/${verb}.md Completion must reference the contract's Active Next-Action Proposal section (ADR-0029 §1)`,
+      );
+      ok(
+        /entry-routing-contract\.md/.test(completionRegion),
+        `commands/${verb}.md Completion must cite entry-routing-contract.md (ADR-0029 §1)`,
+      );
+      for (const field of PROPOSAL_FIELDS) {
+        ok(
+          completionRegion.includes(field),
+          `commands/${verb}.md Completion is missing the "${field}" proposal field (ADR-0029 §1 proposal shape)`,
+        );
+      }
+    }
+  });
 });
 
 describe('plugins/engineer — 4 host-shared canonical scripts (scripts/*.mjs)', () => {

@@ -171,11 +171,23 @@ NOTE="### Ensemble launched: compose at <iso-utc>
 <plan: TDD task list, dependencies, success criteria
  OR code: list of changed files with one-line summary each>
 
-### Recommended next verb
+### Active next-action proposal
 
-/engineer:critique
+(per skills/_shared/references/entry-routing-contract.md
+ § Active Next-Action Proposal — derived from this artifact, not a fixed table)
+- selected_next:         <verb | commit | owner decision>
+- rejected_alternatives: <1-2 alternatives, each + one-line why-not>
+- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
+- evidence_pointers:     <phase notes / files / artifacts — pointers only>
+- confidence:            <HIGH | MEDIUM | LOW>
+- next_command:          <exact /engineer:<verb> … or \$engineer:<verb>>
 "
 
+# ADR-0029 §1 — set --next-action (both writes below) to the compact form
+# of the proposal above (selected_next + one-line why + next_command) so the
+# durable state and the state-derived completion footer agree with the Active
+# Next-Action Proposal. The value shown is the typical-case default; override
+# it when the verb's result selects a different next step (e.g. commit).
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase-label "Phase 1: Compose (synthesized)" \
@@ -212,14 +224,24 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
 
 Output the artifact (plan or change set) and one of:
 
-- `✓ Plan complete.` + path/anchor to the artifact, recommend
-  `/engineer:critique` for review or `/engineer:compose --profile=code`
-  to implement.
-- `✓ Code change complete.` + summary of edited files, recommend
-  `/engineer:critique` for review.
+- `✓ Plan complete.` + path/anchor to the artifact.
+- `✓ Code change complete.` + summary of edited files.
 - `✓ Compose paused (gaps surfaced).` — when peer flagged
   significant gaps or ordering issues that warrant user input
   before proceeding.
+
+Then emit an **Active Next-Action Proposal** instead of a fixed next
+verb, per `skills/_shared/references/entry-routing-contract.md`
+§ Active Next-Action Proposal: **selected_next**, **rejected_alternatives**
+(1-2 + why-not), **rationale** (decisive axes 본질/근본 essence/foundation +
+the Standards/Root-Cause gate), **evidence_pointers** (pointers only),
+**confidence** (HIGH/MEDIUM/LOW), and **next_command** (`/engineer:<verb> …`
+or `$engineer:<verb>`). Typical `selected_next` candidates for compose:
+`/engineer:critique` to review the artifact — or, for a completed `plan`
+profile, `/engineer:compose --profile=code` to implement it; the routing
+table is the fallback only when evidence is genuinely neutral — do not end
+with a hardcoded "next: X". When `selected_next` is `engineer:decide`, also
+name the decision size (`--size=minor|standard|major`) per the contract.
 
 Always include the workflow path.
 

@@ -156,12 +156,23 @@ NOTE="### Ensemble launched: refine at <iso-utc>
 
 <test results, regression checks, root-cause confirmation>
 
-### Recommended next verb
+### Active next-action proposal
 
-/engineer:critique  (to verify with another review pass)
-  OR /engineer:investigate  (if root cause turned out to be deeper)
+(per skills/_shared/references/entry-routing-contract.md
+ § Active Next-Action Proposal — derived from this refinement, not a fixed table)
+- selected_next:         <verb | commit | owner decision>
+- rejected_alternatives: <1-2 alternatives, each + one-line why-not>
+- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
+- evidence_pointers:     <phase notes / files / artifacts — pointers only>
+- confidence:            <HIGH | MEDIUM | LOW>
+- next_command:          <exact /engineer:<verb> … or \$engineer:<verb>>
 "
 
+# ADR-0029 §1 — set --next-action (both writes below) to the compact form
+# of the proposal above (selected_next + one-line why + next_command) so the
+# durable state and the state-derived completion footer agree with the Active
+# Next-Action Proposal. The value shown is the typical-case default; override
+# it when the verb's result selects a different next step (e.g. commit).
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --phase-label "Phase 1: Refine (synthesized)" \
@@ -196,14 +207,26 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
 Output the change summary and one of:
 
 - `✓ Refinement complete.` + edited files + verification status.
-  Recommend `/engineer:critique` to confirm with another review
-  pass, or commit if the change is small and verified.
 - `✓ Refinement blocked (peer flagged regression).` — when CONFLICT
   or significant peer concerns surfaced. Surface the issues; pause
   for user direction before retrying.
-- `✓ Refinement complete (deeper root cause suspected).` —
-  recommend `/engineer:investigate --profile=root-cause` to dig
-  further before iterating again.
+- `✓ Refinement complete (deeper root cause suspected).` — the fix did
+  not hold or the symptom recurred.
+
+Then emit an **Active Next-Action Proposal** instead of a fixed next
+verb, per `skills/_shared/references/entry-routing-contract.md`
+§ Active Next-Action Proposal: **selected_next**, **rejected_alternatives**
+(1-2 + why-not), **rationale** (decisive axes 본질/근본 essence/foundation +
+the Standards/Root-Cause gate), **evidence_pointers** (pointers only),
+**confidence** (HIGH/MEDIUM/LOW), and **next_command** (`/engineer:<verb> …`
+or `$engineer:<verb>`). Typical `selected_next` candidates for refine:
+`/engineer:critique` to confirm with another review pass, or `commit` when
+the change is small and verified — or `/engineer:investigate
+--profile=root-cause` when a deeper root cause is suspected. The routing
+table is the fallback only when evidence is genuinely neutral — do not end
+with a hardcoded "next: X". When `selected_next` is `engineer:decide`, also
+name the decision size (`--size=minor|standard|major`) per the contract.
+The `blocked` case pauses for user direction before any forward proposal.
 
 Always include the workflow path.
 
