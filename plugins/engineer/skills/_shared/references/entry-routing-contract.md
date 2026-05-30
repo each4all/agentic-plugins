@@ -59,8 +59,12 @@ derived from the verb's actual result and the current workflow state:
   pointers that support the recommendation (pointers only — never raw
   peer output or full comparison dumps).
 - **confidence**: HIGH / MEDIUM / LOW, based on available evidence.
-- **next_command**: the exact `/engineer:<verb> …` (Claude) or
-  `$engineer:<verb>` (Codex) to run.
+- **next_command**: the exact next step, matching `selected_next` — for
+  a verb, the `/engineer:<verb> …` (Claude) or `$engineer:<verb>` (Codex)
+  mention; for `commit`, committing the verified change (the
+  `/engineer:start` lifecycle reaches this at Phase 7; otherwise a
+  direct user-approved commit); for `owner decision`, surfacing the
+  decision to the owner rather than a command to run.
 
 The default verb sequence (Routing Recommendation table above) remains
 the **fallback** when evidence is genuinely neutral — but a fixed

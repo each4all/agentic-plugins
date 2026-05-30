@@ -155,7 +155,7 @@ consults `entry-routing-contract.md` and replaces the fixed
                           the Standards/Root-Cause gate result>
 - evidence_pointers:     [<workflow phase / artifact pointer>, ...]
 - confidence:            HIGH | MEDIUM | LOW
-- next_command:          <exact /engineer:<verb> ... or $engineer:<verb>>
+- next_command:          <exact next step: /engineer:<verb> ... / $engineer:<verb> for a verb; the commit / owner-decision action otherwise>
 ```
 
 The routing table remains the **fallback** when evidence is genuinely
