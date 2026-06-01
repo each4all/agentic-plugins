@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.13.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.12.1...plugin-engineer-v0.13.0) (2026-06-01)
+
+
+### Features
+
+* **engineer:** ADR-0027 PR5 — validation contract (axis_awareness + surface parity) ([#355](https://github.com/each4all/agentic-plugins/issues/355)) ([f7af83e](https://github.com/each4all/agentic-plugins/commit/f7af83eb6378079235bdd37328f595a11bce5da0))
+* **engineer:** ADR-0028 Phase 7 commit automation — PR1 Layer 2 ([#349](https://github.com/each4all/agentic-plugins/issues/349)) ([80b6770](https://github.com/each4all/agentic-plugins/commit/80b677086f59d26a4d58e3efebff42d1a11093de))
+* **engineer:** ADR-0028 Phase 7 commit automation — PR2 Layer 1+3 ([#350](https://github.com/each4all/agentic-plugins/issues/350)) ([0a59c96](https://github.com/each4all/agentic-plugins/commit/0a59c962382ea7b3a43ac65dbf3690b05e7b8da5))
+* **engineer:** ADR-0028 PR3 — A5/N4/M3 phase7 boundary fixes + schema 1.3 ([#352](https://github.com/each4all/agentic-plugins/issues/352)) ([66ab289](https://github.com/each4all/agentic-plugins/commit/66ab289050f59315d8889b0c250c0f495a08efde))
+* **engineer:** ADR-0028 PR4 — phase7 boundary fixes (N2/N4-quoted/A4/N1/A2) + ADR forward-compat ([#353](https://github.com/each4all/agentic-plugins/issues/353)) ([eaf195f](https://github.com/each4all/agentic-plugins/commit/eaf195f34f31553bd70781a42034c49a3e436b71))
+* **engineer:** ADR-0028 PR5 — forward-compat read tolerance + serialize preserve ([#356](https://github.com/each4all/agentic-plugins/issues/356)) ([031d3cb](https://github.com/each4all/agentic-plugins/commit/031d3cb54f8d45766746a0808f12cf2595689926))
+* **plugin/engineer:** add Active Next-Action Proposal section to entry-routing contract (ADR-0029 PR-A) ([#362](https://github.com/each4all/agentic-plugins/issues/362)) ([8c704e9](https://github.com/each4all/agentic-plugins/commit/8c704e918b7145d1f8cb46785165347b927e2cbc))
+* **plugin/engineer:** add decision-axes registry + parser skeleton (ADR-0027 PR2) ([#347](https://github.com/each4all/agentic-plugins/issues/347)) ([91d1de9](https://github.com/each4all/agentic-plugins/commit/91d1de92ffed7496bad9f25d03359ade39453673))
+* **plugin/engineer:** mirror the Active Next-Action Proposal completion shape into verb skills (ADR-0029 PR-D) ([#365](https://github.com/each4all/agentic-plugins/issues/365)) ([2c0193c](https://github.com/each4all/agentic-plugins/commit/2c0193cf000cd5737c240e92e73e26bb8ce29eb3))
+* **plugin/engineer:** wire ADR-0027 PR3 sizing (compact preset + ritual depth) ([#351](https://github.com/each4all/agentic-plugins/issues/351)) ([a37491b](https://github.com/each4all/agentic-plugins/commit/a37491be89032813cb77788cf581c2dd25b6df5b))
+* **plugin/engineer:** wire ADR-0027 PR4 weighting + sensitivity ([#354](https://github.com/each4all/agentic-plugins/issues/354)) ([691934b](https://github.com/each4all/agentic-plugins/commit/691934b172f3d69d95f20bdc46cb74c6c666594f))
+* **plugin/engineer:** wire standalone verb completions to the Active Next-Action Proposal (ADR-0029 PR-B) ([#363](https://github.com/each4all/agentic-plugins/issues/363)) ([c6c1372](https://github.com/each4all/agentic-plugins/commit/c6c1372362691a3d50877b9acf3b5f9289b41be5))
+
+
+### Bug Fixes
+
+* **plugin/engineer:** cover non-verb selected_next (commit / owner-decision) in the next_command proposal field (ADR-0029 contract cleanup) ([#364](https://github.com/each4all/agentic-plugins/issues/364)) ([c8a0bd6](https://github.com/each4all/agentic-plugins/commit/c8a0bd678d57750dad7ee1dd0c2f2f9c769b5466))
+
 ## [0.12.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.12.0...plugin-engineer-v0.12.1) (2026-05-17)
 
 
