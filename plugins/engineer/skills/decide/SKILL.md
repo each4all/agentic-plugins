@@ -518,6 +518,35 @@ When invoked standalone, no workflow file write occurs.
 
 ---
 
+## Completion — Active Next-Action Proposal
+
+At the end of a successful decide (both the auto-activated and the command
+path above), emit an **Active Next-Action Proposal** instead of a fixed
+next verb, per `../_shared/references/entry-routing-contract.md`
+§ Active Next-Action Proposal — derived from this decision, not a fixed
+table:
+
+```
+- selected_next:         <verb | commit | owner decision>
+- rejected_alternatives: <1-2 alternatives, each + one-line why-not>
+- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
+- evidence_pointers:     <phase notes / files / artifacts — pointers only>
+- confidence:            <HIGH | MEDIUM | LOW>
+- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; the commit / owner-decision action otherwise>
+```
+
+Typical `selected_next` candidates for decide: `/engineer:compose` to
+produce the artifact for the chosen direction — or `/engineer:investigate`
+if a decisive evidence gap surfaced, or `/engineer:frame` if deciding
+reframed the problem. The routing table is the fallback only when evidence
+is genuinely neutral — do not end with a hardcoded "next: X". When
+`selected_next` is `engineer:decide`, also name the decision size
+(`--size=minor|standard|major`) per the contract. The auto-activated path
+stays lightweight (ADR-0029 §3): it emits this proposal shape and routing
+reasoning without dispatching a peer.
+
+---
+
 ## Anti-patterns (do not produce)
 
 - **Acting first, justifying after**. Always present comparison +

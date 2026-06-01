@@ -299,6 +299,78 @@ describe('plugins/engineer — 6 verb skills (skills/<verb>/SKILL.md)', () => {
       });
     });
   }
+
+  it('six verb skills mirror the entry-routing Active Next-Action Proposal at completion (ADR-0029 §1, PR-D)', async () => {
+    // ADR-0029 PR-D — the SKILL.md completion (the Codex skill-mention path,
+    // and the shared cognitive runbook) must mirror the §1 Active Next-Action
+    // Proposal that PR-B wired into commands/<verb>.md, so a standalone verb
+    // completion on either host emits the evidence-based proposal instead of a
+    // fixed lifecycle-table literal. Unlike the command file (two loci — the
+    // durable Phase 2 NOTE skeleton AND the Completion display), SKILL.md is
+    // cognition-only (ADR-0022 commands-hold-bootstrap: the state.mjs NOTE
+    // writes live in commands/<verb>.md), so it carries a SINGLE locus: a
+    // `## Completion` proposal section. This per-completion consult is the
+    // SKILL.md-side enforcement point that keeps the contract's reach from
+    // regressing to /engineer:start-only — the drift ADR-0029 Consequences
+    // §Negative warns about, mirrored here for the skill surface. The
+    // assertions are deliberately strict (all six proposal fields, scoped to
+    // the Completion section) so the test cannot pass on a 2-field stub.
+    const PROPOSAL_FIELDS = [
+      'selected_next',
+      'rejected_alternatives',
+      'rationale',
+      'evidence_pointers',
+      'confidence',
+      'next_command',
+    ];
+    for (const verb of VERBS) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+
+      // The fixed-literal "static lifecycle table" anti-pattern (ADR-0029 W1)
+      // must be gone. Two guards:
+      //   (a) investigate's presented-output `Recommended next step:` literal
+      //       — a REAL literal PR-D removes from skills/investigate/SKILL.md.
+      //   (b) the command-style `### Recommended next verb` heading — DEFENSIVE
+      //       only: it never existed in any skill (it was the commands/<verb>.md
+      //       literal PR-B removed), but guarding it here stops a future
+      //       copy-paste from a command file from re-introducing it in a skill.
+      ok(
+        !/###\s+Recommended next verb/.test(text),
+        `skills/${verb}/SKILL.md carries the command-style "### Recommended next verb" literal — it must never be copied into a skill (ADR-0029 W1)`,
+      );
+      ok(
+        !/Recommended next step:/.test(text),
+        `skills/${verb}/SKILL.md still carries the fixed "Recommended next step:" literal — replace it with the Active Next-Action Proposal (ADR-0029 W1)`,
+      );
+
+      // The single SKILL.md locus — a `## Completion` proposal section. Bound
+      // the region to the section itself (up to the next `## ` heading, e.g.
+      // `## Anti-patterns`) so the field checks assert presence IN the
+      // proposal, not merely anywhere downstream.
+      const compIdx = text.indexOf('## Completion');
+      ok(compIdx !== -1, `skills/${verb}/SKILL.md has no "## Completion" section to host the Active Next-Action Proposal (ADR-0029 §1 / PR-D)`);
+      const afterHeading = text.slice(compIdx + '## Completion'.length);
+      const nextHeadingRel = afterHeading.search(/\n##\s/);
+      const completionRegion = nextHeadingRel === -1
+        ? text.slice(compIdx)
+        : text.slice(compIdx, compIdx + '## Completion'.length + nextHeadingRel);
+
+      ok(
+        /Active Next-Action Proposal/i.test(completionRegion),
+        `skills/${verb}/SKILL.md Completion must reference the contract's Active Next-Action Proposal section (ADR-0029 §1)`,
+      );
+      ok(
+        completionRegion.includes('../_shared/references/entry-routing-contract.md'),
+        `skills/${verb}/SKILL.md Completion must cite the contract by its skill-relative path "../_shared/references/entry-routing-contract.md" (ADR-0029 §1; the command-side "skills/_shared/..." path would NOT resolve from skills/<verb>/SKILL.md — ADR-0010 §5 copy-not-import means the path is re-based, not copied verbatim)`,
+      );
+      for (const field of PROPOSAL_FIELDS) {
+        ok(
+          new RegExp(`-\\s+${field}:`).test(completionRegion),
+          `skills/${verb}/SKILL.md Completion is missing the "- ${field}:" proposal skeleton line (ADR-0029 §1 proposal shape — a bare token mention is not enough; the field must appear as a skeleton line so the mirror cannot degrade to a generic stub)`,
+        );
+      }
+    }
+  });
 });
 
 describe('plugins/engineer — ADR-0019 PR-D Phase 0 parent-linkage env-var contract', () => {

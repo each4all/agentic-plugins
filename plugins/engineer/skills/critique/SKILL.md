@@ -104,10 +104,9 @@ mode).
 - [what was done well]
 ```
 
-Do NOT fix issues in this skill. Fixing belongs to
-`/engineer:refine` (when the fix is straightforward) or
-`/engineer:decide` followed by `/engineer:refine` (when the fix has
-2+ viable approaches).
+Do NOT fix issues in this skill — critique produces findings. The
+concrete next step is the Active Next-Action Proposal emitted at
+completion (see § Completion below), not a fixed handoff.
 
 ---
 
@@ -180,8 +179,9 @@ Follow the Presentation Mode Protocol
 (`../_shared/references/presentation-protocol.md`) before
 presenting. Use the same output shape as auto-activated mode.
 
-Do NOT fix issues in this skill. Fixing is handled by
-`/engineer:refine` (per the invoking command's flow).
+Do NOT fix issues in this skill — critique produces findings; the next
+action is the Active Next-Action Proposal at completion (see
+§ Completion below).
 
 ### State write (when invoked from a workflow command)
 
@@ -192,6 +192,36 @@ file per `continuity-protocol.md` Phase-boundary Write Rules
 it hands findings to the invoking command, which owns the write.
 
 When invoked standalone, no workflow file write occurs.
+
+---
+
+## Completion — Active Next-Action Proposal
+
+At the end of a successful critique (both the auto-activated and the
+command path above), emit an **Active Next-Action Proposal** instead of a
+fixed next verb, per `../_shared/references/entry-routing-contract.md`
+§ Active Next-Action Proposal — derived from these findings, not a fixed
+table:
+
+```
+- selected_next:         <verb | commit | owner decision>
+- rejected_alternatives: <1-2 alternatives, each + one-line why-not>
+- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
+- evidence_pointers:     <phase notes / files / artifacts — pointers only>
+- confidence:            <HIGH | MEDIUM | LOW>
+- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; the commit / owner-decision action otherwise>
+```
+
+Typical `selected_next` candidates for critique: `/engineer:refine` to
+address selected findings (typically CRITICAL + MAJOR; the user picks
+which MINOR / SUGGESTION items to include) — or `commit` when no
+significant findings surfaced and the artifact is in good shape. The
+routing table is the fallback only when evidence is genuinely neutral —
+do not end with a hardcoded "next: X". When `selected_next` is
+`engineer:decide`, also name the decision size
+(`--size=minor|standard|major`) per the contract. The auto-activated path
+stays lightweight (ADR-0029 §3): it emits this proposal shape and routing
+reasoning without dispatching a peer.
 
 ---
 
