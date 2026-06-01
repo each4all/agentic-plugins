@@ -135,13 +135,11 @@ Symptom:        [what was observed]
 Root cause:     [confirmed cause OR top hypothesis with confidence]
 Evidence:       [what proves this]
 Impact scope:   [how many files/features are affected]
-Recommended next step: [/engineer:decide on a fix approach,
-                        /engineer:refine if obvious]
 ```
 
-Do NOT implement the fix in this skill. Hand off to
-`/engineer:decide` (when the fix has 2+ viable approaches) or
-`/engineer:refine` (when the fix is straightforward).
+Do NOT implement the fix in this skill — investigation produces
+findings. The concrete next step is the Active Next-Action Proposal
+emitted at completion (see § Completion below), not a fixed handoff.
 
 For `cited-brief`, produce the durable artifact per
 `references/cited-brief-spec.md` (canonical structure, citation
@@ -311,6 +309,39 @@ refuted (`root-cause` profile only):
 - Stop and ask the user for additional context (logs, reproduction
   steps, environment details, recent operational changes).
 - Do NOT speculate on a cause not grounded in observable evidence.
+
+---
+
+## Completion — Active Next-Action Proposal
+
+At the end of a successful investigation (the `✓` outcomes, both the
+auto-activated and the command path above), emit an **Active Next-Action
+Proposal** instead of a fixed next verb, per
+`../_shared/references/entry-routing-contract.md` § Active Next-Action
+Proposal — derived from these findings, not a fixed table:
+
+```
+- selected_next:         <verb | commit | owner decision>
+- rejected_alternatives: <1-2 alternatives, each + one-line why-not>
+- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
+- evidence_pointers:     <phase notes / files / artifacts — pointers only>
+- confidence:            <HIGH | MEDIUM | LOW>
+- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; the commit / owner-decision action otherwise>
+```
+
+Typical `selected_next` candidates for investigate: for the `analysis` /
+`root-cause` profiles, `/engineer:decide` (2+ approaches),
+`/engineer:refine` (an obvious fix), or `/engineer:frame` (reformulate the
+question); for the `cited-brief` profile, `/engineer:frame` (scope a
+decision from the brief), `/engineer:decide` (choose between surveyed
+approaches), or `/engineer:compose` (draft from it). The routing table is
+the fallback only when evidence is genuinely neutral — do not end with a
+hardcoded "next: X". When `selected_next` is `engineer:decide`, also name
+the decision size (`--size=minor|standard|major`) per the contract. The
+auto-activated path stays lightweight (ADR-0029 §3): it emits this
+proposal shape and routing reasoning without dispatching a peer. The two
+aborted cited-brief outcomes (aborted-at-save / aborted-at-scoping) have
+no forward result, so they skip the proposal.
 
 ---
 
