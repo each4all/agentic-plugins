@@ -907,6 +907,170 @@ describe('plugins/engineer — 11 commands (commands/<verb>.md — 6 verbs + aud
   });
 });
 
+describe('plugins/engineer — ADR-0029 §2 cross-verb multi-axis lens (PR-C)', () => {
+  // ADR-0029 W2 / §2 — a NON-decide verb that reaches a genuine 2+-branch
+  // decision point (two viable hypotheses / designs / remediation directions,
+  // or a non-neutral Active Next-Action `selected_next` with 2+ candidates)
+  // must surface a COMPACT multi-axis lens resolved from the SHARED
+  // decide-registry.mjs resolver — the single axis source of truth — sized per
+  // the decision (minor→compact / standard→default / major→nine-axis) and
+  // bounded to genuine branch points (never every invocation, never the full
+  // 9-axis matrix for a trivial reversible step).
+  //
+  // `decide` is EXEMPT: it already resolves the registry in commands/decide.md
+  // Phase 0.5, so the §2 cross-verb wiring targets the other five verbs. The
+  // exemption is asserted positively (decide still resolves) so a future
+  // regression that drops Phase 0.5 is caught rather than silently passing the
+  // exemption as a missing wire.
+  //
+  // W-A (approved direction) — the resolve mechanism + bash invocation live
+  // ONCE in the contract; each verb surface carries a THIN consult-pointer.
+  // The §2-specific structural markers (what distinguishes a §2 consult from
+  // the §1 Active Next-Action Proposal, which already cites the contract) are:
+  // (a) NAMING the decide-registry.mjs resolver, (b) naming the --size sizing
+  // flag, (c) bounding language for a genuine 2+-branch point. The pointer is
+  // hosted in a dedicated, heading-bounded section so the markers assert
+  // presence IN the §2 wiring, not merely anywhere in the file (mirrors the
+  // Completion-region bounding the §1 PR-B / PR-D tests use).
+  const NON_DECIDE = ['investigate', 'frame', 'compose', 'critique', 'refine'];
+  const SECTION_HEADING = '## Multi-axis lens at a 2+-branch point';
+
+  // Bound a `## ` section from its heading up to the next `## ` heading (or
+  // EOF), so a marker downstream of the section cannot satisfy the check.
+  function boundSection(text, startIdx, heading) {
+    const after = text.slice(startIdx + heading.length);
+    const rel = after.search(/\n##\s/);
+    return rel === -1
+      ? text.slice(startIdx)
+      : text.slice(startIdx, startIdx + heading.length + rel);
+  }
+
+  it('the contract documents the §2 non-decide-verb lens mechanism in a bounded subsection (single source)', async () => {
+    const text = await readFile(
+      resolve(PLUGIN_ROOT, 'skills/_shared/references/entry-routing-contract.md'),
+      'utf8',
+    );
+    // Bound to the §2 mechanism subsection itself (not a whole-file scan) so
+    // the markers must live IN the §2 section — future drift cannot satisfy
+    // them from elsewhere in the contract (Codex review MINOR-1).
+    const HEADING = '### Surfacing the multi-axis lens from a non-decide verb';
+    const idx = text.indexOf(HEADING);
+    ok(idx !== -1, `entry-routing-contract.md missing the "${HEADING}" §2 mechanism subsection (ADR-0029 §2 / PR-C)`);
+    const region = boundSection(text, idx, HEADING);
+    ok(
+      /decide-registry\.mjs/.test(region),
+      'contract §2 subsection must NAME the shared decide-registry.mjs resolver as the lens source (single axis source — ADR-0029 §2)',
+    );
+    ok(
+      /non-.?decide verb/i.test(region),
+      'contract §2 subsection must scope the lens mechanism to non-decide verbs (ADR-0029 §2)',
+    );
+    ok(
+      /single axis source|single source of (the )?axis truth|single source of truth/i.test(region),
+      'contract §2 subsection must state the registry is the single axis source (no second axis list — ADR-0029 §2)',
+    );
+    ok(
+      /--size=/.test(region),
+      'contract §2 subsection must name the --size sizing flag (minor→compact / standard→default / major→nine-axis)',
+    );
+    ok(
+      /ADR-0013/.test(region),
+      'contract §2 subsection must note the Codex registry-resolution fallback (ADR-0013 asymmetry)',
+    );
+    // Single-source guard (Codex review MAJOR) — the §2 subsection must NOT
+    // re-enumerate the compact preset's supporting axes inline; that axis
+    // membership is owned by decision-axes.yml, and the decision-sizing
+    // subsection above already lists it once. entry-routing-guarantee is the
+    // compact-specific supporting axis, so its presence INSIDE §2 signals a
+    // duplicated / hand-authored axis list (the boundary §2 itself forbids).
+    ok(
+      !/entry-routing-guarantee/.test(region),
+      'contract §2 subsection must NOT hand-author the compact supporting-axis list inline (entry-routing-guarantee belongs to decision-axes.yml + the decision-sizing subsection — ADR-0029 §2 single axis source)',
+    );
+  });
+
+  it('five non-decide verb commands carry a §2 consult-pointer naming the shared resolver', async () => {
+    for (const verb of NON_DECIDE) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
+      const idx = text.indexOf(SECTION_HEADING);
+      ok(idx !== -1, `commands/${verb}.md missing the "${SECTION_HEADING}" §2 section (ADR-0029 §2 / PR-C)`);
+      const region = boundSection(text, idx, SECTION_HEADING);
+      ok(
+        /decide-registry\.mjs/.test(region),
+        `commands/${verb}.md §2 section must NAME the shared decide-registry.mjs resolver (ADR-0029 §2 — the registry is the single axis source, not a hand-authored list)`,
+      );
+      ok(
+        /--size=/.test(region),
+        `commands/${verb}.md §2 section must name the --size sizing flag (minor→compact / standard→default / major→nine-axis)`,
+      );
+      ok(
+        region.includes('skills/_shared/references/entry-routing-contract.md'),
+        `commands/${verb}.md §2 section must cite the contract by its command-relative path "skills/_shared/references/entry-routing-contract.md" (W-A: the mechanism lives in the contract; matches the skill-side ../_shared/... path rigor — Codex review SUGGESTION)`,
+      );
+      ok(
+        /genuine/i.test(region),
+        `commands/${verb}.md §2 section must bound the lens to a genuine 2+-branch point (ADR-0029 §2 — not every invocation)`,
+      );
+    }
+  });
+
+  it('five non-decide verb skills mirror the §2 consult-pointer (host parity + ADR-0013 fallback)', async () => {
+    for (const verb of NON_DECIDE) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+      const idx = text.indexOf(SECTION_HEADING);
+      ok(idx !== -1, `skills/${verb}/SKILL.md missing the "${SECTION_HEADING}" §2 section (ADR-0029 §2 / PR-C host parity)`);
+      const region = boundSection(text, idx, SECTION_HEADING);
+      ok(
+        /decide-registry\.mjs/.test(region),
+        `skills/${verb}/SKILL.md §2 section must NAME the shared decide-registry.mjs resolver (ADR-0029 §2)`,
+      );
+      ok(
+        /--size=/.test(region),
+        `skills/${verb}/SKILL.md §2 section must name the --size sizing flag`,
+      );
+      ok(
+        region.includes('../_shared/references/entry-routing-contract.md'),
+        `skills/${verb}/SKILL.md §2 section must cite the contract by its skill-relative path "../_shared/references/entry-routing-contract.md" (ADR-0010 §5 copy-not-import path re-base — the command-side "skills/_shared/..." path would not resolve from skills/<verb>/)`,
+      );
+      ok(
+        /ADR-0013/.test(region),
+        `skills/${verb}/SKILL.md §2 section must note the Codex registry-resolution fallback (ADR-0013 — when the resolver CLI is not reachable)`,
+      );
+      // Single-source guards (Codex review MAJOR + MINOR-2) — the SKILL is a
+      // THIN consult-pointer (W-A), so its CLI-unreachable fallback must POINT
+      // to the registry source rather than re-listing the compact preset's
+      // supporting axes inline. Positive: cite decision-axes.yml as the axis
+      // source. Negative: entry-routing-guarantee (the compact-specific
+      // supporting axis) must NOT be hand-authored into the section — that
+      // membership lives only in decision-axes.yml.
+      ok(
+        /decision-axes\.yml/.test(region),
+        `skills/${verb}/SKILL.md §2 fallback must point to decision-axes.yml as the axis source rather than re-listing axes inline (ADR-0029 §2 single source)`,
+      );
+      ok(
+        !/entry-routing-guarantee/.test(region),
+        `skills/${verb}/SKILL.md §2 must NOT hand-author the compact supporting-axis list inline (entry-routing-guarantee belongs to decision-axes.yml — ADR-0029 §2 single axis source; W-A thin consult-pointer)`,
+      );
+    }
+  });
+
+  it('decide is exempt from §2 wiring because it already resolves the registry natively (Phase 0.5)', async () => {
+    // The exemption must be a REAL native resolution, not a missing wire — so
+    // assert decide still resolves the registry. If a future change drops
+    // decide's Phase 0.5 resolve, this fails and forces re-evaluating the
+    // exemption rather than leaving decide silently lens-less.
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/decide.md'), 'utf8');
+    ok(
+      /decide-registry\.mjs"\s+resolve/.test(text),
+      'commands/decide.md must still resolve the registry (Phase 0.5) — decide is the §2 exemption baseline (ADR-0029 §2)',
+    );
+    ok(
+      !text.includes(SECTION_HEADING),
+      'commands/decide.md should NOT carry the cross-verb §2 pointer section — decide resolves the registry natively (ADR-0029 §2 exemption)',
+    );
+  });
+});
+
 describe('plugins/engineer — 4 host-shared canonical scripts (scripts/*.mjs)', () => {
   for (const name of HOST_SHARED_SCRIPTS) {
     describe(name, () => {
