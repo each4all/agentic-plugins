@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.13.0...plugin-engineer-v0.14.0) (2026-06-02)
+
+
+### Features
+
+* **plugin/engineer:** surface a compact multi-axis lens at non-decide-verb 2+-branch points (ADR-0029 PR-C §2) ([#366](https://github.com/each4all/agentic-plugins/issues/366)) ([cc9dcc9](https://github.com/each4all/agentic-plugins/commit/cc9dcc94fe01e057bb9fac5485472b76e34d5797))
+
 ## [0.13.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.12.1...plugin-engineer-v0.13.0) (2026-06-01)
 
 
