@@ -220,6 +220,27 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
 
 ---
 
+## Multi-axis lens at a 2+-branch point (ADR-0029 §2)
+
+If executing this verb surfaces a **genuine 2+-branch decision point**
+— two viable implementation designs, or two artifact structures, or a
+non-neutral `selected_next` with 2+ candidates in the proposal below —
+surface a **compact multi-axis lens** comparing the branches across the
+resolved decisive axes (본질/근본 essence/foundation) + supporting axes,
+instead of a flat list. Resolve the sized axis set from the shared
+`$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs resolve --size=<minor|standard|major>`
+resolver — the single axis source of truth, not a hand-authored list —
+per `skills/_shared/references/entry-routing-contract.md`
+§ "Surfacing the multi-axis lens from a non-decide verb".
+
+Bounded: only at a genuine 2+-branch point (not every invocation),
+default `--size=minor` (compact 4-axis), escalating only for weightier
+branches — never the full 9-axis matrix for a trivial reversible step.
+The full mechanism + the Codex-unreachable fallback (ADR-0013) live in
+the contract subsection cited above.
+
+---
+
 ## Completion
 
 Output the artifact (plan or change set) and one of:

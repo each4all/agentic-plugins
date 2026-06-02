@@ -211,6 +211,35 @@ proposal shape and routing reasoning without dispatching a peer.
 
 ---
 
+## Multi-axis lens at a 2+-branch point (ADR-0029 §2)
+
+When this verb reaches a **genuine 2+-branch decision point** — two
+viable implementation designs, or two artifact structures, or a
+non-neutral `selected_next` with 2+ candidates in the proposal above —
+surface a **compact multi-axis lens** comparing the branches across the
+decisive axes (본질/근본 essence/foundation) + the size-appropriate
+supporting axes, instead of a flat list, per
+`../_shared/references/entry-routing-contract.md`
+§ "Surfacing the multi-axis lens from a non-decide verb".
+
+Resolve the sized axis set from the shared `decide-registry.mjs`
+resolver (`scripts/decide-registry.mjs resolve --size=<minor|standard|major>`)
+— the single axis source of truth, not a hand-authored list. The lens
+is bounded: only at a genuine 2+-branch point (not every invocation),
+default `--size=minor` (compact 4-axis), never the full 9-axis matrix
+for a trivial reversible step.
+
+When the resolver CLI is not reachable — e.g. Codex auto-activated
+skill mode, the registry-resolution asymmetry deferred under ADR-0013 —
+keep the decisive axes 본질/근본 (essence/foundation, universal to every
+preset) and read the size-appropriate supporting axes for the `compact`
+preset directly from `../decide/references/decision-axes.yml` (the
+registry file is readable even when the resolver CLI is not). Do not
+hand-author a supporting-axis list here — the YAML stays the single
+source.
+
+---
+
 ## Anti-patterns (do not produce)
 
 - **Composing without a confirmed frame**. Code without a frame

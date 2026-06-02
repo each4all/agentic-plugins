@@ -131,6 +131,59 @@ same axis frame via the `<axis_awareness>` prompt block per
 ADR-0027 §4 — the peer's tradeoff vocabulary aligns with the
 orchestrator's resolved preset.
 
+### Surfacing the multi-axis lens from a non-decide verb (ADR-0029 §2)
+
+The size→preset mapping above is not exclusive to `engineer:decide`.
+When a **non-decide verb** (`investigate` / `frame` / `compose` /
+`critique` / `refine`) reaches a genuine 2+-branch decision point —
+two viable root-cause hypotheses, two implementation designs, two
+remediation directions, or a non-neutral Active Next-Action
+`selected_next` with 2+ candidates — it surfaces a **compact
+multi-axis lens** inline instead of listing the branches flat. This is
+the same forward pull the decisive axes give `decide`, made reachable
+wherever a real branch appears (the Active Next-Action Proposal section
+above already calls for it; this subsection is the mechanism).
+
+Resolve the sized axis set from the **shared registry** — the single
+axis source of truth — rather than hand-authoring a second axis list:
+
+```bash
+node "$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs" resolve --size=<minor|standard|major>
+# stdout: ResolvedDecisionContext JSON. Read axes[] (id, en/ko labels,
+# question, role); compare the 2+ branches across the resolved DECISIVE
+# axes (본질 essence / 근본 foundation) plus the size-appropriate
+# supporting axes, and let the decisive axes drive the recommendation.
+```
+
+Bounding rules — the lens is deliberately not emitted on every
+invocation:
+
+- **Only at a genuine 2+-branch point.** A single obvious path emits no
+  lens; the verb proceeds and the Active Next-Action Proposal alone
+  carries the forward routing.
+- **Sized to the branch — default minor.** An incidental in-verb branch
+  uses `--size=minor` (the 4-axis `compact` preset). Escalate to
+  `--size=standard` (5-axis) or `--size=major` (9-axis) only when the
+  branch's architectural weight justifies it. Never apply the full
+  9-axis matrix to a trivial reversible step.
+- **The registry is the single axis source.** Read the axes from
+  `decide-registry.mjs`; do not duplicate an axis list in the verb or
+  this contract. When the resolver CLI is not reachable — e.g. Codex
+  auto-activated skill mode, the registry-resolution asymmetry deferred
+  under ADR-0013 — keep the decisive axes 본질/근본 (essence/foundation,
+  universal to every preset) and read the `compact` preset's supporting
+  axes from the decision-sizing subsection above or `decision-axes.yml`
+  directly; the YAML stays the single source.
+- **Pointer-only in state.** Record the lens outcome as a compact
+  decisive-axis verdict + pointers, never the full comparison dump
+  (ADR-0024 boundary).
+
+If the inline lens reveals the branch genuinely needs the full ritual
+(peer ensemble, sensitivity perturbation), the proposal's
+`selected_next` should route to `engineer:decide --size=<tier>` rather
+than resolving it inline — the inline lens is a compact aid, not a
+replacement for the `decide` verb's ensemble.
+
 ## Quality-First Defaults
 
 Engineer optimizes for result quality, not token minimization, unless the
