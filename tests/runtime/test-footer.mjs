@@ -681,6 +681,99 @@ describe('runtime footer', () => {
   });
 });
 
+describe('runtime footer session handoff (ADR-0031)', () => {
+  const fullProjection = (overrides = {}) => ({
+    workflow_kind: 'orchestrator',
+    workflow_id: 'macro-x',
+    workflow_path: '.agentic-plugins/state/orchestrator/workflows/macro-x.md',
+    phase: 'phase-2-presented',
+    next_action: 'dispatch the next subtask',
+    archive_gate: 'not_terminal',
+    routing_recommendation: '/orchestrator:next',
+    ...overrides,
+  });
+
+  it('enriches the footer with the projection and session decision', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-projection-'));
+    const projPath = join(root, 'proj.json');
+    await writeFile(projPath, JSON.stringify(fullProjection()));
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'claude',
+      contextState: 'red',
+      workflowProjectionFile: projPath,
+    });
+    strictEqual(report.workflow.kind, 'orchestrator');
+    strictEqual(report.workflow.archive_gate, 'not_terminal');
+    strictEqual(report.session_handoff.recommended_session, 'fresh_or_resumed');
+    strictEqual(report.session_handoff.routing_recommendation, '/orchestrator:next');
+    strictEqual(report.session_handoff.next_command, '/orchestrator:next');
+    const text = formatText(report);
+    ok(text.includes('session handoff (continue-vs-fresh):'));
+    ok(text.includes('workflow archive gate: not_terminal'));
+    ok(text.includes('next command: /orchestrator:next'));
+  });
+
+  it('degrades to per-field workflow flags and omits session_handoff without a projection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-noproj-'));
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'claude',
+      contextState: 'yellow',
+      workflowKind: 'engineer',
+      workflowId: 'w1',
+    });
+    strictEqual(report.workflow.kind, 'engineer');
+    strictEqual('session_handoff' in report, false);
+    strictEqual('archive_gate' in report.workflow, false);
+  });
+
+  it('degrades cleanly on a malformed projection and ignores legacy workflow flags', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-badproj-'));
+    const badPath = join(root, 'bad.json');
+    await writeFile(badPath, '{ not valid json');
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'claude',
+      contextState: 'yellow',
+      workflowProjectionFile: badPath,
+      // legacy flags must NOT leak through once the projection model was opted into.
+      workflowKind: 'engineer',
+      workflowId: 'should-not-appear',
+    });
+    ok(report.projection_error);
+    strictEqual(report.session_handoff.archive_gate, 'absent');
+    strictEqual(report.workflow.kind, null);
+    strictEqual(report.workflow.id, null);
+  });
+
+  it('rejects a projection with missing required fields (bounded schema)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-incomplete-'));
+    const badPath = join(root, 'incomplete.json');
+    const incomplete = fullProjection();
+    delete incomplete.phase;
+    await writeFile(badPath, JSON.stringify(incomplete));
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'claude',
+      contextState: 'yellow',
+      workflowProjectionFile: badPath,
+    });
+    ok(/phase/.test(report.projection_error));
+    strictEqual(report.workflow.kind, null);
+  });
+
+  it('parses --workflow-projection-file and --routing-recommendation', () => {
+    const options = parseArgs([
+      '--host', 'claude',
+      '--workflow-projection-file', '/tmp/p.json',
+      '--routing-recommendation', '/orchestrator:next',
+    ]);
+    strictEqual(options.workflowProjectionFile, '/tmp/p.json');
+    strictEqual(options.routingRecommendation, '/orchestrator:next');
+  });
+});
+
 async function rejectsAsync(promise, pattern) {
   try {
     await promise;

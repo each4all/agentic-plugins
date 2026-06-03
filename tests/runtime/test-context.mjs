@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import {
+  buildHandoffGuidance,
+  evaluateSessionHandoff,
   formatText,
+  normalizeProjection,
   parseArgs,
   runContext,
 } from '../../plugins/runtime/scripts/context.mjs';
@@ -391,6 +394,195 @@ describe('runtime context', () => {
       }),
       /No context artifacts found/,
     );
+  });
+});
+
+describe('runtime session handoff (ADR-0031)', () => {
+  const fullProjection = (overrides = {}) => ({
+    workflow_kind: 'engineer',
+    workflow_id: 'w1',
+    workflow_path: '.agentic-plugins/state/engineer/workflows/w1.md',
+    phase: 'phase-2-presented',
+    next_action: 'commit',
+    archive_gate: 'ready_to_archive',
+    routing_recommendation: 'commit then /orchestrator:next',
+    ...overrides,
+  });
+  // evaluateSessionHandoff reads only archive_gate / routing_recommendation, so
+  // its matrix tests can pass a minimal projection (it does not run normalizeProjection).
+  const READY = { archive_gate: 'ready_to_archive' };
+  const BLOCKED = { archive_gate: 'blocked' };
+
+  it('applies the continue-vs-fresh decision-policy matrix', () => {
+    const matrix = [
+      ['green', READY, 'current_or_resumed'],
+      ['green', BLOCKED, 'current_or_resumed'],
+      ['yellow', READY, 'fresh_or_resumed'],
+      ['yellow', BLOCKED, 'current_or_resumed'],
+      ['yellow', null, 'current_or_resumed'],
+      ['red', READY, 'fresh_or_resumed'],
+      ['red', null, 'fresh_or_resumed'],
+    ];
+    for (const [risk, projection, expected] of matrix) {
+      const result = evaluateSessionHandoff({ riskLevel: risk, projection });
+      strictEqual(
+        result.recommended_session,
+        expected,
+        `${risk} x ${projection?.archive_gate ?? 'absent'}`,
+      );
+    }
+  });
+
+  it('treats an absent or unrecognized caller risk as yellow (fail-soft, never throws)', () => {
+    const absent = evaluateSessionHandoff({ projection: BLOCKED });
+    strictEqual(absent.context_risk, 'yellow');
+    strictEqual(absent.context_risk_supplied, false);
+    // an unusual stored risk must degrade, not throw (the status path reads stored values).
+    const weird = evaluateSessionHandoff({ riskLevel: 'orange', projection: READY });
+    strictEqual(weird.context_risk, 'yellow');
+    strictEqual(weird.context_risk_supplied, false);
+    ok(absent.limits.some((limit) => /caller-supplied, not host-measured/i.test(limit)));
+  });
+
+  it('returns null only when risk, projection, and routing are all absent', () => {
+    strictEqual(evaluateSessionHandoff({}), null);
+    ok(evaluateSessionHandoff({ routing: '/orchestrator:next' }));
+  });
+
+  it('keeps routing available standalone when no projection is present and emits a fresh next_command', () => {
+    const result = evaluateSessionHandoff({ riskLevel: 'red', routing: '/orchestrator:next' });
+    strictEqual(result.recommended_session, 'fresh_or_resumed');
+    strictEqual(result.routing_recommendation, '/orchestrator:next');
+    strictEqual(result.next_command, '/orchestrator:next');
+    // no next_command when staying in the current session.
+    const stay = evaluateSessionHandoff({ riskLevel: 'green', projection: fullProjection() });
+    strictEqual(stay.recommended_session, 'current_or_resumed');
+    strictEqual(stay.next_command, null);
+  });
+
+  it('reports the archive gate without acting on it (runtime non-mutating)', () => {
+    const result = evaluateSessionHandoff({ riskLevel: 'yellow', projection: READY });
+    strictEqual(result.archive_gate, 'ready_to_archive');
+    ok(/ready_to_archive/.test(result.archive_gate_report));
+    ok(result.limits.some((limit) => /non-mutating/i.test(limit)));
+  });
+
+  it('fail-closes a malformed projection and accepts a complete one (bounded schema)', () => {
+    const rejected = [
+      { workflow_kind: 'designer' },
+      fullProjection({ archive_gate: 'nope' }),
+      fullProjection({ workflow_id: '' }),
+      fullProjection({ phase: '' }),
+      (() => { const p = fullProjection(); delete p.routing_recommendation; return p; })(),
+      fullProjection({ workflow_path: '/etc/x' }),
+      fullProjection({ workflow_path: 'C:\\Users\\me\\w.md' }),
+      fullProjection({ workflow_path: '\\\\server\\share\\w.md' }),
+      fullProjection({ workflow_path: '../x' }),
+      { ...fullProjection(), unexpected_key: 1 },
+      [1, 2],
+    ];
+    for (const raw of rejected) {
+      const { projection, error } = normalizeProjection(raw);
+      strictEqual(projection, null, `should reject ${JSON.stringify(raw).slice(0, 50)}`);
+      ok(error, 'a rejection must carry an error message');
+    }
+    deepStrictEqual(normalizeProjection(null), { projection: null, error: null });
+    const accepted = normalizeProjection(fullProjection({ workflow_kind: 'orchestrator', archive_gate: 'not_terminal' }));
+    strictEqual(accepted.error, null);
+    strictEqual(accepted.projection.workflow_kind, 'orchestrator');
+    strictEqual(accepted.projection.routing_recommendation, 'commit then /orchestrator:next');
+    strictEqual(accepted.projection.checkpoint, null); // the only optional field
+  });
+
+  it('composes the session decision into a check report and degrades on a bad projection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-check-projection-'));
+    const projPath = join(root, 'proj.json');
+    await writeFile(projPath, JSON.stringify(fullProjection({ archive_gate: 'ready_to_archive' })));
+    const report = await runContext({ command: 'check', repoRoot: root, risk: 'yellow', workflowProjectionFile: projPath });
+    strictEqual(report.session_handoff.recommended_session, 'fresh_or_resumed');
+    strictEqual(report.session_handoff.archive_gate, 'ready_to_archive');
+    strictEqual(report.session_handoff.next_command, 'commit then /orchestrator:next');
+    strictEqual(report.projection_error, undefined);
+    ok(formatText(report).includes('session handoff (continue-vs-fresh):'));
+
+    const badPath = join(root, 'bad.json');
+    await writeFile(badPath, JSON.stringify({ workflow_kind: 'designer', archive_gate: 'ready_to_archive' }));
+    const degraded = await runContext({ command: 'check', repoRoot: root, risk: 'green', workflowProjectionFile: badPath });
+    strictEqual(degraded.session_handoff.archive_gate, 'absent');
+    strictEqual(degraded.session_handoff.recommended_session, 'current_or_resumed');
+    ok(/workflow_kind|unknown/.test(degraded.projection_error));
+  });
+
+  it('leaves a green check with no projection unchanged but fires the preflight at yellow/red risk', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-check-green-'));
+    const green = await runContext({ command: 'check', repoRoot: root, risk: 'green' });
+    strictEqual('session_handoff' in green, false);
+    strictEqual('projection_error' in green, false);
+    const yellow = await runContext({ command: 'check', repoRoot: root, risk: 'yellow' });
+    ok(yellow.session_handoff);
+    strictEqual(yellow.session_handoff.archive_gate, 'absent');
+  });
+
+  it('folds the session decision into a status handoff only when a projection is supplied', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-status-projection-'));
+    await runContext({
+      command: 'capture',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      summary: 'Status projection test artifact.',
+      risk: 'red',
+      nextSessionPrompt: 'Continue from the artifact.',
+    });
+    const projPath = join(root, 'proj.json');
+    await writeFile(projPath, JSON.stringify(fullProjection({ archive_gate: 'not_terminal' })));
+    const withProjection = await runContext({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:05:00.000Z'),
+      workflowProjectionFile: projPath,
+    });
+    ok(withProjection.handoff.guidance.session_handoff);
+    strictEqual(withProjection.handoff.guidance.session_handoff.recommended_session, 'fresh_or_resumed');
+    strictEqual(withProjection.handoff.guidance.session_handoff.archive_gate, 'not_terminal');
+    // C3 — the nested session handoff is surfaced in text output too.
+    ok(formatText(withProjection).includes('session handoff (continue-vs-fresh):'));
+
+    const withoutProjection = await runContext({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:05:00.000Z'),
+    });
+    strictEqual('session_handoff' in withoutProjection.handoff.guidance, false);
+  });
+
+  it('keeps the merged handoff guidance coherent when the session forces fresh over a reusable artifact', () => {
+    // freshness alone says reuse_handoff (verified source, not stale); the session
+    // layer (red risk) must flip it to fresh AND carry a coherent reason/action.
+    const sourceFreshness = { status: 'verified', current_dirty: false };
+    const sessionHandoff = evaluateSessionHandoff({ riskLevel: 'red', projection: fullProjection({ archive_gate: 'blocked' }) });
+    const guidance = buildHandoffGuidance({ runId: RUN_ID, stale: false, sourceFreshness, sessionHandoff });
+    strictEqual(guidance.recommended_session, 'fresh_or_resumed');
+    strictEqual(guidance.state, 'session_handoff_fresh');
+    ok(/red/i.test(guidance.reason));
+    ok(/fresh session/i.test(guidance.recommended_action));
+    ok(guidance.session_handoff);
+    // with no sessionHandoff the guidance is byte-for-byte the legacy freshness result.
+    const legacy = buildHandoffGuidance({ runId: RUN_ID, stale: false, sourceFreshness });
+    strictEqual(legacy.recommended_session, 'current_or_resumed');
+    strictEqual('session_handoff' in legacy, false);
+  });
+
+  it('parses --workflow-projection-file and --routing-recommendation', () => {
+    const options = parseArgs([
+      'check', '--risk', 'yellow',
+      '--workflow-projection-file', '/tmp/p.json',
+      '--routing-recommendation', '/orchestrator:next',
+    ]);
+    strictEqual(options.workflowProjectionFile, '/tmp/p.json');
+    strictEqual(options.routingRecommendation, '/orchestrator:next');
   });
 });
 

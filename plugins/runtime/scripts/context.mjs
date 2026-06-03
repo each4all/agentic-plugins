@@ -12,6 +12,19 @@ const VERSION = RUNTIME_VERSION;
 const ARTIFACT_SCHEMA = 'runtime-context-artifact-1.0';
 const VALID_COMMANDS = new Set(['capture', 'status', 'check']);
 const RISK_LEVELS = new Set(['green', 'yellow', 'red']);
+// ADR-0031 bounded workflow projection (session-level continue-vs-fresh
+// preflight). The owning plugin (engineer L3 / orchestrator L2) computes
+// these generic-semantic fields from its OWN state and passes them IN;
+// runtime never shell-reads higher-layer state.
+const VALID_WORKFLOW_KINDS = new Set(['engineer', 'orchestrator']);
+const VALID_ARCHIVE_GATES = new Set(['ready_to_archive', 'blocked', 'not_terminal']);
+// The bounded projection carries ONLY these fields (ADR-0031 §schema);
+// `checkpoint` is the only optional one — every other field is required.
+const PROJECTION_FIELDS = new Set([
+  'workflow_kind', 'workflow_id', 'workflow_path', 'phase',
+  'next_action', 'checkpoint', 'archive_gate', 'routing_recommendation',
+]);
+const PROJECTION_REQUIRED_STRINGS = ['workflow_id', 'workflow_path', 'phase', 'next_action', 'routing_recommendation'];
 const RUN_ID_RE = /^context-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const ARTIFACT_KIND_RE = /^[A-Za-z0-9._-]+$/;
 const REPORT_PREVIEW_LIMIT = 1200;
@@ -133,6 +146,21 @@ export async function readStatus(options = {}) {
     snapshot: options.currentSourceSnapshot,
     observedAt: toIso(now),
   });
+  // ADR-0031 — an optional workflow projection folds the session-level
+  // continue-vs-fresh decision into the stored artifact's handoff guidance,
+  // using the artifact's own risk_level as the budget input. Opt-in only: with
+  // no --workflow-projection-file the status handoff is unchanged (rollback-safe).
+  const projectionRequested = options.workflowProjectionFile != null;
+  const { projection, error: projectionError } = projectionRequested
+    ? await loadWorkflowProjection(options)
+    : { projection: null, error: null };
+  const sessionHandoff = projectionRequested
+    ? evaluateSessionHandoff({
+        riskLevel: artifact.context?.risk_level ?? null,
+        projection,
+        routing: options.routingRecommendation ?? null,
+      })
+    : null;
   const handoff = buildHandoffLookup({
     artifact,
     runId: lookup.runId,
@@ -141,12 +169,15 @@ export async function readStatus(options = {}) {
     staleAfterMs,
     skippedInvalid: lookup.skippedInvalid,
     currentSourceSnapshot,
+    sessionHandoff,
   });
   let prompt = null;
   if (artifact.next_session?.prompt_pointer) {
     prompt = await readFile(resolve(repoRoot, artifact.next_session.prompt_pointer), 'utf8');
   }
-  return buildReport({ command: 'status', repoRoot, artifact, contextPath, prompt, handoff });
+  const report = buildReport({ command: 'status', repoRoot, artifact, contextPath, prompt, handoff });
+  if (projectionError) report.projection_error = projectionError;
+  return report;
 }
 
 export async function checkContext(options = {}) {
@@ -154,7 +185,24 @@ export async function checkContext(options = {}) {
   const riskReason = options.riskReason
     ? requireSingleLine(options.riskReason, '--risk-reason')
     : budgetCheck.riskReason;
-  return {
+  // ADR-0031 — check is the session-level continue-vs-fresh preflight surface.
+  // The preflight is surfaced when a bounded projection is supplied OR the
+  // (caller-supplied) budget risk is yellow/red (the contract's risk firing
+  // rule). A green check with no projection stays exactly as before
+  // (backward-compatible): no session_handoff, default next action.
+  const projectionRequested = options.workflowProjectionFile != null;
+  const { projection, error: projectionError } = projectionRequested
+    ? await loadWorkflowProjection(options)
+    : { projection: null, error: null };
+  const includeSession = projectionRequested || budgetCheck.riskLevel !== 'green';
+  const sessionHandoff = includeSession
+    ? evaluateSessionHandoff({
+        riskLevel: budgetCheck.riskLevel,
+        projection,
+        routing: options.routingRecommendation ?? null,
+      })
+    : null;
+  const report = {
     command: 'check',
     version: VERSION,
     status: 'checked',
@@ -170,6 +218,9 @@ export async function checkContext(options = {}) {
     },
     limits: checkLimits(),
   };
+  if (sessionHandoff) report.session_handoff = sessionHandoff;
+  if (projectionError) report.projection_error = projectionError;
+  return report;
 }
 
 export function parseArgs(argv) {
@@ -244,6 +295,12 @@ export function parseArgs(argv) {
       case '--next-session-prompt-file':
         options.nextSessionPromptFile = requireValue(args, arg);
         break;
+      case '--workflow-projection-file':
+        options.workflowProjectionFile = requireValue(args, arg);
+        break;
+      case '--routing-recommendation':
+        options.routingRecommendation = requireSingleLine(requireValue(args, arg), arg);
+        break;
       case '--help':
         options.help = true;
         break;
@@ -279,9 +336,20 @@ export function formatText(report) {
     lines.push('', 'context budget:');
     lines.push(formatContextBudget(report.context_budget));
   }
+  if (report.session_handoff) {
+    pushSessionHandoff(lines, report.session_handoff);
+  }
+  if (report.projection_error) {
+    lines.push('', `workflow projection rejected (degraded to context-risk only): ${report.projection_error}`);
+  }
   if (report.handoff) {
     lines.push('', 'handoff lookup:');
     lines.push(formatHandoffLookup(report.handoff));
+    // status folds the session decision into the handoff guidance; surface it
+    // in text too so the archive-gate report is visible (ADR-0031).
+    if (report.handoff.guidance?.session_handoff) {
+      pushSessionHandoff(lines, report.handoff.guidance.session_handoff);
+    }
   }
   if (report.artifacts?.length) {
     lines.push('', 'artifact pointers:');
@@ -300,6 +368,19 @@ export function formatText(report) {
     for (const limit of report.limits) lines.push(`- ${limit}`);
   }
   return lines.join('\n');
+}
+
+function pushSessionHandoff(lines, sessionHandoff) {
+  lines.push('', 'session handoff (continue-vs-fresh):');
+  lines.push(`- recommended session: ${sessionHandoff.recommended_session}`);
+  lines.push(`- reason: ${sessionHandoff.reason}`);
+  lines.push(`- archive gate: ${sessionHandoff.archive_gate} — ${sessionHandoff.archive_gate_report}`);
+  if (sessionHandoff.routing_recommendation) {
+    lines.push(`- routing: ${sessionHandoff.routing_recommendation}`);
+  }
+  if (sessionHandoff.next_command) {
+    lines.push(`- next command: ${sessionHandoff.next_command}`);
+  }
 }
 
 function buildReport({ command, repoRoot, artifact, contextPath, prompt, handoff = null }) {
@@ -433,6 +514,22 @@ Host handoff commands:
 - Neutral shell: ${options.hostCommands.neutral}`;
 }
 
+// ADR-0031 — read + normalize an optional bounded workflow projection file.
+// Fail-closed: an unreadable file or invalid JSON degrades to no projection
+// with a reported error, never a thrown exception, so the session preflight
+// falls back to context-risk + routing only.
+export async function loadWorkflowProjection(options) {
+  if (!options.workflowProjectionFile) return { projection: null, error: null };
+  let raw;
+  try {
+    const text = await readFile(resolve(options.workflowProjectionFile), 'utf8');
+    raw = JSON.parse(text);
+  } catch (err) {
+    return { projection: null, error: `workflow projection file unreadable or invalid JSON: ${err.message}` };
+  }
+  return normalizeProjection(raw);
+}
+
 function hostHandoffCommands(runId) {
   return {
     claude: `/runtime:context status --run-id ${runId}`,
@@ -531,9 +628,10 @@ Usage:
   runtime:context capture --summary-file <path> [--artifact kind:<repo-path>] [--next-action <text>]
   runtime:context status (--run-id <id>|--latest) [--stale-after-hours <n>]
   runtime:context check --token-budget <n> (--used-tokens <n>|--remaining-tokens <n>)
-  runtime:context check --risk green|yellow|red
+  runtime:context check --risk green|yellow|red [--workflow-projection-file <path>]
+  runtime:context status (--run-id <id>|--latest) [--workflow-projection-file <path>]
 
-This MVP writes repo-local context artifacts under .agentic-plugins/runs/context/ for capture/status, including a read-only git source snapshot when available. Status reports age-based stale metadata plus source-freshness metadata. The check command is read-only and does not create artifacts or mutate host session context.`;
+This MVP writes repo-local context artifacts under .agentic-plugins/runs/context/ for capture/status, including a read-only git source snapshot when available. Status reports age-based stale metadata plus source-freshness metadata. The check command is read-only and does not create artifacts or mutate host session context. When a bounded --workflow-projection-file is supplied (ADR-0031), check/status also compose the session-level continue-vs-fresh preflight from the caller-supplied risk and the projection's archive_gate; a malformed projection is reported and degraded, never interpreted.`;
 }
 
 function requireValue(args, flag) {
@@ -624,6 +722,7 @@ function buildHandoffLookup({
   staleAfterMs,
   skippedInvalid,
   currentSourceSnapshot,
+  sessionHandoff = null,
 }) {
   const selectedAt = artifactTimestampMs(artifact, runId);
   const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
@@ -643,11 +742,179 @@ function buildHandoffLookup({
     stale,
     skipped_invalid: skippedInvalid,
     source_freshness: sourceFreshness,
-    guidance: buildHandoffGuidance({ runId, stale, sourceFreshness }),
+    guidance: buildHandoffGuidance({ runId, stale, sourceFreshness, sessionHandoff }),
   };
 }
 
-export function buildHandoffGuidance({ runId, stale, sourceFreshness }) {
+// ADR-0031 — extends the existing freshness-based handoff guidance with the
+// optional session-level continue-vs-fresh decision. When `sessionHandoff`
+// (the matrix result from evaluateSessionHandoff) is supplied, the combined
+// recommended_session is the more conservative of the two layers: the stored
+// artifact's freshness AND the session's budget/archive-gate state. When it is
+// absent the function behaves exactly as before (backward-compatible).
+export function buildHandoffGuidance({ runId, stale, sourceFreshness, sessionHandoff = null }) {
+  const freshness = freshnessHandoffGuidance({ runId, stale, sourceFreshness });
+  if (!sessionHandoff) return freshness;
+  const sessionFresh = sessionHandoff.recommended_session === 'fresh_or_resumed';
+  const freshnessFresh = freshness.recommended_session === 'fresh_or_resumed';
+  // When the SESSION layer is what forces a fresh handoff (the stored artifact
+  // is itself reusable), keep the merged guidance coherent — the state, reason,
+  // and recommended_action must reflect the session decision, not the stale
+  // "reuse_handoff" copy from the freshness layer.
+  if (sessionFresh && !freshnessFresh) {
+    const tail = sessionHandoff.next_command ? ` Next: ${sessionHandoff.next_command}.` : '';
+    return {
+      ...freshness,
+      state: 'session_handoff_fresh',
+      recommended_session: 'fresh_or_resumed',
+      reason: sessionHandoff.reason,
+      recommended_action: `Hand off to a fresh session — ${sessionHandoff.reason}.${tail}`,
+      session_handoff: sessionHandoff,
+    };
+  }
+  return {
+    ...freshness,
+    recommended_session: freshnessFresh || sessionFresh ? 'fresh_or_resumed' : 'current_or_resumed',
+    session_handoff: sessionHandoff,
+  };
+}
+
+// ADR-0031 § Decision policy — the session-level continue-vs-fresh matrix.
+// Pure (never throws): composes caller-supplied context-budget risk (a) with
+// the bounded workflow projection's archive_gate (b); the routing
+// recommendation (c) is always available (from the projection when present,
+// else the standalone `routing` arg) and shapes the next-session command, not
+// the binary decision. Returns null only when none of the three inputs is
+// present (nothing to decide).
+export function evaluateSessionHandoff({ riskLevel = null, projection = null, routing = null } = {}) {
+  if (riskLevel === null && projection === null && routing === null) return null;
+  // (a) Context-budget risk is caller-supplied, not host-measured (ADR-0031
+  // §7). Absent OR unrecognized → yellow, the conservative default that FIRES
+  // the preflight rather than silently assuming green (fail-soft, no throw).
+  const riskSupplied = RISK_LEVELS.has(riskLevel);
+  const risk = riskSupplied ? riskLevel : 'yellow';
+  const archiveGate = projection && projection.archive_gate ? projection.archive_gate : 'absent';
+  // (c) Routing is always available — in the projection when present, standalone otherwise.
+  const routingRecommendation = (projection && projection.routing_recommendation) || stringOrNull(routing) || null;
+  let recommendedSession;
+  let reason;
+  if (risk === 'red') {
+    recommendedSession = 'fresh_or_resumed';
+    reason = 'context budget risk is red — hand off to a fresh session regardless of archive-gate state';
+  } else if (risk === 'green') {
+    recommendedSession = 'current_or_resumed';
+    reason = 'context budget risk is green — continue in the current session';
+  } else if (archiveGate === 'ready_to_archive') {
+    recommendedSession = 'fresh_or_resumed';
+    reason = 'context budget risk is yellow and the active workflow is ready to archive — a clean session seam';
+  } else {
+    recommendedSession = 'current_or_resumed';
+    reason = archiveGate === 'absent'
+      ? 'context budget risk is yellow with no active workflow projection — continue, watching the budget'
+      : 'context budget risk is yellow and the active workflow is mid-flight — continue rather than fragment it';
+  }
+  return {
+    state: 'session_preflight',
+    recommended_session: recommendedSession,
+    reason,
+    context_risk: risk,
+    context_risk_supplied: riskSupplied,
+    archive_gate: archiveGate,
+    archive_gate_report: archiveGateReport(archiveGate),
+    routing_recommendation: routingRecommendation,
+    // Concrete next command when handing off — the routing recommendation IS
+    // the command to start/resume the next session's work (ADR-0031 output).
+    next_command: recommendedSession === 'fresh_or_resumed' ? routingRecommendation : null,
+    workflow: projection
+      ? {
+          kind: projection.workflow_kind,
+          id: projection.workflow_id,
+          path: projection.workflow_path,
+          phase: projection.phase,
+          next_action: projection.next_action,
+          checkpoint: projection.checkpoint,
+        }
+      : null,
+    limits: [
+      'Context budget risk is caller-supplied, not host-measured (ADR-0031 §7); an absent or unrecognized risk is treated as yellow.',
+      'Archive readiness is a pure-evaluator REPORT, not an archive action — runtime is non-mutating (ADR-0024).',
+    ],
+  };
+}
+
+function archiveGateReport(gate) {
+  switch (gate) {
+    case 'ready_to_archive':
+      return 'The active workflow reports ready_to_archive (all hard gates pass); it archives via the Stop hook after the terminal commit.';
+    case 'blocked':
+      return 'The active workflow is terminal-marked but blocked from archiving (a commit or an active child is still pending).';
+    case 'not_terminal':
+      return 'The active workflow has not reached its terminal marker yet (work in progress).';
+    default:
+      return 'No active workflow projection was supplied; archive readiness is not reported.';
+  }
+}
+
+// ADR-0031 — normalize a raw bounded workflow projection. Fail-closed: returns
+// { projection: null, error } when the input cannot be trusted, so the seam
+// degrades to caller fields rather than interpreting a half-trusted projection.
+// The schema is bounded: unknown keys are rejected, and every field except
+// `checkpoint` is required and non-empty. `workflow_path` must be a
+// repo-relative pointer (no POSIX/Windows absolute, drive-letter, UNC, or `..`).
+export function normalizeProjection(raw) {
+  if (raw === null || raw === undefined) return { projection: null, error: null };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { projection: null, error: 'workflow projection must be a JSON object' };
+  }
+  const unknown = Object.keys(raw).filter((key) => !PROJECTION_FIELDS.has(key));
+  if (unknown.length > 0) {
+    return { projection: null, error: `workflow projection has unknown field(s): ${unknown.join(', ')}` };
+  }
+  if (!VALID_WORKFLOW_KINDS.has(raw.workflow_kind)) {
+    return {
+      projection: null,
+      error: `workflow projection workflow_kind must be one of ${[...VALID_WORKFLOW_KINDS].join(', ')}`,
+    };
+  }
+  if (!VALID_ARCHIVE_GATES.has(raw.archive_gate)) {
+    return {
+      projection: null,
+      error: `workflow projection archive_gate must be one of ${[...VALID_ARCHIVE_GATES].join(', ')}`,
+    };
+  }
+  const out = { workflow_kind: raw.workflow_kind, archive_gate: raw.archive_gate };
+  for (const field of PROJECTION_REQUIRED_STRINGS) {
+    const value = stringOrNull(raw[field]);
+    if (!value) {
+      return { projection: null, error: `workflow projection ${field} must be a non-empty string` };
+    }
+    out[field] = value;
+  }
+  if (isOutOfRepoPointer(out.workflow_path)) {
+    return {
+      projection: null,
+      error: 'workflow projection workflow_path must be a repo-relative pointer (no absolute path, drive letter, UNC, or ..)',
+    };
+  }
+  out.checkpoint = stringOrNull(raw.checkpoint); // the only optional field
+  return { projection: out, error: null };
+}
+
+function isOutOfRepoPointer(value) {
+  if (isAbsolute(value)) return true; // POSIX /x and the platform-native form
+  if (/^[a-zA-Z]:/.test(value)) return true; // Windows drive letter (C:\ / C:/)
+  if (/^[\\/]/.test(value)) return true; // leading slash/backslash incl. UNC \\server
+  if (value.split(/[\\/]/).includes('..')) return true; // traversal, either separator
+  return false;
+}
+
+function stringOrNull(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+function freshnessHandoffGuidance({ runId, stale, sourceFreshness }) {
   if (sourceFreshness.status === 'stale') {
     return {
       state: 'capture_new_context',
