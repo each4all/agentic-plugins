@@ -5,7 +5,7 @@ import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runConsensus } from './consensus.mjs';
-import { buildHandoffGuidance } from './context.mjs';
+import { buildHandoffGuidance, evaluateSessionHandoff, loadWorkflowProjection } from './context.mjs';
 import { buildSourceFreshness, formatSourceFreshness, resolveSourceSnapshot } from './source-snapshot.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
@@ -55,7 +55,27 @@ export async function runFooter(options = {}) {
   const contextState = validateContextState(
     options.contextState ?? context?.contextState ?? 'yellow',
   );
-  const workflow = normalizeWorkflow(repoRoot, options);
+  // ADR-0031 — an optional bounded workflow projection enriches the workflow
+  // fields and drives the session-level continue-vs-fresh decision. When no
+  // projection file is supplied the footer degrades to the per-field workflow
+  // flags and omits session_handoff entirely (rollback-safe, additive).
+  const projectionRequested = options.workflowProjectionFile != null;
+  const { projection, error: projectionError } = projectionRequested
+    ? await loadWorkflowProjection(options)
+    : { projection: null, error: null };
+  // When a projection was requested but rejected, degrade cleanly: do NOT fall
+  // back to the legacy --workflow-* flags (the caller opted into the projection
+  // model). The per-field flags apply only when no projection was requested.
+  const workflow = projectionRequested
+    ? (projection ? normalizeWorkflow(repoRoot, options, projection) : { kind: null, id: null, path: null })
+    : normalizeWorkflow(repoRoot, options, null);
+  const sessionHandoff = projectionRequested
+    ? evaluateSessionHandoff({
+        riskLevel: contextState,
+        projection,
+        routing: options.routingRecommendation ?? null,
+      })
+    : null;
   const providedArtifacts = normalizeArtifacts(repoRoot, options.artifacts ?? []);
   const artifacts = dedupeArtifacts([
     ...contextArtifacts(context),
@@ -86,7 +106,7 @@ export async function runFooter(options = {}) {
     ? buildCutoverRecordGuidance({ host, completion, options })
     : null;
 
-  return {
+  const report = {
     command: 'render',
     version: VERSION,
     advisory: true,
@@ -123,6 +143,9 @@ export async function runFooter(options = {}) {
     cutover_record: cutoverRecord,
     limits: footerLimits(),
   };
+  if (sessionHandoff) report.session_handoff = sessionHandoff;
+  if (projectionError) report.projection_error = projectionError;
+  return report;
 }
 
 export function parseArgs(argv) {
@@ -158,6 +181,12 @@ export function parseArgs(argv) {
         break;
       case '--workflow-path':
         options.workflowPath = requireSingleLine(requireValue(args, arg), arg);
+        break;
+      case '--workflow-projection-file':
+        options.workflowProjectionFile = requireValue(args, arg);
+        break;
+      case '--routing-recommendation':
+        options.routingRecommendation = requireSingleLine(requireValue(args, arg), arg);
         break;
       case '--context-run-id':
         options.contextRunId = validateRunId(requireValue(args, arg));
@@ -315,6 +344,22 @@ export function formatText(report) {
     lines.push(`workflow: ${[report.workflow.kind, report.workflow.id].filter(Boolean).join(' ')}`);
   }
   if (report.workflow?.path) lines.push(`workflow path: ${report.workflow.path}`);
+  if (report.workflow?.archive_gate) lines.push(`workflow archive gate: ${report.workflow.archive_gate}`);
+  if (report.session_handoff) {
+    lines.push('session handoff (continue-vs-fresh):');
+    lines.push(`- recommended session: ${report.session_handoff.recommended_session}`);
+    lines.push(`- reason: ${report.session_handoff.reason}`);
+    lines.push(`- archive gate: ${report.session_handoff.archive_gate} — ${report.session_handoff.archive_gate_report}`);
+    if (report.session_handoff.routing_recommendation) {
+      lines.push(`- routing: ${report.session_handoff.routing_recommendation}`);
+    }
+    if (report.session_handoff.next_command) {
+      lines.push(`- next command: ${report.session_handoff.next_command}`);
+    }
+  }
+  if (report.projection_error) {
+    lines.push(`workflow projection rejected (degraded to context-state only): ${report.projection_error}`);
+  }
   if (report.artifacts?.length) {
     lines.push('artifacts:');
     for (const artifact of report.artifacts) {
@@ -527,7 +572,24 @@ function workflowArtifacts(workflow) {
   return workflow?.path ? [{ kind: 'workflow', pointer: workflow.path }] : [];
 }
 
-function normalizeWorkflow(repoRoot, options) {
+function normalizeWorkflow(repoRoot, options, projection = null) {
+  // ADR-0031 — when a bounded projection is supplied it is the source for the
+  // workflow fields (the owning plugin computed them from its own state);
+  // otherwise degrade to the per-field --workflow-* flags (backward compat).
+  if (projection) {
+    return {
+      kind: projection.workflow_kind,
+      id: projection.workflow_id,
+      path: projection.workflow_path
+        ? normalizeRepoPointer(repoRoot, projection.workflow_path)
+        : null,
+      phase: projection.phase,
+      next_action: projection.next_action,
+      checkpoint: projection.checkpoint,
+      archive_gate: projection.archive_gate,
+      routing_recommendation: projection.routing_recommendation,
+    };
+  }
   return {
     kind: options.workflowKind
       ? requireSingleLine(options.workflowKind, '--workflow-kind')
@@ -1096,6 +1158,7 @@ Usage:
   runtime footer render --consensus-latest
   runtime footer render --consensus-latest-open
   runtime footer render --context-state green|yellow|red --recommended-next-work <text>
+  runtime footer render --workflow-projection-file <path>   # ADR-0031 session-level continue-vs-fresh preflight
   runtime footer render --completion-state review-needed|publish-needed|cleanup-needed|next-work-available|blocked|closed
   runtime footer render --pr-handling --pr-completion-boundary reached --pr-validation-state passed --pr-review-state clear --pr-branch-state pushable
   runtime footer render --cutover-record --cutover-omcc-dev-active yes|no|unknown
