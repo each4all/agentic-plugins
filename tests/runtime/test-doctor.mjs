@@ -126,6 +126,71 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('non-interactive hook trust query'));
   });
 
+  it('treats removed plugin_hooks as ready on the generic hooks gate (Codex >= ~0.134)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    await seedHome(home);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-06-03T00:00:00.000Z'),
+      runner: fakeRunner({
+        'claude --version': okResult('2.1.161 (Claude Code)\n'),
+        'claude --help': okResult('Usage: claude --print --output-format --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n'),
+        'claude auth status': okResult(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' })),
+        'claude plugin --help': okResult('Commands:\n  install\n  list\n  update\n  uninstall\n'),
+        'claude plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.1.0\n    Scope: user\n    Status: enabled\n'),
+        'codex --version': okResult('codex-cli 0.136.0\n'),
+        'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
+        'codex features list': okResult('hooks stable true\nplugin_hooks removed false\nplugins stable true\nmulti_agent stable true\n'),
+        'codex plugin marketplace --help': okResult('Commands:\n  add\n  upgrade\n  remove\n'),
+      }),
+    });
+
+    strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks_stage, 'removed');
+    strictEqual(report.clis.codex.feature_surface.codex_global_hooks, true);
+    // plugin_hooks removed + generic hooks on => ready on the generic gate, no dead-flag advice.
+    strictEqual(report.codex_plugin_hooks.status, 'ready');
+    ok(!report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'enable-codex-plugin-hooks'));
+    ok(!report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'enable-codex-hooks'));
+    ok(!report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_feature_disabled'));
+    ok(!report.host_parity.differences.some((issue) => issue.id === 'codex_generic_hooks_disabled'));
+    ok(formatText(report).includes('status=ready'));
+  });
+
+  it('recommends generic hooks (not plugin_hooks) when plugin_hooks is removed and generic hooks is off', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    await seedHome(home);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-06-03T00:00:00.000Z'),
+      runner: fakeRunner({
+        'claude --version': okResult('2.1.161 (Claude Code)\n'),
+        'claude --help': okResult('Usage: claude --print --output-format --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n'),
+        'claude auth status': okResult(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' })),
+        'claude plugin --help': okResult('Commands:\n  install\n  list\n  update\n  uninstall\n'),
+        'claude plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.1.0\n    Scope: user\n    Status: enabled\n'),
+        'codex --version': okResult('codex-cli 0.136.0\n'),
+        'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin marketplace\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
+        'codex features list': okResult('hooks stable false\nplugin_hooks removed false\nplugins stable true\nmulti_agent stable true\n'),
+        'codex plugin marketplace --help': okResult('Commands:\n  add\n  upgrade\n  remove\n'),
+      }),
+    });
+
+    strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks_stage, 'removed');
+    strictEqual(report.clis.codex.feature_surface.codex_global_hooks, false);
+    // plugin_hooks removed + generic hooks off => recommend enabling generic hooks, not the removed flag.
+    strictEqual(report.codex_plugin_hooks.status, 'feature_disabled');
+    ok(report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'enable-codex-hooks'));
+    ok(!report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'enable-codex-plugin-hooks'));
+    ok(report.host_parity.differences.some((issue) => issue.id === 'codex_generic_hooks_disabled'));
+    ok(!report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_feature_disabled'));
+  });
+
   it('reports unavailable Claude slash plugin surface without blocking Claude plugin CLI management', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-claude-plugin-surface-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));

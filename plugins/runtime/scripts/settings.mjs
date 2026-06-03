@@ -213,7 +213,7 @@ export async function runSettings({
       'Plugin management output omits raw stdout/stderr and records only status, exit code, byte counts, timing, and sanitized error metadata.',
       'Retired/unknown plugin cleanup execution is dry-run unless --execute-plugin-cleanup is supplied.',
       'Plugin cleanup execution is limited to doctor-detected retired/unknown agentic-plugins Claude plugin uninstall commands.',
-      'Codex plugin_hooks host config writes require --apply-codex-plugin-hooks and only update ~/.codex/config.toml [features].plugin_hooks.',
+      'Codex plugin_hooks host config writes require --apply-codex-plugin-hooks and only update ~/.codex/config.toml [features].plugin_hooks; on Codex >= ~0.134 plugin_hooks is removed and that write is skipped (plugin hooks load via generic [features].hooks + /hooks trust).',
       'Codex hook review/trust attestation records an operator claim only; runtime cannot mutate or independently prove active-session /hooks trust state.',
       'Claude host-native config, auth, secrets, and sandbox/permission settings are not written.',
       'Companion invocation still uses companions/contract.md --model and --effort.',
@@ -966,7 +966,9 @@ function buildCodexHookReviewManualFollowups(codexPluginHooks, hookSettings, cod
     id: 'codex-hook-review',
     host: 'codex',
     status: 'manual_check',
-    reason: 'Codex plugin hooks are packaged and plugin_hooks is enabled, but runtime:settings cannot verify active-session hook review/trust state.',
+    reason: codexPluginHooks?.feature_flags?.plugin_hooks_stage === 'removed'
+      ? 'Codex plugin hooks are packaged and generic [features].hooks is enabled (plugin_hooks removed), but runtime:settings cannot verify active-session hook review/trust state.'
+      : 'Codex plugin hooks are packaged and plugin_hooks is enabled, but runtime:settings cannot verify active-session hook review/trust state.',
     environment: 'Open the active Codex session for this repository.',
     commands: ['/hooks'],
     verify: `Review/trust bundled hooks for ${bundled.join(', ')} (${targets.length} review target(s)); if /hooks shows "New hook - review required", review each new hook first. Do not attest from /hooks Installed counts alone, including Active=0 output.${hookStateHint} Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
@@ -1559,6 +1561,9 @@ async function buildHookSettingsPlan({ codexPluginHooks, plugins = {}, homeDir, 
     summary: { bundled_plugins: [], manifest_exposed_plugins: [], default_file_only_plugins: [] },
     recommendations: [],
   };
+  // Codex >= ~0.134 removed the plugin_hooks flag; plugin hooks now load via
+  // generic [features].hooks + /hooks trust, so there is no flag to write.
+  const pluginHooksRemoved = hookReport.feature_flags?.plugin_hooks_stage === 'removed';
   const hostConfig = await buildCodexPluginHooksHostConfigPlan({
     homeDir,
     hookReport,
@@ -1610,14 +1615,16 @@ async function buildHookSettingsPlan({ codexPluginHooks, plugins = {}, homeDir, 
     recommendations,
     host_config: hostConfig,
     mutation_boundary: {
-      executable: true,
+      executable: !pluginHooksRemoved,
       applied: hostConfig.applied,
-      reason: applyCodexPluginHooks
-        ? 'runtime:settings was explicitly allowed to update ~/.codex/config.toml [features].plugin_hooks only.'
-        : 'runtime:settings plans Codex plugin_hooks config but writes it only when --apply-codex-plugin-hooks is explicit.',
+      reason: pluginHooksRemoved
+        ? 'Codex plugin_hooks is removed; runtime:settings does not write it. Plugin hooks load via generic [features].hooks (default on) + /hooks review/trust.'
+        : applyCodexPluginHooks
+          ? 'runtime:settings was explicitly allowed to update ~/.codex/config.toml [features].plugin_hooks only.'
+          : 'runtime:settings plans Codex plugin_hooks config but writes it only when --apply-codex-plugin-hooks is explicit.',
       config_path: hostConfig.path,
-      persistent_config_snippet: '[features]\nplugin_hooks = true\n',
-      session_command: 'codex --enable plugin_hooks',
+      persistent_config_snippet: pluginHooksRemoved ? null : '[features]\nplugin_hooks = true\n',
+      session_command: pluginHooksRemoved ? null : 'codex --enable plugin_hooks',
     },
   };
 }
@@ -1649,7 +1656,9 @@ async function buildCodexPluginHooksHostConfigPlan({ homeDir, hookReport, applyC
   const path = join(homeDir, '.codex', 'config.toml');
   const currentText = await readTextIfExists(path);
   const currentConfig = parseCodexFeaturesConfigToml(currentText.ok ? currentText.text : '');
-  const shouldPlan = (hookReport.recommendations ?? []).some((rec) => rec.action === 'enable-codex-plugin-hooks');
+  const pluginHooksRemoved = hookReport.feature_flags?.plugin_hooks_stage === 'removed';
+  const shouldPlan = !pluginHooksRemoved
+    && (hookReport.recommendations ?? []).some((rec) => rec.action === 'enable-codex-plugin-hooks');
   const before = currentConfig.plugin_hooks ?? null;
   const plannedWrites = shouldPlan && before !== true
     ? [{
@@ -1662,8 +1671,11 @@ async function buildCodexPluginHooksHostConfigPlan({ homeDir, hookReport, applyC
     : [];
   const plan = {
     path,
-    status: plannedWrites.length > 0 ? 'planned' : before === true ? 'not_needed' : 'not_applicable',
+    status: pluginHooksRemoved
+      ? 'not_applicable_removed'
+      : plannedWrites.length > 0 ? 'planned' : before === true ? 'not_needed' : 'not_applicable',
     config_status: currentText.ok ? 'available' : 'missing',
+    plugin_hooks_removed: pluginHooksRemoved,
     current: {
       plugin_hooks: before,
     },
@@ -1673,10 +1685,15 @@ async function buildCodexPluginHooksHostConfigPlan({ homeDir, hookReport, applyC
     planned_writes: plannedWrites,
     applied: false,
     apply_requested: applyCodexPluginHooks,
-    limits: [
-      'Only ~/.codex/config.toml [features].plugin_hooks is changed.',
-      'runtime:settings does not change Codex trust, sandbox, approval, auth, or plugin enablement settings.',
-    ],
+    limits: pluginHooksRemoved
+      ? [
+          'Codex plugin_hooks is removed (>= ~0.134); this write is obsolete and skipped.',
+          'Plugin-bundled hooks now load via generic [features].hooks (default on) + /hooks review/trust.',
+        ]
+      : [
+          'Only ~/.codex/config.toml [features].plugin_hooks is changed.',
+          'runtime:settings does not change Codex trust, sandbox, approval, auth, or plugin enablement settings.',
+        ],
   };
   if (applyCodexPluginHooks && plannedWrites.length > 0) {
     const nextText = upsertCodexPluginHooksConfigToml(currentText.ok ? currentText.text : '', true);
@@ -1959,8 +1976,12 @@ export function formatText(report) {
       lines.push(`  disabled-hook-state: ${entry.plugin}; event=${entry.event}; path=${entry.hooks_path}; ids=${entry.ids.join(',') || 'none'}`);
     }
   }
-  lines.push(`- session-command: ${report.hook_settings.mutation_boundary.session_command}`);
-  lines.push('- persistent-config-snippet: [features] plugin_hooks = true');
+  if (report.hook_settings.mutation_boundary.session_command) {
+    lines.push(`- session-command: ${report.hook_settings.mutation_boundary.session_command}`);
+    lines.push('- persistent-config-snippet: [features] plugin_hooks = true');
+  } else {
+    lines.push('- plugin-hooks: removed on this Codex; plugin hooks load via generic [features].hooks (default on) + /hooks trust');
+  }
   if (report.hook_settings.host_config) {
     const hostConfig = report.hook_settings.host_config;
     lines.push(`- user-config: ${hostConfig.path}; status=${hostConfig.status}; plugin_hooks=${hostConfig.current.plugin_hooks ?? '<unset>'}; applied=${hostConfig.applied}`);
@@ -1979,7 +2000,7 @@ export function formatText(report) {
     lines.push('');
     lines.push('Codex Hook Review');
     lines.push(`- mode=${review.mode}; requested=${review.requested}; status=${review.status}; attested=${review.attested}; command=${review.command}`);
-    lines.push(`- bundled=${review.bundled_plugins.join(',') || 'none'}; plugin-hooks-enabled=${review.plugin_hooks_enabled}; attested-at=${review.attested_at ?? '<none>'}`);
+    lines.push(`- bundled=${review.bundled_plugins.join(',') || 'none'}; plugin-hooks-enabled=${review.plugin_hooks_enabled}${review.plugin_hooks_stage === 'removed' ? ' (removed; generic [features].hooks gates plugin hooks)' : ''}; attested-at=${review.attested_at ?? '<none>'}`);
     if (Object.keys(review.plugin_versions ?? {}).length > 0) {
       lines.push(`- plugin-versions: ${Object.entries(review.plugin_versions).map(([name, version]) => `${name}@${version ?? 'unknown'}`).join(', ')}`);
     }

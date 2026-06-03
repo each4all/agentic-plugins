@@ -360,6 +360,35 @@ describe('runtime settings', () => {
     await rejects(readFile(join(home, '.codex', 'config.toml'), 'utf8'), /ENOENT/);
   });
 
+  it('skips the removed plugin_hooks write and surfaces generic hooks when Codex removed the flag', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-removed-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-removed-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks removed false\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    // plugin_hooks removed + generic hooks on => ready via the generic gate, no dead-flag write.
+    strictEqual(report.hook_settings.status, 'ready');
+    strictEqual(report.hook_settings.host_config.status, 'not_applicable_removed');
+    strictEqual(report.hook_settings.host_config.plugin_hooks_removed, true);
+    deepStrictEqual(report.hook_settings.host_config.planned_writes, []);
+    strictEqual(report.hook_settings.mutation_boundary.executable, false);
+    strictEqual(report.hook_settings.mutation_boundary.session_command, null);
+    strictEqual(report.hook_settings.mutation_boundary.persistent_config_snippet, null);
+    ok(!report.hook_settings.recommendations.some((item) => item.action === 'enable-codex-plugin-hooks'));
+    ok(!report.recommendations.some((item) => item.area === 'hooks' && item.action === 'enable-codex-plugin-hooks'));
+    ok(formatText(report).includes('plugin-hooks: removed on this Codex'));
+    ok(!formatText(report).includes('session-command: codex --enable plugin_hooks'));
+    await rejects(readFile(join(home, '.codex', 'config.toml'), 'utf8'), /ENOENT/);
+  });
+
   it('reports Codex hook review as a manual follow-up when plugin hooks are ready', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-home-'));
