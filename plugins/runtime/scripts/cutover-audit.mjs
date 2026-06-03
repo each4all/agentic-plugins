@@ -15,7 +15,7 @@ const CUTOVER_EVIDENCE_SCHEMA_VERSION = 'runtime-cutover-evidence-1.0';
 const DEFAULT_MAX_ARTIFACT_AGE_HOURS = 24;
 const DEFAULT_DOGFOOD_WINDOW_DAYS = 7;
 const CHECK_PASS = new Set(['satisfied', 'current', 'fresh', 'not-active']);
-const CHECK_UNREADY = new Set(['partial', 'blocked', 'stale', 'not-verified', 'missing']);
+const CHECK_UNREADY = new Set(['partial', 'blocked', 'stale', 'not-verified', 'missing', 'unknown']);
 const OMCC_ACTIVITY = new Set(['yes', 'no', 'unknown']);
 const FOOTER_STATES = new Set([
   'review-needed',
@@ -74,11 +74,10 @@ export async function runCutoverAudit(options = {}) {
     latest: inlineEvidence ?? storedCutoverEvidence.latest,
   };
   const latestEvidence = cutoverEvidence.latest;
-  const [scorecardText, legacyPatternText, developmentText, hostParityText, manifest] = await Promise.all([
+  const [scorecardText, legacyPatternText, developmentText, manifest] = await Promise.all([
     readOptionalText(resolve(repoRoot, 'docs/assurance/omcc-cutover-scorecard.md')),
     readOptionalText(resolve(repoRoot, 'docs/assurance/omcc-legacy-pattern-map.md')),
     readOptionalText(resolve(repoRoot, 'docs/DEVELOPMENT.md')),
-    readOptionalText(resolve(repoRoot, 'plugins/runtime/docs/host-parity-baseline.md')),
     readOptionalJson(resolve(repoRoot, '.release-please-manifest.json')),
   ]);
 
@@ -87,7 +86,7 @@ export async function runCutoverAudit(options = {}) {
     checkScorecardRequirements({ repoRoot, text: scorecardText }),
     checkLegacyPatternMap({ repoRoot, text: legacyPatternText }),
     checkObservedExperienceParity(doctor),
-    checkHostParityBaseline(hostParityText, doctor),
+    checkHostParityBaseline(doctor),
     checkPluginVersions({ repoRoot, manifest, doctor }),
     checkCompatFreshness({ doctor, now, maxArtifactAgeHours }),
     await checkConsensusAndContext({ repoRoot, doctor, now, maxArtifactAgeHours }),
@@ -901,45 +900,19 @@ function applyReusableDoctorProofToExperienceParity({ experience, recordedProof 
   };
 }
 
-function checkHostParityBaseline(text, doctor) {
-  const match = text.match(/Observed on ([0-9-]+) with Claude Code `([^`]+)`, Codex CLI\s*`([^`]+)`/m);
-  const observedClaude = observedVersionText(doctor.clis?.claude?.version);
-  const observedCodex = observedVersionText(doctor.clis?.codex?.version);
-  const normalizedObserved = {
-    claude: normalizeHostVersion(observedClaude),
-    codex: normalizeHostVersion(observedCodex),
-  };
-  const baseline = match
-    ? { date: match[1], claude: match[2], codex: match[3] }
-    : null;
-  const current = baseline
-    && normalizedObserved.claude === baseline.claude
-    && normalizedObserved.codex === baseline.codex;
-  return {
+function checkHostParityBaseline(doctor) {
+  // Reuse doctor's host_parity_baseline freshness — single source of truth.
+  // doctor is always present here (cutover-audit calls runDoctor), so the
+  // fallback only guards against an older doctor report shape. It stays
+  // 'missing' (conservatively blocks readiness) but points at the real cause —
+  // a stale doctor shape, NOT a deleted baseline file.
+  return doctor.host_parity_baseline ?? {
     id: 'host_parity_baseline',
     label: 'Host parity baseline freshness',
-    status: baseline ? current ? 'current' : 'stale' : 'missing',
-    evidence: {
-      baseline,
-      observed: { claude: observedClaude, codex: observedCodex },
-      normalized_observed: normalizedObserved,
-    },
-    next_action: baseline
-      ? current ? null : 'Refresh host parity baseline and runtime:compat evidence for the current host versions.'
-      : 'Restore plugins/runtime/docs/host-parity-baseline.md.',
+    status: 'missing',
+    evidence: {},
+    next_action: 'Re-run runtime:doctor — host_parity_baseline is absent from the doctor report (older doctor shape; current shape required).',
   };
-}
-
-function observedVersionText(value) {
-  if (value && typeof value === 'object' && 'text' in value) return value.text;
-  return value ?? null;
-}
-
-function normalizeHostVersion(value) {
-  const text = String(value ?? '').trim();
-  if (!text) return null;
-  const match = text.match(/\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/);
-  return match?.[0] ?? text;
 }
 
 function checkPluginVersions({ repoRoot, manifest, doctor }) {

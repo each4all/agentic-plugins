@@ -123,6 +123,7 @@ export async function runDoctor({
     homeDir: resolvedHomeDir,
   });
   const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginHooks });
+  const hostParityBaseline = await buildHostParityBaseline({ repoRoot, claude, codex });
   const settingsRuns = await inspectSettingsRuns({
     repoRoot: resolvedRepoRoot,
   });
@@ -269,6 +270,7 @@ export async function runDoctor({
     plugin_command_surface: pluginCommandSurface,
     codex_plugin_hooks: codexPluginHooks,
     host_parity: hostParity,
+    host_parity_baseline: hostParityBaseline,
     companions: companion,
     model_effort: modelEffort,
     settings_runs: settingsRuns,
@@ -1167,6 +1169,72 @@ function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooks
     bundled,
     hooks_file: declared ? declaredFile : defaultHooksFile ?? { status: 'missing' },
     default_hooks_file: defaultHooksFile ?? { status: 'missing' },
+  };
+}
+
+function normalizeHostVersion(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const match = text.match(/\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/);
+  return match?.[0] ?? text;
+}
+
+// Baseline freshness lives in doctor (frequently run) so host-version drift
+// surfaces without a manual runtime:compat run. cutover-audit reuses this
+// result rather than re-parsing the baseline (single source of truth).
+async function buildHostParityBaseline({ repoRoot, claude, codex }) {
+  const path = join(repoRoot, 'plugins', 'runtime', 'docs', 'host-parity-baseline.md');
+  let text = '';
+  try {
+    text = await readFile(path, 'utf8');
+  } catch {
+    text = '';
+  }
+  const match = text.match(/Observed on ([0-9-]+) with Claude Code `([^`]+)`, Codex CLI\s*`([^`]+)`/m);
+  // Gate freshness on a successful version probe. version.text carries
+  // stderr/error_message when the probe failed (inspectCli), so a failed
+  // claude/codex --version must not be normalized into a false current/stale
+  // verdict — without a real observed version, freshness is 'unknown', not a
+  // baseline-staleness signal.
+  const claudeProbe = claude?.version?.status ?? null;
+  const codexProbe = codex?.version?.status ?? null;
+  const probesOk = claudeProbe === 'available' && codexProbe === 'available';
+  const observedClaude = probesOk ? observedVersionText(claude?.version) : null;
+  const observedCodex = probesOk ? observedVersionText(codex?.version) : null;
+  const normalizedObserved = {
+    claude: normalizeHostVersion(observedClaude),
+    codex: normalizeHostVersion(observedCodex),
+  };
+  const baseline = match ? { date: match[1], claude: match[2], codex: match[3] } : null;
+  const current = Boolean(probesOk && baseline
+    && normalizedObserved.claude === normalizeHostVersion(baseline.claude)
+    && normalizedObserved.codex === normalizeHostVersion(baseline.codex));
+  let status;
+  let nextAction;
+  if (!probesOk) {
+    status = 'unknown';
+    nextAction = 'Probe host CLIs first — claude/codex --version did not return a usable version (one or both unavailable); cannot assess baseline freshness.';
+  } else if (!baseline) {
+    status = 'missing';
+    nextAction = 'Restore plugins/runtime/docs/host-parity-baseline.md.';
+  } else if (current) {
+    status = 'current';
+    nextAction = null;
+  } else {
+    status = 'stale';
+    nextAction = 'Refresh plugins/runtime/docs/host-parity-baseline.md via runtime:compat snapshot→check→ingest-release-notes→plan for the current host versions.';
+  }
+  return {
+    id: 'host_parity_baseline',
+    label: 'Host parity baseline freshness',
+    status,
+    evidence: {
+      baseline,
+      observed: { claude: observedClaude, codex: observedCodex },
+      normalized_observed: normalizedObserved,
+      probes: { claude: claudeProbe, codex: codexProbe },
+    },
+    next_action: nextAction,
   };
 }
 
@@ -5032,6 +5100,10 @@ export function formatText(report) {
     lines.push(`- ${entry.severity}: ${entry.id}${entry.plugin ? ` (${entry.plugin})` : ''}; host=${entry.host}; ${entry.summary}`);
     lines.push(`  evidence: ${entry.evidence}`);
     lines.push(`  next: ${entry.next_step}`);
+  }
+  lines.push(`- baseline-freshness: ${report.host_parity_baseline.status}${report.host_parity_baseline.status === 'current' ? '' : ` (observed claude=${report.host_parity_baseline.evidence.observed.claude ?? 'unknown'}, codex=${report.host_parity_baseline.evidence.observed.codex ?? 'unknown'}; baseline=${report.host_parity_baseline.evidence.baseline ? `${report.host_parity_baseline.evidence.baseline.claude}/${report.host_parity_baseline.evidence.baseline.codex} @ ${report.host_parity_baseline.evidence.baseline.date}` : 'missing'})`}`);
+  if (report.host_parity_baseline.next_action) {
+    lines.push(`  next: ${report.host_parity_baseline.next_action}`);
   }
   lines.push('');
   lines.push('Model / Effort');
