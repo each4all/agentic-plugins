@@ -92,7 +92,7 @@ cannot be re-found later by branch.
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 GIT_BRANCH="$(git branch --show-current)"
 if [ -z "$GIT_BRANCH" ]; then
-  echo "✗ Detached HEAD detected — engineer workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
+  echo "✗ Detached HEAD detected — no active branch context (ADR-0031); engineer workflows are anchored to a branch (ADR-0018 §sub-2)." >&2
   echo "  Switch to a branch first: git switch <branch>" >&2
   exit 1
 fi
@@ -307,6 +307,15 @@ direction, approve a plan, or switch to another route, use this
 decision prompt shape: **Options**, **Tradeoffs**, **Risks**,
 **Recommendation**, **Confidence**, **Evidence pointers**, and the
 **Default next command**.
+
+Surface the **ADR-0031 session-level continue-vs-fresh preflight here**, at
+Phase 0 before sequencing the lifecycle, per
+`skills/_shared/references/session-handoff.md`: compute the engineer workflow
+projection for the current branch and pass it — or, when no active workflow
+exists, the standalone routing — to the runtime seam, so the routing
+recommendation above is sized by context-budget risk + archive-gate readiness.
+On detached HEAD the Phase 0a guard already reports "no active branch context";
+do not auto-recommend a fresh session.
 
 Before recommending a quick implementation/refinement path, state the
 standards and root-cause quality gate: the source of truth or standard,
@@ -531,6 +540,15 @@ action, workflow id/path, artifact pointers, recommended next work, and
 next-session action/command or prompt pointer.
 The footer is advisory and pointer-only; do not mutate host session
 context or paste raw peer / consensus output into the main session.
+
+Surface the ADR-0031 session-level continue-vs-fresh preflight at this
+completion (and at Phase 0 before sequencing a fresh lifecycle) per
+`skills/_shared/references/session-handoff.md`: compute the engineer workflow
+projection and pass it to the runtime footer/check
+(`--workflow-projection-file`) so the footer carries the continue-vs-fresh
+decision. On detached HEAD, report "no active branch context" — do not
+auto-recommend a fresh session (already guarded at Phase 0a).
+
 When the deliverable boundary is reached, include PR handling readiness
 fields in the footer. Ask the user what to do with PR handling only when
 the helper returns `pr_handling.recommendation == "ask-user"`; `defer`
