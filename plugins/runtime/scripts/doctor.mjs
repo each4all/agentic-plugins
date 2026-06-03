@@ -282,7 +282,7 @@ export async function runDoctor({
     readiness,
     ledgers,
     limits: [
-      'Codex bundled plugin hooks require both manifest exposure and [features].plugin_hooks=true; doctor reports those separately from generic hooks.',
+      'Codex bundled plugin hooks require manifest exposure plus an enabled hook gate: [features].plugin_hooks on Codex < ~0.134, or generic [features].hooks once plugin_hooks is removed; doctor reports the stage-appropriate gate separately from packaging.',
       'Codex hook review/trust is an active-session /hooks UI check; /hooks Installed counts are packaging evidence only, and Active=0 output is not enough to attest.',
       'The observed Codex CLI does not expose a non-interactive hook trust query, so doctor requires a current runtime:settings operator attestation to clear that follow-up.',
       'Readiness sandbox/permission status remains unknown unless --sandbox-permission-probe is requested; --permission-proof records separate preflight/execution evidence.',
@@ -890,17 +890,34 @@ async function buildCodexPluginHookReport({ codex, plugins, homeDir }) {
       next_step: 'Verify Codex /hooks active execution in-session, or route hook commands through a host-appropriate wrapper before accepting automatic lifecycle hook parity.',
     });
   }
-  if (summary.bundled_plugins.length > 0 && codex.feature_surface.codex_plugin_hooks !== true) {
-    recommendations.push({
-      host: 'codex',
-      area: 'hooks',
-      action: 'enable-codex-plugin-hooks',
-      executable: false,
-      command: 'codex --enable plugin_hooks',
-      config_snippet: '[features]\nplugin_hooks = true\n',
-      detail: 'Codex bundled plugin hooks are packaged, but plugin_hooks is not enabled in the observed feature surface.',
-      next_step: 'Enable plugin_hooks for a test session or in Codex config, then review/trust hooks with /hooks and rerun runtime:doctor.',
-    });
+  if (summary.bundled_plugins.length > 0) {
+    if (codex.feature_surface.codex_plugin_hooks_stage === 'removed') {
+      // Codex >= ~0.134 removed the plugin_hooks flag; plugin-bundled hooks
+      // now load through generic [features].hooks (default on) + /hooks trust.
+      if (codex.feature_surface.codex_global_hooks !== true) {
+        recommendations.push({
+          host: 'codex',
+          area: 'hooks',
+          action: 'enable-codex-hooks',
+          executable: false,
+          command: 'codex --enable hooks',
+          config_snippet: '[features]\nhooks = true\n',
+          detail: 'Codex plugin_hooks is removed; plugin-bundled hooks now load through generic [features].hooks, which is not enabled in the observed feature surface.',
+          next_step: 'Enable generic Codex hooks for a test session or in Codex config, then review/trust the bundled hooks with /hooks and rerun runtime:doctor.',
+        });
+      }
+    } else if (codex.feature_surface.codex_plugin_hooks !== true) {
+      recommendations.push({
+        host: 'codex',
+        area: 'hooks',
+        action: 'enable-codex-plugin-hooks',
+        executable: false,
+        command: 'codex --enable plugin_hooks',
+        config_snippet: '[features]\nplugin_hooks = true\n',
+        detail: 'Codex bundled plugin hooks are packaged, but plugin_hooks is not enabled in the observed feature surface.',
+        next_step: 'Enable plugin_hooks for a test session or in Codex config, then review/trust hooks with /hooks and rerun runtime:doctor.',
+      });
+    }
   }
   if (hookState.summary.expected_disabled > 0) {
     recommendations.push({
@@ -913,13 +930,19 @@ async function buildCodexPluginHookReport({ codex, plugins, homeDir }) {
     });
   }
 
+  // Stage-aware gate: when Codex removed the plugin_hooks flag (>= ~0.134),
+  // readiness keys on generic [features].hooks; otherwise on plugin_hooks.
+  const pluginHooksRemoved = codex.feature_surface.codex_plugin_hooks_stage === 'removed';
+  const hookGateEnabled = pluginHooksRemoved
+    ? codex.feature_surface.codex_global_hooks
+    : codex.feature_surface.codex_plugin_hooks;
   const status = summary.default_file_only_plugins.length > 0 || summary.missing_hooks_file_plugins.length > 0
     ? 'packaging_gap'
     : summary.bundled_plugins.length === 0
       ? 'no_bundled_hooks'
-      : codex.feature_surface.codex_plugin_hooks === true
+      : hookGateEnabled === true
         ? 'ready'
-        : codex.feature_surface.codex_plugin_hooks === false
+        : hookGateEnabled === false
           ? 'feature_disabled'
           : 'feature_unknown';
 
@@ -1163,18 +1186,31 @@ function buildHostParity({ claude, codex, plugins, claudePluginList, codexPlugin
     }));
   }
 
-  if (codexPluginHooks.summary.bundled_plugins.length > 0 && codex.feature_surface.codex_plugin_hooks !== true) {
-    differences.push(parityEntry({
-      id: 'codex_plugin_hooks_feature_disabled',
-      severity: 'warning',
-      host: 'codex',
-      area: 'hooks',
-      summary: codex.feature_surface.codex_global_hooks === true
-        ? 'Codex global hooks are enabled, but bundled plugin hooks require [features].plugin_hooks=true before hook-bearing agentic-plugins can run lifecycle hooks automatically.'
-        : 'Codex bundled plugin hooks are packaged, but generic hooks and/or plugin_hooks are not enabled in the observed feature surface.',
-      evidence: `bundled=${codexPluginHooks.summary.bundled_plugins.join(',')}, codex global_hooks=${featureFlagEvidence(codex.feature_surface.codex_global_hooks, codex.feature_surface.codex_global_hooks_stage)}, codex plugin_hooks=${featureFlagEvidence(codex.feature_surface.codex_plugin_hooks, codex.feature_surface.codex_plugin_hooks_stage)}, codex automatic_plugin_hooks=false`,
-      next_step: 'Use runtime:settings to plan plugin_hooks enablement, then review/trust the bundled hooks in Codex with /hooks.',
-    }));
+  if (codexPluginHooks.summary.bundled_plugins.length > 0) {
+    const pluginHooksRemoved = codex.feature_surface.codex_plugin_hooks_stage === 'removed';
+    if (pluginHooksRemoved && codex.feature_surface.codex_global_hooks !== true) {
+      differences.push(parityEntry({
+        id: 'codex_generic_hooks_disabled',
+        severity: 'warning',
+        host: 'codex',
+        area: 'hooks',
+        summary: 'Codex plugin_hooks is removed and generic [features].hooks is not enabled, so bundled plugin hooks cannot run automatically until generic hooks is on and the hooks are trusted with /hooks.',
+        evidence: `bundled=${codexPluginHooks.summary.bundled_plugins.join(',')}, codex global_hooks=${featureFlagEvidence(codex.feature_surface.codex_global_hooks, codex.feature_surface.codex_global_hooks_stage)}, codex plugin_hooks=${featureFlagEvidence(codex.feature_surface.codex_plugin_hooks, codex.feature_surface.codex_plugin_hooks_stage)}`,
+        next_step: 'Enable generic Codex hooks, then review/trust the bundled hooks in Codex with /hooks.',
+      }));
+    } else if (!pluginHooksRemoved && codex.feature_surface.codex_plugin_hooks !== true) {
+      differences.push(parityEntry({
+        id: 'codex_plugin_hooks_feature_disabled',
+        severity: 'warning',
+        host: 'codex',
+        area: 'hooks',
+        summary: codex.feature_surface.codex_global_hooks === true
+          ? 'Codex global hooks are enabled, but bundled plugin hooks require [features].plugin_hooks=true before hook-bearing agentic-plugins can run lifecycle hooks automatically.'
+          : 'Codex bundled plugin hooks are packaged, but generic hooks and/or plugin_hooks are not enabled in the observed feature surface.',
+        evidence: `bundled=${codexPluginHooks.summary.bundled_plugins.join(',')}, codex global_hooks=${featureFlagEvidence(codex.feature_surface.codex_global_hooks, codex.feature_surface.codex_global_hooks_stage)}, codex plugin_hooks=${featureFlagEvidence(codex.feature_surface.codex_plugin_hooks, codex.feature_surface.codex_plugin_hooks_stage)}, codex automatic_plugin_hooks=false`,
+        next_step: 'Use runtime:settings to plan plugin_hooks enablement, then review/trust the bundled hooks in Codex with /hooks.',
+      }));
+    }
   }
 
   if (codexPluginHooks.summary.command_warning_plugins?.length > 0) {
