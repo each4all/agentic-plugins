@@ -257,3 +257,11 @@ id/path, artifact pointers, recommended next work, and next-session
 action/command or prompt pointer. The footer is advisory
 and pointer-only; do not mutate host session context or paste raw peer /
 consensus output into the main session.
+
+Before rendering the footer, surface the ADR-0031 session-level
+continue-vs-fresh preflight per
+`skills/_shared/references/session-handoff.md`: compute the engineer workflow
+projection and pass it to the runtime footer/check
+(`--workflow-projection-file`) so the footer carries the continue-vs-fresh
+decision. On detached HEAD, report "no active branch context" — do not
+auto-recommend a fresh session.
