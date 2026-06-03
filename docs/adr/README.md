@@ -94,3 +94,4 @@ operatively accurate?* If no, write a new ADR (Supersede).
 | [0028](0028-engineer-phase7-commit-automation.md) | Engineer Phase 7 commit automation — 3-layer defense + 14 policy sections + centralized validate-commit.mjs | Accepted |
 | [0029](0029-entry-routing-contract-enforcement.md) | Extend entry-routing contract enforcement to standalone verbs — active, evidence-based next-action guidance | Accepted |
 | [0030](0030-codex-plugin-hooks-removal-stage-aware-migration.md) | Codex `plugin_hooks` removal — stage-aware runtime migration | Accepted |
+| [0031](0031-session-level-active-handoff-layer.md) | Session-level active handoff layer — projection model composing context risk + workflow state + routing into a continue-vs-fresh decision | Proposed |
