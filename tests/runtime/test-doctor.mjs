@@ -1655,6 +1655,51 @@ describe('runtime doctor', () => {
     rejects(async () => parseArgs(['--run-id', 'doctor-20260513T000000Z-abc123']), /requires --record/);
     rejects(async () => parseArgs(['--record', '--run-id', 'bad']), /Invalid doctor run id/);
   });
+
+  it('reports host_parity_baseline freshness (current / stale / missing / unknown)', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-baseline-home-'));
+    const defaultProbes = {
+      'claude --version': okResult('2.1.161 (Claude Code)\n'),
+      'claude --help': okResult('Commands:\n  auth status\n  plugin list\n'),
+      'codex --version': okResult('codex-cli 0.136.0\n'),
+      'codex --help': okResult('Commands:\n  exec\n  plugin marketplace\n'),
+      'codex features list': okResult('hooks stable true\nplugin_hooks removed false\nplugins stable true\n'),
+    };
+    const runWith = async (baselineLine, probes = defaultProbes) => {
+      const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-baseline-'));
+      await seedRepo(root);
+      if (baselineLine !== null) {
+        await mkdir(join(root, 'plugins', 'runtime', 'docs'), { recursive: true });
+        await writeFile(join(root, 'plugins', 'runtime', 'docs', 'host-parity-baseline.md'), baselineLine);
+      }
+      return runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(probes) });
+    };
+    // current: baseline Observed versions match installed
+    const current = await runWith('Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI\n`0.136.0`, docs.\n');
+    strictEqual(current.host_parity_baseline.status, 'current');
+    strictEqual(current.host_parity_baseline.next_action, null);
+    // normalize tolerates a v-prefix / trailing label on either side
+    const prefixed = await runWith('Observed on 2026-06-03 with Claude Code `v2.1.161`, Codex CLI\n`0.136.0`, docs.\n');
+    strictEqual(prefixed.host_parity_baseline.status, 'current');
+    // stale: baseline older than installed
+    const stale = await runWith('Observed on 2026-05-16 with Claude Code `2.1.143`, Codex CLI\n`0.130.0`, docs.\n');
+    strictEqual(stale.host_parity_baseline.status, 'stale');
+    ok(stale.host_parity_baseline.next_action.includes('runtime:compat'));
+    ok(formatText(stale).includes('baseline-freshness: stale'));
+    // missing: no baseline.md (seedRepo does not create it)
+    const missing = await runWith(null);
+    strictEqual(missing.host_parity_baseline.status, 'missing');
+    // unknown: version probe failed (claude --version omitted → ENOENT). A
+    // matching baseline must NOT be misreported current when the probe failed
+    // (version.text would otherwise carry stderr/error text).
+    const probeFailed = { ...defaultProbes };
+    delete probeFailed['claude --version'];
+    const unknown = await runWith('Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI\n`0.136.0`, docs.\n', probeFailed);
+    strictEqual(unknown.host_parity_baseline.status, 'unknown');
+    ok(unknown.host_parity_baseline.next_action.includes('Probe host CLIs'));
+    strictEqual(unknown.host_parity_baseline.evidence.observed.claude, null);
+    strictEqual(unknown.host_parity_baseline.evidence.probes.claude, 'unavailable');
+  });
 });
 
 function okResult(stdout = '', stderr = '') {

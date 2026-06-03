@@ -52,6 +52,53 @@ describe('runtime cutover audit', () => {
     ok(text.includes('- final-owner-declaration: manual; owner=owner'));
   });
 
+  it('passes through doctor host_parity_baseline freshness (stale / older-shape fallback)', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
+    });
+    // stale baseline from doctor → reused verbatim, blocks readiness, surfaces next_action
+    const staleReport = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctorReport({
+        hostParityBaseline: {
+          id: 'host_parity_baseline',
+          label: 'Host parity baseline freshness',
+          status: 'stale',
+          evidence: {},
+          next_action: 'Refresh plugins/runtime/docs/host-parity-baseline.md via runtime:compat snapshot→check→ingest-release-notes→plan for the current host versions.',
+        },
+      }),
+      footerState: 'closed',
+      footerReason: 'closed',
+      omccDevActive: 'no',
+    });
+    const staleCheck = staleReport.checks.find((check) => check.id === 'host_parity_baseline');
+    strictEqual(staleCheck.status, 'stale');
+    strictEqual(staleReport.ready_candidate, false);
+    ok(staleReport.next_actions.some((entry) => entry.id === 'host_parity_baseline' && entry.next_action.includes('runtime:compat')));
+
+    // older doctor shape (no host_parity_baseline) → fallback points at re-running
+    // doctor (NOT a deleted baseline file), stays 'missing', still blocks readiness
+    const olderShape = doctorReport();
+    delete olderShape.host_parity_baseline;
+    const fallbackReport = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: olderShape,
+      footerState: 'closed',
+      footerReason: 'closed',
+      omccDevActive: 'no',
+    });
+    const fallbackCheck = fallbackReport.checks.find((check) => check.id === 'host_parity_baseline');
+    strictEqual(fallbackCheck.status, 'missing');
+    ok(fallbackCheck.next_action.includes('Re-run runtime:doctor'));
+    strictEqual(fallbackReport.ready_candidate, false);
+  });
+
   it('builds a prompt-to-artifact completion audit checklist on request', async () => {
     const root = await seedRepo({
       scorecardStatus: 'satisfied',
@@ -659,7 +706,19 @@ function doctorReport(overrides = {}) {
     ],
     next_actions: [],
   };
+  const hostParityBaseline = overrides.hostParityBaseline ?? {
+    id: 'host_parity_baseline',
+    label: 'Host parity baseline freshness',
+    status: 'current',
+    evidence: {
+      baseline: { date: '2026-05-16', claude: '2.1.143', codex: '0.130.0' },
+      observed: { claude: '2.1.143 (Claude Code)', codex: 'codex-cli 0.130.0' },
+      normalized_observed: { claude: '2.1.143', codex: '0.130.0' },
+    },
+    next_action: null,
+  };
   return {
+    host_parity_baseline: hostParityBaseline,
     clis: {
       claude: { version: { text: '2.1.143 (Claude Code)' } },
       codex: { version: { text: 'codex-cli 0.130.0' } },
