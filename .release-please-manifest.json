@@ -1,7 +1,7 @@
 {
   "companions": "0.3.0",
   "plugins/companions": "0.4.0",
-  "plugins/engineer": "0.15.0",
+  "plugins/engineer": "0.16.0",
   "plugins/orchestrator": "0.9.0",
   "plugins/runtime": "0.63.0"
 }
