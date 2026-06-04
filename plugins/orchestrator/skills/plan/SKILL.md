@@ -102,6 +102,18 @@ Invoke `state.mjs ensemble-commit --workflow-path <path> --run-id <macro-plan-â€
 
 Follow the Presentation Mode Protocol before presenting. Present the synthesized plan as one macro decision item. Wait for user approval before reporting completion.
 
+### Step 8: Session-level handoff preflight
+
+After the plan is approved, surface the ADR-0031 session-level
+continue-vs-fresh preflight per
+`skills/_shared/references/session-handoff.md`: compute the macro projection
+(find-active then find-macro) and pass it to the runtime footer/check, so the
+recommended `/orchestrator:next` is sized by context-budget risk + archive-gate
+readiness. The preflight computes identically on Codex; only auto re-injection
+of the next-session prompt depends on `[features].plugin_hooks` + a `/hooks`
+trust (operator-attested; not provable non-interactively). On detached HEAD,
+report "no active branch context".
+
 ---
 
 ## Anti-patterns (do not produce)
