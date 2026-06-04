@@ -568,6 +568,79 @@ export async function listWorkflowFiles(repoRoot) {
 }
 
 /**
+ * List workflow files (`.md` only) across BOTH the canonical and legacy
+ * workflow homes. Unlike `listWorkflowFiles` (single resolved home), this is
+ * the branch-agnostic lister the ADR-0031 Stop-archive orphan sweep walks: a
+ * terminal workflow orphaned by branch deletion can live in either home, and
+ * the sweep must see all of them regardless of the current branch. ENOENT on
+ * either home is a clean skip. (Mirror of orchestrator `listAllMacros` +
+ * `listWorkflowFilesAllHomes`.)
+ */
+export async function listWorkflowFilesAllHomes(repoRoot) {
+  const dirs = [
+    workflowDir(repoRoot, { home: 'canonical' }),
+    workflowDir(repoRoot, { home: 'legacy' }),
+  ];
+  const files = [];
+  for (const dir of dirs) {
+    let entries;
+    try {
+      entries = await readdir(dir);
+    } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      throw err;
+    }
+    for (const name of entries) {
+      if (name.endsWith('.md') && !name.endsWith('.md.tmp')) files.push(join(dir, name));
+    }
+  }
+  return files.sort();
+}
+
+/**
+ * Classify a local branch ref: `'present'` | `'absent'` | `'unknown'`.
+ *
+ * `git show-ref --verify --quiet refs/heads/<branch>` exits 0 when the ref
+ * exists and 1 when it is confirmed absent (clean miss). Any other failure
+ * (git not on PATH → ENOENT, not a repo → 128, etc.) is `'unknown'`.
+ *
+ * The orphan sweep archives ONLY on `'absent'` (the branch was deleted, so the
+ * terminal workflow can never archive via the branch-keyed Stop hook). A probe
+ * failure (`'unknown'`) is treated conservatively — leave the workflow — so a
+ * transient git error can never falsely archive a workflow whose branch may
+ * still exist.
+ */
+export function branchRefState(repoRoot, branch) {
+  if (typeof branch !== 'string' || branch.length === 0) return 'unknown';
+  // Guard against malformed ref names FIRST: `git show-ref --verify --quiet`
+  // exits 1 for BOTH a valid-but-missing ref AND an INVALID refname (spaces,
+  // `..`, trailing `/`, `.lock`, etc.). Without this guard a corrupt stored
+  // `git_baseline.branch` would misclassify as 'absent' and be swept.
+  // `check-ref-format --branch` exits non-zero (128) for an invalid name and 0
+  // for a valid one, isolating "invalid name" (→ unknown) from "valid + missing"
+  // (the real 'absent' case). (Codex review P2.)
+  try {
+    execFileSync('git', ['check-ref-format', '--branch', branch], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+  } catch {
+    return 'unknown'; // invalid refname OR git probe failure → conservative
+  }
+  try {
+    execFileSync('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    return 'present';
+  } catch (err) {
+    // The name is valid (guard above), so exit 1 here == ref confirmed absent.
+    // Everything else (ENOENT no-git, 128 not-a-repo) stays unknown → conservative.
+    return err && err.status === 1 ? 'absent' : 'unknown';
+  }
+}
+
+/**
  * Probe the current git branch via `git branch --show-current`.
  *
  * Returns the branch name with only the transport `\n` trimmed —

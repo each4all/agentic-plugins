@@ -22,7 +22,7 @@
 // silently no-ops on any error.
 
 import { findActiveWorkflow } from '../../../scripts/state.mjs';
-import { runStopArchive } from '../../../scripts/stop-archive.mjs';
+import { runStopArchive, runStopArchiveOrphanSweep } from '../../../scripts/stop-archive.mjs';
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
@@ -78,25 +78,33 @@ async function main() {
   const repoRoot = gitTopLevel(process.cwd());
   if (!repoRoot) return 0;
 
-  let active;
+  let active = null;
   try {
     active = await findActiveWorkflow(repoRoot);
   } catch {
-    return 0;
+    active = null;
   }
-  if (!active) return 0;
-
+  if (active) {
+    try {
+      await runStopArchive({
+        workflowPath: active,
+        host: 'codex',
+        repoRoot,
+        statusDigest: gitStatusDigest(repoRoot),
+        headSha: gitHeadSha(repoRoot),
+        headSubject: gitHeadSubject(repoRoot),
+      });
+    } catch (err) {
+      process.stderr.write(`engineer/codex-stop: ${err.message}\n`);
+    }
+  }
+  // ADR-0031 branch-agnostic orphan sweep — runs even when there is no
+  // current-branch workflow, archiving terminal workflows whose baseline
+  // branch was deleted (best-effort, non-fatal per ADR-0011 §4).
   try {
-    await runStopArchive({
-      workflowPath: active,
-      host: 'codex',
-      repoRoot,
-      statusDigest: gitStatusDigest(repoRoot),
-      headSha: gitHeadSha(repoRoot),
-      headSubject: gitHeadSubject(repoRoot),
-    });
+    await runStopArchiveOrphanSweep({ repoRoot, host: 'codex' });
   } catch (err) {
-    process.stderr.write(`engineer/codex-stop: ${err.message}\n`);
+    process.stderr.write(`engineer/codex-stop orphan-sweep: ${err.message}\n`);
   }
   return 0;
 }

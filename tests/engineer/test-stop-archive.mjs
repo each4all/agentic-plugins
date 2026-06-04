@@ -20,9 +20,9 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, match } from 'node:assert/strict';
-import { mkdtemp, rm, readdir, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, readdir, readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, basename } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -47,9 +47,10 @@ const CODEX_PRE_COMPACT_PATH = resolve(
 const ORCHESTRATOR_ROOT = resolve(REPO_ROOT, 'plugins/orchestrator');
 const ORCHESTRATOR_STATE = resolve(ORCHESTRATOR_ROOT, 'scripts/state.mjs');
 
-const { createWorkflow, parseWorkflowFile, ARCHIVE_DIR_REL, WORKFLOW_DIR_REL } =
+const { createWorkflow, parseWorkflowFile, branchRefState, ARCHIVE_DIR_REL, WORKFLOW_DIR_REL } =
   await import(STATE_PATH);
-const { evaluateStopArchive, runStopArchive } = await import(STOP_ARCHIVE_PATH);
+const { evaluateStopArchive, runStopArchive, runStopArchiveOrphanSweep } =
+  await import(STOP_ARCHIVE_PATH);
 
 const MIN_DIGEST =
   'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
@@ -342,13 +343,17 @@ describe('Claude stop hook — case (a) all gates pass → archive', () => {
 describe('Claude stop hook — case (g) cross-branch workflow → no archive (ADR-0018 §sub-2)', () => {
   it('leaves the workflow in workflows/ when its git_baseline.branch differs from current branch', async () => {
     await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      // 'other' is a REAL branch here. Fixture is on 'main', so
+      // findActiveWorkflow returns null for the 'other' workflow and
+      // runStopArchive leaves it. The ADR-0031 orphan sweep ALSO leaves it,
+      // because branchRefState('other')='present' — a terminal cross-branch
+      // workflow whose branch still exists is something you can switch back
+      // to; only a DELETED-branch orphan is swept (covered separately).
+      execFileSync('git', ['branch', 'other'], { cwd: repoRoot });
       const { filePath } = await createWorkflow({
         repoRoot,
         verb: 'compose',
         originalRequest: 'cross-branch stop',
-        // Fixture is on 'main' (withTmpGitRepo init -b main); workflow
-        // is anchored to 'other'. findActiveWorkflow returns null even
-        // though all four other gates would pass.
         gitBaseline: {
           branch: 'other',
           head: baselineHead,
@@ -1259,6 +1264,205 @@ describe('ADR-0019 PR-E — state.mjs stop-archive CLI (terminal-child path)', (
       strictEqual(code, 0, `stderr: ${stderr}`);
       const envelope = JSON.parse(stdout.trim());
       strictEqual(envelope.archived, true);
+    });
+  });
+});
+
+// -----------------------------------------------------------------------------
+// ADR-0031 branch-deletion orphan sweep
+
+describe('branchRefState — local branch ref classification', () => {
+  it('present for an existing branch, absent for a missing one', async () => {
+    await withTmpGitRepo(async ({ repoRoot }) => {
+      strictEqual(branchRefState(repoRoot, 'main'), 'present');
+      strictEqual(branchRefState(repoRoot, 'feat/never-existed'), 'absent');
+    });
+  });
+
+  it('unknown (conservative) when the probe fails — non-repo dir or empty branch', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'engineer-not-a-repo-'));
+    try {
+      strictEqual(branchRefState(dir, 'main'), 'unknown');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    await withTmpGitRepo(async ({ repoRoot }) => {
+      strictEqual(branchRefState(repoRoot, ''), 'unknown');
+      // Invalid refnames must NOT classify as 'absent' (show-ref --verify
+      // returns 1 for them too) — check-ref-format guards them to 'unknown'.
+      strictEqual(branchRefState(repoRoot, 'bad..name'), 'unknown');
+      strictEqual(branchRefState(repoRoot, 'has space'), 'unknown');
+      strictEqual(branchRefState(repoRoot, 'trailing/'), 'unknown');
+    });
+  });
+});
+
+describe('runStopArchiveOrphanSweep — ADR-0031 branch-deletion orphan sweep', () => {
+  async function makeTerminal(filePath) {
+    await setFrontmatter(filePath, (fm) => {
+      fm.current_phase = 'summary-complete';
+      fm.terminal_marker = true;
+    });
+  }
+
+  it('archives a terminal workflow whose baseline branch was deleted (orphan)', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { filePath } = await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'orphan',
+        gitBaseline: { branch: 'feat/gone', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'claude',
+      });
+      await makeTerminal(filePath); // feat/gone has no git ref → branchRefState='absent'
+      const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+      strictEqual(results.filter((r) => r.archived).length, 1);
+      strictEqual((await listWorkflows(repoRoot)).length, 0);
+      strictEqual((await listArchive(repoRoot)).length, 1);
+    });
+  });
+
+  it('leaves a terminal workflow whose branch still exists (it archives normally on that branch)', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      execFileSync('git', ['branch', 'feat/live'], { cwd: repoRoot });
+      const { filePath } = await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'live',
+        gitBaseline: { branch: 'feat/live', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'claude',
+      });
+      await makeTerminal(filePath); // feat/live exists → branchRefState='present' → leave
+      const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+      strictEqual(results.length, 0);
+      strictEqual((await listWorkflows(repoRoot)).length, 1);
+      strictEqual((await listArchive(repoRoot)).length, 0);
+    });
+  });
+
+  it('leaves a NON-terminal workflow on a deleted branch (terminal_marker gate guards it)', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'nonterminal-orphan',
+        gitBaseline: { branch: 'feat/gone', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'claude',
+      });
+      // Left non-terminal (no set-terminal): even though feat/gone is absent,
+      // an in-progress workflow must NOT be swept.
+      const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+      strictEqual(results.length, 0);
+      strictEqual((await listWorkflows(repoRoot)).length, 1);
+    });
+  });
+
+  it('archives a LEGACY-home orphan into the legacy archive (both-homes sweep)', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { filePath } = await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'legacy-orphan',
+        gitBaseline: { branch: 'feat/gone', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'claude',
+      });
+      await makeTerminal(filePath);
+      // Relocate the workflow into the LEGACY engineer home so the sweep must
+      // reach it via listWorkflowFilesAllHomes, and archiveWorkflow must route
+      // it back into the LEGACY archive (inferStorageFromWorkflowPath).
+      const legacyDir = join(repoRoot, '.claude/agentic-engineer/workflows');
+      await mkdir(legacyDir, { recursive: true });
+      await rename(filePath, join(legacyDir, basename(filePath)));
+      const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+      strictEqual(results.filter((r) => r.archived).length, 1);
+      const legacyArchive = await readdir(join(repoRoot, '.claude/agentic-engineer/archive')).catch(() => []);
+      strictEqual(legacyArchive.filter((e) => e.endsWith('.md')).length, 1);
+    });
+  });
+
+  it('the Claude Stop hook runs the orphan sweep even when no workflow is active on the current branch', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      // Orphan on a gone branch; current branch (main) has NO active workflow,
+      // so the pre-ADR-0031 hook would early-return without archiving it.
+      const { filePath } = await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'hook-orphan',
+        gitBaseline: { branch: 'feat/gone', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'claude',
+      });
+      await makeTerminal(filePath);
+      const { code, stderr } = spawnStopHook({
+        hostScript: CLAUDE_STOP_PATH,
+        cwd: repoRoot,
+        payload: JSON.stringify({ cwd: repoRoot }),
+      });
+      strictEqual(code, 0, `stderr: ${stderr}`);
+      strictEqual((await listWorkflows(repoRoot)).length, 0);
+      strictEqual((await listArchive(repoRoot)).length, 1);
+    });
+  });
+
+  it('the Codex Stop hook also runs the orphan sweep', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { filePath } = await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'codex-hook-orphan',
+        gitBaseline: { branch: 'feat/gone', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'codex',
+      });
+      await makeTerminal(filePath);
+      const { code, stderr } = spawnStopHook({
+        hostScript: CODEX_STOP_PATH,
+        cwd: repoRoot,
+        payload: JSON.stringify({ cwd: repoRoot }),
+      });
+      strictEqual(code, 0, `stderr: ${stderr}`);
+      strictEqual((await listWorkflows(repoRoot)).length, 0);
+      strictEqual((await listArchive(repoRoot)).length, 1);
+    });
+  });
+
+  it('archives a PARENT-LINKED orphan (A4 cleanup; A3 still guards the macro)', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { filePath } = await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'parent-linked orphan',
+        gitBaseline: { branch: 'feat/gone', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'claude',
+      });
+      await setFrontmatter(filePath, (fm) => {
+        fm.current_phase = 'summary-complete';
+        fm.terminal_marker = true;
+        fm.parent_workflow = 'macro-plan-20260101T000000Z-aaaaaa';
+        fm.originating_subtask = 'sub1';
+      });
+      const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+      strictEqual(results.filter((r) => r.archived).length, 1);
+      strictEqual((await listWorkflows(repoRoot)).length, 0);
+    });
+  });
+
+  it('leaves a terminal orphan whose stored branch name is MALFORMED (probe → unknown)', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      const { filePath } = await createWorkflow({
+        repoRoot, verb: 'compose', originalRequest: 'malformed-branch',
+        gitBaseline: { branch: 'main', head: baselineHead, status_digest: MIN_DIGEST },
+        host: 'claude',
+      });
+      await setFrontmatter(filePath, (fm) => {
+        fm.current_phase = 'summary-complete';
+        fm.terminal_marker = true;
+        fm.git_baseline = { ...fm.git_baseline, branch: 'bad..name' };
+      });
+      const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+      strictEqual(results.length, 0); // 'unknown' → conservative leave, never a false archive
+      strictEqual((await listWorkflows(repoRoot)).length, 1);
+    });
+  });
+
+  it('sweeps multiple orphans in a single pass', async () => {
+    await withTmpGitRepo(async ({ repoRoot, baselineHead }) => {
+      for (const b of ['feat/gone-1', 'feat/gone-2', 'feat/gone-3']) {
+        const { filePath } = await createWorkflow({
+          repoRoot, verb: 'compose', originalRequest: `orphan ${b}`,
+          gitBaseline: { branch: b, head: baselineHead, status_digest: MIN_DIGEST },
+          host: 'claude',
+        });
+        await makeTerminal(filePath);
+      }
+      const results = await runStopArchiveOrphanSweep({ repoRoot, host: 'claude' });
+      strictEqual(results.filter((r) => r.archived).length, 3);
+      strictEqual((await listWorkflows(repoRoot)).length, 0);
+      strictEqual((await listArchive(repoRoot)).length, 3);
     });
   });
 });
