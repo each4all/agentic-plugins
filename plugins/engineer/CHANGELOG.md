@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.14.0...plugin-engineer-v0.15.0) (2026-06-04)
+
+
+### Features
+
+* **plugin/engineer:** ADR-0031 session-level handoff projection (engineer-wiring) ([#380](https://github.com/each4all/agentic-plugins/issues/380)) ([2f4b4b0](https://github.com/each4all/agentic-plugins/commit/2f4b4b0c9f79f0745d2230f5530aa6e9b1db23ca))
+
 ## [0.14.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.13.0...plugin-engineer-v0.14.0) (2026-06-02)
 
 
