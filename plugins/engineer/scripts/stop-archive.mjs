@@ -21,6 +21,8 @@
 
 import {
   archiveWorkflow,
+  branchRefState,
+  listWorkflowFilesAllHomes,
   noActiveChildrenCheck,
   parseWorkflowFile,
   snapshot,
@@ -238,6 +240,95 @@ export async function runStopArchive({
   }
 
   return { archived: true, to: archiveResult.to };
+}
+
+/**
+ * ADR-0031 branch-agnostic orphan sweep — archive terminal engineer workflows
+ * whose baseline branch was DELETED.
+ *
+ * Why: the per-branch Stop hook archives only the active workflow on the
+ * current branch (`findActiveWorkflow` → `runStopArchive`). A terminal_marker'd
+ * workflow whose `git_baseline.branch` was deleted (the common case after a
+ * subtask feature branch merges and is pruned) can NEVER be re-found by branch,
+ * so it leaks as a permanently-"active" workflow — and transitively blocks an
+ * orchestrator macro's A4 `no_active_engineer_children` gate. This sweep is the
+ * engineer mirror of orchestrator's branch-agnostic `runMacroStopArchiveAll`.
+ *
+ * Orphan criterion (intentionally narrow + safe):
+ *   1. `terminal_marker === true` AND `current_phase` ∈ TERMINAL_PHASES — the
+ *      work is done (set-terminal ran).
+ *   2. the baseline branch is CONFIRMED absent (`branchRefState === 'absent'`).
+ *      A still-present branch is left alone (it archives normally via
+ *      `runStopArchive`'s head_moved gate when the user is next on it, so the
+ *      per-branch single-active "switch-back to resume" semantics are
+ *      preserved). A probe failure (`'unknown'`) is also left alone — a
+ *      transient git error must never falsely archive a live workflow.
+ *
+ * HEAD-independent: a deleted branch's baseline HEAD is meaningless, so there is
+ * no head_moved gate here (mirror of the macro's branch-gone logic). Best-effort
+ * and non-throwing per ADR-0011 §4 — a single corrupt/unreadable file is skipped
+ * with a warning, never blocking the rest of the sweep or the host Stop
+ * lifecycle.
+ *
+ * @returns {Promise<Array<{workflowPath: string, archived: boolean, to?: string, reason?: string}>>}
+ *   one entry per workflow the sweep acted on (archived or attempted).
+ */
+export async function runStopArchiveOrphanSweep({ repoRoot, host, stderr = process.stderr }) {
+  let files;
+  try {
+    files = await listWorkflowFilesAllHomes(repoRoot);
+  } catch (err) {
+    stderr.write(`engineer/stop-archive: orphan-sweep list failed: ${err.message}\n`);
+    return [];
+  }
+  const results = [];
+  for (const workflowPath of files) {
+    let frontmatter;
+    try {
+      const text = await readFile(workflowPath, 'utf8');
+      ({ frontmatter } = parseWorkflowFile(text));
+    } catch (err) {
+      // Corrupt/unreadable workflow — skip (fail-open, ADR-0011 §4). One bad
+      // file must not block sweeping the rest.
+      stderr.write(`engineer/stop-archive: orphan-sweep skip ${workflowPath}: ${err.message}\n`);
+      continue;
+    }
+    if (!terminalMarkerCheck(frontmatter)) continue;
+    if (!terminalPhaseCheck(frontmatter?.current_phase)) continue;
+    const branch = frontmatter?.git_baseline?.branch;
+    if (typeof branch !== 'string' || branch.length === 0) continue;
+    if (branchRefState(repoRoot, branch) !== 'absent') continue; // present | unknown → leave
+    // Parent-linked orphan: archiving it is exactly the cleanup the macro's A4
+    // (no_active_engineer_children) gate waits for — A4 wants the children
+    // ARCHIVED, and a branch-deleted child can never archive via the branch-keyed
+    // hook. The macro stays guarded against false completion by A3
+    // (all_subtasks_terminal): an unreconciled subtask keeps the macro live even
+    // after A4 clears. The deferred parent writeback cannot be replayed here (a
+    // deleted branch has no recoverable terminal commit and writebackParent
+    // requires one), so surface the rare "committed but writeback missed" case
+    // for manual reconciliation rather than silently dropping it. (Codex review P1.)
+    if (typeof frontmatter.parent_workflow === 'string' && frontmatter.parent_workflow.length > 0) {
+      stderr.write(
+        `engineer/stop-archive: archiving parent-linked orphan ${workflowPath} ` +
+        `(parent=${frontmatter.parent_workflow}, subtask=${frontmatter.originating_subtask ?? '?'}); ` +
+        `if its work landed, confirm the macro subtask is completed via ` +
+        `/orchestrator:done — the macro's all_subtasks_terminal gate keeps it live until then.\n`,
+      );
+    }
+    try {
+      const archiveResult = await archiveWorkflow({ workflowPath, host, repoRoot });
+      results.push({
+        workflowPath,
+        archived: archiveResult.archived === true,
+        to: archiveResult.to,
+        reason: archiveResult.reason,
+      });
+    } catch (err) {
+      stderr.write(`engineer/stop-archive: orphan-sweep archive failed for ${workflowPath}: ${err.message}\n`);
+      results.push({ workflowPath, archived: false, reason: 'archive-threw' });
+    }
+  }
+  return results;
 }
 
 function isConventionalCommitSubjectInline(subject) {
