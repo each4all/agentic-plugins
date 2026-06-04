@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.15.0...plugin-engineer-v0.16.0) (2026-06-04)
+
+
+### Features
+
+* **plugin/engineer:** ADR-0031 branch-deletion orphan sweep for Stop-archive ([#383](https://github.com/each4all/agentic-plugins/issues/383)) ([74943c4](https://github.com/each4all/agentic-plugins/commit/74943c468e3850ee93f9c9d2a9fcf39ea73e474c))
+
 ## [0.15.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.14.0...plugin-engineer-v0.15.0) (2026-06-04)
 
 
