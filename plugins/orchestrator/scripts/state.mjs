@@ -670,6 +670,38 @@ export async function listWorkflowFiles(repoRoot) {
 }
 
 /**
+ * List workflow files (`.md` only) across BOTH the canonical and legacy
+ * workflow homes. Unlike `listWorkflowFiles` (which resolves a single home via
+ * `resolveWorkflowStorage`, preferring canonical in read mode), this is the
+ * fail-closed-across-homes lister used by `findMacroBySubtaskBranch`: a macro
+ * referenced by a subtask branch can live in either home, and a canonical+legacy
+ * split must surface as an ambiguity rather than silently preferring canonical
+ * (mirrors `findActiveWorkflowByBranch`'s both-homes scan; the ADR-0031
+ * session-handoff projection depends on this lookup being fail-closed across
+ * homes). ENOENT on either home is a clean skip.
+ */
+async function listWorkflowFilesAllHomes(repoRoot) {
+  const dirs = [
+    workflowDir(repoRoot, { home: 'canonical' }),
+    workflowDir(repoRoot, { home: 'legacy' }),
+  ];
+  const files = [];
+  for (const dir of dirs) {
+    let entries;
+    try {
+      entries = await readdir(dir);
+    } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      throw err;
+    }
+    for (const name of entries) {
+      if (name.endsWith('.md') && !name.endsWith('.md.tmp')) files.push(join(dir, name));
+    }
+  }
+  return files.sort();
+}
+
+/**
  * Probe the current git branch via `git branch --show-current`.
  *
  * Returns the branch name with only the transport `\n` trimmed —
@@ -879,8 +911,11 @@ export async function findActiveWorkflow(repoRoot) {
 
 /**
  * ADR-0019 §1 lines 187-213 — branch-agnostic macro lookup. Scans
- * every active orchestrator workflow file under `workflows/` for the
- * one whose `plan.subtasks[i].branch` matches the supplied branch.
+ * every active orchestrator workflow file under BOTH workflow homes
+ * (canonical + legacy) for the one whose `plan.subtasks[i].branch`
+ * matches the supplied branch. Both homes are scanned so a canonical+legacy
+ * split surfaces as an ambiguity (fail-closed) instead of silently
+ * preferring one home.
  *
  * Used by `/orchestrator:next` and `/orchestrator:done` AFTER the user
  * has been switched to a subtask branch: `findActiveWorkflowByBranch`
@@ -913,7 +948,11 @@ export async function findActiveWorkflow(repoRoot) {
  */
 export async function findMacroBySubtaskBranch(repoRoot, branch) {
   if (typeof branch !== 'string' || branch.length === 0) return null;
-  const files = await listWorkflowFiles(repoRoot);
+  // Scan BOTH workflow homes (canonical + legacy). A single-home scan would
+  // silently prefer canonical and miss a legacy macro, or pick a canonical
+  // match while a legacy duplicate exists — breaking the fail-closed
+  // uniqueness rule the ADR-0031 projection relies on.
+  const files = await listWorkflowFilesAllHomes(repoRoot);
   const matching = [];
   for (const file of files) {
     let fm;

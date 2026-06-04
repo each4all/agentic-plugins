@@ -350,3 +350,14 @@ id/path, artifact pointers, recommended next work, and next-session
 action/command or prompt pointer. The footer is advisory
 and pointer-only; do not mutate host session context or paste raw peer /
 consensus output into the main session.
+
+Before rendering the footer, surface the ADR-0031 session-level
+continue-vs-fresh preflight per
+`skills/_shared/references/session-handoff.md`: compute the orchestrator macro
+projection (resolved across branches via find-active then find-macro) and pass
+it to the runtime footer/check (`--workflow-projection-file`) so the footer
+carries the continue-vs-fresh decision. A finalized macro normally projects
+`archive_gate=ready_to_archive` once every macro gate passes (e.g. all children
+archived); report whatever gate it computes (the footer is advisory) — never
+archive from the preflight. On detached HEAD, report "no active branch
+context" — do not auto-recommend a fresh session.

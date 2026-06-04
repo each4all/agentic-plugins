@@ -123,6 +123,16 @@ summary, whether Codex Stop hook automation is expected for the active session,
 and whether the fallback helper was run. Append the runtime completion footer
 when available.
 
+Surface the ADR-0031 session-level continue-vs-fresh preflight per
+`skills/_shared/references/session-handoff.md`: compute the macro projection
+(find-active then find-macro) and pass it to the runtime footer/check. An
+aborted macro normally projects `archive_gate=ready_to_archive` once every
+macro gate passes; report whatever gate it computes — never archive from the
+preflight. The preflight computes identically on Codex; only
+auto re-injection of the next-session prompt depends on `[features].plugin_hooks`
++ a `/hooks` trust (operator-attested; not provable non-interactively). On
+detached HEAD, report "no active branch context".
+
 ---
 
 ## Anti-patterns
