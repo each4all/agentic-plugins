@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.16.0...plugin-engineer-v0.17.0) (2026-06-05)
+
+
+### Features
+
+* **plugin/engineer:** mirror ADR-0031 session-handoff preflight into Codex verb skills ([#386](https://github.com/each4all/agentic-plugins/issues/386)) ([ea24c67](https://github.com/each4all/agentic-plugins/commit/ea24c678606603d46e502e3bd36f0fd148c9efe0))
+
 ## [0.16.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.15.0...plugin-engineer-v0.16.0) (2026-06-04)
 
 
