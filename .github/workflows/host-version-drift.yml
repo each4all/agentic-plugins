@@ -1,0 +1,160 @@
+name: host-version-drift
+
+# Scheduled gate that surfaces host (Claude Code / Codex CLI) version drift
+# without anyone running runtime:doctor / runtime:compat by hand. CI runners
+# have no host CLI installed, so this compares the runtime host-parity baseline
+# against the latest *published* versions (npm, GitHub releases as fallback)
+# plus a staleness window. It NEVER edits the baseline — drift is surfaced via a
+# single tracking issue + a failing job so a human re-observes and refreshes the
+# baseline (human-reviewed, ADR-0026).
+
+on:
+  schedule:
+    # Twice daily (UTC). GitHub may delay or skip scheduled runs, so two slots
+    # plus workflow_dispatch give a practical floor on detection latency.
+    - cron: '0 6,18 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/check-host-version-drift.mjs'
+      - 'tests/scripts/test-check-host-version-drift.mjs'
+      - 'plugins/runtime/docs/host-parity-baseline.md'
+      - '.github/workflows/host-version-drift.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/check-host-version-drift.mjs'
+      - 'tests/scripts/test-check-host-version-drift.mjs'
+      - 'plugins/runtime/docs/host-parity-baseline.md'
+      - '.github/workflows/host-version-drift.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit-test the drift checker
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Run drift-checker unit tests
+        run: node --test tests/scripts/test-check-host-version-drift.mjs
+
+  drift:
+    name: Check host version drift
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Run host version drift check
+        id: drift
+        # Capture exit code + JSON without aborting the job, so the issue step
+        # below can still run on a drift/stale exit.
+        run: |
+          set +e
+          OUTPUT=$(node scripts/check-host-version-drift.mjs --format json)
+          CODE=$?
+          set -e
+          echo "exit_code=${CODE}" >> "$GITHUB_OUTPUT"
+          {
+            echo "result<<DRIFT_RESULT_EOF"
+            echo "${OUTPUT}"
+            echo "DRIFT_RESULT_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "${OUTPUT}"
+      - name: Upsert or resolve the drift tracking issue
+        # Skip on exit 2 (parser/script error): that is a code defect, surfaced
+        # by the failing job below, not an operational drift alert.
+        if: always() && steps.drift.outputs.exit_code != '2'
+        uses: actions/github-script@v7
+        env:
+          DRIFT_RESULT: ${{ steps.drift.outputs.result }}
+        with:
+          script: |
+            const result = JSON.parse(process.env.DRIFT_RESULT);
+            const TITLE = 'Host version baseline drift — re-observation needed';
+            const LABEL = 'host-version-drift';
+            const DRIFT_STATES = ['drift', 'stale', 'drift+stale'];
+            const { owner, repo } = context.repo;
+            const normalizeBody = (s) => (s || '').replace(/\r\n?/g, '\n').trim();
+
+            // Search open AND closed so a single tracking issue is reused
+            // (reopened) rather than spawning duplicates on recurrence.
+            const all = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'all', labels: LABEL,
+            });
+            const existing = all.find((i) => i.title === TITLE);
+
+            // Only a FULLY confirmed `current` resolves the issue. A flake
+            // (`source-unavailable` / `partial-unavailable`) means "could not
+            // confirm", not "fixed" — it must never close a real drift issue.
+            if (result.status === 'current') {
+              if (existing && existing.state === 'open') {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: existing.number,
+                  body: 'Drift check now reports `current` — closing.',
+                });
+                await github.rest.issues.update({ owner, repo, issue_number: existing.number, state: 'closed' });
+              }
+              return;
+            }
+            if (!DRIFT_STATES.includes(result.status)) {
+              // source-unavailable / partial-unavailable → no-op: leave any
+              // existing issue untouched, and do not open one for a flake.
+              return;
+            }
+
+            const rows = result.hosts
+              .map((h) => `| ${h.host} | ${h.baseline} | ${h.latest ?? '?'} | ${h.severity} |`)
+              .join('\n');
+            const lines = [
+              `The scheduled host-version drift check reported **${result.status}**.`,
+              '',
+              '| host | baseline | latest | severity |',
+              '| --- | --- | --- | --- |',
+              rows,
+            ];
+            if (result.patches && result.patches.length) {
+              lines.push('', `Patch-level (informational, not failing): ${result.patches.join(', ')}`);
+            }
+            if (result.reasons && result.reasons.length) {
+              lines.push('', `Signals: ${result.reasons.join('; ')}`);
+            }
+            lines.push(
+              '',
+              '**Action**: re-observe the hosts and refresh '
+                + '`plugins/runtime/docs/host-parity-baseline.md` (human-reviewed per ADR-0026), '
+                + 'appending a `## Version History` row. This gate never edits the baseline automatically.',
+            );
+            const body = lines.join('\n');
+
+            if (!existing) {
+              await github.rest.issues.create({ owner, repo, title: TITLE, labels: [LABEL], body });
+            } else if (existing.state === 'closed') {
+              // Drift recurred after a prior resolution — reopen the same issue.
+              await github.rest.issues.update({ owner, repo, issue_number: existing.number, state: 'open', body });
+            } else if (normalizeBody(existing.body) !== normalizeBody(body)) {
+              // Update only when facts changed — a stable body avoids twice-daily spam.
+              await github.rest.issues.update({ owner, repo, issue_number: existing.number, body });
+            }
+      - name: Fail the job on drift, stale, or error
+        if: steps.drift.outputs.exit_code != '0'
+        run: |
+          echo "host-version-drift exited ${{ steps.drift.outputs.exit_code }} (1=drift/stale, 2=error)."
+          exit 1
