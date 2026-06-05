@@ -150,3 +150,17 @@ Refresh this baseline when any of these change:
   `.agentic-plugins`-owned path (the former Codex `plugin_hooks` toggle is
   removed), packaging hooks, or launching host-native subagent/team workflows
   automatically.
+
+## Version History
+
+This trail records each human-reviewed baseline observation so a drift alert
+can show *why* the baseline is stale. Append a row when you refresh the
+`Observed on …` header at the top of this file; never rewrite past rows and
+never let automation edit it (ADR-0026). The header stays the single source of
+truth for the current baseline — the drift checker
+(`scripts/check-host-version-drift.mjs`) reads only the first dated header
+line, not this table.
+
+| Observed | Claude | Codex | Note |
+| --- | --- | --- | --- |
+| 2026-06-03 | `2.1.161` | `0.136.0` | Baseline at host-version-drift gate introduction. |
