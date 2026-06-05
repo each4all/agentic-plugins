@@ -167,6 +167,19 @@ reasoning without dispatching a peer.
 
 ---
 
+## Session-level handoff preflight (ADR-0031)
+
+As part of the completion footer (see the Completion section above), surface the
+ADR-0031 session-level continue-vs-fresh preflight per
+`skills/_shared/references/session-handoff.md`: compute the engineer workflow
+projection and pass it to the runtime footer/check
+(`--workflow-projection-file`) so the footer carries the continue-vs-fresh
+decision. On detached HEAD, report "no active branch context" — do not
+auto-recommend a fresh session. This mirrors the `/engineer:frame`
+command's preflight so `$engineer:frame` on Codex surfaces it identically.
+
+---
+
 ## Multi-axis lens at a 2+-branch point (ADR-0029 §2)
 
 When this verb reaches a **genuine 2+-branch decision point** — two

@@ -115,6 +115,18 @@ and choose review depth from the workflow phase, including Phase 5
 design-level issue is surfaced. Treat budget, latency, model, effort, or peer
 limits as user constraints and state the quality tradeoff before proceeding.
 
+### Session-level handoff preflight (Phase 0, ADR-0031)
+
+Before sequencing the Phase 1–7 lifecycle, surface the ADR-0031 session-level
+continue-vs-fresh preflight per
+`skills/_shared/references/session-handoff.md`: compute the engineer workflow
+projection for the current branch and pass it — or, when no active workflow
+exists, the standalone routing — to the runtime seam, so the Entry routing
+recommendation above is sized by context-budget risk + archive-gate readiness.
+On detached HEAD report "no active branch context"; do not auto-recommend a
+fresh session. This mirrors the `/engineer:start` command's Phase 0d preflight
+so `$engineer:start` on Codex surfaces it identically.
+
 ### Phase 1 — Brainstorm composite (investigate → frame → decide)
 
 Per ADR-0020 §Sub-decision 2, Phase 1 is a **composite** of three
@@ -272,6 +284,15 @@ fields in the footer. Ask the user what to do with PR handling only when
 the helper returns `pr_handling.recommendation == "ask-user"`; `defer`
 means evidence is incomplete, and `block` means a readiness criterion
 failed.
+
+Surface the ADR-0031 session-level continue-vs-fresh preflight at this
+completion (and at Phase 0 before sequencing a fresh lifecycle) per
+`skills/_shared/references/session-handoff.md`: compute the engineer workflow
+projection and pass it to the runtime footer/check
+(`--workflow-projection-file`) so the footer carries the continue-vs-fresh
+decision. On detached HEAD report "no active branch context". This mirrors the
+`/engineer:start` command's Phase 7 completion preflight so `$engineer:start`
+on Codex surfaces it identically.
 
 ---
 

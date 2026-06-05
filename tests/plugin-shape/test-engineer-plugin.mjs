@@ -1624,3 +1624,43 @@ describe('plugins/engineer — contract version freshness', () => {
     }
   });
 });
+
+// ADR-0031 — the session-level continue-vs-fresh preflight is wired into the
+// Claude commands; the Codex skills (SKILL.md) must mirror it or `$engineer:*`
+// on Codex silently skips the preflight (the capability-① asymmetry). This
+// guards against a future command-only edit that re-opens the gap.
+//
+// Parity is checked on the load-bearing `session-handoff.md` reference plus the
+// `continue-vs-fresh` phrasing — NOT a bare `ADR-0031` mention, which also
+// appears in the detached-HEAD guard (not a firing point). `start` must surface
+// it at BOTH firing points (Phase 0 entry + Phase 7 completion), so losing
+// either one while keeping the other still fails.
+describe('plugins/engineer — ADR-0031 session-handoff preflight Claude/Codex parity', () => {
+  const refsToHandoff = (text) => (text.match(/session-handoff\.md/g) || []).length;
+  const surfacesPreflight = (text) => /session-handoff\.md/.test(text) && /continue-vs-fresh/.test(text);
+
+  it('every verb whose command surfaces the preflight has it mirrored in the skill', async () => {
+    for (const verb of VERBS) {
+      const command = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
+      const skill = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+      if (surfacesPreflight(command)) {
+        ok(
+          surfacesPreflight(skill),
+          `commands/${verb}.md surfaces the ADR-0031 preflight but skills/${verb}/SKILL.md does not mirror it (Codex asymmetry)`,
+        );
+      }
+    }
+  });
+
+  it('the start macro surfaces the preflight at BOTH firing points (Phase 0 + Phase 7) in command and skill', async () => {
+    for (const rel of ['commands/start.md', 'skills/start/SKILL.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      ok(surfacesPreflight(text), `${rel} lacks the ADR-0031 session-handoff preflight`);
+      const refs = refsToHandoff(text);
+      ok(
+        refs >= 2,
+        `${rel} should surface the preflight at 2 firing points (Phase 0 entry + Phase 7 completion); found ${refs} session-handoff.md reference(s)`,
+      );
+    }
+  });
+});
