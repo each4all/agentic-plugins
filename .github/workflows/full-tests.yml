@@ -1,0 +1,49 @@
+# Repo-level coverage authority (ADR-0033).
+#
+# The host workflows (claude-tests.yml, codex-tests.yml) run their own
+# companion's unit tests plus the curated `test:plugin-shape` subset, and
+# cross-host-tests.yml runs `test:cross-host`. None of them runs the full
+# canonical suite, so test files outside those curated lists — all of
+# tests/runtime/*, tests/scripts/*, companions/tests/contract-parity — used
+# to be gated by NO workflow. This job runs the full discovery-based `npm test`
+# (node --test, no-arg) with no `paths:` filter, so every test file is gated on
+# every push/PR and a newly added test cannot silently escape CI. The host
+# workflows remain as scoped per-host diagnostic signals; this job is the
+# authority. tests/scripts/test-full-suite-coverage.mjs guards the invariant.
+name: full-tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-suite:
+    name: full test suite (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [24]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      # Mirror the host workflows' release-please detection: the suite includes
+      # plugin-shape tests that intentionally tolerate manifest/catalog version
+      # lag on the release-please PR (see tests/plugin-shape/test-*-plugin.mjs).
+      # Without this, every release-please PR would fail the full-suite gate.
+      - name: Run full test suite (npm test)
+        env:
+          AGENTIC_RELEASE_PLEASE_PR: ${{ github.event_name == 'pull_request' && github.head_ref == 'release-please--branches--main' && '1' || '0' }}
+        run: npm test
