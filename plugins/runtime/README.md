@@ -121,8 +121,8 @@ host-specific plugin install/update command shape, different permission
 surfaces, stale host plugin caches, failed Claude plugin entries, and retired
 agentic-plugins installs such as the old `research` plugin. These findings are
 diagnostic output only; doctor does not uninstall, upgrade, or mutate either
-host. Codex-specific capability drift, including marketplace-only plugin
-management and plugin-hook readiness, is documented in
+host. Codex-specific capability drift, including the Codex plugin command
+surface and plugin-hook readiness, is documented in
 [`docs/codex-capability-baseline.md`](docs/codex-capability-baseline.md).
 The source-backed parity matrix for Claude expectations that do not port
 directly to Codex is documented in
@@ -176,12 +176,16 @@ as the archived `research` plugin. It does not expose general plugin uninstall
 or arbitrary host command execution.
 
 Codex temporary marketplace manifests are reported separately from per-plugin
-install cache evidence. The current observed Codex plugin command surface is
-marketplace-only (`add` / `upgrade` / `remove`), not Claude-style per-plugin
-`install` / `list`. If the marketplace cache is current but the per-plugin
-cache is absent, settings reports a manual cache-materialization item instead
-of retrying `codex plugin marketplace add`; doctor surfaces the same state in
-the readiness matrix and host-parity diagnostics.
+install cache evidence. Codex `0.137.0` added per-plugin `codex plugin add` /
+`list` / `remove` beyond the prior marketplace-only `add` / `upgrade` /
+`remove`, but runtime does not yet use them: it still treats the surface as
+marketplace-only and reports a `marketplace-only` command surface (adopting the
+per-plugin commands is a follow-up — see
+[`docs/follow-ups.md`](docs/follow-ups.md)). If the marketplace cache is current
+but the per-plugin cache is absent, settings reports a manual
+cache-materialization item instead of retrying `codex plugin marketplace add`;
+doctor surfaces the same state in the readiness matrix and host-parity
+diagnostics.
 
 It invokes commands as argv arrays, never through a shell, and records only status, exit code, byte counts, timing, retry classification, and sanitized error metadata. Raw stdout and stderr are omitted from settings output and artifacts. `--plugin-management-host all|claude|codex` scopes install/update execution. Settings writes `.agentic-plugins/runs/settings/<run-id>/settings.json` plus `.agentic-plugins/runs/settings/latest.json` for explicit plugin-management, plugin-cleanup, Codex plugin-hook config writes, or Codex hook-review attestations; `runtime:doctor` reads those artifacts and reports failed action types, retryability, and the newest current hook-review attestation. Settings still does not write host-native Claude config, mutate Codex hook trust state, change auth, secrets, sandbox/permission settings, or execute general plugin uninstall commands.
 
