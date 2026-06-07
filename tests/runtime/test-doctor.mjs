@@ -67,7 +67,7 @@ describe('runtime doctor', () => {
     strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks, false);
     strictEqual(report.clis.codex.feature_surface.codex_plugin_hooks_stage, 'under development');
     strictEqual(report.clis.codex.feature_surface.automatic_plugin_hooks, false);
-    strictEqual(report.plugin_command_surface.schema_version, 'runtime-plugin-command-surface-1.3');
+    strictEqual(report.plugin_command_surface.schema_version, 'runtime-plugin-command-surface-1.4');
     strictEqual(report.plugin_command_surface.claude.mode, 'per-plugin-command');
     strictEqual(report.plugin_command_surface.claude.supports.update_plugin, true);
     strictEqual(report.plugin_command_surface.claude.supports.uninstall_plugin, true);
@@ -124,6 +124,86 @@ describe('runtime doctor', () => {
     ok(formatText(report).includes('codex: mode=marketplace-only'));
     ok(formatText(report).includes('Host Parity'));
     ok(formatText(report).includes('non-interactive hook trust query'));
+  });
+
+  it('recognizes the Codex per-plugin command surface on 0.137.0 (ADR-0032)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-perplugin-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-perplugin-home-'));
+    await seedRepo(root);
+    await seedHome(home);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-06-07T00:00:00.000Z'),
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex --version': okResult('codex-cli 0.137.0\n'),
+        'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin  Manage Codex plugins\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
+        'codex plugin --help': okResult('Manage Codex plugins\n\nUsage: codex plugin <COMMAND>\n\nCommands:\n  add          Install a plugin from a configured marketplace snapshot\n  list         List plugins available from configured marketplace snapshots\n  marketplace  Add, list, upgrade, or remove configured plugin marketplaces\n  remove       Remove an installed plugin from local config and cache\n'),
+        'codex plugin marketplace --help': okResult('Add, list, upgrade, or remove configured plugin marketplaces\n\nUsage: codex plugin marketplace <COMMAND>\n\nCommands:\n  add\n  list\n  upgrade\n  remove\n'),
+      }),
+    });
+
+    // Per-plugin surface is detected precisely from `codex plugin --help`, not the version.
+    const featureSurface = report.clis.codex.feature_surface;
+    strictEqual(featureSurface.plugin_install_command, true);
+    strictEqual(featureSurface.plugin_list_command, true);
+    strictEqual(featureSurface.plugin_remove_command, true);
+
+    const codex = report.plugin_command_surface.codex;
+    strictEqual(report.plugin_command_surface.schema_version, 'runtime-plugin-command-surface-1.4');
+    strictEqual(codex.mode, 'per-plugin-and-marketplace');
+    strictEqual(codex.supports.install_plugin, true);
+    strictEqual(codex.supports.list_plugin, true);
+    strictEqual(codex.supports.remove_plugin, true);
+    strictEqual(codex.supports.update_plugin, false);
+    strictEqual(codex.supports.marketplace_add, true);
+    strictEqual(codex.supports.marketplace_list, true);
+    ok(codex.limits.some((line) => line.includes('not full Claude plugin parity')));
+    ok(codex.limits.some((line) => line.includes('does not auto-execute codex plugin add')));
+    ok(codex.limits.some((line) => line.includes('per-plugin add/list/remove')));
+
+    // Partial-parity info note replaces the marketplace-only warning on 0.137+.
+    ok(report.host_parity.differences.some((d) => d.id === 'codex_plugin_command_partial_parity'));
+    ok(!report.host_parity.differences.some((d) => d.id === 'codex_marketplace_command_shape'));
+
+    const text = formatText(report);
+    ok(text.includes('codex: mode=per-plugin-and-marketplace'));
+    ok(text.includes('plugin-add=true'));
+    ok(text.includes('plugin-remove=true'));
+    ok(text.includes('marketplace-list=true'));
+  });
+
+  it('enumerates only the detected per-plugin verbs and does not overclaim (ADR-0032)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-perplugin-partial-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-perplugin-partial-home-'));
+    await seedRepo(root);
+    await seedHome(home);
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-06-07T00:00:00.000Z'),
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex --version': okResult('codex-cli 0.137.0\n'),
+        // Hypothetical host exposing only per-plugin `add` (install), without list/remove.
+        'codex plugin --help': okResult('Manage Codex plugins\n\nUsage: codex plugin <COMMAND>\n\nCommands:\n  add          Install a plugin from a configured marketplace snapshot\n  marketplace  Add, list, upgrade, or remove configured plugin marketplaces\n'),
+        'codex plugin marketplace --help': okResult('Add, list, upgrade, or remove configured plugin marketplaces\n\nUsage: codex plugin marketplace <COMMAND>\n\nCommands:\n  add\n  list\n  upgrade\n  remove\n'),
+      }),
+    });
+
+    const codex = report.plugin_command_surface.codex;
+    strictEqual(codex.mode, 'per-plugin-and-marketplace');
+    strictEqual(codex.supports.install_plugin, true);
+    strictEqual(codex.supports.list_plugin, false);
+    strictEqual(codex.supports.remove_plugin, false);
+    // Must enumerate only the detected verb ("add"), never claim the undetected list/remove.
+    ok(codex.limits.some((line) => line.includes('per-plugin add plus marketplace')));
+    ok(!codex.limits.some((line) => line.includes('per-plugin add/list/remove')));
+    const partial = report.host_parity.differences.find((d) => d.id === 'codex_plugin_command_partial_parity');
+    ok(partial);
+    ok(partial.summary.includes('per-plugin add plus marketplace'));
+    ok(!partial.summary.includes('add/list/remove'));
   });
 
   it('treats removed plugin_hooks as ready on the generic hooks gate (Codex >= ~0.134)', async () => {

@@ -136,10 +136,14 @@ target checklist so `runtime:doctor` can clear the manual follow-up until those
 change.
 
 If Codex already has a current temporary marketplace cache but no per-plugin
-install cache, report that as manual cache materialization. The observed Codex
-plugin command surface is marketplace-only (`add` / `upgrade` / `remove`), so
-do not keep retrying `codex plugin marketplace add` and do not invent a
-per-plugin `codex plugin install` step.
+install cache, report that as manual cache materialization. Codex `0.137.0`
+exposes a per-plugin command surface (`codex plugin add` / `list` / `remove`)
+beyond the marketplace `add` / `upgrade` / `remove`; it is not full Claude
+parity (no `update` / `enable` / `disable` / `details` / `validate` / `prune`).
+Runtime recognizes this surface but does not auto-execute `codex plugin add`
+(execution wiring is a deferred follow-up): you may suggest `codex plugin add
+<plugin>@<marketplace>` as a manual step, but do not keep retrying `codex plugin
+marketplace add`. On older Codex (`0.130`–`0.136`) the surface is marketplace-only.
 
 The executors record only status, exit code, byte counts, timing, and sanitized
 error metadata. They omit raw stdout and stderr. A host command that exits 0 can
