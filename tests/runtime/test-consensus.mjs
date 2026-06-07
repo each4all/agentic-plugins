@@ -1546,6 +1546,7 @@ function fakeConsensusRunner({
       if (args.join(' ') === 'features list') return okResult('hooks Beta true\nplugin_hooks Beta false\n');
       if (args.join(' ') === 'login status') return okResult('Logged in using ChatGPT\n');
       if (args.join(' ') === 'plugin marketplace --help') return okResult('Usage: codex plugin marketplace add upgrade remove\n');
+      if (args.join(' ') === 'plugin --help') return okResult('Usage: codex plugin <COMMAND>\nCommands:\n  add\n  list\n  marketplace\n  remove\n');
     }
     if (command === process.execPath) {
       const companionPath = args[0] ?? '';

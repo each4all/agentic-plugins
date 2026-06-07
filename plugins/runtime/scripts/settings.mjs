@@ -14,7 +14,7 @@ import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
-import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor } from './doctor.mjs';
+import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor, codexPerPluginVerbs } from './doctor.mjs';
 
 export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.10';
 export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.0';
@@ -88,7 +88,9 @@ export async function runSettings({
     await applyConfigPlans(configPlans);
   }
 
-  const pluginPlans = buildPluginPlans(doctor.plugins);
+  const pluginPlans = buildPluginPlans(doctor.plugins, {
+    codexPerPluginVerbList: codexPerPluginVerbs(doctor.clis?.codex?.feature_surface ?? {}),
+  });
   const pluginManagement = await buildPluginManagementPlan({
     plugins: pluginPlans,
     clis: doctor.clis,
@@ -643,7 +645,7 @@ function summarizePluginCleanupStatus(plans, summary) {
   return 'planned';
 }
 
-function buildPluginPlans(plugins) {
+function buildPluginPlans(plugins, { codexPerPluginVerbList = [] } = {}) {
   const result = {};
   for (const name of PLUGIN_NAMES) {
     const plugin = plugins[name];
@@ -672,6 +674,7 @@ function buildPluginPlans(plugins) {
         claudeCacheLatest,
         codexCacheLatest,
         codexTmpMarketplace,
+        codexPerPluginVerbList,
       }),
     };
   }
@@ -695,8 +698,12 @@ function summarizeSingleManifest(manifest) {
   };
 }
 
-function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstalled, claudeCacheLatest, codexCacheLatest, codexTmpMarketplace }) {
+function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstalled, claudeCacheLatest, codexCacheLatest, codexTmpMarketplace, codexPerPluginVerbList = [] }) {
   const recommendations = [];
+  // `add` is the per-plugin install verb and the threshold for recognizing the
+  // surface; enumerate only the observed verbs so strings never overclaim.
+  const codexPerPluginSurface = codexPerPluginVerbList.includes('add');
+  const codexPerPluginVerbText = codexPerPluginVerbList.join('/') || 'add';
   if (!marketplace?.claude) {
     recommendations.push({
       host: 'claude',
@@ -756,7 +763,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
         command: command.display,
         argv: command.argv,
         executable: true,
-        detail: `Codex marketplace cache has ${codexTmpVersion}; source/catalog ${sourceVersion}. Codex upgrades the marketplace, not an individual plugin install.`,
+        detail: `Codex marketplace cache has ${codexTmpVersion}; source/catalog ${sourceVersion}. Codex upgrades via the marketplace, not a per-plugin update command.`,
       });
     } else if (codexTmpVersion) {
       recommendations.push({
@@ -767,10 +774,14 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
         command: null,
         argv: null,
         executable: false,
-        detail: `Codex marketplace cache already has ${name} ${codexTmpVersion}, but no per-plugin install cache was found. Current Codex CLI exposes marketplace add/upgrade/remove rather than per-plugin install/list, so runtime cannot execute cache materialization directly.`,
-        next_step: 'Start a fresh Codex session or invoke the plugin surface after marketplace refresh, then verify host cache materialization with runtime:doctor. Do not repeat marketplace add unless the marketplace cache is missing or stale.',
+        detail: codexPerPluginSurface
+          ? `Codex marketplace cache already has ${name} ${codexTmpVersion}, but no per-plugin install cache was found. Codex exposes per-plugin ${codexPerPluginVerbText}; runtime recognizes this surface but does not auto-execute codex plugin add (execution wiring is a deferred follow-up), so cache materialization stays manual.`
+          : `Codex marketplace cache already has ${name} ${codexTmpVersion}, but no per-plugin install cache was found. Current Codex CLI exposes marketplace add/upgrade/remove rather than per-plugin install/list, so runtime cannot execute cache materialization directly.`,
+        next_step: codexPerPluginSurface
+          ? `Run \`codex plugin add ${name}@agentic-plugins\` manually or start a fresh Codex session, then verify host cache materialization with runtime:doctor. Do not repeat marketplace add unless the marketplace cache is missing or stale.`
+          : 'Start a fresh Codex session or invoke the plugin surface after marketplace refresh, then verify host cache materialization with runtime:doctor. Do not repeat marketplace add unless the marketplace cache is missing or stale.',
         evidence: {
-          command_surface: 'marketplace-only',
+          command_surface: codexPerPluginSurface ? 'per-plugin-and-marketplace' : 'marketplace-only',
           marketplace_cache_version: codexTmpVersion,
           install_cache_status: 'missing',
         },
@@ -785,7 +796,9 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
         command: command.display,
         argv: command.argv,
         executable: true,
-        detail: `Codex exposes marketplace add/upgrade/remove, not per-plugin install; add the marketplace catalog to make ${name} available.`,
+        detail: codexPerPluginSurface
+          ? `Codex exposes per-plugin ${codexPerPluginVerbText} plus marketplace add/list/upgrade/remove; add the marketplace catalog first so ${name} can be installed.`
+          : `Codex exposes marketplace add/upgrade/remove, not per-plugin install; add the marketplace catalog to make ${name} available.`,
       });
     }
   } else if (sourceVersion && codexVersion && semverCompare(String(codexVersion), String(sourceVersion)) < 0) {
@@ -798,7 +811,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
       command: command.display,
       argv: command.argv,
       executable: true,
-      detail: `Cached ${codexVersion}; source/catalog ${sourceVersion}. Codex upgrades the marketplace, not an individual plugin install.`,
+      detail: `Cached ${codexVersion}; source/catalog ${sourceVersion}. Codex upgrades via the marketplace, not a per-plugin update command.`,
     });
   }
   return recommendations;
@@ -1923,7 +1936,7 @@ export function formatText(report) {
   }
   if (report.plugin_command_surface?.codex) {
     const surface = report.plugin_command_surface.codex;
-    lines.push(`- codex command surface: mode=${surface.mode}; marketplace-add=${Boolean(surface.supports.marketplace_add)}; marketplace-upgrade=${Boolean(surface.supports.marketplace_upgrade)}; install=${Boolean(surface.supports.install_plugin)}; list=${Boolean(surface.supports.list_plugin)}; materialization=${surface.materialization.status}`);
+    lines.push(`- codex command surface: mode=${surface.mode}; plugin-add=${Boolean(surface.supports.install_plugin)}; plugin-list=${Boolean(surface.supports.list_plugin)}; plugin-remove=${Boolean(surface.supports.remove_plugin)}; marketplace-add=${Boolean(surface.supports.marketplace_add)}; marketplace-list=${Boolean(surface.supports.marketplace_list)}; marketplace-upgrade=${Boolean(surface.supports.marketplace_upgrade)}; marketplace-remove=${Boolean(surface.supports.marketplace_remove)}; materialization=${surface.materialization.status}`);
   }
   lines.push(`- summary: planned=${report.plugin_management.summary.planned}; executed=${report.plugin_management.summary.executed}; failed=${report.plugin_management.summary.failed}; retryable-failed=${report.plugin_management.summary.failed_retryable}; non-retryable-failed=${report.plugin_management.summary.failed_non_retryable}; blocked=${report.plugin_management.summary.blocked}; manual=${report.plugin_management.summary.manual}; deduplicated=${report.plugin_management.summary.deduplicated}; skipped=${report.plugin_management.summary.skipped}`);
   for (const plan of report.plugin_management.plans) {

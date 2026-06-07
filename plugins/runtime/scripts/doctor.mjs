@@ -106,6 +106,7 @@ export async function runDoctor({
       featureArgs: ['features', 'list'],
       authArgs: ['login', 'status'],
       pluginArgs: ['plugin', 'marketplace', '--help'],
+      pluginRootHelpArgs: ['plugin', '--help'],
       runner,
       cwd: resolvedRepoRoot,
       env,
@@ -370,7 +371,7 @@ export async function runCommand(command, args = [], { cwd = process.cwd(), env 
   });
 }
 
-async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, featureArgs = null, authArgs, pluginArgs, pluginSurfaceArgs = null, runner, cwd, env }) {
+async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, featureArgs = null, authArgs, pluginArgs, pluginSurfaceArgs = null, pluginRootHelpArgs = null, runner, cwd, env }) {
   const version = await runner(name, versionArgs, { cwd, env });
   const available = version.ok || version.exit_code !== null;
   const help = available ? await runner(name, helpArgs, { cwd, env }) : skipped('cli unavailable');
@@ -379,13 +380,18 @@ async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, f
   const authRaw = available ? await runner(name, authArgs, { cwd, env }) : skipped('cli unavailable');
   const pluginRaw = available ? await runner(name, pluginArgs, { cwd, env }) : skipped('cli unavailable');
   const pluginSurfaceRaw = available && pluginSurfaceArgs ? await runner(name, pluginSurfaceArgs, { cwd, env }) : skipped('not requested');
+  // Codex `plugin --help` is captured separately so the per-plugin add/list/remove
+  // subcommands are detected from their own Commands block, not from loose substring
+  // matching over the combined help blob (which also carries marketplace add/list/remove).
+  const pluginRootHelpRaw = available && pluginRootHelpArgs ? await runner(name, pluginRootHelpArgs, { cwd, env }) : skipped('not requested');
   const auth = name === 'claude' ? parseClaudeAuth(authRaw, env) : parseCodexAuth(authRaw);
   const featureText = name === 'claude'
     ? `${help.stdout}\n${help.stderr}\n${extraHelp.stdout}\n${extraHelp.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}\n${pluginSurfaceRaw.stdout}\n${pluginSurfaceRaw.stderr}`
     : `${help.stdout}\n${help.stderr}\n${extraHelp.stdout}\n${extraHelp.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}`;
+  const pluginRootHelpText = `${pluginRootHelpRaw.stdout}\n${pluginRootHelpRaw.stderr}`;
   const featureSurface = name === 'claude'
     ? inspectClaudeFeatureSurface(featureText)
-    : inspectCodexFeatureSurface(featureText, featuresRaw);
+    : inspectCodexFeatureSurface(featureText, featuresRaw, pluginRootHelpText);
 
   return {
     name,
@@ -555,19 +561,31 @@ function inspectClaudeFeatureSurface(helpText) {
   };
 }
 
-function inspectCodexFeatureSurface(helpText, featuresRaw) {
+function inspectCodexFeatureSurface(helpText, featuresRaw, pluginRootHelpText = '') {
   const featureList = parseCodexFeatureList(featuresRaw);
   const hooks = featureList.features.hooks ?? null;
   const pluginHooks = featureList.features.plugin_hooks ?? null;
+  // Per-plugin surface (Codex >= ~0.137): detect the `codex plugin add/list/remove`
+  // subcommands precisely from the `codex plugin --help` Commands block. `^\s+<cmd>\b`
+  // matches only an indented subcommand entry, never a description word ("Add," in the
+  // marketplace subcommand line), a flag (`--add`), or a longer token ("added").
+  const pluginAddCommand = /^\s+add\b/im.test(pluginRootHelpText);
+  const pluginListCommand = /^\s+list\b/im.test(pluginRootHelpText);
+  const pluginRemoveCommand = /^\s+remove\b/im.test(pluginRootHelpText);
   return {
     exec_command: /\bexec\b[\s\S]*Run Codex non-interactively/i.test(helpText) || /\bexec\b/.test(helpText),
     login_status: /\blogin\b[\s\S]*\bstatus\b/i.test(helpText),
     plugin_marketplace: /\bplugin\b[\s\S]*\bmarketplace\b/i.test(helpText),
     plugin_marketplace_add: /\badd\b/.test(helpText),
+    plugin_marketplace_list: /\blist\b/.test(helpText),
     plugin_marketplace_upgrade: /\bupgrade\b/.test(helpText),
     plugin_marketplace_remove: /\bremove\b/.test(helpText),
-    plugin_install_command: /\binstall\b/.test(helpText),
-    plugin_list_command: /\blist\b/.test(helpText),
+    // `codex plugin add` is Codex's per-plugin install verb; `list`/`remove` are the
+    // per-plugin inventory/uninstall verbs. Absent: update/enable/disable/details/
+    // validate/prune (not full Claude plugin parity).
+    plugin_install_command: pluginAddCommand,
+    plugin_list_command: pluginListCommand,
+    plugin_remove_command: pluginRemoveCommand,
     model_flag: /--model\b|-m,\s*--model/.test(helpText),
     config_flag: /--config\b|-c,\s*--config/.test(helpText),
     cd_flag: /--cd\b|-C,\s*--cd/.test(helpText),
@@ -1293,7 +1311,21 @@ function buildHostParity({ claude, codex, plugins, claudePluginList, codexPlugin
     }));
   }
 
-  if (codex.feature_surface.plugin_marketplace === true && codex.feature_surface.plugin_install_command !== true) {
+  if (codex.feature_surface.plugin_install_command === true) {
+    // Codex >= ~0.137: per-plugin install (add) exists but is not full Claude parity.
+    // Enumerate only the per-plugin verbs actually observed so we never overclaim.
+    const codexPerPluginVerbList = codexPerPluginVerbs(codex.feature_surface);
+    differences.push(parityEntry({
+      id: 'codex_plugin_command_partial_parity',
+      severity: 'info',
+      host: 'codex',
+      area: 'plugin-install',
+      summary: `Codex exposes per-plugin ${codexPerPluginVerbList.join('/')} plus marketplace add/list/upgrade/remove, but not full Claude plugin parity (no per-plugin update/enable/disable/details/validate/prune).`,
+      evidence: `codex plugin add=${Boolean(codex.feature_surface.plugin_install_command)}, list=${Boolean(codex.feature_surface.plugin_list_command)}, remove=${Boolean(codex.feature_surface.plugin_remove_command)}; marketplace add=${Boolean(codex.feature_surface.plugin_marketplace_add)}, list=${Boolean(codex.feature_surface.plugin_marketplace_list)}, upgrade=${Boolean(codex.feature_surface.plugin_marketplace_upgrade)}, remove=${Boolean(codex.feature_surface.plugin_marketplace_remove)}`,
+      next_step: `Use per-plugin ${codexPerPluginVerbList.join('/')} where applicable; do not assume update/enable/disable/details/validate/prune exist on Codex.`,
+    }));
+  } else if (codex.feature_surface.plugin_marketplace === true) {
+    // Codex 0.130-0.136: marketplace-only, no per-plugin install/list surface.
     differences.push(parityEntry({
       id: 'codex_marketplace_command_shape',
       severity: 'warning',
@@ -1425,11 +1457,28 @@ function inspectPluginVersionParity(name, plugin) {
   return issues;
 }
 
+// The per-plugin verbs Codex actually exposes, in declared order. Used so output
+// enumerates only detected subcommands and never overclaims (e.g. summarizing
+// "add/list/remove" when only `add` was observed). Exported so settings reuses the
+// same single source of truth instead of re-enumerating the verbs inline.
+export function codexPerPluginVerbs(featureSurface) {
+  return [
+    featureSurface.plugin_install_command && 'add',
+    featureSurface.plugin_list_command && 'list',
+    featureSurface.plugin_remove_command && 'remove',
+  ].filter(Boolean);
+}
+
 function buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPluginHooks, settingsRuns }) {
   const claudeSurfaceStatus = buildClaudePluginCliSurfaceStatus(claude);
   const claudeSurfaceAvailable = claudeSurfaceStatus === 'available';
+  // Codex >= ~0.137 exposes per-plugin `codex plugin add` (install); older hosts are
+  // marketplace-only. Recognition is keyed on the observed command surface, not version.
+  const codexHasPerPlugin = Boolean(codex.feature_surface.plugin_install_command);
+  const codexPerPluginVerbList = codexPerPluginVerbs(codex.feature_surface);
+  const codexPerPluginVerbText = codexPerPluginVerbList.join('/') || 'install';
   return {
-    schema_version: 'runtime-plugin-command-surface-1.3',
+    schema_version: 'runtime-plugin-command-surface-1.4',
     claude: {
       status: claudeSurfaceStatus,
       mode: claudeSurfaceStatus === 'unavailable'
@@ -1465,19 +1514,33 @@ function buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPl
     },
     codex: {
       status: codex.plugin.status,
-      mode: codex.feature_surface.plugin_marketplace ? 'marketplace-only' : 'unknown',
+      mode: codexHasPerPlugin
+        ? 'per-plugin-and-marketplace'
+        : codex.feature_surface.plugin_marketplace
+        ? 'marketplace-only'
+        : 'unknown',
       supports: {
         install_plugin: Boolean(codex.feature_surface.plugin_install_command),
         list_plugin: Boolean(codex.feature_surface.plugin_list_command),
+        remove_plugin: Boolean(codex.feature_surface.plugin_remove_command),
+        // Codex has no per-plugin update verb (marketplace upgrade only); kept explicit
+        // so the non-parity with Claude is visible in the data, not just in `limits`.
+        update_plugin: false,
         marketplace_add: Boolean(codex.feature_surface.plugin_marketplace_add),
+        marketplace_list: Boolean(codex.feature_surface.plugin_marketplace_list),
         marketplace_upgrade: Boolean(codex.feature_surface.plugin_marketplace_upgrade),
         marketplace_remove: Boolean(codex.feature_surface.plugin_marketplace_remove),
       },
-      materialization: buildCodexCacheMaterialization(plugins.runtime),
-      limits: [
-        'Codex marketplace add/upgrade updates marketplace cache evidence, not a per-plugin install cache by itself.',
-        'runtime:settings intentionally keeps Codex cache materialization manual unless the host exposes an explicit per-plugin install/update command.',
-      ],
+      materialization: buildCodexCacheMaterialization(plugins.runtime, { perPluginSurface: codexHasPerPlugin }),
+      limits: codexHasPerPlugin
+        ? [
+            `Codex exposes per-plugin ${codexPerPluginVerbText} plus marketplace add/list/upgrade/remove; it does not expose per-plugin update/enable/disable/details/validate/prune, so this is not full Claude plugin parity.`,
+            'runtime:settings recognizes the per-plugin surface but does not auto-execute codex plugin add; Codex cache materialization stays a manual or fresh-session step (execution wiring is a deferred follow-up).',
+          ]
+        : [
+            'Codex marketplace add/upgrade updates marketplace cache evidence, not a per-plugin install cache by itself.',
+            'runtime:settings intentionally keeps Codex cache materialization manual unless the host exposes an explicit per-plugin install/update command.',
+          ],
     },
     manual_followups: buildPluginCommandSurfaceManualFollowups({
       claudeSurfaceAvailable,
@@ -3513,7 +3576,9 @@ function buildHostReadinessRow({ host, cli, plugin, modelEffort, hooks }) {
       version: cli.version.text || null,
       command_status: cli.version.status,
     },
-    installed: summarizeRuntimeInstallForHost(host, plugin),
+    installed: summarizeRuntimeInstallForHost(host, plugin, {
+      perPluginSurface: host === 'codex' && Boolean(cli.feature_surface?.plugin_install_command),
+    }),
     authenticated: {
       status: cli.auth.status,
       method: cli.auth.method ?? null,
@@ -3532,7 +3597,7 @@ function buildHostReadinessRow({ host, cli, plugin, modelEffort, hooks }) {
   };
 }
 
-function summarizeRuntimeInstallForHost(host, plugin) {
+function summarizeRuntimeInstallForHost(host, plugin, { perPluginSurface = false } = {}) {
   const sourceVersion = plugin.source?.claude_manifest?.version ?? plugin.source?.codex_manifest?.version ?? null;
   if (host === 'claude') {
     const installed = plugin.installed.claude_plugin_list;
@@ -3573,7 +3638,7 @@ function summarizeRuntimeInstallForHost(host, plugin) {
       status: 'installed',
       evidence: 'codex plugin cache contains runtime',
       version: plugin.cache.codex.latest?.manifest_version ?? sourceVersion,
-      materialization: buildCodexCacheMaterialization(plugin),
+      materialization: buildCodexCacheMaterialization(plugin, { perPluginSurface }),
     };
   }
   if (plugin.source?.present) {
@@ -3581,7 +3646,7 @@ function summarizeRuntimeInstallForHost(host, plugin) {
       status: 'source_available',
       evidence: 'repo source tree contains runtime; host install not proven',
       version: sourceVersion,
-      materialization: buildCodexCacheMaterialization(plugin),
+      materialization: buildCodexCacheMaterialization(plugin, { perPluginSurface }),
     };
   }
   if (plugin.cache.codex_tmp_marketplace.status === 'available') {
@@ -3589,7 +3654,7 @@ function summarizeRuntimeInstallForHost(host, plugin) {
       status: 'marketplace_cache_only',
       evidence: 'codex temporary marketplace cache is not installation evidence',
       version: plugin.cache.codex_tmp_marketplace.manifest_version ?? null,
-      materialization: buildCodexCacheMaterialization(plugin),
+      materialization: buildCodexCacheMaterialization(plugin, { perPluginSurface }),
     };
   }
   return {
@@ -3600,7 +3665,7 @@ function summarizeRuntimeInstallForHost(host, plugin) {
   };
 }
 
-function buildCodexCacheMaterialization(plugin) {
+function buildCodexCacheMaterialization(plugin, { perPluginSurface = false } = {}) {
   const installCache = plugin?.cache?.codex ?? {};
   const marketplaceCache = plugin?.cache?.codex_tmp_marketplace ?? {};
   const installVersion = installCache.latest?.manifest_version ?? null;
@@ -3627,8 +3692,10 @@ function buildCodexCacheMaterialization(plugin) {
       marketplace_cache_status: marketplaceCache.status,
       marketplace_cache_version: marketplaceVersion,
       source_available: Boolean(plugin?.source?.present),
-      reason: 'Codex marketplace cache is present, but no per-plugin install cache exists and current Codex CLI exposes marketplace add/upgrade/remove rather than per-plugin install/list.',
-      next_step: 'Start a fresh Codex session or invoke the plugin surface after marketplace refresh, then re-run runtime:doctor to verify cache materialization.',
+      reason: 'Codex marketplace cache is present, but no per-plugin install cache exists yet.',
+      next_step: perPluginSurface
+        ? 'Run `codex plugin add runtime@agentic-plugins` (runtime recognizes but does not auto-execute it) or start a fresh Codex session, then re-run runtime:doctor to verify cache materialization.'
+        : 'Start a fresh Codex session or invoke the plugin surface after marketplace refresh, then re-run runtime:doctor to verify cache materialization.',
     };
   }
   return {
@@ -5064,7 +5131,7 @@ export function formatText(report) {
   }
   if (claudeSurface.materialization.next_step) lines.push(`  next: ${claudeSurface.materialization.next_step}`);
   const codexSurface = report.plugin_command_surface.codex;
-  lines.push(`- codex: mode=${codexSurface.mode}; marketplace-add=${Boolean(codexSurface.supports.marketplace_add)}; marketplace-upgrade=${Boolean(codexSurface.supports.marketplace_upgrade)}; install=${Boolean(codexSurface.supports.install_plugin)}; list=${Boolean(codexSurface.supports.list_plugin)}; materialization=${codexSurface.materialization.status}`);
+  lines.push(`- codex: mode=${codexSurface.mode}; plugin-add=${Boolean(codexSurface.supports.install_plugin)}; plugin-list=${Boolean(codexSurface.supports.list_plugin)}; plugin-remove=${Boolean(codexSurface.supports.remove_plugin)}; marketplace-add=${Boolean(codexSurface.supports.marketplace_add)}; marketplace-list=${Boolean(codexSurface.supports.marketplace_list)}; marketplace-upgrade=${Boolean(codexSurface.supports.marketplace_upgrade)}; marketplace-remove=${Boolean(codexSurface.supports.marketplace_remove)}; materialization=${codexSurface.materialization.status}`);
   if (codexSurface.materialization.next_step) lines.push(`  next: ${codexSurface.materialization.next_step}`);
   if (report.plugin_command_surface.manual_followups?.length > 0) {
     lines.push('');

@@ -624,6 +624,64 @@ describe('runtime settings', () => {
     ok(formatText(report).includes('materialization=manual_session_refresh'));
   });
 
+  it('recognizes the Codex per-plugin surface in cache materialization on 0.137.0 (ADR-0032)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-perplugin-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-perplugin-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex --version': okResult('codex-cli 0.137.0\n'),
+        'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin  Manage Codex plugins\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
+        'codex plugin --help': okResult('Manage Codex plugins\n\nUsage: codex plugin <COMMAND>\n\nCommands:\n  add          Install a plugin from a configured marketplace snapshot\n  list         List plugins available from configured marketplace snapshots\n  marketplace  Add, list, upgrade, or remove configured plugin marketplaces\n  remove       Remove an installed plugin from local config and cache\n'),
+        'codex plugin marketplace --help': okResult('Add, list, upgrade, or remove configured plugin marketplaces\n\nUsage: codex plugin marketplace <COMMAND>\n\nCommands:\n  add\n  list\n  upgrade\n  remove\n'),
+      }),
+    });
+
+    const materialize = report.plugins.runtime.recommendations.find((rec) => rec.host === 'codex' && rec.action === 'materialize-plugin-cache');
+    ok(materialize.detail.includes('does not auto-execute codex plugin add'));
+    ok(materialize.detail.includes('per-plugin add/list/remove'));
+    ok(!materialize.detail.includes('rather than per-plugin install/list'));
+    strictEqual(materialize.evidence.command_surface, 'per-plugin-and-marketplace');
+    ok(materialize.next_step.includes('codex plugin add runtime@agentic-plugins'));
+    strictEqual(report.plugin_command_surface.codex.mode, 'per-plugin-and-marketplace');
+    strictEqual(report.plugin_command_surface.codex.supports.remove_plugin, true);
+    strictEqual(report.plugin_command_surface.codex.supports.marketplace_list, true);
+    ok(formatText(report).includes('codex command surface: mode=per-plugin-and-marketplace'));
+    ok(formatText(report).includes('plugin-add=true'));
+    ok(formatText(report).includes('marketplace-list=true'));
+  });
+
+  it('does not overclaim per-plugin verbs in settings on an add-only Codex host (ADR-0032)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-addonly-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-addonly-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex --version': okResult('codex-cli 0.137.0\n'),
+        'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin  Manage Codex plugins\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
+        // Hypothetical add-only host: install verb present, no list/remove.
+        'codex plugin --help': okResult('Manage Codex plugins\n\nUsage: codex plugin <COMMAND>\n\nCommands:\n  add          Install a plugin from a configured marketplace snapshot\n  marketplace  Add, list, upgrade, or remove configured plugin marketplaces\n'),
+        'codex plugin marketplace --help': okResult('Add, list, upgrade, or remove configured plugin marketplaces\n\nUsage: codex plugin marketplace <COMMAND>\n\nCommands:\n  add\n  list\n  upgrade\n  remove\n'),
+      }),
+    });
+
+    const materialize = report.plugins.runtime.recommendations.find((rec) => rec.host === 'codex' && rec.action === 'materialize-plugin-cache');
+    ok(materialize.detail.includes('Codex exposes per-plugin add;'));
+    ok(!materialize.detail.includes('add/list/remove'));
+    strictEqual(report.plugin_command_surface.codex.supports.list_plugin, false);
+    strictEqual(report.plugin_command_surface.codex.supports.remove_plugin, false);
+  });
+
   it('recommends Codex marketplace upgrade when the temporary marketplace cache is stale', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-tmp-stale-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codex-tmp-stale-home-'));
