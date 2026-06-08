@@ -8,6 +8,13 @@
 - Add `runtime:context check`, a read-only explicit context budget check that computes green/yellow/red risk without creating artifacts or mutating host session context.
 - Add `runtime:context status --latest`, a read-only latest handoff lookup with artifact age and stale-state reporting.
 
+## [0.65.1](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.65.0...plugin-runtime-v0.65.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **plugin/runtime:** route cross-script Codex install-state consumers through the list-authoritative resolver (ADR-0034) ([#397](https://github.com/each4all/agentic-plugins/issues/397)) ([c9f17d4](https://github.com/each4all/agentic-plugins/commit/c9f17d48229ce3e44560e486f7c8dc9757e82c00))
+
 ## [0.65.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.64.0...plugin-runtime-v0.65.0) (2026-06-08)
 
 
