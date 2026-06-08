@@ -1,11 +1,12 @@
-// Smoke test for companions/claude-companion.mjs against the real `claude` CLI.
+// Smoke test for companions/codex-companion.mjs against the real `codex` CLI.
 //
 // Skipped by default. Set COMPANIONS_SMOKE=1 to opt in. Requires:
-//   - claude on PATH
-//   - claude authenticated (claude /login or env-var auth)
+//   - codex on PATH
+//   - codex authenticated (codex login or env-var auth)
 //   - network connectivity
 //
-// Run: COMPANIONS_SMOKE=1 node --test companions/tests/claude-companion.smoke.test.mjs
+// Run: COMPANIONS_SMOKE=1 node --test companions/tests/codex-companion.smoke.mjs
+//   (named *.smoke.mjs, outside Node's default discovery, so `npm test` never runs it — ADR-0033)
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,7 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPT = path.resolve(__dirname, '..', 'claude-companion.mjs');
+const SCRIPT = path.resolve(__dirname, '..', 'codex-companion.mjs');
 const SMOKE = process.env.COMPANIONS_SMOKE === '1';
 
 const PROMPT = `<task>
@@ -26,7 +27,7 @@ Reply with the single word OK and nothing else.
 <rule>Do not add punctuation, formatting, or explanation.</rule>
 </grounding_rules>`;
 
-describe('claude-companion smoke (real `claude` CLI)', { skip: !SMOKE }, () => {
+describe('codex-companion smoke (real `codex` CLI)', { skip: !SMOKE }, () => {
   it('text mode round trip — peer responds with "OK"', () => {
     const result = spawnSync(process.execPath, [SCRIPT, 'task'], {
       input: PROMPT,
@@ -50,7 +51,7 @@ describe('claude-companion smoke (real `claude` CLI)', { skip: !SMOKE }, () => {
     assert.equal(result.status, 0, `exit ${result.status}; stderr=${result.stderr}`);
     const env = JSON.parse(result.stdout);
     assert.equal(env.status, 'success');
-    assert.equal(env.peer_host, 'claude');
+    assert.equal(env.peer_host, 'codex');
     assert.equal(env.exit_code, 0);
     assert.ok(typeof env.stdout === 'string', 'envelope.stdout is a string');
     assert.match(env.stdout, /OK/, 'envelope.stdout includes peer "OK" reply');

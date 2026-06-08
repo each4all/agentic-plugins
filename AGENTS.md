@@ -213,7 +213,7 @@ files (`git add <package-path> && git commit`).
 
 The package paths are the keys of `release-please-config.json`
 `packages` — currently `companions`, `plugins/companions`,
-`plugins/engineer`, and `plugins/orchestrator`. Files **outside**
+`plugins/engineer`, `plugins/orchestrator`, and `plugins/runtime`. Files **outside**
 every package key prefix are exempt: root files (`AGENTS.md`,
 `README.md`, `package.json`, etc.),
 `docs/`, `scripts/`, `tests/`, `kit/`, `.claude-plugin/`,
@@ -293,7 +293,7 @@ context lifecycle events, statusline, etc.). See ADR-0001 final note.
 
 Primary local commands:
 
-- `npm test` — full Node test suite.
+- `npm test` — full Node test suite via `node --test` discovery (ADR-0033). New conventionally-named test files are picked up automatically; smoke tests live in the non-discoverable `companions/tests/*.smoke.mjs` namespace and run only via `npm run test:smoke`.
 - `npm run test:plugin-shape` — plugin shape + engineer/orchestrator state tests.
 - `npm run test:cross-host` — cross-host workflow contract tests.
 - `npm run lint:plugin-shape` — validate all plugin directories with `kit/lint`.
@@ -302,9 +302,12 @@ Primary local commands:
   generated-artifact ignore policy consistency.
 - `npm run sync:companions` and `npm run sync:marketplace` — drift-correction helpers.
 
-GitHub Actions run on Node 24 and cover Claude companion tests, Codex
-companion tests, cross-host tests, marketplace/version validation, and
-release-please automation.
+GitHub Actions run on Node 24. `full-tests.yml` runs the full
+discovery-based `npm test` unfiltered on every push/PR and is the
+repo-level coverage authority (ADR-0033); the host workflows
+(Claude/Codex companion tests, cross-host tests) remain scoped per-host
+diagnostic signals. Other workflows cover marketplace/version
+validation, scheduled host-version drift, and release-please automation.
 
 ---
 

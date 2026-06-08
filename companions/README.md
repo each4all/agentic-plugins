@@ -21,7 +21,9 @@ broader Stage 1 scope.
 - **[`codex-companion.mjs`](codex-companion.mjs)** — Claude → Codex peer-agent
   invocation. Shells out to the public `codex exec` CLI.
 - **[`tests/`](tests/)** — hermetic unit tests (`*.test.mjs`, mocked spawn) plus
-  env-gated smoke tests (`*.smoke.test.mjs`) against the real peer CLIs.
+  env-gated smoke tests (`*.smoke.mjs`) against the real peer CLIs. Smoke tests
+  use the `*.smoke.mjs` name (outside Node's default discovery) so `npm test`
+  never runs them; invoke them explicitly via `npm run test:smoke` (ADR-0033).
 
 ## Which companion to invoke
 
@@ -66,8 +68,8 @@ node --test companions/tests/claude-companion.test.mjs
 node --test companions/tests/codex-companion.test.mjs
 
 # Env-gated smoke tests against real peer CLIs (require auth + network)
-COMPANIONS_SMOKE=1 node --test companions/tests/claude-companion.smoke.test.mjs
-COMPANIONS_SMOKE=1 node --test companions/tests/codex-companion.smoke.test.mjs
+COMPANIONS_SMOKE=1 node --test companions/tests/claude-companion.smoke.mjs
+COMPANIONS_SMOKE=1 node --test companions/tests/codex-companion.smoke.mjs
 ```
 
 ## Why companions and not MCP?
