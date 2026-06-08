@@ -408,7 +408,98 @@ describe('runtime cutover audit', () => {
 
     const versionCheck = report.checks.find((check) => check.id === 'installed_plugin_versions');
     strictEqual(versionCheck.status, 'blocked');
-    strictEqual(versionCheck.evidence.entries.find((entry) => entry.plugin === 'runtime').codex_cache, '0.34.0');
+    strictEqual(versionCheck.evidence.entries.find((entry) => entry.plugin === 'runtime').codex_installed, '0.34.0');
+  });
+
+  it('treats a list-authoritative installed codex version as satisfied without a filesystem cache (ADR-0034)', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
+    });
+    const doctor = doctorReport();
+    const expected = doctor.plugins.runtime.source.claude_manifest.version;
+    // List authoritative: installed at the expected version, but no materialized
+    // filesystem cache. The pre-ADR-0034 cache-only check would have blocked this.
+    doctor.plugins.runtime.cache.codex.latest = null;
+    doctor.plugins.runtime.installed = {
+      codex_resolved: { decision: 'installed', source: 'list', version: expected, enabled: true, evidence: 'codex plugin list reports enabled' },
+    };
+
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctor,
+      footerState: 'closed',
+      omccDevActive: 'no',
+    });
+
+    const versionCheck = report.checks.find((check) => check.id === 'installed_plugin_versions');
+    const runtimeEntry = versionCheck.evidence.entries.find((entry) => entry.plugin === 'runtime');
+    strictEqual(runtimeEntry.codex_installed, expected);
+    strictEqual(runtimeEntry.status, 'satisfied');
+  });
+
+  it('blocks when the codex list reports not installed despite a stale filesystem cache (ADR-0034)', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
+    });
+    const doctor = doctorReport();
+    const expected = doctor.plugins.runtime.source.claude_manifest.version;
+    // Stale install cache still present at the expected version, but the
+    // authoritative list says runtime is not installed — it must not satisfy.
+    doctor.plugins.runtime.cache.codex.latest = { manifest_version: expected };
+    doctor.plugins.runtime.installed = {
+      codex_resolved: { decision: 'not_installed', source: 'list', version: null, enabled: false, evidence: 'codex plugin list does not report runtime as installed' },
+    };
+
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctor,
+      footerState: 'closed',
+      omccDevActive: 'no',
+    });
+
+    const versionCheck = report.checks.find((check) => check.id === 'installed_plugin_versions');
+    const runtimeEntry = versionCheck.evidence.entries.find((entry) => entry.plugin === 'runtime');
+    strictEqual(runtimeEntry.codex_installed, null);
+    strictEqual(runtimeEntry.status, 'blocked');
+    strictEqual(versionCheck.status, 'blocked');
+  });
+
+  it('falls back to the codex cache version when the list was unavailable (ADR-0034)', async () => {
+    const root = await seedRepo({
+      scorecardStatus: 'satisfied',
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
+    });
+    const doctor = doctorReport();
+    const expected = doctor.plugins.runtime.source.claude_manifest.version;
+    // List unavailable (older codex / parse error) -> decision 'fallback' -> the
+    // filesystem cache version is the evidence, preserving pre-ADR-0034 behavior.
+    doctor.plugins.runtime.cache.codex.latest = { manifest_version: expected };
+    doctor.plugins.runtime.installed = {
+      codex_resolved: { decision: 'fallback', source: 'cache', version: null, enabled: null, evidence: null },
+    };
+
+    const report = await runCutoverAudit({
+      repoRoot: root,
+      now: NOW,
+      doctorReport: doctor,
+      footerState: 'closed',
+      omccDevActive: 'no',
+    });
+
+    const versionCheck = report.checks.find((check) => check.id === 'installed_plugin_versions');
+    const runtimeEntry = versionCheck.evidence.entries.find((entry) => entry.plugin === 'runtime');
+    strictEqual(runtimeEntry.codex_installed, expected);
+    strictEqual(runtimeEntry.status, 'satisfied');
   });
 
   it('parses CLI arguments and rejects invalid explicit evidence', () => {

@@ -927,15 +927,24 @@ function checkPluginVersions({ repoRoot, manifest, doctor }) {
     const plugin = doctor.plugins?.[pluginName] ?? {};
     const source = plugin.source?.claude_manifest?.version ?? null;
     const claudeCache = plugin.cache?.claude?.latest?.manifest_version ?? null;
-    const codexCache = plugin.cache?.codex?.latest?.manifest_version ?? null;
+    // ADR-0034 cross-script consumer: compare against the list-authoritative Codex
+    // installed version (single-sourced in doctor's resolveCodexInstallState) rather
+    // than the filesystem cache, so a stale cache cannot satisfy the version-parity
+    // requirement and a list-confirmed install is not blocked by a missing cache.
+    // Fall back to the cache only when the list was unavailable (decision 'fallback')
+    // or the doctor report predates codex_resolved.
+    const codexResolved = plugin.installed?.codex_resolved;
+    const codexInstalled = (!codexResolved || codexResolved.decision === 'fallback')
+      ? (plugin.cache?.codex?.latest?.manifest_version ?? null)
+      : (codexResolved.version ?? null);
     return {
       package: packagePath,
       plugin: pluginName,
       expected,
       source,
       claude_cache: claudeCache,
-      codex_cache: codexCache,
-      status: expected && source === expected && claudeCache === expected && codexCache === expected
+      codex_installed: codexInstalled,
+      status: expected && source === expected && claudeCache === expected && codexInstalled === expected
         ? 'satisfied'
         : 'blocked',
     };

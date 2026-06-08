@@ -2288,7 +2288,7 @@ function evaluateRecordedDoctorProofRun({ run, plugins, claude, codex }) {
   for (const name of PLUGIN_NAMES) {
     const current = summarizePluginVersions(plugins?.[name]);
     const recorded = summarizePluginVersions(latestReport.plugins?.[name]);
-    for (const key of ['source', 'claude_cache', 'codex_cache']) {
+    for (const key of ['source', 'claude_cache', 'codex_installed']) {
       if (current[key] !== recorded[key]) {
         reasons.push(`${name} ${key} mismatch: recorded=${recorded[key] ?? '<unknown>'}, current=${current[key] ?? '<unknown>'}`);
       }
@@ -2331,10 +2331,23 @@ function evaluateRecordedDoctorProofRun({ run, plugins, claude, codex }) {
 }
 
 function summarizePluginVersions(plugin) {
+  // ADR-0034 cross-script consumer (proof-reuse): derive the Codex installed
+  // version from the list-authoritative resolver decision (single-sourced in
+  // buildPluginMatrix) so a recorded proof's reusability tracks the authoritative
+  // installed version, not a stale filesystem cache. Fall back to the cache only
+  // when the list was unavailable (decision 'fallback') or the report predates
+  // codex_resolved (legacy report). The derivation is symmetric — applied to both
+  // the current and the recorded report at the call sites below — so a still-valid
+  // recorded proof is not spuriously invalidated, while a real installed-version
+  // change still invalidates it.
+  const codexResolved = plugin?.installed?.codex_resolved;
+  const codexInstalled = (!codexResolved || codexResolved.decision === 'fallback')
+    ? (plugin?.cache?.codex?.latest?.manifest_version ?? null)
+    : (codexResolved.version ?? null);
   return {
     source: plugin?.source?.claude_manifest?.version ?? null,
     claude_cache: plugin?.cache?.claude?.latest?.manifest_version ?? null,
-    codex_cache: plugin?.cache?.codex?.latest?.manifest_version ?? null,
+    codex_installed: codexInstalled,
   };
 }
 

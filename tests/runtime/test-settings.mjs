@@ -701,6 +701,130 @@ describe('runtime settings', () => {
     ok(report.plugin_management.plans.some((plan) => plan.status === 'planned' && plan.command === 'codex plugin marketplace upgrade agentic-plugins'));
   });
 
+  it('does not recommend installing Codex when the list authoritatively reports installed; only reworded materialization (ADR-0034)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-installed-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-installed-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(codex0137Map({
+        'codex plugin list --json': codexListJson([{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: true, enabled: true }]),
+      })),
+    });
+
+    const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
+    // List authoritatively reports installed -> never imply "install it".
+    ok(codexRecommendations.every((rec) => rec.action !== 'add-marketplace'));
+    const materialize = codexRecommendations.find((rec) => rec.action === 'materialize-plugin-cache');
+    ok(materialize, 'expected a reworded materialize recommendation');
+    ok(materialize.detail.includes('installed, but runtime did not find a materialized'));
+    strictEqual(materialize.evidence.list_decision, 'installed');
+    strictEqual(materialize.evidence.list_version, '0.1.0');
+    strictEqual(materialize.evidence.install_cache_status, 'missing');
+  });
+
+  it('recommends enabling a Codex plugin the list reports installed-but-disabled, not materialization (ADR-0034)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-disabled-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-disabled-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(codex0137Map({
+        'codex plugin list --json': codexListJson([{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: true, enabled: false }]),
+      })),
+    });
+
+    const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
+    const enable = codexRecommendations.find((rec) => rec.action === 'enable-plugin');
+    ok(enable, 'expected an enable-plugin follow-up');
+    ok(enable.detail.includes('installed but disabled'));
+    strictEqual(enable.evidence.list_decision, 'disabled');
+    // A disabled install is not a cache-materialization or marketplace-add problem.
+    ok(codexRecommendations.every((rec) => rec.action !== 'materialize-plugin-cache'));
+    ok(codexRecommendations.every((rec) => rec.action !== 'add-marketplace'));
+  });
+
+  it('keeps a not-installed Codex plugin available with honest list-derived wording (ADR-0034)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-absent-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-absent-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(codex0137Map({
+        'codex plugin list --json': codexListJson([{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: false, enabled: false }]),
+      })),
+    });
+
+    const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
+    const rec = codexRecommendations.find((r) => r.action === 'install-plugin-manual');
+    ok(rec, 'expected a manual install recommendation');
+    ok(rec.detail.includes('does not report runtime installed'));
+    // not-installed is an install, not cache materialization or a sufficient session refresh.
+    ok(rec.next_step.includes('does not install'));
+    strictEqual(rec.evidence.list_decision, 'not_installed');
+    ok(codexRecommendations.every((r) => r.action !== 'materialize-plugin-cache'));
+  });
+
+  it('recommends a Codex marketplace upgrade when the list reports installed but older than source (ADR-0034)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-older-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-older-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(codex0137Map({
+        // Installed per list, but at 0.0.5 — older than the 0.1.0 source/catalog.
+        'codex plugin list --json': codexListJson([{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.0.5', installed: true, enabled: true }]),
+      })),
+    });
+
+    const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
+    const upgrade = codexRecommendations.find((rec) => rec.action === 'upgrade-marketplace');
+    ok(upgrade, 'expected an upgrade-marketplace recommendation from the list version');
+    ok(upgrade.detail.includes('reports runtime 0.0.5 installed'));
+    strictEqual(upgrade.evidence.list_decision, 'installed');
+    strictEqual(upgrade.evidence.list_version, '0.0.5');
+    ok(codexRecommendations.every((rec) => rec.action !== 'add-marketplace'));
+  });
+
+  it('ignores a stale codex install cache when the list reports not installed (ADR-0034)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-stalecache-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-stalecache-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+    // A stale per-plugin install cache lingers at 0.0.5, but the authoritative list
+    // says runtime is not installed — the stale cache must not drive an upgrade.
+    await seedCodexInstallCache(home, 'runtime', '0.0.5');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(codex0137Map({
+        'codex plugin list --json': codexListJson([{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: false, enabled: false }]),
+      })),
+    });
+
+    const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
+    // The stale install cache must NOT surface as an upgrade or materialization.
+    ok(codexRecommendations.every((rec) => rec.action !== 'upgrade-marketplace'));
+    ok(codexRecommendations.every((rec) => rec.action !== 'materialize-plugin-cache'));
+    const install = codexRecommendations.find((rec) => rec.action === 'install-plugin-manual');
+    ok(install, 'expected a manual install recommendation, not a cache-derived upgrade');
+    strictEqual(install.evidence.list_decision, 'not_installed');
+    strictEqual(install.evidence.install_cache_status, 'present');
+  });
+
   it('executes only allowlisted plugin management commands behind an explicit flag', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-execute-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-execute-home-'));
@@ -963,6 +1087,25 @@ function defaultCliMap() {
   };
 }
 
+// ADR-0034: a Codex 0.137 CLI map whose `codex plugin --help` exposes per-plugin
+// add/list/remove so doctor probes `codex plugin list --json`. Supply the list
+// result via `extra` to make install-state authoritative; without it the probe is
+// absent and install-state degrades to the filesystem cache (decision 'fallback').
+function codex0137Map(extra = {}) {
+  return {
+    ...defaultCliMap(),
+    'codex --version': okResult('codex-cli 0.137.0\n'),
+    'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin  Manage Codex plugins\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
+    'codex plugin --help': okResult('Manage Codex plugins\n\nUsage: codex plugin <COMMAND>\n\nCommands:\n  add          Install a plugin from a configured marketplace snapshot\n  list         List plugins available from configured marketplace snapshots\n  marketplace  Add, list, upgrade, or remove configured plugin marketplaces\n  remove       Remove an installed plugin from local config and cache\n'),
+    'codex plugin marketplace --help': okResult('Add, list, upgrade, or remove configured plugin marketplaces\n\nUsage: codex plugin marketplace <COMMAND>\n\nCommands:\n  add\n  list\n  upgrade\n  remove\n'),
+    ...extra,
+  };
+}
+
+function codexListJson(entries) {
+  return okResult(JSON.stringify({ installed: entries }));
+}
+
 function okResult(stdout = '', stderr = '') {
   return { ok: true, exit_code: 0, stdout, stderr, error_code: null, timed_out: false };
 }
@@ -1072,6 +1215,14 @@ async function seedCodexTmpMarketplace(home, name, version) {
     version,
     description: `${name} plugin`,
   });
+}
+
+// The per-plugin install cache doctor reads at
+// ~/.codex/plugins/cache/agentic-plugins/<name>/<version>/.codex-plugin/plugin.json.
+async function seedCodexInstallCache(home, name, version) {
+  const dir = join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', name, version, '.codex-plugin');
+  await mkdir(dir, { recursive: true });
+  await writeJson(join(dir, 'plugin.json'), { name, version, description: `${name} plugin` });
 }
 
 async function writeJson(path, value) {

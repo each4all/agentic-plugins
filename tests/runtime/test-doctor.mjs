@@ -1561,6 +1561,92 @@ describe('runtime doctor', () => {
     ok(formatText(second).includes(`recorded-doctor-proof: reusable; run=${runId}`));
   });
 
+  it('invalidates a recorded doctor proof when the list-authoritative codex installed version changes (ADR-0034)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-codexlist-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-codexlist-home-'));
+    await seedRepo(root);
+    await seedHome(home);
+    const runId = 'doctor-20260608T000000Z-c0de01';
+    const installedList = okResult(JSON.stringify({ installed: [{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: true, enabled: true }] }));
+
+    // Record a reusable proof while the list reports runtime installed @ 0.1.0.
+    const first = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-06-08T00:00:00.000Z'),
+      permissionProof: true,
+      executePermissionProof: true,
+      deepPeerSmoke: true,
+      executeDeepPeerSmoke: true,
+      workflowContinuationProof: true,
+      executeWorkflowContinuationProof: true,
+      recordArtifact: true,
+      runId,
+      runner: proofRunnerWithCodexList(installedList),
+    });
+    strictEqual(first.permission_proof.status, 'passed');
+    strictEqual(first.plugins.runtime.installed.codex_resolved.decision, 'installed');
+    strictEqual(first.plugins.runtime.installed.codex_resolved.version, '0.1.0');
+
+    // Rerun with the list now reporting runtime NOT installed: the list-authoritative
+    // codex installed version changes 0.1.0 -> null, so the recorded proof — keyed on
+    // codex_installed, not the stale filesystem cache — must no longer be reusable.
+    const notInstalledList = okResult(JSON.stringify({ installed: [{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: false, enabled: false }] }));
+    const second = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-06-08T00:05:00.000Z'),
+      runner: proofRunnerWithCodexList(notInstalledList),
+    });
+    strictEqual(second.plugins.runtime.installed.codex_resolved.decision, 'not_installed');
+    strictEqual(second.recorded_doctor_proof.status, 'not_reusable');
+    ok(second.recorded_doctor_proof.reasons.some((reason) => reason.includes('runtime codex_installed mismatch')));
+  });
+
+  it('keeps a cache-recorded proof reusable when a list-capable codex later reports the same version (ADR-0034)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-legacy-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-proof-legacy-home-'));
+    await seedRepo(root);
+    await seedHome(home); // ~/.codex install cache seeds runtime @ 0.1.0
+    const runId = 'doctor-20260608T010000Z-ca11ed';
+
+    // Record while `codex plugin list --json` is unavailable (parse error) -> the
+    // recorded codex_installed derives from the filesystem cache (0.1.0), the same
+    // derivation branch a pre-codex_resolved legacy report takes. Codex CLI stays
+    // 0.137 across both runs so the rerun does not trip the separate CLI-version check.
+    const first = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-06-08T01:00:00.000Z'),
+      permissionProof: true,
+      executePermissionProof: true,
+      deepPeerSmoke: true,
+      executeDeepPeerSmoke: true,
+      workflowContinuationProof: true,
+      executeWorkflowContinuationProof: true,
+      recordArtifact: true,
+      runId,
+      runner: proofRunnerWithCodexList(okResult('not json{')),
+    });
+    strictEqual(first.permission_proof.status, 'passed');
+    strictEqual(first.plugins.runtime.installed.codex_resolved.decision, 'fallback');
+
+    // Rerun once the list is authoritative and reports the SAME version 0.1.0:
+    // current codex_installed (list) == recorded codex_installed (cache) -> the
+    // recorded proof must stay reusable (no spurious codex_installed mismatch).
+    const sameVersionList = okResult(JSON.stringify({ installed: [{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: true, enabled: true }] }));
+    const second = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-06-08T01:05:00.000Z'),
+      runner: proofRunnerWithCodexList(sameVersionList),
+    });
+    strictEqual(second.plugins.runtime.installed.codex_resolved.decision, 'installed');
+    strictEqual(second.plugins.runtime.installed.codex_resolved.version, '0.1.0');
+    strictEqual(second.recorded_doctor_proof.status, 'reusable');
+    ok(!second.recorded_doctor_proof.reasons.some((reason) => reason.includes('codex_installed')));
+  });
+
   it('keeps host auth separate from child companion auth failures', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-child-auth-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
@@ -2024,6 +2110,26 @@ function successfulProofRunner() {
       return okResult(`${args[args.indexOf('--workflow-path') + 1]}\n`);
     }
     return fakeRuntimeProbeRunner(command, args);
+  };
+}
+
+// ADR-0034 proof-reuse: a proof runner (companion/state dispatch via
+// successfulProofRunner) whose codex probes report a 0.137 per-plugin surface and
+// an authoritative `codex plugin list --json` result, so the recorded and current
+// reports resolve codex installed-state from the list rather than the cache.
+function proofRunnerWithCodexList(listResult) {
+  const base = successfulProofRunner();
+  const codexOverrides = {
+    'codex --version': okResult('codex-cli 0.137.0\n'),
+    'codex --help': okResult('Commands:\n  exec Run Codex non-interactively\n  login status\n  plugin  Manage Codex plugins\nOptions:\n  --model\n  --config\n  --cd\n  --sandbox\n  --ask-for-approval\n'),
+    'codex plugin --help': okResult('Manage Codex plugins\n\nUsage: codex plugin <COMMAND>\n\nCommands:\n  add\n  list\n  marketplace\n  remove\n'),
+    'codex plugin marketplace --help': okResult('Commands:\n  add\n  list\n  upgrade\n  remove\n'),
+    'codex plugin list --json': listResult,
+  };
+  return async (command, args, options = {}) => {
+    const key = `${command} ${args.join(' ')}`;
+    if (key in codexOverrides) return codexOverrides[key];
+    return base(command, args, options);
   };
 }
 
