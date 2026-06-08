@@ -654,6 +654,7 @@ function buildPluginPlans(plugins, { codexPerPluginVerbList = [] } = {}) {
     const claudeCacheLatest = plugin.cache?.claude?.latest ?? null;
     const codexCacheLatest = plugin.cache?.codex?.latest ?? null;
     const codexTmpMarketplace = plugin.cache?.codex_tmp_marketplace ?? null;
+    const codexResolved = plugin.installed?.codex_resolved ?? null;
     result[name] = {
       status: plugin.status,
       source_version: sourceVersion,
@@ -674,6 +675,7 @@ function buildPluginPlans(plugins, { codexPerPluginVerbList = [] } = {}) {
         claudeCacheLatest,
         codexCacheLatest,
         codexTmpMarketplace,
+        codexResolved,
         codexPerPluginVerbList,
       }),
     };
@@ -698,7 +700,7 @@ function summarizeSingleManifest(manifest) {
   };
 }
 
-function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstalled, claudeCacheLatest, codexCacheLatest, codexTmpMarketplace, codexPerPluginVerbList = [] }) {
+function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstalled, claudeCacheLatest, codexCacheLatest, codexTmpMarketplace, codexResolved = null, codexPerPluginVerbList = [] }) {
   const recommendations = [];
   // `add` is the per-plugin install verb and the threshold for recognizing the
   // surface; enumerate only the observed verbs so strings never overclaim.
@@ -752,7 +754,126 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
 
   const codexVersion = codexCacheLatest?.manifest_version ?? null;
   const codexTmpVersion = codexTmpMarketplace?.status === 'available' ? codexTmpMarketplace.manifest_version ?? null : null;
-  if (!codexCacheLatest) {
+  // ADR-0034 cross-script consumer: when `codex plugin list` was authoritative,
+  // it — not the filesystem cache — decides the install state, so the cache-driven
+  // recommendations in the trailing `else if` chain must not contradict it. Only
+  // fall through to that legacy logic when the list was unavailable (decision
+  // 'fallback') or the doctor report predates codex_resolved.
+  const codexDecision = codexResolved?.decision ?? null;
+  const codexListVersion = codexResolved?.version ?? null;
+  const codexInstallCacheStatus = codexCacheLatest ? 'present' : 'missing';
+  const codexListAuthoritative = Boolean(codexResolved) && codexDecision !== 'fallback';
+  if (codexListAuthoritative && codexDecision === 'installed') {
+    if (sourceVersion && codexListVersion && semverCompare(String(codexListVersion), String(sourceVersion)) < 0) {
+      const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
+      recommendations.push({
+        id: `${name}:codex:upgrade-marketplace`,
+        host: 'codex',
+        action: 'upgrade-marketplace',
+        executed: false,
+        command: command.display,
+        argv: command.argv,
+        executable: true,
+        detail: `Codex \`plugin list\` reports ${name} ${codexListVersion} installed; source/catalog ${sourceVersion}. Codex upgrades via the marketplace, not a per-plugin update command.`,
+        evidence: { list_decision: codexDecision, list_version: codexListVersion, install_cache_status: codexInstallCacheStatus },
+      });
+    } else if (!codexCacheLatest) {
+      recommendations.push({
+        id: `${name}:codex:materialize-plugin-cache`,
+        host: 'codex',
+        action: 'materialize-plugin-cache',
+        executed: false,
+        command: null,
+        argv: null,
+        executable: false,
+        detail: codexPerPluginSurface
+          ? `Codex \`plugin list\` reports ${name}${codexListVersion ? ` ${codexListVersion}` : ''} installed, but runtime did not find a materialized per-plugin install cache. Codex exposes per-plugin ${codexPerPluginVerbText}; runtime recognizes this surface but does not auto-execute codex plugin add (execution wiring is a deferred follow-up), so cache materialization stays manual.`
+          : `Codex \`plugin list\` reports ${name}${codexListVersion ? ` ${codexListVersion}` : ''} installed, but runtime did not find a materialized per-plugin install cache; the current Codex CLI exposes marketplace add/upgrade/remove rather than per-plugin install/list, so runtime cannot execute cache materialization directly.`,
+        next_step: codexPerPluginSurface
+          ? `Start a fresh Codex session (or re-run \`codex plugin add ${name}@agentic-plugins\`) so the host materializes the install cache, then verify with runtime:doctor.`
+          : 'Start a fresh Codex session after a marketplace refresh so the host materializes the install cache, then verify with runtime:doctor.',
+        evidence: {
+          command_surface: codexPerPluginSurface ? 'per-plugin-and-marketplace' : 'marketplace-only',
+          list_decision: codexDecision,
+          list_version: codexListVersion,
+          install_cache_status: codexInstallCacheStatus,
+        },
+      });
+    }
+    // installed per list, current version, cache materialized → no recommendation.
+  } else if (codexListAuthoritative && codexDecision === 'disabled') {
+    recommendations.push({
+      id: `${name}:codex:enable-plugin`,
+      host: 'codex',
+      action: 'enable-plugin',
+      executed: false,
+      command: null,
+      argv: null,
+      executable: false,
+      detail: `Codex \`plugin list\` reports ${name}${codexListVersion ? ` ${codexListVersion}` : ''} installed but disabled. Cache materialization is not the issue — enable it in the host before relying on Codex-side parity.`,
+      next_step: `Enable ${name} in Codex (host plugin settings), then verify with runtime:doctor.`,
+      evidence: { list_decision: codexDecision, list_version: codexListVersion, install_cache_status: codexInstallCacheStatus },
+    });
+  } else if (codexListAuthoritative && codexDecision === 'not_installed') {
+    // The list authoritatively reports not installed: recommend making it
+    // available based on the marketplace cache state, ignoring any stale install
+    // cache (which the list overrides).
+    if (sourceVersion && codexTmpVersion && semverCompare(String(codexTmpVersion), String(sourceVersion)) < 0) {
+      const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
+      recommendations.push({
+        id: `${name}:codex:upgrade-marketplace`,
+        host: 'codex',
+        action: 'upgrade-marketplace',
+        executed: false,
+        command: command.display,
+        argv: command.argv,
+        executable: true,
+        detail: `Codex \`plugin list\` does not report ${name} installed; marketplace cache has ${codexTmpVersion}, source/catalog ${sourceVersion}. Refresh the marketplace before installing.`,
+        evidence: { list_decision: codexDecision, list_version: null, install_cache_status: codexInstallCacheStatus },
+      });
+    } else if (codexTmpVersion) {
+      // The list says not installed, so this is an install — not a cache
+      // materialization (the plugin IS installed there) and not a mere session
+      // refresh. Reserve "fresh session" for the `installed` missing-cache and
+      // legacy fallback paths.
+      recommendations.push({
+        id: `${name}:codex:install-plugin-manual`,
+        host: 'codex',
+        action: 'install-plugin-manual',
+        executed: false,
+        command: null,
+        argv: null,
+        executable: false,
+        detail: codexPerPluginSurface
+          ? `Codex \`plugin list\` does not report ${name} installed; the marketplace cache has ${codexTmpVersion}. Codex exposes per-plugin ${codexPerPluginVerbText}; runtime does not auto-execute codex plugin add (execution wiring is a deferred follow-up), so installation stays manual.`
+          : `Codex \`plugin list\` does not report ${name} installed; the marketplace cache has ${codexTmpVersion}, but the current Codex CLI exposes marketplace add/upgrade/remove rather than per-plugin install/list, so runtime cannot install it directly.`,
+        next_step: codexPerPluginSurface
+          ? `Run \`codex plugin add ${name}@agentic-plugins\` to install ${name} from the marketplace cache, then verify with runtime:doctor. A fresh session alone does not install a plugin the list reports as not installed.`
+          : `Install ${name} through the Codex host plugin surface (the current CLI exposes no per-plugin install verb), then verify with runtime:doctor. A fresh session alone does not install it.`,
+        evidence: {
+          command_surface: codexPerPluginSurface ? 'per-plugin-and-marketplace' : 'marketplace-only',
+          list_decision: codexDecision,
+          list_version: null,
+          install_cache_status: codexInstallCacheStatus,
+        },
+      });
+    } else {
+      const command = buildPluginCommand({ host: 'codex', action: 'add-marketplace', name });
+      recommendations.push({
+        id: `${name}:codex:add-marketplace`,
+        host: 'codex',
+        action: 'add-marketplace',
+        executed: false,
+        command: command.display,
+        argv: command.argv,
+        executable: true,
+        detail: codexPerPluginSurface
+          ? `Codex \`plugin list\` does not report ${name} installed and no marketplace catalog is configured. Codex exposes per-plugin ${codexPerPluginVerbText} plus marketplace add/list/upgrade/remove; add the marketplace catalog first.`
+          : `Codex \`plugin list\` does not report ${name} installed and no marketplace catalog is configured. Add the marketplace catalog to make ${name} available.`,
+        evidence: { list_decision: codexDecision, list_version: null, install_cache_status: codexInstallCacheStatus },
+      });
+    }
+  } else if (!codexCacheLatest) {
     if (sourceVersion && codexTmpVersion && semverCompare(String(codexTmpVersion), String(sourceVersion)) < 0) {
       const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
       recommendations.push({
