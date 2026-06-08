@@ -107,6 +107,7 @@ export async function runDoctor({
       authArgs: ['login', 'status'],
       pluginArgs: ['plugin', 'marketplace', '--help'],
       pluginRootHelpArgs: ['plugin', '--help'],
+      pluginListArgs: ['plugin', 'list', '--json'],
       runner,
       cwd: resolvedRepoRoot,
       env,
@@ -117,13 +118,14 @@ export async function runDoctor({
   const catalogs = await inspectCatalogs(resolvedRepoRoot);
   const caches = await inspectPluginCaches(resolvedHomeDir);
   const claudePluginList = parseClaudePluginList(claude.plugin?.stdout ?? '');
-  const plugins = buildPluginMatrix({ source, catalogs, caches, claudePluginList });
+  const codexPluginList = parseCodexPluginList(codex.plugin_list);
+  const plugins = buildPluginMatrix({ source, catalogs, caches, claudePluginList, codexPluginList });
   const codexPluginHooks = await buildCodexPluginHookReport({
     codex,
     plugins,
     homeDir: resolvedHomeDir,
   });
-  const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginHooks });
+  const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginList, codexPluginHooks });
   const hostParityBaseline = await buildHostParityBaseline({ repoRoot, claude, codex });
   const settingsRuns = await inspectSettingsRuns({
     repoRoot: resolvedRepoRoot,
@@ -371,7 +373,7 @@ export async function runCommand(command, args = [], { cwd = process.cwd(), env 
   });
 }
 
-async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, featureArgs = null, authArgs, pluginArgs, pluginSurfaceArgs = null, pluginRootHelpArgs = null, runner, cwd, env }) {
+async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, featureArgs = null, authArgs, pluginArgs, pluginSurfaceArgs = null, pluginRootHelpArgs = null, pluginListArgs = null, runner, cwd, env }) {
   const version = await runner(name, versionArgs, { cwd, env });
   const available = version.ok || version.exit_code !== null;
   const help = available ? await runner(name, helpArgs, { cwd, env }) : skipped('cli unavailable');
@@ -384,6 +386,7 @@ async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, f
   // subcommands are detected from their own Commands block, not from loose substring
   // matching over the combined help blob (which also carries marketplace add/list/remove).
   const pluginRootHelpRaw = available && pluginRootHelpArgs ? await runner(name, pluginRootHelpArgs, { cwd, env }) : skipped('not requested');
+  const pluginListRaw = available && pluginListArgs ? await runner(name, pluginListArgs, { cwd, env }) : skipped('not requested');
   const auth = name === 'claude' ? parseClaudeAuth(authRaw, env) : parseCodexAuth(authRaw);
   const featureText = name === 'claude'
     ? `${help.stdout}\n${help.stderr}\n${extraHelp.stdout}\n${extraHelp.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}\n${pluginSurfaceRaw.stdout}\n${pluginSurfaceRaw.stderr}`
@@ -415,6 +418,13 @@ async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, f
       stderr: pluginRaw.stderr,
       exit_code: pluginRaw.exit_code,
       error_code: pluginRaw.error_code,
+    },
+    plugin_list: {
+      status: commandStatus(pluginListRaw),
+      stdout: pluginListRaw.stdout,
+      stderr: pluginListRaw.stderr,
+      exit_code: pluginListRaw.exit_code,
+      error_code: pluginListRaw.error_code,
     },
     plugin_surface: inspectHostPluginSurface({ host: name, result: pluginSurfaceRaw }),
   };
@@ -755,9 +765,16 @@ async function readSingleManifest({ manifestPath }) {
   };
 }
 
-function buildPluginMatrix({ source, catalogs, caches, claudePluginList }) {
+function buildPluginMatrix({ source, catalogs, caches, claudePluginList, codexPluginList = { status: 'unavailable', entries: {} } }) {
   const result = {};
   for (const name of PLUGIN_NAMES) {
+    // Resolve the Codex install decision once, here, so every downstream
+    // consumer (status, readiness row, version parity) reads the same
+    // list-authoritative-then-cache decision rather than re-deriving it.
+    const codexResolved = resolveCodexInstallState({
+      listStatus: codexPluginList.status,
+      entry: codexPluginList.entries?.[name] ?? null,
+    });
     result[name] = {
       source: source[name],
       marketplace: {
@@ -766,6 +783,8 @@ function buildPluginMatrix({ source, catalogs, caches, claudePluginList }) {
       },
       installed: {
         claude_plugin_list: claudePluginList[name] ?? null,
+        codex_plugin_list: codexPluginList.entries?.[name] ?? null,
+        codex_resolved: codexResolved,
       },
       cache: {
         claude: caches.claude[name],
@@ -779,15 +798,22 @@ function buildPluginMatrix({ source, catalogs, caches, claudePluginList }) {
         claudeCache: caches.claude[name],
         codexCache: caches.codex[name],
         claudeInstalled: claudePluginList[name],
+        codexResolved,
       }),
     };
   }
   return result;
 }
 
-function summarizePluginStatus({ source, claudeEntry, codexEntry, claudeCache, codexCache, claudeInstalled }) {
+function summarizePluginStatus({ source, claudeEntry, codexEntry, claudeCache, codexCache, claudeInstalled, codexResolved }) {
   if (claudeInstalled?.status === 'failed') return 'blocked';
-  if (claudeCache?.status === 'available' || codexCache?.status === 'available') {
+  // Codex list is authoritative when it succeeded: a present install (enabled or
+  // disabled) counts as available; a list-confirmed absence must NOT let a stale
+  // codex cache claim availability. Only on list-unavailable (decision=fallback)
+  // does the codex cache count toward availability (ADR-0034).
+  const codexListInstalled = codexResolved?.decision === 'installed' || codexResolved?.decision === 'disabled';
+  const codexCacheCounts = codexResolved?.decision === 'fallback' && codexCache?.status === 'available';
+  if (claudeCache?.status === 'available' || codexListInstalled || codexCacheCounts) {
     return 'available';
   }
   if (claudeInstalled?.status === 'enabled') return 'available';
@@ -827,6 +853,98 @@ function parseClaudePluginList(stdout) {
     if (/^Error:/i.test(line)) current.error = redactSecrets(line.replace(/^Error:\s*/i, ''));
   }
   return result;
+}
+
+// Parse `codex plugin list --json` into a sanitized, Claude-comparable installed
+// map. STDOUT only — Codex 0.137 prints valid JSON on stdout while emitting
+// warnings on stderr, so a non-empty stderr must NOT downgrade a successful
+// parse. Never throws: a missing/older subcommand, nonzero exit, or malformed
+// JSON degrades to a status that callers treat as "list unavailable -> cache
+// fallback" (ADR-0034). Raw JSON / source paths are NOT retained — only the
+// fields the readiness decision needs.
+function parseCodexPluginList(pluginListResult) {
+  const degraded = (status) => ({ status, entries: {}, warnings: [] });
+  if (!pluginListResult || pluginListResult.error_code === 'skipped') return degraded('unavailable');
+  // commandStatus() returns 'available' only when the probe ran successfully
+  // (ok). A present-but-older Codex returns a nonzero "unknown subcommand"
+  // ('unknown'); a missing CLI returns ENOENT ('unavailable'). Both are
+  // non-authoritative -> fallback; the label is reporting-only.
+  if (pluginListResult.status !== 'available') {
+    return degraded(pluginListResult.error_code === 'ENOENT' ? 'unavailable' : 'unsupported');
+  }
+  const stdout = (pluginListResult.stdout ?? '').trim();
+  if (!stdout) return degraded('empty');
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return degraded('parse_error');
+  }
+  if (!parsed || !Array.isArray(parsed.installed)) return degraded('malformed');
+  const entries = {};
+  const warnings = [];
+  for (const raw of parsed.installed) {
+    if (!raw || typeof raw.name !== 'string' || raw.marketplaceName !== 'agentic-plugins') continue;
+    const installed = raw.installed === true;
+    const enabled = typeof raw.enabled === 'boolean' ? raw.enabled : null;
+    const status = !installed
+      ? 'not_installed'
+      : enabled === true ? 'enabled' : enabled === false ? 'disabled' : 'installed';
+    const candidate = {
+      name: raw.name,
+      marketplace: 'agentic-plugins',
+      version: typeof raw.version === 'string' ? raw.version : null,
+      installed,
+      enabled,
+      status,
+      install_policy: typeof raw.installPolicy === 'string' ? raw.installPolicy : null,
+      auth_policy: typeof raw.authPolicy === 'string' ? raw.authPolicy : null,
+      error: null,
+    };
+    if (entries[raw.name]) {
+      warnings.push(`duplicate agentic-plugins entry for ${raw.name}; kept strongest install state`);
+      entries[raw.name] = pickStrongerCodexEntry(entries[raw.name], candidate);
+    } else {
+      entries[raw.name] = candidate;
+    }
+  }
+  return { status: 'available', entries, warnings };
+}
+
+const CODEX_INSTALL_STATUS_RANK = { enabled: 4, installed: 3, disabled: 2, not_installed: 1 };
+function pickStrongerCodexEntry(a, b) {
+  const ra = CODEX_INSTALL_STATUS_RANK[a.status] ?? 0;
+  const rb = CODEX_INSTALL_STATUS_RANK[b.status] ?? 0;
+  return rb > ra ? b : a;
+}
+
+// Single-source the Codex installed-state decision used across the doctor report
+// (plugin matrix status, readiness row, version parity). List-authoritative:
+// when the list probe succeeded, the list is the source of truth and a stale
+// filesystem cache must NOT claim an install the list omits; only a
+// list-unavailable probe (older Codex, nonzero exit, parse error) falls back to
+// cache evidence (decision='fallback', caller applies existing cache logic).
+// Read-only; never mutates host state (ADR-0024 / ADR-0034).
+function resolveCodexInstallState({ listStatus, entry }) {
+  if (listStatus === 'available') {
+    if (entry) {
+      // Defensive: an `installed:false` entry (only expected under --available,
+      // which we never pass) must resolve to not-installed, not the installed
+      // fall-through below.
+      if (entry.status === 'not_installed') {
+        return { decision: 'not_installed', source: 'list', version: null, enabled: false, evidence: 'codex plugin list reports the entry as not installed' };
+      }
+      if (entry.status === 'disabled') {
+        return { decision: 'disabled', source: 'list', version: entry.version ?? null, enabled: false, evidence: 'codex plugin list reports installed but disabled' };
+      }
+      if (entry.status === 'enabled') {
+        return { decision: 'installed', source: 'list', version: entry.version ?? null, enabled: true, evidence: 'codex plugin list reports enabled' };
+      }
+      return { decision: 'installed', source: 'list', version: entry.version ?? null, enabled: entry.enabled ?? null, evidence: 'codex plugin list reports installed' };
+    }
+    return { decision: 'not_installed', source: 'list', version: null, enabled: false, evidence: 'codex plugin list does not report runtime as installed' };
+  }
+  return { decision: 'fallback', source: 'cache', version: null, enabled: null, evidence: null, list_probe_status: listStatus };
 }
 
 async function buildCodexPluginHookReport({ codex, plugins, homeDir }) {
@@ -1256,7 +1374,7 @@ async function buildHostParityBaseline({ repoRoot, claude, codex }) {
   };
 }
 
-function buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginHooks }) {
+function buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginList = { status: 'unavailable', entries: {} }, codexPluginHooks }) {
   const issues = [];
   const differences = [];
 
@@ -1382,6 +1500,29 @@ function buildHostParity({ claude, codex, plugins, claudePluginList, codexPlugin
     }
   }
 
+  // Mirror the Claude retired/unknown-plugin parity for Codex, but only when the
+  // `codex plugin list --json` probe was authoritative (status==='available') —
+  // an unavailable list must not manufacture parity claims (ADR-0034).
+  if (codexPluginList.status === 'available') {
+    for (const installed of Object.values(codexPluginList.entries)) {
+      // Only flag entries the host actually has installed — a defensive
+      // installed:false entry is not a retired install.
+      if (installed.status === 'not_installed') continue;
+      if (!PLUGIN_NAMES.includes(installed.name)) {
+        issues.push(parityEntry({
+          id: 'codex_retired_or_unknown_plugin',
+          severity: 'info',
+          host: 'codex',
+          area: 'plugin-install',
+          plugin: installed.name,
+          summary: `Codex has an agentic-plugins entry that is not in the current runtime plugin set: ${installed.name}.`,
+          evidence: `status=${installed.status ?? 'unknown'}, version=${installed.version ?? 'unknown'}, enabled=${installed.enabled ?? 'unknown'}`,
+          next_step: 'If this is a retired plugin, remove it with `codex plugin remove` from the Codex host.',
+        }));
+      }
+    }
+  }
+
   const all = [...issues, ...differences];
   return {
     status: summarizeParityStatus(all),
@@ -1438,7 +1579,16 @@ function inspectPluginVersionParity(name, plugin) {
   }
 
   const claudeInstalledVersion = plugin.installed.claude_plugin_list?.version ?? plugin.cache.claude?.latest?.manifest_version ?? null;
-  const codexInstalledVersion = plugin.cache.codex?.latest?.manifest_version ?? null;
+  // List-authoritative installed version (ADR-0034): when the list probe was
+  // authoritative, use the resolver's version (installed/disabled -> entry
+  // version; not_installed -> null, so a stale cache cannot manufacture a false
+  // version-drift parity issue after the list omitted the plugin). Fall back to
+  // the filesystem cache version ONLY when the list was unavailable.
+  const codexResolved = plugin.installed.codex_resolved;
+  const codexFromCache = codexResolved?.decision === 'fallback';
+  const codexInstalledVersion = codexFromCache
+    ? (plugin.cache.codex?.latest?.manifest_version ?? null)
+    : (codexResolved?.version ?? null);
   issues.push(...compareInstalledVersion({
     plugin: name,
     host: 'claude',
@@ -1451,7 +1601,7 @@ function inspectPluginVersionParity(name, plugin) {
     host: 'codex',
     actual: codexInstalledVersion,
     expected: sourceVersion,
-    source: 'Codex cache version',
+    source: codexFromCache ? 'Codex cache version' : 'Codex plugin list version',
   }));
 
   return issues;
@@ -3633,6 +3783,37 @@ function summarizeRuntimeInstallForHost(host, plugin, { perPluginSurface = false
     return { status: 'not_installed', evidence: 'no claude plugin list, cache, or source evidence', version: null };
   }
 
+  // Codex: list-authoritative (ADR-0034). When `codex plugin list --json`
+  // succeeded, trust it over the filesystem cache; only fall through to
+  // cache evidence when the list was unavailable (older Codex / nonzero exit /
+  // parse error). Materialization stays cache-derived — "installed per list but
+  // cache not yet materialized" is a coherent, non-contradictory sub-state.
+  const codexResolved = plugin.installed.codex_resolved;
+  if (codexResolved?.decision === 'installed') {
+    return {
+      status: 'installed',
+      evidence: codexResolved.evidence,
+      version: codexResolved.version ?? plugin.cache.codex.latest?.manifest_version ?? sourceVersion,
+      materialization: buildCodexCacheMaterialization(plugin, { perPluginSurface }),
+    };
+  }
+  if (codexResolved?.decision === 'disabled') {
+    return {
+      status: 'blocked',
+      evidence: codexResolved.evidence,
+      version: codexResolved.version ?? plugin.cache.codex.latest?.manifest_version ?? sourceVersion,
+      materialization: buildCodexCacheMaterialization(plugin, { perPluginSurface }),
+    };
+  }
+  if (codexResolved?.decision === 'not_installed') {
+    return {
+      status: 'not_installed',
+      evidence: codexResolved.evidence,
+      version: null,
+      materialization: buildCodexCacheMaterialization(plugin, { perPluginSurface }),
+    };
+  }
+
   if (plugin.cache.codex.status === 'available') {
     return {
       status: 'installed',
@@ -5386,6 +5567,18 @@ function redactCommandDetails(cli) {
       exit_code: cli.plugin.exit_code,
       error_code: cli.plugin.error_code,
     },
+    // Status only — never persist the raw `codex plugin list --json` stdout
+    // (it carries source filesystem paths); writeDoctorArtifact copies the
+    // report wholesale, so the redaction boundary lives here (ADR-0034).
+    ...(cli.plugin_list
+      ? {
+        plugin_list_command_status: {
+          status: cli.plugin_list.status,
+          exit_code: cli.plugin_list.exit_code,
+          error_code: cli.plugin_list.error_code,
+        },
+      }
+      : {}),
     plugin_surface: cli.plugin_surface,
   };
 }
