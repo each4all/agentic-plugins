@@ -97,3 +97,4 @@ operatively accurate?* If no, write a new ADR (Supersede).
 | [0031](0031-session-level-active-handoff-layer.md) | Session-level active handoff layer — projection model composing context risk + workflow state + routing into a continue-vs-fresh decision | Accepted |
 | [0032](0032-codex-per-plugin-command-surface-adoption.md) | Codex per-plugin command surface adoption — stage-aware runtime recognition | Accepted |
 | [0033](0033-ci-full-test-suite-coverage.md) | CI full-suite coverage via test discovery — no-arg `npm test`, unfiltered full-tests gate, smoke namespace split, structural guard | Accepted |
+| [0034](0034-codex-plugin-list-read-signal.md) | Codex `plugin list --json` as host-native installed-state read signal — list-authoritative-then-cache precedence, shared resolver, doctor-scoped (cross-script deferred) | Accepted |

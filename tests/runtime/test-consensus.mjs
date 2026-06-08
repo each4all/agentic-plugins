@@ -1547,6 +1547,11 @@ function fakeConsensusRunner({
       if (args.join(' ') === 'login status') return okResult('Logged in using ChatGPT\n');
       if (args.join(' ') === 'plugin marketplace --help') return okResult('Usage: codex plugin marketplace add upgrade remove\n');
       if (args.join(' ') === 'plugin --help') return okResult('Usage: codex plugin <COMMAND>\nCommands:\n  add\n  list\n  marketplace\n  remove\n');
+      // ADR-0034: doctor probes `codex plugin list --json` for installed-state.
+      // Consensus tests only need runDoctor for readiness context, not plugin
+      // state, so degrade the list here -> doctor uses its cache fallback,
+      // preserving these tests' pre-ADR-0034 doctor view.
+      if (args.join(' ') === 'plugin list --json') return { ok: false, exit_code: 1, stdout: '', stderr: '', error_code: null, timed_out: false };
     }
     if (command === process.execPath) {
       const companionPath = args[0] ?? '';

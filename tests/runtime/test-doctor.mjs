@@ -1782,6 +1782,162 @@ describe('runtime doctor', () => {
   });
 });
 
+// ADR-0034 — doctor uses `codex plugin list --json` as a host-native Codex
+// installed-state read signal, with list-authoritative-then-cache precedence.
+describe('runtime doctor — codex plugin list read signal (ADR-0034)', () => {
+  const codexEntry = (name, { version = '0.1.0', installed = true, enabled = true, marketplaceName = 'agentic-plugins' } = {}) => ({
+    pluginId: `${name}@${marketplaceName}`,
+    name,
+    marketplaceName,
+    version,
+    installed,
+    enabled,
+    source: { source: 'local', path: `/Users/x/.codex/.tmp/marketplaces/${marketplaceName}/plugins/${name}` },
+    installPolicy: 'AVAILABLE',
+    authPolicy: 'ON_USE',
+  });
+  const listJson = (installed) => JSON.stringify({ installed });
+  // Codex 0.137 base map (per-plugin surface present); pass the `codex plugin
+  // list --json` runner result to exercise each list state.
+  const codex137 = (pluginListResult) => ({
+    ...defaultRuntimeProbeMap(),
+    'codex --version': okResult('codex-cli 0.137.0\n'),
+    'codex --help': okResult('Commands:\n  exec\n  login status\n  plugin  Manage Codex plugins\nOptions:\n  --model\n  --sandbox\n  --ask-for-approval\n'),
+    'codex plugin --help': okResult('Manage Codex plugins\n\nUsage: codex plugin <COMMAND>\n\nCommands:\n  add\n  list\n  marketplace\n  remove\n'),
+    'codex plugin marketplace --help': okResult('Commands:\n  add\n  list\n  upgrade\n  remove\n'),
+    'codex plugin list --json': pluginListResult,
+  });
+  const mkdirs = async () => ({
+    root: await mkdtemp(join(tmpdir(), 'runtime-doctor-codexlist-')),
+    home: await mkdtemp(join(tmpdir(), 'runtime-doctor-codexlist-home-')),
+  });
+
+  it('uses codex plugin list --json (enabled) as installed evidence without a filesystem cache', async () => {
+    const { root, home } = await mkdirs();
+    await seedRepo(root); // source present, but no ~/.codex install cache (no seedHome)
+    const report = await runDoctor({
+      repoRoot: root, homeDir: home,
+      runner: fakeRunner(codex137(okResult(listJson([codexEntry('runtime')])))),
+    });
+    strictEqual(report.plugins.runtime.cache.codex.status, 'missing');
+    strictEqual(report.plugins.runtime.installed.codex_plugin_list.status, 'enabled');
+    strictEqual(report.plugins.runtime.installed.codex_resolved.decision, 'installed');
+    strictEqual(report.plugins.runtime.installed.codex_resolved.source, 'list');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.status, 'installed');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.evidence, 'codex plugin list reports enabled');
+  });
+
+  it('reports an installed-but-disabled codex plugin as blocked', async () => {
+    const { root, home } = await mkdirs();
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root, homeDir: home,
+      runner: fakeRunner(codex137(okResult(listJson([codexEntry('runtime', { enabled: false })])))),
+    });
+    strictEqual(report.plugins.runtime.installed.codex_resolved.decision, 'disabled');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.status, 'blocked');
+    ok(/disabled/i.test(report.readiness_matrix.hosts.codex.installed.evidence));
+  });
+
+  it('does not let a stale codex cache claim an install the list omits (precedence)', async () => {
+    const { root, home } = await mkdirs();
+    await seedRepo(root);
+    await seedHome(home); // ~/.codex install cache for runtime IS present
+    // ...but the authoritative list does NOT include runtime.
+    const report = await runDoctor({
+      repoRoot: root, homeDir: home,
+      runner: fakeRunner(codex137(okResult(listJson([codexEntry('companions')])))),
+    });
+    strictEqual(report.plugins.runtime.cache.codex.status, 'available'); // cache present
+    strictEqual(report.plugins.runtime.installed.codex_resolved.decision, 'not_installed');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.status, 'not_installed');
+    ok(/does not report/i.test(report.readiness_matrix.hosts.codex.installed.evidence));
+    // A list-confirmed absence must not let the stale runtime cache version
+    // manufacture a false Codex INSTALLED-version-drift parity issue for runtime
+    // (ADR-0034). (Other plugins that the list DOES report installed, and
+    // marketplace catalog-version drift, are separate legitimate signals.)
+    ok(!report.host_parity.issues.some((issue) => issue.host === 'codex' && issue.plugin === 'runtime'
+      && (issue.id === 'installed_plugin_stale' || issue.id === 'installed_plugin_version_ahead')));
+  });
+
+  it('treats a list entry reporting installed:false as not installed (defensive)', async () => {
+    const { root, home } = await mkdirs();
+    await seedRepo(root);
+    await seedHome(home); // cache present, but list authoritatively says not installed
+    const report = await runDoctor({
+      repoRoot: root, homeDir: home,
+      runner: fakeRunner(codex137(okResult(listJson([codexEntry('runtime', { installed: false, enabled: false })])))),
+    });
+    strictEqual(report.plugins.runtime.installed.codex_plugin_list.status, 'not_installed');
+    strictEqual(report.plugins.runtime.installed.codex_resolved.decision, 'not_installed');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.status, 'not_installed');
+  });
+
+  it('falls back to codex cache when the list output is malformed', async () => {
+    const { root, home } = await mkdirs();
+    await seedRepo(root);
+    await seedHome(home);
+    const report = await runDoctor({
+      repoRoot: root, homeDir: home,
+      runner: fakeRunner(codex137(okResult('this is not json{'))),
+    });
+    strictEqual(report.plugins.runtime.installed.codex_resolved.decision, 'fallback');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.status, 'installed');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.evidence, 'codex plugin cache contains runtime');
+  });
+
+  it('falls back to codex cache when codex plugin list is unsupported (older codex)', async () => {
+    const { root, home } = await mkdirs();
+    await seedRepo(root);
+    await seedHome(home);
+    const unsupported = { ok: false, exit_code: 2, stdout: '', stderr: 'error: unrecognized subcommand \'list\'', error_code: null, timed_out: false };
+    const report = await runDoctor({
+      repoRoot: root, homeDir: home,
+      runner: fakeRunner(codex137(unsupported)),
+    });
+    strictEqual(report.plugins.runtime.installed.codex_resolved.decision, 'fallback');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.status, 'installed');
+    strictEqual(report.readiness_matrix.hosts.codex.installed.evidence, 'codex plugin cache contains runtime');
+  });
+
+  it('ignores codex plugin list entries from other marketplaces', async () => {
+    const { root, home } = await mkdirs();
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root, homeDir: home,
+      runner: fakeRunner(codex137(okResult(listJson([
+        codexEntry('runtime'),
+        codexEntry('runtime', { marketplaceName: 'other-marketplace', version: '9.9.9' }),
+      ])))),
+    });
+    strictEqual(report.plugins.runtime.installed.codex_plugin_list.marketplace, 'agentic-plugins');
+    strictEqual(report.plugins.runtime.installed.codex_plugin_list.version, '0.1.0');
+    ok(!report.host_parity.issues.some((issue) => issue.id === 'codex_retired_or_unknown_plugin'));
+  });
+
+  it('flags a codex agentic-plugins entry not in the runtime plugin set as retired/unknown', async () => {
+    const { root, home } = await mkdirs();
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root, homeDir: home,
+      runner: fakeRunner(codex137(okResult(listJson([codexEntry('runtime'), codexEntry('research')])))),
+    });
+    ok(report.host_parity.issues.some((issue) => issue.id === 'codex_retired_or_unknown_plugin' && issue.plugin === 'research'));
+  });
+
+  it('redacts raw codex plugin list stdout from the report (status only, no source paths)', async () => {
+    const { root, home } = await mkdirs();
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root, homeDir: home,
+      runner: fakeRunner(codex137(okResult(listJson([codexEntry('runtime')])))),
+    });
+    ok(report.clis.codex.plugin_list_command_status, 'plugin_list_command_status present in redacted clis');
+    strictEqual(report.clis.codex.plugin_list, undefined); // raw probe object not persisted
+    ok(!JSON.stringify(report.clis.codex).includes('/.tmp/marketplaces/'), 'no raw source path leaked into clis');
+  });
+});
+
 function okResult(stdout = '', stderr = '') {
   return { ok: true, exit_code: 0, stdout, stderr, error_code: null, timed_out: false };
 }

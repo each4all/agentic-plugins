@@ -116,9 +116,12 @@ against the host.
    Recognition-only deliberately excludes (a) wiring `codex plugin add`
    as an executable cache-materialization action behind
    `--execute-plugin-management`, and (b) using `codex plugin list
-   --json` as a host-native installed-state read signal. Both remain
-   deferred follow-ups; the execution wiring in particular is to be
-   decided alongside the broader runtime non-mutating-boundary
+   --json` as a host-native installed-state read signal. Both were
+   deferred follow-ups at the time of this ADR. Follow-up (b) was
+   subsequently **realized by [ADR-0034](0034-codex-plugin-list-read-signal.md)**
+   (doctor reads `codex plugin list --json` with list-authoritative
+   precedence). Follow-up (a) — the execution wiring — remains deferred,
+   to be decided alongside the broader runtime non-mutating-boundary
    deliberation rather than coupled to this correctness fix.
 
 The refreshed plugin rows in the two baselines are the behavioral spec
@@ -169,7 +172,8 @@ once Codex `0.130`–`0.136` support is no longer needed.
   add a host-native installed-state read probe. Rejected for this ADR as
   scope beyond the capability-model correction; the filesystem-based
   cache materialization detection already works. Left as a deferred
-  follow-up.
+  follow-up — **subsequently realized by
+  [ADR-0034](0034-codex-plugin-list-read-signal.md).**
 - **Version-gated detection**: branch on the Codex version (`>= 0.137`)
   instead of the observed command surface. Rejected — the runtime already
   reads `codex plugin --help` dynamically, so keying on the actual
