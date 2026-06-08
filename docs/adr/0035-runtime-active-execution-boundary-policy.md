@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (2026-06-08, PR #400)
 
 <!--
 Refines (does not supersede) ADR-0024. ADR-0024 established
