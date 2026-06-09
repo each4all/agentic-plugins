@@ -831,11 +831,35 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
         detail: `Codex \`plugin list\` does not report ${name} installed; marketplace cache has ${codexTmpVersion}, source/catalog ${sourceVersion}. Refresh the marketplace before installing.`,
         evidence: { list_decision: codexDecision, list_version: null, install_cache_status: codexInstallCacheStatus },
       });
+    } else if (codexTmpVersion && codexPerPluginSurface) {
+      // The list says not installed; the marketplace cache has it; Codex exposes
+      // the per-plugin `add` verb. This is an EXECUTABLE `codex plugin add`
+      // (ADR-0035 §5/§6, C) — an H2 install behind --execute-plugin-management.
+      // The actual installPolicy/authPolicy gate happens at execute time via a
+      // `codex plugin list --available --json` pre-flight (the plain list does not
+      // report not-installed plugins' policy), then a `codex plugin list --json`
+      // post-verify. It never mutates Codex trust state (enabled ≠ trusted).
+      const command = buildPluginCommand({ host: 'codex', action: 'install-plugin', name });
+      recommendations.push({
+        id: `${name}:codex:install-plugin`,
+        host: 'codex',
+        action: 'install-plugin',
+        executed: false,
+        command: command.display,
+        argv: command.argv,
+        executable: true,
+        detail: `Codex \`plugin list\` does not report ${name} installed; the marketplace cache has ${codexTmpVersion}. Codex exposes per-plugin ${codexPerPluginVerbText}; runtime can install it with \`codex plugin add ${name}@agentic-plugins\` (ADR-0035 §5/§6 H2 executor). Execution is policy-gated (pre-flight installPolicy=AVAILABLE + non-ON_INSTALL authPolicy via \`codex plugin list --available --json\`), runs only under --execute-plugin-management, and post-verifies installation. It never trusts hooks (enabled ≠ trusted; /hooks review is separate).`,
+        next_step: `Run \`runtime:settings --execute-plugin-management\` to install ${name} from the marketplace cache (or \`codex plugin add ${name}@agentic-plugins\` manually), then verify with runtime:doctor.`,
+        evidence: {
+          command_surface: 'per-plugin-and-marketplace',
+          list_decision: codexDecision,
+          list_version: null,
+          install_cache_status: codexInstallCacheStatus,
+        },
+      });
     } else if (codexTmpVersion) {
-      // The list says not installed, so this is an install — not a cache
-      // materialization (the plugin IS installed there) and not a mere session
-      // refresh. Reserve "fresh session" for the `installed` missing-cache and
-      // legacy fallback paths.
+      // Not installed, marketplace cache present, but the current Codex CLI exposes
+      // only marketplace add/upgrade/remove (no per-plugin install) — stays manual.
       recommendations.push({
         id: `${name}:codex:install-plugin-manual`,
         host: 'codex',
@@ -844,14 +868,10 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
         command: null,
         argv: null,
         executable: false,
-        detail: codexPerPluginSurface
-          ? `Codex \`plugin list\` does not report ${name} installed; the marketplace cache has ${codexTmpVersion}. Codex exposes per-plugin ${codexPerPluginVerbText}; runtime does not auto-execute codex plugin add (execution wiring is a deferred follow-up), so installation stays manual.`
-          : `Codex \`plugin list\` does not report ${name} installed; the marketplace cache has ${codexTmpVersion}, but the current Codex CLI exposes marketplace add/upgrade/remove rather than per-plugin install/list, so runtime cannot install it directly.`,
-        next_step: codexPerPluginSurface
-          ? `Run \`codex plugin add ${name}@agentic-plugins\` to install ${name} from the marketplace cache, then verify with runtime:doctor. A fresh session alone does not install a plugin the list reports as not installed.`
-          : `Install ${name} through the Codex host plugin surface (the current CLI exposes no per-plugin install verb), then verify with runtime:doctor. A fresh session alone does not install it.`,
+        detail: `Codex \`plugin list\` does not report ${name} installed; the marketplace cache has ${codexTmpVersion}, but the current Codex CLI exposes marketplace add/upgrade/remove rather than per-plugin install/list, so runtime cannot install it directly.`,
+        next_step: `Install ${name} through the Codex host plugin surface (the current CLI exposes no per-plugin install verb), then verify with runtime:doctor. A fresh session alone does not install it.`,
         evidence: {
-          command_surface: codexPerPluginSurface ? 'per-plugin-and-marketplace' : 'marketplace-only',
+          command_surface: 'marketplace-only',
           list_decision: codexDecision,
           list_version: null,
           install_cache_status: codexInstallCacheStatus,
@@ -945,6 +965,12 @@ function buildPluginCommand({ host, action, name }) {
   if (host === 'claude' && action === 'update-plugin') {
     return commandSpec('claude', ['plugin', 'update', `${name}@agentic-plugins`]);
   }
+  if (host === 'codex' && action === 'install-plugin') {
+    // ADR-0035 §5/§6 (C): H2 per-plugin install. Fixed argv — NO -c/--config,
+    // --enable, or --disable (config-injection / feature-toggle escalation).
+    // Execution is policy-gated at run time (pre-flight installPolicy/authPolicy).
+    return commandSpec('codex', ['plugin', 'add', `${name}@agentic-plugins`]);
+  }
   if (host === 'codex' && action === 'add-marketplace') {
     return commandSpec('codex', ['plugin', 'marketplace', 'add', 'each4all/agentic-plugins']);
   }
@@ -961,15 +987,89 @@ function commandSpec(command, args) {
   };
 }
 
+// ADR-0035 §6 (C) — codex install policy pre-flight + post-verify helpers.
+// The plugin name is the argv install target's local part (`<name>@agentic-plugins`).
+function codexInstallTargetName(plan) {
+  const args = plan?.argv?.args ?? [];
+  const target = args[args.length - 1] ?? '';
+  return String(target).split('@')[0];
+}
+
+// Parse `codex plugin list [--available] --json` stdout and return the
+// agentic-plugins entry for `name` from `installed` or `available`, or null.
+function parseCodexPluginListEntry(stdout, name) {
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout ?? '');
+  } catch {
+    return { parseError: true, entry: null };
+  }
+  const rows = [];
+  if (Array.isArray(parsed?.installed)) rows.push(...parsed.installed);
+  if (Array.isArray(parsed?.available)) rows.push(...parsed.available);
+  const entry = rows.find((e) => e && e.name === name && e.marketplaceName === 'agentic-plugins') ?? null;
+  return { parseError: false, entry };
+}
+
+// Pre-flight: install only when the plugin is marketplace-available with
+// installPolicy=AVAILABLE and an authPolicy that neither requires auth at install
+// (ON_INSTALL) nor is unknown (null). Read-only `codex plugin list --available --json`.
+async function codexInstallPreflight({ plan, runner, cwd, env, timeoutMs }) {
+  const name = codexInstallTargetName(plan);
+  const probe = await runner('codex', ['plugin', 'list', '--available', '--json'], { cwd, env, timeoutMs });
+  const base = { probed: true, found: false, install_policy: null, auth_policy: null };
+  if (!probe.ok) return { ok: false, reason: 'preflight-list-unavailable', evidence: base };
+  const { parseError, entry } = parseCodexPluginListEntry(probe.stdout, name);
+  if (parseError) return { ok: false, reason: 'preflight-list-unparseable', evidence: base };
+  if (!entry) return { ok: false, reason: 'plugin-not-available-in-marketplace', evidence: base };
+  const installPolicy = typeof entry.installPolicy === 'string' ? entry.installPolicy : null;
+  const authPolicy = typeof entry.authPolicy === 'string' ? entry.authPolicy : null;
+  const evidence = { probed: true, found: true, install_policy: installPolicy, auth_policy: authPolicy };
+  if (installPolicy !== 'AVAILABLE') return { ok: false, reason: 'install-policy-not-available', evidence };
+  if (authPolicy === null) return { ok: false, reason: 'auth-policy-unknown', evidence };
+  if (authPolicy === 'ON_INSTALL') return { ok: false, reason: 'auth-required-on-install', evidence };
+  return { ok: true, reason: null, evidence };
+}
+
+// Post-verify: confirm the plugin now appears installed via the read-only list.
+async function codexInstallPostverify({ plan, runner, cwd, env, timeoutMs }) {
+  const name = codexInstallTargetName(plan);
+  const probe = await runner('codex', ['plugin', 'list', '--json'], { cwd, env, timeoutMs });
+  if (!probe.ok) return { installed: false, evidence: { probed: true, installed: null, version: null, enabled: null } };
+  const { entry } = parseCodexPluginListEntry(probe.stdout, name);
+  const installed = entry?.installed === true;
+  return { installed, evidence: { probed: true, installed, version: entry?.version ?? null, enabled: entry?.enabled ?? null } };
+}
+
 async function buildPluginManagementPlan({ plugins, clis, execute, hostFilter, runner, cwd, env, timeoutMs }) {
   const plans = buildPluginManagementCandidates({ plugins, clis, hostFilter });
   if (execute) {
     for (const plan of plans) {
       if (plan.status !== 'planned') continue;
+      const isCodexInstall = plan.host === 'codex' && plan.action === 'install-plugin';
+      // ADR-0035 §6 pre-flight: gate the codex install on installPolicy/authPolicy
+      // read from `codex plugin list --available --json` (the plain list omits
+      // not-installed plugins). If not safe, BLOCK — never run `codex plugin add`.
+      if (isCodexInstall) {
+        const preflight = await codexInstallPreflight({ plan, runner, cwd, env, timeoutMs });
+        plan.preflight = preflight.evidence;
+        if (!preflight.ok) {
+          plan.executed = false;
+          plan.status = 'blocked';
+          plan.block_reason = preflight.reason;
+          continue;
+        }
+      }
       const startedAt = new Date();
       const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs });
       const completedAt = new Date();
-      const semanticFailure = classifyPluginManagementSemanticFailure({ plan, result });
+      // ADR-0035 §6 post-verify: confirm the install landed via a read-only list.
+      let postVerify = null;
+      if (isCodexInstall && result.ok) {
+        postVerify = await codexInstallPostverify({ plan, runner, cwd, env, timeoutMs });
+        plan.post_verify = postVerify.evidence;
+      }
+      const semanticFailure = classifyPluginManagementSemanticFailure({ plan, result, postVerify });
       const effectiveResult = semanticFailure
         ? {
             ...result,
@@ -1057,6 +1157,25 @@ function buildPluginManagementManualFollowups(plans) {
         .map((plan) => claudePluginCommand(plan.argv?.args))
         .filter(Boolean)),
       verify: 'Re-run runtime:settings or runtime:doctor after completing the commands.',
+    });
+  }
+  // ADR-0035 §6 (C) — a codex install blocked by the installPolicy/authPolicy
+  // pre-flight gets explicit manual recovery guidance (§3 invariant 8), with the
+  // exact `codex plugin add` the operator can run themselves after resolving the
+  // policy condition. Runtime will not run it because the host reported it unsafe
+  // to install non-interactively.
+  const codexInstallBlocked = plans.filter((plan) => (
+    plan.host === 'codex' && plan.action === 'install-plugin' && plan.status === 'blocked'
+  ));
+  if (codexInstallBlocked.length > 0) {
+    followups.push({
+      id: 'codex-install-policy-blocked',
+      host: 'codex',
+      status: 'manual_required',
+      reason: 'Codex reported one or more plugins as unsafe to install non-interactively (installPolicy/authPolicy pre-flight blocked them).',
+      reasons: uniqueStrings(codexInstallBlocked.map((plan) => plan.block_reason).filter(Boolean)),
+      commands: uniqueStrings(codexInstallBlocked.map((plan) => plan.command).filter(Boolean)),
+      verify: 'Resolve the policy condition (e.g. authenticate when authPolicy is ON_INSTALL), run the command manually, then re-run runtime:doctor.',
     });
   }
   return followups;
@@ -1266,13 +1385,21 @@ function classifyPluginManagementPlan({ recommendation, hostFilter, clis }) {
   };
 }
 
-function classifyPluginManagementSemanticFailure({ plan, result }) {
+function classifyPluginManagementSemanticFailure({ plan, result, postVerify = null }) {
   if (!result.ok) return null;
   const text = `${result.error_code ?? ''}\n${result.error_message ?? ''}\n${result.stderr ?? ''}\n${result.stdout ?? ''}`.toLowerCase();
   if (plan.host === 'claude' && /(?:\/plugin|plugin) (?:isn't|is not) available in this environment/.test(text)) {
     return {
       error_code: 'HOST_PLUGIN_SURFACE_UNAVAILABLE',
       error_message: 'Claude plugin command is not available in this environment',
+    };
+  }
+  // ADR-0035 §6 (C): a codex install that exited 0 but the read-only post-verify
+  // list does not report it installed is a semantic failure, not a success.
+  if (plan.host === 'codex' && plan.action === 'install-plugin' && postVerify && postVerify.installed !== true) {
+    return {
+      error_code: 'CODEX_INSTALL_NOT_VERIFIED',
+      error_message: 'codex plugin add returned success but the plugin is not reported installed by codex plugin list',
     };
   }
   return null;

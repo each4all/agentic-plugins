@@ -182,14 +182,17 @@ install cache evidence. Codex `0.137.0` added a per-plugin `codex plugin add` /
 `per-plugin-and-marketplace` command surface — keyed on the observed `codex
 plugin --help` command list, not the version — without claiming full Claude
 parity, because Codex still lacks `update` / `enable` / `disable` / `details` /
-`validate` / `prune`. Recognition is read-only: runtime does not auto-execute
-`codex plugin add`; wiring it as an executable cache-materialization action is a
-deferred follow-up (see [`docs/follow-ups.md`](docs/follow-ups.md)). Older Codex
-(`0.130`–`0.136`) is reported as `marketplace-only`. If the marketplace cache is
-current but the per-plugin cache is absent, settings reports a manual
-cache-materialization item — suggesting `codex plugin add` as a manual step on
-`0.137.0`+ — instead of retrying `codex plugin marketplace add`; doctor surfaces
-the same state in the readiness matrix and host-parity diagnostics.
+`validate` / `prune`. On this per-plugin surface, `settings
+--execute-plugin-management` can run `codex plugin add <plugin>@agentic-plugins`
+as an **H2 executor** (ADR-0035 §5/§6, Claude-install parity): policy-gated at
+execute time by a read-only `codex plugin list --available --json` pre-flight
+(requires `installPolicy = AVAILABLE` and a non-`ON_INSTALL`/non-unknown
+`authPolicy`, else blocked), post-verified via `codex plugin list --json`
+(`CODEX_INSTALL_NOT_VERIFIED` when an exit-0 add is not confirmed), with a fixed
+argv that excludes `-c`/`--config`/`--enable`/`--disable` and no Codex trust-state
+mutation (`enabled ≠ trusted`). Older Codex (`0.130`–`0.136`) is reported as
+`marketplace-only` and the recommendation stays manual; doctor surfaces the same
+state in the readiness matrix and host-parity diagnostics.
 
 It invokes commands as argv arrays, never through a shell, and records only status, exit code, byte counts, timing, retry classification, and sanitized error metadata. Raw stdout and stderr are omitted from settings output and artifacts. `--plugin-management-host all|claude|codex` scopes install/update execution. Settings writes `.agentic-plugins/runs/settings/<run-id>/settings.json` plus `.agentic-plugins/runs/settings/latest.json` for explicit plugin-management, plugin-cleanup, Codex plugin-hook config writes, or Codex hook-review attestations; `runtime:doctor` reads those artifacts and reports failed action types, retryability, and the newest current hook-review attestation. Settings still does not write host-native Claude config, mutate Codex hook trust state, change auth, secrets, sandbox/permission settings, or execute general plugin uninstall commands.
 

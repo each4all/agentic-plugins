@@ -203,6 +203,8 @@ export const ARGV_VERB_ALLOWLIST = {
     ['features', 'list'],
     ['login', 'status'],
     ['plugin', '--help'], ['plugin', 'list'], ['plugin', 'list', '--json'],
+    ['plugin', 'list', '--available', '--json'], // C pre-flight policy probe (ADR-0035 §6)
+    ['plugin', 'add', '*'], // C: codex plugin add <name>@agentic-plugins (ADR-0035 §5/§6, H2 install)
     ['plugin', 'marketplace', '--help'],
     ['plugin', 'marketplace', 'add', '*'],
     ['plugin', 'marketplace', 'upgrade', '*'],
@@ -238,6 +240,11 @@ export const DANGEROUS_ARGV_TOKENS = [
   'trust',
   'resume', 'fork', 'compact',
   'prune',
+  // Codex config-injection / feature-toggle flags — ADR-0035 §6 requires the
+  // `codex plugin add`/`list` argv template to EXCLUDE these (they could write
+  // arbitrary config or toggle features = H3 escalation). None appear in any
+  // current runtime host-CLI argv (git uses `-C`, not `-c`).
+  '-c', '--config', '--enable', '--disable',
 ];
 
 // Tokens from DANGEROUS_ARGV_TOKENS that ARE legitimate as a NON-leading token

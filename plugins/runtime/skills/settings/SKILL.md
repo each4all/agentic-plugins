@@ -140,10 +140,17 @@ install cache, report that as manual cache materialization. Codex `0.137.0`
 exposes a per-plugin command surface (`codex plugin add` / `list` / `remove`)
 beyond the marketplace `add` / `upgrade` / `remove`; it is not full Claude
 parity (no `update` / `enable` / `disable` / `details` / `validate` / `prune`).
-Runtime recognizes this surface but does not auto-execute `codex plugin add`
-(execution wiring is a deferred follow-up): you may suggest `codex plugin add
-<plugin>@<marketplace>` as a manual step, but do not keep retrying `codex plugin
-marketplace add`. On older Codex (`0.130`–`0.136`) the surface is marketplace-only.
+On this per-plugin surface a not-installed plugin's recommendation is an
+**executable** `codex plugin add <plugin>@agentic-plugins` (ADR-0035 §5/§6, H2),
+run only behind `--execute-plugin-management`. It is policy-gated at execute time:
+a `codex plugin list --available --json` pre-flight requires `installPolicy =
+AVAILABLE` and a non-`ON_INSTALL`, non-unknown `authPolicy` (else it is blocked,
+not run), and a `codex plugin list --json` post-verify confirms the install (an
+exit-0 add that the list does not confirm is `CODEX_INSTALL_NOT_VERIFIED`). The
+fixed argv excludes `-c`/`--config`/`--enable`/`--disable`, and it never mutates
+Codex trust state (`enabled ≠ trusted`; `/hooks` review stays separate). On older
+Codex (`0.130`–`0.136`) the surface is marketplace-only and the recommendation
+stays manual.
 
 The executors record only status, exit code, byte counts, timing, and sanitized
 error metadata. They omit raw stdout and stderr. A host command that exits 0 can

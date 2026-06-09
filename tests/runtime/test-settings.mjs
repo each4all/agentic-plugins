@@ -750,7 +750,7 @@ describe('runtime settings', () => {
     ok(codexRecommendations.every((rec) => rec.action !== 'add-marketplace'));
   });
 
-  it('keeps a not-installed Codex plugin available with honest list-derived wording (ADR-0034)', async () => {
+  it('offers an executable codex plugin add for a not-installed plugin on the per-plugin surface (ADR-0035 §5/§6)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-absent-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexlist-absent-home-'));
     await seedRepo(root);
@@ -765,13 +765,17 @@ describe('runtime settings', () => {
     });
 
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
-    const rec = codexRecommendations.find((r) => r.action === 'install-plugin-manual');
-    ok(rec, 'expected a manual install recommendation');
-    ok(rec.detail.includes('does not report runtime installed'));
-    // not-installed is an install, not cache materialization or a sufficient session refresh.
-    ok(rec.next_step.includes('does not install'));
+    // Per-plugin surface (codex0137Map exposes `add`) → executable C executor, policy-gated at execute time.
+    const rec = codexRecommendations.find((r) => r.action === 'install-plugin');
+    ok(rec, 'expected an executable codex install recommendation');
+    strictEqual(rec.executable, true);
+    strictEqual(rec.command, 'codex plugin add runtime@agentic-plugins');
+    deepStrictEqual(rec.argv, { command: 'codex', args: ['plugin', 'add', 'runtime@agentic-plugins'] });
+    ok(rec.detail.includes('policy-gated'));
+    ok(rec.detail.includes('never trusts hooks'));
     strictEqual(rec.evidence.list_decision, 'not_installed');
     ok(codexRecommendations.every((r) => r.action !== 'materialize-plugin-cache'));
+    ok(codexRecommendations.every((r) => r.action !== 'install-plugin-manual'));
   });
 
   it('recommends a Codex marketplace upgrade when the list reports installed but older than source (ADR-0034)', async () => {
@@ -819,8 +823,10 @@ describe('runtime settings', () => {
     // The stale install cache must NOT surface as an upgrade or materialization.
     ok(codexRecommendations.every((rec) => rec.action !== 'upgrade-marketplace'));
     ok(codexRecommendations.every((rec) => rec.action !== 'materialize-plugin-cache'));
-    const install = codexRecommendations.find((rec) => rec.action === 'install-plugin-manual');
-    ok(install, 'expected a manual install recommendation, not a cache-derived upgrade');
+    const install = codexRecommendations.find((rec) => rec.action === 'install-plugin');
+    ok(install, 'expected an executable codex install recommendation, not a cache-derived upgrade');
+    strictEqual(install.executable, true);
+    strictEqual(install.command, 'codex plugin add runtime@agentic-plugins');
     strictEqual(install.evidence.list_decision, 'not_installed');
     strictEqual(install.evidence.install_cache_status, 'present');
   });
@@ -854,6 +860,127 @@ describe('runtime settings', () => {
     strictEqual(executed.result.stdout_bytes, 'RAW OUTPUT MUST NOT LEAK\n'.length);
     ok(calls.includes('codex plugin marketplace add each4all/agentic-plugins'));
     ok(!JSON.stringify(report).includes('RAW OUTPUT MUST NOT LEAK'), 'plugin management report must not include raw command output');
+  });
+
+  it('executes codex plugin add after a passing installPolicy/authPolicy pre-flight and post-verifies (ADR-0035 §6)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-ok-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-ok-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+    const others = ['companions', 'engineer', 'orchestrator'].map((n) => ({ name: n, marketplaceName: 'agentic-plugins', version: '9.9.9', installed: true, enabled: true }));
+    const installed = { name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: true, enabled: true };
+    const notInstalled = { name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: false, enabled: false };
+    const calls = [];
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      runner: fakeRunnerSeq(codex0137Map({
+        // recommendation read: runtime not installed; post-verify read: installed.
+        'codex plugin list --json': [codexListJson([...others, notInstalled]), codexListJson([...others, installed])],
+        'codex plugin list --available --json': codexAvailableJson([{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: false, installPolicy: 'AVAILABLE', authPolicy: 'ON_USE' }]),
+        'codex plugin add runtime@agentic-plugins': okResult('RAW INSTALL OUTPUT MUST NOT LEAK\n'),
+        'codex plugin marketplace add each4all/agentic-plugins': okResult('marketplace ok\n'),
+      }), calls),
+    });
+    const plan = report.plugin_management.plans.find((p) => p.host === 'codex' && p.action === 'install-plugin');
+    ok(plan, 'expected an install-plugin plan');
+    strictEqual(plan.status, 'executed');
+    strictEqual(plan.command, 'codex plugin add runtime@agentic-plugins');
+    strictEqual(plan.preflight.install_policy, 'AVAILABLE');
+    strictEqual(plan.preflight.auth_policy, 'ON_USE');
+    strictEqual(plan.post_verify.installed, true);
+    ok(calls.includes('codex plugin list --available --json'), 'pre-flight policy list read');
+    ok(calls.includes('codex plugin add runtime@agentic-plugins'), 'install ran');
+    ok(calls.filter((c) => c === 'codex plugin list --json').length >= 2, 'recommendation + post-verify list reads');
+    ok(!JSON.stringify(report).includes('RAW INSTALL OUTPUT MUST NOT LEAK'), 'raw stdout must not leak');
+  });
+
+  it('blocks codex plugin add when authPolicy is ON_INSTALL (ADR-0035 §6 block-or-manual)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-oninstall-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-oninstall-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+    const others = ['companions', 'engineer', 'orchestrator'].map((n) => ({ name: n, marketplaceName: 'agentic-plugins', version: '9.9.9', installed: true, enabled: true }));
+    const calls = [];
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      runner: fakeRunner(codex0137Map({
+        'codex plugin list --json': codexListJson([...others, { name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: false, enabled: false }]),
+        'codex plugin list --available --json': codexAvailableJson([{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: false, installPolicy: 'AVAILABLE', authPolicy: 'ON_INSTALL' }]),
+        'codex plugin add runtime@agentic-plugins': okResult('SHOULD NOT RUN\n'),
+        'codex plugin marketplace add each4all/agentic-plugins': okResult('marketplace ok\n'),
+      }, calls)),
+    });
+    const plan = report.plugin_management.plans.find((p) => p.host === 'codex' && p.action === 'install-plugin');
+    ok(plan, 'expected an install-plugin plan');
+    strictEqual(plan.status, 'blocked');
+    strictEqual(plan.block_reason, 'auth-required-on-install');
+    strictEqual(plan.preflight.auth_policy, 'ON_INSTALL');
+    ok(!calls.includes('codex plugin add runtime@agentic-plugins'), 'add must NOT run when blocked');
+    // §3 invariant 8 — explicit manual recovery guidance for the blocked install.
+    const followup = report.plugin_management.manual_followups.find((f) => f.id === 'codex-install-policy-blocked');
+    ok(followup, 'expected a manual recovery followup for the blocked install');
+    ok(followup.reasons.includes('auth-required-on-install'));
+    ok(followup.commands.includes('codex plugin add runtime@agentic-plugins'));
+  });
+
+  it('blocks codex plugin add when installPolicy is not AVAILABLE (ADR-0035 §6)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-policy-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-policy-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+    const others = ['companions', 'engineer', 'orchestrator'].map((n) => ({ name: n, marketplaceName: 'agentic-plugins', version: '9.9.9', installed: true, enabled: true }));
+    const calls = [];
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      runner: fakeRunner(codex0137Map({
+        'codex plugin list --json': codexListJson([...others, { name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: false, enabled: false }]),
+        'codex plugin list --available --json': codexAvailableJson([{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: false, installPolicy: 'RESTRICTED', authPolicy: 'ON_USE' }]),
+        'codex plugin add runtime@agentic-plugins': okResult('SHOULD NOT RUN\n'),
+        'codex plugin marketplace add each4all/agentic-plugins': okResult('marketplace ok\n'),
+      }, calls)),
+    });
+    const plan = report.plugin_management.plans.find((p) => p.host === 'codex' && p.action === 'install-plugin');
+    ok(plan, 'expected an install-plugin plan');
+    strictEqual(plan.status, 'blocked');
+    strictEqual(plan.block_reason, 'install-policy-not-available');
+    ok(!calls.includes('codex plugin add runtime@agentic-plugins'), 'add must NOT run when blocked');
+  });
+
+  it('flags CODEX_INSTALL_NOT_VERIFIED when post-verify does not report the plugin installed (ADR-0035 §6)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-unverified-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-codexinstall-unverified-home-'));
+    await seedRepo(root);
+    await seedCodexTmpMarketplace(home, 'runtime', '0.1.0');
+    const others = ['companions', 'engineer', 'orchestrator'].map((n) => ({ name: n, marketplaceName: 'agentic-plugins', version: '9.9.9', installed: true, enabled: true }));
+    const calls = [];
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      // The plain list NEVER shows runtime installed — so the post-verify (read
+      // after `add` returns ok) disagrees with the command's exit code.
+      runner: fakeRunner(codex0137Map({
+        'codex plugin list --json': codexListJson([...others, { name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: false, enabled: false }]),
+        'codex plugin list --available --json': codexAvailableJson([{ name: 'runtime', marketplaceName: 'agentic-plugins', version: '0.1.0', installed: false, installPolicy: 'AVAILABLE', authPolicy: 'ON_USE' }]),
+        'codex plugin add runtime@agentic-plugins': okResult('claims success but list disagrees\n'),
+        'codex plugin marketplace add each4all/agentic-plugins': okResult('marketplace ok\n'),
+      }, calls)),
+    });
+    const plan = report.plugin_management.plans.find((p) => p.host === 'codex' && p.action === 'install-plugin');
+    ok(plan, 'expected an install-plugin plan');
+    strictEqual(plan.status, 'failed');
+    strictEqual(plan.result.error_code, 'CODEX_INSTALL_NOT_VERIFIED');
+    strictEqual(plan.post_verify.installed, false);
   });
 
   it('fails zero-exit Claude plugin commands when the plugin CLI reports unavailable', async () => {
@@ -1104,6 +1231,30 @@ function codex0137Map(extra = {}) {
 
 function codexListJson(entries) {
   return okResult(JSON.stringify({ installed: entries }));
+}
+
+// `codex plugin list --available --json` shape: uninstalled marketplace plugins
+// (with installPolicy/authPolicy) live under `available`.
+function codexAvailableJson(entries) {
+  return okResult(JSON.stringify({ installed: [], available: entries }));
+}
+
+// Sequence-aware runner: a map value may be an ARRAY of results returned in call
+// order (last element repeats), so `codex plugin list --json` can read
+// not-installed first (recommendation) then installed (post-verify).
+function fakeRunnerSeq(map, calls = []) {
+  const counts = {};
+  return async (command, args) => {
+    const key = `${command} ${args.join(' ')}`;
+    calls.push(key);
+    const entry = map[key];
+    if (Array.isArray(entry)) {
+      const i = counts[key] ?? 0;
+      counts[key] = i + 1;
+      return entry[Math.min(i, entry.length - 1)] ?? enoent(command);
+    }
+    return entry ?? enoent(command);
+  };
 }
 
 function okResult(stdout = '', stderr = '') {
