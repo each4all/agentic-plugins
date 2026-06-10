@@ -1044,18 +1044,12 @@ async function buildCodexPluginHookReport({ codex, plugins, homeDir }) {
           next_step: 'Enable generic Codex hooks for a test session or in Codex config, then review/trust the bundled hooks with /hooks and rerun runtime:doctor.',
         });
       }
-    } else if (codex.feature_surface.codex_plugin_hooks !== true) {
-      recommendations.push({
-        host: 'codex',
-        area: 'hooks',
-        action: 'enable-codex-plugin-hooks',
-        executable: false,
-        command: 'codex --enable plugin_hooks',
-        config_snippet: '[features]\nplugin_hooks = true\n',
-        detail: 'Codex bundled plugin hooks are packaged, but plugin_hooks is not enabled in the observed feature surface.',
-        next_step: 'Enable plugin_hooks for a test session or in Codex config, then review/trust hooks with /hooks and rerun runtime:doctor.',
-      });
     }
+    // Legacy Codex < ~0.134 (plugin_hooks stage not 'removed'): the disabled
+    // plugin_hooks gate is reported via host-parity diagnosis only. The former
+    // enable-codex-plugin-hooks recommendation fed the runtime:settings
+    // --apply-codex-plugin-hooks host-config write, which was removed per
+    // ADR-0035 §6; enablement on legacy hosts is a manual config edit.
   }
   if (hookState.summary.expected_disabled > 0) {
     recommendations.push({
@@ -1412,7 +1406,7 @@ function buildHostParity({ claude, codex, plugins, claudePluginList, codexPlugin
           ? 'Codex global hooks are enabled, but bundled plugin hooks require [features].plugin_hooks=true before hook-bearing agentic-plugins can run lifecycle hooks automatically.'
           : 'Codex bundled plugin hooks are packaged, but generic hooks and/or plugin_hooks are not enabled in the observed feature surface.',
         evidence: `bundled=${codexPluginHooks.summary.bundled_plugins.join(',')}, codex global_hooks=${featureFlagEvidence(codex.feature_surface.codex_global_hooks, codex.feature_surface.codex_global_hooks_stage)}, codex plugin_hooks=${featureFlagEvidence(codex.feature_surface.codex_plugin_hooks, codex.feature_surface.codex_plugin_hooks_stage)}, codex automatic_plugin_hooks=false`,
-        next_step: 'Use runtime:settings to plan plugin_hooks enablement, then review/trust the bundled hooks in Codex with /hooks.',
+        next_step: 'Enable [features].plugin_hooks manually in Codex config (legacy Codex < ~0.134; runtime does not write Codex host config per ADR-0035 §6), then review/trust the bundled hooks in Codex with /hooks.',
       }));
     }
   }
@@ -1783,7 +1777,7 @@ function buildCodexHookReviewManualFollowup(codexPluginHooks, surface, settingsR
     id: 'codex-hook-review',
     host: 'codex',
     status: 'manual_check',
-    reason: `Codex plugin hooks are packaged and plugin_hooks is enabled, but ${surface} cannot verify active-session hook review/trust state.`,
+    reason: `Codex plugin hooks are packaged and the stage-appropriate hook gate is enabled, but ${surface} cannot verify active-session hook review/trust state.`,
     environment: 'Open the active Codex session for this repository.',
     commands: ['/hooks'],
     verify: `Review/trust bundled hooks for ${bundled.join(', ')} (${reviewTargets.length} review target(s)); if /hooks shows "New hook - review required", review each new hook first. Do not attest from /hooks Installed counts alone, including Active=0 output.${hookStateHint} Then run runtime:settings --attest-codex-hook-review and rerun runtime:doctor.`,
@@ -3656,7 +3650,7 @@ function buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommand
     evidence: `codex-plugin-hooks=${codexPluginHooks.status}; bundled=${codexPluginHooks.summary.bundled_plugins.join(',') || 'none'}; manual-hook-review=${Boolean(hookFollowup)}`,
     next_step: hookFollowup
       ? hookFollowup.verify
-      : 'Use runtime:settings to enable plugin_hooks or restore hook packaging, then rerun runtime:doctor.',
+      : 'Enable the stage-appropriate Codex hook gate manually (generic [features].hooks on current Codex; [features].plugin_hooks on legacy Codex < ~0.134 — runtime does not write Codex host config per ADR-0035 §6) or restore hook packaging, then rerun runtime:doctor.',
   });
 }
 

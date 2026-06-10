@@ -3,10 +3,12 @@
 //
 // ADR-0024 settings surface. Dry-run is the default. Config apply mode writes
 // only agentic-plugins-owned config files. Plugin management execution requires
-// a separate explicit executor flag. Codex plugin hook enablement is a separate,
-// narrow opt-in host config write limited to [features].plugin_hooks. Codex hook
-// review/trust is host-session UI state, so runtime can only record an explicit
-// operator attestation artifact after the user reviews /hooks.
+// a separate explicit executor flag. Runtime does not write Codex host config:
+// the former --apply-codex-plugin-hooks [features].plugin_hooks write was
+// removed per ADR-0035 §6 (plugin hooks gate via generic [features].hooks on
+// current Codex, or a manual plugin_hooks edit on legacy Codex < ~0.134).
+// Codex hook review/trust is host-session UI state, so runtime can only record
+// an explicit operator attestation artifact after the user reviews /hooks.
 
 import { randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
@@ -16,8 +18,8 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor, codexPerPluginVerbs } from './doctor.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.10';
-export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.0';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.11';
+export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.1';
 export const CONFIG_KEYS = [
   'model',
   'effort',
@@ -54,7 +56,6 @@ export async function runSettings({
   attestCodexHookReview = false,
   pluginManagementHost = 'all',
   pluginManagementTimeoutMs = DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS,
-  applyCodexPluginHooks = false,
   runId = null,
 } = {}) {
   if (!TARGETS.has(target)) throw new Error('--target must be repo, user, or both');
@@ -62,7 +63,7 @@ export async function runSettings({
   const resolvedRepoRoot = resolve(repoRoot);
   const resolvedHomeDir = resolve(homeDir);
   const startedAt = now.toISOString();
-  const settingsExecutionRequested = executePluginManagement || executePluginCleanup || applyCodexPluginHooks || attestCodexHookReview;
+  const settingsExecutionRequested = executePluginManagement || executePluginCleanup || attestCodexHookReview;
   const settingsRunId = runId ? validateSettingsRunId(runId) : settingsExecutionRequested ? makeSettingsRunId(now) : null;
   const desiredConfig = normalizeDesiredConfig(desired);
   const commandRunner = runner ?? runCommand;
@@ -119,11 +120,9 @@ export async function runSettings({
     configTargets: configPlans.targets,
     apply,
   });
-  const hookSettings = await buildHookSettingsPlan({
+  const hookSettings = buildHookSettingsPlan({
     codexPluginHooks: doctor.codex_plugin_hooks,
     plugins: pluginPlans,
-    homeDir: resolvedHomeDir,
-    applyCodexPluginHooks,
   });
   const codexHookReview = buildCodexHookReviewAttestation({
     codexPluginHooks: doctor.codex_plugin_hooks,
@@ -145,18 +144,16 @@ export async function runSettings({
     repo_root: resolvedRepoRoot,
     host,
     output_format: format,
-    dry_run: !(apply || executePluginManagement || executePluginCleanup || applyCodexPluginHooks || attestCodexHookReview),
+    dry_run: !(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview),
     apply,
     config_apply: apply,
     execute_plugin_management: executePluginManagement,
     execute_plugin_cleanup: executePluginCleanup,
     attest_codex_hook_review: attestCodexHookReview,
-    apply_codex_plugin_hooks: applyCodexPluginHooks,
     mutation_boundary: {
-      writes_allowed: mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, applyCodexPluginHooks, attestCodexHookReview }),
+      writes_allowed: mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview }),
       allowed_paths: [
         ...configPlans.targets.filter((plan) => plan.selected).map((plan) => plan.path),
-        ...(applyCodexPluginHooks ? [hookSettings.host_config.path] : []),
       ],
       allowed_plugin_management_actions: executePluginManagement
         ? Array.from(EXECUTABLE_PLUGIN_ACTIONS).sort()
@@ -167,9 +164,7 @@ export async function runSettings({
       plugin_management_host_filter: pluginManagementHost,
       forbidden: [
         'host-native Claude Code config',
-        applyCodexPluginHooks
-          ? 'host-native Codex CLI config outside [features].plugin_hooks'
-          : 'host-native Codex CLI config',
+        'host-native Codex CLI config',
         'authentication state or secrets',
         'sandbox or permission relaxation',
         ...(attestCodexHookReview ? ['Codex hook trust state mutation'] : []),
@@ -198,7 +193,6 @@ export async function runSettings({
       written: false,
       executePluginManagement,
       executePluginCleanup,
-      applyCodexPluginHooks,
       attestCodexHookReview,
     }),
     recommendations: buildTopLevelRecommendations({
@@ -215,11 +209,11 @@ export async function runSettings({
       'Plugin management output omits raw stdout/stderr and records only status, exit code, byte counts, timing, and sanitized error metadata.',
       'Retired/unknown plugin cleanup execution is dry-run unless --execute-plugin-cleanup is supplied.',
       'Plugin cleanup execution is limited to doctor-detected retired/unknown agentic-plugins Claude plugin uninstall commands.',
-      'Codex plugin_hooks host config writes require --apply-codex-plugin-hooks and only update ~/.codex/config.toml [features].plugin_hooks; on Codex >= ~0.134 plugin_hooks is removed and that write is skipped (plugin hooks load via generic [features].hooks + /hooks trust).',
+      'runtime:settings does not write Codex host config; the former --apply-codex-plugin-hooks [features].plugin_hooks write was removed per ADR-0035 §6. Plugin hooks load via generic [features].hooks (default on) plus /hooks review/trust on current Codex; legacy Codex < ~0.134 requires a manual [features].plugin_hooks edit.',
       'Codex hook review/trust attestation records an operator claim only; runtime cannot mutate or independently prove active-session /hooks trust state.',
       'Claude host-native config, auth, secrets, and sandbox/permission settings are not written.',
       'Companion invocation still uses companions/contract.md --model and --effort.',
-      'Dynamic peer consensus, context hygiene mutation, completion footer mutation, deep peer smoke, and broader host-config apply mode beyond Codex plugin_hooks are deferred.',
+      'Dynamic peer consensus, context hygiene mutation, completion footer mutation, deep peer smoke, and host-native config apply modes are deferred.',
     ],
   };
   report.overall = summarizeSettings(report);
@@ -251,12 +245,11 @@ function normalizeConfigValue(value, key) {
   return text;
 }
 
-function mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, applyCodexPluginHooks, attestCodexHookReview }) {
+function mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview }) {
   const allowed = [];
   if (apply) allowed.push('agentic-plugins-owned config files');
   if (executePluginManagement) allowed.push('allowlisted host-native plugin install/update commands');
   if (executePluginCleanup) allowed.push('allowlisted retired/unknown agentic-plugins plugin cleanup commands');
-  if (applyCodexPluginHooks) allowed.push('Codex user config [features].plugin_hooks');
   if (attestCodexHookReview) allowed.push('runtime settings execution artifact with Codex hook review attestation');
   return allowed.length > 0 ? allowed.join('; ') : 'none; dry-run only';
 }
@@ -1529,11 +1522,11 @@ function applyPluginManagementResults(plugins, pluginManagement) {
   }
 }
 
-function buildSettingsArtifactReport({ repoRoot, runId, written, executePluginManagement, executePluginCleanup, applyCodexPluginHooks, attestCodexHookReview }) {
+function buildSettingsArtifactReport({ repoRoot, runId, written, executePluginManagement, executePluginCleanup, attestCodexHookReview }) {
   const settingsRoot = settingsArtifactRoot(repoRoot);
   const reportPath = runId ? settingsArtifactFile(repoRoot, runId) : null;
   const latestPath = resolve(settingsRoot, 'latest.json');
-  const writesArtifact = executePluginManagement || executePluginCleanup || applyCodexPluginHooks || attestCodexHookReview;
+  const writesArtifact = executePluginManagement || executePluginCleanup || attestCodexHookReview;
   return {
     settings_execution: {
       schema_version: SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION,
@@ -1574,14 +1567,12 @@ async function writeSettingsExecutionArtifact({ repoRoot, runId, report, now }) 
       execute_plugin_cleanup: report.execute_plugin_cleanup,
       plugin_management_host: report.plugin_management.host_filter,
       plugin_management_timeout_ms: report.plugin_management.timeout_ms,
-      apply_codex_plugin_hooks: report.apply_codex_plugin_hooks,
       attest_codex_hook_review: report.attest_codex_hook_review,
       apply: report.apply,
       target: report.config.targets.filter((target) => target.selected).map((target) => target.kind),
     },
     plugin_management: report.plugin_management,
     plugin_cleanup: report.plugin_cleanup,
-    codex_plugin_hooks: report.hook_settings.host_config,
     codex_hook_review: report.codex_hook_review,
     summary: {
       overall_status: report.overall.status,
@@ -1592,7 +1583,6 @@ async function writeSettingsExecutionArtifact({ repoRoot, runId, report, now }) 
       plugin_cleanup_executed: report.plugin_cleanup.summary.executed,
       plugin_cleanup_failed: report.plugin_cleanup.summary.failed,
       plugin_cleanup_blocked: report.plugin_cleanup.summary.blocked,
-      codex_plugin_hooks_applied: Boolean(report.hook_settings.host_config?.applied),
       codex_hook_review_attested: Boolean(report.codex_hook_review?.attested),
     },
     failures: [
@@ -1626,7 +1616,6 @@ async function writeSettingsExecutionArtifact({ repoRoot, runId, report, now }) 
     written: true,
     executePluginManagement: report.execute_plugin_management,
     executePluginCleanup: report.execute_plugin_cleanup,
-    applyCodexPluginHooks: report.apply_codex_plugin_hooks,
     attestCodexHookReview: report.attest_codex_hook_review,
   });
 }
@@ -1815,53 +1804,26 @@ function resolveProjectedSetting({ keys, projection }) {
   };
 }
 
-async function buildHookSettingsPlan({ codexPluginHooks, plugins = {}, homeDir, applyCodexPluginHooks }) {
+function buildHookSettingsPlan({ codexPluginHooks, plugins = {} }) {
   const hookReport = codexPluginHooks ?? {
     status: 'unknown',
     feature_flags: {},
     summary: { bundled_plugins: [], manifest_exposed_plugins: [], default_file_only_plugins: [] },
     recommendations: [],
   };
-  // Codex >= ~0.134 removed the plugin_hooks flag; plugin hooks now load via
-  // generic [features].hooks + /hooks trust, so there is no flag to write.
-  const pluginHooksRemoved = hookReport.feature_flags?.plugin_hooks_stage === 'removed';
-  const hostConfig = await buildCodexPluginHooksHostConfigPlan({
-    homeDir,
-    hookReport,
-    applyCodexPluginHooks,
-  });
-  const recommendations = [];
-  for (const recommendation of hookReport.recommendations ?? []) {
-    if (recommendation.action === 'enable-codex-plugin-hooks') {
-      recommendations.push({
-        area: 'hooks',
-        host: 'codex',
-        action: 'enable-codex-plugin-hooks',
-        severity: 'warning',
-        executable: true,
-        executed: hostConfig.applied,
-        command: recommendation.command,
-        config_snippet: recommendation.config_snippet,
-        detail: recommendation.detail,
-        next_step: hostConfig.applied
-          ? 'Codex user config now has [features].plugin_hooks=true. Start a fresh Codex session or run the session command, then review/trust hooks with /hooks and rerun runtime:doctor.'
-          : recommendation.next_step,
-        host_config_status: hostConfig.status,
-        config_path: hostConfig.path,
-      });
-      continue;
-    }
-    recommendations.push({
-      area: 'hooks',
-      host: recommendation.host ?? 'codex',
-      action: recommendation.action,
-      severity: 'warning',
-      executable: false,
-      executed: false,
-      detail: recommendation.detail,
-      next_step: recommendation.next_step ?? null,
-    });
-  }
+  // Read/diagnosis surface only: runtime:settings does not write Codex host
+  // config (the former --apply-codex-plugin-hooks executor was removed per
+  // ADR-0035 §6). Doctor recommendations pass through as non-executable advice.
+  const recommendations = (hookReport.recommendations ?? []).map((recommendation) => ({
+    area: 'hooks',
+    host: recommendation.host ?? 'codex',
+    action: recommendation.action,
+    severity: 'warning',
+    executable: false,
+    executed: false,
+    detail: recommendation.detail,
+    next_step: recommendation.next_step ?? null,
+  }));
   return {
     status: hookReport.status,
     feature_flags: hookReport.feature_flags,
@@ -1874,19 +1836,6 @@ async function buildHookSettingsPlan({ codexPluginHooks, plugins = {}, homeDir, 
     hook_state: hookReport.hook_state ?? null,
     review_targets: buildCodexHookReviewTargets({ codexPluginHooks: hookReport, plugins }),
     recommendations,
-    host_config: hostConfig,
-    mutation_boundary: {
-      executable: !pluginHooksRemoved,
-      applied: hostConfig.applied,
-      reason: pluginHooksRemoved
-        ? 'Codex plugin_hooks is removed; runtime:settings does not write it. Plugin hooks load via generic [features].hooks (default on) + /hooks review/trust.'
-        : applyCodexPluginHooks
-          ? 'runtime:settings was explicitly allowed to update ~/.codex/config.toml [features].plugin_hooks only.'
-          : 'runtime:settings plans Codex plugin_hooks config but writes it only when --apply-codex-plugin-hooks is explicit.',
-      config_path: hostConfig.path,
-      persistent_config_snippet: pluginHooksRemoved ? null : '[features]\nplugin_hooks = true\n',
-      session_command: pluginHooksRemoved ? null : 'codex --enable plugin_hooks',
-    },
   };
 }
 
@@ -1911,131 +1860,6 @@ function buildCodexHookReviewTargets({ codexPluginHooks, plugins }) {
     });
   }
   return targets.sort((a, b) => a.plugin.localeCompare(b.plugin));
-}
-
-async function buildCodexPluginHooksHostConfigPlan({ homeDir, hookReport, applyCodexPluginHooks }) {
-  const path = join(homeDir, '.codex', 'config.toml');
-  const currentText = await readTextIfExists(path);
-  const currentConfig = parseCodexFeaturesConfigToml(currentText.ok ? currentText.text : '');
-  const pluginHooksRemoved = hookReport.feature_flags?.plugin_hooks_stage === 'removed';
-  const shouldPlan = !pluginHooksRemoved
-    && (hookReport.recommendations ?? []).some((rec) => rec.action === 'enable-codex-plugin-hooks');
-  const before = currentConfig.plugin_hooks ?? null;
-  const plannedWrites = shouldPlan && before !== true
-    ? [{
-        op: before === null ? 'add' : 'update',
-        section: 'features',
-        key: 'plugin_hooks',
-        before,
-        after: true,
-      }]
-    : [];
-  const plan = {
-    path,
-    status: pluginHooksRemoved
-      ? 'not_applicable_removed'
-      : plannedWrites.length > 0 ? 'planned' : before === true ? 'not_needed' : 'not_applicable',
-    config_status: currentText.ok ? 'available' : 'missing',
-    plugin_hooks_removed: pluginHooksRemoved,
-    current: {
-      plugin_hooks: before,
-    },
-    desired: {
-      plugin_hooks: true,
-    },
-    planned_writes: plannedWrites,
-    applied: false,
-    apply_requested: applyCodexPluginHooks,
-    limits: pluginHooksRemoved
-      ? [
-          'Codex plugin_hooks is removed (>= ~0.134); this write is obsolete and skipped.',
-          'Plugin-bundled hooks now load via generic [features].hooks (default on) + /hooks review/trust.',
-        ]
-      : [
-          'Only ~/.codex/config.toml [features].plugin_hooks is changed.',
-          'runtime:settings does not change Codex trust, sandbox, approval, auth, or plugin enablement settings.',
-        ],
-  };
-  if (applyCodexPluginHooks && plannedWrites.length > 0) {
-    const nextText = upsertCodexPluginHooksConfigToml(currentText.ok ? currentText.text : '', true);
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, nextText, 'utf8');
-    plan.applied = true;
-    plan.status = 'applied';
-    plan.config_status = 'available';
-    plan.current.plugin_hooks = true;
-  }
-  return plan;
-}
-
-export function parseCodexFeaturesConfigToml(text) {
-  const result = {};
-  let inFeatures = false;
-  for (const raw of String(text ?? '').replace(/\r\n/g, '\n').split('\n')) {
-    const section = raw.match(/^\s*\[([^\]]+)]\s*(?:#.*)?$/);
-    if (section) {
-      inFeatures = section[1].trim() === 'features';
-      continue;
-    }
-    if (!inFeatures) continue;
-    const withoutComment = raw.replace(/#.*/, '').trim();
-    const match = withoutComment.match(/^plugin_hooks\s*=\s*(true|false)\s*$/);
-    if (match) result.plugin_hooks = match[1] === 'true';
-  }
-  return result;
-}
-
-export function upsertCodexPluginHooksConfigToml(text, enabled = true) {
-  const lines = String(text ?? '').replace(/\r\n/g, '\n').split('\n');
-  if (lines.length > 0 && lines.at(-1) === '') lines.pop();
-  const output = [];
-  let inFeatures = false;
-  let featuresSeen = false;
-  let wrote = false;
-  const value = enabled ? 'true' : 'false';
-
-  for (const line of lines) {
-    const section = line.match(/^(\s*)\[([^\]]+)](\s*(?:#.*)?)$/);
-    if (section) {
-      if (inFeatures && !wrote) {
-        appendFeaturePluginHooks(output, value);
-        wrote = true;
-      }
-      inFeatures = section[2].trim() === 'features';
-      if (inFeatures) featuresSeen = true;
-      output.push(line);
-      continue;
-    }
-    if (inFeatures) {
-      const existing = line.match(/^(\s*)plugin_hooks(\s*=\s*)(?:true|false)(\s*(?:#.*)?)$/);
-      if (existing) {
-        output.push(`${existing[1]}plugin_hooks${existing[2]}${value}${existing[3]}`);
-        wrote = true;
-        continue;
-      }
-    }
-    output.push(line);
-  }
-
-  if (featuresSeen && inFeatures && !wrote) {
-    appendFeaturePluginHooks(output, value);
-    wrote = true;
-  }
-  if (!featuresSeen) {
-    if (output.length > 0 && output.at(-1) !== '') output.push('');
-    output.push('[features]');
-    output.push(`plugin_hooks = ${value}`);
-  }
-  return `${output.join('\n')}\n`;
-}
-
-function appendFeaturePluginHooks(output, value) {
-  const trailingBlankLines = [];
-  while (output.length > 0 && output.at(-1) === '') {
-    trailingBlankLines.unshift(output.pop());
-  }
-  output.push(`plugin_hooks = ${value}`);
-  output.push(...trailingBlankLines);
 }
 
 function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredConfig, companionSettings, hookSettings }) {
@@ -2237,18 +2061,11 @@ export function formatText(report) {
       lines.push(`  disabled-hook-state: ${entry.plugin}; event=${entry.event}; path=${entry.hooks_path}; ids=${entry.ids.join(',') || 'none'}`);
     }
   }
-  if (report.hook_settings.mutation_boundary.session_command) {
-    lines.push(`- session-command: ${report.hook_settings.mutation_boundary.session_command}`);
-    lines.push('- persistent-config-snippet: [features] plugin_hooks = true');
-  } else {
+  const hookFlags = report.hook_settings.feature_flags ?? {};
+  if (hookFlags.plugin_hooks_stage === 'removed') {
     lines.push('- plugin-hooks: removed on this Codex; plugin hooks load via generic [features].hooks (default on) + /hooks trust');
-  }
-  if (report.hook_settings.host_config) {
-    const hostConfig = report.hook_settings.host_config;
-    lines.push(`- user-config: ${hostConfig.path}; status=${hostConfig.status}; plugin_hooks=${hostConfig.current.plugin_hooks ?? '<unset>'}; applied=${hostConfig.applied}`);
-    if (hostConfig.planned_writes.length > 0 && !hostConfig.applied) {
-      lines.push('- apply-command: runtime:settings --apply-codex-plugin-hooks');
-    }
+  } else {
+    lines.push(`- plugin-hooks: legacy gate [features].plugin_hooks=${hookFlags.plugin_hooks ?? '<unknown>'}; runtime:settings does not write Codex host config (ADR-0035 §6) — enable it manually in ~/.codex/config.toml if needed, then review/trust with /hooks`);
   }
   for (const recommendation of report.hook_settings.recommendations) {
     const command = recommendation.command ? ` command=${recommendation.command}` : '';
@@ -2314,7 +2131,6 @@ function formatSettingsMode(report) {
   if (report.config_apply) modes.push('config-apply');
   if (report.execute_plugin_management) modes.push('plugin-management');
   if (report.execute_plugin_cleanup) modes.push('plugin-cleanup');
-  if (report.apply_codex_plugin_hooks) modes.push('codex-plugin-hooks');
   if (report.attest_codex_hook_review) modes.push('codex-hook-review');
   return modes.length > 0 ? modes.join('+') : 'dry-run';
 }
@@ -2395,7 +2211,7 @@ function usage() {
     'Usage: settings.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex]',
     '  [--target repo|user|both] [--model <id>] [--effort <level>]',
     '  [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>]',
-    '  [--apply] [--apply-codex-plugin-hooks] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>] [--run-id <settings-run-id>]',
+    '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>] [--run-id <settings-run-id>]',
     '',
   ].join('\n');
 }
@@ -2410,7 +2226,6 @@ export function parseArgs(argv) {
     executePluginManagement: false,
     executePluginCleanup: false,
     attestCodexHookReview: false,
-    applyCodexPluginHooks: false,
     pluginManagementHost: 'all',
     pluginManagementTimeoutMs: DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS,
     runId: null,
@@ -2433,8 +2248,6 @@ export function parseArgs(argv) {
       if (!TARGETS.has(opts.target)) throw new Error('--target must be repo, user, or both');
     } else if (arg === '--apply') {
       opts.apply = true;
-    } else if (arg === '--apply-codex-plugin-hooks') {
-      opts.applyCodexPluginHooks = true;
     } else if (arg === '--attest-codex-hook-review') {
       opts.attestCodexHookReview = true;
     } else if (arg === '--execute-plugin-management') {
