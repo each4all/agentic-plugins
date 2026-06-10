@@ -1,6 +1,6 @@
 # Codex Capability Baseline
 
-Observed on 2026-06-07 with Codex CLI `0.137.0` plus official OpenAI
+Observed on 2026-06-10 with Codex CLI `0.139.0` plus official OpenAI
 developer docs. This file is a runtime-owned host-truth checkpoint, not a
 replacement for the upstream docs.
 
@@ -26,39 +26,51 @@ Official OpenAI developer docs:
 
 Local CLI evidence:
 
-- `codex --version` -> `codex-cli 0.137.0`
-- `codex --help` (0.137.0 adds top-level `doctor`, `update`, `login`/`logout`,
-  and `archive`/`unarchive` alongside `exec`, `review`, `mcp`, `plugin`,
-  `sandbox`, `resume`, `fork`, `cloud`, `features`)
+- `codex --version` -> `codex-cli 0.139.0`
+- `codex --help` (0.139.0 top-level surface: `exec`, `review`, `login`/`logout`,
+  `mcp`, `plugin`, `mcp-server`, `app-server`, `remote-control`, `app`,
+  `completion`, `update`, `doctor`, `sandbox`, `debug`, `apply`, `resume`,
+  `archive`/`unarchive`, `fork`, `cloud`, `exec-server`, `features`; the
+  `doctor`/`update`/`login`/`logout`/`archive` additions date to 0.137.0)
 - `codex exec --help`
-- `codex hooks --help` (observed to fall back to top-level help; no
-  `hooks` subcommand is listed)
-- `codex plugin --help` (0.137.0: `add`, `list`, `marketplace`, `remove`)
+- `codex hooks --help` (re-observed on 0.139.0 to fall back to top-level help;
+  no `hooks` subcommand is listed)
+- `codex plugin --help` (0.139.0: `add`, `list`, `marketplace`, `remove` —
+  command set unchanged from 0.137.0)
 - `codex plugin add --help` (installs `PLUGIN[@MARKETPLACE]` from a configured
-  marketplace snapshot; `--marketplace` selects the source)
+  marketplace snapshot; `--marketplace` selects the source; 0.138.0 added
+  `--json`)
 - `codex plugin list --help` (lists plugins from configured marketplace
-  snapshots; `--json` supported)
+  snapshots; `--json` supported plus a `-m`/`--marketplace` filter; 0.138.0
+  added a `marketplaceSource` `{sourceType, source}` field to source-backed
+  JSON entries — not all entries carry it — and 0.139.0 can serve
+  available-plugin lists from the cached remote catalog before a background
+  refresh)
 - `codex plugin remove --help` (removes an installed plugin from local config
-  and cache)
-- `codex plugin marketplace --help` (0.137.0: `add`, `list`, `upgrade`, `remove`)
+  and cache; 0.138.0 added `--json`)
+- `codex plugin marketplace --help` (0.139.0: `add`, `list`, `upgrade`,
+  `remove` — unchanged from 0.137.0; `marketplace list --json` includes the
+  marketplace source for source-backed marketplaces as of 0.139.0, not every
+  entry)
 - `codex debug --help`
 - `codex mcp --help`
-- `codex features list` (0.137.0: `plugin_hooks` removed, generic `hooks`
+- `codex features list` (0.139.0: `plugin_hooks` removed, generic `hooks`
   stable, `plugins`/`plugin_sharing`/`multi_agent` stable — unchanged from
-  0.136.0)
+  0.137.0; new under-development flags `multi_agent_v2` and `remote_plugin`
+  are observed)
 
 ## Confirmed Codex Surfaces
 
 | Surface | Baseline | Runtime implication |
 |---------|----------|---------------------|
-| Local CLI | Codex CLI is the local terminal coding agent. Local help exposes `exec`, `review`, `mcp`, `plugin`, `sandbox`, `resume`, `fork`, `cloud`, `features`, and related commands. | Runtime may diagnose local CLI availability and command shape, but should keep version and feature observations explicit because this surface changes quickly. |
+| Local CLI | Codex CLI is the local terminal coding agent. Local help on `0.139.0` exposes `exec`, `review`, `mcp`, `plugin`, `sandbox`, `resume`, `fork`, `cloud`, `features`, `doctor`, `update`, `app`, and related commands, plus experimental `app-server`/`remote-control`/`exec-server`. | Runtime may diagnose local CLI availability and command shape, but should keep version and feature observations explicit because this surface changes quickly. |
 | `AGENTS.md` | Codex loads instruction files before work, layering user and project guidance. Project `.codex/` layers load only for trusted projects. | Repo guidance in `AGENTS.md` remains the canonical Codex host instruction path. Runtime should not replace it with generated host config. |
 | Skills | Skills are the reusable workflow authoring format. `SKILL.md` is the required skill entry point, and plugins are the distribution unit for reusable skills and apps. | Codex-facing runtime commands stay packaged as skills under `plugins/runtime/skills/`. Runtime docs should mention `$runtime:*` skill invocation rather than Claude slash-command parity. |
 | Plugins and marketplaces | `.codex-plugin/plugin.json` is the required plugin manifest. A repo-scoped marketplace lives at `$REPO_ROOT/.agents/plugins/marketplace.json`; Codex can also read personal and Claude-style marketplace locations. | Keep `.codex-plugin/plugin.json` plus `.agents/plugins/marketplace.json` as the Codex distribution surface. Do not invent a second Codex install manifest. |
-| Local plugin command shape | In CLI `0.137.0`, `codex plugin` exposes `add`, `list`, `marketplace`, and `remove`; `codex plugin marketplace` exposes `add`, `list`, `upgrade`, and `remove`. Per-plugin `add` (install from a configured marketplace snapshot), `list`, and `remove` are new beyond the prior marketplace-only surface; there is still no per-plugin `update`, `enable`, `disable`, `details`, `validate`, or `prune`. | The CLI is no longer marketplace-only — it has per-plugin `add`/`list`/`remove`. Runtime `doctor`/`settings` recognize this surface as `per-plugin-and-marketplace` (ADR-0032), and `doctor` reads Codex installed-state host-natively from `codex plugin list --json` (read-only, list-authoritative-then-cache; ADR-0034). `runtime:settings --execute-plugin-management --plugin-management-host codex` still executes only marketplace commands; wiring `codex plugin add` as an executable action remains a deferred follow-up (see `follow-ups.md`). Do not claim full Claude-style parity (`update`/`enable`/`disable`/`details`/`validate`/`prune` are still absent). |
+| Local plugin command shape | In CLI `0.139.0` (command set unchanged since `0.137.0`), `codex plugin` exposes `add`, `list`, `marketplace`, and `remove`; `codex plugin marketplace` exposes `add`, `list`, `upgrade`, and `remove`. Per-plugin `add` (install from a configured marketplace snapshot), `list`, and `remove` arrived in `0.137.0` beyond the prior marketplace-only surface; `0.138.0` added `--json` to `add`/`remove` and the marketplace commands plus a `marketplaceSource` field on source-backed `list --json` entries (not universal); `0.139.0` can serve available-plugin lists from the cached remote catalog before a background refresh. There is still no per-plugin `update`, `enable`, `disable`, `details`, `validate`, or `prune`. | The CLI is no longer marketplace-only — it has per-plugin `add`/`list`/`remove`. Runtime `doctor`/`settings` recognize this surface as `per-plugin-and-marketplace` (ADR-0032), and `doctor` reads Codex installed-state host-natively from `codex plugin list --json` (read-only, list-authoritative-then-cache; ADR-0034) — the `0.138.0` additive JSON fields are ignored by that field-selective resolver (re-verified on `0.139.0`). `runtime:settings --execute-plugin-management` can execute `codex plugin add <plugin>@agentic-plugins` as a policy-gated H2 executor (ADR-0035 §5; see `follow-ups.md`); the cached-first available-list behavior makes the executor's read-only `--available` pre-flight potentially cache-aged, which is acceptable for a pre-flight but must not be re-labeled as source truth. Do not claim full Claude-style parity (`update`/`enable`/`disable`/`details`/`validate`/`prune` are still absent). |
 | MCP | Codex supports MCP in the CLI and IDE extension. MCP configuration is stored with other Codex config in `config.toml`, and `codex mcp` manages server entries. | Runtime may diagnose MCP availability and config paths. Runtime must not auto-add MCP servers outside an explicit future executor. |
 | Subagents | Codex subagent workflows are enabled by default, but Codex only spawns subagents when explicitly asked. Custom agents live under `~/.codex/agents/` or `.codex/agents/`, and subagents inherit the current sandbox policy. | Runtime consensus can model manual/subagent lanes, but automatic hidden fanout remains out of bounds. Any Codex subagent use must be an explicit operator or user action. |
-| Hooks | Codex hooks are a documented lifecycle extension. The `plugin_hooks` feature flag was **removed** in ~0.134.0 (PR #22552): `codex features list` on 0.137.0 still reports `plugin_hooks` as `removed` and generic `hooks` as `stable`. Plugin-bundled hooks are no longer gated by a separate flag — they load when the plugin is enabled and generic `[features].hooks` (default on) is set, declared via a `.codex-plugin/plugin.json` `hooks` entry or the default `hooks/hooks.json`, subject to `/hooks` review+trust. Plugin hook commands receive `PLUGIN_ROOT`/`PLUGIN_DATA`, and Codex still sets `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` for compatibility with existing plugin hooks. Local non-interactive help does not expose a `codex hooks` trust/query command. | Runtime should keep generic hooks, plugin enablement, manifest hook exposure, hook command portability, and hook trust/review as separate readiness facts. Do not treat plugin-bundled hooks as runtime-ready based only on generic hook support or `/hooks` `Installed` counts; `Active=0` output and `Trust: New hook - review required` are not enough to attest. Because `plugin_hooks` is removed, the former `--apply-codex-plugin-hooks` write (`[features].plugin_hooks = true`) and `codex --enable plugin_hooks` targeted a dead flag on 0.137.0; that settings write executor and the doctor `enable-codex-plugin-hooks` recommendation were removed per ADR-0035 §6, and runtime `settings`/`doctor` now report the `[features].hooks` + plugin-enablement + `/hooks` trust model read-only. `CLAUDE_PLUGIN_ROOT` in a Codex-exposed command is compatibility telemetry, not a warning by itself; a Claude adapter hook path remains a portability warning. Bare `node` hook commands are also portability warnings because a hook runner may not inherit a login-shell PATH. After the operator reviews/trusts hooks with `/hooks`, `runtime:settings --attest-codex-hook-review` may record a sanitized artifact for doctor to consume; it does not mutate or independently prove Codex trust state. |
+| Hooks | Codex hooks are a documented lifecycle extension. The `plugin_hooks` feature flag was **removed** in ~0.134.0 (PR #22552): `codex features list` on 0.139.0 still reports `plugin_hooks` as `removed` and generic `hooks` as `stable`. Plugin-bundled hooks are no longer gated by a separate flag — they load when the plugin is enabled and generic `[features].hooks` (default on) is set, declared via a `.codex-plugin/plugin.json` `hooks` entry or the default `hooks/hooks.json`, subject to `/hooks` review+trust. Plugin hook commands receive `PLUGIN_ROOT`/`PLUGIN_DATA`, and Codex still sets `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` for compatibility with existing plugin hooks. Local non-interactive help does not expose a `codex hooks` trust/query command. | Runtime should keep generic hooks, plugin enablement, manifest hook exposure, hook command portability, and hook trust/review as separate readiness facts. Do not treat plugin-bundled hooks as runtime-ready based only on generic hook support or `/hooks` `Installed` counts; `Active=0` output and `Trust: New hook - review required` are not enough to attest. Because `plugin_hooks` is removed, the former `--apply-codex-plugin-hooks` write (`[features].plugin_hooks = true`) and `codex --enable plugin_hooks` targeted a dead flag on 0.137.0; that settings write executor and the doctor `enable-codex-plugin-hooks` recommendation were removed per ADR-0035 §6, and runtime `settings`/`doctor` now report the `[features].hooks` + plugin-enablement + `/hooks` trust model read-only. `CLAUDE_PLUGIN_ROOT` in a Codex-exposed command is compatibility telemetry, not a warning by itself; a Claude adapter hook path remains a portability warning. Bare `node` hook commands are also portability warnings because a hook runner may not inherit a login-shell PATH. After the operator reviews/trusts hooks with `/hooks`, `runtime:settings --attest-codex-hook-review` may record a sanitized artifact for doctor to consume; it does not mutate or independently prove Codex trust state. |
 | Config | Codex reads user config from `~/.codex/config.toml`, trusted project config from `.codex/config.toml`, and system config from `/etc/codex/config.toml` on Unix. | Current `runtime:settings --apply` continues writing only `.agentic-plugins/config.toml`. The former host-native Codex write — the `--apply-codex-plugin-hooks` path for `~/.codex/config.toml` `[features].plugin_hooks = true` — was **removed per ADR-0035 §6** (it would have written a dead flag). Runtime has no Codex host-config write executor; Codex config mutation is out of scope. |
 | Sandbox and approvals | Codex separates sandbox boundaries from approval policy. CLI help exposes `read-only`, `workspace-write`, and `danger-full-access`; approval policies include `untrusted`, `on-request`, and `never`. | Runtime doctor/settings may observe and preflight these controls, but must not relax sandbox, approval, permission, or network settings automatically. |
 
@@ -82,7 +94,7 @@ Local CLI evidence:
   now require the plugin enabled, generic `[features].hooks` on, and `/hooks`
   review+trust. (The separate `plugin_hooks` flag was removed in ~0.134.0.)
 - Do not claim runtime can independently verify Codex hook trust/review from
-  CLI state. In local CLI `0.137.0`, `/hooks` is an active-session UI command:
+  CLI state. In local CLI `0.139.0`, `/hooks` is an active-session UI command:
   top-level help does not list a `hooks` subcommand, and `codex plugin
   marketplace` exposes add/list/upgrade/remove with no hook trust query.
   (`~/.codex/config.toml` no longer exposes a `plugin_hooks` enablement flag,
