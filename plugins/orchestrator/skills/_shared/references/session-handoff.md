@@ -88,14 +88,16 @@ computes and passes the macro projection exactly as the Claude command does.
 
 What is **not** non-interactively provable on Codex is the *re-surfacing* of the
 emitted next-session prompt in a later session: that re-injection rides the
-SessionStart hook, which on Codex additionally requires `[features].plugin_hooks
-= true` plus a `/hooks` review/trust of the packaged hook. agentic-plugins
+SessionStart hook, which on Codex additionally requires the stage-appropriate
+hook gate (generic `[features].hooks`, default on, on current Codex;
+`[features].plugin_hooks = true` enabled manually on legacy Codex < ~0.134)
+plus a `/hooks` review/trust of the packaged hook. agentic-plugins
 cannot prove that trust state from a headless run (settings.mjs:955) — so this
 is **diagnose + operator attestation only**:
 
 - diagnose readiness with `runtime:doctor` (Codex plugin-hook readiness) and
-  plan/attest with `runtime:settings` (`--apply-codex-plugin-hooks`,
-  `--attest-codex-hook-review`);
+  attest with `runtime:settings` (`--attest-codex-hook-review`; hook-gate
+  enablement is manual per ADR-0035 §6);
 - the durable handoff (the `runtime:context` artifact's next-session field)
   is host-shared and survives regardless — only its automatic re-injection
   depends on the attested Codex hook state.
