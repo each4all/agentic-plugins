@@ -192,14 +192,15 @@ describe('plugins/runtime settings surface', () => {
     ok(command.includes('scripts/settings.mjs'));
     ok(/dry-run/i.test(command));
     ok(command.includes('--apply'));
-    ok(command.includes('--apply-codex-plugin-hooks'));
+    // ADR-0035 §6 hard-remove: the deleted flag must stay out of the command doc.
+    ok(!command.includes('[--apply-codex-plugin-hooks]'));
     ok(command.includes('/hooks'));
     const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/SKILL.md'), 'utf-8');
     ok(/^name:\s*settings\s*$/m.test(skill));
     ok(skill.includes('Host-native Claude Code'));
     ok(skill.includes('Non-executable host-CLI install plans'));
     ok(skill.includes('--execute-plugin-management'));
-    ok(skill.includes('--apply-codex-plugin-hooks'));
+    ok(!skill.includes('[--apply-codex-plugin-hooks]'));
     ok(skill.includes('/hooks'));
     const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:settings'));

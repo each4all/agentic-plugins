@@ -7,9 +7,7 @@ import { join } from 'node:path';
 import {
   formatText,
   parseArgs,
-  parseCodexFeaturesConfigToml,
   runSettings,
-  upsertCodexPluginHooksConfigToml,
   upsertRuntimeConfigToml,
 } from '../../plugins/runtime/scripts/settings.mjs';
 import { RUNTIME_VERSION } from '../../plugins/runtime/scripts/version.mjs';
@@ -51,9 +49,9 @@ describe('runtime settings', () => {
     strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.status, 'effective');
     strictEqual(report.companion_settings.directions.codex_to_claude.proposed.model, 'claude-new');
     strictEqual(report.overall.setting_warnings, 0);
-    strictEqual(report.overall.hook_warnings, 1);
+    strictEqual(report.overall.hook_warnings, 0);
     strictEqual(report.hook_settings.status, 'feature_disabled');
-    ok(report.hook_settings.recommendations.some((rec) => rec.action === 'enable-codex-plugin-hooks'));
+    ok(!report.hook_settings.recommendations.some((rec) => rec.action === 'enable-codex-plugin-hooks'));
     strictEqual(await readFile(join(root, '.agentic-plugins', 'config.toml'), 'utf8'), 'codex_model = "old-codex"\n');
     ok(calls.every((call) => !/\binstall\b|\bupdate\b/.test(call)), 'settings must not execute plugin install/update commands');
     ok(formatText(report).includes(`runtime:settings ${RUNTIME_VERSION} (dry-run)`));
@@ -70,7 +68,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.10');
+    strictEqual(report.schema_version, 'runtime-settings-1.11');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -332,7 +330,7 @@ describe('runtime settings', () => {
     ok(report.limits.some((limit) => limit.includes('Plugin install/update execution is dry-run')));
   });
 
-  it('plans Codex plugin_hooks enablement without mutating host-native config by default', async () => {
+  it('reports the legacy plugin_hooks gate read-only without planning a host-config write', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-home-'));
     await seedRepo(root);
@@ -345,18 +343,19 @@ describe('runtime settings', () => {
 
     strictEqual(report.hook_settings.status, 'feature_disabled');
     deepStrictEqual(report.hook_settings.packaged_plugins.manifest_exposed, ['engineer', 'orchestrator']);
-    const rec = report.hook_settings.recommendations.find((item) => item.action === 'enable-codex-plugin-hooks');
-    strictEqual(rec.executable, true);
-    strictEqual(rec.executed, false);
-    strictEqual(rec.command, 'codex --enable plugin_hooks');
-    strictEqual(rec.config_snippet, '[features]\nplugin_hooks = true\n');
-    strictEqual(report.hook_settings.host_config.status, 'planned');
-    strictEqual(report.hook_settings.host_config.applied, false);
-    strictEqual(report.hook_settings.host_config.planned_writes[0].key, 'plugin_hooks');
-    ok(report.recommendations.some((item) => item.area === 'hooks' && item.action === 'enable-codex-plugin-hooks'));
-    ok(formatText(report).includes('Codex Plugin Hooks'));
-    ok(formatText(report).includes('session-command: codex --enable plugin_hooks'));
-    ok(formatText(report).includes('apply-command: runtime:settings --apply-codex-plugin-hooks'));
+    // ADR-0035 §6 hard-remove: no executable hook recommendation, no host-config
+    // write plan, no hook-level mutation boundary; the gate state stays readable.
+    ok(!report.hook_settings.recommendations.some((item) => item.action === 'enable-codex-plugin-hooks'));
+    ok(report.hook_settings.recommendations.every((item) => item.executable === false));
+    strictEqual(report.hook_settings.host_config, undefined);
+    strictEqual(report.hook_settings.mutation_boundary, undefined);
+    ok(!report.recommendations.some((item) => item.area === 'hooks' && item.action === 'enable-codex-plugin-hooks'));
+    const text = formatText(report);
+    ok(text.includes('Codex Plugin Hooks'));
+    ok(text.includes('plugin-hooks: legacy gate [features].plugin_hooks=false'));
+    ok(text.includes('does not write Codex host config'));
+    ok(!text.includes('apply-command: runtime:settings --apply-codex-plugin-hooks'));
+    ok(!text.includes('session-command: codex --enable plugin_hooks'));
     await rejects(readFile(join(home, '.codex', 'config.toml'), 'utf8'), /ENOENT/);
   });
 
@@ -374,14 +373,11 @@ describe('runtime settings', () => {
       }),
     });
 
-    // plugin_hooks removed + generic hooks on => ready via the generic gate, no dead-flag write.
+    // plugin_hooks removed + generic hooks on => ready via the generic gate;
+    // ADR-0035 §6: no host-config plan or hook-level mutation boundary exists.
     strictEqual(report.hook_settings.status, 'ready');
-    strictEqual(report.hook_settings.host_config.status, 'not_applicable_removed');
-    strictEqual(report.hook_settings.host_config.plugin_hooks_removed, true);
-    deepStrictEqual(report.hook_settings.host_config.planned_writes, []);
-    strictEqual(report.hook_settings.mutation_boundary.executable, false);
-    strictEqual(report.hook_settings.mutation_boundary.session_command, null);
-    strictEqual(report.hook_settings.mutation_boundary.persistent_config_snippet, null);
+    strictEqual(report.hook_settings.host_config, undefined);
+    strictEqual(report.hook_settings.mutation_boundary, undefined);
     ok(!report.hook_settings.recommendations.some((item) => item.action === 'enable-codex-plugin-hooks'));
     ok(!report.recommendations.some((item) => item.area === 'hooks' && item.action === 'enable-codex-plugin-hooks'));
     ok(formatText(report).includes('plugin-hooks: removed on this Codex'));
@@ -550,12 +546,16 @@ describe('runtime settings', () => {
     ok(formatText(report).includes('disabled-hook-state: engineer; event=pre_compact; path=hooks/hooks.json'));
   });
 
-  it('applies Codex plugin_hooks to user config only behind the explicit flag', async () => {
+  it('never writes Codex host config: the removed --apply-codex-plugin-hooks executor stays gone', async () => {
+    // ADR-0035 §6 hard-remove regression gate: the flag is no longer a CLI
+    // argument, and a default runSettings run leaves ~/.codex untouched.
+    await rejects(async () => parseArgs(['--apply-codex-plugin-hooks']), /Unknown argument: --apply-codex-plugin-hooks/);
+
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-apply-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hooks-apply-home-'));
     await seedRepo(root);
     await mkdir(join(home, '.codex'), { recursive: true });
-    await writeFile(join(home, '.codex', 'config.toml'), [
+    const originalConfig = [
       'model = "gpt-5.5"',
       '',
       '[features]',
@@ -564,33 +564,22 @@ describe('runtime settings', () => {
       '[notice]',
       'hide_full_access_warning = true',
       '',
-    ].join('\n'));
+    ].join('\n');
+    await writeFile(join(home, '.codex', 'config.toml'), originalConfig);
 
     const report = await runSettings({
       repoRoot: root,
       homeDir: home,
-      runId: SETTINGS_RUN_ID,
-      applyCodexPluginHooks: true,
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.dry_run, false);
-    strictEqual(report.apply_codex_plugin_hooks, true);
-    strictEqual(report.hook_settings.host_config.status, 'applied');
-    strictEqual(report.hook_settings.host_config.applied, true);
-    strictEqual(report.hook_settings.host_config.current.plugin_hooks, true);
-    const rec = report.hook_settings.recommendations.find((item) => item.action === 'enable-codex-plugin-hooks');
-    strictEqual(rec.executed, true);
-    strictEqual(report.artifacts.settings_execution.written, true);
-    strictEqual(report.artifacts.settings_execution.run_id, SETTINGS_RUN_ID);
-    const config = await readFile(join(home, '.codex', 'config.toml'), 'utf8');
-    ok(config.includes('[features]\nhooks = true\nplugin_hooks = true\n'));
-    ok(config.includes('[notice]\nhide_full_access_warning = true'));
-    const artifact = JSON.parse(await readFile(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'), 'utf8'));
-    strictEqual(artifact.command.apply_codex_plugin_hooks, true);
-    strictEqual(artifact.codex_plugin_hooks.applied, true);
-    strictEqual(artifact.summary.codex_plugin_hooks_applied, true);
-    ok(formatText(report).includes(`runtime:settings ${RUNTIME_VERSION} (codex-plugin-hooks)`));
+    strictEqual(report.dry_run, true);
+    strictEqual(report.apply_codex_plugin_hooks, undefined);
+    strictEqual(report.hook_settings.host_config, undefined);
+    ok(report.mutation_boundary.forbidden.includes('host-native Codex CLI config'));
+    strictEqual(await readFile(join(home, '.codex', 'config.toml'), 'utf8'), originalConfig);
+    // The codex-plugin-hooks execution mode no longer exists; default runs render dry-run.
+    ok(formatText(report).includes(`runtime:settings ${RUNTIME_VERSION} (dry-run)`));
   });
 
   it('does not retry Codex marketplace add when the temporary marketplace cache is already current', async () => {
@@ -605,7 +594,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.10');
+    strictEqual(report.schema_version, 'runtime-settings-1.11');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -1093,7 +1082,7 @@ describe('runtime settings', () => {
     ok(failed.result.retry_after.includes('network'));
 
     const artifact = await readJson(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'));
-    strictEqual(artifact.schema_version, 'runtime-settings-execution-artifact-1.0');
+    strictEqual(artifact.schema_version, 'runtime-settings-execution-artifact-1.1');
     strictEqual(artifact.run_id, SETTINGS_RUN_ID);
     strictEqual(artifact.status, 'failed');
     strictEqual(artifact.summary.failed_retryable, 1);
@@ -1129,7 +1118,6 @@ describe('runtime settings', () => {
       '--codex-effort',
       'high',
       '--apply',
-      '--apply-codex-plugin-hooks',
       '--attest-codex-hook-review',
       '--execute-plugin-management',
       '--execute-plugin-cleanup',
@@ -1145,7 +1133,6 @@ describe('runtime settings', () => {
     strictEqual(opts.host, 'codex');
     strictEqual(opts.target, 'user');
     strictEqual(opts.apply, true);
-    strictEqual(opts.applyCodexPluginHooks, true);
     strictEqual(opts.attestCodexHookReview, true);
     strictEqual(opts.executePluginManagement, true);
     strictEqual(opts.executePluginCleanup, true);
@@ -1158,6 +1145,7 @@ describe('runtime settings', () => {
       claude_model: 'claude-opus',
       codex_effort: 'high',
     });
+    rejects(async () => parseArgs(['--apply-codex-plugin-hooks']), /Unknown argument/);
     rejects(async () => parseArgs(['--model', 'bad\nvalue']), /single-line/);
     rejects(async () => parseArgs(['--target', 'host']), /--target must be repo, user, or both/);
     rejects(async () => parseArgs(['--plugin-management-host', 'host']), /--plugin-management-host must be all, claude, or codex/);
@@ -1175,26 +1163,6 @@ describe('runtime settings', () => {
     ok(next.includes('model = "shared"'));
   });
 
-  it('upserts Codex plugin_hooks under [features] while preserving unrelated host config', () => {
-    strictEqual(parseCodexFeaturesConfigToml('[features]\nplugin_hooks = false\n').plugin_hooks, false);
-    const next = upsertCodexPluginHooksConfigToml([
-      'model = "gpt-5.5"',
-      '',
-      '[features]',
-      'hooks = true',
-      'plugin_hooks = false # keep comment',
-      '',
-      '[notice]',
-      'hide_full_access_warning = true',
-      '',
-    ].join('\n'));
-    ok(next.includes('model = "gpt-5.5"'));
-    ok(next.includes('hooks = true\nplugin_hooks = true # keep comment'));
-    ok(next.includes('[notice]\nhide_full_access_warning = true'));
-
-    const inserted = upsertCodexPluginHooksConfigToml('model = "gpt-5.5"\n');
-    ok(inserted.includes('[features]\nplugin_hooks = true'));
-  });
 });
 
 function defaultCliMap() {

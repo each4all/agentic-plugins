@@ -82,9 +82,13 @@ describe('runtime doctor', () => {
     strictEqual(report.codex_plugin_hooks.status, 'feature_disabled');
     deepStrictEqual(report.codex_plugin_hooks.summary.bundled_plugins, ['engineer', 'orchestrator']);
     deepStrictEqual(report.codex_plugin_hooks.summary.manifest_exposed_plugins, ['engineer', 'orchestrator']);
-    ok(report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'enable-codex-plugin-hooks'));
+    // ADR-0035 §6: the legacy-stage enable-codex-plugin-hooks recommendation is
+    // removed (it fed the deleted settings write executor); the disabled gate is
+    // still diagnosed read-only via the host-parity difference below.
+    ok(!report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'enable-codex-plugin-hooks'));
     ok(report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_feature_disabled'));
     ok(report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_feature_disabled' && issue.evidence.includes('global_hooks=true/stable')));
+    ok(report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_feature_disabled' && issue.next_step.includes('manually')));
     strictEqual(report.readiness_matrix.schema_version, 'runtime-readiness-matrix-1.0');
     strictEqual(report.readiness_matrix.hosts.claude.available.status, 'available');
     strictEqual(report.readiness_matrix.hosts.claude.installed.status, 'installed');
