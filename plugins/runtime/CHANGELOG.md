@@ -8,6 +8,18 @@
 - Add `runtime:context check`, a read-only explicit context budget check that computes green/yellow/red risk without creating artifacts or mutating host session context.
 - Add `runtime:context status --latest`, a read-only latest handoff lookup with artifact age and stale-state reporting.
 
+## [0.66.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.65.1...plugin-runtime-v0.66.0) (2026-06-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **plugin/runtime:** runtime:settings no longer writes Codex host config — the --apply-codex-plugin-hooks flag is removed (now an Unknown argument parse error), along with the settings report fields apply_codex_plugin_hooks / hook_settings.host_config / hook_settings.mutation_boundary and the execution-artifact codex_plugin_hooks fields. Plugin hooks gate on generic [features].hooks (default on) + /hooks trust on current Codex; legacy Codex < ~0.134 requires a manual [features].plugin_hooks edit. Doctor no longer emits the legacy-stage enable-codex-plugin-hooks recommendation; the read-only stage diagnosis (ADR-0030), the codex_plugin_hooks_feature_disabled host-parity issue, and the --attest-codex-hook-review artifact path are kept. Schemas: runtime-settings-1.11, runtime-settings-execution-artifact-1.1.
+
+### Features
+
+* **plugin/runtime:** remove --apply-codex-plugin-hooks host-config write executor (ADR-0035 §6) ([0de9f12](https://github.com/each4all/agentic-plugins/commit/0de9f12bf65a3979f7741bfe016b05145fdc4408))
+* **plugin/runtime:** wire Codex codex plugin add executor (ADR-0035 §5/§6) ([#403](https://github.com/each4all/agentic-plugins/issues/403)) ([c8b7d1c](https://github.com/each4all/agentic-plugins/commit/c8b7d1cc1695b6f07267fb072974c303817ccfcf))
+
 ## [0.65.1](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.65.0...plugin-runtime-v0.65.1) (2026-06-08)
 
 
