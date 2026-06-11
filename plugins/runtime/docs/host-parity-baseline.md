@@ -1,6 +1,6 @@
 # Host Parity Baseline
 
-Observed on 2026-06-10 with Claude Code `2.1.170`, Codex CLI
+Observed on 2026-06-11 with Claude Code `2.1.173`, Codex CLI
 `0.139.0`, official OpenAI Codex developer docs, and official Claude Code docs.
 This file is a runtime-owned host-truth checkpoint for Claude-vs-Codex
 differences. It is not a promise that either host will keep this behavior.
@@ -34,7 +34,7 @@ Official Claude Code docs:
 
 Local CLI evidence:
 
-- `claude --version` -> `2.1.170 (Claude Code)`
+- `claude --version` -> `2.1.173 (Claude Code)`
 - `claude --help` (2.1.169 added a global `--safe-mode` flag /
   `CLAUDE_CODE_SAFE_MODE` that starts a session with CLAUDE.md, plugins,
   skills, hooks, and MCP servers disabled for troubleshooting)
@@ -191,3 +191,4 @@ line, not this table.
 | 2026-06-03 | `2.1.161` | `0.136.0` | Baseline at host-version-drift gate introduction. |
 | 2026-06-07 | `2.1.168` | `0.137.0` | Re-observed for host-version-drift #388. Codex `0.137.0` added per-plugin `codex plugin add`/`list`/`remove` and `marketplace list`, plus top-level `doctor`/`update`/`login`/`logout`/`archive`; the hooks story (`plugin_hooks` removed, `hooks` stable) is unchanged from 0.136.0. |
 | 2026-06-10 | `2.1.170` | `0.139.0` | Re-observed for host-version-drift #388 (reopened). Codex plugin-surface changes are additive-only: `0.138.0` added `--json` to plugin `add`/`remove` and marketplace commands plus a `marketplaceSource` field on source-backed `list --json` entries (not universal; ignored by the field-selective ADR-0034 resolver), and `0.139.0` serves available-plugin lists cached-first with background refresh. `plugin_hooks` stays `removed`; new under-development flags `multi_agent_v2`/`remote_plugin`. Claude `2.1.169` added `--safe-mode` and `claude agents --json` `--all`/`id`/`state`; `2.1.170` ships the Fable 5 model. Also corrected the stale "codex plugin add executor remains deferred" implication in both baseline docs (it shipped under ADR-0035 §5). |
+| 2026-06-11 | `2.1.173` | `0.139.0` | Re-observed during cutover-audit freshness recovery (compat run `compat-20260611T115129Z-5af90f`, content-backed Claude changelog ingest). Claude-only patch drift; `2.1.171` was never published. Additive/fix-only with no plugin-CLI or hook surface change: `2.1.172` adds nested sub-agent spawning (5 levels), a `/plugin` marketplace search bar, Bedrock region from `~/.aws`, and fixes `availableModels` restriction application, `/model` picker rows, and `WebFetch(domain:*.example.com)` wildcard permission matching; `2.1.173` normalizes Fable 5 `[1m]` model-name suffixes and fixes a Windows sandbox startup warning. Codex unchanged at `0.139.0`. Baseline refresh only; no adoption work required. |
