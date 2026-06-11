@@ -4,8 +4,9 @@
 // Codex-side Stop helper for the orchestrator plugin per ADR-0019 §5
 // macro completion semantics (PR-E). Mirrors
 // plugins/orchestrator/adapters/claude/hooks/stop.mjs functionally;
-// the main divergence is that Codex bundled plugin hooks require
-// [features].plugin_hooks=true plus host trust/review before they run, so this
+// the main divergence is that Codex bundled plugin hooks load only when the
+// plugin is enabled with generic [features].hooks (default on) and pass host
+// trust/review (stage-aware gate per ADR-0030), so this
 // script remains the fallback final step in /orchestrator:finalize,
 // /orchestrator:abort, /orchestrator:next, and /orchestrator:done runbooks
 // under Codex.

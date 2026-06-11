@@ -27,7 +27,7 @@ command file as the canonical Claude runbook.
 | Bulk subtask transition to `deferred` | `--host claude` | `--host codex` |
 | Engineer child `stop-archive` / `detach-archive` pass | Yes | Yes |
 | Set macro terminal markers | `--host claude` | `--host codex` |
-| Macro auto-archive Stop hook | Automatic on Claude Stop | Automatic after `plugin_hooks` + `/hooks` review/trust; manual helper fallback: `adapters/codex/hooks/stop.mjs` |
+| Macro auto-archive Stop hook | Automatic on Claude Stop | Automatic after the bundled hooks load (generic `[features].hooks`) + `/hooks` review/trust; manual helper fallback: `adapters/codex/hooks/stop.mjs` |
 
 ---
 
@@ -112,7 +112,8 @@ children remain.
 ## Phase 4 - Codex Stop hook / fallback
 
 Codex can load orchestrator's bundled Stop hook when the plugin is enabled,
-`[features].plugin_hooks = true`, and the hook has passed Codex review/trust.
+generic `[features].hooks` (default on) is set, and the hook has passed Codex
+review/trust.
 After a successful Codex finalize, run the manual helper when plugin hooks are
 disabled, not yet trusted, not active in the current host session, or the user
 wants immediate archive parity:
@@ -139,7 +140,8 @@ Surface the ADR-0031 session-level continue-vs-fresh preflight per
 finalized macro normally projects `archive_gate=ready_to_archive` once every
 macro gate passes; report whatever gate it computes — never archive from the
 preflight. The preflight computes identically on Codex; only
-auto re-injection of the next-session prompt depends on `[features].plugin_hooks`
+auto re-injection of the next-session prompt depends on the stage-appropriate
+Codex hook gate (generic `[features].hooks`, default on)
 + a `/hooks` trust (operator-attested; not provable non-interactively). On
 detached HEAD, report "no active branch context".
 
@@ -151,5 +153,6 @@ detached HEAD, report "no active branch context".
 - Do not hold the parent macro lock while archiving children.
 - Do not mark remaining work `completed`; finalize means `deferred`.
 - Do not claim Codex Stop hook auto-archive runs automatically unless
-  `[features].plugin_hooks = true` and `/hooks` review/trust are complete for
+  the stage-appropriate hook gate (generic `[features].hooks`, default on)
+  and `/hooks` review/trust are complete for
   the active session.
