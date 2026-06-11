@@ -124,6 +124,14 @@ describe('plugins/orchestrator manifest pair', () => {
       manifest.interface.longDescription.includes('Codex skills mirror plan, next, done, finalize, abort, resume, checkpoint, and peer-now'),
       'longDescription documents the Codex skill mirror surface',
     );
+    ok(
+      manifest.interface.longDescription.includes('.agentic-plugins/state/orchestrator/workflows/'),
+      'longDescription documents the canonical ADR-0025 workflow home',
+    );
+    ok(
+      !manifest.interface.longDescription.includes('[features].plugin_hooks = true'),
+      'longDescription no longer claims the removed plugin_hooks flag as the current gate',
+    );
   });
 
   it('Claude and Codex manifests share name + version + description', async () => {
@@ -221,9 +229,12 @@ describe('plugins/orchestrator README + CHANGELOG', () => {
     // PR-E Stop hook now auto-archives — snapshot-only language must be retired.
     ok(!/snapshot.?only/i.test(readme),
       'README no longer documents Stop as snapshot-only (PR-E ships auto-archive)');
-    // Codex hook scope wording must remain explicit and current.
-    ok(/\[features\]\.plugin_hooks\s*=\s*true/i.test(readme),
-      'README documents Codex plugin_hooks feature flag');
+    // Codex hook scope wording must remain explicit and current (ADR-0030
+    // stage-aware gate: generic [features].hooks, not the removed flag).
+    ok(/\[features\]\.hooks/.test(readme),
+      'README documents the generic Codex [features].hooks gate');
+    ok(!/\[features\]\.plugin_hooks\s*=\s*true/i.test(readme),
+      'README no longer claims the removed plugin_hooks flag as the current gate');
     ok(/manual fallback/i.test(readme),
       'README documents Codex fallback helper');
   });
@@ -265,6 +276,15 @@ describe('plugins/orchestrator adapters/claude/hooks/', () => {
 });
 
 describe('plugins/orchestrator adapters/codex/hooks/', () => {
+  it('README.md documents the ADR-0030 stage-aware Codex hook gate', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'adapters/codex/hooks/README.md'), 'utf-8');
+    // Current gate must be the generic [features].hooks model, and the legacy
+    // plugin_hooks=true literal may appear ONLY qualified as legacy-only
+    // (Codex Phase 5 review MINOR — hub README wording was previously unguarded).
+    ok(/\[features\]\.hooks/.test(text), 'hub README documents the generic Codex [features].hooks gate');
+    ok(/removed in Codex/i.test(text) && /legacy Codex/i.test(text),
+      'hub README qualifies plugin_hooks=true as legacy-only (removed on current Codex), not the current gate');
+  });
   for (const file of CODEX_HOOK_HELPERS) {
     it(`${file} exists${file.endsWith('.mjs') ? ' and is executable' : ''}`, async () => {
       const p = resolve(PLUGIN_ROOT, 'adapters/codex/hooks', file);
@@ -479,7 +499,8 @@ describe('plugins/orchestrator dispatch + lifecycle Codex skill mirrors/', () =>
     ok(finalize.includes('--to-status deferred'), 'finalize documents deferred bulk transition');
     ok(finalize.includes('detach-archive'), 'finalize documents detach-archive child path');
     ok(finalize.includes('--terminal-phase finalized'), 'finalize documents finalized terminal phase');
-    ok(finalize.includes('[features].plugin_hooks = true'), 'finalize documents Codex plugin_hooks requirement');
+    ok(finalize.includes('[features].hooks'), 'finalize documents the generic Codex hook gate (ADR-0030)');
+    ok(!finalize.includes('[features].plugin_hooks = true'), 'finalize no longer claims the removed plugin_hooks flag');
     ok(finalize.includes('/hooks` review/trust'), 'finalize documents Codex hook review/trust requirement');
     ok(finalize.includes('adapters/codex/hooks/stop.mjs'), 'finalize documents Codex stop fallback helper');
 
@@ -487,7 +508,8 @@ describe('plugins/orchestrator dispatch + lifecycle Codex skill mirrors/', () =>
     ok(abort.includes('--to-status abandoned'), 'abort documents abandoned bulk transition');
     ok(abort.includes('detach-archive'), 'abort documents detach-archive child path');
     ok(abort.includes('--terminal-phase aborted'), 'abort documents aborted terminal phase');
-    ok(abort.includes('[features].plugin_hooks = true'), 'abort documents Codex plugin_hooks requirement');
+    ok(abort.includes('[features].hooks'), 'abort documents the generic Codex hook gate (ADR-0030)');
+    ok(!abort.includes('[features].plugin_hooks = true'), 'abort no longer claims the removed plugin_hooks flag');
     ok(abort.includes('/hooks` review/trust'), 'abort documents Codex hook review/trust requirement');
     ok(abort.includes('adapters/codex/hooks/stop.mjs'), 'abort documents Codex stop fallback helper');
   });
@@ -546,12 +568,14 @@ describe('plugins/orchestrator commands/', () => {
     }
   });
 
-  it('/orchestrator:checkpoint uses checkpoint-set and documents Codex plugin-hook boundary', async () => {
+  it('/orchestrator:checkpoint uses checkpoint-set and documents Codex hook-gate boundary', async () => {
     const text = await readFile(resolve(PLUGIN_ROOT, 'commands/checkpoint.md'), 'utf-8');
     ok(/state\.mjs"\s+checkpoint-set/.test(text), 'checkpoint command calls checkpoint-set');
     ok(text.includes('latest_checkpoint'), 'checkpoint command documents latest_checkpoint');
-    ok(/\[features\]\.plugin_hooks\s*=\s*true/.test(text),
-      'checkpoint command documents Codex plugin_hooks boundary');
+    ok(/\[features\]\.hooks/.test(text),
+      'checkpoint command documents the generic Codex hook gate (ADR-0030)');
+    ok(!/\[features\]\.plugin_hooks\s*=\s*true/.test(text),
+      'checkpoint command no longer claims the removed plugin_hooks flag');
   });
 
   it('/orchestrator:peer-now uses peer-runner side-channel and excludes ensemble_results', async () => {

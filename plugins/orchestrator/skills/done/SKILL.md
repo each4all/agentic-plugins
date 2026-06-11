@@ -24,7 +24,7 @@ command file as the canonical Claude runbook.
 | Fallback engineer child scan | Yes | Yes |
 | Resolve branch or explicit commit SHA | Yes | Yes |
 | `state.mjs subtask-update --status completed` | `--host claude` | `--host codex` |
-| Automatic engineer Stop-hook writeback | Yes on Claude engineer Stop | Yes after Codex `plugin_hooks` + `/hooks` review/trust; manual backup when hook is unavailable |
+| Automatic engineer Stop-hook writeback | Yes on Claude engineer Stop | Yes after the bundled hooks load (generic `[features].hooks`) + `/hooks` review/trust; manual backup when hook is unavailable |
 
 ---
 

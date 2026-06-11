@@ -27,7 +27,7 @@ Ships `/orchestrator:plan` (macro plan + Plan-verify opposite-host peer ensemble
 | `/orchestrator:finalize [--workflow=<macro-id>]` | ✅ shipping | Close the macro plan with all non-terminal subtasks → `deferred` + macro `current_phase: 'finalized'` + `terminal_marker: true`. Three-step §5 ritual: bulk subtask transition → active-children detach pass (NO parent lock; routes terminal engineer children through `stop-archive`, mid-flight via `detach-archive`) → terminal markers. |
 | `/orchestrator:abort [--workflow=<macro-id>]` | ✅ shipping | Same ritual as `/finalize`, but subtask transition → `abandoned` and `current_phase: 'aborted'`. Use when work cannot continue. |
 | `/orchestrator:resume [archive [<workflow-id>]]` | ✅ shipping | Inspect the active macro workflow, classify git drift as clean/dirty, append a resume marker, or archive stale macro workflow files. |
-| `/orchestrator:checkpoint <summary>` | ✅ shipping | Write `latest_checkpoint: {at, summary}` on the active macro workflow. Claude SessionStart re-injects it; Codex does the same after `plugin_hooks` is enabled and the bundled hooks are reviewed/trusted in `/hooks`. |
+| `/orchestrator:checkpoint <summary>` | ✅ shipping | Write `latest_checkpoint: {at, summary}` on the active macro workflow. Claude SessionStart re-injects it; Codex does the same once the bundled hooks load (generic `[features].hooks`) and are reviewed/trusted in `/hooks`. |
 | `/orchestrator:peer-now --peer <claude\|codex> (...)` | ✅ shipping | Raw side-channel peer consultation through `peer-runner.mjs --kind peer-now`; optionally appends a `[Peer]` note and stays out of `ensemble_results`. |
 | `/orchestrator:audit <findings>` | ✅ shipping | Audit follow-up alias that canonicalizes to `/orchestrator:plan Audit follow-up: ...`; state remains `verb=plan`, `workflow_id=macro-plan-...`. |
 
@@ -64,8 +64,9 @@ Codex CLI exposes host-level hooks and plugin-bundled hooks. The
 orchestrator Codex manifest points at
 `./adapters/codex/hooks/hooks.json`, so the plugin management surface can show
 host-specific lifecycle commands without routing through Claude adapter paths.
-Automatic Codex execution still depends on `[features].plugin_hooks = true`
-plus Codex hook review/trust in the active host session. The Codex-side `Stop`
+Automatic Codex execution still depends on the plugin being enabled with
+generic `[features].hooks` (default on) plus Codex hook review/trust in the
+active host session. The Codex-side `Stop`
 script under `adapters/codex/hooks/stop.mjs` remains a manual fallback invoked
 from `/orchestrator:finalize` and `/orchestrator:abort` Phase 4 tails (or by
 the user manually) when plugin hooks are disabled or not yet trusted.

@@ -4,8 +4,10 @@
 // Codex-side Stop helper for the engineer plugin per ADR-0011 §4 +
 // ADR-0017 §sub-decision 5.
 //
-// Codex can run this plugin's bundled Stop hook when plugin hooks are enabled
-// and trusted. This script also remains the manual fallback for Codex skill
+// Codex can run this plugin's bundled Stop hook when the plugin is enabled,
+// generic [features].hooks (default on) is set, and the hook is trusted in
+// /hooks (stage-aware gate per ADR-0030). This script also remains the manual
+// fallback for Codex skill
 // command-invoked mode, producing the same last_snapshot + host_history record
 // that Claude's automatic Stop hook produces, AND triggering the same four-gate
 // auto-archive evaluation when the workflow has crossed into a terminal state.

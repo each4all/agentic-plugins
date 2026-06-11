@@ -16,8 +16,8 @@ until explicit migration.
 
 **Cognitive runbook lives in
 `$CLAUDE_PLUGIN_ROOT/skills/checkpoint/SKILL.md`**. This command owns
-Claude-host shell bootstrap; the skill documents Codex use and plugin-hook
-feature-flag boundaries.
+Claude-host shell bootstrap; the skill documents Codex use and Codex
+hook-gate boundaries.
 
 ---
 
@@ -68,8 +68,9 @@ The CLI writes atomically under the per-file lock, preserves schema
 Claude SessionStart re-injects `checkpoint_summary` and
 `checkpoint_at` in the `[orchestrator-active-metadata]` marker. Codex
 can write the same field via `$orchestrator:checkpoint`; automatic Codex
-SessionStart behavior requires bundled plugin hooks to be enabled with
-`[features].plugin_hooks = true` and trusted in the active host session.
+SessionStart behavior requires the bundled plugin hooks to be loaded
+(plugin enabled, generic `[features].hooks` default on) and trusted in
+the active host session.
 
 ---
 

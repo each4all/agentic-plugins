@@ -71,10 +71,10 @@ current release ships:
   Codex binds the host-specific manifest
   `adapters/codex/hooks/hooks.json` through
   `adapters/codex/hooks/{pre-compact,stop,session-start}.mjs` when
-  `[features].plugin_hooks = true`; `runtime:doctor` /
-  `runtime:settings` report whether the feature is enabled, whether the
-  Codex manifest exposes hooks, and whether the active session still
-  needs hook review/trust.
+  the plugin is enabled and generic `[features].hooks` (default on) is
+  set; `runtime:doctor` / `runtime:settings` report whether the hook
+  gate is satisfied, whether the Codex manifest exposes hooks, and
+  whether the active session still needs hook review/trust.
 - **Codex stop helper** (`adapters/codex/hooks/stop.mjs`) — also
   remains the manual fallback for sessions where Codex plugin hooks are
   disabled, untrusted, or not yet active in the current host session.
@@ -282,8 +282,9 @@ trigger phrases.
   state-less, or the user invokes `state.mjs` CLI subcommands manually
   (`node "$ENGINEER_ROOT/scripts/state.mjs" find-active|create|append|snapshot ...`).
 - **Stop snapshot**: Codex CLI can run the bundled plugin Stop hook
-  after `[features].plugin_hooks = true` and `/hooks` review/trust. The
-  helper `adapters/codex/hooks/stop.mjs` remains available for manual
+  once the plugin is enabled with generic `[features].hooks` (default
+  on) and the hook passes `/hooks` review/trust. The helper
+  `adapters/codex/hooks/stop.mjs` remains available for manual
   fallback when the active session has not trusted plugin hooks yet.
 
 Claude side ships full command-mode (Phase 0/1/2 + automatic

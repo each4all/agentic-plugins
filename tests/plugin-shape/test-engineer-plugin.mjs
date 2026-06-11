@@ -1149,7 +1149,14 @@ describe('plugins/engineer — Codex adapter (adapters/codex/hooks/)', () => {
     const path = resolve(PLUGIN_ROOT, 'adapters/codex/hooks/README.md');
     ok(await exists(path), 'adapters/codex/hooks/README.md missing');
     const text = await readFile(path, 'utf-8');
-    ok(/plugin_hooks\s*=\s*true/.test(text), 'README documents Codex plugin_hooks feature flag');
+    ok(/\[features\]\.hooks/.test(text), 'README documents the generic Codex [features].hooks gate (ADR-0030)');
+    // The hub README legitimately retains the legacy plugin_hooks=true literal,
+    // but ONLY qualified as legacy-only — guard that the removal/legacy framing
+    // sits in the README so a future edit cannot reintroduce it as the current
+    // gate (Codex Phase 5 review MINOR — guard was previously too loose).
+    ok(/plugin_hooks\s*=\s*true/.test(text), 'README retains the legacy plugin_hooks note (stage-aware hub)');
+    ok(/removed in Codex/i.test(text) && /legacy Codex/i.test(text),
+      'README qualifies plugin_hooks=true as legacy-only (removed on current Codex), not the current gate');
     ok(/fallback accelerator/i.test(text), 'README documents manual fallback');
   });
 });

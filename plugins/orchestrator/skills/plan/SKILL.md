@@ -110,7 +110,8 @@ continue-vs-fresh preflight per
 (find-active then find-macro) and pass it to the runtime footer/check, so the
 recommended `/orchestrator:next` is sized by context-budget risk + archive-gate
 readiness. The preflight computes identically on Codex; only auto re-injection
-of the next-session prompt depends on `[features].plugin_hooks` + a `/hooks`
+of the next-session prompt depends on the stage-appropriate Codex hook gate
+(generic `[features].hooks`, default on) + a `/hooks`
 trust (operator-attested; not provable non-interactively). On detached HEAD,
 report "no active branch context".
 

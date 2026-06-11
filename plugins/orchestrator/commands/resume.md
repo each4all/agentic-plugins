@@ -12,12 +12,14 @@ shim over `scripts/state.mjs` for the active macro workflow on the
 current git branch. It mirrors the engineer resume pattern where that
 pattern is useful, but the workflow remains orchestrator-native:
 `workflow_type: macro`, `workflow_id: macro-plan-...`, and state under
-`.claude/agentic-orchestrator/`.
+canonical `.agentic-plugins/state/orchestrator/` (legacy
+`.claude/agentic-orchestrator/` remains readable until explicit
+migration per ADR-0025).
 
 **Cognitive runbook lives in
 `$CLAUDE_PLUGIN_ROOT/skills/resume/SKILL.md`**. This command file owns
 Claude-host shell bootstrap and state writes; the skill documents the
-cross-host runbook and Codex plugin-hook feature-flag caveats.
+cross-host runbook and Codex hook-gate caveats.
 
 Plugin root: `$CLAUDE_PLUGIN_ROOT` is the orchestrator plugin root. If
 unset, discover the latest Claude cache entry under
