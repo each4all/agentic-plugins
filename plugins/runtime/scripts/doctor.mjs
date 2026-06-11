@@ -5011,9 +5011,22 @@ function buildDirectionReadiness({
     if (peer.feature_surface[feature] !== true) warnings.push(`${peer.name} feature not observed: ${feature}`);
   }
   if (caller.name === 'codex') {
-    warnings.push(caller.feature_surface.codex_plugin_hooks === true
+    // Stage-aware gate (ADR-0030): Codex removed the plugin_hooks flag
+    // (>= ~0.134), so on current Codex the bundled-hook gate is generic
+    // [features].hooks; only legacy Codex 0.130-0.133 keys readiness on
+    // plugin_hooks. Mirror the canonical pluginHooksRemoved/hookGateEnabled
+    // gate (see buildCodexPluginHooks) so this readiness warning never tells
+    // a current-Codex operator to set the removed [features].plugin_hooks flag.
+    const pluginHooksRemoved = caller.feature_surface.codex_plugin_hooks_stage === 'removed';
+    const hookGateEnabled = pluginHooksRemoved
+      ? caller.feature_surface.codex_global_hooks
+      : caller.feature_surface.codex_plugin_hooks;
+    warnings.push(hookGateEnabled === true
       ? 'Codex plugin hooks are enabled; bundled lifecycle hooks still require hook review/trust in the active host session'
       : caller.feature_surface.codex_global_hooks === true
+        // Reachable only on legacy (non-removed) Codex, where plugin_hooks IS
+        // the correct gate; on the removed stage a true global gate takes the
+        // branch above, so the legacy flag advice never shows on current Codex.
         ? 'Codex global hooks are available, but bundled plugin hooks require [features].plugin_hooks=true before automatic plugin lifecycle hooks run'
         : 'Codex hooks are not fully enabled in the observed feature surface; bundled plugin lifecycle hooks will not run automatically');
   }
