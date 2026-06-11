@@ -3,5 +3,5 @@
   "plugins/companions": "0.4.0",
   "plugins/engineer": "0.17.0",
   "plugins/orchestrator": "0.9.0",
-  "plugins/runtime": "0.66.1"
+  "plugins/runtime": "0.67.0"
 }
