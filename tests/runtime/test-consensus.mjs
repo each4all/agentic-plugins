@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -1046,6 +1046,342 @@ describe('runtime consensus', () => {
     ok(!JSON.stringify(status).includes('OWNER DECISION BODY'), 'status json must not include decision text');
   });
 
+  it('records an owner ratification on a converged complementary run', async () => {
+    const root = await seedPlan();
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    const ratificationFile = join(root, 'owner-ratification-source.md');
+    await writeFile(summaryFile, 'All lanes converged on KEEP; the synthesis flags one residual owner lever.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      {
+        summary: 'Resolution lever (owner\'s call): implement the zero-dep-doable subset now vs wait for a trigger.',
+        kind: 'complementary',
+      },
+    ]));
+    await writeFile(ratificationFile, 'OWNER RATIFICATION BODY THAT MUST STAY IN THE ARTIFACT\n');
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+      convergenceState: 'complementary',
+    });
+
+    const report = await runConsensus({
+      command: 'ratify',
+      repoRoot: root,
+      runId: RUN_ID,
+      ratificationFile,
+      ratifiedBy: 'owner',
+      lever: 'fs-mutation surface: wait for a trigger, keep zero-dep',
+      nextAction: 'Proceed with KEEP-ZERO-DEP; revisit on trigger T1/T2/T3.',
+      now: new Date('2026-05-13T00:06:00.000Z'),
+    });
+
+    strictEqual(report.command, 'ratify');
+    strictEqual(report.status, 'converged', 'ratify must not change the manifest status');
+    strictEqual(report.convergence_state, 'complementary');
+    strictEqual(report.ratified_by, 'owner');
+    strictEqual(report.lever_summary, 'fs-mutation surface: wait for a trigger, keep zero-dep');
+    strictEqual(report.durable_disagreement_count, 1);
+    ok(report.ratification_pointer.endsWith('/owner-ratification.json'));
+    ok(report.ratification_text_pointer.endsWith('/owner-ratification.md'));
+    ok(!JSON.stringify(report).includes('OWNER RATIFICATION BODY'), 'ratification text must not be in json report');
+    const reportText = formatText(report);
+    ok(!reportText.includes('OWNER RATIFICATION BODY'), 'ratification text must not be in text report');
+    ok(reportText.includes('lever: fs-mutation surface: wait for a trigger, keep zero-dep'));
+
+    const manifest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'manifest.json'));
+    strictEqual(manifest.status, 'converged');
+    strictEqual(manifest.ratification_pointer, report.ratification_pointer);
+    const ratification = await readJson(join(root, report.ratification_pointer));
+    strictEqual(ratification.schema_version, 'runtime-consensus-owner-ratification-1.0');
+    strictEqual(ratification.status, 'ratified');
+    strictEqual(ratification.consensus_pointer, manifest.consensus_pointer);
+    strictEqual(ratification.convergence_state, 'complementary');
+    strictEqual(ratification.lever_summary, 'fs-mutation surface: wait for a trigger, keep zero-dep');
+    strictEqual(ratification.next_action, 'Proceed with KEEP-ZERO-DEP; revisit on trigger T1/T2/T3.');
+    strictEqual(await readFile(join(root, ratification.ratification_pointer), 'utf8'), 'OWNER RATIFICATION BODY THAT MUST STAY IN THE ARTIFACT\n');
+    const consensusArtifact = await readJson(join(root, manifest.consensus_pointer));
+    strictEqual(consensusArtifact.convergence_state, 'complementary', 'ratify must not rewrite consensus.json');
+
+    const status = await runConsensus({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+    });
+
+    strictEqual(status.status, 'converged');
+    strictEqual(status.status_guidance.state, 'complete');
+    strictEqual(status.status_guidance.reason, 'convergence_state=complementary; owner ratification recorded by owner');
+    strictEqual(status.next_action, 'Proceed with KEEP-ZERO-DEP; revisit on trigger T1/T2/T3.');
+    strictEqual(status.ratification_pointer, report.ratification_pointer);
+    strictEqual(status.ratification.ratification_pointer, report.ratification_text_pointer);
+    strictEqual(status.ratification.lever_summary, 'fs-mutation surface: wait for a trigger, keep zero-dep');
+    strictEqual(status.owner_ratification_briefing, null, 'ratified run must not print a ratification briefing');
+    const statusText = formatText(status);
+    ok(statusText.includes('owner ratification:'));
+    ok(!statusText.includes('Owner ratification available'));
+    ok(!JSON.stringify(status).includes('OWNER RATIFICATION BODY'), 'status json must not include ratification text');
+  });
+
+  it('surfaces an owner ratification briefing on an unratified complementary run and omits it for aligned runs', async () => {
+    const root = await seedPlan();
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    await writeFile(summaryFile, 'Converged with a residual owner lever.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      {
+        summary: 'Resolution lever (owner\'s call): implement now vs wait for a trigger.',
+        kind: 'complementary',
+      },
+    ]));
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+      convergenceState: 'complementary',
+    });
+
+    const status = await runConsensus({ command: 'status', repoRoot: root, runId: RUN_ID });
+    strictEqual(status.status_guidance.state, 'complete');
+    ok(status.status_guidance.next_steps.some((step) => step.includes(`runtime:consensus ratify --run-id ${RUN_ID}`)));
+    const briefing = status.owner_ratification_briefing;
+    ok(briefing, 'unratified complementary run must surface the ratification briefing');
+    strictEqual(briefing.state, 'complementary');
+    strictEqual(briefing.disagreements.length, 1);
+    strictEqual(briefing.ratify_command, `runtime:consensus ratify --run-id ${RUN_ID} --ratification-file <owner-ratification.md> --ratified-by owner`);
+    const text = formatText(status);
+    ok(text.includes('Owner ratification available (optional):'));
+    ok(text.includes(`Ratify: runtime:consensus ratify --run-id ${RUN_ID}`));
+
+    const alignedRoot = await seedPlan();
+    const alignedSummary = join(alignedRoot, 'summary.md');
+    await writeFile(alignedSummary, 'Full alignment without residual levers.\n');
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: alignedRoot,
+      runId: RUN_ID,
+      summaryFile: alignedSummary,
+    });
+    const alignedStatus = await runConsensus({ command: 'status', repoRoot: alignedRoot, runId: RUN_ID });
+    strictEqual(alignedStatus.status_guidance.state, 'complete');
+    strictEqual(alignedStatus.owner_ratification_briefing, null, 'aligned run without disagreements must not print a ratification briefing');
+    deepStrictEqual(alignedStatus.status_guidance.next_steps, []);
+  });
+
+  it('gates ratify to converged runs and keeps decide gated to unresolved runs', async () => {
+    const root = await seedPlan();
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.md');
+    await writeFile(summaryFile, 'Direct contradiction remains.\n');
+    await writeFile(disagreementsFile, '- Claude recommends shipping now; Codex recommends blocking.\n');
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+    });
+    await rejects(
+      () => runConsensus({ command: 'ratify', repoRoot: root, runId: RUN_ID, ratification: 'Ratify anyway.' }),
+      /ratify requires converged consensus \(aligned\|complementary\); observed convergence_state=contradiction — use runtime:consensus decide/,
+    );
+
+    const convergedRoot = await seedPlan();
+    const convergedSummary = join(convergedRoot, 'summary.md');
+    await writeFile(convergedSummary, 'Aligned outcome.\n');
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: convergedRoot,
+      runId: RUN_ID,
+      summaryFile: convergedSummary,
+    });
+    await rejects(
+      () => runConsensus({ command: 'decide', repoRoot: convergedRoot, runId: RUN_ID, decision: 'Decide anyway.' }),
+      /decide requires unresolved consensus; observed convergence_state=aligned/,
+    );
+    const aligned = await runConsensus({
+      command: 'ratify',
+      repoRoot: convergedRoot,
+      runId: RUN_ID,
+      ratification: 'Owner ratifies the aligned outcome.',
+    });
+    strictEqual(aligned.status, 'converged');
+    strictEqual(aligned.convergence_state, 'aligned');
+    strictEqual(aligned.lever_summary, null);
+  });
+
+  it('refuses ratify before synthesize, double ratification, and cancel/ratify cross-interactions', async () => {
+    const root = await seedPlan();
+    await rejects(
+      () => runConsensus({ command: 'ratify', repoRoot: root, runId: RUN_ID, ratification: 'Too early.' }),
+      /ratify requires consensus\.json; run runtime:consensus synthesize/,
+    );
+
+    const summaryFile = join(root, 'summary.md');
+    await writeFile(summaryFile, 'Aligned outcome.\n');
+    await runConsensus({ command: 'synthesize', repoRoot: root, runId: RUN_ID, summaryFile });
+    await rejects(
+      () => runConsensus({ command: 'ratify', repoRoot: root, runId: RUN_ID }),
+      /ratify requires --ratification <text> or --ratification-file <path>/,
+    );
+    await rejects(
+      () => runConsensus({
+        command: 'ratify',
+        repoRoot: root,
+        runId: RUN_ID,
+        ratification: 'Inline.',
+        ratificationFile: summaryFile,
+      }),
+      /Use either --ratification or --ratification-file, not both/,
+    );
+    await runConsensus({ command: 'ratify', repoRoot: root, runId: RUN_ID, ratification: 'Owner ratifies.' });
+    await rejects(
+      () => runConsensus({ command: 'ratify', repoRoot: root, runId: RUN_ID, ratification: 'Ratify twice.' }),
+      /ratify refused: consensus run already has ratification artifact/,
+    );
+    await rejects(
+      () => runConsensus({ command: 'cancel', repoRoot: root, runId: RUN_ID, reason: 'Cancel after ratification.' }),
+      /cancel refused: consensus run already has an owner ratification; preserve the ratification artifact instead/,
+    );
+
+    const cancelledRoot = await seedPlan();
+    const cancelledSummary = join(cancelledRoot, 'summary.md');
+    await writeFile(cancelledSummary, 'Aligned outcome.\n');
+    await runConsensus({ command: 'synthesize', repoRoot: cancelledRoot, runId: RUN_ID, summaryFile: cancelledSummary });
+    await runConsensus({ command: 'cancel', repoRoot: cancelledRoot, runId: RUN_ID, reason: 'Stopping this run.' });
+    await rejects(
+      () => runConsensus({ command: 'ratify', repoRoot: cancelledRoot, runId: RUN_ID, ratification: 'Ratify after cancel.' }),
+      /ratify refused: consensus run already has cancellation artifact/,
+    );
+  });
+
+  it('gates record/synthesize/next-round/execute/decide behind terminal artifacts', async () => {
+    const root = await seedPlan();
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    const peerFile = join(root, 'claude.txt');
+    await writeFile(summaryFile, 'Converged with a residual owner lever.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      { summary: 'Resolution lever (owner\'s call): implement now vs wait.', kind: 'complementary' },
+    ]));
+    await writeFile(peerFile, 'LATE PEER OUTPUT\n');
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+      convergenceState: 'complementary',
+    });
+    await runConsensus({ command: 'ratify', repoRoot: root, runId: RUN_ID, ratification: 'Owner ratifies; lever resolved as wait.' });
+
+    // Post-ratification mutators must refuse: a later record/synthesize could
+    // move the manifest off converged or rewrite consensus.json under the
+    // recorded ratification (Codex review MAJORs).
+    await rejects(
+      () => runConsensus({ command: 'record', repoRoot: root, runId: RUN_ID, peer: 'claude', inputFile: peerFile }),
+      /record refused: consensus run already has ratification artifact/,
+    );
+    await rejects(
+      () => runConsensus({ command: 'synthesize', repoRoot: root, runId: RUN_ID, summaryFile }),
+      /synthesize refused: consensus run already has ratification artifact/,
+    );
+    await rejects(
+      () => runConsensus({ command: 'next-round', repoRoot: root, runId: RUN_ID, disagreementsFile }),
+      /next-round refused: consensus run already has ratification artifact/,
+    );
+    await rejects(
+      () => runConsensus({ command: 'execute', repoRoot: root, runId: RUN_ID, execute: true }),
+      /execute refused: consensus run already has ratification artifact/,
+    );
+    await rejects(
+      () => runConsensus({ command: 'decide', repoRoot: root, runId: RUN_ID, decision: 'Decide over ratification.' }),
+      /decide refused: consensus run already has ratification artifact/,
+    );
+    const manifest = await readJson(join(root, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'manifest.json'));
+    strictEqual(manifest.status, 'converged', 'refused mutators must not move the manifest off converged');
+
+    // Owner-decided runs get the same mutator protection.
+    const decidedRoot = await seedPlan();
+    const decidedSummary = join(decidedRoot, 'summary.md');
+    const decidedDisagreements = join(decidedRoot, 'disagreements.json');
+    await writeFile(decidedSummary, 'Contradiction remains.\n');
+    await writeFile(decidedDisagreements, JSON.stringify([
+      { summary: 'Ship now vs block on coverage.', kind: 'contradiction' },
+    ]));
+    await runConsensus({ command: 'synthesize', repoRoot: decidedRoot, runId: RUN_ID, summaryFile: decidedSummary, disagreementsFile: decidedDisagreements, convergenceState: 'non-consensus' });
+    await runConsensus({ command: 'decide', repoRoot: decidedRoot, runId: RUN_ID, decision: 'Owner picks blocking on coverage.' });
+    await rejects(
+      () => runConsensus({ command: 'synthesize', repoRoot: decidedRoot, runId: RUN_ID, summaryFile: decidedSummary }),
+      /synthesize refused: consensus run already has owner-decision artifact/,
+    );
+    await rejects(
+      () => runConsensus({ command: 'record', repoRoot: decidedRoot, runId: RUN_ID, peer: 'claude', inputFile: peerFile }),
+      /record refused: consensus run already has owner-decision artifact/,
+    );
+    await rejects(
+      () => runConsensus({ command: 'decide', repoRoot: decidedRoot, runId: RUN_ID, decision: 'Decide twice.' }),
+      /decide refused: consensus run already has owner-decision artifact/,
+    );
+    // Cancel is pointer-gated, not status-gated: a status-drifted manifest
+    // that still carries the owner-decision pointer must refuse cancellation.
+    const decidedManifestPath = join(decidedRoot, '.agentic-plugins', 'runs', 'consensus', RUN_ID, 'manifest.json');
+    const decidedManifest = await readJson(decidedManifestPath);
+    decidedManifest.status = 'recorded';
+    await writeFile(decidedManifestPath, JSON.stringify(decidedManifest, null, 2));
+    await rejects(
+      () => runConsensus({ command: 'cancel', repoRoot: decidedRoot, runId: RUN_ID, reason: 'Cancel a drifted owner-decided run.' }),
+      /cancel refused: consensus run already has an owner decision/,
+    );
+
+    // Cancelled runs get the same mutator protection.
+    const cancelledRoot = await seedPlan();
+    await runConsensus({ command: 'cancel', repoRoot: cancelledRoot, runId: RUN_ID, reason: 'Abandoned.' });
+    await rejects(
+      () => runConsensus({ command: 'record', repoRoot: cancelledRoot, runId: RUN_ID, peer: 'claude', inputFile: peerFile }),
+      /record refused: consensus run already has cancellation artifact/,
+    );
+    await rejects(
+      () => runConsensus({ command: 'synthesize', repoRoot: cancelledRoot, runId: RUN_ID, summaryFile }),
+      /synthesize refused: consensus run already has cancellation artifact/,
+    );
+    await rejects(
+      () => runConsensus({ command: 'decide', repoRoot: cancelledRoot, runId: RUN_ID, decision: 'Decide after cancel.' }),
+      /decide refused: consensus run already has cancellation artifact/,
+    );
+  });
+
+  it('suppresses ratify guidance when the ratification pointer exists but the artifact is unreadable', async () => {
+    const root = await seedPlan();
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    await writeFile(summaryFile, 'Converged with a residual owner lever.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      { summary: 'Resolution lever (owner\'s call): implement now vs wait.', kind: 'complementary' },
+    ]));
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: RUN_ID,
+      summaryFile,
+      disagreementsFile,
+      convergenceState: 'complementary',
+    });
+    const ratifyReport = await runConsensus({ command: 'ratify', repoRoot: root, runId: RUN_ID, ratification: 'Owner ratifies.' });
+    await rm(join(root, ratifyReport.ratification_pointer));
+
+    const status = await runConsensus({ command: 'status', repoRoot: root, runId: RUN_ID });
+    strictEqual(status.ratification, null, 'unreadable ratification artifact must not fabricate a ratification block');
+    strictEqual(status.ratification_pointer, ratifyReport.ratification_pointer, 'manifest pointer stays visible for repair');
+    strictEqual(status.owner_ratification_briefing, null, 'briefing must not re-offer ratify when the pointer already exists');
+    deepStrictEqual(status.status_guidance.next_steps, [], 'next_steps must not re-offer the refused ratify command');
+  });
+
   it('reports status guidance for synthesized durable disagreements', async () => {
     const root = await seedPlan();
     const summaryFile = join(root, 'summary.md');
@@ -1443,6 +1779,12 @@ describe('runtime consensus', () => {
     strictEqual(decideStyle.decisionFile, 'owner.md');
     strictEqual(decideStyle.decidedBy, 'owner');
 
+    const ratifyStyle = parseArgs(['ratify', '--run-id', RUN_ID, '--ratification-file', 'owner-ratification.md', '--ratified-by', 'owner', '--lever', 'fs-scoping: wait for trigger']);
+    strictEqual(ratifyStyle.command, 'ratify');
+    strictEqual(ratifyStyle.ratificationFile, 'owner-ratification.md');
+    strictEqual(ratifyStyle.ratifiedBy, 'owner');
+    strictEqual(ratifyStyle.lever, 'fs-scoping: wait for trigger');
+
     const cancelStyle = parseArgs(['cancel', '--run-id', RUN_ID, '--reason-file', 'reason.md', '--cancelled-by', 'operator', '--confirm-no-active-process']);
     strictEqual(cancelStyle.command, 'cancel');
     strictEqual(cancelStyle.reasonFile, 'reason.md');
@@ -1466,6 +1808,8 @@ describe('runtime consensus', () => {
     throws(() => parseArgs(['plan', '--max-rounds', '0']), /positive integer/);
     throws(() => parseArgs(['synthesize', '--convergence-state', 'mixed']), /aligned, complementary, contradiction/);
     throws(() => parseArgs(['decide', '--decided-by', 'two\nlines']), /--decided-by must be a single-line value/);
+    throws(() => parseArgs(['ratify', '--ratified-by', 'two\nlines']), /--ratified-by must be a single-line value/);
+    throws(() => parseArgs(['ratify', '--lever', 'two\nlines']), /--lever must be a single-line value/);
     throws(() => parseArgs(['cancel', '--cancelled-by', 'two\nlines']), /--cancelled-by must be a single-line value/);
     ok(formatText({ help: true }).includes('default to 2 total rounds'));
     ok(formatText({ help: true }).includes('hard-capped at 3'));
