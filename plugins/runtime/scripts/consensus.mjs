@@ -20,11 +20,12 @@ const VERSION = RUNTIME_VERSION;
 const MANIFEST_SCHEMA = 'runtime-consensus-run-1.0';
 const RESULT_SCHEMA = 'runtime-consensus-result-1.0';
 const OWNER_DECISION_SCHEMA = 'runtime-consensus-owner-decision-1.0';
+const OWNER_RATIFICATION_SCHEMA = 'runtime-consensus-owner-ratification-1.0';
 const CANCELLATION_SCHEMA = 'runtime-consensus-cancellation-1.0';
 const EXECUTION_SCHEMA = 'runtime-consensus-execution-1.0';
 const LATEST_EXECUTION_SCHEMA = 'runtime-consensus-execution-latest-1.0';
 const PROGRESS_SCHEMA = 'runtime-consensus-progress-1.0';
-const VALID_COMMANDS = new Set(['plan', 'record', 'synthesize', 'decide', 'cancel', 'next-round', 'execute', 'status']);
+const VALID_COMMANDS = new Set(['plan', 'record', 'synthesize', 'decide', 'ratify', 'cancel', 'next-round', 'execute', 'status']);
 const VALID_CONVERGENCE_STATES = new Set([
   'aligned',
   'complementary',
@@ -72,6 +73,9 @@ export async function runConsensus(options = {}) {
   }
   if (command === 'decide') {
     return decideConsensus({ ...options, repoRoot });
+  }
+  if (command === 'ratify') {
+    return ratifyConsensus({ ...options, repoRoot });
   }
   if (command === 'cancel') {
     return cancelConsensus({ ...options, repoRoot });
@@ -213,6 +217,25 @@ export async function createPlan(options = {}) {
   };
 }
 
+// Terminal-artifact mutation gate: once a run carries a cancellation,
+// owner-decision, or owner-ratification artifact, the collection/synthesis
+// mutators must refuse to touch it. Without this gate a later record/
+// synthesize/next-round/execute could silently move a terminal run back to
+// collecting state or rewrite consensus.json under a recorded owner
+// resolution, leaving the terminal artifact attached to evidence it never
+// ratified or decided (Codex review MAJORs on the ratify slice).
+function assertRunMutable(manifest, command) {
+  if (manifest.cancellation_pointer) {
+    throw new Error(`${command} refused: consensus run already has cancellation artifact ${manifest.cancellation_pointer}; preserve it and start a new consensus run`);
+  }
+  if (manifest.owner_decision_pointer) {
+    throw new Error(`${command} refused: consensus run already has owner-decision artifact ${manifest.owner_decision_pointer}; preserve it and start a new consensus run`);
+  }
+  if (manifest.ratification_pointer) {
+    throw new Error(`${command} refused: consensus run already has ratification artifact ${manifest.ratification_pointer}; preserve it and start a new consensus run`);
+  }
+}
+
 export async function recordOutput(options = {}) {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
   const runId = validateRunId(required(options.runId, '--run-id'));
@@ -222,6 +245,7 @@ export async function recordOutput(options = {}) {
   const now = options.now ?? new Date();
   const manifestPath = manifestFile(repoRoot, runId);
   const manifest = await readJson(manifestPath);
+  assertRunMutable(manifest, 'record');
   const roundNumber = positiveInt(options.round ?? latestRoundNumber(manifest), '--round');
   const round = findRound(manifest, roundNumber);
   if (!manifest.peers.active.includes(peer)) {
@@ -271,6 +295,7 @@ export async function synthesizeConsensus(options = {}) {
   const now = options.now ?? new Date();
   const manifestPath = manifestFile(repoRoot, runId);
   const manifest = await readJson(manifestPath);
+  assertRunMutable(manifest, 'synthesize');
   const summary = await resolveSummary(options, runId);
   const durableDisagreements = await resolveDisagreements(options, repoRoot, manifest);
   const evidencePointers = collectEvidencePointers(manifest);
@@ -326,6 +351,15 @@ export async function decideConsensus(options = {}) {
   const now = options.now ?? new Date();
   const manifestPath = manifestFile(repoRoot, runId);
   const manifest = await readJson(manifestPath);
+  if (manifest.cancellation_pointer) {
+    throw new Error(`decide refused: consensus run already has cancellation artifact ${manifest.cancellation_pointer}`);
+  }
+  if (manifest.ratification_pointer) {
+    throw new Error(`decide refused: consensus run already has ratification artifact ${manifest.ratification_pointer}; preserve it and start a new consensus run`);
+  }
+  if (manifest.owner_decision_pointer) {
+    throw new Error(`decide refused: consensus run already has owner-decision artifact ${manifest.owner_decision_pointer}; preserve it and start a new consensus run`);
+  }
   if (!manifest.consensus_pointer) {
     throw new Error(`decide requires consensus.json; run runtime:consensus synthesize --run-id ${runId} --summary-file <summary.md> first`);
   }
@@ -401,6 +435,98 @@ export async function decideConsensus(options = {}) {
   };
 }
 
+export async function ratifyConsensus(options = {}) {
+  const repoRoot = resolve(options.repoRoot ?? process.cwd());
+  const runId = validateRunId(required(options.runId, '--run-id'));
+  const now = options.now ?? new Date();
+  const manifestPath = manifestFile(repoRoot, runId);
+  const manifest = await readJson(manifestPath);
+  if (manifest.cancellation_pointer) {
+    throw new Error(`ratify refused: consensus run already has cancellation artifact ${manifest.cancellation_pointer}`);
+  }
+  if (manifest.ratification_pointer) {
+    throw new Error(`ratify refused: consensus run already has ratification artifact ${manifest.ratification_pointer}; preserve it and start a new consensus run for a different owner resolution`);
+  }
+  if (manifest.owner_decision_pointer) {
+    throw new Error(`ratify refused: consensus run already has owner-decision artifact ${manifest.owner_decision_pointer}`);
+  }
+  if (!manifest.consensus_pointer) {
+    throw new Error(`ratify requires consensus.json; run runtime:consensus synthesize --run-id ${runId} --summary-file <summary.md> first`);
+  }
+  const consensusArtifact = await readJson(resolve(repoRoot, manifest.consensus_pointer));
+  const convergenceState = convergenceStateFromArtifact(consensusArtifact);
+  if (!['aligned', 'complementary'].includes(convergenceState)) {
+    throw new Error(`ratify requires converged consensus (aligned|complementary); observed convergence_state=${convergenceState} — use runtime:consensus decide for unresolved consensus`);
+  }
+  const ratification = await resolveRatification(options, runId);
+  const ratificationText = `${ratification.trim()}\n`;
+  const ratificationBuffer = Buffer.from(ratificationText, 'utf8');
+  const runDir = consensusRunDir(repoRoot, runId);
+  const ratificationTextPath = resolve(runDir, 'owner-ratification.md');
+  await assertInside(runDir, ratificationTextPath);
+  await writeFile(ratificationTextPath, ratificationBuffer);
+
+  const ratifiedBy = options.ratifiedBy
+    ? requireSingleLine(options.ratifiedBy, '--ratified-by')
+    : 'owner';
+  const leverSummary = options.lever
+    ? requireSingleLine(options.lever, '--lever')
+    : null;
+  const ratificationTextPointer = pointer(repoRoot, ratificationTextPath);
+  const ownerRatification = {
+    schema_version: OWNER_RATIFICATION_SCHEMA,
+    runtime_version: VERSION,
+    run_id: runId,
+    status: 'ratified',
+    created_at: toIso(now),
+    ratified_by: ratifiedBy,
+    consensus_pointer: manifest.consensus_pointer,
+    convergence_state: convergenceState,
+    lever_summary: leverSummary,
+    ratification_pointer: ratificationTextPointer,
+    ratification_bytes: ratificationBuffer.byteLength,
+    ratification_sha256: sha256(ratificationBuffer),
+    durable_disagreement_count: (consensusArtifact.durable_disagreements ?? []).length,
+    evidence_pointers: consensusArtifact.evidence_pointers ?? [],
+    next_action: options.nextAction
+      ? requireSingleLine(options.nextAction, '--next-action')
+      : 'Proceed with the synthesized decision as ratified; the recorded owner lever resolution is part of the audit trail.',
+    limits: [
+      'Owner ratification text is stored as an artifact pointer and is not printed by status or footer output.',
+      'Ratification does not rewrite consensus.json, change convergence_state, execute peers, relax host policy, mutate host session context, or create another rebuttal round.',
+      'The converged consensus artifact and evidence pointers remain the audit trail for the ratification.',
+    ],
+  };
+  const ownerRatificationPath = resolve(runDir, 'owner-ratification.json');
+  await assertInside(runDir, ownerRatificationPath);
+  await writeJson(ownerRatificationPath, ownerRatification);
+  manifest.ratification_pointer = pointer(repoRoot, ownerRatificationPath);
+  manifest.updated_at = toIso(now);
+  await writeJson(manifestPath, manifest);
+
+  return {
+    command: 'ratify',
+    version: VERSION,
+    run_id: runId,
+    status: manifest.status,
+    convergence_state: convergenceState,
+    ratification_pointer: manifest.ratification_pointer,
+    ratification_text_pointer: ratificationTextPointer,
+    ratification_bytes: ownerRatification.ratification_bytes,
+    ratification_sha256: ownerRatification.ratification_sha256,
+    ratified_by: ratifiedBy,
+    lever_summary: leverSummary,
+    durable_disagreement_count: ownerRatification.durable_disagreement_count,
+    next_action: ownerRatification.next_action,
+    artifacts: [
+      { kind: 'manifest', pointer: pointer(repoRoot, manifestPath) },
+      { kind: 'owner-ratification', pointer: manifest.ratification_pointer },
+      { kind: 'owner-ratification-text', pointer: ratificationTextPointer, bytes: ownerRatification.ratification_bytes, sha256: ownerRatification.ratification_sha256 },
+    ],
+    limits: ownerRatification.limits,
+  };
+}
+
 export async function cancelConsensus(options = {}) {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
   const runId = validateRunId(required(options.runId, '--run-id'));
@@ -411,8 +537,13 @@ export async function cancelConsensus(options = {}) {
   if (manifest.cancellation_pointer) {
     throw new Error(`cancel refused: consensus run already has cancellation artifact ${manifest.cancellation_pointer}`);
   }
-  if (manifest.status === 'owner-decided') {
+  // Pointer-gated (not status-gated): the artifact pointer is the terminal
+  // authority, so a status-drifted manifest still refuses cancellation.
+  if (manifest.owner_decision_pointer) {
     throw new Error('cancel refused: consensus run already has an owner decision; preserve the owner-decision artifact instead');
+  }
+  if (manifest.ratification_pointer) {
+    throw new Error('cancel refused: consensus run already has an owner ratification; preserve the ratification artifact instead');
   }
   const runDir = consensusRunDir(repoRoot, runId);
   const executionPath = resolve(runDir, 'execution.json');
@@ -509,6 +640,7 @@ export async function planNextRound(options = {}) {
   const now = options.now ?? new Date();
   const manifestPath = manifestFile(repoRoot, runId);
   const manifest = await readJson(manifestPath);
+  assertRunMutable(manifest, 'next-round');
   const nextRound = positiveInt(options.round ?? latestRoundNumber(manifest) + 1, '--round');
   if (nextRound > manifest.policy.max_rounds) {
     throw new Error(`Round ${nextRound} exceeds policy max_rounds ${manifest.policy.max_rounds}; no next-round prompt was written and no peers were executed`);
@@ -580,6 +712,7 @@ export async function executeRound(options = {}) {
   const runId = validateRunId(required(options.runId, '--run-id'));
   const manifestPath = manifestFile(repoRoot, runId);
   const manifest = await readJson(manifestPath);
+  assertRunMutable(manifest, 'execute');
   const roundNumber = positiveInt(options.round ?? latestRoundNumber(manifest), '--round');
   const round = findRound(manifest, roundNumber);
   const executablePeers = executablePeersFor(manifest);
@@ -814,6 +947,9 @@ export async function readStatus(options = {}) {
   const ownerDecisionArtifact = manifest.owner_decision_pointer
     ? await readJsonIfExists(resolve(repoRoot, manifest.owner_decision_pointer))
     : null;
+  const ratificationArtifact = manifest.ratification_pointer
+    ? await readJsonIfExists(resolve(repoRoot, manifest.ratification_pointer))
+    : null;
   const cancellationArtifact = manifest.cancellation_pointer
     ? await readJsonIfExists(resolve(repoRoot, manifest.cancellation_pointer))
     : null;
@@ -827,6 +963,7 @@ export async function readStatus(options = {}) {
     progressArtifact,
     consensusArtifact,
     ownerDecisionArtifact,
+    ratificationArtifact,
     cancellationArtifact,
     now,
   });
@@ -841,6 +978,7 @@ export async function readStatus(options = {}) {
     manifest_pointer: pointer(repoRoot, manifestPath),
     consensus_pointer: manifest.consensus_pointer,
     owner_decision_pointer: manifest.owner_decision_pointer ?? null,
+    ratification_pointer: manifest.ratification_pointer ?? null,
     cancellation_pointer: manifest.cancellation_pointer ?? null,
     owner_decision: ownerDecisionArtifact ? {
       status: ownerDecisionArtifact.status,
@@ -851,6 +989,17 @@ export async function readStatus(options = {}) {
       decision_bytes: ownerDecisionArtifact.decision_bytes,
       decision_sha256: ownerDecisionArtifact.decision_sha256,
       next_action: ownerDecisionArtifact.next_action,
+    } : null,
+    ratification: ratificationArtifact ? {
+      status: ratificationArtifact.status,
+      ratified_by: ratificationArtifact.ratified_by,
+      created_at: ratificationArtifact.created_at,
+      convergence_state: ratificationArtifact.convergence_state,
+      lever_summary: ratificationArtifact.lever_summary ?? null,
+      ratification_pointer: ratificationArtifact.ratification_pointer,
+      ratification_bytes: ratificationArtifact.ratification_bytes,
+      ratification_sha256: ratificationArtifact.ratification_sha256,
+      next_action: ratificationArtifact.next_action,
     } : null,
     cancellation: cancellationArtifact ? {
       status: cancellationArtifact.status,
@@ -892,6 +1041,7 @@ export async function readStatus(options = {}) {
     limits: manifest.limits,
   };
   report.owner_decision_briefing = buildOwnerDecisionBriefing(report);
+  report.owner_ratification_briefing = buildOwnerRatificationBriefing(report);
   return report;
 }
 
@@ -1811,11 +1961,43 @@ function buildOwnerDecisionBriefing(report) {
   };
 }
 
+function buildOwnerRatificationBriefing(report) {
+  // Mirror of buildOwnerDecisionBriefing for CONVERGED runs: gate on the
+  // authoritative status guidance state machine ('complete' already implies no
+  // cancellation, no owner decision, and a converged convergence_state), so a
+  // ratified, cancelled, or unresolved run can never print a stale briefing.
+  // The briefing is advisory: it only appears while a converged run still has
+  // synthesis-flagged residual material (durable disagreements, e.g. an
+  // owner's-call lever on a complementary run) and no ratification artifact.
+  // Gate on the manifest pointer, not the parsed artifact: a recorded-but-
+  // unreadable ratification must suppress the briefing rather than re-offer a
+  // ratify command that assertRunMutable/ratify would refuse.
+  if (report?.status_guidance?.state !== 'complete') return null;
+  if (report.ratification_pointer) return null;
+  const disagreements = (Array.isArray(report.durable_disagreements) ? report.durable_disagreements : [])
+    .map((dd) => {
+      const rawType = dd?.type || dd?.kind || 'unspecified';
+      return {
+        type: KNOWN_DISAGREEMENT_KINDS.has(rawType) ? rawType : 'unspecified',
+        summary: typeof dd?.summary === 'string' ? dd.summary : '',
+        evidence_pointers: normalizeEvidencePointers(dd?.evidence_pointers),
+      };
+    });
+  if (disagreements.length === 0) return null;
+  return {
+    state: report.convergence_state ?? null,
+    disagreements,
+    ratify_command: `runtime:consensus ratify --run-id ${report.run_id} --ratification-file <owner-ratification.md> --ratified-by owner`,
+    template_hint: ['Context', 'Ratified Consensus', 'Residual Owner Lever', 'Owner Resolution', 'Rationale'],
+    note: 'Optional: record only if the synthesis flagged a residual owner lever. Derived from synthesized durable disagreements; raw peer output stays in artifacts.',
+  };
+}
+
 function hasReachedRoundLimit(manifest) {
   return latestRoundNumber(manifest) >= manifest.policy.max_rounds;
 }
 
-function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtifact, consensusArtifact, ownerDecisionArtifact, cancellationArtifact, now }) {
+function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtifact, consensusArtifact, ownerDecisionArtifact, ratificationArtifact, cancellationArtifact, now }) {
   const latestRound = findRound(manifest, latestRoundNumber(manifest));
   const summary = executionArtifact?.summary ?? progressArtifact?.summary ?? null;
   const retryCommands = collectRetryCommands(executionArtifact, progressArtifact);
@@ -1897,10 +2079,26 @@ function buildStatusGuidance({ runId, manifest, executionArtifact, progressArtif
       convergenceState,
     });
     if (['aligned', 'complementary'].includes(convergenceState)) {
+      if (ratificationArtifact) {
+        return guidance({
+          state: 'complete',
+          next_action: ratificationArtifact.next_action ?? 'Proceed with the synthesized decision as ratified; the recorded owner lever resolution is part of the audit trail.',
+          next_steps: [],
+          commands: [],
+          reason: `convergence_state=${convergenceState}; owner ratification recorded by ${ratificationArtifact.ratified_by ?? 'owner'}`,
+        });
+      }
+      // Pointer check (not artifact check): a recorded-but-unreadable
+      // ratification must not re-offer the ratify command that ratify itself
+      // would refuse on the existing manifest pointer.
+      const residualLeverCandidates = (consensusArtifact.durable_disagreements ?? []).length > 0
+        && !manifest.ratification_pointer;
       return guidance({
         state: 'complete',
         next_action: consensusArtifact.next_action ?? 'Consensus is converged; proceed with the synthesized decision.',
-        next_steps: [],
+        next_steps: residualLeverCandidates
+          ? [`If the synthesis flagged a residual owner lever, record its resolution: runtime:consensus ratify --run-id ${runId} --ratification-file <owner-ratification.md> --ratified-by owner`]
+          : [],
         commands: [],
         reason: `convergence_state=${convergenceState}`,
       });
@@ -2193,6 +2391,18 @@ export function parseArgs(argv) {
       case '--decided-by':
         options.decidedBy = requireSingleLine(requireValue(args, arg), arg);
         break;
+      case '--ratification':
+        options.ratification = requireValue(args, arg);
+        break;
+      case '--ratification-file':
+        options.ratificationFile = requireValue(args, arg);
+        break;
+      case '--ratified-by':
+        options.ratifiedBy = requireSingleLine(requireValue(args, arg), arg);
+        break;
+      case '--lever':
+        options.lever = requireSingleLine(requireValue(args, arg), arg);
+        break;
       case '--reason':
         options.reason = requireValue(args, arg);
         break;
@@ -2258,6 +2468,9 @@ export function formatText(report) {
   if (report.run_pointer) lines.push(`run artifact: ${report.run_pointer}`);
   if (report.consensus_pointer) lines.push(`consensus: ${report.consensus_pointer}`);
   if (report.owner_decision_pointer) lines.push(`owner decision: ${report.owner_decision_pointer}`);
+  if (report.ratification_pointer) lines.push(`owner ratification: ${report.ratification_pointer}`);
+  if (report.ratified_by) lines.push(`ratified by: ${report.ratified_by}`);
+  if (report.lever_summary) lines.push(`lever: ${report.lever_summary}`);
   if (report.cancellation_pointer) lines.push(`cancellation: ${report.cancellation_pointer}`);
   if (report.execution_pointer) lines.push(`execution: ${report.execution_pointer}`);
   if (report.progress_pointer) lines.push(`progress: ${report.progress_pointer}`);
@@ -2306,6 +2519,12 @@ export function formatText(report) {
     lines.push('', 'owner decision:');
     lines.push(`- status=${report.owner_decision.status}; decided-by=${report.owner_decision.decided_by}; previous-convergence-state=${report.owner_decision.previous_convergence_state}`);
     lines.push(`- decision=${report.owner_decision.decision_pointer}; bytes=${report.owner_decision.decision_bytes}; sha256=${report.owner_decision.decision_sha256}`);
+  }
+  if (report.ratification) {
+    lines.push('', 'owner ratification:');
+    lines.push(`- status=${report.ratification.status}; ratified-by=${report.ratification.ratified_by}; convergence-state=${report.ratification.convergence_state}`);
+    if (report.ratification.lever_summary) lines.push(`- lever=${report.ratification.lever_summary}`);
+    lines.push(`- ratification=${report.ratification.ratification_pointer}; bytes=${report.ratification.ratification_bytes}; sha256=${report.ratification.ratification_sha256}`);
   }
   if (report.cancellation) {
     lines.push('', 'cancellation:');
@@ -2373,6 +2592,18 @@ export function formatText(report) {
     lines.push(`  Decide: ${briefing.decide_command}`);
     lines.push(`  Template sections: ${briefing.template_hint.join(', ')}`);
   }
+  if (report.owner_ratification_briefing) {
+    const briefing = report.owner_ratification_briefing;
+    lines.push('', 'Owner ratification available (optional):');
+    for (const disagreement of briefing.disagreements) {
+      lines.push(`  - [${disagreement.type}] ${disagreement.summary}`);
+      for (const ptr of disagreement.evidence_pointers) {
+        lines.push(`      evidence: ${ptr}`);
+      }
+    }
+    lines.push(`  Ratify: ${briefing.ratify_command}`);
+    lines.push(`  Template sections: ${briefing.template_hint.join(', ')}`);
+  }
   if (report.next_steps?.length) {
     lines.push('', 'next steps:');
     for (const step of report.next_steps) lines.push(`- ${step}`);
@@ -2400,6 +2631,7 @@ Usage:
   runtime:consensus record --run-id <id> --peer <peer> --input-file <path>
   runtime:consensus synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>] [--convergence-state aligned|complementary|contradiction|insufficient-evidence|owner-decision-required|non-consensus]
   runtime:consensus decide --run-id <id> --decision-file <path> [--decided-by owner]
+  runtime:consensus ratify --run-id <id> --ratification <text>|--ratification-file <path> [--ratified-by owner] [--lever <single-line summary>]
   runtime:consensus cancel --run-id <id> --reason <text>|--reason-file <path> [--confirm-no-active-process]
   runtime:consensus next-round --run-id <id> [--disagreements-file <path>]
   runtime:consensus execute --run-id <id> [--round N] [--peers claude,codex] --execute [--timeout-ms N] [--process-budget N]
@@ -2407,7 +2639,7 @@ Usage:
   runtime:consensus status --latest
   runtime:consensus status --latest-open
 
-Planning, synthesis, owner-decision recording, and cancellation never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record. Contradiction rebuttal rounds default to ${DEFAULT_MAX_ROUNDS} total rounds, --max-rounds is hard-capped at ${MAX_ROUNDS_CAP}, and exhausted contradictions become owner-decision-required instead of creating another loop. Cancellation is artifact-only; if progress is running, use --confirm-no-active-process only after verifying no original execute process is still active. Use status --latest-open to select the newest non-terminal run while preserving cancelled, converged, and owner-decided runs as audit artifacts.`;
+Planning, synthesis, owner-decision recording, owner-ratification recording, and cancellation never execute peers. Peer dispatch is available only through the explicit execute command plus --execute. Only companion-backed peers (${COMPANION_PEERS.join(', ')}) are executable; other peer labels are manual/subagent lanes that must be collected with record. Contradiction rebuttal rounds default to ${DEFAULT_MAX_ROUNDS} total rounds, --max-rounds is hard-capped at ${MAX_ROUNDS_CAP}, and exhausted contradictions become owner-decision-required instead of creating another loop. decide resolves unresolved consensus; ratify records the owner's resolution of a synthesis-flagged residual owner lever on a converged run without rewriting consensus.json or changing convergence_state. Cancellation is artifact-only; if progress is running, use --confirm-no-active-process only after verifying no original execute process is still active. Use status --latest-open to select the newest non-terminal run while preserving cancelled, converged, and owner-decided runs as audit artifacts.`;
 }
 
 async function resolveStatusRunSelection({ repoRoot, runId, latest, latestOpen }) {
@@ -2496,7 +2728,7 @@ async function findLatestConsensusRun(repoRoot, { openOnly = false } = {}) {
 }
 
 function isOpenConsensusManifest(manifest) {
-  if (manifest.cancellation_pointer || manifest.owner_decision_pointer) return false;
+  if (manifest.cancellation_pointer || manifest.owner_decision_pointer || manifest.ratification_pointer) return false;
   return !TERMINAL_MANIFEST_STATUSES.has(manifest.status);
 }
 
@@ -2545,6 +2777,22 @@ async function resolveDecision(options, runId) {
     return text;
   }
   throw new Error(`decide requires --decision or --decision-file; retry: runtime:consensus decide --run-id ${runId} --decision-file <owner-decision.md>`);
+}
+
+async function resolveRatification(options, runId) {
+  if (options.ratification && options.ratificationFile) {
+    throw new Error('Use either --ratification or --ratification-file, not both');
+  }
+  if (options.ratification) {
+    if (!options.ratification.trim()) throw new Error('--ratification must not be empty');
+    return options.ratification;
+  }
+  if (options.ratificationFile) {
+    const text = await readFile(resolve(options.ratificationFile), 'utf8');
+    if (!text.trim()) throw new Error('--ratification-file must not be empty');
+    return text;
+  }
+  throw new Error(`ratify requires --ratification <text> or --ratification-file <path>; e.g. runtime:consensus ratify --run-id ${runId} --ratification-file <owner-ratification.md>`);
 }
 
 async function resolveCancellationReason(options, runId) {

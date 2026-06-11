@@ -350,6 +350,56 @@ describe('runtime footer', () => {
     ok(!JSON.stringify(report).includes('RAW OWNER DECISION BODY'));
   });
 
+  it('links consensus owner ratification without leaking ratification text', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-ratify-'));
+    await runConsensus({
+      command: 'plan',
+      repoRoot: root,
+      runId: CONSENSUS_RUN_ID,
+      task: 'Ratify a converged consensus with a residual owner lever.',
+    });
+    const summaryFile = join(root, 'summary.md');
+    const disagreementsFile = join(root, 'disagreements.json');
+    const ratificationFile = join(root, 'owner-ratification.md');
+    await writeFile(summaryFile, 'All peers converged; one residual owner lever remains.\n');
+    await writeFile(disagreementsFile, JSON.stringify([
+      { summary: 'Resolution lever (owner\'s call): implement now vs wait for a trigger.', kind: 'complementary' },
+    ]));
+    await writeFile(ratificationFile, 'RAW OWNER RATIFICATION BODY must stay hidden from the footer.\n');
+    await runConsensus({
+      command: 'synthesize',
+      repoRoot: root,
+      runId: CONSENSUS_RUN_ID,
+      summaryFile,
+      disagreementsFile,
+      convergenceState: 'complementary',
+    });
+    await runConsensus({
+      command: 'ratify',
+      repoRoot: root,
+      runId: CONSENSUS_RUN_ID,
+      ratificationFile,
+      lever: 'implement now vs wait: wait for a trigger',
+      nextAction: 'Proceed with the ratified consensus.',
+    });
+
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      consensusRunId: CONSENSUS_RUN_ID,
+    });
+
+    strictEqual(report.consensus.status, 'converged');
+    strictEqual(report.consensus.status_guidance.state, 'complete');
+    ok(report.consensus.ratification_pointer.endsWith('/owner-ratification.json'));
+    ok(report.artifacts.some((artifact) => artifact.kind === 'consensus-owner-ratification'));
+
+    const text = formatText(report);
+    ok(text.includes('consensus owner ratification:'));
+    ok(!text.includes('RAW OWNER RATIFICATION BODY'));
+    ok(!JSON.stringify(report).includes('RAW OWNER RATIFICATION BODY'));
+  });
+
   it('links consensus cancellation without leaking cancellation reason text', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-footer-consensus-cancel-'));
     await runConsensus({

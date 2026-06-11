@@ -1,6 +1,6 @@
 ---
 name: consensus
-description: "ADR-0024 runtime consensus scaffold with an explicit companion executor. Use when the user wants to plan peer fanout, execute companions only behind --execute, record peer outputs as artifacts, synthesize disagreements, record owner decisions, cancel consensus as artifacts, or create a targeted rebuttal round."
+description: "ADR-0024 runtime consensus scaffold with an explicit companion executor. Use when the user wants to plan peer fanout, execute companions only behind --execute, record peer outputs as artifacts, synthesize disagreements, record owner decisions, ratify a converged run's residual owner lever, cancel consensus as artifacts, or create a targeted rebuttal round."
 ---
 
 # Consensus (runtime framework primitive)
@@ -20,6 +20,7 @@ node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" exec
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" record --run-id <id> --peer <peer> --input-file <path>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" synthesize --run-id <id> --summary-file <path> [--disagreements-file <path>] [--contradictions-file <path>] [--convergence-state aligned|complementary|contradiction|insufficient-evidence|owner-decision-required|non-consensus]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" decide --run-id <id> --decision-file <path> [--decided-by owner]
+node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" ratify --run-id <id> --ratification <text>|--ratification-file <path> [--ratified-by owner] [--lever <single-line summary>]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" cancel --run-id <id> --reason <text>|--reason-file <path> [--confirm-no-active-process]
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" next-round --run-id <id>
 node "<runtime-plugin-root>/scripts/consensus.mjs" --repo-root "$REPO_ROOT" status --run-id <id>
@@ -55,6 +56,11 @@ Consensus reports and manages:
 - contradiction summaries;
 - owner decision artifacts that close exhausted or otherwise unresolved
   consensus without running another peer round;
+- owner ratification artifacts that record the owner's resolution of a
+  synthesis-flagged residual owner lever on a converged (`aligned`/
+  `complementary`) run, with an optional single-line `--lever` summary,
+  while the manifest status stays `converged` and `consensus.json` /
+  `convergence_state` stay untouched;
 - an `owner_decision_briefing` in `status` output when convergence is
   unresolved (`owner-decision-required`, round-budget-exhausted
   `contradiction`, `insufficient-evidence`, or `non-consensus`): the
@@ -62,6 +68,11 @@ Consensus reports and manages:
   `decide` command to run, and the `owner-decision.md` template sections. It is
   derived from synthesized durable disagreements only and never surfaces raw
   peer output (pointer-only invariant);
+- an advisory `owner_ratification_briefing` in `status` output when a run
+  converged with durable disagreements still preserved and no ratification
+  exists: the synthesized durable disagreements, the `ratify` command, and
+  the `owner-ratification.md` template sections (same pointer-only
+  invariant; recording a ratification is optional);
 - cancellation artifacts that close abandoned or intentionally stopped
   consensus runs without killing host processes;
 - evidence pointers;
@@ -96,6 +107,26 @@ Consensus reports and manages:
   `owner-decision.md` from those briefing disagreements (never from raw peer
   output) with the sections: Context, Open Question, Considered Options,
   Decision, Rationale, Rollback.
+- Owner ratifications are explicit artifacts and the converged-run mirror of
+  `decide`. `ratify` requires converged consensus (`aligned`/`complementary`;
+  unresolved runs must use `decide`), refuses already-ratified, owner-decided,
+  and cancelled runs, keeps the manifest status `converged`, and never rewrites
+  `consensus.json`, `convergence_state`, or the synthesized disagreements
+  (no-averaging stays intact). It records a ratification pointer, byte count,
+  hash, consensus pointer, optional single-line lever summary, and next action;
+  it does not print ratification text, execute peers, or create another round.
+  The `--lever` summary is displayed metadata (status prints it); keep
+  sensitive owner-resolution detail in the pointer-only ratification body.
+  Author the `owner-ratification.md` from the briefing disagreements with the
+  sections: Context, Ratified Consensus, Residual Owner Lever, Owner
+  Resolution, Rationale.
+- Terminal artifacts gate the mutators: `record`, `synthesize`, `next-round`,
+  and `execute` refuse a run that already has a cancellation, owner-decision,
+  or owner-ratification artifact, and `decide`/`ratify` refuse all three
+  terminal artifacts including their own (re-deciding or re-ratifying needs a
+  new consensus run) — a recorded owner resolution can never end up attached
+  to evidence or synthesis it never covered. The gates key on artifact
+  pointers, not manifest status. Start a new consensus run instead.
 - Cancellation is an explicit artifact. `cancel` records a reason pointer, byte
   count, hash, previous status, and optional progress pointer; if progress is
   running, require `--confirm-no-active-process` after operator verification.
@@ -114,6 +145,7 @@ $runtime:consensus synthesize --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --summa
 $runtime:consensus next-round --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef
 $runtime:consensus execute --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --round 2 --execute
 $runtime:consensus decide --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --decision-file owner-decision.md
+$runtime:consensus ratify --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --ratification-file owner-ratification.md --lever "fs-scoping timing: wait for a trigger"
 $runtime:consensus cancel --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --reason-file cancellation-reason.md --confirm-no-active-process
 $runtime:consensus status --latest
 ```
