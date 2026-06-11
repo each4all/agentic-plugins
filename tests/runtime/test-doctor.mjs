@@ -241,6 +241,15 @@ describe('runtime doctor', () => {
     ok(!report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_feature_disabled'));
     ok(!report.host_parity.differences.some((issue) => issue.id === 'codex_generic_hooks_disabled'));
     ok(formatText(report).includes('status=ready'));
+    // ADR-0030 stage gate also applies to the Codex-caller direction readiness
+    // warning: with plugin_hooks removed + generic hooks on, the readiness lane
+    // must report the hooks-enabled (review/trust) message and MUST NOT tell the
+    // operator to set the removed [features].plugin_hooks=true flag.
+    const codexCallerWarnings = report.readiness.codex_to_claude.warnings;
+    ok(codexCallerWarnings.some((w) => w.includes('Codex plugin hooks are enabled; bundled lifecycle hooks still require hook review/trust')),
+      'codex-caller readiness reports the stage-aware hooks-enabled message');
+    ok(!codexCallerWarnings.some((w) => w.includes('plugin_hooks=true')),
+      'codex-caller readiness no longer advises the removed [features].plugin_hooks=true flag on current Codex');
   });
 
   it('recommends generic hooks (not plugin_hooks) when plugin_hooks is removed and generic hooks is off', async () => {
