@@ -31,7 +31,7 @@
     {
       "name": "runtime",
       "source": "./plugins/runtime",
-      "version": "0.66.1",
+      "version": "0.67.0",
       "description": "Runtime operator control plane for agentic-plugins host readiness, doctor diagnostics, settings planning, workflow storage migration, consensus artifacts, compatibility drift planning, worktree planning, context hygiene artifacts, model/effort config, companion readiness, and workflow ledger health. L1 framework primitive per ADR-0024.",
       "category": "Productivity"
     }
