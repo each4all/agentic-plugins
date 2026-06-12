@@ -30,6 +30,18 @@
       "category": "Development"
     },
     {
+      "name": "founder",
+      "source": {
+        "source": "local",
+        "path": "./plugins/founder"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    },
+    {
       "name": "orchestrator",
       "source": {
         "source": "local",

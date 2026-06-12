@@ -24,7 +24,7 @@ bridges implemented and tested:
 - [`companions/claude-companion.mjs`](companions/claude-companion.mjs) — Codex → Claude bridge
 - [`companions/codex-companion.mjs`](companions/codex-companion.mjs) — Claude → Codex bridge
 
-Four installable plugins ship in this repository:
+Five installable plugins ship in this repository:
 
 - [`plugins/companions/`](plugins/companions/) — script-only library
   plugin that bundles the canonical companion CLIs for cache-glob
@@ -37,6 +37,11 @@ Four installable plugins ship in this repository:
   durable cited research artifacts (absorbing the Stage 1
   `plugins/research` contract per
   [ADR-0014](docs/adr/0014-plugins-research-deprecation.md))
+- [`plugins/founder/`](plugins/founder/) — second L3 persona plugin
+  for new-business planning per
+  [ADR-0036](docs/adr/0036-founder-persona-business-planning.md).
+  **Incubating scaffold**: no user-facing commands yet; the verb
+  surface lands through the ADR-0036 implementation roadmap
 - [`plugins/orchestrator/`](plugins/orchestrator/) — Stage 3+ L2
   capability plugin per
   [ADR-0018](docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
