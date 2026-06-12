@@ -27,6 +27,15 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
   invocation, and environment details (including the
   `RESEARCH_OUTPUT_ROOT` env var preserved from Stage 1 for
   backwards compatibility).
+- **`founder/`** — second L3 persona plugin for new-business planning
+  per [ADR-0036](../docs/adr/0036-founder-persona-business-planning.md):
+  business-item discovery, ideation, concretization, and planning
+  composition mapped onto the six cognitive verbs. **Incubating
+  scaffold** — no user-facing commands, skills, scripts, or hooks
+  yet; the functional surface lands through the ADR-0036
+  implementation roadmap (machinery PR2, verbs PR3+). See
+  [`plugins/founder/README.md`](founder/README.md) for the roadmap
+  status table.
 - **`orchestrator/`** — Stage 3+ L2 capability plugin per
   [ADR-0018](../docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
   §sub-decision-1 and [ADR-0019](../docs/adr/0019-cross-plugin-invocation-contract.md):

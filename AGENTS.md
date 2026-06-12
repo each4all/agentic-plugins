@@ -213,7 +213,7 @@ files (`git add <package-path> && git commit`).
 
 The package paths are the keys of `release-please-config.json`
 `packages` — currently `companions`, `plugins/companions`,
-`plugins/engineer`, `plugins/orchestrator`, and `plugins/runtime`. Files **outside**
+`plugins/engineer`, `plugins/founder`, `plugins/orchestrator`, and `plugins/runtime`. Files **outside**
 every package key prefix are exempt: root files (`AGENTS.md`,
 `README.md`, `package.json`, etc.),
 `docs/`, `scripts/`, `tests/`, `kit/`, `.claude-plugin/`,
