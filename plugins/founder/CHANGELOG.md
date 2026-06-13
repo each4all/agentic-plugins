@@ -41,4 +41,7 @@ from this seed, per the orchestrator/runtime precedent.)
   cascade amendment + AGENTS.md / ARCHITECTURE.md inventory updates
 - Separate `plugins/runtime` PR (ADR-0016 cross-package rule) —
   `PLUGIN_NAMES` inventory recognition in `runtime:doctor` /
-  `runtime:settings`
+  `runtime:settings`, plus extending the ADR-0031 session-handoff
+  seam's `workflow_kind` enum (`normalizeProjection` currently accepts
+  engineer/orchestrator only, so founder projections degrade the
+  completion footer to context-risk-only until that lands)

@@ -1,12 +1,11 @@
 # founder — new-business planning workbench (L3 persona)
 
-> **Incubating scaffold.** This plugin currently ships **no user-facing
-> commands, skills, scripts, or hooks** — installing it is safe but
-> inert. The functional surface lands through the
+> **Incubating scaffold.** This plugin ships its workflow machinery
+> (state I/O, stop-archive, session hooks) but **no user-facing
+> commands or skills yet** — the verb surface lands through the
 > [ADR-0036](../../docs/adr/0036-founder-persona-business-planning.md)
-> implementation roadmap (PR2+ below). This PR1 scaffold exists so the
-> marketplace catalogs, release automation, and plugin-shape tests are
-> wired atomically before machinery lands.
+> implementation roadmap (PR3+ below). Installed hooks no-op cleanly
+> when no founder workflow exists.
 
 `founder` is the second L3 persona plugin of agentic-plugins (after
 `engineer`), targeting **new-business planning** (신사업 기획). A
@@ -36,8 +35,8 @@ records. State will live at `<repo>/.agentic-plugins/state/founder/`
 
 | PR | Scope | Status |
 |---|---|---|
-| PR1 | Atomic scaffold: manifests, catalogs, release wiring, shape test | ✅ this PR |
-| PR2 | Workflow machinery copy-trim (state/dispatch/peer-runner/hooks) | ⏳ |
+| PR1 | Atomic scaffold: manifests, catalogs, release wiring, shape test | ✅ #420 |
+| PR2 | Workflow machinery copy-trim (state/dispatch/peer-runner/hooks) | ✅ this PR |
 | PR3 | investigate (business-brief spec) + frame (business Task Profile) | ⏳ |
 | PR4 | decide (business axes registry) + compose | ⏳ |
 | PR5 | critique + refine + business ensemble templates | ⏳ |

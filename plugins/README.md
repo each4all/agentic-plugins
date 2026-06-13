@@ -31,9 +31,9 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
   per [ADR-0036](../docs/adr/0036-founder-persona-business-planning.md):
   business-item discovery, ideation, concretization, and planning
   composition mapped onto the six cognitive verbs. **Incubating
-  scaffold** — no user-facing commands, skills, scripts, or hooks
-  yet; the functional surface lands through the ADR-0036
-  implementation roadmap (machinery PR2, verbs PR3+). See
+  scaffold** — workflow machinery and hooks are in place; no
+  user-facing commands or skills yet (the verb surface lands through
+  the ADR-0036 implementation roadmap, PR3+). See
   [`plugins/founder/README.md`](founder/README.md) for the roadmap
   status table.
 - **`orchestrator/`** — Stage 3+ L2 capability plugin per

@@ -1,7 +1,8 @@
 {
   "name": "founder",
   "version": "0.1.0",
-  "description": "Founder workbench for AI-assisted new-business planning across Claude Code & Codex CLI — business-item discovery, ideation, concretization, and planning composition through the six cognitive verbs (ADR-0036). Incubating scaffold: verb commands/skills land in upcoming roadmap PRs; installing now is safe but inert.",
+  "description": "Founder workbench for AI-assisted new-business planning across Claude Code & Codex CLI — business-item discovery, ideation, concretization, and planning composition through the six cognitive verbs (ADR-0036). Incubating scaffold: workflow machinery and hooks are in place; verb commands/skills land in upcoming roadmap PRs.",
+  "hooks": "./adapters/codex/hooks/hooks.json",
   "author": {
     "name": "each4all"
   },
