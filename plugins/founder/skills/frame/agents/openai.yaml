@@ -1,0 +1,7 @@
+interface:
+  display_name: "Founder — Frame"
+  short_description: "Turn business evidence into a structured opportunity model"
+  default_prompt: "Use $founder:frame to articulate the customer problem, value hypothesis, business-model sketch, validation criteria, and key risks"
+
+policy:
+  allow_implicit_invocation: false

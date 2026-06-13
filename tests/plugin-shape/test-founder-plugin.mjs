@@ -1,18 +1,24 @@
 // plugins/founder plugin-shape conformance test (ADR-0036 — revised at
-// PR2, the workflow-machinery copy-trim).
+// PR3, the investigate + frame verb-surface landing).
 //
-// Boundary history: PR1 shipped the fully-inert scaffold (manifests +
-// README + CHANGELOG + wiring only, every functional directory absent).
-// PR2 lands scripts/ + hooks/ + adapters/ (now REQUIRED below, with the
-// Codex manifest hooks key exposed at the same time) while commands/ and
-// skills/ remain forbidden. The next surface PR (ADR-0036 PR3:
-// investigate + frame) MUST revise the boundary suite again.
+// Boundary history:
+//   - PR1 shipped the fully-inert scaffold (manifests + README + CHANGELOG
+//     + wiring only, every functional directory absent).
+//   - PR2 landed scripts/ + hooks/ + adapters/ (REQUIRED below) with the
+//     Codex manifest hooks key exposed; commands/ and skills/ stayed forbidden.
+//   - PR3 (this revision) lands the first two verb surfaces — investigate
+//     (business-brief profile) and frame — so commands/ and skills/ are now
+//     REQUIRED (with investigate/frame entries) rather than forbidden. The
+//     Codex manifest now carries the skills + interface keys. The next
+//     surface PR (ADR-0036 PR4: decide + compose) MUST revise this suite
+//     again (e.g. require commands/decide.md, skills/decide/, the decision
+//     registry).
 //
 // Run via `node --test tests/plugin-shape/test-founder-plugin.mjs`.
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
-import { readFile, stat } from 'node:fs/promises';
+import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,6 +26,26 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/founder');
 
 const INCUBATING_MARKER = /incubating scaffold/i;
+
+// The PR3 privacy-gate textual sentinel (ADR-0036 SD4). The gate must be
+// stated in the spec AND in the investigate prompt-guard surfaces; this
+// load-bearing invariant phrase guards against silent removal. Checked
+// whitespace-normalized so markdown line-wrapping does not break the match.
+const PRIVACY_SENTINEL =
+  'pass an explicit gate before BOTH web search AND peer-host dispatch';
+
+// founder is the first persona with NO omcc ancestor (ADR-0036 Context):
+// these stale tokens must never appear in its verb-surface files.
+const STALE_TOKENS = [
+  /\bomcc\b/i,
+  /\[Claude\]/,
+  /\[Codex\]/,
+  /CODEX_HOME/,
+  /CLAUDE-ONLY/,
+  /CODEX-ONLY/,
+];
+
+const VERB_SKILLS = ['investigate', 'frame'];
 
 async function readJSON(path) {
   return JSON.parse(await readFile(path, 'utf8'));
@@ -34,6 +60,15 @@ async function exists(path) {
   }
 }
 
+function frontmatter(text) {
+  const m = text.match(/^---\n([\s\S]*?)\n---/);
+  return m ? m[1] : null;
+}
+
+function normalizeWhitespace(text) {
+  return text.replace(/\s+/g, ' ');
+}
+
 describe('plugins/founder — Claude manifest (.claude-plugin/plugin.json)', () => {
   const path = resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json');
 
@@ -46,10 +81,10 @@ describe('plugins/founder — Claude manifest (.claude-plugin/plugin.json)', () 
     ok(json.description.length > 0);
   });
 
-  it('carries the incubating marker in its description (PR1 honesty contract)', async () => {
+  it('still carries the incubating marker in its description (held until ADR-0036 PR7)', async () => {
     const json = await readJSON(path);
     ok(INCUBATING_MARKER.test(json.description),
-      'Claude manifest description must state the scaffold is incubating until ADR-0036 PR3+ land');
+      'Claude manifest description must keep the incubating marker until the ADR-0036 PR7 flip');
   });
 
   it('carries publishing metadata consistent with sibling plugins', async () => {
@@ -72,35 +107,38 @@ describe('plugins/founder — Codex manifest (.codex-plugin/plugin.json)', () =>
     strictEqual(json.version, claude.version, 'host manifests must carry the same version');
     strictEqual(typeof json.description, 'string');
     ok(INCUBATING_MARKER.test(json.description),
-      'Codex manifest description must state the scaffold is incubating');
+      'Codex manifest description must keep the incubating marker until the ADR-0036 PR7 flip');
   });
 
-  it('declares hooks but no skills/interface keys (PR2 boundary — revise in PR3 when skills land)', async () => {
+  it('declares hooks AND the skills/interface keys (PR3 boundary — verb surfaces landed)', async () => {
     const json = await readJSON(path);
     strictEqual(json.hooks, './adapters/codex/hooks/hooks.json',
-      'PR2 ships the workflow machinery hooks and must expose them in the Codex manifest at the same time (drift defense)');
-    strictEqual(json.skills, undefined, 'no skills path until ADR-0036 PR3 lands the first SKILL.md');
-    strictEqual(json.interface, undefined, 'no interface block until a skill surface exists');
+      'PR2 machinery hooks remain exposed in the Codex manifest');
+    strictEqual(json.skills, './skills/',
+      'PR3 lands the first SKILL.md surfaces — the Codex manifest must expose the skills path');
+    ok(json.interface && typeof json.interface === 'object',
+      'PR3 lands a verb surface — the Codex manifest must carry an interface block');
+    strictEqual(json.interface.displayName, 'Founder');
+    strictEqual(json.interface.category, 'Productivity');
+    ok(Array.isArray(json.interface.defaultPrompt) && json.interface.defaultPrompt.length > 0);
   });
 });
 
-// Negative-boundary suite — REVISED FOR PR2 (machinery landed: scripts/,
-// hooks/, adapters/ now REQUIRED; commands/ and skills/ remain forbidden
-// until ADR-0036 PR3). The next surface PR (PR3: investigate + frame)
-// MUST revise this suite again.
-describe('plugins/founder — PR2 boundary (machinery present, no verb surface)', () => {
+// Negative-boundary suite — REVISED FOR PR3 (verb surfaces landed:
+// commands/ + skills/ now REQUIRED with investigate/frame entries; the
+// PR2 machinery remains REQUIRED). The next surface PR (PR4: decide +
+// compose) MUST revise this suite again.
+describe('plugins/founder — PR3 boundary (machinery + investigate/frame surfaces)', () => {
   const ABSENT_DIRS = [
-    'commands',
-    'skills',
     'personas',
     'mcp-servers',
     'prompt-templates',
   ];
 
   for (const dir of ABSENT_DIRS) {
-    it(`has no ${dir}/ directory before the verb surface lands`, async () => {
+    it(`has no ${dir}/ directory (not part of the founder surface)`, async () => {
       strictEqual(await exists(resolve(PLUGIN_ROOT, dir)), false,
-        `plugins/founder/${dir}/ must not exist until ADR-0036 PR3+ lands it — revise this suite in that PR`);
+        `plugins/founder/${dir}/ must not exist — founder uses commands/ + skills/ only`);
     });
   }
 
@@ -127,6 +165,27 @@ describe('plugins/founder — PR2 boundary (machinery present, no verb surface)'
     it(`ships ${rel} (PR2 machinery)`, async () => {
       strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true,
         `plugins/founder/${rel} is part of the PR2 machinery copy-trim and must exist`);
+    });
+  }
+
+  // PR3 verb surfaces — commands + skills now REQUIRED.
+  const REQUIRED_SURFACES = [
+    'commands/investigate.md',
+    'commands/frame.md',
+    'skills/investigate/SKILL.md',
+    'skills/investigate/agents/openai.yaml',
+    'skills/investigate/references/business-brief-spec.md',
+    'skills/investigate/references/business-brief-ensemble.md',
+    'skills/investigate/references/output-file-rules.md',
+    'skills/frame/SKILL.md',
+    'skills/frame/agents/openai.yaml',
+    'skills/_shared/references/orchestration.md',
+  ];
+
+  for (const rel of REQUIRED_SURFACES) {
+    it(`ships ${rel} (PR3 investigate + frame surface)`, async () => {
+      strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true,
+        `plugins/founder/${rel} is part of the ADR-0036 PR3 verb surface and must exist`);
     });
   }
 
@@ -165,6 +224,23 @@ describe('plugins/founder — PR2 boundary (machinery present, no verb surface)'
       'plugins/founder must not ship a parent-writeback module at all');
   });
 
+  it('the verb commands carry no parent-linkage env reads (ADR-0036 Non-Goal 3)', async () => {
+    // Guard against actual shell reads ($VAR / ${VAR}), not prose mentions:
+    // the commands legitimately *document* that they do NOT read these vars
+    // (backtick-quoted plain names), which must remain allowed.
+    const READ_FORMS = [
+      /\$\{?AGENTIC_PARENT_WORKFLOW/,
+      /\$\{?AGENTIC_ORIGINATING_SUBTASK/,
+    ];
+    for (const verb of VERB_SKILLS) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
+      for (const form of READ_FORMS) {
+        ok(!form.test(text),
+          `commands/${verb}.md must not shell-read ${form} — founder is not an orchestrator dispatch target (ADR-0036 Non-Goal 3)`);
+      }
+    }
+  });
+
   it('ships README.md with the incubating marker and the ADR-0036 pointer', async () => {
     const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf8');
     ok(INCUBATING_MARKER.test(readme), 'plugin README must call out incubating status');
@@ -175,6 +251,114 @@ describe('plugins/founder — PR2 boundary (machinery present, no verb surface)'
     const changelog = await readFile(resolve(PLUGIN_ROOT, 'CHANGELOG.md'), 'utf8');
     ok(changelog.includes('0.1.0 (initial scaffold seed)'),
       'CHANGELOG must record the seed entry without implying a published tag');
+  });
+});
+
+describe('plugins/founder — verb surface shape (PR3)', () => {
+  for (const verb of VERB_SKILLS) {
+    it(`skills/${verb}/SKILL.md frontmatter name = ${verb} (folder ↔ frontmatter consistency)`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+      const fm = frontmatter(text);
+      ok(fm, `skills/${verb}/SKILL.md has no YAML frontmatter`);
+      const re = new RegExp(`^name:\\s*${verb}\\s*$`, 'm');
+      ok(re.test(fm), `skills/${verb}/SKILL.md frontmatter name != "${verb}"`);
+      match(fm, /description:/, `skills/${verb}/SKILL.md frontmatter must carry a description`);
+    });
+
+    it(`skills/${verb}/agents/openai.yaml display_name names the verb`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'agents/openai.yaml'), 'utf8');
+      const m = text.match(/display_name:\s*"([^"]+)"/);
+      ok(m, `skills/${verb}/agents/openai.yaml must declare interface.display_name`);
+      ok(m[1].toLowerCase().includes(verb),
+        `openai.yaml display_name "${m[1]}" must name the verb "${verb}"`);
+      ok(m[1].toLowerCase().includes('founder'),
+        `openai.yaml display_name "${m[1]}" must name the persona "founder"`);
+    });
+
+    it(`commands/${verb}.md carries a frontmatter description`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
+      const fm = frontmatter(text);
+      ok(fm, `commands/${verb}.md has no YAML frontmatter`);
+      match(fm, /description:\s*\S/, `commands/${verb}.md frontmatter must carry a non-empty description`);
+    });
+  }
+
+  it('no stale tokens (omcc / [Claude] / [Codex] / CODEX_HOME / *-ONLY) anywhere in the plugin — founder has no omcc ancestor', async () => {
+    // Codex Plan-verify (PR3) caught a vestigial omcc-dev comment in
+    // scripts/stop-archive.mjs that the verb-surface-only scan missed.
+    // Scan the WHOLE plugin tree so copy-trim leaks in machinery /
+    // adapters / hooks are caught too (ADR-0036 Context: no omcc ancestor).
+    const TEXT_EXT = new Set(['.md', '.mjs', '.js', '.json', '.yaml', '.yml', '.sh']);
+    const entries = await readdir(PLUGIN_ROOT, { recursive: true, withFileTypes: true });
+    let scanned = 0;
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      const dot = ent.name.lastIndexOf('.');
+      if (dot < 0 || !TEXT_EXT.has(ent.name.slice(dot))) continue;
+      const parent = ent.parentPath ?? ent.path;
+      const full = resolve(parent, ent.name);
+      const rel = full.slice(PLUGIN_ROOT.length + 1);
+      const text = await readFile(full, 'utf8');
+      for (const token of STALE_TOKENS) {
+        ok(!token.test(text), `${rel} contains stale token ${token}`);
+      }
+      scanned += 1;
+    }
+    ok(scanned >= 20, `expected to scan the founder plugin tree, only saw ${scanned} files`);
+  });
+});
+
+describe('plugins/founder — business-brief spec contract (PR3 / ADR-0036 SD4)', () => {
+  const SPEC = 'skills/investigate/references/business-brief-spec.md';
+
+  it('declares the 5-tier business source taxonomy', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, SPEC), 'utf8');
+    for (const tier of [
+      'official-stats',
+      'research-institutional',
+      'market-intelligence',
+      'primary-field',
+      'secondary-press',
+    ]) {
+      ok(text.includes(tier), `business-brief-spec.md must define the "${tier}" tier`);
+    }
+  });
+
+  it('states the freshness/jurisdiction and paywalled/vendor-claim rules', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, SPEC), 'utf8');
+    match(text, /jurisdiction/i, 'spec must state jurisdiction tagging rules');
+    match(text, /as-of/i, 'spec must state as-of freshness dating rules');
+    match(text, /vendor-claim/i, 'spec must state vendor-claim citation treatment');
+    match(text, /paywalled/i, 'spec must state paywalled-source citation treatment');
+  });
+
+  it('the privacy gate sentinel appears in the spec AND the investigate prompt-guard surfaces (ADR-0036 SD4)', async () => {
+    // The macro plan requires the gate stated in the spec AND the
+    // investigate prompt guard (command + skill). Checked
+    // whitespace-normalized so line-wrapping does not break the match.
+    const REQUIRED = [
+      'skills/investigate/references/business-brief-spec.md',
+      'commands/investigate.md',
+      'skills/investigate/SKILL.md',
+    ];
+    for (const rel of REQUIRED) {
+      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      ok(text.includes(PRIVACY_SENTINEL),
+        `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+    }
+  });
+
+  it('the privacy gate sentinel also reaches the ensemble dispatch + frame surfaces', async () => {
+    const ALSO = [
+      'skills/investigate/references/business-brief-ensemble.md',
+      'commands/frame.md',
+      'skills/frame/SKILL.md',
+    ];
+    for (const rel of ALSO) {
+      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      ok(text.includes(PRIVACY_SENTINEL),
+        `${rel} should carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+    }
   });
 });
 
@@ -191,7 +375,7 @@ describe('plugins/founder — Claude marketplace catalog entry', () => {
     strictEqual(entry.version, manifest.version);
     strictEqual(entry.category, 'Productivity');
     ok(INCUBATING_MARKER.test(entry.description),
-      'Claude catalog description must carry the incubating marker');
+      'Claude catalog description must keep the incubating marker until the ADR-0036 PR7 flip');
   });
 });
 

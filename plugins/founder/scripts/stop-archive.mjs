@@ -77,7 +77,8 @@ export function evaluateStopArchive({ frontmatter, headSha, headSubject }) {
     gateFailures.push('head_moved');
   }
 
-  // Gate 4 — no active children (omcc-dev A4 transitive).
+  // Gate 4 — no active children (transitive: a workflow with active
+  // child workflows is not archivable).
   if (!noActiveChildrenCheck(frontmatter)) {
     gateFailures.push('no_active_children');
   }
