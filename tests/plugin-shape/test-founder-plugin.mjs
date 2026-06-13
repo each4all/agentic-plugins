@@ -1,14 +1,12 @@
-// plugins/founder plugin-shape conformance test (ADR-0036 PR1 scaffold).
+// plugins/founder plugin-shape conformance test (ADR-0036 — revised at
+// PR2, the workflow-machinery copy-trim).
 //
-// PR1 ships an intentionally inert scaffold: host manifests + README +
-// CHANGELOG + catalog/release wiring only. The "PR1 negative boundary"
-// suite asserts that NO functional surface exists yet. Those assertions
-// are PR1-ONLY by design: the first PR that lands a functional surface
-// (ADR-0036 roadmap PR2+) MUST revise that suite alongside the new
-// directories/keys it introduces.
-//
-// Expected RED causes before the scaffold lands: (1) plugins/founder
-// files missing; (2) package.json test:plugin-shape wiring missing.
+// Boundary history: PR1 shipped the fully-inert scaffold (manifests +
+// README + CHANGELOG + wiring only, every functional directory absent).
+// PR2 lands scripts/ + hooks/ + adapters/ (now REQUIRED below, with the
+// Codex manifest hooks key exposed at the same time) while commands/ and
+// skills/ remain forbidden. The next surface PR (ADR-0036 PR3:
+// investigate + frame) MUST revise the boundary suite again.
 //
 // Run via `node --test tests/plugin-shape/test-founder-plugin.mjs`.
 
@@ -77,32 +75,95 @@ describe('plugins/founder — Codex manifest (.codex-plugin/plugin.json)', () =>
       'Codex manifest description must state the scaffold is incubating');
   });
 
-  it('declares no functional surface keys in PR1 (negative boundary — PR1-ONLY)', async () => {
+  it('declares hooks but no skills/interface keys (PR2 boundary — revise in PR3 when skills land)', async () => {
     const json = await readJSON(path);
-    strictEqual(json.skills, undefined, 'PR1 must not declare a skills path (no skills exist yet)');
-    strictEqual(json.hooks, undefined, 'PR1 must not declare hooks (none exist yet)');
-    strictEqual(json.interface, undefined, 'PR1 must not declare an interface block');
+    strictEqual(json.hooks, './adapters/codex/hooks/hooks.json',
+      'PR2 ships the workflow machinery hooks and must expose them in the Codex manifest at the same time (drift defense)');
+    strictEqual(json.skills, undefined, 'no skills path until ADR-0036 PR3 lands the first SKILL.md');
+    strictEqual(json.interface, undefined, 'no interface block until a skill surface exists');
   });
 });
 
-describe('plugins/founder — PR1 negative boundary (no functional surface; PR1-ONLY suite)', () => {
+// Negative-boundary suite — REVISED FOR PR2 (machinery landed: scripts/,
+// hooks/, adapters/ now REQUIRED; commands/ and skills/ remain forbidden
+// until ADR-0036 PR3). The next surface PR (PR3: investigate + frame)
+// MUST revise this suite again.
+describe('plugins/founder — PR2 boundary (machinery present, no verb surface)', () => {
   const ABSENT_DIRS = [
     'commands',
     'skills',
-    'scripts',
-    'hooks',
-    'adapters',
     'personas',
     'mcp-servers',
     'prompt-templates',
   ];
 
   for (const dir of ABSENT_DIRS) {
-    it(`has no ${dir}/ directory in the inert scaffold`, async () => {
+    it(`has no ${dir}/ directory before the verb surface lands`, async () => {
       strictEqual(await exists(resolve(PLUGIN_ROOT, dir)), false,
-        `plugins/founder/${dir}/ must not exist in PR1 — it lands in ADR-0036 roadmap PR2+ and this suite must be revised then`);
+        `plugins/founder/${dir}/ must not exist until ADR-0036 PR3+ lands it — revise this suite in that PR`);
     });
   }
+
+  const REQUIRED_MACHINERY = [
+    'scripts/state.mjs',
+    'scripts/stop-archive.mjs',
+    'scripts/validate-commit.mjs',
+    'scripts/dispatch-peer.mjs',
+    'scripts/peer-runner.mjs',
+    'scripts/session-handoff.mjs',
+    'hooks/hooks.json',
+    'adapters/claude/hooks/_shared.mjs',
+    'adapters/claude/hooks/session-start.mjs',
+    'adapters/claude/hooks/pre-compact.mjs',
+    'adapters/claude/hooks/stop.mjs',
+    'adapters/codex/hooks/hooks.json',
+    'adapters/codex/hooks/session-start.mjs',
+    'adapters/codex/hooks/pre-compact.mjs',
+    'adapters/codex/hooks/stop.mjs',
+    'adapters/codex/hooks/run-node-hook.sh',
+  ];
+
+  for (const rel of REQUIRED_MACHINERY) {
+    it(`ships ${rel} (PR2 machinery)`, async () => {
+      strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true,
+        `plugins/founder/${rel} is part of the PR2 machinery copy-trim and must exist`);
+    });
+  }
+
+  it('hook entrypoints carry the executable bit', async () => {
+    const HOOK_EXECUTABLES = [
+      'adapters/claude/hooks/session-start.mjs',
+      'adapters/claude/hooks/pre-compact.mjs',
+      'adapters/claude/hooks/stop.mjs',
+      'adapters/codex/hooks/session-start.mjs',
+      'adapters/codex/hooks/pre-compact.mjs',
+      'adapters/codex/hooks/stop.mjs',
+      'adapters/codex/hooks/run-node-hook.sh',
+    ];
+    for (const rel of HOOK_EXECUTABLES) {
+      const st = await stat(resolve(PLUGIN_ROOT, rel));
+      ok(st.mode & 0o100, `${rel} must be executable (owner x bit)`);
+    }
+  });
+
+  it('guards the no-parent-linkage contract: machinery never references parent-writeback (ADR-0036 Non-Goal 3)', async () => {
+    const SOURCES = [
+      'scripts/state.mjs',
+      'scripts/stop-archive.mjs',
+      'adapters/claude/hooks/_shared.mjs',
+      'adapters/claude/hooks/stop.mjs',
+      'adapters/codex/hooks/stop.mjs',
+    ];
+    for (const rel of SOURCES) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      ok(!text.includes("from './parent-writeback.mjs'"),
+        `${rel} must not import parent-writeback machinery`);
+      ok(!/writebackParent\s*\(/.test(text),
+        `${rel} must not invoke writebackParent`);
+    }
+    strictEqual(await exists(resolve(PLUGIN_ROOT, 'scripts/parent-writeback.mjs')), false,
+      'plugins/founder must not ship a parent-writeback module at all');
+  });
 
   it('ships README.md with the incubating marker and the ADR-0036 pointer', async () => {
     const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf8');
