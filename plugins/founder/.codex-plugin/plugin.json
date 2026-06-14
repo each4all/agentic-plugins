@@ -1,13 +1,13 @@
 {
   "name": "founder",
   "version": "0.1.0",
-  "description": "Founder workbench for AI-assisted new-business planning across Claude Code & Codex CLI — business-item discovery, ideation, concretization, and planning composition through the six cognitive verbs (ADR-0036). Incubating scaffold: workflow machinery, hooks, and the first verb surfaces (investigate / frame) are in place; the remaining verbs, lifecycle macro, and meta skills land in upcoming roadmap PRs.",
+  "description": "Founder workbench for AI-assisted new-business planning across Claude Code & Codex CLI — business-item discovery, ideation, concretization, and planning composition through the six cognitive verbs (ADR-0036). Incubating scaffold: workflow machinery, hooks, and the first four verb surfaces (investigate / frame / decide / compose) are in place; the remaining verbs (critique / refine), lifecycle macro, and meta skills land in upcoming roadmap PRs.",
   "hooks": "./adapters/codex/hooks/hooks.json",
   "skills": "./skills/",
   "interface": {
     "displayName": "Founder",
-    "shortDescription": "AI-assisted new-business planning — business-item discovery + ideation (investigate / frame); more verbs incubating",
-    "longDescription": "L3 persona plugin for new-business planning, the second L3 persona after engineer (ADR-0036). Exposes the six universal cognitive verbs as canonical skills with business-anchored content; this incubating release ships the first two — investigate (business-item discovery via the business-brief profile: a 5-tier business source taxonomy, freshness/jurisdiction tagging, paywalled-source rules, and a privacy gate before web search and peer dispatch) and frame (ideation: turning evidence into a structured business opportunity model). Each verb is invokable as $founder:<verb>. Sub-discipline expansion (business-model archetypes — b2b-saas, consumer-app, commerce, content) flows through the L4 profile axis (MVP ships the general default). The remaining verbs (decide / compose / critique / refine), the $founder:start lifecycle macro, and the workflow-continuity meta skills (resume / checkpoint / peer-now) land in upcoming ADR-0036 roadmap PRs. Bidirectional companion ensembles (Claude <-> Codex) dispatch automatically at command-mode phase boundaries under an always-max policy. Codex skills provide cognitive-runbook parity, not host-bootstrap/state parity (ADR-0036 SD2 / ADR-0021 boundary).",
+    "shortDescription": "AI-assisted new-business planning — discovery, ideation, decision + planning (investigate / frame / decide / compose); more verbs incubating",
+    "longDescription": "L3 persona plugin for new-business planning, the second L3 persona after engineer (ADR-0036). Exposes the six universal cognitive verbs as canonical skills with business-anchored content; this incubating release ships the first four — investigate (business-item discovery via the business-brief profile: a 5-tier business source taxonomy, freshness/jurisdiction tagging, paywalled-source rules, and a privacy gate before web search and peer dispatch), frame (ideation: turning evidence into a structured business opportunity model), decide (business decision across the decisive market-attractiveness + unit-economics axes plus the regulatory-exposure + safety-risk veto gates, carried on a persona-local decision registry per ADR-0036 SD3), and compose (planning artifacts: a venture plan, a lean canvas, or a validation plan). Each verb is invokable as $founder:<verb>. Sub-discipline expansion (business-model archetypes — b2b-saas, consumer-app, commerce, content) flows through the L4 profile axis (MVP ships the general default). The remaining verbs (critique / refine), the $founder:start lifecycle macro, and the workflow-continuity meta skills (resume / checkpoint / peer-now) land in upcoming ADR-0036 roadmap PRs. Bidirectional companion ensembles (Claude <-> Codex) dispatch automatically at command-mode phase boundaries under an always-max policy. Codex skills provide cognitive-runbook parity, not host-bootstrap/state parity (ADR-0036 SD2 / ADR-0021 boundary).",
     "developerName": "each4all",
     "category": "Productivity",
     "capabilities": [
@@ -18,7 +18,9 @@
     "defaultPrompt": [
       "$founder:investigate Is there a market for a back-office SaaS for independent restaurants?",
       "$founder:investigate business-brief subscription pet-supply boxes in Korea",
-      "$founder:frame Shape this candidate item into an opportunity model before I decide"
+      "$founder:frame Shape this candidate item into an opportunity model before I decide",
+      "$founder:decide Compare these two business directions and recommend one (--size=major)",
+      "$founder:compose Draft the venture plan for the chosen direction"
     ]
   },
   "author": {

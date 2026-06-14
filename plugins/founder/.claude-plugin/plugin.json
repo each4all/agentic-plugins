@@ -1,7 +1,7 @@
 {
   "name": "founder",
   "version": "0.1.0",
-  "description": "Founder workbench for AI-assisted new-business planning across Claude Code & Codex CLI — business-item discovery, ideation, concretization, and planning composition through the six cognitive verbs (ADR-0036). Incubating scaffold: workflow machinery, hooks, and the first verb surfaces (investigate / frame) are in place; the remaining verbs, lifecycle macro, and meta skills land in upcoming roadmap PRs.",
+  "description": "Founder workbench for AI-assisted new-business planning across Claude Code & Codex CLI — business-item discovery, ideation, concretization, and planning composition through the six cognitive verbs (ADR-0036). Incubating scaffold: workflow machinery, hooks, and the first four verb surfaces (investigate / frame / decide / compose) are in place; the remaining verbs (critique / refine), lifecycle macro, and meta skills land in upcoming roadmap PRs.",
   "author": {
     "name": "each4all"
   },

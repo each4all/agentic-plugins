@@ -1,0 +1,111 @@
+schema: "1.0"
+
+# founder:decide registry — ADR-0036 SD3 business decision axes, carried
+# on the ADR-0027 §1.1 portable registry schema (copy-not-import per
+# ADR-0029: founder ships its own axis set, not engineer's software axes).
+#
+# Each preset declares an ordered list of axes; the reader
+# (decide-registry.mjs) resolves a preset at command dispatch time per the
+# ADR-0027 §1.5 precedence ladder. Axes carry `role: decisive` or
+# `role: supporting`; the recommendation rule (SKILL.md
+# @decide:recommendation-rule) honors decisive axes when picking a winner.
+# Every preset MUST declare at least two decisive axes (ADR-0027 §1.3
+# invariant, enforced by decide-registry.mjs validatePreset).
+#
+# Three-tier business model (ADR-0036 SD3):
+#   - decisive   — 시장성 market-attractiveness + 단위경제 unit-economics.
+#                  These pick the winner; supporting axes do not downgrade
+#                  a decisive-favored option on their own.
+#   - supporting — 지불의사 willingness-to-pay + 경쟁강도 competitive-intensity.
+#                  They sharpen confidence and break ties; never override
+#                  the decisive axes alone.
+#   - gate-style supporting — 규제노출 regulatory-exposure + 안전리스크 safety-risk,
+#                  each carrying `gate: true`. A hard fail on a gate axis is
+#                  a VETO that overrides market/unit-economics strength —
+#                  not a tradeoff to fold into the execution plan. Gates are
+#                  checked FIRST (see @decide:recommendation-rule). `gate` is
+#                  a founder-local additive field; the ADR-0027 role enum
+#                  (decisive | supporting) is unchanged, so the schema stays
+#                  forward-compatible with the portable reader.
+#
+# PROVISIONAL (잠정, ADR-0036 SD3): the decisive set and the axis questions
+# below are a first-cut hypothesis. They are expected to be re-tuned as
+# real founder dogfood (ADR-0036 PR7) and market data accumulate — e.g.
+# 지불의사 willingness-to-pay may graduate to decisive for a consumer-app
+# archetype, or an archetype L4 profile may overlay axis weights. Treat the
+# current roles as a starting baseline, not a settled invariant beyond the
+# ≥2-decisive floor.
+
+presets:
+
+  default:
+    description: "6-axis preset — the full founder business decision matrix (2 decisive + 2 supporting + 2 gate-style). Resolved for --size=standard and --size=major."
+    axes:
+      - id: "market-attractiveness"
+        labels:
+          en: "Market Attractiveness"
+          ko: "시장성"
+        question: "Is there a real, reachable market of sufficient size, growth, and timing — a customer problem worth solving at scale, not just a feature nobody is asking for?"
+        role: "decisive"
+      - id: "unit-economics"
+        labels:
+          en: "Unit Economics"
+          ko: "단위경제"
+        question: "Do the unit economics work — can a customer be acquired and served for meaningfully less than the value captured, with a credible path to positive contribution margin?"
+        role: "decisive"
+      - id: "willingness-to-pay"
+        labels:
+          en: "Willingness to Pay"
+          ko: "지불의사"
+        question: "Is there behavioral evidence customers will actually pay (or engage at the required intensity) — demand demonstrated by action, not merely stated interest in a survey?"
+        role: "supporting"
+      - id: "competitive-intensity"
+        labels:
+          en: "Competitive Intensity"
+          ko: "경쟁강도"
+        question: "How crowded and defensible is the space — is there a wedge or unfair advantage that compounds, or is this a saturated, undifferentiated race to the bottom?"
+        role: "supporting"
+      - id: "regulatory-exposure"
+        labels:
+          en: "Regulatory Exposure"
+          ko: "규제노출"
+        question: "Does this clear licensing, compliance, and regulatory requirements for the target jurisdiction(s)? A hard regulatory blocker is a VETO gate, not a tradeoff — it overrides market and unit-economics strength until mitigated."
+        role: "supporting"
+        gate: true
+      - id: "safety-risk"
+        labels:
+          en: "Safety / Harm Risk"
+          ko: "안전리스크"
+        question: "Are safety, liability, privacy, and ethical-harm exposures acceptable and mitigable? An unmitigated safety or harm risk is a VETO gate that overrides market and unit-economics strength until addressed."
+        role: "supporting"
+        gate: true
+
+  compact:
+    description: "4-axis compact preset for minor-size business decisions — the two decisive axes plus the two veto gates. Drops the soft supporting axes (willingness-to-pay, competitive-intensity) for quick reversible calls, but never drops the gates: a minor decision must still clear regulatory + safety. Resolved for --size=minor."
+    axes:
+      - id: "market-attractiveness"
+        labels:
+          en: "Market Attractiveness"
+          ko: "시장성"
+        question: "Is there a real, reachable market worth solving for here?"
+        role: "decisive"
+      - id: "unit-economics"
+        labels:
+          en: "Unit Economics"
+          ko: "단위경제"
+        question: "Do the unit economics plausibly work at this scale?"
+        role: "decisive"
+      - id: "regulatory-exposure"
+        labels:
+          en: "Regulatory Exposure"
+          ko: "규제노출"
+        question: "Does this clear the regulatory/licensing requirements for the target jurisdiction(s)? A hard blocker is a VETO gate, not a tradeoff."
+        role: "supporting"
+        gate: true
+      - id: "safety-risk"
+        labels:
+          en: "Safety / Harm Risk"
+          ko: "안전리스크"
+        question: "Are safety, liability, privacy, and ethical-harm exposures acceptable and mitigable? An unmitigated exposure is a VETO gate."
+        role: "supporting"
+        gate: true

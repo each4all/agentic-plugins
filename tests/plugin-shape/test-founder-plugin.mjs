@@ -1,18 +1,22 @@
 // plugins/founder plugin-shape conformance test (ADR-0036 — revised at
-// PR3, the investigate + frame verb-surface landing).
+// PR4, the decide + compose verb-surface + decision-registry landing).
 //
 // Boundary history:
 //   - PR1 shipped the fully-inert scaffold (manifests + README + CHANGELOG
 //     + wiring only, every functional directory absent).
 //   - PR2 landed scripts/ + hooks/ + adapters/ (REQUIRED below) with the
 //     Codex manifest hooks key exposed; commands/ and skills/ stayed forbidden.
-//   - PR3 (this revision) lands the first two verb surfaces — investigate
-//     (business-brief profile) and frame — so commands/ and skills/ are now
-//     REQUIRED (with investigate/frame entries) rather than forbidden. The
-//     Codex manifest now carries the skills + interface keys. The next
-//     surface PR (ADR-0036 PR4: decide + compose) MUST revise this suite
-//     again (e.g. require commands/decide.md, skills/decide/, the decision
-//     registry).
+//   - PR3 landed the first two verb surfaces — investigate (business-brief
+//     profile) and frame — so commands/ and skills/ became REQUIRED (with
+//     investigate/frame entries) rather than forbidden, and the Codex
+//     manifest gained the skills + interface keys.
+//   - PR4 (this revision) lands the decide + compose verb surfaces and the
+//     persona-local decision registry (scripts/decide-registry.mjs +
+//     scripts/lib/* + skills/decide/references/decision-axes.yml, ADR-0036
+//     SD3 / ADR-0027 portable schema, copied per ADR-0029). commands/ +
+//     skills/ now REQUIRE decide/compose entries too. The next surface PR
+//     (ADR-0036 PR5: critique + refine + the ensemble-protocol templates)
+//     MUST revise this suite again.
 //
 // Run via `node --test tests/plugin-shape/test-founder-plugin.mjs`.
 
@@ -45,7 +49,20 @@ const STALE_TOKENS = [
   /CODEX-ONLY/,
 ];
 
-const VERB_SKILLS = ['investigate', 'frame'];
+const VERB_SKILLS = ['investigate', 'frame', 'decide', 'compose'];
+
+// PR4 decision-registry copy (ADR-0036 SD3 / ADR-0027 portable schema,
+// copied not imported per ADR-0029). These files must ship for the
+// founder:decide axis resolution + founder:compose multi-axis lens.
+const REQUIRED_RESOLVER = [
+  'scripts/decide-registry.mjs',
+  'scripts/lib/yaml-mini.mjs',
+  'scripts/lib/decide-args.mjs',
+  'scripts/lib/decide-scores.mjs',
+  'scripts/lib/decide-weights.mjs',
+  'scripts/lib/decide-sensitivity.mjs',
+  'skills/decide/references/decision-axes.yml',
+];
 
 async function readJSON(path) {
   return JSON.parse(await readFile(path, 'utf8'));
@@ -124,11 +141,13 @@ describe('plugins/founder — Codex manifest (.codex-plugin/plugin.json)', () =>
   });
 });
 
-// Negative-boundary suite — REVISED FOR PR3 (verb surfaces landed:
-// commands/ + skills/ now REQUIRED with investigate/frame entries; the
-// PR2 machinery remains REQUIRED). The next surface PR (PR4: decide +
-// compose) MUST revise this suite again.
-describe('plugins/founder — PR3 boundary (machinery + investigate/frame surfaces)', () => {
+// Negative-boundary suite — REVISED FOR PR4 (decide + compose verb surfaces
+// and the decision registry landed: commands/ + skills/ now REQUIRED with
+// investigate/frame/decide/compose entries + scripts/decide-registry.mjs +
+// scripts/lib/* + skills/decide/references/decision-axes.yml; the PR2
+// machinery remains REQUIRED). The next surface PR (PR5: critique + refine)
+// MUST revise this suite again.
+describe('plugins/founder — PR4 boundary (machinery + investigate/frame/decide/compose surfaces + decision registry)', () => {
   const ABSENT_DIRS = [
     'personas',
     'mcp-servers',
@@ -168,7 +187,7 @@ describe('plugins/founder — PR3 boundary (machinery + investigate/frame surfac
     });
   }
 
-  // PR3 verb surfaces — commands + skills now REQUIRED.
+  // PR3 + PR4 verb surfaces — commands + skills now REQUIRED.
   const REQUIRED_SURFACES = [
     'commands/investigate.md',
     'commands/frame.md',
@@ -180,12 +199,27 @@ describe('plugins/founder — PR3 boundary (machinery + investigate/frame surfac
     'skills/frame/SKILL.md',
     'skills/frame/agents/openai.yaml',
     'skills/_shared/references/orchestration.md',
+    // PR4 decide + compose surfaces
+    'commands/decide.md',
+    'commands/compose.md',
+    'skills/decide/SKILL.md',
+    'skills/decide/agents/openai.yaml',
+    'skills/compose/SKILL.md',
+    'skills/compose/agents/openai.yaml',
   ];
 
   for (const rel of REQUIRED_SURFACES) {
-    it(`ships ${rel} (PR3 investigate + frame surface)`, async () => {
+    it(`ships ${rel} (PR3/PR4 verb surface)`, async () => {
       strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true,
-        `plugins/founder/${rel} is part of the ADR-0036 PR3 verb surface and must exist`);
+        `plugins/founder/${rel} is part of the ADR-0036 verb surface and must exist`);
+    });
+  }
+
+  // PR4 decision-registry copy (decide/compose + resolver files exist).
+  for (const rel of REQUIRED_RESOLVER) {
+    it(`ships ${rel} (PR4 decision registry, copied per ADR-0029)`, async () => {
+      strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true,
+        `plugins/founder/${rel} is part of the ADR-0036 PR4 decision registry and must exist`);
     });
   }
 
@@ -254,7 +288,7 @@ describe('plugins/founder — PR3 boundary (machinery + investigate/frame surfac
   });
 });
 
-describe('plugins/founder — verb surface shape (PR3)', () => {
+describe('plugins/founder — verb surface shape (PR3/PR4)', () => {
   for (const verb of VERB_SKILLS) {
     it(`skills/${verb}/SKILL.md frontmatter name = ${verb} (folder ↔ frontmatter consistency)`, async () => {
       const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');

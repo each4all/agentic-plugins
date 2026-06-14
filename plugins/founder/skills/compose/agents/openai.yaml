@@ -1,0 +1,7 @@
+interface:
+  display_name: "Founder — Compose"
+  short_description: "Draft the business planning artifact — venture plan, lean canvas, or validation plan"
+  default_prompt: "Use $founder:compose to draft the venture plan (or --profile=canvas / validation-plan) for the chosen direction"
+
+policy:
+  allow_implicit_invocation: false
