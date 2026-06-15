@@ -18,7 +18,7 @@ import { RUNTIME_VERSION } from './version.mjs';
 export { RUNTIME_VERSION };
 
 export const CONTRACT_COMPATIBLE_MAJOR = 0;
-export const PLUGIN_NAMES = ['companions', 'engineer', 'orchestrator', 'runtime'];
+export const PLUGIN_NAMES = ['companions', 'engineer', 'founder', 'orchestrator', 'runtime'];
 export const TERMINAL_PEER_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled', 'orphaned', 'pruned']);
 export const VALID_PEER_RUN_STATUSES = new Set([
   'queued',

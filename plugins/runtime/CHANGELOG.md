@@ -7,6 +7,12 @@
 - Add `runtime:context`, an artifact-only context hygiene scaffold that writes summary, risk, artifact pointers, and next-session handoff files under `.agentic-plugins/runs/context/` without mutating host session context.
 - Add `runtime:context check`, a read-only explicit context budget check that computes green/yellow/red risk without creating artifacts or mutating host session context.
 - Add `runtime:context status --latest`, a read-only latest handoff lookup with artifact age and stale-state reporting.
+- Recognize the `founder` plugin in the hardcoded `PLUGIN_NAMES` inventory so `runtime:doctor` / `runtime:settings` cover it across the install / cache / catalog probes (ADR-0036 RT). Because founder is hook-bearing (it ships a Codex hooks manifest since founder PR2), it is also surfaced in the Codex hook-readiness report — correctly flagging founder's hooks for `/hooks` review/trust. The deliberate non-goal is a founder-*specific* workflow-ledger health check (it would couple runtime to founder's state schema); founder's ledger is iterated generically like every other plugin (an empty ledger reports as empty — no founder-specific health logic).
+
+### Notes
+
+- The `founder` inventory addition changes the `PLUGIN_NAMES` set, which invalidates the freshness of any previously recorded `runtime:doctor` proof (the proof-reuse gate requires the full plugin set + versions to match). Re-record the doctor proof on a host where all five plugins (including founder) are installed; until then `runtime:doctor` re-runs the proof rather than reusing the now-stale record.
+- Deferred (pre-existing, out of this RT slice's scope; surfaced by the founder inventory expansion): `cutover-audit.mjs`'s package map still omits `plugins/founder` (the omcc cutover predates founder, so cutover parity over founder is a separate scoped decision); and `resolveCodexInstallState`'s not-installed evidence string is hardcoded to `runtime` for every plugin (a not-installed founder reads "does not report runtime as installed") — a generic-name fix threading the plugin name through that helper.
 
 ## [0.67.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.66.1...plugin-runtime-v0.67.0) (2026-06-11)
 
