@@ -1,6 +1,6 @@
 {
   "name": "founder",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Founder workbench for AI-assisted new-business planning across Claude Code & Codex CLI — business-item discovery, ideation, concretization, and planning composition through the six cognitive verbs (ADR-0036). The second L3 persona after engineer: workflow machinery, hooks, all six verb surfaces (investigate / frame / decide / compose / critique / refine), the business ensemble protocol, the founder:start lifecycle macro, and the resume / checkpoint / peer-now meta skills — all shipped (ADR-0036 Accepted).",
   "author": {
     "name": "each4all"
