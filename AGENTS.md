@@ -59,10 +59,12 @@ agentic-plugins/
 │   │                               # library (scripts/discover-peer.mjs); Stage 2 Deliverable B
 │   │                               # absorbed discovery into this plugin per ADR-0010 §6 trigger
 │   │                               # evaluation (high cohesion, no separate plugin spawned)
-│   └── engineer/                   # L3 persona — 6-verb workbench (Stage 2 complete 2026-05-06).
-│                                   # research capability folded in via investigate's cited-brief
-│                                   # profile per ADR-0014 + ADR-0015 (Stage 2.5+); plugins/research
-│                                   # archived at commit 28b5eb8
+│   ├── engineer/                   # L3 persona — 6-verb workbench (Stage 2 complete 2026-05-06).
+│   │                               # research capability folded in via investigate's cited-brief
+│   │                               # profile per ADR-0014 + ADR-0015 (Stage 2.5+); plugins/research
+│   │                               # archived at commit 28b5eb8
+│   └── founder/                    # L3 persona — new-business planning workbench (ADR-0036, 6 verbs
+│                                   # + start macro + 3 meta skills; second L3 persona, Accepted 2026-06-15)
 ├── scripts/
 │   ├── sync-companion-bundles.mjs  # drift-checked companion script copy
 │   └── validate-marketplace.mjs    # marketplace catalog validation
@@ -102,7 +104,8 @@ per ADR-0010:
    cited-brief profile. Other planned occupants (`decision`, `image`)
    remain future work.
 3. **Layer 3 — Persona / workbench** (`plugins/engineer` Stage 2,
-   `plugins/designer` future L3 candidate): user-facing install unit, composes
+   `plugins/founder` ADR-0036 second L3 persona, `plugins/designer`
+   future L3 candidate): user-facing install unit, composes
    capabilities through profiles
 4. **Layer 4 — Profile** (sub-discipline within persona, e.g.,
    `engineer:backend`, `designer:ui`): configuration data carrying

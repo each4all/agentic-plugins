@@ -40,16 +40,6 @@ regulatory / safety gate exposure? Are still-unverified numbers still
 marked `[to be validated]`? founder does not let a revision quietly
 introduce a fresh inconsistency.
 
-> **Roadmap note (incubating, ADR-0036).** This verb references only
-> founder-local files that exist now
-> (`../_shared/references/ensemble-protocol.md`,
-> `../_shared/references/orchestration.md`,
-> `../decide/references/decision-axes.yml`,
-> `../investigate/references/business-brief-spec.md`). The full Active
-> Next-Action Proposal contract + the runtime completion footer + the
-> ADR-0031 session-handoff preflight land with founder's meta skills in
-> PR6; the inline shapes here are the PR5 forms.
-
 ---
 
 ## When auto-activated (without command)
@@ -202,9 +192,10 @@ evidence is genuinely neutral — do not end with a hardcoded "next: X". A
 blocked outcome (peer flagged a regression) pauses for user direction
 before any forward proposal.
 
-(The full Active Next-Action Proposal contract + the runtime completion
-footer + the ADR-0031 session-handoff preflight land with founder's meta
-skills in PR6; the shape above is the PR5 inline form.)
+(The inline Active Next-Action Proposal shape above is what founder
+ships; the deeper runtime-completion-footer / ADR-0031 session-handoff
+seam integration that the engineer plugin carries is future work, not
+part of founder's surface.)
 
 ---
 

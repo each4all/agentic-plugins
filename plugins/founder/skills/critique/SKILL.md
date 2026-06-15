@@ -45,16 +45,6 @@ Regulatory-Exposure, 안전리스크 Safety/Harm-Risk — the `gate: true` axes 
 a tradeoff to fold into "execution concerns". This mirrors the decide
 verb's veto rule.
 
-> **Roadmap note (incubating, ADR-0036).** This verb references only
-> founder-local files that exist now
-> (`../_shared/references/ensemble-protocol.md`,
-> `../_shared/references/orchestration.md`,
-> `../decide/references/decision-axes.yml`,
-> `../investigate/references/business-brief-spec.md`). The full Active
-> Next-Action Proposal contract + the runtime completion footer + the
-> ADR-0031 session-handoff preflight land with founder's meta skills in
-> PR6; the inline shapes here are the PR5 forms.
-
 ---
 
 ## When auto-activated (without command)
@@ -222,9 +212,10 @@ artifact holds up and only minor polish remains, `selected_next` may be
 "the plan is sound — proceed". The routing is a fallback only when
 evidence is genuinely neutral — do not end with a hardcoded "next: X".
 
-(The full Active Next-Action Proposal contract + the runtime completion
-footer + the ADR-0031 session-handoff preflight land with founder's meta
-skills in PR6; the shape above is the PR5 inline form.)
+(The inline Active Next-Action Proposal shape above is what founder
+ships; the deeper runtime-completion-footer / ADR-0031 session-handoff
+seam integration that the engineer plugin carries is future work, not
+part of founder's surface.)
 
 ---
 

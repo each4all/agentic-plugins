@@ -39,9 +39,12 @@ Five installable plugins ship in this repository:
   [ADR-0014](docs/adr/0014-plugins-research-deprecation.md))
 - [`plugins/founder/`](plugins/founder/) — second L3 persona plugin
   for new-business planning per
-  [ADR-0036](docs/adr/0036-founder-persona-business-planning.md).
-  **Incubating scaffold**: no user-facing commands yet; the verb
-  surface lands through the ADR-0036 implementation roadmap
+  [ADR-0036](docs/adr/0036-founder-persona-business-planning.md)
+  (Accepted): the six universal cognitive verbs (investigate / frame
+  / decide / compose / critique / refine) re-anchored to business
+  concerns (markets, unit-economics, regulation, competition), with
+  the business ensemble protocol, the `founder:start` lifecycle macro,
+  and resume / checkpoint / peer-now meta skills
 - [`plugins/orchestrator/`](plugins/orchestrator/) — Stage 3+ L2
   capability plugin per
   [ADR-0018](docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)

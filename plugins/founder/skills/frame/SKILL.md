@@ -38,14 +38,6 @@ consumes downstream decision/composition effort without producing value
 changes mid-stream, return to frame — do not patch a decision built on
 the old framing.
 
-> **Roadmap note (incubating, ADR-0036).** This verb references only
-> founder-local files that exist now (`../_shared/references/orchestration.md`,
-> `../_shared/references/ensemble-protocol.md`). The Frame prompt template
-> + synthesis contract live in `../_shared/references/ensemble-protocol.md`
-> §Frame; the inline dispatch shape below carries the concrete bash. The
-> session-handoff / entry-routing references (PR6) are forward references
-> with the inline fallbacks described here.
-
 ---
 
 ## When auto-activated (without command)
@@ -169,10 +161,10 @@ business directions need comparison (name the size
 is already obvious. The routing is a fallback only when evidence is
 genuinely neutral — do not end with a hardcoded "next: X".
 
-(The full Active Next-Action Proposal contract + the runtime completion
-footer + the ADR-0031 session-handoff preflight land with founder's
-cross-verb surfaces / meta skills in PR5–6; the shape above is the PR3
-inline form.)
+(The inline Active Next-Action Proposal shape above is what founder
+ships; the deeper runtime-completion-footer / ADR-0031 session-handoff
+seam integration that the engineer plugin carries is future work, not
+part of founder's surface.)
 
 ---
 

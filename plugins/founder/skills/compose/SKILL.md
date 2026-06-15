@@ -35,15 +35,6 @@ carries the marker — and those markers become the `validation-plan`
 backlog. founder does not manufacture false confidence in a financial
 projection.
 
-> **Roadmap note (incubating, ADR-0036).** This verb references only
-> founder-local files that exist now (`../_shared/references/orchestration.md`,
-> `../_shared/references/ensemble-protocol.md`,
-> `../decide/references/decision-axes.yml`). The Plan-verify prompt template
-> + synthesis contract live in `../_shared/references/ensemble-protocol.md`
-> §Plan-verify; `commands/compose.md` carries the concrete dispatch bash.
-> The runtime footer + session-handoff references land in PR6 as forward
-> references with the inline fallbacks here.
-
 ---
 
 ## When auto-activated (without command)
@@ -157,9 +148,10 @@ assumption needs evidence before the plan is trustworthy. The routing is a
 fallback only when evidence is genuinely neutral — do not end with a
 hardcoded "next: X".
 
-(The full Active Next-Action Proposal contract + the runtime completion
-footer + the ADR-0031 session-handoff preflight land with founder's meta
-skills in PR6; the shape above is the PR4 inline form.)
+(The inline Active Next-Action Proposal shape above is what founder
+ships; the deeper runtime-completion-footer / ADR-0031 session-handoff
+seam integration that the engineer plugin carries is future work, not
+part of founder's surface.)
 
 ---
 

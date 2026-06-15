@@ -45,15 +45,15 @@ contract). The orchestrator/peer assignment is symmetric — every
 ## Orchestration Process
 
 Before allocating effort, always perform Step 1 (Task Profiling). Steps
-2–3 (local-agent composition + mission briefing) apply to the
-agent-spawning verbs landing in later roadmap PRs; the two PR3 verbs —
-`investigate --profile=business-brief` and `frame` — run
-orchestrator-direct (web evidence-gathering / problem modelling) plus
-the peer ensemble, and do **not** spawn local subagents (mirroring the
-engineer cited-brief precedent where external source retrieval is the
-work and read-only file subagents would not help). founder's local
-business-analysis roster (the agent-taxonomy reference) lands with those
-agent-spawning verbs.
+2–3 (local-agent composition + mission briefing) are **reserved**: all
+six founder verbs run **orchestrator-direct** (web evidence-gathering /
+problem modelling / cognitive analysis) plus the peer ensemble, and do
+**not** spawn local subagents (mirroring the engineer cited-brief
+precedent where external source retrieval is the work and read-only file
+subagents would not help). Steps 2–3 would apply only to a future
+agent-spawning founder verb — none ship today; founder's local
+business-analysis roster (the agent-taxonomy reference) would land with
+such a verb if one is ever added.
 
 ### Step 1: Business Task Profiling
 
@@ -102,8 +102,8 @@ Two distinct profile axes, kept separate to avoid conflation:
   Open Questions than a `build`-stage one.
 - **Risk-class**: the dominant risk surface. `regulatory` and `safety`
   are veto-like (gate-style) — an unmitigated blocker must lower
-  confidence or route back (the gate-style axes land in founder's
-  `decision-axes.yml`, ADR-0036 PR4 / SD3).
+  confidence or route back (the gate-style axes live in founder's
+  `decision-axes.yml` per ADR-0036 SD3).
 - **Evidence-confidence**: how validated the current picture is. LOW
   with honest Open Questions beats HIGH that hides gaps.
 - **Ensemble Affinity**: LOW / MEDIUM / HIGH. Recorded for context;
@@ -111,10 +111,11 @@ Two distinct profile axes, kept separate to avoid conflation:
   peer ensemble at every command-mode phase boundary regardless, per
   `ensemble-protocol.md` / `business-brief-ensemble.md`.
 
-### Step 2: Composition (agent-spawning verbs — later roadmap PRs)
+### Step 2: Composition (reserved — no agent-spawning founder verb ships today)
 
-Select local-analysis roles from founder's business-analysis roster
-(the agent-taxonomy reference landing with the agent-spawning verbs).
+Select local-analysis roles from founder's business-analysis roster (a
+future agent-taxonomy reference — founder ships no agent-spawning verb
+today, so Steps 2–3 are reserved, not exercised).
 
 **Selection criteria — ask yourself for each role:**
 
@@ -140,7 +141,7 @@ Select local-analysis roles from founder's business-analysis roster
 - Judge by **actual risk**, not surface framing. A "simple" consumer
   app can carry heavy privacy/regulatory exposure.
 
-### Step 3: Mission Briefing (agent-spawning verbs — later roadmap PRs)
+### Step 3: Mission Briefing (reserved — no agent-spawning founder verb ships today)
 
 Give each selected perspective a **concrete mission specific to this
 business question**.

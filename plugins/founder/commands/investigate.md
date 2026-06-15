@@ -288,6 +288,7 @@ Always include the workflow path so the user can inspect or resume:
 Workflow: <absolute path to workflow .md file>
 ```
 
-The runtime completion footer + ADR-0031 session-level continue-vs-fresh
-preflight land with founder's meta skills (ADR-0036 PR6); until then,
-state the workflow path and the next-action proposal above.
+founder surfaces the inline next-action proposal + the workflow path
+above; the deeper runtime-completion-footer / ADR-0031 session-handoff
+seam integration that the engineer plugin carries is not part of
+founder's surface (future work if demand arrives).

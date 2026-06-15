@@ -39,6 +39,9 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/founder');
 
+// ADR-0036 was Accepted at PR7 (the real-topic dogfood validated founder).
+// The user-facing surfaces must now be FREE of this incubating marker — the
+// assertions below flipped from "must carry" to "must NOT carry".
 const INCUBATING_MARKER = /incubating scaffold/i;
 
 // The PR3 privacy-gate textual sentinel (ADR-0036 SD4). The gate must be
@@ -108,10 +111,10 @@ describe('plugins/founder — Claude manifest (.claude-plugin/plugin.json)', () 
     ok(json.description.length > 0);
   });
 
-  it('still carries the incubating marker in its description (held until ADR-0036 PR7)', async () => {
+  it('no longer carries the incubating marker (ADR-0036 Accepted at PR7)', async () => {
     const json = await readJSON(path);
-    ok(INCUBATING_MARKER.test(json.description),
-      'Claude manifest description must keep the incubating marker until the ADR-0036 PR7 flip');
+    ok(!INCUBATING_MARKER.test(json.description),
+      'Claude manifest description must drop the incubating marker now that ADR-0036 is Accepted');
   });
 
   it('carries publishing metadata consistent with sibling plugins', async () => {
@@ -133,8 +136,8 @@ describe('plugins/founder — Codex manifest (.codex-plugin/plugin.json)', () =>
     strictEqual(json.name, 'founder');
     strictEqual(json.version, claude.version, 'host manifests must carry the same version');
     strictEqual(typeof json.description, 'string');
-    ok(INCUBATING_MARKER.test(json.description),
-      'Codex manifest description must keep the incubating marker until the ADR-0036 PR7 flip');
+    ok(!INCUBATING_MARKER.test(json.description),
+      'Codex manifest description must drop the incubating marker now that ADR-0036 is Accepted');
   });
 
   it('declares hooks AND the skills/interface keys (PR3 boundary — verb surfaces landed)', async () => {
@@ -307,9 +310,9 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     }
   });
 
-  it('ships README.md with the incubating marker and the ADR-0036 pointer', async () => {
+  it('ships README.md without the incubating marker but with the ADR-0036 pointer (Accepted)', async () => {
     const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf8');
-    ok(INCUBATING_MARKER.test(readme), 'plugin README must call out incubating status');
+    ok(!INCUBATING_MARKER.test(readme), 'plugin README must drop the incubating marker now that ADR-0036 is Accepted');
     ok(readme.includes('ADR-0036'), 'plugin README must point at ADR-0036');
   });
 
@@ -645,6 +648,40 @@ describe('plugins/founder — start lifecycle macro + meta skills (PR6 / ADR-002
   });
 });
 
+// PR7 — ADR-0036 Accepted; founder is complete, not mid-roadmap. The Codex
+// Plan-verify peer caught a systemic set of stale build-phase
+// forward-references that survived the first marker sweep; this guard
+// prevents their regression. These exact phrases described mid-build state
+// and must not reappear in the founder command/skill surface.
+describe('plugins/founder — de-incubated surface (PR7 / ADR-0036 Accepted)', () => {
+  const STALE_BUILD_PHRASES = [
+    /Roadmap note \(incubating/i,
+    /lands? with founder's meta skills/i,
+    /the shape above is the PR\d/i,
+    /until then, state the workflow/i,
+    /agent-spawning verbs landing/i,
+    /later roadmap PRs/i,
+  ];
+
+  it('the founder command + skill surface carries no stale build-phase forward-references', async () => {
+    const offenders = [];
+    for (const root of ['commands', 'skills']) {
+      const entries = await readdir(resolve(PLUGIN_ROOT, root), { recursive: true, withFileTypes: true });
+      for (const ent of entries) {
+        if (!ent.isFile() || !ent.name.endsWith('.md')) continue;
+        const parent = ent.parentPath ?? ent.path;
+        const full = resolve(parent, ent.name);
+        const text = await readFile(full, 'utf8');
+        for (const re of STALE_BUILD_PHRASES) {
+          if (re.test(text)) offenders.push(`${full.slice(PLUGIN_ROOT.length + 1)} :: ${re.source}`);
+        }
+      }
+    }
+    deepStrictEqual(offenders, [],
+      `stale build-phase forward-references must be removed now that ADR-0036 is Accepted:\n  ${offenders.join('\n  ')}`);
+  });
+});
+
 describe('plugins/founder — Claude marketplace catalog entry', () => {
   const path = resolve(REPO_ROOT, '.claude-plugin/marketplace.json');
 
@@ -657,8 +694,8 @@ describe('plugins/founder — Claude marketplace catalog entry', () => {
     const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     strictEqual(entry.version, manifest.version);
     strictEqual(entry.category, 'Productivity');
-    ok(INCUBATING_MARKER.test(entry.description),
-      'Claude catalog description must keep the incubating marker until the ADR-0036 PR7 flip');
+    ok(!INCUBATING_MARKER.test(entry.description),
+      'Claude catalog description must drop the incubating marker now that ADR-0036 is Accepted');
   });
 });
 

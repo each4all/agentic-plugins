@@ -29,18 +29,6 @@ evidence is gathered and the user has reviewed it. Investigation produces
 a cited brief; deciding belongs to `/founder:decide`, framing the problem
 belongs to `/founder:frame`, drafting belongs to `/founder:compose`.
 
-> **Roadmap note (incubating, ADR-0036).** This verb is self-contained at
-> PR3: it references only founder-local files that exist now —
-> `references/business-brief-spec.md`, `references/business-brief-ensemble.md`,
-> `references/output-file-rules.md`, and `../_shared/references/orchestration.md`.
-> Cross-verb surfaces referenced below are now present: the founder
-> decision registry (`scripts/decide-registry.mjs` +
-> `../decide/references/decision-axes.yml`, PR4) and the full
-> `../_shared/references/ensemble-protocol.md` (PR5). The session-handoff
-> / entry-routing references land with the meta skills in PR6; where one
-> of those is named, the inline fallback described here is the current
-> behavior.
-
 ---
 
 ## When auto-activated (without command)
@@ -182,8 +170,9 @@ peer prompt is external transmission. The peer call is automatic
 ### Step 5: Present
 
 Present clearly and confirm with the user before finalizing (present the
-synthesized brief and ask the user to confirm before save; a formal
-founder presentation protocol is deferred to the meta-skill PR). The business-brief
+synthesized brief and ask the user to confirm before save; founder has no
+separate formal presentation protocol — the inline present-and-confirm
+flow described here is what founder ships). The business-brief
 profile has three possible terminal outcomes:
 
 - **saved** — audit passed and the brief was written to
@@ -199,7 +188,7 @@ profile has three possible terminal outcomes:
 ### State write (when invoked from a workflow command)
 
 When `/founder:investigate` is invoked as a sub-step of a founder
-workflow command (e.g., a future `/founder:start` lifecycle macro), the
+workflow command (e.g., the `/founder:start` lifecycle macro), the
 invoking command writes the investigation results to its workflow file.
 This skill itself does not write workflow state — it hands findings to
 the invoking command, which owns the write.
@@ -241,9 +230,8 @@ artifact from it). The routing is a fallback only when evidence is
 genuinely neutral — do not end with a hardcoded "next: X". The two
 aborted outcomes have no forward result, so they skip the proposal.
 
-(The full Active Next-Action Proposal contract — `entry-routing-contract.md`
-— lands with the founder cross-verb surfaces in PR5; the shape above is
-the PR3 inline form.)
+(The cross-verb multi-axis lens ships now; the inline shape above is what
+founder uses.)
 
 Always include the workflow path when invoked from a workflow command, so
 the user can inspect or resume:

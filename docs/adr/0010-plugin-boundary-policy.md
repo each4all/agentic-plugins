@@ -88,7 +88,7 @@ dependency direction:
 | Layer | Role | Examples (current + planned) |
 |-------|------|------------------------------|
 | **L4 — Profile (sub-discipline within persona)** | Configuration data describing context-specific knowledge: source priorities, evaluation criteria, output contract, citation style, vocabulary, methodology. Unbounded — new sub-disciplines extend existing personas without adding plugins. | `engineer:{backend, frontend, devops, sre, ml, data, ...}`, `designer:{ui, print, brand, frontend, image, motion, ...}` |
-| **L3 — Persona / Workbench plugin** | User-facing install unit. The user wears one persona "hat" at a time. Owns workflow orchestration. Composes capabilities through profiles. | `engineer` (Stage 2), `designer` (Stage 3) |
+| **L3 — Persona / Workbench plugin** | User-facing install unit. The user wears one persona "hat" at a time. Owns workflow orchestration. Composes capabilities through profiles. | `engineer` (Stage 2), `founder` (ADR-0036), `designer` (Stage 3) |
 | **L2 — Capability plugin** | Persona-agnostic skills providing reusable activities: gather/frame/decide/compose/critique/refine on a particular kind of material. Self-serve via own commands too. | `research` (Stage 1, current), planned: `decision`, `image` |
 | **L1 — Framework primitive plugin** | Cross-plugin infrastructure: peer-host invocation, workflow runtime, host adapters. Other plugins depend on these. | `companions` (Stage 1, current per ADR-0008), planned: `runtime` (workflow state, hooks, broker) — only when 2+ plugins prove they need it |
 
@@ -691,3 +691,33 @@ two-row table above (preserved for decision-history audit).
 
 **Verified-against**: ADR-0022 §Decision §1–§5 + ADR-0022
 Implementation Roadmap (this PR).
+
+### 2026-06-15 — founder, the second L3 persona (per ADR-0036)
+
+**Trigger**: [ADR-0036](0036-founder-persona-business-planning.md)
+acceptance, which ships `plugins/founder` as the **second L3 persona**
+— the first L3 outside engineering, and the first with no omcc
+ancestor.
+
+**Finding**: founder validates the §1 4-layer model, the §2 six-verb
+model, and the §3 `<persona>:<verb>` naming convention on a
+non-engineering domain (new-business planning). The same six cognitive
+verbs (Investigate / Frame / Decide / Compose / Critique / Refine) and
+the ensemble point templates are re-anchored to business concerns —
+markets, unit-economics, regulation, competition — per ADR-0036
+§Sub-decision 6, copied rather than imported per
+[ADR-0029](0029-entry-routing-contract-enforcement.md)'s single-source
+discipline and §5's no-cross-plugin-import rule (founder owns its
+`business-brief-spec.md` and business Task Profile, not engineer's
+originals).
+
+`designer` ([ADR-0007](0007-migration-cutover-plan.md) §Stage 3, §7)
+remains a future L3 candidate — preserved, not replaced; the L3 layer
+now carries two shipped occupants with room for more. The staged
+decision-L2 seam — a future `decision` L2 capability that could extract
+founder's business decision axes as a second consumer per §6 — is
+recorded in ADR-0036 but deferred.
+
+**Unchanged**: 4-layer composition (§1), 6 cognitive verbs (§2),
+naming convention (§3), cross-plugin handoff (§5), plugin separation
+triggers (§6), plugin name policy (§7).
