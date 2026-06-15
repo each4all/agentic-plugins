@@ -11,8 +11,7 @@ cross-plugin import; ADR-0029 §Neutral copy/adapt). It is the business
 analogue of the engineer cited-brief ensemble. The PR3 investigate verb
 carries this self-contained research-scan contract directly; founder's
 full `_shared/references/ensemble-protocol.md` (all nine business-anchored
-point types) lands in ADR-0036 PR5 and will cross-reference this file for
-the research-scan point.
+point types) cross-references this file for the research-scan point.
 
 The user never invokes the peer host directly. The skill orchestrates
 dispatch, collection, and synthesis transparently through
@@ -527,8 +526,8 @@ design (per ADR-0010 §2 6-verb model).
 - `output-file-rules.md` — output-file conventions; the
   existing-directory check that gates ensemble dispatch lives there.
 - `../../_shared/references/ensemble-protocol.md` — founder's standard
-  ensemble protocol (all nine business-anchored point types). Lands in
-  ADR-0036 PR5; will cross-reference this file for the research-scan point.
+  ensemble protocol (all nine business-anchored point types).
+  Cross-references this file for the research-scan point.
 - `../../../scripts/peer-runner.mjs` — founder's managed peer runner; the
   mechanics that resolve and invoke the peer companion, write the ledger,
   and record `pending_ensemble` for command-managed ensembles.

@@ -19,9 +19,9 @@ this file does NOT serve cross-persona imports as-is.
 The **orchestrator** is the host where the user is currently invoking
 the skill (Claude Code or Codex CLI). It dispatches the **peer** host's
 companion ensemble in parallel per `ensemble-protocol.md` (founder's own
-copy; the nine business-anchored point templates land in ADR-0036 PR5 —
-until then `investigate --profile=business-brief` carries its own
-self-contained `references/business-brief-ensemble.md` research-scan
+copy; the nine business-anchored point templates ship in
+`ensemble-protocol.md`, and its research-scan point cross-references
+`investigate`'s self-contained `references/business-brief-ensemble.md`
 contract). The orchestrator/peer assignment is symmetric — every
 `/founder:*` skill runs from either side.
 
@@ -109,7 +109,7 @@ Two distinct profile axes, kept separate to avoid conflation:
 - **Ensemble Affinity**: LOW / MEDIUM / HIGH. Recorded for context;
   **NOT a dispatch gate** — founder's always-max policy dispatches the
   peer ensemble at every command-mode phase boundary regardless, per
-  `ensemble-protocol.md` (PR5) / `business-brief-ensemble.md` (PR3).
+  `ensemble-protocol.md` / `business-brief-ensemble.md`.
 
 ### Step 2: Composition (agent-spawning verbs — later roadmap PRs)
 
@@ -170,7 +170,7 @@ affinity is recorded but does not gate. The peer runs as an independent
 parallel track — it is NOT a local agent and is not included in any
 agent count or mission briefing. It receives its own prompt per the
 ensemble contract (`business-brief-ensemble.md` for research-scan;
-`ensemble-protocol.md` for the other point types, PR5).
+`ensemble-protocol.md` for the other point types).
 
 ### Failure handling
 

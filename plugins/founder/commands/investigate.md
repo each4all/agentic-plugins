@@ -251,11 +251,11 @@ two viable candidate items, or two competing readings of the same demand
 evidence — surface a **compact multi-axis lens** comparing the branches
 across the decisive business axes (시장성 market-attractiveness / 단위경제
 unit-economics, per ADR-0036 SD3) + size-appropriate supporting axes,
-instead of a flat list. founder's decision registry
-(`scripts/decide-registry.mjs` + `skills/decide/references/decision-axes.yml`)
-lands in PR4; until then read the decisive axes inline as above. Bounded:
-only at a genuine 2+-branch point, never a full matrix for a trivial
-reversible step.
+instead of a flat list. Resolve the decisive axes from founder's decision
+registry (`scripts/decide-registry.mjs` +
+`skills/decide/references/decision-axes.yml`), or read them inline as above
+when the resolver is not reachable. Bounded: only at a genuine 2+-branch
+point, never a full matrix for a trivial reversible step.
 
 ---
 

@@ -108,8 +108,8 @@ pre-genericization value MUST never leave the local host. See
 ### Ensemble dispatch (Frame point type)
 
 Build the Frame prompt and write it to a tempfile, then dispatch in the
-background. PR3 inline minimal contract (founder's full
-`ensemble-protocol.md` formalizes all nine point templates in PR5):
+background. The prompt template + synthesis contract live in
+`skills/_shared/references/ensemble-protocol.md` §Frame:
 
 ```xml
 <task>
@@ -165,9 +165,9 @@ Graceful degradation: companion missing or exit code 3
 (`peer_cli_not_found` / `peer_unauthenticated` / `peer_invocation_error`)
 → proceed local-only and record "### Ensemble degraded:" in the body.
 
-(founder's full `ensemble-protocol.md` formalizing all nine point
-templates lands in ADR-0036 PR5; the Frame dispatch shape above mirrors
-the research-scan dispatch in
+(founder's `skills/_shared/references/ensemble-protocol.md` §Frame carries
+the formal prompt template + synthesis contract; the Frame dispatch shape
+above mirrors the research-scan dispatch in
 `skills/investigate/references/business-brief-ensemble.md`.)
 
 ---
@@ -234,9 +234,11 @@ If executing this verb surfaces a **genuine 2+-branch decision point** —
 two viable opportunity framings, or two candidate customer segments —
 surface a **compact multi-axis lens** across the decisive business axes
 (시장성 market-attractiveness / 단위경제 unit-economics, per ADR-0036 SD3)
-+ size-appropriate supporting axes, instead of a flat list. founder's
-decision registry lands in PR4; until then read the decisive axes inline
-as above. Bounded: only at a genuine 2+-branch point.
++ size-appropriate supporting axes, instead of a flat list. Resolve the
+sized axis set from founder's decision registry
+(`skills/decide/references/decision-axes.yml`), or read the decisive axes
+inline as above when the resolver is not reachable. Bounded: only at a
+genuine 2+-branch point.
 
 ---
 

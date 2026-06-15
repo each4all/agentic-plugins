@@ -170,10 +170,11 @@ pre-genericization value MUST never leave the local host. See
 
 Build the Brainstorm prompt (independent generation of 2-3 business
 directions with tradeoffs across the resolved axes), write it to a
-tempfile, and dispatch in the background. PR4 inline minimal contract
-(founder's full `ensemble-protocol.md` formalizes all nine point
-templates in PR5; the Brainstorm shape mirrors the research-scan dispatch
-in `skills/investigate/references/business-brief-ensemble.md`):
+tempfile, and dispatch in the background. The prompt template (with the
+`<axis_awareness>` business-axis block) + synthesis contract live in
+`skills/_shared/references/ensemble-protocol.md` §Brainstorm; the shape
+mirrors the research-scan dispatch in
+`skills/investigate/references/business-brief-ensemble.md`:
 
 ```bash
 PROMPT_FILE="$(mktemp -t founder-decide-prompt.XXXXXX).xml"

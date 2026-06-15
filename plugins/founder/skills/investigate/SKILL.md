@@ -33,13 +33,13 @@ belongs to `/founder:frame`, drafting belongs to `/founder:compose`.
 > PR3: it references only founder-local files that exist now —
 > `references/business-brief-spec.md`, `references/business-brief-ensemble.md`,
 > `references/output-file-rules.md`, and `../_shared/references/orchestration.md`.
-> Cross-verb surfaces referenced below land in later roadmap PRs:
-> the founder decision registry (`scripts/decide-registry.mjs` +
-> `../decide/references/decision-axes.yml`) in PR4, the full
-> `../_shared/references/ensemble-protocol.md` in PR5, and the
-> session-handoff / entry-routing references with the meta skills (PR5–6).
-> Where a later-PR file is named, the inline fallback described here is
-> the PR3 behavior.
+> Cross-verb surfaces referenced below are now present: the founder
+> decision registry (`scripts/decide-registry.mjs` +
+> `../decide/references/decision-axes.yml`, PR4) and the full
+> `../_shared/references/ensemble-protocol.md` (PR5). The session-handoff
+> / entry-routing references land with the meta skills in PR6; where one
+> of those is named, the inline fallback described here is the current
+> behavior.
 
 ---
 
@@ -181,9 +181,9 @@ peer prompt is external transmission. The peer call is automatic
 
 ### Step 5: Present
 
-Present clearly and confirm with the user before finalizing (the founder
-presentation protocol lands in PR5; until then, present the synthesized
-brief and ask the user to confirm before save). The business-brief
+Present clearly and confirm with the user before finalizing (present the
+synthesized brief and ask the user to confirm before save; a formal
+founder presentation protocol is deferred to the meta-skill PR). The business-brief
 profile has three possible terminal outcomes:
 
 - **saved** — audit passed and the brief was written to
@@ -265,7 +265,7 @@ business axes + size-appropriate supporting axes, instead of a flat list.
 Resolve the sized axis set from founder's own decision registry
 (`scripts/decide-registry.mjs resolve --size=<minor|standard|major>` +
 `../decide/references/decision-axes.yml`) — the single axis source of
-truth. **PR3 fallback** (the registry lands in PR4): keep the decisive
+truth. **Inline fallback** (when the resolver CLI is not reachable): keep the decisive
 axes **시장성 (market-attractiveness)** and **단위경제 (unit-economics)**
 — founder's two decisive axes per ADR-0036 SD3 — and add the most
 relevant supporting axes (지불의사 / 경쟁강도 / 규제노출 / 안전리스크) as

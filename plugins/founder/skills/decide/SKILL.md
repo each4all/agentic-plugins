@@ -324,8 +324,9 @@ point type. The peer independently proposes 2-3 business directions with
 tradeoffs. Genericize per the privacy gate before the peer prompt — the
 peer must never see proprietary venture concepts or customer data. The
 peer call is automatic (always-max policy); skills do not pass `--model` /
-`--effort`. (founder's full `ensemble-protocol.md` formalizes the nine
-point templates in PR5; the Brainstorm dispatch shape mirrors the
+`--effort`. (founder's `../_shared/references/ensemble-protocol.md`
+§Brainstorm carries the prompt template + synthesis contract, including the
+`<axis_awareness>` business-axis block; the dispatch shape mirrors the
 research-scan dispatch in `../investigate/references/business-brief-ensemble.md`.)
 
 Synthesize: add PEER-ONLY directions; elevate confidence for AGREED;

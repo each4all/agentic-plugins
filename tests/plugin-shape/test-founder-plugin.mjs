@@ -1,5 +1,6 @@
 // plugins/founder plugin-shape conformance test (ADR-0036 — revised at
-// PR4, the decide + compose verb-surface + decision-registry landing).
+// PR5, the critique + refine verb-surface + ensemble-protocol templates
+// landing).
 //
 // Boundary history:
 //   - PR1 shipped the fully-inert scaffold (manifests + README + CHANGELOG
@@ -10,13 +11,17 @@
 //     profile) and frame — so commands/ and skills/ became REQUIRED (with
 //     investigate/frame entries) rather than forbidden, and the Codex
 //     manifest gained the skills + interface keys.
-//   - PR4 (this revision) lands the decide + compose verb surfaces and the
-//     persona-local decision registry (scripts/decide-registry.mjs +
-//     scripts/lib/* + skills/decide/references/decision-axes.yml, ADR-0036
-//     SD3 / ADR-0027 portable schema, copied per ADR-0029). commands/ +
-//     skills/ now REQUIRE decide/compose entries too. The next surface PR
-//     (ADR-0036 PR5: critique + refine + the ensemble-protocol templates)
-//     MUST revise this suite again.
+//   - PR4 landed the decide + compose verb surfaces and the persona-local
+//     decision registry (scripts/decide-registry.mjs + scripts/lib/* +
+//     skills/decide/references/decision-axes.yml, ADR-0036 SD3 / ADR-0027
+//     portable schema, copied per ADR-0029).
+//   - PR5 (this revision) lands the final two verb surfaces — critique
+//     (default review + red-team pre-mortem) and refine — plus founder's
+//     own skills/_shared/references/ensemble-protocol.md (the nine
+//     business-anchored ensemble point templates) and extends the
+//     privacy-gate sentinel to the ensemble dispatch surfaces (ADR-0036
+//     SD6 / F7). All six canonical verbs are now present; the PR1-only
+//     forbidden-surface suite is fully retired.
 //
 // Run via `node --test tests/plugin-shape/test-founder-plugin.mjs`.
 
@@ -49,7 +54,7 @@ const STALE_TOKENS = [
   /CODEX-ONLY/,
 ];
 
-const VERB_SKILLS = ['investigate', 'frame', 'decide', 'compose'];
+const VERB_SKILLS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
 
 // PR4 decision-registry copy (ADR-0036 SD3 / ADR-0027 portable schema,
 // copied not imported per ADR-0029). These files must ship for the
@@ -141,13 +146,14 @@ describe('plugins/founder — Codex manifest (.codex-plugin/plugin.json)', () =>
   });
 });
 
-// Negative-boundary suite — REVISED FOR PR4 (decide + compose verb surfaces
-// and the decision registry landed: commands/ + skills/ now REQUIRED with
-// investigate/frame/decide/compose entries + scripts/decide-registry.mjs +
-// scripts/lib/* + skills/decide/references/decision-axes.yml; the PR2
-// machinery remains REQUIRED). The next surface PR (PR5: critique + refine)
-// MUST revise this suite again.
-describe('plugins/founder — PR4 boundary (machinery + investigate/frame/decide/compose surfaces + decision registry)', () => {
+// Negative-boundary suite — REVISED FOR PR5 (critique + refine verb surfaces
+// and founder's own ensemble-protocol.md landed: commands/ + skills/ now
+// REQUIRED with all six verb entries + scripts/decide-registry.mjs +
+// scripts/lib/* + skills/decide/references/decision-axes.yml +
+// skills/_shared/references/ensemble-protocol.md; the PR2 machinery remains
+// REQUIRED). All six canonical verbs are present — the PR1-only
+// forbidden-surface suite is fully retired.
+describe('plugins/founder — PR5 boundary (machinery + all six verb surfaces + decision registry + ensemble protocol)', () => {
   const ABSENT_DIRS = [
     'personas',
     'mcp-servers',
@@ -187,7 +193,7 @@ describe('plugins/founder — PR4 boundary (machinery + investigate/frame/decide
     });
   }
 
-  // PR3 + PR4 verb surfaces — commands + skills now REQUIRED.
+  // PR3 + PR4 + PR5 verb surfaces — commands + skills now REQUIRED.
   const REQUIRED_SURFACES = [
     'commands/investigate.md',
     'commands/frame.md',
@@ -206,6 +212,14 @@ describe('plugins/founder — PR4 boundary (machinery + investigate/frame/decide
     'skills/decide/agents/openai.yaml',
     'skills/compose/SKILL.md',
     'skills/compose/agents/openai.yaml',
+    // PR5 critique + refine surfaces + the ensemble-protocol templates
+    'commands/critique.md',
+    'commands/refine.md',
+    'skills/critique/SKILL.md',
+    'skills/critique/agents/openai.yaml',
+    'skills/refine/SKILL.md',
+    'skills/refine/agents/openai.yaml',
+    'skills/_shared/references/ensemble-protocol.md',
   ];
 
   for (const rel of REQUIRED_SURFACES) {
@@ -288,7 +302,7 @@ describe('plugins/founder — PR4 boundary (machinery + investigate/frame/decide
   });
 });
 
-describe('plugins/founder — verb surface shape (PR3/PR4)', () => {
+describe('plugins/founder — verb surface shape (PR3/PR4/PR5)', () => {
   for (const verb of VERB_SKILLS) {
     it(`skills/${verb}/SKILL.md frontmatter name = ${verb} (folder ↔ frontmatter consistency)`, async () => {
       const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
@@ -393,6 +407,94 @@ describe('plugins/founder — business-brief spec contract (PR3 / ADR-0036 SD4)'
       ok(text.includes(PRIVACY_SENTINEL),
         `${rel} should carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
     }
+  });
+});
+
+// PR5 — founder's own ensemble-protocol.md (the nine business-anchored
+// point templates) + the privacy gate restated on the ensemble dispatch
+// path (ADR-0036 SD6 / F7).
+describe('plugins/founder — ensemble protocol + privacy gate reach (PR5 / ADR-0036 SD6/F7)', () => {
+  const ENSEMBLE = 'skills/_shared/references/ensemble-protocol.md';
+
+  // The nine canonical ensemble point types. Each must be present as a
+  // section heading so the verb commands can cross-reference it by §name.
+  const POINT_TYPES = [
+    'Frame',
+    'Brainstorm',
+    'Explore',
+    'Plan-verify',
+    'Review',
+    'Investigate',
+    'Research-scan',
+    'Refine-verify',
+    'Adversarial-scan',
+  ];
+
+  it('ships all nine business-anchored ensemble point types as sections', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, ENSEMBLE), 'utf8');
+    for (const pt of POINT_TYPES) {
+      ok(new RegExp(`^### ${pt}\\b`, 'm').test(text),
+        `ensemble-protocol.md must define the "${pt}" ensemble point type as a "### ${pt}" section`);
+    }
+  });
+
+  it('carries the business anchors and preserves the four synthesis categories', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, ENSEMBLE), 'utf8');
+    // SD6/F7: the code anchors are re-anchored to market/regulation/
+    // competition. Spot-check load-bearing business vocabulary is present.
+    for (const term of ['unit-economics', 'regulatory', 'go-to-market', 'pre-mortem']) {
+      ok(text.includes(term), `ensemble-protocol.md must use the business anchor "${term}"`);
+    }
+    // The bidirectional synthesis vocabulary is preserved verbatim from the
+    // shared protocol shape (schema-stable public vocabulary).
+    for (const cat of ['AGREED', 'LOCAL-ONLY', 'PEER-ONLY', 'CONFLICT']) {
+      ok(text.includes(cat), `ensemble-protocol.md must keep the "${cat}" synthesis category`);
+    }
+  });
+
+  it('cross-references the research-scan contract rather than duplicating it (ADR-0010 §5)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, ENSEMBLE), 'utf8');
+    ok(text.includes('business-brief-ensemble.md'),
+      'ensemble-protocol.md §Research-scan must cross-reference the canonical business-brief-ensemble.md contract, not re-derive it');
+  });
+
+  it('restates the privacy-gate sentinel on the ensemble-protocol + critique/refine dispatch surfaces (gate repeated on every external path)', async () => {
+    // The macro plan requires the privacy gate restated on the ensemble
+    // dispatch path: the protocol itself AND every new command/skill that
+    // dispatches a peer. Checked whitespace-normalized so markdown
+    // line-wrapping does not break the match.
+    const REQUIRED = [
+      'skills/_shared/references/ensemble-protocol.md',
+      'commands/critique.md',
+      'skills/critique/SKILL.md',
+      'commands/refine.md',
+      'skills/refine/SKILL.md',
+    ];
+    for (const rel of REQUIRED) {
+      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      ok(text.includes(PRIVACY_SENTINEL),
+        `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+    }
+  });
+
+  it('critique declares its two profiles (default review + red-team pre-mortem)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    ok(/red-team/.test(text), 'critique SKILL must declare the red-team profile');
+    match(text, /pre-mortem/i, 'critique SKILL must describe the adversarial pre-mortem');
+  });
+
+  it('refine is single-mode (no --profile branch) like decide/frame', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/SKILL.md'), 'utf8');
+    match(text, /single-mode/i, 'refine SKILL must state it is single-mode');
+  });
+
+  it('refine command does not pass --profile in its create path (single-mode, matches frame/decide)', async () => {
+    // Codex Plan-verify (PR5) caught refine's create path forwarding
+    // --profile "${AGENTIC_PROFILE:-}" even though refine is single-mode;
+    // frame/decide omit it. Guard against the regression.
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
+    ok(!/--profile\s+"\$\{?AGENTIC_PROFILE/.test(text),
+      'commands/refine.md must not pass --profile in the state.mjs create path — refine is single-mode like frame/decide');
   });
 });
 

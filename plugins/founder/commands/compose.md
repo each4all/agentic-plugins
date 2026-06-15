@@ -120,8 +120,8 @@ pre-genericization value MUST never leave the local host. See
 Build the Plan-verify prompt (the peer receives the genericized draft plan
 and returns gaps, sequencing issues, missing risks/assumptions, and
 unit-economics holes), write it to a tempfile, and dispatch in background.
-PR4 inline minimal contract (founder's full `ensemble-protocol.md`
-formalizes all nine point templates in PR5):
+The prompt template + synthesis contract live in
+`skills/_shared/references/ensemble-protocol.md` §Plan-verify:
 
 ```bash
 PROMPT_FILE="$(mktemp -t founder-compose-prompt.XXXXXX).xml"
@@ -207,7 +207,7 @@ If composing surfaces a **genuine 2+-branch decision point** — two viable
 plan structures, two go-to-market wedges, two pricing models — surface a
 **compact multi-axis lens** across the decisive business axes (시장성 /
 단위경제) + the gates, instead of a flat list, reading
-`../decide/references/decision-axes.yml` (the founder registry; the
+`skills/decide/references/decision-axes.yml` (the founder registry; the
 `scripts/decide-registry.mjs resolve --size=minor` resolver gives the
 compact 4-axis set). Bounded: only at a genuine 2+-branch point, never the
 full matrix for a trivial reversible step. A weightier fork should route to
@@ -226,9 +226,9 @@ Output the artifact (plan / canvas / validation-plan) and one of:
 
 Then emit an **Active Next-Action Proposal** (the inline shape in
 `skills/compose/SKILL.md` § Completion): typical `selected_next` is
-`/founder:critique` to review the artifact (lands ADR-0036 PR5) — or
-`/founder:decide` if composing surfaced an undecided fork. Do not end with
-a hardcoded "next: X".
+`/founder:critique` to review the artifact — or `/founder:decide` if
+composing surfaced an undecided fork. Do not end with a hardcoded
+"next: X".
 
 Always include the workflow path:
 

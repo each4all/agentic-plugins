@@ -39,12 +39,12 @@ changes mid-stream, return to frame — do not patch a decision built on
 the old framing.
 
 > **Roadmap note (incubating, ADR-0036).** This verb references only
-> founder-local files that exist now (`../_shared/references/orchestration.md`).
-> The full `../_shared/references/ensemble-protocol.md` (Frame point
-> template) lands in PR5; until then the Frame-point peer ensemble is
-> described inline below. The decision registry (PR4) and the
-> session-handoff / entry-routing references (PR5–6) are forward
-> references with the inline fallbacks described here.
+> founder-local files that exist now (`../_shared/references/orchestration.md`,
+> `../_shared/references/ensemble-protocol.md`). The Frame prompt template
+> + synthesis contract live in `../_shared/references/ensemble-protocol.md`
+> §Frame; the inline dispatch shape below carries the concrete bash. The
+> session-handoff / entry-routing references (PR6) are forward references
+> with the inline fallbacks described here.
 
 ---
 
@@ -114,9 +114,9 @@ unpublished business material pass an explicit gate before BOTH web
 search AND peer-host dispatch; genericize before the peer prompt, and the
 pre-genericization value MUST never leave the local host. The peer call
 is automatic (always-max policy); skills do not pass `--model` /
-`--effort`. (founder's full `ensemble-protocol.md` formalizes all nine
-point templates in PR5; the Frame point's dispatch shape mirrors the
-research-scan dispatch in
+`--effort`. (founder's `../_shared/references/ensemble-protocol.md` §Frame
+carries the prompt template + synthesis contract; the dispatch shape
+mirrors the research-scan dispatch in
 `../investigate/references/business-brief-ensemble.md`.)
 
 ### Step 4: Synthesize
@@ -183,10 +183,10 @@ viable opportunity framings, or two candidate customer segments — surface
 a **compact multi-axis lens** comparing the branches across the decisive
 business axes (시장성 market-attractiveness / 단위경제 unit-economics, per
 ADR-0036 SD3) + size-appropriate supporting axes, instead of a flat list.
-founder's decision registry (`scripts/decide-registry.mjs` +
-`../decide/references/decision-axes.yml`) lands in PR4; until then read
-the decisive axes inline as above. Bounded: only at a genuine 2+-branch
-point, never a full matrix for a trivial reversible step.
+read the decisive axes from founder's decision registry
+(`scripts/decide-registry.mjs` + `../decide/references/decision-axes.yml`),
+or inline as above when the resolver is not reachable. Bounded: only at a
+genuine 2+-branch point, never a full matrix for a trivial reversible step.
 
 ---
 

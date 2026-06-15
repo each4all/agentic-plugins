@@ -37,11 +37,12 @@ projection.
 
 > **Roadmap note (incubating, ADR-0036).** This verb references only
 > founder-local files that exist now (`../_shared/references/orchestration.md`,
-> `../decide/references/decision-axes.yml`). The full
-> `../_shared/references/ensemble-protocol.md` (Plan-verify point template)
-> lands in PR5; until then the Plan-verify peer ensemble is described inline
-> in `commands/compose.md`. The runtime footer + session-handoff references
-> land in PR6 as forward references with the inline fallbacks here.
+> `../_shared/references/ensemble-protocol.md`,
+> `../decide/references/decision-axes.yml`). The Plan-verify prompt template
+> + synthesis contract live in `../_shared/references/ensemble-protocol.md`
+> §Plan-verify; `commands/compose.md` carries the concrete dispatch bash.
+> The runtime footer + session-handoff references land in PR6 as forward
+> references with the inline fallbacks here.
 
 ---
 
@@ -110,9 +111,9 @@ unit-economics, sequencing problems, untested assumptions). Genericize per
 the privacy gate before the peer prompt; the peer must never see
 proprietary venture concepts or customer data. The peer call is automatic
 (always-max policy); skills do not pass `--model` / `--effort`. (founder's
-full `ensemble-protocol.md` formalizes the nine point templates in PR5; the
-Plan-verify dispatch shape lives in `commands/compose.md` and mirrors the
-research-scan dispatch in
+`../_shared/references/ensemble-protocol.md` §Plan-verify carries the
+prompt template + synthesis contract; the concrete dispatch bash lives in
+`commands/compose.md` and mirrors the research-scan dispatch in
 `../investigate/references/business-brief-ensemble.md`.)
 
 ### Step 4: Synthesize
@@ -150,7 +151,7 @@ artifact, not a fixed table:
 ```
 
 Typical `selected_next` candidates for compose: `/founder:critique` to
-review the plan (lands ADR-0036 PR5) — or `/founder:decide` if composing
+review the plan — or `/founder:decide` if composing
 surfaced an undecided fork, or `/founder:investigate` if a load-bearing
 assumption needs evidence before the plan is trustworthy. The routing is a
 fallback only when evidence is genuinely neutral — do not end with a
