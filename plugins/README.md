@@ -29,13 +29,17 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
   backwards compatibility).
 - **`founder/`** — second L3 persona plugin for new-business planning
   per [ADR-0036](../docs/adr/0036-founder-persona-business-planning.md):
-  business-item discovery, ideation, concretization, and planning
-  composition mapped onto the six cognitive verbs. **Incubating
-  scaffold** — workflow machinery and hooks are in place; no
-  user-facing commands or skills yet (the verb surface lands through
-  the ADR-0036 implementation roadmap, PR3+). See
-  [`plugins/founder/README.md`](founder/README.md) for the roadmap
-  status table.
+  the six universal cognitive verbs (`investigate`, `frame`, `decide`,
+  `compose`, `critique`, `refine`) re-anchored to business concerns
+  (markets, unit-economics, regulation, competition), with the business
+  ensemble protocol, the `founder:start` lifecycle macro, and the
+  resume / checkpoint / peer-now meta skills. The `investigate` and
+  `frame` verbs carry founder-owned in-persona contracts (5-tier
+  business source taxonomy + privacy gate in `business-brief-spec.md`,
+  business Task Profile in `orchestration.md`) — copies, not imports,
+  per [ADR-0010](../docs/adr/0010-plugin-boundary-policy.md) §5.
+  Accepted as a complete L3 persona (2026-06-15). See
+  [`plugins/founder/README.md`](founder/README.md).
 - **`orchestrator/`** — Stage 3+ L2 capability plugin per
   [ADR-0018](../docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
   §sub-decision-1 and [ADR-0019](../docs/adr/0019-cross-plugin-invocation-contract.md):

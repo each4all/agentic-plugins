@@ -1,0 +1,7 @@
+interface:
+  display_name: "Founder — Refine"
+  short_description: "Apply critique findings or feedback to a business artifact and verify it still reconciles"
+  default_prompt: "Use $founder:refine to apply the critique findings to the venture plan and verify the revision holds together"
+
+policy:
+  allow_implicit_invocation: false

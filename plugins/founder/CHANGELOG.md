@@ -23,7 +23,9 @@ from this seed, per the orchestrator/runtime precedent.)
 - Plugin-shape conformance test with a PR1-only negative boundary
   (asserts the scaffold stays inert until the first surface PR)
 
-### Deferred (follow-up PRs)
+### Shipped through the ADR-0036 roadmap (PR2–PR7)
+
+The follow-up PRs all landed:
 
 - PR2 — workflow machinery copy-trim: `state.mjs`, `dispatch-peer.mjs`,
   `peer-runner.mjs`, `stop-archive.mjs`, `session-handoff.mjs`, hooks
@@ -37,11 +39,14 @@ from this seed, per the orchestrator/runtime precedent.)
   business-anchored ensemble point templates
 - PR6 — `founder:start` lifecycle macro + meta skills
   (resume / checkpoint / peer-now with Host-availability matrices)
-- PR7 — real-topic dogfood → ADR-0036 `Accepted` flip + ADR-0010
-  cascade amendment + AGENTS.md / ARCHITECTURE.md inventory updates
-- Separate `plugins/runtime` PR (ADR-0016 cross-package rule) —
-  `PLUGIN_NAMES` inventory recognition in `runtime:doctor` /
-  `runtime:settings`, plus extending the ADR-0031 session-handoff
-  seam's `workflow_kind` enum (`normalizeProjection` currently accepts
-  engineer/orchestrator only, so founder projections degrade the
-  completion footer to context-risk-only until that lands)
+- PR7 — real-topic dogfood (validated end-to-end) → ADR-0036
+  `Accepted` flip + ADR-0010 cascade amendment + AGENTS.md /
+  ARCHITECTURE.md inventory updates
+
+### Still deferred (separate `plugins/runtime` PR, ADR-0016 cross-package rule)
+
+`PLUGIN_NAMES` inventory recognition in `runtime:doctor` /
+`runtime:settings`, plus extending the ADR-0031 session-handoff seam's
+`workflow_kind` enum (`normalizeProjection` currently accepts
+engineer/orchestrator only, so founder projections degrade the
+completion footer to context-risk-only until that lands).

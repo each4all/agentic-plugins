@@ -1,0 +1,7 @@
+interface:
+  display_name: "Founder — Decide"
+  short_description: "Compare business directions across market/unit-economics axes + regulatory/safety gates, recommend one"
+  default_prompt: "Use $founder:decide to compare 2+ business directions and recommend one before composing the plan"
+
+policy:
+  allow_implicit_invocation: false

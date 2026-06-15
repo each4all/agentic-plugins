@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed
+Accepted (2026-06-15 — the Implementation Roadmap PR7 real-topic dogfood
+validated the direction; see the Accepted-flip evidence note below)
 
 > **Status convention note.** [README.md](README.md) §Process step 4
 > ("Merge with `Status: Accepted`") coexists with a long-roadmap
@@ -21,6 +22,27 @@ Proposed
 > status); if a successor redesigns part of it, the
 > [README.md](README.md) §"Amendments vs Supersedes" partial-
 > supersedure rules apply.
+
+> **Accepted-flip evidence (PR7, 2026-06-15).** The real-topic dogfood ran
+> founder's live surface end-to-end on a representative business item (an
+> e-invoicing + expense-automation SaaS for micro-SMBs in a market with a
+> statutory e-invoicing mandate): the `founder:start` lifecycle bootstrap
+> (clean-baseline gate + `workflow_type=start`), `investigate` live web
+> research across the 5-tier source taxonomy, `frame`, `decide` with the
+> regulatory/safety **veto gates** firing per contract (규제노출 returned
+> CONDITIONAL with the host-system integration named as an explicit
+> precondition; 안전리스크 PASS), `compose` of a validation-plan with honest
+> `[to be validated]` markers, the founder state machinery
+> (create / append / ensemble-commit / set-terminal / archive), and a live
+> cross-host `peer-runner` round whose peer frame model AGREED with the
+> local one. No runtime defect surfaced. Combined with the PR1–6 conformance
+> suite (2400+ tests) and the six Plan-verify peer reviews (each of which
+> caught and absorbed real defects), this validates the direction. The first
+> **production** dogfood — a real venture the owner is planning — runs in a
+> separate per-venture content repository per §Sub-decision 5, which is the
+> intended workspace; this repo's dogfood is the framework-validation smoke,
+> not the production use. Had the dogfood invalidated the direction, this ADR
+> would instead carry a `Deprecated` status note per the convention above.
 
 ## Context
 
@@ -156,11 +178,14 @@ basis the rest of this ADR builds on.
   runtime/operator primitive, but it has **not** extracted the shared
   workflow-state/hooks/broker machinery that the §1 table sketched —
   that extraction has not happened.
-- The business axes named in F2 are **unvalidated**: the capability
-  test stopped just before `decide`, so no business decision has
-  actually been scored against them. Any design that freezes them
-  into a cross-plugin contract before dogfood validates them would
-  enshrine guesses.
+- The business axes named in F2 were **unvalidated at the time of the
+  capability test** (it stopped just before `decide`). The PR7 dogfood
+  has since lightly validated them — `decide` ran end-to-end and the
+  regulatory/safety veto gates fired per contract — but on a single
+  representative topic, so they remain **provisional** pending
+  production-venture use. Freezing them into a cross-plugin contract
+  before that fuller validation would still enshrine guesses, so the
+  decision-L2 extraction stays deferred.
 
 ## Decision
 
@@ -470,10 +495,9 @@ feeds it evidence.
   AGENTS.md inventory language).
 - This is a **charter extension**, not a charter change — ADR-0007's
   scope and stage history are untouched.
-- Pending cascades, named so they are not forgotten: the ADR-0010
-  amendment (second L3 persona record) lands with the `Accepted`
-  flip (PR7); `AGENTS.md` / `docs/ARCHITECTURE.md` inventory updates
-  land with implementation PRs.
+- Cascades (landed at the `Accepted` flip, PR7): the ADR-0010
+  amendment (second L3 persona record); the `AGENTS.md` /
+  `docs/ARCHITECTURE.md` inventory updates.
 - Cross-persona collaboration (e.g., founder handing a planning
   package to engineer for build feasibility) already works through
   typed artifact files per ADR-0010 §5 — no new contract is needed
@@ -527,8 +551,9 @@ feeds it evidence.
 ## Implementation Roadmap
 
 Indicative 7-PR ladder; implementation-session discretion on
-splitting/merging. Proceeds under `Proposed` per the Status note;
-every PR is gated by the standard CI surface (`npm test`,
+splitting/merging. The roadmap completed end-to-end (PR1–PR7) and the
+`Accepted` flip landed at PR7 per the Status note. Every PR was gated by
+the standard CI surface (`npm test`,
 `lint:plugin-shape`, `validate:marketplace`, `validate:versions`,
 `validate:artifacts`).
 

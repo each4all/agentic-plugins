@@ -1,0 +1,7 @@
+interface:
+  display_name: "Founder — Investigate"
+  short_description: "Scan markets, regulations, competitors, and demand signals; produce a cited business brief"
+  default_prompt: "Use $founder:investigate to research a business topic and produce a durable cited business brief (5-tier source taxonomy, freshness/jurisdiction tagging, privacy gate)"
+
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Founder — Critique"
+  short_description: "Review a business artifact across market/unit-economics/gates, or red-team a venture (pre-mortem)"
+  default_prompt: "Use $founder:critique to review the venture plan (or --profile=red-team for an adversarial pre-mortem) before committing"
+
+policy:
+  allow_implicit_invocation: false

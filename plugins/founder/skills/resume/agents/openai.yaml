@@ -1,0 +1,7 @@
+interface:
+  display_name: "Founder — Resume"
+  short_description: "Re-enter an active founder workflow with a clean/dirty drift report, or archive a stale one"
+  default_prompt: "Use $founder:resume to re-enter the active business-deliverable workflow with a drift report, or $founder:resume archive to retire a stale one"
+
+policy:
+  allow_implicit_invocation: false

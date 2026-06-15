@@ -1,0 +1,7 @@
+interface:
+  display_name: "Founder — Peer-now"
+  short_description: "Ad-hoc cross-host business consultation — dispatch a verbatim (genericized) prompt to claude or codex"
+  default_prompt: "Use $founder:peer-now --peer codex --prompt-text \"...\" for a quick cross-host business consult; genericize before dispatch (privacy gate)"
+
+policy:
+  allow_implicit_invocation: false
