@@ -4,11 +4,20 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { formatText, parseArgs, runDoctor, RUNTIME_VERSION } from '../../plugins/runtime/scripts/doctor.mjs';
+import { formatText, parseArgs, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES } from '../../plugins/runtime/scripts/doctor.mjs';
 
 const PORTABLE_HOOK_COMMAND = '/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${PLUGIN_ROOT}/adapters/codex/hooks/hook.mjs"';
 
 describe('runtime doctor', () => {
+  it('recognizes founder in the hardcoded plugin inventory (ADR-0036 RT)', () => {
+    // RT (ADR-0036): runtime:doctor / runtime:settings must recognize
+    // founder as an installable agentic-plugins plugin — install / cache /
+    // catalog inventory recognition. The founder workflow-ledger health
+    // check and hook-readiness gating are deliberate non-goals here
+    // (they would couple runtime to founder's state schema / hook exposure).
+    deepStrictEqual(PLUGIN_NAMES, ['companions', 'engineer', 'founder', 'orchestrator', 'runtime']);
+  });
+
   it('builds a sanitized read-only report from source, CLI, companion, config, and ledger probes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
