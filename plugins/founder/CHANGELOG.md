@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.1.0...plugin-founder-v0.2.0) (2026-06-15)
+
+
+### Features
+
+* **plugin/founder:** copy-trim workflow machinery + hooks + tests (ADR-0036 PR2) ([#422](https://github.com/each4all/agentic-plugins/issues/422)) ([614bf15](https://github.com/each4all/agentic-plugins/commit/614bf156b5e2ed2e11410b8e11f26f6160a6b57b))
+* **plugin/founder:** founder L3 persona — new-business planning workbench (ADR-0036) ([d0a4d10](https://github.com/each4all/agentic-plugins/commit/d0a4d104331adf8e0f0c0a7655eda2a50c37c347))
+* **plugin/founder:** scaffold founder persona plugin (ADR-0036 PR1) ([#420](https://github.com/each4all/agentic-plugins/issues/420)) ([749b705](https://github.com/each4all/agentic-plugins/commit/749b7051575827fbeb600ab56cd90ef5a9e573b3))
+
 ## 0.1.0 (initial scaffold seed)
 
 Inert scaffold per [ADR-0036](../../docs/adr/0036-founder-persona-business-planning.md)
