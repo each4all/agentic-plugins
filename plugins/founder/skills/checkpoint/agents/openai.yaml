@@ -1,0 +1,7 @@
+interface:
+  display_name: "Founder — Checkpoint"
+  short_description: "Record a one-line progress checkpoint on the active founder workflow for SessionStart re-injection in the next Claude session"
+  default_prompt: "Use $founder:checkpoint <one-line summary> to durably note where the business deliverable stands; the next Claude session's SessionStart hook re-injects the summary on re-entry"
+
+policy:
+  allow_implicit_invocation: false

@@ -1,5 +1,5 @@
 // plugins/founder plugin-shape conformance test (ADR-0036 — revised at
-// PR5, the critique + refine verb-surface + ensemble-protocol templates
+// PR6, the start lifecycle macro + resume/checkpoint/peer-now meta skill
 // landing).
 //
 // Boundary history:
@@ -15,13 +15,18 @@
 //     decision registry (scripts/decide-registry.mjs + scripts/lib/* +
 //     skills/decide/references/decision-axes.yml, ADR-0036 SD3 / ADR-0027
 //     portable schema, copied per ADR-0029).
-//   - PR5 (this revision) lands the final two verb surfaces — critique
-//     (default review + red-team pre-mortem) and refine — plus founder's
-//     own skills/_shared/references/ensemble-protocol.md (the nine
-//     business-anchored ensemble point templates) and extends the
+//   - PR5 landed the final two verb surfaces — critique (default review +
+//     red-team pre-mortem) and refine — plus founder's own
+//     skills/_shared/references/ensemble-protocol.md (the nine
+//     business-anchored ensemble point templates) and extended the
 //     privacy-gate sentinel to the ensemble dispatch surfaces (ADR-0036
-//     SD6 / F7). All six canonical verbs are now present; the PR1-only
-//     forbidden-surface suite is fully retired.
+//     SD6 / F7). All six canonical verbs present.
+//   - PR6 (this revision) lands the start lifecycle macro (command + SKILL
+//     + Codex mirror) and the three meta skills — resume / checkpoint /
+//     peer-now — each with a Host-availability matrix (ADR-0022), plus the
+//     privacy-gate sentinel on the peer-now + start runbooks (ADR-0036
+//     SD2). start is a lifecycle macro (workflow_type=start), not a 7th
+//     verb. The PR1-only forbidden-surface suite is fully retired.
 //
 // Run via `node --test tests/plugin-shape/test-founder-plugin.mjs`.
 
@@ -153,7 +158,7 @@ describe('plugins/founder — Codex manifest (.codex-plugin/plugin.json)', () =>
 // skills/_shared/references/ensemble-protocol.md; the PR2 machinery remains
 // REQUIRED). All six canonical verbs are present — the PR1-only
 // forbidden-surface suite is fully retired.
-describe('plugins/founder — PR5 boundary (machinery + all six verb surfaces + decision registry + ensemble protocol)', () => {
+describe('plugins/founder — PR6 boundary (machinery + six verbs + decision registry + ensemble protocol + start/meta surfaces)', () => {
   const ABSENT_DIRS = [
     'personas',
     'mcp-servers',
@@ -220,6 +225,19 @@ describe('plugins/founder — PR5 boundary (machinery + all six verb surfaces + 
     'skills/refine/SKILL.md',
     'skills/refine/agents/openai.yaml',
     'skills/_shared/references/ensemble-protocol.md',
+    // PR6 start lifecycle macro + resume/checkpoint/peer-now meta skills
+    'commands/start.md',
+    'skills/start/SKILL.md',
+    'skills/start/agents/openai.yaml',
+    'commands/resume.md',
+    'skills/resume/SKILL.md',
+    'skills/resume/agents/openai.yaml',
+    'commands/checkpoint.md',
+    'skills/checkpoint/SKILL.md',
+    'skills/checkpoint/agents/openai.yaml',
+    'commands/peer-now.md',
+    'skills/peer-now/SKILL.md',
+    'skills/peer-now/agents/openai.yaml',
   ];
 
   for (const rel of REQUIRED_SURFACES) {
@@ -495,6 +513,135 @@ describe('plugins/founder — ensemble protocol + privacy gate reach (PR5 / ADR-
     const text = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
     ok(!/--profile\s+"\$\{?AGENTIC_PROFILE/.test(text),
       'commands/refine.md must not pass --profile in the state.mjs create path — refine is single-mode like frame/decide');
+  });
+});
+
+// PR6 — the start lifecycle macro + resume/checkpoint/peer-now meta skills
+// (ADR-0022 meta-skill category, adopted for founder per ADR-0036 SD2).
+describe('plugins/founder — start lifecycle macro + meta skills (PR6 / ADR-0022 / ADR-0036 SD2)', () => {
+  // start is a lifecycle macro and resume/checkpoint/peer-now are meta
+  // skills — NONE are cognitive verbs, so they are deliberately kept out of
+  // VERB_SKILLS. Each still ships command + SKILL + Codex mirror.
+  const MACRO_AND_META = ['start', 'resume', 'checkpoint', 'peer-now'];
+
+  for (const name of MACRO_AND_META) {
+    it(`skills/${name}/SKILL.md frontmatter name = ${name}`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', name, 'SKILL.md'), 'utf8');
+      const fm = frontmatter(text);
+      ok(fm, `skills/${name}/SKILL.md has no YAML frontmatter`);
+      ok(new RegExp(`^name:\\s*${name}\\s*$`, 'm').test(fm),
+        `skills/${name}/SKILL.md frontmatter name != "${name}"`);
+    });
+
+    it(`skills/${name}/agents/openai.yaml display_name names the skill + persona`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', name, 'agents/openai.yaml'), 'utf8');
+      const m = text.match(/display_name:\s*"([^"]+)"/);
+      ok(m, `skills/${name}/agents/openai.yaml must declare interface.display_name`);
+      ok(m[1].toLowerCase().includes(name),
+        `openai.yaml display_name "${m[1]}" must name the skill "${name}"`);
+      ok(m[1].toLowerCase().includes('founder'),
+        `openai.yaml display_name "${m[1]}" must name the persona "founder"`);
+    });
+
+    it(`commands/${name}.md carries a frontmatter description`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${name}.md`), 'utf8');
+      const fm = frontmatter(text);
+      ok(fm, `commands/${name}.md has no YAML frontmatter`);
+      match(fm, /description:\s*\S/, `commands/${name}.md must carry a non-empty description`);
+    });
+  }
+
+  it('every macro/meta SKILL declares a Host-availability matrix (ADR-0022)', async () => {
+    for (const name of MACRO_AND_META) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', name, 'SKILL.md'), 'utf8');
+      match(text, /Host availability/i,
+        `skills/${name}/SKILL.md must declare a Host-availability matrix (ADR-0022)`);
+    }
+  });
+
+  it('macro/meta surfaces do not require the removed plugin_hooks settings key (ADR-0030/0035)', async () => {
+    // The copy-trim source (engineer) requires `[features].plugin_hooks = true`;
+    // that settings key was removed per ADR-0030/0035. founder must use the
+    // generic `[features].hooks` + `/hooks` trust model. A corrective negation
+    // ("there is no plugin_hooks settings key") is allowed and encouraged —
+    // it warns future copy-trim against re-introducing the drift; only the
+    // require/set form is forbidden.
+    const REQUIRE_FORM = /\[features\]\.plugin_hooks|plugin_hooks\s*[:=]\s*true/;
+    for (const name of MACRO_AND_META) {
+      const skillText = await readFile(resolve(PLUGIN_ROOT, 'skills', name, 'SKILL.md'), 'utf8');
+      ok(!REQUIRE_FORM.test(skillText),
+        `skills/${name}/SKILL.md must not require the removed plugin_hooks key — use [features].hooks + /hooks trust`);
+      const cmdText = await readFile(resolve(PLUGIN_ROOT, 'commands', `${name}.md`), 'utf8');
+      ok(!REQUIRE_FORM.test(cmdText),
+        `commands/${name}.md must not require the removed plugin_hooks key`);
+    }
+  });
+
+  it('the privacy-gate sentinel reaches the peer-now + start runbooks (ADR-0036 SD2)', async () => {
+    // The macro plan requires the privacy gate restated on peer-now/start —
+    // both dispatch to the peer host (and start also runs web search).
+    for (const rel of [
+      'skills/peer-now/SKILL.md',
+      'commands/peer-now.md',
+      'skills/start/SKILL.md',
+      'commands/start.md',
+    ]) {
+      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      ok(text.includes(PRIVACY_SENTINEL),
+        `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+    }
+  });
+
+  it('start declares itself a lifecycle macro, not a 7th verb (ADR-0020 §Sub-decision 1)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/start/SKILL.md'), 'utf8');
+    match(text, /lifecycle macro/i,
+      'start SKILL must declare itself a lifecycle macro — the six-verb enum is unchanged');
+    // The start command bootstraps with workflow_type=start (the shape
+    // discriminator pre-wired in state.mjs VALID_WORKFLOW_TYPES at PR2).
+    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/start.md'), 'utf8');
+    match(cmd, /--workflow-type start/,
+      'commands/start.md must bootstrap the macro workflow with --workflow-type start');
+  });
+
+  it('start command guards workflow_type before resuming a non-empty active workflow (does not absorb a verb-chain)', async () => {
+    // Codex Plan-verify (PR6): /founder:start must read workflow_type and
+    // reject mutating a single-verb (verb-chain) workflow into lifecycle
+    // phase space — the engineer source rejects this case.
+    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/start.md'), 'utf8');
+    match(cmd, /workflow_type/,
+      'commands/start.md must read workflow_type when a non-empty active workflow is found');
+    ok(/verb-chain/.test(cmd),
+      'commands/start.md must handle the verb-chain (non-start) active-workflow case explicitly');
+  });
+
+  it('start command clean-baseline gate fails closed (captures the check exit status)', async () => {
+    // Codex Plan-verify (PR6): an empty/unparseable status must NOT proceed.
+    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/start.md'), 'utf8');
+    match(cmd, /BASELINE_RC/,
+      'commands/start.md must capture the check-clean-baseline exit status (fail-closed)');
+  });
+
+  it('peer-now command runs the dispatch synchronously (no run_in_background race)', async () => {
+    // Codex Plan-verify (PR6): peer-now is a synchronous side-channel — it
+    // reads RUN_RC/STDOUT_PATH immediately, so the Bash call must not be
+    // backgrounded.
+    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/peer-now.md'), 'utf8');
+    ok(!/run_in_background:\s*true/.test(cmd),
+      'commands/peer-now.md must not background the dispatch — it reads the response immediately');
+  });
+
+  it('start + meta commands never shell-read parent-linkage env (ADR-0036 Non-Goal 3)', async () => {
+    const READ_FORMS = [
+      /\$\{?AGENTIC_PARENT_WORKFLOW/,
+      /\$\{?AGENTIC_ORIGINATING_SUBTASK/,
+    ];
+    for (const name of MACRO_AND_META) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${name}.md`), 'utf8');
+      for (const form of READ_FORMS) {
+        ok(!form.test(text),
+          `commands/${name}.md must not shell-read ${form} — founder is not an orchestrator dispatch target`);
+      }
+    }
   });
 });
 
