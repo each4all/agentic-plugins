@@ -2438,6 +2438,12 @@ export async function setTerminal({
   nextAction,
   event = 'updated',
   now = new Date(),
+  // ADR-0031 amendment (decision 1) — fire the session-handoff sidecar from
+  // this must-run completion mutation. Opt-in by the production completion
+  // entry points (the CLI `set-terminal` case + phase7-commit), so direct
+  // helper calls (tests, internal state setup) never emit. Default off keeps
+  // the low-level helper side-effect-free for non-completion callers.
+  emitHandoff = false,
 }) {
   validateHost(host);
   validateHookEvent(event);
@@ -2454,7 +2460,7 @@ export async function setTerminal({
       `setTerminal: terminalMarker must be a boolean (got ${typeof terminalMarker} ${JSON.stringify(terminalMarker)})`,
     );
   }
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  const result = await withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
@@ -2473,6 +2479,40 @@ export async function setTerminal({
     );
     return { frontmatter, workflowPath };
   });
+  // ADR-0031 amendment (decisions 1, 2, 3, 6) — fire the activation sidecar
+  // AFTER the terminal mutation succeeded AND the file lock was released
+  // (the `withFileLock` above has resolved). Fail-closed + non-fatal: any
+  // error is swallowed here so a completion/commit can never fail because of
+  // the handoff, and the sidecar itself writes only stderr + a projection
+  // file, never stdout.
+  if (emitHandoff) {
+    try {
+      const inferred = inferStorageFromWorkflowPath(workflowPath);
+      if (inferred) {
+        const { repoRoot, home } = inferred;
+        const projectionFile = join(statePaths(repoRoot, home).root, 'last-session-handoff.json');
+        // Lazy dynamic import inside this async fn — a static
+        // `state.mjs -> session-handoff.mjs` import would cycle
+        // (session-handoff -> state + stop-archive -> state). Top-level await
+        // of a back-importing module can deadlock settlement, so the import
+        // stays here, never at module top level (mirrors the stop-archive
+        // dynamic-import precedent below).
+        const { emitTerminalHandoffSidecar } = await import('./session-handoff.mjs');
+        // Project the EXACT workflow just terminalized (by path), not whatever
+        // is active on the current checkout branch — set-terminal can be invoked
+        // cross-branch on an explicit workflowPath (Codex Plan-verify bug fix).
+        await emitTerminalHandoffSidecar({
+          repoRoot,
+          workflowPath,
+          projectionFile,
+        });
+      }
+    } catch {
+      // non-fatal: the terminal write already landed; the sidecar must never
+      // break a completion/commit (ADR-0031 amendment decision 6).
+    }
+  }
+  return result;
 }
 
 /**
@@ -3540,6 +3580,9 @@ async function cliMain(argv) {
           terminalMarker,
           nextAction: flags['next-action'],
           event: flags.event ?? 'updated',
+          // ADR-0031 amendment — this CLI case is a production completion
+          // entry point (standalone-verb Phase 2 finalize); fire the sidecar.
+          emitHandoff: true,
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;

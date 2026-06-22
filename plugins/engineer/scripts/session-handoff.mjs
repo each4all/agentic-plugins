@@ -15,13 +15,15 @@
 // runner — so computing the projection has no side effects.
 
 import { execFileSync } from 'node:child_process';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
   currentGitBranch,
   findActiveWorkflowByBranch,
   readWorkflow,
+  workflowDir,
 } from './state.mjs';
 import { evaluateStopArchive } from './stop-archive.mjs';
 
@@ -54,13 +56,17 @@ function repoRelativePointer(repoRoot, target) {
 function probeHead(repoRoot) {
   let sha = null;
   let subject = null;
+  // stdio: ignore git's own stderr ('fatal: not a git repository' in a non-git
+  // dir) so it cannot pollute the sidecar's stderr advisory channel. A failed
+  // probe is caught and treated as "HEAD did not move" (never a false archive).
+  const gitOpts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] };
   try {
-    sha = execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() || null;
+    sha = execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], gitOpts).trim() || null;
   } catch {
     return { sha: null, subject: null };
   }
   try {
-    subject = execFileSync('git', ['-C', repoRoot, 'log', '-1', '--format=%s'], { encoding: 'utf8' }).trim() || null;
+    subject = execFileSync('git', ['-C', repoRoot, 'log', '-1', '--format=%s'], gitOpts).trim() || null;
   } catch {
     subject = null;
   }
@@ -74,46 +80,22 @@ function probeHead(repoRoot) {
  *   status is one of: ok | no_active_branch_context | no_active_workflow |
  *   fail_closed. The projection is non-null only for `ok`.
  */
-export async function computeEngineerProjection({
-  repoRoot,
-  branch,
-  routing,
-  headSha,
-  headSubject,
-} = {}) {
-  // Routing is ALWAYS available (ADR-0031 input (c)): a non-empty caller value,
-  // else the default resume route. A whitespace-only value is treated as absent
-  // so the runtime seam (which trims required strings) never rejects it. It is
-  // returned in EVERY branch so the caller can pass it standalone when there is
-  // no projection.
-  const resolvedRouting = typeof routing === 'string' && routing.trim()
-    ? routing.trim()
-    : DEFAULT_ROUTING;
-  // Detached HEAD / no branch — report 'no active branch context' and do NOT
-  // auto-recommend a fresh session (ADR-0018 §sub-2; start.md detached-HEAD rule).
-  if (!branch) {
-    return { projection: null, status: 'no_active_branch_context', routing: resolvedRouting };
-  }
-  let activePath;
-  try {
-    // Throws on a canonical + legacy split (fail-closed, ADR-0031).
-    activePath = await findActiveWorkflowByBranch(repoRoot, branch);
-  } catch (error) {
-    return { projection: null, status: 'fail_closed', error: error.message, routing: resolvedRouting };
-  }
-  if (!activePath) {
-    return { projection: null, status: 'no_active_workflow', routing: resolvedRouting };
-  }
-  let parsed;
-  try {
-    parsed = await readWorkflow(activePath);
-  } catch (error) {
-    return { projection: null, status: 'fail_closed', error: error.message, routing: resolvedRouting };
-  }
+// Routing is ALWAYS available (ADR-0031 input (c)): a non-empty caller value,
+// else the default resume route. A whitespace-only value is treated as absent so
+// the runtime seam (which trims required strings) never rejects it.
+function resolveRouting(routing) {
+  return typeof routing === 'string' && routing.trim() ? routing.trim() : DEFAULT_ROUTING;
+}
+
+/**
+ * Build the bounded projection from an already-resolved workflow file (its path
+ * + parsed content). Shared by the branch-resolved `computeEngineerProjection`
+ * and the path-targeted `computeEngineerProjectionForPath`. The runtime seam
+ * requires every non-checkpoint field non-empty — a missing required field emits
+ * NO projection (fail-closed) rather than one the seam would reject.
+ */
+function projectParsedWorkflow({ repoRoot, activePath, parsed, resolvedRouting, headSha, headSubject }) {
   const frontmatter = parsed.frontmatter ?? parsed;
-  // The runtime seam requires every non-checkpoint projection field non-empty.
-  // If a required engineer field is somehow absent, emit NO projection
-  // (fail-closed) rather than one the seam would reject + report.
   for (const field of ['workflow_id', 'current_phase', 'next_action']) {
     const value = frontmatter[field];
     if (typeof value !== 'string' || value.trim() === '') {
@@ -145,6 +127,131 @@ export async function computeEngineerProjection({
   const checkpoint = frontmatter.latest_checkpoint?.summary;
   if (checkpoint) projection.checkpoint = checkpoint;
   return { projection, status: 'ok', routing: resolvedRouting };
+}
+
+export async function computeEngineerProjection({
+  repoRoot,
+  branch,
+  routing,
+  headSha,
+  headSubject,
+} = {}) {
+  const resolvedRouting = resolveRouting(routing);
+  // Detached HEAD / no branch — report 'no active branch context' and do NOT
+  // auto-recommend a fresh session (ADR-0018 §sub-2; start.md detached-HEAD rule).
+  if (!branch) {
+    return { projection: null, status: 'no_active_branch_context', routing: resolvedRouting };
+  }
+  let activePath;
+  try {
+    // Throws on a canonical + legacy split (fail-closed, ADR-0031).
+    activePath = await findActiveWorkflowByBranch(repoRoot, branch);
+  } catch (error) {
+    return { projection: null, status: 'fail_closed', error: error.message, routing: resolvedRouting };
+  }
+  if (!activePath) {
+    return { projection: null, status: 'no_active_workflow', routing: resolvedRouting };
+  }
+  let parsed;
+  try {
+    parsed = await readWorkflow(activePath);
+  } catch (error) {
+    return { projection: null, status: 'fail_closed', error: error.message, routing: resolvedRouting };
+  }
+  return projectParsedWorkflow({ repoRoot, activePath, parsed, resolvedRouting, headSha, headSubject });
+}
+
+/**
+ * Project a SPECIFIC workflow by path (not by branch). Used by the activation
+ * sidecar so it projects exactly the workflow that was just terminalized —
+ * `setTerminal` mutates an explicit `workflowPath` that may not be the active
+ * workflow on the repo's current checkout branch (cross-branch invocation), so
+ * resolving by `currentGitBranch` would project the wrong workflow (Codex
+ * Plan-verify bug). Fail-closed: an unreadable/invalid workflow emits no projection.
+ */
+export async function computeEngineerProjectionForPath({
+  repoRoot,
+  workflowPath,
+  routing,
+  headSha,
+  headSubject,
+} = {}) {
+  const resolvedRouting = resolveRouting(routing);
+  if (!workflowPath) {
+    return { projection: null, status: 'no_active_workflow', routing: resolvedRouting };
+  }
+  let parsed;
+  try {
+    parsed = await readWorkflow(workflowPath);
+  } catch (error) {
+    return { projection: null, status: 'fail_closed', error: error.message, routing: resolvedRouting };
+  }
+  return projectParsedWorkflow({ repoRoot, activePath: workflowPath, parsed, resolvedRouting, headSha, headSubject });
+}
+
+/**
+ * Default projection-file path: `<engineer state root>/last-session-handoff.json`
+ * (canonical home). Callers that already know the home — e.g. `setTerminal`
+ * via `inferStorageFromWorkflowPath` — pass an explicit `projectionFile`.
+ */
+function defaultProjectionFile(repoRoot) {
+  return resolve(workflowDir(repoRoot), '..', 'last-session-handoff.json');
+}
+
+/**
+ * ADR-0031 activation sidecar — fired from a must-run completion mutation
+ * (engineer `setTerminal`, opted in by the CLI `set-terminal` case and
+ * `phase7-commit`). Projects the EXACT workflow just terminalized (by path,
+ * via `computeEngineerProjectionForPath` — not by current branch) and emits the
+ * bounded projection through two channels that NEVER touch stdout (the completion
+ * scripts' stdout contracts — path-only / JSON — are load-bearing):
+ *
+ *   - GUARANTEED: the projection JSON is written to a stable file the footer
+ *     step reads. Programmatic callers can discard stderr, so the file is the
+ *     channel the runtime seam can always rely on.
+ *   - BEST-EFFORT: a one-line continue-vs-fresh advisory on stderr — the
+ *     active nudge for visible shell/tool invocations.
+ *
+ * Fail-closed + non-fatal: a non-`ok` projection status emits nothing, and any
+ * error is swallowed (at most a one-line stderr note). This helper NEVER
+ * throws and NEVER writes stdout, so a completion/commit cannot fail and a
+ * caller parsing the script's stdout cannot be corrupted (ADR-0031 amendment
+ * decisions 2, 5, 6).
+ *
+ * Risk is NOT composed here (decision 5: do not import the runtime seam). The
+ * advisory names the conservative `--risk yellow` default so the footer step
+ * owns the single continue-vs-fresh composition.
+ *
+ * @returns {Promise<{emitted: boolean, status: string, projectionFile?: string, error?: string}>}
+ */
+export async function emitTerminalHandoffSidecar({ repoRoot, workflowPath, projectionFile } = {}) {
+  try {
+    if (!repoRoot) return { emitted: false, status: 'no_repo_root' };
+    const result = await computeEngineerProjectionForPath({ repoRoot, workflowPath });
+    if (result.status !== 'ok' || !result.projection) {
+      return { emitted: false, status: result.status };
+    }
+    const target = projectionFile ?? defaultProjectionFile(repoRoot);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, `${JSON.stringify(result.projection, null, 2)}\n`, 'utf8');
+    const p = result.projection;
+    process.stderr.write(
+      `⚑ ADR-0031 session-handoff: ${p.workflow_kind} ${p.workflow_id} ` +
+        `(archive_gate=${p.archive_gate}); projection → ${repoRelativePointer(repoRoot, target)}. ` +
+        `Render continue-vs-fresh: runtime:context check --risk yellow ` +
+        `--workflow-projection-file <file> (yellow = conservative script-fired default).\n`,
+    );
+    return { emitted: true, status: 'ok', projectionFile: target };
+  } catch (error) {
+    // Never throw from the sidecar — a completion/commit must not fail because
+    // the handoff projection could not be written (ADR-0031 amendment dec. 6).
+    try {
+      process.stderr.write(`session-handoff sidecar skipped (non-fatal): ${error.message}\n`);
+    } catch {
+      /* stderr itself failed — swallow */
+    }
+    return { emitted: false, status: 'error', error: error.message };
+  }
 }
 
 export function parseArgs(argv) {

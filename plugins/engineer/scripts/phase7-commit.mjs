@@ -1010,6 +1010,9 @@ async function runPostCommitGates({ workflowPath, repoRoot, flags, stderr, lande
     terminalMarker: true,
     nextAction: 'archive',
     event: 'updated',
+    // ADR-0031 amendment — Phase 7 commit is a production completion entry
+    // point; fire the session-handoff sidecar (after the terminal write).
+    emitHandoff: true,
   });
   return { ok: true, landed };
 }
