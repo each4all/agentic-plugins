@@ -467,6 +467,42 @@ describe('runtime session handoff (ADR-0031)', () => {
     ok(result.limits.some((limit) => /non-mutating/i.test(limit)));
   });
 
+  it('reports an honest unsupported workflow_kind instead of degrading to no-active-workflow (runtime-unsupported-kind)', () => {
+    // An active workflow whose kind runtime cannot model (e.g. founder) reaches
+    // the seam as projection=null + unsupportedKind=<name>. The seam MUST
+    // distinguish it from a genuinely absent projection.
+    const handoff = evaluateSessionHandoff({
+      riskLevel: 'yellow',
+      projection: null,
+      unsupportedKind: 'founder',
+      routing: '/founder:resume',
+    });
+    strictEqual(handoff.archive_gate, 'unsupported_kind');
+    strictEqual(handoff.unsupported_workflow_kind, 'founder');
+    ok(handoff.archive_gate !== 'absent', 'must NOT claim no-active-workflow/absent');
+    ok(/founder/.test(handoff.reason), 'reason names the unsupported kind');
+    ok(/founder/.test(handoff.archive_gate_report), 'report names the unsupported kind');
+    ok(/engineer, orchestrator/.test(handoff.archive_gate_report), 'report names the supported kinds');
+    ok(handoff.limits.some((l) => /out of scope/i.test(l)), 'enablement boundary recorded');
+    // runtime cannot read an unsupported workflow's archive readiness, so under
+    // yellow the conservative decision still continues (no projected gate to act on).
+    strictEqual(handoff.recommended_session, 'current_or_resumed');
+    strictEqual(handoff.workflow, null);
+
+    // Under red budget the handoff goes fresh, but the report stays honest about
+    // the unsupported kind and the routing command flows through.
+    const red = evaluateSessionHandoff({ riskLevel: 'red', unsupportedKind: 'founder', routing: '/founder:resume' });
+    strictEqual(red.recommended_session, 'fresh_or_resumed');
+    strictEqual(red.archive_gate, 'unsupported_kind');
+    strictEqual(red.next_command, '/founder:resume');
+
+    // A malformed projection (empty/whitespace kind) is NOT an unsupported kind:
+    // it stays the legacy absent path with no false unsupported_kind report.
+    const malformed = evaluateSessionHandoff({ riskLevel: 'yellow', unsupportedKind: '   ' });
+    strictEqual(malformed.archive_gate, 'absent');
+    strictEqual('unsupported_workflow_kind' in malformed, false);
+  });
+
   it('fail-closes a malformed projection and accepts a complete one (bounded schema)', () => {
     const rejected = [
       { workflow_kind: 'designer' },
@@ -486,6 +522,18 @@ describe('runtime session handoff (ADR-0031)', () => {
       strictEqual(projection, null, `should reject ${JSON.stringify(raw).slice(0, 50)}`);
       ok(error, 'a rejection must carry an error message');
     }
+    // runtime-unsupported-kind: a real, named-but-unsupported kind is surfaced as
+    // a typed unsupportedKind signal (so the seam can report it honestly); a
+    // malformed projection (empty/non-string kind) does NOT set it.
+    strictEqual(normalizeProjection({ workflow_kind: 'designer' }).unsupportedKind, 'designer');
+    strictEqual(normalizeProjection(fullProjection({ workflow_kind: 'founder' })).unsupportedKind, 'founder');
+    strictEqual(normalizeProjection({ workflow_kind: '' }).unsupportedKind ?? null, null);
+    strictEqual(normalizeProjection({ workflow_kind: 42 }).unsupportedKind ?? null, null);
+    // the rejected projection's own routing is preserved so the honest fallback
+    // keeps a routing-shaped next command (founder's ok-case supplies routing
+    // only inside the projection file, never standalone).
+    strictEqual(normalizeProjection(fullProjection({ workflow_kind: 'founder' })).unsupportedRouting, 'commit then /orchestrator:next');
+    strictEqual(normalizeProjection({ workflow_kind: 'designer' }).unsupportedRouting ?? null, null);
     deepStrictEqual(normalizeProjection(null), { projection: null, error: null });
     const accepted = normalizeProjection(fullProjection({ workflow_kind: 'orchestrator', archive_gate: 'not_terminal' }));
     strictEqual(accepted.error, null);
@@ -508,7 +556,12 @@ describe('runtime session handoff (ADR-0031)', () => {
     const badPath = join(root, 'bad.json');
     await writeFile(badPath, JSON.stringify({ workflow_kind: 'designer', archive_gate: 'ready_to_archive' }));
     const degraded = await runContext({ command: 'check', repoRoot: root, risk: 'green', workflowProjectionFile: badPath });
-    strictEqual(degraded.session_handoff.archive_gate, 'absent');
+    // runtime-unsupported-kind: a real-but-unmodelable kind degrades HONESTLY to
+    // 'unsupported_kind' (naming the kind), NOT silently to 'absent' /
+    // no-active-workflow. The decision still continues (green), the projection
+    // error is still surfaced — only the report is now honest.
+    strictEqual(degraded.session_handoff.archive_gate, 'unsupported_kind');
+    strictEqual(degraded.session_handoff.unsupported_workflow_kind, 'designer');
     strictEqual(degraded.session_handoff.recommended_session, 'current_or_resumed');
     ok(/workflow_kind|unknown/.test(degraded.projection_error));
   });
@@ -556,6 +609,41 @@ describe('runtime session handoff (ADR-0031)', () => {
       now: new Date('2026-05-13T00:05:00.000Z'),
     });
     strictEqual('session_handoff' in withoutProjection.handoff.guidance, false);
+  });
+
+  it('surfaces an honest unsupported workflow_kind with preserved routing through the status handoff (runtime-unsupported-kind)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-status-unsupported-'));
+    await runContext({
+      command: 'capture',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      summary: 'Unsupported-kind status handoff test artifact.',
+      risk: 'red',
+      nextSessionPrompt: 'Continue from the artifact.',
+    });
+    const projPath = join(root, 'founder.json');
+    // A founder projection: runtime does not model 'founder', and founder's
+    // ok-case wiring passes routing INSIDE the projection file, not standalone.
+    await writeFile(projPath, JSON.stringify(fullProjection({ workflow_kind: 'founder', routing_recommendation: '/founder:resume' })));
+    const report = await runContext({
+      command: 'status',
+      repoRoot: root,
+      runId: RUN_ID,
+      now: new Date('2026-05-13T00:05:00.000Z'),
+      workflowProjectionFile: projPath,
+    });
+    const sh = report.handoff.guidance.session_handoff;
+    ok(sh, 'the status handoff carries the session decision');
+    strictEqual(sh.archive_gate, 'unsupported_kind');
+    strictEqual(sh.unsupported_workflow_kind, 'founder');
+    // the projection's own routing survives unsupported-kind rejection, so a
+    // red-risk fresh handoff still names the founder resume command.
+    strictEqual(sh.recommended_session, 'fresh_or_resumed');
+    strictEqual(sh.routing_recommendation, '/founder:resume');
+    strictEqual(sh.next_command, '/founder:resume');
+    ok(report.projection_error, 'the projection rejection is still surfaced');
+    ok(formatText(report).includes('unsupported workflow kind: founder'));
   });
 
   it('keeps the merged handoff guidance coherent when the session forces fresh over a reusable artifact', () => {

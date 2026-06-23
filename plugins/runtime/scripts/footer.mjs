@@ -60,7 +60,7 @@ export async function runFooter(options = {}) {
   // projection file is supplied the footer degrades to the per-field workflow
   // flags and omits session_handoff entirely (rollback-safe, additive).
   const projectionRequested = options.workflowProjectionFile != null;
-  const { projection, error: projectionError } = projectionRequested
+  const { projection, error: projectionError, unsupportedKind, unsupportedRouting } = projectionRequested
     ? await loadWorkflowProjection(options)
     : { projection: null, error: null };
   // When a projection was requested but rejected, degrade cleanly: do NOT fall
@@ -73,7 +73,11 @@ export async function runFooter(options = {}) {
     ? evaluateSessionHandoff({
         riskLevel: contextState,
         projection,
-        routing: options.routingRecommendation ?? null,
+        // runtime-unsupported-kind: prefer the rejected projection's own routing
+        // before any standalone --routing-recommendation, so a fresh handoff on
+        // an unmodelable kind still names the resume command.
+        routing: unsupportedRouting ?? options.routingRecommendation ?? null,
+        unsupportedKind: unsupportedKind ?? null,
       })
     : null;
   const providedArtifacts = normalizeArtifacts(repoRoot, options.artifacts ?? []);
@@ -352,6 +356,9 @@ export function formatText(report) {
     lines.push(`- recommended session: ${report.session_handoff.recommended_session}`);
     lines.push(`- reason: ${report.session_handoff.reason}`);
     lines.push(`- archive gate: ${report.session_handoff.archive_gate} — ${report.session_handoff.archive_gate_report}`);
+    if (report.session_handoff.unsupported_workflow_kind) {
+      lines.push(`- unsupported workflow kind: ${report.session_handoff.unsupported_workflow_kind} (runtime cannot model it; enablement out of scope)`);
+    }
     if (report.session_handoff.routing_recommendation) {
       lines.push(`- routing: ${report.session_handoff.routing_recommendation}`);
     }

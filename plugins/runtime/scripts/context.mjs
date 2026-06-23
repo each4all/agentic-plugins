@@ -151,14 +151,19 @@ export async function readStatus(options = {}) {
   // using the artifact's own risk_level as the budget input. Opt-in only: with
   // no --workflow-projection-file the status handoff is unchanged (rollback-safe).
   const projectionRequested = options.workflowProjectionFile != null;
-  const { projection, error: projectionError } = projectionRequested
+  const { projection, error: projectionError, unsupportedKind, unsupportedRouting } = projectionRequested
     ? await loadWorkflowProjection(options)
     : { projection: null, error: null };
   const sessionHandoff = projectionRequested
     ? evaluateSessionHandoff({
         riskLevel: artifact.context?.risk_level ?? null,
         projection,
-        routing: options.routingRecommendation ?? null,
+        // runtime-unsupported-kind: prefer the rejected projection's own routing
+        // (founder's ok-case supplies routing only via the file) before any
+        // standalone --routing-recommendation, so the fresh handoff keeps a
+        // next_command.
+        routing: unsupportedRouting ?? options.routingRecommendation ?? null,
+        unsupportedKind: unsupportedKind ?? null,
       })
     : null;
   const handoff = buildHandoffLookup({
@@ -191,7 +196,7 @@ export async function checkContext(options = {}) {
   // rule). A green check with no projection stays exactly as before
   // (backward-compatible): no session_handoff, default next action.
   const projectionRequested = options.workflowProjectionFile != null;
-  const { projection, error: projectionError } = projectionRequested
+  const { projection, error: projectionError, unsupportedKind, unsupportedRouting } = projectionRequested
     ? await loadWorkflowProjection(options)
     : { projection: null, error: null };
   const includeSession = projectionRequested || budgetCheck.riskLevel !== 'green';
@@ -199,7 +204,10 @@ export async function checkContext(options = {}) {
     ? evaluateSessionHandoff({
         riskLevel: budgetCheck.riskLevel,
         projection,
-        routing: options.routingRecommendation ?? null,
+        // runtime-unsupported-kind: prefer the rejected projection's own routing
+        // before any standalone --routing-recommendation (see statusContext).
+        routing: unsupportedRouting ?? options.routingRecommendation ?? null,
+        unsupportedKind: unsupportedKind ?? null,
       })
     : null;
   const report = {
@@ -375,6 +383,9 @@ function pushSessionHandoff(lines, sessionHandoff) {
   lines.push(`- recommended session: ${sessionHandoff.recommended_session}`);
   lines.push(`- reason: ${sessionHandoff.reason}`);
   lines.push(`- archive gate: ${sessionHandoff.archive_gate} — ${sessionHandoff.archive_gate_report}`);
+  if (sessionHandoff.unsupported_workflow_kind) {
+    lines.push(`- unsupported workflow kind: ${sessionHandoff.unsupported_workflow_kind} (runtime cannot model it; enablement out of scope)`);
+  }
   if (sessionHandoff.routing_recommendation) {
     lines.push(`- routing: ${sessionHandoff.routing_recommendation}`);
   }
@@ -786,14 +797,30 @@ export function buildHandoffGuidance({ runId, stale, sourceFreshness, sessionHan
 // else the standalone `routing` arg) and shapes the next-session command, not
 // the binary decision. Returns null only when none of the three inputs is
 // present (nothing to decide).
-export function evaluateSessionHandoff({ riskLevel = null, projection = null, routing = null } = {}) {
-  if (riskLevel === null && projection === null && routing === null) return null;
+export function evaluateSessionHandoff({ riskLevel = null, projection = null, routing = null, unsupportedKind = null } = {}) {
+  // ADR-0031 (runtime-unsupported-kind) — an active workflow whose kind runtime
+  // cannot model (e.g. founder) reaches the seam as projection=null +
+  // unsupportedKind=<name>. The honest path fires only for a real, named-but-
+  // unsupported kind; a malformed projection (missing/empty kind) leaves
+  // unsupported=null and keeps the prior absent behavior.
+  const unsupported = stringOrNull(unsupportedKind);
+  if (riskLevel === null && projection === null && routing === null && unsupported === null) return null;
   // (a) Context-budget risk is caller-supplied, not host-measured (ADR-0031
   // §7). Absent OR unrecognized → yellow, the conservative default that FIRES
   // the preflight rather than silently assuming green (fail-soft, no throw).
   const riskSupplied = RISK_LEVELS.has(riskLevel);
   const risk = riskSupplied ? riskLevel : 'yellow';
-  const archiveGate = projection && projection.archive_gate ? projection.archive_gate : 'absent';
+  // (b) archive_gate: the real projected gate when we have one; otherwise a
+  // synthesized sentinel — 'unsupported_kind' when an unmodelable workflow was
+  // supplied (honest), 'absent' when nothing was. Runtime genuinely cannot read
+  // an unsupported workflow's archive readiness, so the DECISION still falls
+  // back to budget + routing; only the REPORT distinguishes the two
+  // non-projection states.
+  const archiveGate = projection && projection.archive_gate
+    ? projection.archive_gate
+    : unsupported
+      ? 'unsupported_kind'
+      : 'absent';
   // (c) Routing is always available — in the projection when present, standalone otherwise.
   const routingRecommendation = (projection && projection.routing_recommendation) || stringOrNull(routing) || null;
   let recommendedSession;
@@ -809,18 +836,22 @@ export function evaluateSessionHandoff({ riskLevel = null, projection = null, ro
     reason = 'context budget risk is yellow and the active workflow is ready to archive — a clean session seam';
   } else {
     recommendedSession = 'current_or_resumed';
-    reason = archiveGate === 'absent'
-      ? 'context budget risk is yellow with no active workflow projection — continue, watching the budget'
-      : 'context budget risk is yellow and the active workflow is mid-flight — continue rather than fragment it';
+    if (archiveGate === 'unsupported_kind') {
+      reason = `context budget risk is yellow and an active workflow projection of unsupported kind '${unsupported}' was supplied — runtime models only ${[...VALID_WORKFLOW_KINDS].join(', ')} and cannot read its archive readiness; continue from context budget + routing`;
+    } else if (archiveGate === 'absent') {
+      reason = 'context budget risk is yellow with no active workflow projection — continue, watching the budget';
+    } else {
+      reason = 'context budget risk is yellow and the active workflow is mid-flight — continue rather than fragment it';
+    }
   }
-  return {
+  const result = {
     state: 'session_preflight',
     recommended_session: recommendedSession,
     reason,
     context_risk: risk,
     context_risk_supplied: riskSupplied,
     archive_gate: archiveGate,
-    archive_gate_report: archiveGateReport(archiveGate),
+    archive_gate_report: archiveGateReport(archiveGate, unsupported),
     routing_recommendation: routingRecommendation,
     // Concrete next command when handing off — the routing recommendation IS
     // the command to start/resume the next session's work (ADR-0031 output).
@@ -840,9 +871,19 @@ export function evaluateSessionHandoff({ riskLevel = null, projection = null, ro
       'Archive readiness is a pure-evaluator REPORT, not an archive action — runtime is non-mutating (ADR-0024).',
     ],
   };
+  // ADR-0031 (runtime-unsupported-kind) — name the unmodelable kind explicitly
+  // and record the boundary (modeling new kinds is a separate enablement
+  // change) rather than silently presenting it as no-active-workflow.
+  if (unsupported) {
+    result.unsupported_workflow_kind = unsupported;
+    result.limits.push(
+      `An active workflow projection of kind '${unsupported}' was supplied, but runtime models only ${[...VALID_WORKFLOW_KINDS].join(', ')}; the continue-vs-fresh decision falls back to context budget + routing. Modeling new kinds (enablement) is a separate change, out of scope here.`,
+    );
+  }
+  return result;
 }
 
-function archiveGateReport(gate) {
+function archiveGateReport(gate, unsupportedKind = null) {
   switch (gate) {
     case 'ready_to_archive':
       return 'The active workflow reports ready_to_archive (all hard gates pass); it archives via the Stop hook after the terminal commit.';
@@ -850,6 +891,8 @@ function archiveGateReport(gate) {
       return 'The active workflow is terminal-marked but blocked from archiving (a commit or an active child is still pending).';
     case 'not_terminal':
       return 'The active workflow has not reached its terminal marker yet (work in progress).';
+    case 'unsupported_kind':
+      return `An active workflow projection of unsupported kind${unsupportedKind ? ` '${unsupportedKind}'` : ''} was supplied; runtime models only ${[...VALID_WORKFLOW_KINDS].join(', ')} and cannot read this workflow's archive readiness.`;
     default:
       return 'No active workflow projection was supplied; archive readiness is not reported.';
   }
@@ -871,9 +914,27 @@ export function normalizeProjection(raw) {
     return { projection: null, error: `workflow projection has unknown field(s): ${unknown.join(', ')}` };
   }
   if (!VALID_WORKFLOW_KINDS.has(raw.workflow_kind)) {
+    // ADR-0031 (runtime-unsupported-kind) — surface the rejected kind as a
+    // typed signal so the session preflight can report an HONEST "active
+    // workflow of unsupported kind" instead of silently degrading to the
+    // no-active-workflow path. Only a real, non-empty kind name qualifies; a
+    // missing/empty/non-string kind is a malformed projection, not an
+    // unsupported one, so it leaves unsupportedKind null and keeps the prior
+    // absent behavior.
+    const rejectedKind =
+      typeof raw.workflow_kind === 'string' && raw.workflow_kind.trim() !== ''
+        ? raw.workflow_kind.trim()
+        : null;
     return {
       projection: null,
       error: `workflow projection workflow_kind must be one of ${[...VALID_WORKFLOW_KINDS].join(', ')}`,
+      unsupportedKind: rejectedKind,
+      // Preserve the rejected projection's own routing so the honest fallback
+      // ('continue from context budget + routing') is literal. A founder
+      // projection carries routing only inside the file (the ok-case wiring
+      // does not also pass --routing-recommendation standalone), so dropping it
+      // here would leave a fresh handoff with no next_command.
+      unsupportedRouting: stringOrNull(raw.routing_recommendation),
     };
   }
   if (!VALID_ARCHIVE_GATES.has(raw.archive_gate)) {

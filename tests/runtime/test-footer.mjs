@@ -764,6 +764,27 @@ describe('runtime footer session handoff (ADR-0031)', () => {
     ok(text.includes('next command: /orchestrator:next'));
   });
 
+  it('reports an honest unsupported workflow_kind in the footer instead of no-active-workflow (runtime-unsupported-kind)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-unsupported-'));
+    const projPath = join(root, 'founder.json');
+    // A founder workflow projects workflow_kind:'founder', which runtime does not
+    // model. The footer the user sees must report it honestly, not silently drop
+    // to the no-active-workflow (absent) path.
+    await writeFile(projPath, JSON.stringify(fullProjection({ workflow_kind: 'founder', routing_recommendation: '/founder:resume' })));
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'claude',
+      contextState: 'yellow',
+      workflowProjectionFile: projPath,
+    });
+    strictEqual(report.session_handoff.archive_gate, 'unsupported_kind');
+    strictEqual(report.session_handoff.unsupported_workflow_kind, 'founder');
+    ok(report.projection_error, 'the projection rejection is still surfaced');
+    const text = formatText(report);
+    ok(text.includes('unsupported workflow kind: founder'), 'footer text names the unsupported kind');
+    ok(/enablement out of scope/.test(text), 'footer text records the enablement boundary');
+  });
+
   it('degrades to per-field workflow flags and omits session_handoff without a projection', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-footer-noproj-'));
     const report = await runFooter({
