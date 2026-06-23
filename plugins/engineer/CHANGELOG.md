@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.17.0...plugin-engineer-v0.18.0) (2026-06-23)
+
+
+### Features
+
+* **plugin/engineer:** ADR-0031 activation sidecar — fire session-handoff from set-terminal ([#428](https://github.com/each4all/agentic-plugins/issues/428)) ([5baf201](https://github.com/each4all/agentic-plugins/commit/5baf20156aed565e969b44932beaa1353e551c90))
+* **plugin/engineer:** ADR-0031 hook backstop — late re-surface session-handoff from Stop/SessionStart ([#433](https://github.com/each4all/agentic-plugins/issues/433)) ([5bc96e6](https://github.com/each4all/agentic-plugins/commit/5bc96e62bac6db037fb78385e56b69ab9b6c9b4c))
+
 ## [0.17.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.16.0...plugin-engineer-v0.17.0) (2026-06-05)
 
 
