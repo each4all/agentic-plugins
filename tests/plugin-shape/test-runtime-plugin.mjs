@@ -242,7 +242,7 @@ describe('plugins/runtime settings surface', () => {
     const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
     for (const token of [
       'Claude Code `2.1.186`',
-      'Codex CLI\n`0.141.0`',
+      'Codex CLI\n`0.142.0`',
       'https://developers.openai.com/codex/subagents',
       'https://developers.openai.com/codex/hooks',
       'https://code.claude.com/docs/en/plugins',
