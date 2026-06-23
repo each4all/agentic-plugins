@@ -241,8 +241,8 @@ describe('plugins/runtime settings surface', () => {
   it('documents the Claude-vs-Codex host parity baseline with source-backed non-parity boundaries', async () => {
     const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
     for (const token of [
-      'Claude Code `2.1.173`',
-      'Codex CLI\n`0.139.0`',
+      'Claude Code `2.1.186`',
+      'Codex CLI\n`0.141.0`',
       'https://developers.openai.com/codex/subagents',
       'https://developers.openai.com/codex/hooks',
       'https://code.claude.com/docs/en/plugins',
