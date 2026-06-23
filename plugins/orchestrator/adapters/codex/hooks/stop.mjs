@@ -28,12 +28,39 @@
 // Hook absence is non-fatal (ADR-0011 §4 explicit). This script
 // silently no-ops on any error.
 
+import { listAllMacros, readWorkflow } from '../../../scripts/state.mjs';
+import { emitTerminalHandoffSidecar } from '../../../scripts/session-handoff.mjs';
 import { runMacroStopArchiveAll } from '../../../scripts/stop-archive.mjs';
 import { gitHeadSubject, gitStatusDigest, gitTopLevel } from '../../claude/hooks/_shared.mjs';
+
+// ADR-0031 hook backstop (orchestrator-hook-backstop) — before the archive scan,
+// (re)fire the activation sidecar for any TERMINAL macro so the guaranteed
+// channel is populated even when the primary setMacroTerminal / updateSubtask
+// emit was missed or failed transiently. Branch-agnostic; per-macro + whole-scan
+// non-fatal so it never blocks the Stop lifecycle. Not a substitute for primary.
+async function fireMacroHandoffBackstop(repoRoot) {
+  try {
+    const macros = await listAllMacros(repoRoot);
+    for (const workflowPath of macros) {
+      try {
+        const { frontmatter } = await readWorkflow(workflowPath);
+        if (frontmatter?.terminal_marker === true) {
+          await emitTerminalHandoffSidecar({ repoRoot, workflowPath });
+        }
+      } catch {
+        /* per-macro non-fatal — skip an unreadable macro */
+      }
+    }
+  } catch (err) {
+    process.stderr.write(`orchestrator/codex-stop handoff-backstop: ${err.message}\n`);
+  }
+}
 
 async function main() {
   const repoRoot = gitTopLevel(process.cwd());
   if (!repoRoot) return 0;
+
+  await fireMacroHandoffBackstop(repoRoot);
 
   try {
     await runMacroStopArchiveAll({
