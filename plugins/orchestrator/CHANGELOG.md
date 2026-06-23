@@ -18,6 +18,14 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.10.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.9.0...plugin-orchestrator-v0.10.0) (2026-06-23)
+
+
+### Features
+
+* **plugin/orchestrator:** ADR-0031 activation sidecar — fire session-handoff from macro terminal surfaces ([#432](https://github.com/each4all/agentic-plugins/issues/432)) ([15eb4f3](https://github.com/each4all/agentic-plugins/commit/15eb4f3ecd3d9a091af84aee218f194b8f60506d))
+* **plugin/orchestrator:** ADR-0031 hook backstop — late re-surface macro session-handoff from Stop/SessionStart ([#434](https://github.com/each4all/agentic-plugins/issues/434)) ([c763006](https://github.com/each4all/agentic-plugins/commit/c763006561f1044e1eaa1455ac38f3fa58469eb4))
+
 ## [0.9.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.8.0...plugin-orchestrator-v0.9.0) (2026-06-04)
 
 
