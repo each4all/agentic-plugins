@@ -367,6 +367,34 @@ function inferStorageFromWorkflowPath(workflowPath) {
   return null;
 }
 
+/**
+ * ADR-0031 amendment — fire the orchestrator activation sidecar for a macro
+ * whose must-run completion mutation just landed (the file lock has released).
+ * Lazy dynamic import: a static `state.mjs -> session-handoff.mjs` import would
+ * cycle (session-handoff imports state), and a top-level await of a
+ * back-importing module can deadlock settlement, so the import stays inside this
+ * async fn. Fail-closed + non-fatal: never throws; the sidecar writes only
+ * stderr + a projection file, never stdout (the completion scripts' stdout
+ * contracts are load-bearing). Shared by setMacroTerminal + updateSubtask so the
+ * two macro terminal surfaces fire identically.
+ */
+async function fireMacroHandoffSidecar(workflowPath) {
+  try {
+    const inferred = inferStorageFromWorkflowPath(workflowPath);
+    if (!inferred) return;
+    const { repoRoot, home } = inferred;
+    const projectionFile = join(statePaths(repoRoot, home).root, 'last-session-handoff.json');
+    const { emitTerminalHandoffSidecar } = await import('./session-handoff.mjs');
+    // Project the EXACT macro just terminalized (by path), not whatever is
+    // active on the current checkout branch — these mutations can be invoked
+    // cross-branch on an explicit workflowPath.
+    await emitTerminalHandoffSidecar({ repoRoot, workflowPath, projectionFile });
+  } catch {
+    // non-fatal: the terminal write already landed; the sidecar must never
+    // break a macro completion (ADR-0031 amendment).
+  }
+}
+
 // -----------------------------------------------------------------------------
 // ID generation per ADR-0018 §sub-1
 //
@@ -2548,6 +2576,9 @@ const TERMINAL_SUBTASK_STATUSES = new Set(['completed', 'deferred', 'abandoned']
 const UPDATE_SUBTASK_ALLOWED_KEYS = new Set([
   'workflowPath', 'subtaskId', 'status', 'engineerWorkflowId',
   'commit', 'prUrl', 'closedAt', 'host', 'event', 'now',
+  // ADR-0031 amendment — behavioral opt-in for the activation sidecar (NOT a
+  // subtask field; never enters the update payload). Production CLI passes true.
+  'emitHandoff',
 ]);
 
 export async function updateSubtask(opts) {
@@ -2580,6 +2611,11 @@ export async function updateSubtask(opts) {
     host,
     event = 'updated',
     now = new Date(),
+    // ADR-0031 amendment — opt-in (production CLI subtask-update sets true).
+    // Fires the activation sidecar ONLY when this call's auto-terminal pass
+    // actually promotes the macro to terminal; default off keeps the helper
+    // side-effect-free for tests / internal callers.
+    emitHandoff = false,
   } = opts;
   validateHost(host);
   validateHookEvent(event);
@@ -2659,7 +2695,7 @@ export async function updateSubtask(opts) {
     );
   }
 
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  const result = await withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     ensureMutable(frontmatter);
@@ -2847,6 +2883,16 @@ export async function updateSubtask(opts) {
       autoTerminal: autoTerminalSetThisCall,
     };
   });
+  // ADR-0031 amendment — fire the activation sidecar AFTER the file lock
+  // released, but ONLY when this call's auto-terminal pass actually promoted the
+  // macro to terminal (the happy-path /done landing the last subtask). The skip
+  // paths above return autoTerminal=false, so a no-op / mid-flight update never
+  // fires. NOT a blind engineer mirror: engineer fires on every set-terminal;
+  // the orchestrator's updateSubtask fires only on the auto-terminal transition.
+  if (emitHandoff && result.autoTerminal) {
+    await fireMacroHandoffSidecar(workflowPath);
+  }
+  return result;
 }
 
 // -----------------------------------------------------------------------------
@@ -3109,6 +3155,10 @@ export async function setMacroTerminal({
   nextAction,
   event = 'updated',
   now = new Date(),
+  // ADR-0031 amendment — opt-in (production CLI set-terminal, the /finalize +
+  // /abort surface, sets true). Fires the activation sidecar after the mutation
+  // when the macro is marked terminal; default off for tests / internal callers.
+  emitHandoff = false,
 }) {
   validateHost(host);
   validateHookEvent(event);
@@ -3124,7 +3174,7 @@ export async function setMacroTerminal({
       `setMacroTerminal: terminalMarker must be a boolean (got ${typeof terminalMarker} ${JSON.stringify(terminalMarker)})`,
     );
   }
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  const result = await withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     if (frontmatter?.schema === '1.0') {
@@ -3149,6 +3199,13 @@ export async function setMacroTerminal({
     );
     return { workflowPath, frontmatter };
   });
+  // ADR-0031 amendment — fire the activation sidecar AFTER the lock released,
+  // but ONLY when the macro was actually marked terminal (the /finalize +
+  // /abort surface). A `--terminal-marker false` un-mark never fires.
+  if (emitHandoff && terminalMarker === true) {
+    await fireMacroHandoffSidecar(workflowPath);
+  }
+  return result;
 }
 
 /**
@@ -3789,6 +3846,9 @@ async function cliMain(argv) {
           terminalMarker,
           nextAction: flags['next-action'],
           event: flags.event ?? 'updated',
+          // ADR-0031 amendment — this is the /finalize + /abort production
+          // completion surface; fire the activation sidecar.
+          emitHandoff: true,
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;
@@ -3839,6 +3899,10 @@ async function cliMain(argv) {
           prUrl: flags['pr-url'],
           closedAt: flags['closed-at'],
           event: flags.event ?? 'updated',
+          // ADR-0031 amendment — this is the /done + /next production surface;
+          // opt in. The sidecar fires only when this call's auto-terminal pass
+          // promotes the macro to terminal (guarded inside updateSubtask).
+          emitHandoff: true,
         });
         // Emit JSON envelope so callers (PR-C engineer parent-writeback
         // helper, PR-D /next + /done runbooks) can parse the result
@@ -3872,6 +3936,16 @@ async function cliMain(argv) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const code = await cliMain(process.argv.slice(2));
-  process.exit(code);
+  // Wrap cliMain in an async IIFE rather than awaiting it at top level.
+  // Top-level await blocks circular dynamic imports performed inside cliMain
+  // (the ADR-0031 activation sidecar in setMacroTerminal / updateSubtask
+  // dynamically imports session-handoff.mjs, which re-imports from this file):
+  // with top-level await pending, the inner dynamic import resolves to a Module
+  // record whose state never settles, and Node emits "Detected unsettled
+  // top-level await" before exiting with code 13. The IIFE keeps the dispatch
+  // asynchronous without making it top-level.
+  (async () => {
+    const code = await cliMain(process.argv.slice(2));
+    process.exit(code);
+  })();
 }
