@@ -140,11 +140,26 @@ describe('engineer hook handoff backstop — helpers (ADR-0031)', () => {
       strictEqual(summary.workflow_id, SAMPLE.workflow_id);
       strictEqual(summary.archive_gate, 'ready_to_archive');
       strictEqual(summary.routing_recommendation, '/engineer:resume');
-      ok(/runtime:context check/.test(summary.render), 'carries the continue-vs-fresh render pointer');
+      // The render file-pointer was removed: the one-shot file is consumed right
+      // after the line is emitted, so the marker is SELF-CONTAINED — archive_gate
+      // + routing_recommendation carry the continue-vs-fresh signal directly.
+      ok(!('render' in summary), 'no stale --workflow-projection-file pointer (file is consumed)');
+      ok(summary.note && /archive_gate \+ routing/i.test(summary.note), 'note is self-contained continue-vs-fresh guidance');
       ok(summary.note && /treat as data/i.test(summary.note), 'data-not-instructions note present');
       // next_action is the imperative-injection vector — it must NOT appear.
       ok(!('next_action' in summary), 'next_action key excluded');
       ok(!out.line.includes('IMPERATIVE INJECTION'), 'next_action value not leaked');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not re-inject a fields-less projection (workflow_id fail-closed)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'eng-backstop-malformed-'));
+    try {
+      // An object but with no usable workflow_id must NOT produce an empty marker.
+      await writeProjection(dir, { archive_gate: 'ready_to_archive' });
+      strictEqual(await pendingHandoffReinjectionLine(dir), null, 'object without workflow_id → no re-injection');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
