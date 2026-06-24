@@ -64,19 +64,28 @@ Add **`plugins/image`** as a Layer-2 capability plugin
 `image` is persona-agnostic and reusable by any future persona
 (`designer`, `founder`, `engineer`) and self-serve via its own commands.
 
-1. **Verbs (compose-centric).** Canonical names `image:<verb>`:
-   - `image:compose` — turn an image brief into a generated image
-     (the core verb; MVP scope).
-   - `image:critique` — evaluate a generated image against the brief,
+1. **Verbs (full six-verb capability).** Canonical names `image:<verb>`,
+   the standard six cognitive verbs
+   ([ADR-0010](0010-plugin-boundary-policy.md) §2):
+   - `image:investigate` — gather visual references, style exemplars,
+     and brand/visual constraints.
+   - `image:frame` — turn the request into an explicit **image brief**:
+     subject, composition, style, palette, aspect ratio, and the desired
+     output parameters (size, format, transparency, variant count) plus
+     success criteria.
+   - `image:decide` — choose among candidate approaches, styles, or
+     generated variants under the brief's constraints.
+   - `image:compose` — generate the image (the generative core).
+   - `image:critique` — evaluate a generated image against the brief
      using vision input (Codex `exec --image <FILE>` attaches the
-     generated file back for assessment — a clean compose/critique
-     symmetry).
+     generated file back — a clean compose/critique symmetry).
    - `image:refine` — apply critique/feedback and regenerate.
 
-   The deliberative verbs (`investigate` style/reference gathering,
-   `frame` the brief, `decide` among variants) are admissible later but
-   are **not** in the MVP. Image generation is fundamentally a `compose`
-   activity, so a full six-verb persona is not warranted.
+   The capability is designed **full six-verb** to support quality-first
+   image work (explicit brief, variant selection, evaluation loop), not a
+   bare prompt-to-file shim. The build MAY sequence `compose` first to
+   validate the cross-host pipeline, then layer the deliberative and
+   evaluation verbs — but the target surface is all six.
 
 2. **Domains are profiles/usage, not plugins.** Design / diagram /
    marketing / game-asset usage are L4 profiles (or caller-supplied
@@ -112,12 +121,47 @@ Add **`plugins/image`** as a Layer-2 capability plugin
    unavailable/unauthenticated), `image:compose` reports the limitation
    explicitly rather than failing silently or pretending.
 
+7. **Generation parameters — prompt-rendered through Codex, structured
+   only via direct API.** OpenAI exposes image generation two ways: the
+   **Image API** (`images.generate`/`.edit`, caller picks the GPT Image
+   model directly, e.g. `gpt-image-2`) and the **Responses API**
+   `image_generation` built-in tool (a mainline model such as `gpt-5.5`
+   invokes it). **Codex uses the Responses-API tool path.** Empirically
+   (probe 2026-06-24) Codex surfaces only the **`prompt`** to the
+   session — it does **not** expose `size`, `quality`, `format`,
+   `background`, `n`, or edit/mask options as controllable parameters,
+   even though the tool itself accepts several of them. The underlying
+   **`gpt-image-2`** model supports (per OpenAI's image-generation guide;
+   re-confirm at build time):
+   - **size** — flexible, *not* a fixed list: any resolution with edges
+     multiples of `16px`, max edge ≤ `3840px`, aspect ≤ `3:1`, total
+     `655,360`–`8,294,400` px (popular: `1024x1024`, `1536x1024`,
+     `1024x1536`, `2048x2048`, 2K/4K, `auto`);
+   - **quality** — `low` / `medium` / `high` / `auto`;
+   - **format** — `png` (default) / `jpeg` / `webp`, plus
+     `output_compression` (0–100) for jpeg/webp;
+   - **background** — `opaque` / `auto` only; **`gpt-image-2` does NOT
+     support transparent backgrounds** (a regression from `gpt-image-1`);
+   - **n** (multiple images), **moderation** (`auto`/`low`), **edits**
+     (one+ reference images + optional alpha **mask**), **partial_images**
+     (0–3, streaming).
+
+   Therefore `image:frame` captures the desired parameters in the brief;
+   through the Codex bridge they are **rendered into the prompt**
+   (best-effort — the 2026-06-24 spike confirms a prompt-stated size was
+   honored). A **guaranteed structured-parameter contract** (exact size,
+   quality tier, format/compression, masked edits) requires a **direct
+   OpenAI Images/Responses API** path (API key + org verification, not
+   host-native via Codex), kept as a documented option (Alternative 6)
+   for fidelity-critical use.
+
 This ADR records the **decision to build**; the build itself is a
-multi-deliverable effort (plugin scaffold + compose skill + companion
+multi-deliverable effort (plugin scaffold + verb skills + companion
 dispatch glue + adapters + tests + marketplace entries) suited to
 `/orchestrator:plan` after this ADR is Accepted. The first build slice
-must re-confirm item 3 through the *actual* `codex-companion` invocation
-(no sandbox bypass).
+must re-confirm items 3 and 7 through the *actual* `codex-companion`
+invocation (no sandbox bypass) — both the file return and which
+prompt-rendered parameters Codex reliably honors.
 
 ## Consequences
 
@@ -146,6 +190,16 @@ must re-confirm item 3 through the *actual* `codex-companion` invocation
   images is a new concern.
 - Integration must still confirm the non-bypassed sandbox/approval path;
   the feasibility spike used a bypass flag to isolate the core question.
+- Through Codex, generation parameters (size / quality / format / variant
+  count) are **prompt-rendered best-effort**, not a structured contract;
+  fidelity-critical control needs the direct-API path (Alternative 6).
+  Some controls are model-limited regardless — e.g. `gpt-image-2` has no
+  transparent-background support.
+- Image generation has **real per-image cost** (`gpt-image-2` ≈ $0.005
+  low / $0.04 medium / $0.17–0.21 high, size-dependent) and a
+  content-moderation gate (`moderation_blocked` with category/stage
+  detail); the plugin must surface cost and handle moderation/quota
+  errors explicitly — no hidden spend, no blind retry of user errors.
 
 **Neutral**:
 
@@ -185,6 +239,18 @@ must re-confirm item 3 through the *actual* `codex-companion` invocation
    path + text pointer already suffices, and keeping the contract
    text-only preserves the wire-spec's simplicity (ADR-0009).
 
+6. **Direct OpenAI Images/Responses API for structured parameters.**
+   Calling the Image API (`gpt-image-2`) or constructing the Responses
+   API `image_generation` tool call directly would give exact control
+   over size / quality / format / compression / n / masked edits — which
+   the Codex bridge does not surface (Decision 7). Rejected as the
+   *default* path: it needs an `OPENAI_API_KEY` plus org verification,
+   reintroduces a direct external-service dependency outside the
+   host-native/zero-config posture, and duplicates auth Codex already
+   holds. Retained as an explicit **opt-in path** (behind a user-provided
+   key) for fidelity-critical parameter control if prompt-rendering via
+   Codex proves insufficient.
+
 ## References
 
 - [ADR-0001](0001-hexagonal-architecture.md) — honest scope / no false
@@ -198,3 +264,8 @@ must re-confirm item 3 through the *actual* `codex-companion` invocation
   the Claude-host path.
 - 2026-06-23 feasibility spike — `codex exec` non-interactive gpt-image
   generation producing a valid PNG on the filesystem.
+- 2026-06-24 Codex parameter probe — Codex's `image_generation` tool
+  surfaces only `prompt`, not structured size/quality/format/background/n.
+- OpenAI image-generation guide (`gpt-image-2`) — Image API vs Responses
+  API tool, size/quality/format/compression/background/n/moderation/edits
+  parameters, per-image cost, and content-moderation error handling.
