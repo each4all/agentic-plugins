@@ -1,0 +1,7 @@
+interface:
+  display_name: "Image — Compose"
+  short_description: "Generate an image through Codex's integrated gpt-image tool"
+  default_prompt: "Use $image:compose to generate the image via Codex's integrated gpt-image (native on Codex, the codex-companion bridge on Claude)"
+
+policy:
+  allow_implicit_invocation: false

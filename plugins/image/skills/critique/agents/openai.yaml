@@ -1,0 +1,7 @@
+interface:
+  display_name: "Image — Critique"
+  short_description: "Evaluate a generated image against the brief using vision input"
+  default_prompt: "Use $image:critique to evaluate a generated image against the brief via Codex vision input (codex exec --image)"
+
+policy:
+  allow_implicit_invocation: false

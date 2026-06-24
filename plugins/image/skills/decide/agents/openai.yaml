@@ -1,0 +1,7 @@
+interface:
+  display_name: "Image — Decide"
+  short_description: "Choose among candidate approaches, styles, or generated variants"
+  default_prompt: "Use $image:decide to choose among candidate styles or select the best generated variant under the brief"
+
+policy:
+  allow_implicit_invocation: false

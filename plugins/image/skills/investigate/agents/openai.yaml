@@ -1,0 +1,7 @@
+interface:
+  display_name: "Image — Investigate"
+  short_description: "Gather visual references, style exemplars, and brand/visual constraints"
+  default_prompt: "Use $image:investigate to gather visual references and style exemplars before framing the image brief"
+
+policy:
+  allow_implicit_invocation: false

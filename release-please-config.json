@@ -62,6 +62,23 @@
         }
       ]
     },
+    "plugins/image": {
+      "package-name": "plugin-image",
+      "component": "plugin-image",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": ".claude-plugin/plugin.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": ".codex-plugin/plugin.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
     "plugins/orchestrator": {
       "package-name": "plugin-orchestrator",
       "component": "plugin-orchestrator",
