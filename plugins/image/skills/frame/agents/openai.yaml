@@ -1,0 +1,7 @@
+interface:
+  display_name: "Image — Frame"
+  short_description: "Turn an image request into an explicit image brief"
+  default_prompt: "Use $image:frame to turn the request into an explicit image brief (subject, composition, style, size, format) before generating"
+
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Image — Refine"
+  short_description: "Apply critique or feedback and regenerate the image"
+  default_prompt: "Use $image:refine to apply critique findings and regenerate the image (a new spending loop — cost disclosed)"
+
+policy:
+  allow_implicit_invocation: false
