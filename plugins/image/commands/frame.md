@@ -17,4 +17,14 @@ never pretend prompt wording guarantees an unsupported parameter.
 > **Lean L2 — no workflow state.** The brief is written as `brief.json`
 > under the run dir (`docs/contracts.md`), not a durable workflow file.
 
-> **Scaffold stub.** Full implementation lands in the `frame` verb PR.
+**Validate before compose**: run the helper to check the brief's output
+parameters against gpt-image-2 limits (size grid/aspect/total, quality, format,
+variants, and the unsupported transparent background):
+
+```bash
+node "$CLAUDE_PLUGIN_ROOT/scripts/brief-validate.mjs" --brief-file <brief.json>
+```
+
+Surface issues; do NOT pass an invalid brief to compose. Write the brief as
+`brief.json` — `image:compose` renders its subject/style into the prompt and
+its output params into `--size`/`--quality`/`--format`.
