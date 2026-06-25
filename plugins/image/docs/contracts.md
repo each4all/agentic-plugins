@@ -198,6 +198,8 @@ errors):
 | `peer_unauthenticated` | Codex present but not authenticated | honest-scope failure, no retry |
 | `tool_unavailable` | gpt-image tool not available in the Codex session | honest-scope failure |
 | `write_failed` | image could not be written/verified on the shared fs | surface path + reason |
+| `malformed_envelope` | companion returned non-JSON / unparseable output | surface; no retry |
+| `peer_run_error` | companion ran but failed for another (non-typed) reason | surface detail; no blind retry |
 
 The **honest-scope failure mode** (ADR-0037 Decision 6): where neither
 native generation nor a reachable Codex bridge exists, `image:compose`

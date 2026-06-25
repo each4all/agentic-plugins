@@ -25,5 +25,19 @@ the genericized form leaves the local host. Surface per-image cost; never
 hide spend. Classify failures per the typed error taxonomy
 (`docs/contracts.md` §8); no blind retry.
 
-> **Scaffold stub.** The generative core + companion dispatch glue + the
-> ADR-0037 item 3/7 non-bypass re-confirm land in the `compose-core` PR.
+**Before dispatch**: pass the privacy gate (genericize the prompt) and
+disclose the estimated per-image cost (`docs/contracts.md` §7). Then run the
+helper (Claude host):
+
+```bash
+node "$CLAUDE_PLUGIN_ROOT/scripts/compose-dispatch.mjs" \
+  --prompt-file <genericized-prompt-file> --repo-root "$REPO_ROOT" \
+  --format png --quality low|medium|high [--size <WxH>] [--slug <slug>]
+```
+
+The helper discovers `codex-companion`, generates via Codex's integrated
+gpt-image, **verifies the returned file** (exists / under the run root /
+non-empty / sniffed dimensions), and writes the `ImageResult` manifest. It
+never trusts Codex stdout. Classify failures per the typed error taxonomy
+(`docs/contracts.md` §8); no blind retry. `peer_cli_not_found` is the
+honest-scope failure — report it explicitly.
