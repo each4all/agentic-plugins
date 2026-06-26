@@ -5,13 +5,44 @@ description: "Gathers visual references, style exemplars, and brand/visual const
 
 # Investigate (image capability)
 
-The image plugin's evidence-gathering verb (ADR-0010 §2, ADR-0037
-Decision 1). Gathers visual references, style exemplars, and brand/visual
-constraints that feed the `ImageBrief` (`docs/contracts.md` §3).
+The image plugin's evidence-gathering verb (ADR-0010 §2, ADR-0037 Decision 1).
+Gathers visual references, style exemplars, and brand/visual constraints that
+feed the `ImageBrief` (`docs/contracts.md` §3). No image generation here — no
+generation cost.
 
-The privacy gate (`docs/contracts.md` §9) covers web/reference
-investigation AND attached reference assets — only genericized material
-leaves the local host.
+## When invoked
 
-> **Scaffold stub.** Full implementation lands in the `investigate` verb
-> PR. This scaffold establishes the verb surface + contract.
+1. **Privacy gate** (`docs/contracts.md` §9): genericize the subject/brand
+   before any web search or cross-host dispatch. The gate covers **attached
+   reference assets** too — never use a private image's **bytes, filename,
+   metadata, or private asset URL** as a web-search input, never reverse-image
+   -search or upload a private/unpublished asset, and never send proprietary
+   brand material off-host. If a request needs references that cannot be
+   genericized, gather only what the gate allows and state what was held back
+   (honest scope).
+
+2. **Gather** via web search (WebSearch / WebFetch), preferring authoritative
+   sources:
+   - **brand / visual constraints** — prefer official/public brand guidelines
+     first
+   - **style** exemplars — art direction, medium, rendering style (public
+     sources)
+   - **palette** references — colour, mood
+   - **composition** patterns — framing, layout, focal point
+
+   For each reference, note what the source actually supports (a style cue, a
+   palette, a layout) so frame can turn it into a concrete field.
+
+3. **Structure** the findings as **field proposals + separate source notes**.
+   `ImageBrief` (`docs/contracts.md` §3) has no citation field — keep URLs and
+   citations OUT of the prompt-rendered fields (`style`/`palette`/`composition`)
+   and in a separate "sources" note. Flag anything the **Codex prompt path
+   cannot surface** — not only model-level impossibilities like a transparent
+   background, but also reference images, masks, partial-image streaming, and
+   exact structured controls ("unsupported through Codex / deferred",
+   `docs/contracts.md` §5) — so frame/compose don't promise them.
+
+4. **Hand-off**: the field proposals + source notes feed `image:frame`, which
+   crystallizes + validates the full brief (`scripts/brief-validate.mjs`). Lean
+   L2 — references flow as **text** into the brief, not a run manifest and not
+   durable workflow state.
