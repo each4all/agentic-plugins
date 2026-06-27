@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (2026-06-27, PR #449)
 
 <!--
 Relates to ADR-0024 (runtime operator control plane) and ADR-0035
