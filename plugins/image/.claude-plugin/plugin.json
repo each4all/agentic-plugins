@@ -1,6 +1,6 @@
 {
   "name": "image",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Image capability — cross-host image generation via Codex's integrated gpt-image tool through the companion bridge. L2 capability plugin per ADR-0010 4-layer composition (ADR-0037). Six cognitive verbs (investigate / frame / decide / compose / critique / refine); generation runs only through Codex's integrated gpt-image (never a direct OpenAI API call), with the Claude host dispatching through the codex-companion bridge and results returned by shared-filesystem path plus text pointer. Lean L2 design — no workflow-continuity machinery; brief/result flow through run manifests under .agentic-plugins/runs/image/.",
   "author": {
     "name": "each4all",
