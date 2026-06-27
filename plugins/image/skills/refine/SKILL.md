@@ -5,14 +5,42 @@ description: "Applies critique findings or feedback and regenerates the image �
 
 # Refine (image capability)
 
-The image plugin's refinement verb (ADR-0010 §2, ADR-0037 Decision 1).
-Applies critique/feedback and regenerates through Codex's integrated
-gpt-image (the same dispatch path as `image:compose`).
+The image plugin's refinement verb (ADR-0010 §2, ADR-0037 Decision 1). Applies
+critique/feedback and regenerates through Codex's integrated gpt-image — it
+**reuses `compose-dispatch`** (the same generation + return-validation path).
 
-Each regeneration is a **new spending loop**: explicit per-iteration cost
-disclosure + a cap, and no automatic retry of user/moderation errors
-(`docs/contracts.md` §8). The privacy gate genericizes the revised prompt
-before dispatch (`docs/contracts.md` §9).
+## When invoked
 
-> **Scaffold stub.** Full implementation lands in the `refine-loop` PR.
-> This scaffold establishes the verb surface + contract.
+1. **Cost gate** (`docs/contracts.md` §7): each refine is a **new generation** —
+   disclose the per-iteration cost **before** regenerating. The helper computes
+   it without spending:
+
+   ```bash
+   node "$CLAUDE_PLUGIN_ROOT/scripts/refine-dispatch.mjs" --estimate-only --quality low
+   ```
+
+   There is a **hard iteration cap** (default 3, and a caller cannot raise it —
+   `--max-iterations` is clamped); there is **no automatic retry** of
+   user/moderation errors.
+
+2. **Regenerate** with the feedback applied:
+
+   ```bash
+   node "$CLAUDE_PLUGIN_ROOT/scripts/refine-dispatch.mjs" \
+     --base-prompt-file <base.txt> --feedback-file <feedback.txt> \
+     --iteration <N> --max-iterations 3 --repo-root "$REPO_ROOT" \
+     --format png --quality low [--size <WxH>]
+   ```
+
+   It renders the base prompt + feedback into a new generation, writes a fresh
+   `ImageResult` manifest (new run-id), verifies the returned file (via
+   compose-dispatch), and surfaces the per-iteration cost. Past the cap it
+   returns `iteration_cap` and does NOT generate.
+
+3. **Privacy gate** (`docs/contracts.md` §9): genericize the revised prompt +
+   feedback before cross-host dispatch — only the genericized form leaves the
+   local host.
+
+4. **Loop**: critique the new image (`image:critique`); if it still fails,
+   refine again within the cap, or stop and report. Lean L2 — each iteration is
+   a run manifest, not durable workflow state.

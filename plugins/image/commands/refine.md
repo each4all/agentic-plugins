@@ -19,4 +19,16 @@ retry of user or moderation errors (`docs/contracts.md` §8).
 
 **Privacy gate**: genericize the revised prompt before cross-host dispatch.
 
-> **Scaffold stub.** Full implementation lands in the `refine-loop` PR.
+**Cost gate**: each refine is a NEW generation — disclose cost before
+regenerating (`--estimate-only --quality <q>` computes it without spending);
+HARD iteration cap (default 3, caller cannot raise — `--max-iterations` is
+clamped); no auto-retry of user/moderation errors. Regenerate with the feedback
+applied (reuses compose-dispatch):
+
+```bash
+node "$CLAUDE_PLUGIN_ROOT/scripts/refine-dispatch.mjs" --base-prompt-file <base.txt> --feedback-file <feedback.txt> --iteration <N> --max-iterations 3 --repo-root "$REPO_ROOT" --format png --quality low
+```
+
+Renders base + feedback into a new generation (new run-id manifest, cost
+surfaced). Past the cap it returns `iteration_cap` (no generation). Genericize
+the prompt before dispatch (`docs/contracts.md` §9).
