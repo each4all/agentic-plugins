@@ -63,8 +63,11 @@ agentic-plugins/
 │   │                               # research capability folded in via investigate's cited-brief
 │   │                               # profile per ADR-0014 + ADR-0015 (Stage 2.5+); plugins/research
 │   │                               # archived at commit 28b5eb8
-│   └── founder/                    # L3 persona — new-business planning workbench (ADR-0036, 6 verbs
-│                                   # + start macro + 3 meta skills; second L3 persona, Accepted 2026-06-15)
+│   ├── founder/                    # L3 persona — new-business planning workbench (ADR-0036, 6 verbs
+│   │                               # + start macro + 3 meta skills; second L3 persona, Accepted 2026-06-15)
+│   └── image/                      # L2 capability — cross-host image generation via Codex gpt-image
+│                                   # (ADR-0037, lean L2: 6 verbs + dispatch helpers, no continuity machinery;
+│                                   # generation only through Codex's integrated gpt-image, never a direct API)
 ├── scripts/
 │   ├── sync-companion-bundles.mjs  # drift-checked companion script copy
 │   └── validate-marketplace.mjs    # marketplace catalog validation
@@ -101,8 +104,9 @@ per ADR-0010:
    macro auto-archive. The Stage 1 `plugins/research` incumbent was
    retired at Stage 2.5+ ([ADR-0014](docs/adr/0014-plugins-research-deprecation.md)),
    its cited-brief contract absorbed into `engineer:investigate`'s
-   cited-brief profile. Other planned occupants (`decision`, `image`)
-   remain future work.
+   cited-brief profile. `plugins/image` shipped as an L2 capability
+   ([ADR-0037](docs/adr/0037-image-capability-plugin.md), lean L2 —
+   gpt-image via the companion bridge); `decision` remains future work.
 3. **Layer 3 — Persona / workbench** (`plugins/engineer` Stage 2,
    `plugins/founder` ADR-0036 second L3 persona, `plugins/designer`
    future L3 candidate): user-facing install unit, composes
@@ -216,7 +220,7 @@ files (`git add <package-path> && git commit`).
 
 The package paths are the keys of `release-please-config.json`
 `packages` — currently `companions`, `plugins/companions`,
-`plugins/engineer`, `plugins/founder`, `plugins/orchestrator`, and `plugins/runtime`. Files **outside**
+`plugins/engineer`, `plugins/founder`, `plugins/image`, `plugins/orchestrator`, and `plugins/runtime`. Files **outside**
 every package key prefix are exempt: root files (`AGENTS.md`,
 `README.md`, `package.json`, etc.),
 `docs/`, `scripts/`, `tests/`, `kit/`, `.claude-plugin/`,

@@ -89,7 +89,7 @@ dependency direction:
 |-------|------|------------------------------|
 | **L4 — Profile (sub-discipline within persona)** | Configuration data describing context-specific knowledge: source priorities, evaluation criteria, output contract, citation style, vocabulary, methodology. Unbounded — new sub-disciplines extend existing personas without adding plugins. | `engineer:{backend, frontend, devops, sre, ml, data, ...}`, `designer:{ui, print, brand, frontend, image, motion, ...}` |
 | **L3 — Persona / Workbench plugin** | User-facing install unit. The user wears one persona "hat" at a time. Owns workflow orchestration. Composes capabilities through profiles. | `engineer` (Stage 2), `founder` (ADR-0036), `designer` (Stage 3) |
-| **L2 — Capability plugin** | Persona-agnostic skills providing reusable activities: gather/frame/decide/compose/critique/refine on a particular kind of material. Self-serve via own commands too. | `research` (Stage 1, current), planned: `decision`, `image` |
+| **L2 — Capability plugin** | Persona-agnostic skills providing reusable activities: gather/frame/decide/compose/critique/refine on a particular kind of material. Self-serve via own commands too. | `orchestrator` (Stage 3+), `image` (ADR-0037, shipped); `research` (Stage 1, retired per ADR-0014); planned: `decision` |
 | **L1 — Framework primitive plugin** | Cross-plugin infrastructure: peer-host invocation, workflow runtime, host adapters. Other plugins depend on these. | `companions` (Stage 1, current per ADR-0008), planned: `runtime` (workflow state, hooks, broker) — only when 2+ plugins prove they need it |
 
 Dependency direction: `L4 (data) → L3 (workbench) → L2 (capabilities)
@@ -267,7 +267,7 @@ Plugin names follow **Layer-appropriate axis**:
 | Layer | Naming axis | Pattern | Examples |
 |-------|-------------|---------|----------|
 | L1 framework | infrastructure noun | concrete primitive concept | `companions`, future `runtime` |
-| L2 capability | activity/domain noun | what-it-does | `research`, future `image` |
+| L2 capability | activity/domain noun | what-it-does | `orchestrator`, `image` (ADR-0037); `research` retired; future `decision` |
 | L3 persona | persona noun (`-er` suffix preferred for English consistency) | who-uses-this | `engineer`, future `designer` |
 | L4 profile | sub-discipline noun | hyphen-separated when needed | `backend`, `frontend`, `ui`, `print` |
 

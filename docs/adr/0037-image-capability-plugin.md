@@ -165,6 +165,18 @@ must re-confirm items 3 and 7 through the *actual* `codex-companion`
 invocation (no sandbox bypass) — both the file return and which
 prompt-rendered parameters Codex reliably honors.
 
+> **Build note (2026-06-24..27, 8 subtasks).** The `/orchestrator:plan`
+> macro refined this into a **lean-L2 shape**: `image` ships no host hooks,
+> so no per-host `adapters/<host>/hooks` are built — "adapters" in the list
+> above is general build vocabulary, not a hooks requirement. Workflow-
+> continuity machinery (`state.mjs`, hooks, a `start` macro, and the
+> resume/checkpoint/peer-now meta skills) is likewise omitted; the brief and
+> result flow through run manifests under `.agentic-plugins/runs/image/`.
+> Items 3 and 7 were re-confirmed via the real `codex-companion` (no bypass):
+> compose generated verified 1024×1024 / 768×768 PNGs (prompt-rendered size
+> honored), critique returned a real vision verdict, and refine regenerated
+> blue→red — all through Codex's integrated gpt-image.
+
 ## Consequences
 
 **Positive**:
@@ -190,8 +202,11 @@ prompt-rendered parameters Codex reliably honors.
 - Binary artifacts live out-of-band on the shared filesystem; callers
   must handle path-based results, and cleanup/retention of generated
   images is a new concern.
-- Integration must still confirm the non-bypassed sandbox/approval path;
-  the feasibility spike used a bypass flag to isolate the core question.
+- The non-bypassed sandbox/approval path was confirmed at build time: the
+  compose-core slice generated valid PNGs through the real `codex-companion`
+  in a trusted workspace WITHOUT any bypass flag (see the Build note in
+  Decision; the feasibility spike's bypass flag was only to isolate the core
+  question).
 - Through Codex, generation parameters (size / quality / format / variant
   count) are **prompt-mediated best-effort**, not a structured contract —
   and this is **accepted by design** (direct API is out of scope,

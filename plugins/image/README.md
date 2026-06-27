@@ -53,9 +53,33 @@ parameter limits, typed error taxonomy, retention policy, privacy gate).
 
 ## Status
 
-Scaffold (v0.1.0) — verb surfaces + contract established per ADR-0037. The
-generative core, the brief/decide/critique/refine implementations, and the
-real-generation dogfood land in subsequent PRs (see the orchestrator macro
-plan).
+Shipped (v0.1.0) — all six verbs built and verified per ADR-0037. compose
+(generative core), critique (vision evaluation), and refine (regeneration loop)
+were confirmed **end-to-end with real gpt-image generation** through the
+`codex-companion` bridge (no sandbox bypass); frame (ImageBrief + gpt-image-2
+validation), investigate (visual references), and decide (variant selection +
+safe retention) round out the capability. Lean L2 — no workflow-continuity
+machinery.
+
+> Follow-up: adding `image` to runtime's `PLUGIN_NAMES` (so `runtime:doctor` /
+> `runtime:settings` diagnose it) is a separate cross-package `plugin/runtime`
+> PR (ADR-0016), pending runtime settings/doctor test-fixture updates.
+
+## Install
+
+```sh
+# Claude Code
+claude plugin marketplace add each4all/agentic-plugins
+claude plugin install image@agentic-plugins
+
+# OpenAI Codex CLI — add the marketplace, then enable in ~/.codex/config.toml:
+#   [plugins."image@agentic-plugins"]
+#   enabled = true
+codex plugin marketplace add each4all/agentic-plugins
+```
+
+The Claude host path needs Codex installed + authenticated on the same machine
+(generation rides Codex's integrated gpt-image through the `codex-companion`
+bridge).
 
 See [ADR-0037](../../docs/adr/0037-image-capability-plugin.md).

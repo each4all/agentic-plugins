@@ -40,6 +40,18 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
   per [ADR-0010](../docs/adr/0010-plugin-boundary-policy.md) §5.
   Accepted as a complete L3 persona (2026-06-15). See
   [`plugins/founder/README.md`](founder/README.md).
+- **`image/`** — L2 capability plugin for cross-host image generation via
+  Codex's integrated gpt-image
+  ([ADR-0037](../docs/adr/0037-image-capability-plugin.md)): the six
+  cognitive verbs (`investigate`, `frame`, `decide`, `compose`, `critique`,
+  `refine`), with generation only through Codex's integrated gpt-image
+  (never a direct OpenAI API call) and the Claude host dispatching through
+  `codex-companion`. **Lean L2** — verb skills + commands + dispatch helpers
+  (`compose-dispatch`, `brief-validate`, `variant-select`,
+  `critique-dispatch`, `refine-dispatch`); no workflow-continuity machinery
+  (no `state.mjs`/hooks/start/meta). compose / critique / refine are verified
+  end-to-end with real gpt-image generation. See
+  [`plugins/image/README.md`](image/README.md).
 - **`orchestrator/`** — Stage 3+ L2 capability plugin per
   [ADR-0018](../docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
   §sub-decision-1 and [ADR-0019](../docs/adr/0019-cross-plugin-invocation-contract.md):

@@ -24,7 +24,7 @@ bridges implemented and tested:
 - [`companions/claude-companion.mjs`](companions/claude-companion.mjs) — Codex → Claude bridge
 - [`companions/codex-companion.mjs`](companions/codex-companion.mjs) — Claude → Codex bridge
 
-Five installable plugins ship in this repository:
+Six installable plugins ship in this repository:
 
 - [`plugins/companions/`](plugins/companions/) — script-only library
   plugin that bundles the canonical companion CLIs for cache-glob
@@ -45,6 +45,14 @@ Five installable plugins ship in this repository:
   concerns (markets, unit-economics, regulation, competition), with
   the business ensemble protocol, the `founder:start` lifecycle macro,
   and resume / checkpoint / peer-now meta skills
+- [`plugins/image/`](plugins/image/) — L2 capability plugin for
+  cross-host image generation via Codex's integrated gpt-image
+  ([ADR-0037](docs/adr/0037-image-capability-plugin.md)): the six
+  cognitive verbs (investigate / frame / decide / compose / critique /
+  refine); generation runs only through Codex's integrated gpt-image
+  (never a direct OpenAI API call), with the Claude host dispatching
+  through the `codex-companion` bridge and results returned by
+  shared-filesystem path. Lean L2 — no workflow-continuity machinery.
 - [`plugins/orchestrator/`](plugins/orchestrator/) — Stage 3+ L2
   capability plugin per
   [ADR-0018](docs/adr/0018-stage3-architecture-orchestrator-and-branch-context.md)
@@ -94,6 +102,8 @@ cited-brief contract is now folded into `engineer:investigate`.
 claude plugin marketplace add each4all/agentic-plugins
 claude plugin install companions@agentic-plugins
 claude plugin install engineer@agentic-plugins
+claude plugin install founder@agentic-plugins
+claude plugin install image@agentic-plugins
 claude plugin install orchestrator@agentic-plugins
 claude plugin install runtime@agentic-plugins
 
