@@ -31,7 +31,7 @@
     {
       "name": "image",
       "source": "./plugins/image",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Image capability — cross-host image generation via Codex's integrated gpt-image tool through the companion bridge. L2 capability plugin per ADR-0010 4-layer composition (ADR-0037). Six cognitive verbs (investigate / frame / decide / compose / critique / refine); generation runs only through Codex's integrated gpt-image (never a direct OpenAI API call), with the Claude host dispatching through the codex-companion bridge.",
       "category": "Productivity"
     },
@@ -45,7 +45,7 @@
     {
       "name": "runtime",
       "source": "./plugins/runtime",
-      "version": "0.68.1",
+      "version": "0.69.0",
       "description": "Runtime operator control plane for agentic-plugins host readiness, doctor diagnostics, settings planning, workflow storage migration, consensus artifacts, compatibility drift planning, worktree planning, context hygiene artifacts, model/effort config, companion readiness, and workflow ledger health. L1 framework primitive per ADR-0024.",
       "category": "Productivity"
     }
