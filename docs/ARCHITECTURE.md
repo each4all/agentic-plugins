@@ -67,7 +67,7 @@ model** for plugin organization (ADR-0010).
 │                            occupant; ADR-0018/0019/0023)    │
 │   (plugins/research retired at Stage 2.5+ per ADR-0014;     │
 │    cited-brief absorbed into engineer:investigate)          │
-│   future: plugins/decision, plugins/image                   │
+│   plugins/image (ADR-0037) shipped; future: decision        │
 │   skills: <capability>:<verb> for relevant verbs            │
 ├─────────────────────────────────────────────────────────────┤
 │ L1 — Framework primitive plugins (infrastructure)           │
