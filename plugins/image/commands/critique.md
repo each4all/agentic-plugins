@@ -10,14 +10,22 @@ $ARGUMENTS
 Follow the critique skill at `$CLAUDE_PLUGIN_ROOT/skills/critique/SKILL.md`.
 
 Evaluates a generated image against the brief's success criteria using
-vision input — `codex exec --image <FILE>` attaches the generated file
-back for evaluation (a clean compose/critique symmetry).
+**vision**: Codex reads + visually inspects the image. `codex-companion` has no
+`--image` flag — the helper passes the absolute image path in the prompt
+(prompt-mediated vision, feasibility-confirmed):
 
-**Privacy gate**: attaching an image sends its content to Codex/OpenAI.
-Genericize or gate non-public images before dispatch; handle missing,
-oversized, or unsupported image files explicitly (`docs/contracts.md` §9).
+```bash
+node "$CLAUDE_PLUGIN_ROOT/scripts/critique-dispatch.mjs" \
+  --image <absolute-path> --criteria-file <criteria.txt> --repo-root "$REPO_ROOT"
+```
 
-> **Lean L2 — no workflow state.** The critique references the run manifest
-> (`docs/contracts.md` §4), not a durable workflow file.
+It verifies the file (refuses missing / symlink / non-image / empty / oversized)
+and returns the per-criterion assessment + a verdict (pass/fail).
 
-> **Scaffold stub.** Full implementation lands in the `critique-vision` PR.
+**Privacy gate**: the image path AND its visual contents leave the local host.
+Genericize or gate non-public images before dispatch. On `peer_cli_not_found`,
+report the honest-scope limit (no Codex bridge → no vision critique); do not
+fake a verdict.
+
+> **Lean L2 — no workflow state.** The assessment is text; a failing critique
+> feeds `image:refine`.
