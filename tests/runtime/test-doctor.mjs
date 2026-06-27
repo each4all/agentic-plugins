@@ -15,7 +15,7 @@ describe('runtime doctor', () => {
     // catalog inventory recognition. The founder workflow-ledger health
     // check and hook-readiness gating are deliberate non-goals here
     // (they would couple runtime to founder's state schema / hook exposure).
-    deepStrictEqual(PLUGIN_NAMES, ['companions', 'engineer', 'founder', 'orchestrator', 'runtime']);
+    deepStrictEqual(PLUGIN_NAMES, ['companions', 'engineer', 'founder', 'image', 'orchestrator', 'runtime']);
   });
 
   it('builds a sanitized read-only report from source, CLI, companion, config, and ledger probes', async () => {
