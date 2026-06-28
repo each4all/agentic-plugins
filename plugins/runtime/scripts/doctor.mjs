@@ -14,6 +14,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_VERSION } from './version.mjs';
+import { singleLine, redactSecrets, sanitizeValue } from './lib/permission-sanitize.mjs';
 
 export { RUNTIME_VERSION };
 
@@ -5918,11 +5919,6 @@ function parseNonNegativeInt(value, fallback) {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
-function sanitizeValue(value) {
-  if (value === null || value === undefined) return null;
-  return redactSecrets(singleLine(String(value)));
-}
-
 function sanitizeStringMap(value) {
   const result = {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
@@ -5932,19 +5928,6 @@ function sanitizeStringMap(value) {
     result[safeKey] = sanitizeValue(mapValue);
   }
   return result;
-}
-
-function singleLine(value) {
-  return String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function redactSecrets(value) {
-  return String(value ?? '')
-    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '<redacted-email>')
-    .replace(/\b(?:ghp|github_pat|xox[baprs])_[A-Za-z0-9_=-]{12,}\b/g, '<redacted-token>')
-    .replace(/\b(?:sk|sk-proj|sk-ant)-[A-Za-z0-9_-]{12,}\b/g, '<redacted-token>')
-    .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, '<redacted-aws-key>')
-    .replace(/\b[0-9a-f]{32,}\b/gi, '<redacted-hex>');
 }
 
 function sha256(value) {

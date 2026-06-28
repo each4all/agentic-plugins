@@ -1,0 +1,121 @@
+// Tests for the shared permission-advisor sanitize util (ADR-0038 §5).
+// Pure helpers only: pattern generalization + secret redaction + line
+// normalization. No artifact writes, no host-config access.
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  singleLine,
+  redactSecrets,
+  sanitizeValue,
+  generalizeCommand,
+} from '../../plugins/runtime/scripts/lib/permission-sanitize.mjs';
+
+describe('permission-sanitize singleLine', () => {
+  it('collapses CR/LF/tab and runs of whitespace to a single space', () => {
+    assert.equal(singleLine('a\n\tb   c'), 'a b c');
+  });
+  it('strips all C0 control chars and DEL (settings-grade width)', () => {
+    // Built via fromCharCode so no literal control chars live in source.
+    const ctrl = String.fromCharCode(0, 7, 31, 127);
+    assert.equal(singleLine('a' + ctrl + 'b'), 'a b');
+  });
+  it('trims leading/trailing whitespace', () => {
+    assert.equal(singleLine('  hi  '), 'hi');
+  });
+  it('coerces null/undefined to empty string', () => {
+    assert.equal(singleLine(null), '');
+    assert.equal(singleLine(undefined), '');
+  });
+});
+
+describe('permission-sanitize redactSecrets', () => {
+  it('redacts emails', () => {
+    assert.match(redactSecrets('contact me@example.com now'), /<redacted-email>/);
+  });
+  it('redacts GitHub tokens', () => {
+    assert.match(redactSecrets('ghp_0123456789abcdefABCD'), /<redacted-token>/);
+    assert.match(redactSecrets('github_pat_11AB:CDEF0123456789'), /<redacted-token>/);
+  });
+  it('redacts OpenAI/Anthropic keys', () => {
+    assert.match(redactSecrets('sk-ant-0123456789abcdef'), /<redacted-token>/);
+    assert.match(redactSecrets('sk-proj-0123456789abcdef'), /<redacted-token>/);
+  });
+  it('redacts AWS access keys', () => {
+    assert.match(redactSecrets('AKIAIOSFODNN7EXAMPLE'), /<redacted-aws-key>/);
+  });
+  it('redacts long hex blobs', () => {
+    assert.match(redactSecrets('deadbeefdeadbeefdeadbeefdeadbeef'), /<redacted-hex>/);
+  });
+  it('redacts password= assignments without dropping the key name', () => {
+    const out = redactSecrets('password=hunter2 trailing');
+    assert.match(out, /password=<redacted>/);
+    assert.doesNotMatch(out, /hunter2/);
+  });
+  it('redacts spaced password assignments (Codex review MAJOR)', () => {
+    assert.doesNotMatch(redactSecrets('password = hunter2'), /hunter2/);
+  });
+  it('redacts bearer tokens including base64 chars (Codex review MAJOR)', () => {
+    const out = redactSecrets('Authorization: Bearer abc+def/ghi==');
+    assert.match(out, /Bearer <redacted>/);
+    assert.doesNotMatch(out, /abc\+def/);
+    assert.doesNotMatch(out, /ghi==/);
+  });
+  it('redacts plain bearer tokens', () => {
+    const out = redactSecrets('Bearer abc.def-123_XYZ');
+    assert.match(out, /Bearer <redacted>/);
+    assert.doesNotMatch(out, /abc\.def-123_XYZ/);
+  });
+  it('redacts credentials embedded in URLs', () => {
+    const out = redactSecrets('https://user:s3cr3t@host.example/path');
+    assert.doesNotMatch(out, /s3cr3t/);
+    assert.match(out, /<redacted>@host\.example/);
+  });
+  it('leaves ordinary text untouched', () => {
+    assert.equal(redactSecrets('npm run test'), 'npm run test');
+  });
+});
+
+describe('permission-sanitize sanitizeValue', () => {
+  it('returns null for null/undefined (pointer-safe)', () => {
+    assert.equal(sanitizeValue(null), null);
+    assert.equal(sanitizeValue(undefined), null);
+  });
+  it('applies singleLine then redactSecrets', () => {
+    assert.equal(sanitizeValue('token\nsk-ant-0123456789abcdef'), 'token <redacted-token>');
+  });
+});
+
+describe('permission-sanitize generalizeCommand', () => {
+  it('keeps a known wrapper subcommand and drops args (ADR-0038 §5)', () => {
+    assert.equal(generalizeCommand('npm run test'), 'npm run *');
+    assert.equal(generalizeCommand('git commit -m "msg"'), 'git commit *');
+  });
+  it('keeps only the program when the 2nd token is a flag/path', () => {
+    assert.equal(generalizeCommand('ls -la'), 'ls *');
+    assert.equal(generalizeCommand('node script.mjs --key=secret'), 'node *');
+  });
+  it('drops a bare positional 2nd token for non-wrapper tools (Codex review MAJOR)', () => {
+    // `mysql` is not a subcommand wrapper, so `hunter2` (a positional that
+    // could be a password) must not survive as a kept token.
+    const out = generalizeCommand('mysql hunter2 --flag');
+    assert.equal(out, 'mysql *');
+    assert.doesNotMatch(out, /hunter2/);
+  });
+  it('returns a bare command with no args unchanged', () => {
+    assert.equal(generalizeCommand('git status'), 'git status');
+  });
+  it('never retains a secret-shaped argument', () => {
+    const out = generalizeCommand('curl https://user:p@ss@host -H "Authorization: Bearer sk-ant-0123456789abcdef"');
+    assert.doesNotMatch(out, /sk-ant-0123456789abcdef/);
+    assert.doesNotMatch(out, /p@ss/);
+    assert.equal(out, 'curl *');
+  });
+  it('returns empty string for empty/whitespace/nullish input', () => {
+    assert.equal(generalizeCommand('   '), '');
+    assert.equal(generalizeCommand(''), '');
+    assert.equal(generalizeCommand(null), '');
+  });
+  it('normalizes control chars before tokenizing', () => {
+    assert.equal(generalizeCommand('npm\trun\ntest'), 'npm run *');
+  });
+});
