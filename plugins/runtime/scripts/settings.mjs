@@ -17,6 +17,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor, codexPerPluginVerbs } from './doctor.mjs';
+import { sanitizeValue } from './lib/permission-sanitize.mjs';
 
 export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.11';
 export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.1';
@@ -2133,11 +2134,6 @@ function formatSettingsMode(report) {
   if (report.execute_plugin_cleanup) modes.push('plugin-cleanup');
   if (report.attest_codex_hook_review) modes.push('codex-hook-review');
   return modes.length > 0 ? modes.join('+') : 'dry-run';
-}
-
-function sanitizeValue(value) {
-  if (value === null || value === undefined) return null;
-  return String(value).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function semverCompare(a, b) {
