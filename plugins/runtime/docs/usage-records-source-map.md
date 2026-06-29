@@ -195,8 +195,8 @@ states, simulated at test time — see the fixtures README).
 
 | Status | Meaning | Learner behavior |
 |--------|---------|------------------|
-| `readable` | exists, readable, ≥1 parseable record | parse + extract observations |
-| `missing` | path absent | zero observations; fall back to the conservative known-safe baseline (`source:'baseline'`) and label it |
+| `readable` | exists and readable | parse + extract observations. A readable file that yields **zero** parseable records contributes nothing; if every source is empty/zero-record the learner returns `no_records_available` at the aggregate. A directory or absent path at a record location is reported `missing` (no record there). |
+| `missing` | path absent (or a directory) | zero observations; fall back to the conservative known-safe baseline (`source:'baseline'`) and label it |
 | `permission-denied` | exists but unreadable (`EACCES`) | zero observations; baseline fallback; do not throw |
 | `malformed` | readable but has non-JSON lines, or valid lines whose embedded `arguments` are non-JSON | skip the unparseable units, extract from the survivors, never crash |
 
