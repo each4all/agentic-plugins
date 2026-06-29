@@ -1,0 +1,6 @@
+{"type":"permission-mode","permissionMode":"default","sessionId":"00000000-0000-4000-8000-0000000000cc"}
+{"type":"assistant","uuid":"00000000-0000-4000-8000-0000000000c1","timestamp":"2026-06-20T12:00:00.000Z","sessionId":"00000000-0000-4000-8000-0000000000cc","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_0201","name":"Bash","input":{"command":"ls -la","description":"List files"}}]}}
+{"type":"assistant","uuid":"00000000-0000-4000-8000-0000000000c2","timestamp":"2026-06-20T12:00:05.000Z","sessionId":"00000000-0000-4000-8000-0000000000cc","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_0202","name":"Bash","input":{"command":"npm run build","descri
+
+not-json-at-all <<< corrupted line >>>
+{"type":"assistant","uuid":"00000000-0000-4000-8000-0000000000c3","timestamp":"2026-06-20T12:00:10.000Z","sessionId":"00000000-0000-4000-8000-0000000000cc","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_0203","name":"Bash","input":{"command":"cat package.json","description":"Show manifest"}}]}}
