@@ -76,11 +76,30 @@ const SUBCOMMAND_WRAPPERS = new Set([
   'pip', 'poetry', 'brew', 'apt', 'make',
 ]);
 
+// Strip a path prefix from a program token, keeping only the final component, so
+// an absolute/relative executable path (which may carry a private directory)
+// never becomes the rule pattern (e.g. `/Users/alice/bin/tool` -> `tool`). A
+// bare name is returned unchanged.
+function basenameProgram(token) {
+  const t = String(token).replace(/\/+$/, '');
+  const slash = t.lastIndexOf('/');
+  return slash >= 0 ? t.slice(slash + 1) : t;
+}
+
 export function generalizeCommand(raw) {
   const normalized = singleLine(raw);
   if (!normalized) return '';
-  const tokens = normalized.split(' ');
-  const program = tokens[0];
+  let tokens = normalized.split(' ').filter(Boolean);
+  // Strip leading `FOO=bar` env-assignment prefixes (mirrors gradeCommand's
+  // env-prefix handling) so an env-injected secret like `TOKEN=sk-... cmd` can
+  // never survive as the kept program token (Codex Plan-verify MAJOR #2).
+  while (tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) {
+    tokens = tokens.slice(1);
+  }
+  if (!tokens.length) return '';
+  // Basename a path-shaped program so a private path is never retained
+  // (Plan-verify MINOR #6).
+  const program = basenameProgram(tokens[0]);
   if (!program) return '';
   const kept = [program];
   const second = tokens[1];

@@ -118,4 +118,19 @@ describe('permission-sanitize generalizeCommand', () => {
   it('normalizes control chars before tokenizing', () => {
     assert.equal(generalizeCommand('npm\trun\ntest'), 'npm run *');
   });
+  // Plan-verify MAJOR #2 — an env-injected secret must never survive as the
+  // kept program token (generalizeCommand must mirror gradeCommand's env strip).
+  it('strips leading FOO=bar env prefixes (no secret leak)', () => {
+    assert.equal(generalizeCommand('TOKEN=sk-ant-0123456789abcdef npm test'), 'npm test');
+    assert.equal(generalizeCommand('AWS_SECRET=AKIAEXAMPLEONLY00000 aws s3 ls'), 'aws *');
+    const out = generalizeCommand('GITHUB_TOKEN=ghp_EXAMPLEONLYnotarealtoken00 gh repo view');
+    assert.ok(!out.includes('ghp_'), `leaked token: ${out}`);
+  });
+  // Plan-verify MINOR #6 — a path-shaped program must be basenamed so a private
+  // directory is never retained in the pattern.
+  it('basenames a path-shaped program', () => {
+    assert.equal(generalizeCommand('/usr/local/bin/node script.mjs'), 'node *');
+    assert.equal(generalizeCommand('/Users/alice/private-tools/scan --target x'), 'scan *');
+    assert.equal(generalizeCommand('/usr/bin/git status'), 'git status');
+  });
 });
