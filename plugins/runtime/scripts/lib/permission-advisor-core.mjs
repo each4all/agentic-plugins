@@ -717,7 +717,10 @@ export const ADVISOR_INVARIANTS = Object.freeze({
 // modeRecommendation value.
 export const FORBIDDEN_DEFAULT_MODES = Object.freeze({
   claude: Object.freeze(['bypassPermissions']),
-  codex: Object.freeze(['danger-full-access']),
+  // 'never' (approval_policy) removes the approval safety surface entirely — like
+  // danger-full-access it may only appear as an isolated-environment note, never a
+  // recommended fragment default (ADR-0038 §1; Plan-verify peer MINOR).
+  codex: Object.freeze(['danger-full-access', 'never']),
 });
 
 export function assertNoBypassDefault(host, modeValue) {

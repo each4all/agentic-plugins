@@ -534,11 +534,14 @@ describe('advisor-core boundary invariants', () => {
   it('lists the forbidden default modes per host', () => {
     assert.ok(FORBIDDEN_DEFAULT_MODES.claude.includes('bypassPermissions'));
     assert.ok(FORBIDDEN_DEFAULT_MODES.codex.includes('danger-full-access'));
+    assert.ok(FORBIDDEN_DEFAULT_MODES.codex.includes('never'));
   });
   it('assertNoBypassDefault passes safe values and throws on forbidden ones', () => {
     assert.doesNotThrow(() => assertNoBypassDefault('claude', 'acceptEdits'));
     assert.doesNotThrow(() => assertNoBypassDefault('codex', 'workspace-write'));
+    assert.doesNotThrow(() => assertNoBypassDefault('codex', 'on-request'));
     assert.throws(() => assertNoBypassDefault('claude', 'bypassPermissions'), /never be a recommended default/);
     assert.throws(() => assertNoBypassDefault('codex', 'danger-full-access'), /never be a recommended default/);
+    assert.throws(() => assertNoBypassDefault('codex', 'never'), /never be a recommended default/);
   });
 });

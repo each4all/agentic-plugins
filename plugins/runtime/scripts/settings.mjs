@@ -22,7 +22,7 @@ import { learnFromSources } from './lib/permission-usage-learner.mjs';
 import { makeFragmentContract, makeModeRecommendation } from './lib/permission-advisor-core.mjs';
 import { recordPermissionAdvisoryArtifact, makePermissionRunId } from './lib/permission-artifacts.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.12';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.13';
 
 // ADR-0038 settings-claude permission plan (M1): how many recent usage records to
 // read per host, and a per-file byte cap, when building the dry-run plan.
@@ -149,20 +149,23 @@ export async function runSettings({
     buildCodexHookReviewManualFollowups(doctor.codex_plugin_hooks, hookSettings, codexHookReview),
   );
 
-  const permissionPlanSection = permissionPlan
-    ? await buildPermissionPlan({
-        repoRoot: resolvedRepoRoot,
-        homeDir: resolvedHomeDir,
-        env,
-        now,
-        maxFiles: permissionPlanMaxFiles,
-        maxFileBytes: permissionPlanMaxFileBytes,
-      })
-    : {
-        requested: false,
-        executed: false,
-        status: 'not_requested',
-      };
+  // The same --permission-plan flag plans BOTH hosts (ADR-0038 §1 cross-host).
+  // The orchestrator collects/learns once and writes ONE combined cross-host
+  // advisory artifact shared by both sibling report sections.
+  let permissionPlanSection = { requested: false, executed: false, status: 'not_requested' };
+  let permissionPlanCodexSection = { requested: false, executed: false, status: 'not_requested' };
+  if (permissionPlan) {
+    const crossHostPlan = await buildCrossHostPermissionPlan({
+      repoRoot: resolvedRepoRoot,
+      homeDir: resolvedHomeDir,
+      env,
+      now,
+      maxFiles: permissionPlanMaxFiles,
+      maxFileBytes: permissionPlanMaxFileBytes,
+    });
+    permissionPlanSection = crossHostPlan.claude;
+    permissionPlanCodexSection = crossHostPlan.codex;
+  }
 
   const report = {
     schema_version: SETTINGS_SCHEMA_VERSION,
@@ -215,6 +218,7 @@ export async function runSettings({
     },
     companion_settings: companionSettings,
     permission_plan: permissionPlanSection,
+    permission_plan_codex: permissionPlanCodexSection,
     artifacts: buildSettingsArtifactReport({
       repoRoot: resolvedRepoRoot,
       runId: settingsRunId,
@@ -241,6 +245,7 @@ export async function runSettings({
       'Codex hook review/trust attestation records an operator claim only; runtime cannot mutate or independently prove active-session /hooks trust state.',
       'Claude host-native config, auth, secrets, and sandbox/permission settings are not written.',
       'The permission plan (--permission-plan) reads the Claude allowlist read-only and writes only the agentic-plugins-owned advisory artifact; the .claude/settings.json fragment is emitted for the operator to apply, never written by runtime.',
+      'The Codex permission plan (--permission-plan) reads ~/.codex/config.toml read-only and recommends safety-graded postures (approval_policy/sandbox_mode) + bounded project-trust as a config.toml fragment; never danger-full-access, never written by runtime.',
       'Companion invocation still uses companions/contract.md --model and --effort.',
       'Dynamic peer consensus, context hygiene mutation, completion footer mutation, deep peer smoke, and host-native config apply modes are deferred.',
     ],
@@ -2170,6 +2175,28 @@ export function formatText(report) {
     }
     for (const limit of pp.limits ?? []) lines.push(`- limit: ${limit}`);
   }
+  if (report.permission_plan_codex?.requested) {
+    const cp = report.permission_plan_codex;
+    lines.push('');
+    lines.push('Permission Plan (Codex, dry-run)');
+    lines.push(`- status: ${cp.status}; recommendations=${cp.recommended?.count ?? 0}; baseline-used=${cp.evidence?.baseline_used ?? false}`);
+    if (cp.sources_scanned) {
+      lines.push(`- records: used=${cp.sources_scanned.used}/${cp.sources_scanned.found}; scan-truncated=${cp.sources_scanned.scan_truncated}; skipped-too-large=${cp.sources_scanned.skipped_too_large}`);
+    }
+    const hc = cp.host_config || {};
+    lines.push(`- current: approval_policy=${hc.approval_policy ?? '<unset>'}; sandbox_mode=${hc.sandbox_mode ?? '<unset>'}; project-trusted=${hc.project_trusted ?? false}`);
+    const rec = cp.recommended || {};
+    if (rec.approval_policy) lines.push(`- approval_policy: ${rec.approval_policy.value} (${rec.approval_policy.reason})`);
+    if (rec.sandbox_mode) lines.push(`- sandbox_mode: ${rec.sandbox_mode.value} (${rec.sandbox_mode.reason})`);
+    if (rec.project_trust) lines.push(`- project-trust: ${rec.project_trust.path_pointer} trust_level=${rec.project_trust.trust_level} (${rec.project_trust.reason})`);
+    for (const note of cp.isolated_environment_notes ?? []) lines.push(`- isolated-env: ${note}`);
+    if (cp.artifact?.written) lines.push(`- artifact: ${cp.artifact.report_pointer} (latest: ${cp.artifact.latest_pointer})`);
+    if (cp.fragment_text) {
+      lines.push('- fragment (merge into ~/.codex/config.toml, runtime never writes it):');
+      for (const fragmentLine of cp.fragment_text.split('\n')) lines.push(`    ${fragmentLine}`);
+    }
+    for (const limit of cp.limits ?? []) lines.push(`- limit: ${limit}`);
+  }
   lines.push('');
   lines.push('Limits');
   for (const limit of report.limits) lines.push(`- ${limit}`);
@@ -2332,33 +2359,14 @@ function permissionPlanLimits(capNote) {
 // fragment contract of the NOT-yet-governed recommendations (safety-graded),
 // renders the exact settings.json fragment, and persists plan+evidence to the
 // permission-advisory artifact (surface=settings). Host config is never written.
-async function buildPermissionPlan({ repoRoot, homeDir, env, now, maxFiles, maxFileBytes }) {
-  let collected;
-  try {
-    collected = await collectUsageRecordSources({ homeDir, env, maxFiles, maxFileBytes });
-  } catch (err) {
-    return {
-      requested: true,
-      executed: true,
-      status: 'blocked',
-      host: 'claude',
-      error: err.code ?? err.message,
-      sources_scanned: { found: 0, used: 0, scan_truncated: false, skipped_too_large: 0 },
-      host_config: { read_only: true, sources: [], default_mode: null },
-      recommended: { allow: [], deny: [], ask: [], default_mode: null, count: 0 },
-      already_allowed_count: 0,
-      fragment: null,
-      fragment_text: null,
-      evidence: { rule_count: 0, total_seen: 0, baseline_used: true },
-      artifact: { written: false, reason: 'usage-record enumeration failed' },
-      limits: permissionPlanLimits(null),
-    };
-  }
-
-  const claudeSources = collected.sources.filter((source) => source.host === 'claude');
-  const scan = collected.scanned.claude;
-  const learner = learnFromSources(claudeSources);
+// Builds the Claude SECTION + its fragment contract from the shared cross-host
+// learner. It does NOT collect/learn (the orchestrator does that once) and does
+// NOT write the artifact (the orchestrator writes ONE combined cross-host
+// artifact — Plan-verify peer MAJOR: per-host artifacts clobbered the shared
+// latest.json). Status is per-host (claude evidence), not the combined learner.
+async function buildPermissionPlan({ repoRoot, homeDir, learner, scan, maxFiles }) {
   const claudeRules = learner.rules.filter((rule) => rule.host === 'claude');
+  const claudeHasEvidence = claudeRules.length > 0 || learner.modeEvidence.some((m) => m.host === 'claude');
 
   const hostConfig = await readClaudePermissionConfig({ repoRoot, homeDir });
 
@@ -2427,61 +2435,364 @@ async function buildPermissionPlan({ repoRoot, homeDir, env, now, maxFiles, maxF
   // (Plan-verify peer MAJOR, verified vs Claude docs).
   if (modeRecommendation) fragmentJson.permissions.defaultMode = modeRecommendation.value;
 
+  const capNotes = [];
+  // Per-host cap note reflects the CLAUDE scan only (Plan-verify peer MINOR).
+  if (scan.found > scan.used) capNotes.push(`per-host file cap (${maxFiles}) reached`);
+  if (scan.scan_truncated) capNotes.push('directory scan hit the safety budget');
+  if (scan.skipped_too_large) capNotes.push(`skipped ${scan.skipped_too_large} oversized record(s) above the per-file byte cap`);
+  const capNote = capNotes.length ? `${capNotes.join('; ')}.` : null;
+
+  return {
+    section: {
+      requested: true,
+      executed: true,
+      status: claudeHasEvidence ? 'analyzed' : 'baseline',
+      host: 'claude',
+      sources_scanned: {
+        found: scan.found,
+        used: scan.used,
+        scan_truncated: scan.scan_truncated,
+        skipped_too_large: scan.skipped_too_large,
+      },
+      host_config: { read_only: true, sources: hostConfig.sources, default_mode: hostConfig.defaultMode },
+      recommended: {
+        allow,
+        deny,
+        ask,
+        default_mode: modeRecommendation ? { value: modeRecommendation.value, reason: modeRecommendation.reason } : null,
+        count: allow.length + deny.length + ask.length + (modeRecommendation ? 1 : 0),
+      },
+      conflicts,
+      already_allowed_count: alreadyGoverned,
+      fragment: fragmentJson,
+      fragment_text: JSON.stringify(fragmentJson, null, 2),
+      evidence: {
+        rule_count: claudeRules.length,
+        total_seen: claudeRules.reduce((sum, rule) => sum + rule.evidence.count, 0),
+        baseline_used: !claudeHasEvidence,
+      },
+      limits: permissionPlanLimits(capNote),
+    },
+    fragmentContract: fragment,
+    artifactNotes: [],
+  };
+}
+
+// Reverse of tomlString's escaping for a basic-string key/value: "\\"->"\",
+// '\"'->'"'. Used to compare a stored [projects."<path>"] key against repoRoot.
+function unescapeTomlBasic(s) {
+  return String(s).replace(/\\(["\\])/g, '$1');
+}
+
+// Minimal READ-ONLY scan of ~/.codex/config.toml for exactly the keys the Codex
+// plan needs: top-level approval_policy / sandbox_mode, and the set of
+// [projects."<path>"] sections whose trust_level = "trusted". Section-scoped
+// line parser mirroring doctor's parseCodexHookStateConfigToml; every other
+// section/key is ignored. Top-level keys are only honored before the first
+// section (TOML requires that ordering).
+export function parseCodexPermissionConfigToml(text) {
+  let approvalPolicy = null;
+  let sandboxMode = null;
+  const trustedProjects = new Set();
+  let currentProject = null;
+  let inTopLevel = true;
+  for (const raw of String(text ?? '').replace(/\r\n/g, '\n').split('\n')) {
+    const projectSection = raw.match(/^\s*\[projects\."((?:[^"\\]|\\.)*)"\]\s*(?:#.*)?$/);
+    if (projectSection) {
+      currentProject = unescapeTomlBasic(projectSection[1]);
+      inTopLevel = false;
+      continue;
+    }
+    const line = raw.replace(/#.*/, '').trim();
+    if (line.startsWith('[')) {
+      // Any other section header — including [[array-tables]] and unsupported
+      // shapes — leaves top-level so a later key is never mis-read as a top-level
+      // approval_policy/sandbox_mode (Plan-verify peer MINOR).
+      currentProject = null;
+      inTopLevel = false;
+      continue;
+    }
+    if (!line) continue;
+    if (inTopLevel) {
+      const ap = line.match(/^approval_policy\s*=\s*"([^"]*)"\s*$/);
+      if (ap) { approvalPolicy = ap[1]; continue; }
+      const sm = line.match(/^sandbox_mode\s*=\s*"([^"]*)"\s*$/);
+      if (sm) { sandboxMode = sm[1]; continue; }
+    } else if (currentProject) {
+      const tl = line.match(/^trust_level\s*=\s*"([^"]*)"\s*$/);
+      if (tl && tl[1] === 'trusted') trustedProjects.add(currentProject);
+    }
+  }
+  return { approvalPolicy, sandboxMode, trustedProjects };
+}
+
+// Read ~/.codex/config.toml READ-ONLY (honoring $CODEX_HOME). Never writes; a
+// missing/unreadable file is sanitized source data, not an error.
+async function readCodexPermissionConfig({ homeDir, env, repoRoot }) {
+  const codexHome = env && env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(homeDir, '.codex');
+  const r = await readTextIfExists(join(codexHome, 'config.toml'));
+  if (!r.ok) {
+    const status = r.reason === 'ENOENT' ? 'missing' : 'unreadable';
+    return { approvalPolicy: null, sandboxMode: null, projectTrusted: false, sources: [{ scope: 'user', status }] };
+  }
+  const parsed = parseCodexPermissionConfigToml(r.text);
+  return {
+    approvalPolicy: parsed.approvalPolicy,
+    sandboxMode: parsed.sandboxMode,
+    projectTrusted: parsed.trustedProjects.has(repoRoot),
+    sources: [{ scope: 'user', status: 'readable' }],
+  };
+}
+
+// Render the recommended ~/.codex/config.toml fragment TEXT. Reuses tomlString
+// for value + quoted-path-key escaping (\\ and ") — the topic's flagged TOML
+// escaping concern (a Windows path's backslashes become \\ in the section key).
+// Full TOML basic-string escape: backslash, quote, the named control escapes
+// (\b\t\n\f\r), and any other C0 control / DEL as \uXXXX. Unlike tomlString
+// (which only handles \ and "), this is safe for a project path key that could
+// theoretically contain a control char on POSIX (Plan-verify peer MAJOR — a
+// newline would otherwise corrupt the [projects."..."] header).
+function tomlBasicString(value) {
+  let out = '';
+  for (const ch of String(value)) {
+    const code = ch.codePointAt(0);
+    if (ch === '\\') out += '\\\\';
+    else if (ch === '"') out += '\\"';
+    else if (ch === '\b') out += '\\b';
+    else if (ch === '\t') out += '\\t';
+    else if (ch === '\n') out += '\\n';
+    else if (ch === '\f') out += '\\f';
+    else if (ch === '\r') out += '\\r';
+    else if (code < 0x20 || code === 0x7f) out += `\\u${code.toString(16).padStart(4, '0')}`;
+    else out += ch;
+  }
+  return `"${out}"`;
+}
+
+export function renderCodexConfigToml({ approvalPolicy, sandboxMode, projectTrust }) {
+  const lines = [];
+  if (approvalPolicy) lines.push(`approval_policy = ${tomlBasicString(approvalPolicy)}`);
+  if (sandboxMode) lines.push(`sandbox_mode = ${tomlBasicString(sandboxMode)}`);
+  if (projectTrust) {
+    if (lines.length) lines.push('');
+    lines.push(`[projects.${tomlBasicString(projectTrust.path)}]`);
+    lines.push(`trust_level = ${tomlBasicString(projectTrust.trust_level)}`);
+  }
+  return lines.length ? `${lines.join('\n')}\n` : '';
+}
+
+function codexPermissionPlanLimits(capNote) {
+  const limits = [
+    'runtime:settings Codex permission plan is a dry-run (M1): it emits the recommended ~/.codex/config.toml fragment and writes plan+evidence to an agentic-plugins-owned artifact, but NEVER writes host config — apply it yourself.',
+    'Recommendations are safety-graded postures (approval_policy=on-request, sandbox_mode=workspace-write) and NEVER recommend danger-full-access (or approval_policy=never) as a default; those appear only as explicitly-labeled isolated-environment notes.',
+    'The host ~/.codex/config.toml is read read-only and never added to apply targets; only a posture that is currently prompting is recommended (one already at/looser than the recommendation is left unchanged).',
+    'Evidence retains only generalized patterns + counts (ADR-0038 §5); raw commands, arguments, and source paths are never surfaced.',
+  ];
+  if (capNote) limits.push(capNote);
+  return limits;
+}
+
+// ADR-0038 settings-codex — the M1 Codex permission plan. Codex governs by
+// POSTURE (approval_policy / sandbox_mode), not a per-command allowlist, so the
+// plan recommends safety-graded postures grounded in usage evidence
+// (approval-requested → approval_policy; sandbox-blocked → sandbox_mode), plus a
+// bounded [projects."<repo>"] trust_level entry, rendered as a config.toml
+// fragment. Reads host config read-only; never writes it; never danger-full-access.
+// Builds the Codex SECTION + its fragment contracts from the shared cross-host
+// learner. Like the Claude builder it does NOT collect/learn or write the
+// artifact — the orchestrator writes one combined cross-host artifact. Status is
+// per-host (codex evidence).
+async function buildCodexPermissionPlan({ repoRoot, homeDir, env, learner, scan, maxFiles }) {
+  const codexRules = learner.rules.filter((rule) => rule.host === 'codex');
+  const modeEvidence = learner.modeEvidence.filter((m) => m.host === 'codex');
+  const codexHasEvidence = codexRules.length > 0 || modeEvidence.length > 0;
+  const hostConfig = await readCodexPermissionConfig({ homeDir, env, repoRoot });
+
+  const fragments = [];
+  const recommended = { approval_policy: null, sandbox_mode: null, project_trust: null, count: 0 };
+  const isolatedNotes = [];
+  const artifactNotes = [];
+
+  const approvalSeen = modeEvidence.find((m) => m.cause === 'codex.approval-requested');
+  if (approvalSeen) {
+    if (hostConfig.approvalPolicy !== 'on-request' && hostConfig.approvalPolicy !== 'never') {
+      const mode = makeModeRecommendation({
+        setting: 'approval_policy',
+        value: 'on-request',
+        reason: `approval requested ${approvalSeen.count}x; on-request prompts only on escalation/failure`,
+      });
+      fragments.push(makeFragmentContract({ host: 'codex', rules: [], modeRecommendation: mode, notes: [] }));
+      recommended.approval_policy = { value: 'on-request', reason: mode.reason };
+      recommended.count += 1;
+    }
+    isolatedNotes.push('approval_policy="never" removes approval prompts entirely — isolated-environment only, never a recommended default.');
+  }
+
+  const sandboxSeen = modeEvidence.find((m) => m.cause === 'codex.sandbox-blocked');
+  if (sandboxSeen) {
+    if (hostConfig.sandboxMode !== 'workspace-write' && hostConfig.sandboxMode !== 'danger-full-access') {
+      const mode = makeModeRecommendation({
+        setting: 'sandbox_mode',
+        value: 'workspace-write',
+        reason: `sandbox blocked ${sandboxSeen.count}x; workspace-write permits writes within the workspace`,
+      });
+      fragments.push(makeFragmentContract({ host: 'codex', rules: [], modeRecommendation: mode, notes: [] }));
+      recommended.sandbox_mode = { value: 'workspace-write', reason: mode.reason };
+      recommended.count += 1;
+    }
+    isolatedNotes.push('sandbox_mode="danger-full-access" removes the sandbox entirely — isolated-environment only, never a recommended default.');
+  }
+
+  if ((approvalSeen || sandboxSeen) && !hostConfig.projectTrusted) {
+    recommended.project_trust = { path_pointer: '.', trust_level: 'trusted', reason: 'first-use project trust reduces repeated prompts for this workspace' };
+    recommended.count += 1;
+    // Persist the project-trust intent in the combined artifact too (pointer-only;
+    // Plan-verify peer MINOR — it was in the live report but not the artifact).
+    artifactNotes.push('codex project-trust recommendation: [projects."."] trust_level=trusted');
+  }
+
+  const fragmentText = renderCodexConfigToml({
+    approvalPolicy: recommended.approval_policy ? recommended.approval_policy.value : null,
+    sandboxMode: recommended.sandbox_mode ? recommended.sandbox_mode.value : null,
+    projectTrust: recommended.project_trust ? { path: repoRoot, trust_level: 'trusted' } : null,
+  });
+  const fragmentStruct = {
+    config_toml: {
+      approval_policy: recommended.approval_policy ? recommended.approval_policy.value : null,
+      sandbox_mode: recommended.sandbox_mode ? recommended.sandbox_mode.value : null,
+    },
+    project_trust: recommended.project_trust ? { path_pointer: '.', trust_level: 'trusted' } : null,
+  };
+
+  const capNotes = [];
+  if (scan.found > scan.used) capNotes.push(`per-host file cap (${maxFiles}) reached`);
+  if (scan.scan_truncated) capNotes.push('directory scan hit the safety budget');
+  if (scan.skipped_too_large) capNotes.push(`skipped ${scan.skipped_too_large} oversized record(s) above the per-file byte cap`);
+  const capNote = capNotes.length ? `${capNotes.join('; ')}.` : null;
+
+  return {
+    section: {
+      requested: true,
+      executed: true,
+      status: codexHasEvidence ? 'analyzed' : 'baseline',
+      host: 'codex',
+      sources_scanned: {
+        found: scan.found,
+        used: scan.used,
+        scan_truncated: scan.scan_truncated,
+        skipped_too_large: scan.skipped_too_large,
+      },
+      host_config: {
+        read_only: true,
+        sources: hostConfig.sources,
+        approval_policy: hostConfig.approvalPolicy,
+        sandbox_mode: hostConfig.sandboxMode,
+        project_trusted: hostConfig.projectTrusted,
+      },
+      recommended,
+      isolated_environment_notes: isolatedNotes,
+      evidence: {
+        rule_count: codexRules.length,
+        total_seen: codexRules.reduce((sum, rule) => sum + rule.evidence.count, 0),
+        baseline_used: !codexHasEvidence,
+      },
+      fragment: fragmentStruct,
+      fragment_text: fragmentText,
+      limits: codexPermissionPlanLimits(capNote),
+    },
+    fragmentContracts: fragments,
+    artifactNotes,
+  };
+}
+
+// Orchestrate the cross-host M1 permission plan: collect usage records once,
+// learn once (combined evidence), build both host sections, and write ONE
+// cross-host advisory artifact (hosts: ['claude','codex']) so both sections
+// share a single run id + latest pointer (Plan-verify peer MAJOR — per-host
+// artifacts clobbered the single shared latest.json).
+async function buildCrossHostPermissionPlan({ repoRoot, homeDir, env, now, maxFiles, maxFileBytes }) {
+  let collected;
+  try {
+    collected = await collectUsageRecordSources({ homeDir, env, maxFiles, maxFileBytes });
+  } catch (err) {
+    const reason = err.code ?? err.message;
+    const blocked = (host, extra) => ({
+      requested: true,
+      executed: true,
+      status: 'blocked',
+      host,
+      error: reason,
+      sources_scanned: { found: 0, used: 0, scan_truncated: false, skipped_too_large: 0 },
+      ...extra,
+      artifact: { written: false, reason: 'usage-record enumeration failed' },
+    });
+    return {
+      claude: blocked('claude', {
+        host_config: { read_only: true, sources: [], default_mode: null },
+        recommended: { allow: [], deny: [], ask: [], default_mode: null, count: 0 },
+        conflicts: [],
+        already_allowed_count: 0,
+        fragment: null,
+        fragment_text: null,
+        evidence: { rule_count: 0, total_seen: 0, baseline_used: true },
+        limits: permissionPlanLimits(null),
+      }),
+      codex: blocked('codex', {
+        host_config: { read_only: true, sources: [], approval_policy: null, sandbox_mode: null, project_trusted: false },
+        recommended: { approval_policy: null, sandbox_mode: null, project_trust: null, count: 0 },
+        isolated_environment_notes: [],
+        fragment: null,
+        fragment_text: null,
+        evidence: { rule_count: 0, total_seen: 0, baseline_used: true },
+        limits: codexPermissionPlanLimits(null),
+      }),
+    };
+  }
+
+  const learner = learnFromSources(collected.sources);
+  const claudeBuilt = await buildPermissionPlan({
+    repoRoot,
+    homeDir,
+    learner,
+    scan: collected.scanned.claude,
+    maxFiles,
+  });
+  const codexBuilt = await buildCodexPermissionPlan({
+    repoRoot,
+    homeDir,
+    env,
+    learner,
+    scan: collected.scanned.codex,
+    maxFiles,
+  });
+
+  const fragments = [];
+  if (claudeBuilt.fragmentContract) fragments.push(claudeBuilt.fragmentContract);
+  fragments.push(...codexBuilt.fragmentContracts);
+  const artifactNotes = [...claudeBuilt.artifactNotes, ...codexBuilt.artifactNotes];
+
   const runId = makePermissionRunId(now);
   const { pointers } = await recordPermissionAdvisoryArtifact({
     repoRoot,
     runId,
     surface: 'settings',
-    hosts: ['claude'],
-    plan: [fragment],
+    hosts: ['claude', 'codex'],
+    plan: fragments,
     evidence: learner,
+    notes: artifactNotes,
     createdAt: now.toISOString(),
   });
-
-  const notes = [];
-  // Claude-only plan: the cap note must reflect the CLAUDE scan, not the
-  // both-host collector's `capped` (Plan-verify peer MINOR).
-  if (scan.found > scan.used) notes.push(`per-host file cap (${maxFiles}) reached`);
-  if (scan.scan_truncated) notes.push('directory scan hit the safety budget');
-  if (scan.skipped_too_large) notes.push(`skipped ${scan.skipped_too_large} oversized record(s) above the per-file byte cap`);
-  const capNote = notes.length ? `${notes.join('; ')}.` : null;
+  const artifact = {
+    written: true,
+    run_id: runId,
+    run_pointer: pointers.run_pointer,
+    report_pointer: pointers.report_pointer,
+    latest_pointer: pointers.latest_pointer,
+  };
 
   return {
-    requested: true,
-    executed: true,
-    status: learner.baselineUsed ? 'baseline' : 'analyzed',
-    host: 'claude',
-    sources_scanned: {
-      found: scan.found,
-      used: scan.used,
-      scan_truncated: scan.scan_truncated,
-      skipped_too_large: scan.skipped_too_large,
-    },
-    host_config: { read_only: true, sources: hostConfig.sources, default_mode: hostConfig.defaultMode },
-    recommended: {
-      allow,
-      deny,
-      ask,
-      default_mode: modeRecommendation ? { value: modeRecommendation.value, reason: modeRecommendation.reason } : null,
-      count: allow.length + deny.length + ask.length + (modeRecommendation ? 1 : 0),
-    },
-    conflicts,
-    already_allowed_count: alreadyGoverned,
-    fragment: fragmentJson,
-    fragment_text: JSON.stringify(fragmentJson, null, 2),
-    evidence: {
-      rule_count: claudeRules.length,
-      total_seen: claudeRules.reduce((sum, rule) => sum + rule.evidence.count, 0),
-      baseline_used: learner.baselineUsed,
-    },
-    artifact: {
-      written: true,
-      run_id: runId,
-      run_pointer: pointers.run_pointer,
-      report_pointer: pointers.report_pointer,
-      latest_pointer: pointers.latest_pointer,
-    },
-    limits: permissionPlanLimits(capNote),
+    claude: { ...claudeBuilt.section, artifact },
+    codex: { ...codexBuilt.section, artifact },
   };
 }
 
