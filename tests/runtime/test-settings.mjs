@@ -9,6 +9,8 @@ import {
   parseArgs,
   runSettings,
   upsertRuntimeConfigToml,
+  renderCodexConfigToml,
+  parseCodexPermissionConfigToml,
 } from '../../plugins/runtime/scripts/settings.mjs';
 import { RUNTIME_VERSION } from '../../plugins/runtime/scripts/version.mjs';
 
@@ -68,7 +70,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.12');
+    strictEqual(report.schema_version, 'runtime-settings-1.13');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -594,7 +596,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.12');
+    strictEqual(report.schema_version, 'runtime-settings-1.13');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -1342,6 +1344,164 @@ describe('settings: permission plan (ADR-0038 settings-claude, M1)', () => {
     strictEqual(opts.permissionPlanMaxFiles, 7);
     strictEqual(opts.permissionPlanMaxFileBytes, 2048);
     strictEqual(parseArgs([]).permissionPlan, false);
+  });
+});
+
+describe('settings: Codex permission plan (ADR-0038 settings-codex, M1)', () => {
+  it('renders a config.toml fragment with TOML-escaped project path', () => {
+    const text = renderCodexConfigToml({
+      approvalPolicy: 'on-request',
+      sandboxMode: 'workspace-write',
+      projectTrust: { path: 'C:\\Users\\a"b\\repo', trust_level: 'trusted' },
+    });
+    ok(text.includes('approval_policy = "on-request"'));
+    ok(text.includes('sandbox_mode = "workspace-write"'));
+    // backslashes doubled + quote escaped inside the [projects."..."] key
+    ok(text.includes('[projects."C:\\\\Users\\\\a\\"b\\\\repo"]'), text);
+    ok(text.includes('trust_level = "trusted"'));
+  });
+
+  it('parses approval_policy/sandbox_mode + trusted projects read-only', () => {
+    const parsed = parseCodexPermissionConfigToml([
+      'approval_policy = "on-request"',
+      'sandbox_mode = "read-only"',
+      '',
+      '[projects."/home/me/repo"]',
+      'trust_level = "trusted"',
+      '',
+      '[projects."/home/me/other"]',
+      'trust_level = "untrusted"',
+    ].join('\n'));
+    strictEqual(parsed.approvalPolicy, 'on-request');
+    strictEqual(parsed.sandboxMode, 'read-only');
+    ok(parsed.trustedProjects.has('/home/me/repo'));
+    ok(!parsed.trustedProjects.has('/home/me/other'));
+  });
+
+  it('builds a dry-run Codex plan: postures from evidence, TOML fragment, M1 artifact, no host write', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexplan-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-home-'));
+    await seedRepo(root);
+    await mkdir(join(home, '.codex'), { recursive: true });
+    const originalConfig = 'approval_policy = "untrusted"\nsandbox_mode = "read-only"\n';
+    await writeFile(join(home, '.codex', 'config.toml'), originalConfig);
+    const rollout = [
+      { type: 'response_item', payload: { type: 'local_shell_call', call_id: 'c1', action: { type: 'exec', command: ['bash', '-lc', 'docker ps'] } } },
+      { type: 'event_msg', payload: { type: 'exec_approval_request', call_id: 'c1', command: ['bash', '-lc', 'docker ps'] } },
+      { type: 'response_item', payload: { type: 'local_shell_call', call_id: 'c2', action: { type: 'exec', command: ['bash', '-lc', 'npm install'] } } },
+      { type: 'event_msg', payload: { type: 'exec_command_end', call_id: 'c2', command: ['bash', '-lc', 'npm install'], aggregated_output: 'command denied by sandbox: write blocked', exit_code: 1 } },
+    ].map((o) => JSON.stringify(o)).join('\n') + '\n';
+    await mkdir(join(home, '.codex', 'sessions', '2026', '06', '30'), { recursive: true });
+    await writeFile(join(home, '.codex', 'sessions', '2026', '06', '30', 'rollout-2026-06-30T07-00-00-abc.jsonl'), rollout);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      env: { ...process.env, CODEX_HOME: join(home, '.codex') },
+      permissionPlan: true,
+      now: new Date('2026-06-30T07:30:00.000Z'),
+      runner: fakeRunner(defaultCliMap()),
+    });
+    const cp = report.permission_plan_codex;
+    ok(cp.requested && cp.executed, 'requested + executed');
+    strictEqual(cp.status, 'analyzed');
+    strictEqual(cp.host, 'codex');
+    strictEqual(cp.recommended.approval_policy.value, 'on-request');
+    strictEqual(cp.recommended.sandbox_mode.value, 'workspace-write');
+    ok(cp.recommended.project_trust, 'project trust recommended (not yet trusted)');
+    // never danger-full-access / never as a default — only as isolated-env notes.
+    ok(!cp.fragment_text.includes('danger-full-access'), 'no danger-full-access in fragment');
+    ok(!cp.fragment_text.includes('never'), 'no approval_policy=never in fragment');
+    ok(cp.isolated_environment_notes.some((n) => n.includes('danger-full-access')));
+    ok(cp.fragment_text.includes('approval_policy = "on-request"'));
+    ok(cp.fragment_text.includes('sandbox_mode = "workspace-write"'));
+    ok(cp.fragment_text.includes('[projects.'));
+    strictEqual(cp.host_config.approval_policy, 'untrusted');
+    strictEqual(cp.host_config.sandbox_mode, 'read-only');
+    // M1 artifact (surface=settings, codex); host config NOT written.
+    strictEqual(cp.artifact.written, true);
+    const advisory = await readJson(join(root, '.agentic-plugins', 'runs', 'permission', cp.artifact.run_id, 'advisory.json'));
+    strictEqual(advisory.surface, 'settings');
+    // One combined cross-host artifact (Plan-verify peer MAJOR): hosts covers both.
+    deepStrictEqual(advisory.hosts, ['claude', 'codex']);
+    strictEqual(advisory.boundary.writes_host_config, false);
+    // project-trust intent is persisted as an artifact note (peer MINOR #5).
+    ok((advisory.notes || []).some((n) => n.includes('project-trust')), 'project-trust persisted in artifact notes');
+    strictEqual(await readFile(join(home, '.codex', 'config.toml'), 'utf8'), originalConfig);
+    strictEqual(report.dry_run, true);
+    ok(report.mutation_boundary.forbidden.includes('host-native Codex CLI config'));
+    ok(formatText(report).includes('Permission Plan (Codex, dry-run)'));
+  });
+
+  it('skips postures already at/looser than the recommendation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-codexplan-relaxed-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-home-'));
+    await seedRepo(root);
+    await mkdir(join(home, '.codex'), { recursive: true });
+    await writeFile(join(home, '.codex', 'config.toml'), 'approval_policy = "never"\nsandbox_mode = "danger-full-access"\n');
+    const rollout = [
+      { type: 'response_item', payload: { type: 'local_shell_call', call_id: 'c1', action: { type: 'exec', command: ['bash', '-lc', 'docker ps'] } } },
+      { type: 'event_msg', payload: { type: 'exec_approval_request', call_id: 'c1', command: ['bash', '-lc', 'docker ps'] } },
+    ].map((o) => JSON.stringify(o)).join('\n') + '\n';
+    await mkdir(join(home, '.codex', 'sessions', '2026', '06', '30'), { recursive: true });
+    await writeFile(join(home, '.codex', 'sessions', '2026', '06', '30', 'rollout-relaxed.jsonl'), rollout);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      env: { ...process.env, CODEX_HOME: join(home, '.codex') },
+      permissionPlan: true,
+      now: new Date('2026-06-30T07:30:00.000Z'),
+      runner: fakeRunner(defaultCliMap()),
+    });
+    const cp = report.permission_plan_codex;
+    strictEqual(cp.recommended.approval_policy, null, 'already never → no approval rec');
+    strictEqual(cp.recommended.sandbox_mode, null, 'already danger-full-access → no sandbox rec');
+  });
+
+  it('writes ONE combined cross-host artifact shared by both sections (no latest.json clobber)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-xhost-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-home-'));
+    await seedRepo(root);
+    // Both hosts have evidence.
+    await mkdir(join(home, '.claude', 'projects', 'p'), { recursive: true });
+    await writeFile(
+      join(home, '.claude', 'projects', 'p', 's.jsonl'),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a', name: 'Bash', input: { command: 'cargo build' } }] } }) + '\n',
+    );
+    await mkdir(join(home, '.codex', 'sessions', '2026', '06', '30'), { recursive: true });
+    await writeFile(
+      join(home, '.codex', 'sessions', '2026', '06', '30', 'rollout-x.jsonl'),
+      [
+        { type: 'response_item', payload: { type: 'local_shell_call', call_id: 'c1', action: { type: 'exec', command: ['bash', '-lc', 'docker ps'] } } },
+        { type: 'event_msg', payload: { type: 'exec_approval_request', call_id: 'c1', command: ['bash', '-lc', 'docker ps'] } },
+      ].map((o) => JSON.stringify(o)).join('\n') + '\n',
+    );
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      env: { ...process.env, CODEX_HOME: join(home, '.codex') },
+      permissionPlan: true,
+      now: new Date('2026-06-30T07:30:00.000Z'),
+      runner: fakeRunner(defaultCliMap()),
+    });
+    const claudeArt = report.permission_plan.artifact;
+    const codexArt = report.permission_plan_codex.artifact;
+    // Both sections reference the SAME combined run + latest pointer.
+    strictEqual(claudeArt.run_id, codexArt.run_id, 'both sections share one artifact run id');
+    strictEqual(claudeArt.latest_pointer, codexArt.latest_pointer);
+    const latest = await readJson(join(root, '.agentic-plugins', 'runs', 'permission', 'latest.json'));
+    strictEqual(latest.run_id, claudeArt.run_id, 'latest.json points at the shared cross-host run (no clobber)');
+    const advisory = await readJson(join(root, '.agentic-plugins', 'runs', 'permission', claudeArt.run_id, 'advisory.json'));
+    deepStrictEqual(advisory.hosts, ['claude', 'codex']);
+    // The combined plan carries both hosts' fragments (claude allow + codex postures).
+    ok(advisory.plan.some((f) => f.host === 'claude'), 'claude fragment present');
+    ok(advisory.plan.some((f) => f.host === 'codex'), 'codex fragment present');
+    // Only one run directory exists for the cross-host plan.
+    const { readdir } = await import('node:fs/promises');
+    const runDirs = (await readdir(join(root, '.agentic-plugins', 'runs', 'permission'), { withFileTypes: true })).filter((e) => e.isDirectory());
+    strictEqual(runDirs.length, 1, 'exactly one combined run directory');
   });
 });
 
