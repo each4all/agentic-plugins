@@ -14,6 +14,19 @@
 - The `founder` inventory addition changes the `PLUGIN_NAMES` set, which invalidates the freshness of any previously recorded `runtime:doctor` proof (the proof-reuse gate requires the full plugin set + versions to match). Re-record the doctor proof on a host where all five plugins (including founder) are installed; until then `runtime:doctor` re-runs the proof rather than reusing the now-stale record.
 - Deferred (pre-existing, out of this RT slice's scope; surfaced by the founder inventory expansion): `cutover-audit.mjs`'s package map still omits `plugins/founder` (the omcc cutover predates founder, so cutover parity over founder is a separate scoped decision); and `resolveCodexInstallState`'s not-installed evidence string is hardcoded to `runtime` for every plugin (a not-installed founder reads "does not report runtime as installed") — a generic-name fix threading the plugin name through that helper.
 
+## [0.70.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.69.0...plugin-runtime-v0.70.0) (2026-06-30)
+
+
+### Features
+
+* **plugin/runtime:** doctor R0 permission diagnosis (ADR-0038 doctor-diagnose) ([#457](https://github.com/each4all/agentic-plugins/issues/457)) ([a25d6bc](https://github.com/each4all/agentic-plugins/commit/a25d6bc13dafc657b428e98b9e5f12b3247c8f66))
+* **plugin/runtime:** host-neutral permission-advisor core (ADR-0038 advisor-core) ([#453](https://github.com/each4all/agentic-plugins/issues/453)) ([e00fb1c](https://github.com/each4all/agentic-plugins/commit/e00fb1c0bcf868820fe64c38aa9f3d94deda3f5a))
+* **plugin/runtime:** permission advisory artifact slice (ADR-0038 permission-artifacts) ([#456](https://github.com/each4all/agentic-plugins/issues/456)) ([037a7fa](https://github.com/each4all/agentic-plugins/commit/037a7fa3cb9f222c04508a627a929f649665e353))
+* **plugin/runtime:** settings M1 Claude permission plan (ADR-0038 settings-claude) ([#458](https://github.com/each4all/agentic-plugins/issues/458)) ([c3e636e](https://github.com/each4all/agentic-plugins/commit/c3e636eda28d1ea7cf4d2069d5abd4b0ca56f078))
+* **plugin/runtime:** settings M1 Codex permission plan + cross-host artifact (ADR-0038 settings-codex) ([#459](https://github.com/each4all/agentic-plugins/issues/459)) ([ee0a40b](https://github.com/each4all/agentic-plugins/commit/ee0a40bc947a786de0f096529d754d06fea06f46))
+* **plugin/runtime:** unify permission-advisor sanitize helpers (ADR-0038 sanitize-util) ([#451](https://github.com/each4all/agentic-plugins/issues/451)) ([c2a8413](https://github.com/each4all/agentic-plugins/commit/c2a84134803a7e6ccd057217f99527b389a4bb77))
+* **plugin/runtime:** usage-record learner C engine (ADR-0038 usage-learner) ([#455](https://github.com/each4all/agentic-plugins/issues/455)) ([a94edda](https://github.com/each4all/agentic-plugins/commit/a94edda166334021d79cde0468d86f7ac62614dd))
+
 ## [0.69.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.68.1...plugin-runtime-v0.69.0) (2026-06-27)
 
 
