@@ -1155,6 +1155,40 @@ describe('runtime doctor', () => {
     ok(!text.includes('RAW CONTEXT SUMMARY'), 'doctor must not print context artifact bodies');
   });
 
+  it('inventories the ADR-0038 permission advisory family and excludes its latest.json singleton from run counts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-permission-inventory-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    for (const runId of ['permission-20260629T080000Z-000001', 'permission-20260629T090000Z-000002']) {
+      await mkdir(join(root, '.agentic-plugins', 'runs', 'permission', runId), { recursive: true });
+      await writeFile(
+        join(root, '.agentic-plugins', 'runs', 'permission', runId, 'advisory.json'),
+        '{"kind":"permission-advisory","SANITIZED":"pointer-only"}\n',
+      );
+    }
+    // The overwritten latest.json singleton is a FILE at the family root — it
+    // must count toward file_count but never toward run_count.
+    await writeFile(
+      join(root, '.agentic-plugins', 'runs', 'permission', 'latest.json'),
+      '{"kind":"permission-advisory","run_id":"permission-20260629T090000Z-000002"}\n',
+    );
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      artifactInventory: true,
+      now: new Date('2026-06-29T10:00:00.000Z'),
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    const permission = report.artifact_inventory.families.permission;
+    ok(permission, 'permission family is present in the inventory');
+    strictEqual(permission.run_count, 2);
+    ok(permission.file_count >= 1, 'latest.json is counted as a file');
+    strictEqual(permission.status, 'available');
+    strictEqual(permission.attention.length, 0, 'two runs are under the retention cap');
+  });
+
   it('reports sandbox and permission readiness as unknown without an explicit peer smoke', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-readiness-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));

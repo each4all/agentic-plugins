@@ -46,7 +46,10 @@ const COMPAT_RUN_ID_RE = /^compat-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const DOCTOR_RUN_ID_RE = /^doctor-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const DOCTOR_ARTIFACT_SCHEMA_VERSION = 'runtime-doctor-artifact-1.0';
 const DOCTOR_LATEST_SCHEMA_VERSION = 'runtime-doctor-latest-1.0';
-const RUNTIME_ARTIFACT_FAMILIES = ['compat', 'consensus', 'context', 'settings', 'doctor'];
+// 'permission' is the ADR-0038 permission advisory family; its on-disk segment
+// is owned by scripts/lib/permission-artifacts.mjs (PERMISSION_ARTIFACT_FAMILY),
+// registered here so the inventory + uniform retention cap covers it.
+const RUNTIME_ARTIFACT_FAMILIES = ['compat', 'consensus', 'context', 'settings', 'doctor', 'permission'];
 const CLAUDE_PLUGIN_SURFACE_UNAVAILABLE_RE = /\/plugin (?:isn't|is not) available in this environment/i;
 
 export async function runDoctor({
