@@ -68,7 +68,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.11');
+    strictEqual(report.schema_version, 'runtime-settings-1.12');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -594,7 +594,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.11');
+    strictEqual(report.schema_version, 'runtime-settings-1.12');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -1169,6 +1169,180 @@ describe('runtime settings', () => {
     ok(next.includes('model = "shared"'));
   });
 
+});
+
+describe('settings: permission plan (ADR-0038 settings-claude, M1)', () => {
+  it('builds a dry-run Claude plan: allowlist cross-reference, fragment, M1 artifact, no host write', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-permplan-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-home-'));
+    await seedRepo(root);
+    // Existing Claude allowlist (repo-local): `npm run *` is already governed.
+    await mkdir(join(root, '.claude'), { recursive: true });
+    const existingSettings = { permissions: { allow: ['Bash(npm run *)'] } };
+    await writeJson(join(root, '.claude', 'settings.local.json'), existingSettings);
+    // Claude usage records under the temp home (SECRETPROJECTSLUG / bearer token
+    // are leak canaries that must never reach the report or artifact).
+    const claudeLines = [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm run test' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'cargo build' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't3', name: 'Bash', input: { command: 'git push --force origin main' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't4', name: 'Edit', input: { file_path: '/x' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't5', name: 'Bash', input: { command: "curl -H 'Authorization: Bearer sk-ant-EXAMPLEONLYSECRET1234567890' https://x" } }] } },
+    ].map((o) => JSON.stringify(o)).join('\n') + '\n';
+    await mkdir(join(home, '.claude', 'projects', 'SECRETPROJECTSLUG'), { recursive: true });
+    await writeFile(join(home, '.claude', 'projects', 'SECRETPROJECTSLUG', 's.jsonl'), claudeLines);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      env: { ...process.env, CODEX_HOME: join(home, '.codex') },
+      permissionPlan: true,
+      now: new Date('2026-06-30T07:00:00.000Z'),
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    const pp = report.permission_plan;
+    ok(pp.requested && pp.executed, 'requested + executed');
+    strictEqual(pp.status, 'analyzed');
+    strictEqual(pp.host, 'claude');
+
+    // Cross-reference: already-governed `npm run *` excluded; new ones recommended.
+    ok(!pp.recommended.allow.includes('Bash(npm run *)'), 'already-governed allow excluded');
+    ok(pp.already_allowed_count >= 1, 'counts already-governed');
+    ok(pp.recommended.allow.includes('Bash(cargo build)'), 'new safe allow recommended');
+    ok(pp.recommended.ask.includes('Bash(git push *)'), 'dangerous git push -> ask');
+    ok(pp.recommended.default_mode && pp.recommended.default_mode.value === 'acceptEdits', 'file-mod -> defaultMode acceptEdits');
+    ok(pp.recommended.default_mode.value !== 'bypassPermissions', 'never bypassPermissions');
+
+    // Rendered fragment — defaultMode lives under permissions (Claude schema).
+    ok(pp.fragment.permissions.allow.includes('Bash(cargo build)'));
+    strictEqual(pp.fragment.permissions.defaultMode, 'acceptEdits');
+    strictEqual(pp.fragment.defaultMode, undefined);
+
+    // M1 artifact written under runs/permission with surface=settings; host config NOT written.
+    strictEqual(pp.artifact.written, true);
+    ok(pp.artifact.report_pointer.includes('.agentic-plugins/runs/permission/'), 'artifact under permission family');
+    const advisory = await readJson(join(root, '.agentic-plugins', 'runs', 'permission', pp.artifact.run_id, 'advisory.json'));
+    strictEqual(advisory.surface, 'settings');
+    strictEqual(advisory.plan.length, 1);
+    strictEqual(advisory.boundary.writes_host_config, false);
+    deepStrictEqual(await readJson(join(root, '.claude', 'settings.local.json')), existingSettings);
+    strictEqual(report.dry_run, true);
+    ok(report.mutation_boundary.forbidden.includes('host-native Claude Code config'));
+
+    // Privacy (ADR-0038 §5): no secret arg, no source path, no raw command.
+    const serialized = JSON.stringify(report);
+    ok(!serialized.includes('EXAMPLEONLYSECRET'), 'secret arg must not leak');
+    ok(!serialized.includes('SECRETPROJECTSLUG'), 'source path must not leak');
+    ok(!serialized.includes('git push --force origin main'), 'raw command must be generalized');
+    ok(formatText(report).includes('Permission Plan (Claude, dry-run)'));
+  });
+
+  it('omits the permission plan unless requested', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-permplan-off-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-home-'));
+    await seedRepo(root);
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      env: { ...process.env, CODEX_HOME: join(home, '.codex') },
+      now: new Date('2026-06-30T07:00:00.000Z'),
+      runner: fakeRunner(defaultCliMap()),
+    });
+    strictEqual(report.permission_plan.requested, false);
+    strictEqual(report.permission_plan.status, 'not_requested');
+    await rejects(() => stat(join(root, '.agentic-plugins', 'runs', 'permission')), /ENOENT/);
+  });
+
+  it('degrades to no-evidence baseline when no usage records exist', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-permplan-empty-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-home-'));
+    await seedRepo(root);
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      env: { ...process.env, CODEX_HOME: join(home, '.codex') },
+      permissionPlan: true,
+      now: new Date('2026-06-30T07:00:00.000Z'),
+      runner: fakeRunner(defaultCliMap()),
+    });
+    const pp = report.permission_plan;
+    strictEqual(pp.status, 'baseline');
+    strictEqual(pp.recommended.count, 0);
+    strictEqual(pp.evidence.baseline_used, true);
+  });
+
+  it('matches colon/broader Claude rules and flags allowed-but-dangerous conflicts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-permplan-match-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.claude'), { recursive: true });
+    // npm run:* (colon) governs npm run *; npm * (broad) governs npm ci;
+    // git push * is ALLOWED but the advisor grades it ask -> conflict.
+    await writeJson(join(root, '.claude', 'settings.local.json'), {
+      permissions: { allow: ['Bash(npm run:*)', 'Bash(npm *)', 'Bash(git push *)'] },
+    });
+    const lines = [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a', name: 'Bash', input: { command: 'npm run test' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'b', name: 'Bash', input: { command: 'npm ci' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'c', name: 'Bash', input: { command: 'git push --force origin main' } }] } },
+    ].map((o) => JSON.stringify(o)).join('\n') + '\n';
+    await mkdir(join(home, '.claude', 'projects', 'p'), { recursive: true });
+    await writeFile(join(home, '.claude', 'projects', 'p', 's.jsonl'), lines);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      env: { ...process.env, CODEX_HOME: join(home, '.codex') },
+      permissionPlan: true,
+      now: new Date('2026-06-30T07:00:00.000Z'),
+      runner: fakeRunner(defaultCliMap()),
+    });
+    const pp = report.permission_plan;
+    ok(!pp.recommended.allow.includes('Bash(npm run *)'), 'colon-style rule governs space-style recommendation');
+    ok(!pp.recommended.allow.some((i) => i.startsWith('Bash(npm')), 'broader Bash(npm *) governs npm ci');
+    ok(pp.already_allowed_count >= 2, 'colon + broader matches both counted as governed');
+    const conflict = pp.conflicts.find((c) => c.item === 'Bash(git push *)');
+    ok(conflict && conflict.grade === 'ask', 'allowed-but-dangerous surfaced as a conflict');
+    ok(pp.recommended.ask.includes('Bash(git push *)'), 'corrective ask still recommended despite existing allow');
+    ok(formatText(report).includes('conflict:'), 'conflict rendered in text');
+  });
+
+  it('resolves defaultMode with local > project precedence and reads permissions.defaultMode', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-permplan-mode-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.claude'), { recursive: true });
+    // project sets default; local overrides to acceptEdits (already covers file-mod).
+    await writeJson(join(root, '.claude', 'settings.json'), { permissions: { defaultMode: 'default' } });
+    await writeJson(join(root, '.claude', 'settings.local.json'), { permissions: { defaultMode: 'acceptEdits' } });
+    const lines = [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'e', name: 'Edit', input: { file_path: '/x' } }] } },
+    ].map((o) => JSON.stringify(o)).join('\n') + '\n';
+    await mkdir(join(home, '.claude', 'projects', 'p'), { recursive: true });
+    await writeFile(join(home, '.claude', 'projects', 'p', 's.jsonl'), lines);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      env: { ...process.env, CODEX_HOME: join(home, '.codex') },
+      permissionPlan: true,
+      now: new Date('2026-06-30T07:00:00.000Z'),
+      runner: fakeRunner(defaultCliMap()),
+    });
+    const pp = report.permission_plan;
+    // local acceptEdits wins over project default → already covers file-mod → no defaultMode rec.
+    strictEqual(pp.host_config.default_mode, 'acceptEdits');
+    strictEqual(pp.recommended.default_mode, null);
+  });
+
+  it('parses the --permission-plan flags', () => {
+    const opts = parseArgs(['--permission-plan', '--permission-plan-max-files', '7', '--permission-plan-max-file-bytes', '2048']);
+    strictEqual(opts.permissionPlan, true);
+    strictEqual(opts.permissionPlanMaxFiles, 7);
+    strictEqual(opts.permissionPlanMaxFileBytes, 2048);
+    strictEqual(parseArgs([]).permissionPlan, false);
+  });
 });
 
 function defaultCliMap() {
