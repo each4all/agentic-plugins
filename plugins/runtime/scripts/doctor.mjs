@@ -2890,8 +2890,9 @@ async function collectRecordFiles(dir, matchFn, budget, maxFileBytes) {
 // `maxFiles` per host. Each host gets an INDEPENDENT scan budget so a large Claude
 // tree cannot starve the Codex scan and misreport it as empty (Plan-verify peer
 // MAJOR). Read-only; reports found/used/scan_truncated/skipped_too_large per host
-// so a cap is never silent.
-async function collectUsageRecordSources({ homeDir, env, maxFiles, maxFileBytes }) {
+// so a cap is never silent. Exported so runtime:settings reuses the same
+// hardened (no-follow, budgeted, byte-capped) enumeration instead of duplicating it.
+export async function collectUsageRecordSources({ homeDir, env, maxFiles, maxFileBytes }) {
   const claudeDir = join(homeDir, '.claude', 'projects');
   const codexHome = env && env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(homeDir, '.codex');
   const codexDir = join(codexHome, 'sessions');

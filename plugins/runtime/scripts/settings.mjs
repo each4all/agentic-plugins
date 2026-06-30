@@ -16,10 +16,18 @@ import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
-import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor, codexPerPluginVerbs } from './doctor.mjs';
+import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor, codexPerPluginVerbs, collectUsageRecordSources } from './doctor.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
+import { learnFromSources } from './lib/permission-usage-learner.mjs';
+import { makeFragmentContract, makeModeRecommendation } from './lib/permission-advisor-core.mjs';
+import { recordPermissionAdvisoryArtifact, makePermissionRunId } from './lib/permission-artifacts.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.11';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.12';
+
+// ADR-0038 settings-claude permission plan (M1): how many recent usage records to
+// read per host, and a per-file byte cap, when building the dry-run plan.
+const DEFAULT_PERMISSION_PLAN_MAX_FILES = 100;
+const DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES = 8 * 1024 * 1024;
 export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.1';
 export const CONFIG_KEYS = [
   'model',
@@ -57,6 +65,9 @@ export async function runSettings({
   attestCodexHookReview = false,
   pluginManagementHost = 'all',
   pluginManagementTimeoutMs = DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS,
+  permissionPlan = false,
+  permissionPlanMaxFiles = DEFAULT_PERMISSION_PLAN_MAX_FILES,
+  permissionPlanMaxFileBytes = DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES,
   runId = null,
 } = {}) {
   if (!TARGETS.has(target)) throw new Error('--target must be repo, user, or both');
@@ -138,6 +149,21 @@ export async function runSettings({
     buildCodexHookReviewManualFollowups(doctor.codex_plugin_hooks, hookSettings, codexHookReview),
   );
 
+  const permissionPlanSection = permissionPlan
+    ? await buildPermissionPlan({
+        repoRoot: resolvedRepoRoot,
+        homeDir: resolvedHomeDir,
+        env,
+        now,
+        maxFiles: permissionPlanMaxFiles,
+        maxFileBytes: permissionPlanMaxFileBytes,
+      })
+    : {
+        requested: false,
+        executed: false,
+        status: 'not_requested',
+      };
+
   const report = {
     schema_version: SETTINGS_SCHEMA_VERSION,
     runtime_version: RUNTIME_VERSION,
@@ -188,6 +214,7 @@ export async function runSettings({
       targets: configPlans.targets,
     },
     companion_settings: companionSettings,
+    permission_plan: permissionPlanSection,
     artifacts: buildSettingsArtifactReport({
       repoRoot: resolvedRepoRoot,
       runId: settingsRunId,
@@ -213,6 +240,7 @@ export async function runSettings({
       'runtime:settings does not write Codex host config; the former --apply-codex-plugin-hooks [features].plugin_hooks write was removed per ADR-0035 §6. Plugin hooks load via generic [features].hooks (default on) plus /hooks review/trust on current Codex; legacy Codex < ~0.134 requires a manual [features].plugin_hooks edit.',
       'Codex hook review/trust attestation records an operator claim only; runtime cannot mutate or independently prove active-session /hooks trust state.',
       'Claude host-native config, auth, secrets, and sandbox/permission settings are not written.',
+      'The permission plan (--permission-plan) reads the Claude allowlist read-only and writes only the agentic-plugins-owned advisory artifact; the .claude/settings.json fragment is emitted for the operator to apply, never written by runtime.',
       'Companion invocation still uses companions/contract.md --model and --effort.',
       'Dynamic peer consensus, context hygiene mutation, completion footer mutation, deep peer smoke, and host-native config apply modes are deferred.',
     ],
@@ -2121,6 +2149,27 @@ export function formatText(report) {
     lines.push(`  effective-${direction.effective.mode}: model=${direction.effective.model.value ?? '<host-default>'} (${direction.effective.model.source}); effort=${direction.effective.effort.value ?? '<host-default>'} (${direction.effective.effort.source})`);
     for (const warning of direction.effective.warnings) lines.push(`  warning: ${warning}`);
   }
+  if (report.permission_plan?.requested) {
+    const pp = report.permission_plan;
+    lines.push('');
+    lines.push('Permission Plan (Claude, dry-run)');
+    lines.push(`- status: ${pp.status}; recommendations=${pp.recommended?.count ?? 0}; already-governed=${pp.already_allowed_count ?? 0}; baseline-used=${pp.evidence?.baseline_used ?? false}`);
+    if (pp.sources_scanned) {
+      lines.push(`- records: used=${pp.sources_scanned.used}/${pp.sources_scanned.found}; scan-truncated=${pp.sources_scanned.scan_truncated}; skipped-too-large=${pp.sources_scanned.skipped_too_large}`);
+    }
+    const rec = pp.recommended || {};
+    if (rec.allow?.length) lines.push(`- allow: ${rec.allow.join(', ')}`);
+    if (rec.deny?.length) lines.push(`- deny: ${rec.deny.join(', ')}`);
+    if (rec.ask?.length) lines.push(`- ask: ${rec.ask.join(', ')}`);
+    if (rec.default_mode) lines.push(`- defaultMode: ${rec.default_mode.value} (${rec.default_mode.reason})`);
+    for (const conflict of pp.conflicts ?? []) lines.push(`- conflict: ${conflict.item} — ${conflict.reason}`);
+    if (pp.artifact?.written) lines.push(`- artifact: ${pp.artifact.report_pointer} (latest: ${pp.artifact.latest_pointer})`);
+    if (pp.fragment_text) {
+      lines.push('- fragment (merge into .claude/settings.json, runtime never writes it):');
+      for (const fragmentLine of pp.fragment_text.split('\n')) lines.push(`    ${fragmentLine}`);
+    }
+    for (const limit of pp.limits ?? []) lines.push(`- limit: ${limit}`);
+  }
   lines.push('');
   lines.push('Limits');
   for (const limit of report.limits) lines.push(`- ${limit}`);
@@ -2154,6 +2203,286 @@ async function readTextIfExists(path) {
   } catch (err) {
     return { ok: false, path, reason: err.code ?? err.message };
   }
+}
+
+// Read-only JSON read that never throws (missing/unreadable/malformed are data).
+async function readJsonIfExists(path) {
+  const r = await readTextIfExists(path);
+  if (!r.ok) return { ok: false, reason: r.reason };
+  try {
+    return { ok: true, json: JSON.parse(r.text) };
+  } catch {
+    return { ok: false, reason: 'invalid_json' };
+  }
+}
+
+// Read the Claude permissions allowlist READ-ONLY across repo + user settings,
+// unioning allow/deny/ask and capturing the first observed defaultMode. Never
+// writes; a missing/unreadable/malformed file is reported as a sanitized source
+// status (no raw path). This is the host-allowlist cross-reference doctor
+// deliberately deferred to settings (ADR-0038 §1).
+async function readClaudePermissionConfig({ repoRoot, homeDir }) {
+  const candidates = [
+    { scope: 'repo', path: join(repoRoot, '.claude', 'settings.json') },
+    { scope: 'repo-local', path: join(repoRoot, '.claude', 'settings.local.json') },
+    { scope: 'user', path: join(homeDir, '.claude', 'settings.json') },
+  ];
+  const allow = new Set();
+  const deny = new Set();
+  const ask = new Set();
+  const modeByScope = {};
+  const sources = [];
+  for (const candidate of candidates) {
+    const r = await readJsonIfExists(candidate.path);
+    if (!r.ok) {
+      const status = r.reason === 'ENOENT' ? 'missing' : r.reason === 'invalid_json' ? 'malformed' : 'unreadable';
+      sources.push({ scope: candidate.scope, status });
+      continue;
+    }
+    sources.push({ scope: candidate.scope, status: 'readable' });
+    const perms = r.json && typeof r.json === 'object' ? r.json.permissions : null;
+    if (perms && typeof perms === 'object') {
+      for (const a of Array.isArray(perms.allow) ? perms.allow : []) if (typeof a === 'string') allow.add(a);
+      for (const d of Array.isArray(perms.deny) ? perms.deny : []) if (typeof d === 'string') deny.add(d);
+      for (const k of Array.isArray(perms.ask) ? perms.ask : []) if (typeof k === 'string') ask.add(k);
+      // Claude docs place the scalar at permissions.defaultMode (NOT top-level),
+      // resolved local > project > user (Plan-verify peer MAJOR, verified vs docs).
+      if (typeof perms.defaultMode === 'string') modeByScope[candidate.scope] = perms.defaultMode;
+    }
+  }
+  const defaultMode = modeByScope['repo-local'] ?? modeByScope.repo ?? modeByScope.user ?? null;
+  return { allow, deny, ask, defaultMode, sources };
+}
+
+// Render an advisor-core rule into the exact Claude settings.json permission
+// item string, keyed by cause. file-modification has no per-pattern item — it
+// maps to a defaultMode recommendation instead. The rendering lives here (the
+// settings-claude slice), never in advisor-core (host-neutral by contract).
+function renderClaudePermissionItem(rule) {
+  switch (rule.cause) {
+    case 'claude.bash-not-allowlisted':
+      return `Bash(${rule.pattern})`;
+    case 'claude.webfetch-domain':
+      return `WebFetch(domain:${rule.pattern})`;
+    case 'claude.mcp-not-allowed':
+      return rule.pattern;
+    default:
+      return null;
+  }
+}
+
+// Parse a Claude permission item into { tool, spec }; spec is null for a bare
+// tool (e.g. "Bash" governs all Bash).
+function parseClaudePermissionItem(item) {
+  const m = String(item).match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\((.*)\))?$/);
+  if (!m) return null;
+  return { tool: m[1], spec: m[2] === undefined ? null : m[2] };
+}
+
+// Normalize a Bash specifier to its prefix by stripping a trailing wildcard.
+// Claude documents ":*" as equivalent to a trailing " *". "npm run *" /
+// "npm run:*" -> "npm run"; "npm:*" -> "npm"; "*" -> "" (matches everything).
+function bashSpecPrefix(spec) {
+  if (spec === '*') return '';
+  return spec.replace(/:\*$/, '').replace(/\s*\*$/, '').trim();
+}
+
+// Does an existing Claude rule GOVERN a recommended item (making the
+// recommendation redundant)? Same tool required. A bare tool or "*"/empty
+// Bash spec governs all of that tool. For Bash, an existing prefix governs a
+// recommended item whose prefix starts with it on a token boundary ("npm"
+// governs "npm run"; "npm test" does not). Non-Bash tools use normalized exact
+// match. (Plan-verify peer MAJOR: ":*"≡" *", bare tool, and broader prefixes.)
+function claudePermissionGoverns(existing, recommended) {
+  const e = parseClaudePermissionItem(existing);
+  const r = parseClaudePermissionItem(recommended);
+  if (!e || !r || e.tool !== r.tool) return false;
+  if (e.spec === null) return true;
+  if (e.tool === 'Bash') {
+    const ep = bashSpecPrefix(e.spec);
+    if (ep === '') return true;
+    const rp = bashSpecPrefix(r.spec ?? '');
+    return rp === ep || rp.startsWith(`${ep} `);
+  }
+  const normalize = (s) => (s ?? '').replace(/:\*$/, '').replace(/\s*\*$/, '').trim();
+  return normalize(e.spec) === normalize(r.spec);
+}
+
+function governedByClaudeRules(ruleSet, recommended) {
+  for (const existing of ruleSet) {
+    if (claudePermissionGoverns(existing, recommended)) return true;
+  }
+  return false;
+}
+
+function permissionPlanLimits(capNote) {
+  const limits = [
+    'runtime:settings permission plan is a dry-run (M1): it emits the recommended .claude/settings.json fragment and writes plan+evidence to an agentic-plugins-owned artifact, but NEVER writes host config — apply it yourself by merging the fragment.',
+    'Recommendations are safety-graded (allow for known-safe families; deny/ask retained for dangerous shapes) and never recommend bypassPermissions as a default.',
+    'Already-governed patterns (present in the host allow/deny/ask sets) are excluded; the host allowlist is read read-only and never added to apply targets.',
+    'Evidence retains only generalized patterns + counts (ADR-0038 §5); raw commands, arguments, and source paths are never surfaced.',
+  ];
+  if (capNote) limits.push(capNote);
+  return limits;
+}
+
+// ADR-0038 settings-claude — the M1 Claude permission plan. Learns prompt-cause
+// evidence from Claude usage records (read-only, via doctor's hardened
+// enumeration), reads the host allowlist read-only, builds an advisor-core
+// fragment contract of the NOT-yet-governed recommendations (safety-graded),
+// renders the exact settings.json fragment, and persists plan+evidence to the
+// permission-advisory artifact (surface=settings). Host config is never written.
+async function buildPermissionPlan({ repoRoot, homeDir, env, now, maxFiles, maxFileBytes }) {
+  let collected;
+  try {
+    collected = await collectUsageRecordSources({ homeDir, env, maxFiles, maxFileBytes });
+  } catch (err) {
+    return {
+      requested: true,
+      executed: true,
+      status: 'blocked',
+      host: 'claude',
+      error: err.code ?? err.message,
+      sources_scanned: { found: 0, used: 0, scan_truncated: false, skipped_too_large: 0 },
+      host_config: { read_only: true, sources: [], default_mode: null },
+      recommended: { allow: [], deny: [], ask: [], default_mode: null, count: 0 },
+      already_allowed_count: 0,
+      fragment: null,
+      fragment_text: null,
+      evidence: { rule_count: 0, total_seen: 0, baseline_used: true },
+      artifact: { written: false, reason: 'usage-record enumeration failed' },
+      limits: permissionPlanLimits(null),
+    };
+  }
+
+  const claudeSources = collected.sources.filter((source) => source.host === 'claude');
+  const scan = collected.scanned.claude;
+  const learner = learnFromSources(claudeSources);
+  const claudeRules = learner.rules.filter((rule) => rule.host === 'claude');
+
+  const hostConfig = await readClaudePermissionConfig({ repoRoot, homeDir });
+
+  const allow = [];
+  const deny = [];
+  const ask = [];
+  const conflicts = [];
+  const fragmentRules = [];
+  let alreadyGoverned = 0;
+  for (const rule of claudeRules) {
+    const item = renderClaudePermissionItem(rule);
+    if (!item) continue; // file-modification → defaultMode, handled below
+    if (rule.grade === 'allow') {
+      if (governedByClaudeRules(hostConfig.allow, item)) {
+        alreadyGoverned += 1;
+        continue;
+      }
+      allow.push(item);
+      fragmentRules.push(rule);
+      continue;
+    }
+    // deny / ask: skip only if the SAME bucket already governs it. If it is
+    // currently ALLOWED but graded deny/ask, surface the allowed-but-dangerous
+    // conflict AND still recommend the corrective rule (Plan-verify peer MAJOR —
+    // a dangerous pattern sitting in allow[] must not be silently suppressed).
+    const ownBucket = rule.grade === 'deny' ? hostConfig.deny : hostConfig.ask;
+    if (governedByClaudeRules(ownBucket, item)) {
+      alreadyGoverned += 1;
+      continue;
+    }
+    if (governedByClaudeRules(hostConfig.allow, item)) {
+      conflicts.push({
+        item,
+        grade: rule.grade,
+        reason: `currently allowed in .claude/settings but graded ${rule.grade}; move it to permissions.${rule.grade}`,
+      });
+    }
+    if (rule.grade === 'deny') deny.push(item);
+    else ask.push(item);
+    fragmentRules.push(rule);
+  }
+
+  let modeRecommendation = null;
+  const hasFileMod = learner.modeEvidence.some((m) => m.host === 'claude' && m.cause === 'claude.file-modification');
+  const modeAlreadySet = hostConfig.defaultMode === 'acceptEdits' || hostConfig.defaultMode === 'bypassPermissions';
+  if (hasFileMod && !modeAlreadySet) {
+    modeRecommendation = makeModeRecommendation({
+      setting: 'defaultMode',
+      value: 'acceptEdits',
+      reason: 'clear repeated file-modification prompts (Edit/Write)',
+    });
+  }
+
+  const fragment = makeFragmentContract({
+    host: 'claude',
+    rules: fragmentRules,
+    modeRecommendation,
+    notes: ['merge into .claude/settings.json permissions; runtime never writes host config'],
+  });
+
+  const fragmentJson = { permissions: {} };
+  if (allow.length) fragmentJson.permissions.allow = allow;
+  if (deny.length) fragmentJson.permissions.deny = deny;
+  if (ask.length) fragmentJson.permissions.ask = ask;
+  // Claude places the scalar at permissions.defaultMode, not top-level
+  // (Plan-verify peer MAJOR, verified vs Claude docs).
+  if (modeRecommendation) fragmentJson.permissions.defaultMode = modeRecommendation.value;
+
+  const runId = makePermissionRunId(now);
+  const { pointers } = await recordPermissionAdvisoryArtifact({
+    repoRoot,
+    runId,
+    surface: 'settings',
+    hosts: ['claude'],
+    plan: [fragment],
+    evidence: learner,
+    createdAt: now.toISOString(),
+  });
+
+  const notes = [];
+  // Claude-only plan: the cap note must reflect the CLAUDE scan, not the
+  // both-host collector's `capped` (Plan-verify peer MINOR).
+  if (scan.found > scan.used) notes.push(`per-host file cap (${maxFiles}) reached`);
+  if (scan.scan_truncated) notes.push('directory scan hit the safety budget');
+  if (scan.skipped_too_large) notes.push(`skipped ${scan.skipped_too_large} oversized record(s) above the per-file byte cap`);
+  const capNote = notes.length ? `${notes.join('; ')}.` : null;
+
+  return {
+    requested: true,
+    executed: true,
+    status: learner.baselineUsed ? 'baseline' : 'analyzed',
+    host: 'claude',
+    sources_scanned: {
+      found: scan.found,
+      used: scan.used,
+      scan_truncated: scan.scan_truncated,
+      skipped_too_large: scan.skipped_too_large,
+    },
+    host_config: { read_only: true, sources: hostConfig.sources, default_mode: hostConfig.defaultMode },
+    recommended: {
+      allow,
+      deny,
+      ask,
+      default_mode: modeRecommendation ? { value: modeRecommendation.value, reason: modeRecommendation.reason } : null,
+      count: allow.length + deny.length + ask.length + (modeRecommendation ? 1 : 0),
+    },
+    conflicts,
+    already_allowed_count: alreadyGoverned,
+    fragment: fragmentJson,
+    fragment_text: JSON.stringify(fragmentJson, null, 2),
+    evidence: {
+      rule_count: claudeRules.length,
+      total_seen: claudeRules.reduce((sum, rule) => sum + rule.evidence.count, 0),
+      baseline_used: learner.baselineUsed,
+    },
+    artifact: {
+      written: true,
+      run_id: runId,
+      run_pointer: pointers.run_pointer,
+      report_pointer: pointers.report_pointer,
+      latest_pointer: pointers.latest_pointer,
+    },
+    limits: permissionPlanLimits(capNote),
+  };
 }
 
 async function writeJson(path, value) {
@@ -2207,7 +2536,8 @@ function usage() {
     'Usage: settings.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex]',
     '  [--target repo|user|both] [--model <id>] [--effort <level>]',
     '  [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>]',
-    '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>] [--run-id <settings-run-id>]',
+    '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
+    '  [--permission-plan] [--permission-plan-max-files <n>] [--permission-plan-max-file-bytes <n>] [--run-id <settings-run-id>]',
     '',
   ].join('\n');
 }
@@ -2224,6 +2554,9 @@ export function parseArgs(argv) {
     attestCodexHookReview: false,
     pluginManagementHost: 'all',
     pluginManagementTimeoutMs: DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS,
+    permissionPlan: false,
+    permissionPlanMaxFiles: DEFAULT_PERMISSION_PLAN_MAX_FILES,
+    permissionPlanMaxFileBytes: DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES,
     runId: null,
     desired: {},
   };
@@ -2255,6 +2588,12 @@ export function parseArgs(argv) {
       if (!PLUGIN_MANAGEMENT_HOSTS.has(opts.pluginManagementHost)) throw new Error('--plugin-management-host must be all, claude, or codex');
     } else if (arg === '--plugin-management-timeout-ms') {
       opts.pluginManagementTimeoutMs = parsePositiveInt(requireValue(argv, ++i, arg), arg);
+    } else if (arg === '--permission-plan') {
+      opts.permissionPlan = true;
+    } else if (arg === '--permission-plan-max-files') {
+      opts.permissionPlanMaxFiles = parsePositiveInt(requireValue(argv, ++i, arg), arg);
+    } else if (arg === '--permission-plan-max-file-bytes') {
+      opts.permissionPlanMaxFileBytes = parsePositiveInt(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--run-id') {
       opts.runId = validateSettingsRunId(requireValue(argv, ++i, arg));
     } else if (arg === '--model') {
