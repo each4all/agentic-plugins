@@ -286,21 +286,19 @@ echo "  Next Stop event will evaluate A1-A4 and auto-archive the macro file."
 
 `/orchestrator:abort` completes when all non-terminal subtasks are `abandoned`, every engineer child workflow is archived (terminal via stop-archive, mid-flight via detach-archive), and the macro carries `terminal_marker: true` + `current_phase: 'aborted'`. The macro workflow file is moved to `archive/` on the next host Stop event.
 
-Append the runtime completion footer after the abort summary. Use the
-runtime footer helper when available, or render the same fields manually:
-context state, completion state plus state-derived next action, workflow
-id/path, artifact pointers, recommended next work, and next-session
-action/command or prompt pointer. The footer is advisory
-and pointer-only; do not mutate host session context or paste raw peer /
-consensus output into the main session.
-
-Before rendering the footer, surface the ADR-0031 session-level
-continue-vs-fresh preflight per
-`skills/_shared/references/session-handoff.md`: compute the orchestrator macro
-projection (resolved across branches via find-active then find-macro) and pass
-it to the runtime footer/check (`--workflow-projection-file`) so the footer
-carries the continue-vs-fresh decision. An aborted macro normally projects
-`archive_gate=ready_to_archive` once every macro gate passes (e.g. all children
-archived); report whatever gate it computes (the footer is advisory) — never
-archive from the preflight. On detached HEAD, report "no active branch
-context" — do not auto-recommend a fresh session.
+The runtime completion footer is **code-emitted** on this command's terminal
+path (ADR-0039): the `state.mjs set-terminal` write above fires the ADR-0031
+macro session-handoff sidecar, which shells out to the runtime `footer.mjs` and
+prints the rendered footer — context state, completion state + state-derived
+next action, workflow id/path, artifact pointers, recommended next work, and the
+continue-vs-fresh session-handoff — on that command's **stderr**. Do **not**
+hand-compose a second footer here; surface the one the terminal write already
+emitted. The footer is advisory + pointer-only and fail-closed (a missing/too-old
+runtime emits nothing, and the SessionStart backstop still re-surfaces the
+handoff); it never mutates host session context. An aborted macro normally
+projects `archive_gate=ready_to_archive` once every macro gate passes (e.g. all
+children archived); the footer reports whatever gate it computes — never archive
+from it. This terminal footer renders from the macro's PATH (via
+`computeOrchestratorProjectionForPath`), so — unlike the branch-resolved
+`/plan`/`/next` preflight — it does not depend on the current branch and emits
+even on detached HEAD.
