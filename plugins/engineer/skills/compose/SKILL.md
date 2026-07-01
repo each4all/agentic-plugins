@@ -213,13 +213,13 @@ proposal shape and routing reasoning without dispatching a peer.
 
 ## Session-level handoff preflight (ADR-0031)
 
-As part of the completion footer (see the Completion section above), surface the
-ADR-0031 session-level continue-vs-fresh preflight per
-`skills/_shared/references/session-handoff.md`: compute the engineer workflow
-projection and pass it to the runtime footer/check
-(`--workflow-projection-file`) so the footer carries the continue-vs-fresh
-decision. On detached HEAD, report "no active branch context" — do not
-auto-recommend a fresh session. This mirrors the `/engineer:compose`
+The completion footer — including the ADR-0031 continue-vs-fresh
+session-handoff — is **code-emitted** on this verb's terminal path (ADR-0039):
+`state.mjs set-terminal` fires the session-handoff sidecar, which renders the
+runtime `footer.mjs` on the terminal command's stderr. Do not hand-compose the
+footer or hand-pass the projection here; surface the emitted one. On detached
+HEAD the sidecar reports "no active branch context" and does not auto-recommend
+a fresh session. This mirrors the `/engineer:compose`
 command's preflight so `$engineer:compose` on Codex surfaces it identically.
 
 ---

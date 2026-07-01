@@ -46,7 +46,9 @@ async function main() {
     try {
       const { frontmatter } = await readWorkflow(active);
       if (frontmatter?.terminal_marker === true) {
-        await emitTerminalHandoffSidecar({ repoRoot, workflowPath: active });
+        // ADR-0039 — thread host so the backstop footer render localizes for
+        // Claude; idempotency marker makes this a no-op if the primary rendered.
+        await emitTerminalHandoffSidecar({ repoRoot, workflowPath: active, host: 'claude' });
       }
     } catch (err) {
       process.stderr.write(`engineer/stop handoff-backstop: ${err.message}\n`);

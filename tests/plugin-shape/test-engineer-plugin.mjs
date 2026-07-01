@@ -823,13 +823,21 @@ describe('plugins/engineer — 11 commands (commands/<verb>.md — 6 verbs + aud
     );
   });
 
-  it('workflow completion commands append the runtime completion footer contract', async () => {
+  it('workflow completion commands defer to the code-emitted runtime completion footer (ADR-0039)', async () => {
     for (const cmd of [...VERBS, ...LIFECYCLE_MACROS]) {
       const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${cmd}.md`), 'utf8');
       ok(/runtime completion footer/i.test(text), `commands/${cmd}.md missing runtime footer guidance`);
+      // ADR-0039 §9 — the footer is CODE-EMITTED on the terminal path, not
+      // hand-composed. Guard both the new contract phrasing and the removal of
+      // the old "render the same fields manually" hand-compose instruction.
+      ok(/code-emitted/i.test(text), `commands/${cmd}.md must state the footer is code-emitted (ADR-0039 §9)`);
+      ok(!/render the same fields manually/i.test(text), `commands/${cmd}.md must not instruct hand-composing the footer`);
       ok(/advisory/i.test(text), `commands/${cmd}.md must mark footer advisory`);
       ok(/pointer-only/i.test(text), `commands/${cmd}.md must keep footer pointer-only`);
-      ok(/do not mutate host session\s+context/i.test(text), `commands/${cmd}.md must forbid context mutation`);
+      ok(
+        /(do not\s+mutate|never\s+mutates)\s+host\s+session\s+context/i.test(text),
+        `commands/${cmd}.md must forbid host session context mutation`,
+      );
     }
   });
 

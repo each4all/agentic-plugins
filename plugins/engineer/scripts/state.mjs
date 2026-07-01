@@ -2505,6 +2505,9 @@ export async function setTerminal({
           repoRoot,
           workflowPath,
           projectionFile,
+          // ADR-0039 — thread host so the code-synthesized footer localizes its
+          // commands (claude|codex); this call site already carries it.
+          host,
         });
       }
     } catch {

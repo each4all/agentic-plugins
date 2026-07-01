@@ -13,11 +13,37 @@ preserving the ADR-0010 L3 → L1 direction).
 Per the contract's firing rules, surface the preflight **before guiding the
 user toward substantial next work**:
 
-- at **`engineer:start` Phase 0** (before sequencing a fresh lifecycle), and
-- at **standalone verb completion** (alongside the runtime completion footer),
-  when the Active Next-Action Proposal's `selected_next` implies substantial work.
+- at **`engineer:start` Phase 0** (before sequencing a fresh lifecycle) — a
+  pre-work surface the model still performs, and
+- at **standalone verb / lifecycle completion** — **now code-emitted** (ADR-0039):
+  the terminal mutation (`state.mjs set-terminal`, and `phase7-commit.mjs` for
+  the lifecycle) fires `emitTerminalHandoffSidecar`, which — after writing the
+  projection — shells out to the runtime `footer.mjs` and prints the completion
+  footer (context state, completion state + next action, workflow id/path,
+  artifact pointers, recommended next work, and this continue-vs-fresh
+  session-handoff) on the caller's **stderr**. The model does **not** hand-compose
+  it at completion; it surfaces the emitted one.
 
 It is not emitted on a trivial reversible step.
+
+## Completion footer is code-emitted (ADR-0039)
+
+The `## How to compute + pass the projection` recipe below is the **contract
+reference** and the mechanism the **Phase 0** pre-work preflight uses. At
+**completion** the same projection is computed and handed to `footer.mjs`
+automatically by `emitTerminalHandoffSidecar` (engineer `session-handoff.mjs`),
+via the `discover-runtime.mjs` resolver (copy-not-import, ADR-0010 §5). That
+render is:
+
+- **stderr only, never stdout** (the completion scripts' stdout is a load-bearing
+  machine channel);
+- **fail-closed silent** — a missing/too-old runtime (below
+  `MIN_RUNTIME_VERSION`) emits nothing and never throws; the completion proceeds
+  and the `SessionStart` backstop still re-surfaces the pending handoff;
+- **idempotent** — rendered at most once per terminal transition (a sibling
+  marker keyed to `workflow_id` makes the Stop-hook backstop a no-op once the
+  primary rendered), and a rendered footer suppresses the false "missed-footer"
+  `SessionStart` nudge.
 
 ## How to compute + pass the projection
 
