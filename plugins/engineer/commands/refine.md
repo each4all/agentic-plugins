@@ -251,18 +251,14 @@ The `blocked` case pauses for user direction before any forward proposal.
 
 Always include the workflow path.
 
-Append the runtime completion footer after the workflow path. Use the
-runtime footer helper when available, or render the same fields manually:
-context state, completion state plus state-derived next action, workflow
-id/path, artifact pointers, recommended next work, and next-session
-action/command or prompt pointer. The footer is advisory
-and pointer-only; do not mutate host session context or paste raw peer /
-consensus output into the main session.
-
-Before rendering the footer, surface the ADR-0031 session-level
-continue-vs-fresh preflight per
-`skills/_shared/references/session-handoff.md`: compute the engineer workflow
-projection and pass it to the runtime footer/check
-(`--workflow-projection-file`) so the footer carries the continue-vs-fresh
-decision. On detached HEAD, report "no active branch context" — do not
-auto-recommend a fresh session.
+The runtime completion footer is **code-emitted** on this verb's terminal path
+(ADR-0039): `state.mjs set-terminal` fires the ADR-0031 session-handoff sidecar,
+which shells out to the runtime `footer.mjs` and prints the rendered footer —
+context state, completion state + state-derived next action, workflow id/path,
+artifact pointers, recommended next work, and the continue-vs-fresh
+session-handoff — on that command's **stderr**. Do **not** hand-compose a second
+footer here; surface the one the terminal command already emitted. The footer is
+advisory + pointer-only and fail-closed (a missing/too-old runtime emits
+nothing, and the SessionStart backstop still re-surfaces the handoff); it never
+mutates host session context. On detached HEAD the sidecar reports "no active
+branch context" and does not auto-recommend a fresh session.

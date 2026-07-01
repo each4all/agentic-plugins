@@ -533,21 +533,20 @@ flagged `accept-current-tree`, re-pass `ACCEPT_CURRENT_TREE=1` (or
 `--accept-current-tree`) into the execute step so the driver stages all
 of `git_changes` rather than the manifest intersection.
 
-Append the runtime completion footer after the commit summary and workflow
-path. Use the runtime footer helper when available, or render the same
-fields manually: context state, completion state plus state-derived next
-action, workflow id/path, artifact pointers, recommended next work, and
-next-session action/command or prompt pointer.
-The footer is advisory and pointer-only; do not mutate host session
-context or paste raw peer / consensus output into the main session.
-
-Surface the ADR-0031 session-level continue-vs-fresh preflight at this
-completion (and at Phase 0 before sequencing a fresh lifecycle) per
-`skills/_shared/references/session-handoff.md`: compute the engineer workflow
-projection and pass it to the runtime footer/check
-(`--workflow-projection-file`) so the footer carries the continue-vs-fresh
-decision. On detached HEAD, report "no active branch context" — do not
-auto-recommend a fresh session (already guarded at Phase 0a).
+The base runtime completion footer is **code-emitted** on the Phase 7 terminal
+path (ADR-0039): `phase7-commit.mjs` → `set-terminal` fires the ADR-0031
+session-handoff sidecar, which shells out to the runtime `footer.mjs` and prints
+the rendered footer — context state, completion state + state-derived next
+action, workflow id/path, artifact pointers, recommended next work, and the
+continue-vs-fresh session-handoff — on the commit command's **stderr**. Do
+**not** hand-compose that base footer; surface the emitted one. It is advisory +
+pointer-only and fail-closed (a missing/too-old runtime emits nothing, and the
+SessionStart backstop still re-surfaces the handoff); it never mutates host
+session context. On detached HEAD the sidecar reports "no active branch context"
+and does not auto-recommend a fresh session (already guarded at Phase 0a). The
+continue-vs-fresh preflight at **Phase 0** (before sequencing a fresh lifecycle)
+is a separate, pre-work surface and still applies per
+`skills/_shared/references/session-handoff.md`.
 
 When the deliverable boundary is reached, include PR handling readiness
 fields in the footer. Ask the user what to do with PR handling only when

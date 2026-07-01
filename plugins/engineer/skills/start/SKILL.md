@@ -273,12 +273,13 @@ terminal marker, terminal phase, HEAD movement (real commit progress),
 and no active children. When all four hold, the workflow archives
 without manual cleanup.
 
-Append the runtime completion footer after the commit summary and workflow
-path. The footer is advisory and pointer-only: include context state,
-completion state plus state-derived next action, workflow id/path,
-artifact pointers, recommended next work, and next-session action/command
-or prompt pointer, but do not mutate host session context or paste raw
-peer / consensus output into the main session.
+The base runtime completion footer is **code-emitted** on the Phase 7 terminal
+path (ADR-0039): `phase7-commit.mjs` → `set-terminal` fires the session-handoff
+sidecar, which renders the runtime `footer.mjs` (context state, completion state
++ state-derived next action, workflow id/path, artifact pointers, recommended
+next work, and the continue-vs-fresh session-handoff) on the commit command's
+stderr. Do not hand-compose that base footer; surface the emitted one. It is
+advisory + pointer-only and never mutates host session context.
 When the deliverable boundary is reached, include PR handling readiness
 fields in the footer. Ask the user what to do with PR handling only when
 the helper returns `pr_handling.recommendation == "ask-user"`; `defer`
