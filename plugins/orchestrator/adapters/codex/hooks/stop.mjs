@@ -45,7 +45,9 @@ async function fireMacroHandoffBackstop(repoRoot) {
       try {
         const { frontmatter } = await readWorkflow(workflowPath);
         if (frontmatter?.terminal_marker === true) {
-          await emitTerminalHandoffSidecar({ repoRoot, workflowPath });
+          // ADR-0039 — thread host so the backstop footer render localizes for
+          // Codex; idempotency marker makes this a no-op if the primary rendered.
+          await emitTerminalHandoffSidecar({ repoRoot, workflowPath, host: 'codex' });
         }
       } catch {
         /* per-macro non-fatal — skip an unreadable macro */

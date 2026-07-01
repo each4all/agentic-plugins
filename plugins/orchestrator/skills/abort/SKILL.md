@@ -121,19 +121,19 @@ binding.
 
 Report the macro id, abandoned subtask count, child archive/detach
 summary, whether Codex Stop hook automation is expected for the active session,
-and whether the fallback helper was run. Append the runtime completion footer
-when available.
-
-Surface the ADR-0031 session-level continue-vs-fresh preflight per
-`skills/_shared/references/session-handoff.md`: compute the macro projection
-(find-active then find-macro) and pass it to the runtime footer/check. An
-aborted macro normally projects `archive_gate=ready_to_archive` once every
-macro gate passes; report whatever gate it computes — never archive from the
-preflight. The preflight computes identically on Codex; only
-auto re-injection of the next-session prompt depends on the stage-appropriate
-Codex hook gate (generic `[features].hooks`, default on)
-+ a `/hooks` trust (operator-attested; not provable non-interactively). On
-detached HEAD, report "no active branch context".
+and whether the fallback helper was run. The runtime completion footer is
+**code-emitted** on this verb's terminal path (ADR-0039): the macro terminal
+write (`set-terminal`) fires the ADR-0031 session-handoff sidecar, which renders
+the runtime `footer.mjs` on the command's stderr. Do not hand-compose the footer
+or hand-pass the projection here; surface the emitted one. An aborted macro
+normally projects `archive_gate=ready_to_archive` once every macro gate passes;
+the footer reports whatever gate it computes — never archive from it. The render
+computes identically on Codex; only auto re-injection of the next-session prompt
+depends on the stage-appropriate Codex hook gate (generic `[features].hooks`,
+default on) + a `/hooks` trust (operator-attested; not provable
+non-interactively). The terminal footer resolves the macro by PATH (not by
+branch), so it renders even on detached HEAD — the "no active branch context"
+degradation applies only to the branch-resolved `/plan`/`/next` preflight.
 
 ---
 

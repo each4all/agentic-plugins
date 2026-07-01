@@ -595,8 +595,30 @@ describe('plugins/orchestrator commands/', () => {
     ok(!text.includes('macro-audit-'), 'audit must not introduce macro-audit workflow ids');
   });
 
-  it('completion commands append the runtime completion footer contract', async () => {
-    for (const cmd of ['plan', 'next', 'done', 'finalize', 'abort']) {
+  it('terminal completion commands defer to the code-emitted runtime completion footer (ADR-0039)', async () => {
+    // done/finalize/abort reach the fireMacroHandoffSidecar terminal path, so
+    // their footer is CODE-EMITTED (ADR-0039 §9) — the prose must defer to it,
+    // not hand-compose a duplicate. Guard the new contract phrasing AND the
+    // removal of the old "render the same fields manually" hand-compose line.
+    for (const cmd of ['done', 'finalize', 'abort']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${cmd}.md`), 'utf-8');
+      ok(/runtime completion footer/i.test(text), `commands/${cmd}.md missing runtime footer guidance`);
+      ok(/code-emitted/i.test(text), `commands/${cmd}.md must state the footer is code-emitted (ADR-0039 §9)`);
+      ok(!/render the same fields manually/i.test(text), `commands/${cmd}.md must not instruct hand-composing the footer`);
+      ok(/advisory/i.test(text), `commands/${cmd}.md must mark footer advisory`);
+      ok(/pointer-only/i.test(text), `commands/${cmd}.md must keep footer pointer-only`);
+      ok(
+        /(do not\s+mutate|never\s+mutates)\s+host\s+session\s+context/i.test(text),
+        `commands/${cmd}.md must forbid host session context mutation`,
+      );
+    }
+  });
+
+  it('non-terminal completion commands keep the hand-composed runtime completion footer contract', async () => {
+    // plan/next do NOT reach the terminal sidecar path (they mark a macro/subtask
+    // active, not terminal), so they still hand-compose the footer — the ADR-0039
+    // §9 code-emit de-dup is scoped to the terminal surfaces (done/finalize/abort).
+    for (const cmd of ['plan', 'next']) {
       const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${cmd}.md`), 'utf-8');
       ok(/runtime completion footer/i.test(text), `commands/${cmd}.md missing runtime footer guidance`);
       ok(/advisory/i.test(text), `commands/${cmd}.md must mark footer advisory`);

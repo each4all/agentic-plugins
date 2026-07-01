@@ -103,7 +103,9 @@ async function main() {
   try {
     const pending = await pendingHandoffReinjectionLine(repoRoot);
     if (pending) {
-      process.stdout.write(`${pending.line}\n`);
+      // ADR-0039 §4 — line is null when the completion footer already rendered
+      // (suppress the false "missed-footer" nudge); still consume the one-shot.
+      if (pending.line) process.stdout.write(`${pending.line}\n`);
       await consumePendingHandoff(pending.projectionFile);
     }
   } catch {

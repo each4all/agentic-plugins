@@ -127,9 +127,14 @@ and macro auto-terminal promotion.
 ## Completion
 
 Report the subtask id, commit, closed_at timestamp, and whether the
-macro auto-promoted to terminal. Append the runtime completion footer
-when available. For a real completed subtask, include PR handling
-readiness fields when the footer helper can compute them.
+macro auto-promoted to terminal. The runtime completion footer is
+**code-emitted** on this verb's terminal path (ADR-0039): when this `/done`
+auto-promotes the macro to terminal (its final subtask), the `subtask-update`
+sidecar renders the runtime `footer.mjs` on the command's stderr — surface that
+one, do not hand-compose a duplicate. When subtasks remain, the macro stays
+active and no terminal footer fires. Independently, a real completed subtask
+typically leaves an open PR on its branch — surface that PR follow-up if it has
+not already been handled (orchestrator computes no PR-readiness recommendation).
 
 ---
 

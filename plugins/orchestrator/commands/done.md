@@ -237,14 +237,22 @@ Report one of:
 - `✓ /orchestrator:done was a no-op — subtask <id> was already completed at <closed_at> with commit <sha>.`
 - `✗ Ownership conflict — engineer_workflow_id mismatch (existing=<X>, supplied=<Y>). Archive the stale engineer workflow or use --workflow=<correct-macro-id> if the wrong macro was selected.`
 
-Append the runtime completion footer after successful completion/no-op
-summaries. Use the runtime footer helper when available, or render the
-same fields manually: context state, completion state plus state-derived
-next action, workflow id/path, artifact pointers, recommended next work,
-and next-session action/command or prompt pointer.
-The footer is advisory and pointer-only; do not mutate host session
-context or paste raw peer / consensus output into the main session.
-For a real completed subtask, include PR handling readiness fields in the
-footer. Ask the user what to do with PR handling only when the helper
-returns `pr_handling.recommendation == "ask-user"`; `defer` means
-evidence is incomplete, and `block` means a readiness criterion failed.
+The runtime completion footer is **code-emitted** on this command's terminal
+path (ADR-0039): when this `/done` lands the macro's FINAL subtask, the
+`state.mjs subtask-update` auto-terminal pass fires the ADR-0031 macro
+session-handoff sidecar, which shells out to the runtime `footer.mjs` and prints
+the rendered footer — context state, completion state + state-derived next
+action, workflow id/path, artifact pointers, recommended next work, and the
+continue-vs-fresh session-handoff — on this command's **stderr**. Do **not**
+hand-compose a second footer in that case; surface the one the terminal write
+already emitted. The footer is advisory + pointer-only and fail-closed (a
+missing/too-old runtime emits nothing, and the SessionStart backstop still
+re-surfaces the handoff); it never mutates host session context. When subtasks
+remain (no auto-terminal), the macro stays active and no terminal footer is
+emitted; report the completion/no-op summary above.
+
+Independently of the footer, a real completed subtask (not a no-op) typically
+leaves an open PR on its branch — surface that PR follow-up to the user if it has
+not already been handled. (The `subtask-update` envelope carries `workflowPath`,
+`updatedSubtask`, and `autoTerminal`; orchestrator does not compute a PR-readiness
+recommendation, so do not gate on one.)

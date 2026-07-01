@@ -378,7 +378,7 @@ function inferStorageFromWorkflowPath(workflowPath) {
  * contracts are load-bearing). Shared by setMacroTerminal + updateSubtask so the
  * two macro terminal surfaces fire identically.
  */
-async function fireMacroHandoffSidecar(workflowPath) {
+async function fireMacroHandoffSidecar(workflowPath, host) {
   try {
     const inferred = inferStorageFromWorkflowPath(workflowPath);
     if (!inferred) return;
@@ -388,7 +388,9 @@ async function fireMacroHandoffSidecar(workflowPath) {
     // Project the EXACT macro just terminalized (by path), not whatever is
     // active on the current checkout branch — these mutations can be invoked
     // cross-branch on an explicit workflowPath.
-    await emitTerminalHandoffSidecar({ repoRoot, workflowPath, projectionFile });
+    // ADR-0039 — thread host so the code-synthesized footer localizes its
+    // commands (claude|codex); both macro terminal surfaces carry it.
+    await emitTerminalHandoffSidecar({ repoRoot, workflowPath, projectionFile, host });
   } catch {
     // non-fatal: the terminal write already landed; the sidecar must never
     // break a macro completion (ADR-0031 amendment).
@@ -2890,7 +2892,7 @@ export async function updateSubtask(opts) {
   // fires. NOT a blind engineer mirror: engineer fires on every set-terminal;
   // the orchestrator's updateSubtask fires only on the auto-terminal transition.
   if (emitHandoff && result.autoTerminal) {
-    await fireMacroHandoffSidecar(workflowPath);
+    await fireMacroHandoffSidecar(workflowPath, host);
   }
   return result;
 }
@@ -3203,7 +3205,7 @@ export async function setMacroTerminal({
   // but ONLY when the macro was actually marked terminal (the /finalize +
   // /abort surface). A `--terminal-marker false` un-mark never fires.
   if (emitHandoff && terminalMarker === true) {
-    await fireMacroHandoffSidecar(workflowPath);
+    await fireMacroHandoffSidecar(workflowPath, host);
   }
   return result;
 }

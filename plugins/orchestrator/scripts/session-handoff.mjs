@@ -39,10 +39,12 @@
 //     the soft conventional-commit warning, which the bounded projection never
 //     carries, so headSubject is passed null.
 
+import { execFile } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { discoverRuntimePluginRoot } from './discover-runtime.mjs';
 import {
   currentGitBranch,
   findActiveWorkflowByBranch,
@@ -296,6 +298,214 @@ function pendingHandoffCandidates(repoRoot) {
   return [defaultProjectionFile(repoRoot), legacyProjectionFile(repoRoot)];
 }
 
+// ADR-0039 — the completion footer renders AT MOST ONCE per terminal
+// transition. The primary sidecar (fireMacroHandoffSidecar) and the Stop-hook
+// backstop both funnel through `emitTerminalHandoffSidecar`; a SIBLING marker
+// file records that the footer already fired so the backstop does not re-render,
+// and so SessionStart re-injection can suppress the "missed-footer" nudge for a
+// footer that DID fire (§4).
+//
+// The marker is PER-WORKFLOW (the workflow_id is baked into the filename), NOT
+// one marker per canonical projection slot. The orchestrator Stop backstop scans
+// EVERY terminal macro and they all share the single canonical
+// `last-session-handoff.json`; a slot-keyed marker would let macro B's render
+// clobber macro A's "rendered" state, so the next Stop scan re-renders A's footer
+// (Codex Plan-verify MAJOR — reproduced with A/B/A emits). A per-workflow marker
+// keeps each macro's render idempotent independently, so no macro's terminal
+// footer double-renders. The marker is a separate file — the projection JSON
+// stays the bounded ADR-0031 schema (the runtime seam REJECTS unknown keys), so
+// it is never polluted with a marker.
+export function footerMarkerFile(projectionFile, workflowId) {
+  // Sanitize the id to safe filename chars so the marker path can never escape
+  // the projection's directory (defense-in-depth; ids are already the
+  // `<verb>-<timestamp>-<hex>` shape). An empty/absent id degrades to a stable
+  // constant rather than the bare slot name (which would reintroduce clobbering).
+  const safe = String(workflowId ?? '').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 128) || 'unknown';
+  return `${projectionFile}.${safe}.footer-rendered`;
+}
+
+async function readFooterMarker(markerFile) {
+  try {
+    const marker = JSON.parse(await readFile(markerFile, 'utf8'));
+    return marker && typeof marker === 'object' && !Array.isArray(marker) ? marker : null;
+  } catch {
+    return null;
+  }
+}
+
+// True only for a COMPLETED render of this workflow (status==='rendered'). A bare
+// 'claimed' marker (a render in progress, or one that crashed mid-flight) is NOT
+// a completed render — the idempotency skip and the SessionStart nudge
+// suppression both key on this, so a degraded/aborted render never suppresses the
+// backstop (Codex Plan-verify BLOCKER 1 + 2).
+async function footerRenderedMatches(markerFile, workflowId) {
+  const marker = await readFooterMarker(markerFile);
+  return Boolean(marker) && marker.workflow_id === workflowId && marker.status === 'rendered';
+}
+
+function footerMarkerBody(workflowId, status) {
+  return `${JSON.stringify({ workflow_id: workflowId, status, at: new Date().toISOString() })}\n`;
+}
+
+// Atomically CLAIM the render BEFORE spawning, so two overlapping terminal emits
+// (primary sidecar + Stop-hook backstop) cannot both render (Codex Plan-verify
+// BLOCKER 2). Returns true iff THIS call owns the render:
+//   - `wx` create succeeds  → fresh claim (we own it)
+//   - EEXIST                → this workflow's own marker already exists (a
+//                             completed render, or an in-progress/crashed claim)
+//                             → never re-render.
+// The marker is PER-WORKFLOW, so an EEXIST is ALWAYS this workflow's own marker;
+// there is no "different workflow reused the slot" case to re-claim (that was the
+// slot-keyed design's multi-macro clobber bug). A crashed 'claimed' marker is
+// released by `releaseFooterClaim` on a failed render, or cleaned by `consume`;
+// it is never stolen here — and while it lingers the nudge still fires, because
+// `footerRenderedMatches` requires status==='rendered'.
+async function claimFooterRender(markerFile, workflowId) {
+  try {
+    await writeFile(markerFile, footerMarkerBody(workflowId, 'claimed'), { flag: 'wx' });
+    return true;
+  } catch (error) {
+    // EEXIST → already claimed/rendered by this workflow; anything else is an
+    // unexpected FS error → fail-closed (no render). Both mean "do not render".
+    return false;
+  }
+}
+
+async function markFooterRendered(markerFile, workflowId) {
+  try {
+    await writeFile(markerFile, footerMarkerBody(workflowId, 'rendered'), { flag: 'w' });
+  } catch {
+    // best-effort: a missing 'rendered' upgrade at worst re-renders once or keeps
+    // the backstop nudge next session, never a crash.
+  }
+}
+
+// Release a claim whose render failed/degraded so the backstop can retry and
+// SessionStart still nudges (no false suppression). Only removes OUR still-
+// 'claimed' marker, never a peer's 'rendered' one. Best-effort.
+async function releaseFooterClaim(markerFile, workflowId) {
+  const existing = await readFooterMarker(markerFile);
+  if (existing && existing.workflow_id === workflowId && existing.status !== 'rendered') {
+    try {
+      await rm(markerFile, { force: true });
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+// ADR-0039 §3 — map the bounded macro projection to EXPLICIT footer completion
+// flags so elements 2/3/4 render CONCRETE, not the runtime's generic default.
+// The macro projection always carries a non-empty next_action (projectParsedMacro
+// enforces it), so recommended-next-work is always concrete. `cleanup-needed` /
+// `closed` are never inferred here (§3 — a caller must set them explicitly); the
+// terminal orchestrator path maps only among blocked / next-work-available,
+// matching the runtime's own inference (a concrete next action →
+// next-work-available; footer.mjs `inferCompletionState`). The macro archive_gate
+// vocabulary (`ready_to_archive` / `not_terminal` / `blocked`) collapses onto the
+// same two states: `blocked` → blocked; everything else → next-work-available.
+function mapCompletionFlags(projection) {
+  const gate = projection.archive_gate;
+  const state = gate === 'blocked' ? 'blocked' : 'next-work-available';
+  const reason = gate === 'blocked'
+    ? 'Terminal marker is set but a macro archive gate is unmet (macro-terminal-phase, all-subtasks-terminal, or live engineer children).'
+    : gate === 'not_terminal'
+      ? 'Macro is not yet terminal; concrete next work remains before archive.'
+      : 'Macro reached a terminal, archive-ready state; a concrete next action is recommended.';
+  return { state, reason, recommendedNextWork: projection.next_action };
+}
+
+// Spawn footer.mjs once. Captures the CHILD's stdout only (execFile never routes
+// child output to the parent's channels); the child's stderr is discarded so an
+// unknown-flag / diagnostic line cannot leak. Resolves { ok, stdout } — ok=false
+// on spawn error, non-zero exit, or timeout. NEVER throws.
+function execFooter(footerScript, args) {
+  return new Promise((res) => {
+    execFile(
+      process.execPath,
+      [footerScript, 'render', ...args],
+      { encoding: 'utf8', timeout: 10_000, maxBuffer: 4 * 1024 * 1024 },
+      (error, stdout) => res(error ? { ok: false, stdout: '' } : { ok: true, stdout: stdout ?? '' }),
+    );
+  });
+}
+
+// ADR-0039 §1/§2/§6 — render the runtime completion footer as a SUBPROCESS
+// (footer.mjs is L1 runtime; orchestrator L2 cannot import it — ADR-0010 §5) and
+// re-emit its text on the CALLER's stderr. NEVER stdout: the completion scripts'
+// stdout is a load-bearing machine channel.
+//
+// footer.mjs exits 0 even when it REJECTS the projection (it prints a degraded,
+// context-state-only footer carrying a `projection_error`). Trusting bare stdout
+// would mark that degraded render as success and suppress the real SessionStart
+// nudge (Codex Plan-verify BLOCKER 1). So VALIDATE via `--format json` first
+// (require NO projection_error AND a session_handoff), and only then emit the
+// human-readable `--format text`. Fail-closed silent throughout; resolves true
+// ONLY when a VALID footer was surfaced.
+function renderTerminalFooter({ repoRoot, host, projectionFile, projection }) {
+  return new Promise((resolveRender) => {
+    (async () => {
+      try {
+        const runtimeRoot = await discoverRuntimePluginRoot();
+        if (!runtimeRoot) {
+          resolveRender(false);
+          return;
+        }
+        const footerScript = join(runtimeRoot, 'scripts', 'footer.mjs');
+        const flags = mapCompletionFlags(projection);
+        // footer.mjs validateHost accepts claude|codex|neutral; fall back to
+        // neutral when the caller did not thread a concrete host.
+        const footerHost = host === 'claude' || host === 'codex' ? host : 'neutral';
+        const baseArgs = [
+          '--workflow-projection-file', projectionFile,
+          '--context-state', 'yellow', // NOT --risk (footer.mjs:214); yellow = conservative default
+          '--host', footerHost,
+          '--repo-root', repoRoot,
+          '--completion-state', flags.state,
+          '--completion-reason', flags.reason,
+          '--recommended-next-work', flags.recommendedNextWork,
+        ];
+        // 1. Validate via structured JSON — footer.mjs exits 0 on projection errors.
+        const jsonRun = await execFooter(footerScript, [...baseArgs, '--format', 'json']);
+        if (!jsonRun.ok) {
+          resolveRender(false);
+          return;
+        }
+        let report;
+        try {
+          report = JSON.parse(jsonRun.stdout);
+        } catch {
+          resolveRender(false);
+          return;
+        }
+        if (!report || report.projection_error || !report.session_handoff) {
+          resolveRender(false); // degraded / rejected projection → fail-closed
+          return;
+        }
+        // 2. Emit the human-readable footer on the caller's stderr.
+        const textRun = await execFooter(footerScript, [...baseArgs, '--format', 'text']);
+        if (!textRun.ok || !textRun.stdout) {
+          resolveRender(false);
+          return;
+        }
+        try {
+          process.stderr.write(textRun.stdout.endsWith('\n') ? textRun.stdout : `${textRun.stdout}\n`);
+        } catch {
+          // The footer was NOT delivered (stderr closed/errored). Report NOT
+          // rendered so the caller leaves the marker un-upgraded and the
+          // SessionStart nudge fires as the backstop (Codex Plan-verify MAJOR:
+          // a swallowed delivery failure must not count as a rendered footer).
+          resolveRender(false);
+          return;
+        }
+        resolveRender(true);
+      } catch {
+        resolveRender(false);
+      }
+    })();
+  });
+}
+
 /**
  * ADR-0031 amendment — orchestrator activation sidecar. Fired from a must-run
  * macro completion mutation (`setMacroTerminal` for /finalize + /abort,
@@ -315,13 +525,25 @@ function pendingHandoffCandidates(repoRoot) {
  * Fail-closed + non-fatal: a non-`ok` status emits nothing, any error is
  * swallowed (at most a one-line stderr note). This helper NEVER throws and
  * NEVER writes stdout, so a macro completion cannot fail and a caller parsing
- * the script's stdout cannot be corrupted. Risk is NOT composed here (the
- * advisory names the conservative `--risk yellow` default; the footer step owns
- * the single continue-vs-fresh composition).
+ * the script's stdout cannot be corrupted.
  *
- * @returns {Promise<{emitted: boolean, status: string, projectionFile?: string, error?: string}>}
+ * ADR-0039 — after the projection is written, this also code-synthesizes the
+ * runtime completion footer by shelling out to the runtime plugin's footer.mjs
+ * (a SUBPROCESS, not an import — decision 5 / ADR-0010 §5 stand) and re-emits
+ * its text on stderr. That render is fail-closed silent (missing/too-old runtime
+ * → nothing) and idempotent (rendered at most once per terminal transition,
+ * guarded by a sibling marker so the Stop-hook backstop does not double-render).
+ * The stderr advisory below still names the conservative `yellow` default; the
+ * footer step composes the single continue-vs-fresh report on top of it.
+ *
+ * @param {object} args
+ * @param {string} args.repoRoot
+ * @param {string} args.workflowPath
+ * @param {string} [args.projectionFile]
+ * @param {string} [args.host] — threaded to the footer render (claude|codex|neutral)
+ * @returns {Promise<{emitted: boolean, status: string, projectionFile?: string, footerRendered?: boolean, error?: string}>}
  */
-export async function emitTerminalHandoffSidecar({ repoRoot, workflowPath, projectionFile } = {}) {
+export async function emitTerminalHandoffSidecar({ repoRoot, workflowPath, projectionFile, host } = {}) {
   // `target` is resolved up front so the fail-closed and error paths can CLEAR a
   // stale projection from a PRIOR successful emit. The stable file is the
   // guaranteed channel; serving an older completion's projection (because this
@@ -352,7 +574,24 @@ export async function emitTerminalHandoffSidecar({ repoRoot, workflowPath, proje
     } catch {
       /* advisory is best-effort — swallow */
     }
-    return { emitted: true, status: 'ok', projectionFile: target };
+    // ADR-0039 — code-synthesize the runtime completion footer on top of the
+    // just-written macro projection, AT MOST ONCE per terminal transition. An
+    // atomic sibling claim (§4) makes overlapping emits (primary sidecar +
+    // Stop-hook backstop) safe; the marker is upgraded to 'rendered' only after a
+    // VALID render, so a degraded/aborted render never suppresses the SessionStart
+    // nudge. Fail-closed + non-fatal throughout (never blocks completion).
+    let footerRendered = false;
+    const markerFile = footerMarkerFile(target, p.workflow_id);
+    if (await footerRenderedMatches(markerFile, p.workflow_id)) {
+      footerRendered = true; // the primary already rendered; the backstop must not re-render
+    } else if (await claimFooterRender(markerFile, p.workflow_id)) {
+      footerRendered = await renderTerminalFooter({ repoRoot, host, projectionFile: target, projection: p });
+      if (footerRendered) await markFooterRendered(markerFile, p.workflow_id);
+      else await releaseFooterClaim(markerFile, p.workflow_id);
+    } else {
+      footerRendered = true; // a concurrent emit owns the render — do not double-emit
+    }
+    return { emitted: true, status: 'ok', projectionFile: target, footerRendered };
   } catch (error) {
     // Never throw from the sidecar — a macro completion must not fail because
     // the handoff projection could not be written (ADR-0031 amendment). The
@@ -375,6 +614,14 @@ export async function emitTerminalHandoffSidecar({ repoRoot, workflowPath, proje
  */
 async function clearStaleProjection(target) {
   if (!target) return;
+  // Remove ONLY the stale projection, never a footer-rendered marker. A non-ok
+  // emit cannot know which macro's projection it failed to compute, so it must
+  // not delete a marker: with per-workflow markers on the shared canonical slot,
+  // a blind marker delete could erase a VALID concurrent render's marker (Codex
+  // Plan-verify: a failed emit overlapping a live render must not clobber it).
+  // Stale markers are per-workflow and self-limiting — `consumePendingHandoff`
+  // removes the active one; an orphan for an archived macro is a tiny harmless
+  // file that its own workflow_id could never mismatch back into a re-render.
   try {
     await rm(target, { force: true });
   } catch {
@@ -433,6 +680,14 @@ export async function pendingHandoffReinjectionLine(repoRoot, projectionFile) {
   // Fail-closed on a fields-less projection: without a usable workflow_id the
   // marker would be empty, so treat it as no pending handoff (Codex Plan-verify).
   if (!workflowId) return null;
+  // ADR-0039 §4 reconciliation — if the completion footer already rendered for
+  // this terminal macro (sibling marker present), the "may have been missed"
+  // nudge is FALSE. Suppress it (line=null) but still return the projectionFile
+  // so the hook consumes the one-shot (and its marker). Keys on the RAW
+  // workflow_id (what the marker was written with), not the clamped display id.
+  if (await footerRenderedMatches(footerMarkerFile(pending.projectionFile, p.workflow_id), p.workflow_id)) {
+    return { line: null, projectionFile: pending.projectionFile, footerRendered: true };
+  }
   // SELF-CONTAINED marker: the re-injection carries the continue-vs-fresh signal
   // DIRECTLY (archive_gate = the prior macro's terminal state; routing = the
   // resume command). The one-shot file is CONSUMED right after this line is
@@ -458,10 +713,25 @@ export async function pendingHandoffReinjectionLine(repoRoot, projectionFile) {
  */
 export async function consumePendingHandoff(projectionFile) {
   if (!projectionFile) return;
+  // Derive THIS handoff's per-workflow footer marker from the projection's
+  // workflow_id (read BEFORE removal), so we clean exactly this macro's marker
+  // and never a concurrent macro's that shares the canonical slot. A missing /
+  // unreadable projection means there is no marker to key the removal on.
+  let markerFile = null;
   try {
-    await rm(projectionFile, { force: true });
+    const projection = JSON.parse(await readFile(projectionFile, 'utf8'));
+    if (projection && typeof projection.workflow_id === 'string') {
+      markerFile = footerMarkerFile(projectionFile, projection.workflow_id);
+    }
   } catch {
-    /* best-effort: a stale one-shot file is harmless next session */
+    /* projection gone/unreadable — nothing to key the marker removal on */
+  }
+  for (const target of [projectionFile, markerFile].filter(Boolean)) {
+    try {
+      await rm(target, { force: true });
+    } catch {
+      /* best-effort: a stale one-shot file is harmless next session */
+    }
   }
 }
 
