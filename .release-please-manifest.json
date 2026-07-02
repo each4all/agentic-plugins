@@ -1,9 +1,9 @@
 {
   "companions": "0.3.0",
   "plugins/companions": "0.4.0",
-  "plugins/engineer": "0.18.0",
+  "plugins/engineer": "0.19.0",
   "plugins/founder": "0.2.0",
   "plugins/image": "0.2.0",
-  "plugins/orchestrator": "0.10.0",
-  "plugins/runtime": "0.70.0"
+  "plugins/orchestrator": "0.11.0",
+  "plugins/runtime": "0.70.1"
 }

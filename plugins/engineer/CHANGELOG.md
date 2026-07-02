@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.18.0...plugin-engineer-v0.19.0) (2026-07-02)
+
+
+### Features
+
+* **plugin/engineer:** code-emit the completion footer on the terminal path (ADR-0039 engineer-wire) ([#464](https://github.com/each4all/agentic-plugins/issues/464)) ([2abc35e](https://github.com/each4all/agentic-plugins/commit/2abc35e03d872a3a2b7618f55704359771b62e8c))
+
 ## [0.18.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.17.0...plugin-engineer-v0.18.0) (2026-06-23)
 
 

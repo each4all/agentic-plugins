@@ -18,6 +18,14 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.11.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.10.0...plugin-orchestrator-v0.11.0) (2026-07-02)
+
+
+### Features
+
+* **plugin/orchestrator:** adopt ADR-0029 Active Next-Action Proposal on macro completion surfaces (orch-next-action-shape) ([#467](https://github.com/each4all/agentic-plugins/issues/467)) ([04dbed4](https://github.com/each4all/agentic-plugins/commit/04dbed438cf0f200113ce3bce62da2ff28e345c0))
+* **plugin/orchestrator:** code-emit the completion footer on the terminal path (ADR-0039 orch-wire) ([#466](https://github.com/each4all/agentic-plugins/issues/466)) ([2cd24f9](https://github.com/each4all/agentic-plugins/commit/2cd24f9a209e6d816d9ce12221a735a12d4a760a))
+
 ## [0.10.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.9.0...plugin-orchestrator-v0.10.0) (2026-06-23)
 
 
