@@ -151,10 +151,19 @@ Surface the JSON envelope. Respect skipped absorbing-terminal results:
 
 ## Completion
 
-Report the macro id, subtask id, engineer workflow id, branch, and the
-next recommended command. Append the runtime completion footer when
-available. The footer is advisory and pointer-only; do not mutate host
-session context or paste raw peer output into the main session.
+Report the macro id, subtask id, engineer workflow id, and branch, then emit an
+**Active Next-Action Proposal** (not a fixed next command) per
+`skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
+(canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
+engineer plugin): **selected_next**, **rejected_alternatives** (1-2 + why-not),
+**rationale** (본질/근본 essence/foundation + Standards/Root-Cause gate),
+**evidence_pointers** (pointers only), **confidence** (HIGH/MEDIUM/LOW), and
+**next_command** — derived from the post-dispatch macro state (another
+`$orchestrator:next` when subtasks remain ready; `$orchestrator:finalize` when
+all are terminal; else waiting on the dispatched subtask's commit). Append the
+runtime completion footer when available. The footer is advisory and
+pointer-only; do not mutate host session context or paste raw peer output into
+the main session.
 
 Surface the ADR-0031 session-level continue-vs-fresh preflight per
 `skills/_shared/references/session-handoff.md`: compute the macro projection

@@ -47,7 +47,7 @@ const LIFECYCLE_COMMANDS = ['finalize', 'abort'];
 const META_COMMANDS = ['resume', 'checkpoint', 'peer-now'];
 const DISPATCH_AND_LIFECYCLE_SKILLS = [...DISPATCH_COMMANDS, ...LIFECYCLE_COMMANDS];
 const ALL_COMMANDS = [...VERBS, ...ALIAS_VERBS, ...DISPATCH_COMMANDS, ...LIFECYCLE_COMMANDS, ...META_COMMANDS];
-const SHARED_REFS = ['ensemble-protocol.md', 'presentation-protocol.md'];
+const SHARED_REFS = ['ensemble-protocol.md', 'presentation-protocol.md', 'session-handoff.md'];
 const HOST_SHARED_SCRIPTS = ['state.mjs', 'dispatch-peer.mjs', 'peer-runner.mjs', 'stop-archive.mjs'];
 const CLAUDE_HOOKS = ['_shared.mjs', 'session-start.mjs', 'pre-compact.mjs', 'stop.mjs'];
 const CODEX_HOOK_HELPERS = ['session-start.mjs', 'pre-compact.mjs', 'stop.mjs', 'run-node-hook.sh', 'hooks.json', 'README.md'];
@@ -669,6 +669,177 @@ describe('plugins/orchestrator stale-token audit', () => {
       for (const stale of STALE_TOKENS) {
         ok(!text.includes(stale), `${doc} must not contain ${stale}`);
       }
+    });
+  }
+});
+
+// ADR-0029 §1 — orch-next-action-shape. A macro-completion surface must replace
+// the fixed lifecycle literal (e.g. always "recommend /orchestrator:next") with
+// the evidence-based Active Next-Action Proposal derived from the macro state.
+// Mirrors the engineer shape guard (test-engineer-plugin.mjs six-verb Active
+// Next-Action Proposal checks), adapted to orchestrator's HETEROGENEOUS macro
+// surfaces: the "active planning/dispatch" surfaces (plan + next, on BOTH the
+// Claude command and the Codex skill mirror) carry the full six-field proposal;
+// the meta guard paths (checkpoint/resume no-active-workflow) carry the compact
+// meta/guard-exception pointer, not the full proposal — exactly as the engineer
+// meta skills are excluded from the six-verb proposal guard. The orchestrator
+// does NOT own the contract: its local wiring (session-handoff.md) cites the
+// engineer canonical entry-routing-contract.md BY NAME (ADR-0010 §5 copy-not-
+// import single source), so completion surfaces cite session-handoff.md.
+describe('plugins/orchestrator — ADR-0029 §1 Active Next-Action Proposal (orch-next-action-shape)', () => {
+  const PROPOSAL_FIELDS = [
+    'selected_next',
+    'rejected_alternatives',
+    'rationale',
+    'evidence_pointers',
+    'confidence',
+    'next_command',
+  ];
+
+  // Bound the field checks to the ## Completion section (up to the next ##
+  // heading) so they assert presence IN the proposal, not anywhere downstream.
+  const completionRegionOf = (text) => {
+    const compIdx = text.indexOf('## Completion');
+    if (compIdx === -1) return null;
+    const afterHeading = text.slice(compIdx + '## Completion'.length);
+    const nextHeadingRel = afterHeading.search(/\n##\s/);
+    return nextHeadingRel === -1
+      ? text.slice(compIdx)
+      : text.slice(compIdx, compIdx + '## Completion'.length + nextHeadingRel);
+  };
+
+  // The FORWARD-DECISION surfaces (plan + next + done, on both hosts) — those
+  // whose completion leaves a genuine "what next?" choice. plan.md additionally
+  // carries the durable Phase 2 NOTE skeleton locus (the state.mjs phase note),
+  // like the engineer verb commands; the Codex skills, next.md, and done.md
+  // carry the single Completion locus. done is a HYBRID: its Completion hosts the
+  // proposal for the subtasks-remain path AND defers to the footer on the
+  // auto-terminal path — the terminal-close guard below covers the latter.
+  // finalize/abort are terminal closes (footer-only) — asserted separately.
+  const PROPOSAL_SURFACES = [
+    { path: 'commands/plan.md', phase2: true },
+    { path: 'commands/next.md', phase2: false },
+    { path: 'commands/done.md', phase2: false },
+    { path: 'skills/plan/SKILL.md', phase2: false },
+    { path: 'skills/next/SKILL.md', phase2: false },
+    { path: 'skills/done/SKILL.md', phase2: false },
+  ];
+
+  for (const surface of PROPOSAL_SURFACES) {
+    it(`${surface.path} emits the Active Next-Action Proposal (all six fields, cites the contract) and drops the fixed literal`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, surface.path), 'utf-8');
+
+      // (1) Fixed-literal anti-patterns (ADR-0029 W1) must be gone. Two targeted
+      // markers — NOT a blanket ban on "/orchestrator:next", which the runbook
+      // prose legitimately mentions throughout next.md / plan.md:
+      //   (a) the plan.md NOTE heading "### Recommended next step"
+      //   (b) the "Recommended next: `/orchestrator:…`" bare single-command form
+      ok(!/###\s+Recommended next step/.test(text),
+        `${surface.path} still carries the "### Recommended next step" fixed literal (ADR-0029 W1)`);
+      ok(!/Recommended next:\s*`\/orchestrator:/.test(text),
+        `${surface.path} still carries a "Recommended next: \`/orchestrator:…\`" fixed literal (ADR-0029 W1)`);
+
+      // (2) The Completion section hosts the proposal.
+      const completionRegion = completionRegionOf(text);
+      ok(completionRegion !== null,
+        `${surface.path} has no "## Completion" section to host the proposal (ADR-0029 §1)`);
+      ok(/Active Next-Action Proposal/i.test(completionRegion),
+        `${surface.path} Completion must reference the Active Next-Action Proposal (ADR-0029 §1)`);
+      // (3) Cites the orchestrator-local contract wiring (which cites the
+      // engineer canonical BY NAME — ADR-0010 §5). Assert the basename
+      // session-handoff.md to stay robust to the mixed path conventions across
+      // orchestrator command (skills/_shared/…) vs skill (../_shared/…) surfaces.
+      ok(/session-handoff\.md/.test(completionRegion),
+        `${surface.path} Completion must cite the orchestrator-local session-handoff.md contract wiring (ADR-0029 §1)`);
+      for (const field of PROPOSAL_FIELDS) {
+        // Require each field as a **bold** proposal field or a "- field:"
+        // skeleton line — NOT a bare token. A generic sentence merely listing
+        // the six field names (a stub) would pass includes() but fails this.
+        ok(new RegExp(`\\*\\*${field}\\*\\*|-\\s+${field}:`).test(completionRegion),
+          `${surface.path} Completion must present "${field}" as a **bold** proposal field or a "- ${field}:" skeleton line, not a bare token (ADR-0029 §1 proposal shape — prevents a token-list stub from passing)`);
+      }
+
+      // (4) plan.md's durable Phase 2 NOTE skeleton locus (before ## Completion).
+      if (surface.phase2) {
+        const compIdx = text.indexOf('## Completion');
+        const phase2Region = text.slice(0, compIdx);
+        ok(/###\s+Active next-action proposal/i.test(phase2Region),
+          `${surface.path} Phase 2 NOTE must record the "### Active next-action proposal" skeleton (ADR-0029 §1)`);
+        ok(/session-handoff\.md/.test(phase2Region),
+          `${surface.path} Phase 2 NOTE must cite the session-handoff.md contract wiring (ADR-0029 §1)`);
+        for (const field of PROPOSAL_FIELDS) {
+          ok(new RegExp(`-\\s+${field}:`).test(phase2Region),
+            `${surface.path} Phase 2 NOTE skeleton is missing the "- ${field}:" line (ADR-0029 §1 proposal shape)`);
+        }
+      }
+    });
+  }
+
+  it('skills/_shared/references/session-handoff.md documents the proposal + cites the engineer canonical BY NAME (ADR-0010 §5 single source)', async () => {
+    const text = await readFile(
+      resolve(PLUGIN_ROOT, 'skills/_shared/references/session-handoff.md'), 'utf-8');
+    ok(/Active Next-Action Proposal/.test(text),
+      'session-handoff.md must document the Active Next-Action Proposal (ADR-0029)');
+    ok(/entry-routing-contract\.md/.test(text),
+      'session-handoff.md must cite the engineer canonical entry-routing-contract.md BY NAME (ADR-0010 §5 single source)');
+    // Cited BY NAME, never imported by a cross-plugin path (ADR-0010 §5).
+    ok(!/plugins\/engineer/.test(text) && !/\.\.\/\.\.\/engineer/.test(text),
+      'session-handoff.md must not reach the engineer contract by a cross-plugin path — cite it by name (ADR-0010 §5)');
+    for (const field of PROPOSAL_FIELDS) {
+      ok(text.includes(field),
+        `session-handoff.md proposal wiring is missing the "${field}" field (ADR-0029 §1)`);
+    }
+    // The guard exception must be documented AND enumerate the dispatch/no-child
+    // guards, so their early-exit recovery-command pointers (e.g. next.md's
+    // all_terminal → /orchestrator:finalize) are explicitly a compact
+    // single-honest-recovery pointer, not the W1 fixed-literal anti-pattern.
+    ok(/guard/i.test(text),
+      'session-handoff.md must document the meta/guard exception (ADR-0029 §1)');
+    ok(/all_terminal/.test(text) && /no-child/i.test(text),
+      'session-handoff.md guard exception must enumerate the /orchestrator:next dispatch guards (all_terminal, …) and the /orchestrator:done no-child guard, so their recovery pointers are a documented exception rather than an unswept fixed literal (ADR-0029 §1 meta/guard exception)');
+  });
+
+  // Meta guard paths (Claude command AND Codex skill mirror): the no-active-
+  // workflow branch drops the fixed single-command literal for the compact
+  // meta/guard-exception pointer. These are NOT verb completions with a result —
+  // like the engineer meta skills they do not carry the full six-field proposal
+  // (ADR-0029 §1 meta/guard exception). The softened pointer names the two
+  // honest routes (macro plan OR single-deliverable engineer:start) so it can
+  // never regress to a single hardcoded command.
+  for (const guard of ['commands/checkpoint.md', 'commands/resume.md',
+                       'skills/checkpoint/SKILL.md', 'skills/resume/SKILL.md']) {
+    it(`${guard} no-active-workflow guard uses the softened meta/guard pointer, not a fixed single command`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, guard), 'utf-8');
+      ok(!/Recommended next:\s*`\/orchestrator:/.test(text),
+        `${guard} still carries the fixed "Recommended next: \`/orchestrator:…\`" literal (ADR-0029 W1 meta/guard)`);
+      ok(/Active Next-Action Proposal/.test(text),
+        `${guard} guard should reference the session-handoff.md meta/guard exception (ADR-0029 §1)`);
+      ok(/engineer:start/.test(text),
+        `${guard} softened pointer must name the single-deliverable alternative route (engineer:start), proving it is not a single hardcoded command (ADR-0029 §1 meta/guard exception)`);
+    });
+  }
+
+  // Terminal-close surfaces: /orchestrator:finalize + /orchestrator:abort close
+  // the macro and defer their state-derived next action to the ADR-0039 footer
+  // (no six-field prose — a close has no forward branch). /orchestrator:done's
+  // auto-terminal path is likewise footer-driven. NONE may carry a hardcoded
+  // imperative next-command literal ("Run `/orchestrator:… or wait`",
+  // "### Recommended next step", "Recommended next: `/orchestrator:…`"). (done's
+  // forward-decision proposal is asserted in the PROPOSAL_SURFACES loop above.)
+  // NOTE: Phase-0/1 dispatch-guard early-exits (e.g. next.md's all_terminal →
+  // /orchestrator:finalize) are NOT held to this rule — they are the documented
+  // meta/guard exception (a compact single-honest-recovery pointer), enforced by
+  // the session-handoff.md guard-enumeration assertion above, not here.
+  for (const surface of ['commands/finalize.md', 'commands/abort.md', 'commands/done.md',
+                         'skills/finalize/SKILL.md', 'skills/abort/SKILL.md', 'skills/done/SKILL.md']) {
+    it(`${surface} carries no fixed imperative next-command literal (terminal close defers to the ADR-0039 footer)`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, surface), 'utf-8');
+      ok(!/Run\s+`?\/orchestrator:\w+`?\s+or\s+wait/i.test(text),
+        `${surface} still carries a "Run /orchestrator:… or wait" fixed lifecycle literal (ADR-0029 W1)`);
+      ok(!/###\s+Recommended next step/.test(text),
+        `${surface} still carries the "### Recommended next step" fixed literal (ADR-0029 W1)`);
+      ok(!/Recommended next:\s*`\/orchestrator:/.test(text),
+        `${surface} still carries a "Recommended next: \`/orchestrator:…\`" fixed literal (ADR-0029 W1)`);
     });
   }
 });

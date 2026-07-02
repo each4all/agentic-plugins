@@ -1,18 +1,100 @@
-# Session-Level Handoff Wiring (orchestrator, ADR-0031)
+# Macro Completion Handoff Wiring (orchestrator, ADR-0029 + ADR-0031)
 
-This is the orchestrator-side wiring for the **session-level continue-vs-fresh
-preflight**. Its **canonical contract** — the firing rules, the three inputs,
-the bounded projection schema, and the continue-vs-fresh decision policy — is
-the `entry-routing-contract.md § Session-Level Continue-vs-Fresh Preflight
-(ADR-0031)` section in the engineer plugin (the single source; ADR-0010 §5
-forbids a cross-plugin import, so this file points to that contract by name
-rather than restating its schema, which would drift). This file is the
-orchestrator-local single source for how an orchestrator **macro** surface
-computes its own bounded projection and passes it **into** the runtime seam —
-the runtime layer (L1) never reads orchestrator (L2) state, preserving the
-ADR-0010 L2 → L1 direction (projection / inversion-of-control model).
+This is the orchestrator-side wiring for the two contracts a macro surface
+consults **at completion**: the **Active Next-Action Proposal** (ADR-0029 — what
+to do next) and the **session-level continue-vs-fresh preflight** (ADR-0031 —
+whether to continue this session or hand off to a fresh one). Both **canonical
+contracts** live in the engineer plugin's `entry-routing-contract.md` (the single
+source; ADR-0010 §5 forbids a cross-plugin import, so this file points to those
+sections **by name** rather than restating their schema, which would drift). This
+file holds only the orchestrator-local wiring — how an orchestrator **macro**
+surface adapts the proposal shape, and how it computes its own bounded projection
+and passes it **into** the runtime seam — preserving the ADR-0010 L2 → L1
+direction (the runtime layer never reads orchestrator state; projection /
+inversion-of-control model).
 
-## When to surface it
+## Active Next-Action Proposal (macro completion surfaces, ADR-0029)
+
+Its **canonical contract** is `entry-routing-contract.md § Active Next-Action
+Proposal (standalone verb completion)` in the engineer plugin (the single
+source, cited by name per ADR-0010 §5). A **forward-decision** macro surface —
+one whose completion leaves a genuine "what next?" choice: `/orchestrator:plan`,
+`/orchestrator:next`, `/orchestrator:done`, and the `/orchestrator:audit` alias
+(which reuses the `plan.md` runbook) — MUST NOT end with a **fixed lifecycle
+literal** (e.g. always "recommend `/orchestrator:next`"). It emits an
+**evidence-based proposal** derived from the macro's actual state — which
+subtasks are ready, blocked, or terminal — with the six contract fields:
+
+- **selected_next**: the recommended next step, chosen from the macro state — a
+  macro command (`/orchestrator:next` when a subtask is ready;
+  `/orchestrator:finalize` / `/orchestrator:abort` when work is intentionally
+  closed), `commit`, or `owner decision`. Not a fixed table entry.
+- **rejected_alternatives**: 1-2 plausible next steps, each with a one-line why-not.
+- **rationale**: why `selected_next` is best, grounded in the decisive quality
+  axes (본질 essence / 근본 foundation) and the Standards/Root-Cause gate.
+- **evidence_pointers**: the macro subtask table, phase notes, or artifact
+  pointers that support the recommendation (pointers only — never raw peer output).
+- **confidence**: HIGH / MEDIUM / LOW, based on available evidence.
+- **next_command**: the exact next step matching `selected_next` — the
+  `/orchestrator:<verb> …` (Claude) or `$orchestrator:<verb>` (Codex) mention for
+  a macro command; the concrete action for `commit` / `owner decision`.
+
+The default macro sequence (a ready subtask → `/orchestrator:next`; all subtasks
+terminal → `/orchestrator:finalize` or the Stop-hook auto-archive) remains the
+**fallback** when evidence is genuinely neutral — but a fixed literal is no longer
+the default output. Where a forward-decision surface writes a durable next-action
+(e.g. `state.mjs --next-action`), record the compact form (selected_next +
+one-line rationale + next_command); the fuller proposal (alternatives + evidence
++ confidence) belongs in the completion output and the phase note.
+
+**Forward-decision vs terminal-close.** Only forward-decision surfaces carry the
+six-field prose proposal, because only they leave a genuine forward branch to
+reason about. The **terminal-close** surfaces — `/orchestrator:finalize` and
+`/orchestrator:abort` — close the macro; they carry **no fixed literal** either,
+but they do **not** hand-author the six-field proposal (a close has no
+rejected-alternatives / confidence branch to populate). Their state-derived next
+action is surfaced by the **ADR-0039 code-emitted runtime footer** instead — a
+proportionality boundary, not a claim that the footer reproduces the six fields
+(forcing the full proposal onto a terminal close would be the same
+over-application ADR-0029 warns against for a trivial reversible step).
+`/orchestrator:done` is a **hybrid**: when subtasks remain it is forward-decision
+(emit the six-field proposal); when its completion auto-terminalizes the macro's
+final subtask it is a terminal close (the footer fires, no hand-authored proposal).
+
+**Meta / guard exception.** A **guard path** — one that exits early because there
+is nothing to act on, not a verb completion with a result — is **not** bound by
+the six-field proposal (mirroring the engineer meta skills, which ADR-0029 §1
+likewise does not bind). A guard surfaces a **compact pointer to the single
+honest recovery for its state**, which legitimately names a command: this is not
+the W1 "fixed lifecycle table masking an evidence-based decision", because the
+guard state has exactly one honest recovery (there is no branch to reason over).
+The guard paths are:
+
+- `/orchestrator:checkpoint` / `/orchestrator:resume` *no-active-workflow* → plan
+  a macro **or** start a single-deliverable engineer workflow (`engineer:start`).
+- `/orchestrator:next` dispatch guards → `empty_plan` points to
+  `/orchestrator:plan`; `all_terminal` points to the terminal close
+  (`/orchestrator:finalize` or the auto-archive Stop hook); `in_progress_or_blocked`
+  points to `/orchestrator:done` for the in-flight subtask.
+- `/orchestrator:done` *no-child* → re-dispatch via `/orchestrator:next` (manual
+  completion without a child is unsupported — `subtask-update` requires the
+  `engineer_workflow_id`).
+
+None carry the full six-field proposal.
+
+## Session-Level Continue-vs-Fresh Preflight (ADR-0031)
+
+The Active Next-Action Proposal above answers *"what is the next macro step?"*.
+This section adds its **session-level** counterpart: *"should that step continue
+in the current session, or hand off to a fresh one?"* Its **canonical contract**
+— the firing rules, the three inputs, the bounded projection schema, and the
+continue-vs-fresh decision policy — is the `entry-routing-contract.md
+§ Session-Level Continue-vs-Fresh Preflight (ADR-0031)` section in the engineer
+plugin (the single source; cited by name per ADR-0010 §5). The wiring below is
+the orchestrator-local single source for how an orchestrator **macro** surface
+computes its own bounded projection and passes it **into** the runtime seam.
+
+### When to surface it
 
 Per the contract's firing rules, surface the preflight at the **macro-level
 equivalents of verb completion** — before guiding the user toward substantial
@@ -26,7 +108,7 @@ next work:
 
 It is not emitted on a trivial reversible step.
 
-## How to compute + pass the projection
+### How to compute + pass the projection
 
 The orchestrator macro projection is computed **fail-closed** by a read-only
 script that uses the **pure** `evaluateMacroStopArchive` evaluator (never the
@@ -80,7 +162,7 @@ phase, next_action, checkpoint, archive_gate, routing_recommendation) and its
 fail-closed rules are owned by the canonical contract named above; this wiring
 just produces a schema-valid macro projection and hands it to the seam.
 
-## Codex hook parity (diagnose + operator attestation only)
+### Codex hook parity (diagnose + operator attestation only)
 
 The preflight itself fires **synchronously at completion** and is fully
 host-symmetric: a Codex `$orchestrator:{next,plan,finalize,abort}` skill

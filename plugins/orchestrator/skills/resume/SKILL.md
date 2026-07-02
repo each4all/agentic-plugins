@@ -62,7 +62,11 @@ node "<plugin-root>/scripts/state.mjs" find-active --repo-root "$REPO_ROOT"
 
 Outcomes:
 
-- Empty stdout -> no active macro; recommend `orchestrator:plan`.
+- Empty stdout -> no active macro to reason about; surface a compact pointer
+  (not the full Active Next-Action Proposal — the meta/guard exception in
+  `skills/_shared/references/session-handoff.md`): the honest next step is
+  `orchestrator:plan` for a multi-deliverable macro, or `engineer:start` for a
+  single deliverable.
 - One path -> continue.
 - Non-zero -> duplicate/corrupt branch state; surface the diagnostic
   and do not choose a workflow for the user.

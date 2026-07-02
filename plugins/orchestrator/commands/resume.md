@@ -51,7 +51,12 @@ Branch on the result:
 
 - **Exit 0, empty stdout** -> no active macro workflow. Emit:
   `✗ No active orchestrator workflow; nothing to resume.`
-  Recommended next: `/orchestrator:plan <feature>`.
+  No macro to reason about — this guard surfaces a compact pointer, not the
+  full Active Next-Action Proposal (per
+  `skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
+  meta/guard exception): the honest next step is `/orchestrator:plan <feature>`
+  for a multi-deliverable macro (or `/engineer:start` for a single deliverable),
+  sized to the work shape.
 - **Exit 0, single path** -> continue with Phase 2.
 - **Exit 1** -> per-branch duplicate or malformed-file fail-closed
   diagnostic. Surface stderr and stop. Do not pick a workflow yourself;

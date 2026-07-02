@@ -233,9 +233,24 @@ PR-C0's `updateSubtask` handles single-writer ownership, absorbing-completed pre
 Report one of:
 
 - `✓ Subtask <id> recorded completed. commit=<sha> closed_at=<iso>. Auto-terminal=<true|false>.`
-- `✓ Subtask <id> auto-promoted: macro terminal_marker=true. Run /orchestrator:finalize or wait for the Stop hook auto-archive.`
+- `✓ Subtask <id> auto-promoted: macro terminal_marker=true.` (terminal close — the code-emitted footer below surfaces the state-derived next action.)
 - `✓ /orchestrator:done was a no-op — subtask <id> was already completed at <closed_at> with commit <sha>.`
 - `✗ Ownership conflict — engineer_workflow_id mismatch (existing=<X>, supplied=<Y>). Archive the stale engineer workflow or use --workflow=<correct-macro-id> if the wrong macro was selected.`
+
+When subtasks remain (no auto-terminal), `/orchestrator:done` is a
+**forward-decision** surface — emit an **Active Next-Action Proposal** instead of
+a fixed next command, per
+`skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
+(canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
+engineer plugin): **selected_next**, **rejected_alternatives** (1-2 + why-not),
+**rationale** (decisive axes 본질/근본 essence/foundation + the Standards/Root-Cause
+gate), **evidence_pointers** (pointers only), **confidence** (HIGH/MEDIUM/LOW),
+and **next_command** — derived from the post-completion macro state: typically
+`/orchestrator:next` when this completion unblocked a subtask, or
+`/orchestrator:finalize` when only intentionally-deferred work remains. When this
+`/done` instead auto-terminalized the macro (its final subtask), it is a terminal
+close: the code-emitted footer below surfaces the state-derived next action and
+no hand-authored proposal is added.
 
 The runtime completion footer is **code-emitted** on this command's terminal
 path (ADR-0039): when this `/done` lands the macro's FINAL subtask, the
