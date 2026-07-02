@@ -17,14 +17,12 @@
 //        of the mapped values (never a generic default), and the continue-vs-fresh
 //        session handoff renders. Asserted for BOTH hosts (claude + codex) so the
 //        codex terminal path is proven to render a concrete footer end-to-end,
-//        not just claude.
-//        NOTE (surfaced finding, out of ADR-0039 scope): footer.mjs's
-//        localizeRuntimeCommands only host-localizes `runtime:` commands; the
-//        PERSONA routing command (engineer:/orchestrator:resume) is passed as a
-//        literal `/…` by the projection and is not re-localized, so a codex user
-//        sees `/engineer:resume`. That is a pre-existing cross-host nicety gap in
-//        the merged engineer-wire/orch-wire footer wiring, not a code-emission
-//        acceptance criterion — tracked as a follow-up, not asserted here.
+//        not just claude. The PERSONA routing command in the handoff is asserted
+//        HOST-LOCALIZED: the projection passes Claude-shaped routing
+//        (/engineer:resume) as host-neutral data and footer.mjs
+//        localizePluginCommands rewrites it to the render host's prefix, so a
+//        codex user sees $engineer:resume (the former localizeRuntimeCommands
+//        follow-up gap, now closed).
 //   AC3  fail-closed: with a missing runtime the completion still succeeds
 //        (exit 0), stdout stays path-only, NO footer, NO stale-cache fallback.
 //        (The TOO-OLD gate is deliberately NOT black-box-tested here: the
@@ -158,6 +156,19 @@ describe('ADR-0039 acceptance — cross-persona × cross-host completion-footer 
           match(res.stderr, MAPPED_STATE_RE);
           // element 7/8 — the continue-vs-fresh session handoff renders.
           ok(res.stderr.includes('session handoff (continue-vs-fresh)'), 'the session handoff must render');
+          // cross-host localization — the persona routing command renders with
+          // the RENDER host's prefix (/ on claude, $ on codex), never the other
+          // host's shape.
+          const prefix = host.name === 'claude' ? '/' : '$';
+          const wrongPrefix = host.name === 'claude' ? '$' : '/';
+          ok(
+            res.stderr.includes(`- routing: ${prefix}${persona.name}:resume`),
+            `the persona routing must be ${host.name}-localized; got:\n${res.stderr}`,
+          );
+          ok(
+            !res.stderr.includes(`${wrongPrefix}${persona.name}:resume`),
+            `no ${wrongPrefix}-shaped persona routing may survive a ${host.name} render`,
+          );
         });
 
         it('AC3: fail-closed on a MISSING runtime — completion succeeds, no footer, no fallback', () => {
