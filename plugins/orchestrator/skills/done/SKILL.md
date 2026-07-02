@@ -86,7 +86,12 @@ keys to match:
 - `originating_subtask == <subtask id>`.
 
 Do not match on only one key. Do not invent an engineer workflow id.
-If no child is found, stop and recommend `$orchestrator:next <id>`.
+If no child is found, stop: this subtask was likely never dispatched via
+`$orchestrator:next` — re-dispatch it with `$orchestrator:next <id>` to create
+the engineer child (the single honest recovery for this guard state). Manual
+completion without a child is **not** supported — `subtask-update` requires
+`--engineer-workflow-id`; reconciling that scenario would need a follow-up ADR
+(mirrors `commands/done.md`'s no-child guard).
 
 ---
 
@@ -127,11 +132,26 @@ and macro auto-terminal promotion.
 ## Completion
 
 Report the subtask id, commit, closed_at timestamp, and whether the
-macro auto-promoted to terminal. The runtime completion footer is
+macro auto-promoted to terminal.
+
+When subtasks remain (no auto-terminal), `$orchestrator:done` is a
+**forward-decision** surface — emit an **Active Next-Action Proposal** (not a
+fixed next command) per
+`skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
+(canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
+engineer plugin): **selected_next**, **rejected_alternatives** (1-2 + why-not),
+**rationale** (본질/근본 essence/foundation + Standards/Root-Cause gate),
+**evidence_pointers** (pointers only), **confidence** (HIGH/MEDIUM/LOW), and
+**next_command** — derived from the post-completion macro state (typically
+`$orchestrator:next` when this completion unblocked a subtask, or
+`$orchestrator:finalize` when only intentionally-deferred work remains).
+
+The runtime completion footer is
 **code-emitted** on this verb's terminal path (ADR-0039): when this `/done`
 auto-promotes the macro to terminal (its final subtask), the `subtask-update`
 sidecar renders the runtime `footer.mjs` on the command's stderr — surface that
-one, do not hand-compose a duplicate. When subtasks remain, the macro stays
+one, do not hand-compose a duplicate (a terminal close needs no hand-authored
+proposal). When subtasks remain, the macro stays
 active and no terminal footer fires. Independently, a real completed subtask
 typically leaves an open PR on its branch — surface that PR follow-up if it has
 not already been handled (orchestrator computes no PR-readiness recommendation).

@@ -47,7 +47,12 @@ Branch on the result:
 
 - **Exit 0, empty stdout** -> emit
   `✗ No active orchestrator workflow; nothing to checkpoint.`
-  Recommended next: `/orchestrator:plan <feature>`.
+  There is no macro to reason about, so this guard surfaces a compact
+  pointer, not the full Active Next-Action Proposal (per
+  `skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
+  meta/guard exception): the honest next step is `/orchestrator:plan <feature>`
+  to start a multi-deliverable macro (or `/engineer:start` for a single
+  deliverable) — pick per the work shape.
 - **Exit 0, single path** -> continue.
 - **Exit 1** -> duplicate/corrupt branch state. Surface stderr and
   tell the user to resolve via `/orchestrator:resume` first.

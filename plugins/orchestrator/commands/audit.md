@@ -56,5 +56,7 @@ state write.
 
 ## Completion
 
-Same as `/orchestrator:plan`: present the macro plan and recommend
-`/orchestrator:next` after user approval.
+Same as `/orchestrator:plan`: after user approval, present the macro plan and
+emit the **Active Next-Action Proposal** per `commands/plan.md` § Completion
+(no fixed `/orchestrator:next` literal — the proposal derives the next step from
+the macro state).

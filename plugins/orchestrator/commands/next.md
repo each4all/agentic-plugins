@@ -124,7 +124,10 @@ else
         echo "✗ Macro plan has no subtasks. Run /orchestrator:plan to add some." >&2
         exit 1;;
       all_terminal)
-        echo "✓ All subtasks reached a terminal status — run /orchestrator:finalize to close the macro or wait for the auto-archive Stop hook." >&2
+        # Dispatch guard (not a verb completion) — names the single honest
+        # recovery for this state per session-handoff.md § Active Next-Action
+        # Proposal meta/guard exception: the macro is ready to close.
+        echo "✓ All subtasks reached a terminal status — nothing to dispatch. The macro is ready to close via /orchestrator:finalize (terminal close), or the auto-archive Stop hook once terminal_marker is set." >&2
         exit 1;;
       in_progress_or_blocked)
         echo "✗ No subtask is ready to dispatch — at least one is in_progress (waiting for completion) or blocked (waiting on a predecessor)." >&2
@@ -373,7 +376,18 @@ Report one of:
 - `✓ Subtask <id> already in_progress — re-attached to existing engineer workflow <id>.` (idempotent re-attach.)
 - `✓ Subtask <id> auto-promoted: engineer Stop hook had already completed it; macro now terminal_marker=true.` (rare race; PR-C0 auto-terminal pass fired.)
 
-When more subtasks remain ready, recommend the user follow up with `/orchestrator:next` after the current subtask commits. When all subtasks reach terminal status, recommend `/orchestrator:finalize` or expect the auto-archive once macro `terminal_marker` is set.
+Then emit an **Active Next-Action Proposal** instead of a fixed next command, per
+`skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
+(canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
+engineer plugin): **selected_next**, **rejected_alternatives** (1-2 + why-not),
+**rationale** (decisive axes 본질/근본 essence/foundation + the Standards/Root-Cause
+gate), **evidence_pointers** (pointers only), **confidence** (HIGH/MEDIUM/LOW),
+and **next_command** — derived from the post-dispatch macro state: when more
+subtasks are ready, `selected_next` is typically another `/orchestrator:next`
+after the current subtask commits; when all subtasks reach terminal status, it is
+`/orchestrator:finalize` (or the auto-archive once macro `terminal_marker` is
+set); when the dispatched engineer workflow is still in flight, it is waiting on
+that subtask's commit. Reason from the state rather than a hardcoded literal.
 
 Append the runtime completion footer after the dispatch summary. Use the
 runtime footer helper when available, or render the same fields manually:

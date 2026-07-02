@@ -150,13 +150,17 @@ NOTE="### Ensemble launched: plan at <iso-utc>
 
 <subtasks summary: ids + labels + dependency graph>
 
-### Recommended next step
+### Active next-action proposal
 
-Invoke `/orchestrator:next` to dispatch the first subtask with
-status=pending and empty blocked_by into engineer (ADR-0019 §1
-same-host dispatch). A subtask becomes unblocked when all its
-blocked_by predecessors reach status=completed; drive subtasks in
-dependency order.
+(per skills/_shared/references/session-handoff.md § Active Next-Action Proposal,
+ canonical entry-routing-contract.md § Active Next-Action Proposal in engineer —
+ derived from the macro state, not a fixed table)
+- selected_next:         <a macro command (/orchestrator:next when a subtask is ready; /orchestrator:finalize or /orchestrator:abort when closing), commit, or owner decision>
+- rejected_alternatives: <1-2 alternatives, each + one-line why-not>
+- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
+- evidence_pointers:     <subtask table / phase notes / artifacts — pointers only>
+- confidence:            <HIGH | MEDIUM | LOW>
+- next_command:          <exact next step: /orchestrator:next … (dispatch first ready subtask) or \$orchestrator:next on Codex; the finalize / owner-decision action otherwise>
 "
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
@@ -164,7 +168,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --phase-label "Phase 1: Plan (synthesized)" \
   --phase-note "$NOTE" \
   --current-phase phase-2-presented \
-  --next-action "Await user approval of macro plan" \
+  --next-action "Await user approval of macro plan; then selected_next=/orchestrator:next dispatches the first ready subtask" \
   --event updated
 
 # Atomic three-step ensemble-results commit (pop pending → append result
@@ -189,11 +193,25 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
 
 After user approval of the synthesized plan, output the macro plan and one of:
 
-- `✓ Plan complete.` + path to the workflow file. Recommend invoking `/orchestrator:next` to dispatch the first unblocked subtask (lowest-id entry with `status=pending` and empty `blocked_by`) into engineer. A subtask becomes unblocked when all its `blocked_by` predecessors reach `status=completed` — drive subtasks in dependency order.
-- `✓ Plan complete (LOCAL-ONLY).` + note that Codex peer was unavailable; recommend re-running once `/codex:setup` is configured. Same `/orchestrator:next` driving guidance applies.
+- `✓ Plan complete.` + path to the workflow file.
+- `✓ Plan complete (LOCAL-ONLY).` + note that Codex peer was unavailable; recommend re-running once `/codex:setup` is configured.
 - `✓ Plan paused (CONFLICT items surfaced).` — when synthesizer flagged disagreements that warrant user input before subtasks land.
 
 Always include the workflow path.
+
+Then emit an **Active Next-Action Proposal** instead of a fixed next command, per
+`skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
+(canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
+engineer plugin): **selected_next**, **rejected_alternatives** (1-2 + why-not),
+**rationale** (decisive axes 본질/근본 essence/foundation + the Standards/Root-Cause
+gate), **evidence_pointers** (pointers only), **confidence** (HIGH/MEDIUM/LOW),
+and **next_command**. For a freshly approved plan the typical `selected_next` is
+`/orchestrator:next` to dispatch the first unblocked subtask (lowest-id entry with
+`status=pending` and empty `blocked_by`; a subtask unblocks when all its
+`blocked_by` predecessors reach `status=completed` — drive in dependency order) —
+but a zero-subtask plan or a surfaced CONFLICT routes to the honest next step (an
+owner decision on the conflict, or closing the empty plan), never a hardcoded
+literal.
 
 Append the runtime completion footer after the workflow path. Use the
 runtime footer helper when available, or render the same fields manually:
