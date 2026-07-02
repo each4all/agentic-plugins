@@ -66,6 +66,18 @@ It also reports the same read-only handoff lookup and guidance used by
 guidance state, recommended session shape, recommended action, and safe
 follow-up commands.
 
+**ADR-0039 (now-active wiring).** As of ADR-0039 the helper is no longer
+invoked only by hand: the engineer and orchestrator completion/terminal paths
+**code-emit** it. Their ADR-0031 session-handoff sidecar shells out to this
+`footer.mjs render` (subprocess, never an import — ADR-0010 §5) after writing the
+projection, captures the child stdout, and re-emits it on the completing
+command's **stderr** (the command's stdout stays a machine channel). This stays a
+"script, not a command": the personas discover the runtime root
+(`discoverRuntimePluginRoot`, copy-not-import), gate on `emitted===true`, guard
+against double-emission, and fail closed silently on a missing/too-old runtime.
+See ADR-0039 and `skills/_shared/references/entry-routing-contract.md`
+(engineer) / `session-handoff.md` (orchestrator).
+
 Callers that want the newest existing handoff without creating or updating
 context may use `--context-latest`:
 

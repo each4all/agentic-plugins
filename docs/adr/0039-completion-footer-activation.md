@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (2026-07-02)
 
 <!--
 Relates to ADR-0024 (runtime operator control plane — introduced the
@@ -14,9 +14,13 @@ ADR-0031 sidecar terminal path. The `/runtime:footer`-command option is
 explicitly rejected here, preserving footer-contract.md's "script, not a
 command" posture. Founder inclusion is deferred (see Decision §7).
 
-Flip to Accepted when the implementation series (engineer-wire →
-orch-wire + orch-next-action-shape → acceptance) completes, mirroring the
-ADR-0027/0028 status-flip-on-series-completion precedent.
+Flipped to Accepted 2026-07-02 on completion of the implementation series
+(engineer-wire #464 → orch-wire #466 + orch-next-action-shape #467 →
+acceptance), mirroring the ADR-0027/0028 status-flip-on-series-completion
+precedent. Acceptance evidence: the host-free black-box acceptance gate
+(tests/acceptance/test-footer-activation-acceptance.mjs) proving the
+cross-persona stdout-machine-channel / footer-on-stderr / concrete-elements /
+fail-closed criteria plus the ADR-0010 §5 subprocess-only import boundary.
 -->
 
 ## Context
