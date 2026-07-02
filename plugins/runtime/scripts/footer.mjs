@@ -110,13 +110,27 @@ export async function runFooter(options = {}) {
     ? buildCutoverRecordGuidance({ host, completion, options })
     : null;
 
+  // Host-localize the advisory surfaces that can carry plugin colon-commands:
+  // the projection's persona routing (session handoff + workflow fields) and
+  // the completion next-action / recommended-next-work path. Pointer/path
+  // fields stay untouched, and object shapes are preserved (only existing
+  // string fields are rewritten).
+  const localizedWorkflow = localizeCommandFields(workflow, host, ['next_action', 'routing_recommendation']);
+  const localizedSessionHandoff = sessionHandoff
+    ? {
+        ...localizeCommandFields(sessionHandoff, host, ['routing_recommendation', 'next_command']),
+        workflow: localizeCommandFields(sessionHandoff.workflow, host, ['next_action']),
+      }
+    : sessionHandoff;
+  const localizedCompletion = localizeCommandFields(completion, host, ['next_action']);
+
   const report = {
     command: 'render',
     version: VERSION,
     advisory: true,
     context_state: contextState,
-    completion_state: completion.state,
-    completion,
+    completion_state: localizedCompletion.state,
+    completion: localizedCompletion,
     context: context
       ? {
           run_id: context.runId,
@@ -140,15 +154,15 @@ export async function runFooter(options = {}) {
           status_guidance: consensus.statusGuidance,
         }
       : null,
-    workflow,
+    workflow: localizedWorkflow,
     artifacts,
-    recommended_next_work: effectiveRecommendedNextWork,
+    recommended_next_work: localizePluginCommands(effectiveRecommendedNextWork, host),
     next_session: nextSession,
     pr_handling: prHandling,
     cutover_record: cutoverRecord,
     limits: footerLimits(),
   };
-  if (sessionHandoff) report.session_handoff = sessionHandoff;
+  if (localizedSessionHandoff) report.session_handoff = localizedSessionHandoff;
   if (projectionError) report.projection_error = projectionError;
   return report;
 }
@@ -1003,16 +1017,37 @@ function localizeStatusGuidanceCommands(guidance, host) {
 }
 
 function localizeCommandList(values, host) {
-  return (values ?? []).map((value) => localizeRuntimeCommands(value, host));
+  return (values ?? []).map((value) => localizePluginCommands(value, host));
 }
 
-function localizeRuntimeCommands(value, host) {
+// Colon-commands of every plugin with a command surface (companions is
+// script-only and deliberately absent). An optional leading `/` or `$` is
+// absorbed and rewritten to the render host's prefix, so a command reaches the
+// user host-correct whether the source produced it bare (consensus/context
+// guidance), Claude-shaped (persona projection routing like /engineer:resume),
+// or Codex-shaped (a projection consumed cross-host). The leading-boundary
+// guard keeps path-like text (plugins/runtime, a/engineer:x) unmatched.
+const PLUGIN_COMMAND_RE = /(^|[\s`"'([])([/$])?((?:runtime|engineer|orchestrator|founder|image):[A-Za-z0-9:_-]+)/g;
+
+function localizePluginCommands(value, host) {
   if (!value || host === 'neutral') return value;
   const prefix = host === 'claude' ? '/' : '$';
   return String(value).replace(
-    /(^|[\s`"'([])(runtime:[A-Za-z0-9:_-]+)/g,
-    (_match, leading, command) => `${leading}${prefix}${command}`,
+    PLUGIN_COMMAND_RE,
+    (_match, leading, _hostPrefix, command) => `${leading}${prefix}${command}`,
   );
+}
+
+// Rewrite only the named string fields; absent fields are not introduced and
+// non-string values pass through, so callers asserting object shape (e.g.
+// `'archive_gate' in report.workflow`) are unaffected.
+function localizeCommandFields(target, host, fields) {
+  if (!target) return target;
+  const out = { ...target };
+  for (const field of fields) {
+    if (typeof out[field] === 'string') out[field] = localizePluginCommands(out[field], host);
+  }
+  return out;
 }
 
 function artifactTimestampMs(artifact, fallbackRunId) {

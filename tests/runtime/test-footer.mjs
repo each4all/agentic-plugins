@@ -845,6 +845,109 @@ describe('runtime footer session handoff (ADR-0031)', () => {
   });
 });
 
+// ADR-0039 follow-up — persona colon-commands (engineer:/orchestrator:/founder:/
+// image:) must render host-correct on every advisory command surface, exactly
+// like runtime: commands. The projection produces host-neutral data with
+// Claude-shaped routing (/engineer:resume); the RENDER host decides the prefix.
+describe('runtime footer persona command host-localization', () => {
+  const personaProjection = (overrides = {}) => ({
+    workflow_kind: 'engineer',
+    workflow_id: 'w-1',
+    workflow_path: 'wf/w-1.md',
+    phase: 'summary-complete',
+    next_action: 'Address findings via /engineer:refine before archiving',
+    archive_gate: 'not_terminal',
+    routing_recommendation: '/engineer:resume',
+    ...overrides,
+  });
+
+  const renderWith = async (host, overrides = {}, options = {}) => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-persona-'));
+    const projPath = join(root, 'proj.json');
+    await writeFile(projPath, JSON.stringify(personaProjection(overrides)));
+    return runFooter({
+      repoRoot: root,
+      host,
+      contextState: 'red', // red → fresh_or_resumed → next_command is populated
+      workflowProjectionFile: projPath,
+      ...options,
+    });
+  };
+
+  it('rewrites Claude-shaped persona routing to $ for a codex render (report + text)', async () => {
+    const report = await renderWith('codex');
+    strictEqual(report.session_handoff.routing_recommendation, '$engineer:resume');
+    strictEqual(report.session_handoff.next_command, '$engineer:resume');
+    strictEqual(report.session_handoff.workflow.next_action, 'Address findings via $engineer:refine before archiving');
+    strictEqual(report.workflow.routing_recommendation, '$engineer:resume');
+    strictEqual(report.workflow.next_action, 'Address findings via $engineer:refine before archiving');
+    const text = formatText(report);
+    ok(text.includes('- routing: $engineer:resume'));
+    ok(text.includes('- next command: $engineer:resume'));
+    ok(!text.includes('/engineer:resume'), 'no Claude-shaped persona command may survive a codex render');
+  });
+
+  it('rewrites Codex-shaped routing back to / for a claude render (cross-host symmetry)', async () => {
+    const report = await renderWith('claude', {
+      workflow_kind: 'orchestrator',
+      routing_recommendation: '$orchestrator:resume',
+      next_action: 'Dispatch via $orchestrator:next',
+    });
+    strictEqual(report.session_handoff.routing_recommendation, '/orchestrator:resume');
+    strictEqual(report.session_handoff.next_command, '/orchestrator:resume');
+    strictEqual(report.workflow.next_action, 'Dispatch via /orchestrator:next');
+  });
+
+  it('keeps a neutral render untouched (existing behavior preserved)', async () => {
+    const report = await renderWith('neutral');
+    strictEqual(report.session_handoff.routing_recommendation, '/engineer:resume');
+    strictEqual(report.session_handoff.next_command, '/engineer:resume');
+    strictEqual(report.workflow.next_action, 'Address findings via /engineer:refine before archiving');
+  });
+
+  it('localizes the routing surviving an unsupported-kind projection (founder)', async () => {
+    const report = await renderWith('codex', {
+      workflow_kind: 'founder',
+      routing_recommendation: '/founder:resume',
+    });
+    strictEqual(report.session_handoff.unsupported_workflow_kind, 'founder');
+    strictEqual(report.session_handoff.routing_recommendation, '$founder:resume');
+    strictEqual(report.session_handoff.next_command, '$founder:resume');
+  });
+
+  it('localizes recommended-next-work and the completion next action (sidecar path)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-persona-rnw-'));
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      contextState: 'green',
+      recommendedNextWork: 'Run /engineer:refine then runtime:doctor and image:compose',
+    });
+    strictEqual(
+      report.recommended_next_work,
+      'Run $engineer:refine then $runtime:doctor and $image:compose',
+    );
+    strictEqual(
+      report.completion.next_action,
+      'Run $engineer:refine then $runtime:doctor and $image:compose',
+    );
+  });
+
+  it('does not rewrite path-like text and is idempotent on already-localized commands', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-persona-safe-'));
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      contextState: 'green',
+      recommendedNextWork: 'See plugins/runtime/scripts and a/engineer:x then $engineer:resume',
+    });
+    strictEqual(
+      report.recommended_next_work,
+      'See plugins/runtime/scripts and a/engineer:x then $engineer:resume',
+    );
+  });
+});
+
 async function rejectsAsync(promise, pattern) {
   try {
     await promise;
