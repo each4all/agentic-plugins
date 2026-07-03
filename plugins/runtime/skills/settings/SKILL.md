@@ -1,6 +1,6 @@
 ---
 name: settings
-description: "Dry-run runtime settings planner for agentic-plugins. Use when the user wants to inspect marketplace/plugin/CLI readiness, plan repo-local or user-global model/effort defaults, explicitly execute allowlisted plugin install/update commands, explicitly clean up retired agentic-plugins Claude plugins, check Codex plugin-hook readiness, or record a Codex /hooks review attestation. Mutates only agentic-plugins-owned config when --apply is explicit; runs plugin management only when --execute-plugin-management is explicit; runs retired plugin cleanup only when --execute-plugin-cleanup is explicit; records hook-review attestation only when --attest-codex-hook-review is explicit. Never writes Codex host config: the former --apply-codex-plugin-hooks plugin_hooks write was removed per ADR-0035 §6 (hook enablement is manual)."
+description: "Dry-run runtime settings planner for agentic-plugins. Use when the user wants to inspect marketplace/plugin/CLI readiness, plan repo-local or user-global model/effort defaults, plan ADR-0040 notify_* notification keys, explicitly execute allowlisted plugin install/update commands, explicitly clean up retired agentic-plugins Claude plugins, check Codex plugin-hook readiness, or record a Codex /hooks review attestation. Mutates only agentic-plugins-owned config when --apply is explicit; runs plugin management only when --execute-plugin-management is explicit; runs retired plugin cleanup only when --execute-plugin-cleanup is explicit; records hook-review attestation only when --attest-codex-hook-review is explicit. Never writes Codex host config: the former --apply-codex-plugin-hooks plugin_hooks write was removed per ADR-0035 §6 (hook enablement is manual)."
 ---
 
 # Settings (runtime framework primitive)
@@ -15,7 +15,7 @@ description: "Dry-run runtime settings planner for agentic-plugins. Use when the
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]
+node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>] [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>] [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]
 ```
 
 3. Present the result as a settings plan, not as proof of host parity.
@@ -45,6 +45,15 @@ Settings reports and plans:
 - Effective projected companion defaults after repo-local and user-global
   precedence. Warn when a lower-precedence write would not actually affect
   companion invocation.
+- ADR-0040 §2 notification config keys (`notify_channel`,
+  `notify_quiet_hours`, `notify_quiet_hours_tz`, `notify_dedupe_ttl_seconds`,
+  `notify_urgent_bypass_quiet_hours`, `notify_kinds`) with per-key validation
+  (channel enum, `HH:MM-HH:MM` window, IANA timezone, positive-integer TTL,
+  `"true"`/`"false"`, and kind names checked against the notify-schema lib's
+  kind enum), effective projection over the same repo -> user precedence
+  chain with shipped defaults (`notify_channel = "none"` keeps the emitter
+  disabled until the operator opts in), and warnings for shadowed requests or
+  invalid existing values the notify emitter would fail closed on.
 - Dry-run plugin management plans and, behind `--execute-plugin-management`,
   execution metadata, retry classification, and durable sanitized artifacts for
   allowlisted Claude/Codex plugin install/update commands.

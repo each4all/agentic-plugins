@@ -1,5 +1,5 @@
 import { describe, it } from 'node:test';
-import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert/strict';
+import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -70,7 +70,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.13');
+    strictEqual(report.schema_version, 'runtime-settings-1.14');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -596,7 +596,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.13');
+    strictEqual(report.schema_version, 'runtime-settings-1.14');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -1502,6 +1502,244 @@ describe('settings: Codex permission plan (ADR-0038 settings-codex, M1)', () => 
     const { readdir } = await import('node:fs/promises');
     const runDirs = (await readdir(join(root, '.agentic-plugins', 'runs', 'permission'), { withFileTypes: true })).filter((e) => e.isDirectory());
     strictEqual(runDirs.length, 1, 'exactly one combined run directory');
+  });
+});
+
+describe('settings: notify config keys (ADR-0040 §2)', () => {
+  it('plans notify_* config writes with effective projection, shipped defaults, and a text section', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-plan-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-plan-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      desired: {
+        notify_channel: 'macos-osascript',
+        notify_dedupe_ttl_seconds: '600',
+        notify_kinds: 'approval,peer-run-terminal',
+      },
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    strictEqual(report.dry_run, true);
+    const repoTarget = report.config.targets.find((target) => target.kind === 'repo');
+    ok(repoTarget.planned_writes.some((write) => write.key === 'notify_channel' && write.op === 'add' && write.after === 'macos-osascript'));
+    ok(repoTarget.planned_writes.some((write) => write.key === 'notify_dedupe_ttl_seconds' && write.after === '600'));
+    ok(repoTarget.planned_writes.some((write) => write.key === 'notify_kinds' && write.after === 'approval,peer-run-terminal'));
+
+    const notify = report.notify_settings;
+    strictEqual(notify.effective_mode, 'projected');
+    deepStrictEqual(notify.config_keys, [
+      'notify_channel',
+      'notify_quiet_hours',
+      'notify_quiet_hours_tz',
+      'notify_dedupe_ttl_seconds',
+      'notify_urgent_bypass_quiet_hours',
+      'notify_kinds',
+    ]);
+    strictEqual(notify.keys.notify_channel.value, 'macos-osascript');
+    strictEqual(notify.keys.notify_channel.effective_value, 'macos-osascript');
+    strictEqual(notify.keys.notify_channel.source, 'repo config notify_channel');
+    strictEqual(notify.keys.notify_channel.status, 'effective');
+    strictEqual(notify.keys.notify_channel.default, 'none');
+    strictEqual(notify.keys.notify_urgent_bypass_quiet_hours.value, null);
+    strictEqual(notify.keys.notify_urgent_bypass_quiet_hours.effective_value, 'true');
+    strictEqual(notify.keys.notify_urgent_bypass_quiet_hours.default, 'true');
+    strictEqual(notify.keys.notify_urgent_bypass_quiet_hours.status, 'unchanged');
+    strictEqual(notify.keys.notify_urgent_bypass_quiet_hours.source, 'shipped default');
+    strictEqual(notify.keys.notify_dedupe_ttl_seconds.effective_value, '600');
+    strictEqual(notify.keys.notify_quiet_hours.default, null);
+    strictEqual(notify.keys.notify_quiet_hours.effective_value, null);
+    deepStrictEqual(notify.warnings, []);
+    strictEqual(report.overall.notify_warnings, 0);
+
+    const text = formatText(report);
+    ok(text.includes('Notify (ADR-0040'));
+    ok(text.includes('notify_channel: macos-osascript (repo config notify_channel)'));
+    ok(text.includes('notify_urgent_bypass_quiet_hours'));
+  });
+
+  it('reads existing notify keys from config.toml as current state and keeps unchanged values', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-current-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-current-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "file-log"\nunknown_key = "still-dropped"\n');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      desired: { notify_channel: 'file-log' },
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    const repoTarget = report.config.targets.find((target) => target.kind === 'repo');
+    deepStrictEqual(repoTarget.current_keys, ['notify_channel']);
+    strictEqual(repoTarget.planned_writes.length, 0);
+    ok(repoTarget.unchanged.some((action) => action.key === 'notify_channel' && action.op === 'keep'));
+    strictEqual(report.notify_settings.keys.notify_channel.current_value, 'file-log');
+  });
+
+  it('rejects invalid notify values at parse/normalize time per key', () => {
+    const cases = [
+      [['--notify-channel', 'growl'], /notify_channel/],
+      [['--notify-quiet-hours', '25:00-08:00'], /notify_quiet_hours/],
+      [['--notify-quiet-hours', '2200-0800'], /notify_quiet_hours/],
+      [['--notify-quiet-hours-tz', 'Not/AZone'], /notify_quiet_hours_tz/],
+      [['--notify-dedupe-ttl-seconds', '0'], /notify_dedupe_ttl_seconds/],
+      [['--notify-dedupe-ttl-seconds', 'abc'], /notify_dedupe_ttl_seconds/],
+      [['--notify-urgent-bypass-quiet-hours', 'yes'], /notify_urgent_bypass_quiet_hours/],
+      [['--notify-kinds', 'approval,bogus-kind'], /bogus-kind/],
+    ];
+    for (const [argv, expected] of cases) {
+      throws(() => parseArgs(argv), expected, `expected parse rejection for ${argv.join(' ')}`);
+    }
+  });
+
+  it('rejects invalid notify values on the programmatic path before any planning', async () => {
+    await rejects(
+      () => runSettings({
+        repoRoot: '/nonexistent-root-never-read',
+        desired: { notify_channel: 'growl' },
+        runner: fakeRunner({}),
+      }),
+      /notify_channel must be one of none, macos-osascript, file-log/,
+    );
+  });
+
+  it('accepts --notify-* flags via the generic config flag mapping alongside model/effort flags', () => {
+    const opts = parseArgs([
+      '--notify-channel', 'file-log',
+      '--notify-quiet-hours', '22:00-08:00',
+      '--notify-quiet-hours-tz', 'Asia/Seoul',
+      '--notify-dedupe-ttl-seconds', '300',
+      '--notify-urgent-bypass-quiet-hours', 'false',
+      '--notify-kinds', 'approval',
+      '--codex-model', 'still-works',
+    ]);
+    deepStrictEqual(opts.desired, {
+      codex_model: 'still-works',
+      notify_channel: 'file-log',
+      notify_quiet_hours: '22:00-08:00',
+      notify_quiet_hours_tz: 'Asia/Seoul',
+      notify_dedupe_ttl_seconds: '300',
+      notify_urgent_bypass_quiet_hours: 'false',
+      notify_kinds: 'approval',
+    });
+  });
+
+  it('applies notify config writes to the selected agentic-plugins-owned target', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-apply-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-apply-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      target: 'repo',
+      apply: true,
+      desired: { notify_channel: 'macos-osascript', notify_quiet_hours: '23:30-07:15' },
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    strictEqual(report.config.targets.find((target) => target.kind === 'repo').applied, true);
+    const repoConfig = await readFile(join(root, '.agentic-plugins', 'config.toml'), 'utf8');
+    ok(repoConfig.includes('notify_channel = "macos-osascript"'));
+    ok(repoConfig.includes('notify_quiet_hours = "23:30-07:15"'));
+    strictEqual(report.notify_settings.effective_mode, 'applied');
+    strictEqual(report.notify_settings.keys.notify_channel.value, 'macos-osascript');
+  });
+
+  it('warns when a requested notify key is shadowed by repo config', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-shadow-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-shadow-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "none"\n');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      target: 'user',
+      desired: { notify_channel: 'file-log' },
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    const entry = report.notify_settings.keys.notify_channel;
+    strictEqual(entry.value, 'none');
+    strictEqual(entry.status, 'shadowed');
+    ok(entry.warning.includes('shadowed by repo config notify_channel'));
+    strictEqual(report.overall.notify_warnings, 1);
+    strictEqual(report.overall.status, 'warning');
+    ok(report.recommendations.some((rec) => rec.area === 'config' && rec.detail.includes('shadowed')));
+    ok(formatText(report).includes('warning: notify_channel'));
+  });
+
+  it('warns when an existing config value for a notify key is invalid without blocking the plan', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-invalid-current-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-invalid-current-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "growl"\n');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    const entry = report.notify_settings.keys.notify_channel;
+    strictEqual(entry.value, 'growl');
+    ok(entry.warning.includes('invalid'));
+    strictEqual(report.overall.notify_warnings, 1);
+    strictEqual(report.overall.status, 'warning');
+  });
+
+  it('warns about an invalid lower-precedence notify value shadowed by a valid repo value', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-invalid-lower-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-invalid-lower-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "file-log"\n');
+    await mkdir(join(home, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'notify_channel = "growl"\n');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    const entry = report.notify_settings.keys.notify_channel;
+    strictEqual(entry.value, 'file-log');
+    strictEqual(entry.effective_value, 'file-log');
+    ok(entry.warning.includes('user config value "growl" is invalid'));
+    strictEqual(report.overall.notify_warnings, 1);
+  });
+
+  it('locks the blank/raw notify_kinds contract: blank is dropped, raw CSV is stored as written', async () => {
+    // Blank means "no filter" to the notify-schema lib; the settings differ
+    // has no key-removal semantics, so a blank desired value is dropped (the
+    // operator clears a filter by deleting the config line).
+    const blank = parseArgs(['--notify-channel', 'none']);
+    deepStrictEqual(blank.desired, { notify_channel: 'none' });
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-kinds-raw-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notify-kinds-raw-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      desired: { notify_kinds: 'idle,,idle,', notify_quiet_hours: '' },
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    const repoTarget = report.config.targets.find((target) => target.kind === 'repo');
+    // Raw CSV is stored as written; the notify-schema lib normalizes at
+    // evaluation time (dupes/empty tokens are its concern, not the differ's).
+    ok(repoTarget.planned_writes.some((write) => write.key === 'notify_kinds' && write.after === 'idle,,idle,'));
+    ok(!repoTarget.planned_writes.some((write) => write.key === 'notify_quiet_hours'), 'blank desired value is dropped, not planned');
   });
 });
 
