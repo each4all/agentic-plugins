@@ -54,6 +54,15 @@ export const CAPABILITY_IMPORTERS = {
   // fetch, https?:// validated and flag-gated. Tier M1. Only GET is allowed; a
   // network member call other than `.get(` in this file fails the network-gate.
   'compat.mjs': { modules: ['node:http', 'node:https'], primitives: ['get'] },
+  // notify.mjs dispatchOsascript → spawn('/usr/bin/osascript', <fixed argv>) —
+  // the ADR-0040 §2 notification-emit executor. The ONLY non-companion
+  // external-process execution outside the host-CLI/git wrappers; ADR-0040
+  // authorizes exactly the fixed-template shape pinned in
+  // ARGV_VERB_ALLOWLIST['/usr/bin/osascript'] below and nothing broader
+  // (§4 ceiling untouched; §3 invariants 1/5/8 narrowly amended for this one
+  // surface — config-key gating via notify_channel=none default, detached+
+  // unref fire-and-forget, fail-closed silent emit path).
+  'notify.mjs': { modules: ['node:child_process'], primitives: ['spawn'] },
 };
 
 // Raw child_process primitives. Any of these called in a file that is not a
@@ -78,8 +87,10 @@ export const EXEC_CALL_NAMES = [
   'runCommand', 'runner', 'runGit', 'execGit', 'defaultRunner', 'commandSpec',
 ];
 
-// The only binaries runtime may launch as a literal command.
-export const ALLOWED_COMMAND_LITERALS = ['claude', 'codex', 'git'];
+// The only binaries runtime may launch as a literal command. The osascript
+// entry is deliberately the ABSOLUTE path: it pins the system binary (no PATH
+// resolution surface) for the ADR-0040 §2 fixed-argv notification dispatch.
+export const ALLOWED_COMMAND_LITERALS = ['claude', 'codex', 'git', '/usr/bin/osascript'];
 
 // Node itself, used to run agentic-plugins-owned scripts (engineer state.mjs,
 // companions) inside ephemeral temp repos. Recognised as a member expression
@@ -221,6 +232,16 @@ export const ARGV_VERB_ALLOWLIST = {
     ['show-ref', '--verify', '*'],
     ['worktree', 'list', '...'],
     ['init', '-q', '-b', '*'],
+  ],
+  // notify.mjs macos-osascript channel (ADR-0040 §2): ONE verb-path pinning
+  // the FIXED AppleScript program byte-for-byte, arity-locked. The program
+  // reads `on run argv`; the two trailing '*' are the title/body payload —
+  // data positions only, never program material (interpolating payload into
+  // an -e expression is the classic osascript injection and normalizes to a
+  // '*' program token here, which fails this exact-literal path). Any change
+  // to the program text or arity fails closed until re-registered.
+  '/usr/bin/osascript': [
+    ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', '*', '*'],
   ],
 };
 

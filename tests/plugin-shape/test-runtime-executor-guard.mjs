@@ -351,6 +351,64 @@ describe('ADR-0035 §4 guard — negative conformance (gate bites)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// (c) Negative-conformance — ADR-0040 §2 notification emitter (osascript)
+// ---------------------------------------------------------------------------
+
+describe('ADR-0035 §4 guard — ADR-0040 notification dispatch (per-source negative conformance)', () => {
+  // Mirrors notify.mjs dispatchOsascript: named spawn import + the
+  // spawnImpl-injectable alias the scanner must follow.
+  const PRELUDE = `import { spawn } from 'node:child_process';\nconst doSpawn = spawnImpl ?? spawn;\n`;
+  const FIXED_ARGV = `['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', title, body]`;
+  const OPTS = `{ stdio: 'ignore', detached: true, env: spawnEnv }`;
+
+  it('the exact fixed template in notify.mjs → NO finding', () => {
+    deepStrictEqual(scan('notify.mjs', `${PRELUDE}doSpawn('/usr/bin/osascript', ${FIXED_ARGV}, ${OPTS});`), []);
+  });
+
+  it('payload interpolated INTO the -e program (template literal) → argv-verb-gate', () => {
+    // `display notification "${body}" ...` normalizes its program token to
+    // contain '*', which cannot equal the pinned literal program.
+    const argv = "['-e', 'on run argv', '-e', `display notification \"${body}\" with title (item 1 of argv)`, '-e', 'end run', title]";
+    ok(rules(scan('notify.mjs', `${PRELUDE}doSpawn('/usr/bin/osascript', ${argv}, ${OPTS});`)).includes('argv-verb-gate'));
+  });
+
+  it('a DIFFERENT AppleScript program (do shell script) → argv-verb-gate', () => {
+    const argv = "['-e', 'on run argv', '-e', 'do shell script (item 1 of argv)', '-e', 'end run', title, body]";
+    ok(rules(scan('notify.mjs', `${PRELUDE}doSpawn('/usr/bin/osascript', ${argv}, ${OPTS});`)).includes('argv-verb-gate'));
+  });
+
+  it('an arity change (extra trailing argv) → argv-verb-gate', () => {
+    const argv = FIXED_ARGV.replace(', body]', ', body, extra]');
+    ok(rules(scan('notify.mjs', `${PRELUDE}doSpawn('/usr/bin/osascript', ${argv}, ${OPTS});`)).includes('argv-verb-gate'));
+  });
+
+  it('a variable program (["-e", userProgram, ...]) → argv-verb-gate', () => {
+    const argv = "['-e', userProgram, title]";
+    ok(rules(scan('notify.mjs', `${PRELUDE}doSpawn('/usr/bin/osascript', ${argv}, ${OPTS});`)).includes('argv-verb-gate'));
+  });
+
+  it('a fully dynamic argv (spread) → argv-unresolved', () => {
+    ok(rules(scan('notify.mjs', `${PRELUDE}doSpawn('/usr/bin/osascript', [...userArgs], ${OPTS});`)).includes('argv-unresolved'));
+  });
+
+  it('the same fixed template in a NON-importer runtime file → import-gate', () => {
+    ok(rules(scan('cutover-audit.mjs', `${PRELUDE}doSpawn('/usr/bin/osascript', ${FIXED_ARGV}, ${OPTS});`)).includes('import-gate'));
+  });
+
+  it('a bare `osascript` (PATH-resolved, not the pinned absolute path) → command-gate', () => {
+    ok(rules(scan('notify.mjs', `${PRELUDE}doSpawn('osascript', ${FIXED_ARGV}, ${OPTS});`)).includes('command-gate'));
+  });
+
+  it('shell:true on the osascript spawn → shell-gate', () => {
+    ok(rules(scan('notify.mjs', `${PRELUDE}doSpawn('/usr/bin/osascript', ${FIXED_ARGV}, { shell: true });`)).includes('shell-gate'));
+  });
+
+  it('an unref-dodging kill on the notify child → kill-gate', () => {
+    ok(rules(scan('notify.mjs', `${PRELUDE}const child = doSpawn('/usr/bin/osascript', ${FIXED_ARGV}, ${OPTS}); child.kill('SIGTERM');`)).includes('kill-gate'));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // (c) Registry drift — registry never looser than the code
 // ---------------------------------------------------------------------------
 

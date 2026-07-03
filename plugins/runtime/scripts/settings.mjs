@@ -17,7 +17,14 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor, codexPerPluginVerbs, collectUsageRecordSources } from './doctor.mjs';
-import { parseKindsFilter } from './lib/notify-schema.mjs';
+import {
+  CONFIG_KEYS,
+  CONFIG_KEY_FAMILIES,
+  NOTIFY_KEY_DEFAULTS,
+  normalizeConfigKey,
+  parseRuntimeConfigToml,
+  validateConfigValue,
+} from './lib/runtime-config.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { learnFromSources } from './lib/permission-usage-learner.mjs';
 import { makeFragmentContract, makeModeRecommendation } from './lib/permission-advisor-core.mjs';
@@ -30,92 +37,18 @@ export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.14';
 const DEFAULT_PERMISSION_PLAN_MAX_FILES = 100;
 const DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES = 8 * 1024 * 1024;
 export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.1';
-// Config keys are grouped into families so the plan/apply pipeline stays a
-// generic key-family differ: the differ, TOML parser/upsert, and CLI flag
-// mapping all derive from this table instead of hardcoding one family's
-// shape (ADR-0040 §2 generalized the former model/effort-only list).
-export const CONFIG_KEY_FAMILIES = Object.freeze({
-  model_effort: Object.freeze([
-    'model',
-    'effort',
-    'claude_model',
-    'claude_effort',
-    'codex_model',
-    'codex_effort',
-  ]),
-  notify: Object.freeze([
-    'notify_channel',
-    'notify_quiet_hours',
-    'notify_quiet_hours_tz',
-    'notify_dedupe_ttl_seconds',
-    'notify_urgent_bypass_quiet_hours',
-    'notify_kinds',
-  ]),
-});
-export const CONFIG_KEYS = Object.freeze(Object.values(CONFIG_KEY_FAMILIES).flat());
-
-export const NOTIFY_CHANNELS = Object.freeze(['none', 'macos-osascript', 'file-log']);
-
-// Shipped defaults the emitter uses when a key is unset (ADR-0040 §2).
-// null = "unset is meaningful": quiet hours off, host-local timezone,
-// no kinds filter (all kinds enabled).
-export const NOTIFY_KEY_DEFAULTS = Object.freeze({
-  notify_channel: 'none',
-  notify_quiet_hours: null,
-  notify_quiet_hours_tz: null,
-  notify_dedupe_ttl_seconds: '300',
-  notify_urgent_bypass_quiet_hours: 'true',
-  notify_kinds: null,
-});
-
-const QUIET_HOURS_RE = /^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$/;
-
-// Per-key semantic validators, applied by normalizeDesiredConfig after the
-// generic single-line normalization — every desired-config entry path (CLI
-// parseArgs, programmatic runSettings, upsertRuntimeConfigToml) funnels
-// through that gate. Keys without an entry accept any single-line value
-// (model/effort stay free-form host identifiers).
-const CONFIG_KEY_VALIDATORS = {
-  notify_channel: (value, key) => {
-    if (!NOTIFY_CHANNELS.includes(value)) {
-      throw new Error(`${key} must be one of ${NOTIFY_CHANNELS.join(', ')}`);
-    }
-  },
-  notify_quiet_hours: (value, key) => {
-    if (!QUIET_HOURS_RE.test(value)) {
-      throw new Error(`${key} must match HH:MM-HH:MM (24h, cross-midnight allowed), e.g. 22:00-08:00`);
-    }
-  },
-  notify_quiet_hours_tz: (value, key) => {
-    try {
-      new Intl.DateTimeFormat('en-US', { timeZone: value });
-    } catch {
-      throw new Error(`${key} must be a valid IANA timezone identifier, e.g. Asia/Seoul`);
-    }
-  },
-  notify_dedupe_ttl_seconds: (value, key) => {
-    if (!/^[0-9]+$/.test(value) || !Number.isSafeInteger(Number.parseInt(value, 10)) || Number.parseInt(value, 10) <= 0) {
-      throw new Error(`${key} must be a positive integer of seconds`);
-    }
-  },
-  notify_urgent_bypass_quiet_hours: (value, key) => {
-    if (value !== 'true' && value !== 'false') {
-      throw new Error(`${key} must be "true" or "false"`);
-    }
-  },
-  notify_kinds: (value, key) => {
-    // Single source of truth for the kind enum: the ADR-0040 §1 contract
-    // lib's own CSV parser — never re-enumerate kinds here.
-    const parsed = parseKindsFilter(value);
-    if (!parsed.ok) {
-      throw new Error(`${key} is invalid: ${parsed.errors.join('; ')}`);
-    }
-  },
-};
-
-function validateConfigValue(key, value) {
-  CONFIG_KEY_VALIDATORS[key]?.(value, key);
-}
+// The config-key contract — key families, notify channel/defaults, per-key
+// validators, and the TOML read parser — lives in lib/runtime-config.mjs so
+// the ADR-0040 §2 notify emitter consumes the OFFICIAL key surface without
+// loading this plan pipeline. Re-exported here to keep the public settings
+// API unchanged.
+export {
+  CONFIG_KEY_FAMILIES,
+  CONFIG_KEYS,
+  NOTIFY_CHANNELS,
+  NOTIFY_KEY_DEFAULTS,
+  parseRuntimeConfigToml,
+} from './lib/runtime-config.mjs';
 
 const TARGETS = new Set(['repo', 'user', 'both']);
 const PLUGIN_MANAGEMENT_HOSTS = new Set(['all', 'claude', 'codex']);
@@ -440,23 +373,10 @@ async function applyConfigPlans(configPlans) {
   }
 }
 
-export function parseRuntimeConfigToml(text) {
-  const result = {};
-  for (const raw of String(text ?? '').split(/\r?\n/)) {
-    const withoutComment = raw.replace(/#.*/, '').trim();
-    if (!withoutComment || withoutComment.startsWith('[')) continue;
-    const match = withoutComment.match(/^([A-Za-z0-9_.-]+)\s*=\s*("?)(.*?)\2\s*$/);
-    if (!match) continue;
-    const key = normalizeConfigKey(match[1]);
-    const value = match[3].trim();
-    if (CONFIG_KEYS.includes(key) && value) result[key] = value;
-  }
-  return result;
-}
-
 export function upsertRuntimeConfigToml(text, desired) {
   const normalizedDesired = normalizeDesiredConfig(desired);
-  const remaining = new Map(Object.entries(normalizedDesired));
+  const desiredMap = new Map(Object.entries(normalizedDesired));
+  const replaced = new Set();
   const lines = String(text ?? '').replace(/\r\n/g, '\n').split('\n');
   if (lines.length > 0 && lines.at(-1) === '') lines.pop();
   const output = [];
@@ -468,15 +388,20 @@ export function upsertRuntimeConfigToml(text, desired) {
       continue;
     }
     const normalizedKey = normalizeConfigKey(match[2]);
-    if (!remaining.has(normalizedKey)) {
+    if (!desiredMap.has(normalizedKey)) {
       output.push(line);
       continue;
     }
-    output.push(`${match[1]}${match[2]}${match[3]}${tomlString(remaining.get(normalizedKey))}${match[7]}`);
-    remaining.delete(normalizedKey);
+    // Rewrite EVERY line of a desired key, not just the first: the read
+    // parser (parseRuntimeConfigToml) is last-value-wins, so leaving a later
+    // duplicate stale would make apply report an update the emitter never
+    // sees (Codex review).
+    output.push(`${match[1]}${match[2]}${match[3]}${tomlString(desiredMap.get(normalizedKey))}${match[7]}`);
+    replaced.add(normalizedKey);
   }
 
-  if (remaining.size > 0) {
+  const remaining = [...desiredMap].filter(([key]) => !replaced.has(key));
+  if (remaining.length > 0) {
     if (output.length > 0 && output.at(-1) !== '') output.push('');
     output.push('# agentic-plugins runtime defaults');
     for (const [key, value] of remaining) {
@@ -484,10 +409,6 @@ export function upsertRuntimeConfigToml(text, desired) {
     }
   }
   return `${output.join('\n')}\n`;
-}
-
-function normalizeConfigKey(key) {
-  return String(key).replace(/[.-]/g, '_');
 }
 
 function tomlString(value) {
