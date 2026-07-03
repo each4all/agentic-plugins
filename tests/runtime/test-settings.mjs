@@ -1171,6 +1171,19 @@ describe('runtime settings', () => {
     ok(next.includes('model = "shared"'));
   });
 
+  it('rewrites EVERY duplicate line of a desired key (read parser is last-value-wins)', () => {
+    // Leaving a later duplicate stale would make apply report an update the
+    // last-value-wins read parser (and the notify emitter) never sees.
+    const next = upsertRuntimeConfigToml(
+      'notify_channel = "none"\nother = "keep"\nnotify_channel = "file-log"\n',
+      { notify_channel: 'macos-osascript' },
+    );
+    strictEqual((next.match(/notify_channel = "macos-osascript"/g) ?? []).length, 2);
+    ok(!next.includes('"none"'));
+    ok(!next.includes('"file-log"'));
+    ok(next.includes('other = "keep"'));
+  });
+
 });
 
 describe('settings: permission plan (ADR-0038 settings-claude, M1)', () => {
