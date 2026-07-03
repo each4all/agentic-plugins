@@ -17,26 +17,105 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor, codexPerPluginVerbs, collectUsageRecordSources } from './doctor.mjs';
+import { parseKindsFilter } from './lib/notify-schema.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { learnFromSources } from './lib/permission-usage-learner.mjs';
 import { makeFragmentContract, makeModeRecommendation } from './lib/permission-advisor-core.mjs';
 import { recordPermissionAdvisoryArtifact, makePermissionRunId } from './lib/permission-artifacts.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.13';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.14';
 
 // ADR-0038 settings-claude permission plan (M1): how many recent usage records to
 // read per host, and a per-file byte cap, when building the dry-run plan.
 const DEFAULT_PERMISSION_PLAN_MAX_FILES = 100;
 const DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES = 8 * 1024 * 1024;
 export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.1';
-export const CONFIG_KEYS = [
-  'model',
-  'effort',
-  'claude_model',
-  'claude_effort',
-  'codex_model',
-  'codex_effort',
-];
+// Config keys are grouped into families so the plan/apply pipeline stays a
+// generic key-family differ: the differ, TOML parser/upsert, and CLI flag
+// mapping all derive from this table instead of hardcoding one family's
+// shape (ADR-0040 §2 generalized the former model/effort-only list).
+export const CONFIG_KEY_FAMILIES = Object.freeze({
+  model_effort: Object.freeze([
+    'model',
+    'effort',
+    'claude_model',
+    'claude_effort',
+    'codex_model',
+    'codex_effort',
+  ]),
+  notify: Object.freeze([
+    'notify_channel',
+    'notify_quiet_hours',
+    'notify_quiet_hours_tz',
+    'notify_dedupe_ttl_seconds',
+    'notify_urgent_bypass_quiet_hours',
+    'notify_kinds',
+  ]),
+});
+export const CONFIG_KEYS = Object.freeze(Object.values(CONFIG_KEY_FAMILIES).flat());
+
+export const NOTIFY_CHANNELS = Object.freeze(['none', 'macos-osascript', 'file-log']);
+
+// Shipped defaults the emitter uses when a key is unset (ADR-0040 §2).
+// null = "unset is meaningful": quiet hours off, host-local timezone,
+// no kinds filter (all kinds enabled).
+export const NOTIFY_KEY_DEFAULTS = Object.freeze({
+  notify_channel: 'none',
+  notify_quiet_hours: null,
+  notify_quiet_hours_tz: null,
+  notify_dedupe_ttl_seconds: '300',
+  notify_urgent_bypass_quiet_hours: 'true',
+  notify_kinds: null,
+});
+
+const QUIET_HOURS_RE = /^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$/;
+
+// Per-key semantic validators, applied by normalizeDesiredConfig after the
+// generic single-line normalization — every desired-config entry path (CLI
+// parseArgs, programmatic runSettings, upsertRuntimeConfigToml) funnels
+// through that gate. Keys without an entry accept any single-line value
+// (model/effort stay free-form host identifiers).
+const CONFIG_KEY_VALIDATORS = {
+  notify_channel: (value, key) => {
+    if (!NOTIFY_CHANNELS.includes(value)) {
+      throw new Error(`${key} must be one of ${NOTIFY_CHANNELS.join(', ')}`);
+    }
+  },
+  notify_quiet_hours: (value, key) => {
+    if (!QUIET_HOURS_RE.test(value)) {
+      throw new Error(`${key} must match HH:MM-HH:MM (24h, cross-midnight allowed), e.g. 22:00-08:00`);
+    }
+  },
+  notify_quiet_hours_tz: (value, key) => {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: value });
+    } catch {
+      throw new Error(`${key} must be a valid IANA timezone identifier, e.g. Asia/Seoul`);
+    }
+  },
+  notify_dedupe_ttl_seconds: (value, key) => {
+    if (!/^[0-9]+$/.test(value) || !Number.isSafeInteger(Number.parseInt(value, 10)) || Number.parseInt(value, 10) <= 0) {
+      throw new Error(`${key} must be a positive integer of seconds`);
+    }
+  },
+  notify_urgent_bypass_quiet_hours: (value, key) => {
+    if (value !== 'true' && value !== 'false') {
+      throw new Error(`${key} must be "true" or "false"`);
+    }
+  },
+  notify_kinds: (value, key) => {
+    // Single source of truth for the kind enum: the ADR-0040 §1 contract
+    // lib's own CSV parser — never re-enumerate kinds here.
+    const parsed = parseKindsFilter(value);
+    if (!parsed.ok) {
+      throw new Error(`${key} is invalid: ${parsed.errors.join('; ')}`);
+    }
+  },
+};
+
+function validateConfigValue(key, value) {
+  CONFIG_KEY_VALIDATORS[key]?.(value, key);
+}
 
 const TARGETS = new Set(['repo', 'user', 'both']);
 const PLUGIN_MANAGEMENT_HOSTS = new Set(['all', 'claude', 'codex']);
@@ -132,6 +211,11 @@ export async function runSettings({
     configTargets: configPlans.targets,
     apply,
   });
+  const notifySettings = buildNotifySettingPlans({
+    desiredConfig,
+    configTargets: configPlans.targets,
+    apply,
+  });
   const hookSettings = buildHookSettingsPlan({
     codexPluginHooks: doctor.codex_plugin_hooks,
     plugins: pluginPlans,
@@ -213,10 +297,12 @@ export async function runSettings({
     codex_hook_review: codexHookReview,
     config: {
       resolution_order: doctor.model_effort.resolution_order,
+      key_families: CONFIG_KEY_FAMILIES,
       desired: desiredConfig,
       targets: configPlans.targets,
     },
     companion_settings: companionSettings,
+    notify_settings: notifySettings,
     permission_plan: permissionPlanSection,
     permission_plan_codex: permissionPlanCodexSection,
     artifacts: buildSettingsArtifactReport({
@@ -233,6 +319,7 @@ export async function runSettings({
       pluginCleanup,
       desiredConfig,
       companionSettings,
+      notifySettings,
       hookSettings,
     }),
     limits: [
@@ -268,6 +355,7 @@ function normalizeDesiredConfig(desired) {
     const value = desired[key];
     if (value === null || value === undefined || value === '') continue;
     result[key] = normalizeConfigValue(value, key);
+    validateConfigValue(key, result[key]);
   }
   return result;
 }
@@ -332,7 +420,7 @@ async function buildOneConfigPlan({ kind, path, selected, desiredConfig }) {
     unchanged: actions.filter((action) => action.op === 'keep'),
     applied: false,
     message: Object.keys(desiredConfig).length === 0
-      ? 'No model/effort values requested; pass --model/--effort or direction-specific flags to plan config writes.'
+      ? 'No config values requested; pass --model/--effort, direction-specific flags, or --notify-* flags to plan config writes.'
       : selected
         ? 'Selected for apply when --apply is present.'
         : 'Not selected by --target.',
@@ -1812,12 +1900,12 @@ function buildEffectiveSetting({ peer, kind, requestedKey, proposedValue, curren
   };
 }
 
-function resolveProjectedSetting({ keys, projection }) {
+function resolveProjectedSetting({ keys, projection, field = 'projected_config', defaultSource = 'host-native default' }) {
   for (const targetKind of ['repo', 'user']) {
     const target = projection[targetKind];
     if (!target) continue;
     for (const key of keys) {
-      const value = target.projected_config[key];
+      const value = target[field][key];
       if (value) {
         return {
           value,
@@ -1831,10 +1919,86 @@ function resolveProjectedSetting({ keys, projection }) {
   }
   return {
     value: null,
-    source: 'host-native default',
+    source: defaultSource,
     key: null,
     target: null,
     path: null,
+  };
+}
+
+// ADR-0040 §2 notify key-family plan: per-key effective projection over the
+// same repo -> user precedence chain as model/effort, falling back to the
+// shipped default instead of a host-native default (the emitter, not a host,
+// owns unset behavior). Warns on shadowed requests and on existing config
+// values that fail the per-key validators — the §2 emitter fail-closes on
+// those, so surfacing them here is the operator's only signal.
+function buildNotifySettingPlans({ desiredConfig, configTargets, apply }) {
+  const projection = buildConfigProjection(configTargets);
+  const keys = {};
+  const warnings = [];
+  for (const key of CONFIG_KEY_FAMILIES.notify) {
+    const requested = desiredConfig[key] ?? null;
+    const projected = resolveProjectedSetting({ keys: [key], projection, defaultSource: 'shipped default' });
+    const current = resolveProjectedSetting({ keys: [key], projection, field: 'current_config', defaultSource: 'shipped default' });
+    const status = requested === null
+      ? 'unchanged'
+      : projected.value === requested
+        ? 'effective'
+        : 'shadowed';
+    const keyWarnings = [];
+    if (status === 'shadowed') {
+      keyWarnings.push([
+        `${key} request ${key}=${requested} is shadowed by ${projected.source}`,
+        'choose a higher-precedence target or remove the shadowing config entry',
+      ].join('; '));
+    }
+    if (projected.value !== null) {
+      try {
+        validateConfigValue(key, projected.value);
+      } catch (err) {
+        keyWarnings.push(`${key} effective value "${projected.value}" (${projected.source}) is invalid and the notify emitter will fail closed: ${err.message}`);
+      }
+    }
+    // Validate every target's stored value, not just the winning projection:
+    // an invalid lower-precedence entry (e.g. user config shadowed by a valid
+    // repo value) would otherwise sit silently until the shadowing entry is
+    // removed and the emitter starts fail-closing on it.
+    for (const targetKind of ['repo', 'user']) {
+      const stored = projection[targetKind]?.current_config?.[key];
+      if (!stored || (projected.target === targetKind && projected.value === stored)) continue;
+      try {
+        validateConfigValue(key, stored);
+      } catch (err) {
+        keyWarnings.push(`${key} ${targetKind} config value "${stored}" is invalid and the notify emitter will fail closed on it if it becomes effective: ${err.message}`);
+      }
+    }
+    const warning = keyWarnings.length > 0 ? keyWarnings.join('; ') : null;
+    if (warning) warnings.push(warning);
+    keys[key] = {
+      value: projected.value,
+      effective_value: projected.value ?? NOTIFY_KEY_DEFAULTS[key],
+      source: projected.source,
+      target: projected.target,
+      path: projected.path,
+      default: NOTIFY_KEY_DEFAULTS[key],
+      status,
+      requested_value: requested,
+      current_value: current.value,
+      current_source: current.value !== null ? current.source : null,
+      warning,
+    };
+  }
+  return {
+    config_keys: [...CONFIG_KEY_FAMILIES.notify],
+    effective_mode: apply ? 'applied' : 'projected',
+    resolution_order: [
+      'repo-local .agentic-plugins/config.toml',
+      'user-global ~/.agentic-plugins/config.toml',
+      'shipped default',
+    ],
+    defaults: { ...NOTIFY_KEY_DEFAULTS },
+    keys,
+    warnings,
   };
 }
 
@@ -1896,7 +2060,7 @@ function buildCodexHookReviewTargets({ codexPluginHooks, plugins }) {
   return targets.sort((a, b) => a.plugin.localeCompare(b.plugin));
 }
 
-function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredConfig, companionSettings, hookSettings }) {
+function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredConfig, companionSettings, notifySettings, hookSettings }) {
   const recommendations = [];
   for (const [name, cli] of Object.entries(clis)) {
     if (cli.status !== 'available') {
@@ -1945,10 +2109,10 @@ function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredCon
     recommendations.push({
       area: 'config',
       executed: false,
-      detail: 'No config writes planned. Use --model/--effort or --claude-model/--codex-model with optional --apply.',
+      detail: 'No config writes planned. Use --model/--effort, --claude-model/--codex-model, or --notify-* flags with optional --apply.',
     });
   }
-  for (const warning of collectCompanionSettingWarnings(companionSettings)) {
+  for (const warning of [...collectCompanionSettingWarnings(companionSettings), ...(notifySettings?.warnings ?? [])]) {
     recommendations.push({
       area: 'config',
       executed: false,
@@ -1966,6 +2130,7 @@ function summarizeSettings(report) {
   const appliedCount = report.config.targets.filter((target) => target.applied).length;
   const missingCli = Object.values(report.clis).filter((cli) => cli.status !== 'available').length;
   const settingWarnings = collectCompanionSettingWarnings(report.companion_settings).length;
+  const notifyWarnings = report.notify_settings?.warnings?.length ?? 0;
   const hookWarnings = (report.hook_settings?.recommendations ?? []).filter((rec) => rec.severity === 'warning').length;
   const authWarnings = Object.values(report.clis).filter((cli) => ['manual_required', 'manual_check'].includes(cli.auth_plan?.status)).length;
   const pluginManagementFailed = report.plugin_management.summary.failed;
@@ -1974,11 +2139,12 @@ function summarizeSettings(report) {
     + (report.plugin_cleanup?.summary?.failed ?? 0);
   const hookReviewWarnings = report.codex_hook_review?.requested && report.codex_hook_review.status !== 'attested' ? 1 : 0;
   return {
-    status: missingCli > 0 || settingWarnings > 0 || hookWarnings > 0 || hookReviewWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 || pluginCleanupWarnings > 0 ? 'warning' : 'pass',
+    status: missingCli > 0 || settingWarnings > 0 || notifyWarnings > 0 || hookWarnings > 0 || hookReviewWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 || pluginCleanupWarnings > 0 ? 'warning' : 'pass',
     planned_config_writes: writeCount,
     applied_config_targets: appliedCount,
     plugin_recommendations: Object.values(report.plugins).reduce((sum, plugin) => sum + plugin.recommendations.length, 0),
     setting_warnings: settingWarnings,
+    notify_warnings: notifyWarnings,
     hook_warnings: hookWarnings,
     hook_review_warnings: hookReviewWarnings,
     auth_warnings: authWarnings,
@@ -2153,6 +2319,20 @@ export function formatText(report) {
     lines.push(`- ${direction.label}: ${direction.config_keys.model}/${direction.config_keys.effort}; proposed model=${direction.proposed.model ?? '<none>'}; effort=${direction.proposed.effort ?? '<none>'}`);
     lines.push(`  effective-${direction.effective.mode}: model=${direction.effective.model.value ?? '<host-default>'} (${direction.effective.model.source}); effort=${direction.effective.effort.value ?? '<host-default>'} (${direction.effective.effort.source})`);
     for (const warning of direction.effective.warnings) lines.push(`  warning: ${warning}`);
+  }
+  if (report.notify_settings) {
+    lines.push('');
+    lines.push(`Notify (ADR-0040 §2, effective-${report.notify_settings.effective_mode})`);
+    for (const key of report.notify_settings.config_keys) {
+      const entry = report.notify_settings.keys[key];
+      const rendered = entry.value !== null
+        ? `${entry.value} (${entry.source})`
+        : entry.default !== null
+          ? `<shipped default: ${entry.default}>`
+          : '<unset>';
+      lines.push(`- ${key}: ${rendered}`);
+      if (entry.warning) lines.push(`  warning: ${entry.warning}`);
+    }
   }
   if (report.permission_plan?.requested) {
     const pp = report.permission_plan;
@@ -2847,11 +3027,21 @@ function usage() {
     'Usage: settings.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex]',
     '  [--target repo|user|both] [--model <id>] [--effort <level>]',
     '  [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>]',
+    '  [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>]',
+    '  [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>]',
     '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
     '  [--permission-plan] [--permission-plan-max-files <n>] [--permission-plan-max-file-bytes <n>] [--run-id <settings-run-id>]',
     '',
   ].join('\n');
 }
+
+// Every config key maps to a CLI flag by the same kebab-case rule
+// (claude_model -> --claude-model, notify_kinds -> --notify-kinds), so the
+// flag surface derives from CONFIG_KEYS instead of re-enumerating one
+// else-if branch per key.
+const CONFIG_FLAG_TO_KEY = Object.fromEntries(
+  CONFIG_KEYS.map((key) => [`--${key.replace(/_/g, '-')}`, key]),
+);
 
 export function parseArgs(argv) {
   const opts = {
@@ -2907,18 +3097,8 @@ export function parseArgs(argv) {
       opts.permissionPlanMaxFileBytes = parsePositiveInt(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--run-id') {
       opts.runId = validateSettingsRunId(requireValue(argv, ++i, arg));
-    } else if (arg === '--model') {
-      opts.desired.model = requireValue(argv, ++i, arg);
-    } else if (arg === '--effort') {
-      opts.desired.effort = requireValue(argv, ++i, arg);
-    } else if (arg === '--claude-model') {
-      opts.desired.claude_model = requireValue(argv, ++i, arg);
-    } else if (arg === '--claude-effort') {
-      opts.desired.claude_effort = requireValue(argv, ++i, arg);
-    } else if (arg === '--codex-model') {
-      opts.desired.codex_model = requireValue(argv, ++i, arg);
-    } else if (arg === '--codex-effort') {
-      opts.desired.codex_effort = requireValue(argv, ++i, arg);
+    } else if (CONFIG_FLAG_TO_KEY[arg]) {
+      opts.desired[CONFIG_FLAG_TO_KEY[arg]] = requireValue(argv, ++i, arg);
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }

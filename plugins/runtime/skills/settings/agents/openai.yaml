@@ -1,7 +1,7 @@
 interface:
   display_name: "Runtime - Settings"
-  short_description: "Dry-run host/plugin settings planner and model/effort config writer"
-  default_prompt: "Use $runtime:settings to inspect agentic-plugins setup and plan repo/user model-effort config. Add --apply only for agentic-plugins-owned config writes; add --execute-plugin-management only for explicit allowlisted plugin install/update execution; add --execute-plugin-cleanup only for doctor-detected retired agentic-plugins cleanup; add --attest-codex-hook-review only after the operator has reviewed/trusted bundled hooks with Codex /hooks."
+  short_description: "Dry-run host/plugin settings planner and model/effort + notify config writer"
+  default_prompt: "Use $runtime:settings to inspect agentic-plugins setup and plan repo/user model-effort and ADR-0040 notify_* config. Add --apply only for agentic-plugins-owned config writes; add --execute-plugin-management only for explicit allowlisted plugin install/update execution; add --execute-plugin-cleanup only for doctor-detected retired agentic-plugins cleanup; add --attest-codex-hook-review only after the operator has reviewed/trusted bundled hooks with Codex /hooks."
 
 policy:
   allow_implicit_invocation: false
