@@ -1,0 +1,48 @@
+---
+name: dashboard
+description: "Read-only ADR-0040 runtime operator dashboard. Use when the user wants one aggregate view of agentic state (three-persona active workflows, peer runs with stale emphasis, orchestrator macro subtask progress, consensus runs) plus operator health (doctor/compat/baseline freshness, settings and Codex hook-attestation recency, artifact attention items, notify-state health, recent file-log notifications), optionally re-rendered with --watch."
+---
+
+# Dashboard (runtime framework primitive)
+
+`runtime:dashboard` renders the ADR-0040 §6 aggregate operator view: Tier 1 agentic state and Tier 2 operator health in one R0 read-only snapshot. It reads filesystem state only — recorded doctor/compat/settings artifacts, persona workflow/peer-run ledgers, consensus runs, and runtime notify state — and never probes host CLIs, spawns processes, or mutates anything.
+
+## When invoked by command (`/runtime:dashboard` or `$runtime:dashboard`)
+
+1. Resolve the plugin root.
+   - Claude: `$CLAUDE_PLUGIN_ROOT` or the command file's plugin directory.
+   - Codex: the installed skill directory's plugin root or the current repository checkout during development.
+2. Run:
+
+```bash
+node "<runtime-plugin-root>/scripts/dashboard.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--watch] [--interval-seconds <n>] [--watch-count <n>] [--recent <n>]
+```
+
+3. Present only the rendered snapshot.
+   - Keep attention rows (stale peer runs, artifact-cap breaches, notify-state issues, stale doctor evidence) visible.
+   - When the operator needs a live host diagnosis rather than recorded evidence, route to `/runtime:doctor` instead of re-running the dashboard.
+
+## Scope
+
+Dashboard reports:
+
+- Tier 1: active workflows for engineer, orchestrator, AND founder (persona-generic namespace reads; doctor's `{engineer, orchestrator}` ledger contract stays untouched); peer runs with stale/non-terminal emphasis; orchestrator macro subtask progress parsed from macro workflow frontmatter; consensus run states.
+- Tier 2: recorded doctor artifact recency and runtime-version match; latest compat run drift class and host gaps; host-parity-baseline header; latest settings run recency plus the newest Codex hook-review attestation; artifact-inventory attention items; notify config status and notify-state health (expired dedupe claims, stale reclaim/rotation locks, unreadable state); recent `file-log` notifications when configured.
+- `--watch`: filesystem-only re-render on a bounded poll interval (default 2s, floor 1s) with an explicit exit (SIGINT/SIGTERM or `--watch-count`); with `--format json` the stream is framed as NDJSON (one report per line).
+
+## Boundaries
+
+- No host CLI probing (`claude`/`codex` are never spawned — recorded evidence only).
+- No process spawning of any kind and no network access.
+- No state mutation: no writes under `.agentic-plugins/`, no artifact recording, no retention/cleanup.
+- No host-native config, authentication, secret, sandbox, or permission writes.
+- No unbounded loops: watch mode polls on a bounded interval and exits explicitly.
+- No runtime context mutation.
+
+## Example
+
+```bash
+$runtime:dashboard
+$runtime:dashboard --format json
+$runtime:dashboard --watch --interval-seconds 2 --watch-count 5
+```

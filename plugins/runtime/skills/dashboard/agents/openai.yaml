@@ -1,0 +1,7 @@
+interface:
+  display_name: "Runtime - Dashboard"
+  short_description: "Read-only aggregate operator dashboard for agentic state and operator health"
+  default_prompt: "Use $runtime:dashboard to render the read-only Tier 1 + Tier 2 operator snapshot (three-persona workflows, peer runs, macro progress, consensus, doctor/compat/baseline freshness, settings/hook-attestation recency, artifact attention, notify-state health) without probing host CLIs or mutating state."
+
+policy:
+  allow_implicit_invocation: false

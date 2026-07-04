@@ -14,6 +14,7 @@ const RUNTIME_COMMAND_SURFACES = [
   { name: 'consensus', script: 'consensus.mjs' },
   { name: 'context', script: 'context.mjs' },
   { name: 'cutover', script: 'cutover-audit.mjs' },
+  { name: 'dashboard', script: 'dashboard.mjs' },
   { name: 'doctor', script: 'doctor.mjs' },
   { name: 'migrate', script: 'migrate-workflow-storage.mjs' },
   { name: 'settings', script: 'settings.mjs' },
@@ -374,6 +375,27 @@ describe('plugins/runtime cutover surface', () => {
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/cutover-audit.mjs'));
     ok((scriptStat.mode & 0o111) !== 0, 'cutover-audit.mjs has executable bit');
+  });
+});
+
+describe('plugins/runtime dashboard surface', () => {
+  it('ships dashboard command, skill wrapper, agent yaml, and executable script', async () => {
+    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/dashboard.md'), 'utf-8');
+    ok(command.startsWith('---\n'));
+    ok(command.includes('scripts/dashboard.mjs'));
+    ok(/read-only/i.test(command));
+    ok(command.includes('never probes host CLIs'));
+    ok(command.includes('--watch'));
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/dashboard/SKILL.md'), 'utf-8');
+    ok(/^name:\s*dashboard\s*$/m.test(skill));
+    ok(skill.includes('No host CLI probing'));
+    ok(skill.includes('No state mutation'));
+    ok(skill.includes('No unbounded loops'));
+    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/dashboard/agents/openai.yaml'), 'utf-8');
+    ok(agent.includes('$runtime:dashboard'));
+    ok(/allow_implicit_invocation:\s*false/.test(agent));
+    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/dashboard.mjs'));
+    ok((scriptStat.mode & 0o111) !== 0, 'dashboard.mjs has executable bit');
   });
 });
 
