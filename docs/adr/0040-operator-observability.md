@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 <!--
 Relates to ADR-0024 (runtime operator control plane — doctor/settings/
