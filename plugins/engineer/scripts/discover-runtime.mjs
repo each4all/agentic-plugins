@@ -42,6 +42,17 @@ const ENV_OVERRIDE = 'AGENTIC_RUNTIME_ROOT';
 // gating here avoids spawning a doomed child and gives a clean "too old" signal.
 export const MIN_RUNTIME_VERSION = '0.63.0';
 
+// The floor runtime version whose `notify.mjs emit` interface exists at all
+// (ADR-0040 §5 peer-run terminal self-sensor). Pinned to the FIRST RELEASED
+// runtime version shipping notify.mjs: plugin-runtime-v0.71.0 (the ADR-0040
+// release-gate pin; same constant as the attention sibling's
+// MIN_RUNTIME_VERSION). This is a SEPARATE, higher floor than
+// MIN_RUNTIME_VERSION above — the footer floor stays 0.63.0 so terminal
+// footers keep rendering against older runtimes, while notify emission
+// fail-closes silently below 0.71.0 (peer-runner.mjs passes this as
+// `minVersion` to `discoverRuntimePluginRoot`).
+export const NOTIFY_MIN_RUNTIME_VERSION = '0.71.0';
+
 async function fileExists(path) {
   try {
     const st = await stat(path);
