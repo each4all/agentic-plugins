@@ -14,6 +14,17 @@
 - The `founder` inventory addition changes the `PLUGIN_NAMES` set, which invalidates the freshness of any previously recorded `runtime:doctor` proof (the proof-reuse gate requires the full plugin set + versions to match). Re-record the doctor proof on a host where all five plugins (including founder) are installed; until then `runtime:doctor` re-runs the proof rather than reusing the now-stale record.
 - Deferred (pre-existing, out of this RT slice's scope; surfaced by the founder inventory expansion): `cutover-audit.mjs`'s package map still omits `plugins/founder` (the omcc cutover predates founder, so cutover parity over founder is a separate scoped decision); and `resolveCodexInstallState`'s not-installed evidence string is hardcoded to `runtime` for every plugin (a not-installed founder reads "does not report runtime as installed") — a generic-name fix threading the plugin name through that helper.
 
+## [0.71.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.70.1...plugin-runtime-v0.71.0) (2026-07-04)
+
+
+### Features
+
+* **plugin/runtime:** add ADR-0040 §1 notify-schema contract lib (event schema + atomic TTL dedupe) ([#473](https://github.com/each4all/agentic-plugins/issues/473)) ([af36d83](https://github.com/each4all/agentic-plugins/commit/af36d83f19078159c54a7c4b5d13fa885bb74094))
+* **plugin/runtime:** add ADR-0040 §2 notify_* settings keys via generic key-family differ ([#475](https://github.com/each4all/agentic-plugins/issues/475)) ([86f75e9](https://github.com/each4all/agentic-plugins/commit/86f75e99631ed1a385ce18188f9366f320ea2669))
+* **plugin/runtime:** add ADR-0040 §2 notify.mjs emitter with built-in channels and §4 registry pinning ([#476](https://github.com/each4all/agentic-plugins/issues/476)) ([89a9ea9](https://github.com/each4all/agentic-plugins/commit/89a9ea93933923129e34bd362fbf3cde5f0d6a18))
+* **plugin/runtime:** add ADR-0040 §4 runtime:settings --notification-plan Codex M1 fragment plan ([#478](https://github.com/each4all/agentic-plugins/issues/478)) ([2fac66f](https://github.com/each4all/agentic-plugins/commit/2fac66fad01e3b99948e36690ed13ae4324df3f0))
+* **plugin/runtime:** add ADR-0040 §6 runtime:dashboard Tier 1+2 aggregate operator view ([#479](https://github.com/each4all/agentic-plugins/issues/479)) ([421a836](https://github.com/each4all/agentic-plugins/commit/421a8364873973a5b89e375c12e60a1704c17d37))
+
 ## [0.70.1](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.70.0...plugin-runtime-v0.70.1) (2026-07-02)
 
 
