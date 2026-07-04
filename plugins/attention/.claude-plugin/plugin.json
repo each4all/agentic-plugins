@@ -1,0 +1,22 @@
+{
+  "name": "attention",
+  "version": "0.1.0",
+  "description": "Attention sensors — hook-only L1 plugin pushing operator notifications from Claude Code lifecycle hooks into the runtime notification emitter (ADR-0040 §3). Registers Notification (permission_prompt → approval/urgent, idle_prompt → idle), Stop (workflow-terminal behind a freshness-checked session-handoff projection read, else bare turn-complete), and SubagentStop (subagent-complete). Hooks + sensor scripts only: no skills, no verbs, no state machinery. Sensors are fail-closed silent observers (exit 0 always, never stdout, no decision output) that resolve the runtime plugin root via a version-gated discover-runtime ladder (>= 0.71.0, the first runtime release shipping notify.mjs) and shell out to notify.mjs emit; notifications stay off until the operator sets a notify_channel via runtime:settings.",
+  "author": {
+    "name": "each4all"
+  },
+  "homepage": "https://github.com/each4all/agentic-plugins",
+  "repository": "https://github.com/each4all/agentic-plugins",
+  "license": "MIT",
+  "keywords": [
+    "attention",
+    "notifications",
+    "hooks",
+    "sensors",
+    "operator",
+    "observability",
+    "L1",
+    "claude",
+    "agentic-plugins"
+  ]
+}

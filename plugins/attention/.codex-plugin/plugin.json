@@ -1,0 +1,35 @@
+{
+  "name": "attention",
+  "version": "0.1.0",
+  "description": "Attention sensors — hook-only L1 plugin pushing operator notifications from Claude Code lifecycle hooks into the runtime notification emitter (ADR-0040 §3). Hooks + sensor scripts only: no skills, no verbs, no state machinery. At v1 the plugin ships NO Codex hooks (the entire Codex /hooks review/trust burden is avoided); Codex-side attention comes from the runtime's native host-config M1 fragment plans (runtime:settings --notification-plan) per ADR-0040 §4.",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Attention",
+    "shortDescription": "Claude lifecycle hook sensors that push approval / idle / terminal notifications into the runtime notification pipeline",
+    "longDescription": "Hook-only Layer 1 plugin per ADR-0040 §3 — the hook-bearing sibling of the ADR-0008 script-only library shape. On Claude Code it registers Notification (permission_prompt → approval with urgent urgency, idle_prompt → idle), Stop (workflow-terminal when a freshness-checked last-session-handoff.json projection proves a terminal engineer/orchestrator workflow, else bare turn-complete from documented common input fields), and SubagentStop (subagent-complete). Each sensor resolves the runtime plugin root through a copied discover-runtime ladder (env override → Claude cache SemVer-max → Codex fixed cache → sibling monorepo), version-gated to runtime >= 0.71.0 (the first release shipping notify.mjs), and hands one ADR-0040 §1 event to notify.mjs emit — validate → kinds-filter → dedupe → quiet-hours → redact → dispatch happen runtime-side. Sensors are fail-closed silent observers: exit 0 always, never stdout, no Stop decision output; a missing or too-old runtime is a silent no-op. Notifications stay off until the operator opts into a channel (notify_channel default none) via runtime:settings. Installing this plugin on Codex is inert at v1: it ships no Codex hooks and no skills (the skills/ directory is the Codex manifest-spec placeholder per the ADR-0008 carve-out); Codex-side attention is planned through runtime:settings --notification-plan M1 fragments (ADR-0040 §4).",
+    "developerName": "each4all",
+    "category": "Productivity",
+    "capabilities": [
+      "Read"
+    ],
+    "defaultPrompt": []
+  },
+  "author": {
+    "name": "each4all",
+    "url": "https://github.com/each4all"
+  },
+  "homepage": "https://github.com/each4all/agentic-plugins",
+  "repository": "https://github.com/each4all/agentic-plugins",
+  "license": "MIT",
+  "keywords": [
+    "attention",
+    "notifications",
+    "hooks",
+    "sensors",
+    "operator",
+    "observability",
+    "L1",
+    "claude",
+    "agentic-plugins"
+  ]
+}
