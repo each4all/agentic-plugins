@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.19.0...plugin-engineer-v0.20.0) (2026-07-04)
+
+
+### Features
+
+* **plugin/engineer:** emit ADR-0040 §5 peer-run terminal self-sensor notifications ([1761b50](https://github.com/each4all/agentic-plugins/commit/1761b5046f382ee534d976bc98730ba1af874afc))
+
 ## [0.19.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.18.0...plugin-engineer-v0.19.0) (2026-07-02)
 
 
