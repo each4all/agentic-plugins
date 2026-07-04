@@ -34,7 +34,7 @@ import {
 export { RUNTIME_VERSION };
 
 export const CONTRACT_COMPATIBLE_MAJOR = 0;
-export const PLUGIN_NAMES = ['companions', 'engineer', 'founder', 'image', 'orchestrator', 'runtime'];
+export const PLUGIN_NAMES = ['attention', 'companions', 'engineer', 'founder', 'image', 'orchestrator', 'runtime'];
 export { TERMINAL_PEER_RUN_STATUSES, VALID_PEER_RUN_STATUSES } from './lib/state-readers.mjs';
 
 const DEFAULT_TIMEOUT_MS = 5000;
