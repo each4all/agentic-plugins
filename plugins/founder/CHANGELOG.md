@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.2.0...plugin-founder-v0.3.0) (2026-07-04)
+
+
+### Features
+
+* **plugin/founder:** emit ADR-0040 §5 peer-run terminal self-sensor notifications ([020ac92](https://github.com/each4all/agentic-plugins/commit/020ac92299ec54c9cf03946c287522fbe87da9b9))
+
 ## [0.2.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.1.0...plugin-founder-v0.2.0) (2026-06-15)
 
 

@@ -18,6 +18,13 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.12.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.11.0...plugin-orchestrator-v0.12.0) (2026-07-04)
+
+
+### Features
+
+* **plugin/orchestrator:** emit ADR-0040 §5 peer-run terminal self-sensor notifications ([0d4995d](https://github.com/each4all/agentic-plugins/commit/0d4995da1b63017ae15726ada2027e81a6427948))
+
 ## [0.11.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.10.0...plugin-orchestrator-v0.11.0) (2026-07-02)
 
 
