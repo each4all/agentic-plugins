@@ -980,6 +980,7 @@ async function buildCodexPluginHookReport({ codex, plugins, homeDir }) {
     bundled_plugins: [],
     manifest_exposed_plugins: [],
     default_file_only_plugins: [],
+    claude_adapter_only_plugins: [],
     missing_hooks_file_plugins: [],
     command_warning_plugins: [],
     claude_root_command_plugins: [],
@@ -1013,11 +1014,16 @@ async function buildCodexPluginHookReport({ codex, plugins, homeDir }) {
       codex_tmp_marketplace: marketplaceCache,
       effective,
     };
-    if (effective.bundled) summary.bundled_plugins.push(name);
+    const claudeOnly = effective.status === 'claude_adapter_only';
+    // Claude-hook-only plugins (ADR-0040 §3) are NOT Codex-hook bundlers: keep
+    // them out of the Codex bundled/packaging/review/expected sets so a
+    // deliberately-Claude-only plugin never blocks lifecycle_hook_continuity.
+    if (effective.bundled && !claudeOnly) summary.bundled_plugins.push(name);
     if (effective.manifest_declared) summary.manifest_exposed_plugins.push(name);
     if (effective.status === 'default_file_only') summary.default_file_only_plugins.push(name);
+    if (claudeOnly) summary.claude_adapter_only_plugins.push(name);
     if (effective.status === 'manifest_declared_missing_file') summary.missing_hooks_file_plugins.push(name);
-    if ((effective.hooks_file?.command_analysis?.warnings ?? []).length > 0) summary.command_warning_plugins.push(name);
+    if (!claudeOnly && (effective.hooks_file?.command_analysis?.warnings ?? []).length > 0) summary.command_warning_plugins.push(name);
     if ((effective.hooks_file?.command_analysis?.claude_plugin_root_references ?? 0) > 0) summary.claude_root_command_plugins.push(name);
     if ((effective.hooks_file?.command_analysis?.claude_adapter_references ?? 0) > 0) summary.claude_adapter_command_plugins.push(name);
     if ((effective.hooks_file?.command_analysis?.bare_node_command_references ?? 0) > 0) summary.bare_node_command_plugins.push(name);
@@ -1310,12 +1316,25 @@ function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooks
   const bundled = declared
     ? declaredFile.status === 'available'
     : defaultHooksFile?.status === 'available';
+  // A plugin that bundles hooks ONLY as Claude-adapter commands
+  // (every command targets adapters/claude/hooks/…) and declares no Codex
+  // hooks is a DELIBERATELY Claude-hook-only plugin (ADR-0040 §3 attention:
+  // hook-only L1 with no Codex hooks at v1). Its hook scripts are the Claude
+  // adapter — not Codex-runnable — so it is NOT a Codex packaging gap and its
+  // hooks must not be counted as expected Codex hooks. Distinguished from a
+  // real default_file_only gap (a Codex-runnable hook that merely forgot the
+  // .codex-plugin manifest exposure) by the all-Claude-adapter command shape.
+  const defaultAnalysis = defaultHooksFile?.command_analysis;
+  const claudeAdapterOnly = !declared && bundled
+    && Boolean(defaultAnalysis)
+    && defaultAnalysis.command_count > 0
+    && defaultAnalysis.claude_adapter_references === defaultAnalysis.command_count;
   const status = declared && bundled
     ? 'exposed'
     : declared
       ? 'manifest_declared_missing_file'
       : bundled
-        ? 'default_file_only'
+        ? (claudeAdapterOnly ? 'claude_adapter_only' : 'default_file_only')
         : 'not_packaged';
   return {
     origin,
