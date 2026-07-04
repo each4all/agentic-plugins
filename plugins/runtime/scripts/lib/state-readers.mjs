@@ -92,7 +92,9 @@ export const COMPAT_RUN_ID_RE = /^compat-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // 'permission' is the ADR-0038 permission advisory family; its on-disk segment
 // is owned by scripts/lib/permission-artifacts.mjs (PERMISSION_ARTIFACT_FAMILY),
 // registered here so the inventory + uniform retention cap covers it.
-const RUNTIME_ARTIFACT_FAMILIES = ['compat', 'consensus', 'context', 'settings', 'doctor', 'permission'];
+// 'notification' is the ADR-0040 §4 notification plan family, owned by
+// scripts/lib/notification-plan.mjs (NOTIFICATION_ARTIFACT_FAMILY).
+const RUNTIME_ARTIFACT_FAMILIES = ['compat', 'consensus', 'context', 'settings', 'doctor', 'permission', 'notification'];
 
 // --- low-level fs / frontmatter / timestamp helpers (moved from doctor.mjs) ---
 

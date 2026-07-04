@@ -1,0 +1,709 @@
+// ADR-0040 §4 Codex notification-channel M1 plan lib.
+//
+// `runtime:settings --notification-plan` plans the two Codex-native attention
+// channels as FRAGMENTS + a recorded plan artifact, per the ADR-0038 M1
+// precedent: render + record ONLY — host config is NEVER written, and the
+// rendered receiver scripts are NEVER installed by runtime (installing them at
+// the stable home location, e.g. ~/.agentic-plugins/bin/, is an explicit USER
+// action).
+//
+//   (a) `notify=` — user-layer ~/.codex/config.toml ONLY (the project layer
+//       denylists the key and profile tables reject it). The key is a
+//       single-key FULL REPLACE, so the plan performs a MANDATORY read-check
+//       of any existing value: when a user notifier already exists, the plan
+//       renders a wrapper-chaining script (invoke the prior notifier + ours)
+//       and points the fragment at the chain instead of clobbering
+//       (wrapper-chaining is an acceptance criterion of ADR-0040 §4).
+//   (b) `tui.notifications` — approval-time attention within its documented
+//       limits (TUI-only, default-unfocused condition, OSC 9/BEL terminal
+//       dependence, no external program, no payload).
+//
+// Receiver-shuttle constraint (ADR-0040 §4): the fragment must NOT point into
+// a version-pinned plugin cache path (Claude's cache is per-version; a pinned
+// path goes stale on every runtime upgrade and a static config value has no
+// re-discovery opportunity). The plan therefore renders a thin SHUTTLE script
+// that re-resolves the current runtime root per the ADR-0039 §5 discovery
+// ladder (env override → Claude cache SemVer-max → Codex fixed cache) and
+// delegates to `notify.mjs emit`; the fragment invokes the shuttle via
+// `/usr/bin/env node` (an explicit Node-on-PATH requirement, consistent with
+// doctor's bare-`node` hook portability diagnostics).
+//
+// Receiver input contract (source-verified at codex-cli 0.142.5,
+// legacy_notify.rs): the payload arrives as the LAST argv argument, kebab-case
+// JSON with exactly one variant (`"type": "agent-turn-complete"`), an
+// undocumented `client` field that must be tolerated, and a nullable
+// `last-assistant-message`.
+//
+// The plan artifact reuses the settings-artifact SHAPE (fresh per-run
+// directory + overwritten latest.json singleton) under its own
+// `.agentic-plugins/runs/notification/` family — the same
+// "point-in-time snapshot" reasoning as lib/permission-artifacts.mjs, and the
+// same reason it does NOT share the runs/settings family: doctor reads the
+// latest settings EXECUTION artifact for retry classification, and a plan run
+// overwriting that pointer would clobber it (the exact bug the ADR-0038
+// cross-host artifact consolidation fixed).
+
+import { readFileSync } from 'node:fs';
+import { mkdir, writeFile, rename } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { RUNTIME_VERSION } from '../version.mjs';
+import { readTextIfExists } from './state-readers.mjs';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+export const NOTIFICATION_PLAN_SCHEMA_VERSION = 'runtime-notification-plan-1.0';
+export const NOTIFICATION_PLAN_LATEST_SCHEMA_VERSION = 'runtime-notification-plan-latest-1.0';
+export const NOTIFICATION_PLAN_KIND = 'notification-plan';
+
+// The on-disk family segment under .agentic-plugins/runs/. Registered in
+// lib/state-readers.mjs RUNTIME_ARTIFACT_FAMILIES so the doctor inventory +
+// retention reporting covers it.
+export const NOTIFICATION_ARTIFACT_FAMILY = 'notification';
+
+export const NOTIFICATION_PLAN_MODES = Object.freeze([
+  'direct', // no existing user notifier — fragment points at the shuttle
+  'wrapper-chain', // existing notifier preserved via the chain script
+  'already-configured', // existing notify already points at our receiver
+  'manual-merge', // existing notify present but not parseable as a string argv
+]);
+
+export const NOTIFICATION_PLAN_STATUSES = Object.freeze(['planned', 'blocked']);
+
+export const NOTIFICATION_RUN_ID_RE = /^notification-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+
+// Stable receiver install home (USER-installed; runtime never writes it).
+export const RECEIVER_INSTALL_DIR_POINTER = '~/.agentic-plugins/bin';
+export const SHUTTLE_BASENAME = 'codex-notify-shuttle.mjs';
+export const CHAIN_BASENAME = 'codex-notify-chain.mjs';
+
+// The tui.notifications recommendation (ADR-0040 §4b): approval-requested has
+// delivery priority over agent-turn-complete in the Codex TUI coalescing.
+export const TUI_NOTIFICATIONS_VALUES = Object.freeze(['approval-requested', 'agent-turn-complete']);
+
+const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+// ---------------------------------------------------------------------------
+// Read-check parser — top-level `notify` + `[tui] notifications`, READ-ONLY
+// ---------------------------------------------------------------------------
+
+// Scan a raw capture for basic ("...") / literal ('...') TOML string elements.
+// Returns null when any non-string, non-separator token appears — a notify
+// value that is not a flat string array cannot be safely chained.
+//
+// Decode fidelity is a chaining-safety requirement (Plan-verify peer MAJOR):
+// the wrapper chain EXECUTES this parsed argv, so a string form this scanner
+// cannot decode faithfully must return null (→ manual-merge), never a
+// silently-different value. Basic strings decode the full TOML escape set
+// (\b \t \n \f \r \" \\ \uXXXX \UXXXXXXXX); any other escape and the
+// triple-quoted multi-line forms are rejected as unparseable.
+function extractStringElements(arrayText) {
+  const inner = arrayText.trim().replace(/^\[/, '').replace(/\]$/, '');
+  const values = [];
+  let i = 0;
+  while (i < inner.length) {
+    const ch = inner[i];
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === ',' ) { i += 1; continue; }
+    if (ch === '#') {
+      // Comment inside a multi-line array — skip to end of line.
+      const nl = inner.indexOf('\n', i);
+      if (nl === -1) break;
+      i = nl + 1;
+      continue;
+    }
+    if (ch === '"') {
+      // Triple-quoted multi-line basic string — not supported; fail safe.
+      if (inner.startsWith('"""', i)) return null;
+      let out = '';
+      i += 1;
+      let closed = false;
+      while (i < inner.length) {
+        const c = inner[i];
+        if (c === '\\') {
+          const next = inner[i + 1];
+          if (next === undefined) return null;
+          if (next === 'b') { out += '\b'; i += 2; continue; }
+          if (next === 't') { out += '\t'; i += 2; continue; }
+          if (next === 'n') { out += '\n'; i += 2; continue; }
+          if (next === 'f') { out += '\f'; i += 2; continue; }
+          if (next === 'r') { out += '\r'; i += 2; continue; }
+          if (next === '"') { out += '"'; i += 2; continue; }
+          if (next === '\\') { out += '\\'; i += 2; continue; }
+          if (next === 'u' || next === 'U') {
+            const width = next === 'u' ? 4 : 8;
+            const hex = inner.slice(i + 2, i + 2 + width);
+            if (hex.length !== width || !/^[0-9A-Fa-f]+$/.test(hex)) return null;
+            let decoded;
+            try {
+              decoded = String.fromCodePoint(Number.parseInt(hex, 16));
+            } catch {
+              return null; // out-of-range code point
+            }
+            out += decoded;
+            i += 2 + width;
+            continue;
+          }
+          // Unknown escape — decoding it as anything would risk chaining a
+          // DIFFERENT command than the one configured.
+          return null;
+        }
+        if (c === '"') { closed = true; i += 1; break; }
+        out += c;
+        i += 1;
+      }
+      if (!closed) return null;
+      values.push(out);
+      continue;
+    }
+    if (ch === "'") {
+      // Triple-quoted multi-line literal string — not supported; fail safe.
+      if (inner.startsWith("'''", i)) return null;
+      const end = inner.indexOf("'", i + 1);
+      if (end === -1) return null;
+      values.push(inner.slice(i + 1, end));
+      i = end + 1;
+      continue;
+    }
+    // Any other token (number, bool, nested table…) — not a string argv.
+    return null;
+  }
+  return values;
+}
+
+// Capture a TOML array value starting at lines[startIndex] whose text after
+// `=` is firstRemainder. String-state + bracket-depth aware, so `#` and `]`
+// INSIDE quoted elements never terminate the capture, and a trailing comment
+// after the closing bracket is never captured. Multi-line arrays accumulate
+// until the depth returns to zero (an unclosed array captures to EOF and
+// parses as non-array).
+function captureTomlArray(lines, startIndex, firstRemainder) {
+  let raw = '';
+  let depth = 0;
+  let sawOpen = false;
+  let inString = null; // '"' | "'" | null
+  let escaped = false;
+  let lineIndex = startIndex;
+  let text = firstRemainder;
+  for (;;) {
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (inString) {
+        raw += ch;
+        if (escaped) { escaped = false; continue; }
+        if (inString === '"' && ch === '\\') { escaped = true; continue; }
+        if (ch === inString) inString = null;
+        continue;
+      }
+      if (ch === '#') break; // comment — rest of this physical line ignored
+      raw += ch;
+      if (ch === '"' || ch === "'") { inString = ch; continue; }
+      if (ch === '[') { depth += 1; sawOpen = true; continue; }
+      if (ch === ']') {
+        depth -= 1;
+        if (sawOpen && depth === 0) {
+          return { raw: raw.trim(), nextIndex: lineIndex + 1, closed: true };
+        }
+      }
+    }
+    lineIndex += 1;
+    if (!sawOpen || lineIndex >= lines.length) {
+      return { raw: raw.trim(), nextIndex: lineIndex, closed: !sawOpen };
+    }
+    raw += '\n';
+    text = lines[lineIndex];
+  }
+}
+
+// Minimal READ-ONLY scan of ~/.codex/config.toml for exactly the two keys the
+// notification plan needs: the top-level `notify` value (present/raw/argv) and
+// `[tui] notifications`. Top-level keys are honored only before the first
+// section header (TOML ordering); later duplicate assignments overwrite
+// earlier ones (last-value-wins, mirroring the sibling read parsers).
+export function parseCodexNotifyConfigToml(text) {
+  const lines = String(text ?? '').replace(/\r\n/g, '\n').split('\n');
+  let inTopLevel = true;
+  let inTui = false;
+  let notifyRaw = null;
+  let tuiRaw = null;
+  let i = 0;
+  while (i < lines.length) {
+    const raw = lines[i];
+    const stripped = raw.replace(/#.*/, '').trim();
+    if (stripped.startsWith('[')) {
+      inTopLevel = false;
+      inTui = /^\[tui\]$/.test(stripped);
+      i += 1;
+      continue;
+    }
+    if (inTopLevel) {
+      const m = raw.match(/^\s*notify\s*=\s*(.*)$/);
+      if (m) {
+        const captured = captureTomlArray(lines, i, m[1]);
+        notifyRaw = captured.raw;
+        i = captured.nextIndex;
+        continue;
+      }
+      // Dotted top-level form of the [tui] table key (valid TOML the
+      // section-only scan would miss — Plan-verify peer MINOR).
+      const dotted = raw.match(/^\s*tui\s*\.\s*notifications\s*=\s*(.*)$/);
+      if (dotted) {
+        const captured = captureTomlArray(lines, i, dotted[1]);
+        tuiRaw = captured.raw;
+        i = captured.nextIndex;
+        continue;
+      }
+    } else if (inTui) {
+      const m = raw.match(/^\s*notifications\s*=\s*(.*)$/);
+      if (m) {
+        const captured = captureTomlArray(lines, i, m[1]);
+        tuiRaw = captured.raw;
+        i = captured.nextIndex;
+        continue;
+      }
+    }
+    i += 1;
+  }
+  const notifyValues = notifyRaw !== null && notifyRaw.startsWith('[')
+    ? extractStringElements(notifyRaw)
+    : null;
+  return {
+    notify: { present: notifyRaw !== null, raw: notifyRaw, values: notifyValues },
+    tuiNotifications: { present: tuiRaw !== null, raw: tuiRaw },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Fragment renderers
+// ---------------------------------------------------------------------------
+
+// Full TOML basic-string escape (mirrors settings.mjs tomlBasicString):
+// backslash, quote, named control escapes, other C0/DEL as \uXXXX — safe for
+// a home path that could theoretically carry a control char on POSIX.
+export function tomlBasicString(value) {
+  let out = '';
+  for (const ch of String(value)) {
+    const code = ch.codePointAt(0);
+    if (ch === '\\') out += '\\\\';
+    else if (ch === '"') out += '\\"';
+    else if (ch === '\b') out += '\\b';
+    else if (ch === '\t') out += '\\t';
+    else if (ch === '\n') out += '\\n';
+    else if (ch === '\f') out += '\\f';
+    else if (ch === '\r') out += '\\r';
+    else if (code < 0x20 || code === 0x7f) out += `\\u${code.toString(16).padStart(4, '0')}`;
+    else out += ch;
+  }
+  return `"${out}"`;
+}
+
+// The notify= fragment: /usr/bin/env node <receiver> — never a version-pinned
+// cache path; Codex appends the payload JSON as one extra argv item.
+export function renderCodexNotifyFragmentToml({ receiverPath }) {
+  const argv = ['/usr/bin/env', 'node', String(receiverPath)];
+  return `notify = [${argv.map((item) => tomlBasicString(item)).join(', ')}]\n`;
+}
+
+export function renderCodexTuiNotificationsFragmentToml() {
+  const values = TUI_NOTIFICATIONS_VALUES.map((item) => tomlBasicString(item)).join(', ');
+  return `[tui]\nnotifications = [${values}]\n`;
+}
+
+// ---------------------------------------------------------------------------
+// Receiver script renderers (rendered TEXT — runtime never executes these)
+// ---------------------------------------------------------------------------
+
+// Receiver template sources ship with the plugin at
+// <plugin-root>/receivers/ (this lib is at <plugin-root>/scripts/lib/).
+const RECEIVERS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'receivers');
+
+function readReceiverTemplate(templateBasename) {
+  return readFileSync(join(RECEIVERS_DIR, templateBasename), 'utf8');
+}
+
+// Replace a placeholder that must occur EXACTLY once — zero or duplicate
+// occurrences mean template drift (or an earlier substitution injected the
+// token), and rendering a half-substituted receiver would be worse than
+// failing the plan.
+function substituteOnce(template, placeholder, replacement, label) {
+  const first = template.indexOf(placeholder);
+  if (first === -1 || template.indexOf(placeholder, first + placeholder.length) !== -1) {
+    throw new Error(`receiver template drift: expected exactly one ${label} placeholder`);
+  }
+  return template.slice(0, first) + replacement + template.slice(first + placeholder.length);
+}
+
+// Rendered-literal guards: every value interpolated into a script template is
+// validated first so a hostile config value cannot escape its literal context.
+function assertSemver(value, label) {
+  if (!SEMVER_RE.test(String(value))) {
+    throw new Error(`${label} must be a SemVer version, got '${value}'`);
+  }
+  return String(value);
+}
+
+function jsStringLiteral(value) {
+  return JSON.stringify(String(value));
+}
+
+function jsStringArrayLiteral(values) {
+  if (!Array.isArray(values) || !values.every((item) => typeof item === 'string')) {
+    throw new Error('argv literal requires an array of strings');
+  }
+  return `[${values.map((item) => JSON.stringify(item)).join(', ')}]`;
+}
+
+// The thin receiver shuttle. Standalone (no runtime import — it runs from the
+// user's stable home BEFORE the runtime root is known): re-resolves the
+// runtime root per the ADR-0039 §5 ladder, version-gates it, maps the Codex
+// notify payload onto the ADR-0040 §1 event contract, and delegates to
+// `notify.mjs emit`. Fail-closed silent like every notification surface:
+// exit 0 always, nothing on stdout, at most one stderr diagnostic line.
+//
+// The receiver SOURCES live under plugins/runtime/receivers/ as render-input
+// data, deliberately outside plugins/runtime/scripts/: the ADR-0035 §4
+// executor guard's domain is code the runtime itself executes, and these
+// receivers are never imported or spawned by runtime — the plan renders them
+// into an artifact and the USER installs and runs them. Each placeholder is
+// substituted exactly once; substituteOnce fail-closes on template drift.
+export function renderCodexNotifyShuttleScript({ minRuntimeVersion = RUNTIME_VERSION } = {}) {
+  const minVersion = assertSemver(minRuntimeVersion, 'minRuntimeVersion');
+  return substituteOnce(
+    readReceiverTemplate(SHUTTLE_BASENAME),
+    "'__AGENTIC_MIN_RUNTIME_VERSION__'",
+    jsStringLiteral(minVersion),
+    'MIN_RUNTIME_VERSION',
+  );
+}
+
+// The wrapper-chaining receiver (acceptance criterion): preserves an existing
+// user notifier by invoking it AND the shuttle, both fire-and-forget. The
+// prior notifier's argv is embedded as a validated JS string-array literal.
+// Substitution order matters: the shuttle path goes in first, so prior-argv
+// DATA that happens to contain a placeholder token is inserted afterwards and
+// never re-scanned (and substituteOnce's exactly-once check fail-closes if an
+// earlier substitution ever introduced a duplicate token).
+export function renderCodexNotifyChainScript({ priorNotify, shuttleInstallPath }) {
+  if (!Array.isArray(priorNotify) || priorNotify.length === 0) {
+    throw new Error('renderCodexNotifyChainScript requires a non-empty prior notify argv');
+  }
+  const priorLiteral = jsStringArrayLiteral(priorNotify);
+  const withShuttle = substituteOnce(
+    readReceiverTemplate(CHAIN_BASENAME),
+    '"__AGENTIC_SHUTTLE_PATH__"',
+    jsStringLiteral(shuttleInstallPath),
+    'SHUTTLE_PATH',
+  );
+  return substituteOnce(
+    withShuttle,
+    '["__AGENTIC_PRIOR_NOTIFY__"]',
+    priorLiteral,
+    'PRIOR_NOTIFY',
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Artifact (settings-artifact shape: per-run dir + latest.json singleton)
+// ---------------------------------------------------------------------------
+
+export function makeNotificationRunId(now) {
+  const d = now instanceof Date ? now : new Date(now);
+  const stamp = d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  return `notification-${stamp}-${randomBytes(3).toString('hex')}`;
+}
+
+export function isValidNotificationRunId(runId) {
+  return typeof runId === 'string' && NOTIFICATION_RUN_ID_RE.test(runId);
+}
+
+export function validateNotificationRunId(runId) {
+  if (!isValidNotificationRunId(runId)) {
+    throw new Error(
+      `invalid notification run id '${runId}' (expected notification-YYYYMMDDTHHMMSSZ-<6hex>)`,
+    );
+  }
+  return runId;
+}
+
+export function notificationRunRoot(repoRoot) {
+  return resolve(repoRoot, '.agentic-plugins', 'runs', NOTIFICATION_ARTIFACT_FAMILY);
+}
+
+export function notificationRunDir(repoRoot, runId) {
+  return resolve(notificationRunRoot(repoRoot), validateNotificationRunId(runId));
+}
+
+export function notificationArtifactFile(repoRoot, runId) {
+  return resolve(notificationRunDir(repoRoot, runId), 'plan.json');
+}
+
+export function notificationLatestFile(repoRoot) {
+  return resolve(notificationRunRoot(repoRoot), 'latest.json');
+}
+
+function pointer(repoRoot, path) {
+  const rel = relative(repoRoot, path).split(sep).join('/');
+  return rel || basename(path);
+}
+
+// Atomic write (temp + same-directory rename) — the permission-artifacts
+// precedent: a crash can never leave a half-written plan.json / latest.json.
+async function writeJsonAtomic(path, value) {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp-${randomBytes(6).toString('hex')}`;
+  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await rename(tmp, path);
+}
+
+const ARTIFACT_KEYS = new Set([
+  'schema_version', 'runtime_version', 'kind', 'run_id', 'surface', 'status',
+  'created_at', 'repo_root_pointer', 'host', 'read_check', 'recommended',
+  'fragments', 'scripts', 'receiver_contract', 'limits', 'boundary',
+]);
+const BOUNDARY_KEYS = new Set(['writes_host_config', 'installs_receiver']);
+
+function onlyKnownKeys(obj, allowed) {
+  return Boolean(obj) && typeof obj === 'object' && Object.keys(obj).every((k) => allowed.has(k));
+}
+
+export function isValidNotificationPlanArtifact(artifact) {
+  if (!onlyKnownKeys(artifact, ARTIFACT_KEYS)) return false;
+  if (artifact.schema_version !== NOTIFICATION_PLAN_SCHEMA_VERSION) return false;
+  if (artifact.kind !== NOTIFICATION_PLAN_KIND) return false;
+  if (!isValidNotificationRunId(artifact.run_id)) return false;
+  if (artifact.surface !== 'settings') return false;
+  if (!NOTIFICATION_PLAN_STATUSES.includes(artifact.status)) return false;
+  if (typeof artifact.created_at !== 'string' || !artifact.created_at) return false;
+  if (artifact.repo_root_pointer !== '.') return false;
+  if (artifact.host !== 'codex') return false;
+  if (!artifact.read_check || typeof artifact.read_check !== 'object') return false;
+  if (!artifact.recommended || typeof artifact.recommended !== 'object') return false;
+  if (!NOTIFICATION_PLAN_MODES.includes(artifact.recommended.mode)) return false;
+  if (!artifact.fragments || typeof artifact.fragments !== 'object') return false;
+  if (!artifact.scripts || typeof artifact.scripts !== 'object') return false;
+  if (!Array.isArray(artifact.limits) || !artifact.limits.every((l) => typeof l === 'string')) return false;
+  if (!onlyKnownKeys(artifact.boundary, BOUNDARY_KEYS)) return false;
+  if (artifact.boundary.writes_host_config !== false) return false;
+  if (artifact.boundary.installs_receiver !== false) return false;
+  return true;
+}
+
+export async function writeNotificationPlanArtifact({ repoRoot, artifact }) {
+  if (!isValidNotificationPlanArtifact(artifact)) {
+    throw new Error(
+      'writeNotificationPlanArtifact: artifact failed validation (refusing to write a malformed notification plan)',
+    );
+  }
+  const runId = artifact.run_id;
+  const reportPath = notificationArtifactFile(repoRoot, runId);
+  await writeJsonAtomic(reportPath, artifact);
+  await writeJsonAtomic(notificationLatestFile(repoRoot), {
+    schema_version: NOTIFICATION_PLAN_LATEST_SCHEMA_VERSION,
+    kind: NOTIFICATION_PLAN_KIND,
+    run_id: runId,
+    surface: artifact.surface,
+    status: artifact.status,
+    host: artifact.host,
+    mode: artifact.recommended.mode,
+    updated_at: artifact.created_at,
+    report_pointer: pointer(repoRoot, reportPath),
+    run_pointer: pointer(repoRoot, dirname(reportPath)),
+  });
+  return {
+    run_id: runId,
+    family: NOTIFICATION_ARTIFACT_FAMILY,
+    run_pointer: pointer(repoRoot, notificationRunDir(repoRoot, runId)),
+    report_pointer: pointer(repoRoot, reportPath),
+    latest_pointer: pointer(repoRoot, notificationLatestFile(repoRoot)),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The plan builder (settings section shape)
+// ---------------------------------------------------------------------------
+
+function notificationPlanLimits({ chained }) {
+  const limits = [
+    'runtime:settings notification plan is a dry-run (M1): it renders the ~/.codex/config.toml fragments and receiver scripts and records them in an agentic-plugins-owned artifact, but NEVER writes host config or installs the scripts — installing the receiver at the stable home location and merging the fragments are explicit user actions.',
+    `The notify= fragment targets the USER-layer config.toml only: the project-local .codex/config.toml layer denylists the notify key (silently stripped) and [profiles.*] tables reject it.`,
+    'notify= fires only on agent-turn-complete (the payload enum has exactly one variant at the pinned Codex version) — it cannot deliver approval-time attention; the tui.notifications fragment covers approval-requested within its limits.',
+    'tui.notifications limits: TUI-only (not codex exec), default-unfocused delivery condition, OSC 9/BEL delivery is terminal-emulator-dependent, no external program, no payload. It is also a full-replace key: merging replaces any custom notifications value.',
+    'The fragment invokes the receiver via /usr/bin/env node — Node must be on PATH for the process Codex runs the notifier from (the same portability constraint doctor diagnoses for bare-node hook commands).',
+    'The receiver shuttle re-resolves the runtime plugin root on every invocation (env override, Codex fixed cache first via $CODEX_HOME, then Claude cache SemVer-max) so the fragment never points into a version-pinned plugin cache path.',
+  ];
+  if (chained) {
+    limits.push(
+      'Wrapper chaining preserves the existing notifier: its argv is embedded verbatim in the rendered chain script and in this plan artifact (local, gitignored) because chaining requires it; review the chain script before installing.',
+    );
+  }
+  return limits;
+}
+
+const RECEIVER_CONTRACT = Object.freeze({
+  payload_position: 'last argv argument',
+  payload_format: 'kebab-case JSON (type, turn-id, input-messages, last-assistant-message)',
+  variants: Object.freeze(['agent-turn-complete']),
+  tolerated_fields: Object.freeze(['client']),
+  nullable_fields: Object.freeze(['last-assistant-message']),
+  node_requirement: '/usr/bin/env node (Node on PATH)',
+});
+
+// Build the Codex notification plan section (+ record the plan artifact).
+// Reads the user-layer config.toml READ-ONLY via $CODEX_HOME (mirroring the
+// sibling readCodexPermissionConfig resolution; never a hardcoded ~/.codex),
+// decides direct vs wrapper-chain vs manual-merge, renders every fragment and
+// receiver script as TEXT, and persists one plan artifact per run. Never
+// writes host config; never creates the receiver install dir.
+export async function buildCodexNotificationPlan({
+  repoRoot,
+  homeDir,
+  env = {},
+  now = new Date(),
+  runtimeVersion = RUNTIME_VERSION,
+} = {}) {
+  const codexHome = env && env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(homeDir, '.codex');
+  const codexHomeSource = env && env.CODEX_HOME ? 'CODEX_HOME env override' : 'default ~/.codex';
+  const configPath = join(codexHome, 'config.toml');
+  const read = await readTextIfExists(configPath);
+
+  if (!read.ok && read.reason !== 'ENOENT' && read.reason !== 'ENOTDIR') {
+    // Fail-closed: an unreadable user config means the MANDATORY read-check
+    // cannot run, so no fragment is safe to recommend (a blind notify=
+    // merge could clobber an invisible existing notifier).
+    return {
+      requested: true,
+      executed: true,
+      status: 'blocked',
+      host: 'codex',
+      error: `user config.toml unreadable (${read.reason}); the mandatory notify read-check cannot run`,
+      host_config: { read_only: true, codex_home_source: codexHomeSource, sources: [{ scope: 'user', status: 'unreadable' }] },
+      read_check: { performed: false },
+      recommended: null,
+      fragments: null,
+      scripts: null,
+      receiver_contract: RECEIVER_CONTRACT,
+      artifact: { written: false, reason: 'read-check blocked' },
+      limits: notificationPlanLimits({ chained: false }),
+    };
+  }
+
+  const parsed = parseCodexNotifyConfigToml(read.ok ? read.text : '');
+  const shuttleInstallPath = join(homeDir, '.agentic-plugins', 'bin', SHUTTLE_BASENAME);
+  const chainInstallPath = join(homeDir, '.agentic-plugins', 'bin', CHAIN_BASENAME);
+
+  const priorValues = parsed.notify.values;
+  // Exact install-path match ONLY (Plan-verify peer MINOR): a basename
+  // heuristic would misclassify an unrelated same-named notifier as ours and
+  // silently drop it (skipping the wrapper chain that exists to preserve it).
+  // A user copy at a custom path simply takes the wrapper-chain branch, which
+  // preserves it like any other prior notifier.
+  const referencesOurReceiver = Array.isArray(priorValues)
+    && priorValues.some((item) => item === shuttleInstallPath || item === chainInstallPath);
+
+  let mode;
+  let warning = null;
+  if (!parsed.notify.present) {
+    mode = 'direct';
+  } else if (referencesOurReceiver) {
+    mode = 'already-configured';
+    warning = 'existing notify already points at the agentic-plugins receiver; re-merging the fragment is idempotent.';
+  } else if (Array.isArray(priorValues) && priorValues.length === 0) {
+    // An empty argv array notifies nothing — there is no notifier to
+    // preserve, so the direct fragment simply replaces it.
+    mode = 'direct';
+    warning = 'existing notify is an empty array (no notifier to preserve); the direct fragment replaces it.';
+  } else if (Array.isArray(priorValues) && priorValues.length > 0) {
+    mode = 'wrapper-chain';
+    warning = 'existing notify found: notify is a single-key FULL REPLACE, so merging the direct fragment would clobber it — use the wrapper-chain fragment + chain script to preserve the existing notifier.';
+  } else {
+    mode = 'manual-merge';
+    warning = 'existing notify found but not parseable as a flat string argv array; a safe chain cannot be rendered — merge manually (the direct fragment below replaces the existing value).';
+  }
+
+  const shuttleScript = renderCodexNotifyShuttleScript({ minRuntimeVersion: runtimeVersion });
+  const chainScript = mode === 'wrapper-chain'
+    ? renderCodexNotifyChainScript({ priorNotify: priorValues, shuttleInstallPath })
+    : null;
+  const receiverPath = mode === 'wrapper-chain' ? chainInstallPath : shuttleInstallPath;
+  const notifyFragment = renderCodexNotifyFragmentToml({ receiverPath });
+  const tuiFragment = renderCodexTuiNotificationsFragmentToml();
+  const tuiWarning = parsed.tuiNotifications.present
+    ? `existing [tui] notifications value found (${parsed.tuiNotifications.raw}); notifications is also a full-replace key — merging the fragment replaces it.`
+    : null;
+
+  const limits = notificationPlanLimits({ chained: mode === 'wrapper-chain' });
+  const createdAt = now.toISOString();
+  const runId = makeNotificationRunId(now);
+  const readCheck = {
+    performed: true,
+    config_path_scope: 'user',
+    codex_home_source: codexHomeSource,
+    config_present: read.ok,
+    notify_present: parsed.notify.present,
+    notify_parseable: Array.isArray(priorValues),
+    notify_values: Array.isArray(priorValues) ? priorValues : null,
+    notify_raw: parsed.notify.raw,
+    tui_notifications_present: parsed.tuiNotifications.present,
+    tui_notifications_raw: parsed.tuiNotifications.raw,
+  };
+  const recommended = {
+    mode,
+    receiver_install_dir_pointer: RECEIVER_INSTALL_DIR_POINTER,
+    shuttle_install_path: shuttleInstallPath,
+    chain_install_path: mode === 'wrapper-chain' ? chainInstallPath : null,
+    fragment_target: 'user-layer config.toml (project layer denylists notify; profile tables reject it)',
+  };
+  const fragments = {
+    notify_toml: notifyFragment,
+    tui_notifications_toml: tuiFragment,
+  };
+  const scripts = {
+    shuttle: { install_path: shuttleInstallPath, content: shuttleScript },
+    chain: chainScript === null ? null : { install_path: chainInstallPath, content: chainScript },
+  };
+
+  const artifactBody = {
+    schema_version: NOTIFICATION_PLAN_SCHEMA_VERSION,
+    runtime_version: runtimeVersion,
+    kind: NOTIFICATION_PLAN_KIND,
+    run_id: runId,
+    surface: 'settings',
+    status: 'planned',
+    created_at: createdAt,
+    repo_root_pointer: '.',
+    host: 'codex',
+    read_check: readCheck,
+    recommended,
+    fragments,
+    scripts,
+    receiver_contract: RECEIVER_CONTRACT,
+    limits,
+    boundary: { writes_host_config: false, installs_receiver: false },
+  };
+  const pointers = await writeNotificationPlanArtifact({ repoRoot, artifact: artifactBody });
+
+  return {
+    requested: true,
+    executed: true,
+    status: 'planned',
+    host: 'codex',
+    host_config: {
+      read_only: true,
+      codex_home_source: codexHomeSource,
+      sources: [{ scope: 'user', status: read.ok ? 'readable' : 'missing' }],
+    },
+    read_check: readCheck,
+    warning,
+    tui_warning: tuiWarning,
+    recommended,
+    fragments,
+    scripts,
+    receiver_contract: RECEIVER_CONTRACT,
+    artifact: { written: true, ...pointers },
+    limits,
+  };
+}
