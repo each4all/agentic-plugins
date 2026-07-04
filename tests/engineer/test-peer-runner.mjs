@@ -42,6 +42,17 @@ const {
 } = await import(PEER_RUNNER_PATH);
 const { createWorkflow, readWorkflow } = await import(STATE_PATH);
 
+// ADR-0040 §5 self-sensor isolation for EVERY test in this file: pin the
+// runtime discovery ladder's env-override branch to a nonexistent root so the
+// self-sensor fail-closes silently unless a test opts into the stub runtime
+// below. Without this, a developer machine carrying a real >=0.71.0 runtime
+// cache would route test events into the developer's own notify channel
+// config (the env override never falls back to the cache ladder).
+process.env.AGENTIC_RUNTIME_ROOT = join(
+  tmpdir(),
+  `agentic-engineer-peer-runner-tests-no-runtime-${process.pid}`,
+);
+
 async function withTmpRepo(fn) {
   const dir = await mkdtemp(join(tmpdir(), 'engineer-peer-runner-test-'));
   try {
@@ -669,6 +680,301 @@ describe('peer-runner.mjs — sweep and retention', () => {
       );
       strictEqual(handle.kind, 'peer-now');
       strictEqual(handle.status, 'completed');
+    });
+  });
+});
+
+describe('peer-runner.mjs — ADR-0040 §5 peer-run terminal self-sensor', () => {
+  const NOTIFY_SCHEMA_PATH = resolve(
+    REPO_ROOT,
+    'plugins/runtime/scripts/lib/notify-schema.mjs',
+  );
+
+  // Stub runtime honoring the discover-runtime env-override gates: a
+  // footer.mjs existence marker (engineer's resolver gates on footer.mjs), a
+  // version-declaring manifest, and a notify.mjs that captures its argv +
+  // stdin event as NDJSON instead of dispatching anything.
+  async function writeStubRuntime(root, { version = '0.71.0' } = {}) {
+    const runtimeRoot = join(root, 'stub-runtime');
+    const capturePath = join(root, 'notify-capture.ndjson');
+    await mkdir(join(runtimeRoot, 'scripts'), { recursive: true });
+    await mkdir(join(runtimeRoot, '.claude-plugin'), { recursive: true });
+    await writeFile(
+      join(runtimeRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'runtime', version }),
+      'utf8',
+    );
+    await writeFile(join(runtimeRoot, 'scripts', 'footer.mjs'), '// stub footer\n', 'utf8');
+    await writeFile(join(runtimeRoot, 'scripts', 'notify.mjs'), `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+appendFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
+  argv: process.argv.slice(2),
+  event: JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'),
+}) + '\\n');
+`, 'utf8');
+    return { runtimeRoot, capturePath };
+  }
+
+  async function readCaptured(capturePath) {
+    try {
+      const text = await readFile(capturePath, 'utf8');
+      return text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    } catch {
+      return [];
+    }
+  }
+
+  async function writeMissingCompanions(root) {
+    const companionsRoot = join(root, 'missing-companions');
+    await mkdir(companionsRoot, { recursive: true });
+    await writeFile(join(companionsRoot, 'discover-peer.mjs'), `
+export async function discoverPeerCompanion() {
+  return { ok: false, reason: 'not installed' };
+}
+`, 'utf8');
+    return companionsRoot;
+  }
+
+  it('emits a canonical peer-run-terminal event on runPeer completion', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const companionsRoot = await writeFakeCompanions(repoRoot);
+      const { runtimeRoot, capturePath } = await writeStubRuntime(repoRoot);
+      const result = await runPeer({
+        repoRoot,
+        runId: 'sensor-completed',
+        kind: 'manual',
+        peer: 'claude',
+        promptText: '<task>sensor</task>',
+        outputFormat: 'json',
+        cwd: repoRoot,
+        env: fakeEnv(companionsRoot, { AGENTIC_RUNTIME_ROOT: runtimeRoot }),
+      });
+      strictEqual(result.status, 'completed');
+
+      const captured = await readCaptured(capturePath);
+      strictEqual(captured.length, 1);
+      const { argv, event } = captured[0];
+      deepStrictEqual(argv.slice(0, 2), ['emit', '--repo-root']);
+      // Canonical §1 parity gate: the self-sensor's inline event_id
+      // composition must byte-match the runtime contract lib for the same
+      // subject moment, and the event must pass the emitter's validator.
+      const { buildEventId, deriveRepoIdent, validateEvent } = await import(NOTIFY_SCHEMA_PATH);
+      strictEqual(event.event_id, buildEventId({
+        repoIdent: deriveRepoIdent(repoRoot),
+        kind: 'peer-run-terminal',
+        subject: 'sensor-completed',
+        status: 'completed',
+      }));
+      strictEqual(event.source, 'peer-runner-engineer');
+      strictEqual(event.kind, 'peer-run-terminal');
+      strictEqual(event.urgency, 'normal');
+      strictEqual(event.refs.run_id, 'sensor-completed');
+      strictEqual(event.refs.path, peerRunPaths(repoRoot, 'sensor-completed').handle);
+      strictEqual(event.refs.workflow_id, undefined);
+      deepStrictEqual(validateEvent(event), { ok: true, errors: [] });
+    });
+  });
+
+  it('emits from the missing-companion early return before the final block', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const companionsRoot = await writeMissingCompanions(repoRoot);
+      const { runtimeRoot, capturePath } = await writeStubRuntime(repoRoot);
+      const result = await runPeer({
+        repoRoot,
+        runId: 'sensor-no-companion',
+        kind: 'manual',
+        peer: 'claude',
+        promptText: '<task>sensor</task>',
+        outputFormat: 'json',
+        cwd: repoRoot,
+        env: fakeEnv(companionsRoot, { AGENTIC_RUNTIME_ROOT: runtimeRoot }),
+      });
+      strictEqual(result.ok, false);
+      strictEqual(result.status, 'failed');
+      strictEqual(result.error_kind, 'peer_cli_not_found');
+
+      const captured = await readCaptured(capturePath);
+      strictEqual(captured.length, 1);
+      const { event } = captured[0];
+      ok(event.event_id.endsWith(':peer-run-terminal:sensor-no-companion:failed'), event.event_id);
+      ok(event.body.includes('peer_cli_not_found'), event.body);
+      strictEqual(event.refs.path, peerRunPaths(repoRoot, 'sensor-no-companion').handle);
+    });
+  });
+
+  it('emits cancelled from cancelPeerRun finalize', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const { runtimeRoot, capturePath } = await writeStubRuntime(repoRoot);
+      const env = { ...process.env, AGENTIC_RUNTIME_ROOT: runtimeRoot };
+      const readyFile = join(repoRoot, 'sensor-cancel.ready');
+      const detached = process.platform !== 'win32';
+      const child = spawn(process.execPath, ['-e', `
+const { writeFileSync } = require('node:fs');
+writeFileSync(process.env.FAKE_READY_FILE, 'ready\\n');
+setInterval(() => {}, 1000);
+`], {
+        env: { ...process.env, FAKE_READY_FILE: readyFile },
+        detached,
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+      const closePromise = new Promise((resolveP) => child.on('close', () => resolveP()));
+      try {
+        await waitFor(() => exists(readyFile), { message: 'running cancellable peer process' });
+        const processFingerprint = await fingerprintForPid(child.pid);
+        await writeHandleFixture(repoRoot, 'sensor-cancel', {
+          status: 'running',
+          pid: child.pid,
+          pgid: detached ? child.pid : null,
+          process_fingerprint: processFingerprint,
+        });
+        const cancelled = await cancelPeerRun({
+          repoRoot,
+          runId: 'sensor-cancel',
+          graceMs: 5000,
+          env,
+        });
+        if (processFingerprint.kind === 'none') {
+          // Unverifiable-platform fail-closed path: no cancel, no emit.
+          deepStrictEqual(await readCaptured(capturePath), []);
+          return;
+        }
+        strictEqual(cancelled.ok, true);
+        strictEqual(cancelled.status, 'cancelled');
+        const captured = await readCaptured(capturePath);
+        strictEqual(captured.length, 1);
+        ok(
+          captured[0].event.event_id.endsWith(':peer-run-terminal:sensor-cancel:cancelled'),
+          captured[0].event.event_id,
+        );
+      } finally {
+        if (detached && child.pid) {
+          try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+        } else if (child.pid) {
+          try { process.kill(child.pid, 'SIGKILL'); } catch {}
+        }
+        await closePromise;
+      }
+    });
+  });
+
+  it('emits from sweep reconcile transitions (envelope-present, corrupt-envelope, and orphaned)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const { runtimeRoot, capturePath } = await writeStubRuntime(repoRoot);
+      const env = { ...process.env, AGENTIC_RUNTIME_ROOT: runtimeRoot };
+      const workflowPath = join(repoRoot, 'sensor-envelope-workflow.md');
+      const envelopePaths = await writeHandleFixture(repoRoot, 'sensor-envelope', {
+        status: 'running',
+        pid: 99999999,
+        workflow_path: workflowPath,
+      });
+      await writeFile(envelopePaths.envelope, JSON.stringify({
+        status: 'success',
+        peer_host: 'claude',
+        peer_model: null,
+        stdout: 'done',
+        exit_code: 0,
+      }), { mode: 0o600 });
+      const corruptPaths = await writeHandleFixture(repoRoot, 'sensor-corrupt', {
+        status: 'running',
+        pid: 99999999,
+      });
+      await writeFile(corruptPaths.envelope, 'not-json{', { mode: 0o600 });
+      const old = new Date(Date.now() - 10_000).toISOString();
+      await writeHandleFixture(repoRoot, 'sensor-orphan', {
+        status: 'running',
+        pid: 99999999,
+        updated_at: old,
+        started_at: old,
+      });
+
+      await sweepPeerRuns({ repoRoot, staleGraceMs: 0, env });
+
+      const captured = await readCaptured(capturePath);
+      strictEqual(captured.length, 3);
+      const byRun = new Map(captured.map((entry) => [entry.event.refs.run_id, entry.event]));
+      ok(
+        byRun.get('sensor-envelope').event_id.endsWith(':peer-run-terminal:sensor-envelope:completed'),
+        byRun.get('sensor-envelope').event_id,
+      );
+      strictEqual(byRun.get('sensor-envelope').refs.workflow_id, 'sensor-envelope-workflow');
+      ok(
+        byRun.get('sensor-corrupt').event_id.endsWith(':peer-run-terminal:sensor-corrupt:failed'),
+        byRun.get('sensor-corrupt').event_id,
+      );
+      ok(
+        byRun.get('sensor-corrupt').body.includes('envelope_parse_error'),
+        byRun.get('sensor-corrupt').body,
+      );
+      ok(
+        byRun.get('sensor-orphan').event_id.endsWith(':peer-run-terminal:sensor-orphan:orphaned'),
+        byRun.get('sensor-orphan').event_id,
+      );
+    });
+  });
+
+  it('skips pruned transitions and already-terminal handles', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const { runtimeRoot, capturePath } = await writeStubRuntime(repoRoot);
+      const env = { ...process.env, AGENTIC_RUNTIME_ROOT: runtimeRoot };
+      const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+      const paths = await writeHandleFixture(repoRoot, 'sensor-pruned', {
+        status: 'completed',
+        completed_at: old,
+        updated_at: old,
+        exit_code: 0,
+      });
+
+      const report = await sweepPeerRuns({
+        repoRoot,
+        applyRetention: true,
+        staleGraceMs: 60_000,
+        retentionTtlDays: 1,
+        retentionCap: 200,
+        env,
+      });
+
+      deepStrictEqual(report.pruned, [{ run_id: 'sensor-pruned', reason: 'ttl' }]);
+      strictEqual(await exists(paths.dir), false);
+      // No transition emit (already terminal on entry) and no prune emit
+      // (ADR-0040 §5 pruned-skip).
+      deepStrictEqual(await readCaptured(capturePath), []);
+    });
+  });
+
+  it('fail-closes silently when the runtime is missing or below the notify floor', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const companionsRoot = await writeFakeCompanions(repoRoot);
+      const missing = await runPeer({
+        repoRoot,
+        runId: 'sensor-no-runtime',
+        kind: 'manual',
+        peer: 'claude',
+        promptText: '<task>sensor</task>',
+        outputFormat: 'json',
+        cwd: repoRoot,
+        env: fakeEnv(companionsRoot, {
+          AGENTIC_RUNTIME_ROOT: join(repoRoot, 'does-not-exist'),
+        }),
+      });
+      strictEqual(missing.ok, true);
+      strictEqual(missing.status, 'completed');
+
+      const { runtimeRoot, capturePath } = await writeStubRuntime(repoRoot, { version: '0.70.0' });
+      const tooOld = await runPeer({
+        repoRoot,
+        runId: 'sensor-old-runtime',
+        kind: 'manual',
+        peer: 'claude',
+        promptText: '<task>sensor</task>',
+        outputFormat: 'json',
+        cwd: repoRoot,
+        env: fakeEnv(companionsRoot, { AGENTIC_RUNTIME_ROOT: runtimeRoot }),
+      });
+      strictEqual(tooOld.ok, true);
+      strictEqual(tooOld.status, 'completed');
+      deepStrictEqual(await readCaptured(capturePath), []);
     });
   });
 });
