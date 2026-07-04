@@ -14,6 +14,13 @@
 - The `founder` inventory addition changes the `PLUGIN_NAMES` set, which invalidates the freshness of any previously recorded `runtime:doctor` proof (the proof-reuse gate requires the full plugin set + versions to match). Re-record the doctor proof on a host where all five plugins (including founder) are installed; until then `runtime:doctor` re-runs the proof rather than reusing the now-stale record.
 - Deferred (pre-existing, out of this RT slice's scope; surfaced by the founder inventory expansion): `cutover-audit.mjs`'s package map still omits `plugins/founder` (the omcc cutover predates founder, so cutover parity over founder is a separate scoped decision); and `resolveCodexInstallState`'s not-installed evidence string is hardcoded to `runtime` for every plugin (a not-installed founder reads "does not report runtime as installed") — a generic-name fix threading the plugin name through that helper.
 
+## [0.72.1](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.72.0...plugin-runtime-v0.72.1) (2026-07-04)
+
+
+### Bug Fixes
+
+* **plugin/runtime:** classify Claude-hook-only plugins as claude_adapter_only in the Codex hook check ([67c2e1f](https://github.com/each4all/agentic-plugins/commit/67c2e1f4279ad820db106503964af9e54163a39a))
+
 ## [0.72.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.71.0...plugin-runtime-v0.72.0) (2026-07-04)
 
 
