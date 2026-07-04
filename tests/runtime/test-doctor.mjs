@@ -10,13 +10,16 @@ import { formatText, parseArgs, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES } from 
 const PORTABLE_HOOK_COMMAND = '/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${PLUGIN_ROOT}/adapters/codex/hooks/hook.mjs"';
 
 describe('runtime doctor', () => {
-  it('recognizes founder in the hardcoded plugin inventory (ADR-0036 RT)', () => {
+  it('recognizes founder and attention in the hardcoded plugin inventory (ADR-0036 RT, ADR-0040 §3)', () => {
     // RT (ADR-0036): runtime:doctor / runtime:settings must recognize
     // founder as an installable agentic-plugins plugin — install / cache /
     // catalog inventory recognition. The founder workflow-ledger health
     // check and hook-readiness gating are deliberate non-goals here
     // (they would couple runtime to founder's state schema / hook exposure).
-    deepStrictEqual(PLUGIN_NAMES, ['companions', 'engineer', 'founder', 'image', 'orchestrator', 'runtime']);
+    // ADR-0040 §3: the hook-only attention plugin joins the same
+    // install/cache/catalog inventory (readiness reporting only — its hook
+    // semantics stay attention-owned).
+    deepStrictEqual(PLUGIN_NAMES, ['attention', 'companions', 'engineer', 'founder', 'image', 'orchestrator', 'runtime']);
   });
 
   it('builds a sanitized read-only report from source, CLI, companion, config, and ledger probes', async () => {

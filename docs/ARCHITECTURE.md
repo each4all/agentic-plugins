@@ -73,6 +73,7 @@ model** for plugin organization (ADR-0010).
 │ L1 — Framework primitive plugins (infrastructure)           │
 │   plugins/companions  ← Stage 1 (current, ADR-0008)         │
 │   plugins/runtime    ← Stage 3+ runtime/operator (ADR-0024) │
+│   plugins/attention  ← hook-only Claude sensors (ADR-0040)  │
 └─────────────────────────────────────────────────────────────┘
 ```
 

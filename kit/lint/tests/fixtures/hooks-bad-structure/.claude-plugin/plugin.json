@@ -1,0 +1,5 @@
+{
+  "name": "fixture-hooks-bad-structure",
+  "version": "0.0.1",
+  "description": "Fixture: hooks/hooks.json top-level hooks key has the wrong shape"
+}

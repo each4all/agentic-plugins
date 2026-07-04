@@ -16,7 +16,10 @@ they are trigger-driven futures.
   - `check-plugin-shape.mjs` — verifies manifest required fields,
     name match across `.claude-plugin/plugin.json` and
     `.codex-plugin/plugin.json`, skills path resolution, scripts
-    executable bit, and adapters/hosts/scripts traversal.
+    executable bit, adapters/hosts/{scripts,hooks} traversal, and —
+    for hook-bearing plugins (ADR-0040 §3 hook-only category) —
+    `hooks/hooks.json` structural validity plus existence of every
+    `${CLAUDE_PLUGIN_ROOT}/…` command target inside the plugin.
   - Run locally via `npm run lint:plugin-shape`.
   - CI-gated on both host workflows in `.github/workflows/`.
 

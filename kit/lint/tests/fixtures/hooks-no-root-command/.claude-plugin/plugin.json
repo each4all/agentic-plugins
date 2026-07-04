@@ -1,0 +1,5 @@
+{
+  "name": "fixture-hooks-no-root-command",
+  "version": "0.0.1",
+  "description": "Fixture: hooks/hooks.json command references no ${CLAUDE_PLUGIN_ROOT} target"
+}

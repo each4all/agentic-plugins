@@ -11,6 +11,23 @@
       "component": "companions",
       "changelog-path": "CHANGELOG.md"
     },
+    "plugins/attention": {
+      "package-name": "plugin-attention",
+      "component": "plugin-attention",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": ".claude-plugin/plugin.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": ".codex-plugin/plugin.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
     "plugins/companions": {
       "package-name": "plugin-companions",
       "component": "plugin-companions",

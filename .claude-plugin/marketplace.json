@@ -8,6 +8,13 @@
   },
   "plugins": [
     {
+      "name": "attention",
+      "source": "./plugins/attention",
+      "version": "0.1.0",
+      "description": "Attention sensors — hook-only L1 plugin pushing operator notifications (approval prompts, idle prompts, turn/workflow terminals, subagent completion) from Claude Code lifecycle hooks into the runtime notification emitter (ADR-0040 §3). Hooks + sensor scripts only; fail-closed silent observers; inert until the operator opts into a notify_channel via runtime:settings. No Codex hooks at v1.",
+      "category": "Productivity"
+    },
+    {
       "name": "companions",
       "source": "./plugins/companions",
       "version": "0.4.0",

@@ -54,6 +54,10 @@ agentic-plugins/
 │   └── lint/                       # Plugin shape conformance checks
 ├── plugins/                        # Reference dual-host plugins (4-layer per ADR-0010)
 │   ├── README.md
+│   ├── attention/                  # L1 framework primitive — HOOK-ONLY plugin (ADR-0040 §3):
+│   │                               # Claude Notification/Stop/SubagentStop sensors emitting into
+│   │                               # the runtime notification pipeline via a version-gated
+│   │                               # discover-runtime ladder; no skills/verbs/state, no Codex hooks at v1
 │   ├── companions/                 # L1 framework primitive — script-only library plugin (ADR-0008).
 │   │                               # As of v0.3.0 also bundles canonical companion discovery
 │   │                               # library (scripts/discover-peer.mjs); Stage 2 Deliverable B

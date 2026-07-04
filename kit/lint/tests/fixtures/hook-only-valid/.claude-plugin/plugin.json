@@ -1,0 +1,5 @@
+{
+  "name": "fixture-hook-only",
+  "version": "0.0.1",
+  "description": "Fixture: valid hook-only plugin shape (ADR-0040 §3)"
+}
