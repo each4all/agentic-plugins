@@ -29,8 +29,9 @@ import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { learnFromSources } from './lib/permission-usage-learner.mjs';
 import { makeFragmentContract, makeModeRecommendation } from './lib/permission-advisor-core.mjs';
 import { recordPermissionAdvisoryArtifact, makePermissionRunId } from './lib/permission-artifacts.mjs';
+import { buildCodexNotificationPlan } from './lib/notification-plan.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.14';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.15';
 
 // ADR-0038 settings-claude permission plan (M1): how many recent usage records to
 // read per host, and a per-file byte cap, when building the dry-run plan.
@@ -80,6 +81,7 @@ export async function runSettings({
   permissionPlan = false,
   permissionPlanMaxFiles = DEFAULT_PERMISSION_PLAN_MAX_FILES,
   permissionPlanMaxFileBytes = DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES,
+  notificationPlan = false,
   runId = null,
 } = {}) {
   if (!TARGETS.has(target)) throw new Error('--target must be repo, user, or both');
@@ -184,6 +186,18 @@ export async function runSettings({
     permissionPlanCodexSection = crossHostPlan.codex;
   }
 
+  // ADR-0040 §4 Codex notification-channel M1 plan: fragment render + plan
+  // artifact only (its own runs/notification family; never host config).
+  let notificationPlanSection = { requested: false, executed: false, status: 'not_requested' };
+  if (notificationPlan) {
+    notificationPlanSection = await buildCodexNotificationPlan({
+      repoRoot: resolvedRepoRoot,
+      homeDir: resolvedHomeDir,
+      env,
+      now,
+    });
+  }
+
   const report = {
     schema_version: SETTINGS_SCHEMA_VERSION,
     runtime_version: RUNTIME_VERSION,
@@ -238,6 +252,7 @@ export async function runSettings({
     notify_settings: notifySettings,
     permission_plan: permissionPlanSection,
     permission_plan_codex: permissionPlanCodexSection,
+    notification_plan: notificationPlanSection,
     artifacts: buildSettingsArtifactReport({
       repoRoot: resolvedRepoRoot,
       runId: settingsRunId,
@@ -266,6 +281,7 @@ export async function runSettings({
       'Claude host-native config, auth, secrets, and sandbox/permission settings are not written.',
       'The permission plan (--permission-plan) reads the Claude allowlist read-only and writes only the agentic-plugins-owned advisory artifact; the .claude/settings.json fragment is emitted for the operator to apply, never written by runtime.',
       'The Codex permission plan (--permission-plan) reads ~/.codex/config.toml read-only and recommends safety-graded postures (approval_policy/sandbox_mode) + bounded project-trust as a config.toml fragment; never danger-full-access, never written by runtime.',
+      'The notification plan (--notification-plan) reads the user-layer ~/.codex/config.toml read-only (mandatory notify read-check; wrapper-chaining preserves an existing notifier) and renders notify=/tui.notifications fragments + receiver scripts into an agentic-plugins-owned plan artifact; host config is never written and the receiver install is an explicit user action.',
       'Companion invocation still uses companions/contract.md --model and --effort.',
       'Dynamic peer consensus, context hygiene mutation, completion footer mutation, deep peer smoke, and host-native config apply modes are deferred.',
     ],
@@ -2298,6 +2314,30 @@ export function formatText(report) {
     }
     for (const limit of cp.limits ?? []) lines.push(`- limit: ${limit}`);
   }
+  if (report.notification_plan?.requested) {
+    const np = report.notification_plan;
+    lines.push('');
+    lines.push('Notification Plan (Codex, dry-run — ADR-0040 §4)');
+    if (np.status === 'blocked') {
+      lines.push(`- status: blocked; ${np.error}`);
+    } else {
+      lines.push(`- status: ${np.status}; mode=${np.recommended.mode}; codex-home=${np.host_config.codex_home_source}`);
+      lines.push(`- read-check: notify present=${np.read_check.notify_present}; parseable=${np.read_check.notify_parseable}; tui-notifications present=${np.read_check.tui_notifications_present}`);
+      if (np.warning) lines.push(`- warning: ${np.warning}`);
+      if (np.tui_warning) lines.push(`- warning: ${np.tui_warning}`);
+      lines.push(`- receiver shuttle (user-installed, recorded in the artifact): ${np.recommended.shuttle_install_path}`);
+      if (np.recommended.chain_install_path) {
+        lines.push(`- wrapper chain (preserves the existing notifier): ${np.recommended.chain_install_path}`);
+      }
+      lines.push('- fragment (merge into the USER-layer ~/.codex/config.toml, runtime never writes it):');
+      for (const fragmentLine of np.fragments.notify_toml.trimEnd().split('\n')) lines.push(`    ${fragmentLine}`);
+      lines.push('- fragment (tui approval attention, same file):');
+      for (const fragmentLine of np.fragments.tui_notifications_toml.trimEnd().split('\n')) lines.push(`    ${fragmentLine}`);
+      lines.push(`- receiver contract: payload=${np.receiver_contract.payload_position}; format=${np.receiver_contract.payload_format}; node=${np.receiver_contract.node_requirement}`);
+    }
+    if (np.artifact?.written) lines.push(`- artifact: ${np.artifact.report_pointer} (latest: ${np.artifact.latest_pointer})`);
+    for (const limit of np.limits ?? []) lines.push(`- limit: ${limit}`);
+  }
   lines.push('');
   lines.push('Limits');
   for (const limit of report.limits) lines.push(`- ${limit}`);
@@ -2951,7 +2991,7 @@ function usage() {
     '  [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>]',
     '  [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>]',
     '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
-    '  [--permission-plan] [--permission-plan-max-files <n>] [--permission-plan-max-file-bytes <n>] [--run-id <settings-run-id>]',
+    '  [--permission-plan] [--permission-plan-max-files <n>] [--permission-plan-max-file-bytes <n>] [--notification-plan] [--run-id <settings-run-id>]',
     '',
   ].join('\n');
 }
@@ -2979,6 +3019,7 @@ export function parseArgs(argv) {
     permissionPlan: false,
     permissionPlanMaxFiles: DEFAULT_PERMISSION_PLAN_MAX_FILES,
     permissionPlanMaxFileBytes: DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES,
+    notificationPlan: false,
     runId: null,
     desired: {},
   };
@@ -3012,6 +3053,8 @@ export function parseArgs(argv) {
       opts.pluginManagementTimeoutMs = parsePositiveInt(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--permission-plan') {
       opts.permissionPlan = true;
+    } else if (arg === '--notification-plan') {
+      opts.notificationPlan = true;
     } else if (arg === '--permission-plan-max-files') {
       opts.permissionPlanMaxFiles = parsePositiveInt(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--permission-plan-max-file-bytes') {
