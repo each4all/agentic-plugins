@@ -6,6 +6,18 @@
   },
   "plugins": [
     {
+      "name": "attention",
+      "source": {
+        "source": "local",
+        "path": "./plugins/attention"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    },
+    {
       "name": "companions",
       "source": {
         "source": "local",

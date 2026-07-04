@@ -6,6 +6,19 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
 
 ## Shipped plugins
 
+- **`attention/`** — hook-only L1 attention sensors per
+  [ADR-0040 §3](../docs/adr/0040-operator-observability.md): Claude
+  `Notification` (permission_prompt → approval/urgent, idle_prompt →
+  idle), `Stop` (workflow-terminal behind a freshness-checked
+  session-handoff projection read, else bare turn-complete), and
+  `SubagentStop` (subagent-complete) sensors that resolve the runtime
+  plugin root via a version-gated `discover-runtime.mjs` copy
+  (runtime ≥ 0.71.0) and shell out to `notify.mjs emit`. **Hook-only**
+  — hooks + sensor scripts, no skills/verbs/state machinery, the
+  hook-bearing sibling of the script-only shape; fail-closed silent
+  observers (exit 0 always, never stdout, no decision output); no
+  Codex hooks at v1. See
+  [`plugins/attention/README.md`](attention/README.md).
 - **`companions/`** — first-party Claude/Codex companion bridges
   (claude-companion, codex-companion) per `companions/contract.md`
   v0.1.1. Script-only library plugin per
@@ -124,3 +137,14 @@ that ships only `scripts/` and the two host manifests — no `commands/`,
 — may omit the `adapters/` subtree. The `companions` plugin is the
 canonical example. User-facing plugins continue to follow the full
 layout above.
+
+**Hook-only plugin exception** (per ADR-0040 §3): a plugin that ships
+only `hooks/hooks.json`, its hook entry scripts under
+`adapters/<host>/hooks/`, and supporting `scripts/` — no functional
+skills, no verbs, no state machinery — is the hook-bearing sibling of
+the script-only shape. The Codex manifest's required `skills` field is
+satisfied by an empty `skills/` placeholder per the ADR-0008 carve-out.
+`kit/lint/check-plugin-shape.mjs` validates the hook registration
+structurally (event → matcher groups → `type: "command"` entries) and
+verifies every `${CLAUDE_PLUGIN_ROOT}/…` command target exists inside
+the plugin. The `attention` plugin is the canonical example.

@@ -1,0 +1,5 @@
+{
+  "name": "fixture-hooks-bad-json",
+  "version": "0.0.1",
+  "description": "Fixture: hooks/hooks.json is not parseable JSON"
+}

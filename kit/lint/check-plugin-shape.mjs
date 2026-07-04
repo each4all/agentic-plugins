@@ -3,12 +3,25 @@
 //
 // Validates that a directory has the canonical agentic-plugins plugin
 // shape: a Claude manifest, a Codex manifest, consistent names, any
-// shipped script files have the executable bit set, and the Codex
-// manifest's `skills` path (if declared) resolves to a real directory.
+// shipped script files have the executable bit set, the Codex
+// manifest's `skills` path (if declared) resolves to a real directory,
+// and a Claude hook registration (if shipped) is structurally valid
+// with every plugin-rooted command target present.
 //
 // Script-bearing directories scanned for executable bit:
 //   <plugin-dir>/scripts/                            (script-only library plugins)
 //   <plugin-dir>/adapters/<host>/scripts/            (per-host adapter scripts)
+//   <plugin-dir>/adapters/<host>/hooks/              (per-host hook entry scripts)
+//
+// Hook-bearing plugins (ADR-0040 §3 formalized the hook-only category —
+// hooks + sensor scripts only, the hook-bearing sibling of the ADR-0008
+// script-only shape): when <plugin-dir>/hooks/hooks.json exists it must
+//   - parse as JSON with a top-level `hooks` object mapping event names
+//     to arrays of matcher groups,
+//   - carry `type: "command"` entries with non-empty command strings,
+//   - reference only existing files inside the plugin for every
+//     `${CLAUDE_PLUGIN_ROOT}/…` command target (a hooks.json pointing at
+//     a missing sensor script is the hook-only shape's core failure mode).
 //
 //   node kit/lint/check-plugin-shape.mjs <plugin-dir>
 //
@@ -18,10 +31,11 @@
 //   2 — misuse (bad arguments, plugin-dir not a directory)
 //
 // This is the "minimal" Stage 1 lint per Deliverable B.10, generalized
-// in C.2 to handle adapter-bearing plugins (e.g., plugins/engineer/).
-// Additional checks (drift detection, SemVer cross-version constraints,
-// marketplace registration coverage) remain in their own scripts/tests
-// and may be folded in here as the kit/lint surface matures.
+// in C.2 to handle adapter-bearing plugins (e.g., plugins/engineer/)
+// and extended for ADR-0040's hook-only category. Additional checks
+// (drift detection, SemVer cross-version constraints, marketplace
+// registration coverage) remain in their own scripts/tests and may be
+// folded in here as the kit/lint surface matures.
 
 import { readFile, stat, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -143,8 +157,93 @@ if (await exists(adaptersDir)) {
     if (!host.isDirectory()) continue;
     const hostScripts = resolve(adaptersDir, host.name, 'scripts');
     await checkScriptsDir(`adapters/${host.name}/scripts`, hostScripts);
+    const hostHooks = resolve(adaptersDir, host.name, 'hooks');
+    await checkScriptsDir(`adapters/${host.name}/hooks`, hostHooks);
   }
 }
+
+// Claude hook registration (hooks/hooks.json) — structural validation plus
+// command-target existence for every `${CLAUDE_PLUGIN_ROOT}/…` reference.
+// Optional: plugins without hooks skip this entirely (hook absence is
+// non-fatal per ADR-0011 §4; hook-only plugins per ADR-0040 §3 hinge on it).
+const HOOK_COMMAND_ROOT_RE = /\$\{CLAUDE_PLUGIN_ROOT\}\/([^"']+)/g;
+
+async function checkHooksJson(path) {
+  if (!(await exists(path))) return;
+  let json;
+  try {
+    json = await readJSON(path);
+  } catch (err) {
+    errors.push(`hooks/hooks.json: ${err.message}`);
+    return;
+  }
+  const hooks = json?.hooks;
+  if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) {
+    errors.push('hooks/hooks.json: top-level "hooks" must be an object mapping event names to matcher-group arrays');
+    return;
+  }
+  for (const [eventName, groups] of Object.entries(hooks)) {
+    if (!Array.isArray(groups) || groups.length === 0) {
+      errors.push(`hooks/hooks.json: "${eventName}" must be a non-empty array of matcher groups`);
+      continue;
+    }
+    for (const [gi, group] of groups.entries()) {
+      const groupLabel = `hooks/hooks.json: "${eventName}"[${gi}]`;
+      if (typeof group !== 'object' || group === null || Array.isArray(group)) {
+        errors.push(`${groupLabel}: matcher group must be an object`);
+        continue;
+      }
+      if (group.matcher !== undefined && (typeof group.matcher !== 'string' || group.matcher.length === 0)) {
+        errors.push(`${groupLabel}: matcher must be a non-empty string when present`);
+      }
+      if (!Array.isArray(group.hooks) || group.hooks.length === 0) {
+        errors.push(`${groupLabel}: hooks must be a non-empty array`);
+        continue;
+      }
+      for (const [hi, hook] of group.hooks.entries()) {
+        const hookLabel = `${groupLabel}.hooks[${hi}]`;
+        if (typeof hook !== 'object' || hook === null || Array.isArray(hook)) {
+          errors.push(`${hookLabel}: hook entry must be an object`);
+          continue;
+        }
+        if (hook.type !== 'command') {
+          errors.push(`${hookLabel}: type must be "command"`);
+        }
+        if (typeof hook.command !== 'string' || hook.command.length === 0) {
+          errors.push(`${hookLabel}: command must be a non-empty string`);
+          continue;
+        }
+        const rootMatches = [...hook.command.matchAll(HOOK_COMMAND_ROOT_RE)];
+        // A plugin hook command that references no ${CLAUDE_PLUGIN_ROOT}
+        // target ships no plugin-owned behavior and dodges the existence
+        // check entirely — reject rather than silently pass.
+        if (rootMatches.length === 0) {
+          errors.push(`${hookLabel}: command must reference at least one \${CLAUDE_PLUGIN_ROOT}/… target`);
+          continue;
+        }
+        for (const match of rootMatches) {
+          const target = resolve(PLUGIN_DIR, match[1]);
+          if (!target.startsWith(`${PLUGIN_DIR}/`)) {
+            errors.push(`${hookLabel}: command target "${match[1]}" escapes the plugin directory`);
+            continue;
+          }
+          let targetStat;
+          try {
+            targetStat = await stat(target);
+          } catch {
+            errors.push(`${hookLabel}: command target "${match[1]}" does not exist`);
+            continue;
+          }
+          if (!targetStat.isFile()) {
+            errors.push(`${hookLabel}: command target "${match[1]}" is not a regular file`);
+          }
+        }
+      }
+    }
+  }
+}
+
+await checkHooksJson(resolve(PLUGIN_DIR, 'hooks/hooks.json'));
 
 if (codexManifest && typeof codexManifest.skills === 'string' && codexManifest.skills.length > 0) {
   const skillsPath = resolve(PLUGIN_DIR, codexManifest.skills);
