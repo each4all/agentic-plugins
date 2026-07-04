@@ -348,6 +348,40 @@ describe('runtime doctor', () => {
     ok(report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_packaging_gap'));
   });
 
+  it('classifies a deliberately Claude-hook-only plugin as claude_adapter_only, not a Codex packaging gap (ADR-0040 §3)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-claude-only-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    // attention (ADR-0040 §3 hook-only L1): a hooks/hooks.json whose commands
+    // ALL target adapters/claude, and NO Codex hooks in the manifest. Its hook
+    // scripts are the Claude adapter — not Codex-runnable — so it must NOT be
+    // treated as a Codex packaging gap (which would falsely block
+    // lifecycle_hook_continuity), unlike the mixed/codex-runnable engineer case
+    // above.
+    await mkdir(join(root, 'plugins', 'attention', '.claude-plugin'), { recursive: true });
+    await mkdir(join(root, 'plugins', 'attention', '.codex-plugin'), { recursive: true });
+    await writeJson(join(root, 'plugins', 'attention', '.claude-plugin', 'plugin.json'), { name: 'attention', version: '0.2.0', description: 'attention' });
+    await writeJson(join(root, 'plugins', 'attention', '.codex-plugin', 'plugin.json'), { name: 'attention', version: '0.2.0', description: 'attention' });
+    await mkdir(join(root, 'plugins', 'attention', 'hooks'), { recursive: true });
+    await writeJson(join(root, 'plugins', 'attention', 'hooks', 'hooks.json'), {
+      hooks: {
+        Notification: [{ matcher: 'permission_prompt', hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/notification.mjs"' }] }],
+        Stop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/stop.mjs"' }] }],
+        SubagentStop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/subagent-stop.mjs"' }] }],
+      },
+    });
+
+    const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+
+    deepStrictEqual(report.codex_plugin_hooks.summary.claude_adapter_only_plugins, ['attention']);
+    ok(!report.codex_plugin_hooks.summary.default_file_only_plugins.includes('attention'), 'attention is not a default_file_only Codex gap');
+    ok(!report.codex_plugin_hooks.summary.bundled_plugins.includes('attention'), 'attention is excluded from the Codex bundled set');
+    ok(!report.codex_plugin_hooks.summary.command_warning_plugins.includes('attention'), 'a Claude-only plugin raises no Codex command-portability warning');
+    ok(report.codex_plugin_hooks.status !== 'packaging_gap', `status must not be packaging_gap (got ${report.codex_plugin_hooks.status})`);
+    ok(!report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'expose-bundled-hooks-in-manifest' && (rec.detail ?? '').includes('attention')));
+    ok(!report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_packaging_gap'), 'a deliberately Claude-only plugin does not raise a Codex packaging-gap parity difference');
+  });
+
   it('reports Codex hook review as a manual follow-up when plugin hooks are ready', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-review-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
