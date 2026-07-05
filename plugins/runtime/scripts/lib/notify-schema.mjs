@@ -13,9 +13,17 @@
 // stay dependency-free and side-effect-free apart from claimDedupe's
 // claim-file writes.
 //
-// Contract invariants (ADR-0040 §1):
+// Contract invariants (ADR-0040 §1; hostname dimension added by ADR-0041 §4):
 //   - the dedupe key EXCLUDES source: two producers observing the same
-//     subject moment must build byte-identical event_ids;
+//     subject moment must build byte-identical event_ids. ADR-0041 §4 adds an
+//     OPTIONAL hostname to the identity: producers observing the SAME moment
+//     must pass hostname UNIFORMLY (all with, or all without) or they build
+//     distinct ids. This is safe for the built-in producer set because the
+//     attention sensor is the sole producer of the hostname-bearing kinds
+//     (approval / idle / turn-complete / workflow-terminal / subagent-complete)
+//     and passes hostname on every one; other producers (peer-run self-sensors,
+//     the Codex shuttle) emit different kinds and never collide. A future
+//     producer of an attention kind MUST also pass hostname;
 //   - ONLY kinds without a natural terminal status (approval / idle /
 //     turn-complete) get the FIXED default status token; for every
 //     status-bearing kind an absent status throws, so distinct status
@@ -42,6 +50,23 @@ export const NOTIFY_KINDS = Object.freeze([
 ]);
 
 export const URGENCY_LEVELS = Object.freeze(['urgent', 'normal']);
+
+// ADR-0041 §4 cross-machine routing/display fields — OPTIONAL, backward-
+// compatible extensions to the §1 event schema. Older producers omit them and
+// validateEvent still accepts events without them (independently-versioned
+// producers that resolve a newer runtime but never populate these keep
+// validating). The attention sensors populate them so multi-machine → one-chat
+// egress (ADR-0041) can route and display "which machine, what work, how far
+// along". Per-field caps bound what a later egress channel may transmit; the
+// fields are born capped at build time and re-capped at the egress boundary
+// (buildEgressPayload, ADR-0041 §2f) — validateEvent checks shape only, never
+// enforces the cap (mirrors the title/body contract).
+export const OPTIONAL_ROUTING_FIELDS = Object.freeze(['hostname', 'topic', 'session_hint']);
+export const ROUTING_FIELD_CAPS = Object.freeze({
+  hostname: 64,
+  topic: 120,
+  session_hint: 32,
+});
 
 // The §1 pipeline ORDER contract the emitter must execute. kinds-filter
 // sits BEFORE dedupe by design (see invariants above); dedupe sits
@@ -99,11 +124,38 @@ export function deriveRepoIdent(repoRoot) {
   return `${base}-${shortHash(real, 16)}`;
 }
 
+// ADR-0041 §4 — derive a FIXED-LENGTH, colon-free host token for weaving into
+// the event_id/dedupe key. The token is a short hash of the sanitized hostname
+// (mirroring deriveRepoIdent's hashing), so weaving hostname adds a BOUNDED
+// ~21 chars regardless of hostname length — a long hostname can never push the
+// event_id past the emitter's 256-char cap (which would silently drop the
+// notification). The human-readable hostname rides in the top-level
+// event.hostname display field, so the id needs no readable host substring.
+// Returns null when hostname is absent or sanitizes to empty — the id then
+// stays byte-identical to the pre-ADR-0041 format, so producers that pass no
+// hostname are completely unaffected (the copy-not-import parity gate depends
+// on this).
+function hostSegment(hostname) {
+  if (typeof hostname !== 'string') return null;
+  const sanitized = hostname.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, ROUTING_FIELD_CAPS.hostname);
+  return sanitized.length > 0 ? `host-${shortHash(sanitized, 16)}` : null;
+}
+
 // Compose <repo-ident>:<kind>:<subject>:<status>. There is deliberately
 // no source parameter — accepting one here is how dedupe would break.
 // subject may contain colons (session:<id>:<hash>); repoIdent and
 // status may not, so the first two and the last segment stay stable.
-export function buildEventId({ repoIdent, kind, subject, status } = {}) {
+// ADR-0041 §4 — an OPTIONAL hostname weaves a bounded, colon-free host-hash
+// token into the subject region so the dedupe key is per-machine distinct
+// (multi-device → one-chat fan-in). Absent hostname ⇒ subject unchanged ⇒ id
+// byte-identical to the pre-ADR-0041 format. The token rides in the subject
+// region (not a new leading segment) precisely so validateEvent's segment
+// cross-check accepts the woven id unchanged. NOTE: prefix-encoding a hostname
+// into the subject is not strictly injective against an arbitrary subject that
+// itself begins with the exact `host-<16hex>:` shape — a theoretical collision
+// no built-in producer can hit (attention subjects are session:… / workflow /
+// agent / run ids, never `host-`-prefixed hex).
+export function buildEventId({ repoIdent, kind, subject, status, hostname } = {}) {
   requireNonEmptyString(repoIdent, 'repoIdent');
   requireNonEmptyString(subject, 'subject');
   if (!NOTIFY_KINDS.includes(kind)) {
@@ -126,7 +178,9 @@ export function buildEventId({ repoIdent, kind, subject, status } = {}) {
   if (effectiveStatus.includes(':')) {
     throw new TypeError('status must not contain a colon');
   }
-  return `${repoIdent}:${kind}:${subject}:${effectiveStatus}`;
+  const hostToken = hostSegment(hostname);
+  const effectiveSubject = hostToken ? `${hostToken}:${subject}` : subject;
+  return `${repoIdent}:${kind}:${effectiveSubject}:${effectiveStatus}`;
 }
 
 // ── Kind/subject mapping rules (§1 — contract, not sensor discretion) ──
@@ -195,6 +249,17 @@ export function validateEvent(event) {
   }
   if (event.body !== undefined && typeof event.body !== 'string') {
     errors.push('body must be a string when present');
+  }
+  // ADR-0041 §4 — OPTIONAL cross-machine routing/display fields. Absent is
+  // valid (backward-compat: older producers that resolve a newer runtime but
+  // never populate these keep validating). When present each must be a string;
+  // caps are applied at build time and re-applied at the egress boundary, never
+  // enforced here (mirrors title/body — validate checks shape, redaction/build
+  // applies caps).
+  for (const field of OPTIONAL_ROUTING_FIELDS) {
+    if (event[field] !== undefined && typeof event[field] !== 'string') {
+      errors.push(`${field} must be a string when present`);
+    }
   }
   if (event.refs !== undefined) {
     if (typeof event.refs !== 'object' || event.refs === null || Array.isArray(event.refs)) {

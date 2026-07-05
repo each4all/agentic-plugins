@@ -352,6 +352,30 @@ describe('notify runEmit pipeline (file-log)', () => {
     assert.equal(dedupeClaimCount(repoRoot), 1);
   });
 
+  it('ADR-0041 §4 — an event carrying the OPTIONAL routing fields validates + dispatches (forward-compat)', () => {
+    const repoRoot = makeRepo({ configLines: ['notify_channel = "file-log"'] });
+    const event = makeEvent({
+      // A host-woven event_id (the shape the attention sensor now emits) plus
+      // the top-level routing fields. Nothing in the emitter pipeline rejects
+      // the extra keys.
+      event_id: 'repo-abc123:approval:host-mba:session:s1:aaaa:fired',
+      hostname: 'mba',
+      topic: 'repo:main',
+      session_hint: 'abc123def456',
+    });
+    const result = runEmit(emitArgs({ repoRoot, event }));
+    assert.equal(result.status, 'dispatched');
+    const records = readLog(repoRoot);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].event_id, event.event_id);
+    // The LOCAL file-log record keeps the ADR-0040 allowlist only — routing
+    // fields are the egress channel's concern (buildEgressPayload, a later
+    // slice), never a local render field, so they stay out of the record.
+    assert.ok(!('hostname' in records[0]), 'hostname must not leak into the local record');
+    assert.ok(!('topic' in records[0]), 'topic must not leak into the local record');
+    assert.ok(!('session_hint' in records[0]), 'session_hint must not leak into the local record');
+  });
+
   it('channel=none (shipped default) is a system-off no-op that burns NO TTL slot', () => {
     // ADR-0040 §2 / ADR-0035 §3 invariant 1 amendment: the action-specific
     // gate is the notify_channel CONFIG KEY, whose shipped default is none.

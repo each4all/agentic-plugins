@@ -32,6 +32,8 @@ import {
   notifyStateDir,
   notifyDedupeDir,
   claimDedupe,
+  OPTIONAL_ROUTING_FIELDS,
+  ROUTING_FIELD_CAPS,
 } from '../../plugins/runtime/scripts/lib/notify-schema.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -253,6 +255,49 @@ describe('notify-schema event_id composition', () => {
       /subject/,
     );
   });
+
+  it('ADR-0041 §4 — omitting hostname yields the byte-identical pre-hostname id', () => {
+    const base = { repoIdent: 'repo-a', kind: 'turn-complete', subject: 'session:s1:p1' };
+    assert.equal(buildEventId(base), 'repo-a:turn-complete:session:s1:p1:fired');
+    // undefined / null / '' hostname are all the no-hostname case — every
+    // non-hostname producer (Codex shuttle, per-persona self-sensors) is
+    // completely unaffected by the extension.
+    for (const hostname of [undefined, null, '']) {
+      assert.equal(buildEventId({ ...base, hostname }), buildEventId(base));
+    }
+  });
+
+  it('ADR-0041 §4 — a hostname weaves a colon-free host token (per-machine distinct, stable)', () => {
+    const base = { repoIdent: 'repo-a', kind: 'turn-complete', subject: 'session:s1:p1' };
+    const a = buildEventId({ ...base, hostname: 'mba.local' });
+    const b = buildEventId({ ...base, hostname: 'server2' });
+    assert.notEqual(a, b, 'two machines must build distinct ids for one moment');
+    assert.equal(a, buildEventId({ ...base, hostname: 'mba.local' }), 'one machine must be stable');
+    assert.notEqual(a, buildEventId(base), 'host id must differ from the no-host id');
+    // The woven id still validates — the host token rides in the subject region
+    // so the §1 segment cross-check accepts it unchanged.
+    assert.equal(
+      validateEvent({ event_id: a, source: 'x', kind: 'turn-complete', title: 't', urgency: 'normal' }).ok,
+      true,
+    );
+  });
+
+  it('ADR-0041 §4 — the woven host token is a bounded colon-free hash (id cannot overflow the emitter cap)', () => {
+    // A colon/space-bearing hostname AND a 500-char hostname both yield the same
+    // fixed-shape token, so hostname can never push the event_id past the
+    // emitter's 256-char cap (Codex peer MAJOR: an unbounded token could).
+    for (const hostname of ['a:b c/d', 'x'.repeat(500)]) {
+      const id = buildEventId({ repoIdent: 'repo-a', kind: 'idle', subject: 'session:s1', hostname });
+      const token = id.split(':')[2];
+      assert.match(token, /^host-[0-9a-f]{16}$/, `token "${token}" is not a bounded 16-hex hash`);
+      assert.equal(id.split(':')[1], 'idle', 'kind segment must stay at index 1');
+      assert.ok(id.length < 128, `id length ${id.length} unexpectedly large`);
+      assert.equal(
+        validateEvent({ event_id: id, source: 'x', kind: 'idle', title: 't', urgency: 'normal' }).ok,
+        true,
+      );
+    }
+  });
 });
 
 describe('notify-schema kind/subject mapping contract', () => {
@@ -378,6 +423,41 @@ describe('notify-schema validateEvent', () => {
   it('rejects non-object refs and non-string ref values', () => {
     assert.equal(validateEvent(validSampleEvent({ refs: [] })).ok, false);
     assert.equal(validateEvent(validSampleEvent({ refs: { run_id: 7 } })).ok, false);
+  });
+
+  it('ADR-0041 §4 — accepts an event WITHOUT the optional routing fields (older-producer backward-compat)', () => {
+    const event = validSampleEvent();
+    for (const f of OPTIONAL_ROUTING_FIELDS) {
+      assert.ok(!(f in event), `${f} should be absent by default`);
+    }
+    assert.equal(validateEvent(event).ok, true);
+  });
+
+  it('ADR-0041 §4 — accepts an event WITH valid optional routing fields', () => {
+    const event = validSampleEvent({ hostname: 'mba.local', topic: 'repo:main', session_hint: 'abc123def456' });
+    const res = validateEvent(event);
+    assert.deepEqual(res.errors, []);
+    assert.equal(res.ok, true);
+  });
+
+  it('ADR-0041 §4 — rejects a non-string routing field', () => {
+    for (const field of OPTIONAL_ROUTING_FIELDS) {
+      const res = validateEvent(validSampleEvent({ [field]: 123 }));
+      assert.equal(res.ok, false, `${field} number should be rejected`);
+      assert.ok(res.errors.some((e) => e.includes(field)), `error should name ${field}`);
+    }
+  });
+
+  it('ADR-0041 §4 — does NOT enforce caps at validate time (shape only, like title/body)', () => {
+    // Caps are applied at build + at the egress boundary (buildEgressPayload),
+    // never at validate — a long value passes shape validation.
+    const event = validSampleEvent({ hostname: 'x'.repeat(ROUTING_FIELD_CAPS.hostname + 50) });
+    assert.equal(validateEvent(event).ok, true);
+  });
+
+  it('ADR-0041 §4 — pins the routing field list + caps', () => {
+    assert.deepEqual([...OPTIONAL_ROUTING_FIELDS], ['hostname', 'topic', 'session_hint']);
+    assert.deepEqual({ ...ROUTING_FIELD_CAPS }, { hostname: 64, topic: 120, session_hint: 32 });
   });
 });
 
