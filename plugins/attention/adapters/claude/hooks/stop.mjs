@@ -27,11 +27,14 @@ import {
   SENSOR_PERSONAS,
   WORKFLOW_TERMINAL_STATUS,
   buildEvent,
+  buildSessionHint,
   deriveRepoIdent,
   emitEvent,
   readFreshProjection,
   readStdinJson,
+  resolveHostname,
   resolveRepoRoot,
+  resolveTopic,
   turnCompleteSubject,
   workflowTerminalSubject,
 } from '../../../scripts/lib/sensor.mjs';
@@ -44,6 +47,14 @@ async function main() {
   const repoLabel = path.basename(repoRoot);
   const repoIdent = deriveRepoIdent(repoRoot);
   const now = Date.now();
+  // ADR-0041 §4 cross-machine routing/display fields, resolved once and shared
+  // by every event this turn (workflow-terminal set + the bare fallback). The
+  // session hint is best-effort: session_id primary, prompt_id fallback.
+  const sessionId = payload.session_id;
+  const promptId = payload.prompt_id;
+  const hostname = resolveHostname();
+  const topic = resolveTopic({ repoRoot, repoLabel });
+  const sessionHint = buildSessionHint({ sessionId, promptId });
 
   // State enrichment — one workflow-terminal event per persona whose one-shot
   // projection passes every freshness gate. Both personas can be terminal in
@@ -56,6 +67,11 @@ async function main() {
     const refs = { workflow_id: workflowId };
     if (typeof projection.workflow_path === 'string' && projection.workflow_path.length > 0) {
       refs.path = projection.workflow_path;
+    }
+    // ADR-0041 §3 — phase rides in refs (the egress payload reads workflow_id +
+    // phase from refs when a fresh projection exists).
+    if (typeof projection.phase === 'string' && projection.phase.length > 0) {
+      refs.phase = projection.phase;
     }
     const bodyParts = [workflowId];
     if (typeof projection.phase === 'string' && projection.phase.length > 0) {
@@ -73,6 +89,9 @@ async function main() {
       body: bodyParts.join(' · '),
       urgency: 'normal',
       refs,
+      hostname,
+      topic,
+      sessionHint,
     }));
   }
   if (terminalEvents.length > 0) {
@@ -84,8 +103,6 @@ async function main() {
 
   // Bare case — stale/missing projections degrade to a turn-complete
   // notification built from common fields only, never a wrong workflow claim.
-  const sessionId = payload.session_id;
-  const promptId = payload.prompt_id;
   if (typeof sessionId !== 'string' || sessionId.length === 0) return;
   if (typeof promptId !== 'string' || promptId.length === 0) return;
   await emitEvent({
@@ -97,6 +114,9 @@ async function main() {
       title: `Turn complete — ${repoLabel}`,
       body: `session ${sessionId} · prompt ${promptId}`,
       urgency: 'normal',
+      hostname,
+      topic,
+      sessionHint,
     }),
   });
 }

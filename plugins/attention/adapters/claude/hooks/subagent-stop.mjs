@@ -17,10 +17,13 @@ import path from 'node:path';
 import {
   SUBAGENT_COMPLETE_STATUS,
   buildEvent,
+  buildSessionHint,
   deriveRepoIdent,
   emitEvent,
   readStdinJson,
+  resolveHostname,
   resolveRepoRoot,
+  resolveTopic,
   subagentCompleteSubject,
 } from '../../../scripts/lib/sensor.mjs';
 
@@ -44,6 +47,10 @@ async function main() {
       title: `Subagent complete — ${repoLabel}`,
       body: agentType.length > 0 ? `agent ${agentId} (${agentType})` : `agent ${agentId}`,
       urgency: 'normal',
+      // ADR-0041 §4 cross-machine routing/display fields.
+      hostname: resolveHostname(),
+      topic: resolveTopic({ repoRoot, repoLabel }),
+      sessionHint: buildSessionHint({ sessionId: payload.session_id }),
     }),
   });
 }

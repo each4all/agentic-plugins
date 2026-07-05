@@ -20,11 +20,14 @@ import path from 'node:path';
 import {
   approvalSubject,
   buildEvent,
+  buildSessionHint,
   deriveRepoIdent,
   emitEvent,
   idleSubject,
   readStdinJson,
+  resolveHostname,
   resolveRepoRoot,
+  resolveTopic,
 } from '../../../scripts/lib/sensor.mjs';
 
 async function main() {
@@ -36,9 +39,18 @@ async function main() {
   if (typeof sessionId !== 'string' || sessionId.length === 0) return;
 
   const notificationType = payload.notification_type;
+  // Only permission_prompt / idle_prompt map to events. Bail BEFORE any
+  // routing-field fs work (resolveTopic reads .git) for the ignored types
+  // (auth_success, elicitation variants) — cheaper, and keeps the .git read off
+  // the path for notifications this sensor never emits.
+  if (notificationType !== 'permission_prompt' && notificationType !== 'idle_prompt') return;
   const message = typeof payload.message === 'string' ? payload.message : '';
   const repoLabel = path.basename(repoRoot);
   const repoIdent = deriveRepoIdent(repoRoot);
+  // ADR-0041 §4 cross-machine routing/display fields (shared across the event).
+  const hostname = resolveHostname();
+  const topic = resolveTopic({ repoRoot, repoLabel });
+  const sessionHint = buildSessionHint({ sessionId });
 
   let event = null;
   if (notificationType === 'permission_prompt') {
@@ -49,6 +61,9 @@ async function main() {
       title: `Approval needed — ${repoLabel}`,
       body: message,
       urgency: 'urgent',
+      hostname,
+      topic,
+      sessionHint,
     });
   } else if (notificationType === 'idle_prompt') {
     event = buildEvent({
@@ -58,6 +73,9 @@ async function main() {
       title: `Idle — ${repoLabel}`,
       body: message.length > 0 ? message : 'Session is waiting for input',
       urgency: 'normal',
+      hostname,
+      topic,
+      sessionHint,
     });
   }
   if (event) {
