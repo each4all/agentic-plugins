@@ -4,6 +4,17 @@
 
 Accepted (2026-06-08, PR #400)
 
+**§4 amended by [ADR-0041](0041-cross-machine-notification-egress.md) (2026-07-06,
+tier E1).** ADR-0041 amends §4's network-egress prohibition head-on to add
+exactly one new, named effect domain — **E1 (enumerated-metadata network
+egress)**: outbound delivery of a *redacted, enumerated, capped* metadata field
+set to a *fixed SaaS allowlist* (v1 Telegram), behind an env/verified-ignored-local
+opt-in, an *env-only* credential, over a *fully-pinned, non-redirecting* request.
+Everything outside that exact shape remains forbidden; the safety argument rests
+on the enumerated field set + pinned request + mechanically-verified local
+activation, never on ownership of the data. See ADR-0041 §1–§2 and the §4 note
+below.
+
 <!--
 Refines (does not supersede) ADR-0024. ADR-0024 established
 `plugins/runtime` as the operator control plane that is "read-only by
@@ -157,6 +168,20 @@ Independent of any flag, runtime MUST NOT:
   nothing else;
 - rewrite MCP/server config outside a future, explicit, ADR-gated
   executor.
+
+> **Amendment — tier E1 (network egress), [ADR-0041](0041-cross-machine-notification-egress.md):**
+> the "relax or bypass … network … policy" line above has exactly ONE authorized
+> exception: **E1 — enumerated-metadata network egress**. `notify.mjs` may issue a
+> single **fully-pinned, non-redirecting** `POST` to a **project-fixed SaaS host**
+> (v1 `api.telegram.org`), carrying only a redacted, enumerated, capped metadata
+> field set, behind an **env / verified-ignored-local** opt-in with an **env-only**
+> credential. `curl` is **not** added to the executor registry; the one in-process
+> `fetch` is registry-scanned (`tests/plugin-shape/runtime-executor-scan.mjs`) and
+> permitted only in `notify.mjs`. Arbitrary/self-host URLs, redirect-following, a
+> config-tracked activation, and any non-enumerated / free-text / transcript
+> payload remain forbidden. This is a **bounded** amendment, not a general
+> network-egress precedent — the enumerated-metadata + fixed-service +
+> verified-local narrowing is the deliberate suppressant (ADR-0041 §1–§2, §10).
 
 **Enforcement is required as a registry plus tests, not prose — and is
 planned, not yet built.** Every executor action MUST appear in an

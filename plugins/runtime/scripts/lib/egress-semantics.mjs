@@ -58,14 +58,19 @@ function requireNonEmptyString(value, label) {
   return value;
 }
 
-// Control-strip + collapse-whitespace + cap. Mirrors notify.mjs's sanitizeText
-// so mirror-record fields render identically to local-channel fields.
-function sanitizeToken(value, cap) {
-  return String(value ?? '')
+// Control-strip + collapse-whitespace, an OPTIONAL secret-scrub, then cap.
+// Mirrors notify.mjs's sanitizeText so mirror-record fields render identically to
+// local-channel fields. `scrub` (default identity) MUST run before the cap: a
+// secret longer than the field cap would otherwise be truncated (losing its
+// `@`/marker) before the scrub sees it, leaking a fragment into the mirror
+// artifact (peer CRITICAL). notify.mjs injects the egress secret-scrub for the
+// event-derived fields; the control fields (service/status enums) keep identity.
+function sanitizeToken(value, cap, scrub = (s) => s) {
+  const normalized = String(value ?? '')
     .replace(CONTROL_CHARS_RE, ' ')
     .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, cap);
+    .trim();
+  return scrub(normalized).slice(0, cap);
 }
 
 // Join key components with a single NUL delimiter (injective — no component
@@ -406,16 +411,21 @@ export function buildEgressMirrorRecord({
   egressStatus,
   outcome,
   now = Date.now(),
+  scrub = (s) => s,
 } = {}) {
   requireNonEmptyString(service, 'service');
   if (!EGRESS_STATUSES.includes(egressStatus)) {
     throw new TypeError(`egressStatus must be one of ${EGRESS_STATUSES.join(', ')}`);
   }
+  // `scrub` runs before each cap on the EVENT-DERIVED fields (event_id / kind /
+  // urgency / routing) — the ones a malformed producer could load with a
+  // credential-shaped value; the control fields (service/status enums) carry no
+  // secret and keep identity. notify.mjs injects the egress secret-scrub.
   const mirror = {
     ts: new Date(now).toISOString(),
-    event_id: sanitizeToken(event.event_id, EGRESS_MIRROR_CAPS.event_id),
-    kind: sanitizeToken(event.kind, EGRESS_MIRROR_CAPS.kind),
-    urgency: sanitizeToken(event.urgency, EGRESS_MIRROR_CAPS.urgency),
+    event_id: sanitizeToken(event.event_id, EGRESS_MIRROR_CAPS.event_id, scrub),
+    kind: sanitizeToken(event.kind, EGRESS_MIRROR_CAPS.kind, scrub),
+    urgency: sanitizeToken(event.urgency, EGRESS_MIRROR_CAPS.urgency, scrub),
     egress_channel: sanitizeToken(service, 64),
     egress_status: egressStatus,
     egress_outcome: sanitizeToken(outcome, 64),
@@ -425,7 +435,7 @@ export function buildEgressMirrorRecord({
   // repo:branch / session) — the only non-enumerated data the dashboard needs.
   for (const field of OPTIONAL_ROUTING_FIELDS) {
     if (typeof event[field] === 'string' && event[field].length > 0) {
-      mirror[field] = sanitizeToken(event[field], ROUTING_FIELD_CAPS[field]);
+      mirror[field] = sanitizeToken(event[field], ROUTING_FIELD_CAPS[field], scrub);
     }
   }
   return mirror;

@@ -246,6 +246,17 @@ A single notification event shape shared by all producers:
   pre-negotiated boundary**. Non-macOS desktop channels (`notify-send`,
   Windows toast) land either as further fixed-argv allowlist entries
   (no amendment needed) or with that future ADR.
+
+  > **Update ([ADR-0041](0041-cross-machine-notification-egress.md), 2026-07-06):**
+  > the "future ADR that amends ADR-0035 §4 head-on and decides by effect" has
+  > landed — but for a **different effect domain** than the local desktop channel
+  > above. ADR-0041 decides **network egress** (a `notify.mjs` channel POSTing
+  > enumerated metadata to a fixed SaaS host) and **accepts** it as the bounded
+  > tier **E1** (§4 amended head-on). The **local user-supplied-argv desktop
+  > channel** described here is a *separate* effect and remains deferred under this
+  > paragraph; ADR-0041 sets the effect-not-ownership precedent (per ADR-0038 §6)
+  > it will be measured against. One E1 channel now serves **both** hosts (Claude
+  > attention sensors + the Codex `notify=` shuttle).
 - Spawn contract (macos-osascript): no shell, `stdio: 'ignore'`,
   `detached` + `unref()`, sanitized minimal env, fire-and-forget — a
   missing/slow/failing binary never blocks or fails the calling hook.

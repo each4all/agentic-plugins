@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (2026-07-06)
 
 <!--
 Amends ADR-0035 §4 head-on (effect-based classification) to add one new,
@@ -159,6 +159,23 @@ control-strip. This **reduces** exposure; it is **not** a proof no secret
 escapes — which is why §3 keeps the field set enumerated and drops free text.
 Local channels keep current redaction.
 
+**Scrub-before-cap ordering (acceptance hardening).** The scrub MUST run **before**
+each per-field cap, in both the egress body (`buildEgressPayload`) and the
+attempt-mirror (`buildEgressMirrorRecord`): a secret longer than a field cap would
+otherwise be truncated — losing its `@` / marker — *before* the scrub sees it,
+leaking a fragment. Normalizing then scrubbing the full value then capping closes
+that path. (Caught by the acceptance-gate adversarial ensemble.)
+
+**Local-state scoping (out of egress scope, on record).** The ADR-0040 dedupe
+**claim** file stores the raw `event_id` verbatim (local debuggability + the
+dashboard's per-event inspect). It is read only by the dedupe check and the
+dashboard (by `stat`, never the body) and **never egresses** — the egress payload
+provably excludes `event_id`, the mirror scrubs it, and the throttle stores a
+hash. So a malformed producer parking token-shaped material in `event_id` is
+**not** an E1 egress leak (the credential itself is env-only and reaches no
+artifact). Minimizing that raw value in the local claim is a **separate local-state
+hardening concern**, deliberately out of this ADR's egress threat model.
+
 ### 6. Dashboard/statusline integration (attempt-visible)
 
 The channel **mirrors a sanitized attempted event to `file-log` before network
@@ -166,6 +183,16 @@ dispatch**, recording `egress_channel` + `egress_status` (dispatched/suppressed/
 failed). `runtime:dashboard` Tier 2 and statusline `🔔` reflect reality —
 including missing-token/failed attempts — without the network step blocking or
 hiding outcomes. (Sanitized = no token/token-shaped value, per §2b.)
+
+**Scope clarification (plugin homes vs user layer).** The **attempt-mirror**
+(the `file-log` NDJSON row) and **`runtime:dashboard`** Tier 2 are the *plugin
+homes* for egress observability — both ship in this ADR and read the same
+per-machine notify-state. The **statusline `🔔`** is a **user-layer read** of that
+same state, **not** a plugin-shipped writer: consistent with ADR-0040's
+`statusLine`-deferral (runtime ships no statusline component; the operator's own
+statusline script surfaces the `🔔`). So "dashboard/statusline integration" means
+the plugin populates the notify-state (mirror + dashboard); the statusline merely
+consumes it at the user layer.
 
 ### 7. Dedupe + failure semantics (claim finalization + failure throttle)
 

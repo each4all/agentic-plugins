@@ -485,17 +485,17 @@ async function runEgressDispatch({
       dedupeDir, throttleDir, eventId, ownerToken, outcome, service, fingerprint, now,
     });
     try {
-      // §2b/§5 — the attempt-mirror is an EGRESS artifact: buildEgressMirrorRecord
-      // only caps/control-strips (like the local record), so a token-shaped value
-      // in an event field (e.g. a credential-URL topic, an sk-/AKIA event_id)
-      // would be persisted RAW into the file-log. Secret-scrub every string field
-      // before writing so no token-shaped value lands in an egress artifact (peer
-      // MAJOR). The egress_* control fields are short enums that scrub leaves
-      // untouched; ts is an ISO timestamp.
-      const record = buildEgressMirrorRecord({ event, service, egressStatus: result.egressStatus, outcome, now });
-      for (const key of Object.keys(record)) {
-        if (typeof record[key] === 'string') record[key] = scrubSecrets(record[key]);
-      }
+      // §2b/§5 — the attempt-mirror is an EGRESS artifact: a token-shaped value
+      // in an event field (a credential-URL topic, an sk-/AKIA event_id) must
+      // never persist RAW into the file-log. buildEgressMirrorRecord scrubs each
+      // event-derived field BEFORE its cap (scrub injected here), so a secret the
+      // cap would otherwise truncate — losing its `@`/marker before the scrub saw
+      // it — is redacted while still intact (peer CRITICAL: the scrub was
+      // previously applied AFTER the cap). The egress_* control fields are short
+      // enums that carry no secret; ts is an ISO timestamp.
+      const record = buildEgressMirrorRecord({
+        event, service, egressStatus: result.egressStatus, outcome, now, scrub: scrubSecrets,
+      });
       appendFileLog({ repoRoot: root, record });
     } catch {
       // best-effort attempt visibility; never fail the emit path on a mirror write
