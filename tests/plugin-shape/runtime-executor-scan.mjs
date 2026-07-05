@@ -229,6 +229,193 @@ export function findMemberCalls(code, obj, method) {
   return results;
 }
 
+// Blank the literal TEXT of string/template literals (keep delimiters,
+// structure, newlines, and positions) so identifier-position scans don't match a
+// `fetch` token inside a string. Template `${…}` interpolations are EXECUTABLE
+// CODE (they can hold a real `fetch(...)`), so they are copied verbatim, not
+// blanked (Codex round-3 CRITICAL). Comments are already stripped upstream.
+// Residual (documented): a `fetch(` nested inside a further template literal
+// *inside* an interpolation is skipped opaquely by matchDelimiter's string skip —
+// a token scanner cannot follow arbitrary nesting; the SOUND check is §2b.
+function blankStrings(code) {
+  let out = '';
+  let i = 0;
+  const n = code.length;
+  while (i < n) {
+    const c = code[i];
+    if (c === "'" || c === '"') {
+      out += c; i += 1;
+      while (i < n) {
+        const d = code[i];
+        if (d === '\\' && i + 1 < n) { out += '  '; i += 2; continue; }
+        if (d === c) { out += d; i += 1; break; }
+        out += d === '\n' ? '\n' : ' '; i += 1;
+      }
+      continue;
+    }
+    if (c === '`') {
+      out += c; i += 1;
+      while (i < n) {
+        const d = code[i];
+        if (d === '\\' && i + 1 < n) { out += '  '; i += 2; continue; }
+        if (d === '`') { out += d; i += 1; break; }
+        if (d === '$' && code[i + 1] === '{') {
+          const close = matchDelimiter(code, i + 1); // matches `}`, skipping strings
+          if (close === -1) { out += ' '; i += 1; continue; }
+          out += code.slice(i, close + 1); // copy ${…} interpolation verbatim (code)
+          i = close + 1;
+          continue;
+        }
+        out += d === '\n' ? '\n' : ' '; i += 1;
+      }
+      continue;
+    }
+    out += c; i += 1;
+  }
+  return out;
+}
+
+// FAIL-CLOSED analysis of `fetch` use (ADR-0041 §2d). `fetch` is a global with
+// no import to anchor on and JS offers unbounded indirection, so this flags
+// EVERY reference to fetch and permits ONLY a direct `fetch(` call (which the
+// gate then validates against the pinned spec). Returns:
+//   directCalls: [{inner}] — bare `fetch(` calls (the only permitted form);
+//   indirect: bool         — ANY other fetch reference (a bare `fetch` used as a
+//                            value, a member `.fetch`, computed `['fetch']`,
+//                            `Reflect.get(...,'fetch')`, or a local shadow
+//                            `const/let/var/function fetch`);
+//   anyUse: bool           — directCalls.length > 0 || indirect.
+// Residual (documented, out of scope for a token scanner): string-concatenated
+// obfuscation like `globalThis['fet'+'ch']`. The SOUND behavioral check is the
+// channel slice's fetchImpl-injection unit test (ADR-0041 §2b).
+export function analyzeFetchUse(code) {
+  const codeNoStr = blankStrings(code);
+  // Count REAL bare `fetch(` calls on the BLANKED code so a `fetch(` written
+  // inside a string literal is never mistaken for a call (nor lets a decoy
+  // string cancel a real reference in the arithmetic below — Codex re-review
+  // CRITICAL). blankStrings preserves length, so a call's open-paren index is
+  // identical in `code` and `codeNoStr`; the real inner (with real string
+  // values) is re-extracted from the UNBLANKED `code` for validation.
+  const blankedCalls = findBareCalls(codeNoStr, ['fetch']);
+  const directCalls = blankedCalls.map((c) => {
+    const close = matchDelimiter(code, c.openParen);
+    return { inner: close === -1 ? '' : code.slice(c.openParen + 1, close) };
+  });
+  // A bare `fetch` identifier count above the direct-call count means fetch is
+  // referenced as a value (alias / `.call` receiver / argument / return /
+  // destructure target).
+  const bareTokens = (codeNoStr.match(/(?<![.\w$])fetch\b/g) || []).length;
+  const bareNonCall = Math.max(0, bareTokens - blankedCalls.length);
+  const memberFetch = /\.\s*fetch\b/.test(codeNoStr);   // x.fetch / globalThis.fetch / o.fetch
+  // A name-based reference to the global fetch via a string key: computed member
+  // access `['fetch']`, or a 'fetch' string passed as the LAST argument of a call
+  // — the reflective shape `Reflect.get(obj, 'fetch')`,
+  // `Object.getOwnPropertyDescriptor(obj, 'fetch')`, `Reflect['get'](obj,'fetch')`
+  // (`, 'fetch')` regardless of the object or padding). Keyed on `, 'fetch')` (not
+  // proximity to a global-object token — Codex round-3 evaded a fixed window with
+  // padding) and NOT on any 'fetch' string, so a legitimate DATA string (a git
+  // subcommand 'fetch' in an allowlist array — `, 'fetch',` / `, 'fetch']`) is not
+  // over-flagged. Residual (documented): deeper indirection (a helper returning
+  // the global, string-concat obfuscation) is out of scope for a token scanner —
+  // the SOUND check is the channel slice's fetchImpl test (§2b).
+  const computedFetch = /\[\s*(['"`])fetch\1\s*\]/.test(code);
+  const reflectiveFetch = /,\s*(['"`])fetch\1\s*\)/.test(code);
+  const shadowFetch = /\b(?:const|let|var|function\s*\*?)\s+fetch\b/.test(codeNoStr);
+  const indirect = bareNonCall > 0 || memberFetch || computedFetch || reflectiveFetch || shadowFetch;
+  return { directCalls, indirect, anyUse: directCalls.length > 0 || indirect };
+}
+
+// Validate ONE direct pinned `fetch(url, init)` call. Returns a violation detail
+// string, or null when conformant. Precise (not text-substring): exactly two
+// args; the URL a LONE literal (no `&&`/`||`/ternary/concatenation — so the
+// value equals the text) matching endpointPrefix..endpointSuffix; the init an
+// inline object whose TOP-LEVEL method/redirect/timeout properties are the pinned
+// literals (a token buried in a nested string is not a property, so it fails).
+export function validatePinnedFetch(inner, spec) {
+  const args = splitTopLevel(inner);
+  if (args.length !== 2) {
+    return `pinned fetch must take exactly (url, init) — got ${args.length} arg(s)`;
+  }
+  const urlText = (args[0] || '').trim();
+  const q = urlText[0];
+  if (q !== "'" && q !== '"' && q !== '`') {
+    return 'pinned fetch URL must be a lone string/template literal (got a non-literal expression)';
+  }
+  const litEnd = skipString(urlText, 0); // index just past the closing quote/backtick
+  if (urlText.slice(litEnd).trim() !== '') {
+    return `pinned fetch URL must be a lone literal — no operator/concatenation after it (${truncate(urlText)})`;
+  }
+  const litBody = urlText.slice(1, litEnd - 1);
+  if (!litBody.startsWith(spec.endpointPrefix)) {
+    return `pinned fetch URL must begin with ${spec.endpointPrefix} (host+path pinned)`;
+  }
+  if (spec.endpointSuffix && !litBody.endsWith(spec.endpointSuffix)) {
+    return `pinned fetch URL must end with ${spec.endpointSuffix} (endpoint pinned)`;
+  }
+  const opts = (args[1] || '').trim();
+  if (opts[0] !== '{') {
+    return `pinned fetch init must be an inline object literal { … } (${truncate(opts)})`;
+  }
+  const oClose = matchDelimiter(opts, 0);
+  if (oClose === -1) return 'pinned fetch init object is unterminated';
+  // Parse the TOP-LEVEL properties ourselves (not first-match extractObjectProp)
+  // so a later duplicate key, a spread, or a computed key that would OVERRIDE the
+  // pinned method/redirect/signal at runtime is rejected (Codex re-review
+  // CRITICAL). A token buried in a nested string is not a top-level property, so
+  // it never satisfies a pinned key.
+  const PINNED_KEYS = new Set(['method', 'redirect', 'signal', 'timeout']);
+  const seen = {};
+  for (const prop of splitTopLevel(opts.slice(1, oClose))) {
+    const t = prop.trim();
+    if (t === '') continue;
+    if (t.startsWith('...')) {
+      return 'pinned fetch init must not use spread (…) — it can override the pinned method/redirect/timeout';
+    }
+    if (t.startsWith('[')) {
+      return 'pinned fetch init must not use a computed key — it can inject a pinned property dynamically';
+    }
+    const m = t.match(/^([\w$]+|'[^']*'|"[^"]*")\s*:\s*([\s\S]+)$/);
+    if (!m) {
+      const short = t.match(/^([\w$]+)$/);
+      if (short) {
+        // plain shorthand: reject a pinned key (value hidden); ignore others
+        // (e.g. `body`).
+        if (PINNED_KEYS.has(short[1])) {
+          return `pinned fetch init '${short[1]}' must be an explicit key: value (no shorthand)`;
+        }
+        continue;
+      }
+      // getter/setter/method-shorthand/other non-`key: value` form — a getter or
+      // method named like a pinned key overrides it at runtime while a static
+      // scan reads only the earlier literal (Codex round-3 HIGH). Fail closed.
+      return `pinned fetch init has a non-literal property (${truncate(t)}) — getters/setters/methods/computed keys can override the pinned request`;
+    }
+    const key = m[1].replace(/['"]/g, '');
+    if (PINNED_KEYS.has(key)) {
+      if (seen[key] !== undefined) return `pinned fetch init has a duplicate '${key}' key — cannot statically pin`;
+      seen[key] = m[2].trim();
+    }
+  }
+  if (spec.method && normalizeElement(seen.method || '') !== spec.method) {
+    return `pinned fetch init.method must be the literal '${spec.method}'`;
+  }
+  if (spec.redirect && normalizeElement(seen.redirect || '') !== spec.redirect) {
+    return `pinned fetch init.redirect must be the literal '${spec.redirect}'`;
+  }
+  if (spec.requireTimeout) {
+    // Node's global fetch has NO `timeout` option — only an AbortSignal bounds
+    // the request. Require signal to be EXACTLY AbortSignal.timeout(<arg>) with
+    // no surrounding operator that could resolve to an unbounded signal (Codex
+    // re-review MAJOR: `signal: never || AbortSignal.timeout(5)` and a bare
+    // `timeout:` both slipped the substring check).
+    const sig = (seen.signal || '').trim();
+    if (!/^AbortSignal\s*\.\s*timeout\s*\([^)]*\)$/.test(sig)) {
+      return 'pinned fetch init.signal must be exactly AbortSignal.timeout(<ms>) (Node fetch ignores a `timeout` option; an operator-guarded signal is not bounded)';
+    }
+  }
+  return null;
+}
+
 // Find ALL command-origin calls in a file, closing the aliasing/member/namespace
 // gaps (Codex review MAJOR #1): base EXEC_CALL_NAMES, plus
 //   - imported aliases of exec functions / capability primitives
@@ -672,6 +859,48 @@ export function scanFile({ fileName, source, registry }) {
       for (const piece of nm[1].split(',')) {
         const key = piece.trim().split(/\s*:\s*/)[0].trim();
         if (/^[\w$]+$/.test(key)) flag(key, 'destructure');
+      }
+    }
+  }
+
+  // --- Global-fetch-gate (non-import-anchored, ADR-0041 §2d) ----------------
+  // FAIL-CLOSED: `fetch` is a global with no import to anchor on and JS offers
+  // unbounded indirection, so this flags EVERY fetch reference and permits ONLY a
+  // direct pinned `fetch(url, init)` call in a GLOBAL_FETCH_USERS file. A fetch
+  // reference in a non-registered file, or any indirect/member/computed/aliased/
+  // `.call`/shadowed fetch anywhere, is a violation. The ADR-0041 §11 keystone
+  // that must land before any fetch use. The SOUND behavioral check of the pinned
+  // request is the channel slice's fetchImpl unit test (ADR-0041 §2b); this gate
+  // is the fail-closed CI tripwire + defense-in-depth (see registry header).
+  {
+    const fetchUse = analyzeFetchUse(code);
+    if (fetchUse.anyUse) {
+      const spec = (registry.GLOBAL_FETCH_USERS || {})[fileName];
+      if (!spec) {
+        violations.push({
+          rule: 'global-fetch-gate', file: fileName,
+          detail: 'global fetch referenced in a file not registered as a GLOBAL_FETCH_USERS entry (ADR-0041 §2d)',
+        });
+      } else {
+        if (fetchUse.indirect) {
+          violations.push({
+            rule: 'global-fetch-gate', file: fileName,
+            detail: 'only a DIRECT pinned fetch(url, init) call is allowed — no member/computed/aliased/.call/shadowed fetch reference (it would evade static pinned-request validation)',
+          });
+        }
+        // Cap the number of direct calls (Codex re-review MAJOR): a second
+        // pinned-shape send could egress to a different token/recipient.
+        const maxCalls = spec.maxCalls ?? 1;
+        if (fetchUse.directCalls.length > maxCalls) {
+          violations.push({
+            rule: 'global-fetch-gate', file: fileName,
+            detail: `at most ${maxCalls} direct pinned fetch call permitted (found ${fetchUse.directCalls.length}) — a second call could egress to a different token/recipient`,
+          });
+        }
+        for (const call of fetchUse.directCalls) {
+          const v = validatePinnedFetch(call.inner, spec);
+          if (v) violations.push({ rule: 'global-fetch-gate', file: fileName, detail: v });
+        }
       }
     }
   }

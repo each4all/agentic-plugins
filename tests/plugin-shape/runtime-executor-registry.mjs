@@ -73,7 +73,70 @@ export const RAW_PROCESS_PRIMITIVES = [
 
 // Network primitive member calls (on an http/https/net binding). Only compat.mjs
 // is a network CAPABILITY_IMPORTERS entry, so these are allowed only there.
-export const NETWORK_PRIMITIVES = ['get', 'request', 'connect', 'createConnection', 'createServer'];
+// `fetch` is included so a `binding.fetch(` member call inside a network-importer
+// is also gated; the GLOBAL `fetch` (a bare call with no import to anchor on) is
+// handled separately by the global-fetch-gate (ADR-0041 §2d).
+export const NETWORK_PRIMITIVES = ['get', 'request', 'connect', 'createConnection', 'createServer', 'fetch'];
+
+// ---------------------------------------------------------------------------
+// Global fetch (ADR-0041 §2d E1 egress) — a NON-import-anchored network capability
+// ---------------------------------------------------------------------------
+
+// `fetch` is a runtime GLOBAL (Node built-in): there is no import to anchor the
+// import/network gates on, so a bare `fetch(...)` or any indirection slips past
+// every import-anchored gate above. The global-fetch-gate
+// (runtime-executor-scan.mjs) is deliberately FAIL-CLOSED — it flags EVERY
+// reference to `fetch` (bare/member/computed/aliased/`.call`/Reflect/shadowing)
+// in a runtime script and permits ONLY a direct pinned `fetch(url, init)` call
+// in a GLOBAL_FETCH_USERS entry. It is a CI tripwire + defense-in-depth, NOT a
+// sound sandbox: a determined author could still obfuscate past a token scanner
+// (e.g. `globalThis['fet'+'ch']`) or edit this registry, so the SOUND behavioral
+// validation of the pinned request is the `channel` slice's fetchImpl-injection
+// unit test (ADR-0041 §2b — it observes the actual URL/method/redirect/timeout
+// fetch received). This gate's job is to catch accidental / review-visible fetch
+// additions and to fail closed on anything it cannot recognize as the exact
+// pinned shape. (Codex review: the previous recognize-safe-forms design was
+// fail-OPEN — many indirections evaded it. Now inverted to flag-everything.)
+
+// The ONLY runtime scripts permitted to call the global `fetch`, each with the
+// pinned-request conformance spec its ONE direct call must satisfy. v1 has
+// exactly one: notify.mjs, for the ADR-0041 §2d E1 egress channel (a pinned POST
+// to the fixed Telegram sendMessage endpoint). This entry is registered HERE —
+// the ADR-0041 §11 keystone slice — BEFORE the `channel` slice adds the actual
+// fetch, so the pinned call is conformance-checked the moment it appears (the
+// conformance suite would fail the instant an unregistered/non-pinned fetch
+// landed in notify.mjs). The registration is INERT until fetch is actually used
+// (the gate only fires on a real fetch reference), so it grants nothing on its
+// own (registry never looser than code).
+//
+// Spec fields — the registered file may reference `fetch` ONLY as the callee of
+// a DIRECT `fetch(url, init)` call (no member/computed/alias/`.call`/shadow — all
+// rejected), taking EXACTLY two args, where:
+//   - `endpointPrefix` / `endpointSuffix`: the URL is a lone string/template
+//     literal (no `&&`/`||`/ternary/concatenation — the value must equal the
+//     text) that STARTS WITH endpointPrefix and ENDS WITH endpointSuffix, pinning
+//     the full `https://api.telegram.org/bot<TOKEN>/sendMessage` shape (host+path,
+//     token interpolated only in between) — ADR-0041 §2b;
+//   - `method` / `redirect`: the init object's top-level `method`/`redirect`
+//     properties must be exactly these string literals (parsed as real object
+//     keys, never a token buried in a nested string); redirect:'error' is what
+//     makes host-pinning egress-bounding (fetch follows redirects by default);
+//   - `requireTimeout`: the init object must set a bounded timeout (a `signal`
+//     of `AbortSignal.timeout(...)` or a numeric `timeout`) so a slow/hung
+//     endpoint cannot wedge the hook path (§2e).
+//   - `maxCalls`: the max number of direct pinned fetch calls the file may make
+//     (v1: 1 — a single sendMessage; a second pinned-shape call could egress to
+//     a different token/recipient).
+export const GLOBAL_FETCH_USERS = {
+  'notify.mjs': {
+    endpointPrefix: 'https://api.telegram.org/bot',
+    endpointSuffix: '/sendMessage',
+    method: 'POST',
+    redirect: 'error',
+    requireTimeout: true,
+    maxCalls: 1,
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Command origin (what binary is launched)

