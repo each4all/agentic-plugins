@@ -26,7 +26,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile, utimes } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -149,7 +149,7 @@ describe('plugins/attention — §1 contract parity vs canonical runtime lib', (
     }
   });
 
-  it('buildEventId is behaviorally identical (incl. the default status token)', () => {
+  it('buildEventId is behaviorally identical (incl. the default status token + ADR-0041 hostname weaving)', () => {
     const cases = [
       { repoIdent: 'repo-abc', kind: 'approval', subject: 'session:s1:aaaabbbbcccc' },
       { repoIdent: 'repo-abc', kind: 'idle', subject: 'session:s1' },
@@ -157,6 +157,10 @@ describe('plugins/attention — §1 contract parity vs canonical runtime lib', (
       { repoIdent: 'repo-abc', kind: 'workflow-terminal', subject: 'compose-x', status: 'terminal' },
       { repoIdent: 'repo-abc', kind: 'subagent-complete', subject: 'agent-9', status: 'completed' },
       { repoIdent: 'repo-abc', kind: 'peer-run-terminal', subject: 'run-1', status: 'failed' },
+      // ADR-0041 §4 — the woven-hostname path (incl. sanitization) must be
+      // identical across the copy-not-import copies.
+      { repoIdent: 'repo-abc', kind: 'turn-complete', subject: 'session:s1:p1', hostname: 'mba.local' },
+      { repoIdent: 'repo-abc', kind: 'workflow-terminal', subject: 'compose-x', status: 'terminal', hostname: 'a:b c/d' },
     ];
     for (const c of cases) {
       strictEqual(sensorLib.buildEventId(c), canonical.buildEventId(c));
@@ -164,6 +168,9 @@ describe('plugins/attention — §1 contract parity vs canonical runtime lib', (
     strictEqual(sensorLib.DEFAULT_STATUS_TOKEN, canonical.DEFAULT_STATUS_TOKEN);
     deepStrictEqual([...sensorLib.KINDS_WITH_DEFAULT_STATUS], [...canonical.KINDS_WITH_DEFAULT_STATUS]);
     deepStrictEqual([...sensorLib.NOTIFY_KINDS], [...canonical.NOTIFY_KINDS]);
+    // ADR-0041 §4 — the routing-field contract copies stay identical.
+    deepStrictEqual([...sensorLib.OPTIONAL_ROUTING_FIELDS], [...canonical.OPTIONAL_ROUTING_FIELDS]);
+    deepStrictEqual({ ...sensorLib.ROUTING_FIELD_CAPS }, { ...canonical.ROUTING_FIELD_CAPS });
   });
 
   it('both libs reject an absent status for status-bearing kinds', () => {
@@ -246,12 +253,107 @@ describe('plugins/attention — §1 contract parity vs canonical runtime lib', (
         body: 'agent agent-9',
         urgency: 'normal',
       }),
+      // ADR-0041 §4 — an event carrying the optional routing fields (woven host
+      // token in the id + top-level hostname/topic/session_hint) must ALSO pass
+      // the canonical validateEvent.
+      sensorLib.buildEvent({
+        repoIdent,
+        kind: 'turn-complete',
+        subject: sensorLib.turnCompleteSubject({ sessionId: 's1', promptId: 'p1' }),
+        title: 'Turn complete — repo',
+        urgency: 'normal',
+        hostname: sensorLib.resolveHostname({ env: { AGENTIC_NOTIFY_HOSTNAME: 'test-box' } }),
+        topic: 'repo:main',
+        sessionHint: sensorLib.buildSessionHint({ sessionId: 's1' }),
+      }),
     ];
     for (const event of events) {
       const verdict = canonical.validateEvent(event);
       deepStrictEqual(verdict, { ok: true, errors: [] }, JSON.stringify(event));
       strictEqual(event.source, 'attention-claude');
     }
+    // ADR-0041 §4 — the routing-field event actually carries the woven id + the
+    // top-level fields (born capped; not silently dropped by buildEvent).
+    const routed = events[events.length - 1];
+    strictEqual(routed.hostname, 'test-box');
+    strictEqual(routed.topic, 'repo:main');
+    ok(/:host-[0-9a-f]{16}:/.test(routed.event_id), 'event_id must weave the bounded host-hash token');
+    ok(typeof routed.session_hint === 'string' && routed.session_hint.length > 0);
+  });
+});
+
+describe('plugins/attention — resolveGitBranch (ADR-0041 §3 topic; pure fs, no git exec)', () => {
+  let base;
+  before(async () => { base = await mkdtemp(join(tmpdir(), 'attention-branch-')); });
+  after(async () => { await rm(base, { recursive: true, force: true }); });
+
+  it('reads the branch from a normal .git/HEAD', async () => {
+    const repo = join(base, 'normal');
+    await mkdir(join(repo, '.git'), { recursive: true });
+    await writeFile(join(repo, '.git', 'HEAD'), 'ref: refs/heads/feat/my-branch\n');
+    strictEqual(sensorLib.resolveGitBranch(repo), 'feat/my-branch');
+    strictEqual(sensorLib.resolveTopic({ repoRoot: repo }), `${basename(repo)}:feat/my-branch`);
+  });
+
+  it('follows a .git FILE pointer (worktree/submodule) to the real gitdir HEAD', async () => {
+    const repo = join(base, 'worktree');
+    const gitdir = join(base, 'real-gitdir');
+    await mkdir(gitdir, { recursive: true });
+    await mkdir(repo, { recursive: true });
+    await writeFile(join(gitdir, 'HEAD'), 'ref: refs/heads/wt-branch\n');
+    await writeFile(join(repo, '.git'), `gitdir: ${gitdir}\n`);
+    strictEqual(sensorLib.resolveGitBranch(repo), 'wt-branch');
+  });
+
+  it('returns null on detached HEAD (raw sha) → topic degrades to repo label only', async () => {
+    const repo = join(base, 'detached');
+    await mkdir(join(repo, '.git'), { recursive: true });
+    await writeFile(join(repo, '.git', 'HEAD'), '0123456789abcdef0123456789abcdef01234567\n');
+    strictEqual(sensorLib.resolveGitBranch(repo), null);
+    strictEqual(sensorLib.resolveTopic({ repoRoot: repo }), basename(repo));
+  });
+
+  it('returns null when HEAD / the repo is missing (fail-closed)', async () => {
+    const repo = join(base, 'nohead');
+    await mkdir(join(repo, '.git'), { recursive: true });
+    strictEqual(sensorLib.resolveGitBranch(repo), null);
+    strictEqual(sensorLib.resolveGitBranch(join(base, 'does-not-exist')), null);
+    strictEqual(sensorLib.resolveGitBranch(''), null);
+  });
+
+  it('refuses a NON-REGULAR HEAD (dir/FIFO/device) → null, never blocks the hook (Codex peer MAJOR)', async () => {
+    // readFileSync on a FIFO/device would block the hook indefinitely; the
+    // regular-file gate must reject it. A directory HEAD is the portable proxy
+    // for a non-regular target (mkfifo is not available everywhere).
+    const repo = join(base, 'special-head');
+    await mkdir(join(repo, '.git', 'HEAD'), { recursive: true });
+    strictEqual(sensorLib.resolveGitBranch(repo), null);
+  });
+});
+
+describe('plugins/attention — buildEvent routing-field sanitization (ADR-0041 §5 defense-in-depth)', () => {
+  it('control-strips + caps routing fields at the build boundary (any caller, not just pre-sanitized ones)', () => {
+    const dirty = `repo:main${String.fromCharCode(9)}${String.fromCharCode(1)}branch`;
+    const ev = sensorLib.buildEvent({
+      repoIdent: 'repo-a', kind: 'idle', subject: 'session:s1', title: 't', urgency: 'normal',
+      hostname: 'mba', topic: dirty, sessionHint: 'abc123',
+    });
+    for (const field of ['hostname', 'topic', 'session_hint']) {
+      for (const ch of ev[field] ?? '') {
+        const c = ch.charCodeAt(0);
+        ok(!(c < 0x20 || (c >= 0x7f && c <= 0x9f)), `${field} carries a control char`);
+      }
+    }
+    ok(ev.topic.startsWith('repo:main'), 'topic content preserved after control-strip');
+    strictEqual(canonical.validateEvent(ev).ok, true);
+  });
+
+  it('caps an over-long routing field to its ROUTING_FIELD_CAPS bound', () => {
+    const ev = sensorLib.buildEvent({
+      repoIdent: 'repo-a', kind: 'idle', subject: 'session:s1', title: 't', urgency: 'normal',
+      topic: 'x'.repeat(sensorLib.ROUTING_FIELD_CAPS.topic + 100),
+    });
+    strictEqual(ev.topic.length, sensorLib.ROUTING_FIELD_CAPS.topic);
   });
 });
 
@@ -561,6 +663,10 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
       await rm(repo, { recursive: true, force: true });
     });
 
+    // ADR-0041 §4 — pin the machine label so the woven event_id is
+    // deterministic regardless of the CI host's real hostname.
+    const E2E_HOSTNAME = 'e2e-host';
+
     function runSensorE2E(name, payload) {
       return spawnSync(
         process.execPath,
@@ -571,6 +677,7 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
             ...process.env,
             AGENTIC_RUNTIME_ROOT: runtimeStub,
             ATTENTION_TEST_CAPTURE: captureFile,
+            AGENTIC_NOTIFY_HOSTNAME: E2E_HOSTNAME,
           },
           encoding: 'utf8',
           timeout: 30_000,
@@ -612,8 +719,13 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
           repoIdent: canonical.deriveRepoIdent(expectedRepoRoot),
           kind: 'approval',
           subject: canonical.approvalSubject({ sessionId: 'sess-1', message: 'Allow Bash?' }),
+          hostname: E2E_HOSTNAME,
         }),
       );
+      // ADR-0041 §4 — routing/display fields populated (hostname woven + top-level).
+      strictEqual(event.hostname, E2E_HOSTNAME);
+      strictEqual(event.topic, basename(expectedRepoRoot));
+      ok(typeof event.session_hint === 'string' && event.session_hint.length > 0);
     });
 
     it('other notification types are ignored', async () => {
@@ -646,8 +758,13 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
           repoIdent: canonical.deriveRepoIdent(repo),
           kind: 'turn-complete',
           subject: canonical.turnCompleteSubject({ sessionId: 'sess-1', promptId: 'prompt-7' }),
+          hostname: E2E_HOSTNAME,
         }),
       );
+      // ADR-0041 §4 — the bare turn-complete still carries the routing fields.
+      strictEqual(event.hostname, E2E_HOSTNAME);
+      ok(typeof event.topic === 'string' && event.topic.length > 0);
+      ok(typeof event.session_hint === 'string' && event.session_hint.length > 0);
     });
 
     it('Stop with a fresh rendered projection → workflow-terminal (and NO bare turn-complete)', async () => {
@@ -681,6 +798,8 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
         strictEqual(event.kind, 'workflow-terminal');
         strictEqual(event.refs.workflow_id, wfId);
         strictEqual(event.refs.path, '.agentic-plugins/state/engineer/workflows/x.md');
+        // ADR-0041 §3 — phase rides in refs when a fresh projection exists.
+        strictEqual(event.refs.phase, 'summary-complete');
         strictEqual(
           event.event_id,
           canonical.buildEventId({
@@ -688,8 +807,13 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
             kind: 'workflow-terminal',
             subject: wfId,
             status: 'terminal',
+            hostname: E2E_HOSTNAME,
           }),
         );
+        // ADR-0041 §4 — routing/display fields on the workflow-terminal event.
+        strictEqual(event.hostname, E2E_HOSTNAME);
+        ok(typeof event.topic === 'string' && event.topic.length > 0);
+        ok(typeof event.session_hint === 'string' && event.session_hint.length > 0);
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
@@ -715,8 +839,12 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
           kind: 'subagent-complete',
           subject: 'agent-42',
           status: 'completed',
+          hostname: E2E_HOSTNAME,
         }),
       );
+      // ADR-0041 §4 — routing/display fields on the subagent-complete event.
+      strictEqual(event.hostname, E2E_HOSTNAME);
+      ok(typeof event.session_hint === 'string' && event.session_hint.length > 0);
     });
   });
 });

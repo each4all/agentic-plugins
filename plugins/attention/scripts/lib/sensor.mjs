@@ -36,6 +36,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { discoverRuntimePluginRoot } from '../discover-runtime.mjs';
@@ -63,6 +64,17 @@ export const KINDS_WITH_DEFAULT_STATUS = Object.freeze([
   'idle',
   'turn-complete',
 ]);
+
+// ADR-0041 §4 cross-machine routing/display fields — OPTIONAL, backward-
+// compatible schema extensions. COPY-NOT-IMPORT siblings of the canonical
+// runtime lib (parity-gated). Caps bound what a later egress channel may
+// transmit; sensor events are born capped in buildEvent.
+export const OPTIONAL_ROUTING_FIELDS = Object.freeze(['hostname', 'topic', 'session_hint']);
+export const ROUTING_FIELD_CAPS = Object.freeze({
+  hostname: 64,
+  topic: 120,
+  session_hint: 32,
+});
 
 // Attention's fixed status tokens for its status-bearing kinds. The sensor
 // observes exactly one status moment per kind — the workflow reached terminal,
@@ -105,11 +117,28 @@ export function deriveRepoIdent(repoRoot) {
   return `${base}-${shortHash(real, 16)}`;
 }
 
+// ADR-0041 §4 — derive a FIXED-LENGTH, colon-free host-hash token for weaving
+// into the event_id/dedupe key. COPY-NOT-IMPORT sibling of the canonical lib;
+// must stay behaviorally identical (parity-gated). The short hash bounds the id
+// growth to ~21 chars regardless of hostname length (a long hostname can never
+// overflow the emitter's 256-char cap); the readable hostname rides in the
+// top-level event.hostname field. Returns null when hostname is absent or
+// sanitizes to empty — the id then stays byte-identical to the pre-ADR-0041
+// format.
+function hostSegment(hostname) {
+  if (typeof hostname !== 'string') return null;
+  const sanitized = hostname.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, ROUTING_FIELD_CAPS.hostname);
+  return sanitized.length > 0 ? `host-${shortHash(sanitized, 16)}` : null;
+}
+
 // Compose <repo-ident>:<kind>:<subject>:<status>. There is deliberately no
 // source parameter — accepting one here is how dedupe would break. subject may
 // contain colons (session:<id>:<hash>); repoIdent and status may not, so the
-// first two and the last segment stay stable.
-export function buildEventId({ repoIdent, kind, subject, status } = {}) {
+// first two and the last segment stay stable. ADR-0041 §4 — an OPTIONAL
+// hostname weaves a colon-free host token into the subject region so the dedupe
+// key is per-machine distinct (multi-device → one-chat). Absent hostname ⇒
+// subject unchanged ⇒ id byte-identical to the pre-ADR-0041 format.
+export function buildEventId({ repoIdent, kind, subject, status, hostname } = {}) {
   requireNonEmptyString(repoIdent, 'repoIdent');
   requireNonEmptyString(subject, 'subject');
   if (!NOTIFY_KINDS.includes(kind)) {
@@ -132,7 +161,9 @@ export function buildEventId({ repoIdent, kind, subject, status } = {}) {
   if (effectiveStatus.includes(':')) {
     throw new TypeError('status must not contain a colon');
   }
-  return `${repoIdent}:${kind}:${subject}:${effectiveStatus}`;
+  const hostToken = hostSegment(hostname);
+  const effectiveSubject = hostToken ? `${hostToken}:${subject}` : subject;
+  return `${repoIdent}:${kind}:${effectiveSubject}:${effectiveStatus}`;
 }
 
 // Notification/permission_prompt → approval. The content hash keeps two
@@ -313,16 +344,131 @@ export function readFreshProjection({ repoRoot, persona, now = Date.now() } = {}
 
 // ── Event assembly + emit seam ──
 
-// Assemble a full §1 event object around a composed event_id.
-export function buildEvent({ repoIdent, kind, subject, status, title, body, urgency, refs } = {}) {
+// ── ADR-0041 §4 cross-machine routing/display field resolution ──
+
+// The machine label woven into every attention event_id (per-machine dedupe
+// distinctness) and egressed as the `hostname` field. An operator override
+// (AGENTIC_NOTIFY_HOSTNAME) wins over os.hostname() for machines whose kernel
+// hostname is unhelpful; sanitized + capped so it is a safe id segment and a
+// bounded egress field. Never throws (fail-closed): a resolution failure
+// degrades to '' and the event simply carries no hostname.
+export function resolveHostname({ env = process.env } = {}) {
+  let raw = '';
+  try {
+    const override = env && typeof env.AGENTIC_NOTIFY_HOSTNAME === 'string'
+      ? env.AGENTIC_NOTIFY_HOSTNAME.trim()
+      : '';
+    raw = override.length > 0 ? override : os.hostname();
+  } catch {
+    raw = '';
+  }
+  if (typeof raw !== 'string') return '';
+  return raw.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, ROUTING_FIELD_CAPS.hostname);
+}
+
+// Read a path ONLY if it is a regular file. statSync returns metadata without
+// blocking (even on a FIFO); readFileSync on a FIFO/device WOULD block the hook
+// path indefinitely — the isFile() gate is what keeps a malicious or broken
+// `.git/HEAD` (a FIFO, directory, or device node) from hanging the sensor
+// (ADR-0040 §7 never-block contract). Returns null for any non-regular target.
+function readRegularFileSync(filePath) {
+  const st = fs.statSync(filePath);
+  if (!st.isFile()) return null;
+  return fs.readFileSync(filePath, 'utf8');
+}
+
+// Resolve the current git branch by a pure fs read of .git/HEAD — NEVER a git
+// subprocess (ADR-0041 §3: no hidden git exec on the hot path). Handles the
+// worktree/submodule case where .git is a FILE pointing at the real gitdir.
+// Every read goes through readRegularFileSync, so a special-file `.git/HEAD`
+// can never block the hook. Returns the branch name, or null on detached HEAD /
+// any read failure.
+export function resolveGitBranch(repoRoot) {
+  try {
+    if (typeof repoRoot !== 'string' || repoRoot.length === 0) return null;
+    let gitDir = path.join(repoRoot, '.git');
+    const st = fs.statSync(gitDir);
+    if (st.isFile()) {
+      const pointer = readRegularFileSync(gitDir);
+      if (pointer === null) return null;
+      const m = pointer.trim().match(/^gitdir:\s*(.+)$/);
+      if (!m) return null;
+      gitDir = path.isAbsolute(m[1]) ? m[1] : path.resolve(repoRoot, m[1]);
+    }
+    const headRaw = readRegularFileSync(path.join(gitDir, 'HEAD'));
+    if (headRaw === null) return null;
+    const ref = headRaw.trim().match(/^ref:\s*refs\/heads\/(.+)$/);
+    return ref ? ref[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+// The §3 `topic` egress field: `repo:branch` from event-build-time values (no
+// git subprocess). Falls back to the repo label alone when the branch cannot be
+// resolved (detached HEAD, worktree edge). Capped for egress.
+export function resolveTopic({ repoRoot, repoLabel } = {}) {
+  const label = typeof repoLabel === 'string' && repoLabel.length > 0
+    ? repoLabel
+    : (typeof repoRoot === 'string' && repoRoot.length > 0 ? path.basename(repoRoot) : '');
+  if (label.length === 0) return '';
+  const branch = resolveGitBranch(repoRoot);
+  const topic = branch ? `${label}:${branch}` : label;
+  return topic.slice(0, ROUTING_FIELD_CAPS.topic);
+}
+
+// The §4 `session_hint` egress field: a short, non-reversible hash of the
+// session id (stable per session so same-host ssh+tmux sessions stay distinct
+// in the egress display, without exposing the raw id). Prompt id is the
+// fallback seed. Returns '' when no id is available.
+export function buildSessionHint({ sessionId, promptId } = {}) {
+  const seed = typeof sessionId === 'string' && sessionId.length > 0
+    ? sessionId
+    : (typeof promptId === 'string' && promptId.length > 0 ? promptId : '');
+  if (seed.length === 0) return '';
+  return shortHash(seed, 12).slice(0, ROUTING_FIELD_CAPS.session_hint);
+}
+
+// ── Event assembly ──
+
+// Control-strip + whitespace-collapse + cap a routing/display field at the BUILD
+// boundary, so every caller — the hooks today and any future producer — emits
+// clean, bounded egress-bound fields, not only callers that pre-sanitize their
+// input (peer review: centralize routing-field sanitization here). Mirrors the
+// emitter's own field hardening; the egress-only secret-scrub is a later slice.
+function sanitizeRoutingField(value, cap) {
+  return String(value)
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, cap);
+}
+
+// Assemble a full §1 event object around a composed event_id. ADR-0041 §4 —
+// OPTIONAL hostname/topic/sessionHint are woven into the event_id (hostname)
+// and set as sanitized + born-capped routing/display fields; omitting them
+// yields the pre-ADR-0041 event shape (backward-compat + parity).
+export function buildEvent({
+  repoIdent, kind, subject, status, title, body, urgency, refs,
+  hostname, topic, sessionHint,
+} = {}) {
   const event = {
-    event_id: buildEventId({ repoIdent, kind, subject, status }),
+    event_id: buildEventId({ repoIdent, kind, subject, status, hostname }),
     source: EVENT_SOURCE,
     kind,
     title,
     body: typeof body === 'string' ? body : '',
     urgency,
   };
+  for (const [key, value] of [
+    ['hostname', hostname],
+    ['topic', topic],
+    ['session_hint', sessionHint],
+  ]) {
+    if (typeof value !== 'string' || value.length === 0) continue;
+    const clean = sanitizeRoutingField(value, ROUTING_FIELD_CAPS[key]);
+    if (clean.length > 0) event[key] = clean;
+  }
   if (refs && typeof refs === 'object' && !Array.isArray(refs)) {
     event.refs = refs;
   }
