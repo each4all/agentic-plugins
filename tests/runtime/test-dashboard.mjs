@@ -29,6 +29,11 @@ import {
   summarizeNotifyConfig,
 } from '../../plugins/runtime/scripts/dashboard.mjs';
 import { RUNTIME_VERSION } from '../../plugins/runtime/scripts/version.mjs';
+import {
+  egressThrottleDir,
+  egressThrottleKey,
+  recordEgressFailure,
+} from '../../plugins/runtime/scripts/lib/egress-semantics.mjs';
 
 const DASHBOARD_CLI = path.resolve(
   fileURLToPath(new URL('.', import.meta.url)),
@@ -457,6 +462,81 @@ describe('runtime dashboard notify sections', () => {
     const text = renderDashboardText(report);
     assert.match(text, /recent notifications \(1\)/);
     assert.match(text, /\[workflow-terminal\] done/);
+  });
+});
+
+describe('runtime dashboard egress attempt visibility (ADR-0041 §6)', () => {
+  it('projects egress overlay fields on mirror rows and omits them on local rows', async () => {
+    const root = makeRepo();
+    const notifyDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify');
+    fs.mkdirSync(notifyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(notifyDir, 'log.ndjson'),
+      [
+        '{"ts":"2026-07-04T11:00:00Z","kind":"approval","urgency":"urgent","title":"local","event_id":"a"}',
+        '{"ts":"2026-07-04T11:01:00Z","kind":"approval","urgency":"urgent","title":"egressed","event_id":"b","egress_channel":"telegram","egress_status":"failed","egress_outcome":"timeout","hostname":"boxA"}',
+      ].join('\n'),
+    );
+    const recent = await readRecentNotifications({ repoRoot: root, limit: 5 });
+    const [local, mirror] = recent.entries;
+    assert.ok(!('egress_status' in local), 'local row carries no egress keys');
+    assert.equal(mirror.egress_channel, 'telegram');
+    assert.equal(mirror.egress_status, 'failed');
+    assert.equal(mirror.egress_outcome, 'timeout');
+  });
+
+  it('renders the egress overlay inline in the recent-notification rows', async () => {
+    const root = makeRepo();
+    fs.mkdirSync(path.join(root, '.agentic-plugins'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "file-log"\n');
+    const notifyDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify');
+    fs.mkdirSync(notifyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(notifyDir, 'log.ndjson'),
+      '{"ts":"2026-07-04T11:01:00Z","kind":"approval","urgency":"urgent","title":"egressed","event_id":"b","egress_channel":"telegram","egress_status":"failed","egress_outcome":"timeout"}\n',
+    );
+    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
+    assert.match(renderDashboardText(report), /egress:telegram=failed\(timeout\)/);
+  });
+
+  it('rolls up active egress throttles without flipping notify status', async () => {
+    const root = makeRepo();
+    const throttleDir = egressThrottleDir(root);
+    const key = egressThrottleKey({ eventId: 'e', service: 'telegram', fingerprint: 'fp' });
+    recordEgressFailure({ throttleDir, key, now: NOW.getTime(), baseMs: 3_600_000 });
+    const state = await inspectNotifyState({ repoRoot: root, now: NOW.getTime(), ttlSeconds: 300 });
+    assert.equal(state.egress.throttles, 1);
+    assert.equal(state.egress.active_throttles, 1);
+    assert.ok(state.egress.next_retry_at);
+    assert.notEqual(state.status, 'needs_attention');
+  });
+
+  it('folds an active egress-throttle count into the rendered notify state line', async () => {
+    const root = makeRepo();
+    fs.mkdirSync(path.join(root, '.agentic-plugins'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.agentic-plugins', 'config.toml'), 'notify_channel = "file-log"\n');
+    const throttleDir = egressThrottleDir(root);
+    const key = egressThrottleKey({ eventId: 'e', service: 'telegram', fingerprint: 'fp' });
+    recordEgressFailure({ throttleDir, key, now: NOW.getTime(), baseMs: 3_600_000 });
+    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
+    assert.match(renderDashboardText(report), /egress: 1 throttled/);
+  });
+
+  it('surfaces egress mirror rows even when the local channel is not file-log (§2c separate activation)', async () => {
+    const root = makeRepo();
+    // No notify_channel config → channel defaults to 'none'; an egress mirror
+    // still lands in the log because E1 activation is separate from the local
+    // channel. The dashboard must show it anyway (peer MAJOR).
+    const notifyDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify');
+    fs.mkdirSync(notifyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(notifyDir, 'log.ndjson'),
+      '{"ts":"2026-07-04T11:00:00Z","kind":"approval","urgency":"urgent","event_id":"b","egress_channel":"telegram","egress_status":"failed","egress_outcome":"timeout"}\n',
+    );
+    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
+    assert.notEqual(report.tier2.notify.config.channel, 'file-log');
+    assert.equal(report.tier2.notify.recent.status, 'available', 'egress mirror visible despite channel != file-log');
+    assert.match(renderDashboardText(report), /egress:telegram=failed\(timeout\)/);
   });
 });
 
