@@ -2,6 +2,13 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.3.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.2.0...plugin-attention-v0.3.0) (2026-07-05)
+
+
+### Features
+
+* **attention:** ADR-0041 §4 populate cross-machine routing fields on sensor events ([23de1b1](https://github.com/each4all/agentic-plugins/commit/23de1b1162e4ceda399cd682ad36350ffaee1bf0))
+
 ## [0.2.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.1.0...plugin-attention-v0.2.0) (2026-07-04)
 
 

@@ -14,6 +14,21 @@
 - The `founder` inventory addition changes the `PLUGIN_NAMES` set, which invalidates the freshness of any previously recorded `runtime:doctor` proof (the proof-reuse gate requires the full plugin set + versions to match). Re-record the doctor proof on a host where all five plugins (including founder) are installed; until then `runtime:doctor` re-runs the proof rather than reusing the now-stale record.
 - Deferred (pre-existing, out of this RT slice's scope; surfaced by the founder inventory expansion): `cutover-audit.mjs`'s package map still omits `plugins/founder` (the omcc cutover predates founder, so cutover parity over founder is a separate scoped decision); and `resolveCodexInstallState`'s not-installed evidence string is hardcoded to `runtime` for every plugin (a not-installed founder reads "does not report runtime as installed") — a generic-name fix threading the plugin name through that helper.
 
+## [0.73.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.72.1...plugin-runtime-v0.73.0) (2026-07-05)
+
+
+### Features
+
+* **runtime:** ADR-0041 §2c E1 egress config layer (verified-local reader + activation loader) ([#491](https://github.com/each4all/agentic-plugins/issues/491)) ([e425479](https://github.com/each4all/agentic-plugins/commit/e4254791c9122c1f7d90e5951544db85eeb96b23))
+* **runtime:** ADR-0041 §4 optional cross-machine routing fields in the event schema ([5fa0c9e](https://github.com/each4all/agentic-plugins/commit/5fa0c9e5b49acafebf6c4085212f35867da4d764))
+* **runtime:** ADR-0041 §6/§7 egress semantics (taxonomy + claim-finalization + attempt-mirror + dashboard) ([#495](https://github.com/each4all/agentic-plugins/issues/495)) ([8e48e14](https://github.com/each4all/agentic-plugins/commit/8e48e1412031d821a07061212419a6a5a1f48648))
+* **runtime:** ADR-0041 channel — Telegram E1 egress (pinned fetch + buildEgressPayload + egress secret-scrub) ([#496](https://github.com/each4all/agentic-plugins/issues/496)) ([552e634](https://github.com/each4all/agentic-plugins/commit/552e634f6c925def2381e792017cfe60f8e38925))
+
+
+### Bug Fixes
+
+* **runtime:** ADR-0041 E1 acceptance gate — scrub-before-cap + cross-host egress acceptance ([#497](https://github.com/each4all/agentic-plugins/issues/497)) ([4bf4ed9](https://github.com/each4all/agentic-plugins/commit/4bf4ed90a03b42fa0a1ae80347d999c64a95b128))
+
 ## [0.72.1](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.72.0...plugin-runtime-v0.72.1) (2026-07-04)
 
 
