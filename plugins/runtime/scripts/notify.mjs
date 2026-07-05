@@ -52,6 +52,31 @@ import {
   parseRuntimeConfigToml,
   validateConfigValue,
 } from './lib/runtime-config.mjs';
+import {
+  EGRESS_ENV_KEYS,
+  loadEgressActivation,
+} from './lib/egress-config.mjs';
+import {
+  EGRESS_OUTCOMES,
+  buildEgressMirrorRecord,
+  egressConfigFingerprint,
+  egressThrottleDir,
+  finalizeEgressAttempt,
+  shouldAttemptEgress,
+  suppressThrottledEgress,
+} from './lib/egress-semantics.mjs';
+import {
+  TELEGRAM_SERVICE,
+  buildEgressPayload,
+  buildTelegramSendBody,
+  classifyTelegramError,
+  classifyTelegramResult,
+  mapActivationReasonToOutcome,
+  renderEgressText,
+  scrubSecrets,
+  validateTelegramChatId,
+  validateTelegramToken,
+} from './lib/egress-channel.mjs';
 
 export const NOTIFY_LOG_MAX_BYTES = 1024 * 1024;
 export const NOTIFY_LOG_ROTATE_LOCK_STALE_MS = 60_000;
@@ -375,6 +400,179 @@ function dispatchOsascript({ title, body, spawnImpl = null, env = process.env })
 }
 
 // ---------------------------------------------------------------------------
+// Channel: telegram — ADR-0041 §2b/§2d/§2e E1 enumerated-metadata network egress
+// ---------------------------------------------------------------------------
+
+// Bounded timeout for the one pinned request (§2e). A slow/hung endpoint aborts
+// here and resolves to EGRESS_OUTCOMES.TIMEOUT — the fail-closed hook path is
+// never wedged and never throws.
+export const TELEGRAM_API_TIMEOUT_MS = 5000;
+
+// The ONE pinned egress request (ADR-0041 §2b/§2d). The executor guard's
+// global-fetch-gate (tests/plugin-shape/runtime-executor-scan.mjs) permits
+// exactly one DIRECT fetch(url, init) in this file — url an inline literal
+// pinned to https://api.telegram.org/bot<TOKEN>/sendMessage, method POST,
+// redirect:'error', a bounded AbortSignal.timeout — and rejects every
+// alias/member/computed/variable-URL form. The scanner cannot statically pin a
+// variable, so the real request re-specifies the (url, init) literals inline;
+// the `fetchImpl` injection arm (test-only, ADR-0041 §2b) re-specifies the SAME
+// inline shape it observes and uses a DISTINCT identifier that never matches the
+// gate's `fetch` token. The token is shape-validated (validateTelegramToken)
+// before it reaches this interpolation, so it can contribute only URL-path-safe
+// characters — no percent-encoding (which Telegram rejects on the ':' separator).
+async function dispatchTelegramRequest({ token, body, fetchImpl = null }) {
+  if (fetchImpl) {
+    return fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      redirect: 'error',
+      signal: AbortSignal.timeout(TELEGRAM_API_TIMEOUT_MS),
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+  }
+  return fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: 'POST',
+    redirect: 'error',
+    signal: AbortSignal.timeout(TELEGRAM_API_TIMEOUT_MS),
+    headers: { 'content-type': 'application/json' },
+    body,
+  });
+}
+
+// Orchestrate ONE egress attempt around the pinned request, consuming
+// egress-semantics' claim-finalization + failure throttle + attempt-mirror
+// (ADR-0041 §6/§7) and egress-channel's payload/scrub/validation helpers.
+// Reached ONLY when E1 is ENGAGED (loadEgressActivation.reason !==
+// 'missing-activation') — the operator explicitly opted into egress via env or
+// the verified-ignored-local layer, overriding the local channel for this emit
+// (§2c egress-override rule). Owns the pipeline's pre-claim (finalize
+// promote/release on the same event_id, so a local channel does not also run —
+// the mirror gives file-log visibility). NEVER throws: every path resolves to a
+// data result and the bounded await catches all rejections (§2e).
+async function runEgressDispatch({
+  root, event, egress, ownerToken, quietSuppressed, env, now, fetchImpl,
+}) {
+  // `service` is the coerced, non-empty label for the throttle key + mirror (both
+  // require a non-empty service). v1 has exactly one egress service, so an
+  // engaged-but-unknown-channel misconfig still labels under 'telegram'.
+  const service = egress.channel || TELEGRAM_SERVICE;
+  const dedupeDir = notifyDedupeDir(root);
+  const throttleDir = egressThrottleDir(root);
+  const eventId = event.event_id;
+  // The credential is read from the operator environment ONLY (never a file,
+  // never the activation descriptor). It is folded one-way into the throttle
+  // fingerprint (so a fixed/changed token auto-bypasses any cooldown) and passed
+  // to the pinned request; it is never logged, mirrored, or returned.
+  const rawToken = typeof env[EGRESS_ENV_KEYS.credential] === 'string'
+    ? env[EGRESS_ENV_KEYS.credential].trim()
+    : '';
+  // The fingerprint uses the RAW enum-safe channel (egress.channel — '' for a
+  // misconfig, 'telegram' when active), NOT the coerced `service`: §7's config-fix
+  // bypass requires that fixing the channel key (unknown → telegram) changes the
+  // fingerprint so the cooldown is bypassed. Coercing to 'telegram' here would
+  // leave the channel component constant across the fix and strand the retry.
+  const fingerprint = egressConfigFingerprint({
+    channel: egress.channel ?? '',
+    recipient: egress.recipient ?? '',
+    token: rawToken,
+  });
+
+  // finalize (promote/release the owned claim + record/clear throttle) then
+  // mirror a single sanitized attempt row (§6). The mirror is best-effort — a
+  // mirror-write failure must never fail the fail-closed emit path.
+  const finalizeAndMirror = (outcome) => {
+    const result = finalizeEgressAttempt({
+      dedupeDir, throttleDir, eventId, ownerToken, outcome, service, fingerprint, now,
+    });
+    try {
+      // §2b/§5 — the attempt-mirror is an EGRESS artifact: buildEgressMirrorRecord
+      // only caps/control-strips (like the local record), so a token-shaped value
+      // in an event field (e.g. a credential-URL topic, an sk-/AKIA event_id)
+      // would be persisted RAW into the file-log. Secret-scrub every string field
+      // before writing so no token-shaped value lands in an egress artifact (peer
+      // MAJOR). The egress_* control fields are short enums that scrub leaves
+      // untouched; ts is an ISO timestamp.
+      const record = buildEgressMirrorRecord({ event, service, egressStatus: result.egressStatus, outcome, now });
+      for (const key of Object.keys(record)) {
+        if (typeof record[key] === 'string') record[key] = scrubSecrets(record[key]);
+      }
+      appendFileLog({ repoRoot: root, record });
+    } catch {
+      // best-effort attempt visibility; never fail the emit path on a mirror write
+    }
+    return { status: result.egressStatus, stage: 'egress', reason: `egress-${outcome}`, channel: service };
+  };
+
+  // Config/credential errors are checked BEFORE quiet hours (peer MAJOR). A
+  // mirror row is a file-log record, not a phone notification, so surfacing a
+  // config error during quiet hours adds no notification noise — whereas letting
+  // quiet-hours preempt it would PROMOTE the claim (burning the TTL) and mask the
+  // error until the window closes, stranding the post-fix retry within the TTL.
+  // These paths RELEASE the claim so a fixed config re-fires immediately.
+
+  // Engaged but not active (missing token/recipient, unknown channel, credential
+  // collision): release the claim, record the failure throttle, mirror.
+  if (!egress.active) return finalizeAndMirror(mapActivationReasonToOutcome(egress.reason));
+
+  // Active but a shape-invalid credential/recipient — never interpolate a
+  // malformed token into the request path (§2b); treat as invalid activation.
+  if (!validateTelegramToken(rawToken) || !validateTelegramChatId(egress.recipient)) {
+    return finalizeAndMirror(EGRESS_OUTCOMES.INVALID_LOCAL_ACTIVATION);
+  }
+
+  // Quiet hours (§7 QUIET_HOURS): reached only for a WOULD-SEND (active + valid)
+  // egress — an intentional suppression that still burns the slot (promote), no
+  // throttle, mirror the suppression.
+  if (quietSuppressed) return finalizeAndMirror(EGRESS_OUTCOMES.QUIET_HOURS);
+
+  // Failure-throttle gate (§7): a persistently-failing provider must not
+  // re-dispatch on every repeated event. When throttled, release the owned
+  // pre-claim (so the post-cooldown retry is not itself deduped) and write NO
+  // mirror row — the dashboard surfaces active throttles separately.
+  const gate = shouldAttemptEgress({ throttleDir, eventId, service, fingerprint, now });
+  if (!gate.attempt) {
+    suppressThrottledEgress({ dedupeDir, eventId, ownerToken, now });
+    return { status: 'suppressed', stage: 'egress', reason: 'egress-throttled', channel: service };
+  }
+
+  // Build the enumerated §3 payload → plain text → §5 scrub → fixed body.
+  const payload = buildEgressPayload(event);
+  const text = scrubSecrets(renderEgressText(payload));
+  const send = buildTelegramSendBody({ chatId: egress.recipient, text });
+  if (!send.ok) return finalizeAndMirror(send.outcome); // BODY_CAP
+
+  // The one bounded request (§2e). All rejections are caught and classified — a
+  // slow, failing, or redirecting endpoint degrades to a recorded outcome, never
+  // a throw. Only response.status (a number) and the Telegram `ok` boolean are
+  // read — never the raw response text (§3: raw response text is never egressed
+  // or mirrored).
+  let outcome;
+  try {
+    const response = await dispatchTelegramRequest({ token: rawToken, body: send.body, fetchImpl });
+    const httpOk = Boolean(response) && typeof response.status === 'number'
+      && response.status >= 200 && response.status < 300;
+    let telegramOk = false;
+    if (httpOk && response && typeof response.json === 'function') {
+      try {
+        const parsed = await response.json();
+        telegramOk = parsed?.ok === true;
+      } catch (jsonError) {
+        // A body read aborted by AbortSignal.timeout is a TIMEOUT, not a
+        // provider rejection (peer MINOR) — rethrow so the outer catch classifies
+        // it. A genuine parse failure (unparseable 2xx body) stays provider-
+        // rejected.
+        if (jsonError?.name === 'AbortError' || jsonError?.name === 'TimeoutError') throw jsonError;
+        telegramOk = false;
+      }
+    }
+    outcome = classifyTelegramResult({ httpOk, telegramOk });
+  } catch (error) {
+    outcome = classifyTelegramError(error);
+  }
+  return finalizeAndMirror(outcome);
+}
+
+// ---------------------------------------------------------------------------
 // The emit pipeline
 // ---------------------------------------------------------------------------
 
@@ -382,13 +580,14 @@ function dispatchOsascript({ title, body, spawnImpl = null, env = process.env })
 //   { status: 'dispatched'|'suppressed'|'failed', stage, reason, channel }.
 // The CLI wrapper turns 'failed' into the single stderr line; suppressed
 // outcomes are fully silent by contract.
-export function runEmit({
+export async function runEmit({
   eventText,
   repoRoot = null,
   cwd = process.cwd(),
   homeDir = os.homedir(),
   now = Date.now(),
   spawnImpl = null,
+  fetchImpl = null,
   env = process.env,
 } = {}) {
   try {
@@ -402,6 +601,18 @@ export function runEmit({
       return { status: 'failed', stage: 'config', reason: loaded.errors.join('; '), channel: null };
     }
     const config = loaded.config;
+
+    // ADR-0041 §2c — E1 egress activation is resolved by a SEPARATE loader from
+    // the operator environment or a fail-closed-verified ignored-local layer,
+    // NEVER from the tracked notify_channel config. When ENGAGED it OVERRIDES the
+    // effective channel to the egress service (the "explicit egress-override
+    // rule"), so a default notify_channel=none does not suppress it and tracked
+    // config can never activate it. `engaged` (reason !== 'missing-activation')
+    // means the operator opted in — even a misconfigured opt-in takes the egress
+    // path so the failure is mirrored + throttled rather than silently dropped.
+    const egress = loadEgressActivation({ repoRoot: root, homeDir, env });
+    const egressEngaged = egress.reason !== 'missing-activation';
+    const effectiveChannel = egressEngaged ? (egress.channel || TELEGRAM_SERVICE) : config.channel;
 
     let event;
     try {
@@ -433,8 +644,10 @@ export function runEmit({
     // amendment: the action-specific gate is a CONFIG KEY). An off system
     // leaves NO notify state behind — in particular it must not burn a TTL
     // slot, or enabling a channel right after an event would wrongly
-    // suppress that subject's first real notification.
-    if (config.channel === 'none') {
+    // suppress that subject's first real notification. The EFFECTIVE channel is
+    // gated (not config.channel): an engaged E1 egress override lifts the
+    // none-default so egress fires even when the local channel is off (§2c).
+    if (effectiveChannel === 'none') {
       return { status: 'suppressed', stage: 'channel', reason: 'channel-none', channel: 'none' };
     }
 
@@ -467,7 +680,9 @@ export function runEmit({
       };
     }
 
-    // §1 pipeline stage 4 — quiet hours.
+    // §1 pipeline stage 4 — quiet hours. Computed WITHOUT early-returning: the
+    // egress path records quiet-hours as an outcome (promote claim + mirror)
+    // rather than a bare suppression, so evaluate first, branch below.
     const quiet = evaluateQuietHours({
       window: config.quietHours,
       timeZone: config.quietHoursTz,
@@ -475,6 +690,25 @@ export function runEmit({
       urgentBypass: config.urgentBypass,
       now,
     });
+
+    // ADR-0041 §2c/§6/§7 — E1 egress override. When engaged, egress OWNS the
+    // stage-3 pre-claim (finalize promote/release on this event_id) and records
+    // its own outcome (including quiet-hours) + attempt-mirror; the local channel
+    // does NOT also run. `claim.ownerToken` exists here because a non-claimed
+    // outcome already returned at stage 3.
+    if (effectiveChannel === TELEGRAM_SERVICE) {
+      return await runEgressDispatch({
+        root,
+        event,
+        egress,
+        ownerToken: claim.ownerToken,
+        quietSuppressed: quiet.suppressed,
+        env,
+        now,
+        fetchImpl,
+      });
+    }
+
     if (quiet.suppressed) {
       return { status: 'suppressed', stage: 'quiet-hours', reason: 'quiet-hours', channel: config.channel };
     }
@@ -566,7 +800,7 @@ async function main(argv) {
         process.stderr.write(`notify: emit failed at input: ${truncateReason(error?.message)}\n`);
       }
       if (eventText !== null) {
-        const result = runEmit({ eventText, repoRoot: parsed.opts.repoRoot });
+        const result = await runEmit({ eventText, repoRoot: parsed.opts.repoRoot });
         if (result.status === 'failed') {
           process.stderr.write(`notify: emit failed at ${result.stage}: ${truncateReason(result.reason)}\n`);
         }

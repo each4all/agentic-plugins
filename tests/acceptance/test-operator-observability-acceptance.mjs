@@ -434,11 +434,11 @@ describe('ADR-0040 acceptance (a3) -- quiet hours + urgent bypass (runEmit publi
   it('a NORMAL event inside the window is suppressed; outside it dispatches', async () => {
     const { root, home } = await fixture();
     const ev = event({ urgency: 'normal' });
-    const suppressed = runEmit({ eventText: JSON.stringify(ev), repoRoot: root, homeDir: home, now: IN_WINDOW });
+    const suppressed = await runEmit({ eventText: JSON.stringify(ev), repoRoot: root, homeDir: home, now: IN_WINDOW });
     strictEqual(suppressed.status, 'suppressed');
     strictEqual(suppressed.stage, 'quiet-hours');
 
-    const dispatched = runEmit({
+    const dispatched = await runEmit({
       eventText: JSON.stringify(event({ urgency: 'normal', event_id: buildId('accept', 'workflow-terminal', 'wf-out', 'terminal') })),
       repoRoot: root, homeDir: home, now: OUT_WINDOW,
     });
@@ -450,14 +450,14 @@ describe('ADR-0040 acceptance (a3) -- quiet hours + urgent bypass (runEmit publi
     const bypassOn = await fixture();
     const urgent = event({ urgency: 'urgent', event_id: buildId('accept', 'approval', 'session:s:h', 'fired'), kind: 'approval' });
     strictEqual(
-      runEmit({ eventText: JSON.stringify(urgent), repoRoot: bypassOn.root, homeDir: bypassOn.home, now: IN_WINDOW }).status,
+      (await runEmit({ eventText: JSON.stringify(urgent), repoRoot: bypassOn.root, homeDir: bypassOn.home, now: IN_WINDOW })).status,
       'dispatched',
       'urgent bypasses quiet hours by default -- approval attention is never silently dropped',
     );
 
     const bypassOff = await fixture({ notify_urgent_bypass_quiet_hours: 'false' });
     strictEqual(
-      runEmit({ eventText: JSON.stringify(urgent), repoRoot: bypassOff.root, homeDir: bypassOff.home, now: IN_WINDOW }).status,
+      (await runEmit({ eventText: JSON.stringify(urgent), repoRoot: bypassOff.root, homeDir: bypassOff.home, now: IN_WINDOW })).status,
       'suppressed',
       'the bypass is configurable off',
     );
@@ -476,7 +476,7 @@ describe('ADR-0040 acceptance (a3) -- macos-osascript is argv-only (runEmit publ
       calls.push({ cmd, args, opts });
       return { on() {}, unref() {} }; // fire-and-forget child stub
     };
-    const res = runEmit({ eventText: JSON.stringify(ev), repoRoot: root, homeDir: home, spawnImpl });
+    const res = await runEmit({ eventText: JSON.stringify(ev), repoRoot: root, homeDir: home, spawnImpl });
     return { res, calls };
   }
 
@@ -683,7 +683,7 @@ describe('ADR-0040 acceptance (b) -- sensors fail closed, the calling flow proce
     await writeConfig(root, { notify_channel: 'macos-osascript' });
     // A spawn that throws synchronously models a dead/unavailable channel binary;
     // runEmit must classify it as a failed dispatch, not propagate.
-    const result = runEmit({
+    const result = await runEmit({
       eventText: JSON.stringify(event()),
       repoRoot: root,
       homeDir: home,
