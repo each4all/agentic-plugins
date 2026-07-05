@@ -32,6 +32,8 @@ import {
   notifyStateDir,
   notifyDedupeDir,
   claimDedupe,
+  promoteClaim,
+  releaseClaim,
   OPTIONAL_ROUTING_FIELDS,
   ROUTING_FIELD_CAPS,
 } from '../../plugins/runtime/scripts/lib/notify-schema.mjs';
@@ -736,5 +738,93 @@ describe('notify-schema dedupe claim', () => {
       1,
       `expected exactly 1 reclaim winner, got ${winners.length}: ${JSON.stringify(results)}`,
     );
+  });
+});
+
+// ADR-0041 §7 — claim finalization (owner token + promote/release). ADR-0040's
+// claim stands for the full TTL regardless of outcome; E1 splits it so a failed
+// egress can free the slot without burning the success TTL.
+describe('notify-schema claim finalization (ADR-0041 §7)', () => {
+  const EVENT_ID = 'repo-00000000:approval:session:s1:aaaa:fired';
+
+  it('claimDedupe returns an owner token and records it in the claim file', () => {
+    const dir = tmpDir('notify-finalize-');
+    const res = claimDedupe({ dedupeDir: dir, eventId: EVENT_ID, ttlSeconds: 300, now: 1_000 });
+    assert.equal(res.claimed, true);
+    assert.ok(typeof res.ownerToken === 'string' && res.ownerToken.length > 0);
+    const body = JSON.parse(fs.readFileSync(res.claimPath, 'utf8'));
+    assert.equal(body.owner_token, res.ownerToken);
+    assert.equal(body.finalized, false);
+    assert.equal(body.event_id, EVENT_ID); // legacy field intact
+  });
+
+  it('honors an injected owner token (deterministic finalization)', () => {
+    const dir = tmpDir('notify-finalize-');
+    const res = claimDedupe({ dedupeDir: dir, eventId: EVENT_ID, ttlSeconds: 300, now: 1_000, ownerToken: 'fixed-token' });
+    assert.equal(res.ownerToken, 'fixed-token');
+    assert.equal(JSON.parse(fs.readFileSync(res.claimPath, 'utf8')).owner_token, 'fixed-token');
+  });
+
+  it('promoteClaim marks the owned claim finalized and re-pins its TTL to success time', () => {
+    const dir = tmpDir('notify-finalize-');
+    const t0 = 1_000_000;
+    const claim = claimDedupe({ dedupeDir: dir, eventId: EVENT_ID, ttlSeconds: 300, now: t0 });
+    const promoteAt = t0 + 100_000;
+    const prom = promoteClaim({ dedupeDir: dir, eventId: EVENT_ID, ownerToken: claim.ownerToken, now: promoteAt });
+    assert.equal(prom.promoted, true);
+    assert.equal(JSON.parse(fs.readFileSync(claim.claimPath, 'utf8')).finalized, 'promoted');
+    // TTL is now measured from promoteAt: a claim at t0+300s+1 (expired from the
+    // ORIGINAL claim time) is still a live duplicate because promote re-pinned.
+    const dupe = claimDedupe({ dedupeDir: dir, eventId: EVENT_ID, ttlSeconds: 300, now: t0 + 300_001 });
+    assert.equal(dupe.claimed, false);
+    assert.equal(dupe.reason, 'duplicate');
+    // ...but past promoteAt + TTL it reclaims.
+    const reclaim = claimDedupe({ dedupeDir: dir, eventId: EVENT_ID, ttlSeconds: 300, now: promoteAt + 300_001 });
+    assert.equal(reclaim.claimed, true);
+    assert.equal(reclaim.reclaimed, true);
+  });
+
+  it('releaseClaim removes the owned claim so the next identical event re-fires', () => {
+    const dir = tmpDir('notify-finalize-');
+    const claim = claimDedupe({ dedupeDir: dir, eventId: EVENT_ID, ttlSeconds: 300, now: 1_000 });
+    const rel = releaseClaim({ dedupeDir: dir, eventId: EVENT_ID, ownerToken: claim.ownerToken });
+    assert.equal(rel.released, true);
+    assert.ok(!fs.existsSync(claim.claimPath));
+    // slot free: a re-fire well within the original TTL now claims fresh
+    const again = claimDedupe({ dedupeDir: dir, eventId: EVENT_ID, ttlSeconds: 300, now: 2_000 });
+    assert.equal(again.claimed, true);
+  });
+
+  it('promote/release act ONLY on the owned claim (a successor reclaim is untouched)', () => {
+    const dir = tmpDir('notify-finalize-');
+    const claim = claimDedupe({ dedupeDir: dir, eventId: EVENT_ID, ttlSeconds: 300, now: 1_000 });
+    // a non-owner cannot release or promote
+    const relOther = releaseClaim({ dedupeDir: dir, eventId: EVENT_ID, ownerToken: 'someone-else' });
+    assert.equal(relOther.released, false);
+    assert.equal(relOther.reason, 'not-owner');
+    assert.ok(fs.existsSync(claim.claimPath), 'non-owner release leaves the claim intact');
+    const promOther = promoteClaim({ dedupeDir: dir, eventId: EVENT_ID, ownerToken: 'someone-else', now: 2_000 });
+    assert.equal(promOther.promoted, false);
+    assert.equal(promOther.reason, 'not-owner');
+  });
+
+  it('promote/release on an absent claim are a no-op with reason no-claim', () => {
+    const dir = tmpDir('notify-finalize-');
+    assert.equal(promoteClaim({ dedupeDir: dir, eventId: EVENT_ID, ownerToken: 't', now: 1 }).reason, 'no-claim');
+    assert.equal(releaseClaim({ dedupeDir: dir, eventId: EVENT_ID, ownerToken: 't' }).reason, 'no-claim');
+  });
+
+  it('a within-TTL duplicate returns no owner token (nothing to finalize)', () => {
+    const dir = tmpDir('notify-finalize-');
+    claimDedupe({ dedupeDir: dir, eventId: EVENT_ID, ttlSeconds: 300, now: 1_000 });
+    const dupe = claimDedupe({ dedupeDir: dir, eventId: EVENT_ID, ttlSeconds: 300, now: 1_500 });
+    assert.equal(dupe.claimed, false);
+    assert.equal(dupe.ownerToken ?? null, null);
+  });
+
+  it('promote/release validate their required args', () => {
+    const dir = tmpDir('notify-finalize-');
+    assert.throws(() => promoteClaim({ dedupeDir: dir, eventId: EVENT_ID }), /ownerToken/);
+    assert.throws(() => releaseClaim({ dedupeDir: dir, eventId: '', ownerToken: 't' }), /eventId/);
   });
 });

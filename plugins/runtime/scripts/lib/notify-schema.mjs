@@ -361,13 +361,24 @@ function claimFileName(eventId) {
   return `${shortHash(eventId, 32)}.claim`;
 }
 
-function writeClaimExclusive(claimPath, eventId, now) {
+function writeClaimExclusive(claimPath, eventId, now, ownerToken) {
   // O_EXCL first-claim: exactly one process can create the file.
   const fd = fs.openSync(claimPath, 'wx');
   try {
     fs.writeSync(
       fd,
-      `${JSON.stringify({ event_id: eventId, claimed_at: new Date(now).toISOString() })}\n`,
+      `${JSON.stringify({
+        event_id: eventId,
+        claimed_at: new Date(now).toISOString(),
+        // ADR-0041 §7 claim-finalization: owner_token lets promote/release
+        // target ONLY this claim. finalized flips to a status token on
+        // promote (dispatch success/quiet-hours) so inspection can tell an
+        // in-flight claim from a completed one. Both fields are additive —
+        // older readers (dashboard inspect, the concurrency tests) read
+        // event_id/mtime only and are unaffected.
+        owner_token: ownerToken,
+        finalized: false,
+      })}\n`,
     );
   } finally {
     fs.closeSync(fd);
@@ -388,6 +399,30 @@ function readLockOwner(lockDir) {
     return fs.readFileSync(path.join(lockDir, 'owner'), 'utf8');
   } catch {
     return null;
+  }
+}
+
+// ADR-0041 §7 — a per-claim ownership nonce so a later promote/release acts
+// on ONLY the claim this caller created. Not a secret (it gates a local
+// unlink, never a network step), so a short random hash suffices; the pid +
+// now + Math.random() mix keeps two same-`now` callers (injected clock in
+// tests) distinct.
+function generateOwnerToken(eventId, now) {
+  return shortHash(`${process.pid}:${eventId}:${now}:${Math.random()}`, 24);
+}
+
+// Read + parse a claim file, never throwing: a vanished/corrupt claim reads
+// as { ok: false } so promote/release degrade to a no-op rather than crashing
+// the fail-closed emit path.
+function readClaim(claimPath) {
+  try {
+    const record = JSON.parse(fs.readFileSync(claimPath, 'utf8'));
+    if (typeof record !== 'object' || record === null || Array.isArray(record)) {
+      return { ok: false };
+    }
+    return { ok: true, record };
+  } catch {
+    return { ok: false };
   }
 }
 
@@ -420,20 +455,25 @@ export function claimDedupe({
   ttlSeconds,
   now = Date.now(),
   lockStaleMs = DEFAULT_LOCK_STALE_MS,
+  ownerToken = null,
 } = {}) {
   requireNonEmptyString(dedupeDir, 'dedupeDir');
   requireNonEmptyString(eventId, 'eventId');
   if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
     throw new TypeError('ttlSeconds must be a positive finite number');
   }
+  // ADR-0041 §7 — mint (or accept an injected) ownership token for whichever
+  // claim this call creates. Returned ONLY on the claimed:true outcomes; the
+  // caller passes it to promoteClaim/releaseClaim to finalize the dispatch.
+  const token = ownerToken ?? generateOwnerToken(eventId, now);
   fs.mkdirSync(dedupeDir, { recursive: true });
   const claimPath = path.join(dedupeDir, claimFileName(eventId));
   const ttlMs = ttlSeconds * 1000;
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      writeClaimExclusive(claimPath, eventId, now);
-      return { claimed: true, reclaimed: false, claimPath };
+      writeClaimExclusive(claimPath, eventId, now, token);
+      return { claimed: true, reclaimed: false, claimPath, ownerToken: token };
     } catch (error) {
       if (!error || error.code !== 'EEXIST') throw error;
     }
@@ -505,8 +545,8 @@ export function claimDedupe({
         }
       }
       try {
-        writeClaimExclusive(claimPath, eventId, now);
-        return { claimed: true, reclaimed: true, claimPath };
+        writeClaimExclusive(claimPath, eventId, now, token);
+        return { claimed: true, reclaimed: true, claimPath, ownerToken: token };
       } catch (error) {
         if (!error || error.code !== 'EEXIST') throw error;
         return { claimed: false, reclaimed: false, reason: 'lost-reclaim-race', claimPath };
@@ -522,4 +562,156 @@ export function claimDedupe({
     }
   }
   return { claimed: false, reclaimed: false, reason: 'lost-claim-race', claimPath };
+}
+
+// ── ADR-0041 §7 claim finalization ──
+//
+// ADR-0040 claims a dedupe slot BEFORE dispatch and lets it stand for the full
+// TTL regardless of dispatch outcome — correct for the local channels, whose
+// fire-and-forget dispatch is "inconsequential on failure" by design. E1
+// network egress can genuinely FAIL (missing token, provider error, timeout),
+// and a failed egress that burned the success TTL would suppress the useful
+// retry after the operator fixes config. So E1 splits the claim into two
+// steps: claimDedupe pre-claims (as today, returning an owner token), then
+// exactly one of promoteClaim (success → the claim owns the TTL) or
+// releaseClaim (failure → free the slot for a retry) finalizes it. Both act
+// ONLY on a claim whose recorded owner_token matches — a slow egress that
+// finished after its own TTL expired and a successor reclaimed must never
+// promote/release the successor's fresh claim. These are E1-specific; the
+// local channels never call them, so ADR-0040's semantics are unchanged.
+
+// Serialize a finalization against a concurrent reclaim — the ONLY other writer
+// that can replace a claim file — using the SAME per-claim reclaim lock
+// claimDedupe's reclaim path takes. This closes the read-owner-then-act window
+// Codex flagged: a dispatch that outlived its TTL could otherwise read its old
+// token, have a successor reclaim, then unlink/overwrite the successor's fresh
+// claim. Uncontended in the normal case (finalization runs on a just-claimed,
+// un-expired slot, so no reclaimer is active — one mkdir+rmdir). Returns
+// { locked:false } when a live reclaimer holds the lock: our slot is already
+// being taken over, so we concede rather than race it.
+function withReclaimLock(claimPath, { now, lockStaleMs }, fn) {
+  const lockDir = `${claimPath}.reclaim.lock`;
+  const ownerPath = path.join(lockDir, 'owner');
+  const nonce = `${process.pid}-${shortHash(`${claimPath}:${now}:${Math.random()}`, 16)}`;
+  try {
+    fs.mkdirSync(lockDir, { recursive: true });
+  } catch (error) {
+    if (error && error.code === 'EEXIST') {
+      const lockMtimeMs = statMtimeMs(lockDir);
+      if (lockMtimeMs !== null && now - lockMtimeMs >= lockStaleMs) {
+        // Sweep a crashed reclaimer's stale lock for the NEXT caller, but
+        // concede this call (never sweep-and-act — the §1 double-fire rule).
+        try {
+          fs.rmSync(lockDir, { recursive: true, force: true });
+        } catch {
+          // Lost the sweep race — concede either way.
+        }
+      }
+      return { locked: false };
+    }
+    throw error;
+  }
+  try {
+    fs.writeFileSync(ownerPath, nonce);
+  } catch (error) {
+    // Could not stamp ownership — release and concede.
+    try {
+      fs.rmSync(lockDir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+    throw error;
+  }
+  try {
+    return { locked: true, value: fn() };
+  } finally {
+    if (readLockOwner(lockDir) === nonce) {
+      try {
+        fs.rmSync(lockDir, { recursive: true, force: true });
+      } catch {
+        // A leftover lock is swept as stale by a later caller.
+      }
+    }
+  }
+}
+
+// Success finalization: re-pin the owned claim so the TTL window is measured
+// from dispatch COMPLETION (promote), and mark it finalized for inspection.
+// Runs under the reclaim lock so the owner-check and the rewrite are atomic
+// against a concurrent reclaim. Fail-closed on the hook path: never throws —
+// a vanished/not-owned claim or an fs failure is reported as data with a
+// reason so the emitter's silent contract holds.
+export function promoteClaim({
+  dedupeDir,
+  eventId,
+  ownerToken,
+  now = Date.now(),
+  lockStaleMs = DEFAULT_LOCK_STALE_MS,
+} = {}) {
+  requireNonEmptyString(dedupeDir, 'dedupeDir');
+  requireNonEmptyString(eventId, 'eventId');
+  requireNonEmptyString(ownerToken, 'ownerToken');
+  const claimPath = path.join(dedupeDir, claimFileName(eventId));
+  try {
+    const outcome = withReclaimLock(claimPath, { now, lockStaleMs }, () => {
+      const claim = readClaim(claimPath);
+      if (!claim.ok) return { promoted: false, reason: 'no-claim' };
+      if (claim.record.owner_token !== ownerToken) return { promoted: false, reason: 'not-owner' };
+      fs.writeFileSync(
+        claimPath,
+        `${JSON.stringify({
+          ...claim.record,
+          finalized: 'promoted',
+          finalized_at: new Date(now).toISOString(),
+        })}\n`,
+      );
+      // Re-stamp mtime to `now` so the dedupe TTL (measured against mtime) runs
+      // from success, not from the earlier pre-dispatch claim moment. Explicit
+      // utimes keeps the injected-clock tests deterministic.
+      const stamp = new Date(now);
+      fs.utimesSync(claimPath, stamp, stamp);
+      return { promoted: true, reason: null };
+    });
+    if (!outcome.locked) return { promoted: false, reason: 'reclaim-contended', claimPath };
+    return { ...outcome.value, claimPath };
+  } catch (error) {
+    return { promoted: false, reason: `error:${error?.code ?? error?.message ?? 'unknown'}`, claimPath };
+  }
+}
+
+// Failure finalization: remove ONLY the owned claim so the next identical event
+// re-claims and re-attempts (after the operator fixes config). Runs under the
+// reclaim lock so the owner-check and the unlink are atomic — a successor that
+// reclaimed our expired slot writes a new owner_token, so the in-lock re-read
+// sees not-owner and the successor's fresh claim is left intact. Fail-closed:
+// never throws.
+export function releaseClaim({
+  dedupeDir,
+  eventId,
+  ownerToken,
+  now = Date.now(),
+  lockStaleMs = DEFAULT_LOCK_STALE_MS,
+} = {}) {
+  requireNonEmptyString(dedupeDir, 'dedupeDir');
+  requireNonEmptyString(eventId, 'eventId');
+  requireNonEmptyString(ownerToken, 'ownerToken');
+  const claimPath = path.join(dedupeDir, claimFileName(eventId));
+  try {
+    const outcome = withReclaimLock(claimPath, { now, lockStaleMs }, () => {
+      const claim = readClaim(claimPath);
+      if (!claim.ok) return { released: false, reason: 'no-claim' };
+      if (claim.record.owner_token !== ownerToken) return { released: false, reason: 'not-owner' };
+      try {
+        fs.unlinkSync(claimPath);
+      } catch (error) {
+        if (error && error.code === 'ENOENT') return { released: false, reason: 'no-claim' };
+        throw error;
+      }
+      return { released: true, reason: null };
+    });
+    if (!outcome.locked) return { released: false, reason: 'reclaim-contended', claimPath };
+    return { ...outcome.value, claimPath };
+  } catch (error) {
+    return { released: false, reason: `error:${error?.code ?? error?.message ?? 'unknown'}`, claimPath };
+  }
 }

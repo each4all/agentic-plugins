@@ -33,6 +33,7 @@ import path from 'node:path';
 import { RUNTIME_VERSION } from './version.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { notifyDedupeDir, notifyStateDir } from './lib/notify-schema.mjs';
+import { egressThrottleDir, inspectEgressThrottles } from './lib/egress-semantics.mjs';
 import { NOTIFY_KEY_DEFAULTS } from './lib/runtime-config.mjs';
 import { loadNotifyConfig, resolveRepoRoot, NOTIFY_LOG_ROTATE_LOCK_STALE_MS } from './notify.mjs';
 import {
@@ -418,6 +419,11 @@ export async function inspectNotifyState({
     root: dir,
     dedupe: { claims: 0, expired_claims: 0, reclaim_locks: 0, stale_reclaim_locks: 0, unreadable: 0 },
     log: { present: false, bytes: 0, rotated_present: false, rotated_bytes: 0, rotate_lock_present: false, rotate_lock_stale: false },
+    // ADR-0041 §6 egress attempt-visibility: active failure throttles are an
+    // informational rollup (a provider hiccup in cooldown is expected, not a
+    // runtime health fault), so they never flip `status`; only an unreadable
+    // throttle dir raises an issue.
+    egress: { throttles: 0, active_throttles: 0, next_retry_at: null },
     issues: [],
   };
   try {
@@ -483,6 +489,20 @@ export async function inspectNotifyState({
   if (result.log.rotate_lock_stale) {
     result.issues.push('stale log rotation lock — a log.ndjson rotation did not complete (crashed process?)');
   }
+
+  // ADR-0041 §6 — egress failure-throttle rollup (active cooldowns + earliest
+  // upcoming retry). Informational: an active throttle does not flip status;
+  // only an unreadable throttle record raises an issue.
+  const egress = inspectEgressThrottles({ throttleDir: egressThrottleDir(repoRoot), now });
+  result.egress = {
+    throttles: egress.total,
+    active_throttles: egress.active,
+    next_retry_at: egress.next_retry_at,
+  };
+  if (egress.unreadable > 0) {
+    result.issues.push(`egress throttle state partially unreadable: ${egress.unreadable} record(s)`);
+  }
+
   result.status = result.dedupe.unreadable > 0 || result.issues.some((issue) => issue.includes('unreadable'))
     ? 'blocked'
     : result.issues.length > 0
@@ -514,13 +534,22 @@ export async function readRecentNotifications({ repoRoot, limit = DEFAULT_RECENT
   for (const line of rawLines) {
     try {
       const record = JSON.parse(line);
-      entries.push({
+      const entry = {
         ts: sanitizeValue(record.ts),
         kind: sanitizeValue(record.kind),
         urgency: sanitizeValue(record.urgency),
         title: sanitizeValue(record.title),
         event_id: sanitizeValue(record.event_id),
-      });
+      };
+      // ADR-0041 §6 — surface the egress overlay ONLY on attempt-mirror rows;
+      // local-channel records stay byte-identical (no new keys) so existing
+      // consumers are unaffected.
+      if (record.egress_status !== undefined) {
+        entry.egress_channel = sanitizeValue(record.egress_channel);
+        entry.egress_status = sanitizeValue(record.egress_status);
+        entry.egress_outcome = sanitizeValue(record.egress_outcome);
+      }
+      entries.push(entry);
     } catch {
       malformed += 1;
     }
@@ -573,7 +602,13 @@ export async function buildDashboardReport({
     now: now.getTime(),
     ttlSeconds: notifyConfig.config ? notifyConfig.config.dedupeTtlSeconds : undefined,
   });
-  const recentNotifications = notifyConfig.channel === 'file-log'
+  // ADR-0041 §6 — egress attempt mirrors land in the file-log regardless of the
+  // LOCAL notify_channel (E1 activation is separate, §2c), so surface recent
+  // rows whenever the log EXISTS, not only when the local channel is file-log —
+  // else a telegram-egress mirror written under notify_channel=none/osascript
+  // would be hidden from the dashboard the ADR requires it to appear on.
+  const recentNotifications = (notifyConfig.channel === 'file-log'
+    || notifyState.log.present || notifyState.log.rotated_present)
     ? await readRecentNotifications({ repoRoot, limit: recentLimit })
     : { status: 'not_configured', pointer: null, entries: [], malformed: 0 };
 
@@ -730,7 +765,13 @@ export function renderDashboardText(report) {
   if (notify.config.status === 'invalid') {
     lines.push(`- notify: INVALID config — ${notify.config.errors.join('; ')}`);
   } else {
-    lines.push(`- notify: channel=${notify.config.channel}${notify.config.status === 'off' ? ' (off)' : ''}; state=${notify.state.status}`);
+    // ADR-0041 §6 — fold the active egress-throttle count into the state line
+    // (informational; a cooldown is expected during a provider hiccup).
+    const activeThrottles = notify.state.egress?.active_throttles ?? 0;
+    const egressSummary = activeThrottles > 0
+      ? `; egress: ${activeThrottles} throttled${notify.state.egress?.next_retry_at ? ` (next retry ${notify.state.egress.next_retry_at})` : ''}`
+      : '';
+    lines.push(`- notify: channel=${notify.config.channel}${notify.config.status === 'off' ? ' (off)' : ''}; state=${notify.state.status}${egressSummary}`);
   }
   for (const issue of notify.state.issues) {
     lines.push(`    ! ${issue}`);
@@ -738,7 +779,12 @@ export function renderDashboardText(report) {
   if (notify.recent.status === 'available') {
     lines.push(`- recent notifications (${notify.recent.entries.length}${notify.recent.malformed > 0 ? `, ${notify.recent.malformed} malformed` : ''}):`);
     for (const entry of notify.recent.entries) {
-      lines.push(`    · ${entry.ts ?? '?'} [${entry.kind ?? '?'}${entry.urgency === 'urgent' ? '/urgent' : ''}] ${entry.title ?? ''}`);
+      // ADR-0041 §6 — attempt-mirror rows carry the egress overlay; render it
+      // inline so dispatched/suppressed/failed egress attempts are visible.
+      const egress = entry.egress_status
+        ? ` egress:${entry.egress_channel ?? '?'}=${entry.egress_status}${entry.egress_outcome && entry.egress_outcome !== entry.egress_status ? `(${entry.egress_outcome})` : ''}`
+        : '';
+      lines.push(`    · ${entry.ts ?? '?'} [${entry.kind ?? '?'}${entry.urgency === 'urgent' ? '/urgent' : ''}] ${entry.title ?? ''}${egress}`);
     }
   }
   return `${lines.join('\n')}\n`;
