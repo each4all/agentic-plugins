@@ -135,9 +135,21 @@ of the data.
   > "node networking is blocked". The `fetch → node:https` swap keeps the **identical E1
   > effect** (so it needs no ADR-0035 §4 ceiling amendment — only this text), and closes the
   > acceptance gap where `test-cross-machine-egress-acceptance.mjs` used `fakeFetch` and thus
-  > never exercised a real socket. **Runtime does not "ship" the `node:https` transport until
-  > the release-dogfood subtask proves real owner delivery**; `curl`/external-process egress
-  > remains rejected (see the `curl` executor rejection below — unchanged).
+  > never exercised a real socket. `curl`/external-process egress remains rejected (see the
+  > `curl` executor rejection below — unchanged).
+  >
+  > **Status (release-dogfood — real delivery PROVEN 2026-07-06):** the ship gate above is
+  > SATISFIED. The shipped `node:https` transport was exercised end-to-end through the REAL
+  > `notify.mjs emit` CLI subprocess, over the owner's genuine (IPv6-broken) network, using the
+  > owner's real bot credential from the single-source `~/.claude/telegram-notify.json`. Two
+  > consecutive sends both resolved `egress_outcome: dispatched` (Telegram `HTTP 200 { ok: true }`)
+  > in ~1.0–1.1s each, and the owner **confirmed phone receipt**; the received text matched the
+  > enumerated §3 render byte-for-byte, proving no local free-text (title/body) egressed in real
+  > delivery. The real credential left NO trace in any persisted artifact/state (leak scan clean).
+  > **Rollback decision: none** — the transport delivers in the exact environment that broke
+  > `fetch`, so prototype-cutover proceeds (disable the personal curl prototype, wire runtime
+  > egress activation per machine, avoid duplicate sends). The `AGENTIC_EGRESS_REAL_SMOKE`-gated
+  > acceptance smoke ([acceptance-gate]) is the repeatable CI-skipped hook for this proof.
 - **(e) Bounded await, not vague fire-and-forget.** A **bounded `await` inside
   `notify.mjs` with a small timeout**, all rejections caught; a slow/failing/
   missing network degrades to a recorded failure, never blocks or throws on the
