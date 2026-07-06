@@ -30,6 +30,8 @@ import {
   redactEvent,
   resolveRepoRoot,
   runEmit,
+  TELEGRAM_API_TIMEOUT_MS,
+  telegramAttemptTimeoutMs,
 } from '../../plugins/runtime/scripts/notify.mjs';
 import { NOTIFY_KEY_DEFAULTS } from '../../plugins/runtime/scripts/lib/runtime-config.mjs';
 import { notifyDedupeDir, notifyStateDir } from '../../plugins/runtime/scripts/lib/notify-schema.mjs';
@@ -1087,5 +1089,31 @@ describe('notify runEmit pipeline (telegram E1 egress)', () => {
     const result = await egressEmit({ repoRoot, respond: () => ({ status: 200, jsonError: abortError() }) });
     assert.equal(result.reason, 'egress-timeout');
     assert.equal(result.status, 'failed');
+  });
+});
+
+// The socket path of the real node:https transport is not unit-testable (the guard
+// requires an inline pinned URL, so it cannot be pointed at a local server), but the
+// family/budget arithmetic IS — and a review found the original single-shared-deadline
+// form starved the fallback on a first-family HANG. These pin the fix.
+describe('ADR-0041 §2d telegramAttemptTimeoutMs (IPv4-preferred fallback budget)', () => {
+  const half = Math.ceil(TELEGRAM_API_TIMEOUT_MS / 2);
+  it('caps a non-final attempt so a first-family HANG leaves budget for the fallback', () => {
+    // A single shared deadline would hand family:4 (index 0) the whole budget; a
+    // connect HANG would then consume it all and the default family would never run.
+    assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: 0, index: 0, familyCount: 2 }), half);
+  });
+  it('gives the final attempt all remaining budget (fallback runs even after a first-family hang)', () => {
+    assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: half, index: 1, familyCount: 2 }), TELEGRAM_API_TIMEOUT_MS - half);
+  });
+  it('a FAST first-family failure leaves nearly the whole budget for the fallback', () => {
+    assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: 10, index: 1, familyCount: 2 }), TELEGRAM_API_TIMEOUT_MS - 10);
+  });
+  it('returns 0 once the shared budget is spent (loop breaks, deadline never exceeded)', () => {
+    assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: TELEGRAM_API_TIMEOUT_MS, index: 1, familyCount: 2 }), 0);
+    assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: TELEGRAM_API_TIMEOUT_MS + 100, index: 1, familyCount: 2 }), 0);
+  });
+  it('a single-family list gets the full budget (the only attempt is final)', () => {
+    assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: 0, index: 0, familyCount: 1 }), TELEGRAM_API_TIMEOUT_MS);
   });
 });

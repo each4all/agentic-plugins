@@ -414,14 +414,16 @@ describe('ADR-0035 §4 guard — ADR-0040 notification dispatch (per-source nega
 // ---------------------------------------------------------------------------
 
 describe('ADR-0041 §2d guard — global fetch egress (per-source negative conformance)', () => {
-  // The pinned E1 egress shape the `channel` slice will add to notify.mjs: a
-  // direct global fetch to the fixed Telegram host, POST, redirect:'error', a
-  // bounded AbortSignal timeout, URL a template whose STATIC prefix is the
-  // allowlisted origin (token interpolated only AFTER it).
+  // The ORIGINAL E1 egress shape (a direct global fetch to the fixed Telegram host,
+  // POST, redirect:'error', a bounded AbortSignal timeout). The [impl-transport]
+  // slice swapped the transport to an in-process node:https request (ADR-0041 §2d)
+  // and emptied GLOBAL_FETCH_USERS, so this fetch shape is NO LONGER registered in
+  // notify.mjs — the gate now rejects it there too (see the node:https block below
+  // for the current pinned transport).
   const PINNED = "fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000), body: payload })";
 
-  it('the pinned Telegram POST in notify.mjs → NO finding', () => {
-    deepStrictEqual(scan('notify.mjs', `const token = 't'; const payload = 'x'; ${PINNED};`), []);
+  it('the former pinned Telegram fetch in notify.mjs is now rejected (transport swapped to node:https) → global-fetch-gate', () => {
+    ok(rules(scan('notify.mjs', `const token = 't'; const payload = 'x'; ${PINNED};`)).includes('global-fetch-gate'));
   });
 
   it('global fetch in a NON-registered runtime file → global-fetch-gate', () => {
@@ -535,10 +537,10 @@ describe('ADR-0041 §2d guard — global fetch egress (per-source negative confo
   it('a fetch-mentioning string in a non-registered file is NOT flagged (no over-reject)', () => {
     deepStrictEqual(scan('cutover-audit.mjs', 'const help = "fetch(url, init)";'), []);
   });
-  it("the channel's full pinned call (template URL + body + headers) in notify.mjs → NO finding", () => {
+  it("the former full pinned fetch call in notify.mjs is now rejected (transport swapped to node:https) → global-fetch-gate", () => {
     const src = "const token = 't'; const payload = {}; "
       + "fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000), body: JSON.stringify(payload), headers: { 'Content-Type': 'application/json' } });";
-    deepStrictEqual(scan('notify.mjs', src), []);
+    ok(rules(scan('notify.mjs', src)).includes('global-fetch-gate'));
   });
 
   // Codex round-3 — the round-2 fixes' own residual holes.
