@@ -482,10 +482,22 @@ export function buildEvent({
  * child's stdout/stderr are discarded: the sensor owns the "never stdout"
  * contract and the emitter is fail-closed silent on its own.
  *
- * spawnSync (bounded by `timeoutMs`) rather than fire-and-forget: the emitter
- * is local fs work that returns promptly, and a synchronous bound keeps the
- * hook's lifetime deterministic. A timeout kills the child and loses the
- * notification — acceptable by the ADR-0040 §7 fail-closed contract.
+ * spawnSync (bounded by `timeoutMs`) rather than fire-and-forget: a synchronous
+ * bound keeps the hook's lifetime deterministic. A timeout kills the child and
+ * loses the notification — acceptable by the ADR-0040 §7 fail-closed contract.
+ *
+ * `timeoutMs` MUST exceed the runtime emitter's OWN network budget (notify.mjs
+ * TELEGRAM_API_TIMEOUT_MS, currently 8s for the ADR-0041 §2d Telegram egress
+ * channel) plus node-startup + emit-preflight overhead — otherwise this spawn kill
+ * would pre-empt an in-flight egress dispatch before its 8s deadline, re-introducing
+ * the intermittent notification loss the longer egress budget exists to fix. 12s =
+ * the 8s network budget + ~4s headroom for node startup and the preflight. The
+ * personal curl prototype used a 10s spawn bound over curl -m 8 (a 2s margin), but
+ * node's startup is slower and more load-sensitive than curl's fast exec, so the
+ * margin is widened here so a cold/loaded host cannot kill an otherwise-valid
+ * full-budget dispatch (peer review MINOR). The local notify channels (file-log /
+ * macos-osascript) still return promptly; only the egress channel approaches this
+ * bound, and only during a network blip.
  *
  * @returns {Promise<{emitted: boolean, reason?: string}>}
  */
@@ -494,7 +506,7 @@ export async function emitEvent({
   event,
   env = process.env,
   home = undefined,
-  timeoutMs = 5000,
+  timeoutMs = 12000,
 } = {}) {
   try {
     if (typeof repoRoot !== 'string' || repoRoot.length === 0 || !event) {
