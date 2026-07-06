@@ -451,23 +451,35 @@ export function telegramAttemptTimeoutMs({ deadline, now, index, familyCount }) 
 // rejects every alias/member/computed/variable-URL form or a second call. The
 // IPv4-preferred retry is a LOOP around this SINGLE call site (only the non-pinned
 // `family` varies). The `fetchImpl` injection arm (test-only, ADR-0041 §2b — the
-// pipeline's non-transport logic is unit-tested through it; comprehensive
-// node:https-shape injection + real-delivery proof are the acceptance-gate and
-// release-dogfood subtasks) uses a DISTINCT identifier that never matches a `fetch`
+// pipeline's non-transport logic is unit-tested through it; the node:https-shape
+// injection landed in the [acceptance-gate] subtask, and real-delivery proof is the
+// [release-dogfood] subtask) uses a DISTINCT identifier that never matches a `fetch`
 // token. The token is shape-validated (validateTelegramToken) before it reaches
 // this interpolation, so it can contribute only URL-path-safe characters — no
 // percent-encoding (which Telegram rejects on the ':' separator).
 async function dispatchTelegramRequest({ token, body, fetchImpl = null }) {
   if (fetchImpl) {
-    // ADR-0041 §2b test-injection seam: a double observes the (url, init) and
-    // returns a { status, json } result. Kept fetch-shaped (redirect:'error') for
-    // the existing §2b unit tests; the acceptance-gate subtask reworks it to the
-    // node:https shape.
+    // ADR-0041 §2b/§2d test-injection seam: a double observes the (url, options) and
+    // returns the { status, json } shape the real node:https path resolves to — so
+    // the pipeline's NON-transport logic (payload/scrub/outcome-classification/claim/
+    // throttle/mirror/leak-containment) is exercised deterministically. Reworked to
+    // the node:https REQUEST-LEVEL shape ([acceptance-gate] subtask): method POST, a
+    // bounded AbortSignal, and the content-type + content-length headers, with the
+    // body carried alongside for observation. No fetch `redirect` key — node:https
+    // never follows redirects, so egress-bounding is STRUCTURAL (the executor guard's
+    // maxCalls:1 single call site; a Location would need a forbidden second request).
+    // This seam deliberately does NOT — and structurally CANNOT — reproduce the real
+    // transport BEHAVIOR just below (the IPv4-preferred family fallback, the
+    // secureConnect body-write timing, the no-retry-after-write idempotency): the
+    // guard forbids aliasing that single pinned call site, which is what an injection
+    // would require. That behavior is covered instead by the exported
+    // `telegramAttemptTimeoutMs` budget unit test, the (K) opt-in real-network smoke,
+    // and the [release-dogfood] subtask. The token is shape-validated before it
+    // interpolates into the URL (same as the real path below).
     return fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
-      redirect: 'error',
       signal: AbortSignal.timeout(TELEGRAM_API_TIMEOUT_MS),
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
       body,
     });
   }

@@ -36,6 +36,20 @@
 //       emit substrate -- notify.mjs, notify-schema.mjs, OR the new egress-*.mjs
 //       libs -- it is reached only by subprocess (the emitter) or copy (the §1
 //       contract lib).
+//   (H) §2b/§5 deterministic LEAK SCAN (this [acceptance-gate] slice): a fake
+//       credential, present end-to-end, is asserted ABSENT from every observable
+//       surface -- a spawned child's argv + sanitized env, the real CLI's
+//       stdout/stderr, and the persisted artifact + state tree. A SCAN, not a review.
+//   (I) §2e FAIL-CLOSED transport: a thrown/absent transport degrades to a recorded
+//       failed outcome (claim released, throttle recorded, mirror row) and NEVER
+//       throws or wedges the fire-and-forget hook path.
+//   (J) §7 outcome-classification matrix: every provider result/error (2xx ok,
+//       4xx/5xx, {ok:false}, TimeoutError, native ETIMEDOUT, redirect, ENOTFOUND)
+//       maps to the right outcome/status/reason + claim/throttle disposition -- the
+//       runtime complement to the static executor guard's SHAPE proof.
+//   (K) opt-in REAL-network smoke (CI-SKIPPED): the ONE gate that opens a real
+//       socket, behind AGENTIC_EGRESS_REAL_SMOKE=1. Deterministic CI is necessary
+//       but NOT sufficient; real delivery proof is the [release-dogfood] subtask.
 //
 // Two properties inherently need injection and use the runtime's OWN public
 // `runEmit` API (documented, deliberate -- NOT a cross-plugin reach; the
@@ -48,11 +62,14 @@
 //     config-fix bypass) need a DETERMINISTIC provider result -- `runEmit({
 //     fetchImpl, now })`.
 // A FAKE, shape-valid token is used everywhere a request is issued; it never
-// reaches a real endpoint (fetch is injected). Every real-subprocess path that
-// cannot inject fetch is kept network-free by DESIGN: a MISSING or SHAPE-INVALID
-// token resolves BEFORE the pinned request, so the real notify.mjs never opens a
-// socket -- the acceptance criterion there is the mirror/throttle/claim state,
-// not a send.
+// reaches a real endpoint -- the node:https transport is injected via `fetchImpl`
+// (a node:https-shaped double as of the [impl-transport] swap + this slice's seam
+// rework), so no socket opens. The SOLE exception is the opt-in (K) real-network
+// smoke, CI-skipped by default. Every real-subprocess path that cannot inject the
+// transport is kept network-free by DESIGN: a MISSING or SHAPE-INVALID token (or a
+// missing recipient) resolves BEFORE the pinned request, so the real notify.mjs
+// never opens a socket -- the acceptance criterion there is the mirror/throttle/
+// claim state, not a send.
 //
 // Host-free + deterministic: throwaway git repos + state homes + a fixture HOME
 // so no real user config leaks in; the runtime is pinned via AGENTIC_RUNTIME_ROOT
@@ -82,6 +99,25 @@ const ATTENTION_ROOT = resolve(REPO_ROOT, 'plugins/attention');
 const NOTIFICATION_SENSOR = resolve(ATTENTION_ROOT, 'adapters/claude/hooks/notification.mjs');
 const SHUTTLE_TEMPLATE = resolve(RUNTIME_ROOT, 'receivers/codex-notify-shuttle.mjs');
 
+// HERMETICITY (peer CRITICAL): several real-CLI/sensor tests build their subprocess
+// env as `{ ...process.env, ... }`. The owner DOGFOODS this channel with a LIVE
+// @e16tae_notification_bot and may export TELEGRAM_BOT_TOKEN / the egress activation
+// in the same shell that runs `npm test` (the [release-dogfood] subtask literally
+// asks for it). Left inherited, a "network-free, missing-credential" test would then
+// engage egress with the REAL token + a valid recipient and open a REAL node:https
+// socket to api.telegram.org carrying the live credential -- defeating the suite's
+// own hermeticity, flipping missing-* asserts to dispatched/provider-error, and
+// putting the secret on the wire from the very suite meant to contain it. Scrub the
+// AMBIENT egress activation ONCE at module load (before any test body runs). Every
+// test sets the activation it needs explicitly; none relies on the ambient value.
+// A no-op on a clean CI env. This also keeps the ONE real socket exclusively behind
+// the (K) AGENTIC_EGRESS_REAL_SMOKE opt-in. NOTE: `node:https` core (not undici,
+// no proxy-aware agent) is also a containment gain -- the token-in-URL is never
+// auto-routed through an ambient HTTP(S)_PROXY.
+for (const k of ['AGENTIC_NOTIFY_EGRESS_CHANNEL', 'TELEGRAM_CHAT_ID', 'TELEGRAM_BOT_TOKEN']) {
+  delete process.env[k];
+}
+
 // The notify state layout (ADR-0040 §1 / ADR-0041 §7; canonical: notify-schema
 // notifyStateDir + egress-semantics egressThrottleDir). Hardcoded here -- a
 // black-box observer reads the documented paths, never imports the layout helper.
@@ -96,8 +132,16 @@ const THROTTLE_REL = join(NOTIFY_DIR_REL, 'egress-throttle');
 const FAKE_TOKEN = '123456789:AAA_bbbCCCdddEEEfffGGGhhhIIIjjjKKK';
 const FAKE_TOKEN_FIXED = '987654321:ZZZ_yyyXXXwwwVVVuuuTTTsssRRRqqqPPP';
 const FAKE_CHAT_ID = '-1001234567890';
-// A token fragment that must never appear anywhere in persisted state.
+// A token fragment that must never appear anywhere in persisted state. NOTE: this
+// is only the token's LOW-ENTROPY, semi-public bot-id half, and (peer MAJOR) it is
+// a substring of FAKE_CHAT_ID ('-1001234567890') and all-hex, so it is a weak,
+// collision-prone witness. It is kept as a secondary check on CONTENT surfaces only.
 const TOKEN_BOT_ID = '123456789';
+// The token's SECRET half (the high-entropy auth part after the ':'). A leak of THIS
+// is the real breach -- a regression that persisted ONLY the auth suffix would slip
+// past every bot-id/full-token scan (peer MAJOR). This distinctive, non-hex,
+// single-occurrence slice is the unambiguous witness the leak scans key on.
+const TOKEN_SECRET_FRAGMENT = 'AAA_bbbCCCddd';
 // A SHAPE-INVALID token: present (so activation still ENGAGES) but rejected by
 // validateTelegramToken BEFORE the pinned request. Used in every real-CLI
 // NEGATIVE activation test so the network-free premise holds UNCONDITIONALLY —
@@ -249,6 +293,58 @@ function timeoutError() {
   return e;
 }
 
+// A native node:https socket timeout surfaces as a system Error with
+// code:'ETIMEDOUT' (name 'Error') -- NOT a TimeoutError; classifyTelegramError maps
+// it to TIMEOUT all the same (§2d transport). ENOTFOUND/ECONNREFUSED (a reachable-
+// but-broken or absent transport) is instead a plain provider error. A redirect-
+// mentioning rejection classifies REDIRECT_ERROR (node:https never follows a
+// redirect, so this arises only from an error message, never a real 3xx follow).
+function etimedoutError() {
+  const e = new Error('connect ETIMEDOUT 149.154.167.220:443');
+  e.code = 'ETIMEDOUT';
+  return e;
+}
+function transportAbsentError() {
+  const e = new Error('getaddrinfo ENOTFOUND api.telegram.org');
+  e.code = 'ENOTFOUND';
+  return e;
+}
+function redirectError() {
+  return new TypeError('unexpected redirect response from api.telegram.org');
+}
+
+// A spawnImpl double (the local §2 osascript channel seam, mirroring
+// test-notify.mjs's fakeSpawn): records every (cmd, args, opts) a would-be child
+// receives so an argv/child-env token scan can prove the credential never rides a
+// spawned process. Returns a minimal detached-child stub so notify's fire-and-
+// forget contract (child.on / child.unref) is satisfied.
+function fakeSpawn(calls) {
+  return (cmd, args, opts) => {
+    calls.push({ cmd, args, opts });
+    return { on() { return this; }, unref() {} };
+  };
+}
+
+// The frozen clock the injection-dependent gates share (matches (A)/(D)'s NOW).
+const ACCEPT_NOW = Date.UTC(2026, 0, 15, 12, 0, 0);
+
+// Drive the REAL runEmit egress pipeline with an injected transport double --
+// hoisted so the (H)/(I)/(J) deterministic gates below reuse the exact (A)/(D)
+// injection shape instead of redefining it per block.
+function emitEgress({
+  root, home, env = egressEnv(), calls = [], respond, event = egressEvent(), now = ACCEPT_NOW, spawnImpl,
+} = {}) {
+  return runEmit({
+    eventText: JSON.stringify(event),
+    repoRoot: root,
+    homeDir: home ?? fixtureHome(),
+    now,
+    env,
+    fetchImpl: fakeFetch(calls, respond),
+    ...(spawnImpl ? { spawnImpl } : {}),
+  });
+}
+
 function readLog(root) {
   try {
     return readFileSync(join(root, LOG_REL), 'utf8')
@@ -315,6 +411,38 @@ function readLogRaw(root) {
   try { return readFileSync(join(root, LOG_REL), 'utf8'); } catch { return null; }
 }
 
+// Every relative PATH (dir + file NAME) under the notify state tree, joined -- for a
+// FILENAME leak scan (peer MAJOR: dumpNotifyState / dumpEgressArtifacts read file
+// CONTENTS only; a token embedded in a claim / throttle / log FILENAME would slip
+// past a content-only scan). State filenames are hashes today, so this is a
+// forward-looking tripwire against a future name scheme embedding cleartext.
+function dumpNotifyPaths(root) {
+  const names = [];
+  const base = join(root, NOTIFY_DIR_REL);
+  const walk = (d, rel) => {
+    let entries;
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      names.push(join(rel, e.name));
+      if (e.isDirectory()) walk(join(d, e.name), join(rel, e.name));
+    }
+  };
+  walk(base, NOTIFY_DIR_REL);
+  return names.join('\n');
+}
+
+// Assert a captured surface (content OR a joined filename list) carries NO token
+// material: the full token, the high-entropy SECRET fragment, AND the bot-id. The
+// secret fragment is the load-bearing witness (a suffix-only leak); the full token
+// and bot-id are belt-and-suspenders. None of the scanned surfaces legitimately
+// carries FAKE_CHAT_ID (which embeds the bot-id), so the bot-id check does not
+// false-positive here.
+function assertNoTokenLeak(haystack, where) {
+  ok(!haystack.includes(FAKE_TOKEN), `the full token must NOT appear in ${where}`);
+  ok(!haystack.includes(TOKEN_SECRET_FRAGMENT), `the token SECRET (auth half) must NOT appear in ${where}`);
+  ok(!haystack.includes(TOKEN_BOT_ID), `not even the bot-id fragment must appear in ${where}`);
+}
+
 function sleep(ms) { return new Promise((r) => { setTimeout(r, ms); }); }
 
 // Poll for a detached producer's egress mirror row (the Codex shuttle spawns
@@ -363,7 +491,7 @@ describe('ADR-0041 acceptance (A) -- the one pinned request through the real run
     });
   }
 
-  it('§2b -- an active machine issues EXACTLY the pinned POST (fake token, no-redirect, bounded)', async () => {
+  it('§2b/§2d -- an active machine issues EXACTLY the pinned POST (fake token, node:https shape, bounded)', async () => {
     const root = markerRepo('A-pinned');
     const calls = [];
     const result = await emit({ root, calls });
@@ -375,8 +503,15 @@ describe('ADR-0041 acceptance (A) -- the one pinned request through the real run
     const { url, init } = calls[0];
     strictEqual(url, `https://api.telegram.org/bot${FAKE_TOKEN}/sendMessage`, 'the fully-pinned URL');
     strictEqual(init.method, 'POST');
-    strictEqual(init.redirect, 'error', 'redirects are refused (host-pin alone does not bound egress)');
+    // node:https shape (§2d): the reworked injection seam mirrors the real
+    // https.request options. There is NO fetch `redirect` key -- node:https never
+    // follows redirects, so egress-bounding is STRUCTURAL (the executor guard's
+    // maxCalls:1 single call site — a Location would need a forbidden second
+    // request), not a `redirect:'error'` option. A content-length header pins the
+    // exact body byte length, exactly as the real transport sends it.
+    ok(!('redirect' in init), 'no fetch redirect option -- redirects are bounded structurally, not via init');
     strictEqual(init.headers['content-type'], 'application/json');
+    strictEqual(init.headers['content-length'], Buffer.byteLength(init.body), 'content-length matches the POST body (node:https shape)');
     ok(init.signal && typeof init.signal === 'object' && 'aborted' in init.signal, 'a bounded AbortSignal (§2e)');
   });
 
@@ -852,6 +987,203 @@ describe('ADR-0041 acceptance (E2) -- hostname weaves into event_id for cross-ma
     strictEqual(run('machine-A').status, 0);
     rows = readLog(root);
     strictEqual(rows.length, 2, 'the same machine/session dedupes -- A repeats collapse onto the first A claim');
+  });
+});
+
+// ===========================================================================
+// (H) the credential leaks to NOWHERE -- a deterministic SCAN (not a review) of the
+//     captured argv / stderr / artifacts / state (§2b/§5). The transport double
+//     never opens a socket, so a fake token can ride the pipeline end-to-end while
+//     every surface an operator or `ps` could observe is asserted token-free.
+// ===========================================================================
+
+describe('ADR-0041 acceptance (H) -- the credential leaks to NOWHERE (scan argv/stderr/artifacts/state)', () => {
+  it('H1 -- a real CLI attempt carrying a VALID token in env never emits it to argv, stdout, or stderr', () => {
+    const root = markerRepo('H-cli');
+    const home = fixtureHome();
+    // A VALID-shape token (a real scan target) but NO recipient -> the engaged egress
+    // resolves MISSING-RECIPIENT before the pinned request, so the real notify.mjs is
+    // network-free while the token rides the whole subprocess (env + in-memory only).
+    // The module-load scrub above guarantees the ambient env carries no real token.
+    const argv = [NOTIFY_CLI, 'emit', '--repo-root', root];
+    const env = { ...process.env, HOME: home, AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_BOT_TOKEN: FAKE_TOKEN };
+    delete env.TELEGRAM_CHAT_ID;
+    const res = spawnSync(process.execPath, argv, {
+      input: `${JSON.stringify(egressEvent())}\n`, env, encoding: 'utf8', timeout: 30_000,
+    });
+    strictEqual(res.status, 0, `fail-closed exit 0; stderr:\n${res.stderr}`);
+    strictEqual(res.stdout, '', 'stdout is always empty (fail-closed silent)');
+    // argv scan: the token rides the ENV only -- never the command line (where `ps`
+    // would expose it). We construct argv, so this is a standing regression tripwire.
+    assertNoTokenLeak(argv.join('\n'), 'the process argv');
+    // stderr scan: at most one truncated reason line, never the credential.
+    assertNoTokenLeak(res.stderr, 'stderr');
+    // the attempt WAS mirrored -- and pin the SPECIFIC outcome (peer: coarse
+    // 'suppressed' also matches missing-token / invalid-activation, so assert the
+    // missing-RECIPIENT path actually ran, not merely some suppression).
+    const rows = egressRows(root);
+    strictEqual(rows.length, 1, 'the engaged, network-free attempt was mirrored');
+    strictEqual(rows[0].egress_status, 'suppressed', 'a missing recipient is a suppressed attempt');
+    strictEqual(rows[0].egress_outcome, 'missing-recipient', 'the valid-token + no-recipient path resolved missing-recipient');
+    // ...and neither the full token, its secret half, nor the bot-id landed in the
+    // persisted state -- scanning BOTH file contents AND file NAMES.
+    assertNoTokenLeak(dumpNotifyState(root), 'persisted notify state (contents)');
+    assertNoTokenLeak(dumpNotifyPaths(root), 'persisted notify state (filenames)');
+  });
+
+  it("H2 -- the env token never rides a SPAWNED child's argv or its sanitized env (fake spawn capture)", async () => {
+    const root = markerRepo('H-spawn');
+    const home = fixtureHome();
+    // Egress NOT engaged (no channel key), so the LOCAL macos-osascript channel runs
+    // and spawns a child. The token is in env; capture the spawn and prove it reaches
+    // neither the child argv nor the SPAWN_ENV_ALLOWLIST-sanitized child env.
+    writeConfig(root, { notify_channel: 'macos-osascript' });
+    const spawnCalls = [];
+    await runEmit({
+      eventText: JSON.stringify(egressEvent()),
+      repoRoot: root,
+      homeDir: home,
+      now: ACCEPT_NOW,
+      env: { HOME: home, TELEGRAM_BOT_TOKEN: FAKE_TOKEN },
+      spawnImpl: fakeSpawn(spawnCalls),
+    });
+    ok(spawnCalls.length >= 1, 'the local osascript channel spawned a child');
+    for (const c of spawnCalls) {
+      // JSON.stringify covers object KEYS and values, so a token-as-key is caught too.
+      assertNoTokenLeak(JSON.stringify(c.args), "the spawned child's argv");
+      assertNoTokenLeak(JSON.stringify(c.opts?.env ?? {}), "the spawned child's env (SPAWN_ENV_ALLOWLIST excludes the token)");
+    }
+  });
+
+  it('H3 -- a dispatched success with a fake token persists NO token to any egress artifact or state', async () => {
+    const root = markerRepo('H-success');
+    const calls = [];
+    // A real dispatched success writes a mirror row + promotes a claim; the token was
+    // captured by the double (in the pinned URL) but must persist NOWHERE.
+    const result = await emitEgress({ root, calls });
+    strictEqual(result.status, 'dispatched');
+    strictEqual(calls[0].url, `https://api.telegram.org/bot${FAKE_TOKEN}/sendMessage`, 'the token was in the captured (un-sent) URL');
+    const artifacts = dumpEgressArtifacts(root);
+    ok(artifacts.length > 0, 'egress artifacts were written (a mirror row exists)');
+    assertNoTokenLeak(artifacts, 'any egress artifact');
+    assertNoTokenLeak(dumpNotifyState(root), 'any persisted state (contents)');
+    assertNoTokenLeak(dumpNotifyPaths(root), 'any persisted state (filenames)');
+  });
+});
+
+// ===========================================================================
+// (I) transport failure is FAIL-CLOSED -- a thrown or absent transport degrades to a
+//     recorded outcome (never a throw, never a wedged hook path, §2e). Injection-
+//     dependent: a double models the failure a real broken socket would surface.
+// ===========================================================================
+
+describe('ADR-0041 acceptance (I) -- a failing/absent transport is fail-closed (degrades, never throws)', () => {
+  it('I1 -- a transport that THROWS (unreachable/absent) resolves failed, RELEASES the claim, records the throttle, mirrors failed', async () => {
+    const root = markerRepo('I-throw');
+    const calls = [];
+    const result = await emitEgress({ root, calls, respond: () => transportAbsentError() });
+    strictEqual(result.status, 'failed', 'a thrown transport error never escapes -- it degrades to failed');
+    strictEqual(result.reason, 'egress-provider-error');
+    strictEqual(calls.length, 1, 'the one bounded attempt ran');
+    strictEqual(claimCount(root), 0, 'the claim is RELEASED (retryable after fix)');
+    strictEqual(throttleCount(root), 1, 'a failure throttle is recorded');
+    const row = egressRows(root)[0];
+    strictEqual(row.egress_status, 'failed');
+    strictEqual(row.egress_outcome, 'provider-error');
+  });
+
+  it('I2 -- the fire-and-forget CLI stays fail-closed (exit 0, empty stdout) on a mirrored failure', () => {
+    const root = markerRepo('I-cli');
+    const home = fixtureHome();
+    // The real CLI cannot inject a transport, so keep it network-free (no token) and
+    // assert the fail-closed contract holds on the mirrored missing-token failure.
+    const env = { ...process.env, HOME: home, AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_CHAT_ID: FAKE_CHAT_ID };
+    const res = emitCli(root, egressEvent(), env);
+    strictEqual(res.status, 0, 'exit 0 always');
+    strictEqual(res.stdout, '', 'stdout empty always');
+    strictEqual(egressRows(root)[0].egress_outcome, 'missing-token', 'the network-free failure was mirrored, not thrown');
+  });
+});
+
+// ===========================================================================
+// (J) provider-outcome classification matrix -- each transport result/error maps to
+//     the right §7 outcome, coarse status, pipeline reason, and claim/throttle
+//     disposition, observed through the REAL runEmit pipeline (not a classifier unit
+//     test). This is the runtime complement to the static executor guard: the guard
+//     proves the request SHAPE is pinned; this proves the RESULT handling.
+// ===========================================================================
+
+describe('ADR-0041 acceptance (J) -- provider-outcome classification matrix', () => {
+  // claim: 1 == promoted (owns the dedupe TTL), 0 == released. throttle: 1 ==
+  // recorded, 0 == cleared. Mirrors OUTCOME_TABLE (egress-semantics.mjs).
+  const CASES = [
+    { name: 'HTTP 200 + {ok:true} -> dispatched', respond: () => ({ status: 200, ok: true }), outcome: 'dispatched', status: 'dispatched', reason: 'egress-dispatched', claim: 1, throttle: 0 },
+    { name: 'HTTP 500 -> provider-error', respond: () => ({ status: 500, ok: false }), outcome: 'provider-error', status: 'failed', reason: 'egress-provider-error', claim: 0, throttle: 1 },
+    { name: 'HTTP 200 + {ok:false} -> provider-rejected', respond: () => ({ status: 200, ok: false }), outcome: 'provider-rejected', status: 'failed', reason: 'egress-provider-rejected', claim: 0, throttle: 1 },
+    { name: 'AbortSignal TimeoutError -> timeout', respond: () => timeoutError(), outcome: 'timeout', status: 'failed', reason: 'egress-timeout', claim: 0, throttle: 1 },
+    { name: 'native ETIMEDOUT code -> timeout', respond: () => etimedoutError(), outcome: 'timeout', status: 'failed', reason: 'egress-timeout', claim: 0, throttle: 1 },
+    // The classifier's redirect branch is DEFENSIVE/vestigial from the fetch era: the
+    // real node:https transport never follows redirects, so a 3xx returns as a
+    // statusCode -> httpOk=false -> provider-error, never redirect-error. This case
+    // still exercises a live classifier branch (kept -- its disposition is identical
+    // to provider-error), but the outcome is unreachable via the shipped transport
+    // (peer LOW).
+    { name: 'redirect-mentioning error -> redirect-error', respond: () => redirectError(), outcome: 'redirect-error', status: 'failed', reason: 'egress-redirect-error', claim: 0, throttle: 1 },
+    { name: 'ENOTFOUND -> provider-error', respond: () => transportAbsentError(), outcome: 'provider-error', status: 'failed', reason: 'egress-provider-error', claim: 0, throttle: 1 },
+  ];
+  for (const c of CASES) {
+    it(`J -- ${c.name}`, async () => {
+      const root = markerRepo('J-outcome');
+      const calls = [];
+      const result = await emitEgress({ root, calls, respond: c.respond });
+      strictEqual(result.status, c.status, 'pipeline status');
+      strictEqual(result.reason, c.reason, 'pipeline reason');
+      strictEqual(calls.length, 1, 'exactly one bounded attempt');
+      const row = egressRows(root)[0];
+      strictEqual(row.egress_outcome, c.outcome, 'mirror egress_outcome');
+      strictEqual(row.egress_status, c.status, 'mirror coarse status');
+      strictEqual(claimCount(root), c.claim, 'claim disposition (promote=1/release=0)');
+      strictEqual(throttleCount(root), c.throttle, 'throttle disposition (record=1/clear=0)');
+    });
+  }
+});
+
+// ===========================================================================
+// (K) opt-in REAL-network smoke -- CI-SKIPPED by default. Deterministic CI is
+//     NECESSARY but NOT SUFFICIENT (§2d): every gate above injects a transport
+//     double and NEVER opens a socket, so none can prove the real node:https
+//     transport DELIVERS -- nor exercise the IPv4-preferred family fallback, the
+//     secureConnect body-write timing, or the no-retry-after-write idempotency (the
+//     guard forbids the aliasing an injection needs; a node:https module-mock needs
+//     an experimental flag this suite does not enable -- so the pure budget helper
+//     `telegramAttemptTimeoutMs` is unit-tested and the socket behavior is left to
+//     this smoke + release-dogfood). The fetch->node:https swap exists precisely
+//     because a green fakeFetch suite hid an undici delivery failure on the owner's
+//     IPv6-broken host. Real delivery proof is the [release-dogfood] subtask (the
+//     owner receives a live Telegram message). This is the manual hook: it runs the
+//     REAL transport (no fetchImpl) ONLY when AGENTIC_EGRESS_REAL_SMOKE=1 with real
+//     env credentials, so CI stays hermetic and network-free.
+// ===========================================================================
+
+describe('ADR-0041 acceptance (K) -- opt-in real-network smoke (skipped unless AGENTIC_EGRESS_REAL_SMOKE=1)', () => {
+  const REAL = process.env.AGENTIC_EGRESS_REAL_SMOKE === '1';
+  it('K -- the REAL node:https transport delivers to a live endpoint', { skip: !REAL }, async () => {
+    const token = process.env.AGENTIC_EGRESS_REAL_SMOKE_TOKEN;
+    const chatId = process.env.AGENTIC_EGRESS_REAL_SMOKE_CHAT_ID;
+    ok(token && chatId, 'AGENTIC_EGRESS_REAL_SMOKE=1 requires AGENTIC_EGRESS_REAL_SMOKE_TOKEN + AGENTIC_EGRESS_REAL_SMOKE_CHAT_ID');
+    const root = markerRepo('K-real');
+    const home = fixtureHome();
+    // NO fetchImpl -> dispatchTelegramRequest's REAL node:https branch runs and opens
+    // a real socket (IPv4-preferred family, bounded shared deadline).
+    const result = await runEmit({
+      eventText: JSON.stringify(egressEvent()),
+      repoRoot: root,
+      homeDir: home,
+      env: { AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_CHAT_ID: chatId, TELEGRAM_BOT_TOKEN: token },
+    });
+    strictEqual(result.status, 'dispatched', 'the real transport delivered (status dispatched)');
+    // Even a REAL token must persist to NOWHERE.
+    ok(!dumpNotifyState(root).includes(token), 'the real token never lands in persisted state');
   });
 });
 

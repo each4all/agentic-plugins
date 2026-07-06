@@ -802,9 +802,14 @@ describe('notify runEmit pipeline (telegram E1 egress)', () => {
     const { url, init } = calls[0];
     assert.equal(url, `https://api.telegram.org/bot${FAKE_TELEGRAM_TOKEN}/sendMessage`);
     assert.equal(init.method, 'POST');
-    assert.equal(init.redirect, 'error');
+    // node:https REQUEST shape (ADR-0041 §2d): the reworked injection seam mirrors
+    // the real https.request options — no fetch `redirect` key (node:https never
+    // follows redirects; egress-bounding is structural via the guard's maxCalls:1),
+    // with content-type + a content-length matching the exact body byte length.
+    assert.ok(!('redirect' in init), 'no fetch redirect option (node:https bounds redirects structurally)');
     assert.ok(init.signal && typeof init.signal === 'object' && 'aborted' in init.signal, 'a bounded AbortSignal');
     assert.equal(init.headers['content-type'], 'application/json');
+    assert.equal(init.headers['content-length'], Buffer.byteLength(init.body), 'content-length matches the POST body');
   });
 
   it('§2f — the egress body carries ONLY enumerated §3 fields, never title/body/refs.path', async () => {
