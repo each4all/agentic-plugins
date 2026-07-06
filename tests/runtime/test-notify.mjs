@@ -31,11 +31,26 @@ import {
   resolveRepoRoot,
   runEmit,
   TELEGRAM_API_TIMEOUT_MS,
+  TELEGRAM_FALLBACK_RESERVE_MS,
   telegramAttemptTimeoutMs,
 } from '../../plugins/runtime/scripts/notify.mjs';
 import { NOTIFY_KEY_DEFAULTS } from '../../plugins/runtime/scripts/lib/runtime-config.mjs';
 import { notifyDedupeDir, notifyStateDir } from '../../plugins/runtime/scripts/lib/notify-schema.mjs';
 import { egressThrottleDir } from '../../plugins/runtime/scripts/lib/egress-semantics.mjs';
+
+// Module-load egress-triple scrub (mirrors tests/acceptance/test-cross-machine-
+// egress-acceptance.mjs). The local-channel tests below call runEmit with the
+// default env = process.env; on a machine where the operator has ACTIVATED egress
+// (the owner's own dogfood shell now exports AGENTIC_NOTIFY_EGRESS_CHANNEL +
+// TELEGRAM_CHAT_ID + TELEGRAM_BOT_TOKEN via the ADR-0041 launcher), that ambient
+// activation would ENGAGE the egress override (§2c) and flip file-log / osascript /
+// none expectations to channel=telegram / dispatched. Deleting the triple here keeps
+// these unit tests hermetic; the egress-specific tests build their own env via
+// egressEnv() and are unaffected. Single-point root-fix (the module-load scrub lesson
+// from the acceptance-gate slice), not scattered per-test env plumbing.
+for (const k of ['AGENTIC_NOTIFY_EGRESS_CHANNEL', 'TELEGRAM_CHAT_ID', 'TELEGRAM_BOT_TOKEN']) {
+  delete process.env[k];
+}
 
 const NOTIFY_CLI = path.resolve(
   fileURLToPath(new URL('.', import.meta.url)),
@@ -1099,24 +1114,51 @@ describe('notify runEmit pipeline (telegram E1 egress)', () => {
 
 // The socket path of the real node:https transport is not unit-testable (the guard
 // requires an inline pinned URL, so it cannot be pointed at a local server), but the
-// family/budget arithmetic IS — and a review found the original single-shared-deadline
-// form starved the fallback on a first-family HANG. These pin the fix.
-describe('ADR-0041 §2d telegramAttemptTimeoutMs (IPv4-preferred fallback budget)', () => {
-  const half = Math.ceil(TELEGRAM_API_TIMEOUT_MS / 2);
-  it('caps a non-final attempt so a first-family HANG leaves budget for the fallback', () => {
-    // A single shared deadline would hand family:4 (index 0) the whole budget; a
-    // connect HANG would then consume it all and the default family would never run.
-    assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: 0, index: 0, familyCount: 2 }), half);
+// family/budget arithmetic IS. The transport-hardening slice replaced the old even
+// 1/familyCount split — which capped the reliable IPv4 path at an arbitrary share and
+// let a transient blip on the owner's IPv6-broken host time the whole dispatch out —
+// with `remaining - TELEGRAM_FALLBACK_RESERVE_MS` for every NON-FINAL attempt, so IPv4
+// (and its retry) get the bulk of the window while a small reserve is held for the
+// default fallback. These pin that behavior against a revert.
+describe('ADR-0041 §2d telegramAttemptTimeoutMs (IPv4-favoring reserve budget, retry-aware)', () => {
+  it('gives a non-final (IPv4) attempt remaining minus the fallback reserve — the bulk of the budget', () => {
+    // The fix returns remaining-reserve; the old code returned ceil(TIMEOUT/familyCount).
+    assert.equal(
+      telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: 0, index: 0, familyCount: 3 }),
+      TELEGRAM_API_TIMEOUT_MS - TELEGRAM_FALLBACK_RESERVE_MS,
+    );
   });
-  it('gives the final attempt all remaining budget (fallback runs even after a first-family hang)', () => {
-    assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: half, index: 1, familyCount: 2 }), TELEGRAM_API_TIMEOUT_MS - half);
+  it('gives IPv4 far MORE than an even 1/familyCount share (the point of the rebalance)', () => {
+    const evenShare = Math.ceil(TELEGRAM_API_TIMEOUT_MS / 3);
+    const ipv4 = telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: 0, index: 0, familyCount: 3 });
+    assert.ok(ipv4 > evenShare, `IPv4 budget ${ipv4} should exceed the even share ${evenShare}`);
   });
-  it('a FAST first-family failure leaves nearly the whole budget for the fallback', () => {
-    assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: 10, index: 1, familyCount: 2 }), TELEGRAM_API_TIMEOUT_MS - 10);
+  it('gives the IPv4 retry (also non-final) a generous budget after a FAST first failure', () => {
+    // family:4 index 0 fast-failed at t=10 → the retry (index 1) is still non-final.
+    assert.equal(
+      telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: 10, index: 1, familyCount: 3 }),
+      (TELEGRAM_API_TIMEOUT_MS - 10) - TELEGRAM_FALLBACK_RESERVE_MS,
+    );
   });
-  it('returns 0 once the shared budget is spent (loop breaks, deadline never exceeded)', () => {
-    assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: TELEGRAM_API_TIMEOUT_MS, index: 1, familyCount: 2 }), 0);
-    assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: TELEGRAM_API_TIMEOUT_MS + 100, index: 1, familyCount: 2 }), 0);
+  it('gives the FINAL default-family attempt ALL remaining budget after two fast IPv4 failures (IPv6-only-host path)', () => {
+    assert.equal(
+      telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: 20, index: 2, familyCount: 3 }),
+      TELEGRAM_API_TIMEOUT_MS - 20,
+    );
+  });
+  it('yields 0 for a non-final attempt when a slow IPv4 left less than the reserve (loop breaks — no doomed sub-reserve fallback)', () => {
+    // IPv4 (index 0) consumed most of the budget; less than the reserve remains, so the
+    // IPv4 retry (index 1) gets 0 and the loop breaks rather than opening a starved
+    // fallback socket the IPv6-broken host cannot use anyway.
+    const now = TELEGRAM_API_TIMEOUT_MS - Math.floor(TELEGRAM_FALLBACK_RESERVE_MS / 2);
+    assert.equal(
+      telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now, index: 1, familyCount: 3 }),
+      0,
+    );
+  });
+  it('returns 0 once the shared deadline is reached or passed (loop breaks, deadline never exceeded)', () => {
+    assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: TELEGRAM_API_TIMEOUT_MS, index: 1, familyCount: 3 }), 0);
+    assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: TELEGRAM_API_TIMEOUT_MS + 100, index: 2, familyCount: 3 }), 0);
   });
   it('a single-family list gets the full budget (the only attempt is final)', () => {
     assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: 0, index: 0, familyCount: 1 }), TELEGRAM_API_TIMEOUT_MS);

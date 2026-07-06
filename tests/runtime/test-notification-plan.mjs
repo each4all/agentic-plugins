@@ -38,6 +38,17 @@ import {
 import { formatText, parseArgs, runSettings } from '../../plugins/runtime/scripts/settings.mjs';
 import { RUNTIME_VERSION } from '../../plugins/runtime/scripts/version.mjs';
 
+// Module-load egress-triple scrub (mirrors test-cross-machine-egress-acceptance.mjs,
+// test-notify.mjs, test-operator-observability-acceptance.mjs). The Codex-shuttle
+// end-to-end test runs the real notify.mjs emit and expects the file-log channel; on
+// a machine where the operator has ACTIVATED egress (the owner's ADR-0041 launcher
+// exports the triple), that ambient activation would engage the §2c egress override
+// and flip the expected channel to telegram. Deleting the triple keeps the suite
+// hermetic against an operator-activated shell.
+for (const k of ['AGENTIC_NOTIFY_EGRESS_CHANNEL', 'TELEGRAM_CHAT_ID', 'TELEGRAM_BOT_TOKEN']) {
+  delete process.env[k];
+}
+
 const execFileAsync = promisify(execFile);
 
 describe('notification plan: notify read-check parser', () => {

@@ -62,6 +62,17 @@ import { fileURLToPath } from 'node:url';
 // above. No persona/attention PLUGIN is imported anywhere in this file.
 import { runEmit, REDACT_FIELD_CAPS } from '../../plugins/runtime/scripts/notify.mjs';
 
+// Module-load egress-triple scrub (mirrors test-cross-machine-egress-acceptance.mjs
+// and test-notify.mjs). This suite spreads `...process.env` into the real notify.mjs
+// emit subprocesses and calls runEmit with the default env; on a machine where the
+// operator has ACTIVATED egress (the owner's ADR-0041 launcher exports the triple),
+// that ambient activation would engage the §2c egress override and flip the local
+// emit-pipeline expectations to channel=telegram / dispatched. Deleting the triple
+// keeps this black-box observability suite hermetic.
+for (const k of ['AGENTIC_NOTIFY_EGRESS_CHANNEL', 'TELEGRAM_CHAT_ID', 'TELEGRAM_BOT_TOKEN']) {
+  delete process.env[k];
+}
+
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const RUNTIME_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
 const NOTIFY_CLI = resolve(RUNTIME_ROOT, 'scripts/notify.mjs');
