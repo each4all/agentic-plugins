@@ -114,12 +114,30 @@ of the data.
   operator-owned before use. **A token alone never activates egress**: activation
   is a separate, explicit, non-tracked setting. Missing either credential or
   activation = silent no-op.
-- **(d) In-process `fetch`, explicitly authorized — not `curl`.** Registered in
-  the executor guard as a **network `CAPABILITY_IMPORTER` for `notify.mjs` scoped
-  to the pinned request**. `curl` is **not** added to `ALLOWED_COMMAND_LITERALS`.
-  The scanner watches `fetch`/`globalThis.fetch`/aliases as a network primitive,
-  with fail-closed tests for: non-notify fetch, non-POST, non-allowlisted origin,
-  missing timeout, redirect-following.
+- **(d) In-process HTTPS request (`node:https`), explicitly authorized — not `curl`.**
+  Registered in the executor guard as a **network `CAPABILITY_IMPORTER` for `notify.mjs`
+  scoped to the pinned request**. `curl` is **not** added to `ALLOWED_COMMAND_LITERALS`.
+  The transport is a `node:https` request pinned to the fixed host, **IPv4-preferred with a
+  bounded fallback**: the bundled `fetch` (undici) does not fall back to IPv4 on IPv6-broken
+  hosts and times out, whereas `node:https` with an explicit address family delivers. The
+  fallback to the default/IPv6 family fires **only while no POST body has been written** —
+  Telegram `sendMessage` has no idempotency key, so a written body must never be retried.
+  The scanner watches `fetch`/`globalThis.fetch`/aliases **and** the pinned `node:https`
+  request as network primitives, with fail-closed tests for: non-notify egress, non-POST,
+  non-allowlisted origin, missing timeout, redirect-following.
+
+  > **Status (transport fix — [decide-transport] ratified 2026-07-06):** the E1 transport
+  > was originally implemented with `fetch`, which **silently failed to deliver** in the
+  > owner's IPv6-broken environment (undici `ETIMEDOUT` across GET/POST/IPv4-forced, while
+  > `curl -4` succeeded in ~0.8s). Empirically, `node:https` with an explicit IPv4 family
+  > delivered 5/5 (real `message_id`); default-family `node:https` and undici both hung.
+  > Root cause: default address-family selection fails to fast-fail the dead IPv6 SYN, not
+  > "node networking is blocked". The `fetch → node:https` swap keeps the **identical E1
+  > effect** (so it needs no ADR-0035 §4 ceiling amendment — only this text), and closes the
+  > acceptance gap where `test-cross-machine-egress-acceptance.mjs` used `fakeFetch` and thus
+  > never exercised a real socket. **Runtime does not "ship" the `node:https` transport until
+  > the release-dogfood subtask proves real owner delivery**; `curl`/external-process egress
+  > remains rejected (see the `curl` executor rejection below — unchanged).
 - **(e) Bounded await, not vague fire-and-forget.** A **bounded `await` inside
   `notify.mjs` with a small timeout**, all rejections caught; a slow/failing/
   missing network degrades to a recorded failure, never blocks or throws on the
@@ -244,14 +262,14 @@ enumerated-metadata payload only; the §2 hard conditions re-cleared. E1 is a
 
 On acceptance: update **ADR-0035 Status/§4** ("§4 amended by ADR-0041 — E1") and
 **ADR-0040 §2** deferred-channel text (point here). Tests required: executor-guard
-registry + scanner `fetch` coverage (§2d), pinned-request fake-token unit test
+registry + scanner network-primitive coverage (`fetch`/`node:https`, §2d), pinned-request fake-token unit test
 (§2b), `buildEgressPayload()` exclusion test (§2f), dedupe-failure tests (§7),
 redaction/secret-scrub test (§5), attempt-mirror test (§6), cross-host acceptance.
 Implementation is a **`orchestrator:plan` multi-deliverable (~5-6 PRs)** with the
-**scanner/registry gate landing before or with any `fetch` use**: (1) ADR-0035/
+**scanner/registry gate landing before or with any network-egress-primitive use**: (1) ADR-0035/
 0040 boundary-doc updates; (2) verified-ignored-local + config/schema; (3) event
 schema + attention `hostname`/`session_hint` (copy-not-import); (4) executor
-scanner/registry `fetch` gate; (5) Telegram fetch channel + redaction/mirror; (6)
+scanner/registry network-primitive gate; (5) Telegram HTTPS (`node:https`) channel + redaction/mirror; (6)
 acceptance tests.
 
 ## Consequences
@@ -272,7 +290,7 @@ acceptance tests.
   creates **precedent-erosion pressure** ("this is egress too, so…"); the
   **enumerated-metadata + fixed-service + verified-local** narrowing is the
   deliberate suppressant that keeps E1 from generalizing. Standing review
-  obligation (registry, scanner `fetch`, redirect/pinning, activation-proof).
+  obligation (registry, network-primitive scanner, redirect/pinning, activation-proof).
 - Credential + recipient are per-machine operator responsibility — "install-only"
   is "install + env var (+ optional verified-local recipient)".
 - New paths to maintain/test: egress scrub, attempt-mirror, pinned-request

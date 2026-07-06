@@ -176,9 +176,14 @@ Independent of any flag, runtime MUST NOT:
 > (v1 `api.telegram.org`), carrying only a redacted, enumerated, capped metadata
 > field set, behind an **env / verified-ignored-local** opt-in with an **env-only**
 > credential. `curl` is **not** added to the executor registry; the one in-process
-> `fetch` is registry-scanned (`tests/plugin-shape/runtime-executor-scan.mjs`) and
-> permitted only in `notify.mjs`. Arbitrary/self-host URLs, redirect-following, a
-> config-tracked activation, and any non-enumerated / free-text / transcript
+> **HTTPS request** — a `node:https` client, **explicit-IPv4-preferred** so it delivers on
+> IPv6-broken hosts where the bundled `fetch` (undici) hangs — is registry-scanned
+> (`tests/plugin-shape/runtime-executor-scan.mjs`) and permitted only in `notify.mjs`.
+> (This is a **transport-detail** clarification, not a new §4 exception: the swap from
+> `fetch` to `node:https` keeps the identical E1 effect — same pinned host, method, path,
+> no-redirect, enumerated body, env-only credential — so the active-execution ceiling is
+> **unchanged**; `curl`/external-process egress stays forbidden.)
+> Arbitrary/self-host URLs, redirect-following, a config-tracked activation, and any non-enumerated / free-text / transcript
 > payload remain forbidden. This is a **bounded** amendment, not a general
 > network-egress precedent — the enumerated-metadata + fixed-service +
 > verified-local narrowing is the deliberate suppressant (ADR-0041 §1–§2, §10).
