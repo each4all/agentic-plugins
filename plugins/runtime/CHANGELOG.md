@@ -14,6 +14,13 @@
 - The `founder` inventory addition changes the `PLUGIN_NAMES` set, which invalidates the freshness of any previously recorded `runtime:doctor` proof (the proof-reuse gate requires the full plugin set + versions to match). Re-record the doctor proof on a host where all five plugins (including founder) are installed; until then `runtime:doctor` re-runs the proof rather than reusing the now-stale record.
 - Deferred (pre-existing, out of this RT slice's scope; surfaced by the founder inventory expansion): `cutover-audit.mjs`'s package map still omits `plugins/founder` (the omcc cutover predates founder, so cutover parity over founder is a separate scoped decision); and `resolveCodexInstallState`'s not-installed evidence string is hardcoded to `runtime` for every plugin (a not-installed founder reads "does not report runtime as installed") — a generic-name fix threading the plugin name through that helper.
 
+## [0.74.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.73.0...plugin-runtime-v0.74.0) (2026-07-06)
+
+
+### Features
+
+* **runtime:** ADR-0041 §2d fetch→node:https E1 egress transport (impl-transport) ([#501](https://github.com/each4all/agentic-plugins/issues/501)) ([ed14d23](https://github.com/each4all/agentic-plugins/commit/ed14d23c5d3036fc90b9fff79e5ad0c9c7e5e8d3))
+
 ## [0.73.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.72.1...plugin-runtime-v0.73.0) (2026-07-05)
 
 
