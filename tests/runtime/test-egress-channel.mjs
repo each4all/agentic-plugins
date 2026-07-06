@@ -221,6 +221,10 @@ describe('egress outcome classification', () => {
   it('classifyTelegramError distinguishes timeout / redirect / provider', () => {
     assert.equal(classifyTelegramError({ name: 'TimeoutError' }), EGRESS_OUTCOMES.TIMEOUT);
     assert.equal(classifyTelegramError({ name: 'AbortError' }), EGRESS_OUTCOMES.TIMEOUT);
+    // ADR-0041 §2d: a native node:https socket timeout is `code: 'ETIMEDOUT'` (name 'Error').
+    assert.equal(classifyTelegramError({ code: 'ETIMEDOUT' }), EGRESS_OUTCOMES.TIMEOUT);
+    // A connection refusal/unreachable stays a provider error (not a timeout).
+    assert.equal(classifyTelegramError({ code: 'ECONNREFUSED' }), EGRESS_OUTCOMES.PROVIDER_ERROR);
     assert.equal(classifyTelegramError(new TypeError('fetch failed: redirect count exceeded')), EGRESS_OUTCOMES.REDIRECT_ERROR);
     assert.equal(classifyTelegramError(new TypeError('getaddrinfo ENOTFOUND')), EGRESS_OUTCOMES.PROVIDER_ERROR);
     assert.equal(classifyTelegramError(undefined), EGRESS_OUTCOMES.PROVIDER_ERROR);

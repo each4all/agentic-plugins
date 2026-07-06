@@ -34,6 +34,7 @@
 // untouched (see tests/plugin-shape/runtime-executor-registry.mjs).
 
 import { spawn } from 'node:child_process';
+import https from 'node:https';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -408,20 +409,60 @@ function dispatchOsascript({ title, body, spawnImpl = null, env = process.env })
 // never wedged and never throws.
 export const TELEGRAM_API_TIMEOUT_MS = 5000;
 
-// The ONE pinned egress request (ADR-0041 §2b/§2d). The executor guard's
-// global-fetch-gate (tests/plugin-shape/runtime-executor-scan.mjs) permits
-// exactly one DIRECT fetch(url, init) in this file — url an inline literal
-// pinned to https://api.telegram.org/bot<TOKEN>/sendMessage, method POST,
-// redirect:'error', a bounded AbortSignal.timeout — and rejects every
-// alias/member/computed/variable-URL form. The scanner cannot statically pin a
-// variable, so the real request re-specifies the (url, init) literals inline;
-// the `fetchImpl` injection arm (test-only, ADR-0041 §2b) re-specifies the SAME
-// inline shape it observes and uses a DISTINCT identifier that never matches the
-// gate's `fetch` token. The token is shape-validated (validateTelegramToken)
-// before it reaches this interpolation, so it can contribute only URL-path-safe
-// characters — no percent-encoding (which Telegram rejects on the ':' separator).
+// ADR-0041 §2d IPv4-preferred→bounded-fallback address families. The bundled
+// `fetch` (undici) and default address-family selection do NOT fast-fail a dead
+// IPv6 SYN on IPv6-broken hosts and time out; an explicit IPv4 family delivers
+// (empirically 5/5 in the owner env, while default-family and undici both hung).
+// We try IPv4 FIRST, then fall back to the default family — but the fallback
+// fires ONLY while no POST body has been written (see below): Telegram
+// `sendMessage` has no idempotency key, so a written body must never be retried.
+const TELEGRAM_ADDRESS_FAMILIES = [4, undefined];
+
+// Defense-in-depth bound on the buffered response body. The endpoint is pinned to
+// api.telegram.org (a small JSON `{ ok, result }`); the AbortSignal bounds read
+// time, and this bounds memory if the pinned host ever returns an unbounded body.
+const TELEGRAM_RESPONSE_READ_CAP = 65536;
+
+// Per-attempt timeout for the ADR-0041 §2d IPv4-preferred→fallback dispatch. ONE
+// shared `deadline` bounds the WHOLE dispatch to TELEGRAM_API_TIMEOUT_MS, but a
+// NON-FINAL attempt is additionally capped to an even share of the budget so a
+// first-family connect HANG (not just a fast failure) still leaves time for the
+// fallback family — the symmetric IPv4-black-hole case of the IPv6 hang this fix
+// targets (a shared deadline alone lets a first-family hang consume the whole budget
+// and starve the fallback). The final attempt gets all remaining budget. Pure +
+// exported so the family/budget logic is unit-testable even though the surrounding
+// node:https socket path is not (acceptance-gate / release-dogfood). Returns 0 when
+// the shared budget is already spent.
+export function telegramAttemptTimeoutMs({ deadline, now, index, familyCount }) {
+  const remaining = deadline - now;
+  if (remaining <= 0) return 0;
+  const isFinal = index >= familyCount - 1;
+  return isFinal ? remaining : Math.min(remaining, Math.ceil(TELEGRAM_API_TIMEOUT_MS / familyCount));
+}
+
+// The ONE pinned egress request (ADR-0041 §2b/§2d). The transport is an in-process
+// `node:https` request — NOT `fetch` (undici silently failed to deliver on the
+// owner's IPv6-broken host; §2d [decide-transport]) and NOT `curl` (no external-
+// process egress; `curl` stays out of ALLOWED_COMMAND_LITERALS). The executor
+// guard's pinned-https-gate (tests/plugin-shape/runtime-executor-scan.mjs) permits
+// exactly one DIRECT `https.request(url, options)` in this file — url an inline
+// literal pinned to https://api.telegram.org/bot<TOKEN>/sendMessage, method POST, a
+// bounded AbortSignal.timeout, options carrying ONLY the allowlisted keys — and
+// rejects every alias/member/computed/variable-URL form or a second call. The
+// IPv4-preferred retry is a LOOP around this SINGLE call site (only the non-pinned
+// `family` varies). The `fetchImpl` injection arm (test-only, ADR-0041 §2b — the
+// pipeline's non-transport logic is unit-tested through it; comprehensive
+// node:https-shape injection + real-delivery proof are the acceptance-gate and
+// release-dogfood subtasks) uses a DISTINCT identifier that never matches a `fetch`
+// token. The token is shape-validated (validateTelegramToken) before it reaches
+// this interpolation, so it can contribute only URL-path-safe characters — no
+// percent-encoding (which Telegram rejects on the ':' separator).
 async function dispatchTelegramRequest({ token, body, fetchImpl = null }) {
   if (fetchImpl) {
+    // ADR-0041 §2b test-injection seam: a double observes the (url, init) and
+    // returns a { status, json } result. Kept fetch-shaped (redirect:'error') for
+    // the existing §2b unit tests; the acceptance-gate subtask reworks it to the
+    // node:https shape.
     return fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       redirect: 'error',
@@ -430,13 +471,63 @@ async function dispatchTelegramRequest({ token, body, fetchImpl = null }) {
       body,
     });
   }
-  return fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST',
-    redirect: 'error',
-    signal: AbortSignal.timeout(TELEGRAM_API_TIMEOUT_MS),
-    headers: { 'content-type': 'application/json' },
-    body,
-  });
+  // Real transport: node:https, IPv4-preferred with a bounded fallback (§2d). ONE
+  // shared deadline bounds the WHOLE dispatch to TELEGRAM_API_TIMEOUT_MS; each
+  // non-final attempt is capped (telegramAttemptTimeoutMs) so a first-family connect
+  // HANG cannot consume the whole budget and starve the fallback. The body is
+  // buffered and the Promise resolves on 'end' with { status, json } — the exact
+  // fetch Response fields the caller reads (response.status, response.json()). A
+  // body-read failure (incl. the bounded signal aborting mid-body — which surfaces
+  // on `res` as a connection reset, not a TimeoutError) rejects and is classified by
+  // the caller as a failure outcome; TIMEOUT / provider-error all share the
+  // release+throttle disposition, so the exact label is non-load-bearing.
+  const deadline = Date.now() + TELEGRAM_API_TIMEOUT_MS;
+  const familyCount = TELEGRAM_ADDRESS_FAMILIES.length;
+  let lastError = null;
+  for (let familyIndex = 0; familyIndex < familyCount; familyIndex += 1) {
+    const family = TELEGRAM_ADDRESS_FAMILIES[familyIndex];
+    const attemptTimeout = telegramAttemptTimeoutMs({
+      deadline, now: Date.now(), index: familyIndex, familyCount,
+    });
+    if (attemptTimeout <= 0) break; // shared budget spent — never exceed the deadline
+    let bodyWritten = false;
+    try {
+      return await new Promise((resolve, reject) => {
+        const req = https.request(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          family,
+          signal: AbortSignal.timeout(attemptTimeout),
+          headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+        }, (res) => {
+          // Buffer the (small, capped) JSON body; resolve on 'end' with the two
+          // fields the caller reads. A stalled/aborted body read rejects via res
+          // 'error' (bounded by the signal) — the Promise settles definitively, so
+          // the process never lingers on a half-read response.
+          let data = '';
+          res.setEncoding('utf8');
+          res.on('data', (chunk) => { if (data.length < TELEGRAM_RESPONSE_READ_CAP) data += chunk; });
+          res.on('end', () => resolve({ status: res.statusCode, json: async () => JSON.parse(data) }));
+          res.on('error', reject);
+        });
+        req.on('error', reject);
+        // ADR-0041 §2d idempotency: write the POST body ONLY once the socket has
+        // securely connected, so a pre-connect failure (a dead-family SYN hang,
+        // aborted by the bounded signal) falls back to the next family with NO body
+        // written. After a write, an error is surfaced (bodyWritten short-circuits
+        // the retry below) and the body is never re-sent (no idempotency key).
+        req.on('socket', (socket) => {
+          const flush = () => { bodyWritten = true; req.end(body); };
+          if (socket.connecting) socket.once('secureConnect', flush);
+          else flush();
+        });
+      });
+    } catch (error) {
+      lastError = error;
+      if (bodyWritten) throw error; // the body reached the wire — never retry
+      // otherwise fall through and try the next address family
+    }
+  }
+  throw lastError;
 }
 
 // Orchestrate ONE egress attempt around the pinned request, consuming

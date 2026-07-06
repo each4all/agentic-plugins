@@ -112,24 +112,23 @@ export const NETWORK_PRIMITIVES = ['get', 'request', 'connect', 'createConnectio
 // fail-OPEN — many indirections evaded it. Now inverted to flag-everything.)
 
 // The ONLY runtime scripts permitted to call the global `fetch`, each with the
-// pinned-request conformance spec its ONE direct call must satisfy. v1 has
-// exactly one: notify.mjs, for the ADR-0041 §2d E1 egress channel (a pinned POST
-// to the fixed Telegram sendMessage endpoint). This entry is registered HERE —
-// the ADR-0041 §11 keystone slice — BEFORE the `channel` slice adds the actual
-// fetch, so the pinned call is conformance-checked the moment it appears (the
-// conformance suite would fail the instant an unregistered/non-pinned fetch
-// landed in notify.mjs). The registration is INERT until fetch is actually used
-// (the gate only fires on a real fetch reference), so it grants nothing on its
-// own (registry never looser than code).
+// pinned-request conformance spec its ONE direct call must satisfy. As of the
+// ADR-0041 §2d transport fix ([impl-transport], ratified 2026-07-06) this is
+// EMPTY: the E1 egress transport was swapped from a global `fetch` to an in-process
+// `node:https` request (undici silently failed to deliver on the owner's
+// IPv6-broken host — see PINNED_HTTPS_USERS below), so no runtime script uses the
+// global `fetch` and none is registered here. The global-fetch-gate stays active
+// as a fail-closed tripwire: it now rejects ANY `fetch` reference in EVERY runtime
+// script (registry never looser than code — an entry for a fetch that no longer
+// exists would authorize a re-added fetch that the swap deliberately removed).
 //
-// Spec fields — the registered file may reference `fetch` ONLY as the callee of
-// a DIRECT `fetch(url, init)` call (no member/computed/alias/`.call`/shadow — all
-// rejected), taking EXACTLY two args, where:
+// Spec fields (retained for a FUTURE fetch user, if any) — a registered file may
+// reference `fetch` ONLY as the callee of a DIRECT `fetch(url, init)` call (no
+// member/computed/alias/`.call`/shadow — all rejected), taking EXACTLY two args:
 //   - `endpointPrefix` / `endpointSuffix`: the URL is a lone string/template
 //     literal (no `&&`/`||`/ternary/concatenation — the value must equal the
 //     text) that STARTS WITH endpointPrefix and ENDS WITH endpointSuffix, pinning
-//     the full `https://api.telegram.org/bot<TOKEN>/sendMessage` shape (host+path,
-//     token interpolated only in between) — ADR-0041 §2b;
+//     the full host+path shape (token interpolated only in between) — ADR-0041 §2b;
 //   - `method` / `redirect`: the init object's top-level `method`/`redirect`
 //     properties must be exactly these string literals (parsed as real object
 //     keys, never a token buried in a nested string); redirect:'error' is what
@@ -137,19 +136,8 @@ export const NETWORK_PRIMITIVES = ['get', 'request', 'connect', 'createConnectio
 //   - `requireTimeout`: the init object must set a bounded timeout (a `signal`
 //     of `AbortSignal.timeout(...)` or a numeric `timeout`) so a slow/hung
 //     endpoint cannot wedge the hook path (§2e).
-//   - `maxCalls`: the max number of direct pinned fetch calls the file may make
-//     (v1: 1 — a single sendMessage; a second pinned-shape call could egress to
-//     a different token/recipient).
-export const GLOBAL_FETCH_USERS = {
-  'notify.mjs': {
-    endpointPrefix: 'https://api.telegram.org/bot',
-    endpointSuffix: '/sendMessage',
-    method: 'POST',
-    redirect: 'error',
-    requireTimeout: true,
-    maxCalls: 1,
-  },
-};
+//   - `maxCalls`: the max number of direct pinned fetch calls the file may make.
+export const GLOBAL_FETCH_USERS = {};
 
 // ---------------------------------------------------------------------------
 // Pinned in-process HTTPS egress (ADR-0041 §2d node:https transport) — an
