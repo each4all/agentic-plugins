@@ -404,40 +404,64 @@ function dispatchOsascript({ title, body, spawnImpl = null, env = process.env })
 // Channel: telegram — ADR-0041 §2b/§2d/§2e E1 enumerated-metadata network egress
 // ---------------------------------------------------------------------------
 
-// Bounded timeout for the one pinned request (§2e). A slow/hung endpoint aborts
-// here and resolves to EGRESS_OUTCOMES.TIMEOUT — the fail-closed hook path is
-// never wedged and never throws.
-export const TELEGRAM_API_TIMEOUT_MS = 5000;
+// Bounded timeout for the pinned request (§2e). Raised 5000→8000 to match the
+// personal curl prototype's `-m 8` resilience: on the owner's IPv6-broken host a
+// transient network blip can make even the reliable IPv4 path briefly slow, and
+// the old 5s budget lost that race (live mirror showed intermittent egress
+// timeouts). A slow/hung endpoint still aborts here and resolves to
+// EGRESS_OUTCOMES.TIMEOUT — the fail-closed hook path is never wedged and never
+// throws. NOTE: the attention sensor spawns this emitter under its OWN spawnSync
+// timeout (sensor.mjs emitEvent `timeoutMs`), which MUST exceed this budget plus
+// node/pipeline overhead or it would kill the dispatch before the deadline; the
+// two are tuned together.
+export const TELEGRAM_API_TIMEOUT_MS = 8000;
 
-// ADR-0041 §2d IPv4-preferred→bounded-fallback address families. The bundled
-// `fetch` (undici) and default address-family selection do NOT fast-fail a dead
-// IPv6 SYN on IPv6-broken hosts and time out; an explicit IPv4 family delivers
-// (empirically 5/5 in the owner env, while default-family and undici both hung).
-// We try IPv4 FIRST, then fall back to the default family — but the fallback
-// fires ONLY while no POST body has been written (see below): Telegram
-// `sendMessage` has no idempotency key, so a written body must never be retried.
-const TELEGRAM_ADDRESS_FAMILIES = [4, undefined];
+// Budget each NON-FINAL attempt holds back for the attempts after it (the IPv4
+// retry and the default-family fallback), replacing the old even 1/familyCount
+// split that starved the reliable IPv4 path. Small on purpose: IPv4 should get the
+// bulk of the budget so a merely-SLOW IPv4 (a transient blip) still completes,
+// while a FAST-failing IPv4 (genuinely unavailable, e.g. an IPv6-only host) returns
+// before consuming this and — because the FINAL attempt gets ALL remaining budget —
+// hands the fallback nearly the whole window anyway. See telegramAttemptTimeoutMs.
+export const TELEGRAM_FALLBACK_RESERVE_MS = 2000;
+
+// ADR-0041 §2d address-family attempt order: IPv4, IPv4-RETRY, then the default
+// family. Owner-env diagnostic (getMe): explicit IPv4 is 100% reliable (~253ms)
+// while the default family fast-fails on the broken IPv6 stack (undici's default
+// selection likewise hung). So IPv4 is tried FIRST; because a transient blip can
+// make a single IPv4 connect briefly fail or stall, a SECOND IPv4 attempt (the
+// retry) precedes the default fallback; and the default family stays LAST for
+// portability (IPv6-only / DNS64-NAT64 hosts, where IPv4 fast-fails and hands the
+// final attempt the full remaining budget). The retry and the fallback fire ONLY
+// while no POST body has been written (the loop's bodyWritten gate below): Telegram
+// `sendMessage` has no idempotency key, so a written body is never re-sent.
+const TELEGRAM_ADDRESS_FAMILIES = [4, 4, undefined];
 
 // Defense-in-depth bound on the buffered response body. The endpoint is pinned to
 // api.telegram.org (a small JSON `{ ok, result }`); the AbortSignal bounds read
 // time, and this bounds memory if the pinned host ever returns an unbounded body.
 const TELEGRAM_RESPONSE_READ_CAP = 65536;
 
-// Per-attempt timeout for the ADR-0041 §2d IPv4-preferred→fallback dispatch. ONE
-// shared `deadline` bounds the WHOLE dispatch to TELEGRAM_API_TIMEOUT_MS, but a
-// NON-FINAL attempt is additionally capped to an even share of the budget so a
-// first-family connect HANG (not just a fast failure) still leaves time for the
-// fallback family — the symmetric IPv4-black-hole case of the IPv6 hang this fix
-// targets (a shared deadline alone lets a first-family hang consume the whole budget
-// and starve the fallback). The final attempt gets all remaining budget. Pure +
-// exported so the family/budget logic is unit-testable even though the surrounding
-// node:https socket path is not (acceptance-gate / release-dogfood). Returns 0 when
-// the shared budget is already spent.
+// Per-attempt timeout for the §2d IPv4-preferred→retry→fallback dispatch. ONE
+// shared `deadline` bounds the WHOLE dispatch to TELEGRAM_API_TIMEOUT_MS. A
+// NON-FINAL attempt gets the remaining budget MINUS TELEGRAM_FALLBACK_RESERVE_MS
+// rather than an even 1/familyCount share: the reliable IPv4 path is thereby given
+// the bulk of the budget so a merely-SLOW IPv4 (a transient blip) still completes,
+// while a FAST-failing IPv4 (genuinely unavailable, e.g. an IPv6-only host) returns
+// quickly and — being followed by the FINAL default attempt, which gets ALL
+// remaining budget — hands the fallback nearly the whole window. The final attempt
+// always gets the full remaining budget. Pure + exported so the family/budget logic
+// is unit-testable even though the surrounding node:https socket path is not
+// (real-network smoke / release-dogfood). Returns 0 when the shared budget is spent
+// OR the reserve already consumes the remainder for a non-final attempt — the
+// dispatch loop then SKIPS that attempt (continue) rather than open a
+// zero/negative-timeout socket, while a LATER family (the default fallback) still
+// receives its own remaining budget, so a slow/black-holed IPv4 never starves it.
 export function telegramAttemptTimeoutMs({ deadline, now, index, familyCount }) {
   const remaining = deadline - now;
   if (remaining <= 0) return 0;
   const isFinal = index >= familyCount - 1;
-  return isFinal ? remaining : Math.min(remaining, Math.ceil(TELEGRAM_API_TIMEOUT_MS / familyCount));
+  return isFinal ? remaining : Math.max(0, remaining - TELEGRAM_FALLBACK_RESERVE_MS);
 }
 
 // The ONE pinned egress request (ADR-0041 §2b/§2d). The transport is an in-process
@@ -483,10 +507,12 @@ async function dispatchTelegramRequest({ token, body, fetchImpl = null }) {
       body,
     });
   }
-  // Real transport: node:https, IPv4-preferred with a bounded fallback (§2d). ONE
-  // shared deadline bounds the WHOLE dispatch to TELEGRAM_API_TIMEOUT_MS; each
-  // non-final attempt is capped (telegramAttemptTimeoutMs) so a first-family connect
-  // HANG cannot consume the whole budget and starve the fallback. The body is
+  // Real transport: node:https, IPv4-preferred with an IPv4 retry then a bounded
+  // default-family fallback (§2d). ONE shared deadline bounds the WHOLE dispatch to
+  // TELEGRAM_API_TIMEOUT_MS; each non-final attempt reserves budget for the ones
+  // after it (telegramAttemptTimeoutMs) so the reliable IPv4 path gets the bulk of
+  // the window — a slow IPv4 still completes — yet a fast IPv4 failure returns the
+  // budget to the fallback. The body is
   // buffered and the Promise resolves on 'end' with { status, json } — the exact
   // fetch Response fields the caller reads (response.status, response.json()). A
   // body-read failure (incl. the bounded signal aborting mid-body — which surfaces
@@ -501,7 +527,14 @@ async function dispatchTelegramRequest({ token, body, fetchImpl = null }) {
     const attemptTimeout = telegramAttemptTimeoutMs({
       deadline, now: Date.now(), index: familyIndex, familyCount,
     });
-    if (attemptTimeout <= 0) break; // shared budget spent — never exceed the deadline
+    // This family's slice is spent (its own budget, or the reserve zeroed a
+    // non-final attempt). SKIP it but keep going: a SLOW/black-holed IPv4 must not
+    // starve the default-family fallback by way of the intervening IPv4-retry's
+    // zeroed reserve (the [4, 4, undefined] retry sits between IPv4 and the
+    // fallback, so a `break` here would drop the fallback the [4, undefined] form
+    // always reached). The FINAL attempt's budget is the full `remaining`, so the
+    // shared deadline is still never exceeded.
+    if (attemptTimeout <= 0) continue;
     let bodyWritten = false;
     try {
       return await new Promise((resolve, reject) => {
