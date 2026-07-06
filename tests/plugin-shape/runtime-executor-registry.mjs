@@ -35,6 +35,11 @@ export const WATCHED_CAPABILITY_MODULES = [
   'node:tls', 'tls',
   'node:dgram', 'dgram',
   'node:dns', 'dns', 'node:dns/promises',
+  // node:module grants createRequire, which re-opens synchronous `require()` of ANY
+  // capability module (`createRequire(import.meta.url)('node:https')`) — a load path the
+  // import-gate's static import/dynamic-import detection cannot see. Watching it fails
+  // closed on that bypass (Codex plan-verify CRITICAL). No runtime script imports it.
+  'node:module', 'module',
 ];
 
 // The only runtime scripts permitted to import a capability module, and which
@@ -90,8 +95,16 @@ export const NETWORK_PRIMITIVES = ['get', 'request', 'connect', 'createConnectio
 // in a runtime script and permits ONLY a direct pinned `fetch(url, init)` call
 // in a GLOBAL_FETCH_USERS entry. It is a CI tripwire + defense-in-depth, NOT a
 // sound sandbox: a determined author could still obfuscate past a token scanner
-// (e.g. `globalThis['fet'+'ch']`) or edit this registry, so the SOUND behavioral
-// validation of the pinned request is the `channel` slice's fetchImpl-injection
+// (e.g. `globalThis['fet'+'ch']`, a string-concatenated or UNICODE-ESCAPED
+// identifier in USE position, deep reflection, or `eval`) or edit this registry,
+// so the SOUND behavioral validation of the pinned request is the `channel`
+// slice's fetchImpl-injection
+// [residual boundary] Escaped identifiers in IMPORT and MODULE-SPECIFIER position
+// ARE caught (a clean statement-anchored check exists there); an escaped identifier
+// in an arbitrary USE position (`https.request(...)`) is the documented
+// deliberate-obfuscation residual — a general static check would false-positive on
+// legitimate `\u`-bearing regex character classes (the `/[\u0000-\u001F]/` control
+// scrub in notify.mjs itself), so §2b behavioral validation is the sound check.
 // unit test (ADR-0041 §2b — it observes the actual URL/method/redirect/timeout
 // fetch received). This gate's job is to catch accidental / review-visible fetch
 // additions and to fail closed on anything it cannot recognize as the exact
@@ -133,6 +146,67 @@ export const GLOBAL_FETCH_USERS = {
     endpointSuffix: '/sendMessage',
     method: 'POST',
     redirect: 'error',
+    requireTimeout: true,
+    maxCalls: 1,
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Pinned in-process HTTPS egress (ADR-0041 §2d node:https transport) — an
+// IMPORT-ANCHORED network capability scoped to the pinned request
+// ---------------------------------------------------------------------------
+
+// The E1 egress transport was originally a global `fetch` (GLOBAL_FETCH_USERS
+// above). The [decide-transport] fix (ADR-0041 §2d, ratified 2026-07-06) swaps it
+// to an in-process `node:https` request: the bundled `fetch` (undici) does not
+// fast-fail a dead IPv6 SYN on the owner's IPv6-broken host and times out, whereas
+// `node:https` with an explicit IPv4 family delivers. ADR-0041 §2d authorizes this
+// as "a network CAPABILITY_IMPORTER for notify.mjs scoped to the pinned request";
+// `curl` stays OUT of ALLOWED_COMMAND_LITERALS (no external-process egress).
+//
+// This registry is that scoped capability. Unlike CAPABILITY_IMPORTERS (whose
+// `modules` are drift-checked to require an actual `import` — so a node:https entry
+// there could not land before the impl slice adds the import), PINNED_HTTPS_USERS is
+// NOT drift-checked and is INERT until the import + call actually appear: it grants
+// nothing on its own (registry never looser than code), so it lands in the guard
+// slice — the ADR-0041 §11 keystone, scanner-gate-before-use — BEFORE the impl slice
+// adds the transport, exactly as GLOBAL_FETCH_USERS was registered before the fetch.
+//
+// Being registered here does two things, both enforced by the pinned-https-gate and
+// the import-gate (runtime-executor-scan.mjs):
+//   1. authorizes the file to `import <binding> from 'node:https'` (import-gate honors
+//      a PINNED_HTTPS_USERS entry as it honors a CAPABILITY_IMPORTERS entry); and
+//   2. obligates EVERY use of that binding to be the single pinned request — a direct
+//      `<binding>.request(url, options)` whose url is the pinned host+endpoint literal,
+//      method POST, with a bounded timeout — and rejects every other shape (a non-POST,
+//      a non-allowlisted origin, a missing timeout, an indirect/aliased/computed/`.call`
+//      request, any OTHER https member method, or a SECOND request call).
+//
+// Spec fields (parallel to GLOBAL_FETCH_USERS; see validatePinnedHttpsRequest):
+//   - `module`: the capability module this file may import for the pinned request
+//     (v1: 'node:https'); the import-gate honors ONLY this module for this file.
+//   - `endpointPrefix` / `endpointSuffix`: the request URL must be a lone string/
+//     template literal that STARTS WITH endpointPrefix and ENDS WITH endpointSuffix,
+//     pinning `https://api.telegram.org/bot<TOKEN>/sendMessage` (token interpolated
+//     only in between) — ADR-0041 §2b.
+//   - `method`: the options object's top-level `method` must be exactly this literal.
+//   - `requireTimeout`: the options must bound the request — either
+//     `signal: AbortSignal.timeout(<…>)` (fetch-parity auto-abort) or a `timeout:`
+//     option set to a positive value — so a hung endpoint cannot wedge the hook path
+//     (§2e). Note: `node:https.request` does NOT follow redirects (unlike `fetch`), so
+//     there is no `redirect` key to pin; redirect-FOLLOWING would require a SECOND
+//     request to a Location, which `maxCalls` forbids.
+//   - `maxCalls`: the max number of direct pinned request calls the file may make
+//     (v1: 1). The IPv4-preferred→fallback retry (ADR-0041 §2d) must therefore be a
+//     loop around a SINGLE `<binding>.request(...)` call site (varying only the
+//     non-pinned `family` option), never a second call site — which both keeps the
+//     egress bound and structurally reflects "a written body is never retried".
+export const PINNED_HTTPS_USERS = {
+  'notify.mjs': {
+    module: 'node:https',
+    endpointPrefix: 'https://api.telegram.org/bot',
+    endpointSuffix: '/sendMessage',
+    method: 'POST',
     requireTimeout: true,
     maxCalls: 1,
   },
