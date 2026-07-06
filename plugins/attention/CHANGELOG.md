@@ -2,6 +2,13 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.3.1](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.3.0...plugin-attention-v0.3.1) (2026-07-06)
+
+
+### Bug Fixes
+
+* **attention:** widen egress emitter spawn timeout to cover the 8s notify budget ([79761d6](https://github.com/each4all/agentic-plugins/commit/79761d63db827d489238123b91dfeae3103ceab7))
+
 ## [0.3.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.2.0...plugin-attention-v0.3.0) (2026-07-05)
 
 
