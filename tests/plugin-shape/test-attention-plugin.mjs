@@ -21,7 +21,7 @@
 // Run via `node --test tests/plugin-shape/test-attention-plugin.mjs`.
 
 import { describe, it, before, after } from 'node:test';
-import { strictEqual, ok, deepStrictEqual, throws } from 'node:assert/strict';
+import { strictEqual, ok, deepStrictEqual, throws, doesNotThrow } from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile, utimes } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -171,6 +171,27 @@ describe('plugins/attention — §1 contract parity vs canonical runtime lib', (
     // ADR-0041 §4 — the routing-field contract copies stay identical.
     deepStrictEqual([...sensorLib.OPTIONAL_ROUTING_FIELDS], [...canonical.OPTIONAL_ROUTING_FIELDS]);
     deepStrictEqual({ ...sensorLib.ROUTING_FIELD_CAPS }, { ...canonical.ROUTING_FIELD_CAPS });
+  });
+
+  it('ADR-0041 §3a — the copied headline vocab/field/cap + predicate are identical (copy-not-import parity)', () => {
+    // The producer copy MUST match the canonical runtime lib byte-for-byte, or a
+    // token this producer borns would be dropped runtime-side (Guard 2) as
+    // out-of-vocab — the exact drift this parity gate exists to catch.
+    strictEqual(sensorLib.OPTIONAL_HEADLINE_FIELD, canonical.OPTIONAL_HEADLINE_FIELD);
+    deepStrictEqual([...sensorLib.HEADLINE_VOCAB], [...canonical.HEADLINE_VOCAB]);
+    strictEqual(sensorLib.HEADLINE_FIELD_CAP, canonical.HEADLINE_FIELD_CAP);
+    ok(Object.isFrozen(sensorLib.HEADLINE_VOCAB));
+    // The copied membership predicate mirrors the canonical Guard-2 predicate.
+    for (const token of sensorLib.HEADLINE_VOCAB) {
+      strictEqual(sensorLib.isHeadlineToken(token), true);
+      strictEqual(canonical.isHeadlineToken(token), true);
+    }
+    for (const bad of ['COMPLETE', ' complete ', 'not-a-token', '', 42, null, undefined]) {
+      strictEqual(sensorLib.isHeadlineToken(bad), false);
+      // Assert the canonical Guard-2 predicate agrees, so a broadened runtime
+      // predicate cannot drift away from the copied one unnoticed (Codex peer).
+      strictEqual(canonical.isHeadlineToken(bad), false);
+    }
   });
 
   it('both libs reject an absent status for status-bearing kinds', () => {
@@ -354,6 +375,88 @@ describe('plugins/attention — buildEvent routing-field sanitization (ADR-0041 
       topic: 'x'.repeat(sensorLib.ROUTING_FIELD_CAPS.topic + 100),
     });
     strictEqual(ev.topic.length, sensorLib.ROUTING_FIELD_CAPS.topic);
+  });
+});
+
+describe('plugins/attention — deriveHeadlineToken (ADR-0041 §3a Guard 1 map-or-omit)', () => {
+  it('maps workflow-terminal × the real archive_gate values to the closed vocab', () => {
+    // The three values engineer/orchestrator mapArchiveGate actually emit.
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'ready_to_archive' }), 'complete');
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'not_terminal' }), 'in-progress');
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'blocked' }), 'blocked');
+  });
+
+  it('omits (null) for an unknown/absent gate or a non-workflow-terminal kind — never a guess', () => {
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'ready' }), null, 'a stale/unknown gate omits');
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: '' }), null);
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: undefined }), null);
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal' }), null);
+    // ADR-0041 §3a — the bare turn-complete deliberately carries no token (a
+    // kind-only token would overstate a single turn as workflow status). Every
+    // non-workflow-terminal kind omits.
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'turn-complete', archiveGate: 'ready_to_archive' }), null);
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'subagent-complete', archiveGate: 'ready_to_archive' }), null);
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'approval' }), null);
+    strictEqual(sensorLib.deriveHeadlineToken({}), null);
+    strictEqual(sensorLib.deriveHeadlineToken(), null);
+  });
+
+  it('every mapping value is a canonical closed-vocab member (no silent drift out of vocab)', () => {
+    // Whatever the table maps to must pass the canonical Guard-2 predicate; a value
+    // drifting out of vocab would be dropped runtime-side, silently losing the token.
+    for (const gate of ['ready_to_archive', 'not_terminal', 'blocked']) {
+      const token = sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: gate });
+      ok(token, `${gate} must map to a token`);
+      strictEqual(canonical.isHeadlineToken(token), true, `${gate} → ${token} must be a canonical vocab member`);
+    }
+  });
+
+  it('never throws + omits for a non-string, prototype-key, or coercion-hostile gate (fail-closed — Codex peer MAJOR)', () => {
+    // archive_gate comes from a parsed projection JSON and can be ANY type. None may
+    // throw: a throw escapes to the Stop sensor's outer catch and suppresses the WHOLE
+    // notification instead of omitting only headline. Two nasty shapes: an object with
+    // a NON-CALLABLE toString ({toString:'x'}) makes a bracket-lookup String() throw;
+    // an object with a CALLABLE toString returning a gate name would coerce to a real
+    // token — both must be refused. Inherited string keys must not resolve either.
+    const hostileGates = [
+      42, null, {}, [], true,
+      { toString: 'ready_to_archive' },       // non-callable toString → String() throws
+      { toString: () => 'ready_to_archive' },  // callable → would coerce to 'complete' without the guard
+      'constructor', '__proto__', 'toString', 'hasOwnProperty',
+    ];
+    for (const gate of hostileGates) {
+      let result;
+      doesNotThrow(
+        () => { result = sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: gate }); },
+        `archiveGate=${JSON.stringify(gate)} must not throw`,
+      );
+      strictEqual(result, null, `archiveGate=${JSON.stringify(gate)} must omit (null)`);
+    }
+  });
+});
+
+describe('plugins/attention — buildEvent borns the opt-in headline (ADR-0041 §3a Guard 1)', () => {
+  it('sets a valid token; the event still passes canonical validateEvent + Guard 2', () => {
+    const ev = sensorLib.buildEvent({
+      repoIdent: 'repo-a', kind: 'workflow-terminal', subject: 'compose-x',
+      status: sensorLib.WORKFLOW_TERMINAL_STATUS, title: 't', urgency: 'normal', headline: 'complete',
+    });
+    strictEqual(ev.headline, 'complete');
+    // headline is set VERBATIM (not truncated) so the runtime Guard-2 sees the same
+    // full value — validating the exact token the producer borns.
+    strictEqual(canonical.validateEvent(ev).ok, true);
+    strictEqual(canonical.isHeadlineToken(ev.headline), true);
+  });
+
+  it('omits headline for a null/omitted or out-of-vocab value — never coerced onto the event', () => {
+    for (const bad of [null, undefined, 'not-a-token', ' complete ', 'COMPLETE', 42, {}]) {
+      const ev = sensorLib.buildEvent({
+        repoIdent: 'repo-a', kind: 'turn-complete', subject: 'session:s1:p1',
+        title: 't', urgency: 'normal', headline: bad,
+      });
+      strictEqual('headline' in ev, false, `headline must be absent for ${JSON.stringify(bad)}`);
+      strictEqual(canonical.validateEvent(ev).ok, true, 'a dropped headline never fails the base validation');
+    }
   });
 });
 
@@ -765,6 +868,9 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
       strictEqual(event.hostname, E2E_HOSTNAME);
       ok(typeof event.topic === 'string' && event.topic.length > 0);
       ok(typeof event.session_hint === 'string' && event.session_hint.length > 0);
+      // ADR-0041 §3a — a bare turn-complete (no fresh projection) borns NO headline
+      // (a kind-only token would overstate a single turn as workflow status).
+      strictEqual('headline' in event, false);
     });
 
     it('Stop with a fresh rendered projection → workflow-terminal (and NO bare turn-complete)', async () => {
@@ -777,7 +883,10 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
         workflow_path: '.agentic-plugins/state/engineer/workflows/x.md',
         phase: 'summary-complete',
         next_action: 'Commit the change',
-        archive_gate: 'ready',
+        // A real mapArchiveGate output (engineer/orchestrator emit
+        // ready_to_archive / not_terminal / blocked); ready_to_archive → the
+        // headline token `complete` below (ADR-0041 §3a).
+        archive_gate: 'ready_to_archive',
         routing_recommendation: 'continue',
       }));
       await writeFile(
@@ -800,6 +909,11 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
         strictEqual(event.refs.path, '.agentic-plugins/state/engineer/workflows/x.md');
         // ADR-0041 §3 — phase rides in refs when a fresh projection exists.
         strictEqual(event.refs.phase, 'summary-complete');
+        // ADR-0041 §3a — the workflow-terminal event borns the opt-in headline from
+        // the projection's archive_gate (ready_to_archive → complete), end-to-end
+        // through the real Stop sensor. The runtime opt-in + Guard 2 decide egress;
+        // the producer's job — proven here — is to born the correct closed-vocab token.
+        strictEqual(event.headline, 'complete');
         strictEqual(
           event.event_id,
           canonical.buildEventId({
@@ -816,6 +930,57 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
         ok(typeof event.session_hint === 'string' && event.session_hint.length > 0);
       } finally {
         await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('two fresh projections (engineer + orchestrator) → two workflow-terminal events with per-persona headline, no bare turn-complete (Codex peer)', async () => {
+      // Both personas can be terminal in one turn (a macro closes with its last
+      // engineer child). Each workflow-terminal event borns its OWN headline from
+      // its OWN projection's archive_gate — engineer blocked → blocked, orchestrator
+      // not_terminal → in-progress — and the bare turn-complete is suppressed.
+      const engDir = join(repo, '.agentic-plugins', 'state', 'engineer');
+      const orcDir = join(repo, '.agentic-plugins', 'state', 'orchestrator');
+      await mkdir(engDir, { recursive: true });
+      await mkdir(orcDir, { recursive: true });
+      const engId = 'compose-20260704T112944Z-eeeeee';
+      const macroId = 'macro-plan-20260704T112944Z-aaaaaa';
+      // engineer: archive_gate blocked → 'blocked'; UNSCOPED rendered marker shape.
+      await writeFile(join(engDir, 'last-session-handoff.json'), JSON.stringify({
+        workflow_kind: 'engineer', workflow_id: engId,
+        workflow_path: '.agentic-plugins/state/engineer/workflows/e.md',
+        phase: 'plan', next_action: 'n', archive_gate: 'blocked', routing_recommendation: 'continue',
+      }));
+      await writeFile(
+        join(engDir, 'last-session-handoff.json.footer-rendered'),
+        JSON.stringify({ workflow_id: engId, status: 'rendered', at: new Date().toISOString() }),
+      );
+      // orchestrator: archive_gate not_terminal → 'in-progress'; WORKFLOW-ID-SCOPED marker shape.
+      await writeFile(join(orcDir, 'last-session-handoff.json'), JSON.stringify({
+        workflow_kind: 'orchestrator', workflow_id: macroId,
+        workflow_path: '.agentic-plugins/state/orchestrator/workflows/m.md',
+        phase: 'phase-3-dispatch', next_action: 'n', archive_gate: 'not_terminal', routing_recommendation: 'continue',
+      }));
+      await writeFile(
+        join(orcDir, `last-session-handoff.json.${macroId}.footer-rendered`),
+        JSON.stringify({ workflow_id: macroId, status: 'rendered', at: new Date().toISOString() }),
+      );
+      try {
+        const result = runSensorE2E('stop.mjs', { cwd: repo, session_id: 'sess-1', prompt_id: 'prompt-9' });
+        strictEqual(result.status, 0);
+        strictEqual(result.stdout, '');
+        const captures = await takeCaptures();
+        strictEqual(captures.length, 2, 'one workflow-terminal per fresh persona projection; the bare turn-complete is suppressed');
+        const byWfId = Object.fromEntries(captures.map((c) => [c.event.refs.workflow_id, c.event]));
+        strictEqual(byWfId[engId].kind, 'workflow-terminal');
+        strictEqual(byWfId[engId].headline, 'blocked', 'engineer archive_gate=blocked → headline blocked');
+        strictEqual(byWfId[macroId].kind, 'workflow-terminal');
+        strictEqual(byWfId[macroId].headline, 'in-progress', 'orchestrator archive_gate=not_terminal → headline in-progress');
+        for (const { event } of captures) {
+          strictEqual(event.kind === 'turn-complete', false, 'no bare turn-complete when a terminal event fired');
+        }
+      } finally {
+        await rm(engDir, { recursive: true, force: true });
+        await rm(orcDir, { recursive: true, force: true });
       }
     });
 
