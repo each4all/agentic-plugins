@@ -97,6 +97,12 @@ const RUNTIME_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
 const NOTIFY_CLI = resolve(RUNTIME_ROOT, 'scripts/notify.mjs');
 const ATTENTION_ROOT = resolve(REPO_ROOT, 'plugins/attention');
 const NOTIFICATION_SENSOR = resolve(ATTENTION_ROOT, 'adapters/claude/hooks/notification.mjs');
+// The REAL Claude attention Stop sensor — the ONE producer that borns the ADR-0041
+// §3a closed-vocabulary headline (deriveHeadlineToken maps a fresh workflow-terminal
+// projection's archive_gate → a status token). The (L) real-producer gate drives it
+// end-to-end so the headline is proven through an actual sensor, not only synthetic
+// event JSON (Codex PEER-10).
+const STOP_SENSOR = resolve(ATTENTION_ROOT, 'adapters/claude/hooks/stop.mjs');
 const SHUTTLE_TEMPLATE = resolve(RUNTIME_ROOT, 'receivers/codex-notify-shuttle.mjs');
 
 // HERMETICITY (peer CRITICAL): several real-CLI/sensor tests build their subprocess
@@ -114,7 +120,18 @@ const SHUTTLE_TEMPLATE = resolve(RUNTIME_ROOT, 'receivers/codex-notify-shuttle.m
 // the (K) AGENTIC_EGRESS_REAL_SMOKE opt-in. NOTE: `node:https` core (not undici,
 // no proxy-aware agent) is also a containment gain -- the token-in-URL is never
 // auto-routed through an ambient HTTP(S)_PROXY.
-for (const k of ['AGENTIC_NOTIFY_EGRESS_CHANNEL', 'TELEGRAM_CHAT_ID', 'TELEGRAM_BOT_TOKEN']) {
+//
+// AGENTIC_NOTIFY_EGRESS_HEADLINE joins the scrub list (ADR-0041 §3a): the SAME owner
+// dogfoods the opt-in headline and may export it in the `npm test` shell. A real-
+// subprocess test that builds its env from `{ ...process.env, ... }` (the (L)
+// real-producer default-off path, L7-OFF) would then inherit an ambient opt-in=ON, and
+// the runtime would egress the headline the test asserts is ABSENT — a SPURIOUS FAILURE
+// (not a false pass: the extra field makes `headline === undefined` fail, it does not
+// hide anything). Scrubbing it here makes the default OFF unconditional; each headline
+// test sets the opt-in it needs explicitly. (The synthetic runEmit paths pass an
+// explicit `egressEnv()` dict and never read process.env, so they are already immune —
+// this protects the real-subprocess path.)
+for (const k of ['AGENTIC_NOTIFY_EGRESS_CHANNEL', 'TELEGRAM_CHAT_ID', 'TELEGRAM_BOT_TOKEN', 'AGENTIC_NOTIFY_EGRESS_HEADLINE']) {
   delete process.env[k];
 }
 
@@ -201,6 +218,43 @@ function writeVerifiedLocal(home, kv) {
   return file;
 }
 
+// Stage a FRESH terminal workflow projection + its ADR-0039 footer-rendered marker
+// so the REAL attention Stop sensor's readFreshProjection accepts it and borns a
+// workflow-terminal headline (deriveHeadlineToken maps archive_gate → a status
+// token). Black-box: the on-disk layout is reproduced verbatim (canonical home +
+// per-persona marker filename), never by importing the sensor. Written just before
+// the sensor runs, so the projection mtime is inside HANDOFF_FRESHNESS_MS of the
+// sensor's real Date.now() (no clock injection into a real subprocess). Returns the
+// projection file path. Defaults yield archive_gate='ready_to_archive' → 'complete'.
+function writeFreshProjection(root, persona, {
+  workflowId,
+  archiveGate = 'ready_to_archive',
+  phase = 'phase-7',
+  nextAction = 'Commit the change',
+  workflowKind = persona,
+} = {}) {
+  const dir = join(root, '.agentic-plugins', 'state', persona);
+  mkdirSync(dir, { recursive: true });
+  const projectionFile = join(dir, 'last-session-handoff.json');
+  const projection = {
+    workflow_id: workflowId,
+    workflow_kind: workflowKind,
+    archive_gate: archiveGate,
+    phase,
+    next_action: nextAction,
+    workflow_path: join(dir, 'workflows', `${workflowId}.md`),
+  };
+  writeFileSync(projectionFile, `${JSON.stringify(projection)}\n`);
+  // Per-persona marker filename shape (canonical: attention sensor footerMarkerFileFor
+  // / the personas' session-handoff writers): engineer keys one marker per projection
+  // slot; orchestrator bakes a filesystem-safe workflow id into the name.
+  const markerName = persona === 'orchestrator'
+    ? `last-session-handoff.json.${String(workflowId).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 128) || 'unknown'}.footer-rendered`
+    : 'last-session-handoff.json.footer-rendered';
+  writeFileSync(join(dir, markerName), `${JSON.stringify({ workflow_id: workflowId, status: 'rendered' })}\n`);
+  return projectionFile;
+}
+
 // A §1 event_id: <repoIdent>:<kind>:<subject>:<status>, colon-free repoIdent +
 // status, kind segment == kind. The emitter validates shape + uses it verbatim.
 function buildId(repoIdent, kind, subject, status) {
@@ -248,6 +302,24 @@ function egressEvent(overrides = {}) {
 // of loose "includes" regexes (peer MAJOR): any extra field leaking in makes the
 // string longer and fails.
 const EXPECTED_EGRESS_TEXT = 'approval · @mba · repo:main · wf wf-1/phase-3 · sess12';
+
+// The SAME render with the ADR-0041 §3a opt-in headline present: the closed-vocab
+// status token slots right AFTER kind (renderEgressText order: kind · headline ·
+// @host · topic · wf · session_hint). An exact-match on this string proves the
+// headline lands in EXACTLY that one position — and, by contrast with
+// EXPECTED_EGRESS_TEXT above, that it is ABSENT when the opt-in is off. The token
+// 'complete' is the map of a `ready_to_archive` archive_gate (the real
+// deriveHeadlineToken mapping the Stop producer emits).
+const EXPECTED_EGRESS_TEXT_WITH_HEADLINE = 'approval · complete · @mba · repo:main · wf wf-1/phase-3 · sess12';
+
+// The ADR-0041 §3a closed vocabulary, duplicated here as a black-box observer's
+// EXPECTED set (canonical: notify-schema HEADLINE_VOCAB / attention sensor's
+// copy). A test never imports the producer's list — it asserts against the fixed
+// tokens an operator actually sees, so a vocab drift on either side is caught as a
+// value mismatch, not silently followed.
+const EXPECTED_HEADLINE_VOCAB = Object.freeze([
+  'your-turn', 'needs-approval', 'in-progress', 'blocked', 'complete', 'failed',
+]);
 
 // The operator-environment activation triple (§2c). Any key can be dropped via
 // an explicit `undefined` override to exercise a missing-input path.
@@ -1149,6 +1221,307 @@ describe('ADR-0041 acceptance (J) -- provider-outcome classification matrix', ()
 });
 
 // ===========================================================================
+// (L) ADR-0041 §3a -- the OPT-IN closed-vocabulary `headline` status token. The
+//     headline is the SINGLE highest-leak-risk egress field (it is the only one the
+//     attention producer borns from workflow STATE), so this gate proves, END-TO-END
+//     through the real runEmit pipeline + one REAL attention producer, that:
+//       * a non-vocab value (secret / markup / control / newline / padded / wrong-
+//         case / unknown) is DROPPED, never coerced or truncated-leaked (the vocab
+//         gate sits UPSTREAM of the cap, so a secret never even reaches scrubCap);
+//       * a valid vocab token rides BOTH the egress body AND the attempt-mirror, and
+//         the two AGREE (buildEgressPayload / buildEgressMirrorRecord parity);
+//       * the field is DEFAULT-OFF: an event.headline with the opt-in absent egresses
+//         nothing, in neither the body nor the mirror;
+//       * the opt-in ALONE (without egress activation) is inert — no egress at all;
+//       * a valid headline coexists with forbidden free-text sentinels WITHOUT
+//         carrying any of them (source isolation);
+//       * the credential still leaks to NOWHERE while a headline is present.
+//     Injection-dependent scans reuse the (A)/(H) transport double (fake token, no
+//     socket); the one real-producer path drives the actual attention Stop sensor.
+// ===========================================================================
+
+describe('ADR-0041 acceptance (L) -- the opt-in closed-vocabulary headline status token (§3a)', () => {
+  // Pathological, NON-vocab headline values: each must be DROPPED by the validate-or-
+  // drop gate (isHeadlineToken exact-membership), never coerced into compliance nor
+  // cap-truncated into a leaked fragment. EVERY case carries a distinctive ASCII
+  // `witness` (a scannable marker embedded in the value) so the state scan runs for ALL
+  // of them — a regression persisting the raw value under a DIFFERENT mirror key (e.g.
+  // `raw_headline: "COMPLETE"`) is caught by scanning the whole state, not just the
+  // `headline` field (Codex gap: witness-less cases previously skipped the state scan).
+  // The newline case carries a REAL control byte (U+000A) so it also exercises a
+  // control-bearing value being dropped; its witness is the text AFTER the newline.
+  const NONVOCAB = [
+    { label: 'a >cap high-entropy secret', value: `blocked-${'H3ADL1NESECRET'.repeat(4)}`, witness: 'H3ADL1NESECRET' },
+    { label: 'HTML-looking markup', value: '<b>complete</b>', witness: '<b>complete</b>' },
+    { label: 'Markdown-looking markup', value: '*complete*', witness: '*complete*' },
+    { label: 'a newline-injected fake key', value: 'complete\nchat_id=EVILCHATID', witness: 'EVILCHATID' },
+    { label: 'a suffix-appended near-token', value: 'complete-EXTRAHLMARK', witness: 'EXTRAHLMARK' },
+    { label: 'a whitespace-padded near-token', value: '  complete PADHLMARK  ', witness: 'PADHLMARK' },
+    { label: 'a wrong-case token', value: 'COMPLETE', witness: 'COMPLETE' },
+    { label: 'an unknown token', value: 'almost-done', witness: 'almost-done' },
+  ];
+  for (const { label, value, witness } of NONVOCAB) {
+    it(`L1 §3a/§4/§5 -- a non-vocab headline (${label}) is DROPPED from body + mirror, never coerced/truncated`, async () => {
+      const root = markerRepo('L-drop');
+      const calls = [];
+      const result = await emitEgress({
+        root, calls,
+        env: egressEnv({ AGENTIC_NOTIFY_EGRESS_HEADLINE: 'true' }),
+        event: egressEvent({ headline: value }),
+      });
+      strictEqual(result.status, 'dispatched');
+      const body = JSON.parse(calls[0].init.body);
+      // Injection-safety: the sendMessage body is ALWAYS exactly { chat_id, text },
+      // no parse_mode, whatever markup/control/newline the DROPPED headline carried.
+      deepStrictEqual(Object.keys(body).sort(), ['chat_id', 'text'], 'no parse_mode / no free-form keys');
+      // The vocab gate is UPSTREAM of the per-field cap: a non-token headline never
+      // reaches scrubCap, so the render is byte-identical to the no-headline expected
+      // text (a scrub-AFTER-cap fragment leak cannot even arise for headline). The
+      // exact-match already implies no witness / no control char survives into the BODY.
+      strictEqual(body.text, EXPECTED_EGRESS_TEXT, 'a dropped headline leaves the enumerated render unchanged');
+      // Mirror: no headline under the canonical key AND the raw value under NO key,
+      // scanning the WHOLE persisted state (contents). A distinctive per-case witness is
+      // the leak signal — NOT a whole-state control-char scan: the NDJSON log legitimately
+      // contains structural newlines (U+000A), so the raw newline the newline-injected
+      // value carries is proven un-persisted by its post-newline 'EVILCHATID' witness.
+      strictEqual(egressRows(root)[0].headline, undefined, 'no headline under the canonical mirror key');
+      const state = dumpNotifyState(root);
+      ok(!state.includes(witness), `the dropped headline material (${witness}) never lands in state under ANY key`);
+    });
+  }
+
+  // Every valid vocab token rides both surfaces with the EXACT enumerated render and
+  // the two agree — the whole closed set, not just one token, so a vocab drift OR a
+  // body-appended/duplicated regression fails as a value mismatch (Codex FP: the prior
+  // loose split[1] check would pass a body-appended regression for 5/6 tokens).
+  for (const token of EXPECTED_HEADLINE_VOCAB) {
+    it(`L2 §3a -- the valid token '${token}' rides BOTH surfaces with the EXACT render (opt-in ON, parity)`, async () => {
+      const root = markerRepo('L-token');
+      const calls = [];
+      const result = await emitEgress({
+        root, calls,
+        env: egressEnv({ AGENTIC_NOTIFY_EGRESS_HEADLINE: 'true' }),
+        event: egressEvent({ headline: token }),
+      });
+      strictEqual(result.status, 'dispatched');
+      const body = JSON.parse(calls[0].init.body);
+      deepStrictEqual(Object.keys(body).sort(), ['chat_id', 'text'], 'no parse_mode / no free-form keys');
+      // EXACT full render: only the headline segment varies (renderEgressText order
+      // kind · headline · @host · …), so any extra/duplicated free text lengthens the
+      // string and fails.
+      const expected = `approval · ${token} · @mba · repo:main · wf wf-1/phase-3 · sess12`;
+      strictEqual(body.text, expected, 'exact enumerated render with the token slotted after kind');
+      // Producer/runtime PARITY: the SAME token the body carries is the one the mirror
+      // persists (buildEgressPayload + buildEgressMirrorRecord share the §3a Guard 2 gate).
+      strictEqual(egressRows(root)[0].headline, token, 'the mirror carries the SAME token as the body');
+    });
+  }
+
+  it('L3 §3a DEFAULT-OFF -- egress active + event.headline present + NO opt-in → headline absent from body AND mirror', async () => {
+    const root = markerRepo('L-defaultoff');
+    const calls = [];
+    // egressEnv() carries NO opt-in; the event still supplies a valid headline.
+    const result = await emitEgress({ root, calls, event: egressEvent({ headline: 'complete' }) });
+    strictEqual(result.status, 'dispatched');
+    const body = JSON.parse(calls[0].init.body);
+    strictEqual(body.text, EXPECTED_EGRESS_TEXT, 'default-off: the body render carries no headline segment');
+    ok(!body.text.includes('complete'), 'the headline token does not leak into the body when the opt-in is off');
+    strictEqual(egressRows(root)[0].headline, undefined, 'default-off: the attempt-mirror omits the headline');
+  });
+
+  it('L4 §3a OPT-IN-ALONE inert -- the headline opt-in WITHOUT egress activation causes NO egress', () => {
+    const root = markerRepo('L-optinalone');
+    const home = fixtureHome();
+    // A local channel so the event is provably PROCESSED; the headline opt-in is set
+    // but there is NO egress channel key → runEgressDispatch (where the opt-in is
+    // even read) is never reached, the structural "opt-in-alone inert" guarantee.
+    writeConfig(root, { notify_channel: 'file-log' });
+    const env = { ...process.env, HOME: home, AGENTIC_NOTIFY_EGRESS_HEADLINE: 'true' };
+    const res = emitCli(root, egressEvent(), env);
+    strictEqual(res.status, 0, `fail-closed exit 0; stderr:\n${res.stderr}`);
+    ok(readLog(root).length >= 1, 'the local file-log channel processed the event');
+    strictEqual(egressRows(root).length, 0, 'the headline opt-in alone never engages egress');
+  });
+
+  it('L4b §3a -- the headline opt-in resolves from the verified user-home config.local.toml (not only the env var)', async () => {
+    const root = markerRepo('L-verifiedlocal');
+    const home = fixtureHome();
+    // egress ACTIVATION via the env triple; the headline opt-in ONLY via the user-home
+    // verified-ignored-local file `egress_headline = "true"` — the SECOND opt-in source
+    // (loadEgressHeadlineOptIn's local layer), which the env-var tests never exercise.
+    // Proves the black-box acceptance gate covers BOTH opt-in sources (Codex gap).
+    writeVerifiedLocal(home, { egress_headline: 'true' });
+    const calls = [];
+    const result = await emitEgress({
+      root, home, calls,
+      env: egressEnv(), // NO env opt-in — the verified-local file is the only source
+      event: egressEvent({ headline: 'complete' }),
+    });
+    strictEqual(result.status, 'dispatched');
+    strictEqual(JSON.parse(calls[0].init.body).text, EXPECTED_EGRESS_TEXT_WITH_HEADLINE, 'the verified-local opt-in enabled the headline');
+    strictEqual(egressRows(root)[0].headline, 'complete', 'the verified-local opt-in headline rode the mirror');
+  });
+
+  it('L5 §3a SOURCE ISOLATION -- a valid headline coexists with forbidden free-text sentinels; the token egresses, the sentinels NEVER do', async () => {
+    const root = markerRepo('L-isolation');
+    const calls = [];
+    // egressEvent parks a unique sentinel in EVERY non-enumerated field
+    // (title/body/message/next_action/transcript/refs.path/refs.run_id).
+    const result = await emitEgress({
+      root, calls,
+      env: egressEnv({ AGENTIC_NOTIFY_EGRESS_HEADLINE: 'true' }),
+      event: egressEvent({ headline: 'complete' }),
+    });
+    strictEqual(result.status, 'dispatched');
+    const body = JSON.parse(calls[0].init.body);
+    strictEqual(body.text, EXPECTED_EGRESS_TEXT_WITH_HEADLINE, 'the body is the enumerated render + the headline, nothing else');
+    strictEqual(egressRows(root)[0].headline, 'complete', 'the headline token egressed (output may include the safe token)...');
+    const state = dumpNotifyState(root);
+    for (const sentinel of SENTINELS) {
+      ok(!body.text.includes(sentinel), `${sentinel} must never ride the headline-bearing body`);
+      ok(!state.includes(sentinel), `${sentinel} must never land in an egress artifact alongside the headline`);
+    }
+  });
+
+  it('L5b §3a -- a valid headline rides the mirror even on a PROVIDER-FAILED dispatch (the mirror is outcome-independent)', async () => {
+    const root = markerRepo('L-failheadline');
+    const calls = [];
+    // A 500 → provider-error: the claim is released, a throttle is recorded, the mirror
+    // is FAILED. buildEgressMirrorRecord does not gate the headline on the outcome, so a
+    // failed egress still surfaces "how far along" on the dashboard (headline 'failed'
+    // on a failed dispatch is the apt case).
+    const result = await emitEgress({
+      root, calls,
+      env: egressEnv({ AGENTIC_NOTIFY_EGRESS_HEADLINE: 'true' }),
+      event: egressEvent({ headline: 'failed' }),
+      respond: () => ({ status: 500, ok: false }),
+    });
+    strictEqual(result.status, 'failed');
+    const row = egressRows(root)[0];
+    strictEqual(row.egress_status, 'failed', 'the mirror recorded the failed coarse status');
+    strictEqual(row.egress_outcome, 'provider-error', 'the mirror recorded the provider-error outcome');
+    strictEqual(row.headline, 'failed', 'the headline rides the mirror on a failed outcome too');
+  });
+
+  it('L6 §2b/§5 -- with the headline present, the fake token STILL leaks to NOWHERE (URL captured, artifacts/state/filenames clean)', async () => {
+    const root = markerRepo('L-noleak');
+    const calls = [];
+    const result = await emitEgress({
+      root, calls,
+      env: egressEnv({ AGENTIC_NOTIFY_EGRESS_HEADLINE: 'true' }),
+      event: egressEvent({ headline: 'complete' }),
+    });
+    strictEqual(result.status, 'dispatched');
+    strictEqual(calls[0].url, `https://api.telegram.org/bot${FAKE_TOKEN}/sendMessage`, 'the token rode the captured (un-sent) URL');
+    strictEqual(egressRows(root)[0].headline, 'complete', 'the headline IS present in the artifacts...');
+    // ...and the token is STILL absent from every observable surface.
+    assertNoTokenLeak(dumpEgressArtifacts(root), 'any egress artifact (headline present)');
+    assertNoTokenLeak(dumpNotifyState(root), 'any persisted state contents (headline present)');
+    assertNoTokenLeak(dumpNotifyPaths(root), 'any persisted state filename (headline present)');
+  });
+
+  it('L6b §2b/§5 -- a REAL CLI attempt with the opt-in ON + a valid token never emits the token to argv/stderr (headline present)', () => {
+    const root = markerRepo('L-cliheadline');
+    const home = fixtureHome();
+    // A VALID token but NO recipient → the engaged egress resolves MISSING-RECIPIENT
+    // before the pinned request (network-free) while the token rides the whole
+    // subprocess env, AND the opt-in is ON with a valid headline — so the headline-
+    // bearing branch runs through the REAL CLI. (H1 covers argv/stderr WITHOUT a
+    // headline; this is the headline-present complement — Codex gap.)
+    const argv = [NOTIFY_CLI, 'emit', '--repo-root', root];
+    const env = {
+      ...process.env, HOME: home,
+      AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_BOT_TOKEN: FAKE_TOKEN,
+      AGENTIC_NOTIFY_EGRESS_HEADLINE: 'true',
+    };
+    delete env.TELEGRAM_CHAT_ID;
+    const res = spawnSync(process.execPath, argv, {
+      input: `${JSON.stringify(egressEvent({ headline: 'complete' }))}\n`, env, encoding: 'utf8', timeout: 30_000,
+    });
+    strictEqual(res.status, 0, `fail-closed exit 0; stderr:\n${res.stderr}`);
+    strictEqual(res.stdout, '', 'stdout empty (fail-closed silent)');
+    assertNoTokenLeak(argv.join('\n'), 'the process argv (headline present)');
+    assertNoTokenLeak(res.stderr, 'stderr (headline present)');
+    const row = egressRows(root)[0];
+    strictEqual(row.egress_outcome, 'missing-recipient', 'the valid-token + no-recipient path resolved missing-recipient');
+    strictEqual(row.headline, 'complete', 'the headline rode the mirror on the network-free CLI path');
+    assertNoTokenLeak(dumpNotifyState(root), 'persisted state contents (headline present)');
+    assertNoTokenLeak(dumpNotifyPaths(root), 'persisted state filenames (headline present)');
+  });
+
+  // The ONE real-producer path (Codex PEER-10): drive the ACTUAL attention Stop sensor
+  // so the headline is born by the real deriveHeadlineToken from a real fresh
+  // projection, not hand-woven event JSON. Network-free (missing credential, like the
+  // (E) producer gate): the acceptance signal is the mirrored attempt row carrying the
+  // headline. The sensor's emitEvent uses a synchronous spawnSync, so the mirror lands
+  // before the sensor exits (no polling).
+  function stopEnv(home, extra = {}) {
+    const env = {
+      ...process.env,
+      HOME: home,
+      AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT,
+      AGENTIC_NOTIFY_HOSTNAME: 'accept-host',
+      AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
+      TELEGRAM_CHAT_ID: FAKE_CHAT_ID,
+      ...extra,
+    };
+    delete env.TELEGRAM_BOT_TOKEN; // network-free: missing-credential resolves before the pinned request
+    return env;
+  }
+  function runStop(root, home, extra) {
+    const workflowId = 'compose-20260115T120000Z-abc123';
+    writeFreshProjection(root, 'engineer', { workflowId, archiveGate: 'ready_to_archive' });
+    const payload = { cwd: root, session_id: 'sess-stop-1', prompt_id: 'prompt-1' };
+    return spawnSync(process.execPath, [STOP_SENSOR], {
+      input: JSON.stringify(payload),
+      env: stopEnv(home, extra),
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+  }
+
+  it('L7 §3a -- the REAL attention Stop sensor borns a headline that rides the egress mirror (opt-in ON, one real producer path)', () => {
+    const root = markerRepo('L-realheadline-on');
+    const home = fixtureHome();
+    const res = runStop(root, home, { AGENTIC_NOTIFY_EGRESS_HEADLINE: 'true' });
+    strictEqual(res.status, 0, `the Stop sensor is fail-closed exit 0; stderr:\n${res.stderr}`);
+    const rows = egressRows(root);
+    ok(rows.length >= 1, `a telegram egress attempt was mirrored; sensor stderr:\n${res.stderr}`);
+    // kind='workflow-terminal' proves readFreshProjection ACCEPTED the fixture (a
+    // degraded/stale projection would yield a bare 'turn-complete' with no headline), so
+    // the headline is genuinely deriveHeadlineToken(ready_to_archive)-born, not hand-woven.
+    strictEqual(rows[0].kind, 'workflow-terminal', 'the real fresh terminal projection drove the egress (not a bare turn-complete)');
+    strictEqual(rows[0].headline, 'complete', 'the real deriveHeadlineToken(ready_to_archive) headline rode the mirror');
+    // Pin the SPECIFIC network-free path (coarse 'suppressed' alone also matches other
+    // suppressions): missing-credential resolved missing-token before the pinned request.
+    strictEqual(rows[0].egress_status, 'suppressed', 'the network-free (missing-credential) attempt was mirrored, not sent');
+    strictEqual(rows[0].egress_outcome, 'missing-token', 'the specific missing-token path ran');
+    // SCOPE (Codex): this proves real-producer → MIRROR. real-producer → Telegram BODY
+    // cannot be observed here (the sensor spawns notify.mjs detached; no fetchImpl seam),
+    // so L1/L2 prove event.headline → body with the identical token, and K2 (opt-in real
+    // smoke) exercises the real transport DISPATCH — the composition is the end-to-end proof.
+  });
+
+  it('L7 §3a DEFAULT-OFF through the real producer -- the RUNTIME omits the real producer headline without the opt-in', () => {
+    const root = markerRepo('L-realheadline-off');
+    const home = fixtureHome();
+    // Same real producer + accepted projection as L7-ON (which established the sensor
+    // borns 'complete'); here the opt-in is ABSENT, so the RUNTIME gate drops it from the
+    // mirror. NOTE (Codex): the raw producer event is not observable (emitEvent ignores
+    // the child's stdio), so this test alone cannot distinguish "runtime dropped it" from
+    // a producer that wrongly gated BIRTH on the opt-in — L7-ON (identical fixture, opt-in
+    // ON, headline present) is what pins the producer as opt-in-independent; this pins the
+    // runtime egress gate.
+    const res = runStop(root, home);
+    strictEqual(res.status, 0, `the Stop sensor is fail-closed exit 0; stderr:\n${res.stderr}`);
+    const rows = egressRows(root);
+    ok(rows.length >= 1, `a telegram egress attempt was mirrored; sensor stderr:\n${res.stderr}`);
+    strictEqual(rows[0].kind, 'workflow-terminal', 'the same real terminal projection drove the egress');
+    strictEqual(rows[0].headline, undefined, 'no opt-in → the real producer headline is NOT egressed');
+  });
+});
+
+// ===========================================================================
 // (K) opt-in REAL-network smoke -- CI-SKIPPED by default. Deterministic CI is
 //     NECESSARY but NOT SUFFICIENT (§2d): every gate above injects a transport
 //     double and NEVER opens a socket, so none can prove the real node:https
@@ -1183,6 +1556,34 @@ describe('ADR-0041 acceptance (K) -- opt-in real-network smoke (skipped unless A
     });
     strictEqual(result.status, 'dispatched', 'the real transport delivered (status dispatched)');
     // Even a REAL token must persist to NOWHERE.
+    ok(!dumpNotifyState(root).includes(token), 'the real token never lands in persisted state');
+  });
+
+  it('K2 -- the REAL transport delivers a HEADLINE-bearing egress (§3a opt-in ON)', { skip: !REAL }, async () => {
+    const token = process.env.AGENTIC_EGRESS_REAL_SMOKE_TOKEN;
+    const chatId = process.env.AGENTIC_EGRESS_REAL_SMOKE_CHAT_ID;
+    ok(token && chatId, 'AGENTIC_EGRESS_REAL_SMOKE=1 requires AGENTIC_EGRESS_REAL_SMOKE_TOKEN + AGENTIC_EGRESS_REAL_SMOKE_CHAT_ID');
+    const root = markerRepo('K-realheadline');
+    const home = fixtureHome();
+    // NO fetchImpl -> the real node:https transport opens a socket; the opt-in is ON so
+    // the dispatched body carries the closed-vocab headline (the owner sees it on the
+    // phone as `... · complete · ...`). SCOPE (Codex): this asserts the real transport
+    // DISPATCHES (status 'dispatched' + the mirror carries the headline) — it does NOT
+    // read back the delivered Telegram text (the API response is not inspected for the
+    // sent body). Human confirmation of the on-phone text is the [release-dogfood] subtask.
+    const result = await runEmit({
+      eventText: JSON.stringify(egressEvent({ headline: 'complete' })),
+      repoRoot: root,
+      homeDir: home,
+      env: {
+        AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
+        TELEGRAM_CHAT_ID: chatId,
+        TELEGRAM_BOT_TOKEN: token,
+        AGENTIC_NOTIFY_EGRESS_HEADLINE: '1',
+      },
+    });
+    strictEqual(result.status, 'dispatched', 'the real transport delivered the headline-bearing message');
+    strictEqual(egressRows(root)[0].headline, 'complete', 'the delivered attempt mirrored the headline');
     ok(!dumpNotifyState(root).includes(token), 'the real token never lands in persisted state');
   });
 });
