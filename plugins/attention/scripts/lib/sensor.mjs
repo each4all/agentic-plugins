@@ -76,6 +76,71 @@ export const ROUTING_FIELD_CAPS = Object.freeze({
   session_hint: 32,
 });
 
+// ADR-0041 §3a — the OPT-IN closed-vocabulary `headline` status token. COPY-NOT-
+// IMPORT siblings of the canonical runtime lib (notify-schema.mjs, ADR-0010 §5 —
+// parity-gated by tests/plugin-shape/test-attention-plugin.mjs). Attention is the
+// PRODUCER (Guard 1: map-or-omit — deriveHeadlineToken below borns a token only for
+// a recognized signal combination, never a guess); the runtime egress builders are
+// the VALIDATOR (Guard 2: validate-or-drop against this same vocab). The field
+// name + vocab + cap MUST stay byte-identical to the canonical lib, or a token this
+// producer borns would be dropped runtime-side as out-of-vocab. Mirrors the
+// hostname/session_hint copy-not-import precedent above.
+export const OPTIONAL_HEADLINE_FIELD = 'headline';
+export const HEADLINE_VOCAB = Object.freeze([
+  'your-turn',
+  'needs-approval',
+  'in-progress',
+  'blocked',
+  'complete',
+  'failed',
+]);
+// Defense-in-depth cap (a valid token is <= 14 chars; matched to the canonical
+// bound). A closed-vocab token is secret-free and always under the cap, so capping
+// is a uniform-treatment guard, not the leak control — vocab membership is.
+export const HEADLINE_FIELD_CAP = 32;
+
+// Guard 2's predicate, copied so the producer can self-check its own map output
+// (belt-and-suspenders) with the exact membership test the runtime egress guard
+// uses: true ONLY for an exact closed-vocab member — a non-string, whitespace-
+// padded, or unknown value is not a token.
+export function isHeadlineToken(value) {
+  return typeof value === 'string' && HEADLINE_VOCAB.includes(value);
+}
+
+// ADR-0041 §3a Guard 1 (producer map-or-omit). Maps the STRUCTURED signals the
+// Stop sensor already holds — the event `kind` + the projection `archive_gate`
+// (the real values engineer/orchestrator mapArchiveGate emit: ready_to_archive /
+// not_terminal / blocked) — to a closed-vocabulary headline token, or null (OMIT).
+// It NEVER guesses: an unknown/absent archive_gate or a non-workflow-terminal kind
+// yields null so buildEvent omits headline entirely (never a wrong token). At v1
+// only the workflow-terminal kind carries a fresh projection; the bare turn-complete
+// deliberately produces no token (a kind-only token would overstate a single turn as
+// session status — ADR-0041 §3a "Claude-Stop-only", Codex-shuttle-omits). The final
+// isHeadlineToken re-check keeps the table honest: were a mapping value to drift out
+// of vocab it would omit here (and the parity test would fail loudly), never egress.
+const HEADLINE_BY_ARCHIVE_GATE = Object.freeze({
+  ready_to_archive: 'complete',
+  not_terminal: 'in-progress',
+  blocked: 'blocked',
+});
+export function deriveHeadlineToken({ kind, archiveGate } = {}) {
+  if (kind !== 'workflow-terminal') return null;
+  // Own-key, STRING-ONLY lookup. archiveGate comes from a parsed projection JSON, so
+  // it can be any JSON type — and a bracket lookup would COERCE a non-string key via
+  // String(), which THROWS on a pathological object (e.g. { toString: 'ready_to_archive' }
+  // shadows the method with a non-callable). That throw would escape to the Stop
+  // sensor's outer catch and suppress the WHOLE notification, not just omit headline —
+  // violating the fail-closed contract (a malformed projection is an environmental
+  // condition, not a producer bug). Object.hasOwn also blocks an inherited key
+  // ('constructor'/'toString'/'__proto__') from resolving to a prototype member
+  // (Codex Plan-verify MAJOR).
+  if (typeof archiveGate !== 'string' || !Object.hasOwn(HEADLINE_BY_ARCHIVE_GATE, archiveGate)) {
+    return null;
+  }
+  const token = HEADLINE_BY_ARCHIVE_GATE[archiveGate];
+  return isHeadlineToken(token) ? token : null;
+}
+
 // Attention's fixed status tokens for its status-bearing kinds. The sensor
 // observes exactly one status moment per kind — the workflow reached terminal,
 // the subagent stopped — so a deterministic fixed token keeps the dedupe key
@@ -450,7 +515,7 @@ function sanitizeRoutingField(value, cap) {
 // yields the pre-ADR-0041 event shape (backward-compat + parity).
 export function buildEvent({
   repoIdent, kind, subject, status, title, body, urgency, refs,
-  hostname, topic, sessionHint,
+  hostname, topic, sessionHint, headline,
 } = {}) {
   const event = {
     event_id: buildEventId({ repoIdent, kind, subject, status, hostname }),
@@ -468,6 +533,21 @@ export function buildEvent({
     if (typeof value !== 'string' || value.length === 0) continue;
     const clean = sanitizeRoutingField(value, ROUTING_FIELD_CAPS[key]);
     if (clean.length > 0) event[key] = clean;
+  }
+  // ADR-0041 §3a Guard 1 — born the opt-in headline token ONLY when it is an exact
+  // closed-vocab member (map-or-omit; the caller maps via deriveHeadlineToken). Set
+  // verbatim: a valid token is clean and always under HEADLINE_FIELD_CAP, so there
+  // is nothing to control-strip or truncate, and the runtime Guard 2 (isHeadlineToken)
+  // validates the SAME full value — pre-truncating here could only break that match.
+  // Emitting it is inert without the runtime opt-in; a non-token/omitted value simply
+  // never sets the field, so the base notification is unaffected. buildEvent stays
+  // KIND-AGNOSTIC by design: the vocab carries tokens for non-terminal kinds
+  // (needs-approval / your-turn) reserved for future producers, so the v1
+  // "workflow-terminal-only" rule is enforced UPSTREAM (deriveHeadlineToken + the
+  // Stop call site passing headline only on the workflow-terminal path), not baked
+  // into this generic assembler — the invariant here is vocab membership alone.
+  if (isHeadlineToken(headline)) {
+    event[OPTIONAL_HEADLINE_FIELD] = headline;
   }
   if (refs && typeof refs === 'object' && !Array.isArray(refs)) {
     event.refs = refs;

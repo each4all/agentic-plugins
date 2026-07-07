@@ -28,6 +28,7 @@ import {
   WORKFLOW_TERMINAL_STATUS,
   buildEvent,
   buildSessionHint,
+  deriveHeadlineToken,
   deriveRepoIdent,
   emitEvent,
   readFreshProjection,
@@ -80,6 +81,14 @@ async function main() {
     if (typeof projection.next_action === 'string' && projection.next_action.length > 0) {
       bodyParts.push(`next: ${projection.next_action}`);
     }
+    // ADR-0041 §3a — born the opt-in closed-vocabulary headline from the STRUCTURED
+    // projection signal (archive_gate) only. map-or-omit: an unknown/absent gate
+    // yields null and buildEvent omits headline (never a guess). This
+    // workflow-terminal path is the ONLY headline-bearing one — the bare
+    // turn-complete below deliberately carries none (a kind-only token would
+    // overstate a single turn as workflow status). Never derived from free text
+    // (title/body/next_action); the runtime opt-in + enum-guard gate egress.
+    const headline = deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: projection.archive_gate });
     terminalEvents.push(buildEvent({
       repoIdent,
       kind: 'workflow-terminal',
@@ -92,6 +101,7 @@ async function main() {
       hostname,
       topic,
       sessionHint,
+      headline,
     }));
   }
   if (terminalEvents.length > 0) {
