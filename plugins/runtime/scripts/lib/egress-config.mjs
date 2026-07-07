@@ -77,6 +77,19 @@ export const EGRESS_LOCAL_KEYS = Object.freeze({
   recipient: 'egress_chat_id',
 });
 
+// ADR-0041 §3a — the SEPARATE, default-OFF headline opt-in. Distinct from egress
+// ACTIVATION (§2c): activation decides whether egress fires AT ALL; this decides
+// only whether an already-firing egress ALSO carries the closed-vocabulary
+// `headline` status token. It is a FORMAT/verbosity gate, not a leak-acceptance
+// gate — the field is secret-free by construction. Read from the operator env or
+// the SAME user-home verified-ignored-local layer as activation — NEVER tracked
+// config (this key is absent from runtime-config CONFIG_KEYS and this loader never
+// reads repo config), so a cloned hostile repo can never enable it. opt-in-ALONE
+// is inert: without egress activation, runEgressDispatch is never reached, so a set
+// opt-in egresses nothing.
+export const EGRESS_HEADLINE_ENV_KEY = 'AGENTIC_NOTIFY_EGRESS_HEADLINE';
+export const EGRESS_HEADLINE_LOCAL_KEY = 'egress_headline';
+
 // The single honored verified-local file, under the user home (never the repo).
 // Matches the existing `*.local.toml` gitignore slot (.gitignore:58).
 export const EGRESS_LOCAL_FILENAME = 'config.local.toml';
@@ -91,7 +104,11 @@ export function egressLocalConfigPath(homeDir) {
 // (the repo's single TOML-subset behavior) with an egress-only key allowlist.
 export function parseEgressLocalToml(text) {
   const out = {};
-  const allow = new Set(Object.values(EGRESS_LOCAL_KEYS));
+  // Allowlist = the activation keys PLUS the headline opt-in key. Extra keys in the
+  // returned map are ignored by loadEgressActivation (it reads only channel/
+  // recipient); loadEgressHeadlineOptIn reads only the headline key. Still an
+  // egress-only allowlist — no unrelated key can leak into or out of this surface.
+  const allow = new Set([...Object.values(EGRESS_LOCAL_KEYS), EGRESS_HEADLINE_LOCAL_KEY]);
   for (const raw of String(text ?? '').split(/\r?\n/)) {
     const withoutComment = raw.replace(/#.*/, '').trim();
     if (!withoutComment || withoutComment.startsWith('[')) continue;
@@ -271,4 +288,61 @@ export function loadEgressActivation({
     source: active ? (channelSource === recipientSource ? channelSource : 'mixed') : null,
     localReason,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Separate headline opt-in reader (ADR-0041 §3a)
+// ---------------------------------------------------------------------------
+
+// The affirmative token set for the strict boolean parse. Case-insensitive.
+const HEADLINE_TRUE_TOKENS = Object.freeze(new Set(['true', '1', 'yes', 'on']));
+
+// Strict boolean parse with invalid-value fail-closed: ONLY an affirmative token
+// enables. Anything else — an explicit false, an empty string, an unrecognized
+// value, or a non-string — resolves to OFF. So a fumbled `egress_headline = maybe`
+// disables the field rather than ambiguously enabling it.
+export function parseHeadlineOptInValue(value) {
+  if (typeof value !== 'string') return false;
+  return HEADLINE_TRUE_TOKENS.has(value.trim().toLowerCase());
+}
+
+// Resolve the headline opt-in from the operator env FIRST, then the user-home
+// verified-ignored-local layer — mirroring loadEgressActivation's env-first
+// precedence and its fail-closed local read (O_NOFOLLOW, operator-owned,
+// inside-repo-refused). Tracked config is NEVER consulted, so a cloned repo cannot
+// enable it. Default OFF; any absence, unverifiable local file, or parse failure is
+// OFF. Never throws. This is a SEPARATE read from loadEgressActivation (ADR-0041
+// §3a "distinct from egress activation"); the extra read is a tiny local file on
+// the already-bounded, egress-engaged Stop path.
+export function loadEgressHeadlineOptIn({
+  repoRoot = null,
+  homeDir = os.homedir(),
+  env = process.env,
+  getuid,
+  readLocalImpl = readVerifiedIgnoredLocal,
+} = {}) {
+  // Read the env value as a STRING only. process.env is always string-valued;
+  // reading it raw here (NOT via normalizeScalar, which STRINGIFIES a non-string)
+  // preserves the strict-boolean contract — a programmatically-injected non-string
+  // env is not a meaningful value, so it falls through to the local layer rather
+  // than being coerced into a token (Codex peer: normalizeScalar's stringify
+  // bypassed parseHeadlineOptInValue's non-string rejection). A set, non-empty
+  // string env is authoritative (wins over local); unset / empty / whitespace falls
+  // to the verified-local layer.
+  const rawEnv = env[EGRESS_HEADLINE_ENV_KEY];
+  if (typeof rawEnv === 'string' && rawEnv.trim() !== '') {
+    return parseHeadlineOptInValue(rawEnv);
+  }
+
+  // Fail-closed on ANY error (a bad homeDir, a throwing injected reader): the opt-in
+  // defaults OFF and this reader never throws on the emit path (§3a
+  // fail-closed-silent). readVerifiedIgnoredLocal itself never throws, so in
+  // production this catch is unreachable — it hardens the injected-seam edges.
+  try {
+    const read = readLocalImpl({ filePath: egressLocalConfigPath(homeDir), repoRoot, getuid });
+    if (!read.ok) return false;
+    return parseHeadlineOptInValue(parseEgressLocalToml(read.text)[EGRESS_HEADLINE_LOCAL_KEY]);
+  } catch {
+    return false;
+  }
 }

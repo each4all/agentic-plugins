@@ -56,6 +56,7 @@ import {
 import {
   EGRESS_ENV_KEYS,
   loadEgressActivation,
+  loadEgressHeadlineOptIn,
 } from './lib/egress-config.mjs';
 import {
   EGRESS_OUTCOMES,
@@ -586,7 +587,7 @@ async function dispatchTelegramRequest({ token, body, fetchImpl = null }) {
 // the mirror gives file-log visibility). NEVER throws: every path resolves to a
 // data result and the bounded await catches all rejections (§2e).
 async function runEgressDispatch({
-  root, event, egress, ownerToken, quietSuppressed, env, now, fetchImpl,
+  root, event, egress, ownerToken, quietSuppressed, env, now, fetchImpl, homeDir,
 }) {
   // `service` is the coerced, non-empty label for the throttle key + mirror (both
   // require a non-empty service). v1 has exactly one egress service, so an
@@ -613,6 +614,13 @@ async function runEgressDispatch({
     token: rawToken,
   });
 
+  // ADR-0041 §3a — resolve the SEPARATE headline opt-in ONCE (env or user-home
+  // verified-ignored-local; default OFF; tracked config can never enable it). This
+  // runs only here, so opt-in-alone (opt-in set but egress NOT engaged) never
+  // reaches it — the structural "opt-in-alone inert" guarantee. Threaded into BOTH
+  // the payload and the mirror so the two agree (parity).
+  const headlineOptIn = loadEgressHeadlineOptIn({ repoRoot: root, homeDir, env });
+
   // finalize (promote/release the owned claim + record/clear throttle) then
   // mirror a single sanitized attempt row (§6). The mirror is best-effort — a
   // mirror-write failure must never fail the fail-closed emit path.
@@ -630,7 +638,7 @@ async function runEgressDispatch({
       // previously applied AFTER the cap). The egress_* control fields are short
       // enums that carry no secret; ts is an ISO timestamp.
       const record = buildEgressMirrorRecord({
-        event, service, egressStatus: result.egressStatus, outcome, now, scrub: scrubSecrets,
+        event, service, egressStatus: result.egressStatus, outcome, now, scrub: scrubSecrets, headlineOptIn,
       });
       appendFileLog({ repoRoot: root, record });
     } catch {
@@ -672,7 +680,7 @@ async function runEgressDispatch({
   }
 
   // Build the enumerated §3 payload → plain text → §5 scrub → fixed body.
-  const payload = buildEgressPayload(event);
+  const payload = buildEgressPayload(event, { headlineOptIn });
   const text = scrubSecrets(renderEgressText(payload));
   const send = buildTelegramSendBody({ chatId: egress.recipient, text });
   if (!send.ok) return finalizeAndMirror(send.outcome); // BODY_CAP
@@ -842,6 +850,7 @@ export async function runEmit({
         env,
         now,
         fetchImpl,
+        homeDir,
       });
     }
 

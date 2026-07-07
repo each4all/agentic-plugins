@@ -68,6 +68,38 @@ export const ROUTING_FIELD_CAPS = Object.freeze({
   session_hint: 32,
 });
 
+// ADR-0041 §3a — the OPT-IN closed-vocabulary `headline` status token. A SEPARATE
+// optional field, deliberately NOT a member of OPTIONAL_ROUTING_FIELDS: that list
+// is iterated UNCONDITIONALLY by validate/payload/mirror/attention-parity, whereas
+// headline is emitted only behind its own default-OFF opt-in (Codex PEER-9). The
+// value is a bounded token drawn from a FIXED closed vocabulary, so it is
+// secret-free and injection-safe by construction — it carries no free text. The
+// attention producer maps (kind, archive_gate, terminal-status) → one of these
+// tokens and COPIES-not-imports this vocab (ADR-0010 §5); the runtime egress
+// builders VALIDATE-OR-DROP against it (§3a Guard 2), so a producer bug or vocab
+// drift is dropped here, never egressed. Parity between the copied producer vocab
+// and this one is asserted by an attention/runtime parity test.
+export const OPTIONAL_HEADLINE_FIELD = 'headline';
+export const HEADLINE_VOCAB = Object.freeze([
+  'your-turn',
+  'needs-approval',
+  'in-progress',
+  'blocked',
+  'complete',
+  'failed',
+]);
+// Defense-in-depth cap (a valid token is <= 14 chars; matched to the kind cap for a
+// uniform bound). Capping a closed-vocab token is belt-and-suspenders, not the leak
+// control — the vocab-membership check below is the control.
+export const HEADLINE_FIELD_CAP = 32;
+
+// The §3a Guard 2 validate-or-drop predicate: true ONLY for an exact closed-vocab
+// member. A non-string, a whitespace-padded token, or any unknown value is NOT a
+// token — the egress builders drop it (never coerce it into compliance).
+export function isHeadlineToken(value) {
+  return typeof value === 'string' && HEADLINE_VOCAB.includes(value);
+}
+
 // The §1 pipeline ORDER contract the emitter must execute. kinds-filter
 // sits BEFORE dedupe by design (see invariants above); dedupe sits
 // before quiet-hours so a suppressed-by-quiet-hours event still burns
