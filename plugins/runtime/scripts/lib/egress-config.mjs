@@ -98,6 +98,19 @@ export function egressLocalConfigPath(homeDir) {
   return path.join(homeDir, '.agentic-plugins', EGRESS_LOCAL_FILENAME);
 }
 
+// Return a shallow copy of `env` with the egress credential key removed. Callers
+// that must hand `env` to a SUBPROCESS (e.g. runtime:settings → runDoctor host-CLI
+// probes, plugin management, cleanup) use this so the env-only credential
+// (TELEGRAM_BOT_TOKEN) never rides into a child process or an injected runner that
+// could echo it (ADR-0041 §2b/§2c). The credential is needed ONLY by
+// loadEgressActivation's in-process PRESENCE check — never by a spawned subprocess
+// — so stripping it here is lossless for every subprocess consumer.
+export function redactEgressCredentialFromEnv(env = process.env) {
+  const copy = { ...env };
+  delete copy[EGRESS_ENV_KEYS.credential];
+  return copy;
+}
+
 // Dedicated line parser: reads ONLY the egress keys, so egress activation can
 // neither leak into nor be planned out of the shared runtime-config key
 // surface. Mirrors parseRuntimeConfigToml's line/quote/comment/CRLF handling

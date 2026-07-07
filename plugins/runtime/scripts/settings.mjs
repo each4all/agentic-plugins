@@ -30,8 +30,10 @@ import { learnFromSources } from './lib/permission-usage-learner.mjs';
 import { makeFragmentContract, makeModeRecommendation } from './lib/permission-advisor-core.mjs';
 import { recordPermissionAdvisoryArtifact, makePermissionRunId } from './lib/permission-artifacts.mjs';
 import { buildCodexNotificationPlan } from './lib/notification-plan.mjs';
+import { buildEgressLauncherPlan } from './lib/egress-launcher-plan.mjs';
+import { redactEgressCredentialFromEnv } from './lib/egress-config.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.15';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.16';
 
 // ADR-0038 settings-claude permission plan (M1): how many recent usage records to
 // read per host, and a per-file byte cap, when building the dry-run plan.
@@ -82,6 +84,7 @@ export async function runSettings({
   permissionPlanMaxFiles = DEFAULT_PERMISSION_PLAN_MAX_FILES,
   permissionPlanMaxFileBytes = DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES,
   notificationPlan = false,
+  egressLauncherPlan = false,
   runId = null,
 } = {}) {
   if (!TARGETS.has(target)) throw new Error('--target must be repo, user, or both');
@@ -93,6 +96,15 @@ export async function runSettings({
   const settingsRunId = runId ? validateSettingsRunId(runId) : settingsExecutionRequested ? makeSettingsRunId(now) : null;
   const desiredConfig = normalizeDesiredConfig(desired);
   const commandRunner = runner ?? runCommand;
+
+  // ADR-0041 §2b/§2c (Codex review MAJOR): the egress credential (TELEGRAM_BOT_TOKEN)
+  // must NOT ride into subprocess probes. runDoctor spawns host CLIs with `env`, so a
+  // retained/echoed child output — or an injected runner — could surface the token in
+  // the settings report. Capture the real env for the launcher's in-process, read-only
+  // PRESENCE check (it never spawns, never echoes the value), then strip the credential
+  // from the `env` every subprocess (doctor, plugin management, cleanup) receives.
+  const launcherEnv = env;
+  env = redactEgressCredentialFromEnv(env);
 
   const doctor = await runDoctor({
     repoRoot: resolvedRepoRoot,
@@ -198,6 +210,22 @@ export async function runSettings({
     });
   }
 
+  // ADR-0041 §12 first-class egress launcher: read-only activation-state +
+  // prototype scan → per-machine activation runbook, recorded as an artifact
+  // only. NEVER writes host config, ~/.agentic-plugins/config.local.toml, the
+  // credential, or ~/.claude/settings.json (§2c: a launcher that wrote
+  // activation would itself be the egress-activation vector §2c closed).
+  let egressLauncherPlanSection = { requested: false, executed: false, status: 'not_requested' };
+  if (egressLauncherPlan) {
+    egressLauncherPlanSection = await buildEgressLauncherPlan({
+      repoRoot: resolvedRepoRoot,
+      homeDir: resolvedHomeDir,
+      env: launcherEnv, // the launcher's read-only presence check needs the real env; subprocesses get the scrubbed one
+      host,
+      now,
+    });
+  }
+
   const report = {
     schema_version: SETTINGS_SCHEMA_VERSION,
     runtime_version: RUNTIME_VERSION,
@@ -253,6 +281,7 @@ export async function runSettings({
     permission_plan: permissionPlanSection,
     permission_plan_codex: permissionPlanCodexSection,
     notification_plan: notificationPlanSection,
+    egress_launcher_plan: egressLauncherPlanSection,
     artifacts: buildSettingsArtifactReport({
       repoRoot: resolvedRepoRoot,
       runId: settingsRunId,
@@ -282,6 +311,7 @@ export async function runSettings({
       'The permission plan (--permission-plan) reads the Claude allowlist read-only and writes only the agentic-plugins-owned advisory artifact; the .claude/settings.json fragment is emitted for the operator to apply, never written by runtime.',
       'The Codex permission plan (--permission-plan) reads ~/.codex/config.toml read-only and recommends safety-graded postures (approval_policy/sandbox_mode) + bounded project-trust as a config.toml fragment; never danger-full-access, never written by runtime.',
       'The notification plan (--notification-plan) reads the user-layer ~/.codex/config.toml read-only (mandatory notify read-check; wrapper-chaining preserves an existing notifier) and renders notify=/tui.notifications fragments + receiver scripts into an agentic-plugins-owned plan artifact; host config is never written and the receiver install is an explicit user action.',
+      'The egress launcher plan (--egress-launcher-plan) reads the current egress activation state and the personal ~/.claude prototype hooks read-only and records a per-machine activation runbook in an agentic-plugins-owned artifact; it NEVER writes host config, ~/.agentic-plugins/config.local.toml, the credential, or ~/.claude/settings.json, and the credential value is never read (only its presence). Applying the plan is an explicit user action (ADR-0041 §2c/§12).',
       'Companion invocation still uses companions/contract.md --model and --effort.',
       'Dynamic peer consensus, context hygiene mutation, completion footer mutation, deep peer smoke, and host-native config apply modes are deferred.',
     ],
@@ -2338,6 +2368,31 @@ export function formatText(report) {
     if (np.artifact?.written) lines.push(`- artifact: ${np.artifact.report_pointer} (latest: ${np.artifact.latest_pointer})`);
     for (const limit of np.limits ?? []) lines.push(`- limit: ${limit}`);
   }
+  if (report.egress_launcher_plan?.requested) {
+    const el = report.egress_launcher_plan;
+    const as = el.activation_state || {};
+    const proto = el.prototype || {};
+    lines.push('');
+    lines.push('Egress Launcher Plan (dry-run — ADR-0041 §12; artifact-only, runtime writes no host/activation state)');
+    lines.push(`- mode: ${el.mode}`);
+    lines.push(`- activation: active=${as.active} reason=${as.reason} channel=${as.channel ?? 'none'} source=${as.source ?? 'n/a'} credential-present=${as.credential_present} headline-opt-in=${as.headline_opt_in}`);
+    lines.push(`- prototype (~/.claude personal hook): settings-present=${proto.settings_present} match-count=${proto.match_count} script-present=${proto.script_file_present}`);
+    for (const step of el.steps || []) {
+      if (!step.applicable) continue;
+      lines.push(`- step [${step.id}]: ${step.title}`);
+      if (step.detail) lines.push(`    ${step.detail}`);
+      if (step.recommended_layout?.config_local_toml) {
+        lines.push('    recommended layout — you create ~/.agentic-plugins/config.local.toml (runtime never writes it):');
+        for (const l of step.recommended_layout.config_local_toml.trimEnd().split('\n')) lines.push(`      ${l}`);
+        lines.push(`    token (env-only): ${step.recommended_layout.token_env_line}`);
+        lines.push('    alternative layout — env-all:');
+        for (const l of step.alternative_layout.env_block.trimEnd().split('\n')) lines.push(`      ${l}`);
+      }
+      for (const h of step.hooks_to_remove ?? []) lines.push(`    remove hook [${h.event}]: ${h.command_pointer}`);
+    }
+    if (el.artifact?.written) lines.push(`- artifact: ${el.artifact.report_pointer} (latest: ${el.artifact.latest_pointer})`);
+    for (const limit of el.limits ?? []) lines.push(`- limit: ${limit}`);
+  }
   lines.push('');
   lines.push('Limits');
   for (const limit of report.limits) lines.push(`- ${limit}`);
@@ -2991,7 +3046,7 @@ function usage() {
     '  [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>]',
     '  [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>]',
     '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
-    '  [--permission-plan] [--permission-plan-max-files <n>] [--permission-plan-max-file-bytes <n>] [--notification-plan] [--run-id <settings-run-id>]',
+    '  [--permission-plan] [--permission-plan-max-files <n>] [--permission-plan-max-file-bytes <n>] [--notification-plan] [--egress-launcher-plan] [--run-id <settings-run-id>]',
     '',
   ].join('\n');
 }
@@ -3020,6 +3075,7 @@ export function parseArgs(argv) {
     permissionPlanMaxFiles: DEFAULT_PERMISSION_PLAN_MAX_FILES,
     permissionPlanMaxFileBytes: DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES,
     notificationPlan: false,
+    egressLauncherPlan: false,
     runId: null,
     desired: {},
   };
@@ -3055,6 +3111,8 @@ export function parseArgs(argv) {
       opts.permissionPlan = true;
     } else if (arg === '--notification-plan') {
       opts.notificationPlan = true;
+    } else if (arg === '--egress-launcher-plan') {
+      opts.egressLauncherPlan = true;
     } else if (arg === '--permission-plan-max-files') {
       opts.permissionPlanMaxFiles = parsePositiveInt(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--permission-plan-max-file-bytes') {

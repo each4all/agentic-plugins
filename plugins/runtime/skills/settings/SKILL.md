@@ -1,6 +1,6 @@
 ---
 name: settings
-description: "Dry-run runtime settings planner for agentic-plugins. Use when the user wants to inspect marketplace/plugin/CLI readiness, plan repo-local or user-global model/effort defaults, plan ADR-0040 notify_* notification keys, render the ADR-0040 §4 Codex notification-channel fragment plan (--notification-plan: notify=/tui.notifications fragments + receiver shuttle, artifact-only), explicitly execute allowlisted plugin install/update commands, explicitly clean up retired agentic-plugins Claude plugins, check Codex plugin-hook readiness, or record a Codex /hooks review attestation. Mutates only agentic-plugins-owned config when --apply is explicit; runs plugin management only when --execute-plugin-management is explicit; runs retired plugin cleanup only when --execute-plugin-cleanup is explicit; records hook-review attestation only when --attest-codex-hook-review is explicit. Never writes Codex host config: the former --apply-codex-plugin-hooks plugin_hooks write was removed per ADR-0035 §6 (hook enablement is manual)."
+description: "Dry-run runtime settings planner for agentic-plugins. Use when the user wants to inspect marketplace/plugin/CLI readiness, plan repo-local or user-global model/effort defaults, plan ADR-0040 notify_* notification keys, render the ADR-0040 §4 Codex notification-channel fragment plan (--notification-plan: notify=/tui.notifications fragments + receiver shuttle, artifact-only), render the ADR-0041 §12 egress launcher plan (--egress-launcher-plan: read-only activation-state + ~/.claude prototype scan → state-aware per-machine activation runbook, artifact-only; never writes host config, config.local.toml, the credential, or ~/.claude/settings.json), explicitly execute allowlisted plugin install/update commands, explicitly clean up retired agentic-plugins Claude plugins, check Codex plugin-hook readiness, or record a Codex /hooks review attestation. Mutates only agentic-plugins-owned config when --apply is explicit; runs plugin management only when --execute-plugin-management is explicit; runs retired plugin cleanup only when --execute-plugin-cleanup is explicit; records hook-review attestation only when --attest-codex-hook-review is explicit. Never writes Codex host config: the former --apply-codex-plugin-hooks plugin_hooks write was removed per ADR-0035 §6 (hook enablement is manual)."
 ---
 
 # Settings (runtime framework primitive)
@@ -15,7 +15,7 @@ description: "Dry-run runtime settings planner for agentic-plugins. Use when the
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>] [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>] [--notification-plan] [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]
+node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>] [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>] [--notification-plan] [--egress-launcher-plan] [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]
 ```
 
 3. Present the result as a settings plan, not as proof of host parity.
@@ -70,6 +70,24 @@ Settings reports and plans:
   in an `.agentic-plugins/runs/notification/` plan artifact only; host
   config is never written and installing the receiver at
   `~/.agentic-plugins/bin/` is an explicit user action.
+- The ADR-0041 §12 first-class egress launcher plan behind
+  `--egress-launcher-plan`: a read-only read of the current egress activation
+  state (`loadEgressActivation`) plus a read-only scan of the personal
+  `~/.claude/settings.json` prototype hooks, computed into a state-aware mode
+  (`activate` / `partial` / `prototype-retire-only` / `already-active`) and a
+  per-machine activation runbook — the `~/.agentic-plugins/config.local.toml`
+  content (channel + chat-id; recommended layout, env-all shown as an
+  alternative), the env credential line, the exact prototype hook entries to
+  remove, verify, rollback, and the per-machine repeat — recorded in an
+  `.agentic-plugins/runs/egress-launcher/` plan artifact only. Host config,
+  `~/.agentic-plugins/config.local.toml`, the credential, and
+  `~/.claude/settings.json` are never written (ADR-0041 §2c: a launcher that
+  wrote activation would be the egress-activation vector §2c closes); the
+  credential value is never read (only its presence), a boundary-invariant
+  validator refuses to write unless every `boundary.writes_*` flag is false, and
+  a `scrubSecrets` pass fail-closes the write on any secret-shaped value. It
+  emits no network effect, so it stays below the E1 ceiling; applying the plan is
+  an explicit user action.
 - Dry-run plugin management plans and, behind `--execute-plugin-management`,
   execution metadata, retry classification, and durable sanitized artifacts for
   allowlisted Claude/Codex plugin install/update commands.
