@@ -4,6 +4,13 @@
 
 Accepted (2026-07-06)
 
+*Amended 2026-07-07 ([decide-headline] / macro `…85bdad`, subtask `adr-amend`):
+§3a adds the opt-in, closed-vocabulary `headline` status token as a
+**DECIDED-but-not-yet-shipped** payload field **within** the existing E1 tier (a
+payload refinement, **not** a new effect domain — no ADR-0035 §4 ceiling change).
+See the §3a Status blockquote: `headline` is the design of record, not a shipped
+capability, until `release-dogfood` proves real delivery.*
+
 <!--
 Amends ADR-0035 §4 head-on (effect-based classification) to add one new,
 narrowly-scoped effect domain. On acceptance: (1) record "§4 amended by ADR-0041"
@@ -165,10 +172,85 @@ of the data.
 The egress body carries **only**: `kind`, `topic` (`repo:branch`, computed from
 event-build-time values — **no hidden `git` exec** in the emitter), `hostname`,
 `session_hint`, and — when a fresh workflow projection exists — `workflow_id`,
-`phase`. **`next_action` free text is NOT egressed** (it defeats scrubbing);
-replaced by a bounded status token if needed. **Raw transcript/response text is
-never egressed.** The notification is a **trigger + context** ("which machine,
-what work, how far along") pulling the operator into the session for detail.
+`phase`, plus — **only when the operator opts in (§3a)** — a bounded,
+closed-vocabulary `headline` status token. **`next_action` free text is NOT
+egressed** (it defeats scrubbing); the "bounded status token if needed" this
+sentence anticipated is realized as the opt-in `headline` field defined in §3a
+below — a **closed enum, not free text**. **Raw transcript/response text is never
+egressed.** The notification is a **trigger + context** ("which machine, what
+work, how far along") pulling the operator into the session for detail.
+
+#### 3a. `headline` — bounded closed-vocabulary status token (opt-in) — [decide-headline] 2026-07-07
+
+> **Status: DECIDED design, not yet shipped.** A governance-gated amendment (macro
+> `…85bdad`, subtask `adr-amend`). `headline` is the **design of record**; it is
+> **not yet implemented or delivered**. Remaining subtasks: `runtime-headline`
+> (schema field + opt-in reader + egress/mirror emission), `producer-headline`
+> (attention borns the token), `acceptance-headline` (leak/edge tests), and
+> `release-dogfood` (two-package release + owner real-delivery proof). Do **not**
+> read this section as "runtime ships/delivers headline" until `release-dogfood`
+> proves real delivery — mirroring §2d's ship-gate discipline.
+
+- **What it is.** One `headline` field carrying a token from a **fixed, closed
+  vocabulary** — e.g. `your-turn`, `needs-approval`, `in-progress`, `blocked`,
+  `complete`, `failed` (exact set finalized in `runtime-headline`). It answers
+  "*what state is this session in*" in a single machine-stable token. **Zero free
+  text** — the value is selected from the closed set, never composed from operator-
+  or model-authored characters.
+- **Not the rejected free-form `next_action`.** The Alternatives entry rejects
+  **free text** in the egress body; a closed enum is not free text. Because
+  `headline` is drawn from a fixed vocabulary **enforced at both guards below**, it
+  is **secret-free and injection-safe** — it cannot carry a key/token, a transcript
+  fragment, or a Markdown/HTML payload — so it does **not** reopen the leak surface
+  §3/§5 closed.
+  The "Free-form `next_action` — Rejected" alternative therefore **stands**;
+  `headline` is the *bounded status token* that entry pointed to (reconciled in
+  Alternatives below). The opt-in here is a **format gate**, not the informed
+  leak-acceptance lever that free-form egress would have required.
+- **Born in attention (two-package scope), enforced at two guards.** The token is
+  **produced in the attention package**, derived at event-build time from
+  **existing** signals — `kind` (on the event) + `archive_gate` (already in the
+  closed projection field set) + terminal status — **not** by extending the closed
+  projection schema and **not** derived in the runtime emitter (which sees only the
+  event). **Guard 1 (producer): map-or-omit** — only a recognized
+  `(kind, archive_gate, terminal-status)` combination yields a token; an unknown or
+  absent signal **omits** `headline`, never a guessed value. The runtime package
+  adds the schema field, the opt-in reader, and the egress/mirror emission, and —
+  **Guard 2 (runtime, load-bearing): validate-or-drop** — MUST check `headline`
+  against the closed vocabulary and **drop any out-of-vocab value** before
+  scrub/cap/render. Runtime does **not** "egress whatever token attention supplied":
+  a producer bug or vocabulary drift is caught runtime-side, not trusted away.
+  Runtime **copies, does not import**, the vocabulary constant (ADR-0010 §5
+  cross-plugin import ban; mirrors the `hostname`/`session_hint` copy-not-import
+  precedent) — so the copied constant + both mapping tables MUST be
+  **parity-tested** across `attention`/`runtime` to catch drift.
+- **Opt-in = a format/verbosity gate, not leak-acceptance.** Populating `headline`
+  requires a **separate, default-OFF opt-in** — env `AGENTIC_NOTIFY_EGRESS_HEADLINE`
+  or a verified-ignored-local `egress_headline` key — **distinct from egress
+  activation (§2c)**. Its role is **verbosity/format control**, not informed
+  acceptance of residual leak risk (there is none once the closed vocabulary is
+  enforced at both guards below — the field carries no free text), which is why it
+  can default OFF without weakening safety. It is
+  **fail-closed** (an unset/invalid opt-in omits `headline` **without** suppressing
+  the base egress notification), **tracked-config-inert** (tracked
+  `.agentic-plugins/config.toml` can never enable it — §2c's verified-ignored-local
+  rule), and **opt-in-alone inert** (enabling the headline opt-in without egress
+  activation does nothing).
+- **Cross-host degradation — Claude-Stop-only at v1.** The token needs the
+  attention producer's fresh projection, so it populates on the **Claude Stop
+  path** at v1. The Codex `notify=` shuttle carries **no** projection (it emits a
+  bare `turn-complete` event), so at v1 **Codex omits `headline` entirely** — a
+  `kind`-only token (e.g. `turn-complete`→`complete`) would overstate a single turn
+  as session/workflow status, so it is deliberately **not** derived; the base
+  notification is unaffected.
+- **Stays within the E1 ceiling (no new precedent).** `headline` is a payload
+  refinement **inside** the existing `E1 — enumerated-metadata network egress`
+  tier, not a new effect domain — a closed enum is squarely "enumerated metadata",
+  so it needs **no** ADR-0035 §4 ceiling amendment and **no** ADR-0040 §2 change.
+  This does **not** establish a general "closed-enum fields are always admissible"
+  rule: each future egress field still enters only by updating §3's enumerated
+  payload list and the §5 / acceptance leak-scans (the standing review obligation
+  in Consequences → Negative).
 
 ### 4. Event schema §1 extension (exact)
 
@@ -180,6 +262,21 @@ Telegram rendering (**plain text, no `parse_mode`** unless fully escaped).
 transcript**) give a stable per-event identity so same-host/repo/branch ssh+tmux
 sessions stay distinct. `event_id`/dedupe incorporate `hostname`; dedupe state
 stays **per-machine** (local), making multi-device → one-chat inherent.
+
+**`headline` schema field (opt-in, §3a).** Add `headline` as one more **capped,
+plain-text** field, populated by the attention producer from the closed
+vocabulary of §3a. Its per-field cap is small — it bounds a single known token
+(the longest vocabulary member plus headroom; finalized in `runtime-headline`) —
+and capping a closed-vocab value is a **uniform-treatment guard, not a leak
+control**. Unlike a free-text field, `headline` introduces **no new injection
+surface** once the runtime enum-guard (§3a Guard 2) drops out-of-vocab values: the
+closed vocabulary contains no `parse_mode` metacharacters, so the existing
+plain-text (no-`parse_mode`) Telegram render already covers it. With that guard and
+the acceptance leak-scans in place it is the **lowest**-risk display field — not, as
+an earlier free-text framing supposed, the highest. Implementation note: `headline` is a **separate optional field**, **not**
+added to the unconditionally-iterated routing-field list — validation/payload/
+mirror/parity passes that walk the routing fields do not carry it by default; it
+is emitted only under the §3a opt-in.
 
 ### 5. Egress-only secret-scrub redaction (defense-in-depth, not a proof)
 
@@ -194,7 +291,14 @@ each per-field cap, in both the egress body (`buildEgressPayload`) and the
 attempt-mirror (`buildEgressMirrorRecord`): a secret longer than a field cap would
 otherwise be truncated — losing its `@` / marker — *before* the scrub sees it,
 leaking a fragment. Normalizing then scrubbing the full value then capping closes
-that path. (Caught by the acceptance-gate adversarial ensemble.)
+that path. (Caught by the acceptance-gate adversarial ensemble.) The opt-in
+`headline` token (§3a) is first **dropped if out-of-vocabulary** by the runtime
+enum-guard (§3a Guard 2) — that omit-not-coerce guard, not the scrub, is its primary
+control — then covered by this **same** scrub-before-cap pass in **both** the body
+(`buildEgressPayload`) and the mirror (`buildEgressMirrorRecord`) as
+defense-in-depth, uniform treatment so a future vocabulary change cannot silently
+regress. A valid closed-vocabulary token carries no secret and cannot exceed its
+cap, so the pass has nothing to remove today.
 
 **Local-state scoping (out of egress scope, on record).** The ADR-0040 dedupe
 **claim** file stores the raw `event_id` verbatim (local debuggability + the
@@ -308,7 +412,11 @@ acceptance tests.
 - New paths to maintain/test: egress scrub, attempt-mirror, pinned-request
   validation, separate egress builder, verified-ignored-local reader.
 - Codex asymmetry: the channel reaches Codex, but enumerated metadata is richest
-  under workflow projections; a bare Codex turn yields less context.
+  under workflow projections; a bare Codex turn yields less context. The opt-in
+  `headline` token (§3a) inherits this — it is **Claude-Stop-only at v1** (the
+  Codex `notify=` shuttle carries no projection) and is **omitted entirely on
+  Codex** at v1, since a `kind`-only token would overstate a single turn as session
+  status.
 
 **Neutral**
 
@@ -333,8 +441,13 @@ acceptance tests.
   neutralize it (effect, not ownership).
 - **Transcript-raw egress (even opt-in).** *Rejected*: irreducible secret-leak
   risk best-effort scrubbing cannot close; opt-in only **transfers** risk.
-- **Free-form `next_action` in the egress body.** *Rejected*: free text defeats
-  scrubbing; replaced by a bounded status token.
+- **Free-form `next_action` in the egress body.** *Rejected — and stays
+  rejected*: free text defeats scrubbing. The replacement this entry names — "a
+  bounded status token" — is realized as the opt-in, **closed-vocabulary**
+  `headline` field (§3a): a closed enum **enforced at both a producer map-or-omit
+  and a runtime validate-or-drop guard** is secret-free and injection-safe, so
+  admitting `headline` is **not** re-admitting this rejected free-form entry.
+  (Design decided 2026-07-07 [decide-headline]; not yet shipped — see §3a Status.)
 - **Channel/recipient/token in tracked `config.toml`.** *Rejected*: tracked +
   echoed to artifacts — a repo-controlled activation/exposure vector. Env or
   verified-ignored-local only; token alone never activates.
