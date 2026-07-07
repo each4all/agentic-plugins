@@ -1682,3 +1682,82 @@ describe('ADR-0041 acceptance (G) -- attention + persona self-sensors reach the 
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// (M) §12 first-class egress launcher -- runtime:settings --egress-launcher-plan
+// is an ARTIFACT-ONLY PLANNER. Driven through the REAL settings.mjs CLI with a
+// hermetic HOME + a fake credential, it proves the load-bearing boundary AT the
+// operator's real entry point: the plan is recorded ONLY under
+// runs/egress-launcher/, the host prototype settings.json is byte-identical,
+// config.local.toml is never created, and the fake credential leaks to NOWHERE
+// (stdout / stderr / the artifact tree). The in-depth mechanics (mode matrix,
+// renderers, detector, validator, full-tree no-mutation) live in
+// tests/runtime/test-egress-launcher-plan.mjs; THIS gate is the real-process
+// boundary proof, mirroring (H)'s deterministic leak scan.
+// ---------------------------------------------------------------------------
+
+const SETTINGS_CLI = resolve(RUNTIME_ROOT, 'scripts/settings.mjs');
+
+describe('ADR-0041 acceptance (M) -- the egress launcher plans artifact-only through the real CLI', () => {
+  // A fixture HOME whose ~/.claude/settings.json wires the personal prototype
+  // hooks, so an ACTIVE machine (fake env triple) computes the richest mode
+  // (prototype-retire-only) -- the path that renders the retire step.
+  function seedPrototypeHome() {
+    const home = fixtureHome();
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    const cmd = `node ${join(home, '.claude', 'telegram-notify.mjs')}`;
+    const settings = { hooks: {
+      Notification: [{ matcher: '', hooks: [{ type: 'command', command: cmd }] }],
+      Stop: [{ matcher: '', hooks: [{ type: 'command', command: cmd }] }],
+    } };
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify(settings, null, 2));
+    return home;
+  }
+
+  it('records the plan ONLY under runs/egress-launcher/, never host/config/settings, and leaks no credential', () => {
+    const repo = markerRepo('egl-cli');
+    const home = seedPrototypeHome();
+    const settingsBefore = readFileSync(join(home, '.claude', 'settings.json'), 'utf8');
+
+    const res = spawnSync(
+      process.execPath,
+      [SETTINGS_CLI, '--repo-root', repo, '--egress-launcher-plan', '--format', 'json'],
+      {
+        env: { ...process.env, HOME: home, AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT, ...egressEnv() },
+        encoding: 'utf8',
+        timeout: 120000,
+      },
+    );
+
+    strictEqual(res.status, 0, `settings.mjs exited ${res.status}: ${res.stderr}`);
+    const report = JSON.parse(res.stdout);
+    const el = report.egress_launcher_plan;
+    ok(el?.requested, 'egress_launcher_plan section present');
+    strictEqual(el.status, 'planned');
+    strictEqual(el.mode, 'prototype-retire-only'); // active env triple + prototype hooks present
+    ok(el.artifact?.written);
+
+    // (a) NO host mutation: settings.json byte-identical, config.local.toml never created.
+    strictEqual(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'), settingsBefore);
+    ok(!existsSync(join(home, '.agentic-plugins', 'config.local.toml')), 'launcher must never create config.local.toml');
+
+    // (a) the ONLY runs family the launcher writes is egress-launcher.
+    const artFamilyDir = join(repo, '.agentic-plugins', 'runs', 'egress-launcher');
+    ok(existsSync(artFamilyDir));
+    for (const fam of readdirSync(join(repo, '.agentic-plugins', 'runs'))) {
+      strictEqual(fam, 'egress-launcher', `unexpected runs family written by the launcher: ${fam}`);
+    }
+
+    // (b) LEAK SCAN: the fake credential is absent from stdout, stderr, and the artifact tree.
+    ok(!res.stdout.includes(FAKE_TOKEN), 'token absent from stdout');
+    ok(!(res.stderr ?? '').includes(FAKE_TOKEN), 'token absent from stderr');
+    const scanTree = (dir) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const abs = join(dir, e.name);
+        if (e.isDirectory()) scanTree(abs);
+        else ok(!readFileSync(abs, 'utf8').includes(FAKE_TOKEN), `token leaked into ${abs}`);
+      }
+    };
+    scanTree(artFamilyDir);
+  });
+});

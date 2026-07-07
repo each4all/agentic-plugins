@@ -94,7 +94,9 @@ export const COMPAT_RUN_ID_RE = /^compat-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // registered here so the inventory + uniform retention cap covers it.
 // 'notification' is the ADR-0040 §4 notification plan family, owned by
 // scripts/lib/notification-plan.mjs (NOTIFICATION_ARTIFACT_FAMILY).
-const RUNTIME_ARTIFACT_FAMILIES = ['compat', 'consensus', 'context', 'settings', 'doctor', 'permission', 'notification'];
+// 'egress-launcher' is the ADR-0041 §12 first-class egress launcher plan family,
+// owned by scripts/lib/egress-launcher-plan.mjs (EGRESS_LAUNCHER_ARTIFACT_FAMILY).
+const RUNTIME_ARTIFACT_FAMILIES = ['compat', 'consensus', 'context', 'settings', 'doctor', 'permission', 'notification', 'egress-launcher'];
 
 // --- low-level fs / frontmatter / timestamp helpers (moved from doctor.mjs) ---
 

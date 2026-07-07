@@ -11,6 +11,12 @@ payload refinement, **not** a new effect domain — no ADR-0035 §4 ceiling chan
 See the §3a Status blockquote: `headline` is the design of record, not a shipped
 capability, until `release-dogfood` proves real delivery.*
 
+*Amended 2026-07-07 ([egress-launcher]): §12 adds the first-class, artifact-only
+**egress launcher** (`runtime:settings --egress-launcher-plan`) that realizes the
+prototype-cutover track (§2d Status / §11). A **planner** — it writes no
+activation and emits no network effect — so it is strictly below the E1 ceiling
+and needs no ADR-0035 §4 change.*
+
 <!--
 Amends ADR-0035 §4 head-on (effect-based classification) to add one new,
 narrowly-scoped effect domain. On acceptance: (1) record "§4 amended by ADR-0041"
@@ -155,7 +161,8 @@ of the data.
   > delivery. The real credential left NO trace in any persisted artifact/state (leak scan clean).
   > **Rollback decision: none** — the transport delivers in the exact environment that broke
   > `fetch`, so prototype-cutover proceeds (disable the personal curl prototype, wire runtime
-  > egress activation per machine, avoid duplicate sends). The `AGENTIC_EGRESS_REAL_SMOKE`-gated
+  > egress activation per machine, avoid duplicate sends) — realized as the first-class,
+  > artifact-only **§12 egress launcher** (`runtime:settings --egress-launcher-plan`). The `AGENTIC_EGRESS_REAL_SMOKE`-gated
   > acceptance smoke ([acceptance-gate]) is the repeatable CI-skipped hook for this proof.
 - **(e) Bounded await, not vague fire-and-forget.** A **bounded `await` inside
   `notify.mjs` with a small timeout**, all rejections caught; a slow/failing/
@@ -386,7 +393,53 @@ Implementation is a **`orchestrator:plan` multi-deliverable (~5-6 PRs)** with th
 0040 boundary-doc updates; (2) verified-ignored-local + config/schema; (3) event
 schema + attention `hostname`/`session_hint` (copy-not-import); (4) executor
 scanner/registry network-primitive gate; (5) Telegram HTTPS (`node:https`) channel + redaction/mirror; (6)
-acceptance tests.
+acceptance tests. The **prototype-cutover** step (§2d Status / §8) is realized as
+the first-class, artifact-only **§12 egress launcher** — a planner that writes no
+activation, so it lands as an ordinary runtime feature, not a §4-gated slice.
+
+### 12. First-class egress launcher (`runtime:settings --egress-launcher-plan`) — [egress-launcher] 2026-07-07
+
+The prototype-cutover track (§2d Status / §11) — retire the personal `~/.claude`
+curl prototype, wire runtime egress activation per machine, avoid duplicate sends
+— is realized as a **first-class, artifact-only planner** in `runtime:settings`,
+structurally mirroring `--notification-plan` (§6 / ADR-0040 §4).
+
+- **What it is.** `runtime:settings --egress-launcher-plan` reads the current
+  egress activation state (`loadEgressActivation`, §2c) and the personal
+  `~/.claude/settings.json` prototype hooks **read-only**, computes a
+  **state-aware mode** (`activate` / `partial` / `prototype-retire-only` /
+  `already-active`), and records a per-machine activation runbook — the
+  `config.local.toml` content (channel + chat-id), the env credential line, the
+  exact prototype hook entries to remove, verify, rollback, and the per-machine
+  repeat (§8) — into an `.agentic-plugins/runs/egress-launcher/` plan artifact.
+- **Artifact-only is load-bearing, not cosmetic.** The launcher **never writes**
+  host config, `~/.agentic-plugins/config.local.toml`, the credential, or
+  `~/.claude/settings.json`. §2c makes egress activation a value that must come
+  only from the operator env or a fail-closed-verified ignored-local file,
+  precisely so no tool path can activate egress; a launcher that *wrote* the
+  activation would itself become the egress-activation vector §2c closed.
+  Applying the plan (creating the file, exporting the token, disabling the
+  prototype hooks) is an explicit **user** action — the same
+  render-and-record-only discipline as the notification plan's receiver install.
+- **Strictly within — in fact below — the E1 ceiling (no new precedent).** The
+  launcher is a **planner**: it emits **no network effect** and writes **no
+  activation**, so it is strictly less than an E1 egress and needs **no**
+  ADR-0035 §4 amendment. The credential is **never read** (only its presence is
+  surfaced, §2b); a boundary-invariant artifact validator refuses to write unless
+  every `boundary.writes_*` flag is `false`, and a `scrubSecrets` (§5) pass
+  fail-closes the write if any secret-shaped value ever reached the artifact. The
+  recommended layout keeps channel + chat-id in the verified-ignored-local file
+  and the token in env; an env-all layout is shown as an alternative (§2c honors
+  both for channel/recipient; the credential is env-only either way). The
+  `egress_*` keys stay **outside** runtime-config `CONFIG_KEYS`, so `--apply` can
+  never write them and the launcher never adds them.
+- **Detection-informed, not a generic checklist.** Prototype detection matches by
+  **exact path** (`~/.claude/telegram-notify.mjs`), never a basename-anywhere
+  heuristic that would misclassify an unrelated same-named script, and is
+  Claude-scoped (the personal hook). A machine already cut over gets an
+  `already-active` no-op verification plan; a machine whose prototype hooks are
+  already gone gets no misleading "disable" step — the state-aware plan tells the
+  operator only what is true on *this* machine.
 
 ## Consequences
 
