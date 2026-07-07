@@ -2,6 +2,13 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.4.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.3.1...plugin-attention-v0.4.0) (2026-07-07)
+
+
+### Features
+
+* **attention:** born opt-in closed-vocabulary headline token on Stop workflow-terminal events (ADR-0041 §3a producer-headline) ([#513](https://github.com/each4all/agentic-plugins/issues/513)) ([df364a9](https://github.com/each4all/agentic-plugins/commit/df364a99a450e855aad8605dd23284d7d61d4ce6))
+
 ## [0.3.1](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.3.0...plugin-attention-v0.3.1) (2026-07-06)
 
 
