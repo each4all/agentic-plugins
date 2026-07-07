@@ -47,6 +47,9 @@ import {
   releaseClaim,
   OPTIONAL_ROUTING_FIELDS,
   ROUTING_FIELD_CAPS,
+  OPTIONAL_HEADLINE_FIELD,
+  HEADLINE_FIELD_CAP,
+  isHeadlineToken,
 } from './notify-schema.mjs';
 
 const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
@@ -412,6 +415,7 @@ export function buildEgressMirrorRecord({
   outcome,
   now = Date.now(),
   scrub = (s) => s,
+  headlineOptIn = false,
 } = {}) {
   requireNonEmptyString(service, 'service');
   if (!EGRESS_STATUSES.includes(egressStatus)) {
@@ -437,6 +441,14 @@ export function buildEgressMirrorRecord({
     if (typeof event[field] === 'string' && event[field].length > 0) {
       mirror[field] = sanitizeToken(event[field], ROUTING_FIELD_CAPS[field], scrub);
     }
+  }
+  // ADR-0041 §3a — the opt-in closed-vocabulary headline, mirrored with the SAME
+  // validate-or-drop guard as buildEgressPayload (Guard 2) so the attempt-mirror
+  // and the egress body agree (the parity a producer/runtime drift test asserts).
+  // sanitizeToken(scrub) is uniform §5 defense-in-depth; a valid vocab token has
+  // nothing to scrub and cannot exceed its cap.
+  if (headlineOptIn && isHeadlineToken(event[OPTIONAL_HEADLINE_FIELD])) {
+    mirror[OPTIONAL_HEADLINE_FIELD] = sanitizeToken(event[OPTIONAL_HEADLINE_FIELD], HEADLINE_FIELD_CAP, scrub);
   }
   return mirror;
 }
