@@ -1,0 +1,7 @@
+interface:
+  display_name: "Designer — Frame"
+  short_description: "Turn design/UX evidence into a structured UX problem model with measurable success metrics"
+  default_prompt: "Use $designer:frame to articulate the user problem, job-to-be-done, design goals, measurable UX success metrics, constraints, and key risks"
+
+policy:
+  allow_implicit_invocation: false
