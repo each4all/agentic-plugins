@@ -11,7 +11,7 @@
 //     hooks/ + adapters/), exposing the Codex manifest hooks key. Designer
 //     mirrors founder's NON-DISPATCH shape (ADR-0042 Non-Goal 2). commands/ +
 //     skills/ stayed forbidden.
-//   - PR3 (this revision) lands the first two verb surfaces — investigate
+//   - PR3 lands the first two verb surfaces — investigate
 //     (the design-brief profile) and frame — so commands/ + skills/ become
 //     REQUIRED (with investigate/frame entries) rather than forbidden, and the
 //     Codex manifest gains the skills + interface keys. It ships the named
@@ -22,10 +22,12 @@
 //     shared _shared/references/orchestration.md Design Task Profile is
 //     deliberately DEFERRED to PR6 (the SKILLs carry a self-contained inline
 //     Design Task Profile at PR3), so this revision asserts it ABSENT. The
-//     decide engine (decide-registry.mjs + scripts/lib/*) stays deferred to
-//     PR4 (founder ADR-0036 precedent), still ABSENT.
-//   - PR4 lands decide + compose + the decide engine; PR5A/PR5B land critique
-//     + refine; PR6 lands start + meta skills + orchestration.md + L4 profiles.
+//     decide engine (decide-registry.mjs + scripts/lib/*) was deferred to PR4.
+//   - PR4 (this revision) lands decide + compose + the decide engine
+//     (decide-registry.mjs + scripts/lib/* + skills/decide/references/decision-axes.yml
+//     — the 7-axis SD3 registry: usability the common decisive axis,
+//     accessibility the single veto gate). PR5A/PR5B land critique + refine;
+//     PR6 lands start + meta skills + orchestration.md + L4 profiles.
 //   - PR7 de-incubates: the incubating marker is removed from the manifests +
 //     README, and these PRESENCE assertions flip to ABSENCE.
 //
@@ -35,7 +37,7 @@ import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/designer');
@@ -147,12 +149,14 @@ describe('plugins/designer — Codex manifest (.codex-plugin/plugin.json)', () =
       'the Codex interface category must match the designer marketplace category (Development)');
     ok(Array.isArray(json.interface.defaultPrompt) && json.interface.defaultPrompt.length > 0,
       'the Codex interface must carry a non-empty defaultPrompt list');
-    // PR3 only ships investigate + frame — the defaultPrompt examples must not
-    // advertise a verb that has not landed yet (no compose/critique/etc.).
+    // PR4 ships investigate + frame + decide + compose — the defaultPrompt
+    // examples must not advertise a verb that has not landed yet.
     const prompts = json.interface.defaultPrompt.join('\n');
     ok(/\$designer:investigate/.test(prompts), 'defaultPrompt must show a $designer:investigate example');
     ok(/\$designer:frame/.test(prompts), 'defaultPrompt must show a $designer:frame example');
-    for (const notyet of ['decide', 'compose', 'critique', 'refine', 'start']) {
+    ok(/\$designer:decide/.test(prompts), 'defaultPrompt must show a $designer:decide example (PR4)');
+    ok(/\$designer:compose/.test(prompts), 'defaultPrompt must show a $designer:compose example (PR4)');
+    for (const notyet of ['critique', 'refine', 'start']) {
       ok(!new RegExp(`\\$designer:${notyet}\\b`).test(prompts),
         `defaultPrompt must not advertise $designer:${notyet} — it lands in a later PR`);
     }
@@ -329,12 +333,9 @@ describe('plugins/designer — PR2 machinery boundary (copy-trim continuity + ho
     }
   });
 
-  it('does NOT yet ship the decide engine (registry + lib land at PR4 — founder ADR-0036 precedent)', async () => {
-    strictEqual(await exists(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs')), false,
-      'the decide registry lands with decide+compose at PR4, not with PR3 verb surfaces');
-    strictEqual(await exists(resolve(PLUGIN_ROOT, 'scripts/lib')), false,
-      'the decide engine lib/ (decide-args/scores/weights/sensitivity/yaml-mini) lands at PR4');
-  });
+  // (The PR3-era "decide engine absent" guard was removed at PR4 — the engine
+  // now ships; its presence + registry invariants are asserted in the
+  // "PR4 decide + compose verb surfaces + decide engine" describe block below.)
 });
 
 describe('plugins/designer — PR3 verb surfaces (investigate + frame + design-brief contract)', () => {
@@ -365,12 +366,12 @@ describe('plugins/designer — PR3 verb surfaces (investigate + frame + design-b
       'the shared orchestration.md (Design Task Profile + bilingual triggers) lands at PR6, not PR3');
   });
 
-  it('the six-verb enum is NOT yet complete — decide/compose/critique/refine skills absent (PR4+)', async () => {
-    for (const notyet of ['decide', 'compose', 'critique', 'refine']) {
+  it('the six-verb enum is NOT yet complete — critique/refine skills absent (land at PR5A/PR5B)', async () => {
+    for (const notyet of ['critique', 'refine']) {
       strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills', notyet, 'SKILL.md')), false,
-        `skills/${notyet}/SKILL.md lands in a later PR, not PR3`);
+        `skills/${notyet}/SKILL.md lands at PR5A/PR5B, not PR4`);
       strictEqual(await exists(resolve(PLUGIN_ROOT, 'commands', `${notyet}.md`)), false,
-        `commands/${notyet}.md lands in a later PR, not PR3`);
+        `commands/${notyet}.md lands at PR5A/PR5B, not PR4`);
     }
   });
 
@@ -572,10 +573,209 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
   });
 });
 
-describe('plugins/designer — inert boundary (PR3: remaining verb surfaces still absent)', () => {
-  // commands/ + skills/ landed at PR3 (investigate + frame); the persona
-  // dirs never ship. decide/compose/critique/refine + start + meta land
-  // in later PRs (asserted absent in the PR3 verb-surface suite above).
+describe('plugins/designer — PR4 decide + compose verb surfaces + decide engine (ADR-0042 SD3)', () => {
+  const REQUIRED_PR4_SURFACES = [
+    'scripts/decide-registry.mjs',
+    'scripts/lib/decide-args.mjs',
+    'scripts/lib/decide-weights.mjs',
+    'scripts/lib/decide-scores.mjs',
+    'scripts/lib/decide-sensitivity.mjs',
+    'scripts/lib/yaml-mini.mjs',
+    'skills/decide/references/decision-axes.yml',
+    'skills/decide/SKILL.md',
+    'skills/decide/agents/openai.yaml',
+    'commands/decide.md',
+    'skills/compose/SKILL.md',
+    'skills/compose/agents/openai.yaml',
+    'commands/compose.md',
+  ];
+  const PR4_VERBS = ['decide', 'compose'];
+
+  for (const rel of REQUIRED_PR4_SURFACES) {
+    it(`ships ${rel} (PR4 decide engine / verb surface)`, async () => {
+      strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true,
+        `plugins/designer/${rel} is part of the ADR-0042 PR4 surface and must exist`);
+    });
+  }
+
+  // The decision-axes registry lives under skills/decide/references/ — the
+  // DEFAULT_PATH decide-registry.mjs resolves relative to scripts/ (../skills/…).
+  it('the decision-axes registry lives under skills/decide/references/', async () => {
+    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/decide/references/decision-axes.yml')), true);
+  });
+
+  for (const verb of PR4_VERBS) {
+    it(`skills/${verb}/SKILL.md frontmatter name = ${verb}`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+      const fm = frontmatter(text);
+      ok(fm, `skills/${verb}/SKILL.md has no YAML frontmatter`);
+      ok(new RegExp(`^name:\\s*${verb}\\s*$`, 'm').test(fm),
+        `skills/${verb}/SKILL.md frontmatter name != "${verb}"`);
+      match(fm, /description:/, `skills/${verb}/SKILL.md frontmatter must carry a description`);
+    });
+
+    it(`skills/${verb}/agents/openai.yaml display_name names the verb + persona`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'agents/openai.yaml'), 'utf8');
+      const m = text.match(/display_name:\s*"([^"]+)"/);
+      ok(m, `skills/${verb}/agents/openai.yaml must declare interface.display_name`);
+      ok(m[1].toLowerCase().includes(verb), `openai.yaml display_name "${m[1]}" must name the verb "${verb}"`);
+      ok(m[1].toLowerCase().includes('designer'), `openai.yaml display_name "${m[1]}" must name the persona "designer"`);
+    });
+
+    it(`commands/${verb}.md carries a frontmatter description`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
+      const fm = frontmatter(text);
+      ok(fm, `commands/${verb}.md has no YAML frontmatter`);
+      match(fm, /description:\s*\S/, `commands/${verb}.md frontmatter must carry a non-empty description`);
+    });
+
+    it(`commands/${verb}.md carries no parent-linkage env reads (ADR-0042 Non-Goal 2)`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
+      for (const form of [/\$\{?AGENTIC_PARENT_WORKFLOW/, /\$\{?AGENTIC_ORIGINATING_SUBTASK/]) {
+        ok(!form.test(text),
+          `commands/${verb}.md must not shell-read ${form} — designer is non-dispatch (ADR-0042 Non-Goal 2)`);
+      }
+    });
+  }
+
+  it('the decide registry loads cleanly (no fallback) with the four design presets', async () => {
+    const mod = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs')).href);
+    const { registry, fallbackTriggered } = mod.loadRegistry({});
+    strictEqual(fallbackTriggered, false, 'the real designer registry must load without fallback');
+    deepStrictEqual(Object.keys(registry.presets).sort(), ['balanced', 'clarity', 'conversion', 'experience']);
+  });
+
+  it('7-axis balanced preset (SD3): usability common-decisive, accessibility the single veto gate, >=2 decisive, axis id "accessibility" NOT "a11y"', async () => {
+    const mod = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs')).href);
+    const { registry } = mod.loadRegistry({});
+    strictEqual(registry.presets.balanced.axes.length, 7, 'balanced is the 7-axis matrix');
+    for (const pid of Object.keys(registry.presets)) {
+      const axes = registry.presets[pid].axes;
+      const decisive = axes.filter((a) => a.role === 'decisive').map((a) => a.id);
+      ok(decisive.length >= 2, `preset ${pid} must declare >= 2 decisive axes (${decisive.length})`);
+      ok(decisive.includes('usability'), `preset ${pid} must carry usability as a decisive axis (common-decisive)`);
+      const gates = axes.filter((a) => a.gate).map((a) => a.id);
+      deepStrictEqual(gates, ['accessibility'], `preset ${pid} must have exactly one veto gate: accessibility`);
+      const acc = axes.find((a) => a.id === 'accessibility');
+      strictEqual(acc.role, 'supporting', 'accessibility is role:supporting + gate:true (portable-reader-compatible)');
+      ok(!axes.some((a) => a.id === 'a11y'),
+        `preset ${pid} must NOT define an "a11y" axis id — a11y is only a profile-flag alias mapped to the accessibility axis`);
+    }
+  });
+
+  it('DEFAULT_FALLBACK mirrors the balanced preset (lockstep) — ENOENT resolves to balanced', async () => {
+    const mod = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs')).href);
+    const { registry } = mod.loadRegistry({});
+    const shape = (axes) => axes.map((a) => ({ id: a.id, role: a.role, gate: a.gate }));
+    const balanced = shape(registry.presets.balanced.axes);
+    const fb = mod.resolvePreset({ path: '/nonexistent/decision-axes.yml' });
+    strictEqual(fb.fallbackTriggered, true);
+    strictEqual(fb.context.preset_id, 'balanced');
+    deepStrictEqual(shape(fb.context.axes), balanced,
+      'DEFAULT_FALLBACK must mirror the balanced preset — keep the two in lockstep');
+  });
+
+  // PR4 tests presets-defined + >=2-decisive only. The "every L4 profile
+  // resolves to a defined preset" cross-check is DEFERRED to PR6 (profiles
+  // land at PR6 — ADR-0042 macro plan).
+  it('every registry preset is a defined map with a description and a non-empty axis list', async () => {
+    const mod = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs')).href);
+    const { registry } = mod.loadRegistry({});
+    for (const pid of Object.keys(registry.presets)) {
+      const p = registry.presets[pid];
+      strictEqual(typeof p.description, 'string');
+      ok(p.description.length > 0, `preset ${pid} must carry a description`);
+      ok(Array.isArray(p.axes) && p.axes.length > 0, `preset ${pid} must carry a non-empty axis list`);
+    }
+  });
+
+  it('the SD4 privacy gate + screenshots-sensitive sentinels reach the decide + compose external-dispatch surfaces (Codex COVERAGE-2)', async () => {
+    // decide dispatches a Brainstorm peer; compose dispatches a Plan-verify peer —
+    // both are external transmission, so the SD4 privacy gate must reach them.
+    for (const rel of ['skills/decide/SKILL.md', 'commands/decide.md', 'skills/compose/SKILL.md', 'commands/compose.md']) {
+      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      ok(text.includes(PRIVACY_SENTINEL),
+        `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+      ok(text.toLowerCase().includes(SCREENSHOT_SENTINEL),
+        `${rel} must carry the "screenshots are sensitive by default" invariant (ADR-0042 SD4)`);
+    }
+  });
+
+  it('the @decide:axis-table SKILL region renders the 7 balanced axes with accessibility as the gate (Codex COVERAGE-4)', async () => {
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md'), 'utf8');
+    const m = skill.match(/<!-- @decide:axis-table:begin -->([\s\S]*?)<!-- @decide:axis-table:end -->/);
+    ok(m, 'skills/decide/SKILL.md must contain the @decide:axis-table marker region');
+    const region = m[1];
+    for (const label of ['Usability', 'Consistency', 'Conversion', 'Desirability', 'Content-Clarity', 'Feasibility', 'Accessibility']) {
+      ok(region.includes(label), `@decide:axis-table must render the "${label}" axis (SKILL <-> registry drift guard)`);
+    }
+    ok(/Accessibility[\s\S]*?gate/i.test(region), '@decide:axis-table must mark 접근성 Accessibility as the gate');
+  });
+
+  it('decide is single-mode (no --profile flag in any state command); compose forwards --profile in create AND append (Codex COVERAGE-3)', async () => {
+    const decideCmd = await readFile(resolve(PLUGIN_ROOT, 'commands/decide.md'), 'utf8');
+    const composeCmd = await readFile(resolve(PLUGIN_ROOT, 'commands/compose.md'), 'utf8');
+    // decide: never passes a `--profile "<value>"` flag (the prose "no `--profile`
+    // argument" is backtick-quoted documentation, not a shell flag, and is allowed).
+    ok(!/--profile\s+"/.test(decideCmd),
+      'commands/decide.md must not pass a --profile flag in any state.mjs call — decide is single-mode');
+    // compose: --profile forwarded from AGENTIC_PROFILE in create AND carried in the append/resume path.
+    ok(/--profile\s+"\$\{?AGENTIC_PROFILE/.test(composeCmd),
+      'commands/compose.md must forward --profile from AGENTIC_PROFILE (create path, spec/flow/wireframe)');
+    ok(/--profile\s+"<profile/.test(composeCmd),
+      'commands/compose.md append/resume path must carry --profile (resume continuity)');
+  });
+
+  it('the decide/compose surfaces carry the incubating disclaimer (critique/refine/start directional, not runnable)', async () => {
+    for (const rel of ['skills/decide/SKILL.md', 'skills/compose/SKILL.md', 'commands/decide.md', 'commands/compose.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      match(text, /incubating/i, `${rel} must carry the incubating disclaimer`);
+      ok(/PR5A|PR5B/.test(text) && /\bdirectional\b/.test(text),
+        `${rel} must note critique/refine land at PR5A/PR5B so an unlanded next_command is directional, not runnable`);
+    }
+  });
+
+  it('no stale founder/business vocabulary leaks into the decide/compose surfaces (copy-trim rebrand)', async () => {
+    const STALE = [
+      // founder / business vocabulary
+      /business_brief/i, /FOUNDER_OUTPUT_ROOT/, /\bventure\b/i, /\bjurisdiction\b/i, /unit-economics/i, /market-attractiveness/i, /시장성/, /단위경제/,
+      // engineer decide-axis ids — must not leak into designer surfaces (Codex COVERAGE-1 / REBRAND-1)
+      /\bessence\b/i, /\bfoundation\b/i, /practical-fit/i, /\bmaturation\b/i, /canonical-precedent/i,
+    ];
+    for (const rel of [
+      'skills/decide/SKILL.md',
+      'skills/compose/SKILL.md',
+      'commands/decide.md',
+      'commands/compose.md',
+      'skills/decide/references/decision-axes.yml',
+    ]) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      for (const re of STALE) {
+        ok(!re.test(text), `${rel} carries stale business vocabulary ${re} (copy-trim rebrand miss)`);
+      }
+    }
+  });
+
+  it('package.json wires the designer decide unit suite into test:plugin-shape (PR4)', async () => {
+    const pkg = await readJSON(resolve(REPO_ROOT, 'package.json'));
+    const suite = pkg.scripts['test:plugin-shape'];
+    for (const t of [
+      'tests/designer/test-decide-registry.mjs',
+      'tests/designer/test-decide-args.mjs',
+      'tests/designer/test-decide-weights.mjs',
+      'tests/designer/test-decide-scores.mjs',
+      'tests/designer/test-decide-sensitivity.mjs',
+      'tests/designer/test-yaml-mini.mjs',
+    ]) {
+      ok(suite.includes(t), `test:plugin-shape must run ${t} (PR4 decide unit suite)`);
+    }
+  });
+});
+
+describe('plugins/designer — inert boundary (remaining verb surfaces land in later PRs)', () => {
+  // commands/ + skills/ landed across PR3 (investigate + frame) + PR4 (decide
+  // + compose); the persona dirs never ship. critique/refine + start + meta
+  // land in later PRs (asserted absent in the verb-surface suites above).
   const FORBIDDEN_DIRS = [
     'personas',
     'mcp-servers',
