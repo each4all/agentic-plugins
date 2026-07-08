@@ -63,6 +63,9 @@ agentic-plugins/
 │   │                               # library (scripts/discover-peer.mjs); Stage 2 Deliverable B
 │   │                               # absorbed discovery into this plugin per ADR-0010 §6 trigger
 │   │                               # evaluation (high cohesion, no separate plugin spawned)
+│   ├── designer/                   # L3 persona — code-first design/UX decision & quality workbench
+│   │                               # (ADR-0042, third L3 persona; INCUBATING — PR1 atomic scaffold only,
+│   │                               # surfaces land across the implementation ladder; non-dispatch, composes image L2)
 │   ├── engineer/                   # L3 persona — 6-verb workbench (Stage 2 complete 2026-05-06).
 │   │                               # research capability folded in via investigate's cited-brief
 │   │                               # profile per ADR-0014 + ADR-0015 (Stage 2.5+); plugins/research
@@ -223,8 +226,9 @@ before pushing**. Per-package commits stage only that package's
 files (`git add <package-path> && git commit`).
 
 The package paths are the keys of `release-please-config.json`
-`packages` — currently `companions`, `plugins/companions`,
-`plugins/engineer`, `plugins/founder`, `plugins/image`, `plugins/orchestrator`, and `plugins/runtime`. Files **outside**
+`packages` — currently `companions`, `plugins/attention`,
+`plugins/companions`, `plugins/designer`, `plugins/engineer`,
+`plugins/founder`, `plugins/image`, `plugins/orchestrator`, and `plugins/runtime`. Files **outside**
 every package key prefix are exempt: root files (`AGENTS.md`,
 `README.md`, `package.json`, etc.),
 `docs/`, `scripts/`, `tests/`, `kit/`, `.claude-plugin/`,
