@@ -1,8 +1,26 @@
 {
   "name": "designer",
   "version": "0.1.0",
-  "description": "Designer workbench for code-first design/UX decision & quality assurance across Claude Code & Codex CLI (ADR-0042). The third L3 persona after engineer and founder: the six universal cognitive verbs (investigate / frame / decide / compose / critique / refine) re-anchored to UX/UI/CTA/flow — pre-code design thinking (user flows, wireframe specs, CTA copy, information architecture) plus a post-code quality-critique loop that evaluates rendered screenshots + frontend code under usability / accessibility / conversion / consistency lenses. Composes the image L2 capability for generated imagery rather than re-implementing it; Figma and external design tools are excluded in v1 (code-first scope). Incubating scaffold — the persona's user-facing verb surfaces (the six cognitive verbs, the start lifecycle macro, and the meta skills) land across the ADR-0042 implementation ladder; this release ships the scaffold (manifests, catalogs, release wiring, staged shape test) plus the copy-trimmed non-dispatch workflow-continuity machinery and hooks, with no verb surface yet.",
+  "description": "Designer workbench for code-first design/UX decision & quality assurance across Claude Code & Codex CLI (ADR-0042). The third L3 persona after engineer and founder: the six universal cognitive verbs (investigate / frame / decide / compose / critique / refine) re-anchored to UX/UI/CTA/flow — pre-code design thinking (user flows, wireframe specs, CTA copy, information architecture) plus a post-code quality-critique loop that evaluates rendered screenshots + frontend code under usability / accessibility / conversion / consistency lenses. Composes the image L2 capability for generated imagery rather than re-implementing it; Figma and external design tools are excluded in v1 (code-first scope). Incubating scaffold — the persona's remaining verb surfaces (decide / compose / critique / refine, the start lifecycle macro, and the meta skills) land across the ADR-0042 implementation ladder; this release adds the first two verb surfaces — investigate (design-brief profile: 5-tier design source taxonomy, freshness/platform tagging, and a privacy gate with screenshots sensitive-by-default) and frame (UX problem model with measurable success metrics) — on top of the scaffold, catalogs, release wiring, staged shape test, and the copy-trimmed non-dispatch workflow-continuity machinery and hooks.",
   "hooks": "./adapters/codex/hooks/hooks.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Designer",
+    "shortDescription": "Code-first design/UX decision & quality workbench (incubating). This release ships the first two verb surfaces — investigate (cited design brief) and frame (UX problem model with measurable success metrics); the remaining verbs land across the ADR-0042 ladder",
+    "longDescription": "L3 persona plugin for code-first design/UX — the third L3 persona after engineer and founder (ADR-0042). Exposes the six universal cognitive verbs as canonical skills re-anchored to UX/UI/CTA/flow. Incubating: this release adds the first two verb surfaces — investigate (the design-brief profile: scans UX/accessibility standards, design systems, competitor UX, and the design press across a 5-tier source taxonomy, reads the existing frontend code, and produces a durable cited design brief; freshness/platform tagging, paywalled/vendor-claim rules, and a privacy gate before web search and peer dispatch with screenshots sensitive-by-default) and frame (turning evidence into a structured UX problem model with users, job-to-be-done, goals, MEASURABLE UX success metrics, constraints, and key risks). Each verb is invokable as $designer:<verb>, and the reference-scan ensemble contract is self-contained in the investigate skill (the full design-anchored ensemble protocol lands at PR6). The remaining verbs — decide (design decision axes, SD3), compose (flows / wireframe specs / CTA copy / IA), critique (host-direct vision quality lenses over rendered screenshots + frontend code, SD4), refine — plus the designer:start lifecycle macro and the resume / checkpoint / peer-now meta skills land across the ADR-0042 implementation ladder. designer is non-dispatch (ADR-0042 Non-Goal 2) and composes the image L2 capability rather than re-implementing imagery; Figma is excluded in v1. Bidirectional companion ensembles (Claude <-> Codex) dispatch automatically at command-mode phase boundaries under an always-max policy; vision-grounded critique is same-host (the reference-scan peer path is code/text-only). Codex skills provide cognitive-runbook parity, not host-bootstrap/state parity (ADR-0042 SD1 / ADR-0021 boundary).",
+    "developerName": "each4all",
+    "category": "Development",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "$designer:investigate Research navigation patterns for a mobile web checkout flow and produce a cited design brief",
+      "$designer:investigate design-brief accessible form-validation patterns (WCAG AA, web)",
+      "$designer:frame Shape this checkout redesign into a UX problem model with measurable success metrics"
+    ]
+  },
   "author": {
     "name": "each4all"
   },

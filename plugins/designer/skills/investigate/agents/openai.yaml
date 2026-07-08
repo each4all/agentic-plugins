@@ -1,0 +1,7 @@
+interface:
+  display_name: "Designer — Investigate"
+  short_description: "Scan references, competitor UX, design systems, and heuristic/accessibility standards; read the frontend; produce a cited design brief"
+  default_prompt: "Use $designer:investigate to research a design/UX topic and produce a durable cited design brief (5-tier source taxonomy, freshness/platform tagging, privacy gate with screenshots sensitive-by-default)"
+
+policy:
+  allow_implicit_invocation: false

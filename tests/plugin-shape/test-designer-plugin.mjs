@@ -7,27 +7,32 @@
 //     wiring + package.json test-suite wiring. Every functional directory was
 //     ABSENT, and the manifests + README carry the `incubating scaffold`
 //     marker.
-//   - PR2 (this revision) lands the copy-and-trim WORKFLOW-CONTINUITY
-//     machinery (scripts/ + hooks/ + adapters/), exposing the Codex manifest
-//     hooks key. Designer mirrors founder's NON-DISPATCH shape (ADR-0042
-//     Non-Goal 2): it copies the six continuity scripts + the discover-runtime
-//     self-sensor, but ships NO parent-writeback module and NO phase7-commit
-//     driver, and the machinery never reads parent-linkage env nor invokes
-//     writebackParent (founder test-founder-plugin.mjs:277 precedent). The
-//     decide engine (decide-registry.mjs + scripts/lib/*) is deliberately
-//     deferred to PR4 (founder ADR-0036 precedent), so this revision asserts
-//     it ABSENT. The forbidden-dir list shrinks by scripts/hooks/adapters;
-//     commands/ + skills/ stay forbidden until PR3+.
-//   - PR3–PR6 land commands/ + skills/ (the six verb surfaces + start macro
-//     + meta skills), the decide engine (PR4), and the Codex manifest
-//     skills + interface keys.
-//   - PR7 de-incubates: the incubating marker is removed from the manifests
-//     + README, and these PRESENCE assertions flip to ABSENCE.
+//   - PR2 landed the copy-and-trim WORKFLOW-CONTINUITY machinery (scripts/ +
+//     hooks/ + adapters/), exposing the Codex manifest hooks key. Designer
+//     mirrors founder's NON-DISPATCH shape (ADR-0042 Non-Goal 2). commands/ +
+//     skills/ stayed forbidden.
+//   - PR3 (this revision) lands the first two verb surfaces — investigate
+//     (the design-brief profile) and frame — so commands/ + skills/ become
+//     REQUIRED (with investigate/frame entries) rather than forbidden, and the
+//     Codex manifest gains the skills + interface keys. It ships the named
+//     design-brief contract artifacts (design-brief-spec.md,
+//     design-brief-ensemble.md, output-file-rules.md) and the SD4 privacy gate
+//     (privacy-gate sentinel in the spec + the investigate/frame prompt-guard
+//     surfaces + the ensemble surface; screenshots sensitive-by-default). The
+//     shared _shared/references/orchestration.md Design Task Profile is
+//     deliberately DEFERRED to PR6 (the SKILLs carry a self-contained inline
+//     Design Task Profile at PR3), so this revision asserts it ABSENT. The
+//     decide engine (decide-registry.mjs + scripts/lib/*) stays deferred to
+//     PR4 (founder ADR-0036 precedent), still ABSENT.
+//   - PR4 lands decide + compose + the decide engine; PR5A/PR5B land critique
+//     + refine; PR6 lands start + meta skills + orchestration.md + L4 profiles.
+//   - PR7 de-incubates: the incubating marker is removed from the manifests +
+//     README, and these PRESENCE assertions flip to ABSENCE.
 //
 // Run via `node --test tests/plugin-shape/test-designer-plugin.mjs`.
 
 import { describe, it } from 'node:test';
-import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
+import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
 import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +47,30 @@ const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/designer');
 // precedent).
 const INCUBATING_MARKER = /incubating scaffold/i;
 
+// The PR3 privacy-gate textual sentinel (ADR-0042 SD4). The gate must be
+// stated in the spec AND in the investigate/frame prompt-guard surfaces;
+// this load-bearing invariant phrase guards against silent removal.
+// Checked whitespace-normalized so markdown line-wrapping does not break
+// the match.
+const PRIVACY_SENTINEL =
+  'pass an explicit privacy gate before BOTH web search AND peer-host dispatch';
+
+// The SD4 "screenshots are sensitive by default" invariant — designer's
+// vision-input material is treated as sensitive before any external send.
+const SCREENSHOT_SENTINEL = 'screenshots are sensitive by default';
+
+// The 5-tier design source taxonomy (ADR-0042 SD2/SD4) — the design/UX
+// re-anchoring of the founder business tiers. lens ⇒ authority ladder.
+const DESIGN_TIERS = [
+  'standards-heuristics',
+  'design-system',
+  'competitor-reference',
+  'user-research',
+  'design-press',
+];
+
+const VERB_SKILLS = ['investigate', 'frame'];
+
 async function readJSON(path) {
   return JSON.parse(await readFile(path, 'utf8'));
 }
@@ -53,6 +82,15 @@ async function exists(path) {
   } catch {
     return false;
   }
+}
+
+function frontmatter(text) {
+  const m = text.match(/^---\n([\s\S]*?)\n---/);
+  return m ? m[1] : null;
+}
+
+function normalizeWhitespace(text) {
+  return text.replace(/\s+/g, ' ');
 }
 
 describe('plugins/designer — Claude manifest (.claude-plugin/plugin.json)', () => {
@@ -96,12 +134,28 @@ describe('plugins/designer — Codex manifest (.codex-plugin/plugin.json)', () =
       'Codex manifest description must carry the incubating marker until ADR-0042 is Accepted at PR7');
   });
 
-  it('declares hooks but NOT yet skills / interface (PR2 machinery landed; verb surfaces land at PR3+)', async () => {
+  it('declares hooks AND the skills/interface keys (PR3 boundary — verb surfaces landed)', async () => {
     const json = await readJSON(path);
     strictEqual(json.hooks, './adapters/codex/hooks/hooks.json',
-      'PR2 machinery exposes the Codex manifest hooks path');
-    ok(!('skills' in json), 'PR2 has no verb surfaces — the Codex manifest skills key lands at PR3');
-    ok(!('interface' in json), 'PR2 has no verb surfaces — the Codex manifest interface block lands at PR3');
+      'PR2 machinery hooks remain exposed in the Codex manifest');
+    strictEqual(json.skills, './skills/',
+      'PR3 lands the first SKILL.md surfaces — the Codex manifest must expose the skills path');
+    ok(json.interface && typeof json.interface === 'object',
+      'PR3 lands a verb surface — the Codex manifest must carry an interface block');
+    strictEqual(json.interface.displayName, 'Designer');
+    strictEqual(json.interface.category, 'Development',
+      'the Codex interface category must match the designer marketplace category (Development)');
+    ok(Array.isArray(json.interface.defaultPrompt) && json.interface.defaultPrompt.length > 0,
+      'the Codex interface must carry a non-empty defaultPrompt list');
+    // PR3 only ships investigate + frame — the defaultPrompt examples must not
+    // advertise a verb that has not landed yet (no compose/critique/etc.).
+    const prompts = json.interface.defaultPrompt.join('\n');
+    ok(/\$designer:investigate/.test(prompts), 'defaultPrompt must show a $designer:investigate example');
+    ok(/\$designer:frame/.test(prompts), 'defaultPrompt must show a $designer:frame example');
+    for (const notyet of ['decide', 'compose', 'critique', 'refine', 'start']) {
+      ok(!new RegExp(`\\$designer:${notyet}\\b`).test(prompts),
+        `defaultPrompt must not advertise $designer:${notyet} — it lands in a later PR`);
+    }
   });
 });
 
@@ -192,9 +246,6 @@ describe('plugins/designer — PR2 machinery boundary (copy-trim continuity + ho
   it('the Codex hooks.json wires the three events through run-node-hook.sh + ${PLUGIN_ROOT}, no cross-persona/host leakage', async () => {
     const manifest = await readJSON(resolve(PLUGIN_ROOT, 'adapters/codex/hooks/hooks.json'));
     deepStrictEqual(Object.keys(manifest.hooks).sort(), ['PreCompact', 'SessionStart', 'Stop']);
-    // Every Codex hook command must resolve node via run-node-hook.sh under
-    // ${PLUGIN_ROOT} (the portable-node pattern), and must NOT reference the
-    // Claude adapter tree or ${CLAUDE_PLUGIN_ROOT} (ADR-0042 SD7 host split).
     for (const event of ['SessionStart', 'PreCompact', 'Stop']) {
       for (const entry of manifest.hooks[event]) {
         for (const h of entry.hooks) {
@@ -214,9 +265,6 @@ describe('plugins/designer — PR2 machinery boundary (copy-trim continuity + ho
     ok(!/founder/i.test(s), 'no founder path may leak into the designer Codex hooks.json (rebrand completeness)');
   });
 
-  // ADR-0042 SD7 host-adapter split (topic: "NO Claude-adapter paths inside
-  // Codex hooks"). The Codex hook SOURCE files must be self-contained: no
-  // import/require reaches into the sibling Claude adapter tree.
   it('the Codex hook source files never import from the Claude adapter tree', async () => {
     const CODEX_HOOK_SOURCES = [
       'adapters/codex/hooks/_shared.mjs',
@@ -234,14 +282,7 @@ describe('plugins/designer — PR2 machinery boundary (copy-trim continuity + ho
   });
 
   // ADR-0042 Non-Goal 2 — designer is NOT an orchestrator dispatch target.
-  // The continuity machinery must never ship or reference the parent-linkage
-  // writeback path (founder test-founder-plugin.mjs:277 precedent). The guard
-  // targets IMPORTS + INVOCATIONS, not prose: state.mjs legitimately DOCUMENTS
-  // the trim (and defensively rejects --parent-workflow flags), so a bare
-  // string mention of the removed fields must remain allowed.
   it('guards the non-dispatch contract: machinery never imports/invokes parent-writeback (ADR-0042 Non-Goal 2)', async () => {
-    // Scan EVERY machinery + hook source, not a hand-picked subset, so the
-    // guard cannot pass vacuously on future drift (Codex Plan-verify §Edge).
     for (const rel of [...ALL_SCRIPTS, ...ALL_HOOK_SCRIPTS]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       ok(!/(?:import|from|require)\b[^\n]*parent-writeback/.test(text),
@@ -262,9 +303,6 @@ describe('plugins/designer — PR2 machinery boundary (copy-trim continuity + ho
       /process\.env\.AGENTIC_PARENT_WORKFLOW/,
       /process\.env\.AGENTIC_ORIGINATING_SUBTASK/,
     ];
-    // Full machinery + hook scan (not a subset) — a bare prose mention of
-    // the removed fields stays allowed (state.mjs documents/rejects the
-    // flags); only a live shell/process.env READ is forbidden.
     for (const rel of [...ALL_SCRIPTS, ...ALL_HOOK_SCRIPTS]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       for (const re of FORBIDDEN_READS) {
@@ -274,29 +312,280 @@ describe('plugins/designer — PR2 machinery boundary (copy-trim continuity + ho
     }
   });
 
+  it('the verb commands carry no parent-linkage env reads (ADR-0042 Non-Goal 2)', async () => {
+    // Guard against actual shell reads ($VAR / ${VAR}), not prose mentions:
+    // the commands legitimately DOCUMENT that they do NOT read these vars
+    // (backtick-quoted plain names), which must remain allowed.
+    const READ_FORMS = [
+      /\$\{?AGENTIC_PARENT_WORKFLOW/,
+      /\$\{?AGENTIC_ORIGINATING_SUBTASK/,
+    ];
+    for (const verb of VERB_SKILLS) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
+      for (const form of READ_FORMS) {
+        ok(!form.test(text),
+          `commands/${verb}.md must not shell-read ${form} — designer is not an orchestrator dispatch target (ADR-0042 Non-Goal 2)`);
+      }
+    }
+  });
+
   it('does NOT yet ship the decide engine (registry + lib land at PR4 — founder ADR-0036 precedent)', async () => {
     strictEqual(await exists(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs')), false,
-      'the decide registry lands with decide+compose at PR4, not with PR2 machinery');
+      'the decide registry lands with decide+compose at PR4, not with PR3 verb surfaces');
     strictEqual(await exists(resolve(PLUGIN_ROOT, 'scripts/lib')), false,
       'the decide engine lib/ (decide-args/scores/weights/sensitivity/yaml-mini) lands at PR4');
   });
 });
 
-describe('plugins/designer — inert boundary (PR2: verb surfaces still absent)', () => {
-  // scripts/hooks/adapters landed at PR2; commands/ + skills/ + the persona
-  // dirs stay absent until PR3+ (per the boundary history at the top).
+describe('plugins/designer — PR3 verb surfaces (investigate + frame + design-brief contract)', () => {
+  const REQUIRED_SURFACES = [
+    'commands/investigate.md',
+    'commands/frame.md',
+    'skills/investigate/SKILL.md',
+    'skills/investigate/agents/openai.yaml',
+    'skills/investigate/references/design-brief-spec.md',
+    'skills/investigate/references/design-brief-ensemble.md',
+    'skills/investigate/references/output-file-rules.md',
+    'skills/frame/SKILL.md',
+    'skills/frame/agents/openai.yaml',
+  ];
+
+  for (const rel of REQUIRED_SURFACES) {
+    it(`ships ${rel} (PR3 verb surface)`, async () => {
+      strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true,
+        `plugins/designer/${rel} is part of the ADR-0042 PR3 verb surface and must exist`);
+    });
+  }
+
+  // The shared Design Task Profile / Dynamic Orchestration reference is
+  // DEFERRED to PR6 (macro plan): PR3 SKILLs carry a self-contained inline
+  // Design Task Profile instead. Assert it absent so PR6 owns it cleanly.
+  it('does NOT yet ship _shared/references/orchestration.md (Design Task Profile lands at PR6)', async () => {
+    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/_shared/references/orchestration.md')), false,
+      'the shared orchestration.md (Design Task Profile + bilingual triggers) lands at PR6, not PR3');
+  });
+
+  it('the six-verb enum is NOT yet complete — decide/compose/critique/refine skills absent (PR4+)', async () => {
+    for (const notyet of ['decide', 'compose', 'critique', 'refine']) {
+      strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills', notyet, 'SKILL.md')), false,
+        `skills/${notyet}/SKILL.md lands in a later PR, not PR3`);
+      strictEqual(await exists(resolve(PLUGIN_ROOT, 'commands', `${notyet}.md`)), false,
+        `commands/${notyet}.md lands in a later PR, not PR3`);
+    }
+  });
+
+  for (const verb of VERB_SKILLS) {
+    it(`skills/${verb}/SKILL.md frontmatter name = ${verb} (folder ↔ frontmatter consistency)`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+      const fm = frontmatter(text);
+      ok(fm, `skills/${verb}/SKILL.md has no YAML frontmatter`);
+      ok(new RegExp(`^name:\\s*${verb}\\s*$`, 'm').test(fm),
+        `skills/${verb}/SKILL.md frontmatter name != "${verb}"`);
+      match(fm, /description:/, `skills/${verb}/SKILL.md frontmatter must carry a description`);
+    });
+
+    it(`skills/${verb}/agents/openai.yaml display_name names the verb + persona`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'agents/openai.yaml'), 'utf8');
+      const m = text.match(/display_name:\s*"([^"]+)"/);
+      ok(m, `skills/${verb}/agents/openai.yaml must declare interface.display_name`);
+      ok(m[1].toLowerCase().includes(verb),
+        `openai.yaml display_name "${m[1]}" must name the verb "${verb}"`);
+      ok(m[1].toLowerCase().includes('designer'),
+        `openai.yaml display_name "${m[1]}" must name the persona "designer"`);
+    });
+
+    it(`commands/${verb}.md carries a frontmatter description`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'commands', `${verb}.md`), 'utf8');
+      const fm = frontmatter(text);
+      ok(fm, `commands/${verb}.md has no YAML frontmatter`);
+      match(fm, /description:\s*\S/, `commands/${verb}.md frontmatter must carry a non-empty description`);
+    });
+  }
+});
+
+describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD4)', () => {
+  const SPEC = 'skills/investigate/references/design-brief-spec.md';
+
+  it('declares the 5-tier design source taxonomy', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, SPEC), 'utf8');
+    for (const tier of DESIGN_TIERS) {
+      ok(text.includes(tier), `design-brief-spec.md must define the "${tier}" tier`);
+    }
+  });
+
+  it('states the freshness/platform and paywalled/vendor-claim rules (design re-anchor of jurisdiction)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, SPEC), 'utf8');
+    match(text, /platform/i, 'spec must state platform-context tagging rules (the design re-anchor of jurisdiction)');
+    match(text, /as-of/i, 'spec must state as-of freshness dating rules');
+    match(text, /vendor-claim/i, 'spec must state vendor-claim citation treatment');
+    match(text, /paywalled/i, 'spec must state paywalled-source citation treatment');
+  });
+
+  it('re-anchors the accessibility honesty boundary (candidate issues, not a conformance certificate — Non-Goal 6)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, SPEC), 'utf8');
+    match(text, /accessibility/i, 'spec must address accessibility evidence');
+    match(text, /conformance/i, 'spec must state the WCAG-conformance honesty boundary (cannot certify)');
+  });
+
+  it('the privacy-gate sentinel appears in the spec AND the investigate prompt-guard surfaces (ADR-0042 SD4)', async () => {
+    const REQUIRED = [
+      'skills/investigate/references/design-brief-spec.md',
+      'commands/investigate.md',
+      'skills/investigate/SKILL.md',
+    ];
+    for (const rel of REQUIRED) {
+      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      ok(text.includes(PRIVACY_SENTINEL),
+        `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+    }
+  });
+
+  it('the privacy-gate sentinel also reaches the ensemble dispatch + frame surfaces', async () => {
+    const ALSO = [
+      'skills/investigate/references/design-brief-ensemble.md',
+      'commands/frame.md',
+      'skills/frame/SKILL.md',
+    ];
+    for (const rel of ALSO) {
+      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      ok(text.includes(PRIVACY_SENTINEL),
+        `${rel} should carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+    }
+  });
+
+  it('the "screenshots sensitive-by-default" invariant reaches every privacy surface (SD4 item 4)', async () => {
+    const SURFACES = [
+      'skills/investigate/references/design-brief-spec.md',
+      'commands/investigate.md',
+      'skills/investigate/SKILL.md',
+      'skills/investigate/references/design-brief-ensemble.md',
+      'commands/frame.md',
+      'skills/frame/SKILL.md',
+    ];
+    for (const rel of SURFACES) {
+      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8')).toLowerCase();
+      ok(text.includes(SCREENSHOT_SENTINEL),
+        `${rel} must carry the "screenshots are sensitive by default" invariant (ADR-0042 SD4)`);
+    }
+  });
+
+  it('the reference-scan ensemble states the code/text-only vision boundary (no --image to the peer, SD4 item 3)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/investigate/references/design-brief-ensemble.md'), 'utf8');
+    match(text, /--image/, 'ensemble must state that the peer path has no --image flag');
+    match(text, /same-host/i, 'ensemble must state that vision critique is a same-host capability');
+  });
+
+  it('the investigate skill names the two evidence streams — external references AND the frontend code read (SD2)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/investigate/SKILL.md'), 'utf8');
+    match(text, /frontend code/i, 'investigate SKILL must state it reads the existing frontend code (ADR-0042 SD2)');
+  });
+
+  it('the frame skill fixes MEASURABLE UX success metrics (SD4 item 1 pre-code quality)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/frame/SKILL.md'), 'utf8');
+    match(text, /measurable/i, 'frame SKILL must require measurable UX success metrics');
+    match(text, /success metric/i, 'frame SKILL must structure UX success metrics');
+  });
+
+  // --- Codex Plan-verify (PR3) remediation guards ---
+
+  it('separates user-research from the web-searched tiers (local-only supplied stream, NOT WebSearch)', async () => {
+    // Codex Plan-verify GAP: user-research must not be lumped into
+    // "Use WebSearch + WebFetch" across all five tiers — it is a local-only,
+    // supplied, no-URL stream (design-brief-spec § User-research citation shape).
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/investigate/SKILL.md'), 'utf8');
+    match(text, /four URL-bearing tiers/i,
+      'investigate SKILL must scope WebSearch to the four URL-bearing tiers, excluding user-research');
+    match(text, /never web-searched|not web-searched/i,
+      'investigate SKILL must state user-research is a local-only supplied stream, never web-searched');
+  });
+
+  it('resolves the user-research authority-vs-relevance conflict (observed-behavior override)', async () => {
+    // Codex Plan-verify CONFLICT: "highest-authority first" put user-research
+    // below competitor-reference while calling it highest-relevance — the spec
+    // must state that user-research outranks competitor/press for an
+    // observed-behavior claim, with accessibility as the sole veto.
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/investigate/references/design-brief-spec.md'), 'utf8');
+    match(text, /authority vs\.? relevance/i,
+      'spec must distinguish external-authority from relevance for user-research');
+    match(text, /observed-behavior/i,
+      'spec must define the observed-behavior override (user-research outranks competitor/press for this product\'s users)');
+  });
+
+  it('bars the peer from emitting supplied aggregates as cited sources (context-only)', async () => {
+    // Codex Plan-verify CONFLICT: the ensemble both allowed the peer to reason
+    // from supplied aggregates and required every claim to carry a URL. The
+    // fix: supplied aggregates are context-only; the peer cannot cite them.
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/investigate/references/design-brief-ensemble.md'), 'utf8');
+    match(text, /context only/i,
+      'ensemble citation_contract must mark supplied aggregates as context-only (the peer cannot cite them)');
+  });
+
+  it('the state.mjs create --profile boundary is correct: investigate forwards it, frame omits it', async () => {
+    // Codex Plan-verify TEST-ISSUE + founder refine regression precedent.
+    const inv = await readFile(resolve(PLUGIN_ROOT, 'commands/investigate.md'), 'utf8');
+    const frame = await readFile(resolve(PLUGIN_ROOT, 'commands/frame.md'), 'utf8');
+    ok(/state\.mjs create[\s\S]*?--profile\s+"\$\{?AGENTIC_PROFILE/.test(inv),
+      'commands/investigate.md create path must forward --profile (it carries the design-brief profile)');
+    ok(!/--profile\s+"\$\{?AGENTIC_PROFILE/.test(frame),
+      'commands/frame.md must not pass --profile in any state.mjs path — frame is single-mode (founder refine precedent)');
+  });
+
+  it('the PR3 verb surfaces carry the incubating next-action disclaimer (unlanded verbs directional, not runnable)', async () => {
+    // Codex Plan-verify GAP: investigate/frame recommend /designer:decide +
+    // /designer:compose as next commands, but those verbs are absent until PR4.
+    // Each surface must disclaim that an unlanded verb's next_command is
+    // directional, not runnable.
+    for (const rel of [
+      'skills/investigate/SKILL.md',
+      'skills/frame/SKILL.md',
+      'commands/investigate.md',
+      'commands/frame.md',
+    ]) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      match(text, /incubating/i, `${rel} must carry the incubating next-action disclaimer`);
+      ok(/PR4/.test(text) && /\bdirectional\b/.test(text),
+        `${rel} must note decide/compose land at PR4 so an unlanded next_command is directional, not runnable`);
+    }
+  });
+
+  it('no stale founder/business vocabulary leaks into the live verb surfaces (contrast prose excepted)', async () => {
+    // Codex Plan-verify RE-ANCHOR-ERROR: "venture" leaked into frame SKILL.
+    // Guard the operational-vocabulary tokens that must never appear in the
+    // designer surface (rebrand-miss tokens). Provenance/contrast prose that
+    // names "the founder business-brief spec" is allowed; these are the
+    // operational tokens a copy-trim miss would leave behind.
+    const STALE = [/business_brief/i, /FOUNDER_OUTPUT_ROOT/, /\bventure\b/i, /\bjurisdiction\b/i, /unit-economics/i];
+    for (const rel of [
+      'skills/investigate/SKILL.md',
+      'skills/frame/SKILL.md',
+      'commands/investigate.md',
+      'commands/frame.md',
+      'skills/investigate/references/design-brief-spec.md',
+      'skills/investigate/references/design-brief-ensemble.md',
+      'skills/investigate/references/output-file-rules.md',
+    ]) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      for (const re of STALE) {
+        ok(!re.test(text), `${rel} carries stale business vocabulary ${re} (copy-trim rebrand miss)`);
+      }
+    }
+  });
+});
+
+describe('plugins/designer — inert boundary (PR3: remaining verb surfaces still absent)', () => {
+  // commands/ + skills/ landed at PR3 (investigate + frame); the persona
+  // dirs never ship. decide/compose/critique/refine + start + meta land
+  // in later PRs (asserted absent in the PR3 verb-surface suite above).
   const FORBIDDEN_DIRS = [
-    'commands',
-    'skills',
     'personas',
     'mcp-servers',
     'prompt-templates',
   ];
 
   for (const dir of FORBIDDEN_DIRS) {
-    it(`has no ${dir}/ directory (verb surface — lands in a later PR)`, async () => {
+    it(`has no ${dir}/ directory (not part of the designer surface)`, async () => {
       strictEqual(await exists(resolve(PLUGIN_ROOT, dir)), false,
-        `plugins/designer/${dir}/ must not exist until its landing PR`);
+        `plugins/designer/${dir}/ must not exist — designer uses commands/ + skills/ only`);
     });
   }
 
@@ -314,7 +603,7 @@ describe('plugins/designer — inert boundary (PR2: verb surfaces still absent)'
 });
 
 describe('plugins/designer — marketplace catalog wiring (both hosts)', () => {
-  it('the Claude catalog carries a designer entry resolving to the plugin dir at version 0.1.0', async () => {
+  it('the Claude catalog carries a designer entry resolving to the plugin dir at the manifest version', async () => {
     const catalog = await readJSON(resolve(REPO_ROOT, '.claude-plugin/marketplace.json'));
     const entry = catalog.plugins.find((p) => p.name === 'designer');
     ok(entry, 'designer must appear in .claude-plugin/marketplace.json');
