@@ -1,9 +1,10 @@
 # designer — code-first design/UX decision & quality workbench (L3 persona)
 
-> **Incubating scaffold.** This release is the **atomic scaffold only**
-> (manifests, both marketplace catalogs, release wiring, and a staged
-> shape test) per [ADR-0042](../../docs/adr/0042-designer-persona-design-ux-workbench.md).
-> The persona surfaces — workflow machinery, the six verb skills, the
+> **Incubating scaffold.** This release adds the **copy-trimmed
+> workflow-continuity machinery and hooks** (non-dispatch) on top of the
+> scaffold (manifests, both marketplace catalogs, release wiring, and a
+> staged shape test) per [ADR-0042](../../docs/adr/0042-designer-persona-design-ux-workbench.md).
+> The persona's user-facing surfaces — the six verb skills, the
 > `designer:start` lifecycle macro, and the meta skills — land across the
 > ADR-0042 implementation ladder. Until the roadmap completes and ADR-0042
 > flips to `Accepted`, no functional command/skill surface ships.
@@ -49,7 +50,7 @@ vision, plus the frontend code itself). This is the mechanism that makes
 | PR | Scope | Status |
 |---|---|---|
 | PR1 | Atomic scaffold: manifests, both catalogs, release wiring, staged shape test | ✅ this release |
-| PR2 | Workflow machinery copy-trim (state/dispatch/peer-runner/session-handoff/stop-archive/hooks) | ⏳ pending |
+| PR2 | Workflow machinery copy-trim (state/dispatch/peer-runner/session-handoff/stop-archive/hooks) | ✅ this release |
 | PR3 | investigate (design brief + privacy gate) + frame | ⏳ pending |
 | PR4 | decide (7-axis design decision registry) + compose | ⏳ pending |
 | PR5 | critique (quality lenses) + refine (convergence loop) | ⏳ pending |

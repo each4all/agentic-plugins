@@ -1,0 +1,35 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh\" \"${PLUGIN_ROOT}/adapters/codex/hooks/session-start.mjs\""
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh\" \"${PLUGIN_ROOT}/adapters/codex/hooks/pre-compact.mjs\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh\" \"${PLUGIN_ROOT}/adapters/codex/hooks/stop.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}
