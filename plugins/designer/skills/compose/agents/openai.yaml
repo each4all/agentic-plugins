@@ -1,0 +1,7 @@
+interface:
+  display_name: "Designer — Compose"
+  short_description: "Draft the design artifact — user flows, wireframe specs, CTA copy, IA, component specs — annotated with accessibility + consistency criteria"
+  default_prompt: "Use $designer:compose to draft the design spec (or --profile=flow / wireframe) for the chosen direction, with accessibility + consistency acceptance criteria"
+
+policy:
+  allow_implicit_invocation: false

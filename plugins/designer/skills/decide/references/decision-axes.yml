@@ -1,0 +1,211 @@
+schema: "1.0"
+
+# designer:decide registry — ADR-0042 SD3 design/UX decision axes, carried
+# on the ADR-0027 §1.1 portable registry schema (copy-not-import per
+# ADR-0029: designer ships its own axis set, not engineer's software axes or
+# founder's business axes).
+#
+# Each preset declares an ordered list of axes; the reader
+# (decide-registry.mjs) resolves a preset at command dispatch time per the
+# ADR-0027 §1.5 precedence ladder. Axes carry `role: decisive` or
+# `role: supporting`; the recommendation rule (SKILL.md
+# @decide:recommendation-rule) honors decisive axes when picking a winner.
+# Every preset MUST declare at least two decisive axes (ADR-0027 §1.3
+# invariant, enforced by decide-registry.mjs validatePreset).
+#
+# Three-tier design model (ADR-0042 SD3):
+#   - decisive   — 사용성 usability is the COMMON decisive axis in every
+#                  preset; a second decisive axis is the one the preset's
+#                  archetype turns on (일관성 consistency for balanced, 전환
+#                  conversion for a CTA decision, 매력도 desirability for a
+#                  UI/brand decision, 명확성 content-clarity for a content
+#                  decision). Decisive axes pick the winner; supporting axes
+#                  do not downgrade a decisive-favored option on their own.
+#   - supporting — the remaining non-gate axes (전환 conversion, 매력도
+#                  desirability, 명확성 content-clarity, 구현가능성 feasibility,
+#                  일관성 consistency, depending on the preset). They sharpen
+#                  confidence and break ties; never override the decisive
+#                  axes alone.
+#   - gate-style supporting — 접근성 accessibility, carrying `gate: true`. A
+#                  hard WCAG A/AA barrier is a VETO that overrides usability /
+#                  archetype strength — not a tradeoff to fold into the build
+#                  plan. Gates are checked FIRST (see
+#                  @decide:recommendation-rule). `gate` is a designer-local
+#                  additive field following the founder ADR-0036 precedent;
+#                  the ADR-0027 role enum (decisive | supporting) is
+#                  unchanged, so the schema stays forward-compatible with the
+#                  portable reader.
+#
+# accessibility HONESTY BOUNDARY (ADR-0042 Non-Goal 6): the accessibility
+# gate flags CANDIDATE WCAG A/AA issues (contrast, semantic structure, alt
+# text, visible focus, target size) from specs + code + screenshots; it does
+# NOT certify conformance — focus order, keyboard traversal, and
+# screen-reader behavior need runtime testing. A gate FAIL is a candidate
+# blocker to resolve or explicitly accept-with-rationale, not a certificate.
+#
+# PROVISIONAL (잠정, ADR-0042 SD3): the decisive/supporting split and the
+# axis questions below are a first-cut hypothesis, expected to be re-tuned as
+# real designer dogfood (ADR-0042 PR7) accumulates — e.g. 전환 conversion may
+# graduate to decisive for a growth-surface archetype. Treat the current
+# roles as a starting baseline, not a settled invariant beyond the
+# ≥2-decisive floor and the accessibility veto gate.
+#
+# Preset ↔ L4 profile map (profiles land at PR6): general → balanced,
+# flow → balanced, ui → experience, cta → conversion, content → clarity.
+# At PR4 only `balanced` is reachable by default (all --size tiers resolve
+# it); conversion / experience / clarity are DEFINED-BUT-INACTIVE — reachable
+# only via an explicit --preset=<id> until the PR6 profiles wire them.
+
+presets:
+
+  balanced:
+    description: "7-axis preset — the full designer design/UX decision matrix (2 decisive: usability + consistency; 4 supporting; 1 accessibility veto gate). The MVP default: every --size tier resolves it. Maps to the general + flow L4 profiles (PR6)."
+    axes:
+      - id: "usability"
+        labels:
+          en: "Usability"
+          ko: "사용성"
+        question: "Can the target users accomplish their task efficiently and without confusion — is the flow learnable, are affordances and states clear, is error recovery forgiving?"
+        role: "decisive"
+      - id: "consistency"
+        labels:
+          en: "Consistency"
+          ko: "일관성"
+        question: "Does this cohere with the established design system, platform conventions, and the product's existing patterns — or introduce a one-off that fragments the experience?"
+        role: "decisive"
+      - id: "conversion"
+        labels:
+          en: "Conversion"
+          ko: "전환"
+        question: "Does this move the user toward the intended action — is the primary call-to-action clear, the path low-friction, the value legible at the decision point?"
+        role: "supporting"
+      - id: "desirability"
+        labels:
+          en: "Desirability"
+          ko: "매력도"
+        question: "Is this something users will want to use — does it feel polished, trustworthy, and appropriate for the brand and audience?"
+        role: "supporting"
+      - id: "content-clarity"
+        labels:
+          en: "Content Clarity"
+          ko: "명확성"
+        question: "Is the content clear, scannable, and correctly leveled for the audience — labels, microcopy, information hierarchy, and reading order?"
+        role: "supporting"
+      - id: "feasibility"
+        labels:
+          en: "Feasibility"
+          ko: "구현가능성"
+        question: "Can this be built and maintained within the frontend-stack, component-library, and effort constraints — reusing existing components rather than demanding new infrastructure?"
+        role: "supporting"
+      - id: "accessibility"
+        labels:
+          en: "Accessibility"
+          ko: "접근성"
+        question: "Does this meet accessibility requirements — perceivable, operable, understandable for users with disabilities (contrast, semantic structure, keyboard, visible focus, target size)? A hard WCAG A/AA barrier is a VETO gate, not a tradeoff — candidate-level only (ADR-0042 Non-Goal 6): runtime testing of focus order, keyboard traversal, and screen-reader behavior is required to certify conformance."
+        role: "supporting"
+        gate: true
+
+  conversion:
+    description: "5-axis archetype preset for CTA / growth-surface decisions — usability + conversion decisive, accessibility veto gate, content-clarity + consistency supporting. DEFINED-BUT-INACTIVE at PR4 (reachable via --preset=conversion); the cta L4 profile wires it at PR6."
+    axes:
+      - id: "usability"
+        labels:
+          en: "Usability"
+          ko: "사용성"
+        question: "Can users complete the intended action without confusion or friction on the path to it?"
+        role: "decisive"
+      - id: "conversion"
+        labels:
+          en: "Conversion"
+          ko: "전환"
+        question: "Does this move the user toward the intended action — clear primary CTA, low-friction path, value legible at the decision point, honest (no dark-pattern) persuasion?"
+        role: "decisive"
+      - id: "content-clarity"
+        labels:
+          en: "Content Clarity"
+          ko: "명확성"
+        question: "Is the CTA copy and supporting microcopy clear, specific, and honest about what happens next?"
+        role: "supporting"
+      - id: "consistency"
+        labels:
+          en: "Consistency"
+          ko: "일관성"
+        question: "Does the CTA pattern match the design system and the product's other conversion surfaces?"
+        role: "supporting"
+      - id: "accessibility"
+        labels:
+          en: "Accessibility"
+          ko: "접근성"
+        question: "Is the action operable for users with disabilities — target size, focus order, contrast, name/role/value? A hard WCAG A/AA barrier is a VETO gate — candidate-level only (ADR-0042 Non-Goal 6): runtime testing of focus order, keyboard, and screen-reader behavior certifies conformance."
+        role: "supporting"
+        gate: true
+
+  experience:
+    description: "5-axis archetype preset for UI polish / brand-experience decisions — usability + desirability decisive, accessibility veto gate, consistency + feasibility supporting. DEFINED-BUT-INACTIVE at PR4 (reachable via --preset=experience); the ui L4 profile wires it at PR6."
+    axes:
+      - id: "usability"
+        labels:
+          en: "Usability"
+          ko: "사용성"
+        question: "Does the polish serve the task — do refinements aid comprehension and flow rather than decorate at the cost of clarity?"
+        role: "decisive"
+      - id: "desirability"
+        labels:
+          en: "Desirability"
+          ko: "매력도"
+        question: "Is this something users will want to use — polished, trustworthy, emotionally resonant, and on-brand for the audience?"
+        role: "decisive"
+      - id: "consistency"
+        labels:
+          en: "Consistency"
+          ko: "일관성"
+        question: "Does the visual/interaction treatment cohere with the design system and platform conventions rather than introducing a bespoke one-off?"
+        role: "supporting"
+      - id: "feasibility"
+        labels:
+          en: "Feasibility"
+          ko: "구현가능성"
+        question: "Can the treatment be built and maintained with existing components/tokens, or does it demand costly new infrastructure or one-off styling?"
+        role: "supporting"
+      - id: "accessibility"
+        labels:
+          en: "Accessibility"
+          ko: "접근성"
+        question: "Does the treatment preserve accessibility — contrast, motion-reduction, focus visibility, non-color cues? A hard WCAG A/AA barrier is a VETO gate — candidate-level only (ADR-0042 Non-Goal 6): runtime testing of focus order, keyboard, and screen-reader behavior certifies conformance."
+        role: "supporting"
+        gate: true
+
+  clarity:
+    description: "5-axis archetype preset for content / information-clarity decisions — usability + content-clarity decisive, accessibility veto gate, consistency + conversion supporting. DEFINED-BUT-INACTIVE at PR4 (reachable via --preset=clarity); the content L4 profile wires it at PR6."
+    axes:
+      - id: "usability"
+        labels:
+          en: "Usability"
+          ko: "사용성"
+        question: "Can users find and act on the information they need without confusion — is navigation and scanning efficient?"
+        role: "decisive"
+      - id: "content-clarity"
+        labels:
+          en: "Content Clarity"
+          ko: "명확성"
+        question: "Is the content clear, scannable, and correctly leveled for the audience — labels, microcopy, information hierarchy, reading order, and plain-language?"
+        role: "decisive"
+      - id: "consistency"
+        labels:
+          en: "Consistency"
+          ko: "일관성"
+        question: "Do terminology, tone, and content patterns match the design system's content guidelines and the rest of the product?"
+        role: "supporting"
+      - id: "conversion"
+        labels:
+          en: "Conversion"
+          ko: "전환"
+        question: "Does the content lead the user to the next step where one is intended, without burying the action?"
+        role: "supporting"
+      - id: "accessibility"
+        labels:
+          en: "Accessibility"
+          ko: "접근성"
+        question: "Is the content perceivable and understandable — reading level, semantic headings/landmarks, alt text, contrast? A hard WCAG A/AA barrier is a VETO gate — candidate-level only (ADR-0042 Non-Goal 6): runtime testing of focus order, keyboard, and screen-reader behavior certifies conformance."
+        role: "supporting"
+        gate: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Designer — Decide"
+  short_description: "Compare design/UX directions across usability + archetype axes with an accessibility veto gate, recommend one"
+  default_prompt: "Use $designer:decide to compare 2+ design directions and recommend one before composing the flows/specs"
+
+policy:
+  allow_implicit_invocation: false
