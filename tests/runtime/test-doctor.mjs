@@ -541,6 +541,70 @@ describe('runtime doctor', () => {
     ok(text.includes('enable-codex-hook-state'));
   });
 
+  // Regression: a hook entry Codex wrote on trust carries `trusted_hash` and NO
+  // `enabled` key. Reading the absent key as `disabled` made every hook trusted
+  // by a current Codex look disabled, which in turn made
+  // `runtime:settings --attest-codex-hook-review` block permanently (it refuses
+  // while any expected entry is disabled). Observed on codex-cli 0.142.5 when
+  // designer became the first hook-bearing plugin trusted after the ADR-0035 §6
+  // host-config writer was removed; the designer Stop hook demonstrably fired
+  // and archived a terminal workflow while doctor called it `disabled`.
+  for (const explicitEnabled of [false, true]) {
+    const label = explicitEnabled
+      ? 'an explicit `enabled = true` (older Codex residue)'
+      : 'no `enabled` key (what a current Codex writes on trust)';
+    it(`treats a trusted Codex hook entry with ${label} as enabled`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-trusted-repo-'));
+      const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-trusted-home-'));
+      await seedRepo(root);
+      await writeTrustedCodexHookStateConfig(home, 'hooks/hooks.json', { explicitEnabled });
+
+      const report = await runDoctor({
+        repoRoot: root,
+        homeDir: home,
+        runner: fakeRunner({
+          ...defaultRuntimeProbeMap(),
+          'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+        }),
+      });
+
+      const summary = report.codex_plugin_hooks.hook_state.summary;
+      strictEqual(summary.expected, 6);
+      strictEqual(summary.expected_enabled, 6, 'a trusted entry is enabled unless `enabled = false` says otherwise');
+      strictEqual(summary.expected_disabled, 0, 'an absent `enabled` key must not be reported as disabled');
+      strictEqual(summary.expected_untrusted, 0);
+      strictEqual(summary.expected_missing, 0);
+      for (const entry of report.codex_plugin_hooks.hook_state.expected) {
+        strictEqual(entry.state, 'enabled_trusted', `${entry.plugin}:${entry.event}`);
+      }
+      // The blocking follow-up hint must not fire: there is nothing to enable.
+      const followup = report.plugin_command_surface.manual_followups.find((e) => e.id === 'codex-hook-review');
+      ok(!followup.verify.includes('expected bundled hook entries disabled'),
+        'no "enable them in /hooks" hint when nothing is disabled — /hooks has no enable toggle to act on');
+      ok(!report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'enable-codex-hook-state'));
+      ok(formatText(report).includes('hook-state: config=available; expected=6; enabled=6; disabled=0'));
+    });
+  }
+
+  it('still reports disabled when Codex wrote an explicit `enabled = false`', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-explicit-off-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-explicit-off-home-'));
+    await seedRepo(root);
+    await writeDisabledCodexHookStateConfig(home);
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    strictEqual(report.codex_plugin_hooks.hook_state.summary.expected_disabled, 6,
+      'the widening must not swallow a deliberate opt-out');
+  });
+
   it('reports Codex hook command portability warnings when hook commands still point at Claude adapter paths', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-command-warning-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
@@ -2643,6 +2707,31 @@ async function writeDisabledCodexHookStateConfig(home, hooksPath = 'hooks/hooks.
     for (const event of ['pre_compact', 'session_start', 'stop']) {
       lines.push(`[hooks.state."${plugin}@agentic-plugins:${hooksPath}:${event}:0:0"]`);
       lines.push('enabled = false');
+      lines.push('trusted_hash = "sha256:abc123"');
+      lines.push('');
+    }
+  }
+  await writeFile(join(home, '.codex', 'config.toml'), lines.join('\n'));
+}
+
+// The shape a CURRENT Codex writes when the operator trusts a hook in `/hooks`:
+// a `trusted_hash` and NO `enabled` key. `/hooks` exposes no enable toggle, so
+// this is the only reachable trusted state for a newly-installed hook-bearing
+// plugin. `enabled = true` appears in older configs as residue from an earlier
+// Codex; both must read as ENABLED.
+async function writeTrustedCodexHookStateConfig(home, hooksPath = 'hooks/hooks.json', { explicitEnabled = false } = {}) {
+  await mkdir(join(home, '.codex'), { recursive: true });
+  const lines = [
+    '[features]',
+    'plugin_hooks = true',
+    '',
+    '[hooks.state]',
+    '',
+  ];
+  for (const plugin of ['engineer', 'orchestrator']) {
+    for (const event of ['pre_compact', 'session_start', 'stop']) {
+      lines.push(`[hooks.state."${plugin}@agentic-plugins:${hooksPath}:${event}:0:0"]`);
+      if (explicitEnabled) lines.push('enabled = true');
       lines.push('trusted_hash = "sha256:abc123"');
       lines.push('');
     }

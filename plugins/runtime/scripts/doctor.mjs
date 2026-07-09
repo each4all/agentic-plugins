@@ -1189,8 +1189,23 @@ async function buildCodexHookStateReport({ homeDir, reviewTargets }) {
         && entry.hooks_path === hooksPath
         && entry.event === normalizedEvent
       ));
-      const enabledMatches = matches.filter((entry) => entry.enabled === true);
+      // Codex omits `enabled` from a `[hooks.state."…"]` entry it considers
+      // enabled — the key is written only to record an explicit `false`. An
+      // absent key therefore means ENABLED, not unknown and not disabled.
+      //
+      // Reading absence as `disabled` is fail-closed in the wrong direction:
+      // it made every hook trusted by a current Codex (which writes only
+      // `trusted_hash`) look disabled, and `runtime:settings
+      // --attest-codex-hook-review` blocks while any expected entry is
+      // disabled — so no newly-trusted hook-bearing plugin could ever be
+      // attested. The `enabled = true` lines on the older plugin entries are
+      // residue from an earlier Codex; `/hooks` exposes no enable toggle to
+      // reproduce them. Verified empirically on codex-cli 0.142.5: designer's
+      // Stop hook, whose entry carries `trusted_hash` and no `enabled` key,
+      // executed and archived a terminal designer workflow during a
+      // `codex exec` turn.
       const disabledMatches = matches.filter((entry) => entry.enabled === false);
+      const enabledMatches = matches.filter((entry) => entry.enabled !== false);
       const trustedMatches = matches.filter((entry) => entry.trusted === true);
       const state = matches.length === 0
         ? 'missing'
