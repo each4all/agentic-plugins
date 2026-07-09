@@ -467,6 +467,40 @@ describe('runtime session handoff (ADR-0031)', () => {
     ok(result.limits.some((limit) => /non-mutating/i.test(limit)));
   });
 
+  // ADR-0042 RT boundary: the designer inventory addition does NOT extend the
+  // runtime workflow_kind projection enum. runtime models engineer/orchestrator
+  // only; designer (like founder) reaches the seam as an unsupported kind, and
+  // that must stay an honest report, not a silent no-active-workflow.
+  it('designer is an unsupported workflow_kind by design — the RT inventory slice does not extend the enum', () => {
+    const handoff = evaluateSessionHandoff({
+      riskLevel: 'yellow',
+      projection: null,
+      unsupportedKind: 'designer',
+      routing: '/designer:resume',
+    });
+    strictEqual(handoff.archive_gate, 'unsupported_kind');
+    strictEqual(handoff.unsupported_workflow_kind, 'designer');
+    ok(handoff.archive_gate !== 'absent', 'must NOT claim no-active-workflow/absent');
+    ok(/designer/.test(handoff.reason), 'reason names the unsupported kind');
+    ok(/engineer, orchestrator/.test(handoff.archive_gate_report),
+      'the supported-kind list must stay engineer + orchestrator (ADR-0042 Consequences)');
+
+    // Codex Plan-verify MINOR: the seam test above hand-feeds `unsupportedKind`,
+    // so it would still pass if VALID_WORKFLOW_KINDS were quietly extended.
+    // Drive the REAL enum path: a well-formed designer projection must be
+    // REJECTED (projection=null) and typed as an unsupported kind, while the
+    // supported kinds keep working.
+    const designerProjection = normalizeProjection(fullProjection({ workflow_kind: 'designer' }));
+    strictEqual(designerProjection.projection, null,
+      'runtime must not accept a designer workflow projection (the RT slice does not extend the enum)');
+    strictEqual(designerProjection.unsupportedKind, 'designer');
+    for (const supported of ['engineer', 'orchestrator']) {
+      const accepted = normalizeProjection(fullProjection({ workflow_kind: supported }));
+      strictEqual(accepted.error, null, `${supported} must remain a supported workflow kind`);
+      strictEqual(accepted.projection.workflow_kind, supported);
+    }
+  });
+
   it('reports an honest unsupported workflow_kind instead of degrading to no-active-workflow (runtime-unsupported-kind)', () => {
     // An active workflow whose kind runtime cannot model (e.g. founder) reaches
     // the seam as projection=null + unsupportedKind=<name>. The seam MUST

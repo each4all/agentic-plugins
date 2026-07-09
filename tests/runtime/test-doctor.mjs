@@ -1,16 +1,17 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, rejects, deepStrictEqual } from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, symlink, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { formatText, parseArgs, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES } from '../../plugins/runtime/scripts/doctor.mjs';
 
 const PORTABLE_HOOK_COMMAND = '/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${PLUGIN_ROOT}/adapters/codex/hooks/hook.mjs"';
 
 describe('runtime doctor', () => {
-  it('recognizes founder and attention in the hardcoded plugin inventory (ADR-0036 RT, ADR-0040 §3)', () => {
+  it('recognizes founder, attention and designer in the hardcoded plugin inventory (ADR-0036 / ADR-0040 §3 / ADR-0042 RT)', () => {
     // RT (ADR-0036): runtime:doctor / runtime:settings must recognize
     // founder as an installable agentic-plugins plugin — install / cache /
     // catalog inventory recognition. The founder workflow-ledger health
@@ -19,7 +20,12 @@ describe('runtime doctor', () => {
     // ADR-0040 §3: the hook-only attention plugin joins the same
     // install/cache/catalog inventory (readiness reporting only — its hook
     // semantics stay attention-owned).
-    deepStrictEqual(PLUGIN_NAMES, ['attention', 'companions', 'engineer', 'founder', 'image', 'orchestrator', 'runtime']);
+    // RT (ADR-0042): designer joins on the same terms. Inventory recognition
+    // ONLY — see the boundary tests below for what this deliberately does not
+    // extend (workflow_kind projection, dashboard Tier-1 personas).
+    deepStrictEqual(PLUGIN_NAMES, ['attention', 'companions', 'designer', 'engineer', 'founder', 'image', 'orchestrator', 'runtime']);
+    // Alphabetical, so the inventory reads deterministically in every report.
+    deepStrictEqual([...PLUGIN_NAMES], [...PLUGIN_NAMES].sort());
   });
 
   it('builds a sanitized read-only report from source, CLI, companion, config, and ledger probes', async () => {
@@ -380,6 +386,88 @@ describe('runtime doctor', () => {
     ok(report.codex_plugin_hooks.status !== 'packaging_gap', `status must not be packaging_gap (got ${report.codex_plugin_hooks.status})`);
     ok(!report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'expose-bundled-hooks-in-manifest' && (rec.detail ?? '').includes('attention')));
     ok(!report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_packaging_gap'), 'a deliberately Claude-only plugin does not raise a Codex packaging-gap parity difference');
+  });
+
+  // ADR-0042 RT: designer is hook-bearing (it ships a Codex hooks manifest since
+  // designer PR2), so the inventory addition surfaces it in the Codex
+  // hook-readiness report. The boundary the RT topic fixes: assert INVENTORY
+  // MEMBERSHIP (packaged), never trusted/active state — runtime treats `/hooks`
+  // review as a MANUAL attestation it cannot observe.
+  // Codex Plan-verify MINOR: the synthetic seed below uses `./hooks/hooks.json`,
+  // but the shipped designer manifest exposes `./adapters/codex/hooks/hooks.json`.
+  // Ground the hook-readiness premise on the REAL plugin, so a manifest-path
+  // regression in plugins/designer cannot pass the synthetic test.
+  it('the shipped designer plugin really is hook-bearing (the premise of the RT hook-readiness signal)', async () => {
+    const repoRoot = resolve(fileURLToPath(import.meta.url), '../../..');
+    const manifest = JSON.parse(await readFile(join(repoRoot, 'plugins', 'designer', '.codex-plugin', 'plugin.json'), 'utf8'));
+    strictEqual(typeof manifest.hooks, 'string', 'the designer Codex manifest must expose a hooks path');
+    ok(existsSync(join(repoRoot, 'plugins', 'designer', manifest.hooks)),
+      `the designer Codex manifest hooks path must resolve: ${manifest.hooks}`);
+    ok(PLUGIN_NAMES.includes('designer'),
+      'a hook-bearing designer must be in the runtime inventory for the hook-readiness report to see it');
+  });
+
+  it('a hook-bearing designer is reported as PACKAGED and review-required, never as trusted/active (ADR-0042 RT)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-designer-hooks-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    // Seed designer the way the plugin actually ships: a Codex manifest that
+    // exposes hooks + a bundled hooks.json with the portable command shape.
+    await mkdir(join(root, 'plugins', 'designer', '.claude-plugin'), { recursive: true });
+    await mkdir(join(root, 'plugins', 'designer', '.codex-plugin'), { recursive: true });
+    await mkdir(join(root, 'plugins', 'designer', 'hooks'), { recursive: true });
+    await writeJson(join(root, 'plugins', 'designer', '.claude-plugin', 'plugin.json'), {
+      name: 'designer', version: '1.0.0', description: 'designer plugin',
+    });
+    await writeJson(join(root, 'plugins', 'designer', '.codex-plugin', 'plugin.json'), {
+      name: 'designer', version: '1.0.0', description: 'designer plugin', hooks: './hooks/hooks.json',
+    });
+    await writeJson(join(root, 'plugins', 'designer', 'hooks', 'hooks.json'), {
+      hooks: {
+        SessionStart: [{ matcher: 'compact', hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
+        PreCompact: [{ hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
+        Stop: [{ hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
+      },
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    // PACKAGED: designer joins the bundled set and the review targets.
+    ok(report.codex_plugin_hooks.summary.bundled_plugins.includes('designer'),
+      'a hook-bearing designer must appear in the Codex bundled set');
+    const target = report.codex_plugin_hooks.review_targets.find((entry) => entry.plugin === 'designer');
+    ok(target, 'designer must appear as a Codex hook review target');
+    strictEqual(target.manifest_exposed, true);
+    deepStrictEqual(target.events, ['PreCompact', 'SessionStart', 'Stop']);
+    // No packaging gap, and no command-portability warning: the seeded command
+    // is the portable ${PLUGIN_ROOT} + run-node-hook.sh shape.
+    ok(!report.codex_plugin_hooks.summary.missing_hooks_file_plugins.includes('designer'));
+    ok(!report.codex_plugin_hooks.summary.command_warning_plugins.includes('designer'));
+    ok(!report.codex_plugin_hooks.summary.bare_node_command_plugins.includes('designer'));
+
+    // NOT trusted/active: review stays a manual `/hooks` follow-up that names
+    // designer, and doctor never claims the hooks are trusted or active.
+    const followup = report.plugin_command_surface.manual_followups.find((entry) => entry.id === 'codex-hook-review');
+    strictEqual(followup.status, 'manual_check');
+    deepStrictEqual(followup.commands, ['/hooks']);
+    ok(followup.verify.includes('designer'), 'the manual /hooks follow-up must name designer');
+    ok(followup.verify.includes('New hook - review required'));
+    ok(followup.verify.includes('Active=0'));
+    // Codex Plan-verify MINOR: `x === undefined` also passes when the key exists
+    // with an undefined value. Assert ABSENCE of the key, and that nothing in the
+    // serialized review-target payload claims trust/activity — runtime cannot
+    // observe either (that is what the /hooks manual attestation is for).
+    ok(!Object.hasOwn(target, 'trusted'), 'doctor must not synthesize a trusted key it cannot observe');
+    ok(!Object.hasOwn(target, 'active'), 'doctor must not synthesize an active key it cannot observe');
+    ok(!/"(trusted|active)"\s*:/.test(JSON.stringify(report.codex_plugin_hooks.review_targets)),
+      'no review target may serialize a trusted/active claim');
   });
 
   it('reports Codex hook review as a manual follow-up when plugin hooks are ready', async () => {
@@ -2157,6 +2245,37 @@ describe('runtime doctor — codex plugin list read signal (ADR-0034)', () => {
     home: await mkdtemp(join(tmpdir(), 'runtime-doctor-codexlist-home-')),
   });
 
+  // The founder RT slice (ADR-0036) recorded a deferred generic-name fix: the
+  // not-installed evidence string hardcoded "runtime", so a not-installed
+  // `designer` reported "codex plugin list does not report runtime as
+  // installed". The designer RT slice (ADR-0042) closes it — adding designer to
+  // the inventory is exactly what surfaces the wrong name to an operator.
+  it('the not-installed evidence names the plugin it is about, not "runtime" (ADR-0042 RT)', async () => {
+    const { root, home } = await mkdirs();
+    await seedRepo(root);
+    await seedHome(home);
+    // List probe succeeds and reports NOTHING from our marketplace -> every
+    // plugin takes the list-authoritative not-installed branch.
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      now: new Date('2026-05-13T00:00:00.000Z'),
+      runner: fakeRunner(codex137(okResult(listJson([])))),
+    });
+    const checked = [];
+    for (const name of PLUGIN_NAMES) {
+      const evidence = report.plugins?.[name]?.installed?.codex_resolved?.evidence;
+      if (typeof evidence !== 'string' || !evidence.includes('does not report')) continue;
+      checked.push(name);
+      ok(evidence.includes(name),
+        `the not-installed evidence for "${name}" must name "${name}", got: ${evidence}`);
+    }
+    // Non-vacuous: the not-installed branch must actually have been exercised
+    // for the whole inventory, designer included.
+    deepStrictEqual(checked, [...PLUGIN_NAMES],
+      `every inventory plugin must take the not-installed branch (checked: ${JSON.stringify(checked)})`);
+  });
+
   it('uses codex plugin list --json (enabled) as installed evidence without a filesystem cache', async () => {
     const { root, home } = await mkdirs();
     await seedRepo(root); // source present, but no ~/.codex install cache (no seedHome)
@@ -2268,6 +2387,26 @@ describe('runtime doctor — codex plugin list read signal (ADR-0034)', () => {
       runner: fakeRunner(codex137(okResult(listJson([codexEntry('runtime'), codexEntry('research')])))),
     });
     ok(report.host_parity.issues.some((issue) => issue.id === 'codex_retired_or_unknown_plugin' && issue.plugin === 'research'));
+  });
+
+  // The concrete operator-facing value of the ADR-0042 RT slice: BEFORE designer
+  // joined PLUGIN_NAMES, an installed `designer@agentic-plugins` was reported as
+  // a retired/unknown plugin (the same bucket `research` — an actually-archived
+  // plugin — lands in). Recognition means designer must NOT be flagged, while a
+  // genuinely retired plugin still is. Asserting both directions in one probe
+  // keeps the test from passing on a blanket "never flag anything" regression.
+  it('an installed designer is recognized, not flagged retired/unknown; an actually-retired plugin still is (ADR-0042 RT)', async () => {
+    const { root, home } = await mkdirs();
+    await seedRepo(root);
+    const report = await runDoctor({
+      repoRoot: root, homeDir: home,
+      runner: fakeRunner(codex137(okResult(listJson([codexEntry('designer'), codexEntry('research')])))),
+    });
+    const retired = report.host_parity.issues.filter((issue) => issue.id === 'codex_retired_or_unknown_plugin');
+    ok(!retired.some((issue) => issue.plugin === 'designer'),
+      'designer is in the runtime plugin set and must not be reported as retired/unknown');
+    ok(retired.some((issue) => issue.plugin === 'research'),
+      'an actually-retired plugin must still be flagged (the guard is not a blanket suppression)');
   });
 
   it('redacts raw codex plugin list stdout from the report (status only, no source paths)', async () => {

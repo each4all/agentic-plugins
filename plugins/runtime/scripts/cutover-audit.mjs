@@ -109,7 +109,7 @@ export async function runCutoverAudit(options = {}) {
     generated_at: now.toISOString(),
     repo_root: repoRoot,
     cutover_gate: cutoverGate,
-    operator_verification: buildOperatorVerification({ checks, cutoverGate, readyCandidate }),
+    operator_verification: buildOperatorVerification({ checks, cutoverGate, readyCandidate, doctor }),
     checks,
     next_actions: checks
       .filter((check) => CHECK_UNREADY.has(check.status))
@@ -243,7 +243,13 @@ function footerGateDetail(check) {
   };
 }
 
-function buildOperatorVerification({ checks, cutoverGate, readyCandidate }) {
+// `doctor` is read only to name the bundled hook-bearing plugins the operator
+// must actually review. The checklist used to hardcode "engineer and
+// orchestrator"; once a fourth hook-bearing plugin joined the runtime inventory
+// (founder, then designer), an operator following the literal text would review
+// the wrong set and leave the newcomer's hooks untrusted — so the cutover gate
+// could never satisfy while the checklist claimed it should. Derive the names.
+function buildOperatorVerification({ checks, cutoverGate, readyCandidate, doctor = null }) {
   const byId = new Map(checks.map((check) => [check.id, check]));
   const parity = byId.get('observed_experience_parity');
   const dogfood = byId.get('dogfood_evidence_window');
@@ -262,6 +268,15 @@ function buildOperatorVerification({ checks, cutoverGate, readyCandidate }) {
   ));
   if (hookFollowups.length > 0 || hookCriteria.length > 0) {
     const hookCommands = uniqueStrings(hookFollowups.flatMap((action) => action.commands ?? []));
+    // Prefer the explicit review targets; fall back to the bundled set, then to
+    // a generic phrase when doctor gave us neither (never a stale hardcoded list).
+    const reviewPlugins = uniqueStrings([
+      ...(doctor?.codex_plugin_hooks?.review_targets ?? []).map((target) => target.plugin).filter(Boolean),
+      ...(doctor?.codex_plugin_hooks?.summary?.bundled_plugins ?? []),
+    ]);
+    const reviewSubject = reviewPlugins.length
+      ? `bundled ${reviewPlugins.join(', ')} hooks`
+      : 'every bundled agentic-plugins hook';
     const hookReason = hookFollowups.find((action) => action.reason)?.reason ?? (
       parity?.status === 'satisfied'
         ? 'Codex hook review has no outstanding runtime follow-up.'
@@ -272,7 +287,7 @@ function buildOperatorVerification({ checks, cutoverGate, readyCandidate }) {
       status: parity?.status === 'satisfied' ? 'satisfied' : 'pending',
       owner: 'operator',
       command: hookCommands.length ? hookCommands.join(', ') : '/hooks',
-      verify: 'In the active Codex session, review and enable/trust bundled engineer and orchestrator hooks.',
+      verify: `In the active Codex session, review and enable/trust ${reviewSubject}.`,
       pass_condition: 'runtime:doctor reports observed experience parity ready, score 100%, and zero manual follow-ups.',
       fail_condition: 'Any bundled hook remains disabled, untrusted, inactive, or still points at an old cache-version command path.',
       after: 'Run runtime:settings --attest-codex-hook-review, then rerun runtime:doctor and runtime:cutover audit.',

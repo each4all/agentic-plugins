@@ -249,6 +249,13 @@ describe('runtime cutover audit', () => {
     strictEqual(hookCheck.status, 'pending');
     strictEqual(hookCheck.command, '/hooks');
     ok(hookCheck.verify.includes('active Codex session'));
+    // The checklist must never hardcode a plugin pair. With no doctor
+    // hook-report to read, it degrades to a generic subject rather than naming
+    // a stale "engineer and orchestrator" set.
+    ok(!/engineer and orchestrator/.test(hookCheck.verify),
+      'the hook-review checklist must not hardcode "engineer and orchestrator"');
+    ok(hookCheck.verify.includes('every bundled agentic-plugins hook'),
+      `expected the generic fallback subject, got: ${hookCheck.verify}`);
     ok(hookCheck.pass_condition.includes('score 100%'));
     ok(hookCheck.fail_condition.includes('old cache-version command path'));
     ok(hookCheck.after.includes('runtime:settings --attest-codex-hook-review'));
@@ -265,6 +272,54 @@ describe('runtime cutover audit', () => {
     ok(text.includes('unresolved criteria: plugin_management_followups:partial, lifecycle_hook_continuity:partial'));
     ok(text.includes('manual next actions: codex-hook-review'));
     ok(text.includes('follow-up detail: codex-hook-review; host=codex; commands=/hooks'));
+  });
+
+  // ADR-0042 RT: once a fourth hook-bearing plugin (designer) joins the runtime
+  // inventory, the operator hook-review checklist must name the plugins doctor
+  // actually reports as review targets. The old text hardcoded "engineer and
+  // orchestrator", so an operator would review the wrong set, leave designer's
+  // hooks untrusted, and the cutover gate could never satisfy.
+  it('the operator hook-review checklist names the doctor-reported review targets, not a hardcoded pair (ADR-0042 RT)', async () => {
+    const root = await seedRepo({
+      conditionStatus: 'satisfied',
+      contextCreatedAt: '2026-05-16T07:30:00.000Z',
+      cutoverEvidenceDates: oneWeekDogfoodDates(),
+    });
+    const doctor = doctorReport({
+      experienceParity: {
+        status: 'partial',
+        score_percent: 91,
+        manual_followup_count: 1,
+        counts: { satisfied: 6, partial: 2, not_verified: 0, blocked: 0 },
+        criteria: [
+          { id: 'plugin_management_followups', status: 'partial' },
+          { id: 'lifecycle_hook_continuity', status: 'partial' },
+        ],
+        next_actions: [
+          { id: 'codex-hook-review', host: 'codex', commands: ['/hooks'], reason: 'Review/trust bundled hooks with /hooks.' },
+        ],
+      },
+    });
+    doctor.codex_plugin_hooks = {
+      status: 'ready',
+      summary: { bundled_plugins: ['designer', 'engineer', 'orchestrator'] },
+      review_targets: [
+        { plugin: 'designer', version: '0.1.0' },
+        { plugin: 'engineer', version: '1.0.0' },
+        { plugin: 'orchestrator', version: '1.0.0' },
+      ],
+    };
+
+    const report = await runCutoverAudit({
+      repoRoot: root, now: NOW, doctorReport: doctor, footerState: 'closed', omccDevActive: 'no',
+    });
+
+    const hookCheck = report.operator_verification.find((entry) => entry.id === 'codex-hook-review');
+    ok(hookCheck.verify.includes('designer'), `the checklist must name designer, got: ${hookCheck.verify}`);
+    ok(hookCheck.verify.includes('engineer'), 'the checklist must still name engineer');
+    ok(hookCheck.verify.includes('orchestrator'), 'the checklist must still name orchestrator');
+    ok(!/engineer and orchestrator/.test(hookCheck.verify),
+      'the hardcoded pair must be gone, not merely extended');
   });
 
   it('applies reusable recorded doctor proof to proof-only parity criteria', async () => {
