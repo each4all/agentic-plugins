@@ -23,11 +23,18 @@
 //     deliberately DEFERRED to PR6 (the SKILLs carry a self-contained inline
 //     Design Task Profile at PR3), so this revision asserts it ABSENT. The
 //     decide engine (decide-registry.mjs + scripts/lib/*) was deferred to PR4.
-//   - PR4 (this revision) lands decide + compose + the decide engine
+//   - PR4 lands decide + compose + the decide engine
 //     (decide-registry.mjs + scripts/lib/* + skills/decide/references/decision-axes.yml
 //     — the 7-axis SD3 registry: usability the common decisive axis,
-//     accessibility the single veto gate). PR5A/PR5B land critique + refine;
-//     PR6 lands start + meta skills + orchestration.md + L4 profiles.
+//     accessibility the single veto gate).
+//   - PR5A (this revision) lands critique — the four active quality lenses
+//     (usability / accessibility / conversion / consistency, mapped 1:1 onto the
+//     SD3 axis ids, `a11y` a profile-flag alias for the accessibility axis) + the
+//     single internalized quality-criteria reference (Nielsen 10 + WCAG A/AA +
+//     conversion + consistency) + host-direct vision (same-host; the peer path
+//     stays code/text, no --image) + candidate-only a11y (Non-Goal 6) + the
+//     privacy gate on the critique surface. PR5B lands refine; PR6 lands start +
+//     meta skills + orchestration.md + L4 profiles.
 //   - PR7 de-incubates: the incubating marker is removed from the manifests +
 //     README, and these PRESENCE assertions flip to ABSENCE.
 //
@@ -149,14 +156,15 @@ describe('plugins/designer — Codex manifest (.codex-plugin/plugin.json)', () =
       'the Codex interface category must match the designer marketplace category (Development)');
     ok(Array.isArray(json.interface.defaultPrompt) && json.interface.defaultPrompt.length > 0,
       'the Codex interface must carry a non-empty defaultPrompt list');
-    // PR4 ships investigate + frame + decide + compose — the defaultPrompt
-    // examples must not advertise a verb that has not landed yet.
+    // PR5A ships investigate + frame + decide + compose + critique — the
+    // defaultPrompt examples must not advertise a verb that has not landed yet.
     const prompts = json.interface.defaultPrompt.join('\n');
     ok(/\$designer:investigate/.test(prompts), 'defaultPrompt must show a $designer:investigate example');
     ok(/\$designer:frame/.test(prompts), 'defaultPrompt must show a $designer:frame example');
     ok(/\$designer:decide/.test(prompts), 'defaultPrompt must show a $designer:decide example (PR4)');
     ok(/\$designer:compose/.test(prompts), 'defaultPrompt must show a $designer:compose example (PR4)');
-    for (const notyet of ['critique', 'refine', 'start']) {
+    ok(/\$designer:critique/.test(prompts), 'defaultPrompt must show a $designer:critique example (PR5A)');
+    for (const notyet of ['refine', 'start']) {
       ok(!new RegExp(`\\$designer:${notyet}\\b`).test(prompts),
         `defaultPrompt must not advertise $designer:${notyet} — it lands in a later PR`);
     }
@@ -366,12 +374,12 @@ describe('plugins/designer — PR3 verb surfaces (investigate + frame + design-b
       'the shared orchestration.md (Design Task Profile + bilingual triggers) lands at PR6, not PR3');
   });
 
-  it('the six-verb enum is NOT yet complete — critique/refine skills absent (land at PR5A/PR5B)', async () => {
-    for (const notyet of ['critique', 'refine']) {
+  it('the six-verb enum is NOT yet complete — refine skill absent (lands at PR5B)', async () => {
+    for (const notyet of ['refine']) {
       strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills', notyet, 'SKILL.md')), false,
-        `skills/${notyet}/SKILL.md lands at PR5A/PR5B, not PR4`);
+        `skills/${notyet}/SKILL.md lands at PR5B, not PR5A`);
       strictEqual(await exists(resolve(PLUGIN_ROOT, 'commands', `${notyet}.md`)), false,
-        `commands/${notyet}.md lands at PR5A/PR5B, not PR4`);
+        `commands/${notyet}.md lands at PR5B, not PR5A`);
     }
   });
 
@@ -772,10 +780,233 @@ describe('plugins/designer — PR4 decide + compose verb surfaces + decide engin
   });
 });
 
+describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-0042 SD4)', () => {
+  const REQUIRED_PR5A_SURFACES = [
+    'commands/critique.md',
+    'skills/critique/SKILL.md',
+    'skills/critique/agents/openai.yaml',
+    'skills/critique/references/quality-criteria.md',
+  ];
+
+  for (const rel of REQUIRED_PR5A_SURFACES) {
+    it(`ships ${rel} (PR5A critique surface)`, async () => {
+      strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true,
+        `plugins/designer/${rel} is part of the ADR-0042 PR5A critique surface and must exist`);
+    });
+  }
+
+  it('skills/critique/SKILL.md frontmatter name = critique', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    const fm = frontmatter(text);
+    ok(fm, 'skills/critique/SKILL.md has no YAML frontmatter');
+    ok(/^name:\s*critique\s*$/m.test(fm), 'skills/critique/SKILL.md frontmatter name != "critique"');
+    match(fm, /description:/, 'skills/critique/SKILL.md frontmatter must carry a description');
+  });
+
+  it('skills/critique/agents/openai.yaml display_name names the verb + persona', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/agents/openai.yaml'), 'utf8');
+    const m = text.match(/display_name:\s*"([^"]+)"/);
+    ok(m, 'skills/critique/agents/openai.yaml must declare interface.display_name');
+    ok(m[1].toLowerCase().includes('critique'), `openai.yaml display_name "${m[1]}" must name the verb "critique"`);
+    ok(m[1].toLowerCase().includes('designer'), `openai.yaml display_name "${m[1]}" must name the persona "designer"`);
+  });
+
+  it('commands/critique.md carries a frontmatter description', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/critique.md'), 'utf8');
+    const fm = frontmatter(text);
+    ok(fm, 'commands/critique.md has no YAML frontmatter');
+    match(fm, /description:\s*\S/, 'commands/critique.md frontmatter must carry a non-empty description');
+  });
+
+  it('commands/critique.md carries no parent-linkage env reads (ADR-0042 Non-Goal 2)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/critique.md'), 'utf8');
+    for (const form of [/\$\{?AGENTIC_PARENT_WORKFLOW/, /\$\{?AGENTIC_ORIGINATING_SUBTASK/]) {
+      ok(!form.test(text),
+        `commands/critique.md must not shell-read ${form} — designer is non-dispatch (ADR-0042 Non-Goal 2)`);
+    }
+  });
+
+  it('critique forwards --profile from AGENTIC_PROFILE (lens-bearing, create + append)', async () => {
+    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/critique.md'), 'utf8');
+    ok(/--profile\s+"\$\{?AGENTIC_PROFILE/.test(cmd),
+      'commands/critique.md must forward --profile from AGENTIC_PROFILE (create path — critique is lens-bearing)');
+    ok(/--profile\s+"<profile/.test(cmd),
+      'commands/critique.md append/resume path must carry --profile (resume continuity)');
+  });
+
+  it('the @critique:lens-table maps the 4 active lenses 1:1 onto the SD3 axes (exactly, no extras), accessibility the gate, each row routed to a criteria section (SD4)', async () => {
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    const m = skill.match(/<!-- @critique:lens-table:begin -->([\s\S]*?)<!-- @critique:lens-table:end -->/);
+    ok(m, 'skills/critique/SKILL.md must contain the @critique:lens-table marker region');
+    const region = m[1];
+    // Parse the data rows (markdown rows starting "| <n> |") and tie each lens
+    // flag to the axis it evaluates + its criteria section. A substring check
+    // would pass with an extra active lens, a mis-mapped row, or the criteria
+    // file named only in the header (Codex Plan-verify MAJOR — 1:1 not enforced).
+    const rows = region.split('\n').filter((l) => /^\s*\|\s*\d+\s*\|/.test(l));
+    const EXPECT = [
+      ['usability', 'usability', 'Usability'],
+      ['a11y', 'accessibility', 'Accessibility'],
+      ['conversion', 'conversion', 'Conversion'],
+      ['consistency', 'consistency', 'Consistency'],
+    ];
+    strictEqual(rows.length, EXPECT.length,
+      `@critique:lens-table must declare EXACTLY ${EXPECT.length} active lenses (no extras) — found ${rows.length}`);
+    EXPECT.forEach(([flag, axis, section], i) => {
+      ok(new RegExp('`' + flag + '`').test(rows[i]),
+        `@critique:lens-table row ${i + 1} must carry the \`${flag}\` lens flag`);
+      ok(new RegExp('\\b' + axis + '\\b').test(rows[i]),
+        `@critique:lens-table row ${i + 1} (\`${flag}\`) must map 1:1 to the ${axis} axis`);
+      ok(rows[i].includes(`§ ${section}`),
+        `@critique:lens-table row ${i + 1} must route to the § ${section} criteria section (single criteria file)`);
+    });
+    // the a11y (accessibility) row is the veto gate; the other three are not.
+    match(rows.find((r) => /`a11y`/.test(r)), /gate/i, 'the a11y (accessibility) lens row must be the veto gate');
+    for (const nonGate of ['usability', 'conversion', 'consistency']) {
+      ok(!/gate/i.test(rows.find((r) => new RegExp('`' + nonGate + '`').test(r))),
+        `the ${nonGate} lens row must NOT be marked a gate (accessibility is the sole gate)`);
+    }
+    ok(region.includes('quality-criteria.md'),
+      'the lens table header must name the single internalized criteria file (references/quality-criteria.md)');
+  });
+
+  it('critique lenses reuse the SD3 axis vocabulary 1:1 — inactive == registry axes minus the 4 active; a11y is the accessibility alias (SD4)', async () => {
+    const mod = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs')).href);
+    const { registry } = mod.loadRegistry({});
+    const axisIds = new Set(Object.values(registry.presets).flatMap((p) => p.axes.map((a) => a.id)));
+    const ACTIVE_AXES = ['usability', 'accessibility', 'conversion', 'consistency'];
+    for (const lensAxis of ACTIVE_AXES) {
+      ok(axisIds.has(lensAxis),
+        `active critique lens "${lensAxis}" must be a decision-axes.yml axis id (one shared vocabulary, no orphan lens)`);
+    }
+    ok(!axisIds.has('a11y'), 'there is no a11y axis id — a11y is only a critique profile-flag alias');
+    // The inactive lenses must be EXACTLY the SD3 axes minus the 4 active-lens
+    // axes — a true 1:1 coverage guard, not a hand-picked list (Codex Plan-verify
+    // MAJOR: substring checks did not tie the lens set to the registry).
+    const inactiveExpected = [...axisIds].filter((a) => !ACTIVE_AXES.includes(a)).sort();
+    deepStrictEqual(inactiveExpected, ['content-clarity', 'desirability', 'feasibility'],
+      'the defined-but-inactive lenses must equal the 7 SD3 axes minus the 4 active-lens axes');
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    match(skill, /a11y[\s\S]{0,120}?(alias|accessibility)/i,
+      'critique SKILL must document the a11y lens flag as an alias for the accessibility axis');
+    for (const inactive of inactiveExpected) {
+      ok(skill.includes(inactive), `critique SKILL must name the defined-but-inactive lens "${inactive}" (completes 1:1 axis coverage)`);
+    }
+    match(skill, /defined-but-inactive/i,
+      'critique SKILL must mark desirability / content-clarity / feasibility as defined-but-inactive lenses');
+  });
+
+  it('does NOT ship _shared/references/ensemble-protocol.md — critique only forward-references it (lands at PR6)', async () => {
+    // Codex Plan-verify MINOR: critique forward-references the shared ensemble
+    // protocol (skills/critique/SKILL.md + commands/critique.md), so guard its
+    // absence until PR6 the way orchestration.md is guarded above.
+    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md')), false,
+      'the shared ensemble-protocol.md (design-anchored ensemble point types) lands at PR6; critique only forward-references it');
+  });
+
+  it('the single internalized criteria file names all four active-lens standards (Nielsen / WCAG / conversion / consistency) — SD4', async () => {
+    const criteria = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/references/quality-criteria.md'), 'utf8');
+    match(criteria, /Nielsen/i, "criteria file must ground the usability lens in Nielsen's heuristics");
+    match(criteria, /WCAG/i, 'criteria file must ground the accessibility lens in WCAG A/AA');
+    match(criteria, /conversion/i, 'criteria file must carry the conversion criteria');
+    match(criteria, /consistency/i, 'criteria file must carry the consistency criteria');
+    for (const section of ['Usability', 'Accessibility', 'Conversion', 'Consistency']) {
+      ok(criteria.includes(section), `criteria file must carry the § ${section} section (a lens references it)`);
+    }
+  });
+
+  it('the critique SKILL references the single internalized criteria file (SD4 — every lens applies the same standard)', async () => {
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    match(skill, /references\/quality-criteria\.md/,
+      'critique SKILL must reference the single internalized criteria file');
+    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/critique/references/quality-criteria.md')), true);
+  });
+
+  it('host-direct vision + code/text-only peer path is stated across SKILL + command + openai, and the peer dispatch never passes --image (SD4 item 3)', async () => {
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/critique.md'), 'utf8');
+    const openai = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/agents/openai.yaml'), 'utf8');
+    // Codex Plan-verify MAJOR: the guard read only SKILL.md and broad words — a
+    // regression could add --image to the peer command and still pass. Cover the
+    // command dispatch + openai surfaces and assert the peer path has no --image.
+    for (const [rel, text] of [['SKILL.md', skill], ['commands/critique.md', cmd]]) {
+      match(text, /codex exec --image/, `critique ${rel} must state Codex host-direct vision via codex exec --image (active host only)`);
+      match(text, /same-host/i, `critique ${rel} must state vision-grounded critique is a same-host capability`);
+      match(text, /no .{0,3}--image/i, `critique ${rel} must state the companion peer path has no --image flag`);
+    }
+    match(skill, /inline image bytes|never as inline/i, 'critique SKILL must state the peer never receives inline image bytes');
+    // The peer dispatch invocation must NEVER carry --image — the companion has
+    // no image channel; vision is host-direct only.
+    const dispatch = cmd.match(/peer-runner\.mjs[\s\S]*?&\s*\n/);
+    ok(dispatch, 'commands/critique.md must dispatch the peer ensemble via peer-runner.mjs run');
+    ok(!/--image/.test(dispatch[0]),
+      'the peer-runner dispatch must never pass --image — the companion peer path has no image channel');
+    // openai.yaml frames vision as host-direct (active host), never a peer capability.
+    ok(/host-direct|active host/i.test(openai),
+      'agents/openai.yaml must frame vision as host-direct (active host), not a companion capability');
+    ok(!/peer[^\n]{0,40}--image/i.test(openai), 'agents/openai.yaml must not claim the peer takes --image');
+  });
+
+  it('critique flags CANDIDATE accessibility issues only, not conformance certification (ADR-0042 Non-Goal 6)', async () => {
+    for (const rel of ['skills/critique/SKILL.md', 'skills/critique/references/quality-criteria.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      match(text, /candidate/i, `${rel} must state critique flags candidate a11y issues`);
+      match(text, /conformance/i, `${rel} must state the WCAG-conformance honesty boundary (cannot certify)`);
+    }
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    match(skill, /Non-Goal 6/, 'critique SKILL must cite ADR-0042 Non-Goal 6 for the candidate-only a11y boundary');
+  });
+
+  it('an unmitigated accessibility veto gate is a CRITICAL finding (SD4 gate severity rule)', async () => {
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/critique/SKILL.md'), 'utf8');
+    ok(/CRITICAL/.test(skill) && /SUGGESTION/.test(skill),
+      'critique SKILL must use the CRITICAL / MAJOR / MINOR / SUGGESTION severity scheme');
+    match(skill, /unmitigated[\s\S]{0,160}?CRITICAL/i,
+      'critique SKILL must state that an unmitigated accessibility veto gate is CRITICAL by definition');
+  });
+
+  it('the SD4 privacy gate + screenshots-sensitive sentinels reach the critique external-dispatch surfaces', async () => {
+    for (const rel of ['skills/critique/SKILL.md', 'commands/critique.md']) {
+      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      ok(text.includes(PRIVACY_SENTINEL),
+        `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+      ok(text.toLowerCase().includes(SCREENSHOT_SENTINEL),
+        `${rel} must carry the "screenshots are sensitive by default" invariant (ADR-0042 SD4)`);
+    }
+  });
+
+  it('the critique surface carries the incubating disclaimer (refine/start directional, not runnable)', async () => {
+    for (const rel of ['skills/critique/SKILL.md', 'commands/critique.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      match(text, /incubating/i, `${rel} must carry the incubating disclaimer`);
+      ok(/PR5B|PR6/.test(text) && /\bdirectional\b/.test(text),
+        `${rel} must note refine/start land at PR5B/PR6 so an unlanded next_command is directional, not runnable`);
+    }
+  });
+
+  it('no stale founder/business or engineer-axis vocabulary leaks into the critique surfaces (copy-trim rebrand)', async () => {
+    const STALE = [
+      /business_brief/i, /FOUNDER_OUTPUT_ROOT/, /\bventure\b/i, /\bjurisdiction\b/i, /unit-economics/i, /market-attractiveness/i, /시장성/, /단위경제/,
+      /\bessence\b/i, /\bfoundation\b/i, /practical-fit/i, /\bmaturation\b/i, /canonical-precedent/i,
+    ];
+    for (const rel of [
+      'skills/critique/SKILL.md',
+      'commands/critique.md',
+      'skills/critique/references/quality-criteria.md',
+      'skills/critique/agents/openai.yaml',
+    ]) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      for (const re of STALE) {
+        ok(!re.test(text), `${rel} carries stale vocabulary ${re} (copy-trim rebrand miss)`);
+      }
+    }
+  });
+});
+
 describe('plugins/designer — inert boundary (remaining verb surfaces land in later PRs)', () => {
   // commands/ + skills/ landed across PR3 (investigate + frame) + PR4 (decide
-  // + compose); the persona dirs never ship. critique/refine + start + meta
-  // land in later PRs (asserted absent in the verb-surface suites above).
+  // + compose) + PR5A (critique); the persona dirs never ship. refine + start +
+  // meta land in later PRs (asserted absent in the verb-surface suites above).
   const FORBIDDEN_DIRS = [
     'personas',
     'mcp-servers',
