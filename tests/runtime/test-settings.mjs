@@ -989,6 +989,7 @@ describe('runtime settings', () => {
         ...defaultCliMap(),
         'claude plugin install attention@agentic-plugins': unavailable,
         'claude plugin install companions@agentic-plugins': unavailable,
+        'claude plugin install designer@agentic-plugins': unavailable,
         'claude plugin install engineer@agentic-plugins': unavailable,
         'claude plugin install founder@agentic-plugins': unavailable,
         'claude plugin install image@agentic-plugins': unavailable,
@@ -996,6 +997,7 @@ describe('runtime settings', () => {
         'claude plugin install runtime@agentic-plugins': unavailable,
         'claude plugin update attention@agentic-plugins': unavailable,
         'claude plugin update companions@agentic-plugins': unavailable,
+        'claude plugin update designer@agentic-plugins': unavailable,
         'claude plugin update engineer@agentic-plugins': unavailable,
         'claude plugin update founder@agentic-plugins': unavailable,
         'claude plugin update image@agentic-plugins': unavailable,
@@ -1034,6 +1036,7 @@ describe('runtime settings', () => {
         'claude /plugin list': okResult("/plugin isn't available in this environment.\n"),
         'claude plugin install attention@agentic-plugins': okResult('installed attention\n'),
         'claude plugin install companions@agentic-plugins': okResult('installed companions\n'),
+        'claude plugin install designer@agentic-plugins': okResult('installed designer\n'),
         'claude plugin install engineer@agentic-plugins': okResult('installed engineer\n'),
         'claude plugin install founder@agentic-plugins': okResult('installed founder\n'),
         'claude plugin install image@agentic-plugins': okResult('installed image\n'),
@@ -1046,9 +1049,16 @@ describe('runtime settings', () => {
     strictEqual(report.plugin_command_surface.claude.mode, 'per-plugin-command');
     strictEqual(report.plugin_command_surface.claude.observed_surfaces.slash_plugin, 'unavailable');
     strictEqual(report.plugin_management.summary.blocked, 0);
-    strictEqual(report.plugin_management.summary.executed, 6);
+    strictEqual(report.plugin_management.summary.executed, 7);
     strictEqual(report.plugin_management.summary.failed, 0);
     ok(claudePlans.some((plan) => plan.status === 'executed' && plan.command === 'claude plugin install companions@agentic-plugins'));
+    // ADR-0042 RT + Codex Plan-verify MINOR: a count-preserving regression that
+    // dropped designer from the plans would still satisfy `executed === 7`.
+    // Assert the designer plan and its actual invocation directly.
+    ok(claudePlans.some((plan) => plan.status === 'executed' && plan.command === 'claude plugin install designer@agentic-plugins'),
+      'designer must have an executed Claude plugin-management plan (runtime inventory recognition)');
+    ok(calls.includes('claude plugin install designer@agentic-plugins'),
+      'the designer install command must actually be invoked');
     strictEqual(report.plugin_management.manual_followups.length, 0);
     ok(calls.includes('claude /plugin list'));
     ok(calls.includes('claude plugin install companions@agentic-plugins'));

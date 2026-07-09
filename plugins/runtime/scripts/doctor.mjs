@@ -34,7 +34,7 @@ import {
 export { RUNTIME_VERSION };
 
 export const CONTRACT_COMPATIBLE_MAJOR = 0;
-export const PLUGIN_NAMES = ['attention', 'companions', 'engineer', 'founder', 'image', 'orchestrator', 'runtime'];
+export const PLUGIN_NAMES = ['attention', 'companions', 'designer', 'engineer', 'founder', 'image', 'orchestrator', 'runtime'];
 export { TERMINAL_PEER_RUN_STATUSES, VALID_PEER_RUN_STATUSES } from './lib/state-readers.mjs';
 
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -799,6 +799,7 @@ function buildPluginMatrix({ source, catalogs, caches, claudePluginList, codexPl
     // consumer (status, readiness row, version parity) reads the same
     // list-authoritative-then-cache decision rather than re-deriving it.
     const codexResolved = resolveCodexInstallState({
+      name,
       listStatus: codexPluginList.status,
       entry: codexPluginList.entries?.[name] ?? null,
     });
@@ -952,7 +953,14 @@ function pickStrongerCodexEntry(a, b) {
 // list-unavailable probe (older Codex, nonzero exit, parse error) falls back to
 // cache evidence (decision='fallback', caller applies existing cache logic).
 // Read-only; never mutates host state (ADR-0024 / ADR-0034).
-function resolveCodexInstallState({ listStatus, entry }) {
+//
+// `name` is the plugin the decision is about. It exists only to render an
+// honest evidence string: the not-installed branch used to hardcode "runtime",
+// so a not-installed `designer` reported "codex plugin list does not report
+// runtime as installed". The founder RT slice (ADR-0036) recorded this as a
+// deferred generic-name fix; the designer RT slice closes it, because the
+// inventory addition is exactly what surfaces the wrong name to an operator.
+function resolveCodexInstallState({ name, listStatus, entry }) {
   if (listStatus === 'available') {
     if (entry) {
       // Defensive: an `installed:false` entry (only expected under --available,
@@ -969,7 +977,7 @@ function resolveCodexInstallState({ listStatus, entry }) {
       }
       return { decision: 'installed', source: 'list', version: entry.version ?? null, enabled: entry.enabled ?? null, evidence: 'codex plugin list reports installed' };
     }
-    return { decision: 'not_installed', source: 'list', version: null, enabled: false, evidence: 'codex plugin list does not report runtime as installed' };
+    return { decision: 'not_installed', source: 'list', version: null, enabled: false, evidence: `codex plugin list does not report ${name} as installed` };
   }
   return { decision: 'fallback', source: 'cache', version: null, enabled: null, evidence: null, list_probe_status: listStatus };
 }

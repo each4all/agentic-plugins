@@ -187,6 +187,12 @@ describe('runtime dashboard report — empty repository', () => {
     // ADR-0040 §6: all three personas, founder included, from day one.
     assert.deepEqual(Object.keys(report.tier1.personas).sort(), ['engineer', 'founder', 'orchestrator']);
     assert.deepEqual(DASHBOARD_PERSONAS.map((persona) => persona.plugin), ['engineer', 'orchestrator', 'founder']);
+    // ADR-0042 RT boundary: adding designer to the runtime doctor/settings
+    // INVENTORY does not add it to the dashboard Tier-1 persona set. That would
+    // require the workflow_kind projection the RT slice deliberately does not
+    // extend, so designer stays absent from active-workflow reporting.
+    assert.ok(!DASHBOARD_PERSONAS.some((persona) => persona.plugin === 'designer'),
+      'designer must stay out of the dashboard Tier-1 personas (ADR-0042 Consequences)');
     for (const persona of Object.values(report.tier1.personas)) {
       assert.equal(persona.workflows.count, 0);
       assert.equal(persona.peer_runs.count, 0);
