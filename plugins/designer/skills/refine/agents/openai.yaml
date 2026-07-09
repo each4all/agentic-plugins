@@ -1,7 +1,7 @@
 interface:
   display_name: "Designer — Refine"
   short_description: "Apply critique findings or feedback to a design spec or the frontend code + rendered screen, verify it reconciles, and re-critique to convergence — refine never clears a usability/conversion problem by opening an accessibility barrier"
-  default_prompt: "Use $designer:refine to apply critique findings or feedback to a design artifact (single-mode, no --profile) — it revises, verifies the design reconciles, then re-critiques in a bounded loop until convergence (no new CRITICAL/MAJOR and the accessibility gate PASSES); the re-rendered screen is read host-direct when supplied (designer does not run the build), the peer verify path stays code/text with no image bytes"
+  default_prompt: "Use $designer:refine to apply critique findings or feedback to a design artifact (single-mode, no --profile) — it revises, verifies the design reconciles, then re-critiques in a bounded loop until convergence (no new CRITICAL/MAJOR and the accessibility gate is not FAIL — PASS, or CONDITIONAL with every remediation named as a blocking precondition); the re-rendered screen is read host-direct when supplied (designer does not run the build), the peer verify path stays code/text with no image bytes"
 
 policy:
   allow_implicit_invocation: false

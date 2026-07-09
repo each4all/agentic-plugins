@@ -16,7 +16,7 @@ SD4). Critique operates on two input shapes — the **pre-code** design spec (fr
 `/designer:compose`) and the **post-code** rendered screen (a screenshot) plus
 the frontend code that produced it — and holds both to the same standard: the
 single internalized reference in `references/quality-criteria.md`. Fixes are the
-`/designer:refine` verb's job (lands at PR5B); a genuine 2+-direction fork
+`/designer:refine` verb's job; a genuine 2+-direction fork
 routes to `/designer:decide`.
 
 ## The four quality lenses (ADR-0042 SD4)
@@ -39,7 +39,7 @@ the criteria recorded in `references/quality-criteria.md`.
 The **`a11y` lens flag is an alias for the `accessibility` axis** — there is no
 `a11y` axis id (mirrors the decide profile-flag alias). The remaining three SD3
 axes — **desirability**, **content-clarity**, **feasibility** — are named as
-lenses but **defined-but-inactive at the MVP** (they complete the 1:1 axis
+lenses but **defined-but-inactive in v1** (they complete the 1:1 axis
 coverage and activate incrementally; see `references/quality-criteria.md`
 § Defined-but-inactive lenses).
 
@@ -52,10 +52,11 @@ coverage and activate incrementally; see `references/quality-criteria.md`
 > or explicitly accept-with-rationale, not a conformance certificate. designer
 > flags and prioritizes; it does not issue a certificate.
 
-> **PROVISIONAL (잠정, ADR-0042 SD3).** The active/inactive lens split and the
-> criteria weighting are a first-cut hypothesis, expected to be re-tuned as real
-> designer dogfood (ADR-0042 PR7) accumulates. Treat these as a baseline, not a
-> settled invariant beyond the accessibility veto gate.
+> **Dogfood-validated, still evolving (ADR-0042 SD4).** The active/inactive lens
+> split and the criteria weighting were exercised end-to-end by the ADR-0042
+> Accepted-flip dogfood — the four active lenses produced real findings and the
+> accessibility gate moved a design from FAIL to CONDITIONAL. They remain open to
+> re-tuning as dogfood accumulates; the accessibility veto gate is settled.
 
 **Profile selection**: `--profile=<lens>` focuses the review on one lens; a
 missing profile runs **all four active lenses** (the default full-surface
@@ -273,18 +274,16 @@ the selected findings (CRITICAL + MAJOR by default; the user picks which MINOR /
 SUGGESTION items to include) — or `/designer:decide` when a finding opens a
 genuine 2+-direction fork, or `/designer:investigate` when a load-bearing
 accessibility or convention claim needs authoritative evidence. When no CRITICAL
-or MAJOR (and the gate passes), the design is in good shape — say so. The routing
+or MAJOR (and the gate is not FAIL — `PASS`, or `CONDITIONAL` with its
+remediations named), the design is in good shape — say so. The routing
 is a fallback only when evidence is genuinely neutral — do not end with a
 hardcoded "next: X".
 
-**Incubating note (ADR-0042).** The full designer surface is installed as of
-PR6: the six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
+**Surface note (ADR-0042 Accepted).** The full designer surface ships: the
+six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
 `critique` / `refine`), the `/designer:start` lifecycle macro, and the
 `resume` / `checkpoint` / `peer-now` meta skills. Every `next_command` this
-proposal can name is runnable. The persona is still **incubating**: ADR-0042 is
-`Proposed` and flips to `Accepted` after the PR7 real-topic dogfood, so the SD3
-decision axes and the SD4 quality lenses remain PROVISIONAL. The critique report is the
-durable handoff either way.
+proposal can name is runnable. The critique report is the durable handoff.
 
 Always include the workflow path when invoked from a workflow command:
 

@@ -1,13 +1,14 @@
 # designer — code-first design/UX decision & quality workbench (L3 persona)
 
-> **Incubating scaffold.** This release adds the **copy-trimmed
-> workflow-continuity machinery and hooks** (non-dispatch) on top of the
-> scaffold (manifests, both marketplace catalogs, release wiring, and a
-> staged shape test) per [ADR-0042](../../docs/adr/0042-designer-persona-design-ux-workbench.md).
-> The persona's user-facing surfaces — the six verb skills, the
-> `designer:start` lifecycle macro, and the meta skills — land across the
-> ADR-0042 implementation ladder. Until the roadmap completes and ADR-0042
-> flips to `Accepted`, no functional command/skill surface ships.
+It ships the **complete** persona surface: the six universal cognitive verbs
+(investigate / frame / decide / compose / critique / refine) re-anchored to
+design/UX, the 7-axis design decision registry, a design-anchored peer
+ensemble, the `designer:start` lifecycle macro, the
+resume / checkpoint / peer-now meta skills, and the L4 design profiles
+(`general` / `flow` / `ui` / `cta` / `content`). Per
+[ADR-0042](../../docs/adr/0042-designer-persona-design-ux-workbench.md) the
+persona is **Accepted** (real-topic dogfood validated it end-to-end).
+Installed hooks no-op cleanly when no designer workflow exists.
 
 `designer` is the third L3 persona plugin of agentic-plugins (after
 `engineer` and `founder`), targeting **code-first design/UX** — the
@@ -45,26 +46,14 @@ specs *and* post-code reality (a rendered screenshot via host-native
 vision, plus the frontend code itself). This is the mechanism that makes
 "agent-assured quality without a design tool" concrete (ADR-0042 SD4).
 
-## Roadmap status (ADR-0042 §Implementation Roadmap)
+## Runtime integration
 
-| PR | Scope | Status |
-|---|---|---|
-| PR1 | Atomic scaffold: manifests, both catalogs, release wiring, staged shape test | ✅ this release |
-| PR2 | Workflow machinery copy-trim (state/dispatch/peer-runner/session-handoff/stop-archive/hooks) | ✅ this release |
-| PR3 | investigate (design brief + privacy gate) + frame | ⏳ pending |
-| PR4 | decide (7-axis design decision registry) + compose | ⏳ pending |
-| PR5 | critique (quality lenses) + refine (convergence loop) | ⏳ pending |
-| PR6 | start lifecycle macro + resume / checkpoint / peer-now meta skills | ⏳ pending |
-| PR7 | Real-topic dogfood → ADR-0042 `Accepted` flip + ADR-0010 §1 L4 correction + doc cascade | ⏳ pending |
-
-Additionally deferred (separate `plugins/runtime` PR per
-[ADR-0016](../../docs/adr/0016-cross-package-commit-splitting.md)
-cross-package rule): `runtime:doctor` / `runtime:settings` inventory
-recognition — their `PLUGIN_NAMES` lists do not yet include `designer`,
-so runtime diagnostics will not report this plugin until that RT PR lands.
-Per ADR-0042 Consequences, the runtime `workflow_kind` projection is
-**not** extended for designer (runtime models only `engineer` /
-`orchestrator`).
+`runtime:doctor` and `runtime:settings` recognize `designer` in their plugin
+inventory and Codex hook-readiness checks. Per ADR-0042 §Consequences the
+runtime `workflow_kind` projection is deliberately **not** extended for
+designer (runtime models only `engineer` / `orchestrator`; founder and
+designer are unsupported kinds by design), so designer workflows do not
+appear in the `runtime:dashboard` Tier-1 active-workflow view.
 
 ## Scope boundaries (ADR-0042 Non-Goals)
 

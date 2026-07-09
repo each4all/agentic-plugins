@@ -9,7 +9,7 @@ sub-question findings against an independent model on the peer host.
 This is designer's own copy of the reference-scan contract (ADR-0010 §5
 no cross-plugin import; ADR-0029 §Neutral copy/adapt). It is the
 design/UX analogue of the founder research-scan ensemble and the engineer
-cited-brief ensemble. The PR3 investigate verb carries this self-contained
+cited-brief ensemble. The investigate verb carries this self-contained
 reference-scan contract directly; designer's full
 `_shared/references/ensemble-protocol.md` (the design-anchored ensemble
 point types) cross-references this file for the reference-scan point.

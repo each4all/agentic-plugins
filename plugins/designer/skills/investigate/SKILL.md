@@ -32,14 +32,13 @@ problem belongs to `/designer:frame`, drafting flows/specs belongs to
 
 ---
 
-## Design Task Profile (self-contained, PR3)
+## Design Task Profile
 
 Every command-mode run records a **Design Task Profile** before allocating
-effort. At PR3 the profile is stated inline here (self-contained); the
-shared Dynamic Orchestration reference —
-`_shared/references/orchestration.md`, carrying the full Design Task
-Profile and bilingual triggers — is the canonical source, and
-this section will then defer to it. Record:
+effort. The canonical source is the shared Dynamic Orchestration reference —
+`_shared/references/orchestration.md`, carrying the full Design Task Profile
+and bilingual triggers; this section restates it inline for
+self-containment. Where the two disagree, the shared reference wins. Record:
 
 ```
 Design Task Profile:
@@ -172,7 +171,7 @@ from a workflow command) state writes.
 
 Build the Design Task Profile per the section above, capturing `Persona:
 designer`, `Skill-profile: design-brief` (the verb mode), `Profile:
-general` (the L4 archetype — MVP default), Surface, Users, Stage,
+general` (the L4 archetype — default), Surface, Users, Stage,
 Platform, Evidence-confidence, and Ensemble Affinity (recorded but not
 gating — always-max policy). After the Task Profile, run the auto-mode
 Step 1–3 flow above (topic + platform + stage confirmation, sub-questions,
@@ -282,14 +281,11 @@ from it). The routing is a fallback only when evidence is genuinely
 neutral — do not end with a hardcoded "next: X". The two aborted outcomes
 have no forward result, so they skip the proposal.
 
-**Incubating note (ADR-0042).** The full designer surface is installed as of
-PR6: the six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
+**Surface note (ADR-0042 Accepted).** The full designer surface ships: the
+six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
 `critique` / `refine`), the `/designer:start` lifecycle macro, and the
 `resume` / `checkpoint` / `peer-now` meta skills. Every `next_command` this
-proposal can name is runnable. The persona is still **incubating**: ADR-0042 is
-`Proposed` and flips to `Accepted` after the PR7 real-topic dogfood, so the SD3
-decision axes and the SD4 quality lenses remain PROVISIONAL. The saved design brief is the
-durable handoff either way.
+proposal can name is runnable. The saved design brief is the durable handoff.
 
 Always include the workflow path when invoked from a workflow command, so
 the user can inspect or resume:
@@ -311,8 +307,8 @@ list.
 
 The designer decision registry (`scripts/decide-registry.mjs` +
 `skills/decide/references/decision-axes.yml`, ADR-0042 SD3) is the single
-axis source of truth. It **lands at PR4** with `designer:decide`. Until
-then, use this **inline fallback**: keep the decisive axes **usability
+axis source of truth; resolve the axis set from it. When the registry is
+unreachable, fall back inline: keep the decisive axes **usability
 사용성** (the common-decisive design axis) and the **context lens** the
 question turns on (consistency 일관성 / conversion 전환 / desirability
 매력도 / content-clarity 명확성), and treat **accessibility 접근성** as the
