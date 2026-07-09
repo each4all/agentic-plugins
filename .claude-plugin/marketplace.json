@@ -24,7 +24,7 @@
     {
       "name": "designer",
       "source": "./plugins/designer",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Designer workbench for code-first design/UX decision & quality assurance across Claude Code & Codex CLI (ADR-0042). The third L3 persona after engineer and founder — the six cognitive verbs re-anchored to UX/UI/CTA/flow, with pre-code design thinking (flows, wireframe specs, CTA copy, IA) and a post-code quality-critique loop over rendered screenshots + frontend code, accessibility the veto gate. All six verbs, the designer:start lifecycle macro, and the resume / checkpoint / peer-now meta skills ship (ADR-0042 Accepted). Composes the image L2 capability rather than re-implementing imagery; Figma excluded in v1.",
       "category": "Development"
     },
@@ -59,7 +59,7 @@
     {
       "name": "runtime",
       "source": "./plugins/runtime",
-      "version": "0.76.0",
+      "version": "0.77.0",
       "description": "Runtime operator control plane for agentic-plugins host readiness, doctor diagnostics, settings planning, workflow storage migration, consensus artifacts, compatibility drift planning, worktree planning, context hygiene artifacts, model/effort config, companion readiness, and workflow ledger health. L1 framework primitive per ADR-0024.",
       "category": "Productivity"
     }
