@@ -1,0 +1,7 @@
+interface:
+  display_name: "Designer — Critique"
+  short_description: "Review a design spec or a rendered screen across usability / accessibility / conversion / consistency lenses, with accessibility as a veto gate"
+  default_prompt: "Use $designer:critique to review a design spec or a rendered screen (--profile=usability|a11y|conversion|consistency, else all four) — vision is host-direct on the active host; the peer path stays code/text"
+
+policy:
+  allow_implicit_invocation: false
