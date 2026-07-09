@@ -197,9 +197,9 @@ Gate verdict: 접근성 Accessibility [PASS/CONDITIONAL/FAIL] (candidate-level; 
 # Next-Action Proposal above (selected_next + one-line why + next_command), NOT a
 # fixed verb. `/designer:refine` is installed and runnable, but it is not the
 # automatic next step: when the critique is clean (no CRITICAL/MAJOR + the gate
-# passes) the next action is "commit / proceed", not refine. Derive it from the
-# actual result rather than hard-coding a refine handoff.
-NEXT_ACTION="<compact selected_next + why + next_command — e.g. 'Address CRITICAL/MAJOR findings (/designer:refine)' OR 'No blocking findings, gate PASS — proceed to commit'>"
+# is not FAIL) the next action is "commit / proceed", not refine. Derive it from
+# the actual result rather than hard-coding a refine handoff.
+NEXT_ACTION="<compact selected_next + why + next_command — e.g. 'Address CRITICAL/MAJOR findings (/designer:refine)' OR 'No blocking findings, gate not FAIL (PASS or CONDITIONAL with named preconditions) — proceed to commit'>"
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
@@ -255,7 +255,8 @@ Output the severity-grouped report (leading with the gate verdict) and one of:
 
 - `✓ Critique complete.` + count by severity.
 - `✓ Critique complete (no significant findings).` — when no CRITICAL or MAJOR
-  surfaced and the accessibility gate passes; the design is in good shape.
+  surfaced and the accessibility gate is not FAIL (`PASS`, or `CONDITIONAL` with
+  its remediations named); the design is in good shape.
 
 Then emit an **Active Next-Action Proposal** (the inline shape in
 `skills/critique/SKILL.md` § Completion): typical `selected_next` is
@@ -265,11 +266,9 @@ a finding opens a genuine 2+-direction fork, or `/designer:investigate` when a
 load-bearing accessibility / convention claim needs evidence. Do not end with a
 hardcoded "next: X".
 
-designer is incubating (ADR-0042 `Proposed`) — the full surface (the six verbs,
-the `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
-`peer-now` meta skills) is installed as of PR6, so every `next_command` is
-runnable. The persona flips to `Accepted` after the PR7 real-topic dogfood; the
-SD3 axes and SD4 lenses stay PROVISIONAL until then. The critique report is the durable
+ADR-0042 is `Accepted` — the full designer surface (the six verbs, the
+`/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
+`peer-now` meta skills) ships, so every `next_command` is runnable. The critique report is the durable
 handoff. See `skills/critique/SKILL.md` § Completion.
 
 Always include the workflow path:

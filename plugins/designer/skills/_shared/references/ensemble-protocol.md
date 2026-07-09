@@ -24,8 +24,8 @@ as-is.
 The six point types below are the design analogue of the engineer /
 founder ensemble point sets. The **reference-scan** point has its full
 bidirectional contract in
-`../../investigate/references/design-brief-ensemble.md` (landed at
-ADR-0042 PR3); this file cross-references it rather than duplicating the
+`../../investigate/references/design-brief-ensemble.md`; this file
+cross-references it rather than duplicating the
 citation-remapping / Path-A / Path-B machinery.
 
 ---
@@ -476,11 +476,22 @@ invocation pattern above.
      tradeoff against the named axes' labels and roles (the decisive
      usability axis + the preset's archetype axis; supporting axes;
      the accessibility veto gate)
-  3. Risk areas (usability / accessibility / conversion / consistency /
-     feasibility)
-  4. Accessibility gate verdict for the direction: PASS / CANDIDATE-FAIL
-     (name the candidate WCAG A/AA barrier) / UNKNOWN — a candidate
-     barrier is a veto, not a tradeoff to fold into the build plan
+  3. Risk areas — one per axis listed in <axis_awareness>, using that
+     axis's label. When <axis_awareness> is absent, fall back to
+     usability / accessibility / conversion / consistency.
+  4. Accessibility gate verdict for the direction: PASS / CONDITIONAL /
+     CANDIDATE-FAIL / UNKNOWN.
+     - PASS — no candidate WCAG A/AA barrier is visible in the description.
+     - CONDITIONAL — a candidate barrier exists but a specific remediation
+       removes it; name the barrier AND the remediation. The remediation is
+       a blocking precondition of the direction, not a nice-to-have.
+     - CANDIDATE-FAIL — a candidate barrier is inherent to the direction and
+       no remediation preserves it. This is a veto, not a tradeoff to fold
+       into the build plan.
+     - UNKNOWN — the description is insufficient to judge. Say what is missing.
+     Do NOT report PASS and then name a barrier in the risk areas: a barrier
+     you can name with a fix is CONDITIONAL, and one you cannot fix is
+     CANDIDATE-FAIL.
   </structured_output_contract>
 
   <privacy_contract>
@@ -529,6 +540,18 @@ invocation pattern above.
   conform — several questions legitimately contain an apostrophe (e.g.
   "the product's existing patterns"), which is correct and must not be
   "fixed". Future presets follow the same narrowed rule.
+- **Gate-verdict vocabulary**: the four values above are exactly the
+  verdicts `../../decide/SKILL.md` and `../../critique/SKILL.md` render
+  (`PASS / CONDITIONAL / FAIL`, plus `UNKNOWN` for an under-described peer
+  input). `CANDIDATE-FAIL` is the peer-side spelling of `FAIL` — the
+  `CANDIDATE-` prefix restates ADR-0042 Non-Goal 6, that a peer reading
+  only text/code cannot certify conformance. **`CONDITIONAL` is
+  load-bearing**: `@decide:recommendation-rule` tier 2 ranks "gate-passing
+  **or** gate-conditional-with-named-remediation" directions, so a contract
+  that omits it forces the peer to either escalate a remediable barrier into
+  a veto or bury it in prose. Both corrupt synthesis. Map the peer's verdict
+  onto the local vocabulary 1:1; never silently upgrade `CONDITIONAL` to
+  `PASS` because the remediation looks easy.
 - **Synthesis**: Merge direction sets per the four base categories. Add
   PEER-ONLY directions; elevate confidence for AGREED; present CONFLICT
   directions both ways for the user. When `<axis_awareness>` was present,
@@ -537,8 +560,13 @@ invocation pattern above.
   its justification uses a concept orthogonal to the snapshot's axes, and
   surface the unmapped vocabulary so the user MAY widen the preset. This
   is a presentation sub-label on top of the four base buckets, not a
-  fifth category. A peer-flagged candidate accessibility barrier on the
-  locally-preferred direction is checked FIRST, before the decisive axes.
+  fifth category. The peer's gate verdict on the locally-preferred
+  direction is reconciled FIRST, before the decisive axes: a peer
+  `CANDIDATE-FAIL` vetoes until refuted; a peer `CONDITIONAL` adds its named
+  remediation to the direction's preconditions (it does not veto); a peer
+  `UNKNOWN` is a request for context, not evidence of safety. When the two
+  sides' gate verdicts differ, the **stricter** verdict holds until the
+  discrepancy is resolved on the evidence.
 
 ### Plan-verify (compose phase)
 

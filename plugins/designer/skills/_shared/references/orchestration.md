@@ -73,7 +73,7 @@ Design Task Profile:
   Ensemble Affinity:   [LOW | MEDIUM | HIGH]
 ```
 
-This is the canonical Design Task Profile. The PR3 verb skills state it
+This is the canonical Design Task Profile. The verb skills state it
 inline for self-containment; where the two ever disagree, this file is
 the source of truth.
 

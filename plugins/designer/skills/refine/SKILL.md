@@ -124,10 +124,31 @@ route through `/designer:decide` first.
    does not run the build); if it is unavailable or the edit broke the render, the
    vision re-critique cannot run — flag it UNVERIFIED and do not claim convergence.
    Loop back to Step 2 for any new finding until findings converge — no new
-   CRITICAL / MAJOR and the accessibility gate passes. **Bound the loop**: at most
+   CRITICAL / MAJOR and the accessibility gate is **not FAIL** (see
+   @refine:convergence-predicate). **Bound the loop**: at most
    a few passes (default 2, hard cap 3); if findings still do not converge, stop
    and pause (route to `/designer:decide` / `/designer:investigate` / an owner
    decision) rather than iterating indefinitely.
+
+<!-- @refine:convergence-predicate:begin -->
+**The convergence predicate.** A refinement has converged when the re-critique
+produces **no new CRITICAL / MAJOR finding** and the accessibility gate verdict
+is **not `FAIL`** — that is, `PASS`, or `CONDITIONAL` with every remediation
+named as a blocking precondition of the artifact.
+
+`CONDITIONAL` converges **on purpose**. Under ADR-0042 Non-Goal 6 a static
+spec / code / screenshot critique is candidate-level and cannot certify
+conformance: focus order, keyboard traversal, and screen-reader behavior are
+established only by runtime testing, which designer does not perform. So a
+correct, well-specified design that names its runtime-verifiable remediations
+lands on `CONDITIONAL`, not `PASS`. Requiring `PASS` to converge would mean an
+honest design never converges — and would pressure the author into the exact
+over-claim Non-Goal 6 exists to prevent.
+
+What does **not** converge: a `FAIL` gate (an unmitigated candidate barrier), a
+`CONDITIONAL` whose remediation is vague, deferred, or unowned ("we'll check
+contrast later" is not a precondition), and any pass that opens a new barrier.
+<!-- @refine:convergence-predicate:end -->
 
 If verification surfaces a new inconsistency or a new barrier, return to Step 2
 and report it. Do NOT mark the refinement complete on an unreconciled artifact or
@@ -139,8 +160,10 @@ an unresolved re-critique.
 ## Refinement Summary
 - Applied: [N findings / 1 revision / etc.]
 - Verified: [downstream elements reconcile; accessibility gate exposure
-  unchanged; measurable success metrics intact; [to be validated] markers intact]
-- Re-critique: [converged — no new CRITICAL/MAJOR, gate PASS] OR [new findings → looping]
+  unchanged or reduced; measurable success metrics intact; [to be validated] markers intact]
+- Re-critique: [converged — no new CRITICAL/MAJOR, gate PASS or CONDITIONAL
+  with named preconditions] OR [new findings → looping] OR [paused — gate FAIL
+  / pass cap reached]
 - Deferred: [items not addressed and why]
 ```
 
@@ -223,8 +246,9 @@ After both sides return:
    - A peer-flagged regression (a new inconsistency or a **new accessibility
      barrier**) → pause and report to the user before proceeding.
 
-Loop Steps 2–5 until findings converge (no new CRITICAL / MAJOR and the
-accessibility gate passes). This is the critique → refine → re-critique
+Loop Steps 2–5 until findings converge per @refine:convergence-predicate (no
+new CRITICAL / MAJOR and the accessibility gate is not FAIL). This is the
+critique → refine → re-critique
 convergence loop. **Bound it (no unbounded loop)**: run at most a few passes
 (default 2, hard cap 3). If findings still do not converge — each pass exposes a
 fresh CRITICAL / MAJOR, or the peer keeps flagging a regression — STOP: pause and
@@ -268,14 +292,11 @@ routing is a fallback only when evidence is genuinely neutral — do not end wit
 hardcoded "next: X". A blocked outcome (peer flagged a regression / a new
 accessibility barrier) pauses for user direction before any forward proposal.
 
-**Incubating note (ADR-0042).** The full designer surface is installed as of
-PR6: the six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
+**Surface note (ADR-0042 Accepted).** The full designer surface ships: the
+six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
 `critique` / `refine`), the `/designer:start` lifecycle macro, and the
 `resume` / `checkpoint` / `peer-now` meta skills. Every `next_command` this
-proposal can name is runnable. The persona is still **incubating**: ADR-0042 is
-`Proposed` and flips to `Accepted` after the PR7 real-topic dogfood, so the SD3
-decision axes and the SD4 quality lenses remain PROVISIONAL. The refinement summary is the
-durable handoff either way.
+proposal can name is runnable. The refinement summary is the durable handoff.
 
 Always include the workflow path when invoked from a workflow command:
 

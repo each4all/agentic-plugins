@@ -36,7 +36,7 @@ re-implements image generation (the artifact-handoff contract lives in
 **Quality is annotated in, not deferred (ADR-0042 SD4).** "Excluding Figma
 is not excluding quality" means every composed element carries explicit
 **acceptance criteria** on the two design-quality axes that the later
-`designer:critique` (PR5A) holds the rendered UI to:
+`designer:critique` holds the rendered UI to:
 
 - **Accessibility** — candidate WCAG A/AA checks for the element: semantic
   structure / landmark, keyboard operability, visible focus, contrast,
@@ -130,7 +130,7 @@ privacy gate before BOTH web search AND peer-host dispatch. Genericize
 before the peer prompt; the pre-genericization value MUST never leave the
 local host. **Screenshots are sensitive by default** and are never sent to
 the peer as bytes (the peer path is code/text-based; vision critique is a
-same-host `designer:critique` capability landing at PR5A). See
+same-host `designer:critique` capability). See
 `../investigate/references/design-brief-spec.md` § Privacy Gate.
 
 ### Step 3: Peer ensemble parallel analysis (Plan-verify point)
@@ -191,14 +191,11 @@ load-bearing pattern assumption needs evidence before the spec is
 trustworthy. The routing is a fallback only when evidence is genuinely
 neutral — do not end with a hardcoded "next: X".
 
-**Incubating note (ADR-0042).** The full designer surface is installed as of
-PR6: the six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
+**Surface note (ADR-0042 Accepted).** The full designer surface ships: the
+six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
 `critique` / `refine`), the `/designer:start` lifecycle macro, and the
 `resume` / `checkpoint` / `peer-now` meta skills. Every `next_command` this
-proposal can name is runnable. The persona is still **incubating**: ADR-0042 is
-`Proposed` and flips to `Accepted` after the PR7 real-topic dogfood, so the SD3
-decision axes and the SD4 quality lenses remain PROVISIONAL. The composed spec is the
-durable handoff either way.
+proposal can name is runnable. The composed spec is the durable handoff.
 
 Always include the workflow path when invoked from a workflow command:
 

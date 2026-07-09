@@ -43,11 +43,12 @@ schema: "1.0"
 # screen-reader behavior need runtime testing. A gate FAIL is a candidate
 # blocker to resolve or explicitly accept-with-rationale, not a certificate.
 #
-# PROVISIONAL (잠정, ADR-0042 SD3): the decisive/supporting split and the
-# axis questions below are a first-cut hypothesis, expected to be re-tuned as
-# real designer dogfood (ADR-0042 PR7) accumulates — e.g. 전환 conversion may
-# graduate to decisive for a growth-surface archetype. Treat the current
-# roles as a starting baseline, not a settled invariant beyond the
+# DOGFOOD-VALIDATED, STILL EVOLVING (ADR-0042 SD3): the decisive/supporting
+# split and the axis questions were exercised end-to-end by the ADR-0042
+# Accepted-flip dogfood — the presets discriminated between real candidate
+# directions and the accessibility gate exercised its veto. They remain open
+# to re-tuning as dogfood accumulates (e.g. 전환 conversion may graduate to
+# decisive for a further growth-surface archetype). Settled invariants: the
 # ≥2-decisive floor and the accessibility veto gate.
 #
 # Preset ↔ L4 profile map (PROFILE_PRESET_MAP in ../../../scripts/decide-registry.mjs
@@ -55,6 +56,11 @@ schema: "1.0"
 # ui → experience, cta → conversion, content → clarity. `balanced` stays the
 # default (all --size tiers resolve it); conversion / experience / clarity are
 # reached via an explicit --preset=<id> or via their L4 profile.
+#
+# Preset axis counts differ ON PURPOSE. `balanced` carries all seven axes; the
+# three archetype presets carry five — the two decisive axes, the accessibility
+# gate, and only the supporting axes their archetype actually turns on. An axis
+# a preset omits is not evaluated for that decision; it is not a silent zero.
 
 presets:
 

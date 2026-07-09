@@ -30,9 +30,8 @@ three tiers of weight:
 
 This verb takes no `--profile` argument — decide is single-mode. Design
 sub-discipline context flows through the **Design Task Profile**
-(self-contained in `../investigate/SKILL.md` § Design Task Profile at PR3;
-the shared `../_shared/references/orchestration.md` Dynamic Orchestration
-reference).
+(canonically defined in `../_shared/references/orchestration.md`; the verb
+skills restate it inline for self-containment).
 
 > **accessibility HONESTY BOUNDARY (ADR-0042 Non-Goal 6).** The
 > accessibility gate flags *candidate* WCAG A/AA issues from specs, code,
@@ -42,11 +41,12 @@ reference).
 > is a candidate blocker to resolve or explicitly accept-with-rationale,
 > not a certificate.
 
-> **PROVISIONAL (잠정, ADR-0042 SD3).** The decisive/supporting split and
-> the axis questions are a first-cut hypothesis, expected to be re-tuned as
-> real designer dogfood (ADR-0042 PR7) accumulates. Treat the roles as a
-> baseline, not a settled invariant beyond the ≥2-decisive floor and the
-> accessibility veto gate.
+> **Dogfood-validated, still evolving (ADR-0042 SD3).** The decisive/supporting
+> split and the axis questions were validated by the ADR-0042 Accepted-flip
+> dogfood: the presets discriminated between real directions and the
+> accessibility gate exercised its veto. They remain open to re-tuning as
+> designer dogfood accumulates — but the ≥2-decisive floor and the
+> accessibility veto gate are settled invariants.
 
 ---
 
@@ -105,7 +105,7 @@ the registry is missing or invalid (graceful-degradation per ADR-0027 §1.6).
 | 6 | **구현가능성 Feasibility** | supporting | Can it be built/maintained within the frontend-stack + component-library + effort constraints? |
 | 7 | **접근성 Accessibility** | **gate** | Does it clear WCAG A/AA (contrast, semantics, keyboard, focus, target size)? A hard barrier is a veto (candidate-level — Non-Goal 6). |
 
-These seven anchors are the `balanced` preset — the MVP default, resolved
+These seven anchors are the `balanced` preset — the default, resolved
 for every `--size` tier. The archetype presets (`conversion`, `experience`,
 `clarity`) swap the second decisive axis and drop the axes their archetype
 does not turn on; they are reachable via explicit `--preset=<id>` or via the
@@ -185,7 +185,7 @@ weighting/sensitivity rows below.
 <!-- @decide:comparison-table:end -->
 
 <!-- @decide:weighting-sensitivity-output:begin -->
-#### REQUIRED output format — weighting + sensitivity (ADR-0027 §1.3 + PR4)
+#### REQUIRED output format — weighting + sensitivity (ADR-0027 §1.3)
 
 This region renders ONLY when the opt-in gate fires:
 `context.weights_explicit === true` (user passed `--weights=<spec>`) OR
@@ -212,8 +212,17 @@ axes. Uniform `{}` weights expand to 1.0 per axis. The aggregate row is
 **advisory only** — it is NOT the recommendation winner. When it favors a
 different direction than the @decide:recommendation-rule winner, the
 recommendation adds a `Sensitivity-aggregate divergence:` line and lowers
-confidence one tier, but does NOT flip the recommendation. The accessibility
-gate is never expressed as a weight — a FAIL vetoes regardless of aggregate.
+confidence one tier, but does NOT flip the recommendation.
+
+The accessibility **veto is never encoded as a weight**. The gate axis does
+carry a weight in the advisory aggregate like any supporting axis — the
+resolver emits `accessibility: 1.0` by default and accepts an explicit
+`--weights=accessibility:<w>` — but that weight only tilts the advisory row.
+A gate **FAIL vetoes regardless of the aggregate**, and no weight (including
+`accessibility:0`) can remove, soften, or strengthen the veto: the veto is
+applied categorically by @decide:recommendation-rule tier 1, before any
+aggregate is read. Never present a high accessibility weight as if it were
+the gate, and never treat a low one as a waiver.
 
 **Sensitivity flip summary** (matches `analyzeSensitivity()` in
 `scripts/lib/decide-sensitivity.mjs`):
@@ -353,7 +362,7 @@ tradeoffs across the resolved axes. Genericize per the privacy gate before
 the peer prompt — the peer must never see proprietary UI or customer data,
 and **screenshots are never sent to the peer as bytes** (the peer path is
 code/text-based; `codex-companion` has no `--image` flag — vision critique
-is a same-host `designer:critique` capability landing at PR5A). The peer
+is a same-host `designer:critique` capability). The peer
 call is automatic (always-max policy); skills do not pass `--model` /
 `--effort`. (designer's `../_shared/references/ensemble-protocol.md`
 §Brainstorm carries the formal prompt template +
@@ -403,14 +412,11 @@ decisive evidence gap or an unresolved accessibility gate surfaced, or
 fallback only when evidence is genuinely neutral — do not end with a
 hardcoded "next: X".
 
-**Incubating note (ADR-0042).** The full designer surface is installed as of
-PR6: the six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
+**Surface note (ADR-0042 Accepted).** The full designer surface ships: the
+six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
 `critique` / `refine`), the `/designer:start` lifecycle macro, and the
 `resume` / `checkpoint` / `peer-now` meta skills. Every `next_command` this
-proposal can name is runnable. The persona is still **incubating**: ADR-0042 is
-`Proposed` and flips to `Accepted` after the PR7 real-topic dogfood, so the SD3
-decision axes and the SD4 quality lenses remain PROVISIONAL. The decision record is the
-durable handoff either way.
+proposal can name is runnable. The decision record is the durable handoff.
 
 Always include the workflow path when invoked from a workflow command:
 

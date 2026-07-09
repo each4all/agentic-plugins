@@ -194,10 +194,15 @@ automatically per `../_shared/references/ensemble-protocol.md` (always-max).
 **Do not proceed to Phase 2 until the user approves a direction.** Every
 direction-approval prompt carries Options / Tradeoffs / Risks /
 Recommendation / Confidence / Evidence pointers / Default next command, plus
-the accessibility gate verdict (PASS / CANDIDATE-FAIL / UNKNOWN). A
-CANDIDATE-FAIL direction is not recommended without an explicit,
-user-acknowledged remediation — a candidate WCAG A/AA barrier vetoes; it is
-not a tradeoff to fold into the build plan.
+the accessibility gate verdict (PASS / CONDITIONAL / CANDIDATE-FAIL /
+UNKNOWN — the vocabulary of
+`../_shared/references/ensemble-protocol.md` § Brainstorm, where
+`CANDIDATE-FAIL` is the peer-side spelling of `FAIL`). A **CONDITIONAL**
+direction may be recommended, but only with its remediation named as a
+blocking precondition. A **CANDIDATE-FAIL** direction vetoes: it is not
+recommended on usability/archetype strength, and a candidate WCAG A/AA
+barrier is not a tradeoff to fold into the build plan. An **UNKNOWN** verdict
+is a request for context, not evidence of safety.
 
 ### Phase 2 — Compose the design artifact
 
@@ -337,6 +342,5 @@ work if demand arrives).
   detached HEAD.
 - ADR-0042 Non-Goal 2 — `start` is designer-internal verb sequencing and
   does NOT transit cross-plugin boundaries; `parent_workflow` is unset.
-- designer is **incubating** (ADR-0042 is `Proposed`): the persona flips to
-  `Accepted` after the PR7 real-topic dogfood. All six verbs, this macro,
-  and the three meta skills now ship.
+- ADR-0042 is `Accepted` (the real-topic dogfood validated the persona). All
+  six verbs, this macro, and the three meta skills ship.

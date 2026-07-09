@@ -24,10 +24,11 @@ Provenance of the four active-lens standards:
 > a static critique cannot perform. A gate FAIL is a **candidate blocker** to
 > resolve or explicitly accept-with-rationale, never a conformance certificate.
 
-> **PROVISIONAL (잠정, ADR-0042 SD3).** The criteria weighting and the
-> active/inactive lens split are a first-cut hypothesis, expected to be re-tuned
-> as real designer dogfood (ADR-0042 PR7) accumulates. Treat these as a
-> baseline, not a settled invariant.
+> **Dogfood-validated, still evolving (ADR-0042 SD4).** The criteria weighting and
+> the active/inactive lens split were exercised end-to-end by the ADR-0042
+> Accepted-flip dogfood — the four active lenses produced real findings and the
+> accessibility gate moved a design from FAIL to CONDITIONAL. They remain open to
+> re-tuning as dogfood accumulates; the accessibility veto gate is settled.
 
 **Single shared vocabulary (ADR-0042 SD4).** A critique lens name **is** an SD3
 decision-axis id — `designer:decide` and `designer:critique` share ONE axis
@@ -203,10 +204,10 @@ introducing one-offs that fragment the experience.
 ## Defined-but-inactive lenses (MVP)
 
 To keep the 1:1 lens ⇒ SD3-axis coverage complete, the remaining three axes are
-**named as lenses but inactive at the MVP** (ADR-0042 SD4 — they "complete the
+**named as lenses but inactive in v1** (ADR-0042 SD4 — they "complete the
 1:1 axis coverage and activate incrementally"). Their axis definitions live in
 `../../decide/references/decision-axes.yml`; their critique criteria are stubbed
-here and mature in a later slice (ADR-0042 PR7 dogfood):
+here and mature as dogfood demand for them arrives:
 
 - **desirability** (매력도) — emotional appeal, polish, trust, and brand fit
   (distinct from usability's task-efficiency and aesthetic-minimalist heuristic).
@@ -216,7 +217,7 @@ here and mature in a later slice (ADR-0042 PR7 dogfood):
   and component library; component reuse over new infrastructure.
 
 Invoking `--profile=<one of these>` is accepted but reports that the lens is
-defined-but-inactive at the MVP and falls back to the full active-lens set,
+defined-but-inactive in v1 and falls back to the full active-lens set,
 rather than emitting a half-specified rubric.
 
 ---

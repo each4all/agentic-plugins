@@ -109,7 +109,11 @@ are reported as unverified, not certified.
 findings converge. After applying the revision + the Refine-verify ensemble,
 re-critique the revised artifact (for a post-code change, re-render + re-read the
 screen host-direct — same-host vision). Loop until no new CRITICAL / MAJOR and the
-accessibility gate passes.
+accessibility gate is **not FAIL** — `PASS`, or `CONDITIONAL` with every
+remediation named as a blocking precondition. `CONDITIONAL` converges on purpose:
+static critique is candidate-level (ADR-0042 Non-Goal 6), so an honest,
+well-specified design lands there rather than on `PASS`. See
+`$CLAUDE_PLUGIN_ROOT/skills/refine/SKILL.md` @refine:convergence-predicate.
 
 ### Privacy gate (before any external call)
 
@@ -200,7 +204,7 @@ NOTE="### Ensemble launched: refine at <iso-utc>
 - Verified: <downstream elements reconcile; accessibility gate exposure
   unchanged; measurable success metrics intact; [to be validated] markers intact>
 - Render status (post-code only): <re-rendered screen read host-direct | re-render unavailable / broke — vision re-critique UNVERIFIED | N/A (pre-code)>
-- Re-critique: <converged — no new CRITICAL/MAJOR + accessibility gate PASS | NOT converged — new findings / regression / vision UNVERIFIED>
+- Re-critique: <converged — no new CRITICAL/MAJOR + accessibility gate not FAIL (PASS, or CONDITIONAL with named preconditions) | NOT converged — new findings / regression / gate FAIL / vision UNVERIFIED>
 - Convergence: <CONVERGED | PAUSED — bounded passes exhausted / regression / render unavailable → routed to owner decision | /designer:decide | /designer:investigate>
 - Deferred: <items not addressed and why>
 
@@ -219,7 +223,7 @@ NOTE="### Ensemble launched: refine at <iso-utc>
 # fixed verb. The convergence handoff is a re-critique: when refine converged, the
 # typical next action is "/designer:critique to confirm" OR "proceed / commit"
 # when the change was small and reconciles. Derive it from the actual result.
-NEXT_ACTION="<compact selected_next + why + next_command — e.g. 'Re-critique the revised artifact to confirm convergence (/designer:critique)' OR 'Converged, gate PASS — proceed / commit'>"
+NEXT_ACTION="<compact selected_next + why + next_command — e.g. 'Re-critique the revised artifact to confirm convergence (/designer:critique)' OR 'Converged, gate not FAIL — proceed / commit'>"
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
@@ -246,7 +250,7 @@ fi
 
 # ADR-0017 §sub-decision 5 — atomic terminal write. CONVERGENCE GUARD: mark the
 # workflow terminal ONLY when the refine actually CONVERGED — the re-critique is
-# clean (no new CRITICAL/MAJOR, accessibility gate PASS), no peer-flagged
+# clean (no new CRITICAL/MAJOR, accessibility gate not FAIL), no peer-flagged
 # regression, and (post-code) the vision re-critique ran or is explicitly N/A. A
 # PAUSED / non-converged refine (a new inconsistency, a new accessibility barrier,
 # a bounded-pass exhaustion, or a re-render that could not be re-critiqued) leaves
@@ -293,7 +297,8 @@ Output the refinement summary (applied / verified / re-critique / deferred) and
 one of:
 
 - `✓ Refinement complete.` + the artifact revised and reconciled (re-critique
-  converged, accessibility gate PASS).
+  converged, accessibility gate not FAIL — state which: `PASS`, or `CONDITIONAL`
+  plus the preconditions now binding on the artifact).
 - `✓ Refine paused.` — when the peer or the consistency re-critique surfaced a new
   inconsistency or a new accessibility barrier, the bounded passes were exhausted
   without convergence, or a post-code re-render could not be re-critiqued. The
@@ -306,11 +311,9 @@ Then emit an **Active Next-Action Proposal** (the inline shape in
 — or "the design is sound, proceed" when the change was small and reconciles. Do
 not end with a hardcoded "next: X".
 
-designer is incubating (ADR-0042 `Proposed`) — the full surface (the six verbs,
-the `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
-`peer-now` meta skills) is installed as of PR6, so every `next_command` is
-runnable. The persona flips to `Accepted` after the PR7 real-topic dogfood; the
-SD3 axes and SD4 lenses stay PROVISIONAL until then. The refinement summary is the durable
+ADR-0042 is `Accepted` — the full designer surface (the six verbs, the
+`/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
+`peer-now` meta skills) ships, so every `next_command` is runnable. The refinement summary is the durable
 handoff. See `skills/refine/SKILL.md` § Completion.
 
 Always include the workflow path:

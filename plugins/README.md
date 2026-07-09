@@ -100,10 +100,13 @@ Per `docs/adr/0007-migration-cutover-plan.md`, plugin names and
 structures are agentic-plugins' own design — not 1:1 ports of omcc.
 omcc plugins serve as **experiential reference**, not porting targets.
 
-- **Future**: design-domain plugin — references omcc-designer's
-  experience (poster, social-graphics, frontend, brief, evaluation,
-  etc.) with the same redesign stance and the same 4-layer
-  composition model
+- **`designer`** (L3 persona, ADR-0042) — the design-domain plugin,
+  redesigned from omcc-designer's experience (poster, social-graphics,
+  frontend, brief, evaluation) rather than ported. Scoped down to a
+  code-first design/UX **decision & quality** workbench: `print` /
+  `brand` / `motion` are explicit Non-Goals, Figma is excluded in v1,
+  and generated imagery composes the `image` L2 capability instead of
+  being re-implemented. Same 4-layer composition model.
 
 ## Plugin layout convention
 

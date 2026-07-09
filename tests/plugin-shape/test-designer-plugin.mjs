@@ -47,8 +47,13 @@
 //     §1.5(3) profile-override slot. The two ABSENCE guards from PR3/PR5A
 //     therefore flip to PRESENCE here, and the DEFERRED "every L4 profile
 //     resolves to a defined preset" shape test lands.
-//   - PR7 de-incubates: the incubating marker is removed from the manifests +
-//     README, and these PRESENCE assertions flip to ABSENCE.
+//   - PR7 (this revision) de-incubates. The real-topic dogfood ran the persona
+//     end-to-end and flipped ADR-0042 to Accepted, so the incubating marker is
+//     removed from the manifests + README + both catalogs and every PRESENCE
+//     assertion flips to ABSENCE. The dogfood surfaced seven defects; the six
+//     that are designer-local are fixed here and guarded below (the seventh, the
+//     source-taxonomy gap, is recorded as a demand-gated ADR-0042 follow-up and
+//     is guarded as an honest in-spec note rather than a silent workaround).
 //
 // Run via `node --test tests/plugin-shape/test-designer-plugin.mjs`.
 
@@ -61,11 +66,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/designer');
 
-// ADR-0042 is Proposed; the persona is incubating until the PR7 dogfood
-// flips it to Accepted. Until then the user-facing surfaces MUST carry
-// this marker so the scaffold never reads as a shipped persona. At PR7
-// these assertions flip from "must carry" to "must NOT carry" (founder
-// precedent).
+// ADR-0042 was Accepted at PR7 (the real-topic dogfood validated designer).
+// The user-facing surfaces must now be FREE of this incubating marker — the
+// assertions below are the de-incubation gate (founder precedent).
 const INCUBATING_MARKER = /incubating scaffold/i;
 
 // The PR3 privacy-gate textual sentinel (ADR-0042 SD4). The gate must be
@@ -178,10 +181,10 @@ describe('plugins/designer — Claude manifest (.claude-plugin/plugin.json)', ()
     ok(json.description.length > 0);
   });
 
-  it('carries the incubating marker (ADR-0042 Proposed — removed at PR7)', async () => {
+  it('no longer carries the incubating marker (ADR-0042 Accepted at PR7)', async () => {
     const json = await readJSON(path);
-    ok(INCUBATING_MARKER.test(json.description),
-      'Claude manifest description must carry the incubating marker until ADR-0042 is Accepted at PR7');
+    ok(!INCUBATING_MARKER.test(json.description),
+      'Claude manifest description must drop the incubating marker now that ADR-0042 is Accepted');
   });
 
   it('carries publishing metadata consistent with sibling plugins', async () => {
@@ -203,8 +206,8 @@ describe('plugins/designer — Codex manifest (.codex-plugin/plugin.json)', () =
     strictEqual(json.name, 'designer');
     strictEqual(json.version, claude.version, 'host manifests must carry the same version');
     strictEqual(typeof json.description, 'string');
-    ok(INCUBATING_MARKER.test(json.description),
-      'Codex manifest description must carry the incubating marker until ADR-0042 is Accepted at PR7');
+    ok(!INCUBATING_MARKER.test(json.description),
+      'Codex manifest description must drop the incubating marker now that ADR-0042 is Accepted');
   });
 
   it('declares hooks AND the skills/interface keys (PR3 boundary — verb surfaces landed)', async () => {
@@ -604,13 +607,10 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
       'commands/frame.md must not pass --profile in any state.mjs path — frame is single-mode (founder refine precedent)');
   });
 
-  it('the PR3 verb surfaces carry the incubating next-action disclaimer (PR7 flip gate, no stale unlanded claim)', async () => {
-    // Originally (PR3) this asserted that investigate/frame disclaim an unlanded
-    // /designer:decide + /designer:compose. Those verbs shipped at PR4, and PR6
-    // completed the surface, so the disclaimer's SUBJECT changed: what remains
-    // true is that the persona is incubating until the PR7 dogfood flips
-    // ADR-0042 to Accepted. The "unlanded / not runnable" claim is now false and
-    // is banned repo-wide by the PR6 suite's stale-claim scan.
+  it('the investigate/frame surfaces are de-incubated and name ADR-0042 as Accepted', async () => {
+    // Through PR6 these surfaces disclaimed an incubating persona and pointed at
+    // the PR7 dogfood as the Accepted-flip gate. The dogfood ran; the flip landed.
+    // Both the marker and the forward reference are now false claims.
     for (const rel of [
       'skills/investigate/SKILL.md',
       'skills/frame/SKILL.md',
@@ -618,8 +618,9 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
       'commands/frame.md',
     ]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
-      match(text, /incubating/i, `${rel} must carry the incubating next-action disclaimer`);
-      match(text, /PR7/, `${rel} must name the PR7 dogfood as the Accepted-flip gate`);
+      ok(!/incubating/i.test(text), `${rel} must drop the incubating disclaimer`);
+      match(text, /ADR-0042 is `Accepted`|ADR-0042 Accepted/,
+        `${rel} must state that ADR-0042 is Accepted`);
     }
   });
 
@@ -800,11 +801,10 @@ describe('plugins/designer — PR4 decide + compose verb surfaces + decide engin
       'commands/compose.md append/resume path must carry --profile (resume continuity)');
   });
 
-  it('the decide/compose surfaces carry the incubating disclaimer (PR7 flip gate, no stale unlanded claim)', async () => {
+  it('the decide/compose surfaces are de-incubated (ADR-0042 Accepted)', async () => {
     for (const rel of ['skills/decide/SKILL.md', 'skills/compose/SKILL.md', 'commands/decide.md', 'commands/compose.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
-      match(text, /incubating/i, `${rel} must carry the incubating disclaimer`);
-      match(text, /PR7/, `${rel} must name the PR7 dogfood as the Accepted-flip gate`);
+      ok(!/incubating/i.test(text), `${rel} must drop the incubating disclaimer`);
     }
   });
 
@@ -1046,11 +1046,10 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
     }
   });
 
-  it('the critique surface carries the incubating disclaimer (PR7 flip gate, no stale unlanded claim)', async () => {
+  it('the critique surface is de-incubated (ADR-0042 Accepted)', async () => {
     for (const rel of ['skills/critique/SKILL.md', 'commands/critique.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
-      match(text, /incubating/i, `${rel} must carry the incubating disclaimer`);
-      match(text, /PR7/, `${rel} must name the PR7 dogfood as the Accepted-flip gate`);
+      ok(!/incubating/i.test(text), `${rel} must drop the incubating disclaimer`);
     }
   });
 
@@ -1222,11 +1221,10 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
     }
   });
 
-  it('the refine surface carries the incubating disclaimer (PR7 flip gate, no stale unlanded claim)', async () => {
+  it('the refine surface is de-incubated (ADR-0042 Accepted)', async () => {
     for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
-      match(text, /incubating/i, `${rel} must carry the incubating disclaimer`);
-      match(text, /PR7/, `${rel} must name the PR7 dogfood as the Accepted-flip gate`);
+      ok(!/incubating/i.test(text), `${rel} must drop the incubating disclaimer`);
     }
   });
 
@@ -1719,11 +1717,11 @@ describe('plugins/designer — PR6 start macro + meta skills + shared references
     }
   });
 
-  it('the PR6 surfaces still carry the incubating disclaimer (ADR-0042 is Proposed until the PR7 dogfood)', async () => {
+  it('the start macro surface is de-incubated (ADR-0042 Accepted)', async () => {
     for (const rel of ['skills/start/SKILL.md', 'commands/start.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
-      match(text, /incubating/i, `${rel} must carry the incubating disclaimer`);
-      match(text, /PR7/, `${rel} must point at the PR7 dogfood as the Accepted-flip gate`);
+      ok(!/incubating/i.test(text), `${rel} must drop the incubating disclaimer`);
+      match(text, /ADR-0042 is `Accepted`/, `${rel} must state that ADR-0042 is Accepted`);
     }
   });
 });
@@ -1745,11 +1743,12 @@ describe('plugins/designer — inert boundary (persona directories never ship)',
     });
   }
 
-  it('ships README.md carrying the incubating marker AND the ADR-0042 pointer', async () => {
+  it('ships README.md without the incubating marker but with the ADR-0042 pointer (Accepted)', async () => {
     const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf8');
-    ok(INCUBATING_MARKER.test(readme),
-      'plugin README must carry the incubating marker until ADR-0042 is Accepted at PR7');
+    ok(!INCUBATING_MARKER.test(readme),
+      'plugin README must drop the incubating marker now that ADR-0042 is Accepted');
     ok(/ADR-0042/.test(readme), 'plugin README must point at ADR-0042');
+    ok(/\*\*Accepted\*\*/.test(readme), 'plugin README must state the persona is Accepted');
   });
 
   it('ships CHANGELOG.md with the initial scaffold seed entry', async () => {
@@ -1767,6 +1766,8 @@ describe('plugins/designer — marketplace catalog wiring (both hosts)', () => {
     const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     strictEqual(entry.version, manifest.version,
       'Claude catalog entry version must match the manifest version');
+    ok(!INCUBATING_MARKER.test(entry.description),
+      'Claude catalog description must drop the incubating marker now that ADR-0042 is Accepted');
   });
 
   it('the Codex catalog carries a designer entry resolving to the plugin dir', async () => {
@@ -1813,5 +1814,199 @@ describe('plugins/designer — release-please + test-suite wiring', () => {
     for (const t of REQUIRED_UNIT_TESTS) {
       ok(suite.includes(t), `test:plugin-shape must run ${t} (PR2 machinery unit suite)`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR7 — ADR-0042 Accepted. designer is a complete persona, not mid-roadmap.
+// Two guard families:
+//   1. Stale build-phase forward references. The surfaces were authored across
+//      a seven-PR ladder and accumulated "lands at PR5A" / "at PR3" / "until
+//      then" prose that is now false. (founder PR7 precedent — its Codex
+//      Plan-verify peer caught the same systemic residue.)
+//   2. The six designer-local defects the real-topic dogfood surfaced. Each is
+//      a contradiction between two designer surfaces, so each guard pins BOTH
+//      sides rather than just asserting the corrected phrasing exists.
+// ---------------------------------------------------------------------------
+describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', () => {
+  const STALE_BUILD_PHRASES = [
+    /\bincubating\b/i,
+    /lands? at PR\d/i,
+    /landing at PR\d/i,
+    /\(PR\d[AB]?\)\s+(?:later\s+)?holds/i,
+    /at PR3\b/i,
+    /flips to `Accepted`/i,
+    /until then,? (?:use|read|state)/i,
+    /implementation ladder/i,
+    /later roadmap PRs/i,
+    /stay PROVISIONAL/i,
+  ];
+
+  // Scan `.md` AND `agents/*.yaml`. The Codex Refine-verify peer caught the
+  // PR7 sweep missing `skills/refine/agents/openai.yaml`, whose default_prompt
+  // restated the old "gate PASSES" convergence rule: the Codex-facing surface
+  // is authored in YAML, not markdown, and an .md-only scan cannot see it.
+  const SURFACE_EXTS = ['.md', '.yaml', '.yml'];
+
+  it('the designer command + skill surface carries no stale build-phase forward-references', async () => {
+    const offenders = [];
+    for (const root of ['commands', 'skills']) {
+      const entries = await readdir(resolve(PLUGIN_ROOT, root), { recursive: true, withFileTypes: true });
+      for (const ent of entries) {
+        if (!ent.isFile() || !SURFACE_EXTS.some((e) => ent.name.endsWith(e))) continue;
+        const parent = ent.parentPath ?? ent.path;
+        const full = resolve(parent, ent.name);
+        const text = await readFile(full, 'utf8');
+        for (const re of STALE_BUILD_PHRASES) {
+          if (re.test(text)) offenders.push(`${full.slice(PLUGIN_ROOT.length + 1)} :: ${re.source}`);
+        }
+      }
+    }
+    deepStrictEqual(offenders, [],
+      `stale build-phase forward-references must be removed now that ADR-0042 is Accepted:\n  ${offenders.join('\n  ')}`);
+  });
+
+  // The gate-verdict vocabulary and the convergence predicate are restated across
+  // SKILL.md / commands/*.md / agents/*.yaml. A fix applied to one surface and not
+  // its siblings is the recurring defect class in this plugin — the peer found two
+  // instances of it in the first PR7 pass. Pin every surface that names the rules.
+  it('no designer surface — markdown OR Codex agent yaml — still requires a PASS gate to converge (F7 cross-surface)', async () => {
+    const offenders = [];
+    for (const root of ['commands', 'skills']) {
+      const entries = await readdir(resolve(PLUGIN_ROOT, root), { recursive: true, withFileTypes: true });
+      for (const ent of entries) {
+        if (!ent.isFile() || !SURFACE_EXTS.some((e) => ent.name.endsWith(e))) continue;
+        const parent = ent.parentPath ?? ent.path;
+        const full = resolve(parent, ent.name);
+        const rel = full.slice(PLUGIN_ROOT.length + 1);
+        const text = await readFile(full, 'utf8');
+        if (/converge[^.]{0,80}\bgate (?:PASSES|passes)\b/i.test(text)) offenders.push(`${rel} :: convergence requires gate PASS`);
+        if (/gate PASS —/.test(text)) offenders.push(`${rel} :: "gate PASS —" as the clean-result example`);
+      }
+    }
+    deepStrictEqual(offenders, [], `convergence must be "gate not FAIL" on every surface:\n  ${offenders.join('\n  ')}`);
+  });
+
+  it('the start macro approval gate uses the four-value gate vocabulary (F5 cross-surface)', async () => {
+    const start = await readFile(resolve(PLUGIN_ROOT, 'skills/start/SKILL.md'), 'utf8');
+    match(start, /PASS \/ CONDITIONAL \/ CANDIDATE-FAIL \/\s*\n?UNKNOWN/,
+      'the direction-approval prompt must carry the same four verdicts the peer contract offers');
+    match(start, /A \*\*CONDITIONAL\*\*\s*\n?direction may be recommended, but only with its remediation named as a\s*\n?blocking precondition/,
+      'the start macro must allow a CONDITIONAL direction with a named precondition');
+    match(start, /A \*\*CANDIDATE-FAIL\*\* direction vetoes/,
+      'the start macro must keep CANDIDATE-FAIL as a veto');
+  });
+
+  // Dogfood finding F1 — ADR-0042 SD3's table renders a role for all 7 axes in
+  // all 4 presets, but the shipped archetype presets carry 5. The trimming is
+  // intentional; the registry must SAY so, or the next reader "fixes" it back.
+  it('the registry documents that archetype presets carry a trimmed axis list on purpose (F1)', async () => {
+    const yml = await readFile(resolve(PLUGIN_ROOT, 'skills/decide/references/decision-axes.yml'), 'utf8');
+    match(yml, /Preset axis counts differ ON PURPOSE/,
+      'decision-axes.yml must state that the archetype presets trim their axis list deliberately');
+    match(yml, /is not evaluated for that decision; it is not a silent zero/,
+      'decision-axes.yml must say an omitted axis is unevaluated, not zero-weighted');
+
+    const mod = await import(
+      pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs')).href);
+    const { registry, fallbackTriggered } = mod.loadRegistry({});
+    strictEqual(fallbackTriggered, false, 'the shipped registry must load without falling back');
+    const counts = Object.fromEntries(
+      Object.entries(registry.presets).map(([id, p]) => [id, p.axes.length]));
+    deepStrictEqual(counts, { balanced: 7, conversion: 5, experience: 5, clarity: 5 },
+      'the shipped axis counts are 7/5/5/5 — if this changes, ADR-0042 SD3\'s table must change with it');
+    // Every L4 profile still resolves to a defined preset (SD3 shape invariant).
+    for (const [profile, presetId] of Object.entries(mod.PROFILE_PRESET_MAP)) {
+      ok(registry.presets[presetId], `L4 profile "${profile}" must resolve to a defined preset`);
+    }
+  });
+
+  // Dogfood finding F3 — decide/SKILL.md claimed the gate "is never expressed as
+  // a weight" while the resolver emits accessibility:1.0 and accepts an explicit
+  // override. The veto is categorical; the weight is advisory. Say both.
+  it('decide/SKILL.md describes the gate weight honestly — the VETO is not a weight (F3)', async () => {
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/decide/SKILL.md'), 'utf8');
+    ok(!/gate is never expressed as a weight/i.test(skill),
+      'the old claim contradicts the resolver, which emits a weight for the accessibility axis');
+    match(skill, /veto is never encoded as a weight/i,
+      'decide SKILL must say the VETO (not the axis) is what carries no weight');
+    match(skill, /no weight \(including\s*\n?`accessibility:0`\) can remove, soften, or strengthen the veto/i,
+      'decide SKILL must state that no weight value waives the veto');
+  });
+
+  // Dogfood finding F5 — the Brainstorm peer contract offered PASS /
+  // CANDIDATE-FAIL / UNKNOWN, but the decide recommendation-rule is built on
+  // CONDITIONAL. Observed live: the peer returned PASS for three directions and
+  // demoted their real barriers into prose. The vocabularies must match.
+  it('the Brainstorm ensemble gate vocabulary includes CONDITIONAL, matching decide/critique (F5)', async () => {
+    const proto = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    match(proto, /gate verdict for the direction: PASS \/ CONDITIONAL \/\s*\n?\s*CANDIDATE-FAIL \/ UNKNOWN/,
+      'Brainstorm structured_output_contract must offer the peer a CONDITIONAL verdict');
+    match(proto, /Do NOT report PASS and then name a barrier in the risk areas/,
+      'Brainstorm must forbid the PASS-plus-prose-barrier shape the dogfood peer produced');
+    match(proto, /a peer `CONDITIONAL` adds its named\s*\n?\s*remediation to the direction's preconditions \(it does not veto\)/,
+      'synthesis must map CONDITIONAL to preconditions, not to a veto');
+    match(proto, /the \*\*stricter\*\* verdict holds/,
+      'synthesis must resolve a gate-verdict disagreement toward the stricter verdict');
+
+    // The four values the peer may return must be exactly the values the local
+    // surfaces render (plus UNKNOWN for an under-described input).
+    for (const rel of ['skills/decide/SKILL.md', 'skills/critique/SKILL.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      match(text, /PASS \/ CONDITIONAL \/\s*\n?FAIL/,
+        `${rel} must render the three-value gate verdict the ensemble contract mirrors`);
+    }
+  });
+
+  // Dogfood finding F6 — the Brainstorm risk-area list was hardcoded to five
+  // names, so under preset=conversion the peer was solicited for `feasibility`
+  // (not an axis of that preset) and never for `content-clarity` (which is).
+  it('the Brainstorm risk areas derive from the snapshotted axes, not a hardcoded list (F6)', async () => {
+    const proto = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    match(proto, /Risk areas — one per axis listed in <axis_awareness>, using that\s*\n?\s*axis's label/,
+      'Brainstorm must derive the risk-area list from the axis snapshot');
+    ok(!/Risk areas \(usability \/ accessibility \/ conversion \/ consistency \/\s*\n?\s*feasibility\)/.test(proto),
+      'the hardcoded five-name risk-area list must be gone — it solicited axes outside the resolved preset');
+  });
+
+  // Dogfood finding F7 — refine's convergence predicate demanded a PASS gate,
+  // but Non-Goal 6 makes CONDITIONAL the honest verdict for any spec naming
+  // runtime-verifiable remediations. A correct design could never converge.
+  it('refine converges on a CONDITIONAL gate, not only on PASS (F7)', async () => {
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/SKILL.md'), 'utf8');
+    match(skill, /<!-- @refine:convergence-predicate:begin -->/,
+      'refine SKILL must carry a named convergence-predicate region');
+    match(skill, /`CONDITIONAL` converges \*\*on purpose\*\*/,
+      'the predicate must state that CONDITIONAL converges deliberately');
+    match(skill, /Requiring `PASS` to converge would mean an\s*\n?honest design never converges/,
+      'the predicate must record WHY a PASS-only rule is wrong (the Non-Goal 6 tension)');
+    match(skill, /What does \*\*not\*\* converge: a `FAIL` gate/,
+      'the predicate must keep FAIL non-converging — the veto survives the widening');
+
+    // No surface may still define convergence as requiring the gate to pass.
+    for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md', 'commands/critique.md',
+      'skills/critique/SKILL.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      ok(!/converge[^.]{0,60}\bgate passes\b/i.test(text),
+        `${rel} must not define convergence as requiring the accessibility gate to PASS`);
+    }
+  });
+
+  // Dogfood finding F4 — the 5-tier taxonomy has no slot for independently
+  // published third-party usability research. Not fixed here (a sixth tier is a
+  // cross-surface contract change); the spec must name the gap so an
+  // investigator neither launders the source up nor discards it.
+  it('the design-brief spec names the third-party-research taxonomy gap instead of hiding it (F4)', async () => {
+    const spec = await readFile(resolve(PLUGIN_ROOT, 'skills/investigate/references/design-brief-spec.md'), 'utf8');
+    match(spec, /Known gap — third-party published usability research/,
+      'the spec must name the taxonomy gap explicitly');
+    match(spec, /Filing such a source at tier 4 is both a\s*\n?shape violation and tier laundering/,
+      'the spec must forbid laundering third-party research into the first-party user-research tier');
+    match(spec, /State the mismatch in the \*\*Confidence Note\*\*/,
+      'the spec must require the under-ranking be disclosed, not silently absorbed');
+    // The gap must not be closed by quietly redefining tier 4 — user-research
+    // stays first-party and stays out of WebSearch (the PR3 peer invariant).
+    match(spec, /4\. \*\*user-research\*\* — first-party research gathered for this\n   investigation/,
+      'tier 4 must remain first-party by definition');
   });
 });

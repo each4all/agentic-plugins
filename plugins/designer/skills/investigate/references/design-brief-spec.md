@@ -143,6 +143,29 @@ must not be presented with the same certainty as one grounded in
 `standards-heuristics` or a documented `design-system` pattern —
 "three competitors do it" is not a standard.
 
+**Known gap — third-party published usability research.** Independently
+published, large-sample usability studies (Baymard Institute checkout
+research, Nielsen Norman Group study *reports* as distinct from their
+articles) have **no exact tier**. They are not `user-research`: tier 4 is
+first-party by definition, is a local-only supplied stream that is never
+web-searched, and carries a first-party citation shape (Evidence-ID,
+Method, Consent-note, no URL). Filing such a source at tier 4 is both a
+shape violation and tier laundering. In practice they land at `design-press`
+(tier 5), which understates their evidential weight.
+
+Until the taxonomy grows a tier for them (ADR-0042 §Consequences records
+this as a demand-gated follow-up), handle them as follows and never work
+around it silently:
+
+- File at the best-fitting **URL-bearing** tier — normally `design-press`,
+  or `standards-heuristics` when the study is itself the normative source
+  a standard cites.
+- Carry an honest `Access-note` (`summary-of-paid-report` for a paywalled
+  study whose findings you read only in summary).
+- State the mismatch in the **Confidence Note**: name the source, say the
+  taxonomy under-ranks it, and give the reader the reason. Do not silently
+  promote it, and do not silently discard it because its tier is low.
+
 **Authority vs. relevance (the user-research exception).** The tier order
 above ranks *external authority* — how independently a third party could
 re-audit the source. On that axis `user-research` sits low (the team

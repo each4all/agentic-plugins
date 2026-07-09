@@ -4,14 +4,17 @@
 
 Accepted
 
-> Last amended 2026-05-12 — see [Amendments](#amendments). 2026-05-06
+> Last amended 2026-07-09 — see [Amendments](#amendments). 2026-05-06
 > recorded the ADR-0015 cascade (`plugins/research` retirement);
 > 2026-05-11 recorded the ADR-0020 cascade (lifecycle macro command
 > boundary versus verb-level alias); 2026-05-12 first records the
 > ADR-0021 cascade (macro skill category alongside verb skills);
 > 2026-05-12 then records the ADR-0022 cascade (meta skill category
 > as the third sibling of verb and macro skills, closing ADR-0021 §6
-> and formalizing the `skills/<plugin>/` three-category split).
+> and formalizing the `skills/<plugin>/` three-category split);
+> 2026-06-15 recorded the ADR-0036 cascade (`founder`, the second L3
+> persona); 2026-07-09 records the ADR-0042 cascade (`designer`, the
+> third L3 persona, and the deferred §1 L4 profile-list correction).
 
 ## Context
 
@@ -87,8 +90,8 @@ dependency direction:
 
 | Layer | Role | Examples (current + planned) |
 |-------|------|------------------------------|
-| **L4 — Profile (sub-discipline within persona)** | Configuration data describing context-specific knowledge: source priorities, evaluation criteria, output contract, citation style, vocabulary, methodology. Unbounded — new sub-disciplines extend existing personas without adding plugins. | `engineer:{backend, frontend, devops, sre, ml, data, ...}`, `designer:{ui, print, brand, frontend, image, motion, ...}` |
-| **L3 — Persona / Workbench plugin** | User-facing install unit. The user wears one persona "hat" at a time. Owns workflow orchestration. Composes capabilities through profiles. | `engineer` (Stage 2), `founder` (ADR-0036), `designer` (Stage 3) |
+| **L4 — Profile (sub-discipline within persona)** | Configuration data describing context-specific knowledge: source priorities, evaluation criteria, output contract, citation style, vocabulary, methodology. Unbounded — new sub-disciplines extend existing personas without adding plugins. | `engineer:{backend, frontend, devops, sre, ml, data, ...}`, `designer:{general, flow, ui, cta, content}` |
+| **L3 — Persona / Workbench plugin** | User-facing install unit. The user wears one persona "hat" at a time. Owns workflow orchestration. Composes capabilities through profiles. | `engineer` (Stage 2), `founder` (ADR-0036), `designer` (ADR-0042) |
 | **L2 — Capability plugin** | Persona-agnostic skills providing reusable activities: gather/frame/decide/compose/critique/refine on a particular kind of material. Self-serve via own commands too. | `orchestrator` (Stage 3+), `image` (ADR-0037, shipped); `research` (Stage 1, retired per ADR-0014); planned: `decision` |
 | **L1 — Framework primitive plugin** | Cross-plugin infrastructure: peer-host invocation, workflow runtime, host adapters. Other plugins depend on these. | `companions` (Stage 1, current per ADR-0008), planned: `runtime` (workflow state, hooks, broker) — only when 2+ plugins prove they need it |
 
@@ -133,7 +136,7 @@ arguments.
 /engineer:investigate --profile=backend --topic="auth token rotation"
 /engineer:critique --profile=architecture --topic="payment service refactor"
 /designer:compose --profile=ui --topic="onboarding flow"
-/designer:critique --profile=print --topic="poster v3"
+/designer:critique --profile=cta --topic="checkout primary button"
 /research:research --topic="Node 24 child_process API surface"
 ```
 
@@ -246,8 +249,10 @@ hold:
    meaningfully different operational concerns (e.g., image
    generation has external-API quotas, billing implications, and
    prompt-engineering complexity that engineering tooling doesn't),
-   isolate so users opt in explicitly. Future example: `image`
-   plugin separated from `designer` after design ships.
+   isolate so users opt in explicitly. Realized example: `image`
+   ([ADR-0037](0037-image-capability-plugin.md)) shipped as an L2
+   capability *before* `designer`, which composes rather than absorbs it
+   ([ADR-0042](0042-designer-persona-design-ux-workbench.md) SD5).
 3. **Mental model discontinuity at install time** — when the user's
    intent at install ("I'm doing X") differs sharply from existing
    plugins' intents, the new plugin earns its place. Example:
@@ -268,14 +273,14 @@ Plugin names follow **Layer-appropriate axis**:
 |-------|-------------|---------|----------|
 | L1 framework | infrastructure noun | concrete primitive concept | `companions`, future `runtime` |
 | L2 capability | activity/domain noun | what-it-does | `orchestrator`, `image` (ADR-0037); `research` retired; future `decision` |
-| L3 persona | persona noun (`-er` suffix preferred for English consistency) | who-uses-this | `engineer`, future `designer` |
-| L4 profile | sub-discipline noun | hyphen-separated when needed | `backend`, `frontend`, `ui`, `print` |
+| L3 persona | persona noun (`-er` suffix preferred for English consistency) | who-uses-this | `engineer`, `founder`, `designer` |
+| L4 profile | sub-discipline noun | hyphen-separated when needed | `backend`, `frontend`, `ui`, `cta` |
 
 Stage 2 plugin name: **`engineer`** (canonical, L3 persona axis,
 no plugin-name level aliases per §3 — marketplace contract
-constraint). Stage 3 plugin name (planned): `designer`. Pairing
-`engineer + designer` keeps L3 axis consistent across stages and
-matches the user's mental vocabulary ("엔지니어 모자/디자이너 모자",
+constraint). Stage 3 plugin name: **`designer`** (shipped, ADR-0042).
+Pairing `engineer + designer` keeps the L3 axis consistent across stages
+and matches the user's mental vocabulary ("엔지니어 모자/디자이너 모자",
 "engineer hat / designer hat").
 
 ## Consequences
@@ -515,9 +520,9 @@ original prose is preserved for decision-history audit):
   taxonomy.
 - §7's plugin name policy.
 - All references to `plugins/companions` (L1 framework primitive),
-  `plugins/engineer` (L3 persona), `plugins/designer` (planned
-  L3), and `plugins/decision` / `plugins/image` (planned L2
-  occupants).
+  `plugins/engineer` (L3 persona), `plugins/designer` (then planned,
+  shipped per ADR-0042), and `plugins/decision` / `plugins/image`
+  (then planned L2 occupants; `image` shipped per ADR-0037).
 
 **Verified-against**: ADR-0014 (capability decision, Decision §2–§7)
 \+ ADR-0015 (timeline portion, Decision §1) + the parent workflow's
@@ -712,12 +717,73 @@ discipline and §5's no-cross-plugin-import rule (founder owns its
 originals).
 
 `designer` ([ADR-0007](0007-migration-cutover-plan.md) §Stage 3, §7)
-remains a future L3 candidate — preserved, not replaced; the L3 layer
-now carries two shipped occupants with room for more. The staged
-decision-L2 seam — a future `decision` L2 capability that could extract
-founder's business decision axes as a second consumer per §6 — is
-recorded in ADR-0036 but deferred.
+remained a future L3 candidate at the time of this entry — preserved, not
+replaced; it shipped later per
+[ADR-0042](0042-designer-persona-design-ux-workbench.md) (see the next
+amendment). The staged decision-L2 seam — a future `decision` L2 capability
+that could extract founder's business decision axes as a second consumer per
+§6 — is recorded in ADR-0036 but deferred.
 
 **Unchanged**: 4-layer composition (§1), 6 cognitive verbs (§2),
 naming convention (§3), cross-plugin handoff (§5), plugin separation
 triggers (§6), plugin name policy (§7).
+
+### 2026-07-09 — designer, the third L3 persona + the L4 correction (per ADR-0042)
+
+**Trigger**: [ADR-0042](0042-designer-persona-design-ux-workbench.md)
+acceptance, which ships `plugins/designer` as the **third L3 persona** — the
+long-reserved design/UX occupant this ADR has named since §1. The ADR
+deferred its ADR-0010 cascade to its own Accepted flip (ADR-0036 SD1
+precedent) so that this ADR never cites a still-`Proposed` decision.
+
+- **§1 (4-layer composition), L4 row — the deferred correction.** The L4
+  examples listed `designer:{ui, print, brand, frontend, image, motion, ...}`,
+  which predates [ADR-0037](0037-image-capability-plugin.md) extracting
+  `image` into an L2 capability. Per ADR-0042 §Sub-decision 5, designer's
+  imagery concern is satisfied by **composing** the `image` L2 plugin —
+  designer never calls an image-generation API — so `image` is dropped from
+  designer's L4 profile list. `print` / `brand` / `motion` are dropped too:
+  they are visual-production disciplines outside designer's
+  decision/quality scope (ADR-0042 Non-Goal 5), and `frontend` belongs to
+  `engineer`. The row now carries designer's five **shipped** profiles:
+  `{general, flow, ui, cta, content}`.
+
+- **§1, L3 row / §7 (plugin name policy)**: `designer` moves from planned to
+  shipped. The L3 axis now carries three occupants —
+  `engineer` / `founder` / `designer` — and §7's `-er`-suffix persona-noun
+  rule holds across all three, exactly as §7 predicted ("engineer hat /
+  designer hat"). No naming-policy change.
+
+- **§3 (Naming convention)**: the illustrative
+  `/designer:critique --profile=print` example is corrected to a profile
+  designer actually ships (`cta`). The `<persona>:<verb>` rule itself is
+  unchanged, and designer's six verb skills instantiate it directly.
+
+- **§6 (Plugin separation triggers), Trigger 2**: the "future example: `image`
+  plugin separated from `designer` after design ships" is now a **realized**
+  example with its ordering inverted — `image` shipped first (ADR-0037) and
+  `designer` composes it. The trigger's logic (distinct cost/quota/auth
+  profile warrants an opt-in plugin) is confirmed; only the illustrative
+  sequence was wrong. ADR-0042 §Consequences records this as neutral.
+
+**Finding**: designer is the third independent confirmation of the §1 4-layer
+model and the §2 six-verb model, and the first on a discipline whose *decisive
+axis is context-dependent* — a landing-page CTA is won on conversion, an
+onboarding flow on usability. That did not require a new verb or a new layer:
+it is carried entirely by L4 profiles resolving decision presets (ADR-0042
+SD3/SD6), which is precisely the "unbounded discipline expansion without skill
+explosion" §1 claims for the L4 row. designer copies rather than imports its
+machinery per §5 and [ADR-0029](0029-entry-routing-contract-enforcement.md) —
+the fourth such copy.
+
+The `decision` L2 seam remains **deferred**. designer is a second
+decide-registry consumer in the ADR-0027 §1.1 schema sense, but ADR-0042
+Non-Goal 4 evaluates the extraction on its own merits rather than letting a
+third persona auto-trigger it.
+
+**Unchanged**: 4-layer composition (§1), 6 cognitive verbs (§2), naming
+convention (§3), plugin-internal skill use (§4), cross-plugin handoff (§5),
+plugin separation triggers (§6), plugin name policy (§7).
+
+**Verified-against**: ADR-0042 §Sub-decision 1/3/5/6/7 + §Non-Goals + the
+PR7 Accepted-flip evidence note.

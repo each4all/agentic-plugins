@@ -2,17 +2,75 @@
 
 ## Status
 
-Proposed
+Accepted (2026-07-09 — the Implementation Roadmap PR7 real-topic dogfood
+validated the direction; see the Accepted-flip evidence note below)
 
-<!--
-Long-roadmap pattern (precedent: ADR-0027/0028/0029/0036): this ADR is
-merged `Proposed` ahead of the implementation ladder, then flipped to
-`Accepted` in the roadmap's dogfood PR once `plugins/designer` has driven
-a real design/UX deliverable end-to-end. Until that flip, the axis
-schema (SD3) and quality-assurance lenses (SD4) are PROVISIONAL, subject
-to re-tuning from dogfood the same way ADR-0036 SD3 marked founder's
-business axes provisional.
--->
+> **Status convention note.** This ADR follows the **long-roadmap pattern**
+> (precedent: ADR-0027/0028/0029/0036): it merged `Proposed` ahead of the
+> implementation ladder and flipped to `Accepted` in the roadmap's dogfood PR
+> once `plugins/designer` had driven a real design/UX deliverable end-to-end.
+> Until that flip the axis schema (SD3) and quality-assurance lenses (SD4)
+> were PROVISIONAL, the same way ADR-0036 SD3 marked founder's business axes
+> provisional. Abandonment path (not taken): had the dogfood invalidated the
+> direction, this ADR would carry a `Deprecated` status with a closing
+> rationale — the repo defines no `Rejected` status.
+
+> **Accepted-flip evidence (PR7, 2026-07-09).** The real-topic dogfood ran
+> designer's live surface end-to-end on a representative design deliverable (a
+> mobile-web checkout flow for a micro-SMB storefront): the `designer:start`
+> bootstrap (clean-baseline gate + `workflow_type=start`), `investigate` live
+> research across the five-tier source taxonomy with the SD4 **privacy gate**
+> and the freshness rule both firing (the strongest behavioral source turned
+> out to be a 2013 publication, and the brief's Confidence Note recorded its
+> magnitudes as expired), `frame` with measurable UX metrics, `decide`
+> resolving the `conversion` preset through the `cta` L4 profile with the
+> **accessibility veto gate** rendering CONDITIONAL verdicts and named
+> preconditions, `compose` of a flow spec with blocking accessibility
+> acceptance criteria, `critique` returning a gate **FAIL** on that spec (a
+> prescribed de-emphasis rule with no contrast floor; `disabled` accordion
+> headers removing steps from keyboard traversal), `refine` clearing both and
+> the re-critique converging with **no new CRITICAL/MAJOR** and gate
+> FAIL → CONDITIONAL, then `set-terminal` + `archive`. A live cross-host
+> `peer-runner` Brainstorm round (designer's own copy, through the
+> `companions` bridge) independently produced the same three candidate
+> directions and the same recommendation.
+>
+> The dogfood found **seven defects**, three of which no amount of reading
+> would have surfaced — they required running the loop. The peer empirically
+> demonstrated the gate-vocabulary hole by returning `PASS` for three
+> directions while naming their barriers in prose, because the Brainstorm
+> contract gave it no `CONDITIONAL` token. Six defects were designer-local
+> and are fixed in this PR (SD3's over-specified preset table; the stale
+> "MVP ships `balanced` / `general` only" staging claims; a decide-SKILL claim
+> that the gate "is never expressed as a weight" which the resolver
+> contradicts; the Brainstorm gate vocabulary; a hardcoded Brainstorm
+> risk-area list that solicited axes outside the resolved preset; and a refine
+> convergence predicate demanding gate `PASS`, which under Non-Goal 6 no
+> honest spec can reach). The seventh — the source taxonomy has no tier for
+> independently published third-party usability research — is a cross-surface
+> contract change and is recorded below as a demand-gated follow-up, with the
+> spec now naming the gap rather than inviting a silent workaround.
+>
+> That the machinery **exercised its own veto on its own artifact**, and that
+> the peer's disagreement was traceable to a contract defect rather than a
+> judgment difference, is what validates the direction. Combined with the
+> PR1–PR6 conformance suite and the seven Plan-verify peer reviews (each of
+> which absorbed real defects), the SD3 axes and SD4 lenses are now
+> dogfood-validated — still open to re-tuning, but no longer hypothetical.
+>
+> **What this dogfood did not exercise.** This repository has no frontend, so
+> the SD4 differentiator's **post-code path — host-direct vision on a rendered
+> screen — never ran**. Critique and refine were exercised in spec mode only,
+> and every vision-grounded property was reported UNVERIFIED, as the skills'
+> own honesty rule requires. The Accepted flip therefore rests on the
+> decision/critique machinery and the spec-mode convergence loop, not on a
+> demonstrated screenshot critique. The first **production** dogfood — the
+> owner's real code-first service — runs in that service's own repository,
+> which is the intended workspace per the motivating scenario and the only
+> place the rendered-screen path can honestly be exercised. Confirming that
+> path on a real rendered screen is the **outstanding follow-up** to this
+> flip; this repo's dogfood is the framework-validation smoke, not the
+> production use.
 
 ## Context
 
@@ -134,7 +192,7 @@ specs *and* post-code reality (a rendered screenshot via host-native
 vision, plus the frontend code itself). This is the mechanism that makes
 "agent-assured quality without a design tool" concrete (SD4).
 
-### Sub-decision 3 — Design decision axes (PROVISIONAL)
+### Sub-decision 3 — Design decision axes (dogfood-validated)
 
 `designer:decide` carries a decision-axis registry on the ADR-0027 §1.1
 portable schema, copied-not-imported per ADR-0029 (designer ships its
@@ -151,18 +209,30 @@ use.
 Seven-axis pool. **usability is the common decisive** (the second
 decisive axis is the context lens), and **accessibility is the common
 veto gate** across every preset. The four presets map 1:1 onto the L4
-profiles of SD6:
+profiles of SD6. A `—` means the preset **does not carry that axis at
+all**: an archetype preset evaluates only the axes its archetype turns on:
 
 | Axis | `balanced` (general/flow) | `conversion` (cta) | `experience` (ui) | `clarity` (content) |
 |---|---|---|---|---|
 | usability 사용성 | **decisive** | **decisive** | **decisive** | **decisive** |
 | consistency 일관성 | **decisive** | supporting | supporting | supporting |
-| conversion 전환 | supporting | **decisive** | supporting | supporting |
-| desirability 매력도 | supporting | supporting | **decisive** | supporting |
-| content-clarity 명확성 | supporting | supporting | supporting | **decisive** |
-| feasibility 구현가능성 | supporting | supporting | supporting | supporting |
+| conversion 전환 | supporting | **decisive** | — | supporting |
+| desirability 매력도 | supporting | — | **decisive** | — |
+| content-clarity 명확성 | supporting | supporting | — | **decisive** |
+| feasibility 구현가능성 | supporting | — | supporting | — |
 | accessibility 접근성 | gate | gate | gate | gate |
+| *(axis count)* | *7* | *5* | *5* | *5* |
 
+- **Only `balanced` carries all seven axes.** The three archetype presets
+  carry five: two decisive, the gate, and the two supporting axes the
+  archetype actually turns on. An omitted axis is **not evaluated** for
+  that decision — it is not a silent zero-weight. This trimming is
+  deliberate (a preset is a lens, and forcing seven axes onto a CTA
+  decision adds noise, not rigor); the PR7 dogfood confirmed it by
+  observing the cost of the opposite mistake — the Brainstorm ensemble's
+  hardcoded risk-area list solicited a `feasibility` risk from the peer
+  under `preset=conversion`, an axis that preset does not carry, while
+  omitting `content-clarity`, which it does.
 - Each preset has **usability + one context axis** as its two decisive
   axes (≥2-decisive floor, ADR-0027 §1.3, enforced by
   `decide-registry.mjs validatePreset`).
@@ -178,14 +248,27 @@ profiles of SD6:
   column above is shorthand for this supporting+gate:true encoding, not
   a new role value — the schema stays forward-compatible with the
   portable reader.
-- **MVP ships the `balanced` preset only**; `conversion` / `experience`
-  / `clarity` are defined in the registry but activated incrementally
-  (founder shipped `general` only). A shape test asserts every L4
-  profile in SD6 resolves to a defined preset.
+- **The veto is categorical, not a weight.** Because accessibility is
+  encoded as a supporting axis, the resolver emits a weight for it and
+  accepts `--weights=accessibility:<w>` like any other axis — but that
+  weight only tilts the *advisory* aggregate row. No weight value,
+  including `0`, waives, softens, or strengthens the veto: the gate is
+  applied by the recommendation rule before any aggregate is read. The
+  PR7 dogfood found the decide skill claiming the opposite ("the gate is
+  never expressed as a weight"), which the resolver contradicts; the
+  skill now states both halves.
+- **All four presets ship**, reachable by an explicit `--preset=<id>` or
+  through their L4 profile (`general`/`flow` → `balanced`, `cta` →
+  `conversion`, `ui` → `experience`, `content` → `clarity`). `balanced`
+  remains the default that every `--size` tier resolves. A shape test
+  asserts every L4 profile in SD6 resolves to a defined preset, and pins
+  the 7/5/5/5 axis counts against this table.
 
-The axis set and roles are **PROVISIONAL** (ADR-0036 SD3 precedent):
-a first-cut hypothesis, re-tuned from real designer dogfood beyond the
-≥2-decisive floor.
+The axis set and roles are **dogfood-validated** (ADR-0036 SD3
+precedent): the PR7 real-topic dogfood exercised the preset selection and
+the veto gate on a real decision, and the axes discriminated. They remain
+open to re-tuning as dogfood accumulates; the ≥2-decisive floor and the
+accessibility veto gate are settled invariants.
 
 ### Sub-decision 4 — Quality-assurance strategy (the differentiator)
 
@@ -243,7 +326,23 @@ code-materialized UI.
    default.
 
 5. **Convergence loop.** critique → refine → re-critique until findings
-   converge (engineer Phase 5–6 pattern, copied).
+   converge (engineer Phase 5–6 pattern, copied). Convergence means **no
+   new CRITICAL/MAJOR and the accessibility gate is not `FAIL`** — that
+   is, `PASS`, or `CONDITIONAL` with every remediation named as a blocking
+   precondition. `CONDITIONAL` converges deliberately: under Non-Goal 6 a
+   static critique is candidate-level, so an honest, well-specified design
+   that names its runtime-verifiable remediations lands on `CONDITIONAL`
+   rather than `PASS`. Requiring `PASS` would mean no honest design ever
+   converges, and would pressure the author into exactly the conformance
+   over-claim Non-Goal 6 exists to prevent. `FAIL` never converges.
+
+   The gate's verdict vocabulary is **`PASS` / `CONDITIONAL` / `FAIL`**
+   everywhere it appears — including the cross-host peer contract, whose
+   `CANDIDATE-FAIL` is the peer-side spelling of `FAIL` (the prefix
+   restates Non-Goal 6 for a reviewer who has seen no screen). A contract
+   that omits `CONDITIONAL` forces the peer to escalate remediable
+   barriers into vetoes or bury them in prose; the PR7 dogfood observed
+   exactly that before the vocabulary was unified.
 
 6. **Complementary to engineer, not overlapping.** designer critiques
    the *design/UX* dimension; engineer critiques *code correctness*. The
@@ -280,12 +379,15 @@ inside the plugin so every critique applies the same standard.
   frontend code** — no external-tool dependency. A future design-tool
   integration is a separate ADR gated on real demand (a preserved seam,
   not a v1 feature).
-- **ADR-0010 §1 L4 correction.** The L4 row currently lists
-  `designer:{ui, print, brand, frontend, image, motion, ...}`, which
-  predates ADR-0037 extracting `image` to L2. This ADR amends that entry
-  (see Consequences): designer's imagery concern is satisfied by
-  composing the `image` L2 plugin, so `image` is dropped from designer's
-  L4 profile list.
+- **ADR-0010 §1 L4 correction.** Before this ADR's Accepted flip the L4 row
+  listed `designer:{ui, print, brand, frontend, image, motion, ...}`, which
+  predated ADR-0037 extracting `image` to L2. The flip lands the amendment
+  (see Consequences, and ADR-0010's 2026-07-09 Amendment): designer's imagery
+  concern is satisfied by composing the `image` L2 plugin, so `image` is
+  dropped; `print` / `brand` / `motion` go with it as visual-production
+  disciplines (Non-Goal 5), and `frontend` belongs to `engineer`. The row now
+  carries designer's five shipped profiles
+  `{general, flow, ui, cta, content}`.
 
 ### Sub-decision 6 — Persona surfaces
 
@@ -293,14 +395,15 @@ inside the plugin so every critique applies the same standard.
   in `skills/_shared/references/orchestration.md`, carrying persona =
   designer, the skill-profile (verb execution mode), and the L4 Profile
   axis.
-- **L4 profiles**: MVP ships `general` only (founder precedent). The
-  demand-facing archetypes are `ui` / `flow` / `cta` / `content`, each
+- **L4 profiles**: all five ship — `general` (the default) plus the
+  demand-facing archetypes `flow` / `ui` / `cta` / `content` — each
   resolving to a decision preset defined in SD3: `general`⇒balanced,
   `flow`⇒balanced (flow decisions turn on usability+consistency),
   `ui`⇒experience, `cta`⇒conversion, `content`⇒clarity. Every profile
-  resolves to a defined preset (shape-tested, SD3). `print` / `brand` /
-  `motion` are visual-production disciplines and are **not** introduced
-  (Non-Goal).
+  resolves to a defined preset (shape-tested, SD3). An explicit `--size`
+  outranks the ambient L4 profile (ADR-0027 §1.5(2) precedes §1.5(3)) and
+  the resolver says so on stderr. `print` / `brand` / `motion` are
+  visual-production disciplines and are **not** introduced (Non-Goal).
 - **Triggers**: bilingual English/Korean trigger phrases per skill
   (e.g. "review this UI", "user flow", "heuristic evaluation", "CTA",
   "접근성", "유저플로우", "UX 검토", "와이어프레임").
@@ -339,8 +442,12 @@ adapters mirror founder's (SessionStart / PreCompact / Stop).
    code-first scope; the running frontend is the design artifact of
    record.
 4. **`decision` L2 extraction** — designer's axes are evaluated on their
-   own merits; a shared `decision` L2 is gated on §6 Trigger 1 (a second
-   registry consumer) per ADR-0027/ADR-0036, independent of this ADR.
+   own merits. A third registry consumer is **evidence** toward a future
+   extraction, not a trigger that fires on its own: per ADR-0036
+   §Sub-decision 3 and ADR-0027, extraction requires a **fresh ADR**,
+   dogfood-validated axes, and a demonstration that the sibling copies have
+   become shared infrastructure rather than three independent registries
+   that happen to share a schema. designer changes nothing about that gate.
 5. **`print` / `brand` / `motion` L4 profiles** — visual-production
    disciplines outside the decision/quality scope.
 6. **Formal accessibility (WCAG) conformance certification** — designer
@@ -368,12 +475,30 @@ adapters mirror founder's (SessionStart / PreCompact / Stop).
   maintenance surface; a machinery change now propagates to four
   personas. Accepted as the standing cost of copy-not-import, already
   paid at founder.
-- The decision axes (SD3) and quality lenses (SD4) are PROVISIONAL and
-  will need dogfood re-tuning before the Accepted flip.
+- The decision axes (SD3) and quality lenses (SD4) shipped PROVISIONAL and
+  were re-tuned by the PR7 dogfood before the Accepted flip. They are now
+  dogfood-validated, not frozen.
+- **Open follow-up — the source taxonomy has no tier for independently
+  published third-party usability research.** The PR7 dogfood's strongest
+  behavioral evidence was a large-sample published checkout study. Tier 4
+  `user-research` is *first-party by definition*, is a local-only supplied
+  stream that is never web-searched, and carries a first-party citation
+  shape (Evidence-ID / Method / Consent-note, no URL) — so filing the
+  study there is both a shape violation and tier laundering, which the
+  spec's own audit checklist correctly blocked. It therefore lands at
+  `design-press` (tier 5, lowest authority), which systematically
+  under-ranks the most decision-relevant external evidence class for a UX
+  decision. founder's taxonomy carried a `research-institutional` tier;
+  designer's re-anchoring dropped it without a replacement. Adding a sixth
+  tier touches `design-brief-spec.md`, the reference-scan ensemble, both
+  manifests, and the shape test's tier list, so it is **demand-gated
+  future work**, not folded into the Accepted flip. Until then the spec
+  names the gap explicitly and requires the under-ranking be disclosed in
+  the brief's Confidence Note — the honest workaround, not a silent one.
 - runtime **inventory + hook-readiness** awareness (doctor/settings
-  `PLUGIN_NAMES`) must be extended in a **separate** `plugins/runtime` PR
-  (ADR-0016 cross-package split), so designer is briefly invisible to
-  runtime diagnostics until that RT track lands. Following founder,
+  `PLUGIN_NAMES`) was extended in a **separate** `plugins/runtime` PR
+  (ADR-0016 cross-package split), so designer was briefly invisible to
+  runtime diagnostics until that RT track landed. Following founder,
   runtime's `workflow_kind` projection is **not** extended for designer
   (runtime models only `engineer`/`orchestrator`; founder/designer are
   unsupported kinds by design) — extending workflow-projection semantics
@@ -412,10 +537,10 @@ adapters mirror founder's (SessionStart / PreCompact / Stop).
 
 ## Implementation Roadmap
 
-Indicative ladder, following the founder (ADR-0036) precedent. Actual
-subtask decomposition is produced and Plan-verified by
-`/orchestrator:plan` at implementation time; this section is directional,
-not binding.
+**Shipped.** `/orchestrator:plan` decomposed this ladder into nine
+Plan-verified subtasks (PR5 split into PR5A critique + PR5B refine; the RT
+track branched off PR2 in parallel), and all nine landed. The ladder below is
+the ADR's original directional shape, preserved for decision-history audit.
 
 - **PR1 — atomic scaffold**: `plugins/designer/` manifests
   (`.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`), both
@@ -445,12 +570,10 @@ not binding.
   `PLUGIN_NAMES` and Codex hook-readiness inventory **only**. Does **not**
   extend the `workflow_kind` projection enum (Consequences).
 
-`/orchestrator:plan` produces and Plan-verifies this PR2–PR7
-decomposition at implementation time; the ladder above is the expected
-shape, matching how founder actually shipped (ADR-0036 §Implementation
-Roadmap). Every PR gated by the standard CI surface (`npm test`,
+Every PR was gated by the standard CI surface (`npm test`,
 `lint:plugin-shape`, `validate:marketplace`, `validate:versions`,
-`validate:artifacts`).
+`validate:artifacts`) and by a cross-host Codex Plan-verify peer review that
+absorbed real defects at each rung.
 
 ## References
 

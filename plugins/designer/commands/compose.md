@@ -113,7 +113,7 @@ per-call flag.
 **Quality is annotated in (ADR-0042 SD4)**: every composed element carries
 its accessibility (candidate WCAG A/AA checks) + consistency (design-system
 component/token/pattern reuse) acceptance criteria — the criteria
-`designer:critique` (PR5A) later holds the rendered UI to. Generated imagery
+`designer:critique` later holds the rendered UI to. Generated imagery
 is an `image:compose` artifact handoff, never drawn here (see
 `skills/_shared/references/orchestration.md` § image L2 composition boundary).
 
@@ -125,7 +125,7 @@ privacy gate before BOTH web search AND peer-host dispatch. Genericize
 before the peer prompt; the pre-genericization value MUST never leave the
 local host. **Screenshots are sensitive by default** and are never sent to
 the peer as bytes (the peer path is code/text-based; vision critique is a
-same-host `designer:critique` capability landing at PR5A). See
+same-host `designer:critique` capability). See
 `skills/investigate/references/design-brief-spec.md` § Privacy Gate.
 
 ### Ensemble dispatch (Plan-verify point type)
@@ -248,11 +248,9 @@ Then emit an **Active Next-Action Proposal** (the inline shape in
 screen) — or `/designer:decide` if composing surfaced an undecided fork. Do
 not end with a hardcoded "next: X".
 
-designer is incubating (ADR-0042 `Proposed`) — the full surface (the six verbs,
-the `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
-`peer-now` meta skills) is installed as of PR6, so every `next_command` is
-runnable. The persona flips to `Accepted` after the PR7 real-topic dogfood; the
-SD3 axes and SD4 lenses stay PROVISIONAL until then. The composed spec is the durable
+ADR-0042 is `Accepted` — the full designer surface (the six verbs, the
+`/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
+`peer-now` meta skills) ships, so every `next_command` is runnable. The composed spec is the durable
 handoff. See `skills/compose/SKILL.md` § Completion.
 
 Always include the workflow path:

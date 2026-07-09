@@ -35,7 +35,7 @@ blockers on the primary path").
 These design fields replace the founder frame's business-planning fields
 — ADR-0042 SD2. Frame takes no `--profile` argument — it is single-mode by
 definition (one UX problem model per invocation). Sub-discipline context flows through the Design
-Task Profile (self-contained in the investigate skill at PR3; the shared
+Task Profile (restated inline in the investigate skill; the shared
 `../_shared/references/orchestration.md` Dynamic Orchestration reference
 ), not via per-call profile arguments.
 
@@ -99,8 +99,8 @@ Full framing with peer ensemble parallel analysis.
 Build the Design Task Profile (Persona=designer, the Surface / Users /
 Stage / Platform / Evidence-confidence fields, and Ensemble Affinity —
 recorded but not gating, always-max policy). The profile shape is
-self-contained in `../investigate/SKILL.md` § Design Task Profile at PR3;
-the shared `../_shared/references/orchestration.md` reference.
+canonically defined in `../_shared/references/orchestration.md`; the verb
+skills restate it inline for self-containment.
 
 ### Step 2: Local framing
 
@@ -230,14 +230,11 @@ design directions need comparison (name the size
 is already obvious. The routing is a fallback only when evidence is
 genuinely neutral — do not end with a hardcoded "next: X".
 
-**Incubating note (ADR-0042).** The full designer surface is installed as of
-PR6: the six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
+**Surface note (ADR-0042 Accepted).** The full designer surface ships: the
+six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
 `critique` / `refine`), the `/designer:start` lifecycle macro, and the
 `resume` / `checkpoint` / `peer-now` meta skills. Every `next_command` this
-proposal can name is runnable. The persona is still **incubating**: ADR-0042 is
-`Proposed` and flips to `Accepted` after the PR7 real-topic dogfood, so the SD3
-decision axes and the SD4 quality lenses remain PROVISIONAL. The UX problem model is the
-durable handoff either way.
+proposal can name is runnable. The UX problem model is the durable handoff.
 
 Always include the workflow path:
 
@@ -261,8 +258,8 @@ decisive design axes (usability 사용성 + the context lens the question
 turns on, with accessibility 접근성 as the veto gate, per ADR-0042 SD3) +
 size-appropriate supporting axes, instead of a flat list. The designer
 decision registry (`scripts/decide-registry.mjs` +
-`../decide/references/decision-axes.yml`) is the axis source of truth and
-lands at PR4; until then read the decisive axes inline as above. Bounded:
+`../decide/references/decision-axes.yml`) is the axis source of truth; when
+it is unreachable, read the decisive axes inline as above. Bounded:
 only at a genuine 2+-branch point, never a full matrix for a trivial
 reversible step.
 

@@ -262,9 +262,8 @@ Always include the workflow path:
 Workflow: <absolute path to workflow .md file>
 ```
 
-designer is incubating (ADR-0042 `Proposed`) — the six cognitive verbs, this
-`start` macro, and the `resume` / `checkpoint` / `peer-now` meta skills all
-ship; the persona flips to `Accepted` after the PR7 real-topic dogfood.
+ADR-0042 is `Accepted` — the six cognitive verbs, this `start` macro, and the
+`resume` / `checkpoint` / `peer-now` meta skills all ship.
 
 designer surfaces the inline next-action proposal + the workflow path above;
 the deeper runtime-completion-footer / ADR-0031 session-handoff seam
