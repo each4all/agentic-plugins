@@ -1789,9 +1789,13 @@ describe('plugins/designer — release-please + test-suite wiring', () => {
     ok(paths.includes('.codex-plugin/plugin.json'), 'extra-files must bump the Codex manifest version');
   });
 
-  it('.release-please-manifest.json seeds plugins/designer at 0.1.0', async () => {
-    const manifest = await readJSON(resolve(REPO_ROOT, '.release-please-manifest.json'));
-    strictEqual(manifest['plugins/designer'], '0.1.0');
+  // Lockstep, not a literal. This asserted the `0.1.0` PR1 seed, which went
+  // stale the moment release-please cut `plugin-designer-v0.2.0` — the same
+  // shape `test-runtime-plugin.mjs` already uses for its own package.
+  it('.release-please-manifest.json tracks the plugins/designer manifest version', async () => {
+    const releasePleaseManifest = await readJSON(resolve(REPO_ROOT, '.release-please-manifest.json'));
+    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
+    strictEqual(releasePleaseManifest['plugins/designer'], manifest.version);
   });
 
   it('package.json wires the designer shape test into test:plugin-shape', async () => {
