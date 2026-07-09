@@ -164,7 +164,8 @@ describe('plugins/designer — Codex manifest (.codex-plugin/plugin.json)', () =
     ok(/\$designer:decide/.test(prompts), 'defaultPrompt must show a $designer:decide example (PR4)');
     ok(/\$designer:compose/.test(prompts), 'defaultPrompt must show a $designer:compose example (PR4)');
     ok(/\$designer:critique/.test(prompts), 'defaultPrompt must show a $designer:critique example (PR5A)');
-    for (const notyet of ['refine', 'start']) {
+    ok(/\$designer:refine/.test(prompts), 'defaultPrompt must show a $designer:refine example (PR5B)');
+    for (const notyet of ['start']) {
       ok(!new RegExp(`\\$designer:${notyet}\\b`).test(prompts),
         `defaultPrompt must not advertise $designer:${notyet} — it lands in a later PR`);
     }
@@ -374,12 +375,15 @@ describe('plugins/designer — PR3 verb surfaces (investigate + frame + design-b
       'the shared orchestration.md (Design Task Profile + bilingual triggers) lands at PR6, not PR3');
   });
 
-  it('the six-verb enum is NOT yet complete — refine skill absent (lands at PR5B)', async () => {
-    for (const notyet of ['refine']) {
+  // Forward guard: after PR5B lands refine, the six-verb cognitive set is
+  // complete; the start lifecycle macro (+ meta skills) is the remaining
+  // PR6 surface. Keep a guard so PR6 owns skills/start cleanly.
+  it('the six-verb enum is COMPLETE at PR5B — only the start macro remains (lands at PR6)', async () => {
+    for (const notyet of ['start']) {
       strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills', notyet, 'SKILL.md')), false,
-        `skills/${notyet}/SKILL.md lands at PR5B, not PR5A`);
+        `skills/${notyet}/SKILL.md lands at PR6, not PR5B`);
       strictEqual(await exists(resolve(PLUGIN_ROOT, 'commands', `${notyet}.md`)), false,
-        `commands/${notyet}.md lands at PR5B, not PR5A`);
+        `commands/${notyet}.md lands at PR6, not PR5B`);
     }
   });
 
@@ -994,6 +998,181 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
       'commands/critique.md',
       'skills/critique/references/quality-criteria.md',
       'skills/critique/agents/openai.yaml',
+    ]) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      for (const re of STALE) {
+        ok(!re.test(text), `${rel} carries stale vocabulary ${re} (copy-trim rebrand miss)`);
+      }
+    }
+  });
+});
+
+describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-0042 SD4)', () => {
+  const REQUIRED_PR5B_SURFACES = [
+    'commands/refine.md',
+    'skills/refine/SKILL.md',
+    'skills/refine/agents/openai.yaml',
+  ];
+
+  for (const rel of REQUIRED_PR5B_SURFACES) {
+    it(`ships ${rel} (PR5B refine surface)`, async () => {
+      strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true,
+        `plugins/designer/${rel} is part of the ADR-0042 PR5B refine surface and must exist`);
+    });
+  }
+
+  it('skills/refine/SKILL.md frontmatter name = refine', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/SKILL.md'), 'utf8');
+    const fm = frontmatter(text);
+    ok(fm, 'skills/refine/SKILL.md has no YAML frontmatter');
+    ok(/^name:\s*refine\s*$/m.test(fm), 'skills/refine/SKILL.md frontmatter name != "refine"');
+    match(fm, /description:/, 'skills/refine/SKILL.md frontmatter must carry a description');
+  });
+
+  it('skills/refine/agents/openai.yaml display_name names the verb + persona', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/agents/openai.yaml'), 'utf8');
+    const m = text.match(/display_name:\s*"([^"]+)"/);
+    ok(m, 'skills/refine/agents/openai.yaml must declare interface.display_name');
+    ok(m[1].toLowerCase().includes('refine'), `openai.yaml display_name "${m[1]}" must name the verb "refine"`);
+    ok(m[1].toLowerCase().includes('designer'), `openai.yaml display_name "${m[1]}" must name the persona "designer"`);
+  });
+
+  it('commands/refine.md carries a frontmatter description', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
+    const fm = frontmatter(text);
+    ok(fm, 'commands/refine.md has no YAML frontmatter');
+    match(fm, /description:\s*\S/, 'commands/refine.md frontmatter must carry a non-empty description');
+  });
+
+  it('commands/refine.md carries no parent-linkage env reads (ADR-0042 Non-Goal 2)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
+    for (const form of [/\$\{?AGENTIC_PARENT_WORKFLOW/, /\$\{?AGENTIC_ORIGINATING_SUBTASK/]) {
+      ok(!form.test(text),
+        `commands/refine.md must not shell-read ${form} — designer is non-dispatch (ADR-0042 Non-Goal 2)`);
+    }
+  });
+
+  // refine is SINGLE-MODE (founder/engineer refine + designer frame precedent):
+  // no --profile in any state.mjs call. The prose "no --profile argument" is
+  // backtick/paren documentation, not a shell flag, and remains allowed.
+  it('refine is single-mode — no --profile flag in ANY form in any state.mjs call (Codex m2: =, ", \', $)', async () => {
+    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
+    // Catch every real flag form (--profile=, --profile ", --profile ', --profile $value),
+    // not just the double-quoted one. Backtick-prose `--profile` is followed by a
+    // backtick, so it is not matched — documentation stays allowed (Codex m2).
+    ok(!/--profile(=|\s+["'$])/.test(cmd),
+      "commands/refine.md must not pass a --profile flag in ANY form (=, \", ', or $value) — refine is single-mode");
+  });
+
+  it('the refine SKILL + command state the critique → refine → re-critique convergence loop (ADR-0042 SD4)', async () => {
+    for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      match(text, /re-critique/i, `${rel} must name the re-critique convergence step`);
+      match(text, /converge/i, `${rel} must state the loop runs until findings converge`);
+      match(text, /SD4/, `${rel} must cite ADR-0042 SD4 for the convergence loop`);
+    }
+  });
+
+  // Codex C1/C2: Phase 2 must NOT mark the workflow terminal on a non-converged /
+  // paused refine (a new inconsistency / accessibility barrier / bounded-pass
+  // exhaustion / an unverifiable post-code re-render). set-terminal must be gated
+  // by the CONVERGED check, with an explicit paused branch leaving the wf active.
+  it('Phase 2 guards the terminal write behind convergence — a paused refine is NOT marked terminal (Codex C1)', async () => {
+    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
+    const guarded = cmd.match(/if \[ "\$\{CONVERGED[\s\S]*?set-terminal/);
+    ok(guarded, 'commands/refine.md set-terminal must sit inside the CONVERGED convergence guard (not unconditional)');
+    match(cmd, /PAUSED[\s\S]{0,200}(left ACTIVE|NOT marked terminal)/i,
+      'commands/refine.md must describe the paused branch leaving the workflow ACTIVE (not terminal)');
+  });
+
+  it('the convergence loop is bounded — persistent non-convergence pauses/routes, not an infinite loop (Codex M1)', async () => {
+    for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      match(text, /bound(ed)? (the |it|convergence)|hard cap/i, `${rel} must bound the convergence loop (no unbounded loop)`);
+      ok(/owner decision|\/designer:decide|\/designer:investigate/i.test(text),
+        `${rel} must route persistent non-convergence to a decision / pause, not an infinite loop`);
+    }
+  });
+
+  it('post-code re-critique is honest about an unavailable/broken re-render — designer does not run the build (Codex M2)', async () => {
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/SKILL.md'), 'utf8');
+    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
+    for (const [rel, text] of [['SKILL.md', skill], ['commands/refine.md', cmd]]) {
+      // normalize whitespace so a markdown line-wrap inside "run the ... build" does not break the match.
+      ok(/does (\*\*)?not(\*\*)? run the (frontend )?build/i.test(normalizeWhitespace(text)),
+        `refine ${rel} must state designer does not run the frontend build (the re-rendered screen is host-supplied)`);
+      match(text, /UNVERIFIED/, `refine ${rel} must flag the vision re-critique UNVERIFIED when the re-render is unavailable`);
+    }
+    ok(/do not claim (full )?convergence|not a substitute/i.test(normalizeWhitespace(cmd)),
+      'commands/refine.md must forbid claiming convergence on a code/text-only pass when the re-render could not be re-critiqued');
+  });
+
+  // The load-bearing design gate: a refine must NOT clear a usability/conversion
+  // problem by opening a new accessibility barrier (the design analog of the
+  // founder veto-gate-exposure rule). Author-guard against silent removal.
+  it('refine guards the accessibility veto gate — a revision must not open a new a11y barrier (SD4)', async () => {
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/SKILL.md'), 'utf8');
+    match(skill, /accessibility barrier/i, 'refine SKILL must name the new-accessibility-barrier gate exposure');
+    match(skill, /moved the (veto )?gate/i,
+      'refine SKILL must state that opening a barrier moves the veto gate rather than clearing it');
+  });
+
+  it('refine keeps the candidate-only accessibility boundary on re-critique (ADR-0042 Non-Goal 6)', async () => {
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/refine/SKILL.md'), 'utf8');
+    match(skill, /candidate/i, 'refine SKILL must keep the candidate-only a11y boundary on re-critique');
+    match(skill, /Non-Goal 6/, 'refine SKILL must cite ADR-0042 Non-Goal 6');
+  });
+
+  it('the Refine-verify ensemble dispatches via peer-runner.mjs and never passes --image (SD4 item 3)', async () => {
+    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
+    const dispatch = cmd.match(/peer-runner\.mjs[\s\S]*?&\s*\n/);
+    ok(dispatch, 'commands/refine.md must dispatch the peer ensemble via peer-runner.mjs run');
+    ok(/--ensemble-type refine-verify/.test(dispatch[0]),
+      'the refine dispatch must use the refine-verify ensemble point type');
+    ok(!/--image/.test(dispatch[0]),
+      'the peer-runner dispatch must never pass --image — the companion peer path has no image channel');
+  });
+
+  it('the refine surface forward-references the shared ensemble-protocol.md § Refine-verify (still lands at PR6)', async () => {
+    for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      match(text, /ensemble-protocol\.md/, `${rel} must forward-reference the shared ensemble-protocol.md`);
+      match(text, /Refine-verify/, `${rel} must name the Refine-verify ensemble point`);
+    }
+    // PR5B does NOT author the shared file — it still lands at PR6 (SD6), like
+    // the critique / compose / decide forward-references before it.
+    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md')), false,
+      'the shared ensemble-protocol.md still lands at PR6; PR5B refine only forward-references it');
+  });
+
+  it('the SD4 privacy gate + screenshots-sensitive sentinels reach the refine external-dispatch surfaces', async () => {
+    for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md']) {
+      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      ok(text.includes(PRIVACY_SENTINEL),
+        `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+      ok(text.toLowerCase().includes(SCREENSHOT_SENTINEL),
+        `${rel} must carry the "screenshots are sensitive by default" invariant (ADR-0042 SD4)`);
+    }
+  });
+
+  it('the refine surface carries the incubating disclaimer (start macro directional, not runnable)', async () => {
+    for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      match(text, /incubating/i, `${rel} must carry the incubating disclaimer`);
+      ok(/PR6/.test(text) && /\bdirectional\b/.test(text),
+        `${rel} must note the start macro lands at PR6 so an unlanded next_command is directional, not runnable`);
+    }
+  });
+
+  it('no stale founder/business or engineer-axis vocabulary leaks into the refine surfaces (copy-trim rebrand)', async () => {
+    const STALE = [
+      /business_brief/i, /FOUNDER_OUTPUT_ROOT/, /\bventure\b/i, /\bjurisdiction\b/i, /unit-economics/i, /market-attractiveness/i, /시장성/, /단위경제/,
+      /\bessence\b/i, /\bfoundation\b/i, /practical-fit/i, /\bmaturation\b/i, /canonical-precedent/i,
+    ];
+    for (const rel of [
+      'skills/refine/SKILL.md',
+      'commands/refine.md',
+      'skills/refine/agents/openai.yaml',
     ]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       for (const re of STALE) {
