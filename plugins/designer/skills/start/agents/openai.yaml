@@ -1,0 +1,7 @@
+interface:
+  display_name: "Designer — Start"
+  short_description: "Sequence one design/UX deliverable end-to-end: investigate → frame → decide → compose → critique → refine, with approval gates at the direction and the spec"
+  default_prompt: "Use $designer:start <design topic> to take one surface (a screen, a flow, a CTA, an IA) from idea to a reviewed, accessibility-gated spec in one pass; the saved spec is the artifact handoff to the frontend (designer is non-dispatch), and post-code the rendered screen returns to $designer:critique"
+
+policy:
+  allow_implicit_invocation: false

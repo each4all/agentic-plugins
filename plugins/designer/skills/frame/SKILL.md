@@ -37,7 +37,7 @@ These design fields replace the founder frame's business-planning fields
 definition (one UX problem model per invocation). Sub-discipline context flows through the Design
 Task Profile (self-contained in the investigate skill at PR3; the shared
 `../_shared/references/orchestration.md` Dynamic Orchestration reference
-lands at PR6), not via per-call profile arguments.
+), not via per-call profile arguments.
 
 **Core principle**: frame before deciding. A misframed UX problem consumes
 downstream decision/composition effort without producing value ("a
@@ -100,7 +100,7 @@ Build the Design Task Profile (Persona=designer, the Surface / Users /
 Stage / Platform / Evidence-confidence fields, and Ensemble Affinity —
 recorded but not gating, always-max policy). The profile shape is
 self-contained in `../investigate/SKILL.md` § Design Task Profile at PR3;
-the shared `../_shared/references/orchestration.md` reference lands at PR6.
+the shared `../_shared/references/orchestration.md` reference.
 
 ### Step 2: Local framing
 
@@ -176,7 +176,7 @@ Graceful degradation: companion missing or exit code 3
 → proceed local-only and record "### Ensemble degraded:" in the body.
 
 (designer's `../_shared/references/ensemble-protocol.md` §Frame — landing
-at PR6 — will carry the formal prompt template + synthesis contract; the
+carries the formal prompt template + synthesis contract; the
 Frame dispatch shape above mirrors the reference-scan dispatch in
 `../investigate/references/design-brief-ensemble.md`.)
 
@@ -230,11 +230,14 @@ design directions need comparison (name the size
 is already obvious. The routing is a fallback only when evidence is
 genuinely neutral — do not end with a hardcoded "next: X".
 
-**Incubating note (ADR-0042).** designer ships across the implementation
-ladder: at PR3 only `investigate` + `frame` are installed. `decide` /
-`compose` land at PR4, `critique` / `refine` at PR5. If the proposal names
-an unlanded verb, `next_command` is directional, not runnable — the UX
-problem model is the durable handoff until the persona completes.
+**Incubating note (ADR-0042).** The full designer surface is installed as of
+PR6: the six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
+`critique` / `refine`), the `/designer:start` lifecycle macro, and the
+`resume` / `checkpoint` / `peer-now` meta skills. Every `next_command` this
+proposal can name is runnable. The persona is still **incubating**: ADR-0042 is
+`Proposed` and flips to `Accepted` after the PR7 real-topic dogfood, so the SD3
+decision axes and the SD4 quality lenses remain PROVISIONAL. The UX problem model is the
+durable handoff either way.
 
 Always include the workflow path:
 

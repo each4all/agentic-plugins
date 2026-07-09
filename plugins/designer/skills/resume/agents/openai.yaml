@@ -1,0 +1,7 @@
+interface:
+  display_name: "Designer — Resume"
+  short_description: "Re-enter an active designer workflow with a clean/dirty drift report, or archive a stale one"
+  default_prompt: "Use $designer:resume to re-enter the active design workflow with a drift report (a dirty tree during a critique → refine loop means the screen needs re-rendering), or $designer:resume archive to retire a stale one"
+
+policy:
+  allow_implicit_invocation: false

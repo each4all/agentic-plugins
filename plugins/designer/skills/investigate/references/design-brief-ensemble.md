@@ -12,8 +12,7 @@ design/UX analogue of the founder research-scan ensemble and the engineer
 cited-brief ensemble. The PR3 investigate verb carries this self-contained
 reference-scan contract directly; designer's full
 `_shared/references/ensemble-protocol.md` (the design-anchored ensemble
-point types) lands at PR6 and cross-references this file for the
-reference-scan point.
+point types) cross-references this file for the reference-scan point.
 
 The user never invokes the peer host directly. The skill orchestrates
 dispatch, collection, and synthesis transparently through
@@ -553,7 +552,7 @@ model).
 - `output-file-rules.md` — output-file conventions; the
   existing-directory check that gates ensemble dispatch lives there.
 - `../../_shared/references/ensemble-protocol.md` — designer's standard
-  ensemble protocol (the design-anchored point types), landing at PR6.
+  ensemble protocol (the design-anchored point types).
   Cross-references this file for the reference-scan point.
 - `../../../scripts/peer-runner.mjs` — designer's managed peer runner; the
   mechanics that resolve and invoke the peer companion, write the ledger,

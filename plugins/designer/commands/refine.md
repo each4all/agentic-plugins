@@ -84,7 +84,7 @@ Follow the refine skill's command-invoked mode at
 `$CLAUDE_PLUGIN_ROOT/skills/refine/SKILL.md`. Refine is **single-mode** (no
 `--profile` argument). The L4 design archetype flows through the Design Task
 Profile per `skills/investigate/SKILL.md` § Design Task Profile (the shared
-`skills/_shared/references/orchestration.md` reference lands at PR6).
+`skills/_shared/references/orchestration.md` reference).
 
 Refine applies critique findings or feedback to the design artifact — a pre-code
 design spec (user flow, wireframe spec, CTA copy, IA, component spec) OR a
@@ -132,7 +132,7 @@ screenshot path, **never image bytes** — and verifies the revision resolves th
 finding without introducing a new inconsistency or a new accessibility barrier),
 write it to a tempfile, and dispatch in the background. The privacy gate must have
 passed first. The prompt template + synthesis contract land in
-`skills/_shared/references/ensemble-protocol.md` § Refine-verify at PR6; the
+`skills/_shared/references/ensemble-protocol.md` § Refine-verify; the
 dispatch shape mirrors the reference-scan dispatch in
 `skills/investigate/references/design-brief-ensemble.md`:
 
@@ -250,10 +250,17 @@ fi
 # regression, and (post-code) the vision re-critique ran or is explicitly N/A. A
 # PAUSED / non-converged refine (a new inconsistency, a new accessibility barrier,
 # a bounded-pass exhaustion, or a re-render that could not be re-critiqued) leaves
-# the workflow ACTIVE — set CONVERGED=no — so the Stop hook cannot auto-archive an
-# unresolved session. The user resolves the flagged item, then re-runs
-# /designer:refine or routes to /designer:decide.
-if [ "${CONVERGED:-yes}" = "yes" ]; then
+# the workflow ACTIVE so the Stop hook cannot auto-archive an unresolved session.
+# The user resolves the flagged item, then re-runs /designer:refine or routes to
+# /designer:decide.
+#
+# FAIL-CLOSED: the default is `no`. Shell state does not survive across Bash tool
+# invocations, so a lost CONVERGED must read as "convergence not established",
+# never as success — `state.mjs set-terminal` also defaults `--terminal-marker`
+# to true, so nothing downstream would catch a fail-open default. Assign it
+# explicitly IN THIS BLOCK from the re-critique verdict.
+CONVERGED="<yes|no — from the re-critique verdict; unset means no>"
+if [ "${CONVERGED:-no}" = "yes" ]; then
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
     --terminal-phase summary-complete \
@@ -299,11 +306,12 @@ Then emit an **Active Next-Action Proposal** (the inline shape in
 — or "the design is sound, proceed" when the change was small and reconciles. Do
 not end with a hardcoded "next: X".
 
-designer is incubating (ADR-0042) — at PR5B the six cognitive verbs (`investigate`
-+ `frame` + `decide` + `compose` + `critique` + `refine`) are installed; the
-`start` macro + the meta skills land at PR6, so an unlanded surface's
-`next_command` is directional, not runnable (the refinement summary is the durable
-handoff). See `skills/refine/SKILL.md` § Completion.
+designer is incubating (ADR-0042 `Proposed`) — the full surface (the six verbs,
+the `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
+`peer-now` meta skills) is installed as of PR6, so every `next_command` is
+runnable. The persona flips to `Accepted` after the PR7 real-topic dogfood; the
+SD3 axes and SD4 lenses stay PROVISIONAL until then. The refinement summary is the durable
+handoff. See `skills/refine/SKILL.md` § Completion.
 
 Always include the workflow path:
 

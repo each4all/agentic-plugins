@@ -133,7 +133,7 @@ and/or frontend code, or a verified-local screenshot path, **never image bytes**
 signals, candidate a11y from markup, conversion/funnel logic, design-system
 consistency), write it to a tempfile, and dispatch in the background. The prompt
 template + synthesis contract land in
-`skills/_shared/references/ensemble-protocol.md` § Review at PR6; the dispatch
+`skills/_shared/references/ensemble-protocol.md` § Review; the dispatch
 shape mirrors the reference-scan dispatch in
 `skills/investigate/references/design-brief-ensemble.md`:
 
@@ -195,11 +195,11 @@ Gate verdict: 접근성 Accessibility [PASS/CONDITIONAL/FAIL] (candidate-level; 
 
 # ADR-0029 §1 — the workflow next-action mirrors the COMPACT form of the Active
 # Next-Action Proposal above (selected_next + one-line why + next_command), NOT a
-# fixed verb. refine is PR5B (unlanded): when refine is the selected_next it is
-# DIRECTIONAL, not runnable; when the critique is clean (no CRITICAL/MAJOR + the
-# gate passes) the next action is "commit / proceed", not refine. Derive it from
-# the actual result rather than hard-coding a refine handoff.
-NEXT_ACTION="<compact selected_next + why + next_command — e.g. 'Address CRITICAL/MAJOR findings; refine is PR5B (directional, not runnable)' OR 'No blocking findings, gate PASS — proceed to commit'>"
+# fixed verb. `/designer:refine` is installed and runnable, but it is not the
+# automatic next step: when the critique is clean (no CRITICAL/MAJOR + the gate
+# passes) the next action is "commit / proceed", not refine. Derive it from the
+# actual result rather than hard-coding a refine handoff.
+NEXT_ACTION="<compact selected_next + why + next_command — e.g. 'Address CRITICAL/MAJOR findings (/designer:refine)' OR 'No blocking findings, gate PASS — proceed to commit'>"
 
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
@@ -265,11 +265,12 @@ a finding opens a genuine 2+-direction fork, or `/designer:investigate` when a
 load-bearing accessibility / convention claim needs evidence. Do not end with a
 hardcoded "next: X".
 
-designer is incubating (ADR-0042) — at PR5A `investigate` + `frame` + `decide` +
-`compose` + `critique` are installed; `refine` lands at PR5B and the `start`
-macro + meta skills at PR6, so an unlanded verb's `next_command` is directional,
-not runnable (the critique report is the durable handoff). See
-`skills/critique/SKILL.md` § Completion.
+designer is incubating (ADR-0042 `Proposed`) — the full surface (the six verbs,
+the `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
+`peer-now` meta skills) is installed as of PR6, so every `next_command` is
+runnable. The persona flips to `Accepted` after the PR7 real-topic dogfood; the
+SD3 axes and SD4 lenses stay PROVISIONAL until then. The critique report is the durable
+handoff. See `skills/critique/SKILL.md` § Completion.
 
 Always include the workflow path:
 

@@ -33,8 +33,20 @@
 //     single internalized quality-criteria reference (Nielsen 10 + WCAG A/AA +
 //     conversion + consistency) + host-direct vision (same-host; the peer path
 //     stays code/text, no --image) + candidate-only a11y (Non-Goal 6) + the
-//     privacy gate on the critique surface. PR5B lands refine; PR6 lands start +
-//     meta skills + orchestration.md + L4 profiles.
+//     privacy gate on the critique surface.
+//   - PR5B lands refine (the bounded critique → refine → re-critique convergence
+//     loop), completing the six-verb cognitive set.
+//   - PR6 (this revision) lands the REMAINING persona surface: the
+//     `designer:start` lifecycle macro, the checkpoint / resume / peer-now meta
+//     skills, the two shared references the verb surfaces have been
+//     forward-referencing since PR3 (_shared/references/orchestration.md — the
+//     canonical Design Task Profile, bilingual EN/KO triggers, the L4 profile →
+//     preset map, the image L2 artifact-handoff boundary — and
+//     _shared/references/ensemble-protocol.md — the six design-anchored point
+//     types), and the L4 design profiles wired into decide-registry's ADR-0027
+//     §1.5(3) profile-override slot. The two ABSENCE guards from PR3/PR5A
+//     therefore flip to PRESENCE here, and the DEFERRED "every L4 profile
+//     resolves to a defined preset" shape test lands.
 //   - PR7 de-incubates: the incubating marker is removed from the manifests +
 //     README, and these PRESENCE assertions flip to ABSENCE.
 //
@@ -42,7 +54,7 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, match } from 'node:assert/strict';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -80,6 +92,50 @@ const DESIGN_TIERS = [
 
 const VERB_SKILLS = ['investigate', 'frame'];
 
+// The complete designer surface as of PR6: six cognitive verbs + the start
+// lifecycle macro + the three meta skills (ADR-0022 category, ADR-0042 SD7).
+const ALL_VERB_SKILLS = ['investigate', 'frame', 'decide', 'compose', 'critique', 'refine'];
+const META_SKILLS = ['checkpoint', 'resume', 'peer-now'];
+const PR6_SKILLS = ['start', ...META_SKILLS];
+
+// ADR-0042 SD6 — the L4 archetype → SD3 decision-preset map. Duplicated here on
+// purpose: the test declares the CONTRACT and decide-registry.mjs must match it,
+// so a silent edit to the map's single source of truth fails loudly.
+const EXPECTED_PROFILE_PRESET_MAP = {
+  general: 'balanced',
+  flow: 'balanced',
+  ui: 'experience',
+  cta: 'conversion',
+  content: 'clarity',
+};
+
+// ADR-0042 SD5 — designer composes the image L2 capability and NEVER implements
+// generation. Mirrors the plugins/image direct-OpenAI-API-ban sentinel
+// (ADR-0037 Alternative 6): prose (.md/.yaml) legitimately *describes* the ban,
+// so only code/shell files are scanned for actual call forms.
+const DIRECT_API_FORMS = [
+  /\bimages\s*\.\s*(generate|edit|createVariation)\s*\(/,
+  /api\.openai\.com/,
+  /\bnew\s+OpenAI\b/,
+  /\bOPENAI_API_KEY\b/,
+  /from\s+['"]openai['"]/,
+  /require\(\s*['"]openai['"]\s*\)/,
+];
+
+// Shell READS of the parent-linkage env (prose mentions in backticks stay legal).
+const PARENT_LINKAGE_READS = [
+  /\$\{?AGENTIC_PARENT_WORKFLOW/,
+  /\$\{?AGENTIC_ORIGINATING_SUBTASK/,
+];
+
+// Stale vocabulary from the copy-trim sources (founder business axes + engineer
+// software-quality axis ids). Neither may survive into a designer surface.
+const STALE_VOCABULARY = [
+  /business_brief/i, /FOUNDER_OUTPUT_ROOT/, /\bventure\b/i, /\bjurisdiction\b/i,
+  /unit-economics/i, /market-attractiveness/i, /시장성/, /단위경제/,
+  /\bessence\b/i, /\bfoundation\b/i, /practical-fit/i, /\bmaturation\b/i, /canonical-precedent/i,
+];
+
 async function readJSON(path) {
   return JSON.parse(await readFile(path, 'utf8'));
 }
@@ -100,6 +156,14 @@ function frontmatter(text) {
 
 function normalizeWhitespace(text) {
   return text.replace(/\s+/g, ' ');
+}
+
+// Extract the single-quoted trigger phrases from a skill's frontmatter.
+// Naive /'([^']*)'/g mispairs on prose apostrophes ("the persona's verb"), so an
+// opening quote must follow a word boundary opener and the closing quote must be
+// followed by punctuation or whitespace — the shape a quoted phrase actually has.
+function quotedTriggerPhrases(frontmatterText) {
+  return [...frontmatterText.matchAll(/(?:^|[\s(])'([^']{1,80})'(?=[,.;:)\s]|$)/gm)].map((m) => m[1]);
 }
 
 describe('plugins/designer — Claude manifest (.claude-plugin/plugin.json)', () => {
@@ -165,9 +229,12 @@ describe('plugins/designer — Codex manifest (.codex-plugin/plugin.json)', () =
     ok(/\$designer:compose/.test(prompts), 'defaultPrompt must show a $designer:compose example (PR4)');
     ok(/\$designer:critique/.test(prompts), 'defaultPrompt must show a $designer:critique example (PR5A)');
     ok(/\$designer:refine/.test(prompts), 'defaultPrompt must show a $designer:refine example (PR5B)');
-    for (const notyet of ['start']) {
-      ok(!new RegExp(`\\$designer:${notyet}\\b`).test(prompts),
-        `defaultPrompt must not advertise $designer:${notyet} — it lands in a later PR`);
+    ok(/\$designer:start/.test(prompts), 'defaultPrompt must show a $designer:start example (PR6 lifecycle macro)');
+    // The meta skills are workflow-continuity operations, not entry points the
+    // interface should advertise as a first prompt (founder PR6 precedent).
+    for (const meta of META_SKILLS) {
+      ok(!new RegExp(`\\$designer:${meta}\\b`).test(prompts),
+        `defaultPrompt must not advertise $designer:${meta} — meta skills are not entry-point prompts`);
     }
   });
 });
@@ -367,23 +434,17 @@ describe('plugins/designer — PR3 verb surfaces (investigate + frame + design-b
     });
   }
 
-  // The shared Design Task Profile / Dynamic Orchestration reference is
-  // DEFERRED to PR6 (macro plan): PR3 SKILLs carry a self-contained inline
-  // Design Task Profile instead. Assert it absent so PR6 owns it cleanly.
-  it('does NOT yet ship _shared/references/orchestration.md (Design Task Profile lands at PR6)', async () => {
-    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/_shared/references/orchestration.md')), false,
-      'the shared orchestration.md (Design Task Profile + bilingual triggers) lands at PR6, not PR3');
-  });
-
-  // Forward guard: after PR5B lands refine, the six-verb cognitive set is
-  // complete; the start lifecycle macro (+ meta skills) is the remaining
-  // PR6 surface. Keep a guard so PR6 owns skills/start cleanly.
-  it('the six-verb enum is COMPLETE at PR5B — only the start macro remains (lands at PR6)', async () => {
-    for (const notyet of ['start']) {
-      strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills', notyet, 'SKILL.md')), false,
-        `skills/${notyet}/SKILL.md lands at PR6, not PR5B`);
-      strictEqual(await exists(resolve(PLUGIN_ROOT, 'commands', `${notyet}.md`)), false,
-        `commands/${notyet}.md lands at PR6, not PR5B`);
+  // The shared Design Task Profile / Dynamic Orchestration reference was
+  // DEFERRED to PR6 (PR3 SKILLs carried a self-contained inline Design Task
+  // Profile). PR6 landed it — its content is asserted in the PR6 suite below,
+  // and here we only confirm the PR3 forward-reference now resolves.
+  it('the PR3 forward-reference to _shared/references/orchestration.md now resolves (landed at PR6)', async () => {
+    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/_shared/references/orchestration.md')), true,
+      'the shared orchestration.md landed at PR6 — the PR3 verb SKILLs forward-reference it');
+    for (const rel of ['skills/investigate/SKILL.md', 'skills/frame/SKILL.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      match(text, /_shared\/references\/orchestration\.md/,
+        `${rel} must reference the shared Design Task Profile / orchestration reference`);
     }
   });
 
@@ -543,11 +604,13 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
       'commands/frame.md must not pass --profile in any state.mjs path — frame is single-mode (founder refine precedent)');
   });
 
-  it('the PR3 verb surfaces carry the incubating next-action disclaimer (unlanded verbs directional, not runnable)', async () => {
-    // Codex Plan-verify GAP: investigate/frame recommend /designer:decide +
-    // /designer:compose as next commands, but those verbs are absent until PR4.
-    // Each surface must disclaim that an unlanded verb's next_command is
-    // directional, not runnable.
+  it('the PR3 verb surfaces carry the incubating next-action disclaimer (PR7 flip gate, no stale unlanded claim)', async () => {
+    // Originally (PR3) this asserted that investigate/frame disclaim an unlanded
+    // /designer:decide + /designer:compose. Those verbs shipped at PR4, and PR6
+    // completed the surface, so the disclaimer's SUBJECT changed: what remains
+    // true is that the persona is incubating until the PR7 dogfood flips
+    // ADR-0042 to Accepted. The "unlanded / not runnable" claim is now false and
+    // is banned repo-wide by the PR6 suite's stale-claim scan.
     for (const rel of [
       'skills/investigate/SKILL.md',
       'skills/frame/SKILL.md',
@@ -556,8 +619,7 @@ describe('plugins/designer — design-brief spec contract (PR3 / ADR-0042 SD2/SD
     ]) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       match(text, /incubating/i, `${rel} must carry the incubating next-action disclaimer`);
-      ok(/PR4/.test(text) && /\bdirectional\b/.test(text),
-        `${rel} must note decide/compose land at PR4 so an unlanded next_command is directional, not runnable`);
+      match(text, /PR7/, `${rel} must name the PR7 dogfood as the Accepted-flip gate`);
     }
   });
 
@@ -687,9 +749,9 @@ describe('plugins/designer — PR4 decide + compose verb surfaces + decide engin
       'DEFAULT_FALLBACK must mirror the balanced preset — keep the two in lockstep');
   });
 
-  // PR4 tests presets-defined + >=2-decisive only. The "every L4 profile
-  // resolves to a defined preset" cross-check is DEFERRED to PR6 (profiles
-  // land at PR6 — ADR-0042 macro plan).
+  // PR4 tested presets-defined + >=2-decisive only. The "every L4 profile
+  // resolves to a defined preset" cross-check landed at PR6 (profiles exist
+  // now) — see the PR6 suite below.
   it('every registry preset is a defined map with a description and a non-empty axis list', async () => {
     const mod = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs')).href);
     const { registry } = mod.loadRegistry({});
@@ -738,12 +800,11 @@ describe('plugins/designer — PR4 decide + compose verb surfaces + decide engin
       'commands/compose.md append/resume path must carry --profile (resume continuity)');
   });
 
-  it('the decide/compose surfaces carry the incubating disclaimer (critique/refine/start directional, not runnable)', async () => {
+  it('the decide/compose surfaces carry the incubating disclaimer (PR7 flip gate, no stale unlanded claim)', async () => {
     for (const rel of ['skills/decide/SKILL.md', 'skills/compose/SKILL.md', 'commands/decide.md', 'commands/compose.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       match(text, /incubating/i, `${rel} must carry the incubating disclaimer`);
-      ok(/PR5A|PR5B/.test(text) && /\bdirectional\b/.test(text),
-        `${rel} must note critique/refine land at PR5A/PR5B so an unlanded next_command is directional, not runnable`);
+      match(text, /PR7/, `${rel} must name the PR7 dogfood as the Accepted-flip gate`);
     }
   });
 
@@ -900,12 +961,18 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
       'critique SKILL must mark desirability / content-clarity / feasibility as defined-but-inactive lenses');
   });
 
-  it('does NOT ship _shared/references/ensemble-protocol.md — critique only forward-references it (lands at PR6)', async () => {
-    // Codex Plan-verify MINOR: critique forward-references the shared ensemble
-    // protocol (skills/critique/SKILL.md + commands/critique.md), so guard its
-    // absence until PR6 the way orchestration.md is guarded above.
-    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md')), false,
-      'the shared ensemble-protocol.md (design-anchored ensemble point types) lands at PR6; critique only forward-references it');
+  it('the critique forward-reference to _shared/references/ensemble-protocol.md § Review now resolves (landed at PR6)', async () => {
+    // Codex Plan-verify MINOR (PR5A) guarded the shared protocol's ABSENCE until
+    // PR6. PR6 authored it, so the guard flips: the forward-reference must
+    // resolve, and the § Review point it names must exist in the shipped file.
+    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md')), true,
+      'the shared ensemble-protocol.md (design-anchored ensemble point types) landed at PR6');
+    const protocol = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    match(protocol, /^### Review /m, 'ensemble-protocol.md must define the § Review point critique names');
+    for (const rel of ['skills/critique/SKILL.md', 'commands/critique.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      match(text, /ensemble-protocol\.md/, `${rel} must reference the shared ensemble protocol`);
+    }
   });
 
   it('the single internalized criteria file names all four active-lens standards (Nielsen / WCAG / conversion / consistency) — SD4', async () => {
@@ -979,12 +1046,11 @@ describe('plugins/designer — PR5A critique verb surface + quality lenses (ADR-
     }
   });
 
-  it('the critique surface carries the incubating disclaimer (refine/start directional, not runnable)', async () => {
+  it('the critique surface carries the incubating disclaimer (PR7 flip gate, no stale unlanded claim)', async () => {
     for (const rel of ['skills/critique/SKILL.md', 'commands/critique.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       match(text, /incubating/i, `${rel} must carry the incubating disclaimer`);
-      ok(/PR5B|PR6/.test(text) && /\bdirectional\b/.test(text),
-        `${rel} must note refine/start land at PR5B/PR6 so an unlanded next_command is directional, not runnable`);
+      match(text, /PR7/, `${rel} must name the PR7 dogfood as the Accepted-flip gate`);
     }
   });
 
@@ -1133,16 +1199,17 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
       'the peer-runner dispatch must never pass --image — the companion peer path has no image channel');
   });
 
-  it('the refine surface forward-references the shared ensemble-protocol.md § Refine-verify (still lands at PR6)', async () => {
+  it('the refine forward-reference to the shared ensemble-protocol.md § Refine-verify now resolves (landed at PR6)', async () => {
     for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
-      match(text, /ensemble-protocol\.md/, `${rel} must forward-reference the shared ensemble-protocol.md`);
+      match(text, /ensemble-protocol\.md/, `${rel} must reference the shared ensemble-protocol.md`);
       match(text, /Refine-verify/, `${rel} must name the Refine-verify ensemble point`);
     }
-    // PR5B does NOT author the shared file — it still lands at PR6 (SD6), like
-    // the critique / compose / decide forward-references before it.
-    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md')), false,
-      'the shared ensemble-protocol.md still lands at PR6; PR5B refine only forward-references it');
+    strictEqual(await exists(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md')), true,
+      'the shared ensemble-protocol.md landed at PR6; PR5B refine forward-referenced it');
+    const protocol = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    match(protocol, /^### Refine-verify /m,
+      'ensemble-protocol.md must define the § Refine-verify point refine names');
   });
 
   it('the SD4 privacy gate + screenshots-sensitive sentinels reach the refine external-dispatch surfaces', async () => {
@@ -1155,13 +1222,25 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
     }
   });
 
-  it('the refine surface carries the incubating disclaimer (start macro directional, not runnable)', async () => {
+  it('the refine surface carries the incubating disclaimer (PR7 flip gate, no stale unlanded claim)', async () => {
     for (const rel of ['skills/refine/SKILL.md', 'commands/refine.md']) {
       const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
       match(text, /incubating/i, `${rel} must carry the incubating disclaimer`);
-      ok(/PR6/.test(text) && /\bdirectional\b/.test(text),
-        `${rel} must note the start macro lands at PR6 so an unlanded next_command is directional, not runnable`);
+      match(text, /PR7/, `${rel} must name the PR7 dogfood as the Accepted-flip gate`);
     }
+  });
+
+  // Codex C1 (PR5B) required the guard to EXIST; it did not require it to fail
+  // closed. `${CONVERGED:-yes}` is not a guard: shell state does not survive
+  // across Bash tool invocations, so a lost variable marks a paused refine
+  // terminal — and `state.mjs set-terminal` defaults `--terminal-marker` to true,
+  // so nothing downstream catches it.
+  it('the refine convergence guard FAILS CLOSED — an unset CONVERGED must not mark the workflow terminal', async () => {
+    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/refine.md'), 'utf8');
+    match(cmd, /if \[ "\$\{CONVERGED:-no\}" = "yes" \]/,
+      'commands/refine.md must default CONVERGED to "no" (fail-closed), not "yes" (fail-open)');
+    ok(!/\$\{CONVERGED:-yes\}/.test(cmd),
+      'commands/refine.md must not carry a fail-open ${CONVERGED:-yes} default');
   });
 
   it('no stale founder/business or engineer-axis vocabulary leaks into the refine surfaces (copy-trim rebrand)', async () => {
@@ -1182,10 +1261,477 @@ describe('plugins/designer — PR5B refine verb surface + convergence loop (ADR-
   });
 });
 
-describe('plugins/designer — inert boundary (remaining verb surfaces land in later PRs)', () => {
-  // commands/ + skills/ landed across PR3 (investigate + frame) + PR4 (decide
-  // + compose) + PR5A (critique); the persona dirs never ship. refine + start +
-  // meta land in later PRs (asserted absent in the verb-surface suites above).
+describe('plugins/designer — PR6 start macro + meta skills + shared references + L4 profiles (ADR-0042 SD5/SD6/SD7)', () => {
+  const REQUIRED_PR6_SURFACES = [
+    'skills/_shared/references/orchestration.md',
+    'skills/_shared/references/ensemble-protocol.md',
+    'commands/start.md',
+    'commands/checkpoint.md',
+    'commands/resume.md',
+    'commands/peer-now.md',
+    'skills/start/SKILL.md',
+    'skills/start/agents/openai.yaml',
+    'skills/checkpoint/SKILL.md',
+    'skills/checkpoint/agents/openai.yaml',
+    'skills/resume/SKILL.md',
+    'skills/resume/agents/openai.yaml',
+    'skills/peer-now/SKILL.md',
+    'skills/peer-now/agents/openai.yaml',
+  ];
+
+  for (const rel of REQUIRED_PR6_SURFACES) {
+    it(`ships ${rel} (PR6 surface)`, async () => {
+      strictEqual(await exists(resolve(PLUGIN_ROOT, rel)), true,
+        `plugins/designer/${rel} is part of the ADR-0042 PR6 surface and must exist`);
+    });
+  }
+
+  for (const skill of PR6_SKILLS) {
+    it(`skills/${skill}/SKILL.md frontmatter name = ${skill} (folder ↔ frontmatter consistency)`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', skill, 'SKILL.md'), 'utf8');
+      const fm = frontmatter(text);
+      ok(fm, `skills/${skill}/SKILL.md has no YAML frontmatter`);
+      ok(new RegExp(`^name:\\s*${skill}\\s*$`, 'm').test(fm),
+        `skills/${skill}/SKILL.md frontmatter name != "${skill}"`);
+      match(fm, /description:/, `skills/${skill}/SKILL.md frontmatter must carry a description`);
+    });
+
+    it(`skills/${skill}/agents/openai.yaml display_name names the surface + persona`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', skill, 'agents/openai.yaml'), 'utf8');
+      const m = text.match(/display_name:\s*"([^"]+)"/);
+      ok(m, `skills/${skill}/agents/openai.yaml must declare interface.display_name`);
+      ok(m[1].toLowerCase().includes(skill), `openai.yaml display_name "${m[1]}" must name "${skill}"`);
+      ok(m[1].toLowerCase().includes('designer'), `openai.yaml display_name "${m[1]}" must name the persona "designer"`);
+    });
+
+    // ADR-0022 mandates the Host-availability matrix on every macro + meta skill
+    // (founder PR6 precedent): the cross-host contract must be stated, not implied.
+    it(`skills/${skill}/SKILL.md carries the mandatory Host-availability matrix (ADR-0022)`, async () => {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', skill, 'SKILL.md'), 'utf8');
+      match(text, /^## Host availability \(ADR-0022\)$/m,
+        `skills/${skill}/SKILL.md must carry a "## Host availability (ADR-0022)" section`);
+      match(text, /^\|\s*Operation\s*\|/m,
+        `skills/${skill}/SKILL.md host-availability section must be a table with an Operation column`);
+      ok(/--host codex/.test(text) && /--host claude/.test(text),
+        `skills/${skill}/SKILL.md must state both host flags in the matrix`);
+      match(text, /^## Claude\/Codex command resolution$/m,
+        `skills/${skill}/SKILL.md must carry the Claude/Codex command-resolution table`);
+    });
+  }
+
+  // ADR-0042 SD6 — bilingual EN/KO triggers per skill. The operator's own
+  // vocabulary is the auto-activation surface; an English-only description is a
+  // regression. "Any Korean character somewhere in the frontmatter" is too weak —
+  // a stray Korean noun in prose would pass while every real trigger phrase was
+  // deleted. Require ≥2 QUOTED Korean trigger phrases, the shape the descriptions
+  // actually use ('체크포인트', '진행 메모', …).
+  it('every skill description carries at least two quoted Korean trigger phrases (SD6)', async () => {
+    for (const skill of [...ALL_VERB_SKILLS, ...PR6_SKILLS]) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', skill, 'SKILL.md'), 'utf8');
+      const fm = frontmatter(text);
+      ok(fm, `skills/${skill}/SKILL.md has no YAML frontmatter`);
+      const phrases = quotedTriggerPhrases(fm);
+      const koreanTriggers = phrases.filter((p) => /[가-힣]/.test(p));
+      ok(koreanTriggers.length >= 2,
+        `skills/${skill}/SKILL.md must quote >= 2 Korean trigger phrases (ADR-0042 SD6); found ${koreanTriggers.length}: ${JSON.stringify(koreanTriggers)}`);
+      // English triggers must survive alongside them.
+      const englishTriggers = phrases.filter((p) => !/[가-힣]/.test(p) && /[a-z]{3}/i.test(p));
+      ok(englishTriggers.length >= 2,
+        `skills/${skill}/SKILL.md must quote >= 2 English trigger phrases; found ${englishTriggers.length}: ${JSON.stringify(englishTriggers)}`);
+    }
+  });
+
+  // Codex Plan-verify MAJOR (sequencing): PR6 landed `start` + the meta skills,
+  // so no surface may still tell the user those commands are unlanded. The scan
+  // covers the WHOLE plugin, not just PR6's own files — the stale text lives in
+  // the PR3/PR4/PR5 surfaces.
+  it('no designer surface claims an unlanded verb / a not-runnable next_command / a pending PR6 file', async () => {
+    const STALE_CLAIMS = [
+      /directional,\s*not\s*runnable/i,
+      /\bunlanded\b/i,
+      /not yet installed/i,
+      /(lands?|landing) at PR6/i,
+    ];
+    const entries = await readdir(PLUGIN_ROOT, { recursive: true, withFileTypes: true });
+    const offenders = [];
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      if (!/\.(md|yml|yaml)$/.test(ent.name)) continue;
+      if (ent.name === 'CHANGELOG.md') continue; // history is allowed to be historical
+      const parent = ent.parentPath ?? ent.path;
+      const full = resolve(parent, ent.name);
+      const rel = full.slice(PLUGIN_ROOT.length + 1);
+      const text = await readFile(full, 'utf8');
+      for (const re of STALE_CLAIMS) {
+        if (re.test(text)) offenders.push(`${rel} :: ${re.source}`);
+      }
+    }
+    deepStrictEqual(offenders, [],
+      `PR6 installed start + the meta skills; no surface may still call them unlanded:\n  ${offenders.join('\n  ')}`);
+  });
+
+  // The Host-availability matrices name state.mjs operations. A matrix that
+  // claims an operation the CLI does not implement is a documentation lie a
+  // substring check would never catch.
+  it('every state.mjs subcommand named in a PR6 host-availability matrix actually exists', async () => {
+    const usage = await readFile(resolve(PLUGIN_ROOT, 'scripts/state.mjs'), 'utf8');
+    const implemented = new Set([...usage.matchAll(/^\s*case '([a-z][a-z-]*)':/gm)].map((m) => m[1]));
+    ok(implemented.size >= 10, `expected to parse the state.mjs subcommand switch (got ${implemented.size})`);
+    let named = 0;
+    for (const skill of PR6_SKILLS) {
+      const text = await readFile(resolve(PLUGIN_ROOT, 'skills', skill, 'SKILL.md'), 'utf8');
+      for (const m of text.matchAll(/state\.mjs\s+([a-z][a-z-]+)/g)) {
+        const sub = m[1];
+        named += 1;
+        ok(implemented.has(sub),
+          `skills/${skill}/SKILL.md names \`state.mjs ${sub}\`, which scripts/state.mjs does not implement`);
+      }
+    }
+    ok(named >= 6, `the PR6 SKILL matrices must actually name state.mjs operations (found ${named})`);
+  });
+
+  it('the shared orchestration.md carries the canonical Design Task Profile with every field', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/orchestration.md'), 'utf8');
+    match(text, /Design Task Profile:/, 'orchestration.md must render the Design Task Profile block');
+    for (const field of ['Surface:', 'Users:', 'Stage:', 'Persona:', 'Skill-profile:', 'Profile:', 'Platform:', 'Evidence-confidence:', 'Ensemble Affinity:']) {
+      ok(text.includes(field), `Design Task Profile must declare the "${field}" field`);
+    }
+    // Skill-profile (verb mode) vs Profile (L4 archetype) must stay distinguished.
+    match(text, /Skill-profile[\s\S]{0,600}?L4/,
+      'orchestration.md must keep the Skill-profile and the L4 Profile axes explicitly separate');
+    match(text, /Ensemble Affinity[\s\S]{0,400}?NOT a dispatch gate/i,
+      'orchestration.md must state that Ensemble Affinity does not gate dispatch (always-max policy)');
+  });
+
+  it('the shared orchestration.md documents the bilingual EN/KO trigger convention (SD6)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/orchestration.md'), 'utf8');
+    match(text, /Bilingual triggers/i, 'orchestration.md must carry the bilingual trigger convention section');
+    ok(/[가-힣]/.test(text), 'the bilingual trigger table must contain Korean trigger phrases');
+  });
+
+  it('the shared orchestration.md documents the L4 profile → preset map, row-for-row, matching the code', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/orchestration.md'), 'utf8');
+    // Parse the markdown table rows rather than substring-matching the names: a
+    // doc that said `cta` → `clarity` while mentioning `conversion` elsewhere
+    // would pass a substring check (Codex Plan-verify MINOR).
+    const documented = {};
+    for (const line of text.split('\n')) {
+      const m = line.match(/^\|\s*`([a-z]+)`\s*\|[^|]*\|\s*`([a-z]+)`\s*\|/);
+      if (m) documented[m[1]] = m[2];
+    }
+    deepStrictEqual(documented, EXPECTED_PROFILE_PRESET_MAP,
+      'the orchestration.md L4 table must map each profile to exactly the preset the code map does');
+    // The doc must point at the code map rather than re-declaring it as data.
+    match(text, /PROFILE_PRESET_MAP/,
+      'orchestration.md must name PROFILE_PRESET_MAP as the single source of truth for the map');
+    match(text, /accessibility[\s\S]{0,200}?veto gate/i,
+      'orchestration.md must state accessibility is the veto gate in every preset');
+    // The L4 archetype must not be conflated with the state.mjs skill-profile.
+    match(text, /AGENTIC_DESIGNER_PROFILE/,
+      'orchestration.md must document how the L4 archetype reaches decide-registry');
+    // The env seam is ambient, not durable — both hazards must be stated.
+    match(text, /does not survive across Bash tool invocations/i,
+      'orchestration.md must warn that the export is lost across Bash tool invocations');
+    match(text, /stale|inherited/i,
+      'orchestration.md must warn that a stale ambient export leaks into a standalone decide');
+    match(text, /--size[\s\S]{0,400}?(drops|outranks)/i,
+      'orchestration.md must state that an explicit --size outranks (and drops) the L4 archetype');
+  });
+
+  // The DEFERRED PR4 cross-check, landed here now that the profiles exist.
+  it('every L4 profile resolves to a preset the SD3 registry defines (ADR-0042 SD3, DEFERRED from PR4)', async () => {
+    const mod = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs')).href);
+    const { registry } = mod.loadRegistry({});
+    ok(mod.PROFILE_PRESET_MAP, 'decide-registry.mjs must export PROFILE_PRESET_MAP (the §1.5(3) profile slot)');
+    deepStrictEqual({ ...mod.PROFILE_PRESET_MAP }, EXPECTED_PROFILE_PRESET_MAP,
+      'the shipped L4 profile → preset map must match the ADR-0042 SD6 contract');
+    for (const [profile, presetId] of Object.entries(mod.PROFILE_PRESET_MAP)) {
+      ok(Object.hasOwn(registry.presets, presetId),
+        `L4 profile "${profile}" maps to preset "${presetId}", which decision-axes.yml does not define`);
+      // and it must actually resolve, with the veto gate intact.
+      const { context, fallbackTriggered } = mod.resolvePreset({ profileOverride: profile });
+      strictEqual(fallbackTriggered, false, `resolving L4 profile "${profile}" must not trigger the registry fallback`);
+      strictEqual(context.preset_id, presetId, `L4 profile "${profile}" must resolve preset "${presetId}"`);
+      deepStrictEqual(context.axes.filter((a) => a.gate).map((a) => a.id), ['accessibility'],
+        `L4 profile "${profile}" must keep accessibility as the single veto gate`);
+    }
+  });
+
+  // Codex Plan-verify MAJOR: the env seam is process state, not workflow state.
+  // The lifecycle must not pretend an `export` survives to a later Bash block, and
+  // it must warn that a stale ambient export leaks into a standalone decide.
+  it('the start surfaces treat the L4 env seam as ambient, not durable (inline carry + stale-export hazard)', async () => {
+    for (const rel of ['skills/start/SKILL.md', 'commands/start.md']) {
+      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      match(text, /does not survive across Bash tool invocations/i,
+        `${rel} must state that shell state (the export) is lost across Bash tool invocations`);
+      match(text, /AGENTIC_DESIGNER_PROFILE="[^"]*" \\? ?node/,
+        `${rel} must show the inline-prefix form that carries the archetype into the resolve call`);
+      match(text, /stale/i,
+        `${rel} must warn that a stale ambient export leaks into an unrelated standalone /designer:decide`);
+    }
+    // The resolver must actually emit the provenance diagnostic the docs promise.
+    const registry = await readFile(resolve(PLUGIN_ROOT, 'scripts/decide-registry.mjs'), 'utf8');
+    match(registry, /L4 profile "\$\{profileOverride\}" \(AGENTIC_DESIGNER_PROFILE\) resolved preset/,
+      'decide-registry.mjs must emit a provenance diagnostic when an archetype changes the resolved preset');
+    match(registry, /outranks the L4 profile/,
+      'decide-registry.mjs must warn when an explicit --size silently drops the archetype');
+  });
+
+  it('the L4 archetype does NOT enter the ADR-0027 §2.2 decide grammar (no --profile flag)', async () => {
+    // decide stays single-mode: the archetype is ambient context (env), never a
+    // decide flag and never the state.mjs skill-profile field.
+    const args = await readFile(resolve(PLUGIN_ROOT, 'scripts/lib/decide-args.mjs'), 'utf8');
+    match(args, /KNOWN_FLAGS\s*=\s*new Set\(\["preset", "size", "weights"\]\)/,
+      'decide-args.mjs KNOWN_FLAGS must stay {preset, size, weights} — the L4 profile is not a decide flag');
+    for (const rel of ['commands/start.md', 'commands/decide.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      ok(!/--profile(=|\s+["'$])/.test(text),
+        `${rel} must not pass a --profile flag in any form — start and decide are both single-mode`);
+    }
+  });
+
+  it('the shared ensemble-protocol.md defines all six design-anchored point types', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    for (const point of ['Frame', 'Brainstorm', 'Plan-verify', 'Review', 'Refine-verify', 'Reference-scan']) {
+      match(text, new RegExp(`^### ${point} `, 'm'), `ensemble-protocol.md must define the § ${point} point type`);
+    }
+    // Every --ensemble-type the shipped verb commands dispatch must be mapped.
+    for (const type of ['reference-scan', 'frame', 'brainstorm', 'plan-verify', 'review', 'refine-verify']) {
+      ok(new RegExp('`' + type + '`').test(text),
+        `ensemble-protocol.md must map the \`${type}\` --ensemble-type to its point`);
+    }
+    // reference-scan cross-references the canonical contract, never duplicates it.
+    match(text, /design-brief-ensemble\.md/,
+      'the reference-scan point must cross-reference the canonical design-brief-ensemble.md contract');
+    // The four base synthesis categories are the schema-stable public vocabulary.
+    for (const cat of ['AGREED', 'LOCAL-ONLY', 'PEER-ONLY', 'CONFLICT']) {
+      ok(text.includes(cat), `ensemble-protocol.md must carry the ${cat} synthesis category`);
+    }
+  });
+
+  it('the shared ensemble-protocol.md states the peer has no image channel and vision is same-host (SD4 item 3)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    match(text, /no .{0,3}--image/i, 'ensemble-protocol.md must state the companion peer path has no --image flag');
+    match(text, /same-host/i, 'ensemble-protocol.md must state vision-grounded judgment is same-host');
+    match(text, /inline image bytes/i, 'ensemble-protocol.md must forbid inline image bytes in a peer prompt');
+    match(text, /codex exec --image/, 'ensemble-protocol.md must name the Codex host-direct vision path');
+    match(text, /UNVERIFIED/, 'ensemble-protocol.md must keep the UNVERIFIED honesty boundary for unseen screens');
+  });
+
+  it('the shared ensemble-protocol.md structurally excludes peer-now from ensemble_results (State Bookkeeping)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    match(text, /^### State Bookkeeping$/m, 'ensemble-protocol.md must carry the § State Bookkeeping section peer-now cites');
+    match(text, /peer-now[\s\S]{0,300}?excluded[\s\S]{0,120}?ensemble_results/i,
+      'State Bookkeeping must state the peer-now structural exclusion from ensemble_results');
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/peer-now/SKILL.md'), 'utf8');
+    match(skill, /_shared\/references\/ensemble-protocol\.md.{0,80}State Bookkeeping/s,
+      'peer-now SKILL must cite ensemble-protocol.md § State Bookkeeping for the exclusion');
+    match(skill, /--kind peer-now/, 'peer-now SKILL must dispatch with --kind peer-now (side-channel, not an ensemble)');
+  });
+
+  // ADR-0042 SD7 / Non-Goal 2 — designer is not an orchestrator dispatch target.
+  it('the PR6 commands + skills carry no parent-linkage env reads (ADR-0042 Non-Goal 2)', async () => {
+    const files = [
+      ...PR6_SKILLS.map((s) => `skills/${s}/SKILL.md`),
+      'commands/start.md', 'commands/checkpoint.md', 'commands/resume.md', 'commands/peer-now.md',
+      'skills/_shared/references/orchestration.md',
+      'skills/_shared/references/ensemble-protocol.md',
+    ];
+    for (const rel of files) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      for (const form of PARENT_LINKAGE_READS) {
+        ok(!form.test(text),
+          `${rel} must not shell-read ${form} — designer is non-dispatch (ADR-0042 Non-Goal 2)`);
+      }
+    }
+    // start.md must say so plainly, and must never reach for a dispatch CLI.
+    const start = await readFile(resolve(PLUGIN_ROOT, 'commands/start.md'), 'utf8');
+    match(start, /Non-Goal 2/, 'commands/start.md must cite ADR-0042 Non-Goal 2 (non-dispatch)');
+    ok(!/parent-writeback|subtask-update/.test(start),
+      'commands/start.md must never invoke orchestrator dispatch/writeback machinery');
+  });
+
+  it('the start macro bootstraps workflow_type=start and guards the terminal write behind convergence', async () => {
+    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/start.md'), 'utf8');
+    match(cmd, /state\.mjs" create[\s\S]*?--workflow-type start/,
+      'commands/start.md must create the workflow with --workflow-type start (ADR-0020 §Sub-decision 5)');
+    match(cmd, /check-clean-baseline/, 'commands/start.md must run the clean-baseline gate before bootstrap');
+    match(cmd, /fail-closed|Fail CLOSED/i, 'the clean-baseline gate must fail closed');
+    // The refine C1 precedent, hardened: the guard must exist AND fail closed.
+    // A `${CONVERGED:-yes}` default is not a guard — shell state does not survive
+    // across Bash tool invocations, so a lost variable would mark a paused Phase 4
+    // terminal (and `set-terminal` defaults `--terminal-marker` to true).
+    const guarded = cmd.match(/if \[ "\$\{CONVERGED[\s\S]*?set-terminal/);
+    ok(guarded, 'commands/start.md set-terminal must sit inside the CONVERGED convergence guard (not unconditional)');
+    match(cmd, /if \[ "\$\{CONVERGED:-no\}" = "yes" \]/,
+      'commands/start.md must default CONVERGED to "no" (fail-closed), not "yes" (fail-open)');
+    ok(!/\$\{CONVERGED:-yes\}/.test(cmd),
+      'commands/start.md must not carry a fail-open ${CONVERGED:-yes} default');
+    match(cmd, /PAUSED[\s\S]{0,240}(left ACTIVE|NOT marked terminal)/i,
+      'commands/start.md must describe the paused branch leaving the workflow ACTIVE (not terminal)');
+    // The lifecycle macro must not absorb a single-verb workflow.
+    match(cmd, /workflow_type[\s\S]{0,400}?verb-chain[\s\S]{0,400}?reject/i,
+      'commands/start.md must reject absorbing a verb-chain workflow into lifecycle phase space');
+  });
+
+  it('the start SKILL sequences the six verbs with approval gates at the direction and the spec', async () => {
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/start/SKILL.md'), 'utf8');
+    for (const verb of ALL_VERB_SKILLS) {
+      ok(skill.includes(verb), `start SKILL must sequence the ${verb} verb`);
+    }
+    match(skill, /Do not proceed to Phase 2 until the user approves a direction/i,
+      'start SKILL must gate Phase 2 on direction approval');
+    match(skill, /Do not proceed to Phase 3 until the user approves the spec/i,
+      'start SKILL must gate Phase 3 on spec approval');
+    match(skill, /bounded/i, 'start SKILL must bound the Phase 4 convergence loop');
+    match(skill, /single-pass/i, 'start SKILL must state the macro is single-pass');
+    match(skill, /does .{0,12}not.{0,12} run the (frontend )?build/i,
+      'start SKILL must state designer does not run the frontend build (the re-render is host-supplied)');
+  });
+
+  // ADR-0042 SD5 — image L2 is COMPOSED via artifact handoff, never re-implemented.
+  it('the image L2 composition boundary is stated as an artifact handoff, never a dispatch or a generator (SD5)', async () => {
+    const orch = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/orchestration.md'), 'utf8');
+    match(orch, /image L2 composition boundary/i, 'orchestration.md must carry the image L2 composition boundary section');
+    match(orch, /image:compose/, 'orchestration.md must name the image:compose surface designer composes');
+    match(orch, /artifact handoff/i, 'the image composition must be an artifact handoff (designer is non-dispatch)');
+    // whitespace-normalized: markdown emphasis + line wrapping sit inside the phrase.
+    match(normalizeWhitespace(orch), /never\*{0,2}\s*calls the OpenAI image API directly/i,
+      'orchestration.md must state agentic-plugins never calls the OpenAI image API directly (ADR-0037 Alternative 6)');
+    match(orch, /gpt-image/, 'orchestration.md must state generation runs through Codex\'s integrated gpt-image tool');
+    // The composing surfaces must repeat the boundary where the handoff happens.
+    // `compose` is the verb that actually produces the image brief, so it is the
+    // load-bearing one — a regression there would pass a start-only check
+    // (Codex Plan-verify MINOR).
+    for (const rel of ['skills/start/SKILL.md', 'commands/start.md', 'skills/compose/SKILL.md', 'commands/compose.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      match(text, /image:compose/, `${rel} must name the image:compose handoff for generated imagery`);
+      match(text, /never (drawn|draws|implements|implement|re-implements)/i,
+        `${rel} must state designer never generates imagery itself`);
+    }
+  });
+
+  it('no designer code file calls an image generation API (direct-OpenAI-API-ban sentinel, ADR-0037 Alternative 6)', async () => {
+    const entries = await readdir(PLUGIN_ROOT, { recursive: true, withFileTypes: true });
+    const offenders = [];
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      if (!ent.name.endsWith('.mjs') && !ent.name.endsWith('.js') && !ent.name.endsWith('.sh')) continue;
+      const parent = ent.parentPath ?? ent.path;
+      const full = resolve(parent, ent.name);
+      const rel = full.slice(PLUGIN_ROOT.length + 1);
+      const text = await readFile(full, 'utf8');
+      for (const form of DIRECT_API_FORMS) {
+        if (form.test(text)) offenders.push(`${rel} :: ${form.source}`);
+      }
+    }
+    deepStrictEqual(offenders, [],
+      `designer composes the image L2 capability and never implements generation — no direct image-API calls (ADR-0042 SD5):\n  ${offenders.join('\n  ')}`);
+  });
+
+  it('the SD4 privacy gate + screenshots-sensitive sentinels reach the start + peer-now external-dispatch surfaces', async () => {
+    // start dispatches the peer at every phase boundary and runs web search;
+    // peer-now sends a verbatim prompt. checkpoint/resume make no external call.
+    for (const rel of ['skills/start/SKILL.md', 'commands/start.md', 'skills/peer-now/SKILL.md', 'commands/peer-now.md']) {
+      const text = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      ok(text.includes(PRIVACY_SENTINEL),
+        `${rel} must carry the privacy-gate sentinel "${PRIVACY_SENTINEL}"`);
+      ok(text.toLowerCase().includes(SCREENSHOT_SENTINEL),
+        `${rel} must carry the "screenshots are sensitive by default" invariant (ADR-0042 SD4)`);
+    }
+    // ...and the shared protocol, which every ensemble dispatch reads.
+    const protocol = normalizeWhitespace(await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8'));
+    ok(protocol.includes(PRIVACY_SENTINEL), 'ensemble-protocol.md must carry the privacy-gate sentinel');
+    ok(protocol.toLowerCase().includes(SCREENSHOT_SENTINEL),
+      'ensemble-protocol.md must carry the "screenshots are sensitive by default" invariant');
+  });
+
+  // Repo-wide, non-vacuous: collect EVERY peer-runner dispatch block across the
+  // whole designer surface (start.md delegates and dispatches none of its own, so
+  // a per-file `if (dispatch)` guard would pass vacuously there). Assert the block
+  // count matches the shipped dispatchers, then assert none carries --image.
+  it('no designer surface dispatches the peer with --image, and every dispatched ensemble type is a documented point', async () => {
+    const DISPATCH_RE = /node "[^"]*peer-runner\.mjs" run[\s\S]*?(?:\n\n|&\n)/g;
+    const surfaces = [
+      ...ALL_VERB_SKILLS.map((v) => `commands/${v}.md`),
+      ...ALL_VERB_SKILLS.map((v) => `skills/${v}/SKILL.md`),
+      ...PR6_SKILLS.map((s) => `skills/${s}/SKILL.md`),
+      'commands/start.md', 'commands/checkpoint.md', 'commands/resume.md', 'commands/peer-now.md',
+    ];
+    let blocks = 0;
+    const withImage = [];
+    const dispatchedTypes = new Set();
+    for (const rel of surfaces) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      for (const m of text.matchAll(DISPATCH_RE)) {
+        blocks += 1;
+        if (/--image/.test(m[0])) withImage.push(rel);
+      }
+      for (const m of text.matchAll(/--ensemble-type\s+([a-z-]+)/g)) dispatchedTypes.add(m[1]);
+    }
+    ok(blocks >= 6, `expected the shipped peer-runner dispatch blocks to be found (got ${blocks}) — the scan must not pass vacuously`);
+    deepStrictEqual(withImage, [],
+      `the companion peer path has no image channel — these dispatches pass --image: ${withImage.join(', ')}`);
+
+    // Cross-check: every --ensemble-type the surface actually dispatches must be a
+    // point type ensemble-protocol.md defines. Derived from both files, not a list.
+    const protocol = await readFile(resolve(PLUGIN_ROOT, 'skills/_shared/references/ensemble-protocol.md'), 'utf8');
+    const documented = new Set(
+      [...protocol.matchAll(/^### ([A-Za-z][A-Za-z-]*) \(/gm)].map((m) => m[1].toLowerCase()),
+    );
+    deepStrictEqual([...dispatchedTypes].sort(), ['brainstorm', 'frame', 'plan-verify', 'reference-scan', 'refine-verify', 'review'],
+      'the six shipped verbs must dispatch exactly the six design-anchored ensemble types');
+    for (const type of dispatchedTypes) {
+      ok(documented.has(type),
+        `--ensemble-type ${type} is dispatched but ensemble-protocol.md defines no "### ${type}" point (documented: ${[...documented].join(', ')})`);
+    }
+  });
+
+  it('peer-now dispatches as a side-channel: --kind peer-now, no ensemble-accounting flags', async () => {
+    const cmd = await readFile(resolve(PLUGIN_ROOT, 'commands/peer-now.md'), 'utf8');
+    match(cmd, /--kind peer-now/, 'commands/peer-now.md must dispatch with --kind peer-now');
+    for (const flag of ['--ensemble-type', '--workflow-path', '--phase ']) {
+      ok(!new RegExp(flag.replace(/[-]/g, '\\-')).test(cmd.match(/node "[^"]*peer-runner\.mjs" run[\s\S]*?\n\n/)?.[0] ?? ''),
+        `peer-now's peer-runner dispatch must omit ${flag} — it is a side-channel, not an ensemble`);
+    }
+    // --run-id IS passed: it is the peer-run ledger key, not an ensemble key. The
+    // structural exclusion lives in peer-runner (kind !== 'ensemble' → no pending row).
+    match(cmd, /--run-id "\$RUN_ID"/, 'peer-now passes --run-id as the peer-run ledger key');
+    const runner = await readFile(resolve(PLUGIN_ROOT, 'scripts/peer-runner.mjs'), 'utf8');
+    match(runner, /if \(handle\.kind !== 'ensemble'\) return;/,
+      'peer-runner must register pending_ensemble only for kind=ensemble (the structural exclusion peer-now relies on)');
+  });
+
+  it('no stale founder/business or engineer-axis vocabulary leaks into the PR6 surfaces (copy-trim rebrand)', async () => {
+    const files = [
+      ...PR6_SKILLS.map((s) => `skills/${s}/SKILL.md`),
+      ...PR6_SKILLS.map((s) => `skills/${s}/agents/openai.yaml`),
+      'commands/start.md', 'commands/checkpoint.md', 'commands/resume.md', 'commands/peer-now.md',
+      'skills/_shared/references/orchestration.md',
+      'skills/_shared/references/ensemble-protocol.md',
+    ];
+    for (const rel of files) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      for (const re of STALE_VOCABULARY) {
+        ok(!re.test(text), `${rel} carries stale vocabulary ${re} (copy-trim rebrand miss)`);
+      }
+    }
+  });
+
+  it('the PR6 surfaces still carry the incubating disclaimer (ADR-0042 is Proposed until the PR7 dogfood)', async () => {
+    for (const rel of ['skills/start/SKILL.md', 'commands/start.md']) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      match(text, /incubating/i, `${rel} must carry the incubating disclaimer`);
+      match(text, /PR7/, `${rel} must point at the PR7 dogfood as the Accepted-flip gate`);
+    }
+  });
+});
+
+describe('plugins/designer — inert boundary (persona directories never ship)', () => {
+  // commands/ + skills/ landed across PR3 (investigate + frame), PR4 (decide +
+  // compose), PR5A (critique), PR5B (refine), and PR6 (start + meta skills +
+  // shared references). The persona dirs never ship.
   const FORBIDDEN_DIRS = [
     'personas',
     'mcp-servers',

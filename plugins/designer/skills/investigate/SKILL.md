@@ -38,7 +38,7 @@ Every command-mode run records a **Design Task Profile** before allocating
 effort. At PR3 the profile is stated inline here (self-contained); the
 shared Dynamic Orchestration reference —
 `_shared/references/orchestration.md`, carrying the full Design Task
-Profile and bilingual triggers — lands at PR6 of the ADR-0042 ladder, and
+Profile and bilingual triggers — is the canonical source, and
 this section will then defer to it. Record:
 
 ```
@@ -48,7 +48,7 @@ Design Task Profile:
   Stage:               [discovery | design | evaluation]
   Persona:             designer
   Skill-profile:       [the verb's profile mode — investigate's "design-brief"; empty for single-mode verbs like frame]
-  Profile:             [L4 design archetype — general (MVP default); ui / flow / cta / content land at PR6]
+  Profile:             [L4 design archetype — general (default) | ui | flow | cta | content]
   Platform:            [delivery context — web (responsive) / iOS / Android / desktop; viewport class; LTR/RTL]
   Evidence-confidence: [LOW | MEDIUM | HIGH — how much validated evidence backs the current understanding]
   Ensemble Affinity:   [LOW | MEDIUM | HIGH — recorded, NOT a dispatch gate; always-max policy dispatches regardless]
@@ -240,8 +240,8 @@ three possible terminal outcomes:
 ### State write (when invoked from a workflow command)
 
 When `/designer:investigate` is invoked as a sub-step of a designer
-workflow command (e.g., the `/designer:start` lifecycle macro landing at
-PR6), the invoking command writes the investigation results to its
+workflow command (e.g., the `/designer:start` lifecycle macro), the invoking
+command writes the investigation results to its
 workflow file. This skill itself does not write workflow state — it hands
 findings to the invoking command, which owns the write.
 
@@ -282,13 +282,14 @@ from it). The routing is a fallback only when evidence is genuinely
 neutral — do not end with a hardcoded "next: X". The two aborted outcomes
 have no forward result, so they skip the proposal.
 
-**Incubating note (ADR-0042).** designer ships across the implementation
-ladder: at PR3 only `investigate` + `frame` are installed. A proposal may
-name an eventual next verb — `decide` / `compose` land at PR4,
-`critique` / `refine` at PR5 — that is **not yet installed**; for an
-unlanded verb `next_command` is directional, not runnable, and the saved
-design brief is the durable handoff. `/designer:frame` is the runnable PR3
-next step.
+**Incubating note (ADR-0042).** The full designer surface is installed as of
+PR6: the six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
+`critique` / `refine`), the `/designer:start` lifecycle macro, and the
+`resume` / `checkpoint` / `peer-now` meta skills. Every `next_command` this
+proposal can name is runnable. The persona is still **incubating**: ADR-0042 is
+`Proposed` and flips to `Accepted` after the PR7 real-topic dogfood, so the SD3
+decision axes and the SD4 quality lenses remain PROVISIONAL. The saved design brief is the
+durable handoff either way.
 
 Always include the workflow path when invoked from a workflow command, so
 the user can inspect or resume:

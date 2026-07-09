@@ -107,14 +107,15 @@ Compose consumes upstream output — a confirmed UX problem model from
 first rather than composing on incomplete inputs. The L4 design archetype
 (general default; ui / flow / cta / content) flows through the Design Task
 Profile per `skills/investigate/SKILL.md` § Design Task Profile (the shared
-`skills/_shared/references/orchestration.md` reference lands at PR6), not a
+`skills/_shared/references/orchestration.md` reference), not a
 per-call flag.
 
 **Quality is annotated in (ADR-0042 SD4)**: every composed element carries
 its accessibility (candidate WCAG A/AA checks) + consistency (design-system
 component/token/pattern reuse) acceptance criteria — the criteria
 `designer:critique` (PR5A) later holds the rendered UI to. Generated imagery
-is an `image:compose` handoff (PR6), never drawn here.
+is an `image:compose` artifact handoff, never drawn here (see
+`skills/_shared/references/orchestration.md` § image L2 composition boundary).
 
 ### Privacy gate (before any external call)
 
@@ -134,7 +135,7 @@ and returns gaps: missing states, unhandled edge cases, untested
 accessibility criteria, design-system inconsistencies, responsive/RTL gaps,
 ambiguous CTA copy), write it to a tempfile, and dispatch in background. The
 prompt template + synthesis contract land in
-`skills/_shared/references/ensemble-protocol.md` §Plan-verify at PR6; the
+`skills/_shared/references/ensemble-protocol.md` §Plan-verify; the
 dispatch shape mirrors the reference-scan dispatch in
 `skills/investigate/references/design-brief-ensemble.md`:
 
@@ -247,11 +248,12 @@ Then emit an **Active Next-Action Proposal** (the inline shape in
 screen) — or `/designer:decide` if composing surfaced an undecided fork. Do
 not end with a hardcoded "next: X".
 
-designer is incubating (ADR-0042) — at PR4 `investigate` + `frame` +
-`decide` + `compose` are installed; `critique` / `refine` land at PR5A /
-PR5B, so an unlanded verb's `next_command` is directional, not runnable (the
-composed spec is the durable handoff). See `skills/compose/SKILL.md`
-§ Completion.
+designer is incubating (ADR-0042 `Proposed`) — the full surface (the six verbs,
+the `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
+`peer-now` meta skills) is installed as of PR6, so every `next_command` is
+runnable. The persona flips to `Accepted` after the PR7 real-topic dogfood; the
+SD3 axes and SD4 lenses stay PROVISIONAL until then. The composed spec is the durable
+handoff. See `skills/compose/SKILL.md` § Completion.
 
 Always include the workflow path:
 

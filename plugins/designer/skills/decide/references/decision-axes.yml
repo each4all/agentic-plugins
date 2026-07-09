@@ -50,16 +50,16 @@ schema: "1.0"
 # roles as a starting baseline, not a settled invariant beyond the
 # ≥2-decisive floor and the accessibility veto gate.
 #
-# Preset ↔ L4 profile map (profiles land at PR6): general → balanced,
-# flow → balanced, ui → experience, cta → conversion, content → clarity.
-# At PR4 only `balanced` is reachable by default (all --size tiers resolve
-# it); conversion / experience / clarity are DEFINED-BUT-INACTIVE — reachable
-# only via an explicit --preset=<id> until the PR6 profiles wire them.
+# Preset ↔ L4 profile map (PROFILE_PRESET_MAP in ../../../scripts/decide-registry.mjs
+# is the single source of truth): general → balanced, flow → balanced,
+# ui → experience, cta → conversion, content → clarity. `balanced` stays the
+# default (all --size tiers resolve it); conversion / experience / clarity are
+# reached via an explicit --preset=<id> or via their L4 profile.
 
 presets:
 
   balanced:
-    description: "7-axis preset — the full designer design/UX decision matrix (2 decisive: usability + consistency; 4 supporting; 1 accessibility veto gate). The MVP default: every --size tier resolves it. Maps to the general + flow L4 profiles (PR6)."
+    description: "7-axis preset — the full designer design/UX decision matrix (2 decisive: usability + consistency; 4 supporting; 1 accessibility veto gate). The default: every --size tier resolves it. Reached by the general + flow L4 profiles."
     axes:
       - id: "usability"
         labels:
@@ -106,7 +106,7 @@ presets:
         gate: true
 
   conversion:
-    description: "5-axis archetype preset for CTA / growth-surface decisions — usability + conversion decisive, accessibility veto gate, content-clarity + consistency supporting. DEFINED-BUT-INACTIVE at PR4 (reachable via --preset=conversion); the cta L4 profile wires it at PR6."
+    description: "5-axis archetype preset for CTA / growth-surface decisions — usability + conversion decisive, accessibility veto gate, content-clarity + consistency supporting. Reached via --preset=conversion or the cta L4 profile."
     axes:
       - id: "usability"
         labels:
@@ -141,7 +141,7 @@ presets:
         gate: true
 
   experience:
-    description: "5-axis archetype preset for UI polish / brand-experience decisions — usability + desirability decisive, accessibility veto gate, consistency + feasibility supporting. DEFINED-BUT-INACTIVE at PR4 (reachable via --preset=experience); the ui L4 profile wires it at PR6."
+    description: "5-axis archetype preset for UI polish / brand-experience decisions — usability + desirability decisive, accessibility veto gate, consistency + feasibility supporting. Reached via --preset=experience or the ui L4 profile."
     axes:
       - id: "usability"
         labels:
@@ -176,7 +176,7 @@ presets:
         gate: true
 
   clarity:
-    description: "5-axis archetype preset for content / information-clarity decisions — usability + content-clarity decisive, accessibility veto gate, consistency + conversion supporting. DEFINED-BUT-INACTIVE at PR4 (reachable via --preset=clarity); the content L4 profile wires it at PR6."
+    description: "5-axis archetype preset for content / information-clarity decisions — usability + content-clarity decisive, accessibility veto gate, consistency + conversion supporting. Reached via --preset=clarity or the content L4 profile."
     axes:
       - id: "usability"
         labels:

@@ -113,7 +113,7 @@ Follow the investigate skill's "When invoked by command" mode at
   Skill-profile=design-brief, Profile=general (L4 archetype), Surface,
   Users, Stage, Platform, Evidence-confidence — self-contained in the
   skill at PR3; the shared `_shared/references/orchestration.md` Dynamic
-  Orchestration reference lands at PR6), then confirm topic + platform +
+  Orchestration reference), then confirm topic + platform +
   stage, draft 1–7 sub-questions, define scope, run the existing-directory
   check, and pass the privacy gate.
 - **Step 2**: No subagent spawning — the orchestrator runs WebSearch +
@@ -290,10 +290,12 @@ patterns — name the size `--size=minor|standard|major`), or
 hardcoded "next: X". The two aborted cases have no forward result, so they
 skip the proposal.
 
-designer is incubating (ADR-0042) — at PR3 only `investigate` + `frame`
-are installed; `decide` / `compose` land at PR4, so an unlanded verb's
-`next_command` is directional, not runnable (the saved brief is the
-durable handoff). `/designer:frame` is the runnable PR3 next step. See
+designer is incubating (ADR-0042 `Proposed`) — the full surface (the six verbs,
+the `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
+`peer-now` meta skills) is installed as of PR6, so every `next_command` is
+runnable. The persona flips to `Accepted` after the PR7 real-topic dogfood; the
+SD3 axes and SD4 lenses stay PROVISIONAL until then. The saved brief is the durable
+handoff. `/designer:frame` is the runnable PR3 next step. See
 `skills/investigate/SKILL.md` § Completion.
 
 Always include the workflow path so the user can inspect or resume:

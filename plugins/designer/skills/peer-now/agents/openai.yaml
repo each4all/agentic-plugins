@@ -1,0 +1,7 @@
+interface:
+  display_name: "Designer — Peer-now"
+  short_description: "Ad-hoc cross-host design consultation — dispatch a verbatim (genericized) prompt to claude or codex"
+  default_prompt: "Use $designer:peer-now --peer codex --prompt-text \"...\" for a quick cross-host design consult; genericize before dispatch (privacy gate) — the companion path has no image channel, so the peer answers on code/text and vision stays host-direct"
+
+policy:
+  allow_implicit_invocation: false
