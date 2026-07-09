@@ -96,7 +96,7 @@ out-of-scope items.
 Frame is single-mode (no `--profile` argument). Design context flows
 through the Design Task Profile (self-contained in the investigate skill
 at PR3; the shared `skills/_shared/references/orchestration.md` reference
-lands at PR6).
+).
 
 ### Privacy gate (before any external call)
 
@@ -113,7 +113,7 @@ same-host `designer:critique` capability). See
 
 Build the Frame prompt and write it to a tempfile, then dispatch in the
 background. The prompt template + synthesis contract live in
-`skills/frame/SKILL.md` § Step 3 (and, at PR6,
+`skills/frame/SKILL.md` § Step 3 (and
 `skills/_shared/references/ensemble-protocol.md` §Frame):
 
 ```bash
@@ -225,10 +225,12 @@ are `/designer:decide` when 2+ directions need comparison (name the size
 `--size=minor|standard|major`), or `/designer:compose` when the direction
 is already obvious. Do not end with a hardcoded "next: X".
 
-designer is incubating (ADR-0042) — at PR3 only `investigate` + `frame`
-are installed; `decide` / `compose` land at PR4, so an unlanded verb's
-`next_command` is directional, not runnable (the UX problem model is the
-durable handoff). See `skills/frame/SKILL.md` § Completion.
+designer is incubating (ADR-0042 `Proposed`) — the full surface (the six verbs,
+the `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
+`peer-now` meta skills) is installed as of PR6, so every `next_command` is
+runnable. The persona flips to `Accepted` after the PR7 real-topic dogfood; the
+SD3 axes and SD4 lenses stay PROVISIONAL until then. The UX problem model is the durable
+handoff. See `skills/frame/SKILL.md` § Completion.
 
 Always include the workflow path:
 

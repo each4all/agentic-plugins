@@ -22,7 +22,7 @@ inferred from intent. Missing profile → `spec`. Unknown profile → `spec`
 with a one-line warning. The L4 design archetype (general default; ui /
 flow / cta / content) flows through the Design Task Profile per
 `../investigate/SKILL.md` § Design Task Profile (the shared
-`../_shared/references/orchestration.md` reference lands at PR6), not a
+`../_shared/references/orchestration.md` reference), not a
 per-call flag.
 
 **Code-first, not Figma (ADR-0042).** Compose produces *text/structure* a
@@ -30,8 +30,8 @@ frontend engineer implements directly in code — wireframe specs describe
 layout and content in words, not pixels. When generated imagery is genuinely
 needed (an illustrative hero, an icon set), compose does NOT draw it: it
 hands a brief to the `image` L2 capability (`image:compose`) — designer never
-re-implements image generation (that contract lands with the image handoff
-at PR6).
+re-implements image generation (the artifact-handoff contract lives in
+`../_shared/references/orchestration.md` § image L2 composition boundary).
 
 **Quality is annotated in, not deferred (ADR-0042 SD4).** "Excluding Figma
 is not excluding quality" means every composed element carries explicit
@@ -145,7 +145,7 @@ Genericize per the privacy gate before the peer prompt; the peer must never
 see proprietary UI or customer data, and screenshots are never sent as
 bytes. The peer call is automatic (always-max policy); skills do not pass
 `--model` / `--effort`. (designer's `../_shared/references/ensemble-protocol.md`
-§Plan-verify — landing at PR6 — will carry the prompt template + synthesis
+§Plan-verify carries the prompt template + synthesis
 contract; the dispatch shape mirrors the reference-scan dispatch in
 `../investigate/references/design-brief-ensemble.md`.)
 
@@ -191,13 +191,14 @@ load-bearing pattern assumption needs evidence before the spec is
 trustworthy. The routing is a fallback only when evidence is genuinely
 neutral — do not end with a hardcoded "next: X".
 
-**Incubating note (ADR-0042).** designer ships across the implementation
-ladder: at PR4 `investigate` + `frame` + `decide` + `compose` are
-installed. `critique` / `refine` land at PR5A / PR5B and the `start`
-lifecycle macro + meta skills at PR6. If the proposal names an unlanded
-verb (`critique` / `refine` / `start`), `next_command` is directional, not
-runnable — the composed spec is the durable handoff until the persona
-completes.
+**Incubating note (ADR-0042).** The full designer surface is installed as of
+PR6: the six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
+`critique` / `refine`), the `/designer:start` lifecycle macro, and the
+`resume` / `checkpoint` / `peer-now` meta skills. Every `next_command` this
+proposal can name is runnable. The persona is still **incubating**: ADR-0042 is
+`Proposed` and flips to `Accepted` after the PR7 real-topic dogfood, so the SD3
+decision axes and the SD4 quality lenses remain PROVISIONAL. The composed spec is the
+durable handoff either way.
 
 Always include the workflow path when invoked from a workflow command:
 

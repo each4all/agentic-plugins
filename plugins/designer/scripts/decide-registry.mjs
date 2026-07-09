@@ -17,11 +17,12 @@
 //     presetId?: string,
 //     sizeExplicit?: boolean,
 //     sizeValue?: "minor" | "standard" | "major",
-//     profileOverride?: string,        // §1.5(3) reserved slot
+//     profileOverride?: string,        // §1.5(3) — the L4 design archetype (PR6)
 //     body?: string,                   // threaded into context.body per §5.6
 //     weights?: string,                // PR4 — raw --weights=<spec> string
 //     weightsExplicit?: boolean,       // PR4 — top-level parser explicit-presence signal
 //   }) -> { context: ResolvedDecisionContext, diagnostics: string[], fallbackTriggered: boolean }
+//   PROFILE_PRESET_MAP                 // §1.5(3) — L4 profile -> preset id (PR6)
 //
 // CLI:
 //   node decide-registry.mjs resolve
@@ -31,6 +32,15 @@
 //     exit 0 — registry resolved (with or without graceful-degradation diagnostics)
 //     exit 2 — argument-parser errors (unknown flag, invalid --size, malformed
 //              --weights) per ADR-0027 §2.3(3-4)
+//
+//   The L4 design archetype is NOT a `resolve` flag: the ADR-0027 §2.2 decide
+//   grammar (--preset / --size / --weights) is unchanged, and `/designer:decide`
+//   stays single-mode. The CLI reads the archetype from the
+//   `AGENTIC_DESIGNER_PROFILE` environment variable — the value the Design Task
+//   Profile recorded (`skills/_shared/references/orchestration.md` § Step 1),
+//   exported by `/designer:start`. Unset means `general`, which resolves the
+//   same `balanced` preset the default already picks, so behavior is unchanged
+//   for a standalone verb invocation.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -65,6 +75,26 @@ const DEFAULT_FALLBACK = Object.freeze({
 });
 
 function freeze(obj) { return Object.freeze(obj); }
+
+// ADR-0042 SD6 — the L4 design archetype → decision-preset map, and the single
+// source of truth for it. `skills/_shared/references/orchestration.md`
+// documents the table; `skills/decide/references/decision-axes.yml` defines the
+// presets. A shape test asserts every value here names a preset the registry
+// actually defines (ADR-0042 SD3: "every L4 profile resolves to a defined
+// preset"), which is what keeps the three files from drifting apart.
+//
+// `general` is the MVP default and resolves the same `balanced` preset the
+// §1.5(4) default fallback picks, so an unset profile changes nothing. The
+// four archetypes were shipped DEFINED-BUT-INACTIVE at PR4 (reachable only via
+// an explicit `--preset=<id>`); this map is the PR6 wiring that makes them
+// reachable from the persona's own L4 axis.
+export const PROFILE_PRESET_MAP = Object.freeze({
+  general: "balanced",
+  flow: "balanced",      // flow decisions turn on usability + consistency
+  ui: "experience",      // UI polish turns on usability + desirability
+  cta: "conversion",     // CTA / growth surfaces turn on usability + conversion
+  content: "clarity",    // content decisions turn on usability + content-clarity
+});
 
 // Validate a single preset entry's shape per §1.6 schema invariants.
 // Returns null on success, or a diagnostic string describing the first
@@ -242,7 +272,7 @@ export function loadRegistry({ path } = {}) {
 // Precedence:
 //   1. presetId (explicit `--preset=<id>`)
 //   2. sizeExplicit && sizeValue (explicit `--size=<tier>`) → implied preset
-//   3. profileOverride (reserved; L4 profiles wire it at PR6)
+//   3. profileOverride (the L4 design archetype, via PROFILE_PRESET_MAP — PR6)
 //   4. default → `balanced` preset
 //
 // PR4 (Task 3): `weights` (raw spec string from --weights=<spec>) +
@@ -297,15 +327,33 @@ export function resolvePreset({
       // compact tier (ADR-0042 SD3). All sizes resolve `balanced`; `--size`
       // controls per-axis rendering depth (the SKILL @decide:* size-aware
       // regions), not which preset is chosen. The archetype presets
-      // (conversion / experience / clarity) are "defined-but-inactive": they
-      // exist in the registry but are reachable only via explicit `--preset`
-      // (or, at PR6, an L4 profile), never via `--size`.
+      // (conversion / experience / clarity) are reachable via an explicit
+      // `--preset` or, since PR6, an L4 profile (§1.5(3)) — never via `--size`.
+      // An explicit `--size` therefore OUTRANKS the L4 profile by design: the
+      // user typed the flag, the profile is ambient context.
       const map = { minor: "balanced", standard: "balanced", major: "balanced" };
       const implied = map[sizeValue];
       const impliedPreset = implied ? ownPreset(implied) : null;
       if (impliedPreset) {
         chosen = impliedPreset;
         chosenSource = `size-implied:${sizeValue}->${implied}`;
+        // Silent-drop guard. designer's size→preset map is degenerate (every
+        // tier implies `balanced`), so an explicit `--size` consumes §1.5(2)
+        // and the L4 archetype at §1.5(3) never fires. That is ADR-0027-correct
+        // — an explicit flag outranks ambient context — but it is invisible: a
+        // user who set profile=cta and typed `--size=minor` gets the `balanced`
+        // matrix, not the `conversion` archetype. Say so on stderr rather than
+        // silently discarding the archetype.
+        const droppedPreset = profileOverride && Object.hasOwn(PROFILE_PRESET_MAP, profileOverride)
+          ? PROFILE_PRESET_MAP[profileOverride]
+          : null;
+        if (droppedPreset && droppedPreset !== implied) {
+          diags.push(
+            `--size=${sizeValue} implies preset "${implied}" and outranks the L4 profile ` +
+            `"${profileOverride}" (preset "${droppedPreset}"), which was NOT applied ` +
+            `(ADR-0027 §1.5(2) precedes §1.5(3)); drop --size to use the profile's preset`,
+          );
+        }
       } else if (implied) {
         diags.push(`--size=${sizeValue} implies preset "${implied}" but registry has none; falling back to default`);
         fallback = true;
@@ -314,10 +362,50 @@ export function resolvePreset({
       }
     }
 
-    // §1.5(3): persona/profile override slot — reserved; never satisfied
-    // in PR2. Recorded as a diagnostic for future visibility.
+    // §1.5(3): the L4 design-archetype override (ADR-0042 SD6, wired at PR6).
+    // Reached only when the user typed neither `--preset` nor `--size`, so an
+    // explicit flag always outranks ambient profile context. An unknown
+    // archetype, or one whose mapped preset is missing from the registry,
+    // degrades gracefully to the `balanced` default with a diagnostic — a
+    // design decision must never halt on a mistyped profile.
+    //
+    // Both degraded branches set `fallbackTriggered`, mirroring the
+    // unknown-preset row: the selector the caller supplied did NOT resolve, so
+    // `preset_id: "balanced"` here does not mean "the caller asked for
+    // balanced". That signal is what suppresses the Brainstorm
+    // `<axis_awareness>` block (§4.3) — better a free-form peer than a peer
+    // pinned to an axis frame the caller never chose. An UNSET profile is not a
+    // degraded path at all: the guard below skips it and §1.5(4) defaults.
     if (!chosen && profileOverride) {
-      diags.push(`profile override "${profileOverride}" provided but no consumer registered in PR2; ignored`);
+      const mapped = Object.hasOwn(PROFILE_PRESET_MAP, profileOverride)
+        ? PROFILE_PRESET_MAP[profileOverride]
+        : null;
+      if (!mapped) {
+        diags.push(`unknown L4 profile "${profileOverride}"; known: ${Object.keys(PROFILE_PRESET_MAP).join(", ")}; falling back to default`);
+        fallback = true;
+        chosen = ownPreset("balanced");
+        chosenSource = "fallback-after-unknown-profile";
+      } else {
+        const mappedPreset = ownPreset(mapped);
+        if (mappedPreset) {
+          chosen = mappedPreset;
+          chosenSource = `profile-implied:${profileOverride}->${mapped}`;
+          // Provenance. The §5.6 context carries no chosen-source field (PR4
+          // refine M4 dropped `_chosenSource` as off-schema), so a preset that
+          // arrived from ambient environment rather than a typed flag would
+          // otherwise be indistinguishable from an explicit `--preset`. Emit it
+          // only when the archetype actually CHANGED the outcome — `general` and
+          // `flow` both resolve the §1.5(4) default and would be pure noise.
+          if (mapped !== "balanced") {
+            diags.push(`L4 profile "${profileOverride}" (AGENTIC_DESIGNER_PROFILE) resolved preset "${mapped}"`);
+          }
+        } else {
+          diags.push(`L4 profile "${profileOverride}" implies preset "${mapped}" but registry has none; falling back to default`);
+          fallback = true;
+          chosen = ownPreset("balanced");
+          chosenSource = "fallback-after-profile-implied-missing";
+        }
+      }
     }
 
     // §1.5(4): default fallback.
@@ -428,10 +516,17 @@ async function main(argv) {
     process.exit(2);
   }
 
+  // PR6 §1.5(3): the L4 design archetype arrives through the environment, not
+  // the decide grammar (see the header note). Blank/whitespace-only is treated
+  // as unset so an `export AGENTIC_DESIGNER_PROFILE=""` never reads as an
+  // unknown profile and never trips the degraded path.
+  const profileOverride = (process.env.AGENTIC_DESIGNER_PROFILE ?? "").trim() || undefined;
+
   const { context, diagnostics } = resolvePreset({
     presetId: parsed.flags.preset,
     sizeExplicit: parsed.flags.size !== undefined,
     sizeValue: parsed.flags.size,
+    profileOverride,                          // PR6: L4 archetype from AGENTIC_DESIGNER_PROFILE
     body: parsed.body,                        // peer M2 fix — thread body into §5.6 context
     weights: parsed.flags.weights,            // PR4: raw spec from --weights=<spec>
     weightsExplicit: parsed.weightsExplicit,  // PR4: top-level explicit-presence signal

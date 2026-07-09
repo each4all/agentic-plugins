@@ -24,8 +24,8 @@ This verb takes no `--profile` argument — refine is **single-mode by design**
 (the verb's purpose is faithful application + verification of an already-decided
 change). The L4 design archetype (general default; ui / flow / cta / content)
 flows through the Design Task Profile per `../investigate/SKILL.md` § Design Task
-Profile (the shared `../_shared/references/orchestration.md` reference lands at
-PR6), not via a per-call profile argument.
+Profile (the shared `../_shared/references/orchestration.md` reference), not via
+a per-call profile argument.
 
 **Core principle**: do not revise the design until the *why* is confirmed. When
 refining in response to a critique or a usability/conversion problem, the
@@ -160,8 +160,8 @@ Build the Design Task Profile per `../investigate/SKILL.md` § Design Task Profi
 (Persona=designer; Surface / Users / Stage / Platform / Evidence-confidence
 fields; Ensemble Affinity recorded but not gating — always-max policy). Refine is
 single-mode, so there is no verb Skill-profile to record. The shared
-`../_shared/references/orchestration.md` Dynamic Orchestration reference lands at
-PR6.
+`../_shared/references/orchestration.md` Dynamic Orchestration reference is the
+canonical source.
 
 ### Step 2: Apply the revision
 
@@ -192,7 +192,7 @@ elements — spec text and/or frontend code, or a verified-local screenshot path
 finding without introducing a new inconsistency or a new accessibility barrier.
 Build the Refine-verify prompt, write it to a tempfile, and dispatch in the
 background. The prompt template + synthesis contract land in
-`../_shared/references/ensemble-protocol.md` § Refine-verify at PR6; the dispatch
+`../_shared/references/ensemble-protocol.md` § Refine-verify; the dispatch
 shape mirrors the reference-scan dispatch in
 `../investigate/references/design-brief-ensemble.md` (command-managed via
 `scripts/peer-runner.mjs`). See `commands/refine.md` for the concrete dispatch
@@ -236,7 +236,7 @@ purpose — it is not marked complete.
 ### State write (when invoked from a workflow command)
 
 When `/designer:refine` runs as a sub-step of a designer workflow command (the
-`/designer:start` lifecycle macro lands at PR6), the invoking command writes the
+`/designer:start` lifecycle macro), the invoking command writes the
 applied revision (element, summary) and the verification result (design
 reconciles, gate exposure unchanged, peer verdict, re-critique convergence) to
 its workflow file. This skill itself does not write workflow state. When invoked
@@ -268,12 +268,14 @@ routing is a fallback only when evidence is genuinely neutral — do not end wit
 hardcoded "next: X". A blocked outcome (peer flagged a regression / a new
 accessibility barrier) pauses for user direction before any forward proposal.
 
-**Incubating note (ADR-0042).** designer ships across the implementation ladder:
-at PR5B `investigate` + `frame` + `decide` + `compose` + `critique` + `refine` are
-installed — the six-verb cognitive set is complete. The `start` lifecycle macro +
-the resume / checkpoint / peer-now meta skills land at PR6. If the proposal names
-an unlanded surface (`start`), `next_command` is directional, not runnable — the
-refinement summary is the durable handoff until the persona completes.
+**Incubating note (ADR-0042).** The full designer surface is installed as of
+PR6: the six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
+`critique` / `refine`), the `/designer:start` lifecycle macro, and the
+`resume` / `checkpoint` / `peer-now` meta skills. Every `next_command` this
+proposal can name is runnable. The persona is still **incubating**: ADR-0042 is
+`Proposed` and flips to `Accepted` after the PR7 real-topic dogfood, so the SD3
+decision axes and the SD4 quality lenses remain PROVISIONAL. The refinement summary is the
+durable handoff either way.
 
 Always include the workflow path when invoked from a workflow command:
 

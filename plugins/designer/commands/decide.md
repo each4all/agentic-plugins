@@ -163,7 +163,7 @@ rationale. The user makes the final call.
 Decide is single-mode (no `--profile` argument). Design sub-discipline
 context flows through the Design Task Profile per `skills/investigate/SKILL.md`
 § Design Task Profile (the shared `skills/_shared/references/orchestration.md`
-reference lands at PR6).
+reference).
 
 ### Privacy gate (before any external call)
 
@@ -182,7 +182,7 @@ Build the Brainstorm prompt (independent generation of 2-3 design
 directions with tradeoffs across the resolved axes), write it to a
 tempfile, and dispatch in the background. The prompt template (with the
 `<axis_awareness>` design-axis block) + synthesis contract land in
-`skills/_shared/references/ensemble-protocol.md` §Brainstorm at PR6; the
+`skills/_shared/references/ensemble-protocol.md` §Brainstorm; the
 dispatch shape mirrors the reference-scan dispatch in
 `skills/investigate/references/design-brief-ensemble.md`:
 
@@ -298,11 +298,12 @@ Then emit an **Active Next-Action Proposal** (the inline shape in
 surfaced, or `/designer:frame` if deciding reframed the UX problem. Do not
 end with a hardcoded "next: X".
 
-designer is incubating (ADR-0042) — at PR4 `investigate` + `frame` +
-`decide` + `compose` are installed; `critique` / `refine` land at PR5A /
-PR5B, so an unlanded verb's `next_command` is directional, not runnable
-(the decision record is the durable handoff). See `skills/decide/SKILL.md`
-§ Completion.
+designer is incubating (ADR-0042 `Proposed`) — the full surface (the six verbs,
+the `/designer:start` lifecycle macro, and the `resume` / `checkpoint` /
+`peer-now` meta skills) is installed as of PR6, so every `next_command` is
+runnable. The persona flips to `Accepted` after the PR7 real-topic dogfood; the
+SD3 axes and SD4 lenses stay PROVISIONAL until then. The decision record is the durable
+handoff. See `skills/decide/SKILL.md` § Completion.
 
 Always include the workflow path:
 

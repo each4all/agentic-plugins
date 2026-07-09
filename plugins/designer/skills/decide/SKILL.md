@@ -32,7 +32,7 @@ This verb takes no `--profile` argument — decide is single-mode. Design
 sub-discipline context flows through the **Design Task Profile**
 (self-contained in `../investigate/SKILL.md` § Design Task Profile at PR3;
 the shared `../_shared/references/orchestration.md` Dynamic Orchestration
-reference lands at PR6).
+reference).
 
 > **accessibility HONESTY BOUNDARY (ADR-0042 Non-Goal 6).** The
 > accessibility gate flags *candidate* WCAG A/AA issues from specs, code,
@@ -108,8 +108,9 @@ the registry is missing or invalid (graceful-degradation per ADR-0027 §1.6).
 These seven anchors are the `balanced` preset — the MVP default, resolved
 for every `--size` tier. The archetype presets (`conversion`, `experience`,
 `clarity`) swap the second decisive axis and drop the axes their archetype
-does not turn on; they are reachable via explicit `--preset=<id>` (the PR6
-L4 profiles wire them to `cta` / `ui` / `content`).
+does not turn on; they are reachable via explicit `--preset=<id>` or via the
+L4 profiles that wire them (`cta` → `conversion`, `ui` → `experience`,
+`content` → `clarity`; see `../_shared/references/orchestration.md`).
 
 **Axis-set resolution + ritual size (command mode, ADR-0027 §1.5)**:
 `--preset=<id>` wins outright; absent `--preset`, `--size=<tier>` resolves
@@ -338,7 +339,7 @@ Build the Design Task Profile per `../investigate/SKILL.md` § Design Task
 Profile (Persona=designer, the Surface / Users / Stage / Platform /
 Evidence-confidence fields, and Ensemble Affinity — recorded but not
 gating, always-max policy). The shared
-`../_shared/references/orchestration.md` reference lands at PR6.
+`../_shared/references/orchestration.md` reference.
 
 ### Steps 1-4
 
@@ -355,7 +356,7 @@ code/text-based; `codex-companion` has no `--image` flag — vision critique
 is a same-host `designer:critique` capability landing at PR5A). The peer
 call is automatic (always-max policy); skills do not pass `--model` /
 `--effort`. (designer's `../_shared/references/ensemble-protocol.md`
-§Brainstorm — landing at PR6 — will carry the formal prompt template +
+§Brainstorm carries the formal prompt template +
 synthesis contract, including the `<axis_awareness>` design-axis block; the
 dispatch shape mirrors the reference-scan dispatch in
 `../investigate/references/design-brief-ensemble.md`.)
@@ -373,7 +374,7 @@ explicit approval.
 ### State write (when invoked from a workflow command)
 
 When `/designer:decide` runs as a sub-step of a designer workflow command
-(e.g. the `/designer:start` lifecycle macro landing at PR6), the invoking
+(e.g. the `/designer:start` lifecycle macro), the invoking
 command writes the decision (`chosen`, `rationale`, gate verdict,
 `rejected`) to its workflow file. This skill itself does not write workflow
 state. When invoked standalone, no workflow file write occurs.
@@ -402,13 +403,14 @@ decisive evidence gap or an unresolved accessibility gate surfaced, or
 fallback only when evidence is genuinely neutral — do not end with a
 hardcoded "next: X".
 
-**Incubating note (ADR-0042).** designer ships across the implementation
-ladder: at PR4 `investigate` + `frame` + `decide` + `compose` are
-installed. `critique` / `refine` land at PR5A / PR5B and the
-`start` lifecycle macro + meta skills at PR6. If the proposal names an
-unlanded verb (`critique` / `refine` / `start`), `next_command` is
-directional, not runnable — the decision record is the durable handoff
-until the persona completes.
+**Incubating note (ADR-0042).** The full designer surface is installed as of
+PR6: the six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
+`critique` / `refine`), the `/designer:start` lifecycle macro, and the
+`resume` / `checkpoint` / `peer-now` meta skills. Every `next_command` this
+proposal can name is runnable. The persona is still **incubating**: ADR-0042 is
+`Proposed` and flips to `Accepted` after the PR7 real-topic dogfood, so the SD3
+decision axes and the SD4 quality lenses remain PROVISIONAL. The decision record is the
+durable handoff either way.
 
 Always include the workflow path when invoked from a workflow command:
 

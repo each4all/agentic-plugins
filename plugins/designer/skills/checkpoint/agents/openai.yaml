@@ -1,0 +1,7 @@
+interface:
+  display_name: "Designer — Checkpoint"
+  short_description: "Record a one-line progress checkpoint on the active designer workflow for SessionStart re-injection in the next session"
+  default_prompt: "Use $designer:checkpoint <one-line summary> to durably note where the design deliverable stands; the next session's SessionStart hook re-injects the summary on re-entry"
+
+policy:
+  allow_implicit_invocation: false

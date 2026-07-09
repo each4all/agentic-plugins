@@ -186,7 +186,7 @@ Build the Design Task Profile per `../investigate/SKILL.md` § Design Task Profi
 (Persona=designer; Surface / Users / Stage / Platform / Evidence-confidence
 fields; Ensemble Affinity recorded but not gating — always-max policy). The
 shared `../_shared/references/orchestration.md` Dynamic Orchestration reference
-lands at PR6.
+is the canonical source.
 
 ### Step 2: Collect the artifact context
 
@@ -218,7 +218,7 @@ artifact — spec text and/or frontend code, or a verified-local screenshot path
 **never image bytes** — and returns an independent code/text critique across the
 lenses. Build the Review prompt, write it to a tempfile, and dispatch in the
 background. The prompt template + synthesis contract land in
-`../_shared/references/ensemble-protocol.md` § Review at PR6; the dispatch shape
+`../_shared/references/ensemble-protocol.md` § Review; the dispatch shape
 mirrors the reference-scan dispatch in
 `../investigate/references/design-brief-ensemble.md` (command-managed via
 `scripts/peer-runner.mjs`). See `commands/critique.md` for the concrete dispatch
@@ -247,7 +247,7 @@ screen-reader — runtime).
 ### State write (when invoked from a workflow command)
 
 When `/designer:critique` runs as a sub-step of a designer workflow command (the
-`/designer:start` lifecycle macro lands at PR6), the invoking command writes the
+`/designer:start` lifecycle macro), the invoking command writes the
 critique findings + gate verdict to its workflow file. This skill itself does
 not write workflow state. When invoked standalone, no workflow file write occurs.
 
@@ -277,12 +277,14 @@ or MAJOR (and the gate passes), the design is in good shape — say so. The rout
 is a fallback only when evidence is genuinely neutral — do not end with a
 hardcoded "next: X".
 
-**Incubating note (ADR-0042).** designer ships across the implementation ladder:
-at PR5A `investigate` + `frame` + `decide` + `compose` + `critique` are
-installed. `refine` lands at PR5B and the `start` lifecycle macro + meta skills
-at PR6. If the proposal names an unlanded verb (`refine` / `start`),
-`next_command` is directional, not runnable — the critique report is the durable
-handoff until the persona completes.
+**Incubating note (ADR-0042).** The full designer surface is installed as of
+PR6: the six cognitive verbs (`investigate` / `frame` / `decide` / `compose` /
+`critique` / `refine`), the `/designer:start` lifecycle macro, and the
+`resume` / `checkpoint` / `peer-now` meta skills. Every `next_command` this
+proposal can name is runnable. The persona is still **incubating**: ADR-0042 is
+`Proposed` and flips to `Accepted` after the PR7 real-topic dogfood, so the SD3
+decision axes and the SD4 quality lenses remain PROVISIONAL. The critique report is the
+durable handoff either way.
 
 Always include the workflow path when invoked from a workflow command:
 

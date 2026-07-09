@@ -23,7 +23,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-import { loadRegistry, resolvePreset } from "../../plugins/designer/scripts/decide-registry.mjs";
+import { loadRegistry, resolvePreset, PROFILE_PRESET_MAP } from "../../plugins/designer/scripts/decide-registry.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..");
@@ -308,8 +308,15 @@ test("no --weights → empty sentinel map + weights_explicit false (backward-com
 
 // ---------- CLI surface ----------
 
+// PR6 wired the L4 archetype through AGENTIC_DESIGNER_PROFILE (ADR-0027
+// §1.5(3) profile-override slot). Every CLI test must therefore pin that
+// variable, or an operator who exports it in their own shell would see these
+// assertions resolve a different preset. Empty string == unset (the CLI
+// trims and treats blank as absent).
+const CLI_ENV = { ...process.env, AGENTIC_DESIGNER_PROFILE: "" };
+
 test("CLI: resolve (default) → 7 design axes JSON on stdout, exit 0", () => {
-  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--", "bottom tab bar vs hamburger nav"], { encoding: "utf8" });
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--", "bottom tab bar vs hamburger nav"], { encoding: "utf8", env: CLI_ENV });
   assert.equal(r.status, 0, r.stderr);
   const parsed = JSON.parse(r.stdout);
   assert.equal(parsed.preset_id, "balanced");
@@ -318,7 +325,7 @@ test("CLI: resolve (default) → 7 design axes JSON on stdout, exit 0", () => {
 });
 
 test("CLI: resolve --preset=experience → 5 axes", () => {
-  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--preset=experience", "--", "x"], { encoding: "utf8" });
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--preset=experience", "--", "x"], { encoding: "utf8", env: CLI_ENV });
   assert.equal(r.status, 0, r.stderr);
   const parsed = JSON.parse(r.stdout);
   assert.equal(parsed.preset_id, "experience");
@@ -326,7 +333,7 @@ test("CLI: resolve --preset=experience → 5 axes", () => {
 });
 
 test("CLI: resolve --size=minor → balanced (7 axes, no compact tier)", () => {
-  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--size=minor", "--", "x"], { encoding: "utf8" });
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--size=minor", "--", "x"], { encoding: "utf8", env: CLI_ENV });
   assert.equal(r.status, 0, r.stderr);
   const parsed = JSON.parse(r.stdout);
   assert.equal(parsed.preset_id, "balanced");
@@ -335,6 +342,192 @@ test("CLI: resolve --size=minor → balanced (7 axes, no compact tier)", () => {
 });
 
 test("CLI: invalid flag → exit 2 (parser halt)", () => {
-  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--bogus=1"], { encoding: "utf8" });
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--bogus=1"], { encoding: "utf8", env: CLI_ENV });
   assert.equal(r.status, 2);
+});
+
+// ---------- §1.5(3) L4 profile override (ADR-0042 SD6, wired at PR6) ----------
+
+test("PROFILE_PRESET_MAP: every L4 profile resolves to a preset the registry defines", () => {
+  const { registry } = loadRegistry({});
+  for (const [profile, presetId] of Object.entries(PROFILE_PRESET_MAP)) {
+    assert.ok(
+      Object.hasOwn(registry.presets, presetId),
+      `L4 profile "${profile}" maps to preset "${presetId}", which decision-axes.yml does not define`,
+    );
+  }
+});
+
+test("PROFILE_PRESET_MAP: the SD6 archetype map is exactly general/flow/ui/cta/content", () => {
+  assert.deepEqual(PROFILE_PRESET_MAP, {
+    general: "balanced",
+    flow: "balanced",
+    ui: "experience",
+    cta: "conversion",
+    content: "clarity",
+  });
+});
+
+test("profileOverride resolves the mapped preset; general is a no-op equal to the default", () => {
+  assert.equal(resolvePreset({ profileOverride: "cta" }).context.preset_id, "conversion");
+  assert.equal(resolvePreset({ profileOverride: "ui" }).context.preset_id, "experience");
+  assert.equal(resolvePreset({ profileOverride: "content" }).context.preset_id, "clarity");
+  assert.equal(resolvePreset({ profileOverride: "flow" }).context.preset_id, "balanced");
+
+  const general = resolvePreset({ profileOverride: "general" });
+  assert.equal(general.context.preset_id, "balanced");
+  assert.equal(general.context.registry_fallback, false);
+  assert.deepEqual(general.context.axes.map((a) => a.id), resolvePreset({}).context.axes.map((a) => a.id));
+});
+
+test("profileOverride keeps the accessibility veto gate on every mapped preset", () => {
+  for (const profile of Object.keys(PROFILE_PRESET_MAP)) {
+    const { context } = resolvePreset({ profileOverride: profile });
+    const gates = context.axes.filter((a) => a.gate).map((a) => a.id);
+    assert.deepEqual(gates, [GATE], `profile ${profile} must keep the single accessibility veto gate`);
+  }
+});
+
+// §1.5 precedence: an explicit flag the user typed always outranks the ambient
+// L4 profile. The profile only fires at slot (3), i.e. when neither --preset
+// nor --size was given.
+test("§1.5 precedence: explicit --preset outranks the L4 profile", () => {
+  const { context } = resolvePreset({ presetId: "clarity", profileOverride: "cta" });
+  assert.equal(context.preset_id, "clarity");
+  assert.equal(context.registry_fallback, false);
+});
+
+test("§1.5 precedence: explicit --size outranks the L4 profile (size implies balanced)", () => {
+  const { context } = resolvePreset({ sizeExplicit: true, sizeValue: "major", profileOverride: "cta" });
+  assert.equal(context.preset_id, "balanced");
+  assert.equal(context.size, "major");
+  assert.equal(context.registry_fallback, false);
+});
+
+test("unknown L4 profile degrades to balanced + registry_fallback=true (suppresses axis_awareness)", () => {
+  const { context, diagnostics, fallbackTriggered } = resolvePreset({ profileOverride: "brand" });
+  assert.equal(context.preset_id, "balanced");
+  assert.equal(fallbackTriggered, true);
+  assert.equal(context.registry_fallback, true);
+  assert.ok(
+    diagnostics.some((d) => d.includes('unknown L4 profile "brand"')),
+    `expected an unknown-profile diagnostic, got ${JSON.stringify(diagnostics)}`,
+  );
+});
+
+test("prototype-chain profile ids are not resolvable (Object.hasOwn guard)", () => {
+  for (const evil of ["constructor", "toString", "__proto__"]) {
+    const { context, fallbackTriggered } = resolvePreset({ profileOverride: evil });
+    assert.equal(context.preset_id, "balanced", `profile "${evil}" must not resolve through the prototype chain`);
+    assert.equal(fallbackTriggered, true);
+  }
+});
+
+test("an UNSET profile is not a degraded path — no fallback, no diagnostic", () => {
+  const { context, diagnostics, fallbackTriggered } = resolvePreset({ body: "x" });
+  assert.equal(context.preset_id, "balanced");
+  assert.equal(fallbackTriggered, false);
+  assert.deepEqual(diagnostics, []);
+  assert.equal(context.registry_fallback, false);
+});
+
+// ---------- CLI: the profile arrives through the environment, not the grammar ----------
+
+test("CLI: AGENTIC_DESIGNER_PROFILE=cta → conversion preset (no grammar change)", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--", "x"], {
+    encoding: "utf8",
+    env: { ...process.env, AGENTIC_DESIGNER_PROFILE: "cta" },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const parsed = JSON.parse(r.stdout);
+  assert.equal(parsed.preset_id, "conversion");
+  assert.equal(parsed.registry_fallback, false);
+});
+
+test("CLI: --preset=balanced outranks AGENTIC_DESIGNER_PROFILE=cta", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--preset=balanced", "--", "x"], {
+    encoding: "utf8",
+    env: { ...process.env, AGENTIC_DESIGNER_PROFILE: "cta" },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).preset_id, "balanced");
+});
+
+test("CLI: blank AGENTIC_DESIGNER_PROFILE is treated as unset (no unknown-profile diagnostic)", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--", "x"], {
+    encoding: "utf8",
+    env: { ...process.env, AGENTIC_DESIGNER_PROFILE: "   " },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const parsed = JSON.parse(r.stdout);
+  assert.equal(parsed.preset_id, "balanced");
+  assert.equal(parsed.registry_fallback, false);
+  assert.ok(!/unknown L4 profile/.test(r.stderr), `blank profile must not emit a diagnostic; got: ${r.stderr}`);
+});
+
+test("CLI: `--profile=<id>` is NOT a decide flag — the ADR-0027 §2.2 grammar is unchanged (exit 2)", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--profile=cta"], { encoding: "utf8", env: CLI_ENV });
+  assert.equal(r.status, 2, "the L4 archetype must not leak into the decide argument grammar");
+});
+
+// Observability: a preset that arrived from ambient environment rather than a
+// typed flag must be visible on stderr — the §5.6 context carries no
+// chosen-source field, so diagnostics are the only provenance channel.
+
+test("profile-implied resolution emits a provenance diagnostic when it changes the outcome", () => {
+  const { diagnostics } = resolvePreset({ profileOverride: "cta" });
+  assert.ok(
+    diagnostics.some((d) => /L4 profile "cta".*resolved preset "conversion"/.test(d)),
+    `expected a provenance diagnostic, got ${JSON.stringify(diagnostics)}`,
+  );
+});
+
+test("profile-implied resolution stays silent when it does not change the outcome (general/flow -> balanced)", () => {
+  for (const profile of ["general", "flow"]) {
+    const { diagnostics, context } = resolvePreset({ profileOverride: profile });
+    assert.equal(context.preset_id, "balanced");
+    assert.deepEqual(diagnostics, [], `profile ${profile} resolves the default preset and must not emit noise`);
+  }
+});
+
+// The silent-drop trap: designer's size→preset map is degenerate, so an
+// explicit --size consumes §1.5(2) and the archetype never fires. Correct per
+// the ladder, but it must not be silent.
+test("explicit --size that drops a non-default L4 profile emits a warning diagnostic", () => {
+  const { context, diagnostics } = resolvePreset({
+    sizeExplicit: true, sizeValue: "minor", profileOverride: "cta",
+  });
+  assert.equal(context.preset_id, "balanced");
+  assert.ok(
+    diagnostics.some((d) => /--size=minor.*outranks the L4 profile "cta".*NOT applied/.test(d)),
+    `expected a size-outranks-profile diagnostic, got ${JSON.stringify(diagnostics)}`,
+  );
+});
+
+test("explicit --size does NOT warn when the L4 profile would have resolved the same preset", () => {
+  for (const profile of ["general", "flow"]) {
+    const { diagnostics } = resolvePreset({ sizeExplicit: true, sizeValue: "major", profileOverride: profile });
+    assert.deepEqual(diagnostics, [], `profile ${profile} maps to balanced; --size=major drops nothing`);
+  }
+});
+
+test("explicit --size does not warn when no L4 profile is set", () => {
+  const { diagnostics } = resolvePreset({ sizeExplicit: true, sizeValue: "minor" });
+  assert.deepEqual(diagnostics, []);
+});
+
+test("an unknown L4 profile is never reported as a silently-dropped archetype", () => {
+  const { diagnostics } = resolvePreset({ sizeExplicit: true, sizeValue: "minor", profileOverride: "brand" });
+  assert.ok(!diagnostics.some((d) => /outranks the L4 profile/.test(d)),
+    "an unmapped profile has no preset to drop; do not claim one was discarded");
+});
+
+test("CLI: --size with an ambient non-default profile surfaces the drop on stderr", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "resolve", "--size=minor", "--", "x"], {
+    encoding: "utf8",
+    env: { ...process.env, AGENTIC_DESIGNER_PROFILE: "cta" },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).preset_id, "balanced");
+  assert.match(r.stderr, /outranks the L4 profile "cta"/);
 });
