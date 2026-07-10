@@ -1034,15 +1034,35 @@ async function buildCodexPluginHookReport({ codex, plugins, homeDir }) {
       effective,
     };
     const claudeOnly = effective.status === 'claude_adapter_only';
-    // Claude-hook-only plugins (ADR-0040 §3) are NOT Codex-hook bundlers: keep
-    // them out of the Codex bundled/packaging/review/expected sets so a
-    // deliberately-Claude-only plugin never blocks lifecycle_hook_continuity.
-    if (effective.bundled && !claudeOnly) summary.bundled_plugins.push(name);
+    // claude_adapter_only remains a DIAGNOSIS (all-Claude-adapter command
+    // shape) but is no longer an exclusion from the Codex bundled/review/
+    // expected sets. The old exclusion assumed Codex ignores such hooks;
+    // host truth disproved it: Codex's default-file discovery is
+    // command-shape-blind. Observed on codex-cli 0.144.1 — it loaded
+    // attention's hooks/hooks.json, surfaced stop/subagent_stop in /hooks,
+    // and the operator trusted them ([hooks.state] carries trusted_hash
+    // entries). The exclusion made doctor misread those trusted entries as
+    // unexpected_agentic_entries and hid a genuine review/trust surface
+    // from attestation. ADR-0040 §3's "avoid the Codex /hooks burden"
+    // intent is not achievable by mere non-declaration on current Codex;
+    // the attention-package posture (declare in the manifest, restructure,
+    // or ship portable commands) is tracked in
+    // plugins/runtime/docs/follow-ups.md. Command-portability warnings
+    // apply to these plugins like any other bundler — Codex surfaces the
+    // hooks, so their command shape is host truth, not noise.
+    // A temporary marketplace snapshot is a browsable catalog, NOT an
+    // installation (pinned by the existing not-installation contract test):
+    // a plugin whose hooks are visible ONLY there must not become a bundled/
+    // review/expected hook surface, and its command shape must not gate
+    // parity (refine-verify finding — the effective fallthrough above exists
+    // for file inspection, not for installation semantics).
+    const tmpMarketplaceOnly = effective.origin === 'codex_tmp_marketplace';
+    if (effective.bundled && !tmpMarketplaceOnly) summary.bundled_plugins.push(name);
     if (effective.manifest_declared) summary.manifest_exposed_plugins.push(name);
     if (effective.status === 'default_file_only') summary.default_file_only_plugins.push(name);
     if (claudeOnly) summary.claude_adapter_only_plugins.push(name);
     if (effective.status === 'manifest_declared_missing_file') summary.missing_hooks_file_plugins.push(name);
-    if (!claudeOnly && (effective.hooks_file?.command_analysis?.warnings ?? []).length > 0) summary.command_warning_plugins.push(name);
+    if (!tmpMarketplaceOnly && (effective.hooks_file?.command_analysis?.warnings ?? []).length > 0) summary.command_warning_plugins.push(name);
     if ((effective.hooks_file?.command_analysis?.claude_plugin_root_references ?? 0) > 0) summary.claude_root_command_plugins.push(name);
     if ((effective.hooks_file?.command_analysis?.claude_adapter_references ?? 0) > 0) summary.claude_adapter_command_plugins.push(name);
     if ((effective.hooks_file?.command_analysis?.bare_node_command_references ?? 0) > 0) summary.bare_node_command_plugins.push(name);
@@ -1148,6 +1168,19 @@ async function buildCodexPluginHookReport({ codex, plugins, homeDir }) {
   };
 }
 
+// Version resolution for the hook review/attestation surfaces: source
+// manifest (dev checkout) → list-authoritative installed version (ADR-0034)
+// → Codex install-cache manifest. Cache-only consumer repos previously
+// resolved to null here, so a cache upgrade could never flip a recorded
+// /hooks attestation to plugin_version_changed (refine-verify finding).
+function resolveHookPluginVersion(plugin) {
+  return plugin?.source?.claude_manifest?.version
+    ?? plugin?.source?.codex_manifest?.version
+    ?? plugin?.installed?.codex_resolved?.version
+    ?? plugin?.cache?.codex?.latest?.manifest_version
+    ?? null;
+}
+
 function buildCodexHookReviewTargets({ summary, plugin_entries, plugins }) {
   const targets = [];
   for (const pluginName of summary?.bundled_plugins ?? []) {
@@ -1157,7 +1190,7 @@ function buildCodexHookReviewTargets({ summary, plugin_entries, plugins }) {
     const plugin = plugins?.[pluginName];
     targets.push({
       plugin: pluginName,
-      version: plugin?.source?.claude_manifest?.version ?? plugin?.source?.codex_manifest?.version ?? null,
+      version: resolveHookPluginVersion(plugin),
       origin: effective.origin ?? null,
       manifest_exposed: effective.manifest_declared === true,
       hooks_path: sanitizeValue(hooksFile.path),
@@ -1171,6 +1204,17 @@ function buildCodexHookReviewTargets({ summary, plugin_entries, plugins }) {
   }
   return targets.sort((a, b) => a.plugin.localeCompare(b.plugin));
 }
+
+// Codex hook-state event vocabulary observed on codex-cli 0.144.1 (see
+// plugins/runtime/docs/codex-capability-baseline.md § Hooks): the events
+// Codex actually materializes as `[hooks.state]` entries. A hooks-file event
+// outside this set that has never been observed on this machine (e.g.
+// Claude's `Notification`, which current Codex does not recognize) must not
+// produce an expected entry — the host can never satisfy it, so it would
+// read as a permanently-`missing` false alarm. Observed entries are always
+// expected regardless of this set, so a future Codex that starts
+// materializing a new event self-heals without a code change.
+const CODEX_HOOK_STATE_EVENTS = new Set(['pre_compact', 'session_start', 'stop', 'subagent_stop']);
 
 async function buildCodexHookStateReport({ homeDir, reviewTargets }) {
   const configPath = join(homeDir, '.codex', 'config.toml');
@@ -1189,6 +1233,7 @@ async function buildCodexHookStateReport({ homeDir, reviewTargets }) {
     trusted: Boolean(entry.trusted_hash),
   }));
   const expected = [];
+  const unmappedEvents = [];
   for (const target of reviewTargets ?? []) {
     const hooksPath = normalizeCodexHookStatePath(target.hooks_path, target.plugin);
     for (const event of target.events ?? []) {
@@ -1200,6 +1245,18 @@ async function buildCodexHookStateReport({ homeDir, reviewTargets }) {
         && entry.hooks_path === hooksPath
         && entry.event === normalizedEvent
       ));
+      // Vocabulary gate: an event Codex does not materialize (not in the
+      // observed vocabulary AND absent from hooks.state) is surfaced as
+      // unmapped, never counted as an expected-but-missing entry.
+      if (matches.length === 0 && !CODEX_HOOK_STATE_EVENTS.has(normalizedEvent)) {
+        unmappedEvents.push({
+          plugin: target.plugin,
+          hooks_path: hooksPath,
+          event: sanitizeValue(event),
+          normalized_event: normalizedEvent,
+        });
+        continue;
+      }
       // Codex omits `enabled` from a `[hooks.state."…"]` entry it considers
       // enabled — the key is written only to record an explicit `false`. An
       // absent key therefore means ENABLED, not unknown and not disabled.
@@ -1246,7 +1303,7 @@ async function buildCodexHookStateReport({ homeDir, reviewTargets }) {
   const untrustedExpected = expected.filter((entry) => entry.state === 'enabled_untrusted');
   const missingExpected = expected.filter((entry) => entry.state === 'missing');
   return {
-    schema_version: 'runtime-codex-hook-state-1.0',
+    schema_version: 'runtime-codex-hook-state-1.1',
     config_path: configPath,
     config_status: currentText.ok ? 'available' : 'missing',
     read_error: currentText.ok ? null : currentText.reason,
@@ -1260,7 +1317,9 @@ async function buildCodexHookStateReport({ homeDir, reviewTargets }) {
       expected_untrusted: untrustedExpected.length,
       expected_missing: missingExpected.length,
       unexpected_agentic_entries: unexpectedAgenticEntries.length,
+      unmapped_events: unmappedEvents.length,
     },
+    unmapped_events: unmappedEvents,
     expected,
     disabled_expected: disabledExpected,
     untrusted_expected: untrustedExpected,
@@ -1328,6 +1387,18 @@ function normalizeCodexHookStatePath(path, plugin) {
     if (markerIndex >= 0) return normalized.slice(markerIndex + marker.length);
     const bareMarker = `plugins/${plugin}/`;
     if (normalized.startsWith(bareMarker)) return normalized.slice(bareMarker.length);
+    // Versioned install-cache layout (`…/cache/agentic-plugins/<plugin>/<version>/…`):
+    // Codex writes hooks.state paths RELATIVE to the plugin root regardless of
+    // install origin, but cache inspection records the absolute hooks-file
+    // path. Without this marker a cache-only consumer repo (no plugins/
+    // source) could never match a single hooks.state row — every expected
+    // entry read `missing` and every trusted row read unexpected
+    // (refine-verify reproduced expected_missing=14 / unexpected=14), which
+    // also kept the attestation disabled-gate unreachable.
+    const escapedPlugin = plugin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const cacheMarker = new RegExp(`(?:^|/)${escapedPlugin}/\\d+\\.\\d+\\.\\d+[^/]*/`);
+    const cacheMatch = normalized.match(cacheMarker);
+    if (cacheMatch) return normalized.slice(cacheMatch.index + cacheMatch[0].length);
   }
   return normalized;
 }
@@ -1352,12 +1423,15 @@ function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooks
     : defaultHooksFile?.status === 'available';
   // A plugin that bundles hooks ONLY as Claude-adapter commands
   // (every command targets adapters/claude/hooks/…) and declares no Codex
-  // hooks is a DELIBERATELY Claude-hook-only plugin (ADR-0040 §3 attention:
-  // hook-only L1 with no Codex hooks at v1). Its hook scripts are the Claude
-  // adapter — not Codex-runnable — so it is NOT a Codex packaging gap and its
-  // hooks must not be counted as expected Codex hooks. Distinguished from a
-  // real default_file_only gap (a Codex-runnable hook that merely forgot the
-  // .codex-plugin manifest exposure) by the all-Claude-adapter command shape.
+  // hooks is a DELIBERATELY Claude-hook-only plugin (ADR-0040 §3 attention).
+  // The classification is kept as a diagnosis of that command shape — and to
+  // keep the plugin out of default_file_only (its missing manifest
+  // declaration is a deliberate posture, not a forgotten exposure) — but it
+  // is NOT an exclusion from the bundled/review/expected sets: Codex's
+  // default-file discovery is command-shape-blind (observed on codex-cli
+  // 0.144.1, which loaded attention's hooks/hooks.json and let the operator
+  // trust stop/subagent_stop), so the host review/trust surface exists
+  // regardless of the design intent.
   const defaultAnalysis = defaultHooksFile?.command_analysis;
   const claudeAdapterOnly = !declared && bundled
     && Boolean(defaultAnalysis)
@@ -1881,7 +1955,7 @@ function getCurrentCodexHookReviewAttestation(settingsRuns, codexPluginHooks, pl
   const expectedVersions = {};
   for (const pluginName of expectedPlugins) {
     const plugin = plugins?.[pluginName];
-    expectedVersions[pluginName] = plugin?.source?.claude_manifest?.version ?? plugin?.source?.codex_manifest?.version ?? null;
+    expectedVersions[pluginName] = resolveHookPluginVersion(plugin);
   }
   for (const pluginName of expectedPlugins) {
     const expected = expectedVersions[pluginName] ?? null;
@@ -2946,7 +3020,14 @@ function buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommand
       next_step: 'Expose bundled hooks in each hook-bearing Codex plugin manifest and package hooks/hooks.json.',
     });
   }
-  if (codexPluginHooks.status === 'ready' && !hookFollowup) {
+  // Command-portability warnings gate this criterion (refine-verify
+  // finding): a bundled hook whose commands are Claude-adapter-shaped or
+  // rely on a bare `node` is surfaced by Codex but may not RUN there, so
+  // "continuity" cannot be scored satisfied on packaging + trust alone —
+  // otherwise a fresh attestation would silently launder the warning into
+  // a 100% parity score.
+  const commandWarningPlugins = codexPluginHooks.summary.command_warning_plugins ?? [];
+  if (codexPluginHooks.status === 'ready' && !hookFollowup && commandWarningPlugins.length === 0) {
     return parityCriterion({
       id: 'lifecycle_hook_continuity',
       label: 'Lifecycle hooks are packaged and enabled',
@@ -2961,10 +3042,12 @@ function buildLifecycleHookExperienceCriterion({ codexPluginHooks, pluginCommand
     label: 'Lifecycle hooks are packaged but still require host-specific confirmation',
     status: 'partial',
     weight: 15,
-    evidence: `codex-plugin-hooks=${codexPluginHooks.status}; bundled=${codexPluginHooks.summary.bundled_plugins.join(',') || 'none'}; manual-hook-review=${Boolean(hookFollowup)}`,
+    evidence: `codex-plugin-hooks=${codexPluginHooks.status}; bundled=${codexPluginHooks.summary.bundled_plugins.join(',') || 'none'}; manual-hook-review=${Boolean(hookFollowup)}; command-warnings=${commandWarningPlugins.join(',') || 'none'}`,
     next_step: hookFollowup
       ? hookFollowup.verify
-      : 'Enable the stage-appropriate Codex hook gate manually (generic [features].hooks on current Codex; [features].plugin_hooks on legacy Codex < ~0.134 — runtime does not write Codex host config per ADR-0035 §6) or restore hook packaging, then rerun runtime:doctor.',
+      : commandWarningPlugins.length > 0
+        ? `Hook commands for ${commandWarningPlugins.join(', ')} carry portability warnings (Claude-adapter paths / bare node) — ship portable command wrappers (or resolve the package posture per plugins/runtime/docs/follow-ups.md) before scoring lifecycle continuity satisfied.`
+        : 'Enable the stage-appropriate Codex hook gate manually (generic [features].hooks on current Codex; [features].plugin_hooks on legacy Codex < ~0.134 — runtime does not write Codex host config per ADR-0035 §6) or restore hook packaging, then rerun runtime:doctor.',
   });
 }
 
@@ -4624,7 +4707,7 @@ export function formatText(report) {
   lines.push(`- status=${codexHooks.status}; bundled=${codexHooks.summary.bundled_plugins.join(',') || 'none'}; manifest-exposed=${codexHooks.summary.manifest_exposed_plugins.join(',') || 'none'}; default-file-only=${codexHooks.summary.default_file_only_plugins.join(',') || 'none'}; command-warnings=${(codexHooks.summary.command_warning_plugins ?? []).join(',') || 'none'}`);
   if (codexHooks.hook_state) {
     const state = codexHooks.hook_state;
-    lines.push(`- hook-state: config=${state.config_status}; expected=${state.summary.expected}; enabled=${state.summary.expected_enabled}; disabled=${state.summary.expected_disabled}; missing=${state.summary.expected_missing}; untrusted=${state.summary.expected_untrusted}; unexpected-agentic=${state.summary.unexpected_agentic_entries}`);
+    lines.push(`- hook-state: config=${state.config_status}; expected=${state.summary.expected}; enabled=${state.summary.expected_enabled}; disabled=${state.summary.expected_disabled}; missing=${state.summary.expected_missing}; untrusted=${state.summary.expected_untrusted}; unexpected-agentic=${state.summary.unexpected_agentic_entries}; unmapped=${state.summary.unmapped_events ?? 0}`);
     for (const entry of state.disabled_expected ?? []) {
       lines.push(`  disabled-hook-state: ${entry.plugin}; event=${entry.event}; path=${entry.hooks_path}; ids=${entry.ids.join(',') || 'none'}`);
     }

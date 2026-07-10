@@ -384,16 +384,17 @@ describe('runtime doctor', () => {
     ok(report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_packaging_gap'));
   });
 
-  it('classifies a deliberately Claude-hook-only plugin as claude_adapter_only, not a Codex packaging gap (ADR-0040 §3)', async () => {
+  it('folds a claude_adapter_only plugin into the Codex bundled/review/expected sets (host loads default-file hooks regardless of command shape)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-claude-only-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
     // attention (ADR-0040 §3 hook-only L1): a hooks/hooks.json whose commands
-    // ALL target adapters/claude, and NO Codex hooks in the manifest. Its hook
-    // scripts are the Claude adapter — not Codex-runnable — so it must NOT be
-    // treated as a Codex packaging gap (which would falsely block
-    // lifecycle_hook_continuity), unlike the mixed/codex-runnable engineer case
-    // above.
+    // ALL target adapters/claude, and NO Codex hooks in the manifest. The old
+    // model excluded it from the Codex sets on the premise that Codex ignores
+    // such hooks; host truth disproved that — Codex 0.144.1's default-file
+    // discovery is command-shape-blind (it surfaced attention's
+    // stop/subagent_stop in /hooks and let the operator trust them). The
+    // classification survives as a diagnosis; the exclusion does not.
     await mkdir(join(root, 'plugins', 'attention', '.claude-plugin'), { recursive: true });
     await mkdir(join(root, 'plugins', 'attention', '.codex-plugin'), { recursive: true });
     await writeJson(join(root, 'plugins', 'attention', '.claude-plugin', 'plugin.json'), { name: 'attention', version: '0.2.0', description: 'attention' });
@@ -409,13 +410,228 @@ describe('runtime doctor', () => {
 
     const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
 
+    // Diagnosis retained; deliberate non-declaration stays out of the
+    // default_file_only packaging-gap bucket (the posture decision belongs
+    // to the attention package, tracked in follow-ups.md).
     deepStrictEqual(report.codex_plugin_hooks.summary.claude_adapter_only_plugins, ['attention']);
     ok(!report.codex_plugin_hooks.summary.default_file_only_plugins.includes('attention'), 'attention is not a default_file_only Codex gap');
-    ok(!report.codex_plugin_hooks.summary.bundled_plugins.includes('attention'), 'attention is excluded from the Codex bundled set');
-    ok(!report.codex_plugin_hooks.summary.command_warning_plugins.includes('attention'), 'a Claude-only plugin raises no Codex command-portability warning');
     ok(report.codex_plugin_hooks.status !== 'packaging_gap', `status must not be packaging_gap (got ${report.codex_plugin_hooks.status})`);
     ok(!report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'expose-bundled-hooks-in-manifest' && (rec.detail ?? '').includes('attention')));
     ok(!report.host_parity.differences.some((issue) => issue.id === 'codex_plugin_hooks_packaging_gap'), 'a deliberately Claude-only plugin does not raise a Codex packaging-gap parity difference');
+
+    // Host-truth inclusion: bundled + review target + expected hook state.
+    ok(report.codex_plugin_hooks.summary.bundled_plugins.includes('attention'), 'attention joins the Codex bundled set — Codex loads its default-file hooks');
+    const target = report.codex_plugin_hooks.review_targets.find((entry) => entry.plugin === 'attention');
+    ok(target, 'attention has a /hooks review target');
+    deepStrictEqual(target.events, ['Notification', 'Stop', 'SubagentStop']);
+    strictEqual(target.manifest_exposed, false);
+    // Command-portability warnings apply like any other bundler (bare `node`
+    // + Claude-adapter references are host truth once Codex surfaces the
+    // hooks) — the same pressure that moved the siblings to portable
+    // /bin/sh wrappers.
+    ok(report.codex_plugin_hooks.summary.command_warning_plugins.includes('attention'), 'claude-adapter command shape now raises the portability warning');
+
+    // Expected hook-state entries exist for the events Codex materializes
+    // (stop, subagent_stop); Claude's Notification is not a Codex event, so
+    // it surfaces as unmapped instead of a permanently-missing expectation.
+    const attentionExpected = report.codex_plugin_hooks.hook_state.expected.filter((entry) => entry.plugin === 'attention');
+    deepStrictEqual(attentionExpected.map((entry) => entry.event).sort(), ['stop', 'subagent_stop']);
+    for (const entry of attentionExpected) strictEqual(entry.state, 'missing', 'empty home: expected but not yet reviewed/trusted');
+    deepStrictEqual(report.codex_plugin_hooks.hook_state.unmapped_events, [
+      { plugin: 'attention', hooks_path: 'hooks/hooks.json', event: 'Notification', normalized_event: 'notification' },
+    ]);
+    strictEqual(report.codex_plugin_hooks.hook_state.summary.unmapped_events, 1);
+  });
+
+  it('reads trusted attention hook-state entries as expected, not unexpected_agentic_entries', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-attention-trusted-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-attention-trusted-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, 'plugins', 'attention', '.claude-plugin'), { recursive: true });
+    await mkdir(join(root, 'plugins', 'attention', '.codex-plugin'), { recursive: true });
+    await writeJson(join(root, 'plugins', 'attention', '.claude-plugin', 'plugin.json'), { name: 'attention', version: '0.4.0', description: 'attention' });
+    await writeJson(join(root, 'plugins', 'attention', '.codex-plugin', 'plugin.json'), { name: 'attention', version: '0.4.0', description: 'attention' });
+    await mkdir(join(root, 'plugins', 'attention', 'hooks'), { recursive: true });
+    await writeJson(join(root, 'plugins', 'attention', 'hooks', 'hooks.json'), {
+      hooks: {
+        Notification: [{ matcher: 'permission_prompt', hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/notification.mjs"' }] }],
+        Stop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/stop.mjs"' }] }],
+        SubagentStop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/subagent-stop.mjs"' }] }],
+      },
+    });
+    // What this machine's Codex actually wrote after the operator trusted
+    // attention's hooks: trusted_hash entries for stop/subagent_stop only
+    // (no `enabled` key, no notification entry).
+    await mkdir(join(home, '.codex'), { recursive: true });
+    await writeFile(join(home, '.codex', 'config.toml'), [
+      '[hooks.state]',
+      '',
+      '[hooks.state."attention@agentic-plugins:hooks/hooks.json:stop:0:0"]',
+      'trusted_hash = "sha256:abc123"',
+      '',
+      '[hooks.state."attention@agentic-plugins:hooks/hooks.json:subagent_stop:0:0"]',
+      'trusted_hash = "sha256:def456"',
+      '',
+    ].join('\n'));
+
+    const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+
+    const summary = report.codex_plugin_hooks.hook_state.summary;
+    strictEqual(summary.unexpected_agentic_entries, 0, 'trusted attention entries are expected, never unexpected');
+    const attentionExpected = report.codex_plugin_hooks.hook_state.expected.filter((entry) => entry.plugin === 'attention');
+    deepStrictEqual(attentionExpected.map((entry) => `${entry.event}:${entry.state}`).sort(), ['stop:enabled_trusted', 'subagent_stop:enabled_trusted']);
+    strictEqual(summary.unmapped_events, 1, 'Notification stays unmapped, not missing');
+    ok(formatText(report).includes('unmapped=1'));
+    strictEqual(report.codex_plugin_hooks.hook_state.schema_version, 'runtime-codex-hook-state-1.1');
+    // Command warnings gate lifecycle continuity (refine-verify): trusted
+    // packaging alone must not score satisfied while attention's commands
+    // carry portability warnings.
+    const lifecycle = report.experience_parity.criteria.find((criterion) => criterion.id === 'lifecycle_hook_continuity');
+    strictEqual(lifecycle.status, 'partial', 'command-portability warnings keep lifecycle continuity partial');
+    ok(lifecycle.evidence.includes('command-warnings=attention'));
+  });
+
+  // Refine-verify blocker: in a cache-only consumer repo (no plugins/ source)
+  // the hooks file path is the ABSOLUTE versioned install-cache path, while
+  // Codex writes hooks.state paths relative to the plugin root. Without the
+  // versioned-cache marker in normalizeCodexHookStatePath nothing matched —
+  // every expected entry read `missing`, every trusted row read unexpected,
+  // and the attestation disabled-gate was unreachable.
+  it('matches hooks.state rows against versioned install-cache hook paths in a cache-only consumer repo', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-cache-only-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-cache-only-home-'));
+    // NO seedRepo: the consumer repo has no plugins/ source at all.
+    const cacheRoot = join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', 'attention', '0.4.0');
+    await mkdir(join(cacheRoot, '.codex-plugin'), { recursive: true });
+    await writeJson(join(cacheRoot, '.codex-plugin', 'plugin.json'), { name: 'attention', version: '0.4.0', description: 'attention' });
+    await mkdir(join(cacheRoot, 'hooks'), { recursive: true });
+    await writeJson(join(cacheRoot, 'hooks', 'hooks.json'), {
+      hooks: {
+        Notification: [{ matcher: 'permission_prompt', hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/notification.mjs"' }] }],
+        Stop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/stop.mjs"' }] }],
+        SubagentStop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/subagent-stop.mjs"' }] }],
+      },
+    });
+    await writeFile(join(home, '.codex', 'config.toml'), [
+      '[hooks.state]',
+      '',
+      '[hooks.state."attention@agentic-plugins:hooks/hooks.json:stop:0:0"]',
+      'trusted_hash = "sha256:abc123"',
+      '',
+      '[hooks.state."attention@agentic-plugins:hooks/hooks.json:subagent_stop:0:0"]',
+      'enabled = false',
+      'trusted_hash = "sha256:def456"',
+      '',
+    ].join('\n'));
+
+    const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+
+    const target = report.codex_plugin_hooks.review_targets.find((entry) => entry.plugin === 'attention');
+    ok(target, 'cache-only attention still has a review target');
+    strictEqual(target.version, '0.4.0', 'version resolves from the install cache when no source manifest exists');
+    const summary = report.codex_plugin_hooks.hook_state.summary;
+    strictEqual(summary.expected_configured, 2, 'absolute versioned cache paths normalize to the relative hooks.state shape');
+    strictEqual(summary.unexpected_agentic_entries, 0, 'no trusted row is misread as unexpected in a cache-only repo');
+    strictEqual(summary.expected_missing, 0);
+    strictEqual(summary.expected_disabled, 1, 'the explicit enabled=false row is visible again — the attestation disabled-gate is reachable');
+    const states = Object.fromEntries(report.codex_plugin_hooks.hook_state.expected.filter((entry) => entry.plugin === 'attention').map((entry) => [entry.event, entry.state]));
+    deepStrictEqual(states, { stop: 'enabled_trusted', subagent_stop: 'disabled' });
+  });
+
+  it('invalidates a recorded /hooks attestation when the install-cache version moves (cache-only repo)', async () => {
+    for (const { cacheVersion, expectFollowup, label } of [
+      { cacheVersion: '0.4.0', expectFollowup: false, label: 'matching cache version keeps the attestation current' },
+      { cacheVersion: '0.5.0', expectFollowup: true, label: 'a cache upgrade flips the attestation to plugin_version_changed' },
+    ]) {
+      const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-attest-cache-'));
+      const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-attest-cache-home-'));
+      const cacheRoot = join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', 'attention', cacheVersion);
+      await mkdir(join(cacheRoot, '.codex-plugin'), { recursive: true });
+      await writeJson(join(cacheRoot, '.codex-plugin', 'plugin.json'), { name: 'attention', version: cacheVersion, description: 'attention' });
+      await mkdir(join(cacheRoot, 'hooks'), { recursive: true });
+      await writeJson(join(cacheRoot, 'hooks', 'hooks.json'), {
+        hooks: {
+          Stop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/stop.mjs"' }] }],
+          SubagentStop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/subagent-stop.mjs"' }] }],
+        },
+      });
+      await writeFile(join(home, '.codex', 'config.toml'), [
+        '[hooks.state]',
+        '',
+        '[hooks.state."attention@agentic-plugins:hooks/hooks.json:stop:0:0"]',
+        'trusted_hash = "sha256:abc123"',
+        '',
+        '[hooks.state."attention@agentic-plugins:hooks/hooks.json:subagent_stop:0:0"]',
+        'trusted_hash = "sha256:def456"',
+        '',
+      ].join('\n'));
+      // Recorded attestation covering attention@0.4.0.
+      const runId = 'settings-20260710T120000Z-abc123';
+      await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
+      await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
+        schema_version: 'runtime-settings-execution-artifact-1.1',
+        run_id: runId,
+        status: 'recorded',
+        created_at: '2026-07-10T12:00:00.000Z',
+        codex_hook_review: {
+          mode: 'attest',
+          requested: true,
+          attested: true,
+          status: 'attested',
+          host: 'codex',
+          command: '/hooks',
+          attested_at: '2026-07-10T12:00:00.000Z',
+          bundled_plugins: ['attention'],
+          plugin_versions: { attention: '0.4.0' },
+        },
+      });
+
+      const report = await runDoctor({
+        repoRoot: root,
+        homeDir: home,
+        runner: fakeRunner({
+          ...defaultRuntimeProbeMap(),
+          'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+        }),
+      });
+      // Guard against a vacuous pass: the follow-up generator early-returns
+      // unless the hook surface is ready, so pin the precondition.
+      strictEqual(report.codex_plugin_hooks.status, 'ready', `${label}: hook surface must be ready`);
+      const followup = (report.plugin_command_surface.manual_followups ?? []).find((item) => item.id === 'codex-hook-review');
+      strictEqual(Boolean(followup), expectFollowup, label);
+    }
+  });
+
+  it('keeps observed-but-unknown hook-state events expected (vocabulary mirror self-heals)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-unknown-event-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-unknown-event-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, 'plugins', 'attention', '.claude-plugin'), { recursive: true });
+    await mkdir(join(root, 'plugins', 'attention', '.codex-plugin'), { recursive: true });
+    await writeJson(join(root, 'plugins', 'attention', '.claude-plugin', 'plugin.json'), { name: 'attention', version: '0.4.0', description: 'attention' });
+    await writeJson(join(root, 'plugins', 'attention', '.codex-plugin', 'plugin.json'), { name: 'attention', version: '0.4.0', description: 'attention' });
+    await mkdir(join(root, 'plugins', 'attention', 'hooks'), { recursive: true });
+    await writeJson(join(root, 'plugins', 'attention', 'hooks', 'hooks.json'), {
+      hooks: {
+        // An event outside CODEX_HOOK_STATE_EVENTS that a future Codex has
+        // started materializing: because a matching hooks.state row EXISTS,
+        // it must stay expected (self-heal), not unmapped.
+        SessionEnd: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/stop.mjs"' }] }],
+      },
+    });
+    await mkdir(join(home, '.codex'), { recursive: true });
+    await writeFile(join(home, '.codex', 'config.toml'), [
+      '[hooks.state]',
+      '',
+      '[hooks.state."attention@agentic-plugins:hooks/hooks.json:session_end:0:0"]',
+      'trusted_hash = "sha256:abc123"',
+      '',
+    ].join('\n'));
+
+    const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    const attentionExpected = report.codex_plugin_hooks.hook_state.expected.filter((entry) => entry.plugin === 'attention');
+    deepStrictEqual(attentionExpected.map((entry) => `${entry.event}:${entry.state}`), ['session_end:enabled_trusted']);
+    strictEqual(report.codex_plugin_hooks.hook_state.summary.unmapped_events, 0, 'an observed event is never unmapped, even outside the mirror vocabulary');
   });
 
   // ADR-0042 RT: designer is hook-bearing (it ships a Codex hooks manifest since

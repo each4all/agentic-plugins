@@ -545,6 +545,7 @@ describe('runtime settings', () => {
     const artifact = JSON.parse(await readFile(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'), 'utf8'));
     strictEqual(artifact.codex_hook_review.status, 'blocked');
     ok(formatText(report).includes('hook-state: config=available; expected=6; enabled=0; disabled=6'));
+    ok(/hook-state: [^\n]*unmapped=0/.test(formatText(report)), 'settings renders the hook-state unmapped counter');
     ok(formatText(report).includes('disabled-hook-state: engineer; event=pre_compact; path=hooks/hooks.json'));
   });
 
