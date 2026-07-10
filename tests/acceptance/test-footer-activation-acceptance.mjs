@@ -46,8 +46,9 @@ import { mkdtempSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+
+import { runGit, runNode, runNodeOk } from './_helpers.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const RUNTIME_ROOT = resolve(REPO_ROOT, 'plugins/runtime'); // pin discovery deterministically
@@ -62,11 +63,11 @@ const NEXT_ACTION = 'ACCEPTANCE-concrete-next-step-42';
 const MAPPED_STATE_RE = /completion state: (next-work-available|blocked)\b/;
 
 function initRepo(root) {
-  execFileSync('git', ['init', '-q', '-b', 'feat/x'], { cwd: root });
-  execFileSync('git', ['config', 'user.name', 'footer-accept'], { cwd: root });
-  execFileSync('git', ['config', 'user.email', 'footer-accept@example.invalid'], { cwd: root });
-  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: root });
-  execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'baseline', '--no-verify'], { cwd: root });
+  runGit(['init', '-q', '-b', 'feat/x'], { cwd: root });
+  runGit(['config', 'user.name', 'footer-accept'], { cwd: root });
+  runGit(['config', 'user.email', 'footer-accept@example.invalid'], { cwd: root });
+  runGit(['config', 'commit.gpgsign', 'false'], { cwd: root });
+  runGit(['commit', '-q', '--allow-empty', '-m', 'baseline', '--no-verify'], { cwd: root });
 }
 
 // Each persona knows how to create a workflow via its real state.mjs CLI and
@@ -78,14 +79,14 @@ const PERSONAS = [
     branch: 'feat/x',
     terminalPhase: 'summary-complete',
     create(root, host) {
-      return execFileSync('node', [
+      return runNodeOk([
         this.state, 'create', '--repo-root', root,
         '--verb', 'compose', '--host', host, '--persona', 'engineer',
         '--git-baseline-branch', this.branch, '--git-baseline-head', BASELINE_HEAD,
         '--status-digest', 'deadbeef', '--profile', 'backend',
         '--original-request', 'acceptance fixture',
         '--current-phase', 'phase-0-bootstrap', '--next-action', 'Run compose skill',
-      ], { encoding: 'utf8' }).trim();
+      ]);
     },
   },
   {
@@ -96,12 +97,12 @@ const PERSONAS = [
     create(root, host) {
       // A bare macro (verb=plan → macro id); the terminal footer fires from the
       // macro handoff sidecar on set-terminal regardless of subtasks.
-      return execFileSync('node', [
+      return runNodeOk([
         this.state, 'create', '--repo-root', root,
         '--verb', 'plan', '--host', host,
         '--git-baseline-branch', this.branch, '--git-baseline-head', BASELINE_HEAD,
         '--status-digest', 'deadbeef', '--original-request', 'acceptance macro fixture',
-      ], { encoding: 'utf8' }).trim();
+      ]);
     },
   },
 ];
@@ -114,13 +115,14 @@ const HOSTS = [{ name: 'claude' }, { name: 'codex' }];
 // The REAL terminal CLI shared by both personas. runtimeRoot === null forces a
 // missing runtime; a string overrides the pinned runtime (e.g. a too-old stub).
 function setTerminal(persona, host, root, wfPath, { runtimeRoot = RUNTIME_ROOT } = {}) {
-  const env = { ...process.env };
-  env.AGENTIC_RUNTIME_ROOT = runtimeRoot === null ? join(root, 'no-such-runtime') : runtimeRoot;
-  return spawnSync('node', [
+  return runNode([
     persona.state, 'set-terminal', '--workflow-path', wfPath, '--host', host,
     '--terminal-phase', persona.terminalPhase, '--terminal-marker', 'true',
     '--next-action', NEXT_ACTION, '--event', 'updated',
-  ], { encoding: 'utf8', cwd: root, env });
+  ], {
+    cwd: root,
+    env: { AGENTIC_RUNTIME_ROOT: runtimeRoot === null ? join(root, 'no-such-runtime') : runtimeRoot },
+  });
 }
 
 function freshWorkflow(persona, host) {
