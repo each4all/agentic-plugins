@@ -27,7 +27,7 @@ node "<runtime-plugin-root>/scripts/dashboard.mjs" --repo-root "$REPO_ROOT" [--f
 Dashboard reports:
 
 - Tier 1: active workflows for engineer, orchestrator, AND founder (persona-generic namespace reads; doctor's `{engineer, orchestrator}` ledger contract stays untouched); peer runs with stale/non-terminal emphasis; orchestrator macro subtask progress parsed from macro workflow frontmatter; consensus run states.
-- Tier 2: recorded doctor artifact recency and runtime-version match; latest compat run drift class and host gaps; host-parity-baseline header; latest settings run recency plus the newest Codex hook-review attestation; artifact-inventory attention items; notify config status and notify-state health (expired dedupe claims, stale reclaim/rotation locks, unreadable state); recent `file-log` notifications when configured.
+- Tier 2: recorded doctor artifact recency and runtime-version match; latest compat run drift class and host gaps; host-parity-baseline header; latest settings execution/attestation artifact recency (plan-only and probe-free settings runs record no execution artifact) plus the newest Codex hook-review attestation; artifact-inventory attention items; notify config status and notify-state health (expired dedupe claims, stale reclaim/rotation locks, unreadable state); recent `file-log` notifications when configured.
 - `--watch`: filesystem-only re-render on a bounded poll interval (default 2s, floor 1s) with an explicit exit (SIGINT/SIGTERM or `--watch-count`); with `--format json` the stream is framed as NDJSON (one report per line).
 
 ## Boundaries

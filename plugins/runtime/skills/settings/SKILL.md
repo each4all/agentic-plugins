@@ -1,6 +1,6 @@
 ---
 name: settings
-description: "Dry-run runtime settings planner for agentic-plugins. Use when the user wants to inspect marketplace/plugin/CLI readiness, plan repo-local or user-global model/effort defaults, plan ADR-0040 notify_* notification keys, render the ADR-0040 §4 Codex notification-channel fragment plan (--notification-plan: notify=/tui.notifications fragments + receiver shuttle, artifact-only), render the ADR-0041 §12 egress launcher plan (--egress-launcher-plan: read-only activation-state + ~/.claude prototype scan → state-aware per-machine activation runbook, artifact-only; never writes host config, config.local.toml, the credential, or ~/.claude/settings.json), explicitly execute allowlisted plugin install/update commands, explicitly clean up retired agentic-plugins Claude plugins, check Codex plugin-hook readiness, or record a Codex /hooks review attestation. Mutates only agentic-plugins-owned config when --apply is explicit; runs plugin management only when --execute-plugin-management is explicit; runs retired plugin cleanup only when --execute-plugin-cleanup is explicit; records hook-review attestation only when --attest-codex-hook-review is explicit. Never writes Codex host config: the former --apply-codex-plugin-hooks plugin_hooks write was removed per ADR-0035 §6 (hook enablement is manual)."
+description: "Dry-run runtime settings planner for agentic-plugins. Use when the user wants to inspect marketplace/plugin/CLI readiness, plan repo-local or user-global model/effort defaults, plan ADR-0040 notify_* notification keys, render the ADR-0040 §4 Codex notification-channel fragment plan (--notification-plan: notify=/tui.notifications fragments + receiver shuttle, artifact-only), render the ADR-0041 §12 egress launcher plan (--egress-launcher-plan: read-only activation-state + ~/.claude prototype scan → state-aware per-machine activation runbook, artifact-only; never writes host config, config.local.toml, the credential, or ~/.claude/settings.json), run a probe-free local plan (--skip-host-cli-probes: no runDoctor / host-CLI subprocess probes; filesystem-only model/effort resolution; discriminated report_scope=local_plan report per docs/settings-report-contract.md; rejects the execute/attest flags and their modifiers while --apply and the plan flags stay allowed), explicitly execute allowlisted plugin install/update commands, explicitly clean up retired agentic-plugins Claude plugins, check Codex plugin-hook readiness, or record a Codex /hooks review attestation. Mutates only agentic-plugins-owned config when --apply is explicit; runs plugin management only when --execute-plugin-management is explicit; runs retired plugin cleanup only when --execute-plugin-cleanup is explicit; records hook-review attestation only when --attest-codex-hook-review is explicit. Never writes Codex host config: the former --apply-codex-plugin-hooks plugin_hooks write was removed per ADR-0035 §6 (hook enablement is manual)."
 ---
 
 # Settings (runtime framework primitive)
@@ -15,11 +15,25 @@ description: "Dry-run runtime settings planner for agentic-plugins. Use when the
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>] [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>] [--notification-plan] [--egress-launcher-plan] [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]
+node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>] [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>] [--notification-plan] [--egress-launcher-plan] [--skip-host-cli-probes] [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]
 ```
 
 3. Present the result as a settings plan, not as proof of host parity.
    - Dry-run output is the default and must be safe to run repeatedly.
+   - `--skip-host-cli-probes` is the probe-free local plan (contract:
+     `docs/settings-report-contract.md`): no `runDoctor`, no host-CLI
+     subprocess probes — model/effort and companion directions resolve from
+     the filesystem-only peer-execution context, snapshotted before any
+     `--apply` write. Evidence collection is orthogonal to mutation:
+     `--apply` and the three plan flags stay allowed; the execute/attest
+     flags and their exclusive modifiers (`--plugin-management-host`,
+     `--plugin-management-timeout-ms`, `--run-id`) are rejected before any
+     probe, config write, or artifact write. The report is discriminated
+     (`report_scope=local_plan`, `host_cli_probes.status=skipped`,
+     `section_presence` map, `null` probe-derived sections, qualified
+     `local plan: pass|warning` text) so a narrowed report never reads as a
+     clean full pass, and no `.agentic-plugins/runs/settings/` execution
+     artifact is ever written in this mode.
    - `--apply` may write only `.agentic-plugins/config.toml` in the repo and/or user home.
    - `--execute-plugin-management` runs only allowlisted host-native plugin install/update/add/upgrade commands. It preflights the relevant host plugin command surface first, uses Claude's non-slash `claude plugin install/update` CLI when available, blocks unavailable CLI surfaces before execution, does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts under `.agentic-plugins/runs/settings/<run-id>/`, and treats host "plugin surface unavailable" output as failed even when the host exits 0.
    - `--execute-plugin-cleanup` runs only `claude plugin uninstall <plugin>@agentic-plugins` commands generated from `runtime:doctor` retired/unknown `agentic-plugins` findings. It blocks unavailable Claude plugin surfaces, does not use a shell, does not print raw stdout/stderr, writes sanitized execution artifacts, and does not authorize general plugin uninstall.
