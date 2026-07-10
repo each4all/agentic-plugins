@@ -242,8 +242,8 @@ describe('plugins/runtime settings surface', () => {
   it('documents the Claude-vs-Codex host parity baseline with source-backed non-parity boundaries', async () => {
     const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
     for (const token of [
-      'Claude Code `2.1.201`',
-      'Codex CLI\n`0.142.5`',
+      'Claude Code `2.1.206`',
+      'Codex CLI\n`0.144.1`',
       'https://developers.openai.com/codex/subagents',
       'https://developers.openai.com/codex/hooks',
       'https://code.claude.com/docs/en/plugins',
@@ -261,6 +261,38 @@ describe('plugins/runtime settings surface', () => {
     ]) {
       ok(baseline.includes(token), `${token} documented`);
     }
+  });
+
+  it('keeps the host parity baseline internally consistent with its header versions', async () => {
+    // Regression gate for the 2026-07-10 recovery: four earlier refreshes
+    // updated the header (and appended history rows) while the Local CLI
+    // evidence block stayed at 2.1.173/0.139.0. Bare header tokens cannot
+    // catch that shape — this derives the header versions and requires the
+    // evidence block, the newest history row, and follow-ups.md to agree.
+    const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
+    const header = baseline.match(/Observed on ([0-9-]+) with Claude Code `([^`]+)`, Codex CLI\s*`([^`]+)`/);
+    ok(header, 'baseline header parseable by the doctor/compat regex shape');
+    const [, , headerClaude, headerCodex] = header;
+    ok(
+      baseline.includes(`\`claude --version\` -> \`${headerClaude} (Claude Code)\``),
+      `Local CLI evidence records claude --version ${headerClaude}`,
+    );
+    ok(
+      baseline.includes(`\`codex --version\` -> \`codex-cli ${headerCodex}\``),
+      `Local CLI evidence records codex --version ${headerCodex}`,
+    );
+    const historyRows = baseline.split('\n').filter((line) => /^\| \d{4}-\d{2}-\d{2} \|/.test(line));
+    ok(historyRows.length > 0, 'version history has dated rows');
+    const newestRow = historyRows[historyRows.length - 1];
+    ok(
+      newestRow.includes(`\`${headerClaude}\``) && newestRow.includes(`\`${headerCodex}\``),
+      'newest version-history row records the header versions',
+    );
+    const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
+    ok(
+      followUps.includes(`local Claude Code \`${headerClaude}\` and Codex CLI \`${headerCodex}\` observations`),
+      'follow-ups.md current-baseline statement matches the header versions',
+    );
   });
 });
 
