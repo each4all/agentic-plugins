@@ -222,7 +222,7 @@ describe('plugins/runtime settings surface', () => {
   it('documents the Codex capability baseline with source-backed host boundaries', async () => {
     const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/codex-capability-baseline.md'), 'utf-8');
     for (const token of [
-      'codex-cli 0.139.0',
+      'codex-cli 0.144.1',
       'marketplaceSource',
       'https://developers.openai.com/codex/skills',
       'https://developers.openai.com/codex/plugins/build',
@@ -292,6 +292,34 @@ describe('plugins/runtime settings surface', () => {
     ok(
       followUps.includes(`local Claude Code \`${headerClaude}\` and Codex CLI \`${headerCodex}\` observations`),
       'follow-ups.md current-baseline statement matches the header versions',
+    );
+
+    // Same defect class, sibling doc: the Codex capability baseline had also
+    // drifted (header + evidence pinned at 0.139.0 while its own drift policy
+    // requires refresh on any installed codex --version change).
+    const codexBaseline = await readFile(resolve(PLUGIN_ROOT, 'docs/codex-capability-baseline.md'), 'utf-8');
+    const codexHeader = codexBaseline.match(/Observed on ([0-9-]+) with Codex CLI\s*`([^`]+)`/);
+    ok(codexHeader, 'codex capability baseline header parseable');
+    const [, codexHeaderDate, codexHeaderVersion] = codexHeader;
+    // Both baselines observe the same installed codex; a host-parity refresh
+    // that leaves the capability doc behind (or vice versa) must go RED here,
+    // not survive on each doc's self-consistency alone.
+    strictEqual(
+      codexHeaderVersion,
+      headerCodex,
+      'codex-capability and host-parity baselines record the same Codex version',
+    );
+    ok(
+      codexBaseline.includes(`\`codex --version\` -> \`codex-cli ${codexHeaderVersion}\``),
+      `codex capability Local CLI evidence records codex --version ${codexHeaderVersion}`,
+    );
+    ok(
+      codexBaseline.includes(`Local CLI evidence (re-observed ${codexHeaderDate} on \`${codexHeaderVersion}\`)`),
+      'codex capability evidence heading carries the header date and version',
+    );
+    ok(
+      followUps.includes(`local CLI \`${codexHeaderVersion}\` observations`),
+      'follow-ups.md codex-capability statement matches that header version',
     );
   });
 });
