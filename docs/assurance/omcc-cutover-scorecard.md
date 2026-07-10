@@ -97,15 +97,15 @@ For each runtime/engineer/orchestrator slice, use this continuity loop:
 Current local dry-run evidence: `runtime:settings` reports all agentic-plugins
 surfaces available with source/cache versions matching the current repo manifest,
 and zero plugin-management config writes planned after the `plugin-runtime`
-`0.78.0` release and installed-state refresh (the refresh itself was executed
+`0.78.1` release and installed-state refresh (the refresh itself was executed
 through the `runtime:settings --execute-plugin-management` executor, artifact
-`settings-20260710T135903Z-bdf460` — Claude `update-plugin` and Codex
+`settings-20260710T153653Z-a8e721` — Claude `update-plugin` and Codex
 `upgrade-marketplace` both exit 0; `claude plugin list` and `codex plugin list
---json` both report the runtime plugin installed and enabled at 0.78.0,
-2026-07-10). Current runtime execution evidence is native to the installed
-`plugin-runtime` `0.78.0`: permission proof, deep peer smoke, and workflow
-continuation proof passed in both directions, re-recorded on 2026-07-10 as
-`doctor-20260710T135955Z-d752f5`
+--json` both report the runtime plugin installed and enabled at 0.78.1,
+2026-07-10Z). Current runtime execution evidence is native to the installed
+`plugin-runtime` `0.78.1`: permission proof, deep peer smoke, and workflow
+continuation proof passed in both directions, re-recorded on 2026-07-10Z as
+`doctor-20260710T153802Z-276226`
 (Claude Code `2.1.206` / `codex-cli 0.144.1`; designer `0.2.0` / engineer `0.20.0` /
 orchestrator `0.12.0` / founder `0.3.0` / attention `0.4.0` / image `0.2.0` /
 companions `0.4.0`;
@@ -152,20 +152,34 @@ operator attestation claim and does not mutate or independently prove Codex trus
 state; the attestation is valid only while the hook-bearing plugin set and source
 versions still match — which is exactly why adding designer invalidated the prior
 `settings-20260704T170801Z-b66656` attestation and required a fresh `/hooks` review.
-The latest `plugin-runtime` `0.78.0` release/install proof loop is an ADR-0024
-**control-plane slice** — feature PR #540 shipped the owner-ratified probe-free
-`runtime:settings --skip-host-cli-probes` mode (contract #539,
-`plugins/runtime/docs/settings-report-contract.md`): an evidence-collection
-axis orthogonal to the mutation axis, a dual-mode discriminated report
-(`report_scope`/`host_cli_probes`/`section_presence`, `runtime-settings-1.17`,
-null-not-empty probe sections), a presence-keyed conflict gate inside exported
-`runSettings`, and the `mutation_boundary.writes_allowed` plan-artifact honesty
-fix — extending the #534 probe-hygiene lineage from consensus to settings.
-Release PR #541 cut tag `plugin-runtime-v0.78.0` with marketplace sync commit
-`51db10f` (release-please Action follow-up), and the current 0.78.0-native proof
-`doctor-20260710T135955Z-d752f5` (recorded 2026-07-10 under Claude Code `2.1.206`
-/ Codex `0.144.1`; three execute proofs passed both directions; parity `ready`
-`100%` 8/8; `host_parity_baseline` `current`) is the record of reference.
+The latest `plugin-runtime` `0.78.1` release/install proof loop is an ADR-0024
+**host-truth slice** — fix PR #543 folded attention into doctor's expected
+Codex hook sets after host observation disproved the claude-adapter-only
+exclusion premise (Codex 0.144.1 default-file discovery is command-shape-blind:
+it loaded attention's hooks/hooks.json and the operator trusted
+`stop`/`subagent_stop`), gated expected hook-state entries on the observed
+materialization vocabulary (`unmapped`, never permanently-`missing`, for
+Claude's `Notification`), fixed the cache-only versioned-path matching
+blocker and attestation version currency surfaced by its Codex Refine-verify
+pass, and made command-portability warnings gate `lifecycle_hook_continuity`
+so a fresh attestation cannot launder Claude-shaped hook commands into a 100%
+parity score. Release PR #544 cut tag `plugin-runtime-v0.78.1` with
+marketplace sync commit `e8d8fdc` (release-please Action follow-up), and the
+current 0.78.1-native proof `doctor-20260710T153802Z-276226` (recorded
+2026-07-10Z under Claude Code `2.1.206` / Codex `0.144.1`; three execute
+proofs passed both directions; hook state `14/14` `enabled_trusted` with
+`unexpected=0`/`unmapped=1`; `/hooks` re-attestation
+`settings-20260710T153728Z-5796b6` covering all five hook-bearing plugins;
+`host_parity_baseline` `current`; experience parity **deliberately** `partial`
+`95%` 7/8 — `lifecycle_hook_continuity` held `partial` by the new
+`command-warnings=attention` gate until the attention package resolves its
+Codex posture, per `plugins/runtime/docs/follow-ups.md`) is the record of
+reference. The prior 0.78.0 loop shipped the owner-ratified probe-free
+`runtime:settings --skip-host-cli-probes` mode (feature PR #540, contract
+#539, tag plugin-runtime-v0.78.0 — backticks deliberately omitted so the
+freshness gate collects only the current tag — sync `51db10f`); its `ready` `100%` proof
+`doctor-20260710T135955Z-d752f5` was measured under the pre-#543 criterion and
+its honest inventory-lag note became fix #543.
 
 The preceding 0.77.1 loop was the ADR-0042 **designer persona acceptance** — feat
 PR #528 taught doctor/settings to recognize designer in the plugin inventory,
@@ -190,7 +204,7 @@ hand-maintained here.
 |---|---|---|---|---|
 | R1 | agentic-plugins must be superior-compatible with omcc/omcc-dev, not a simple baseline copy. | ADR-0007 mandates redesign-over-port; ADR-0010 maps omcc experience into a 4-layer/6-verb model; ADR-0019 and ADR-0020 replace omcc-dev single and multi-deliverable workflow shapes with engineer plus orchestrator. `omcc-legacy-pattern-map.md` inventories D1-D20 legacy surfaces and maps each to an agentic-plugins improvement, retained behavior, or explicit rejection/deferment rationale. | satisfied | Every retained omcc-dev behavior has an agentic-plugins equivalent, improvement, or documented rejection with rationale. |
 | R2 | Overbuilt or unnecessary parts should be improved or removed. | `plugins/research` was retired and cited-brief moved into `engineer:investigate`; `plugins/designer` is deferred rather than shipped prematurely; hidden automatic ensembles and raw peer output are rejected. `runtime:cutover` reads `omcc-legacy-pattern-map.md` and blocks readiness when required D1-D20 rows are missing, statuses are invalid, or a rejected/deferred row is still an active daily dependency. | satisfied | A cutover audit lists all legacy omcc patterns as retained, improved, rejected, or deferred; no active daily workflow depends on a rejected/deferred pattern. |
-| R3 | Switching development tools must work in both directions: Claude Code to Codex and Codex to Claude. | Cross-host tests cover resume and stop-archive behavior for engineer/orchestrator; companions exist in both directions. Installed `plugin-runtime` `0.78.0` carries the native `runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof` proof re-recorded under the 0.78.0 install on 2026-07-10 KST (`doctor-20260710T135955Z-d752f5`, Claude Code `2.1.206` / Codex `0.144.1`, runtime installed `0.78.0` on both hosts; release tag `plugin-runtime-v0.78.0`; experience parity `ready` `100%` 8/8; `host_parity_baseline` `current` against the 2026-07-10 baseline). The superseded 0.77.2 record `doctor-20260710T044745Z-1a789e` (same host versions, parity `ready` `100%`) honestly read `stale` on baseline freshness at measurement time; the same-day baseline-refresh slice closed it and this record measures `current`. The intermediate 0.77.0 record `doctor-20260709T131625Z-33c54d` read `partial` `91%` because doctor mis-read the newly-trusted designer hooks as disabled; the classifier fix released as 0.77.1 restored `ready` `100%`. Both `claude -> codex` and `codex -> claude` passed the permission proof, deep peer smoke, and engineer workflow continuation proof through `state.mjs create`, `dispatch-peer.mjs`, `pending_ensemble`, and `ensemble_results` in an ephemeral temp repo. | satisfied | Keep the explicit installed-runtime proof in the release/install continuity loop whenever the peer path changes. |
+| R3 | Switching development tools must work in both directions: Claude Code to Codex and Codex to Claude. | Cross-host tests cover resume and stop-archive behavior for engineer/orchestrator; companions exist in both directions. Installed `plugin-runtime` `0.78.1` carries the native `runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof` proof re-recorded under the 0.78.1 install on 2026-07-10Z (`doctor-20260710T153802Z-276226`, Claude Code `2.1.206` / Codex `0.144.1`, runtime installed `0.78.1` on both hosts; release tag `plugin-runtime-v0.78.1`; hook state `14/14` `enabled_trusted`, `unexpected=0`, `unmapped=1`; `/hooks` re-attestation `settings-20260710T153728Z-5796b6` covering all five hook-bearing plugins incl. attention; `host_parity_baseline` `current`; experience parity **deliberately** `partial` `95%` 7/8 — the same release's command-portability gate holds `lifecycle_hook_continuity` `partial` with `command-warnings=attention` until the attention package resolves its Codex posture; the bidirectional proof surfaces themselves all passed). The superseded 0.78.0 record `doctor-20260710T135955Z-d752f5` read `ready` `100%` 8/8 under the pre-#543 criterion; before it, the 0.77.2 record `doctor-20260710T044745Z-1a789e` (same host versions, parity `ready` `100%`) honestly read `stale` on baseline freshness at measurement time; the same-day baseline-refresh slice closed it. The intermediate 0.77.0 record `doctor-20260709T131625Z-33c54d` read `partial` `91%` because doctor mis-read the newly-trusted designer hooks as disabled; the classifier fix released as 0.77.1 restored `ready` `100%`. Both `claude -> codex` and `codex -> claude` passed the permission proof, deep peer smoke, and engineer workflow continuation proof through `state.mjs create`, `dispatch-peer.mjs`, `pending_ensemble`, and `ensemble_results` in an ephemeral temp repo. | satisfied | Keep the explicit installed-runtime proof in the release/install continuity loop whenever the peer path changes. |
 | R4 | Claude Code and Codex user experience must be equivalent where possible; non-portable host-specific features must not become hard dependencies. | Architecture documents host-specific adapter boundaries; runtime baseline documents command/hook/subagent differences; Codex macro/meta skill mirrors exist. The native `runtime:doctor` execute proofs re-recorded under the 0.77.1 install on 2026-07-09 (`doctor-20260709T141930Z-515ebf`, Claude Code `2.1.205` / Codex `0.143.0`, runtime `0.77.1` on both hosts) confirmed bidirectional peer execution and engineer workflow continuation passed both directions, and `runtime:settings` reports source/cache version parity with zero plugin-management config writes planned. Installing designer `0.2.0` grew the hook-bearing set to `designer@0.2.0`/`engineer@0.20.0`/`orchestrator@0.12.0`/`founder@0.3.0`, invalidating the 2026-07-04 attestation `settings-20260704T170801Z-b66656` and requiring a fresh Codex `/hooks` review — which in turn exposed the doctor hook-state defect fixed in 0.77.1 (an absent `enabled` key means enabled, not disabled), after which `~/.codex/config.toml` hook-state reads `12/12` `enabled_trusted` (`untrusted=0`/`disabled=0`/`missing=0`) and the attestation `settings-20260709T141913Z-8b7122` covers all four bundled plugins; `attention@0.4.0` is a deliberately Claude-hook-only plugin (ADR-0040 §3, recognized `claude_adapter_only`, not a Codex hook), and `image` ships no Codex hooks manifest, so observed experience parity reads `ready` (score `100%`, 8/8 satisfied) per this row's gate. | satisfied | Refresh the active-session `/hooks` review/trust attestation after hook-bearing plugin upgrades or hook packaging changes; do not claim observed parity `ready` until the post-attestation doctor/cutover evidence is recorded. |
 | R5 | Optimize for best results, not token minimization. | Engineer now publishes a tested quality-first default contract: phase-boundary ensembles are the default peer breadth, model/effort defaults stay host-native or `runtime:settings` configured without token-saving downshift, and review depth follows the workflow phase through `parallel-review` and re-review after refine. `runtime:consensus` also records `best-results-over-token-minimization` in manifest, prompt artifacts, and text output with all-requested-peer breadth by default unless the operator constrains it. `tests/engineer/test-start-command.mjs` and `tests/runtime/test-consensus.mjs` cover these fields. | satisfied | Keep quality-first defaults explicit; budget, latency, model, effort, or peer limits must be user constraints with stated quality tradeoffs. |
 | R6 | Context engineering should improve output quality; decisions requested from the user must be concrete, comparative, and evidence-based. | Runtime context artifacts, footer guidance, engineer/orchestrator presentation protocols, and the engineer entry-routing contract exist. `tests/engineer/test-start-command.mjs` verifies the decision prompt fields across `/engineer:start`, `$engineer:start`, and the shared contract. | satisfied | Keep every user decision prompt on the same options/tradeoffs/risks/recommendation/confidence/evidence/default-next-command shape. |
