@@ -9,11 +9,11 @@
 // single source. Deliberately dependency-light: only the §1 notify-schema
 // contract lib (for the notify_kinds CSV parser) — no doctor/plan machinery.
 //
-// Known remaining duplicate: doctor.mjs carries a private line-parser twin
-// (doctor.mjs inspectModelEffort) with deliberately different semantics — it
-// reports ALL keys for diagnosis, not just CONFIG_KEYS. Unifying it onto this
-// module (e.g. a knownOnly option) belongs to the ADR-0040 doctor-reader
-// extraction slice, which restructures doctor's read layer anyway.
+// Known remaining duplicate: lib/peer-execution-context.mjs carries a private line-parser twin
+// (its private inspectModelEffort) with deliberately different semantics — it
+// reports ALL keys for diagnosis, not just CONFIG_KEYS. It travelled with
+// inspectModelEffort when that moved out of doctor.mjs; unifying it onto this module
+// (e.g. a knownOnly option) is still open and still a behavior change.
 
 import { parseKindsFilter } from './notify-schema.mjs';
 

@@ -317,6 +317,67 @@ describe('runtime consensus', () => {
     ok(!JSON.stringify(latestOpen).includes('cancelled consensus task'), 'status report must not include skipped task body');
   });
 
+  // The peer-execution seam must resolve the companion path + model/effort from the
+  // FILESYSTEM only. Before the ADR-0024 extraction, consensus reached for `runDoctor`
+  // to get two filesystem-derived values and paid ~3.1s of host-CLI probing for them --
+  // 14 `claude`/`codex` processes it never read, each of which received the ambient
+  // TELEGRAM_BOT_TOKEN. The scrub now lives inside runDoctor itself, at the point of use
+  // (ADR-0041 sec.2b/2c); it used to be each caller's job and only settings.mjs did it.
+  it('resolves peer context WITHOUT spawning any host CLI, and still hands the companion the raw env', async () => {
+    const root = await seedPlan();
+    const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-noprobe-home-'));
+    await seedCompanionCache(homeDir);
+
+    const ambientEnv = { ...process.env, TELEGRAM_BOT_TOKEN: 'sentinel-token' };
+    const calls = [];
+    const inner = fakeConsensusRunner();
+    const recording = async (command, args = [], options = {}) => {
+      calls.push({ command, args, env: options.env });
+      return inner(command, args, options);
+    };
+
+    const report = await runConsensus({
+      command: 'execute',
+      repoRoot: root,
+      homeDir,
+      runId: RUN_ID,
+      execute: true,
+      env: ambientEnv,
+      now: new Date('2026-05-13T00:02:00.000Z'),
+      runner: recording,
+    });
+    strictEqual(report.execution_summary.passed, 2);
+
+    // (1) Zero host-CLI probes. `command === process.execPath` alone would NOT be enough
+    // -- `node doctor.mjs` is also an execPath launch -- so pin the exact selected paths.
+    const hostCalls = calls.filter((call) => call.command === 'claude' || call.command === 'codex');
+    deepStrictEqual(hostCalls, [], `consensus must not spawn host CLIs; got ${hostCalls.map((c) => `${c.command} ${c.args.join(' ')}`).join(', ')}`);
+
+    strictEqual(calls.length, 2, 'exactly the two companion launches, nothing else');
+    for (const call of calls) strictEqual(call.command, process.execPath);
+
+    // The selected companion is the one the seam resolved from the SEEDED cache -- an
+    // absolute path under the fixture home, not merely a string containing the filename.
+    const claudeCompanion = join(homeDir, '.codex', 'plugins', 'cache', 'agentic-plugins', 'companions', '0.1.0', 'scripts', 'claude-companion.mjs');
+    const codexCompanion = join(homeDir, '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions', '0.1.0', 'scripts', 'codex-companion.mjs');
+    deepStrictEqual(calls.map((call) => call.args[0]), [claudeCompanion, codexCompanion]);
+
+    // The full argv, not just the script: `task` + the prompt-file contract flag.
+    for (const call of calls) {
+      strictEqual(call.args[1], 'task', 'the companion contract subcommand');
+      ok(call.args.includes('--prompt-file'), 'the prompt rides as a file, never as argv text');
+      ok(call.args[call.args.indexOf('--prompt-file') + 1].endsWith('.md'), 'the prompt-file value is a path');
+    }
+
+    // (2) The companion DELIBERATELY receives the WHOLE ambient env. The token has to
+    // reach the peer session so its attention Stop hook can egress (attention sensor.mjs
+    // -> notify.mjs reads process.env; ADR-0041 sec.3), and PATH/host config must survive
+    // too. Scrubbing here would silently disable cross-machine notifications for peers.
+    for (const call of calls) {
+      deepStrictEqual(call.env, ambientEnv, 'the companion launch must receive the ambient env unchanged');
+    }
+  });
+
   it('executes a planned round only with --execute and stores raw outputs as artifacts', async () => {
     const root = await seedPlan();
     const homeDir = await mkdtemp(join(tmpdir(), 'runtime-consensus-home-'));
@@ -1875,28 +1936,9 @@ function fakeConsensusRunner({
 } = {}) {
   return async (command, args = []) => {
     const key = [command, ...args].join(' ');
-    if (command === 'claude') {
-      if (args.join(' ') === '--version') return okResult('2.1.140 (Claude Code)\n');
-      if (args.join(' ') === '--help') return okResult('Usage: claude --print --output-format --no-session-persistence --model --effort --permission-mode --plugin-dir\nCommands:\n  auth status\n  plugin list\n');
-      if (args.join(' ') === 'auth status') return okResult(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' }));
-      if (args.join(' ') === 'plugin --help') return okResult('Commands:\n  install\n  list\n  update\n  uninstall\n');
-      if (args.join(' ') === 'plugin list') return okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.11.0\n    Scope: user\n    Status: enabled\n');
-      if (args.join(' ') === '/plugin list') return okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.11.0\n    Scope: user\n    Status: enabled\n');
-    }
-    if (command === 'codex') {
-      if (args.join(' ') === '--version') return okResult('codex 1.0.0\n');
-      if (args.join(' ') === '--help') return okResult('Usage: codex exec --model -c --config --cd --sandbox --ask-for-approval\nCommands:\n  login status\n  plugin marketplace add upgrade remove\n');
-      if (args.join(' ') === 'exec --help') return okResult('Usage: codex exec --model -c --config --cd --sandbox --ask-for-approval\n');
-      if (args.join(' ') === 'features list') return okResult('hooks Beta true\nplugin_hooks Beta false\n');
-      if (args.join(' ') === 'login status') return okResult('Logged in using ChatGPT\n');
-      if (args.join(' ') === 'plugin marketplace --help') return okResult('Usage: codex plugin marketplace add upgrade remove\n');
-      if (args.join(' ') === 'plugin --help') return okResult('Usage: codex plugin <COMMAND>\nCommands:\n  add\n  list\n  marketplace\n  remove\n');
-      // ADR-0034: doctor probes `codex plugin list --json` for installed-state.
-      // Consensus tests only need runDoctor for readiness context, not plugin
-      // state, so degrade the list here -> doctor uses its cache fallback,
-      // preserving these tests' pre-ADR-0034 doctor view.
-      if (args.join(' ') === 'plugin list --json') return { ok: false, exit_code: 1, stdout: '', stderr: '', error_code: null, timed_out: false };
-    }
+    // No `claude` / `codex` branches on purpose. Consensus resolves its peer context from
+    // the filesystem (lib/peer-execution-context.mjs) and spawns only the companion, so
+    // any host-CLI call here is a regression -- it falls through to the throw below.
     if (command === process.execPath) {
       const companionPath = args[0] ?? '';
       if (companionPath.includes('claude-companion.mjs')) {
@@ -1939,10 +1981,6 @@ function companionResult({ peer, raw, failed, failureKind, failureMessage }) {
     error_code: null,
     timed_out: false,
   };
-}
-
-function okResult(stdout) {
-  return { ok: true, exit_code: 0, stdout, stderr: '', error_code: null, timed_out: false };
 }
 
 function timeoutResult(stdout = '') {

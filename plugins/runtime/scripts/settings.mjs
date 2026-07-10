@@ -17,6 +17,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor, codexPerPluginVerbs, collectUsageRecordSources } from './doctor.mjs';
+import { semverCompare } from './lib/semver.mjs';
 import {
   CONFIG_KEYS,
   CONFIG_KEY_FAMILIES,
@@ -2406,17 +2407,6 @@ function formatSettingsMode(report) {
   if (report.execute_plugin_cleanup) modes.push('plugin-cleanup');
   if (report.attest_codex_hook_review) modes.push('codex-hook-review');
   return modes.length > 0 ? modes.join('+') : 'dry-run';
-}
-
-function semverCompare(a, b) {
-  const pa = a.split('.').map((x) => Number.parseInt(x, 10) || 0);
-  const pb = b.split('.').map((x) => Number.parseInt(x, 10) || 0);
-  for (let i = 0; i < 3; i++) {
-    const av = pa[i] ?? 0;
-    const bv = pb[i] ?? 0;
-    if (av !== bv) return av - bv;
-  }
-  return 0;
 }
 
 async function readTextIfExists(path) {

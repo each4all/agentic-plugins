@@ -98,13 +98,19 @@ export function egressLocalConfigPath(homeDir) {
   return path.join(homeDir, '.agentic-plugins', EGRESS_LOCAL_FILENAME);
 }
 
-// Return a shallow copy of `env` with the egress credential key removed. Callers
-// that must hand `env` to a SUBPROCESS (e.g. runtime:settings → runDoctor host-CLI
-// probes, plugin management, cleanup) use this so the env-only credential
-// (TELEGRAM_BOT_TOKEN) never rides into a child process or an injected runner that
-// could echo it (ADR-0041 §2b/§2c). The credential is needed ONLY by
-// loadEgressActivation's in-process PRESENCE check — never by a spawned subprocess
-// — so stripping it here is lossless for every subprocess consumer.
+// Return a shallow copy of `env` with the egress credential key removed.
+//
+// For CONTROL-PLANE subprocesses only — host-CLI probes, plugin management, cleanup
+// (runtime:settings → runDoctor). It must NOT be applied to a companion/peer launch:
+// the peer session's own attention Stop hook reads the credential from its inherited
+// environment to egress notifications (ADR-0041 §3), so scrubbing there would silently
+// disable cross-machine notifications for peer sessions. Callers that hand `env` to a
+// control-plane subprocess use this so the env-only credential
+// (TELEGRAM_BOT_TOKEN) never rides into such a child process, or into an injected
+// runner that could echo it (ADR-0041 §2b/§2c). A control-plane probe needs the
+// credential only for loadEgressActivation's in-process PRESENCE check, so stripping
+// it is lossless THERE. It is not lossless for a peer launch, which is why that path
+// is excluded above.
 export function redactEgressCredentialFromEnv(env = process.env) {
   const copy = { ...env };
   delete copy[EGRESS_ENV_KEYS.credential];
