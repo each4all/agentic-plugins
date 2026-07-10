@@ -51,7 +51,6 @@
 
 import { describe, it, before, after } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -62,16 +61,15 @@ import { fileURLToPath } from 'node:url';
 // above. No persona/attention PLUGIN is imported anywhere in this file.
 import { runEmit, REDACT_FIELD_CAPS } from '../../plugins/runtime/scripts/notify.mjs';
 
-// Module-load egress-triple scrub (mirrors test-cross-machine-egress-acceptance.mjs
-// and test-notify.mjs). This suite spreads `...process.env` into the real notify.mjs
-// emit subprocesses and calls runEmit with the default env; on a machine where the
-// operator has ACTIVATED egress (the owner's ADR-0041 launcher exports the triple),
-// that ambient activation would engage the §2c egress override and flip the local
-// emit-pipeline expectations to channel=telegram / dispatched. Deleting the triple
-// keeps this black-box observability suite hermetic.
-for (const k of ['AGENTIC_NOTIFY_EGRESS_CHANNEL', 'TELEGRAM_CHAT_ID', 'TELEGRAM_BOT_TOKEN']) {
-  delete process.env[k];
-}
+import { runGit, runNode, runNodeAsync, runNodeOk, scrubAmbientEgressEnv } from './_helpers.mjs';
+
+// Module-load egress scrub. `hermeticEnv` covers the child processes, but this
+// suite ALSO calls `runEmit` in process, and `runEmit` defaults `env = process.env`.
+// On a machine where the operator has ACTIVATED egress (the owner's ADR-0041
+// launcher exports the triple), that ambient activation would engage the §2c
+// egress override and flip the local emit-pipeline expectations to
+// channel=telegram / dispatched. Both layers are required.
+scrubAmbientEgressEnv();
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const RUNTIME_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
@@ -120,11 +118,11 @@ async function markerRepo(prefix) {
 // CLIs stamp a git baseline, so they want a repo with at least one commit.
 function realGitRepo(prefix, branch = 'feat/x') {
   const root = tmp(prefix);
-  execFileSync('git', ['init', '-q', '-b', branch], { cwd: root });
-  execFileSync('git', ['config', 'user.name', 'adr0040-accept'], { cwd: root });
-  execFileSync('git', ['config', 'user.email', 'adr0040-accept@example.invalid'], { cwd: root });
-  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: root });
-  execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'baseline', '--no-verify'], { cwd: root });
+  runGit(['init', '-q', '-b', branch], { cwd: root });
+  runGit(['config', 'user.name', 'adr0040-accept'], { cwd: root });
+  runGit(['config', 'user.email', 'adr0040-accept@example.invalid'], { cwd: root });
+  runGit(['config', 'commit.gpgsign', 'false'], { cwd: root });
+  runGit(['commit', '-q', '--allow-empty', '-m', 'baseline', '--no-verify'], { cwd: root });
   return { root, branch };
 }
 
@@ -165,11 +163,9 @@ function event(overrides = {}) {
 // Synchronous real-CLI emit (sequential cases). Fail-closed contract: exit 0
 // always, stdout empty always.
 function emit(root, ev, home) {
-  return spawnSync(process.execPath, [NOTIFY_CLI, 'emit', '--repo-root', root], {
+  return runNode([NOTIFY_CLI, 'emit', '--repo-root', root], {
     input: `${JSON.stringify(ev)}\n`,
-    env: { ...process.env, HOME: home },
-    encoding: 'utf8',
-    timeout: 30_000,
+    env: { HOME: home },
   });
 }
 
@@ -177,18 +173,9 @@ function emit(root, ev, home) {
 // each is a genuinely separate OS process contending on the O_EXCL claim / the
 // mkdir rotation lock.
 function emitAsync(root, ev, home) {
-  return new Promise((resolveP) => {
-    const child = spawn(process.execPath, [NOTIFY_CLI, 'emit', '--repo-root', root], {
-      env: { ...process.env, HOME: home },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d; });
-    child.stderr.on('data', (d) => { stderr += d; });
-    child.on('close', (code) => resolveP({ status: code, stdout, stderr }));
-    child.stdin.write(`${JSON.stringify(ev)}\n`);
-    child.stdin.end();
+  return runNodeAsync([NOTIFY_CLI, 'emit', '--repo-root', root], {
+    input: `${JSON.stringify(ev)}\n`,
+    env: { HOME: home },
   });
 }
 
@@ -219,11 +206,9 @@ async function listClaims(root) {
 }
 
 function runSensor(sensorPath, payload, { runtimeRoot, home }) {
-  return spawnSync(process.execPath, [sensorPath], {
+  return runNode([sensorPath], {
     input: JSON.stringify(payload),
-    env: { ...process.env, HOME: home, AGENTIC_RUNTIME_ROOT: runtimeRoot },
-    encoding: 'utf8',
-    timeout: 30_000,
+    env: { HOME: home, AGENTIC_RUNTIME_ROOT: runtimeRoot },
   });
 }
 
@@ -338,8 +323,8 @@ describe('ADR-0040 acceptance (a1) -- emit pipeline through the real notify.mjs 
     await writeConfig(root, { notify_channel: 'file-log' });
 
     // Not JSON.
-    const bad = spawnSync(process.execPath, [NOTIFY_CLI, 'emit', '--repo-root', root], {
-      input: 'this is not json', env: { ...process.env, HOME: home }, encoding: 'utf8',
+    const bad = runNode([NOTIFY_CLI, 'emit', '--repo-root', root], {
+      input: 'this is not json', env: { HOME: home },
     });
     strictEqual(bad.status, 0, 'malformed input still exits 0');
     strictEqual(bad.stdout, '', 'no stdout on the fail-closed path');
@@ -351,8 +336,8 @@ describe('ADR-0040 acceptance (a1) -- emit pipeline through the real notify.mjs 
 
     // No --repo-root and a cwd with no .git -> repo-root failure, still exit 0.
     const noRepoCwd = tmp('norepo');
-    const noRepo = spawnSync(process.execPath, [NOTIFY_CLI, 'emit'], {
-      input: JSON.stringify(event()), cwd: noRepoCwd, env: { ...process.env, HOME: home }, encoding: 'utf8',
+    const noRepo = runNode([NOTIFY_CLI, 'emit'], {
+      input: JSON.stringify(event()), cwd: noRepoCwd, env: { HOME: home },
     });
     strictEqual(noRepo.status, 0);
     strictEqual(noRepo.stdout, '');
@@ -679,8 +664,8 @@ describe('ADR-0040 acceptance (b) -- sensors fail closed, the calling flow proce
     const home = fixtureHome();
     for (const sensor of ALL) {
       for (const input of ['', '{not json', 'null', '[]']) {
-        const r = spawnSync(process.execPath, [sensor], {
-          input, env: { ...process.env, HOME: home, AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT }, encoding: 'utf8', timeout: 30_000,
+        const r = runNode([sensor], {
+          input, env: { HOME: home, AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT },
         });
         strictEqual(r.status, 0, `${sensor} on ${JSON.stringify(input)}`);
         strictEqual(r.stdout, '');
@@ -744,18 +729,17 @@ describe('ADR-0040 acceptance (a/e) -- persona peer-run self-sensor fires end-to
       join(fakeCompanions, 'discover-peer.mjs'),
       'export async function discoverPeerCompanion() { return { ok: false }; }\n',
     );
-    const res = spawnSync(process.execPath, [
+    const res = runNode([
       resolve(REPO_ROOT, 'plugins/engineer/scripts/peer-runner.mjs'), 'run',
       '--peer', 'codex', '--kind', 'peer-now', '--prompt-text', 'ping',
       '--repo-root', repo, '--host', 'claude', '--output-format', 'json', '--cwd', repo,
     ], {
-      encoding: 'utf8',
-      env: { ...process.env, HOME: home, AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT, AGENTIC_COMPANIONS_ROOT: fakeCompanions },
-      timeout: 60_000,
+      env: { HOME: home, AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT, AGENTIC_COMPANIONS_ROOT: fakeCompanions },
     });
     // The run reports the missing companion (a non-zero exit is expected); the
     // acceptance criterion is that the self-sensor notification fired, not the
-    // run's own exit status.
+    // run's own exit status. A liveness overrun would raise SpawnInfraError from
+    // runNode rather than surfacing here as "the notification never fired".
     const peerRunTerminals = (await readLog(repo)).filter((rec) => rec.kind === 'peer-run-terminal');
     ok(peerRunTerminals.length >= 1, `a peer-run-terminal notification was emitted; run stderr:\n${res.stderr}`);
     ok(
@@ -777,17 +761,17 @@ describe('ADR-0040 acceptance (c) -- dashboard aggregate over fixture state', ()
     root = repo.root;
     home = fixtureHome();
     const branch = repo.branch;
-    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    const head = runGit(['rev-parse', 'HEAD'], { cwd: root });
 
     // Seed one workflow in EACH persona namespace via the real create CLIs, so
     // Tier 1 aggregates genuine fixture state (founder proves the direct
     // namespace scan the ADR sec.6 added on top of doctor's engineer+orchestrator).
-    const create = (persona, extra) => execFileSync('node', [
+    const create = (persona, extra) => runNodeOk([
       resolve(REPO_ROOT, `plugins/${persona}/scripts/state.mjs`), 'create',
       '--repo-root', root, '--host', 'claude',
       '--git-baseline-branch', branch, '--git-baseline-head', head,
       '--status-digest', 'deadbeef', ...extra,
-    ], { encoding: 'utf8' }).trim();
+    ]);
     create('engineer', ['--verb', 'compose', '--persona', 'engineer', '--profile', 'backend', '--original-request', 'acc', '--current-phase', 'phase-0', '--next-action', 'go']);
     create('orchestrator', ['--verb', 'plan', '--original-request', 'acc macro']);
     create('founder', ['--verb', 'compose', '--persona', 'founder', '--original-request', 'acc venture']);
@@ -804,9 +788,7 @@ describe('ADR-0040 acceptance (c) -- dashboard aggregate over fixture state', ()
   });
 
   function dashboardJson() {
-    const res = spawnSync(process.execPath, [DASHBOARD_CLI, '--repo-root', root, '--format', 'json'], {
-      encoding: 'utf8', env: { ...process.env, HOME: home },
-    });
+    const res = runNode([DASHBOARD_CLI, '--repo-root', root, '--format', 'json'], { env: { HOME: home } });
     strictEqual(res.status, 0, res.stderr);
     return JSON.parse(res.stdout);
   }
@@ -847,14 +829,15 @@ describe('ADR-0040 acceptance (c) -- dashboard aggregate over fixture state', ()
 // ===========================================================================
 
 describe('ADR-0040 acceptance (d) -- --notification-plan is M1 no-host-write', () => {
+  // settings.mjs calls runDoctor unconditionally (settings.mjs:109), and doctor
+  // probes each host CLI up to 8 times at 5s apiece (doctor.mjs:40,102-127). With
+  // the real binaries on PATH that is ~40s inside a child this suite used to bound
+  // at 30s -- a guaranteed timeout on any machine slow enough to hit the probe
+  // caps, with zero machine load required. A hermetic PATH removes the fan-out.
   function runPlan(repoRoot, { home, codexHome, apply }) {
     const args = [SETTINGS_CLI, '--repo-root', repoRoot, '--notification-plan', '--format', 'json'];
     if (apply) args.push('--apply');
-    return spawnSync(process.execPath, args, {
-      encoding: 'utf8',
-      env: { ...process.env, HOME: home, CODEX_HOME: codexHome },
-      timeout: 30_000,
-    });
+    return runNode(args, { env: { HOME: home, CODEX_HOME: codexHome } });
   }
 
   it('an ABSENT Codex config.toml is never created -- by dry-run or --apply', async () => {

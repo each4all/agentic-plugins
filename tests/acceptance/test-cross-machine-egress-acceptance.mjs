@@ -78,7 +78,6 @@
 
 import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, statSync,
 } from 'node:fs';
@@ -91,6 +90,8 @@ import { fileURLToPath } from 'node:url';
 // (A pinned-request capture, D provider-outcome scenarios). No persona/attention
 // PLUGIN is imported anywhere in this file (the (G) scan enforces that on them).
 import { runEmit } from '../../plugins/runtime/scripts/notify.mjs';
+
+import { runNode, scrubAmbientEgressEnv } from './_helpers.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const RUNTIME_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
@@ -105,35 +106,26 @@ const NOTIFICATION_SENSOR = resolve(ATTENTION_ROOT, 'adapters/claude/hooks/notif
 const STOP_SENSOR = resolve(ATTENTION_ROOT, 'adapters/claude/hooks/stop.mjs');
 const SHUTTLE_TEMPLATE = resolve(RUNTIME_ROOT, 'receivers/codex-notify-shuttle.mjs');
 
-// HERMETICITY (peer CRITICAL): several real-CLI/sensor tests build their subprocess
-// env as `{ ...process.env, ... }`. The owner DOGFOODS this channel with a LIVE
+// HERMETICITY (peer CRITICAL): the owner DOGFOODS this channel with a LIVE
 // @e16tae_notification_bot and may export TELEGRAM_BOT_TOKEN / the egress activation
 // in the same shell that runs `npm test` (the [release-dogfood] subtask literally
-// asks for it). Left inherited, a "network-free, missing-credential" test would then
+// asks for it). Left inherited, a "network-free, missing-credential" test would
 // engage egress with the REAL token + a valid recipient and open a REAL node:https
 // socket to api.telegram.org carrying the live credential -- defeating the suite's
 // own hermeticity, flipping missing-* asserts to dispatched/provider-error, and
-// putting the secret on the wire from the very suite meant to contain it. Scrub the
-// AMBIENT egress activation ONCE at module load (before any test body runs). Every
-// test sets the activation it needs explicitly; none relies on the ambient value.
-// A no-op on a clean CI env. This also keeps the ONE real socket exclusively behind
+// putting the secret on the wire from the very suite meant to contain it. The same
+// applies to AGENTIC_NOTIFY_EGRESS_HEADLINE (ADR-0041 §3a): an ambient opt-in=ON
+// would egress a headline the (L) default-off path asserts is ABSENT.
+//
+// Child processes are covered by `hermeticEnv`, which scrubs the whole
+// AGENTIC_*/TELEGRAM_* ambient surface out of the base env before applying each
+// call site's explicit deltas. This module-load scrub covers the OTHER layer: the
+// in-process `runEmit` paths that default `env = process.env`. Both are required.
+// A no-op on a clean CI env. It also keeps the ONE real socket exclusively behind
 // the (K) AGENTIC_EGRESS_REAL_SMOKE opt-in. NOTE: `node:https` core (not undici,
 // no proxy-aware agent) is also a containment gain -- the token-in-URL is never
 // auto-routed through an ambient HTTP(S)_PROXY.
-//
-// AGENTIC_NOTIFY_EGRESS_HEADLINE joins the scrub list (ADR-0041 §3a): the SAME owner
-// dogfoods the opt-in headline and may export it in the `npm test` shell. A real-
-// subprocess test that builds its env from `{ ...process.env, ... }` (the (L)
-// real-producer default-off path, L7-OFF) would then inherit an ambient opt-in=ON, and
-// the runtime would egress the headline the test asserts is ABSENT — a SPURIOUS FAILURE
-// (not a false pass: the extra field makes `headline === undefined` fail, it does not
-// hide anything). Scrubbing it here makes the default OFF unconditional; each headline
-// test sets the opt-in it needs explicitly. (The synthetic runEmit paths pass an
-// explicit `egressEnv()` dict and never read process.env, so they are already immune —
-// this protects the real-subprocess path.)
-for (const k of ['AGENTIC_NOTIFY_EGRESS_CHANNEL', 'TELEGRAM_CHAT_ID', 'TELEGRAM_BOT_TOKEN', 'AGENTIC_NOTIFY_EGRESS_HEADLINE']) {
-  delete process.env[k];
-}
+scrubAmbientEgressEnv();
 
 // The notify state layout (ADR-0040 §1 / ADR-0041 §7; canonical: notify-schema
 // notifyStateDir + egress-semantics egressThrottleDir). Hardcoded here -- a
@@ -335,15 +327,14 @@ function egressEnv(overrides = {}) {
 }
 
 // Synchronous real-CLI emit (fail-closed contract: exit 0 always, stdout empty
-// always). `env` is the FULL subprocess env (HOME + egress vars). No fetch can
-// be injected here by design -- callers keep the token missing/invalid so the
-// real notify.mjs never opens a socket.
+// always). `env` carries only this call site's DELTAS (HOME + the egress vars it
+// means to set); `hermeticEnv` supplies the scrubbed base. No fetch can be
+// injected here by design -- callers keep the token missing/invalid so the real
+// notify.mjs never opens a socket.
 function emitCli(root, ev, env) {
-  return spawnSync(process.execPath, [NOTIFY_CLI, 'emit', '--repo-root', root], {
+  return runNode([NOTIFY_CLI, 'emit', '--repo-root', root], {
     input: `${JSON.stringify(ev)}\n`,
     env,
-    encoding: 'utf8',
-    timeout: 30_000,
   });
 }
 
@@ -678,7 +669,7 @@ describe('ADR-0041 acceptance (B) -- a user-supplied URL can never become a dest
     // The activation "channel" is a fixed ENUM (telegram-only). A URL is not in
     // it -> unknown-egress-channel -> mirrored suppression, never a dispatch.
     const env = {
-      ...process.env, HOME: home,
+      HOME: home,
       AGENTIC_NOTIFY_EGRESS_CHANNEL: 'https://evil.example/webhook',
       TELEGRAM_CHAT_ID: FAKE_CHAT_ID,
       TELEGRAM_BOT_TOKEN: FAKE_TOKEN,
@@ -698,7 +689,7 @@ describe('ADR-0041 acceptance (B) -- a user-supplied URL can never become a dest
     const root = markerRepo('B-url-recipient');
     const home = fixtureHome();
     const env = {
-      ...process.env, HOME: home,
+      HOME: home,
       AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
       TELEGRAM_CHAT_ID: 'https://evil.example/webhook',
       TELEGRAM_BOT_TOKEN: FAKE_TOKEN,
@@ -725,7 +716,7 @@ describe('ADR-0041 acceptance (C) -- activation only from env or verified-ignore
     const root = markerRepo('C-token-alone');
     const home = fixtureHome();
     writeConfig(root, { notify_channel: 'file-log' });
-    const env = { ...process.env, HOME: home, TELEGRAM_BOT_TOKEN: FAKE_TOKEN }; // token only
+    const env = { HOME: home, TELEGRAM_BOT_TOKEN: FAKE_TOKEN }; // token only
     const res = emitCli(root, egressEvent(), env);
     strictEqual(res.status, 0);
     const rows = readLog(root);
@@ -739,7 +730,7 @@ describe('ADR-0041 acceptance (C) -- activation only from env or verified-ignore
     writeConfig(root, { notify_channel: 'file-log' });
     // Channel + recipient from env; NO token -> engaged, missing-credential.
     const env = {
-      ...process.env, HOME: home,
+      HOME: home,
       AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_CHAT_ID: FAKE_CHAT_ID,
     };
     const res = emitCli(root, egressEvent(), env);
@@ -758,10 +749,9 @@ describe('ADR-0041 acceptance (C) -- activation only from env or verified-ignore
     // env carries NO egress vars at all. If the reader did not honor the file,
     // egress would not engage and no egress row would appear.
     writeVerifiedLocal(home, { egress_channel: 'telegram', egress_chat_id: FAKE_CHAT_ID });
-    const env = { ...process.env, HOME: home };
-    delete env.AGENTIC_NOTIFY_EGRESS_CHANNEL;
-    delete env.TELEGRAM_CHAT_ID;
-    delete env.TELEGRAM_BOT_TOKEN;
+    // No egress deltas at all -- hermeticEnv's base carries none, so the file is
+    // the only possible activation source.
+    const env = { HOME: home };
     const res = emitCli(root, egressEvent(), env);
     strictEqual(res.status, 0);
     const rows = egressRows(root);
@@ -785,9 +775,9 @@ describe('ADR-0041 acceptance (C) -- activation only from env or verified-ignore
     // invalid-local-activation BEFORE any socket, surfacing the bug as a mirror
     // row (egress_status present) rather than a real request to Telegram (peer
     // MAJOR: a valid token here could open a real socket on regression).
-    const env = { ...process.env, HOME: home, TELEGRAM_BOT_TOKEN: INVALID_TOKEN };
-    delete env.AGENTIC_NOTIFY_EGRESS_CHANNEL;
-    delete env.TELEGRAM_CHAT_ID;
+    // No channel/recipient deltas: hermeticEnv's base has none either, so only the
+    // tracked config.toml could activate -- and it must not.
+    const env = { HOME: home, TELEGRAM_BOT_TOKEN: INVALID_TOKEN };
     const res = emitCli(root, egressEvent(), env);
     strictEqual(res.status, 0);
     const rows = readLog(root);
@@ -803,9 +793,8 @@ describe('ADR-0041 acceptance (C) -- activation only from env or verified-ignore
     writeConfig(root, { notify_channel: 'file-log' });
     writeVerifiedLocal(root, { egress_channel: 'telegram', egress_chat_id: FAKE_CHAT_ID });
     // INVALID token (see c4): network-free even if the inside-repo guard regressed.
-    const env = { ...process.env, HOME: root, TELEGRAM_BOT_TOKEN: INVALID_TOKEN };
-    delete env.AGENTIC_NOTIFY_EGRESS_CHANNEL;
-    delete env.TELEGRAM_CHAT_ID;
+    // HOME is deliberately the repo root here -- the helper never forces a fixture HOME.
+    const env = { HOME: root, TELEGRAM_BOT_TOKEN: INVALID_TOKEN };
     const res = emitCli(root, egressEvent(), env);
     strictEqual(res.status, 0);
     const rows = readLog(root);
@@ -866,7 +855,7 @@ describe('ADR-0041 acceptance (D) -- attempt-mirror + dedupe-failure taxonomy as
     const home = fixtureHome();
     // Real fire-and-forget CLI; channel + recipient set, no token -> network-free.
     const env = {
-      ...process.env, HOME: home,
+      HOME: home,
       AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_CHAT_ID: FAKE_CHAT_ID,
     };
     const res = emitCli(root, egressEvent(), env);
@@ -957,17 +946,17 @@ describe('ADR-0041 acceptance (E) -- one channel serves both host producers (rea
   // real notify.mjs resolves missing-credential BEFORE the pinned request -> no
   // socket. The acceptance signal is the mirrored telegram attempt.
   function producerEnv(home, extra = {}) {
-    const env = {
-      ...process.env,
+    return {
       HOME: home,
       AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT,
       AGENTIC_NOTIFY_HOSTNAME: 'accept-host',
       AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
       TELEGRAM_CHAT_ID: FAKE_CHAT_ID,
       ...extra,
+      // Ensure-absent, and it MUST stay after `...extra` -- a token in `extra`
+      // would otherwise resurrect and put this "network-free" path on the wire.
+      TELEGRAM_BOT_TOKEN: undefined,
     };
-    delete env.TELEGRAM_BOT_TOKEN;
-    return env;
   }
 
   it('the REAL Claude attention Notification sensor drives a telegram egress attempt (host-woven hostname mirrored)', () => {
@@ -979,11 +968,9 @@ describe('ADR-0041 acceptance (E) -- one channel serves both host producers (rea
       notification_type: 'permission_prompt',
       message: 'Allow write to config?',
     };
-    const res = spawnSync(process.execPath, [NOTIFICATION_SENSOR], {
+    const res = runNode([NOTIFICATION_SENSOR], {
       input: JSON.stringify(payload),
       env: producerEnv(home),
-      encoding: 'utf8',
-      timeout: 30_000,
     });
     // The sensor's emitEvent uses spawnSync (synchronous) -> the mirror is
     // written before the sensor process exits; no polling needed.
@@ -1008,11 +995,9 @@ describe('ADR-0041 acceptance (E) -- one channel serves both host producers (rea
     };
     // The shuttle resolves the repo by walking cwd -> .git, so run it FROM the
     // repo. It spawns notify.mjs DETACHED + unref'd, so poll for the mirror row.
-    const res = spawnSync(process.execPath, [shuttle, JSON.stringify(payload)], {
+    const res = runNode([shuttle, JSON.stringify(payload)], {
       cwd: root,
       env: producerEnv(home),
-      encoding: 'utf8',
-      timeout: 30_000,
     });
     strictEqual(res.status, 0, `the shuttle is fail-closed exit 0; stderr:\n${res.stderr}`);
     const rows = await pollEgressRows(root);
@@ -1040,11 +1025,9 @@ describe('ADR-0041 acceptance (E2) -- hostname weaves into event_id for cross-ma
     // Identical hook payload on every "machine" -- only AGENTIC_NOTIFY_HOSTNAME
     // differs, exactly the multi-machine ssh+tmux case (§8).
     const payload = { cwd: root, session_id: 'sess-shared', notification_type: 'permission_prompt', message: 'identical approval' };
-    const run = (hostname) => spawnSync(process.execPath, [NOTIFICATION_SENSOR], {
+    const run = (hostname) => runNode([NOTIFICATION_SENSOR], {
       input: JSON.stringify(payload),
-      env: { ...process.env, HOME: home, AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT, AGENTIC_NOTIFY_HOSTNAME: hostname },
-      encoding: 'utf8',
-      timeout: 30_000,
+      env: { HOME: home, AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT, AGENTIC_NOTIFY_HOSTNAME: hostname },
     });
     strictEqual(run('machine-A').status, 0);
     strictEqual(run('machine-B').status, 0);
@@ -1076,13 +1059,10 @@ describe('ADR-0041 acceptance (H) -- the credential leaks to NOWHERE (scan argv/
     // A VALID-shape token (a real scan target) but NO recipient -> the engaged egress
     // resolves MISSING-RECIPIENT before the pinned request, so the real notify.mjs is
     // network-free while the token rides the whole subprocess (env + in-memory only).
-    // The module-load scrub above guarantees the ambient env carries no real token.
+    // hermeticEnv's scrubbed base guarantees no ambient token and no recipient.
     const argv = [NOTIFY_CLI, 'emit', '--repo-root', root];
-    const env = { ...process.env, HOME: home, AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_BOT_TOKEN: FAKE_TOKEN };
-    delete env.TELEGRAM_CHAT_ID;
-    const res = spawnSync(process.execPath, argv, {
-      input: `${JSON.stringify(egressEvent())}\n`, env, encoding: 'utf8', timeout: 30_000,
-    });
+    const env = { HOME: home, AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_BOT_TOKEN: FAKE_TOKEN };
+    const res = runNode(argv, { input: `${JSON.stringify(egressEvent())}\n`, env });
     strictEqual(res.status, 0, `fail-closed exit 0; stderr:\n${res.stderr}`);
     strictEqual(res.stdout, '', 'stdout is always empty (fail-closed silent)');
     // argv scan: the token rides the ENV only -- never the command line (where `ps`
@@ -1169,7 +1149,7 @@ describe('ADR-0041 acceptance (I) -- a failing/absent transport is fail-closed (
     const home = fixtureHome();
     // The real CLI cannot inject a transport, so keep it network-free (no token) and
     // assert the fail-closed contract holds on the mirrored missing-token failure.
-    const env = { ...process.env, HOME: home, AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_CHAT_ID: FAKE_CHAT_ID };
+    const env = { HOME: home, AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_CHAT_ID: FAKE_CHAT_ID };
     const res = emitCli(root, egressEvent(), env);
     strictEqual(res.status, 0, 'exit 0 always');
     strictEqual(res.stdout, '', 'stdout empty always');
@@ -1336,7 +1316,7 @@ describe('ADR-0041 acceptance (L) -- the opt-in closed-vocabulary headline statu
     // but there is NO egress channel key → runEgressDispatch (where the opt-in is
     // even read) is never reached, the structural "opt-in-alone inert" guarantee.
     writeConfig(root, { notify_channel: 'file-log' });
-    const env = { ...process.env, HOME: home, AGENTIC_NOTIFY_EGRESS_HEADLINE: 'true' };
+    const env = { HOME: home, AGENTIC_NOTIFY_EGRESS_HEADLINE: 'true' };
     const res = emitCli(root, egressEvent(), env);
     strictEqual(res.status, 0, `fail-closed exit 0; stderr:\n${res.stderr}`);
     ok(readLog(root).length >= 1, 'the local file-log channel processed the event');
@@ -1430,14 +1410,11 @@ describe('ADR-0041 acceptance (L) -- the opt-in closed-vocabulary headline statu
     // headline; this is the headline-present complement — Codex gap.)
     const argv = [NOTIFY_CLI, 'emit', '--repo-root', root];
     const env = {
-      ...process.env, HOME: home,
+      HOME: home,
       AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_BOT_TOKEN: FAKE_TOKEN,
       AGENTIC_NOTIFY_EGRESS_HEADLINE: 'true',
     };
-    delete env.TELEGRAM_CHAT_ID;
-    const res = spawnSync(process.execPath, argv, {
-      input: `${JSON.stringify(egressEvent({ headline: 'complete' }))}\n`, env, encoding: 'utf8', timeout: 30_000,
-    });
+    const res = runNode(argv, { input: `${JSON.stringify(egressEvent({ headline: 'complete' }))}\n`, env });
     strictEqual(res.status, 0, `fail-closed exit 0; stderr:\n${res.stderr}`);
     strictEqual(res.stdout, '', 'stdout empty (fail-closed silent)');
     assertNoTokenLeak(argv.join('\n'), 'the process argv (headline present)');
@@ -1456,27 +1433,25 @@ describe('ADR-0041 acceptance (L) -- the opt-in closed-vocabulary headline statu
   // headline. The sensor's emitEvent uses a synchronous spawnSync, so the mirror lands
   // before the sensor exits (no polling).
   function stopEnv(home, extra = {}) {
-    const env = {
-      ...process.env,
+    return {
       HOME: home,
       AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT,
       AGENTIC_NOTIFY_HOSTNAME: 'accept-host',
       AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
       TELEGRAM_CHAT_ID: FAKE_CHAT_ID,
       ...extra,
+      // network-free: missing-credential resolves before the pinned request. The
+      // deletion MUST stay after `...extra`, or an `extra` token would resurrect.
+      TELEGRAM_BOT_TOKEN: undefined,
     };
-    delete env.TELEGRAM_BOT_TOKEN; // network-free: missing-credential resolves before the pinned request
-    return env;
   }
   function runStop(root, home, extra) {
     const workflowId = 'compose-20260115T120000Z-abc123';
     writeFreshProjection(root, 'engineer', { workflowId, archiveGate: 'ready_to_archive' });
     const payload = { cwd: root, session_id: 'sess-stop-1', prompt_id: 'prompt-1' };
-    return spawnSync(process.execPath, [STOP_SENSOR], {
+    return runNode([STOP_SENSOR], {
       input: JSON.stringify(payload),
       env: stopEnv(home, extra),
-      encoding: 'utf8',
-      timeout: 30_000,
     });
   }
 
@@ -1719,14 +1694,12 @@ describe('ADR-0041 acceptance (M) -- the egress launcher plans artifact-only thr
     const home = seedPrototypeHome();
     const settingsBefore = readFileSync(join(home, '.claude', 'settings.json'), 'utf8');
 
-    const res = spawnSync(
-      process.execPath,
+    // The 120s budget this call used to carry was a fossil of settings.mjs's
+    // unconditional runDoctor host-CLI fan-out (settings.mjs:109). A hermetic PATH
+    // removes the fan-out, so the shared liveness backstop is now ample.
+    const res = runNode(
       [SETTINGS_CLI, '--repo-root', repo, '--egress-launcher-plan', '--format', 'json'],
-      {
-        env: { ...process.env, HOME: home, AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT, ...egressEnv() },
-        encoding: 'utf8',
-        timeout: 120000,
-      },
+      { env: { HOME: home, AGENTIC_RUNTIME_ROOT: RUNTIME_ROOT, ...egressEnv() } },
     );
 
     strictEqual(res.status, 0, `settings.mjs exited ${res.status}: ${res.stderr}`);
