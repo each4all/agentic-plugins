@@ -30,10 +30,13 @@ import {
   runIdTimestampMs,
   safeCount,
 } from './lib/state-readers.mjs';
+import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
+import { semverCompare } from './lib/semver.mjs';
+import { redactEgressCredentialFromEnv } from './lib/egress-config.mjs';
 
 export { RUNTIME_VERSION };
 
-export const CONTRACT_COMPATIBLE_MAJOR = 0;
+export { CONTRACT_COMPATIBLE_MAJOR } from './lib/peer-execution-context.mjs';
 export const PLUGIN_NAMES = ['attention', 'companions', 'designer', 'engineer', 'founder', 'image', 'orchestrator', 'runtime'];
 export { TERMINAL_PEER_RUN_STATUSES, VALID_PEER_RUN_STATUSES } from './lib/state-readers.mjs';
 
@@ -99,6 +102,15 @@ export async function runDoctor({
   const resolvedHomeDir = resolve(homeDir);
   const startedAt = now.toISOString();
 
+  // ADR-0041 §2b/§2c: the egress credential must not ride into CONTROL-PLANE probes.
+  // Every caller used to be responsible for this and only `settings.mjs` did it, so a
+  // direct `runtime:doctor` run and `cutover-audit.mjs` handed the token to all 14
+  // `claude`/`codex` probe processes. Scrub it here, at the point of use.
+  // The raw `env` is deliberately retained for the explicitly-executed proofs below:
+  // they spawn companions/workflows whose own attention hooks need the credential to
+  // egress notifications (ADR-0041 §3).
+  const probeEnv = redactEgressCredentialFromEnv(env);
+
   const [claude, codex] = await Promise.all([
     inspectCli('claude', {
       versionArgs: ['--version'],
@@ -109,7 +121,7 @@ export async function runDoctor({
       pluginSurfaceArgs: ['/plugin', 'list'],
       runner,
       cwd: resolvedRepoRoot,
-      env,
+      env: probeEnv,
     }),
     inspectCli('codex', {
       versionArgs: ['--version'],
@@ -122,7 +134,7 @@ export async function runDoctor({
       pluginListArgs: ['plugin', 'list', '--json'],
       runner,
       cwd: resolvedRepoRoot,
-      env,
+      env: probeEnv,
     }),
   ]);
 
@@ -143,11 +155,10 @@ export async function runDoctor({
     repoRoot: resolvedRepoRoot,
   });
   const pluginCommandSurface = buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPluginHooks, settingsRuns });
-  const companion = await inspectCompanionContract({
-    repoRoot: resolvedRepoRoot,
-    homeDir: resolvedHomeDir,
-  });
-  const modelEffort = await inspectModelEffort({
+  // The same two filesystem-only inspectors as before, now behind the seam that
+  // consensus.mjs shares. They hold no mutable state and write nothing, so resolving
+  // them together is safe; `report.companions` / `report.model_effort` are unchanged.
+  const { companions: companion, model_effort: modelEffort } = await resolvePeerExecutionContext({
     repoRoot: resolvedRepoRoot,
     homeDir: resolvedHomeDir,
     explicitModel,
@@ -1917,216 +1928,6 @@ function summarizeParityStatus(entries) {
   if (entries.some((entry) => entry.severity === 'blocked')) return 'blocked';
   if (entries.some((entry) => entry.severity === 'warning')) return 'warning';
   return 'pass';
-}
-
-async function inspectCompanionContract({ repoRoot, homeDir }) {
-  const contractPath = join(repoRoot, 'companions', 'contract.md');
-  const contractText = await readTextIfExists(contractPath);
-  const contractVersion = contractText.ok ? parseContractDocVersion(contractText.text) : null;
-  const localRoot = join(repoRoot, 'plugins', 'companions');
-  const sourceRoot = join(repoRoot, 'companions');
-  const directions = {
-    claude_to_codex: await inspectCompanionDirection({
-      label: 'Claude -> Codex',
-      peer: 'codex',
-      filename: 'codex-companion.mjs',
-      candidates: [
-        join(sourceRoot, 'codex-companion.mjs'),
-        join(localRoot, 'scripts', 'codex-companion.mjs'),
-        ...(await latestVersionedScriptCandidates({
-          baseDir: join(homeDir, '.claude', 'plugins', 'cache', 'agentic-plugins', 'companions'),
-          scriptRel: join('scripts', 'codex-companion.mjs'),
-          manifestRel: join('.claude-plugin', 'plugin.json'),
-        })),
-      ],
-      contractVersion,
-    }),
-    codex_to_claude: await inspectCompanionDirection({
-      label: 'Codex -> Claude',
-      peer: 'claude',
-      filename: 'claude-companion.mjs',
-      candidates: [
-        join(sourceRoot, 'claude-companion.mjs'),
-        join(localRoot, 'scripts', 'claude-companion.mjs'),
-        ...(await latestVersionedScriptCandidates({
-          baseDir: join(homeDir, '.codex', 'plugins', 'cache', 'agentic-plugins', 'companions'),
-          scriptRel: join('scripts', 'claude-companion.mjs'),
-          manifestRel: join('.codex-plugin', 'plugin.json'),
-        })),
-        join(homeDir, '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'companions', 'scripts', 'claude-companion.mjs'),
-      ],
-      contractVersion,
-    }),
-  };
-  return {
-    contract_path: contractText.ok ? contractPath : null,
-    contract_version: contractVersion,
-    compatible_major: CONTRACT_COMPATIBLE_MAJOR,
-    directions,
-  };
-}
-
-async function latestVersionedScriptCandidates({ baseDir, scriptRel, manifestRel }) {
-  let entries;
-  try {
-    entries = await readdir(baseDir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const candidates = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const manifest = await readJsonIfExists(join(baseDir, entry.name, manifestRel));
-    if (!manifest.ok) continue;
-    candidates.push({
-      version: manifest.json.version ?? entry.name,
-      path: join(baseDir, entry.name, scriptRel),
-    });
-  }
-  candidates.sort((a, b) => semverCompare(String(b.version), String(a.version)));
-  return candidates.map((c) => c.path);
-}
-
-async function inspectCompanionDirection({ label, peer, filename, candidates, contractVersion }) {
-  const seen = new Set();
-  const inspected = [];
-  for (const candidate of candidates) {
-    if (seen.has(candidate)) continue;
-    seen.add(candidate);
-    const preflight = await preflightCompanionScript(candidate, contractVersion);
-    inspected.push({ path: candidate, ...preflight });
-  }
-  const selected = inspected.find((c) => c.status === 'available') ?? null;
-  return {
-    label,
-    peer,
-    filename,
-    status: selected ? 'available' : inspected.some((c) => c.status === 'blocked') ? 'blocked' : 'not_installed',
-    selected,
-    candidates: inspected,
-  };
-}
-
-async function preflightCompanionScript(path, contractVersion) {
-  const text = await readTextIfExists(path);
-  if (!text.ok) return { status: 'missing', reason: text.reason };
-  const scriptVersion = parseScriptContractVersion(text.text);
-  const hasPromptFile = /['"]prompt-file['"]|--prompt-file/.test(text.text);
-  const scriptMajor = scriptVersion ? Number.parseInt(scriptVersion.split('.')[0], 10) : null;
-  const contractMajor = contractVersion ? Number.parseInt(contractVersion.split('.')[0], 10) : CONTRACT_COMPATIBLE_MAJOR;
-  const compatible = hasPromptFile && scriptMajor === contractMajor && scriptMajor === CONTRACT_COMPATIBLE_MAJOR;
-  return {
-    status: compatible ? 'available' : 'blocked',
-    contract_version: scriptVersion,
-    has_prompt_file: hasPromptFile,
-    compatible,
-    reason: compatible ? null : 'missing --prompt-file support or incompatible CONTRACT_VERSION major',
-  };
-}
-
-function parseContractDocVersion(text) {
-  const match = text.match(/Version\*\*:\s*`?v?([0-9]+\.[0-9]+\.[0-9]+)/i);
-  return match?.[1] ?? null;
-}
-
-function parseScriptContractVersion(text) {
-  const match = text.match(/CONTRACT_VERSION\s*=\s*['"]([0-9]+\.[0-9]+\.[0-9]+)['"]/);
-  return match?.[1] ?? null;
-}
-
-async function inspectModelEffort({ repoRoot, homeDir, explicitModel, explicitEffort }) {
-  const repoConfigPath = join(repoRoot, '.agentic-plugins', 'config.toml');
-  const userConfigPath = join(homeDir, '.agentic-plugins', 'config.toml');
-  const repoConfig = await readTextIfExists(repoConfigPath);
-  const userConfig = await readTextIfExists(userConfigPath);
-  const repoDefaults = repoConfig.ok ? parseRuntimeConfigToml(repoConfig.text) : {};
-  const userDefaults = userConfig.ok ? parseRuntimeConfigToml(userConfig.text) : {};
-  const directions = {
-    claude_to_codex: resolveModelEffortForPeer({
-      peer: 'codex',
-      explicitModel,
-      explicitEffort,
-      repoDefaults,
-      userDefaults,
-    }),
-    codex_to_claude: resolveModelEffortForPeer({
-      peer: 'claude',
-      explicitModel,
-      explicitEffort,
-      repoDefaults,
-      userDefaults,
-    }),
-  };
-  return {
-    resolution_order: [
-      'explicit command flags',
-      'workflow/subtask override',
-      'repo-local .agentic-plugins/config.toml',
-      'user-global ~/.agentic-plugins/config.toml',
-      'host-native default',
-    ],
-    explicit: {
-      model: explicitModel,
-      effort: explicitEffort,
-    },
-    workflow_override: {
-      status: 'not_observed',
-      reason: 'doctor v0.1 reads current files and ledgers but does not infer a workflow/subtask override unless a future runtime field records one',
-    },
-    repo_config: {
-      path: repoConfigPath,
-      status: repoConfig.ok ? 'available' : 'missing',
-      keys: Object.keys(repoDefaults).sort(),
-    },
-    user_config: {
-      path: userConfigPath,
-      status: userConfig.ok ? 'available' : 'missing',
-      keys: Object.keys(userDefaults).sort(),
-    },
-    directions,
-  };
-}
-
-function parseRuntimeConfigToml(text) {
-  const result = {};
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.replace(/#.*/, '').trim();
-    if (!line || line.startsWith('[')) continue;
-    const match = line.match(/^([A-Za-z0-9_.-]+)\s*=\s*("?)(.*?)\2\s*$/);
-    if (!match) continue;
-    const key = match[1].replace(/[.-]/g, '_');
-    const value = match[3].trim();
-    if (value) result[key] = value;
-  }
-  return result;
-}
-
-function resolveModelEffortForPeer({ peer, explicitModel, explicitEffort, repoDefaults, userDefaults }) {
-  return {
-    model: resolveOneSetting({
-      explicit: explicitModel,
-      repoDefaults,
-      userDefaults,
-      keys: [`${peer}_model`, 'model'],
-    }),
-    effort: resolveOneSetting({
-      explicit: explicitEffort,
-      repoDefaults,
-      userDefaults,
-      keys: [`${peer}_effort`, 'effort'],
-    }),
-  };
-}
-
-function resolveOneSetting({ explicit, repoDefaults, userDefaults, keys }) {
-  if (explicit) return { value: explicit, source: 'explicit command flags' };
-  for (const key of keys) {
-    if (repoDefaults[key]) return { value: repoDefaults[key], source: `repo config ${key}` };
-  }
-  for (const key of keys) {
-    if (userDefaults[key]) return { value: userDefaults[key], source: `user config ${key}` };
-  }
-  return { value: null, source: 'host-native default' };
 }
 
 async function inspectWorkflowLedgers({ repoRoot, now, staleGraceMs }) {
@@ -5403,17 +5204,6 @@ function sameStringSet(left, right) {
   const a = uniqueStrings(left ?? []).sort();
   const b = uniqueStrings(right ?? []).sort();
   return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-
-function semverCompare(a, b) {
-  const pa = a.split('.').map((x) => Number.parseInt(x, 10) || 0);
-  const pb = b.split('.').map((x) => Number.parseInt(x, 10) || 0);
-  for (let i = 0; i < 3; i++) {
-    const av = pa[i] ?? 0;
-    const bv = pb[i] ?? 0;
-    if (av !== bv) return av - bv;
-  }
-  return 0;
 }
 
 function usage() {

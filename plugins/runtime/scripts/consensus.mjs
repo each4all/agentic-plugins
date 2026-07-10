@@ -13,7 +13,8 @@ import { homedir } from 'node:os';
 import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runCommand, runDoctor } from './doctor.mjs';
+import { runCommand } from './doctor.mjs';
+import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -759,13 +760,14 @@ export async function executeRound(options = {}) {
   });
   await writeExecutionProgress(repoRoot, progressPath, progress);
 
-  const doctor = await runDoctor({
+  // Peer context is two FILESYSTEM lookups: which companion script to spawn, and which
+  // model/effort to hand it. This used to go through `runDoctor`, which additionally
+  // probed both host CLIs ~14 times (~3.1s) for output consensus never read, and handed
+  // those probe processes the ambient egress credential. The seam takes no `env` and no
+  // `runner`, so it cannot spawn anything.
+  const peerContext = await resolvePeerExecutionContext({
     repoRoot,
     homeDir,
-    env,
-    now,
-    runner,
-    format: 'json',
     explicitModel: options.model ?? null,
     explicitEffort: options.effort ?? null,
   });
@@ -784,7 +786,7 @@ export async function executeRound(options = {}) {
       roundNumber,
       round,
       peer,
-      doctor,
+      peerContext,
       env,
       runner,
       timeoutMs,
@@ -1078,7 +1080,7 @@ async function executePeer({
   roundNumber,
   round,
   peer,
-  doctor,
+  peerContext,
   env,
   runner,
   timeoutMs,
@@ -1118,8 +1120,8 @@ async function executePeer({
     });
   }
 
-  const companionDirection = doctor.companions.directions[directionKey];
-  const directionSettings = doctor.model_effort.directions[directionKey];
+  const companionDirection = peerContext.companions.directions[directionKey];
+  const directionSettings = peerContext.model_effort.directions[directionKey];
   const prompt = round.prompts.find((entry) => entry.peer === peer);
   const promptPointer = prompt?.pointer ?? null;
   if (!prompt) {

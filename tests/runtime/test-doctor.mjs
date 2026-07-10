@@ -11,6 +11,36 @@ import { formatText, parseArgs, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES } from 
 const PORTABLE_HOOK_COMMAND = '/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${PLUGIN_ROOT}/adapters/codex/hooks/hook.mjs"';
 
 describe('runtime doctor', () => {
+  // ADR-0041 §2b/§2c. This used to be every caller's job, and only settings.mjs did it,
+  // so a direct `runtime:doctor` run and cutover-audit handed TELEGRAM_BOT_TOKEN to all
+  // 14 `claude`/`codex` probe processes. The scrub now lives at the point of use.
+  it('never hands the egress credential to a host-CLI probe', async () => {
+    const seen = [];
+    // A SUCCEEDING runner, so `available` is true and inspectCli walks the whole probe
+    // chain (6 claude + 8 codex). An ENOENT stub would short-circuit after `--version`
+    // and this gate would only ever inspect 2 of the 14 envs.
+    const runner = async (command, args = [], options = {}) => {
+      seen.push({ command, args, env: options.env });
+      return { ok: true, exit_code: 0, stdout: '', stderr: '', error_code: null, error_message: null };
+    };
+    await runDoctor({
+      repoRoot: process.cwd(),
+      format: 'json',
+      runner,
+      env: { ...process.env, TELEGRAM_BOT_TOKEN: 'sentinel-token', PATH: '/usr/bin:/bin' },
+    });
+
+    const claudeProbes = seen.filter((call) => call.command === 'claude');
+    const codexProbes = seen.filter((call) => call.command === 'codex');
+    strictEqual(claudeProbes.length, 6, 'every claude probe must be inspected, not just --version');
+    strictEqual(codexProbes.length, 8, 'every codex probe must be inspected, not just --version');
+    const probes = [...claudeProbes, ...codexProbes];
+    for (const probe of probes) {
+      strictEqual(probe.env?.TELEGRAM_BOT_TOKEN, undefined, `${probe.command} probe received the egress credential`);
+      strictEqual(probe.env?.PATH, '/usr/bin:/bin', 'the rest of the env must survive the scrub');
+    }
+  });
+
   it('recognizes founder, attention and designer in the hardcoded plugin inventory (ADR-0036 / ADR-0040 §3 / ADR-0042 RT)', () => {
     // RT (ADR-0036): runtime:doctor / runtime:settings must recognize
     // founder as an installable agentic-plugins plugin — install / cache /
