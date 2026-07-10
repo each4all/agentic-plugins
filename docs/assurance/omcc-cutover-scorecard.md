@@ -110,7 +110,14 @@ companions `0.4.0`;
 The same run reports `host_parity_baseline` `stale`: the recorded baseline
 (2026-07-04, Claude `2.1.201` / Codex `0.142.5`) predates the observed
 `2.1.206` / `0.144.1`. That freshness check is not a CI gate and does not affect the
-proof results above; refreshing the baseline is a separate slice. This supersedes the
+proof results above; refreshing the baseline is a separate slice. That slice landed
+on 2026-07-10: the baseline header now reads Claude `2.1.206` / Codex `0.144.1`
+(compat run `compat-20260710T054356Z-34315e`, content-backed Claude `CHANGELOG.md`
+and Codex GitHub release-note ingest; additive/fix-only, no adoption work), a fresh
+snapshot+check reads `drift: none` (`compat-20260710T104459Z-67ece6`), and a
+post-refresh `runtime:doctor` reads `baseline-freshness: current` — the proof
+record above is preserved as-recorded (it genuinely read `stale` at measurement
+time). This supersedes the
 prior 0.77.1-native proof (`doctor-20260709T141930Z-515ebf`, parity `ready` `100%`) and,
 before it, the 0.76.0 loop (`doctor-20260707T140348Z-5a8fb8`, parity `ready` `100%`).
 
