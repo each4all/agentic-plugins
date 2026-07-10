@@ -59,6 +59,26 @@ Local CLI evidence (re-observed 2026-07-10 on `0.144.1`):
   newer trusted rows with `trusted_hash` only coexist in the same config;
   a config-file parse proves serialization shapes, not the full set of states
   the current `/hooks` UI can write.)
+  Two further `[hooks.state]` observations (0.144.1, 2026-07-10):
+  - **Materialized event vocabulary**: the entries observed across all
+    agentic-plugins hook-bearing plugins use exactly `session_start`,
+    `pre_compact`, `stop`, and `subagent_stop`. A hooks-file event Codex does
+    not recognize — Claude's `Notification` — produced **no** state entry at
+    all (attention's file declares Notification/Stop/SubagentStop; only
+    `stop` and `subagent_stop` materialized). `runtime:doctor` mirrors this
+    vocabulary (`CODEX_HOOK_STATE_EVENTS`) so an event the host can never
+    materialize surfaces as `unmapped`, not as a permanently-`missing`
+    expectation; an event actually observed in `[hooks.state]` is always
+    expected regardless of the mirror, so a future Codex that starts
+    materializing new events self-heals.
+  - **Default-file discovery is command-shape-blind**: attention declares no
+    `hooks` in `.codex-plugin/plugin.json` and all its hook commands target
+    `adapters/claude/hooks/…`, yet Codex discovered `hooks/hooks.json`,
+    surfaced the mappable events in `/hooks`, and recorded the operator's
+    trust (`trusted_hash` entries observed for `stop`/`subagent_stop`).
+    Non-declaration does **not** keep a default-location hooks file out of
+    the Codex review/trust surface — which is why `runtime:doctor` counts
+    deliberately-Claude-only bundlers in its expected Codex hook sets.
 - `codex plugin --help` (0.144.1: `add`, `list`, `marketplace`, `remove` —
   command set unchanged from 0.137.0)
 - `codex plugin add --help` (installs `PLUGIN[@MARKETPLACE]` from a configured
