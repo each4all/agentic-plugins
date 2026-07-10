@@ -196,6 +196,9 @@ describe('plugins/runtime settings surface', () => {
     // ADR-0035 §6 hard-remove: the deleted flag must stay out of the command doc.
     ok(!command.includes('[--apply-codex-plugin-hooks]'));
     ok(command.includes('/hooks'));
+    // Probe-free mode (settings-report-contract.md) is documented on every surface.
+    ok(command.includes('--skip-host-cli-probes'));
+    ok(command.includes('settings-report-contract.md'));
     const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/SKILL.md'), 'utf-8');
     ok(/^name:\s*settings\s*$/m.test(skill));
     ok(skill.includes('Host-native Claude Code'));
@@ -203,16 +206,19 @@ describe('plugins/runtime settings surface', () => {
     ok(skill.includes('--execute-plugin-management'));
     ok(!skill.includes('[--apply-codex-plugin-hooks]'));
     ok(skill.includes('/hooks'));
+    ok(skill.includes('--skip-host-cli-probes'));
+    ok(skill.includes('settings-report-contract.md'));
     const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/settings/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:settings'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
+    ok(agent.includes('--skip-host-cli-probes'));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/settings.mjs'));
     ok((scriptStat.mode & 0o111) !== 0, 'settings.mjs has executable bit');
   });
 
   it('follow-ups document plugin-management boundaries plus deferred consensus/context/footer scope', async () => {
     const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
-    for (const token of ['Plugin management beyond the explicit settings executor', 'Consensus executor depth beyond the explicit boundary', 'Worktree execution beyond read-only planning', 'Context automation', 'Completion footer', 'Codex capability drift beyond the current baseline', 'Claude-vs-Codex parity drift beyond the current baseline']) {
+    for (const token of ['Plugin management beyond the explicit settings executor', 'Consensus executor depth beyond the explicit boundary', 'Worktree execution beyond read-only planning', 'Context automation', 'Completion footer', 'Codex capability drift beyond the current baseline', 'Claude-vs-Codex parity drift beyond the current baseline', 'Probe-free `runtime:settings` mode']) {
       ok(followUps.includes(token), `${token} documented`);
     }
     ok(/Codex capability drift/i.test(followUps), 'Codex capability drift documented');

@@ -754,7 +754,7 @@ export function renderDashboardText(report) {
       : 'no codex hook attestation recorded';
     lines.push(`- settings: ${settings.latest.run_id} (${formatAge(nowMs, settings.latest.selected_at)}); ${attestation}`);
   } else {
-    lines.push(`- settings: ${settings.status} — no recorded runtime:settings run`);
+    lines.push(`- settings: ${settings.status} — no recorded runtime:settings execution/attestation artifact (plan-only and probe-free runs record none by design)`);
   }
   const artifacts = report.tier2.artifacts;
   lines.push(`- artifacts: ${artifacts.status} (${artifacts.total.run_count} runs, ${artifacts.total.bytes} bytes)`);

@@ -17,6 +17,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor, codexPerPluginVerbs, collectUsageRecordSources } from './doctor.mjs';
+import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
 import { semverCompare } from './lib/semver.mjs';
 import {
   CONFIG_KEYS,
@@ -34,7 +35,7 @@ import { buildCodexNotificationPlan } from './lib/notification-plan.mjs';
 import { buildEgressLauncherPlan } from './lib/egress-launcher-plan.mjs';
 import { redactEgressCredentialFromEnv } from './lib/egress-config.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.16';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.17';
 
 // ADR-0038 settings-claude permission plan (M1): how many recent usage records to
 // read per host, and a per-file byte cap, when building the dry-run plan.
@@ -79,8 +80,13 @@ export async function runSettings({
   executePluginManagement = false,
   executePluginCleanup = false,
   attestCodexHookReview = false,
-  pluginManagementHost = 'all',
-  pluginManagementTimeoutMs = DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS,
+  // The two plugin-management modifiers stay ABSENT (undefined) until after
+  // the probe-free conflict gate below — a value-comparison gate would let
+  // `--skip-host-cli-probes --plugin-management-host all` through even though
+  // the contract rejects the flag itself (settings-report-contract.md §1).
+  pluginManagementHost = undefined,
+  pluginManagementTimeoutMs = undefined,
+  skipHostCliProbes = false,
   permissionPlan = false,
   permissionPlanMaxFiles = DEFAULT_PERMISSION_PLAN_MAX_FILES,
   permissionPlanMaxFileBytes = DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES,
@@ -89,7 +95,26 @@ export async function runSettings({
   runId = null,
 } = {}) {
   if (!TARGETS.has(target)) throw new Error('--target must be repo, user, or both');
-  if (!PLUGIN_MANAGEMENT_HOSTS.has(pluginManagementHost)) throw new Error('--plugin-management-host must be all, claude, or codex');
+  // Probe-free conflict gate (settings-report-contract.md §1-§2) — MUST run
+  // inside the exported API, on the RAW options, BEFORE any probe, run-id
+  // normalization, config write, or artifact write. A flag is rejected iff
+  // its effect consumes host-CLI probe evidence or it exclusively
+  // parameterizes a rejected flag; presence (not value) is what conflicts.
+  if (skipHostCliProbes) {
+    const conflicts = [];
+    if (executePluginManagement) conflicts.push('--execute-plugin-management consumes host-CLI probe evidence');
+    if (executePluginCleanup) conflicts.push('--execute-plugin-cleanup consumes host-CLI probe evidence');
+    if (attestCodexHookReview) conflicts.push('--attest-codex-hook-review consumes host-CLI probe evidence');
+    if (pluginManagementHost !== undefined) conflicts.push('--plugin-management-host exclusively parameterizes the rejected plugin-management executor');
+    if (pluginManagementTimeoutMs !== undefined) conflicts.push('--plugin-management-timeout-ms exclusively parameterizes the rejected plugin-management executor');
+    if (runId !== null && runId !== undefined) conflicts.push('--run-id exclusively parameterizes the rejected settings execution artifact');
+    if (conflicts.length > 0) {
+      throw new Error(`--skip-host-cli-probes conflicts (plugins/runtime/docs/settings-report-contract.md §1): ${conflicts.join('; ')}`);
+    }
+  }
+  const effectivePluginManagementHost = pluginManagementHost ?? 'all';
+  const effectivePluginManagementTimeoutMs = pluginManagementTimeoutMs ?? DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS;
+  if (!PLUGIN_MANAGEMENT_HOSTS.has(effectivePluginManagementHost)) throw new Error('--plugin-management-host must be all, claude, or codex');
   const resolvedRepoRoot = resolve(repoRoot);
   const resolvedHomeDir = resolve(homeDir);
   const startedAt = now.toISOString();
@@ -107,15 +132,29 @@ export async function runSettings({
   const launcherEnv = env;
   env = redactEgressCredentialFromEnv(env);
 
-  const doctor = await runDoctor({
-    repoRoot: resolvedRepoRoot,
-    homeDir: resolvedHomeDir,
-    env,
-    now,
-    runner: commandRunner,
-    format: 'json',
-    host,
-  });
+  // Evidence-collection axis (settings-report-contract.md §2): probe-free
+  // runs resolve model/effort + companion directions from the filesystem-only
+  // peer execution context at the SAME pre-apply position runDoctor occupies,
+  // so freshly-applied config values can never masquerade as "current".
+  let doctor = null;
+  let peerModelEffort = null;
+  if (skipHostCliProbes) {
+    const peerContext = await resolvePeerExecutionContext({
+      repoRoot: resolvedRepoRoot,
+      homeDir: resolvedHomeDir,
+    });
+    peerModelEffort = peerContext.model_effort;
+  } else {
+    doctor = await runDoctor({
+      repoRoot: resolvedRepoRoot,
+      homeDir: resolvedHomeDir,
+      env,
+      now,
+      runner: commandRunner,
+      format: 'json',
+      host,
+    });
+  }
 
   const configPlans = await buildConfigPlans({
     repoRoot: resolvedRepoRoot,
@@ -128,33 +167,41 @@ export async function runSettings({
     await applyConfigPlans(configPlans);
   }
 
-  const pluginPlans = buildPluginPlans(doctor.plugins, {
-    codexPerPluginVerbList: codexPerPluginVerbs(doctor.clis?.codex?.feature_surface ?? {}),
-  });
-  const pluginManagement = await buildPluginManagementPlan({
-    plugins: pluginPlans,
-    clis: doctor.clis,
-    execute: executePluginManagement,
-    hostFilter: pluginManagementHost,
-    runner: commandRunner,
-    cwd: resolvedRepoRoot,
-    env,
-    timeoutMs: pluginManagementTimeoutMs,
-  });
-  applyPluginManagementResults(pluginPlans, pluginManagement);
-  const cliPlans = buildCliPlans(doctor.clis);
-  const pluginCleanup = await buildPluginCleanupPlans({
-    hostParityIssues: doctor.host_parity?.issues ?? [],
-    clis: doctor.clis,
-    execute: executePluginCleanup,
-    runner: commandRunner,
-    cwd: resolvedRepoRoot,
-    env,
-    timeoutMs: pluginManagementTimeoutMs,
-  });
+  let pluginPlans = null;
+  let pluginManagement = null;
+  let cliPlans = null;
+  let pluginCleanup = null;
+  let hookSettings = null;
+  let codexHookReview = null;
+  if (!skipHostCliProbes) {
+    pluginPlans = buildPluginPlans(doctor.plugins, {
+      codexPerPluginVerbList: codexPerPluginVerbs(doctor.clis?.codex?.feature_surface ?? {}),
+    });
+    pluginManagement = await buildPluginManagementPlan({
+      plugins: pluginPlans,
+      clis: doctor.clis,
+      execute: executePluginManagement,
+      hostFilter: effectivePluginManagementHost,
+      runner: commandRunner,
+      cwd: resolvedRepoRoot,
+      env,
+      timeoutMs: effectivePluginManagementTimeoutMs,
+    });
+    applyPluginManagementResults(pluginPlans, pluginManagement);
+    cliPlans = buildCliPlans(doctor.clis);
+    pluginCleanup = await buildPluginCleanupPlans({
+      hostParityIssues: doctor.host_parity?.issues ?? [],
+      clis: doctor.clis,
+      execute: executePluginCleanup,
+      runner: commandRunner,
+      cwd: resolvedRepoRoot,
+      env,
+      timeoutMs: effectivePluginManagementTimeoutMs,
+    });
+  }
 
   const companionSettings = buildCompanionSettingPlans({
-    currentDirections: doctor.model_effort.directions,
+    currentDirections: skipHostCliProbes ? peerModelEffort.directions : doctor.model_effort.directions,
     desiredConfig,
     configTargets: configPlans.targets,
     apply,
@@ -164,22 +211,24 @@ export async function runSettings({
     configTargets: configPlans.targets,
     apply,
   });
-  const hookSettings = buildHookSettingsPlan({
-    codexPluginHooks: doctor.codex_plugin_hooks,
-    plugins: pluginPlans,
-  });
-  const codexHookReview = buildCodexHookReviewAttestation({
-    codexPluginHooks: doctor.codex_plugin_hooks,
-    hookSettings,
-    plugins: pluginPlans,
-    requested: attestCodexHookReview,
-    attestedAt: startedAt,
-  });
-  pluginManagement.manual_followups = mergeManualFollowups(
-    pluginManagement.manual_followups,
-    buildPluginCleanupManualFollowups(pluginCleanup.plans),
-    buildCodexHookReviewManualFollowups(doctor.codex_plugin_hooks, hookSettings, codexHookReview),
-  );
+  if (!skipHostCliProbes) {
+    hookSettings = buildHookSettingsPlan({
+      codexPluginHooks: doctor.codex_plugin_hooks,
+      plugins: pluginPlans,
+    });
+    codexHookReview = buildCodexHookReviewAttestation({
+      codexPluginHooks: doctor.codex_plugin_hooks,
+      hookSettings,
+      plugins: pluginPlans,
+      requested: attestCodexHookReview,
+      attestedAt: startedAt,
+    });
+    pluginManagement.manual_followups = mergeManualFollowups(
+      pluginManagement.manual_followups,
+      buildPluginCleanupManualFollowups(pluginCleanup.plans),
+      buildCodexHookReviewManualFollowups(doctor.codex_plugin_hooks, hookSettings, codexHookReview),
+    );
+  }
 
   // The same --permission-plan flag plans BOTH hosts (ADR-0038 §1 cross-host).
   // The orchestrator collects/learns once and writes ONE combined cross-host
@@ -235,13 +284,21 @@ export async function runSettings({
     host,
     output_format: format,
     dry_run: !(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview),
+    // Evidence-collection discriminator (settings-report-contract.md §3) —
+    // present in BOTH modes so a narrowed report is never distinguishable
+    // only by what it lacks.
+    report_scope: skipHostCliProbes ? 'local_plan' : 'full',
+    host_cli_probes: skipHostCliProbes
+      ? { status: 'skipped', flag: '--skip-host-cli-probes' }
+      : { status: 'run', flag: null },
+    section_presence: buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationPlan, egressLauncherPlan }),
     apply,
     config_apply: apply,
     execute_plugin_management: executePluginManagement,
     execute_plugin_cleanup: executePluginCleanup,
     attest_codex_hook_review: attestCodexHookReview,
     mutation_boundary: {
-      writes_allowed: mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview }),
+      writes_allowed: mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview, permissionPlan, notificationPlan, egressLauncherPlan }),
       allowed_paths: [
         ...configPlans.targets.filter((plan) => plan.selected).map((plan) => plan.path),
       ],
@@ -251,7 +308,7 @@ export async function runSettings({
       allowed_plugin_cleanup_actions: executePluginCleanup
         ? Array.from(EXECUTABLE_PLUGIN_CLEANUP_ACTIONS).sort()
         : [],
-      plugin_management_host_filter: pluginManagementHost,
+      plugin_management_host_filter: effectivePluginManagementHost,
       forbidden: [
         'host-native Claude Code config',
         'host-native Codex CLI config',
@@ -267,12 +324,12 @@ export async function runSettings({
     clis: cliPlans,
     plugins: pluginPlans,
     plugin_cleanup: pluginCleanup,
-    plugin_command_surface: doctor.plugin_command_surface,
+    plugin_command_surface: skipHostCliProbes ? null : doctor.plugin_command_surface,
     plugin_management: pluginManagement,
     hook_settings: hookSettings,
     codex_hook_review: codexHookReview,
     config: {
-      resolution_order: doctor.model_effort.resolution_order,
+      resolution_order: skipHostCliProbes ? peerModelEffort.resolution_order : doctor.model_effort.resolution_order,
       key_families: CONFIG_KEY_FAMILIES,
       desired: desiredConfig,
       targets: configPlans.targets,
@@ -291,9 +348,12 @@ export async function runSettings({
       executePluginCleanup,
       attestCodexHookReview,
     }),
+    // In local_plan mode this rebuilds from evaluated inputs only (config
+    // hints + companion/notify warnings) — the probe-derived inputs are
+    // empty, and section_presence marks the section 'local_only'.
     recommendations: buildTopLevelRecommendations({
-      clis: cliPlans,
-      plugins: pluginPlans,
+      clis: cliPlans ?? {},
+      plugins: pluginPlans ?? {},
       pluginCleanup,
       desiredConfig,
       companionSettings,
@@ -347,13 +407,48 @@ function normalizeConfigValue(value, key) {
   return text;
 }
 
-function mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview }) {
+function mutationBoundaryWritesAllowed({ apply, executePluginManagement, executePluginCleanup, attestCodexHookReview, permissionPlan = false, notificationPlan = false, egressLauncherPlan = false }) {
   const allowed = [];
   if (apply) allowed.push('agentic-plugins-owned config files');
   if (executePluginManagement) allowed.push('allowlisted host-native plugin install/update commands');
   if (executePluginCleanup) allowed.push('allowlisted retired/unknown agentic-plugins plugin cleanup commands');
   if (attestCodexHookReview) allowed.push('runtime settings execution artifact with Codex hook review attestation');
+  // Plan-artifact honesty (settings-report-contract.md §3, both modes): the
+  // M1 plan flags write their own artifact families while dry_run stays
+  // true — "dry run" must never render as "no writes" while they do.
+  if (permissionPlan) allowed.push('agentic-plugins-owned permission advisory artifact (runs/permission)');
+  if (notificationPlan) allowed.push('agentic-plugins-owned notification plan artifact (runs/notification)');
+  if (egressLauncherPlan) allowed.push('agentic-plugins-owned egress launcher plan artifact (runs/egress-launcher)');
   return allowed.length > 0 ? allowed.join('; ') : 'none; dry-run only';
+}
+
+// settings-report-contract.md §3 — one authoritative map over every
+// top-level report section (19 entries). Enum: evaluated | not_evaluated |
+// not_requested | local_only. An empty container or zero counter must never
+// stand in for "not evaluated"; this map carries the semantics.
+function buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationPlan, egressLauncherPlan }) {
+  const probeState = skipHostCliProbes ? 'not_evaluated' : 'evaluated';
+  return {
+    clis: probeState,
+    plugins: probeState,
+    plugin_command_surface: probeState,
+    plugin_management: probeState,
+    plugin_cleanup: probeState,
+    hook_settings: probeState,
+    codex_hook_review: probeState,
+    config: 'evaluated',
+    companion_settings: 'evaluated',
+    notify_settings: 'evaluated',
+    mutation_boundary: 'evaluated',
+    artifacts: 'evaluated',
+    limits: 'evaluated',
+    overall: 'evaluated',
+    recommendations: skipHostCliProbes ? 'local_only' : 'evaluated',
+    permission_plan: permissionPlan ? 'evaluated' : 'not_requested',
+    permission_plan_codex: permissionPlan ? 'evaluated' : 'not_requested',
+    notification_plan: notificationPlan ? 'evaluated' : 'not_requested',
+    egress_launcher_plan: egressLauncherPlan ? 'evaluated' : 'not_requested',
+  };
 }
 
 async function buildConfigPlans({ repoRoot, homeDir, target, desiredConfig }) {
@@ -2096,9 +2191,34 @@ function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredCon
 function summarizeSettings(report) {
   const writeCount = report.config.targets.reduce((sum, target) => sum + target.planned_writes.length, 0);
   const appliedCount = report.config.targets.filter((target) => target.applied).length;
-  const missingCli = Object.values(report.clis).filter((cli) => cli.status !== 'available').length;
   const settingWarnings = collectCompanionSettingWarnings(report.companion_settings).length;
   const notifyWarnings = report.notify_settings?.warnings?.length ?? 0;
+  if (report.report_scope === 'local_plan') {
+    // settings-report-contract.md §3 — status is computed over evaluated
+    // sections only, which includes requested plan sections: a blocked or
+    // failed requested plan must never yield an unqualified local pass.
+    // Probe-derived counters are null (never 0): a zero would read as
+    // "evaluated and clean".
+    const blockedPlanSections = ['permission_plan', 'permission_plan_codex', 'notification_plan', 'egress_launcher_plan']
+      .map((key) => report[key])
+      .filter((section) => section?.requested && ['blocked', 'failed'].includes(section.status)).length;
+    return {
+      scope: 'local_plan',
+      status: settingWarnings > 0 || notifyWarnings > 0 || blockedPlanSections > 0 ? 'warning' : 'pass',
+      planned_config_writes: writeCount,
+      applied_config_targets: appliedCount,
+      plugin_recommendations: null,
+      setting_warnings: settingWarnings,
+      notify_warnings: notifyWarnings,
+      hook_warnings: null,
+      hook_review_warnings: null,
+      auth_warnings: null,
+      plugin_cleanup_warnings: null,
+      plugin_management_executed: null,
+      plugin_management_failed: null,
+    };
+  }
+  const missingCli = Object.values(report.clis).filter((cli) => cli.status !== 'available').length;
   const hookWarnings = (report.hook_settings?.recommendations ?? []).filter((rec) => rec.severity === 'warning').length;
   const authWarnings = Object.values(report.clis).filter((cli) => ['manual_required', 'manual_check'].includes(cli.auth_plan?.status)).length;
   const pluginManagementFailed = report.plugin_management.summary.failed;
@@ -2107,6 +2227,7 @@ function summarizeSettings(report) {
     + (report.plugin_cleanup?.summary?.failed ?? 0);
   const hookReviewWarnings = report.codex_hook_review?.requested && report.codex_hook_review.status !== 'attested' ? 1 : 0;
   return {
+    scope: 'full',
     status: missingCli > 0 || settingWarnings > 0 || notifyWarnings > 0 || hookWarnings > 0 || hookReviewWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 || pluginCleanupWarnings > 0 ? 'warning' : 'pass',
     planned_config_writes: writeCount,
     applied_config_targets: appliedCount,
@@ -2131,30 +2252,48 @@ function collectCompanionSettingWarnings(companionSettings) {
 }
 
 export function formatText(report) {
+  // settings-report-contract.md §4 — full-mode text stays byte-identical
+  // (scoped to runs without plan flags); a narrowed report renders the scope
+  // in the header, explicit probe/scope lines, a qualified overall line, and
+  // one explicit "not evaluated" line per skipped section instead of its
+  // normal body. An unqualified `pass` is never printed from a narrowed
+  // report (full mode prints no overall line today, so nothing is removed).
+  const narrowed = report.report_scope === 'local_plan';
+  const NOT_EVALUATED_LINE = `- not evaluated (${report.host_cli_probes?.flag ?? '--skip-host-cli-probes'})`;
   const lines = [];
   lines.push(`runtime:settings ${report.runtime_version} (${formatSettingsMode(report)})`);
   lines.push(`repo: ${report.repo_root}`);
   lines.push(`dry-run: ${report.dry_run}`);
+  if (narrowed) {
+    lines.push('report scope: local_plan');
+    lines.push(`host CLI probes: skipped by ${report.host_cli_probes?.flag ?? '--skip-host-cli-probes'}`);
+    lines.push(`local plan: ${report.overall.status}`);
+  }
   lines.push('');
   lines.push('Mutation Boundary');
   lines.push(`- writes: ${report.mutation_boundary.writes_allowed}`);
   for (const forbidden of report.mutation_boundary.forbidden) lines.push(`- forbidden: ${forbidden}`);
   lines.push('');
   lines.push('Host CLIs');
-  for (const name of ['claude', 'codex']) {
-    const cli = report.clis[name];
-    lines.push(`- ${name}: ${cli.status}; version=${cli.version.text || cli.version.status}; auth=${cli.auth?.status ?? 'unknown'}`);
-    if (cli.recommendation) lines.push(`  recommendation: ${cli.recommendation}`);
-    if (cli.install_plan?.status === 'manual_required') {
-      lines.push(`  install-plan: ${cli.install_plan.status}; executable=${cli.install_plan.executable}; next-step=${cli.install_plan.next_step}`);
-    }
-    if (['manual_required', 'manual_check'].includes(cli.auth_plan?.status)) {
-      lines.push(`  auth-plan: ${cli.auth_plan.status}; executable=${cli.auth_plan.executable}; command=${cli.auth_plan.command ?? 'n/a'}; next-step=${cli.auth_plan.next_step}`);
+  if (narrowed) {
+    lines.push(NOT_EVALUATED_LINE);
+  } else {
+    for (const name of ['claude', 'codex']) {
+      const cli = report.clis[name];
+      lines.push(`- ${name}: ${cli.status}; version=${cli.version.text || cli.version.status}; auth=${cli.auth?.status ?? 'unknown'}`);
+      if (cli.recommendation) lines.push(`  recommendation: ${cli.recommendation}`);
+      if (cli.install_plan?.status === 'manual_required') {
+        lines.push(`  install-plan: ${cli.install_plan.status}; executable=${cli.install_plan.executable}; next-step=${cli.install_plan.next_step}`);
+      }
+      if (['manual_required', 'manual_check'].includes(cli.auth_plan?.status)) {
+        lines.push(`  auth-plan: ${cli.auth_plan.status}; executable=${cli.auth_plan.executable}; command=${cli.auth_plan.command ?? 'n/a'}; next-step=${cli.auth_plan.next_step}`);
+      }
     }
   }
   lines.push('');
   lines.push('Plugins');
-  for (const name of PLUGIN_NAMES) {
+  if (narrowed) lines.push(NOT_EVALUATED_LINE);
+  else for (const name of PLUGIN_NAMES) {
     const plugin = report.plugins[name];
     const codexTmp = plugin.marketplace_cache?.codex_tmp_marketplace;
     lines.push(`- ${name}: ${plugin.status}; source=${plugin.source_version ?? 'n/a'}; codex-marketplace-cache=${codexTmp?.version ?? 'n/a'}; recommendations=${plugin.recommendations.length}`);
@@ -2166,6 +2305,9 @@ export function formatText(report) {
   }
   lines.push('');
   lines.push('Plugin Management');
+  if (narrowed) {
+    lines.push(NOT_EVALUATED_LINE);
+  } else {
   lines.push(`- mode: ${report.plugin_management.mode}; requested=${report.plugin_management.requested}; host-filter=${report.plugin_management.host_filter}; timeout-ms=${report.plugin_management.timeout_ms}`);
   if (report.plugin_command_surface?.claude) {
     const surface = report.plugin_command_surface.claude;
@@ -2203,7 +2345,12 @@ export function formatText(report) {
       lines.push(`  verify: ${followup.verify}`);
     }
   }
-  if (report.plugin_cleanup?.plans?.length > 0) {
+  }
+  if (narrowed) {
+    lines.push('');
+    lines.push('Plugin Cleanup');
+    lines.push(NOT_EVALUATED_LINE);
+  } else if (report.plugin_cleanup?.plans?.length > 0) {
     lines.push('');
     lines.push('Plugin Cleanup');
     lines.push(`- mode: ${report.plugin_cleanup.mode}; requested=${report.plugin_cleanup.requested}; timeout-ms=${report.plugin_cleanup.timeout_ms}`);
@@ -2221,6 +2368,9 @@ export function formatText(report) {
   }
   lines.push('');
   lines.push('Codex Plugin Hooks');
+  if (narrowed) {
+    lines.push(NOT_EVALUATED_LINE);
+  } else {
   lines.push(`- status=${report.hook_settings.status}; bundled=${report.hook_settings.packaged_plugins.bundled.join(',') || 'none'}; manifest-exposed=${report.hook_settings.packaged_plugins.manifest_exposed.join(',') || 'none'}; default-file-only=${report.hook_settings.packaged_plugins.default_file_only.join(',') || 'none'}; command-warnings=${report.hook_settings.packaged_plugins.command_warnings.join(',') || 'none'}`);
   if (report.hook_settings.hook_state) {
     const state = report.hook_settings.hook_state;
@@ -2241,7 +2391,12 @@ export function formatText(report) {
     lines.push(`  detail: ${recommendation.detail}`);
     if (recommendation.next_step) lines.push(`  next: ${recommendation.next_step}`);
   }
-  if (report.codex_hook_review) {
+  }
+  if (narrowed) {
+    lines.push('');
+    lines.push('Codex Hook Review');
+    lines.push(NOT_EVALUATED_LINE);
+  } else if (report.codex_hook_review) {
     const review = report.codex_hook_review;
     lines.push('');
     lines.push('Codex Hook Review');
@@ -2402,6 +2557,7 @@ export function formatText(report) {
 
 function formatSettingsMode(report) {
   const modes = [];
+  if (report.report_scope === 'local_plan') modes.push('local-plan');
   if (report.config_apply) modes.push('config-apply');
   if (report.execute_plugin_management) modes.push('plugin-management');
   if (report.execute_plugin_cleanup) modes.push('plugin-cleanup');
@@ -3037,6 +3193,7 @@ function usage() {
     '  [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>]',
     '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
     '  [--permission-plan] [--permission-plan-max-files <n>] [--permission-plan-max-file-bytes <n>] [--notification-plan] [--egress-launcher-plan] [--run-id <settings-run-id>]',
+    '  [--skip-host-cli-probes]  (probe-free local plan: no runDoctor / host-CLI subprocess probes; rejects --execute-*, --attest-codex-hook-review, --plugin-management-*, --run-id; --apply and the plan flags stay allowed)',
     '',
   ].join('\n');
 }
@@ -3059,8 +3216,12 @@ export function parseArgs(argv) {
     executePluginManagement: false,
     executePluginCleanup: false,
     attestCodexHookReview: false,
-    pluginManagementHost: 'all',
-    pluginManagementTimeoutMs: DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS,
+    // Absent (undefined) until the flag is actually passed — runSettings'
+    // probe-free conflict gate keys on presence, and value-comparison would
+    // erase `--plugin-management-host all` (settings-report-contract.md §1).
+    pluginManagementHost: undefined,
+    pluginManagementTimeoutMs: undefined,
+    skipHostCliProbes: false,
     permissionPlan: false,
     permissionPlanMaxFiles: DEFAULT_PERMISSION_PLAN_MAX_FILES,
     permissionPlanMaxFileBytes: DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES,
@@ -3097,6 +3258,8 @@ export function parseArgs(argv) {
       if (!PLUGIN_MANAGEMENT_HOSTS.has(opts.pluginManagementHost)) throw new Error('--plugin-management-host must be all, claude, or codex');
     } else if (arg === '--plugin-management-timeout-ms') {
       opts.pluginManagementTimeoutMs = parsePositiveInt(requireValue(argv, ++i, arg), arg);
+    } else if (arg === '--skip-host-cli-probes') {
+      opts.skipHostCliProbes = true;
     } else if (arg === '--permission-plan') {
       opts.permissionPlan = true;
     } else if (arg === '--notification-plan') {

@@ -89,7 +89,16 @@ Line references below are anchors observed at decision time
   warning.
 - Default full-mode behavior is preserved: probes run, all sections evaluate,
   exit codes unchanged, text output byte-identical, JSON output changed only
-  by the additive discriminator keys in §3.
+  by the additive discriminator keys in §3. **Scope erratum (2026-07-10,
+  Plan-verify)**: byte-compatibility is scoped to full-mode runs **without
+  plan flags** — when a plan flag is requested, the §3
+  `mutation_boundary.writes_allowed` honesty fix changes that value (and its
+  text rendering) by design, in both modes.
+- Non-transactional ordering (ADR-0035 §3.10 disclosure): config apply runs
+  before the plan-artifact writers, so a later plan-write failure can leave
+  an applied config and earlier plan artifacts behind. This is deliberate —
+  each write is independently idempotent and re-runnable; recovery is re-run,
+  not rollback. The probe-free mode does not change this ordering.
 - `dry_run` keeps its current meaning (mutation axis only:
   `!(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview)`).
   Evidence collection never affects `dry_run`.
@@ -122,10 +131,18 @@ it lacks:
   `Object.values(undefined)`; the discriminator carries the semantics, `null`
   carries the ergonomics).
 - `recommendations` in `local_plan` mode is rebuilt from evaluated inputs only
-  (`companion_settings`, `notify_settings`) and marked `local_only` in
-  `section_presence` — it MUST NOT silently present as full coverage.
+  (config-derived hints, `companion_settings`, `notify_settings` — erratum
+  2026-07-10: the config-area hints are evaluated-derived and stay) and marked
+  `local_only` in `section_presence` — it MUST NOT silently present as full
+  coverage.
 - `overall`: gains `scope: "full" | "local_plan"`. The `status` enum is
   unchanged (`pass` | `warning`) and is computed over evaluated sections only.
+  **Erratum (2026-07-10, Plan-verify)**: in `local_plan` mode, "evaluated
+  sections" includes requested plan sections — a requested plan section whose
+  own `status` is `blocked` (or failed) yields `status: "warning"`, never an
+  unqualified local pass. (Full mode has the same pre-existing gap — a
+  blocked notification plan does not warn — deliberately unchanged by this
+  contract and recorded as a follow-up.)
   Probe-derived counters are `null` (not `0`) in `local_plan` mode:
   `plugin_recommendations`, `hook_warnings`, `hook_review_warnings`,
   `auth_warnings`, `plugin_cleanup_warnings`, `plugin_management_executed`,
@@ -171,10 +188,16 @@ it lacks:
   the single writer (`writeSettingsExecutionArtifact`, gated at
   `settings.mjs:321-328` on the three rejected executor/attest flags) is
   unreachable in this mode; a regression test pins the invariant regardless.
-- The plan-artifact families (`runs/permission-advisor`, notification,
-  egress-launcher) are unaffected: when their flags are requested they write
-  their own families exactly as in full mode, and `mutation_boundary` +
-  `report.artifacts` pointers must say so (§3).
+- The plan-artifact families (`runs/permission` — erratum 2026-07-10: the
+  pinned family name is `permission`, `PERMISSION_ARTIFACT_FAMILY` in
+  `lib/permission-artifacts.mjs` — plus the notification and egress-launcher
+  families) are unaffected: when their flags are requested they write their
+  own families exactly as in full mode. Their artifact pointers live inside
+  each plan section (`permission_plan.artifact`, `notification_plan.artifact`,
+  `egress_launcher_plan.artifact`) — **not** in `report.artifacts`, which
+  carries only `settings_execution` (erratum 2026-07-10) — and
+  `mutation_boundary.writes_allowed` must enumerate the requested families
+  (§3).
 
 ## 6. Test obligations (S2B)
 
