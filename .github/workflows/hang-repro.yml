@@ -1,6 +1,9 @@
 # Temporary investigation workflow for the intermittent claude-tests hang
 # (tests/engineer/test-peer-runner.mjs, observed 3x on 2026-07-11).
-# Manually dispatched only; delete once the root cause lands.
+# Manually dispatched / investigation-branch push only; delete once the root
+# cause lands. v2: --report-on-signal + SIGUSR2 to dump active libuv handles
+# of the hung test-file process (Node 24 names the main thread "MainThread",
+# so pgrep needs -f).
 name: hang-repro
 
 on:
@@ -36,8 +39,10 @@ jobs:
       - name: Stress test-peer-runner with hang forensics
         run: |
           set -u
+          export NODE_OPTIONS="--report-on-signal"
           ITER="${{ inputs.iterations || '60' }}"
           for i in $(seq 1 "$ITER"); do
+            rm -f report.*.json
             node --test tests/engineer/test-peer-runner.mjs > "iter.log" 2>&1 &
             RUNNER=$!
             SECS=0
@@ -50,25 +55,34 @@ jobs:
             if [ "$HUNG" = 1 ]; then
               echo "=== HANG at iteration $i (runner pid $RUNNER) ==="
               echo "--- last runner output ---"
-              tail -30 iter.log
+              tail -12 iter.log
               echo "--- process table ---"
-              ps -eo pid,ppid,pgid,stat,wchan:32,etime,args | grep -E "node|PID" | grep -v grep
-              echo "--- per-node-process forensics ---"
-              for p in $(pgrep node); do
-                [ "$p" = "$RUNNER" ] && role="RUNNER" || role="other"
-                echo "== pid $p ($role) =="
-                cat "/proc/$p/status" 2>/dev/null | grep -E "^(Name|State|PPid)" || true
-                echo "wchan: $(cat /proc/$p/wchan 2>/dev/null || true)"
-                echo "-- fds --"
-                ls -l "/proc/$p/fd" 2>/dev/null | head -15 || true
-                echo "-- stack (kernel) --"
-                sudo cat "/proc/$p/stack" 2>/dev/null | head -10 || true
+              ps -eo pid,ppid,pgid,stat,wchan:24,etime,args | grep -E "node|PID" | grep -v grep
+              echo "--- diagnostic reports via SIGUSR2 ---"
+              for p in $(pgrep -f "tests/engineer/test-peer-runner"); do
+                [ "$p" = "$RUNNER" ] && continue
+                echo "signalling test-file process $p"
+                kill -USR2 "$p" 2>/dev/null || true
               done
-              echo "--- pipe ownership map ---"
-              sudo lsof -U 2>/dev/null | head -5 || true
-              sudo lsof 2>/dev/null | grep -E "FIFO|pipe" | grep node | head -40 || true
+              sleep 4
+              for r in report.*.json; do
+                [ -e "$r" ] || continue
+                echo "== $r =="
+                jq '{
+                  cmd: .header.commandLine,
+                  pid: .header.processId,
+                  stack: .javascriptStack.stack,
+                  activeHandles: [.libuv[]? | select(.is_active==true and .is_referenced==true)],
+                  activeRequests: (.uvthreadResourceUsage // null)
+                }' "$r" 2>/dev/null || head -c 4000 "$r"
+              done
+              echo "--- full active libuv detail (unreferenced too) ---"
+              for r in report.*.json; do
+                [ -e "$r" ] || continue
+                jq '[.libuv[]? | select(.is_active==true)]' "$r" 2>/dev/null | head -120
+              done
               kill -9 "$RUNNER" 2>/dev/null || true
-              pkill -9 node 2>/dev/null || true
+              pkill -9 -f "test-peer-runner" 2>/dev/null || true
               exit 1
             fi
             wait "$RUNNER"
