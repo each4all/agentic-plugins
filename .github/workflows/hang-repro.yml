@@ -1,0 +1,81 @@
+# Temporary investigation workflow for the intermittent claude-tests hang
+# (tests/engineer/test-peer-runner.mjs, observed 3x on 2026-07-11).
+# Manually dispatched only; delete once the root cause lands.
+name: hang-repro
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: iterations per job
+        default: "60"
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    name: stress ${{ matrix.lane }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Stress test-peer-runner with hang forensics
+        run: |
+          set -u
+          ITER="${{ inputs.iterations }}"
+          for i in $(seq 1 "$ITER"); do
+            node --test tests/engineer/test-peer-runner.mjs > "iter.log" 2>&1 &
+            RUNNER=$!
+            SECS=0
+            HUNG=0
+            while kill -0 "$RUNNER" 2>/dev/null; do
+              sleep 1
+              SECS=$((SECS+1))
+              if [ "$SECS" -ge 90 ]; then HUNG=1; break; fi
+            done
+            if [ "$HUNG" = 1 ]; then
+              echo "=== HANG at iteration $i (runner pid $RUNNER) ==="
+              echo "--- last runner output ---"
+              tail -30 iter.log
+              echo "--- process table ---"
+              ps -eo pid,ppid,pgid,stat,wchan:32,etime,args | grep -E "node|PID" | grep -v grep
+              echo "--- per-node-process forensics ---"
+              for p in $(pgrep node); do
+                [ "$p" = "$RUNNER" ] && role="RUNNER" || role="other"
+                echo "== pid $p ($role) =="
+                cat "/proc/$p/status" 2>/dev/null | grep -E "^(Name|State|PPid)" || true
+                echo "wchan: $(cat /proc/$p/wchan 2>/dev/null || true)"
+                echo "-- fds --"
+                ls -l "/proc/$p/fd" 2>/dev/null | head -15 || true
+                echo "-- stack (kernel) --"
+                sudo cat "/proc/$p/stack" 2>/dev/null | head -10 || true
+              done
+              echo "--- pipe ownership map ---"
+              sudo lsof -U 2>/dev/null | head -5 || true
+              sudo lsof 2>/dev/null | grep -E "FIFO|pipe" | grep node | head -40 || true
+              kill -9 "$RUNNER" 2>/dev/null || true
+              pkill -9 node 2>/dev/null || true
+              exit 1
+            fi
+            wait "$RUNNER"
+            RC=$?
+            if [ "$RC" -ne 0 ]; then
+              echo "iteration $i FAILED rc=$RC (assertion failure, not hang)"
+              tail -40 iter.log
+              exit 2
+            fi
+            [ $((i % 10)) -eq 0 ] && echo "progress: $i/$ITER OK"
+          done
+          echo "lane complete: no hang in $ITER iterations"
