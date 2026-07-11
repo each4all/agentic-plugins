@@ -39,7 +39,27 @@ jobs:
       - name: Stress test-peer-runner with hang forensics
         run: |
           set -u
-          export NODE_OPTIONS="--report-on-signal"
+          # v3: trace ChildProcess lifecycle emits inside the test-file process
+          # only (argv[1] filter — NODE_OPTIONS propagates to grandchildren).
+          # EventEmitter.prototype patch works despite ESM static bindings.
+          cat > /tmp/trace-child.mjs <<'EOF'
+          import { EventEmitter } from 'node:events';
+          const isTestFile = String(process.argv[1] ?? '').includes('test-peer-runner');
+          if (isTestFile) {
+            const orig = EventEmitter.prototype.emit;
+            EventEmitter.prototype.emit = function (ev, ...rest) {
+              if ((ev === 'spawn' || ev === 'exit' || ev === 'close' || ev === 'error')
+                  && this?.constructor?.name === 'ChildProcess') {
+                process.stderr.write(`[trace ${process.hrtime.bigint()}] ChildProcess ${ev} pid=${this.pid} spawnfile=${this.spawnfile} args=${JSON.stringify(rest).slice(0, 80)}\n`);
+              }
+              return orig.apply(this, arguments);
+            };
+            process.on('beforeExit', () => {
+              process.stderr.write(`[trace ${process.hrtime.bigint()}] beforeExit fired\n`);
+            });
+          }
+          EOF
+          export NODE_OPTIONS="--report-on-signal --import /tmp/trace-child.mjs"
           ITER="${{ inputs.iterations || '60' }}"
           for i in $(seq 1 "$ITER"); do
             rm -f report.*.json
@@ -54,8 +74,8 @@ jobs:
             done
             if [ "$HUNG" = 1 ]; then
               echo "=== HANG at iteration $i (runner pid $RUNNER) ==="
-              echo "--- last runner output ---"
-              tail -12 iter.log
+              echo "--- last runner output (with child-lifecycle trace) ---"
+              tail -80 iter.log
               echo "--- process table ---"
               ps -eo pid,ppid,pgid,stat,wchan:24,etime,args | grep -E "node|PID" | grep -v grep
               echo "--- diagnostic reports via SIGUSR2 ---"
