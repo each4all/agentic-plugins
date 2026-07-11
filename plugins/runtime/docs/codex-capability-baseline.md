@@ -79,6 +79,18 @@ Local CLI evidence (re-observed 2026-07-10 on `0.144.1`):
     Non-declaration does **not** keep a default-location hooks file out of
     the Codex review/trust surface — which is why `runtime:doctor` counts
     deliberately-Claude-only bundlers in its expected Codex hook sets.
+    *Posture resolution (2026-07-11, source mechanism corrected — the
+    observation above is preserved verbatim as the evidence that forced
+    it):* the attention package relocated its Claude registration to a
+    `.claude-plugin/plugin.json`-declared `adapters/claude/hooks/hooks.json`
+    and removed the root default file, so the relocated package supplies
+    neither discovery input (effective for a given machine once the
+    released version is installed there). **Release/install proof is PENDING**: `/hooks` showing
+    zero attention targets on the upgraded install is the *expected*
+    outcome, not yet an observation, and whether the two stale
+    pre-relocation `[hooks.state]` trust rows persist (display-only
+    `unexpected_agentic_entries`) or get pruned by a host operation remains
+    to be observed — runtime itself never mutates them either way.
 - `codex plugin --help` (0.144.1: `add`, `list`, `marketplace`, `remove` —
   command set unchanged from 0.137.0)
 - `codex plugin add --help` (installs `PLUGIN[@MARKETPLACE]` from a configured
