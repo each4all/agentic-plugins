@@ -10,7 +10,7 @@ script-only library shape, isolated in its own rarely-releasing plugin so the
 hook review/trust burden never attaches to frequently-releasing packages
 (ADR-0010 §6 Trigger 2).
 
-## What it registers (Claude Code, `hooks/hooks.json`)
+## What it registers (Claude Code, manifest-declared `adapters/claude/hooks/hooks.json`)
 
 | Hook event | Matcher | Event kind (ADR-0040 §1) | Subject | Urgency |
 |---|---|---|---|---|
@@ -81,25 +81,36 @@ the `file-log` channel's `.agentic-plugins/state/runtime/notify/log.ndjson`.
   `lib/notify-schema.mjs`, and `tests/plugin-shape/test-attention-plugin.mjs`
   holds the parity gate.
 
-## Codex CLI at v1
+## Codex CLI
 
-**No Codex `hooks.json` ships in this plugin** — the entire Codex `/hooks`
-review/trust burden is avoided until ADR-0040 §4c's deferred
-`PermissionRequest` path is triggered. Installing `attention` on Codex is
-inert (the `skills/` directory is the Codex manifest-spec placeholder per
-the ADR-0008 carve-out). Codex-side attention is planned natively through
+The plugin contributes **zero plugin-owned Codex hook surface**, by both
+discovery inputs current Codex actually uses (host truth, Codex 0.144.1 —
+recorded in the ADR-0040 §3 amendment):
+
+1. `.codex-plugin/plugin.json` declares **no `hooks` key**, and
+2. there is **no root `hooks/hooks.json`** — Codex's default-file discovery
+   loads that location regardless of command shape, which is exactly why the
+   Claude registration is manifest-scoped at
+   `adapters/claude/hooks/hooks.json` instead of the default path.
+
+Non-declaration alone does NOT keep a default-location hooks file out of the
+Codex `/hooks` review/trust surface; path isolation does. The `skills/`
+directory remains the Codex manifest-spec placeholder per the ADR-0008
+carve-out. Codex-side attention is owned natively by
 `runtime:settings --notification-plan` M1 fragments (`notify=` +
-`tui.notifications`), per ADR-0040 §4.
+`tui.notifications`), per ADR-0040 §4; the §4(c) programmable
+`PermissionRequest` hook stays deferred behind its adoption trigger.
 
 ## Layout
 
 ```
 plugins/attention/
-├── .claude-plugin/plugin.json     # Claude manifest
-├── .codex-plugin/plugin.json      # Codex manifest (inert at v1)
-├── hooks/hooks.json               # Claude hook registration (adapter surface)
-├── adapters/claude/hooks/         # sensor entry scripts (host-specific)
-│   ├── notification.mjs
+├── .claude-plugin/plugin.json     # Claude manifest ("hooks" → adapters path)
+├── .codex-plugin/plugin.json      # Codex manifest (no hooks key)
+├── adapters/claude/hooks/         # Claude adapter surface (host-specific)
+│   ├── hooks.json                 # hook registration (manifest-declared;
+│   │                              #   NOT at the Codex default-discovery path)
+│   ├── notification.mjs           # sensor entry scripts
 │   ├── stop.mjs
 │   └── subagent-stop.mjs
 ├── scripts/

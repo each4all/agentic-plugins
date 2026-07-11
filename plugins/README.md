@@ -16,8 +16,11 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
   (runtime ≥ 0.71.0) and shell out to `notify.mjs emit`. **Hook-only**
   — hooks + sensor scripts, no skills/verbs/state machinery, the
   hook-bearing sibling of the script-only shape; fail-closed silent
-  observers (exit 0 always, never stdout, no decision output); no
-  Codex hooks at v1. See
+  observers (exit 0 always, never stdout, no decision output); zero
+  Codex hook surface (no Codex manifest `hooks` key AND no root default
+  file — the Claude registration is manifest-declared at
+  `adapters/claude/hooks/hooks.json`, outside Codex default-file
+  discovery, per the ADR-0040 §3 amendment). See
   [`plugins/attention/README.md`](attention/README.md).
 - **`companions/`** — first-party Claude/Codex companion bridges
   (claude-companion, codex-companion) per `companions/contract.md`
@@ -142,12 +145,17 @@ canonical example. User-facing plugins continue to follow the full
 layout above.
 
 **Hook-only plugin exception** (per ADR-0040 §3): a plugin that ships
-only `hooks/hooks.json`, its hook entry scripts under
-`adapters/<host>/hooks/`, and supporting `scripts/` — no functional
-skills, no verbs, no state machinery — is the hook-bearing sibling of
-the script-only shape. The Codex manifest's required `skills` field is
-satisfied by an empty `skills/` placeholder per the ADR-0008 carve-out.
-`kit/lint/check-plugin-shape.mjs` validates the hook registration
+only a Claude hook registration — the root default `hooks/hooks.json`
+or a `.claude-plugin/plugin.json` `hooks`-declared `./`-relative
+`.json` path (attention uses `adapters/claude/hooks/hooks.json` to stay
+out of Codex default-file discovery, per the ADR-0040 §3 amendment) —
+plus its hook entry scripts under `adapters/<host>/hooks/` and
+supporting `scripts/`, with no functional skills, no verbs, and no
+state machinery, is the hook-bearing sibling of the script-only shape.
+The Codex manifest's required `skills` field is satisfied by an empty
+`skills/` placeholder per the ADR-0008 carve-out.
+`kit/lint/check-plugin-shape.mjs` validates every registration source
+(root default when present, plus each manifest-declared path)
 structurally (event → matcher groups → `type: "command"` entries) and
 verifies every `${CLAUDE_PLUGIN_ROOT}/…` command target exists inside
 the plugin. The `attention` plugin is the canonical example.

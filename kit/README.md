@@ -18,8 +18,19 @@ they are trigger-driven futures.
     `.codex-plugin/plugin.json`, skills path resolution, scripts
     executable bit, adapters/hosts/{scripts,hooks} traversal, and —
     for hook-bearing plugins (ADR-0040 §3 hook-only category) —
-    `hooks/hooks.json` structural validity plus existence of every
-    `${CLAUDE_PLUGIN_ROOT}/…` command target inside the plugin.
+    Claude hook registration validity from BOTH sources: the root
+    default `hooks/hooks.json` whenever it exists (Codex default-file
+    discovery reads it regardless of manifests), and every
+    `.claude-plugin/plugin.json` `hooks`-declared path (`./`-prefixed,
+    `.json`-suffixed, POSIX separators, inside the plugin lexically AND
+    physically — existing targets are realpath-checked so in-plugin
+    symlinks to outside content are rejected — no duplicate or
+    root-default redeclaration by real file identity; string or
+    string-array form — inline objects are rejected as a policy this
+    linter sets, following ADR-0006's file-backed layout convention).
+    Each registration file gets structural validation plus existence +
+    physical containment of every `${CLAUDE_PLUGIN_ROOT}/…` command
+    target inside the plugin.
   - Run locally via `npm run lint:plugin-shape`.
   - CI-gated on both host workflows in `.github/workflows/`.
 

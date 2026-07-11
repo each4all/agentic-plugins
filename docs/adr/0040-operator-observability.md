@@ -340,15 +340,17 @@ A single notification event shape shared by all producers:
   explicitly in both directions — ADR-0037 spawned via Trigger 2;
   Stage 2 Deliverable B absorbed discovery into companions at 0/3
   triggers): attention fires **Trigger 2 — distinct operational/trust
-  profile**. A hook-bearing surface carries the Codex `/hooks`
-  review/trust burden on every release of whatever plugin hosts it and
+  profile**. A Codex-discoverable hook-bearing surface carries the Codex
+  `/hooks` review/trust burden on every release of whatever plugin hosts it and
   auto-executes on host lifecycle events; isolating it in a minimal,
   rarely-releasing plugin is the point of the P4 hybrid (absorbing the
   sensors into runtime or a persona would attach that burden to
   frequently-releasing packages — Alternatives P3). Cohesion with
   runtime is preserved through the subprocess seam (§2), not
   co-location.
-- Claude `hooks/hooks.json` registers:
+- The Claude hook registration (since the 2026-07-11 amendment a
+  `.claude-plugin/plugin.json`-declared `adapters/claude/hooks/hooks.json`;
+  originally the root `hooks/hooks.json`) registers:
   - `Notification` with a `notification_type` matcher —
     `permission_prompt` (urgent) and `idle_prompt` (normal) at v1,
   - `Stop` (workflow/turn terminal; no matcher exists),
@@ -370,9 +372,14 @@ A single notification event shape shared by all producers:
   from §5.
 - All sensors: exit 0 always, nothing on stdout, no Stop `decision`
   output (pure observation, never blocks stopping).
-- **No Codex `hooks.json` in attention at v1** — the entire Codex
-  `/hooks` review/trust burden is avoided until §4's deferred path is
-  triggered.
+- **No Codex hook surface in attention at v1** — the Codex `/hooks`
+  review/trust burden is avoided until §4's deferred path is triggered.
+  *(Corrected mechanism, Amendment 2026-07-11: non-declaration alone does
+  NOT achieve this on current Codex — its default-file discovery loads a
+  root `hooks/hooks.json` regardless of command shape. The invariant is
+  therefore two-part: no `.codex-plugin/plugin.json` `hooks` key AND no
+  root default file; the Claude registration lives at the
+  manifest-declared adapters path instead.)*
 
 ### 4. Codex channel — M1 fragment plans (evidence-refined)
 
@@ -410,10 +417,11 @@ write):
 - **(c) `PermissionRequest` lifecycle hook — deferred.** It is the only
   programmable approval-time channel (decision-optional: a hook that
   returns no decision leaves the normal prompt intact), but shipping it
-  means attention grows a Codex `hooks.json` and every attention release
-  re-enters `/hooks` review/trust. Adoption trigger: real-world evidence
-  that `tui.notifications` is insufficient for approval attention (e.g.,
-  the operator works primarily unfocused-terminal-out-of-sight or via
+  means attention gains a Codex-manifest-declared (or default-discovered)
+  hook surface and every attention release re-enters `/hooks`
+  review/trust. Adoption trigger: real-world evidence that
+  `tui.notifications` is insufficient for approval attention (e.g., the
+  operator works primarily unfocused-terminal-out-of-sight or via
   `codex exec`).
 
 ### 5. Peer-run terminal self-sensor (in each persona's `peer-runner.mjs`)
@@ -505,9 +513,12 @@ write):
 - Runtime stays hook-free — **this ADR's own placement decision**
   (ADR-0030 / 0035 §6 supply the context on Codex hook
   enablement/trust mechanics, not the decision): the Codex `/hooks`
-  re-attestation burden is **zero at v1** (no new Codex hooks anywhere)
-  and, when §4c triggers, confined to the rarely-releasing attention
-  plugin instead of every runtime release.
+  re-attestation burden is **zero at v1** — achieved by **path
+  isolation**, not by mere non-declaration (Amendment 2026-07-11: current
+  Codex default-file discovery loads a root `hooks/hooks.json` regardless
+  of manifests, so attention's Claude registration is manifest-scoped
+  under `adapters/claude/`) — and, when §4c triggers, confined to the
+  rarely-releasing attention plugin instead of every runtime release.
 - The `file-log` channel + dashboard Tier 2 close the loop: notification
   history is itself operator-visible state.
 - The event schema/dedupe contract (§1) is reusable by any future
@@ -564,7 +575,9 @@ write):
 - **P3 — runtime absorbs everything including hooks**: rejected. A
   hook-bearing runtime would enter Codex `/hooks` review/trust for
   every **Codex-hook-bearing** release — at v1 (Claude hooks only) the
-  cost is optionality, but the moment §4c triggers, a
+  cost is optionality (per the 2026-07-11 amendment, "Claude hooks only"
+  avoids the Codex burden only via path isolation, not by mere
+  non-declaration), but the moment §4c triggers, a
   frequently-releasing runtime would carry the re-attestation burden on
   every release; isolating the hook surface in attention buys that
   §4c-future cheaply. (Runtime shipping no hooks today is status quo;
@@ -587,3 +600,54 @@ write):
   daemons/services; hooks + in-process self-sensors cover the same
   moments with zero resident footprint, and `--watch` remains an
   explicit, bounded foreground mode.
+
+## Amendment (2026-07-11): §3 packaging mechanism corrected — relocation out of Codex default discovery
+
+Host truth disproved the §3 packaging **mechanism** (not the decision):
+"no Codex hooks by non-declaration" assumed Codex only reads hooks a
+`.codex-plugin/plugin.json` declares. Observed on codex-cli 0.144.1
+(recorded in `plugins/runtime/docs/codex-capability-baseline.md`
+§ hooks.state observations): Codex **default-file discovery is
+command-shape-blind** — it loaded attention's root `hooks/hooks.json`
+despite the absent manifest key and the all-Claude-adapter commands,
+surfaced `stop`/`subagent_stop` in `/hooks`, and recorded the operator's
+trust. The burden §3 meant to avoid was therefore being paid anyway, for
+hooks with no assured Codex execution semantics, and `runtime:doctor`
+(PR #543) honestly gated `lifecycle_hook_continuity` at `partial`
+(`command-warnings=attention`, experience parity 95%).
+
+Correction (owner decision 2026-07-11, of the three tracked options —
+declare in the Codex manifest / portable wrappers + Codex-payload-aware
+sensors / restructure): **restructure by relocation**.
+
+- `plugins/attention/hooks/hooks.json` moved to
+  `plugins/attention/adapters/claude/hooks/hooks.json` (content
+  unchanged; commands stay `${CLAUDE_PLUGIN_ROOT}`-rooted), declared via
+  the Claude manifest `hooks` key — the documented plugin-manifest
+  component-path mechanism.
+- The corrected invariant is **two-part**: no `.codex-plugin/plugin.json`
+  `hooks` key **and** no root default `hooks/hooks.json`. Zero Codex
+  burden is achieved by **path isolation**, not non-declaration.
+- The §4 event-ownership decision **stands unchanged**: Codex-side
+  attention remains the native `notify=` / `tui.notifications` M1
+  fragment plans, and §4(c) stays deferred behind its adoption trigger.
+  (The rejected alternative — adopting the sibling
+  `adapters/codex/hooks/` pattern with real Codex sensors — would have
+  duplicated §4(a)'s turn-complete ownership: the shuttle's
+  `codex-turn:<id>` subjects and the Stop sensor's
+  `session:<sid>:<pid>` subjects cannot dedupe against each other, and
+  it would fire §4(c)'s door without its trigger evidence.)
+- Runtime never mutates the operator's stale pre-relocation
+  `[hooks.state]` trust rows; retained rows are displayed as
+  display-only `unexpected_agentic_entries` (whether the host retains or
+  prunes them across upgrades is unobserved — either outcome is host
+  behavior to record, not runtime's to perform).
+- Residual host-evolution risk is accepted and pinned: if a future Codex
+  broadens discovery (e.g., reads Claude-manifest component paths), the
+  absence regression tests pin their host premise
+  (`codex-cli 0.144.1`, `status=ready`) and the compat baseline-drift
+  process re-opens this posture rather than silently re-laundering it.
+- Effective-surface note: doctor's source→installed-cache fallback keeps
+  the pre-relocation cache surface visible (honestly) until the released
+  attention version is installed; the parity-100% claim belongs to the
+  post-release install proof, not the source relocation.

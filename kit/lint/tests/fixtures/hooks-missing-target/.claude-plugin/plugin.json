@@ -1,5 +1,6 @@
 {
   "name": "fixture-hooks-missing-target",
   "version": "0.0.1",
-  "description": "Fixture: hooks/hooks.json references a command target that does not exist"
+  "description": "Fixture: hooks/hooks.json references a command target that does not exist",
+  "hooks": "./adapters/claude/hooks/hooks.json"
 }

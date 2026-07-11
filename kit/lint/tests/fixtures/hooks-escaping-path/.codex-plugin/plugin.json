@@ -1,0 +1,5 @@
+{
+  "name": "fixture-hooks-escaping-path",
+  "version": "0.0.1",
+  "description": "Fixture: Claude manifest declares a ./-prefixed hooks path that escapes the plugin directory"
+}
