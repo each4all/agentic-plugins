@@ -48,9 +48,13 @@ jobs:
           if (isTestFile) {
             const orig = EventEmitter.prototype.emit;
             EventEmitter.prototype.emit = function (ev, ...rest) {
+              const ctor = this?.constructor?.name;
               if ((ev === 'spawn' || ev === 'exit' || ev === 'close' || ev === 'error')
-                  && this?.constructor?.name === 'ChildProcess') {
+                  && ctor === 'ChildProcess') {
                 process.stderr.write(`[trace ${process.hrtime.bigint()}] ChildProcess ${ev} pid=${this.pid} spawnfile=${this.spawnfile} args=${JSON.stringify(rest).slice(0, 80)}\n`);
+              } else if ((ev === 'open' || ev === 'ready' || ev === 'finish' || ev === 'close' || ev === 'error' || ev === 'drain')
+                  && ctor === 'WriteStream') {
+                process.stderr.write(`[trace ${process.hrtime.bigint()}] WriteStream ${ev} path=${this.path ?? '?'} fd=${this.fd ?? '?'}\n`);
               }
               return orig.apply(this, arguments);
             };
