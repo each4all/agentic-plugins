@@ -2,6 +2,13 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.4.1](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.4.0...plugin-attention-v0.4.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* **plugin/attention:** relocate Claude hook registration to a manifest-declared adapters path ([#546](https://github.com/each4all/agentic-plugins/issues/546)) ([ceb2fb9](https://github.com/each4all/agentic-plugins/commit/ceb2fb91c53bf52e404e7bf69c3d4db2c2a4879a))
+
 ## [0.4.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.3.1...plugin-attention-v0.4.0) (2026-07-07)
 
 
