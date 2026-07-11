@@ -4,6 +4,8 @@
 name: hang-repro
 
 on:
+  push:
+    branches: [fix/claude-tests-hang]
   workflow_dispatch:
     inputs:
       iterations:
@@ -34,7 +36,7 @@ jobs:
       - name: Stress test-peer-runner with hang forensics
         run: |
           set -u
-          ITER="${{ inputs.iterations }}"
+          ITER="${{ inputs.iterations || '60' }}"
           for i in $(seq 1 "$ITER"); do
             node --test tests/engineer/test-peer-runner.mjs > "iter.log" 2>&1 &
             RUNNER=$!
