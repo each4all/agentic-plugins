@@ -41,20 +41,29 @@ async function readJSON(path) {
 }
 
 describe('plugins/attention — manifests', () => {
-  it('Claude manifest has required scalar fields', async () => {
+  it('Claude manifest has required scalar fields and declares the adapter hooks path', async () => {
     const json = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
     strictEqual(json.name, 'attention');
     ok(/^\d+\.\d+\.\d+/.test(json.version), `version "${json.version}" not SemVer-shaped`);
     ok(json.description.length > 0);
     strictEqual(json.author.name, 'each4all');
+    // The Claude registration is manifest-scoped OUT of Codex's default
+    // discovery path (posture resolution, ADR-0040 §3 amendment): host truth
+    // showed Codex 0.144.1 loads a root hooks/hooks.json regardless of
+    // command shape, so the default location is not Claude-private.
+    strictEqual(json.hooks, './adapters/claude/hooks/hooks.json');
   });
 
-  it('Codex manifest has required fields and the skills placeholder', async () => {
+  it('Codex manifest has required fields, the skills placeholder, and NO hooks key', async () => {
     const json = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
     strictEqual(json.name, 'attention');
     for (const field of ['version', 'description', 'homepage', 'license']) {
       ok(typeof json[field] === 'string' && json[field].length > 0, `${field} missing`);
     }
+    // First Codex discovery premise, pinned directly: no manifest-declared
+    // hook surface (the second premise — no root default file — is pinned in
+    // the hook-only shape block below).
+    ok(!Object.hasOwn(json, 'hooks'), 'Codex manifest must not declare hooks');
     // Codex vendored spec requires `skills` to point at a real directory;
     // hook-only plugins satisfy it with the ADR-0008 carve-out placeholder.
     strictEqual(json.skills, './skills/');
@@ -76,7 +85,7 @@ describe('plugins/attention — manifests', () => {
 });
 
 describe('plugins/attention — hook-only shape (ADR-0040 §3)', () => {
-  it('ships NO functional skills, NO commands, NO state machinery, NO Codex hooks', async () => {
+  it('ships NO functional skills, NO commands, NO state machinery, NO Codex hook surface', async () => {
     // The shape qualifier prohibits functional skills content — a
     // SKILL.md directory under skills/<name>/ — not the placeholder README.
     const { readdir } = await import('node:fs/promises');
@@ -88,11 +97,24 @@ describe('plugins/attention — hook-only shape (ADR-0040 §3)', () => {
     );
     ok(!existsSync(resolve(PLUGIN_ROOT, 'commands')), 'commands/ must not exist');
     ok(!existsSync(resolve(PLUGIN_ROOT, 'scripts/state.mjs')), 'state machinery must not exist');
-    ok(!existsSync(resolve(PLUGIN_ROOT, 'adapters/codex')), 'no Codex adapter surface at v1');
+    ok(!existsSync(resolve(PLUGIN_ROOT, 'adapters/codex')), 'no Codex adapter surface');
+    // Second Codex discovery premise: no root default hooks file. Codex
+    // 0.144.1 default-file discovery reads hooks/hooks.json command-shape-
+    // blind, so the Claude registration lives at the manifest-declared
+    // adapters path instead (relocation, ADR-0040 §3 amendment).
+    ok(!existsSync(resolve(PLUGIN_ROOT, 'hooks')), 'root hooks/ (Codex default discovery input) must not exist');
   });
 
-  it('hooks/hooks.json registers exactly Notification(permission_prompt, idle_prompt), Stop, SubagentStop', async () => {
-    const json = await readJSON(resolve(PLUGIN_ROOT, 'hooks/hooks.json'));
+  // Resolve the Claude hook registration the way the host does: through the
+  // manifest-declared path, never a hardcoded location.
+  async function readDeclaredHooks() {
+    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.claude-plugin/plugin.json'));
+    strictEqual(typeof manifest.hooks, 'string', 'Claude manifest must declare a string hooks path');
+    return readJSON(resolve(PLUGIN_ROOT, manifest.hooks));
+  }
+
+  it('the declared registration carries exactly Notification(permission_prompt, idle_prompt), Stop, SubagentStop', async () => {
+    const json = await readDeclaredHooks();
     deepStrictEqual(Object.keys(json.hooks).sort(), ['Notification', 'Stop', 'SubagentStop']);
     deepStrictEqual(
       json.hooks.Notification.map((group) => group.matcher),
@@ -106,28 +128,32 @@ describe('plugins/attention — hook-only shape (ADR-0040 §3)', () => {
     strictEqual(json.hooks.SubagentStop[0].matcher, undefined);
   });
 
-  it('every hook command target exists with the executable bit set', async () => {
-    const json = await readJSON(resolve(PLUGIN_ROOT, 'hooks/hooks.json'));
-    const targets = new Set();
-    for (const groups of Object.values(json.hooks)) {
-      for (const group of groups) {
-        for (const hook of group.hooks) {
-          strictEqual(hook.type, 'command');
-          for (const match of hook.command.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([^"']+)/g)) {
-            targets.add(match[1]);
-          }
-        }
-      }
+  it('every hook command target exists with the executable bit set, wired per event', async () => {
+    const json = await readDeclaredHooks();
+    // Exact per-registration wiring (not a Set union — a union would pass
+    // with two Notification handlers both pointing at stop.mjs): each
+    // event/matcher group carries exactly one plugin-root target, and that
+    // target is the event's own sensor.
+    const wiring = {};
+    for (const [eventName, groups] of Object.entries(json.hooks)) {
+      wiring[eventName] = groups.map((group) => {
+        strictEqual(group.hooks.length, 1, `${eventName}: one command per matcher group`);
+        const hook = group.hooks[0];
+        strictEqual(hook.type, 'command');
+        const targets = [...hook.command.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([^"']+)/g)].map((m) => m[1]);
+        strictEqual(targets.length, 1, `${eventName}: exactly one plugin-root target per hook`);
+        return targets[0];
+      });
     }
-    deepStrictEqual(
-      [...targets].sort(),
-      [
+    deepStrictEqual(wiring, {
+      Notification: [
         'adapters/claude/hooks/notification.mjs',
-        'adapters/claude/hooks/stop.mjs',
-        'adapters/claude/hooks/subagent-stop.mjs',
+        'adapters/claude/hooks/notification.mjs',
       ],
-    );
-    for (const target of targets) {
+      Stop: ['adapters/claude/hooks/stop.mjs'],
+      SubagentStop: ['adapters/claude/hooks/subagent-stop.mjs'],
+    });
+    for (const target of new Set(Object.values(wiring).flat())) {
       const st = await stat(resolve(PLUGIN_ROOT, target));
       ok(st.isFile(), `${target} missing`);
       ok((st.mode & 0o111) !== 0, `${target} executable bit not set`);

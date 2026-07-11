@@ -15,13 +15,28 @@
 //
 // Hook-bearing plugins (ADR-0040 §3 formalized the hook-only category —
 // hooks + sensor scripts only, the hook-bearing sibling of the ADR-0008
-// script-only shape): when <plugin-dir>/hooks/hooks.json exists it must
+// script-only shape): every Claude hook registration file must
 //   - parse as JSON with a top-level `hooks` object mapping event names
 //     to arrays of matcher groups,
 //   - carry `type: "command"` entries with non-empty command strings,
 //   - reference only existing files inside the plugin for every
 //     `${CLAUDE_PLUGIN_ROOT}/…` command target (a hooks.json pointing at
 //     a missing sensor script is the hook-only shape's core failure mode).
+//
+// Registration files come from TWO sources, both validated:
+//   - the root default <plugin-dir>/hooks/hooks.json when it exists
+//     (Codex default-file discovery also reads this location, so it is
+//     always validated even when a manifest path is declared), and
+//   - `.claude-plugin/plugin.json` `hooks` — a `./`-prefixed,
+//     `.json`-suffixed, POSIX-separator plugin-relative string path or a
+//     non-empty array of such strings (Claude Code also accepts an inline
+//     object; the agentic-plugins canonical shape is file-backed JSON
+//     following ADR-0006's layout convention — the rejection policy is set
+//     by this linter). A declared path must exist, stay inside the plugin
+//     both lexically and physically (existing targets are realpath-checked,
+//     so an in-plugin symlink to outside content is rejected), and not
+//     redeclare the root default — by real file identity, not just
+//     spelling.
 //
 //   node kit/lint/check-plugin-shape.mjs <plugin-dir>
 //
@@ -37,8 +52,8 @@
 // registration coverage) remain in their own scripts/tests and may be
 // folded in here as the kit/lint surface matures.
 
-import { readFile, stat, readdir } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { readFile, realpath, stat, readdir } from 'node:fs/promises';
+import { isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 
 const args = process.argv.slice(2);
 if (args.length !== 1) {
@@ -162,33 +177,72 @@ if (await exists(adaptersDir)) {
   }
 }
 
-// Claude hook registration (hooks/hooks.json) — structural validation plus
-// command-target existence for every `${CLAUDE_PLUGIN_ROOT}/…` reference.
-// Optional: plugins without hooks skip this entirely (hook absence is
-// non-fatal per ADR-0011 §4; hook-only plugins per ADR-0040 §3 hinge on it).
+// Claude hook registration — structural validation plus command-target
+// existence for every `${CLAUDE_PLUGIN_ROOT}/…` reference. Hook absence is
+// non-fatal (ADR-0011 §4); hook-only plugins per ADR-0040 §3 hinge on their
+// shape tests to require presence. Known edge (pre-existing): the command
+// regex reads targets out of quoted commands textually, so an unquoted
+// command with unusual shell quoting can yield a false missing-target
+// diagnostic.
 const HOOK_COMMAND_ROOT_RE = /\$\{CLAUDE_PLUGIN_ROOT\}\/([^"']+)/g;
 
-async function checkHooksJson(path) {
+// Containment is checked twice: a LEXICAL gate via path arithmetic
+// (`relative()` handles `..` traversal and absolute escapes, and works for
+// paths that do not exist yet), then — for targets that exist — a PHYSICAL
+// gate comparing `realpath()` on both sides, so a symlink inside the plugin
+// pointing at a file outside it is rejected rather than silently linted as
+// in-plugin content (and a symlinked plugin root itself stays legitimate,
+// because both sides resolve through the same realpath).
+function escapesDir(baseDir, absTarget) {
+  const rel = relative(baseDir, absTarget);
+  return rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+}
+
+function escapesPluginDir(absTarget) {
+  return escapesDir(PLUGIN_DIR, absTarget);
+}
+
+let realPluginDirPromise = null;
+function realPluginDir() {
+  realPluginDirPromise ??= realpath(PLUGIN_DIR).catch(() => PLUGIN_DIR);
+  return realPluginDirPromise;
+}
+
+// Physical containment for an EXISTING path; returns the real path when it
+// stays inside the plugin, or null when it resolves outside (symlink escape)
+// or cannot be resolved.
+async function containedRealPath(absTarget) {
+  try {
+    const realBase = await realPluginDir();
+    const realTarget = await realpath(absTarget);
+    if (escapesDir(realBase, realTarget)) return null;
+    return realTarget;
+  } catch {
+    return null;
+  }
+}
+
+async function checkHooksJson(label, path) {
   if (!(await exists(path))) return;
   let json;
   try {
     json = await readJSON(path);
   } catch (err) {
-    errors.push(`hooks/hooks.json: ${err.message}`);
+    errors.push(`${label}: ${err.message}`);
     return;
   }
   const hooks = json?.hooks;
   if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) {
-    errors.push('hooks/hooks.json: top-level "hooks" must be an object mapping event names to matcher-group arrays');
+    errors.push(`${label}: top-level "hooks" must be an object mapping event names to matcher-group arrays`);
     return;
   }
   for (const [eventName, groups] of Object.entries(hooks)) {
     if (!Array.isArray(groups) || groups.length === 0) {
-      errors.push(`hooks/hooks.json: "${eventName}" must be a non-empty array of matcher groups`);
+      errors.push(`${label}: "${eventName}" must be a non-empty array of matcher groups`);
       continue;
     }
     for (const [gi, group] of groups.entries()) {
-      const groupLabel = `hooks/hooks.json: "${eventName}"[${gi}]`;
+      const groupLabel = `${label}: "${eventName}"[${gi}]`;
       if (typeof group !== 'object' || group === null || Array.isArray(group)) {
         errors.push(`${groupLabel}: matcher group must be an object`);
         continue;
@@ -223,7 +277,7 @@ async function checkHooksJson(path) {
         }
         for (const match of rootMatches) {
           const target = resolve(PLUGIN_DIR, match[1]);
-          if (!target.startsWith(`${PLUGIN_DIR}/`)) {
+          if (escapesPluginDir(target)) {
             errors.push(`${hookLabel}: command target "${match[1]}" escapes the plugin directory`);
             continue;
           }
@@ -236,6 +290,10 @@ async function checkHooksJson(path) {
           }
           if (!targetStat.isFile()) {
             errors.push(`${hookLabel}: command target "${match[1]}" is not a regular file`);
+            continue;
+          }
+          if ((await containedRealPath(target)) === null) {
+            errors.push(`${hookLabel}: command target "${match[1]}" resolves outside the plugin directory (symlink)`);
           }
         }
       }
@@ -243,7 +301,111 @@ async function checkHooksJson(path) {
   }
 }
 
-await checkHooksJson(resolve(PLUGIN_DIR, 'hooks/hooks.json'));
+// Collect `.claude-plugin/plugin.json` `hooks` declarations into validated,
+// deduplicated plugin-relative paths. Returns canonical relative paths for
+// entries that pass the shape checks; shape violations land in `errors`.
+function collectDeclaredHookPaths(manifest) {
+  const value = manifest?.hooks;
+  if (value === undefined) return [];
+  const manifestLabel = '.claude-plugin/plugin.json';
+  let entries;
+  if (typeof value === 'string') {
+    entries = [{ raw: value, label: `${manifestLabel}: hooks` }];
+  } else if (Array.isArray(value)) {
+    if (value.length === 0) {
+      errors.push(`${manifestLabel}: hooks must not be an empty array`);
+      return [];
+    }
+    entries = value.map((raw, i) => ({ raw, label: `${manifestLabel}: hooks[${i}]` }));
+  } else if (typeof value === 'object' && value !== null) {
+    errors.push(`${manifestLabel}: inline hooks config is not supported by the agentic-plugins file-backed shape (ADR-0006) — declare a ./-relative .json path instead`);
+    return [];
+  } else {
+    errors.push(`${manifestLabel}: hooks must be a ./-relative string path or an array of string paths`);
+    return [];
+  }
+
+  const seen = new Map();
+  const declared = [];
+  for (const { raw, label } of entries) {
+    if (typeof raw !== 'string') {
+      errors.push(`${label} must be a string path (inline hook objects are not supported by the agentic-plugins file-backed shape)`);
+      continue;
+    }
+    if (raw.length === 0) {
+      errors.push(`${label} must be a non-empty string path`);
+      continue;
+    }
+    if (raw.includes('\\')) {
+      errors.push(`${label}: declared hooks path "${raw}" must use POSIX separators (no backslashes)`);
+      continue;
+    }
+    if (!raw.startsWith('./')) {
+      errors.push(`${label}: declared hooks path "${raw}" must start with "./"`);
+      continue;
+    }
+    if (!raw.endsWith('.json')) {
+      errors.push(`${label}: declared hooks path "${raw}" must end with ".json"`);
+      continue;
+    }
+    const abs = resolve(PLUGIN_DIR, raw);
+    if (escapesPluginDir(abs)) {
+      errors.push(`${label}: declared hooks path "${raw}" escapes the plugin directory`);
+      continue;
+    }
+    const canonical = normalize(relative(PLUGIN_DIR, abs));
+    if (canonical === normalize('hooks/hooks.json')) {
+      errors.push(`${label}: declared hooks path "${raw}" redeclares the default hooks/hooks.json — remove the declaration or move the file`);
+      continue;
+    }
+    if (seen.has(canonical)) {
+      errors.push(`${label}: duplicate declared hooks path "${raw}" (already declared as "${seen.get(canonical)}")`);
+      continue;
+    }
+    seen.set(canonical, raw);
+    declared.push({ raw, label, abs, canonical });
+  }
+  return declared;
+}
+
+{
+  const rootDefaultAbs = resolve(PLUGIN_DIR, 'hooks/hooks.json');
+  const rootDefaultReal = await containedRealPath(rootDefaultAbs);
+  const seenReal = new Map();
+  for (const entry of collectDeclaredHookPaths(claudeManifest)) {
+    let st;
+    try {
+      st = await stat(entry.abs);
+    } catch {
+      errors.push(`${entry.label}: declared hooks path "${entry.raw}" does not exist`);
+      continue;
+    }
+    if (!st.isFile()) {
+      errors.push(`${entry.label}: declared hooks path "${entry.raw}" is not a regular file`);
+      continue;
+    }
+    const real = await containedRealPath(entry.abs);
+    if (real === null) {
+      errors.push(`${entry.label}: declared hooks path "${entry.raw}" resolves outside the plugin directory (symlink)`);
+      continue;
+    }
+    if (rootDefaultReal !== null && real === rootDefaultReal) {
+      errors.push(`${entry.label}: declared hooks path "${entry.raw}" redeclares the default hooks/hooks.json — remove the declaration or move the file`);
+      continue;
+    }
+    if (seenReal.has(real)) {
+      errors.push(`${entry.label}: duplicate declared hooks path "${entry.raw}" (already declared as "${seenReal.get(real)}")`);
+      continue;
+    }
+    seenReal.set(real, entry.raw);
+    await checkHooksJson(entry.canonical, entry.abs);
+  }
+}
+
+// The root default is validated whenever it exists — including alongside a
+// declared custom path — because Codex default-file discovery reads this
+// location regardless of the Claude manifest (host truth, 0.144.1).
+await checkHooksJson('hooks/hooks.json', resolve(PLUGIN_DIR, 'hooks/hooks.json'));
 
 if (codexManifest && typeof codexManifest.skills === 'string' && codexManifest.skills.length > 0) {
   const skillsPath = resolve(PLUGIN_DIR, codexManifest.skills);

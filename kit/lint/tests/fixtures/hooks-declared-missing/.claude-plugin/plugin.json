@@ -1,0 +1,6 @@
+{
+  "name": "fixture-hooks-declared-missing",
+  "version": "0.0.1",
+  "description": "Fixture: Claude manifest declares a hooks path that does not exist",
+  "hooks": "./adapters/claude/hooks/hooks.json"
+}
