@@ -85,12 +85,19 @@ Local CLI evidence (re-observed 2026-07-10 on `0.144.1`):
     `.claude-plugin/plugin.json`-declared `adapters/claude/hooks/hooks.json`
     and removed the root default file, so the relocated package supplies
     neither discovery input (effective for a given machine once the
-    released version is installed there). **Release/install proof is PENDING**: `/hooks` showing
-    zero attention targets on the upgraded install is the *expected*
-    outcome, not yet an observation, and whether the two stale
-    pre-relocation `[hooks.state]` trust rows persist (display-only
-    `unexpected_agentic_entries`) or get pruned by a host operation remains
-    to be observed — runtime itself never mutates them either way.
+    released version is installed there). **Release/install proof LANDED
+    (2026-07-11, `doctor-20260711T045954Z-731e34`)**: on the upgraded
+    0.4.1 install the Codex cache carries neither discovery input, doctor
+    reads `effective.status = not_packaged` with attention absent from
+    the bundled/review/command-warning sets, **no new attention
+    `[hooks.state]` rows materialized**, and the two stale pre-relocation
+    trust rows were **retained by the host** across the upgrade — they
+    display as `unexpected_agentic_entries=2`, and runtime's non-mutation
+    is hash-verified (`config.toml` SHA-256 identical before/after).
+    Claude-side, the manifest-declared registration live-fired (file-log
+    `turn-complete` from an installed-0.4.1 `claude -p` turn). The
+    `/hooks` TUI visual glance is redundant with the state evidence and
+    happens naturally in the operator's next Codex session.
 - `codex plugin --help` (0.144.1: `add`, `list`, `marketplace`, `remove` —
   command set unchanged from 0.137.0)
 - `codex plugin add --help` (installs `PLUGIN[@MARKETPLACE]` from a configured
