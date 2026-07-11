@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // plugins/attention/adapters/claude/hooks/notification.mjs
 //
-// ADR-0040 §3 Claude `Notification` sensor. hooks/hooks.json registers this
-// entry with `notification_type` matchers (permission_prompt, idle_prompt);
+// ADR-0040 §3 Claude `Notification` sensor. The manifest-declared
+// adapters/claude/hooks/hooks.json registration (kept out of Codex's
+// default-discovery path per the §3 amendment) carries this entry with
+// `notification_type` matchers (permission_prompt, idle_prompt);
 // the sensor still branches on the payload's own notification_type — a
 // self-contained observer never trusts registration-time filtering alone —
 // and silently ignores every other type (auth_success, elicitation variants).
