@@ -1039,17 +1039,20 @@ async function buildCodexPluginHookReport({ codex, plugins, homeDir }) {
     // expected sets. The old exclusion assumed Codex ignores such hooks;
     // host truth disproved it: Codex's default-file discovery is
     // command-shape-blind. Observed on codex-cli 0.144.1 — it loaded
-    // attention's hooks/hooks.json, surfaced stop/subagent_stop in /hooks,
-    // and the operator trusted them ([hooks.state] carries trusted_hash
-    // entries). The exclusion made doctor misread those trusted entries as
-    // unexpected_agentic_entries and hid a genuine review/trust surface
-    // from attestation. ADR-0040 §3's "avoid the Codex /hooks burden"
-    // intent is not achievable by mere non-declaration on current Codex;
-    // the attention-package posture (declare in the manifest, restructure,
-    // or ship portable commands) is tracked in
-    // plugins/runtime/docs/follow-ups.md. Command-portability warnings
-    // apply to these plugins like any other bundler — Codex surfaces the
-    // hooks, so their command shape is host truth, not noise.
+    // attention's then-root hooks/hooks.json, surfaced stop/subagent_stop
+    // in /hooks, and the operator trusted them ([hooks.state] carries
+    // trusted_hash entries). The exclusion made doctor misread those
+    // trusted entries as unexpected_agentic_entries and hid a genuine
+    // review/trust surface from attestation. ADR-0040 §3's "avoid the
+    // Codex /hooks burden" intent is not achievable by mere non-declaration
+    // on current Codex — the attention package resolved its posture
+    // (2026-07-11, restructure: a manifest-declared adapters/claude path
+    // with no root default; history + pending install proof tracked in
+    // plugins/runtime/docs/follow-ups.md), and this inclusion logic stays
+    // for any plugin that ships a default-location hooks file.
+    // Command-portability warnings apply to such plugins like any other
+    // bundler — Codex surfaces the hooks, so their command shape is host
+    // truth, not noise.
     // A temporary marketplace snapshot is a browsable catalog, NOT an
     // installation (pinned by the existing not-installation contract test):
     // a plugin whose hooks are visible ONLY there must not become a bundled/
@@ -1423,15 +1426,20 @@ function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooks
     : defaultHooksFile?.status === 'available';
   // A plugin that bundles hooks ONLY as Claude-adapter commands
   // (every command targets adapters/claude/hooks/…) and declares no Codex
-  // hooks is a DELIBERATELY Claude-hook-only plugin (ADR-0040 §3 attention).
-  // The classification is kept as a diagnosis of that command shape — and to
-  // keep the plugin out of default_file_only (its missing manifest
-  // declaration is a deliberate posture, not a forgotten exposure) — but it
-  // is NOT an exclusion from the bundled/review/expected sets: Codex's
-  // default-file discovery is command-shape-blind (observed on codex-cli
-  // 0.144.1, which loaded attention's hooks/hooks.json and let the operator
-  // trust stop/subagent_stop), so the host review/trust surface exists
-  // regardless of the design intent.
+  // hooks is a DELIBERATELY Claude-hook-only plugin (historically ADR-0040
+  // §3 attention, pre-relocation). The classification is kept as a
+  // diagnosis of that command shape — and to keep such a plugin out of
+  // default_file_only (its missing manifest declaration is a deliberate
+  // posture, not a forgotten exposure) — but it is NOT an exclusion from
+  // the bundled/review/expected sets: Codex's default-file discovery is
+  // command-shape-blind (observed on codex-cli 0.144.1, which loaded
+  // attention's then-root hooks/hooks.json and let the operator trust
+  // stop/subagent_stop), so the host review/trust surface exists regardless
+  // of the design intent. That observation drove the posture resolution
+  // (2026-07-11): attention relocated its Claude registration to a
+  // manifest-declared adapters/claude path with no root default, so its
+  // shipped source no longer reaches this classification — an installed
+  // pre-relocation cache legitimately still does until upgraded.
   const defaultAnalysis = defaultHooksFile?.command_analysis;
   const claudeAdapterOnly = !declared && bundled
     && Boolean(defaultAnalysis)
