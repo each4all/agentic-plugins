@@ -13,10 +13,12 @@ const ARTIFACT_SCHEMA = 'runtime-context-artifact-1.0';
 const VALID_COMMANDS = new Set(['capture', 'status', 'check']);
 const RISK_LEVELS = new Set(['green', 'yellow', 'red']);
 // ADR-0031 bounded workflow projection (session-level continue-vs-fresh
-// preflight). The owning plugin (engineer L3 / orchestrator L2) computes
-// these generic-semantic fields from its OWN state and passes them IN;
-// runtime never shell-reads higher-layer state.
-const VALID_WORKFLOW_KINDS = new Set(['engineer', 'orchestrator']);
+// preflight). The owning plugin (engineer/founder/designer L3 /
+// orchestrator L2) computes these generic-semantic fields from its OWN
+// state and passes them IN; runtime never shell-reads higher-layer state.
+// ADR-0043 §1 widened the seam to all four personas (additive); any other
+// kind still degrades honestly through the unsupported-kind path.
+const VALID_WORKFLOW_KINDS = new Set(['engineer', 'orchestrator', 'founder', 'designer']);
 const VALID_ARCHIVE_GATES = new Set(['ready_to_archive', 'blocked', 'not_terminal']);
 // The bounded projection carries ONLY these fields (ADR-0031 §schema);
 // `checkpoint` is the only optional one — every other field is required.
@@ -159,7 +161,7 @@ export async function readStatus(options = {}) {
         riskLevel: artifact.context?.risk_level ?? null,
         projection,
         // runtime-unsupported-kind: prefer the rejected projection's own routing
-        // (founder's ok-case supplies routing only via the file) before any
+        // (persona ok-case wiring supplies routing only via the file) before any
         // standalone --routing-recommendation, so the fresh handoff keeps a
         // next_command.
         routing: unsupportedRouting ?? options.routingRecommendation ?? null,
@@ -615,7 +617,7 @@ function contextLimits() {
   return [
     'This scaffold writes runtime-owned context artifacts only; it does not mutate host session context.',
     'Main-session output is limited to context summary, risk level, artifact pointers, and recommended next-session action/prompt.',
-    'Engineer and orchestrator workflow state stays in its existing storage; no migration is performed.',
+    'Persona workflow state stays in its existing storage; no migration is performed.',
     'Consensus or peer raw output should be referenced by artifact pointer only, not pasted into the context summary.',
     'Codex plugin-hook feature/trust state and permission limits are not represented as host parity.',
   ];
@@ -626,7 +628,7 @@ function checkLimits() {
     'Read-only check only; no context artifact is created.',
     'This check does not mutate, compact, trim, or rewrite host session context.',
     'No automatic context capture, host switch, new workflow, or new session is started.',
-    'Engineer and orchestrator workflow state stays in its existing storage; no migration is performed.',
+    'Persona workflow state stays in its existing storage; no migration is performed.',
     'Codex plugin-hook feature/trust state and permission limits are not represented as host parity.',
   ];
 }
@@ -799,7 +801,7 @@ export function buildHandoffGuidance({ runId, stale, sourceFreshness, sessionHan
 // present (nothing to decide).
 export function evaluateSessionHandoff({ riskLevel = null, projection = null, routing = null, unsupportedKind = null } = {}) {
   // ADR-0031 (runtime-unsupported-kind) — an active workflow whose kind runtime
-  // cannot model (e.g. founder) reaches the seam as projection=null +
+  // cannot model (e.g. image, or a typo) reaches the seam as projection=null +
   // unsupportedKind=<name>. The honest path fires only for a real, named-but-
   // unsupported kind; a malformed projection (missing/empty kind) leaves
   // unsupported=null and keeps the prior absent behavior.
@@ -921,19 +923,26 @@ export function normalizeProjection(raw) {
     // missing/empty/non-string kind is a malformed projection, not an
     // unsupported one, so it leaves unsupportedKind null and keeps the prior
     // absent behavior.
-    const rejectedKind =
+    const trimmedKind =
       typeof raw.workflow_kind === 'string' && raw.workflow_kind.trim() !== ''
         ? raw.workflow_kind.trim()
         : null;
+    // A whitespace-padded SUPPORTED kind stays a plain malformed projection
+    // (the bounded schema does not trim-and-accept), and it must not surface
+    // as an unsupported kind — that report would contradict its own
+    // supported-kind list ("unsupported kind 'founder'" next to a list
+    // naming founder).
+    const rejectedKind =
+      trimmedKind && !VALID_WORKFLOW_KINDS.has(trimmedKind) ? trimmedKind : null;
     return {
       projection: null,
       error: `workflow projection workflow_kind must be one of ${[...VALID_WORKFLOW_KINDS].join(', ')}`,
       unsupportedKind: rejectedKind,
       // Preserve the rejected projection's own routing so the honest fallback
-      // ('continue from context budget + routing') is literal. A founder
-      // projection carries routing only inside the file (the ok-case wiring
-      // does not also pass --routing-recommendation standalone), so dropping it
-      // here would leave a fresh handoff with no next_command.
+      // ('continue from context budget + routing') is literal. Persona ok-case
+      // wiring carries routing only inside the projection file (it does not
+      // also pass --routing-recommendation standalone), so dropping it here
+      // would leave a fresh handoff with no next_command.
       unsupportedRouting: stringOrNull(raw.routing_recommendation),
     };
   }

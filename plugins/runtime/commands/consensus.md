@@ -70,4 +70,4 @@ Notes:
 - `cancel` records an operator cancellation as pointer-only artifacts. If a running progress artifact exists without a final execution artifact, it requires `--confirm-no-active-process`; it does not kill, interrupt, or signal host CLI processes.
 - `synthesize` records `convergence_state` as `aligned`, `complementary`, `contradiction`, `insufficient-evidence`, `owner-decision-required`, or `non-consensus`.
 - `next-round` requires direct-contradiction durable disagreements from `consensus.json` or an explicit `--disagreements-file`; it does not create empty rebuttal rounds or execute peers.
-- This command does not migrate engineer/orchestrator workflow state.
+- This command does not migrate persona workflow state.

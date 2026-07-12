@@ -1021,13 +1021,15 @@ function localizeCommandList(values, host) {
 }
 
 // Colon-commands of every plugin with a command surface (companions is
-// script-only and deliberately absent). An optional leading `/` or `$` is
-// absorbed and rewritten to the render host's prefix, so a command reaches the
-// user host-correct whether the source produced it bare (consensus/context
-// guidance), Claude-shaped (persona projection routing like /engineer:resume),
-// or Codex-shaped (a projection consumed cross-host). The leading-boundary
-// guard keeps path-like text (plugins/runtime, a/engineer:x) unmatched.
-const PLUGIN_COMMAND_RE = /(^|[\s`"'([])([/$])?((?:runtime|engineer|orchestrator|founder|image):[A-Za-z0-9:_-]+)/g;
+// script-only, attention hook-only — both deliberately absent). An optional
+// leading `/` or `$` is absorbed and rewritten to the render host's prefix, so
+// a command reaches the user host-correct whether the source produced it bare
+// (consensus/context guidance), Claude-shaped (persona projection routing like
+// /engineer:resume), or Codex-shaped (a projection consumed cross-host). The
+// leading-boundary guard keeps path-like text (plugins/runtime, a/engineer:x)
+// unmatched. designer joined via ADR-0043 §1 (a latent omission before that —
+// same "persona projection routing" contract surface as the seam expansion).
+const PLUGIN_COMMAND_RE = /(^|[\s`"'([])([/$])?((?:runtime|engineer|orchestrator|founder|designer|image):[A-Za-z0-9:_-]+)/g;
 
 function localizePluginCommands(value, host) {
   if (!value || host === 'neutral') return value;
