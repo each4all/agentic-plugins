@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.2.0...plugin-designer-v0.2.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* **plugin/designer:** register peer-runner child observers synchronously with spawn ([be86355](https://github.com/each4all/agentic-plugins/commit/be86355ec944e5033897c9dc304b65e618a89a03))
+
 ## [0.2.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.1.0...plugin-designer-v0.2.0) (2026-07-09)
 
 

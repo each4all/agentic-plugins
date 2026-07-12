@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.3.0...plugin-founder-v0.3.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* **plugin/founder:** register peer-runner child observers synchronously with spawn ([5900c7f](https://github.com/each4all/agentic-plugins/commit/5900c7f5302eb74b16a9603cc23c3d03bc35e113))
+
 ## [0.3.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.2.0...plugin-founder-v0.3.0) (2026-07-04)
 
 

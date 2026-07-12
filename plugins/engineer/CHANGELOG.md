@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.20.0...plugin-engineer-v0.20.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** register peer-runner child observers synchronously with spawn ([3dd7180](https://github.com/each4all/agentic-plugins/commit/3dd7180cb25639975c946603ddbf8dd3b7d31c24))
+
 ## [0.20.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.19.0...plugin-engineer-v0.20.0) (2026-07-04)
 
 
