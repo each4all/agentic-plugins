@@ -8,6 +8,7 @@
 // Run via `node --test tests/orchestrator/test-peer-runner.mjs`.
 
 import { describe, it } from 'node:test';
+import { EventEmitter } from 'node:events';
 import { strictEqual, ok, deepStrictEqual, rejects } from 'node:assert/strict';
 import {
   access,
@@ -406,6 +407,195 @@ describe('peer-runner.mjs — run ledger and handle schema', () => {
   });
 });
 
+describe('peer-runner.mjs — spawn-synchronous lifecycle registration (2026-07-11 CI hang regression)', () => {
+  // Root cause of the intermittent 30-minute CI hang: runPeer used to await
+  // fingerprintForPid() and updateHandle() between spawn() and its listener
+  // registrations. A fast-exiting companion (~30ms) emitted 'exit'/'close'
+  // (and its only stdout chunk) into zero listeners during that window, the
+  // late once('close') then never settled, and node:test's keep-alive held
+  // the file process forever. The invariant below is deterministic in both
+  // directions: 'spawn' is emitted from a later tick than spawn() itself, so
+  // synchronous registration always wins and await-deferred registration
+  // always loses — no load or timing dependence.
+  it('attaches data/error/close observers before the companion emits spawn', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const companionsRoot = await writeFakeCompanions(repoRoot);
+      const observed = [];
+      const origEmit = EventEmitter.prototype.emit;
+      EventEmitter.prototype.emit = function patchedEmit(ev, ...rest) {
+        if (
+          ev === 'spawn'
+          && this?.constructor?.name === 'ChildProcess'
+          && this.spawnargs?.some?.((a) => String(a).includes('-companion.mjs'))
+        ) {
+          observed.push({
+            close: this.listenerCount('close'),
+            error: this.listenerCount('error'),
+            stdoutData: this.stdout?.listenerCount?.('data') ?? 0,
+            stderrData: this.stderr?.listenerCount?.('data') ?? 0,
+          });
+        }
+        return origEmit.apply(this, arguments);
+      };
+      try {
+        const result = await runPeer({
+          repoRoot,
+          runId: 'sync-registration',
+          kind: 'manual',
+          peer: 'claude',
+          promptText: '<task>sync</task>',
+          outputFormat: 'json',
+          cwd: repoRoot,
+          env: fakeEnv(companionsRoot),
+        });
+        strictEqual(result.status, 'completed');
+      } finally {
+        EventEmitter.prototype.emit = origEmit;
+      }
+      strictEqual(observed.length, 1, 'exactly one companion spawn must be observed');
+      ok(observed[0].close >= 1,
+        `a close observer must already exist when spawn is emitted (got ${observed[0].close})`);
+      ok(observed[0].error >= 1,
+        `an error observer must already exist when spawn is emitted (got ${observed[0].error})`);
+      ok(observed[0].stdoutData >= 1,
+        `a stdout data collector must already exist when spawn is emitted (got ${observed[0].stdoutData})`);
+      ok(observed[0].stderrData >= 1,
+        `a stderr data collector must already exist when spawn is emitted (got ${observed[0].stderrData})`);
+    });
+  });
+
+  it('preserves the full output of an immediately-exiting companion', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const companionsRoot = await writeFakeCompanions(repoRoot);
+      const result = await runPeer({
+        repoRoot,
+        runId: 'exact-output',
+        kind: 'manual',
+        peer: 'claude',
+        promptText: '<task>exact</task>',
+        outputFormat: 'json',
+        cwd: repoRoot,
+        env: fakeEnv(companionsRoot),
+      });
+      strictEqual(result.status, 'completed');
+
+      const paths = peerRunPaths(repoRoot, 'exact-output');
+      const expectedStdout = JSON.stringify({
+        status: 'success',
+        peer_host: 'claude',
+        peer_model: null,
+        stdout: 'fake ok',
+        exit_code: 0,
+      });
+      strictEqual(await readFile(paths.stdout, 'utf8'), expectedStdout,
+        'the ledger stdout log must retain the exact companion output');
+      strictEqual(await readFile(paths.stderr, 'utf8'), '',
+        'the ledger stderr log must be empty for a silent companion');
+      const handle = await readHandle(paths.handle);
+      strictEqual(handle.stdout_bytes, Buffer.byteLength(expectedStdout));
+      strictEqual(handle.stderr_bytes, 0);
+      const envelope = await readJson(paths.envelope);
+      strictEqual(envelope.stdout, 'fake ok');
+    });
+  });
+
+  it('finalizes a terminal ledger when the spawn itself fails (no node on PATH)', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const companionsRoot = await writeFakeCompanions(repoRoot);
+      // PATH must point at a real but EMPTY directory: merely omitting it
+      // lets execvp fall back to the confstr default (/bin:/usr/bin), so the
+      // spawn would succeed on any machine with a system node there.
+      const emptyBin = join(repoRoot, 'empty-bin');
+      await mkdir(emptyBin, { recursive: true });
+      const rejections = [];
+      const onRejection = (err) => rejections.push(err);
+      process.on('unhandledRejection', onRejection);
+      try {
+        const result = await runPeer({
+          repoRoot,
+          runId: 'spawn-error',
+          kind: 'manual',
+          peer: 'claude',
+          promptText: '<task>fail</task>',
+          outputFormat: 'json',
+          cwd: repoRoot,
+          // spawn('node', …) cannot resolve the executable, so the child
+          // emits 'error' (ENOENT) and then 'close' without 'spawn'.
+          env: {
+            PATH: emptyBin,
+            AGENTIC_COMPANIONS_ROOT: companionsRoot,
+            AGENTIC_RUNTIME_ROOT: process.env.AGENTIC_RUNTIME_ROOT,
+          },
+        });
+        strictEqual(result.ok, false);
+        strictEqual(result.status, 'failed');
+        strictEqual(result.error_kind, 'ENOENT');
+
+        const paths = peerRunPaths(repoRoot, 'spawn-error');
+        const handle = await readHandle(paths.handle);
+        strictEqual(handle.status, 'failed');
+        strictEqual(handle.error_kind, 'ENOENT');
+        strictEqual(handle.pid, null, 'a never-spawned child must not leave a recorded pid');
+        strictEqual(handle.pgid, null);
+        ok(handle.completed_at, 'the failed run must be terminal');
+        strictEqual(handle.exit_code, null);
+        strictEqual(await exists(paths.envelope), false, 'no envelope for a failed spawn');
+        // Both ledger streams must be finalized (created then closed) — a
+        // leaked stream here would re-orphan the event loop.
+        strictEqual(await readFile(paths.stdout, 'utf8'), '');
+        strictEqual(await readFile(paths.stderr, 'utf8'), '');
+      } finally {
+        process.removeListener('unhandledRejection', onRejection);
+      }
+      deepStrictEqual(rejections, [], 'a failed spawn must not surface unhandled rejections');
+    });
+  });
+
+  it('finalizes as failed when a ledger stream errors instead of reporting completed', async () => {
+    await withTmpRepo(async (repoRoot) => {
+      const companionsRoot = await writeFakeCompanions(repoRoot);
+      // Deterministically break the stdout ledger stream: destroy it with an
+      // injected error the moment it opens. The run's companion still
+      // succeeds, but a run whose ledger log was never persisted must NOT
+      // report completed (its byte counters would point at a missing file).
+      const origEmit = EventEmitter.prototype.emit;
+      EventEmitter.prototype.emit = function patchedEmit(ev, ...rest) {
+        if (
+          ev === 'open'
+          && this?.constructor?.name === 'WriteStream'
+          && String(this.path ?? '').replaceAll('\\', '/').endsWith(`${'ledger-stream-error'}/stdout.log`)
+        ) {
+          queueMicrotask(() => {
+            this.destroy(Object.assign(new Error('injected ledger failure'), { code: 'EIO' }));
+          });
+        }
+        return origEmit.apply(this, arguments);
+      };
+      try {
+        const result = await runPeer({
+          repoRoot,
+          runId: 'ledger-stream-error',
+          kind: 'manual',
+          peer: 'claude',
+          promptText: '<task>ledger</task>',
+          outputFormat: 'json',
+          cwd: repoRoot,
+          env: fakeEnv(companionsRoot),
+        });
+        strictEqual(result.ok, false, 'a run with an unpersisted ledger must not be ok');
+        strictEqual(result.status, 'failed');
+        strictEqual(result.error_kind, 'EIO');
+      } finally {
+        EventEmitter.prototype.emit = origEmit;
+      }
+      const handle = await readHandle(peerRunPaths(repoRoot, 'ledger-stream-error').handle);
+      strictEqual(handle.status, 'failed');
+      strictEqual(handle.error_kind, 'EIO');
+      ok(handle.completed_at, 'the failed run must still be terminal');
+    });
+  });
+});
+
 describe('peer-runner.mjs — status and output byte tracking', () => {
   it('updates stdout/stderr byte counts while a run is active', async () => {
     await withTmpRepo(async (repoRoot) => {
@@ -424,6 +614,17 @@ describe('peer-runner.mjs — status and output byte tracking', () => {
         env: fakeEnv(companionsRoot, { FAKE_COMPANION_MODE: 'stream-text' }),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
+      // Same lost-close class as the runPeer fix: the observers must exist
+      // before the awaits below, or a child that finishes during the polling
+      // window emits 'close' (and its output) into nothing and this test
+      // hangs the whole file.
+      const closePromise = new Promise((resolveP) => {
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', (c) => { stdout += c; });
+        child.stderr.on('data', (c) => { stderr += c; });
+        child.on('close', (code) => resolveP({ code, stdout, stderr }));
+      });
 
       const paths = peerRunPaths(repoRoot, 'stream-run');
       await waitFor(async () => {
@@ -438,13 +639,7 @@ describe('peer-runner.mjs — status and output byte tracking', () => {
       ok(mid.handle.stderr_bytes >= Buffer.byteLength('warn-a\n'));
       ok(mid.handle.last_output_at, 'last_output_at should be set after data');
 
-      const close = await new Promise((resolveP) => {
-        let stdout = '';
-        let stderr = '';
-        child.stdout.on('data', (c) => { stdout += c; });
-        child.stderr.on('data', (c) => { stderr += c; });
-        child.on('close', (code) => resolveP({ code, stdout, stderr }));
-      });
+      const close = await closePromise;
       strictEqual(close.code, 0, `stderr: ${close.stderr}`);
 
       const final = await readHandle(paths.handle);

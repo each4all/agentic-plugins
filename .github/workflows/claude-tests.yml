@@ -28,12 +28,14 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       - name: Run claude-companion unit tests
+        timeout-minutes: 5
         run: node --test companions/tests/claude-companion.test.mjs
 
       - name: Syntax check claude-companion.mjs
         run: node --check companions/claude-companion.mjs
 
       - name: Run plugin-shape + research conformance tests
+        timeout-minutes: 10
         env:
           AGENTIC_RELEASE_PLEASE_PR: ${{ github.event_name == 'pull_request' && github.head_ref == 'release-please--branches--main' && '1' || '0' }}
         run: npm run test:plugin-shape
