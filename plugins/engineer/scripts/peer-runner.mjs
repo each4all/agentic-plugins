@@ -691,43 +691,88 @@ export async function runPeer(args) {
     if (options.cwd) childArgs.push('--cwd', resolve(options.cwd));
 
     const detached = process.platform !== 'win32';
-    const child = spawn('node', [companionPath, ...childArgs], {
-      env: options.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached,
-    });
 
-    const fingerprint = await fingerprintForPid(child.pid);
-    await updateHandle(paths.handle, (h) => {
-      h.status = 'running';
-      h.pid = child.pid;
-      h.pgid = detached ? child.pid : null;
-      h.process_fingerprint = fingerprint;
-    });
+    // Every lifecycle observer below is registered in the SAME synchronous
+    // block as spawn(). An await between spawn() and these registrations
+    // opens a window in which a fast-exiting companion emits 'spawn',
+    // 'exit', 'close' — and its only output chunks — into zero listeners.
+    // Those events are not replayed: the close wait would then never settle,
+    // the event loop would drain, and node:test's keep-alive would hold the
+    // process forever (the 2026-07-11 CI 30-minute-hang root cause).
+    let child;
+    try {
+      child = spawn('node', [companionPath, ...childArgs], {
+        env: options.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached,
+      });
+    } catch (err) {
+      // A synchronous spawn throw (invalid options) must still leave a
+      // terminal ledger rather than a workflow stuck at `spawning`.
+      const failed = await updateHandle(paths.handle, (h) => {
+        h.status = 'failed';
+        h.completed_at = nowIso();
+        h.exit_code = null;
+        h.error_kind = err.code ?? 'spawn_error';
+      });
+      await emitPeerRunTerminal({
+        repoRoot: options.repoRoot,
+        runId,
+        status: failed.status,
+        errorKind: failed.error_kind,
+        workflowPath: failed.workflow_path,
+        handlePath: paths.handle,
+        env: options.env,
+      });
+      throw err;
+    }
 
     const stdoutChunks = [];
     const stderrChunks = [];
     const stdoutStream = createWriteStream(paths.stdout, { flags: 'a', mode: 0o600 });
     const stderrStream = createWriteStream(paths.stderr, { flags: 'a', mode: 0o600 });
+    // Error-aware stream completion: 'close' fires after 'finish' AND after
+    // an error-triggered autoDestroy, so a ledger-write failure cannot
+    // re-orphan the join below the way a lost end() callback would. The
+    // first error is CAPTURED, not discarded — a run whose ledger log was
+    // never persisted must finalize as failed, not report completed with
+    // nonzero byte counters pointing at a missing file. The listener stays
+    // attached so a repeated write-after-destroy error cannot crash the
+    // process once the first one is recorded.
+    let streamError = null;
+    const streamDone = (stream) => {
+      stream.on('error', (err) => {
+        streamError ??= err;
+      });
+      return new Promise((resolveP) => {
+        stream.once('close', resolveP);
+      });
+    };
+    const stdoutStreamDone = streamDone(stdoutStream);
+    const stderrStreamDone = streamDone(stderrStream);
+
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let handleUpdateChain = Promise.resolve();
+
+    const queueHandleUpdate = (mutator) => {
+      handleUpdateChain = handleUpdateChain.then(() => updateHandle(paths.handle, mutator));
+      // Keep the rejection for the post-close `await handleUpdateChain`
+      // while preventing an unhandled-rejection crash in the gap between
+      // this enqueue and that await.
+      handleUpdateChain.catch(() => {});
+      return handleUpdateChain;
+    };
 
     const queueOutputNote = (streamName, chunk) => {
       const bytes = Buffer.byteLength(chunk);
       if (streamName === 'stdout') stdoutBytes += bytes;
       else stderrBytes += bytes;
-      handleUpdateChain = handleUpdateChain.then(() => updateHandle(paths.handle, (h) => {
+      return queueHandleUpdate((h) => {
         h.stdout_bytes = stdoutBytes;
         h.stderr_bytes = stderrBytes;
         h.last_output_at = nowIso();
-      }));
-      return handleUpdateChain;
-    };
-
-    const queueHandleUpdate = (mutator) => {
-      handleUpdateChain = handleUpdateChain.then(() => updateHandle(paths.handle, mutator));
-      return handleUpdateChain;
+      });
     };
 
     child.stdout.on('data', (chunk) => {
@@ -741,21 +786,38 @@ export async function runPeer(args) {
       void queueOutputNote('stderr', chunk);
     });
 
+    // 'error' is collected, not rejected: a failed spawn emits 'error' and
+    // then 'close' (never 'spawn'), so the close barrier still settles and
+    // the terminal finalize + self-sensor emit below run on that path too.
+    let childError = null;
     child.once('error', (err) => {
+      childError = err;
       void queueHandleUpdate((h) => {
         h.status = 'failed';
         h.error_kind = err.code ?? 'spawn_error';
       });
     });
 
-    const { code, signal } = await new Promise((resolveP, rejectP) => {
-      child.once('error', rejectP);
+    // The running transition is driven by 'spawn' (success only, emitted
+    // before any child output reaches 'data'): a failed spawn never records
+    // `running` and never serializes an undefined pid into the handle.
+    child.once('spawn', () => {
+      void queueHandleUpdate(async (h) => {
+        h.status = 'running';
+        h.pid = child.pid;
+        h.pgid = detached ? child.pid : null;
+        h.process_fingerprint = await fingerprintForPid(child.pid);
+      });
+    });
+
+    // Non-rejecting close barrier — the single lifecycle join point for the
+    // success, kill, and spawn-failure paths alike.
+    const { code, signal } = await new Promise((resolveP) => {
       child.once('close', (exitCode, exitSignal) => resolveP({ code: exitCode, signal: exitSignal }));
     });
-    await Promise.all([
-      new Promise((resolveP) => stdoutStream.end(resolveP)),
-      new Promise((resolveP) => stderrStream.end(resolveP)),
-    ]);
+    stdoutStream.end();
+    stderrStream.end();
+    await Promise.all([stdoutStreamDone, stderrStreamDone]);
     await handleUpdateChain;
 
     const stdout = Buffer.concat(stdoutChunks).toString('utf8');
@@ -776,6 +838,18 @@ export async function runPeer(args) {
       if (cancelled) {
         h.status = 'cancelled';
         h.error_kind = 'cancelled';
+      } else if (childError) {
+        h.status = 'failed';
+        h.error_kind = childError.code ?? 'spawn_error';
+        // The child never ran: 'close' reports a negative errno in the exit
+        // code slot on spawn failure, which is not a process exit code.
+        h.exit_code = null;
+      } else if (streamError) {
+        // The companion may have succeeded, but its ledger log was not
+        // persisted — reporting completed here would leave byte counters
+        // pointing at a missing/truncated file.
+        h.status = 'failed';
+        h.error_kind = streamError.code ?? 'ledger_write_error';
       } else if (envelopeResult.status) {
         h.status = envelopeResult.status;
         h.error_kind = envelopeResult.errorKind;
