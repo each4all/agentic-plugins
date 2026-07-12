@@ -7,5 +7,5 @@
   "plugins/founder": "0.3.1",
   "plugins/image": "0.2.0",
   "plugins/orchestrator": "0.12.1",
-  "plugins/runtime": "0.78.1"
+  "plugins/runtime": "0.79.0"
 }
