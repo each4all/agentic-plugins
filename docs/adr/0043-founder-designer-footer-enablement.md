@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (2026-07-12)
 
 <!--
 This is the runtime-enablement ADR that ADR-0042 explicitly required
@@ -17,6 +17,13 @@ may ride them. Implementation is staged by the 2026-07-12 macro plan:
 S2 (runtime enum expansion), S3 (founder onboarding), S4 (designer
 onboarding), with S9 (completion-output contract) as a co-gate for
 S3/S4.
+
+Flipped to Accepted 2026-07-12 on merge of the authoring PR #553, per
+the ADR process §3 merge-time default. The S2 macro subtask reads
+"Per accepted ADR-0043", so acceptance gates the implementation
+series rather than following it (contrast the ADR-0039
+flip-on-series-completion precedent, whose implementation was bundled
+with the ADR itself).
 -->
 
 ## Context
