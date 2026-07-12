@@ -764,13 +764,34 @@ describe('runtime footer session handoff (ADR-0031)', () => {
     ok(text.includes('next command: /orchestrator:next'));
   });
 
+  it('accepts founder and designer projections as first-class supported kinds (ADR-0043 §1)', async () => {
+    for (const kind of ['founder', 'designer']) {
+      const root = await mkdtemp(join(tmpdir(), `runtime-footer-${kind}-`));
+      const projPath = join(root, 'proj.json');
+      await writeFile(projPath, JSON.stringify(fullProjection({ workflow_kind: kind })));
+      const report = await runFooter({
+        repoRoot: root,
+        host: 'claude',
+        contextState: 'yellow',
+        workflowProjectionFile: projPath,
+      });
+      strictEqual(report.projection_error, undefined, `${kind} must load without a projection error`);
+      strictEqual(report.workflow.kind, kind);
+      strictEqual(report.workflow.archive_gate, 'not_terminal');
+      strictEqual('unsupported_workflow_kind' in report.session_handoff, false,
+        `${kind} must not be reported as an unsupported kind`);
+    }
+  });
+
   it('reports an honest unsupported workflow_kind in the footer instead of no-active-workflow (runtime-unsupported-kind)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-footer-unsupported-'));
-    const projPath = join(root, 'founder.json');
-    // A founder workflow projects workflow_kind:'founder', which runtime does not
-    // model. The footer the user sees must report it honestly, not silently drop
-    // to the no-active-workflow (absent) path.
-    await writeFile(projPath, JSON.stringify(fullProjection({ workflow_kind: 'founder', routing_recommendation: '/founder:resume' })));
+    const projPath = join(root, 'image.json');
+    // The genuinely unsupported fixture is `image` (lean L2 with no workflow
+    // state machine — ADR-0037): the degradation path outlived the
+    // founder/designer enablement (ADR-0043 §1), and the footer must keep
+    // reporting it honestly, not silently drop to the no-active-workflow
+    // (absent) path.
+    await writeFile(projPath, JSON.stringify(fullProjection({ workflow_kind: 'image', routing_recommendation: '/image:frame' })));
     const report = await runFooter({
       repoRoot: root,
       host: 'claude',
@@ -778,10 +799,10 @@ describe('runtime footer session handoff (ADR-0031)', () => {
       workflowProjectionFile: projPath,
     });
     strictEqual(report.session_handoff.archive_gate, 'unsupported_kind');
-    strictEqual(report.session_handoff.unsupported_workflow_kind, 'founder');
+    strictEqual(report.session_handoff.unsupported_workflow_kind, 'image');
     ok(report.projection_error, 'the projection rejection is still surfaced');
     const text = formatText(report);
-    ok(text.includes('unsupported workflow kind: founder'), 'footer text names the unsupported kind');
+    ok(text.includes('unsupported workflow kind: image'), 'footer text names the unsupported kind');
     ok(/enablement out of scope/.test(text), 'footer text records the enablement boundary');
   });
 
@@ -846,9 +867,10 @@ describe('runtime footer session handoff (ADR-0031)', () => {
 });
 
 // ADR-0039 follow-up — persona colon-commands (engineer:/orchestrator:/founder:/
-// image:) must render host-correct on every advisory command surface, exactly
-// like runtime: commands. The projection produces host-neutral data with
+// designer:/image:) must render host-correct on every advisory command surface,
+// exactly like runtime: commands. The projection produces host-neutral data with
 // Claude-shaped routing (/engineer:resume); the RENDER host decides the prefix.
+// designer joined the localization set via ADR-0043 §1 (latent-omission fix).
 describe('runtime footer persona command host-localization', () => {
   const personaProjection = (overrides = {}) => ({
     workflow_kind: 'engineer',
@@ -905,14 +927,48 @@ describe('runtime footer persona command host-localization', () => {
     strictEqual(report.workflow.next_action, 'Address findings via /engineer:refine before archiving');
   });
 
-  it('localizes the routing surviving an unsupported-kind projection (founder)', async () => {
+  it('localizes designer routing on a supported-kind projection (ADR-0043 §1 latent-omission regression)', async () => {
+    // Before ADR-0043, PLUGIN_COMMAND_RE omitted designer:, so a
+    // /designer:<verb> command flowing through a footer survived a codex
+    // render un-rewritten. Pin the fix on the now-supported designer kind.
     const report = await renderWith('codex', {
-      workflow_kind: 'founder',
-      routing_recommendation: '/founder:resume',
+      workflow_kind: 'designer',
+      routing_recommendation: '/designer:resume',
+      next_action: 'Re-critique via /designer:critique before archiving',
     });
-    strictEqual(report.session_handoff.unsupported_workflow_kind, 'founder');
-    strictEqual(report.session_handoff.routing_recommendation, '$founder:resume');
-    strictEqual(report.session_handoff.next_command, '$founder:resume');
+    strictEqual('unsupported_workflow_kind' in report.session_handoff, false);
+    strictEqual(report.session_handoff.routing_recommendation, '$designer:resume');
+    strictEqual(report.session_handoff.next_command, '$designer:resume');
+    strictEqual(report.workflow.next_action, 'Re-critique via $designer:critique before archiving');
+  });
+
+  it('localizes the routing surviving an unsupported-kind projection (image)', async () => {
+    const report = await renderWith('codex', {
+      workflow_kind: 'image',
+      routing_recommendation: '/image:frame',
+    });
+    strictEqual(report.session_handoff.unsupported_workflow_kind, 'image');
+    strictEqual(report.session_handoff.routing_recommendation, '$image:frame');
+    strictEqual(report.session_handoff.next_command, '$image:frame');
+  });
+
+  it('localizes every PLUGIN_COMMAND_RE member (table-driven omission guard)', async () => {
+    // The designer omission fixed by ADR-0043 §1 was exactly this failure
+    // mode: a plugin with a command surface missing from the regex. Drive
+    // every member through the render path so the next omission cannot land
+    // without failing here.
+    const commands = ['runtime', 'engineer', 'orchestrator', 'founder', 'designer', 'image'];
+    const root = await mkdtemp(join(tmpdir(), 'runtime-footer-persona-table-'));
+    const report = await runFooter({
+      repoRoot: root,
+      host: 'codex',
+      contextState: 'green',
+      recommendedNextWork: commands.map((name) => `/${name}:x`).join(' '),
+    });
+    strictEqual(
+      report.recommended_next_work,
+      commands.map((name) => `$${name}:x`).join(' '),
+    );
   });
 
   it('localizes recommended-next-work and the completion next action (sidecar path)', async () => {
@@ -921,15 +977,15 @@ describe('runtime footer persona command host-localization', () => {
       repoRoot: root,
       host: 'codex',
       contextState: 'green',
-      recommendedNextWork: 'Run /engineer:refine then runtime:doctor and image:compose',
+      recommendedNextWork: 'Run /engineer:refine then runtime:doctor, /designer:critique and image:compose',
     });
     strictEqual(
       report.recommended_next_work,
-      'Run $engineer:refine then $runtime:doctor and $image:compose',
+      'Run $engineer:refine then $runtime:doctor, $designer:critique and $image:compose',
     );
     strictEqual(
       report.completion.next_action,
-      'Run $engineer:refine then $runtime:doctor and $image:compose',
+      'Run $engineer:refine then $runtime:doctor, $designer:critique and $image:compose',
     );
   });
 

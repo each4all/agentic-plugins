@@ -51,8 +51,10 @@ describe('runtime doctor', () => {
     // install/cache/catalog inventory (readiness reporting only — its hook
     // semantics stay attention-owned).
     // RT (ADR-0042): designer joins on the same terms. Inventory recognition
-    // ONLY — see the boundary tests below for what this deliberately does not
-    // extend (workflow_kind projection, dashboard Tier-1 personas).
+    // ONLY — the dashboard Tier-1 persona set stays deliberately narrower
+    // (ADR-0040 §6; ADR-0043 §3). The workflow_kind projection enum, once the
+    // other deliberate non-extension here, was widened to all four personas
+    // by ADR-0043 S2.
     deepStrictEqual(PLUGIN_NAMES, ['attention', 'companions', 'designer', 'engineer', 'founder', 'image', 'orchestrator', 'runtime']);
     // Alphabetical, so the inventory reads deterministically in every report.
     deepStrictEqual([...PLUGIN_NAMES], [...PLUGIN_NAMES].sort());

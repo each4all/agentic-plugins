@@ -55,7 +55,7 @@ Context reports and manages:
 - No automatic context measurement, capture trigger, or new session start from `check`.
 - No direct peer execution.
 - No consensus raw output or peer raw output in the main session.
-- No engineer/orchestrator workflow state migration.
+- No persona workflow state migration.
 - No host-native config, authentication, secret, sandbox, or permission writes.
 - No claim that Codex plugin-hook feature/trust state or permission limits are host parity.
 

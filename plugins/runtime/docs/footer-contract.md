@@ -1,10 +1,11 @@
 # Completion Footer Contract
 
-ADR-0024 defines a standard completion footer for engineer and
-orchestrator completion surfaces. The footer is a runtime-owned advisory
-surface: it helps the user decide whether to continue, pause, or start a
-fresh session, but it does not mutate host session context or workflow
-state.
+ADR-0024 defines a standard completion footer for persona completion
+surfaces; the workflow-projection seam behind it models the four personas
+— engineer, orchestrator, founder, and designer (ADR-0043 §1). The footer
+is a runtime-owned advisory surface: it helps the user decide whether to
+continue, pause, or start a fresh session, but it does not mutate host
+session context or workflow state.
 
 ## Required fields
 
@@ -67,16 +68,20 @@ guidance state, recommended session shape, recommended action, and safe
 follow-up commands.
 
 **ADR-0039 (now-active wiring).** As of ADR-0039 the helper is no longer
-invoked only by hand: the engineer and orchestrator completion/terminal paths
-**code-emit** it. Their ADR-0031 session-handoff sidecar shells out to this
+invoked only by hand: the completion/terminal paths of the personas whose
+ADR-0043 onboarding has landed **code-emit** it (ADR-0043 §5 tracks the
+per-persona rollout; the projection seam accepts all four kinds either
+way, so a not-yet-onboarded persona simply emits nothing). The
+onboarded persona's ADR-0031 session-handoff sidecar shells out to this
 `footer.mjs render` (subprocess, never an import — ADR-0010 §5) after writing the
 projection, captures the child stdout, and re-emits it on the completing
 command's **stderr** (the command's stdout stays a machine channel). This stays a
 "script, not a command": the personas discover the runtime root
 (`discoverRuntimePluginRoot`, copy-not-import), gate on `emitted===true`, guard
 against double-emission, and fail closed silently on a missing/too-old runtime.
-See ADR-0039 and `skills/_shared/references/entry-routing-contract.md`
-(engineer) / `session-handoff.md` (orchestrator).
+See ADR-0039, ADR-0043, and the onboarded persona's own
+`skills/_shared/references/session-handoff.md` runbook (engineer's copy is
+the reference implementation the other personas derive from, ADR-0043 §2).
 
 Callers that want the newest existing handoff without creating or updating
 context may use `--context-latest`:
@@ -252,7 +257,7 @@ writes sanitized cutover evidence under `.agentic-plugins/runs/cutover/`.
   runtime-owned files.
 - Consensus status is advisory only: no peer execution, synthesis,
   next-round planning, or artifact mutation happens through the footer.
-- Existing engineer and orchestrator workflow state remains in its current
-  storage; this contract is not a migration path.
+- Existing persona workflow state remains in its current storage; this
+  contract is not a migration path.
 - Codex plugin-hook and permission limits remain explicit and are not
   represented as host parity.

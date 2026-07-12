@@ -2,14 +2,12 @@
 //
 // Verifies that designer computes its OWN bounded projection (fail-closed).
 //
-// Runtime-seam deferral: plugins/runtime's normalizeProjection currently
-// accepts workflow_kind ∈ {engineer, orchestrator} only, so designer
-// projections are NOT yet seam-accepted — the completion-footer flow
-// degrades gracefully to context-risk-only until a separate
-// plugins/runtime PR extends the enum (ADR-0016 cross-package rule keeps
-// that change out of this designer PR; tracked in the designer CHANGELOG
-// Deferred list). These tests therefore assert designer's OWN projection
-// shape, not the runtime round-trip.
+// Runtime-seam status: ADR-0043 S2 widened plugins/runtime's
+// normalizeProjection enum to all four personas, so designer projections
+// are seam-accepted on a current runtime; designer's own sidecar/footer
+// plumbing lands separately (ADR-0043 S4 — the ADR-0016 cross-package
+// rule keeps runtime and designer changes in separate PRs). These tests
+// assert designer's OWN projection shape, not the runtime round-trip.
 //
 // Run via `node --test tests/designer/test-session-handoff.mjs`.
 

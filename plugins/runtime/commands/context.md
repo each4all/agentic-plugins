@@ -40,6 +40,6 @@ Notes:
 - Main-session output is limited to context summary, risk level, artifact pointers, and recommended next-session prompt/action.
 - Source freshness uses read-only git observation only. If git metadata is unavailable, source freshness is reported as `unknown` rather than inferred.
 - Context budget checks use explicit caller-supplied values only; this command does not measure Claude or Codex host context automatically.
-- This command does not migrate engineer/orchestrator workflow state.
+- This command does not migrate persona workflow state.
 - Consensus raw output and peer raw output must be referenced by artifact pointer only.
 - Codex plugin-hook feature/trust state and permission limits are reported as limits, not host parity.
