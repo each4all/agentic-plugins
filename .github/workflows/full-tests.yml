@@ -44,6 +44,7 @@ jobs:
       # lag on the release-please PR (see tests/plugin-shape/test-*-plugin.mjs).
       # Without this, every release-please PR would fail the full-suite gate.
       - name: Run full test suite (npm test)
+        timeout-minutes: 15
         env:
           AGENTIC_RELEASE_PLEASE_PR: ${{ github.event_name == 'pull_request' && github.head_ref == 'release-please--branches--main' && '1' || '0' }}
         run: npm test
