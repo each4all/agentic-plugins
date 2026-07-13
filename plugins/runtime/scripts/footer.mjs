@@ -91,21 +91,45 @@ export async function runFooter(options = {}) {
   const prHandling = shouldIncludePrHandling(options)
     ? buildPrHandlingReadiness({ contextState, options })
     : null;
-  const recommendedNextWork = normalizeRecommendedNextWork(options, consensus);
+  // Completion-output contract: a whitespace-only completion flag is treated
+  // as ABSENT (defaults + provenance fire), never as authored explicit
+  // content — a blank marker-free line would be the exact silent degradation
+  // the contract exists to expose. CLI enum parsing still rejects invalid
+  // non-empty values upstream.
+  const completionFlags = {
+    completionState: presentFlag(options.completionState),
+    completionReason: presentFlag(options.completionReason),
+    completionNextAction: presentFlag(options.completionNextAction),
+    recommendedNextWork: presentFlag(options.recommendedNextWork),
+  };
+  const recommendedNextWork = normalizeRecommendedNextWork(completionFlags, consensus);
+  const recommendedNextWorkProvenance = completionFlags.recommendedNextWork
+    ? 'explicit'
+    : consensus?.statusGuidance?.next_action
+      ? 'derived'
+      : 'generic';
   const completion = buildCompletionState({
-    options,
+    options: completionFlags,
     contextState,
     consensus,
     prHandling,
     recommendedNextWork,
+    recommendedNextWorkProvenance,
   });
-  const effectiveRecommendedNextWork = isDefaultRecommendedNextWork({
-    options,
+  const recommendedNextWorkIsDefault = isDefaultRecommendedNextWork({
+    options: completionFlags,
     consensus,
     recommendedNextWork,
-  })
+  });
+  const effectiveRecommendedNextWork = recommendedNextWorkIsDefault
     ? completion.next_action
     : recommendedNextWork;
+  // When the recommended next work falls back to the completion next action it
+  // inherits that field's provenance (an explicit --completion-next-action
+  // reads as derived here — the content is caller-authored via another flag).
+  const recommendedNextWorkSource = recommendedNextWorkIsDefault
+    ? (completion.sources.next_action === 'explicit' ? 'derived' : completion.sources.next_action)
+    : recommendedNextWorkProvenance;
   const cutoverRecord = shouldIncludeCutoverRecord(options)
     ? buildCutoverRecordGuidance({ host, completion, options })
     : null;
@@ -157,6 +181,7 @@ export async function runFooter(options = {}) {
     workflow: localizedWorkflow,
     artifacts,
     recommended_next_work: localizePluginCommands(effectiveRecommendedNextWork, host),
+    recommended_next_work_source: recommendedNextWorkSource,
     next_session: nextSession,
     pr_handling: prHandling,
     cutover_record: cutoverRecord,
@@ -320,13 +345,19 @@ export function parseArgs(argv) {
   return options;
 }
 
+// S9 completion-output contract — a generic runtime fallback must be visible
+// in the rendered text (text-format only; JSON values stay unmarked).
+function genericMarker(tier) {
+  return tier === 'generic' ? ' [generic fallback]' : '';
+}
+
 export function formatText(report) {
   if (report.help) return helpText();
   const lines = ['Runtime completion footer (advisory)'];
   lines.push(`context state: ${report.context_state}`);
-  lines.push(`completion state: ${report.completion_state}`);
-  if (report.completion?.reason) lines.push(`completion reason: ${report.completion.reason}`);
-  if (report.completion?.next_action) lines.push(`completion next action: ${report.completion.next_action}`);
+  lines.push(`completion state: ${report.completion_state}${genericMarker(report.completion?.sources?.state)}`);
+  if (report.completion?.reason) lines.push(`completion reason: ${report.completion.reason}${genericMarker(report.completion?.sources?.reason)}`);
+  if (report.completion?.next_action) lines.push(`completion next action: ${report.completion.next_action}${genericMarker(report.completion?.sources?.next_action)}`);
   if (report.context?.pointer) lines.push(`context artifact: ${report.context.pointer}`);
   if (report.context?.lookup) {
     lines.push('context lookup:');
@@ -365,6 +396,12 @@ export function formatText(report) {
   }
   if (report.workflow?.path) lines.push(`workflow path: ${report.workflow.path}`);
   if (report.workflow?.archive_gate) lines.push(`workflow archive gate: ${report.workflow.archive_gate}`);
+  if (report.workflow?.checkpoint) {
+    // The checkpoint summary is free text from the projection — collapse
+    // control characters/newlines so it cannot inject fake footer lines
+    // (text render is the trust boundary; the JSON report keeps the raw value).
+    lines.push(`workflow checkpoint: ${singleLineText(report.workflow.checkpoint)}`);
+  }
   if (report.session_handoff) {
     lines.push('session handoff (continue-vs-fresh):');
     lines.push(`- recommended session: ${report.session_handoff.recommended_session}`);
@@ -389,7 +426,7 @@ export function formatText(report) {
       lines.push(`- ${artifact.kind}: ${artifact.pointer}`);
     }
   }
-  lines.push(`recommended next work: ${report.recommended_next_work}`);
+  lines.push(`recommended next work: ${report.recommended_next_work}${genericMarker(report.recommended_next_work_source)}`);
   if (report.next_session?.action) {
     lines.push(`next-session action: ${report.next_session.action}`);
   }
@@ -795,33 +832,68 @@ function quoteCommandArg(value) {
   return `"${text.replace(/(["\\$`])/g, '\\$&')}"`;
 }
 
-function buildCompletionState({ options, contextState, consensus, prHandling, recommendedNextWork }) {
+// Completion-output contract: a caller flag counts as PRESENT only when it
+// carries non-whitespace content; blank explicit flags fall back to the
+// defaults (and their provenance) instead of rendering empty marker-free lines.
+function presentFlag(value) {
+  if (value === undefined || value === null) return undefined;
+  const text = String(value);
+  return text.trim() === '' ? undefined : text;
+}
+
+// S9 completion-output contract (docs/completion-output-contract.md): every
+// completion field carries a per-field provenance tier —
+//   explicit — the field's own caller flag supplied the value;
+//   derived  — a runtime default consumed completion-specific evidence
+//              (another caller flag's value, consensus guidance, PR readiness,
+//              red context risk);
+//   generic  — a static state-template fallback with no completion-specific
+//              evidence. Only `generic` is surfaced with a visible text marker
+//              so silent degradation cannot render as authored content.
+// `closed` is the documented exception: its static reason/next-action restate
+// a definitionally complete assertion, so they classify as derived.
+function buildCompletionState({ options, contextState, consensus, prHandling, recommendedNextWork, recommendedNextWorkProvenance }) {
+  const inferred = options.completionState
+    ? null
+    : inferCompletionState({ contextState, consensus, prHandling, recommendedNextWork });
   const state = options.completionState
     ? validateCompletionState(options.completionState)
-    : inferCompletionState({ contextState, consensus, prHandling, recommendedNextWork });
+    : inferred.state;
+  const stateTier = options.completionState ? 'explicit' : inferred.tier;
+  const defaultReason = options.completionReason
+    ? null
+    : defaultCompletionReason({ state, contextState, consensus, prHandling, recommendedNextWork });
   const reason = options.completionReason
     ? requireSingleLine(options.completionReason, '--completion-reason')
-    : defaultCompletionReason({ state, contextState, consensus, prHandling, recommendedNextWork });
+    : defaultReason.value;
+  const defaultNextAction = options.completionNextAction
+    ? null
+    : defaultCompletionNextAction({ state, consensus, prHandling, recommendedNextWork, recommendedNextWorkProvenance });
   const nextAction = options.completionNextAction
     ? requireSingleLine(options.completionNextAction, '--completion-next-action')
-    : defaultCompletionNextAction({ state, consensus, prHandling, recommendedNextWork });
+    : defaultNextAction.value;
   return {
     state,
     source: options.completionState ? 'explicit' : 'inferred',
+    sources: {
+      state: stateTier,
+      reason: options.completionReason ? 'explicit' : defaultReason.tier,
+      next_action: options.completionNextAction ? 'explicit' : defaultNextAction.tier,
+    },
     reason,
     next_action: nextAction,
   };
 }
 
 function inferCompletionState({ contextState, consensus, prHandling, recommendedNextWork }) {
-  if (prHandling?.recommendation === 'block') return 'blocked';
-  if (isBlockingConsensusGuidance(consensus?.statusGuidance?.state)) return 'blocked';
-  if (prHandling?.recommendation === 'ask-user') return 'publish-needed';
-  if (prHandling?.recommendation === 'defer') return 'review-needed';
-  if (contextState === 'red') return 'review-needed';
-  if (isActionableConsensusGuidance(consensus?.statusGuidance?.state)) return 'next-work-available';
-  if (recommendedNextWork !== defaultRecommendedNextWork()) return 'next-work-available';
-  return 'review-needed';
+  if (prHandling?.recommendation === 'block') return { state: 'blocked', tier: 'derived' };
+  if (isBlockingConsensusGuidance(consensus?.statusGuidance?.state)) return { state: 'blocked', tier: 'derived' };
+  if (prHandling?.recommendation === 'ask-user') return { state: 'publish-needed', tier: 'derived' };
+  if (prHandling?.recommendation === 'defer') return { state: 'review-needed', tier: 'derived' };
+  if (contextState === 'red') return { state: 'review-needed', tier: 'derived' };
+  if (isActionableConsensusGuidance(consensus?.statusGuidance?.state)) return { state: 'next-work-available', tier: 'derived' };
+  if (recommendedNextWork !== defaultRecommendedNextWork()) return { state: 'next-work-available', tier: 'derived' };
+  return { state: 'review-needed', tier: 'generic' };
 }
 
 function isBlockingConsensusGuidance(state) {
@@ -851,34 +923,72 @@ function isActionableConsensusGuidance(state) {
 
 function defaultCompletionReason({ state, contextState, consensus, prHandling, recommendedNextWork }) {
   if (state === 'blocked') {
-    if (prHandling?.recommendation === 'block') return 'PR handling has a failed readiness criterion.';
-    if (consensus?.statusGuidance?.state) return `Consensus guidance is ${consensus.statusGuidance.state}.`;
-    return 'A required operator, validation, review, permission, or evidence precondition is blocked.';
+    if (prHandling?.recommendation === 'block') return { value: 'PR handling has a failed readiness criterion.', tier: 'derived' };
+    // Evidence-consistency rule (completion-output contract): a blocked reason
+    // may cite consensus only when the guidance itself is blocking — pairing a
+    // blocked state with actionable consensus guidance would assert evidence
+    // that contradicts the state.
+    if (isBlockingConsensusGuidance(consensus?.statusGuidance?.state)) {
+      return { value: `Consensus guidance is ${consensus.statusGuidance.state}.`, tier: 'derived' };
+    }
+    return { value: 'A required operator, validation, review, permission, or evidence precondition is blocked.', tier: 'generic' };
   }
-  if (state === 'publish-needed') return 'PR handling readiness passed and the user should decide whether to publish.';
-  if (state === 'cleanup-needed') return 'Caller reported that cleanup is the next required action.';
+  if (state === 'publish-needed') {
+    // The string asserts readiness PASSED — only an ask-user PR-handling
+    // verdict is evidence of that; mere presence of PR data (e.g. defer) is not.
+    return {
+      value: 'PR handling readiness passed and the user should decide whether to publish.',
+      tier: prHandling?.recommendation === 'ask-user' ? 'derived' : 'generic',
+    };
+  }
+  if (state === 'cleanup-needed') return { value: 'Caller reported that cleanup is the next required action.', tier: 'generic' };
   if (state === 'next-work-available') {
-    if (consensus?.statusGuidance?.state) return `Consensus guidance is ${consensus.statusGuidance.state}.`;
-    if (recommendedNextWork !== defaultRecommendedNextWork()) return 'Caller supplied recommended next work.';
-    return 'Follow-up work is available from the current runtime evidence.';
+    if (consensus?.statusGuidance?.state) return { value: `Consensus guidance is ${consensus.statusGuidance.state}.`, tier: 'derived' };
+    if (recommendedNextWork !== defaultRecommendedNextWork()) return { value: 'Caller supplied recommended next work.', tier: 'derived' };
+    return { value: 'Follow-up work is available from the current runtime evidence.', tier: 'generic' };
   }
-  if (state === 'closed') return 'Caller explicitly reported that no repo, PR, release, cleanup, or planned follow-up work remains.';
-  if (contextState === 'red') return 'Context risk is red; review or fresh-session handoff is needed before substantial follow-up.';
-  if (prHandling?.recommendation === 'defer') return 'PR handling evidence is incomplete.';
-  return 'Completion evidence should be reviewed before choosing the next action.';
+  if (state === 'closed') {
+    // closed restates a definitionally complete caller assertion (documented
+    // special case) — never a generic-fallback nudge.
+    return { value: 'Caller explicitly reported that no repo, PR, release, cleanup, or planned follow-up work remains.', tier: 'derived' };
+  }
+  if (contextState === 'red') return { value: 'Context risk is red; review or fresh-session handoff is needed before substantial follow-up.', tier: 'derived' };
+  if (prHandling?.recommendation === 'defer') return { value: 'PR handling evidence is incomplete.', tier: 'derived' };
+  return { value: 'Completion evidence should be reviewed before choosing the next action.', tier: 'generic' };
 }
 
-function defaultCompletionNextAction({ state, consensus, prHandling, recommendedNextWork }) {
+function defaultCompletionNextAction({ state, consensus, prHandling, recommendedNextWork, recommendedNextWorkProvenance }) {
   if (state === 'blocked') {
-    if (consensus?.statusGuidance?.next_action) return consensus.statusGuidance.next_action;
-    if (prHandling?.recommendation === 'block') return 'Resolve failed PR handling criteria before publishing or closing the slice.';
-    return 'Resolve the blocking precondition, then rerun the relevant runtime check.';
+    // Same evidence-consistency rule as the reason: only blocking consensus
+    // guidance may drive a blocked next action.
+    if (isBlockingConsensusGuidance(consensus?.statusGuidance?.state) && consensus?.statusGuidance?.next_action) {
+      return { value: consensus.statusGuidance.next_action, tier: 'derived' };
+    }
+    if (prHandling?.recommendation === 'block') return { value: 'Resolve failed PR handling criteria before publishing or closing the slice.', tier: 'derived' };
+    return { value: 'Resolve the blocking precondition, then rerun the relevant runtime check.', tier: 'generic' };
   }
-  if (state === 'publish-needed') return 'Ask the user whether to commit, push, open or update a PR, defer publishing, or continue without PR handling.';
-  if (state === 'cleanup-needed') return 'Clean up merged branches, stale worktrees, plugin/cache drift, or release follow-ups before starting the next slice.';
-  if (state === 'next-work-available') return recommendedNextWork;
-  if (state === 'closed') return 'No further repo, PR, release, cleanup, or planned follow-up action is known from this footer evidence.';
-  return 'Review validation, artifacts, context, consensus, and PR readiness evidence before choosing the next command.';
+  if (state === 'publish-needed') {
+    return {
+      value: 'Ask the user whether to commit, push, open or update a PR, defer publishing, or continue without PR handling.',
+      tier: prHandling?.recommendation === 'ask-user' ? 'derived' : 'generic',
+    };
+  }
+  if (state === 'cleanup-needed') return { value: 'Clean up merged branches, stale worktrees, plugin/cache drift, or release follow-ups before starting the next slice.', tier: 'generic' };
+  if (state === 'next-work-available') {
+    // The value routes the recommended next work through; its provenance
+    // follows that signal (a caller/consensus-fed value is derived, the bare
+    // static default stays generic).
+    return {
+      value: recommendedNextWork,
+      tier: recommendedNextWorkProvenance === 'generic' ? 'generic' : 'derived',
+    };
+  }
+  if (state === 'closed') {
+    // Documented special case: nothing further remains, so the static text is
+    // definitionally complete.
+    return { value: 'No further repo, PR, release, cleanup, or planned follow-up action is known from this footer evidence.', tier: 'derived' };
+  }
+  return { value: 'Review validation, artifacts, context, consensus, and PR readiness evidence before choosing the next command.', tier: 'generic' };
 }
 
 function criterion(name, observed, rule) {
@@ -1161,6 +1271,13 @@ function requireSingleLine(value, flag) {
     throw new Error(`${flag} must be a single-line value`);
   }
   return value;
+}
+
+// Render-side sanitizer for free text that did not pass requireSingleLine
+// (e.g. the projection checkpoint): collapse control characters and newlines
+// into single spaces so interpolated text cannot fabricate footer lines.
+function singleLineText(value) {
+  return String(value).replace(/[\u0000-\u001F\u007F]+/g, ' ').trim();
 }
 
 function parseNonNegativeInteger(value, flag) {
