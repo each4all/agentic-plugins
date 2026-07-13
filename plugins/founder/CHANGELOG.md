@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.3.1...plugin-founder-v0.4.0) (2026-07-13)
+
+
+### Features
+
+* **plugin/founder:** emit terminal handoff sidecar + completion footer (ADR-0043 S3) ([578936b](https://github.com/each4all/agentic-plugins/commit/578936b43ad832c9721bb51c221852bdb20b41db))
+
 ## [0.3.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.3.0...plugin-founder-v0.3.1) (2026-07-12)
 
 
