@@ -202,10 +202,19 @@ Always include the workflow path.
 Then emit an **Active Next-Action Proposal** instead of a fixed next command, per
 `skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
 (canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
-engineer plugin): **selected_next**, **rejected_alternatives** (1-2 + why-not),
-**rationale** (decisive axes 본질/근본 essence/foundation + the Standards/Root-Cause
-gate), **evidence_pointers** (pointers only), **confidence** (HIGH/MEDIUM/LOW),
-and **next_command**. For a freshly approved plan the typical `selected_next` is
+engineer plugin) — the canonical six-field template (runtime
+completion-output contract):
+
+```
+- selected_next:         <macro action | owner decision>
+- rejected_alternatives: <1-2 alternatives, each + one-line why-not>
+- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
+- evidence_pointers:     <macro plan / subtask states / phase notes — pointers only>
+- confidence:            <HIGH | MEDIUM | LOW>
+- next_command:          <exact next step: /orchestrator:<command> … — or the wait / owner-decision action>
+```
+
+For a freshly approved plan the typical `selected_next` is
 `/orchestrator:next` to dispatch the first unblocked subtask (lowest-id entry with
 `status=pending` and empty `blocked_by`; a subtask unblocks when all its
 `blocked_by` predecessors reach `status=completed` — drive in dependency order) —

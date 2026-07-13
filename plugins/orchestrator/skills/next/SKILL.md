@@ -155,10 +155,19 @@ Report the macro id, subtask id, engineer workflow id, and branch, then emit an
 **Active Next-Action Proposal** (not a fixed next command) per
 `skills/_shared/references/session-handoff.md § Active Next-Action Proposal`
 (canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
-engineer plugin): **selected_next**, **rejected_alternatives** (1-2 + why-not),
-**rationale** (본질/근본 essence/foundation + Standards/Root-Cause gate),
-**evidence_pointers** (pointers only), **confidence** (HIGH/MEDIUM/LOW), and
-**next_command** — derived from the post-dispatch macro state (another
+engineer plugin) — the canonical six-field template (runtime
+completion-output contract):
+
+```
+- selected_next:         <macro action | owner decision>
+- rejected_alternatives: <1-2 alternatives, each + one-line why-not>
+- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
+- evidence_pointers:     <macro plan / subtask states / phase notes — pointers only>
+- confidence:            <HIGH | MEDIUM | LOW>
+- next_command:          <exact next step: $orchestrator:<command> … — or the wait / owner-decision action>
+```
+
+Derive from the post-dispatch macro state (another
 `$orchestrator:next` when subtasks remain ready; `$orchestrator:finalize` when
 all are terminal; else waiting on the dispatched subtask's commit). Append the
 runtime completion footer when available. The footer is advisory and

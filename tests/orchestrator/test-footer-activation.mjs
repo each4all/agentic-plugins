@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   emitTerminalHandoffSidecar,
+  mapCompletionFlags,
   pendingHandoffReinjectionLine,
   footerMarkerFile,
 } from '../../plugins/orchestrator/scripts/session-handoff.mjs';
@@ -160,6 +161,65 @@ describe('orchestrator completion-footer activation (ADR-0039)', () => {
     strictEqual(res.stdout, `${macroPath}\n`, 'stdout must remain path-only');
     ok(!res.stdout.includes(FOOTER_HEADER), 'footer must NOT appear on stdout');
     ok(res.stderr.includes(FOOTER_HEADER), 'footer header must appear on stderr');
+  });
+
+  // S9 completion-output contract — the macro sidecar's completion flags must
+  // meet the minimum-content floor: the reason names the current phase and,
+  // when blocked, the SPECIFIC failed macro gates; blocked completions also
+  // pass a gate-specific unblocking --completion-next-action.
+  describe('completion-flag minimum content (completion-output contract)', () => {
+    const projection = {
+      workflow_kind: 'orchestrator',
+      workflow_id: 'macro-plan-20260712T000000Z-abc123',
+      workflow_path: '.agentic-plugins/state/orchestrator/workflows/macro-plan-20260712T000000Z-abc123.md',
+      phase: 'finalized',
+      next_action: 'Archive the finalized macro',
+      archive_gate: 'ready_to_archive',
+      routing_recommendation: '/orchestrator:resume',
+    };
+
+    it('names the phase on every archive-gate state', () => {
+      const ready = mapCompletionFlags({ ...projection, archive_gate: 'ready_to_archive' });
+      ok(ready.reason.includes('at phase finalized'), ready.reason);
+      strictEqual(ready.completionNextAction, undefined, 'no unblocking action when not blocked');
+
+      const notTerminal = mapCompletionFlags({ ...projection, archive_gate: 'not_terminal' }, ['terminal_marker']);
+      ok(notTerminal.reason.includes('at phase finalized'), notTerminal.reason);
+    });
+
+    it('names the specific failed macro gates and derives the unblocking action when blocked', () => {
+      const flags = mapCompletionFlags(
+        { ...projection, archive_gate: 'blocked' },
+        ['all_subtasks_terminal', 'no_active_engineer_children'],
+      );
+      strictEqual(flags.state, 'blocked');
+      ok(flags.reason.includes('macro archive gate(s) unmet: all_subtasks_terminal, no_active_engineer_children'), flags.reason);
+      ok(flags.completionNextAction.includes('Complete, defer, or abort the remaining non-terminal subtasks'), flags.completionNextAction);
+      ok(flags.completionNextAction.includes('Settle or archive the live engineer child workflows'), flags.completionNextAction);
+      ok(!/[\r\n]/.test(flags.reason), 'reason must stay single-line');
+      ok(!/[\r\n]/.test(flags.completionNextAction), 'next action must stay single-line');
+    });
+
+    it('E2E: a blocked macro terminal (pending subtask) renders gate names and stays generic-marker-free', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'orch-footer-blocked-'));
+      // T1 stays pending → all_subtasks_terminal fails after set-terminal.
+      const macroPath = await bootstrapMacro(root, { subtasks: [SUBTASK('T1')] });
+      const res = cliSetTerminal(root, macroPath, 'Archive the finalized macro');
+
+      strictEqual(res.status, 0, res.stderr);
+      ok(res.stderr.includes('completion state: blocked'), res.stderr);
+      ok(
+        res.stderr.includes('macro archive gate(s) unmet: all_subtasks_terminal'),
+        `reason must name the failed macro gate; got:\n${res.stderr}`,
+      );
+      ok(
+        res.stderr.includes('completion next action: Complete, defer, or abort the remaining non-terminal subtasks'),
+        `unblocking action must render; got:\n${res.stderr}`,
+      );
+      // The sidecar passes every completion flag explicitly — a macro terminal
+      // footer must never surface a runtime generic-fallback marker.
+      ok(!res.stderr.includes('[generic fallback]'), 'sidecar footers must be generic-marker-free');
+    });
   });
 
   it('promotes elements 2/3/4/7 to CONCRETE (completion state + recommended next work + continue-vs-fresh)', async () => {
