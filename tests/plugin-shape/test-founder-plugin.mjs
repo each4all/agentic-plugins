@@ -182,6 +182,8 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     'scripts/dispatch-peer.mjs',
     'scripts/peer-runner.mjs',
     'scripts/session-handoff.mjs',
+    // ADR-0043 S3 — dual-consumer runtime resolver (footer + notify floors).
+    'scripts/discover-runtime.mjs',
     'hooks/hooks.json',
     'adapters/claude/hooks/_shared.mjs',
     'adapters/claude/hooks/session-start.mjs',
@@ -241,6 +243,10 @@ describe('plugins/founder — PR6 boundary (machinery + six verbs + decision reg
     'commands/peer-now.md',
     'skills/peer-now/SKILL.md',
     'skills/peer-now/agents/openai.yaml',
+    // ADR-0043 S3 — the shared session-handoff wiring runbook (ADR-0039 §7
+    // recipe item; documents the code-emitted footer, the fail-closed
+    // baseline, and the footer-rendered marker contract).
+    'skills/_shared/references/session-handoff.md',
   ];
 
   for (const rel of REQUIRED_SURFACES) {
@@ -742,5 +748,63 @@ describe('plugins/founder — repo wiring (self-guard)', () => {
     const pkg = await readJSON(resolve(REPO_ROOT, 'package.json'));
     ok(pkg.scripts['test:plugin-shape'].includes('tests/plugin-shape/test-founder-plugin.mjs'),
       'host CI workflows run the explicit test:plugin-shape list — this file must be wired in');
+  });
+});
+
+// ADR-0043 S3 — the session-handoff wiring runbook is founder's single source
+// for the code-emitted footer path; its citation discipline and its documented
+// cross-package contracts (marker shape, publish-needed mapping) are pinned so
+// they cannot silently drift out of the runbook.
+describe('plugins/founder — session-handoff runbook (ADR-0043 S3)', () => {
+  const RUNBOOK = 'skills/_shared/references/session-handoff.md';
+
+  it('cites the engineer canonical contract BY NAME, never by a cross-plugin path (ADR-0010 §5)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, RUNBOOK), 'utf8');
+    ok(/entry-routing-contract\.md/.test(text),
+      'the runbook must cite the engineer canonical entry-routing-contract.md by name (single source)');
+    ok(!/plugins\/engineer/.test(text) && !/\.\.\/\.\.\/engineer/.test(text),
+      'the runbook must not reach the engineer contract by a cross-plugin path — cite it by name');
+  });
+
+  it('documents the footer-rendered marker contract and the publish-needed mapping', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, RUNBOOK), 'utf8');
+    ok(text.includes('.footer-rendered'),
+      'the marker filename contract (ADR-0043 §2 cross-package contract) must be documented');
+    ok(/"status":\s*"claimed"\|"rendered"|status.*claimed.*rendered/.test(text),
+      'the marker JSON shape (workflow_id + claimed/rendered status) must be documented');
+    ok(text.includes('publish-needed'),
+      "founder's manually-published completion mapping must be documented");
+    ok(/orphan sweep/i.test(text),
+      'the inherited orphan-sweep no-emit limitation must be documented (ADR-0043 §2 scope honesty)');
+  });
+
+  it('the verb command AND skill surfaces defer to the code-emitted footer (ADR-0039 §9 prose de-dup)', async () => {
+    const surfaces = [
+      'commands/investigate.md', 'commands/frame.md', 'commands/decide.md',
+      'commands/compose.md', 'commands/critique.md', 'commands/refine.md',
+      'commands/start.md',
+      // The skill runbooks carried the same pre-S3 deferral prose — pin them
+      // too so the de-dup cannot silently regress on the Codex-side surfaces
+      // (Codex Plan-verify: the command-only pin was incomplete).
+      'skills/investigate/SKILL.md', 'skills/frame/SKILL.md', 'skills/decide/SKILL.md',
+      'skills/compose/SKILL.md', 'skills/critique/SKILL.md', 'skills/refine/SKILL.md',
+      'skills/start/SKILL.md',
+    ];
+    for (const rel of surfaces) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      // investigate/SKILL.md never carried the deferral prose and stays
+      // footer-silent by design (its command file owns the completion
+      // surface); every other surface must defer to the code-emitted footer.
+      if (rel !== 'skills/investigate/SKILL.md') {
+        ok(/code-emit/.test(text),
+          `${rel} must defer to the code-emitted completion footer`);
+        ok(text.includes('references/session-handoff.md'),
+          `${rel} must point at the shared session-handoff runbook`);
+      }
+      ok(!/future work if demand arrives/.test(text),
+        `${rel} must not carry the retired pre-S3 deferral prose`);
+      ok(!/is future work, not\s*\npart of founder's surface/.test(text),
+        `${rel} must not carry the retired pre-S3 skill deferral prose`);
+    }
   });
 });

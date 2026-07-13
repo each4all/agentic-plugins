@@ -195,6 +195,9 @@ Present the final business artifact and save it (the durable
 `<root>/YYYY-MM-DD_<topic-slug>/` location). Write the terminal state:
 
 ```bash
+# ADR-0029 §1 / completion-output contract §2 — write the COMPACT form
+# (selected_next + one-line why + next_command) into --next-action; the
+# code-emitted footer surfaces it verbatim as "recommended next work".
 node "<plugin-root>/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host <claude|codex> \
   --terminal-phase summary-complete --terminal-marker true \
@@ -203,13 +206,18 @@ node "<plugin-root>/scripts/state.mjs" set-terminal \
 ```
 
 founder does NOT auto-commit — the user saves the deliverable to their
-per-venture content repository (ADR-0036 §SD5). Append an advisory
-completion footer (pointer-only): context state, completion state +
-state-derived next action, workflow id/path, the saved artifact pointer, and
-the recommended next work. Surface the session-level continue-vs-fresh
-read inline: the macro workflow is terminal, so a fresh deliverable starts a
-new `/founder:start`; do not mutate host session context. On detached HEAD,
-report "no active branch context".
+per-venture content repository (ADR-0036 §SD5). The `set-terminal` above
+fires the ADR-0031 session-handoff sidecar, which **code-emits** the
+runtime completion footer on stderr (ADR-0039, enabled by ADR-0043 S3):
+context state, completion state (`publish-needed` while only the owner's
+save/commit remains) + state-derived next action, workflow id/path,
+artifact pointers, recommended next work, and the continue-vs-fresh read —
+the macro workflow is terminal, so a fresh deliverable starts a new
+`/founder:start`. Do NOT hand-compose a second footer; surface the emitted
+one. The footer never mutates host session context; detached HEAD never
+auto-recommends a fresh session (the branch-based preflight is what
+reports "no active branch context"). Wiring:
+`skills/_shared/references/session-handoff.md`.
 
 ---
 

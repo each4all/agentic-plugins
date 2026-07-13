@@ -2,8 +2,12 @@
 //
 // This is the holistic, cross-persona AND cross-host acceptance gate for the
 // ADR-0039 series (engineer-wire → orch-wire + orch-next-action-shape →
-// acceptance). The per-plugin suites (tests/engineer/test-footer-activation.mjs,
-// tests/orchestrator/test-footer-activation.mjs) prove each path's mechanics in
+// acceptance), extended per persona as the ADR-0043 onboardings land (S3 added
+// founder; the second of S3/S4 to land completes the four-persona matrix per
+// ADR-0043 §5 shared-surface serialization). The per-plugin suites
+// (tests/engineer/test-footer-activation.mjs,
+// tests/orchestrator/test-footer-activation.mjs,
+// tests/founder/test-footer-activation.mjs) prove each path's mechanics in
 // depth; THIS suite proves the same load-bearing acceptance criteria hold
 // UNIFORMLY across every persona terminal path × host, driven through each
 // plugin's REAL completion CLI (no direct imports of the persona internals — a
@@ -57,10 +61,15 @@ const BASELINE_HEAD = '1111111111111111111111111111111111111111';
 // A distinctive next-action so AC2 can prove the element is concrete (the exact
 // caller-supplied string reaches the footer), not a generic default.
 const NEXT_ACTION = 'ACCEPTANCE-concrete-next-step-42';
-// The mapped completion states the set-terminal path can infer (footer.mjs
-// VALID_COMPLETION_STATES / inferCompletionState) — AC2 asserts one of these,
-// never an arbitrary/generic value.
-const MAPPED_STATE_RE = /completion state: (next-work-available|blocked)\b/;
+// The mapped completion states each persona's set-terminal path can infer
+// (footer.mjs VALID_COMPLETION_STATES / the persona's own mapper) — AC2
+// asserts one of the PERSONA's states, never an arbitrary/generic value and
+// never another persona's mapping (Codex Plan-verify: a shared alternation
+// would have weakened the engineer/orchestrator assertions). publish-needed
+// belongs only to the manually-published personas (founder/designer,
+// completion-output contract §2).
+const AUTO_COMMIT_STATES_RE = /completion state: (next-work-available|blocked)\b/;
+const MANUAL_PUBLISH_STATES_RE = /completion state: (next-work-available|publish-needed|blocked)\b/;
 
 function initRepo(root) {
   runGit(['init', '-q', '-b', 'feat/x'], { cwd: root });
@@ -78,6 +87,7 @@ const PERSONAS = [
     state: resolve(REPO_ROOT, 'plugins/engineer/scripts/state.mjs'),
     branch: 'feat/x',
     terminalPhase: 'summary-complete',
+    mappedStateRe: AUTO_COMMIT_STATES_RE,
     create(root, host) {
       return runNodeOk([
         this.state, 'create', '--repo-root', root,
@@ -94,6 +104,7 @@ const PERSONAS = [
     state: resolve(REPO_ROOT, 'plugins/orchestrator/scripts/state.mjs'),
     branch: 'main',
     terminalPhase: 'finalized',
+    mappedStateRe: AUTO_COMMIT_STATES_RE,
     create(root, host) {
       // A bare macro (verb=plan → macro id); the terminal footer fires from the
       // macro handoff sidecar on set-terminal regardless of subtasks.
@@ -102,6 +113,27 @@ const PERSONAS = [
         '--verb', 'plan', '--host', host,
         '--git-baseline-branch', this.branch, '--git-baseline-head', BASELINE_HEAD,
         '--status-digest', 'deadbeef', '--original-request', 'acceptance macro fixture',
+      ]);
+    },
+  },
+  {
+    // ADR-0043 S3 — founder onboarding row. Same set-terminal completion CLI;
+    // the BASELINE_HEAD fixture differs from the repo's real HEAD, so the
+    // head_moved gate passes and AC2 observes next-work-available (the
+    // publish-needed mapping is pinned in tests/founder/test-footer-activation.mjs).
+    name: 'founder',
+    state: resolve(REPO_ROOT, 'plugins/founder/scripts/state.mjs'),
+    branch: 'feat/x',
+    terminalPhase: 'summary-complete',
+    mappedStateRe: MANUAL_PUBLISH_STATES_RE,
+    create(root, host) {
+      return runNodeOk([
+        this.state, 'create', '--repo-root', root,
+        '--verb', 'compose', '--host', host, '--persona', 'founder',
+        '--git-baseline-branch', this.branch, '--git-baseline-head', BASELINE_HEAD,
+        '--status-digest', 'deadbeef', '--profile', 'plan',
+        '--original-request', 'acceptance fixture',
+        '--current-phase', 'phase-0-bootstrap', '--next-action', 'Run compose skill',
       ]);
     },
   },
@@ -154,8 +186,9 @@ describe('ADR-0039 acceptance — cross-persona × cross-host completion-footer 
             res.stderr.includes(`recommended next work: ${NEXT_ACTION}`),
             `recommended next work must carry the concrete next-action; got:\n${res.stderr}`,
           );
-          // element 2 — a MAPPED completion state (not any arbitrary token).
-          match(res.stderr, MAPPED_STATE_RE);
+          // element 2 — a MAPPED completion state (not any arbitrary token),
+          // drawn from THIS persona's own mapping.
+          match(res.stderr, persona.mappedStateRe);
           // element 7/8 — the continue-vs-fresh session handoff renders.
           ok(res.stderr.includes('session handoff (continue-vs-fresh)'), 'the session handoff must render');
           // cross-host localization — the persona routing command renders with
