@@ -2854,6 +2854,11 @@ export async function updateSubtask(opts) {
     if (autoTerminalSetThisCall) {
       frontmatter.terminal_marker = true;
       frontmatter.current_phase = 'commit-complete';
+      // Completion-output contract: the pre-terminal next_action (e.g.
+      // "Dispatch the first ready subtask") is stale the moment the last
+      // subtask lands — the sidecar footer would otherwise recommend it as
+      // next work. Rewrite it to the auto-terminal reality in the same pass.
+      frontmatter.next_action = 'All subtasks are terminal; the macro will auto-archive on the next Stop. Review the landed subtasks, then plan or dispatch the next work item.';
     }
 
     // Re-validate the full plan against schema invariants (catches

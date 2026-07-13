@@ -123,11 +123,19 @@ After the plan is approved and the session-level preflight is surfaced, emit an
 **Active Next-Action Proposal** instead of a fixed next verb, per
 `../_shared/references/session-handoff.md § Active Next-Action Proposal`
 (canonical: `entry-routing-contract.md § Active Next-Action Proposal` in the
-engineer plugin — cited by name, ADR-0010 §5 copy-not-import). Surface all six
-fields: **selected_next**, **rejected_alternatives** (1-2 + why-not),
-**rationale** (decisive axes 본질/근본 essence/foundation + the Standards/Root-Cause
-gate), **evidence_pointers** (pointers only), **confidence** (HIGH/MEDIUM/LOW),
-and **next_command**. For a freshly approved macro plan the typical
+engineer plugin — cited by name, ADR-0010 §5 copy-not-import). Surface the
+canonical six-field template (runtime completion-output contract):
+
+```
+- selected_next:         <macro action | owner decision>
+- rejected_alternatives: <1-2 alternatives, each + one-line why-not>
+- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
+- evidence_pointers:     <macro plan / subtask states / phase notes — pointers only>
+- confidence:            <HIGH | MEDIUM | LOW>
+- next_command:          <exact next step: $orchestrator:<command> … — or the wait / owner-decision action>
+```
+
+For a freshly approved macro plan the typical
 `selected_next` is `/orchestrator:next` (dispatch the first unblocked subtask) or
 `$orchestrator:next` on Codex — but a zero-subtask plan or a surfaced CONFLICT
 routes to the honest next step (closing the plan, or an owner decision), never a

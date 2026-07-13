@@ -1644,6 +1644,13 @@ describe('state.mjs — ADR-0019 PR-C0 updateSubtask atomic single-subtask mutat
       const { frontmatter } = await readWorkflow(filePath);
       strictEqual(frontmatter.terminal_marker, true);
       strictEqual(frontmatter.current_phase, 'commit-complete');
+      // Completion-output contract: the auto-terminal pass must rewrite the
+      // now-stale next_action so the sidecar footer never recommends
+      // pre-terminal work (e.g. dispatching a subtask that no longer exists).
+      ok(
+        frontmatter.next_action.includes('All subtasks are terminal'),
+        `auto-terminal must rewrite next_action; got: ${frontmatter.next_action}`,
+      );
     });
   });
 
