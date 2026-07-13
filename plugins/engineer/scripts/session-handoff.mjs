@@ -127,7 +127,12 @@ function projectParsedWorkflow({ repoRoot, activePath, parsed, resolvedRouting, 
   };
   const checkpoint = frontmatter.latest_checkpoint?.summary;
   if (checkpoint) projection.checkpoint = checkpoint;
-  return { projection, status: 'ok', routing: resolvedRouting };
+  // gate_failures rides the RETURN value only, never the projection: the
+  // bounded ADR-0031 schema is frozen (the runtime seam rejects unknown keys),
+  // but the completion-flag mapping (completion-output contract) needs the
+  // concrete failed gates to name them in --completion-reason /
+  // --completion-next-action.
+  return { projection, status: 'ok', routing: resolvedRouting, gate_failures: verdict.gateFailures };
 }
 
 export async function computeEngineerProjection({
@@ -323,15 +328,43 @@ async function releaseFooterClaim(markerFile, workflowId) {
 // the terminal engineer path maps only among blocked / next-work-available,
 // matching the runtime's own inference (a concrete next action →
 // next-work-available; footer.mjs `inferCompletionState`).
-function mapCompletionFlags(projection) {
+//
+// Completion-output contract (runtime docs/completion-output-contract.md):
+// the reason names the CURRENT PHASE and, when blocked, the SPECIFIC failed
+// gates (from the pure evaluator's verdict — threaded via the compute return,
+// never the frozen projection schema); a blocked completion also passes a
+// gate-specific --completion-next-action naming the unblocking action.
+const BLOCKED_GATE_NEXT_ACTIONS = {
+  // head_moved is a fail-closed collapse: a failed git probe also reports it
+  // (evaluateStopArchive treats a null probe as "HEAD did not move").
+  head_moved: 'Commit the completed work so HEAD moves past the workflow baseline (the Stop-hook archive gate requires a real commit; a failed git probe also reports this gate).',
+  no_active_children: 'Settle or archive the active child workflows dispatched from this workflow before archiving it.',
+  terminal_phase: 'Advance current_phase to an archive-whitelisted terminal phase (commit-complete, summary-complete, or fix-complete).',
+};
+
+export function mapCompletionFlags(projection, gateFailures = []) {
   const gate = projection.archive_gate;
   const state = gate === 'blocked' ? 'blocked' : 'next-work-available';
+  const blockedGates = gateFailures.filter((g) => g !== 'terminal_marker');
   const reason = gate === 'blocked'
-    ? 'Terminal marker is set but an archive gate is unmet (HEAD unmoved, active children, or terminal-phase gate).'
+    ? `Terminal marker is set at phase ${projection.phase} but archive gate(s) unmet: ${blockedGates.join(', ') || 'unknown'}.`
     : gate === 'not_terminal'
-      ? 'Workflow is not yet terminal; concrete next work remains before archive.'
-      : 'Workflow reached a terminal, archive-ready state; a concrete next action is recommended.';
-  return { state, reason, recommendedNextWork: projection.next_action };
+      ? `Workflow at phase ${projection.phase} is not yet terminal; concrete next work remains before archive.`
+      : `Workflow at phase ${projection.phase} is terminal and archive-ready; a concrete next action is recommended.`;
+  const flags = { state, reason, recommendedNextWork: projection.next_action };
+  if (gate === 'blocked') {
+    const actions = blockedGates
+      .map((g) => BLOCKED_GATE_NEXT_ACTIONS[g])
+      .filter(Boolean);
+    // Always pass an explicit unblocking action on blocked terminals — an
+    // unknown/future gate token falls back to a sidecar-authored generic
+    // instruction rather than letting the runtime's no-input default render
+    // with a generic-fallback marker (contract §3.2 marker-free floor).
+    flags.completionNextAction = actions.length > 0
+      ? actions.join(' ')
+      : `Resolve the unmet archive gate(s): ${blockedGates.join(', ') || 'unknown'} (see the workflow phase notes).`;
+  }
+  return flags;
 }
 
 // Spawn footer.mjs once. Captures the CHILD's stdout only (execFile never routes
@@ -361,7 +394,7 @@ function execFooter(footerScript, args) {
 // (require NO projection_error AND a session_handoff), and only then emit the
 // human-readable `--format text`. Fail-closed silent throughout; resolves true
 // ONLY when a VALID footer was surfaced.
-function renderTerminalFooter({ repoRoot, host, projectionFile, projection }) {
+function renderTerminalFooter({ repoRoot, host, projectionFile, projection, gateFailures }) {
   return new Promise((resolveRender) => {
     (async () => {
       try {
@@ -371,7 +404,7 @@ function renderTerminalFooter({ repoRoot, host, projectionFile, projection }) {
           return;
         }
         const footerScript = join(runtimeRoot, 'scripts', 'footer.mjs');
-        const flags = mapCompletionFlags(projection);
+        const flags = mapCompletionFlags(projection, gateFailures);
         // footer.mjs validateHost accepts claude|codex|neutral; fall back to
         // neutral when the caller did not thread a concrete host.
         const footerHost = host === 'claude' || host === 'codex' ? host : 'neutral';
@@ -384,6 +417,12 @@ function renderTerminalFooter({ repoRoot, host, projectionFile, projection }) {
           '--completion-reason', flags.reason,
           '--recommended-next-work', flags.recommendedNextWork,
         ];
+        if (flags.completionNextAction) {
+          // Gate-specific unblocking action (completion-output contract).
+          // --completion-next-action predates the 0.63.0 discovery floor, so no
+          // separate capability floor is needed.
+          baseArgs.push('--completion-next-action', flags.completionNextAction);
+        }
         // 1. Validate via structured JSON — footer.mjs exits 0 on projection errors.
         const jsonRun = await execFooter(footerScript, [...baseArgs, '--format', 'json']);
         if (!jsonRun.ok) {
@@ -484,7 +523,13 @@ export async function emitTerminalHandoffSidecar({ repoRoot, workflowPath, proje
     if (await footerRenderedMatches(markerFile, p.workflow_id)) {
       footerRendered = true; // the primary already rendered; the backstop must not re-render
     } else if (await claimFooterRender(markerFile, p.workflow_id)) {
-      footerRendered = await renderTerminalFooter({ repoRoot, host, projectionFile: target, projection: p });
+      footerRendered = await renderTerminalFooter({
+        repoRoot,
+        host,
+        projectionFile: target,
+        projection: p,
+        gateFailures: result.gate_failures ?? [],
+      });
       if (footerRendered) await markFooterRendered(markerFile, p.workflow_id);
       else await releaseFooterClaim(markerFile, p.workflow_id);
     } else {

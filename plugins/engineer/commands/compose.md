@@ -253,11 +253,19 @@ Output the artifact (plan or change set) and one of:
 
 Then emit an **Active Next-Action Proposal** instead of a fixed next
 verb, per `skills/_shared/references/entry-routing-contract.md`
-§ Active Next-Action Proposal: **selected_next**, **rejected_alternatives**
-(1-2 + why-not), **rationale** (decisive axes 본질/근본 essence/foundation +
-the Standards/Root-Cause gate), **evidence_pointers** (pointers only),
-**confidence** (HIGH/MEDIUM/LOW), and **next_command** (the `/engineer:<verb> …` / `$engineer:<verb>` mention
-for a verb, or the concrete action for `commit` / `owner decision`). Typical `selected_next` candidates for compose:
+§ Active Next-Action Proposal — the canonical six-field template
+(runtime completion-output contract):
+
+```
+- selected_next:         <verb | commit | owner decision>
+- rejected_alternatives: <1-2 alternatives, each + one-line why-not>
+- rationale:             <why best — 본질/근본 (essence/foundation) + Standards/Root-Cause gate>
+- evidence_pointers:     <phase notes / files / artifacts — pointers only>
+- confidence:            <HIGH | MEDIUM | LOW>
+- next_command:          <exact next step: /engineer:<verb> … or $engineer:<verb> for a verb; the commit / owner-decision action otherwise>
+```
+
+Typical `selected_next` candidates for compose:
 `/engineer:critique` to review the artifact — or, for a completed `plan`
 profile, `/engineer:compose --profile=code` to implement it; the routing
 table is the fallback only when evidence is genuinely neutral — do not end
