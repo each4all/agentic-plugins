@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   emitTerminalHandoffSidecar,
+  mapCompletionFlags,
   pendingHandoffReinjectionLine,
 } from '../../plugins/engineer/scripts/session-handoff.mjs';
 
@@ -265,6 +266,112 @@ describe('engineer completion-footer activation (ADR-0039)', () => {
     const pending = await pendingHandoffReinjectionLine(root);
     ok(pending && pending.line && pending.line.includes('[engineer-handoff-pending]'),
       'a degraded render keeps the SessionStart nudge as a backstop');
+  });
+
+  // S9 completion-output contract — the sidecar's completion flags must meet
+  // the minimum-content floor: the reason names the current phase and, when
+  // blocked, the SPECIFIC failed gates; blocked completions also pass a
+  // gate-specific unblocking --completion-next-action.
+  describe('completion-flag minimum content (completion-output contract)', () => {
+    const projection = {
+      workflow_kind: 'engineer',
+      workflow_id: 'compose-20260712T000000Z-abc123',
+      workflow_path: '.agentic-plugins/state/engineer/workflows/compose-20260712T000000Z-abc123.md',
+      phase: 'summary-complete',
+      next_action: 'Critique the composed artifact',
+      archive_gate: 'ready_to_archive',
+      routing_recommendation: '/engineer:resume',
+    };
+
+    it('names the phase on every archive-gate state', () => {
+      const ready = mapCompletionFlags({ ...projection, archive_gate: 'ready_to_archive' });
+      ok(ready.reason.includes('at phase summary-complete'), ready.reason);
+      strictEqual(ready.state, 'next-work-available');
+      strictEqual(ready.completionNextAction, undefined, 'no unblocking action when not blocked');
+
+      const notTerminal = mapCompletionFlags({ ...projection, archive_gate: 'not_terminal' }, ['terminal_marker']);
+      ok(notTerminal.reason.includes('at phase summary-complete'), notTerminal.reason);
+      strictEqual(notTerminal.completionNextAction, undefined);
+    });
+
+    it('names the specific failed gates and derives the unblocking action when blocked', () => {
+      const flags = mapCompletionFlags(
+        { ...projection, archive_gate: 'blocked' },
+        ['head_moved', 'no_active_children'],
+      );
+      strictEqual(flags.state, 'blocked');
+      ok(flags.reason.includes('archive gate(s) unmet: head_moved, no_active_children'), flags.reason);
+      ok(flags.completionNextAction.includes('Commit the completed work so HEAD moves'), flags.completionNextAction);
+      ok(flags.completionNextAction.includes('Settle or archive the active child workflows'), flags.completionNextAction);
+      ok(!/[\r\n]/.test(flags.reason), 'reason must stay single-line');
+      ok(!/[\r\n]/.test(flags.completionNextAction), 'next action must stay single-line');
+    });
+
+    it('always passes an explicit unblocking action when blocked — unknown gates get the sidecar fallback', () => {
+      // Empty verdict (hand-invoked) and a future gate token both fall back to
+      // a sidecar-authored instruction: the runtime's no-input default would
+      // render with a generic-fallback marker (contract §3.2 marker-free floor).
+      const empty = mapCompletionFlags({ ...projection, archive_gate: 'blocked' }, []);
+      ok(empty.reason.includes('archive gate(s) unmet: unknown'), empty.reason);
+      strictEqual(
+        empty.completionNextAction,
+        'Resolve the unmet archive gate(s): unknown (see the workflow phase notes).',
+      );
+
+      const future = mapCompletionFlags({ ...projection, archive_gate: 'blocked' }, ['future_gate']);
+      strictEqual(
+        future.completionNextAction,
+        'Resolve the unmet archive gate(s): future_gate (see the workflow phase notes).',
+      );
+    });
+
+    it('E2E: a blocked terminal (HEAD unmoved) renders gate names and stays generic-marker-free', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'footer-blocked-'));
+      initRepo(root);
+      // Baseline the workflow at the REAL current HEAD so the head_moved gate
+      // fails at set-terminal time (no commit in between) → archive_gate=blocked.
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+      const wf = execFileSync(
+        'node',
+        [
+          STATE, 'create', '--repo-root', root,
+          '--verb', 'compose', '--host', 'claude', '--persona', 'engineer',
+          '--git-baseline-branch', 'feat/x', '--git-baseline-head', head,
+          '--status-digest', 'deadbeef',
+          '--profile', 'backend', '--original-request', 'blocked footer test',
+          '--current-phase', 'phase-0-bootstrap', '--next-action', 'Run compose skill',
+        ],
+        { encoding: 'utf8' },
+      ).trim();
+      const res = cliSetTerminal(root, wf, 'Critique the composed artifact');
+
+      strictEqual(res.status, 0, res.stderr);
+      ok(res.stderr.includes('completion state: blocked'), res.stderr);
+      ok(
+        res.stderr.includes('archive gate(s) unmet: head_moved'),
+        `reason must name the failed gate; got:\n${res.stderr}`,
+      );
+      ok(
+        res.stderr.includes('completion next action: Commit the completed work so HEAD moves'),
+        `unblocking action must render; got:\n${res.stderr}`,
+      );
+      // The sidecar passes every completion flag explicitly — a persona terminal
+      // footer must never surface a runtime generic-fallback marker.
+      ok(!res.stderr.includes('[generic fallback]'), 'sidecar footers must be generic-marker-free');
+    });
+
+    it('E2E: the archive-ready terminal reason names the terminal phase', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'footer-ready-'));
+      initRepo(root);
+      const wf = createWorkflow(root);
+      const res = cliSetTerminal(root, wf, 'Critique the composed artifact');
+      strictEqual(res.status, 0, res.stderr);
+      ok(
+        res.stderr.includes('completion reason: Workflow at phase summary-complete is terminal and archive-ready'),
+        `reason must name the phase; got:\n${res.stderr}`,
+      );
+      ok(!res.stderr.includes('[generic fallback]'), 'sidecar footers must be generic-marker-free');
+    });
   });
 
   it("a 'claimed' (in-progress/crashed) marker does not suppress the nudge — only 'rendered' does (Codex Plan-verify BLOCKER 2)", async () => {
