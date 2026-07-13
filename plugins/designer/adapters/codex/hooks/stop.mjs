@@ -23,7 +23,8 @@
 // Hook absence is non-fatal (ADR-0011 §4 explicit). This script
 // silently no-ops on any error.
 
-import { findActiveWorkflow } from '../../../scripts/state.mjs';
+import { findActiveWorkflow, readWorkflow } from '../../../scripts/state.mjs';
+import { emitTerminalHandoffSidecar } from '../../../scripts/session-handoff.mjs';
 import { runStopArchive, runStopArchiveOrphanSweep } from '../../../scripts/stop-archive.mjs';
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -87,6 +88,23 @@ async function main() {
     active = null;
   }
   if (active) {
+    // ADR-0031 hook backstop (designer-hook-backstop, ADR-0043 S4) — if the
+    // active workflow is terminal, (re)fire the activation sidecar BEFORE
+    // archiving so the guaranteed-channel projection is written even when the
+    // primary set-terminal sidecar's emit was missed or failed transiently.
+    // Non-fatal; never blocks the Stop lifecycle. Not a substitute for the
+    // primary firing. The orphan sweep below archives deleted-branch terminals
+    // WITHOUT a final emit attempt (documented inherited limitation).
+    try {
+      const { frontmatter } = await readWorkflow(active);
+      if (frontmatter?.terminal_marker === true) {
+        // ADR-0039 — thread host so the backstop footer render localizes for
+        // Codex; idempotency marker makes this a no-op if the primary rendered.
+        await emitTerminalHandoffSidecar({ repoRoot, workflowPath: active, host: 'codex' });
+      }
+    } catch (err) {
+      process.stderr.write(`designer/codex-stop handoff-backstop: ${err.message}\n`);
+    }
     try {
       await runStopArchive({
         workflowPath: active,

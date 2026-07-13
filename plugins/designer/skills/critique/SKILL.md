@@ -291,10 +291,12 @@ Always include the workflow path when invoked from a workflow command:
 Workflow: <absolute path to workflow .md file>
 ```
 
-(The inline Active Next-Action Proposal shape above is what designer ships; the
-deeper runtime-completion-footer / ADR-0031 session-handoff seam integration that
-the engineer plugin carries is not part of designer's surface — future work if
-demand arrives.)
+(When the invoking workflow command's terminal write runs — `state.mjs
+set-terminal` — the runtime completion footer is **code-emitted** on that
+command's stderr per ADR-0039/ADR-0043 S4; do not hand-compose a second
+footer — surface the emitted one. Standalone skill invocations write no
+workflow state and emit no footer. Wiring:
+`skills/_shared/references/session-handoff.md`.)
 
 ---
 

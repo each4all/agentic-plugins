@@ -235,6 +235,9 @@ flow spec / wireframe spec / CTA copy at its
 # variable means "convergence not established", and the macro stays active.
 CONVERGED="<yes|no — from the Phase 4 re-critique verdict; unset means no>"
 if [ "${CONVERGED:-no}" = "yes" ]; then
+  # ADR-0029 §1 / completion-output contract §2 — write the COMPACT form
+  # (selected_next + one-line why + next_command) into --next-action; the
+  # code-emitted footer surfaces it verbatim as "recommended next work".
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
     --terminal-phase summary-complete --terminal-marker true \
@@ -249,12 +252,18 @@ designer does NOT auto-commit and does NOT dispatch (ADR-0042 Non-Goal 2).
 The terminal output names the **artifact handoff** explicitly: the saved spec
 is the input to `/engineer:start` (single surface) or `/orchestrator:plan`
 (multi-deliverable frontend program), and the rendered result comes back to
-`/designer:critique` for the post-code quality pass. Append an advisory,
-pointer-only completion summary (context state, completion state +
-state-derived next action, workflow id/path, the saved artifact pointer,
-recommended next work). The macro workflow is terminal, so a fresh deliverable
-starts a new `/designer:start`. Do not mutate host session context. On
-detached HEAD, report "no active branch context".
+`/designer:critique` for the post-code quality pass. The `set-terminal` above
+fires the ADR-0031 session-handoff sidecar, which **code-emits** the
+runtime completion footer on stderr (ADR-0039, enabled by ADR-0043 S4):
+context state, completion state (`publish-needed` while only the owner's
+save/commit remains) + state-derived next action, workflow id/path,
+artifact pointers, recommended next work, and the continue-vs-fresh read —
+the macro workflow is terminal, so a fresh deliverable starts a new
+`/designer:start`. Do NOT hand-compose a second footer; surface the emitted
+one. The footer never mutates host session context; detached HEAD never
+auto-recommends a fresh session (the branch-based preflight is what
+reports "no active branch context"). Wiring details:
+`skills/_shared/references/session-handoff.md`.
 
 Always include the workflow path:
 
@@ -264,8 +273,3 @@ Workflow: <absolute path to workflow .md file>
 
 ADR-0042 is `Accepted` — the six cognitive verbs, this `start` macro, and the
 `resume` / `checkpoint` / `peer-now` meta skills all ship.
-
-designer surfaces the inline next-action proposal + the workflow path above;
-the deeper runtime-completion-footer / ADR-0031 session-handoff seam
-integration that the engineer plugin carries is not part of designer's
-surface (future work if demand arrives).

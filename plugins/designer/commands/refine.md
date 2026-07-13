@@ -265,6 +265,10 @@ fi
 # explicitly IN THIS BLOCK from the re-critique verdict.
 CONVERGED="<yes|no — from the re-critique verdict; unset means no>"
 if [ "${CONVERGED:-no}" = "yes" ]; then
+  # ADR-0029 §1 / completion-output contract §2 — $NEXT_ACTION above is already
+  # the COMPACT proposal form (selected_next + one-line why + next_command); the
+  # durable state and the code-emitted completion footer surface it verbatim as
+  # "recommended next work".
   node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
     --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
     --terminal-phase summary-complete \
@@ -322,7 +326,20 @@ Always include the workflow path:
 Workflow: <absolute path to workflow .md file>
 ```
 
-designer surfaces the inline next-action proposal + the workflow path above; the
-deeper runtime-completion-footer / ADR-0031 session-handoff seam integration that
-the engineer plugin carries is not part of designer's surface (future work if
-demand arrives).
+The runtime completion footer is **code-emitted** on this verb's terminal
+path (ADR-0039, enabled for designer by ADR-0043 S4): `state.mjs
+set-terminal` fires the ADR-0031 session-handoff sidecar, which shells out
+to the runtime `footer.mjs` and prints the rendered footer — context
+state, completion state (designer's manually-published mapping surfaces
+`publish-needed` when only the owner's save/commit remains) + state-derived
+next action, workflow id/path, artifact pointers, recommended next work,
+and the continue-vs-fresh session-handoff — on that command's **stderr**.
+Do **not** hand-compose a second footer; surface the one the terminal
+command already emitted. The footer is advisory + pointer-only and
+fail-closed (a missing/too-old runtime emits nothing, and the SessionStart
+backstop still re-surfaces the handoff); it never mutates host session
+context. Detached HEAD never auto-recommends a fresh session (ADR-0018
+§sub-2; the branch-based preflight is what reports "no active branch
+context" — the path-targeted terminal sidecar still renders normally).
+Wiring details:
+`skills/_shared/references/session-handoff.md`.

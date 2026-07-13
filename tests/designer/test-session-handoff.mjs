@@ -4,10 +4,11 @@
 //
 // Runtime-seam status: ADR-0043 S2 widened plugins/runtime's
 // normalizeProjection enum to all four personas, so designer projections
-// are seam-accepted on a current runtime; designer's own sidecar/footer
-// plumbing lands separately (ADR-0043 S4 — the ADR-0016 cross-package
-// rule keeps runtime and designer changes in separate PRs). These tests
-// assert designer's OWN projection shape, not the runtime round-trip.
+// are seam-accepted on a current runtime; designer's sidecar/footer
+// plumbing landed with ADR-0043 S4 (its suites are
+// test-handoff-sidecar / test-footer-activation / test-handoff-backstop).
+// These tests assert designer's OWN projection shape, not the runtime
+// round-trip.
 //
 // Run via `node --test tests/designer/test-session-handoff.mjs`.
 
@@ -21,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   computeDesignerProjection,
+  computeDesignerProjectionForPath,
   mapArchiveGate,
   parseArgs,
 } from '../../plugins/designer/scripts/session-handoff.mjs';
@@ -55,7 +57,14 @@ function setTerminal(workflowPath) {
       '--terminal-phase', 'summary-complete', '--terminal-marker', 'true',
       '--next-action', 'Critique the composed artifact', '--event', 'updated',
     ],
-    { encoding: 'utf8' },
+    {
+      encoding: 'utf8',
+      // The CLI set-terminal now fires the ADR-0043 S4 sidecar (footer
+      // included). These tests assert PROJECTION logic only — pin discovery
+      // at a nonexistent root so the render fail-closes identically on every
+      // machine (a host plugin cache must not make this suite env-dependent).
+      env: { ...process.env, AGENTIC_RUNTIME_ROOT: join(tmpdir(), 'no-such-runtime') },
+    },
   );
 }
 
@@ -114,7 +123,7 @@ describe('designer session handoff projection (ADR-0031)', () => {
     strictEqual(blocked.projection.archive_gate, 'blocked'); // terminal-marked but HEAD did not move
   });
 
-  it('emits the designer projection shape (runtime-seam acceptance deferred to a runtime PR)', async () => {
+  it('emits the designer projection shape (seam-accepted since the ADR-0043 S2 enum expansion)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsg-handoff-xcheck-'));
     createWorkflow(root, 'feat/z');
     const { projection } = await computeDesignerProjection({
@@ -122,7 +131,7 @@ describe('designer session handoff projection (ADR-0031)', () => {
     });
     ok(projection);
     strictEqual(projection.workflow_kind, 'designer',
-      'designer must identify its own workflow_kind — the runtime seam enum extension is a deferred runtime PR');
+      'designer must identify its own workflow_kind — the runtime seam models it since the ADR-0043 S2 enum expansion');
     strictEqual(projection.archive_gate, 'not_terminal');
     ok(projection.workflow_path.includes('.agentic-plugins/state/designer/workflows/'),
       `repo-relative pointer must use the designer canonical home: ${projection.workflow_path}`);
@@ -164,5 +173,53 @@ describe('designer session handoff projection (ADR-0031)', () => {
     strictEqual(options.repoRoot, '/r');
     strictEqual(options.branch, 'b');
     strictEqual(options.routing, '/designer:resume');
+  });
+
+  // ADR-0043 S4 — the path-targeted variant the activation sidecar uses, and
+  // the gate_failures return channel the completion-flag mapping consumes.
+  describe('computeDesignerProjectionForPath (ADR-0043 §2 path-targeted baseline)', () => {
+    it('projects the exact workflow at the given path', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'dsg-forpath-ok-'));
+      const pathA = createWorkflow(root, 'feat/a');
+      createWorkflow(root, 'feat/b');
+      const result = await computeDesignerProjectionForPath({
+        repoRoot: root, workflowPath: pathA, headSha: MOVED_HEAD, headSubject: 'feat: a',
+      });
+      strictEqual(result.status, 'ok');
+      strictEqual(result.projection.workflow_kind, 'designer');
+      ok(pathA.endsWith(`${result.projection.workflow_id}.md`), 'projects the path-targeted workflow');
+    });
+
+    it('is fail-closed on a missing path and reports no_active_workflow on an empty one', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'dsg-forpath-none-'));
+      const missing = await computeDesignerProjectionForPath({
+        repoRoot: root, workflowPath: join(root, 'nope.md'),
+      });
+      strictEqual(missing.status, 'fail_closed');
+      strictEqual(missing.projection, null);
+      const empty = await computeDesignerProjectionForPath({ repoRoot: root });
+      strictEqual(empty.status, 'no_active_workflow');
+      strictEqual(empty.routing, '/designer:resume', 'routing survives with no projection');
+    });
+
+    it('threads gate_failures on the return value, never inside the bounded projection', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'dsg-forpath-gates-'));
+      const path = createWorkflow(root, 'feat/g');
+      setTerminal(path);
+      // Terminal-marked + HEAD unmoved → blocked with head_moved as the only
+      // failed gate — the evidence the publish-needed mapping keys on.
+      const blocked = await computeDesignerProjectionForPath({
+        repoRoot: root, workflowPath: path, headSha: BASELINE_HEAD, headSubject: 'feat: g',
+      });
+      strictEqual(blocked.projection.archive_gate, 'blocked');
+      strictEqual(JSON.stringify(blocked.gate_failures), JSON.stringify(['head_moved']));
+      ok(!('gate_failures' in blocked.projection),
+        'the frozen 8-field projection schema must not carry gate_failures');
+      const ready = await computeDesignerProjectionForPath({
+        repoRoot: root, workflowPath: path, headSha: MOVED_HEAD, headSubject: 'feat: g',
+      });
+      strictEqual(ready.projection.archive_gate, 'ready_to_archive');
+      strictEqual(ready.gate_failures.length, 0);
+    });
   });
 });

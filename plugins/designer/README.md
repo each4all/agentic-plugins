@@ -49,11 +49,18 @@ vision, plus the frontend code itself). This is the mechanism that makes
 ## Runtime integration
 
 `runtime:doctor` and `runtime:settings` recognize `designer` in their plugin
-inventory and Codex hook-readiness checks. Per ADR-0042 §Consequences the
-runtime `workflow_kind` projection is deliberately **not** extended for
-designer (runtime models only `engineer` / `orchestrator`; founder and
-designer are unsupported kinds by design), so designer workflows do not
-appear in the `runtime:dashboard` Tier-1 active-workflow view.
+inventory and Codex hook-readiness checks. Per
+[ADR-0043](../../docs/adr/0043-founder-designer-footer-enablement.md) the
+runtime `workflow_kind` projection seam models all four personas (S2), and
+designer terminal paths **code-emit** the runtime completion footer through
+the ADR-0031 session-handoff sidecar (S4) — see
+`skills/_shared/references/session-handoff.md` for the wiring, the dual
+discovery floors, and the footer-rendered marker contract. Designer stays
+out of the `runtime:dashboard` Tier-1 active-workflow view: Tier-1 scoping
+is a deliberate ADR-0040 §6 decision independent of the projection seam
+(designer inclusion is a demand-gated follow-up per ADR-0043 §3), and the
+attention sensors' designer enrichment is likewise a separate post-S4
+follow-up.
 
 ## Scope boundaries (ADR-0042 Non-Goals)
 
