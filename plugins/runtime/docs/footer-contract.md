@@ -182,6 +182,18 @@ those outcomes. A caller that emits `closed` is asserting that PR, release,
 installed-state, cleanup, and planned follow-up evidence has already been
 checked outside the footer.
 
+Completion provenance is reported per field
+([`completion-output-contract.md`](completion-output-contract.md)):
+`completion.sources` classifies state/reason/next-action as
+`explicit | derived | generic` (the legacy coarse `completion.source` is
+frozen), `recommended_next_work_source` does the same for the recommended
+next work, and text output suffixes ` [generic fallback]` onto any
+completion surface whose value is a no-evidence runtime template — silent
+degradation never renders indistinguishable from caller-authored content.
+That contract also fixes the minimum content callers must pass in
+`--completion-reason` / `--recommended-next-work` /
+`--completion-next-action`.
+
 ### PR handling readiness
 
 Callers should include PR handling fields only after the work itself has
