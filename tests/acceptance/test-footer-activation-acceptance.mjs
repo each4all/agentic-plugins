@@ -2,12 +2,13 @@
 //
 // This is the holistic, cross-persona AND cross-host acceptance gate for the
 // ADR-0039 series (engineer-wire → orch-wire + orch-next-action-shape →
-// acceptance), extended per persona as the ADR-0043 onboardings land (S3 added
-// founder; the second of S3/S4 to land completes the four-persona matrix per
+// acceptance), extended per persona as the ADR-0043 onboardings landed (S3
+// added founder; S4 added designer, completing the four-persona matrix per
 // ADR-0043 §5 shared-surface serialization). The per-plugin suites
 // (tests/engineer/test-footer-activation.mjs,
 // tests/orchestrator/test-footer-activation.mjs,
-// tests/founder/test-footer-activation.mjs) prove each path's mechanics in
+// tests/founder/test-footer-activation.mjs,
+// tests/designer/test-footer-activation.mjs) prove each path's mechanics in
 // depth; THIS suite proves the same load-bearing acceptance criteria hold
 // UNIFORMLY across every persona terminal path × host, driven through each
 // plugin's REAL completion CLI (no direct imports of the persona internals — a
@@ -137,6 +138,28 @@ const PERSONAS = [
       ]);
     },
   },
+  {
+    // ADR-0043 S4 — designer onboarding row, completing the four-persona
+    // matrix (§5 shared-surface serialization: the second of S3/S4 to land
+    // extends this suite for its persona). Manually-published mapping like
+    // founder; the publish-needed specifics are pinned in
+    // tests/designer/test-footer-activation.mjs.
+    name: 'designer',
+    state: resolve(REPO_ROOT, 'plugins/designer/scripts/state.mjs'),
+    branch: 'feat/x',
+    terminalPhase: 'summary-complete',
+    mappedStateRe: MANUAL_PUBLISH_STATES_RE,
+    create(root, host) {
+      return runNodeOk([
+        this.state, 'create', '--repo-root', root,
+        '--verb', 'compose', '--host', host, '--persona', 'designer',
+        '--git-baseline-branch', this.branch, '--git-baseline-head', BASELINE_HEAD,
+        '--status-digest', 'deadbeef', '--profile', 'general',
+        '--original-request', 'acceptance fixture',
+        '--current-phase', 'phase-0-bootstrap', '--next-action', 'Run compose skill',
+      ]);
+    },
+  },
 ];
 
 // Both hosts run the SAME acceptance criteria — the cross-host coverage proves
@@ -229,7 +252,7 @@ describe('ADR-0039 acceptance — persona plugins reach footer.mjs only by subpr
   // review + the per-plugin footer wiring's own tests are the backstop for that
   // residual. This guard catches every LITERAL import/require/export form,
   // including re-exports and template-literal specifiers.
-  const PERSONA_DIRS = ['plugins/engineer', 'plugins/orchestrator', 'plugins/founder'];
+  const PERSONA_DIRS = ['plugins/engineer', 'plugins/orchestrator', 'plugins/founder', 'plugins/designer'];
 
   // Static import/export forms are anchored at LINE START (^, /m) and their
   // specifiers stay single-line ([^`'"\n]) so a subprocess string arg
@@ -238,10 +261,17 @@ describe('ADR-0039 acceptance — persona plugins reach footer.mjs only by subpr
   // `footer.mjs` — is NOT flagged; only a real statement is. Dynamic import()
   // and require() are matched mid-line (they are calls, not statements). The
   // specifier char class allows ' " and ` (template-literal specifiers).
+  // Multiline STATIC forms are covered by the brace/namespace patterns below
+  // (their bounded bodies — [^}] / identifier — may span newlines without
+  // risking prose false-positives); a fully computed dynamic import remains
+  // the documented static-analysis limit above.
   const IMPORT_PATTERNS = [
     /^\s*import\b[^\n]*\bfrom\s*[`'"][^`'"\n]*footer\.mjs/m, // import … from '…footer.mjs'
     /^\s*import\s*[`'"][^`'"\n]*footer\.mjs/m,               // bare import '…footer.mjs'
     /^\s*export\b[^\n]*\bfrom\s*[`'"][^`'"\n]*footer\.mjs/m, // export {x}/ * from '…footer.mjs'
+    /^\s*import\s+(?:[\w$]+\s*,\s*)?\{[^}]*\}\s*from\s*[`'"][^`'"\n]*footer\.mjs/m, // multiline named/mixed import { … \n … } from '…footer.mjs'
+    /^\s*export\s+\{[^}]*\}\s*from\s*[`'"][^`'"\n]*footer\.mjs/m,                   // multiline re-export { … \n … } from '…footer.mjs'
+    /^\s*import\s+\*\s*as\s+[\w$]+\s*\n?\s*from\s*[`'"][^`'"\n]*footer\.mjs/m,      // namespace import * as x from '…footer.mjs' (wrapped from)
     /\bimport\s*\(\s*[`'"][^`'"\n]*footer\.mjs/,             // dynamic import('…footer.mjs')
     /\brequire\s*\(\s*[`'"][^`'"\n]*footer\.mjs/,            // require('…footer.mjs')
   ];

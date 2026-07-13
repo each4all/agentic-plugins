@@ -175,7 +175,7 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" append \
   --phase-label "Phase 1: Frame (synthesized)" \
   --phase-note "$NOTE" \
   --current-phase phase-2-presented \
-  --next-action "Decide on a design direction given this frame" \
+  --next-action "Decide on a design direction given this frame (/designer:decide)" \
   --event updated
 
 # ADR-0017 §sub-decision 4 — atomic three-step ensemble-results commit.
@@ -185,12 +185,19 @@ node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" ensemble-commit \
   --verdict "$VERDICT" --summary "$SUMMARY" \
   --completed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+# ADR-0029 §1 / completion-output contract §2 — set --next-action (the
+# append above and this terminal write) to the COMPACT form of the
+# proposal above (selected_next + one-line why + next_command) so the
+# durable state and the code-emitted completion footer agree with the
+# Active Next-Action Proposal. The value shown is the typical-case
+# default; override it when the verb's result selects a different next
+# step (e.g. the owner publish/commit step).
 # ADR-0017 §sub-decision 5 — atomic terminal write.
 node "$CLAUDE_PLUGIN_ROOT/scripts/state.mjs" set-terminal \
   --workflow-path "$ACTIVE" --host "${AGENTIC_HOST:-claude}" \
   --terminal-phase summary-complete \
   --terminal-marker true \
-  --next-action "Decide on a design direction given this frame" \
+  --next-action "Decide on a design direction given this frame (/designer:decide)" \
   --event updated
 ```
 
@@ -236,7 +243,20 @@ Always include the workflow path:
 Workflow: <absolute path to workflow .md file>
 ```
 
-designer surfaces the inline next-action proposal + the workflow path
-above; the deeper runtime-completion-footer / ADR-0031 session-handoff
-seam integration that the engineer plugin carries is not part of
-designer's surface (future work if demand arrives).
+The runtime completion footer is **code-emitted** on this verb's terminal
+path (ADR-0039, enabled for designer by ADR-0043 S4): `state.mjs
+set-terminal` fires the ADR-0031 session-handoff sidecar, which shells out
+to the runtime `footer.mjs` and prints the rendered footer — context
+state, completion state (designer's manually-published mapping surfaces
+`publish-needed` when only the owner's save/commit remains) + state-derived
+next action, workflow id/path, artifact pointers, recommended next work,
+and the continue-vs-fresh session-handoff — on that command's **stderr**.
+Do **not** hand-compose a second footer; surface the one the terminal
+command already emitted. The footer is advisory + pointer-only and
+fail-closed (a missing/too-old runtime emits nothing, and the SessionStart
+backstop still re-surfaces the handoff); it never mutates host session
+context. Detached HEAD never auto-recommends a fresh session (ADR-0018
+§sub-2; the branch-based preflight is what reports "no active branch
+context" — the path-targeted terminal sidecar still renders normally).
+Wiring details:
+`skills/_shared/references/session-handoff.md`.

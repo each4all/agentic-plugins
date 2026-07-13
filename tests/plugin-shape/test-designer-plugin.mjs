@@ -2014,3 +2014,81 @@ describe('plugins/designer — de-incubated surface (PR7 / ADR-0042 Accepted)', 
       'tier 4 must remain first-party by definition');
   });
 });
+
+// ADR-0043 S4 — the session-handoff wiring runbook is designer's single source
+// for the code-emitted footer path; its citation discipline and its documented
+// cross-package contracts (marker shape, publish-needed mapping) are pinned so
+// they cannot silently drift out of the runbook (founder S3 precedent).
+describe('plugins/designer — session-handoff runbook (ADR-0043 S4)', () => {
+  const RUNBOOK = 'skills/_shared/references/session-handoff.md';
+
+  it('ships the shared session-handoff runbook (ADR-0039 §7 recipe item)', async () => {
+    strictEqual(await exists(resolve(PLUGIN_ROOT, RUNBOOK)), true,
+      'the ADR-0043 S4 onboarding lands the copied session-handoff wiring runbook');
+  });
+
+  it('cites the engineer canonical contract BY NAME, never by a cross-plugin path (ADR-0010 §5)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, RUNBOOK), 'utf8');
+    ok(/entry-routing-contract\.md/.test(text),
+      'the runbook must cite the engineer canonical entry-routing-contract.md by name (single source)');
+    ok(!/plugins\/engineer/.test(text) && !/\.\.\/\.\.\/engineer/.test(text),
+      'the runbook must not reach the engineer contract by a cross-plugin path — cite it by name');
+  });
+
+  it('documents the footer-rendered marker contract and the publish-needed mapping', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, RUNBOOK), 'utf8');
+    ok(text.includes('.footer-rendered'),
+      'the marker filename contract (ADR-0043 §2 cross-package contract) must be documented');
+    ok(/"status":\s*"claimed"\|"rendered"|status.*claimed.*rendered/.test(text),
+      'the marker JSON shape (workflow_id + claimed/rendered status) must be documented');
+    ok(text.includes('publish-needed'),
+      "designer's manually-published completion mapping must be documented");
+    ok(/orphan sweep/i.test(text),
+      'the inherited orphan-sweep no-emit limitation must be documented (ADR-0043 §2 scope honesty)');
+  });
+
+  it('documents tombstone survival, the dual floors, the rollback order, and the wildcard cleanup (Codex Plan-verify)', async () => {
+    const text = await readFile(resolve(PLUGIN_ROOT, RUNBOOK), 'utf8');
+    ok(/tombstone/i.test(text) && /survives?/i.test(text),
+      "the rendered-marker TOMBSTONE surviving SessionStart consumption must be documented — it is what keeps a publish-needed workflow's later Stop from re-rendering");
+    ok(/MIN_RUNTIME_VERSION/.test(text) && /NOTIFY_MIN_RUNTIME_VERSION/.test(text),
+      'both discovery-floor constants must be named (dual-consumer ladder, ADR-0043 §4)');
+    ok(text.includes('scripts/footer.mjs') && text.includes('scripts/notify.mjs'),
+      'each floor must name its own gating capability file (the two ladders never share a gate)');
+    ok(/personas first, runtime second/.test(text),
+      'the ADR-0043 §5 rollback order must be documented');
+    ok(text.includes('last-session-handoff.json*'),
+      'the rollback cleanup must name the wildcard covering projection + marker artifacts');
+  });
+
+  it('the verb command AND skill surfaces defer to the code-emitted footer (ADR-0039 §9 prose de-dup)', async () => {
+    const surfaces = [
+      'commands/investigate.md', 'commands/frame.md', 'commands/decide.md',
+      'commands/compose.md', 'commands/critique.md', 'commands/refine.md',
+      'commands/start.md',
+      // The skill runbooks carried the same pre-S4 deferral prose — pin them
+      // too so the de-dup cannot silently regress on the Codex-side surfaces
+      // (the founder S3 Codex Plan-verify finding: a command-only pin was
+      // incomplete).
+      'skills/investigate/SKILL.md', 'skills/frame/SKILL.md', 'skills/decide/SKILL.md',
+      'skills/compose/SKILL.md', 'skills/critique/SKILL.md', 'skills/refine/SKILL.md',
+      'skills/start/SKILL.md',
+    ];
+    for (const rel of surfaces) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf8');
+      // investigate/SKILL.md never carried the deferral prose and stays
+      // footer-silent by design (its command file owns the completion
+      // surface); every other surface must defer to the code-emitted footer.
+      if (rel !== 'skills/investigate/SKILL.md') {
+        ok(/code-emit/.test(text),
+          `${rel} must defer to the code-emitted completion footer`);
+        ok(text.includes('references/session-handoff.md'),
+          `${rel} must point at the shared session-handoff runbook`);
+      }
+      ok(!/future work if demand arrives/.test(text),
+        `${rel} must not carry the retired pre-S4 deferral prose`);
+      ok(!/is future work, not part/.test(text),
+        `${rel} must not carry the retired pre-S4 skill deferral prose`);
+    }
+  });
+});
