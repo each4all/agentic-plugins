@@ -157,14 +157,17 @@ availability limit:
 | Input | Source | Availability |
 |---|---|---|
 | (a) Context-budget risk | Caller-supplied risk level (green / yellow / red) | **Caller-supplied, not host-measured** — the runtime budget check takes `--risk` or `--token-budget` metrics from the caller (`context.mjs`; ADR-0031 §7). The preflight cannot read true token usage and cannot tell whether a supplied risk has gone stale mid-session. When risk is **absent it defaults to `yellow`** (the conservative default `captureContext` already uses), which *fires* the preflight rather than silently assuming green. |
-| (b) Workflow projection | The owning plugin's bounded projection (schema below), computed by engineer / orchestrator from their **own** state | Present only when an active workflow exists on the branch **and** its state reads unambiguously. Absent (no workflow, or fail-closed on ambiguous/corrupt state) → the preflight degrades to inputs (a) + (c). |
+| (b) Workflow projection | The owning plugin's bounded projection (schema below), computed by the owning persona (engineer / orchestrator, plus founder / designer as their ADR-0043 onboardings land) from its **own** state | Present only when an active workflow exists on the branch **and** its state reads unambiguously. Absent (no workflow, or fail-closed on ambiguous/corrupt state) → the preflight degrades to inputs (a) + (c). |
 | (c) Routing recommendation | The Routing Recommendation table above, resolved by the owning surface | **Always available** — a pure function of the work shape. It travels *inside* the projection (field `routing_recommendation`) when one exists, and is passed to the seam as a standalone field when (b) is absent, so (c) is never lost when there is no active workflow. |
 
 ### The bounded projection schema (input (b))
 
-engineer and orchestrator each read their **own** workflow state (their own
+Each onboarded persona — engineer and orchestrator originally; founder and
+designer as their ADR-0043 onboardings land (rollout-neutral per ADR-0043
+§1: the seam accepts all four kinds; who *emits* is each persona's own
+onboarding slice) — reads its **own** workflow state (its own
 `state.mjs read` / `find-active`; orchestrator macros resolve via `find-macro`,
-never `find-active` on a subtask branch) and emit a bounded projection. The
+never `find-active` on a subtask branch) and emits a bounded projection. The
 seam consumes it as a single `--workflow-projection-file` JSON object
 (mirroring the existing `--subtasks-json-file` and `$AGENTIC_DECIDE_CONTEXT_FILE`
 file-passing patterns), never as per-field flags. The exact CLI flag and the
@@ -175,7 +178,7 @@ semantic** values:
 
 | Field | Meaning | Notes |
 |---|---|---|
-| `workflow_kind` | `engineer` \| `orchestrator` | The owning layer — the only discriminator the runtime sees. |
+| `workflow_kind` | `engineer` \| `orchestrator` \| `founder` \| `designer` | The owning layer — the only discriminator the runtime sees (four-persona seam per ADR-0043; a kind outside the enum degrades honestly on the runtime side). |
 | `workflow_id` | The active workflow id | Pointer only. |
 | `workflow_path` | Path to the workflow file | Pointer only; the runtime does not read it. |
 | `phase` | Current phase label | Generic string, for the prompt. |
@@ -197,10 +200,11 @@ the `{shouldArchive, gateFailures}` verdict to one generic value:
 - `blocked` — `shouldArchive === false` **without** a `terminal_marker` failure:
   terminal-marked but another gate is unmet (engineer `head_moved` /
   `no_active_children`; orchestrator `all_subtasks_terminal` /
-  `no_active_engineer_children` / `macro_terminal_phase`) — archivable *soon*
-  but awaiting a commit or active children. If the gate **cannot be computed**
-  (HEAD probe or child scan fails), the surface reports `blocked`
-  conservatively, carrying the reason, rather than guessing readiness.
+  `no_active_engineer_children` / `macro_terminal_phase`; founder and designer
+  mirror engineer's gates) — archivable *soon* but awaiting a commit or active
+  children. If the gate **cannot be computed** (HEAD probe or child scan
+  fails), the surface reports `blocked` conservatively, carrying the reason,
+  rather than guessing readiness.
 
 **Fail-closed.** If the owning plugin's state read is ambiguous or corrupt
 (canonical+legacy duplicates, or `find-macro` matching two macros for one
@@ -212,8 +216,9 @@ malformed projection (invalid JSON, missing required field, unknown
 as **absent + reported**, never interpreted.
 
 The seam treats every field as opaque: it renders them, it does not re-derive
-engineer / orchestrator semantics from them. A future plugin (e.g. a `designer`
-persona) passes the same shape without the runtime learning its schema.
+per-persona semantics from them. A future persona passes the same shape once
+its kind joins the seam enum (the ADR-0043 onboarding pattern); an unknown
+kind degrades honestly without the runtime learning its schema.
 
 ### Decision policy (continue-vs-fresh)
 
