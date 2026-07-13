@@ -20,6 +20,13 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.80.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.79.0...plugin-runtime-v0.80.0) (2026-07-13)
+
+
+### Features
+
+* **plugin/runtime:** completion-output contract with per-field provenance and visible generic fallback ([00dbc80](https://github.com/each4all/agentic-plugins/commit/00dbc800d04037e9f3178d4c3a0a51f8a802c3be))
+
 ## [0.79.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.78.1...plugin-runtime-v0.79.0) (2026-07-12)
 
 

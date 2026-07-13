@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.20.1...plugin-engineer-v0.21.0) (2026-07-13)
+
+
+### Features
+
+* **plugin/engineer:** name phase and failed gates in terminal completion flags ([85bbd3d](https://github.com/each4all/agentic-plugins/commit/85bbd3d0955021fa09326d507e769732bf55c1da))
+
 ## [0.20.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.20.0...plugin-engineer-v0.20.1) (2026-07-12)
 
 
