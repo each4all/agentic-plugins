@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.2.1...plugin-designer-v0.3.0) (2026-07-13)
+
+
+### Features
+
+* **plugin/designer:** emit terminal handoff sidecar + completion footer (ADR-0043 S4) ([2df14d5](https://github.com/each4all/agentic-plugins/commit/2df14d560a9f9fcde9d496b46171dcb097c5f07a))
+
 ## [0.2.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.2.0...plugin-designer-v0.2.1) (2026-07-12)
 
 
