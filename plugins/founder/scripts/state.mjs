@@ -47,7 +47,7 @@ import {
   mkdir,
   open,
 } from 'node:fs/promises';
-import { join, dirname, basename, isAbsolute } from 'node:path';
+import { join, dirname, basename, isAbsolute, resolve as resolvePath } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { hrtime, pid } from 'node:process';
 // ADR-0018 §sub-2 — `currentGitBranch` shells out to `git branch
@@ -2279,6 +2279,12 @@ export async function setTerminal({
   nextAction,
   event = 'updated',
   now = new Date(),
+  // ADR-0031 amendment (decision 1) / ADR-0043 S3 — fire the session-handoff
+  // sidecar from this must-run completion mutation. Opt-in by the production
+  // completion entry point (the CLI `set-terminal` case), so direct helper
+  // calls (tests, internal state setup) never emit. Default off keeps the
+  // low-level helper side-effect-free for non-completion callers.
+  emitHandoff = false,
 }) {
   validateHost(host);
   validateHookEvent(event);
@@ -2295,7 +2301,7 @@ export async function setTerminal({
       `setTerminal: terminalMarker must be a boolean (got ${typeof terminalMarker} ${JSON.stringify(terminalMarker)})`,
     );
   }
-  return withFileLock(workflowPath, async ({ lockPath, token }) => {
+  const result = await withFileLock(workflowPath, async ({ lockPath, token }) => {
     const text = await readFile(workflowPath, 'utf8');
     const { frontmatter, body } = parseWorkflowFile(text);
     const nowIso = isoUtc(now);
@@ -2314,6 +2320,56 @@ export async function setTerminal({
     );
     return { frontmatter, workflowPath };
   });
+  // ADR-0031 amendment (decisions 1, 2, 3, 6) / ADR-0043 §2 — fire the
+  // activation sidecar AFTER the terminal mutation succeeded AND the file lock
+  // was released (the `withFileLock` above has resolved). Fail-closed +
+  // non-fatal: any error is swallowed here so a completion can never fail
+  // because of the handoff, and the sidecar itself writes only stderr + a
+  // projection file, never stdout. Gated on `terminalMarker === true`
+  // (orchestrator parity, Codex Plan-verify): un-marking a workflow
+  // (`--terminal-marker false`) is not a terminal transition and must not
+  // emit a terminal handoff.
+  if (emitHandoff && terminalMarker === true) {
+    try {
+      // Resolve a relative --workflow-path before home inference — the
+      // canonical-needle match requires an absolute spelling, and a relative
+      // path would otherwise mutate successfully but silently skip the
+      // sidecar (Codex Plan-verify edge case).
+      const absWorkflowPath = isAbsolute(workflowPath) ? workflowPath : resolvePath(workflowPath);
+      const inferred = inferStorageFromWorkflowPath(absWorkflowPath);
+      if (inferred) {
+        const { repoRoot, home } = inferred;
+        const projectionFile = join(statePaths(repoRoot, home).root, 'last-session-handoff.json');
+        // Lazy dynamic import inside this async fn — a static
+        // `state.mjs -> session-handoff.mjs` import would cycle
+        // (session-handoff -> state + stop-archive -> state). Top-level await
+        // of a back-importing module can deadlock settlement, so the import
+        // stays here, never at module top level (mirrors the stop-archive
+        // dynamic-import precedent).
+        const { emitTerminalHandoffSidecar } = await import('./session-handoff.mjs');
+        // Project the EXACT workflow just terminalized (by path), not whatever
+        // is active on the current checkout branch — set-terminal can be
+        // invoked cross-branch on an explicit workflowPath (ADR-0043 §2
+        // path-targeted baseline).
+        await emitTerminalHandoffSidecar({
+          repoRoot,
+          workflowPath: absWorkflowPath,
+          projectionFile,
+          // ADR-0039 — thread host so the code-synthesized footer localizes its
+          // commands (claude|codex); this call site already carries it.
+          host,
+          // This is the must-run completion mutation — a NEW terminal
+          // transition. `primary` lets a re-terminalized workflow re-render
+          // over its own prior 'rendered' tombstone (see claimFooterRender).
+          origin: 'primary',
+        });
+      }
+    } catch {
+      // non-fatal: the terminal write already landed; the sidecar must never
+      // break a completion (ADR-0031 amendment decision 6).
+    }
+  }
+  return result;
 }
 
 /**
@@ -3288,6 +3344,10 @@ async function cliMain(argv) {
           terminalMarker,
           nextAction: flags['next-action'],
           event: flags.event ?? 'updated',
+          // ADR-0031 amendment / ADR-0043 S3 — this CLI case is the founder
+          // production completion entry point (verb Phase 2 finalize + the
+          // /founder:start terminal step); fire the sidecar.
+          emitHandoff: true,
         });
         process.stdout.write(`${flags['workflow-path']}\n`);
         return 0;

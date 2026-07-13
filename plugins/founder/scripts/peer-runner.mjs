@@ -29,7 +29,7 @@ import { constants as fsConstants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
-import { discoverRuntimePluginRoot, NOTIFY_MIN_RUNTIME_VERSION } from './discover-runtime.mjs';
+import { discoverRuntimePluginRoot, NOTIFY_CAPABILITY, NOTIFY_MIN_RUNTIME_VERSION } from './discover-runtime.mjs';
 import { resolveCompanionPath, validateEnvelopeShape } from './dispatch-peer.mjs';
 import { recordPendingEnsemble } from './state.mjs';
 
@@ -129,9 +129,10 @@ export function isTerminalStatus(status) {
 //
 // Fail-closed silent (ADR-0040 §7): never throws, never writes stdout or
 // stderr (peer-runner stdout is a machine channel — run/status/cancel/sweep
-// JSON results). A missing or too-old runtime (NOTIFY_MIN_RUNTIME_VERSION
-// gate — founder's discover copy gates directly on notify.mjs, having no
-// footer consumer) is a silent no-op with no stale-cache fallback.
+// JSON results). A missing or too-old runtime (NOTIFY_MIN_RUNTIME_VERSION +
+// NOTIFY_CAPABILITY pair — founder's discover copy is dual-consumer per
+// ADR-0043 §2, so the notify ladder names its own gate) is a silent no-op
+// with no stale-cache fallback.
 
 const SELF_SENSOR_SOURCE = 'peer-runner-founder';
 const SELF_SENSOR_TIMEOUT_MS = 5000;
@@ -171,6 +172,9 @@ export async function emitPeerRunTerminal(args) {
     const runtimeRoot = await discoverRuntimePluginRoot({
       env,
       minVersion: NOTIFY_MIN_RUNTIME_VERSION,
+      // ADR-0043 §2 — the notify ladder gates on notify.mjs; the resolver's
+      // defaults are the FOOTER pair (S3 onboarding), so pass both explicitly.
+      capability: NOTIFY_CAPABILITY,
     });
     if (!runtimeRoot) return;
     const notifyPath = join(runtimeRoot, 'scripts', 'notify.mjs');

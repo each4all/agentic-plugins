@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   computeFounderProjection,
+  computeFounderProjectionForPath,
   mapArchiveGate,
   parseArgs,
 } from '../../plugins/founder/scripts/session-handoff.mjs';
@@ -55,7 +56,14 @@ function setTerminal(workflowPath) {
       '--terminal-phase', 'summary-complete', '--terminal-marker', 'true',
       '--next-action', 'Critique the composed artifact', '--event', 'updated',
     ],
-    { encoding: 'utf8' },
+    {
+      encoding: 'utf8',
+      // The CLI set-terminal now fires the ADR-0043 S3 sidecar (footer
+      // included). These tests assert PROJECTION logic only — pin discovery
+      // at a nonexistent root so the render fail-closes identically on every
+      // machine (a host plugin cache must not make this suite env-dependent).
+      env: { ...process.env, AGENTIC_RUNTIME_ROOT: join(tmpdir(), 'no-such-runtime') },
+    },
   );
 }
 
@@ -164,5 +172,53 @@ describe('founder session handoff projection (ADR-0031)', () => {
     strictEqual(options.repoRoot, '/r');
     strictEqual(options.branch, 'b');
     strictEqual(options.routing, '/founder:resume');
+  });
+
+  // ADR-0043 S3 — the path-targeted variant the activation sidecar uses, and
+  // the gate_failures return channel the completion-flag mapping consumes.
+  describe('computeFounderProjectionForPath (ADR-0043 §2 path-targeted baseline)', () => {
+    it('projects the exact workflow at the given path', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'fdr-forpath-ok-'));
+      const pathA = createWorkflow(root, 'feat/a');
+      createWorkflow(root, 'feat/b');
+      const result = await computeFounderProjectionForPath({
+        repoRoot: root, workflowPath: pathA, headSha: MOVED_HEAD, headSubject: 'feat: a',
+      });
+      strictEqual(result.status, 'ok');
+      strictEqual(result.projection.workflow_kind, 'founder');
+      ok(pathA.endsWith(`${result.projection.workflow_id}.md`), 'projects the path-targeted workflow');
+    });
+
+    it('is fail-closed on a missing path and reports no_active_workflow on an empty one', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'fdr-forpath-none-'));
+      const missing = await computeFounderProjectionForPath({
+        repoRoot: root, workflowPath: join(root, 'nope.md'),
+      });
+      strictEqual(missing.status, 'fail_closed');
+      strictEqual(missing.projection, null);
+      const empty = await computeFounderProjectionForPath({ repoRoot: root });
+      strictEqual(empty.status, 'no_active_workflow');
+      strictEqual(empty.routing, '/founder:resume', 'routing survives with no projection');
+    });
+
+    it('threads gate_failures on the return value, never inside the bounded projection', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'fdr-forpath-gates-'));
+      const path = createWorkflow(root, 'feat/g');
+      setTerminal(path);
+      // Terminal-marked + HEAD unmoved → blocked with head_moved as the only
+      // failed gate — the evidence the publish-needed mapping keys on.
+      const blocked = await computeFounderProjectionForPath({
+        repoRoot: root, workflowPath: path, headSha: BASELINE_HEAD, headSubject: 'feat: g',
+      });
+      strictEqual(blocked.projection.archive_gate, 'blocked');
+      strictEqual(JSON.stringify(blocked.gate_failures), JSON.stringify(['head_moved']));
+      ok(!('gate_failures' in blocked.projection),
+        'the frozen 8-field projection schema must not carry gate_failures');
+      const ready = await computeFounderProjectionForPath({
+        repoRoot: root, workflowPath: path, headSha: MOVED_HEAD, headSubject: 'feat: g',
+      });
+      strictEqual(ready.projection.archive_gate, 'ready_to_archive');
+      strictEqual(ready.gate_failures.length, 0);
+    });
   });
 });

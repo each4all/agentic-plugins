@@ -369,10 +369,12 @@ surfaced, or `/founder:frame` if deciding reframed the opportunity. The
 routing is a fallback only when evidence is genuinely neutral — do not end
 with a hardcoded "next: X".
 
-(The inline Active Next-Action Proposal shape above is what founder
-ships; the deeper runtime-completion-footer / ADR-0031 session-handoff
-seam integration that the engineer plugin carries is future work, not
-part of founder's surface.)
+(When the invoking workflow command's terminal write runs — `state.mjs
+set-terminal` — the runtime completion footer is **code-emitted** on that
+command's stderr per ADR-0039/ADR-0043 S3; do not hand-compose a second
+footer — surface the emitted one. Standalone skill invocations write no
+workflow state and emit no footer. Wiring:
+`skills/_shared/references/session-handoff.md`.)
 
 ---
 

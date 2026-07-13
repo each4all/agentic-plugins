@@ -1,26 +1,36 @@
 #!/usr/bin/env node
 // plugins/founder/scripts/discover-runtime.mjs
 //
-// ADR-0039 §5 ladder, applied to the ADR-0040 §5 founder peer-run terminal
-// self-sensor. Founder's FIRST discover-runtime copy: unlike engineer and
-// orchestrator (whose copies gate on `scripts/footer.mjs` for the ADR-0039
-// completion footer, with a separate NOTIFY floor layered on top), founder
-// ships no footer sidecar (ADR-0039 §7 deferred it with an onboarding
-// recipe), so this resolver's ONLY consumer is `peer-runner.mjs`'s notify
-// emission — it gates directly on `scripts/notify.mjs`, mirroring the
-// attention sibling (plugins/attention/scripts/discover-runtime.mjs).
+// ADR-0039 §5 ladder, founder DUAL-CONSUMER copy (ADR-0043 §2/§4). Two
+// runtime capabilities ride this resolver, each with its OWN floor and its
+// OWN gating capability file:
 //
-// COPY-NOT-IMPORT (ADR-0010 §5). notify.mjs is L1 runtime; founder is an L3
-// persona. A cross-plugin `import` would break SemVer independence, so this
-// module lives INSIDE founder and discovers the runtime plugin root by
-// filesystem inspection only; the eventual notify.mjs invocation goes through
-// `child_process`.
+//   - FOOTER (ADR-0043 S3): `session-handoff.mjs` `emitTerminalHandoffSidecar`
+//     shells out to the runtime `scripts/footer.mjs render` to code-synthesize
+//     the completion footer. Floor = MIN_RUNTIME_VERSION; every ladder rung
+//     gates on `scripts/footer.mjs`.
+//   - NOTIFY (ADR-0040 §5): `peer-runner.mjs`'s peer-run terminal self-sensor
+//     shells out to the runtime `scripts/notify.mjs emit`. Floor =
+//     NOTIFY_MIN_RUNTIME_VERSION; every ladder rung gates on
+//     `scripts/notify.mjs`.
 //
-// The resolver runs IN-PROCESS on peer-runner terminal paths (no CLI
-// boundary), so the version gate is folded into `discoverRuntimePluginRoot` —
-// it returns a root only when notify.mjs exists AND the runtime is new
-// enough. A missing OR too-old runtime is a silent fail-closed (null), with
-// NO fall-back to a stale cache (ADR-0039 §5): the ladder resolves ONE best
+// The capability file is a PARAMETER (ADR-0043 §2): copying engineer's
+// footer-gated resolver wholesale would silently change notify discovery from
+// "notify exists" to "footer exists", so each consumer passes its own
+// capability + floor and the two ladders stay independent (independent
+// regression tests pin both).
+//
+// COPY-NOT-IMPORT (ADR-0010 §5). footer.mjs / notify.mjs are L1 runtime;
+// founder is an L3 persona. A cross-plugin `import` would break SemVer
+// independence, so this module lives INSIDE founder and discovers the runtime
+// plugin root by filesystem inspection only; the eventual footer.mjs /
+// notify.mjs invocation goes through `child_process`.
+//
+// The resolver runs IN-PROCESS on terminal hot paths (no CLI boundary), so the
+// version gate is folded into `discoverRuntimePluginRoot` — it returns a root
+// only when the gating capability file exists AND the runtime is new enough.
+// A missing OR too-old runtime is a silent fail-closed (null), with NO
+// fall-back to a stale cache (ADR-0039 §5): the ladder resolves ONE best
 // root, then that root is version-gated; it is never re-discovered to find an
 // older-but-present copy.
 
@@ -31,19 +41,32 @@ import { homedir } from 'node:os';
 
 const ENV_OVERRIDE = 'AGENTIC_RUNTIME_ROOT';
 
-// The floor runtime version whose `notify.mjs emit` interface exists at all.
-// ADR-0040's release-gate subtask pinned this to the FIRST RELEASED runtime
-// version shipping notify.mjs: plugin-runtime-v0.71.0 (macro checkpoint
-// 2026-07-04, tag plugin-runtime-v0.71.0). A planned-but-unreleased version
-// must never be pinned here — release-please owns the bump, and the gate
-// below fail-closes on anything older (missing/too-old ⇒ silent no-op).
-export const MIN_RUNTIME_VERSION = '0.71.0';
+// FOOTER floor (ADR-0043 §4): the first RELEASED runtime version containing
+// the ADR-0043 S2 `VALID_WORKFLOW_KINDS` expansion to founder/designer —
+// plugin-runtime-v0.79.0 (S2 landed on main as cb720e7, PR #555; released by
+// #556 on 2026-07-12). Every released runtime ≥0.63.0 renders footers, but a
+// runtime below THIS floor rejects `workflow_kind: founder` and renders the
+// unsupported-kind degradation text instead of the real footer, so the
+// producer-side floor is the only compatibility gate available (the projection
+// JSON carries no version field). The S9 completion-output contract is
+// additive-visible and deliberately does NOT move this floor
+// (plugins/runtime/docs/completion-output-contract.md §1). A
+// planned-but-unreleased version must never be pinned here — release-please
+// owns the bump, and the gate below fail-closes on anything older.
+export const MIN_RUNTIME_VERSION = '0.79.0';
 
-// Alias keeping founder's peer-runner self-sensor call-site identical to its
-// engineer/orchestrator semantic siblings (their copies carry a separate,
-// higher notify floor above a 0.63.0 footer floor; founder has no footer
-// consumer, so the two floors coincide).
-export const NOTIFY_MIN_RUNTIME_VERSION = MIN_RUNTIME_VERSION;
+// NOTIFY floor (ADR-0040 §5, UNCHANGED by the footer onboarding — ADR-0043 §4
+// explicitly keeps the two floors separate): the first RELEASED runtime
+// version shipping notify.mjs, plugin-runtime-v0.71.0 (macro checkpoint
+// 2026-07-04). Notify emission is a released capability and must not be
+// dragged up by the footer floor.
+export const NOTIFY_MIN_RUNTIME_VERSION = '0.71.0';
+
+// Gating capability files (basenames under `<runtime-root>/scripts/`). Each
+// consumer passes its own so the footer ladder and the notify ladder never
+// share a gate (ADR-0043 §2).
+export const FOOTER_CAPABILITY = 'footer.mjs';
+export const NOTIFY_CAPABILITY = 'notify.mjs';
 
 async function fileExists(path) {
   try {
@@ -77,13 +100,13 @@ function semverCompare(a, b) {
   return 0;
 }
 
-// Strict floor gate: a prerelease of the floor version (e.g. `0.71.0-beta.1`)
-// must NOT satisfy `>= 0.71.0` — the prerelease precedes its release. `min` is
-// a clean release (MIN_RUNTIME_VERSION). Cores compared numerically; on an
-// equal core, a prerelease `version` is treated as BELOW. A prerelease of a
-// HIGHER core (e.g. `0.72.0-beta.1`) deliberately passes — it postdates the
-// floor release and therefore carries notify.mjs (SemVer ordering; same
-// semantics as the engineer/orchestrator/attention sibling copies).
+// Strict floor gate: a prerelease of the floor version (e.g. `0.79.0-beta.1`)
+// must NOT satisfy `>= 0.79.0` — the prerelease precedes its release. `min` is
+// a clean release (one of the exported floors). Cores compared numerically; on
+// an equal core, a prerelease `version` is treated as BELOW. A prerelease of a
+// HIGHER core (e.g. `0.80.0-beta.1`) deliberately passes — it postdates the
+// floor release and therefore carries the gated capability (SemVer ordering;
+// same semantics as the engineer/orchestrator/attention sibling copies).
 function versionGte(version, min) {
   const [core, prerelease] = String(version).split('-', 2);
   const parts = core.split('.').map((x) => Number.parseInt(x, 10) || 0);
@@ -130,7 +153,7 @@ async function readRuntimeVersion(root) {
 /**
  * True when the runtime plugin at `root` declares a version >= `min`. A
  * missing/unreadable version is treated as too-old (fail-closed): we will not
- * emit against a runtime we cannot vouch for.
+ * render or emit against a runtime we cannot vouch for.
  */
 export async function runtimeVersionAtLeast(root, min = MIN_RUNTIME_VERSION) {
   const version = await readRuntimeVersion(root);
@@ -139,35 +162,40 @@ export async function runtimeVersionAtLeast(root, min = MIN_RUNTIME_VERSION) {
 }
 
 /**
- * Resolve the runtime plugin root directory containing `scripts/notify.mjs`,
- * WITHOUT the version gate. Ladder (mirrors the engineer/orchestrator copies):
- *   1. `AGENTIC_RUNTIME_ROOT` env override (absolute + scripts/notify.mjs must exist)
+ * Resolve the runtime plugin root directory containing
+ * `scripts/<capability>`, WITHOUT the version gate. Ladder (mirrors the
+ * engineer/orchestrator copies):
+ *   1. `AGENTIC_RUNTIME_ROOT` env override (absolute + scripts/<capability> must exist)
  *   2. Claude cache layout (multi-version; latest SemVer whose plugin.json
- *      `name` is "runtime" and whose scripts/notify.mjs exists)
+ *      `name` is "runtime" and whose scripts/<capability> exists)
  *   3. Codex cache layout (single fixed path)
  *   4. Sibling fallback — derive founder's own plugin root from `import.meta.url`
  *      (this file at `<founder-root>/scripts/...`) and look for
- *      `<founder-root>/../runtime/scripts/notify.mjs`.
+ *      `<founder-root>/../runtime/scripts/<capability>`.
  * Returns the absolute path on first hit, `null` if nothing resolves.
  *
  * @param {object} args
  * @param {Record<string,string>} [args.env=process.env]
  * @param {string} [args.home=homedir()]
  * @param {string} [args.selfUrl=import.meta.url]
+ * @param {string} [args.capability=FOOTER_CAPABILITY] — gating file basename
+ *   under `scripts/` (FOOTER_CAPABILITY | NOTIFY_CAPABILITY)
  * @returns {Promise<?string>}
  */
 export async function resolveRuntimePluginRoot({
   env = process.env,
   home = homedir(),
   selfUrl = import.meta.url,
+  capability = FOOTER_CAPABILITY,
 } = {}) {
+  const capabilityRel = join('scripts', capability);
   // 1. Env override.
   const overrideRoot = env[ENV_OVERRIDE];
   if (typeof overrideRoot === 'string' && overrideRoot.length > 0) {
     if (!isAbsolute(overrideRoot)) {
       return null;
     }
-    if (await fileExists(join(overrideRoot, 'scripts', 'notify.mjs'))) {
+    if (await fileExists(join(overrideRoot, capabilityRel))) {
       return overrideRoot;
     }
     return null;
@@ -177,8 +205,8 @@ export async function resolveRuntimePluginRoot({
 
   // Same-host preference (mirrors discover-engineer's Codex P2 finding): when
   // founder runs from one host's install and a stale opposite-host runtime
-  // cache also exists, probe the matching cache FIRST so the emit uses the
-  // same-host runtime. Detect host from selfUrl.
+  // cache also exists, probe the matching cache FIRST so the render/emit uses
+  // the same-host runtime. Detect host from selfUrl.
   let sameHost = null;
   if (typeof selfUrl === 'string' && selfUrl.length > 0) {
     if (selfUrl.includes('/.codex/')) sameHost = 'codex';
@@ -205,8 +233,7 @@ export async function resolveRuntimePluginRoot({
         continue;
       }
       if (manifest?.name !== 'runtime') continue;
-      const notifyPath = join(versionRoot, 'scripts', 'notify.mjs');
-      if (!(await fileExists(notifyPath))) continue;
+      if (!(await fileExists(join(versionRoot, capabilityRel)))) continue;
       candidates.push({
         version: typeof manifest.version === 'string' ? manifest.version : '0.0.0',
         root: versionRoot,
@@ -218,7 +245,7 @@ export async function resolveRuntimePluginRoot({
   }
   async function probeCodexCache() {
     if ((await dirExists(codexBase))
-        && (await fileExists(join(codexBase, 'scripts', 'notify.mjs')))) {
+        && (await fileExists(join(codexBase, capabilityRel)))) {
       return codexBase;
     }
     return null;
@@ -247,7 +274,7 @@ export async function resolveRuntimePluginRoot({
       // dirname(here) = <founder-root>/scripts
       // resolve(..., '..', '..', 'runtime') = sibling runtime plugin
       const sibling = resolve(dirname(here), '..', '..', 'runtime');
-      if (await fileExists(join(sibling, 'scripts', 'notify.mjs'))) {
+      if (await fileExists(join(sibling, capabilityRel))) {
         return sibling;
       }
     }
@@ -258,17 +285,22 @@ export async function resolveRuntimePluginRoot({
 
 /**
  * Resolve the runtime plugin root, version-gated. Returns the absolute root
- * ONLY when `scripts/notify.mjs` exists AND the runtime declares a version >=
- * `minVersion`. A missing OR too-old runtime returns `null` — the founder
- * peer-run self-sensor then fail-closes silently (no notification, the
- * peer-run lifecycle proceeds), with NO fall-back to a stale cache
- * (ADR-0039 §5).
+ * ONLY when `scripts/<capability>` exists AND the runtime declares a version
+ * >= `minVersion`. A missing OR too-old runtime returns `null` — the calling
+ * terminal path then fail-closes silently (no footer / no notification, the
+ * completion or peer-run lifecycle proceeds), with NO fall-back to a stale
+ * cache (ADR-0039 §5).
+ *
+ * The defaults are the FOOTER pair; the notify consumer passes
+ * `{ minVersion: NOTIFY_MIN_RUNTIME_VERSION, capability: NOTIFY_CAPABILITY }`
+ * explicitly (ADR-0043 §2 — the two ladders never share a gate).
  *
  * @param {object} [args]
  * @param {Record<string,string>} [args.env=process.env]
  * @param {string} [args.home=homedir()]
  * @param {string} [args.selfUrl=import.meta.url]
  * @param {string} [args.minVersion=MIN_RUNTIME_VERSION]
+ * @param {string} [args.capability=FOOTER_CAPABILITY]
  * @returns {Promise<?string>}
  */
 export async function discoverRuntimePluginRoot({
@@ -276,8 +308,9 @@ export async function discoverRuntimePluginRoot({
   home = homedir(),
   selfUrl = import.meta.url,
   minVersion = MIN_RUNTIME_VERSION,
+  capability = FOOTER_CAPABILITY,
 } = {}) {
-  const root = await resolveRuntimePluginRoot({ env, home, selfUrl });
+  const root = await resolveRuntimePluginRoot({ env, home, selfUrl, capability });
   if (!root) return null;
   if (!(await runtimeVersionAtLeast(root, minVersion))) return null;
   return root;
@@ -285,13 +318,13 @@ export async function discoverRuntimePluginRoot({
 
 // -----------------------------------------------------------------------------
 // CLI surface — a thin `discover` shim for manual sanity checks + debugging.
-// The founder peer-run self-sensor calls `discoverRuntimePluginRoot`
-// in-process, so this CLI is not on any hot path; it mirrors the engineer
-// copy's `discover` subcommand shape (empty stdout + exit 0 means "not
-// resolved").
+// The founder terminal paths call `discoverRuntimePluginRoot` in-process, so
+// this CLI is not on any hot path; it mirrors the engineer copy's `discover`
+// subcommand shape (empty stdout + exit 0 means "not resolved"). `--notify`
+// switches to the notify pair so both ladders stay debuggable.
 
 async function cliMain(argv) {
-  const [subcommand] = argv;
+  const [subcommand, ...rest] = argv;
   if (!subcommand || subcommand === '-h' || subcommand === '--help') {
     process.stdout.write(
       [
@@ -299,18 +332,25 @@ async function cliMain(argv) {
         '',
         'Usage:',
         '',
-        '  discover',
+        '  discover [--notify]',
         '    Resolve the runtime plugin root (env override → Claude cache →',
-        '    Codex cache → sibling fallback), version-gated to >= ' + MIN_RUNTIME_VERSION + ',',
-        '    and print the absolute path on stdout. Empty stdout + exit 0 if',
-        '    not resolved or too old.',
+        '    Codex cache → sibling fallback). Default gates on the FOOTER',
+        '    capability (scripts/footer.mjs, version >= ' + MIN_RUNTIME_VERSION + ');',
+        '    --notify gates on scripts/notify.mjs, version >= ' + NOTIFY_MIN_RUNTIME_VERSION + '.',
+        '    Prints the absolute path on stdout. Empty stdout + exit 0 if not',
+        '    resolved or too old.',
         '',
       ].join('\n'),
     );
     return 0;
   }
   if (subcommand === 'discover') {
-    const root = await discoverRuntimePluginRoot();
+    const notify = rest.includes('--notify');
+    const root = await discoverRuntimePluginRoot(
+      notify
+        ? { minVersion: NOTIFY_MIN_RUNTIME_VERSION, capability: NOTIFY_CAPABILITY }
+        : {},
+    );
     if (root) process.stdout.write(`${root}\n`);
     return 0;
   }
