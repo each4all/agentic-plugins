@@ -29,24 +29,38 @@ Stop-specific payload field.
 
 `workflow-terminal` is emitted **only** behind a freshness-checked read of
 `last-session-handoff.json` (the ADR-0031/0039 sidecar projection), per
-persona (engineer, orchestrator):
+persona — all four onboarded personas since the ADR-0043 §3 follow-up
+(engineer, orchestrator, founder, designer):
 
-1. **workflow-id consistency** — the projection's `workflow_id` must match
-   the `.footer-rendered` marker's, and the marker must record
+1. **workflow-id + kind consistency** — the projection's `workflow_id` must
+   match the `.footer-rendered` marker's, the marker must record
    `status: "rendered"` (a `claimed` marker is a render in flight, not a
-   completed terminal presentation);
-2. **mtime bound** — the projection must be recent
-   (`HANDOFF_FRESHNESS_MS`, 10 minutes), so a lingering one-shot projection
-   stops re-classifying later turns;
-3. **per-persona marker shape** — engineer keys
+   completed terminal presentation), and the projection's `workflow_kind`
+   must strictly equal the persona (the canonical bounded schema requires
+   the field — a malformed projection degrades, never enriches);
+2. **transition anchor** — both the projection's mtime AND the rendered
+   marker's `at` timestamp (the render moment) must be recent
+   (`HANDOFF_FRESHNESS_MS`, 10 minutes). The marker anchor is what ties
+   enrichment to the terminal *transition*: founder/designer publish-needed
+   workflows stay active-terminal with their Stop backstop refreshing the
+   projection every turn, but the rendered `at` is written once per
+   transition — so later turns degrade back to bare `turn-complete` instead
+   of re-notifying once per rolling dedupe-TTL window (a primary
+   re-terminalization rewrites the marker and re-arms enrichment);
+3. **per-persona marker shape** — engineer, founder, and designer key
    `<projection>.footer-rendered`; orchestrator keys
    `<projection>.<workflow-id>.footer-rendered` (the shapes differ by
-   design; the sensor mirrors both).
+   design; the sensor consumes each persona's documented contract —
+   founder/designer's lives in their `session-handoff.md` runbooks per
+   ADR-0043 §2).
 
 A stale or missing projection degrades to a **bare** `turn-complete`
-notification — never a wrong workflow claim. Founder writes no sidecar at v1
-and therefore stays bare-Stop-only (its richer coverage comes from the
-ADR-0040 §5 peer-run self-sensors).
+notification — never a wrong workflow claim. For the manually-published
+personas (founder/designer) an `archive_gate` of `blocked` usually means
+the completion contract's `publish-needed` state, which the frozen 8-field
+projection cannot distinguish from a genuine blocker — so their
+`workflow-terminal` events omit the opt-in `headline` token on `blocked`
+rather than overclaim (map-or-omit).
 
 ## How events reach a channel
 

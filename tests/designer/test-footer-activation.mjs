@@ -170,6 +170,10 @@ describe('designer completion-footer activation (ADR-0043 S4)', () => {
     const projection = JSON.parse(await readFile(projectionFile, 'utf8'));
     strictEqual(marker.workflow_id, projection.workflow_id, 'marker keys on the terminalized workflow_id');
     strictEqual(marker.status, 'rendered', "a completed render upgrades the marker to 'rendered'");
+    // The attention sensor's transition anchor is load-bearing on this field
+    // (ADR-0043 §3): the render moment must be a parseable ISO-8601 UTC stamp.
+    ok(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(marker.at),
+      `marker.at must be ISO-8601 UTC; got: ${marker.at}`);
 
     // BACKSTOP (marker present → must NOT re-render).
     const backstop = await captureStderr(() =>

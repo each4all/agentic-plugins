@@ -908,7 +908,7 @@ describe('ADR-0040 acceptance (e) -- attention + persona self-sensors reach noti
   // anchored at line start so a subprocess string arg -- join(runtimeRoot,
   // 'scripts', 'notify.mjs') -- or a prose mention is NOT flagged; only a real
   // import statement or an import()/require() call is.
-  const SCANNED_DIRS = ['plugins/attention', 'plugins/engineer', 'plugins/founder', 'plugins/orchestrator'];
+  const SCANNED_DIRS = ['plugins/attention', 'plugins/designer', 'plugins/engineer', 'plugins/founder', 'plugins/orchestrator'];
   // Regex-escaped module basenames of the runtime emit substrate.
   const TARGETS = ['notify\\.mjs', 'notify-schema\\.mjs'];
   // A specifier's opening quote (', ", or backtick) and its body (no quote, no

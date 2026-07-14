@@ -109,7 +109,7 @@ export function isHeadlineToken(value) {
 
 // ADR-0041 §3a Guard 1 (producer map-or-omit). Maps the STRUCTURED signals the
 // Stop sensor already holds — the event `kind` + the projection `archive_gate`
-// (the real values engineer/orchestrator mapArchiveGate emit: ready_to_archive /
+// (the real values the persona mapArchiveGate copies emit: ready_to_archive /
 // not_terminal / blocked) — to a closed-vocabulary headline token, or null (OMIT).
 // It NEVER guesses: an unknown/absent archive_gate or a non-workflow-terminal kind
 // yields null so buildEvent omits headline entirely (never a wrong token). At v1
@@ -118,12 +118,21 @@ export function isHeadlineToken(value) {
 // session status — ADR-0041 §3a "Claude-Stop-only", Codex-shuttle-omits). The final
 // isHeadlineToken re-check keeps the table honest: were a mapping value to drift out
 // of vocab it would omit here (and the parity test would fail loudly), never egress.
+//
+// ADR-0043 §3 nuance: for the manually-published personas (founder/designer)
+// an archive_gate of 'blocked' is USUALLY the completion-output contract §2
+// publish-needed state (only head_moved unmet — explicitly "not blocked"),
+// and the frozen 8-field projection carries no gate_failures to tell
+// publish-needed from a genuine blocker — so their 'blocked' maps to NO token
+// (map-or-omit: never a wrong token). ready_to_archive → complete and
+// not_terminal → in-progress stay truthful for all four personas.
 const HEADLINE_BY_ARCHIVE_GATE = Object.freeze({
   ready_to_archive: 'complete',
   not_terminal: 'in-progress',
   blocked: 'blocked',
 });
-export function deriveHeadlineToken({ kind, archiveGate } = {}) {
+const MANUALLY_PUBLISHED_PERSONAS = Object.freeze(['founder', 'designer']);
+export function deriveHeadlineToken({ kind, archiveGate, persona } = {}) {
   if (kind !== 'workflow-terminal') return null;
   // Own-key, STRING-ONLY lookup. archiveGate comes from a parsed projection JSON, so
   // it can be any JSON type — and a bracket lookup would COERCE a non-string key via
@@ -135,6 +144,9 @@ export function deriveHeadlineToken({ kind, archiveGate } = {}) {
   // ('constructor'/'toString'/'__proto__') from resolving to a prototype member
   // (Codex Plan-verify MAJOR).
   if (typeof archiveGate !== 'string' || !Object.hasOwn(HEADLINE_BY_ARCHIVE_GATE, archiveGate)) {
+    return null;
+  }
+  if (archiveGate === 'blocked' && MANUALLY_PUBLISHED_PERSONAS.includes(persona)) {
     return null;
   }
   const token = HEADLINE_BY_ARCHIVE_GATE[archiveGate];
@@ -306,50 +318,106 @@ export function resolveRepoRoot(cwd = process.cwd()) {
 // ── §3 state enrichment: freshness-checked projection read ──
 
 // The personas whose ADR-0031/0039 sidecars the Stop sensor may enrich from.
-// Founder deliberately stays bare-Stop-only at v1: it computes a projection
-// but writes no sidecar, and the runtime seam rejects workflow_kind 'founder'
-// (context.mjs VALID_WORKFLOW_KINDS) — adding founder projection acceptance
-// is ADR-0039 §7's separate recipe, not this sensor's call.
-export const SENSOR_PERSONAS = Object.freeze(['engineer', 'orchestrator']);
+// The ADR-0043 §3 follow-up landed once its trigger fired: founder (S3,
+// plugin-founder-v0.4.0) and designer (S4, plugin-designer-v0.3.0) sidecars
+// emit projections + footer-rendered markers in the wild, and each persona's
+// marker shape is a documented cross-package contract in that persona's
+// `skills/_shared/references/session-handoff.md` (ADR-0043 §2) — this sensor
+// consumes those documented contracts, never a reverse-engineered
+// implementation detail. Rollback note: attention rolls back independently;
+// it owns no durable state beyond the runtime notify-state TTL entries its
+// emitted events produce.
+export const SENSOR_PERSONAS = Object.freeze(['engineer', 'orchestrator', 'founder', 'designer']);
 
-// Mtime bound for "this projection describes the terminal transition the
-// CURRENT Stop is observing". Wide enough to cover a long tail between the
-// primary set-terminal write and the turn's Stop event; narrow enough that a
-// lingering one-shot projection (no new session consumed it yet) stops
-// re-classifying later turns as workflow-terminal once the TTL dedupe window
-// has lapsed. Stale ⇒ the Stop degrades to a bare turn-complete notification.
+// Freshness bound for "this projection describes the terminal transition the
+// CURRENT Stop is observing", applied to BOTH signals readFreshProjection
+// gates on: the projection file's mtime AND the rendered marker's `at`
+// timestamp (the render moment — the transition anchor). The dual anchor
+// matters for the manually-published personas (founder/designer): their
+// publish-needed workflows stay active-terminal and their persona Stop
+// backstop rewrites the projection every turn (fresh mtime indefinitely),
+// but the rendered marker's `at` is written once per terminal transition —
+// so enrichment fires near the transition and later turns degrade back to a
+// bare turn-complete instead of re-emitting workflow-terminal once per
+// rolling dedupe-TTL window (the emitter accepts at most one attempt per
+// event ID per rolling TTL, and quiet-hours suppression can prevent delivery
+// entirely — neither queues a retry). A primary re-terminalization rewrites
+// the marker (new `at`) and re-arms enrichment for the new transition.
+// Stale on either anchor ⇒ the Stop degrades to a bare turn-complete.
 export const HANDOFF_FRESHNESS_MS = 10 * 60 * 1000;
 
-// The candidate one-shot files, canonical home first, then the legacy
-// (pre-ADR-0025) home — a repo holds EITHER canonical or legacy persona state
-// (the personas' resolveWorkflowStorage blocks both for writes), so the first
-// EXISTING file is that persona's projection home (mirrors the personas' own
-// pendingHandoffCandidates preference order). DELIBERATELY stricter than a
-// keep-scanning reader: when both homes hold a file the repo is already in an
-// inconsistent state, so a stale/invalid first candidate fail-closes to a bare
-// notification rather than trusting the shadowed second home (never a wrong
-// workflow claim).
+// Maximum tolerated FUTURE skew on either freshness anchor. `now` is captured
+// once before the per-persona reads, so a legitimately-concurrent persona
+// write can postdate it by milliseconds — but a far-future mtime or marker
+// `at` is malformed state, and malformed must degrade, never enrich (a
+// unidirectional age check would hold a future-dated anchor "fresh" for its
+// entire lead PLUS the window — the Codex review reproduced exactly that
+// bypass). Both anchors reject when age < -FUTURE_SKEW_MS (ADR-0040 §7).
+export const FUTURE_SKEW_MS = 60 * 1000;
+
+// The marker `at` contract is ISO-8601 UTC (the persona writers emit
+// `new Date().toISOString()`). Date.parse would also accept RFC-2822, local
+// times, and date-only strings — parseable but out of contract — so the
+// lexical shape is validated BEFORE parsing (fail-closed on non-contract
+// spellings).
+const ISO_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+
+// The candidate one-shot files, PER PERSONA. engineer/orchestrator predate
+// ADR-0025, so their canonical home is probed first and the legacy
+// (pre-ADR-0025) home second — a repo holds EITHER canonical or legacy
+// persona state (the personas' resolveWorkflowStorage blocks both for
+// writes), so the first EXISTING file is that persona's projection home
+// (mirrors the personas' own pendingHandoffCandidates preference order).
+// DELIBERATELY stricter than a keep-scanning reader: when both homes hold a
+// file the repo is already in an inconsistent state, so a stale/invalid first
+// candidate fail-closes to a bare notification rather than trusting the
+// shadowed second home (never a wrong workflow claim). founder/designer are
+// canonical-home-only — no legacy home ever existed for them (ADR-0036 SD5 /
+// ADR-0042 SD7) — so their candidate list deliberately models only the path
+// their writers can produce.
+const LEGACY_HOME_PERSONAS = Object.freeze(['engineer', 'orchestrator']);
 function projectionCandidates(repoRoot, persona) {
-  return [
+  const candidates = [
     path.join(repoRoot, '.agentic-plugins', 'state', persona, 'last-session-handoff.json'),
-    path.join(repoRoot, '.claude', `agentic-${persona}`, 'last-session-handoff.json'),
   ];
+  if (LEGACY_HOME_PERSONAS.includes(persona)) {
+    candidates.push(path.join(repoRoot, '.claude', `agentic-${persona}`, 'last-session-handoff.json'));
+  }
+  return candidates;
 }
 
-// The ADR-0039 footer-rendered marker is PER-PERSONA in shape — engineer keys
-// one marker per projection slot, orchestrator bakes the workflow id into the
-// filename (its Stop backstop scans every terminal macro against one shared
-// slot). Copied shapes, canonical sources:
+// The ADR-0039 footer-rendered marker is PER-PERSONA in shape — engineer,
+// founder, and designer key one marker per projection slot; orchestrator
+// bakes the workflow id into the filename (its Stop backstop scans every
+// terminal macro against one shared slot). The shape table is EXPLICIT so a
+// future SENSOR_PERSONAS addition fails closed (no marker contract → null →
+// bare notification) until its shape is deliberately added here. Copied
+// shapes, canonical sources (founder/designer document theirs as the
+// ADR-0043 §2 cross-package contract):
 //   engineer:     `${projectionFile}.footer-rendered`
 //                 (plugins/engineer/scripts/session-handoff.mjs)
 //   orchestrator: `${projectionFile}.${safeWorkflowId}.footer-rendered`
 //                 (plugins/orchestrator/scripts/session-handoff.mjs)
+//   founder:      `${projectionFile}.footer-rendered`
+//                 (plugins/founder/skills/_shared/references/session-handoff.md)
+//   designer:     `${projectionFile}.footer-rendered`
+//                 (plugins/designer/skills/_shared/references/session-handoff.md)
+const MARKER_SHAPE_BY_PERSONA = Object.freeze({
+  engineer: 'slot',
+  orchestrator: 'id-scoped',
+  founder: 'slot',
+  designer: 'slot',
+});
 export function footerMarkerFileFor(persona, projectionFile, workflowId) {
-  if (persona === 'orchestrator') {
+  const shape = MARKER_SHAPE_BY_PERSONA[persona];
+  if (shape === 'id-scoped') {
     const safe = String(workflowId ?? '').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 128) || 'unknown';
     return `${projectionFile}.${safe}.footer-rendered`;
   }
-  return `${projectionFile}.footer-rendered`;
+  if (shape === 'slot') {
+    return `${projectionFile}.footer-rendered`;
+  }
+  return null; // unknown persona — no documented marker contract; caller fail-closes
 }
 
 function readJsonIfObject(filePath) {
@@ -364,15 +432,27 @@ function readJsonIfObject(filePath) {
 /**
  * Read one persona's `last-session-handoff.json` and accept it ONLY when every
  * freshness gate passes:
- *   - the projection file exists (canonical home first, then legacy),
+ *   - the projection file exists (per-persona candidate homes: canonical for
+ *     all four; the pre-ADR-0025 legacy home only for engineer/orchestrator),
  *   - its mtime is within HANDOFF_FRESHNESS_MS of `now`,
  *   - it parses to an object whose workflow_id is a non-empty string,
- *   - its workflow_kind (when present) matches the persona directory,
- *   - the per-persona footer-rendered marker exists with the SAME workflow_id
- *     and status 'rendered' (a bare 'claimed' marker is a render in flight or
- *     one that crashed — not a completed terminal presentation).
+ *   - its workflow_kind STRICTLY equals the persona directory — the canonical
+ *     bounded schema requires the field (runtime context.mjs), so an absent or
+ *     padded kind is a malformed projection and malformed must degrade,
+ *     never enrich,
+ *   - the per-persona footer-rendered marker exists with the SAME workflow_id,
+ *     status 'rendered' (a bare 'claimed' marker is a render in flight or one
+ *     that crashed — not a completed terminal presentation), AND an `at`
+ *     render timestamp within HANDOFF_FRESHNESS_MS — the transition anchor
+ *     (persona Stop backstops refresh the projection mtime but never a
+ *     rendered marker's `at`, so this is what ties enrichment to the terminal
+ *     TRANSITION rather than to a persisting active-terminal state).
  * Any gate failing returns null and the caller degrades to a bare
- * notification — never a wrong one.
+ * notification — never a wrong one. Best-effort/last-observed: Claude fires
+ * Stop hooks with no cross-plugin ordering, so the projection read here is
+ * the persona's last-observed terminal state, not necessarily this instant's
+ * (the workflow-scoped dedupe key collapses gate-state flips of one
+ * transition on the emitter side).
  *
  * @returns {?{workflowId: string, projection: object, projectionFile: string}}
  */
@@ -389,16 +469,26 @@ export function readFreshProjection({ repoRoot, persona, now = Date.now() } = {}
     }
     if (!projectionFile) return null;
     const st = fs.statSync(projectionFile);
-    if (now - st.mtimeMs > HANDOFF_FRESHNESS_MS) return null;
+    const mtimeAge = now - st.mtimeMs;
+    if (mtimeAge > HANDOFF_FRESHNESS_MS || mtimeAge < -FUTURE_SKEW_MS) return null;
     const projection = readJsonIfObject(projectionFile);
     if (!projection) return null;
     const workflowId = projection.workflow_id;
     if (typeof workflowId !== 'string' || workflowId.length === 0) return null;
-    if (typeof projection.workflow_kind === 'string' && projection.workflow_kind !== persona) {
+    if (projection.workflow_kind !== persona) return null;
+    const markerFile = footerMarkerFileFor(persona, projectionFile, workflowId);
+    if (!markerFile) return null;
+    const marker = readJsonIfObject(markerFile);
+    if (!marker || marker.workflow_id !== workflowId || marker.status !== 'rendered') {
       return null;
     }
-    const marker = readJsonIfObject(footerMarkerFileFor(persona, projectionFile, workflowId));
-    if (!marker || marker.workflow_id !== workflowId || marker.status !== 'rendered') {
+    const renderedAt = typeof marker.at === 'string' && ISO_UTC_RE.test(marker.at)
+      ? Date.parse(marker.at)
+      : NaN;
+    const renderedAge = now - renderedAt;
+    if (!Number.isFinite(renderedAt)
+      || renderedAge > HANDOFF_FRESHNESS_MS
+      || renderedAge < -FUTURE_SKEW_MS) {
       return null;
     }
     return { workflowId, projection, projectionFile };
@@ -553,6 +643,39 @@ export function buildEvent({
     event.refs = refs;
   }
   return event;
+}
+
+/**
+ * Emit a batch of terminal events under one monotonic deadline. Each emission
+ * gets the FULL `minSlotMs` timeout or does not start at all — a partial slot
+ * would kill an in-flight runtime egress dispatch before its own 8s network
+ * deadline (see the emitEvent timeout contract below), which is worse than
+ * dropping the event outright. `deadlineMs` bounds the host's Stop latency:
+ * four fresh personas × the 12s per-emit bound could otherwise hold Stop for
+ * ~48s during egress trouble; two full slots (24s) is the accepted worst
+ * case, and every dropped remainder is the ADR-0040 §7 fail-closed choice
+ * (a lost notification, never a blocked host or a truncated dispatch).
+ * `emit`/`now` are injectable for deterministic tests only.
+ *
+ * @returns {Promise<{emitted: number, dropped: number}>}
+ */
+export async function emitTerminalEvents({
+  repoRoot,
+  events,
+  deadlineMs = 24_000,
+  minSlotMs = 12_000,
+  emit = emitEvent,
+  now = Date.now,
+} = {}) {
+  const list = Array.isArray(events) ? events : [];
+  const deadline = now() + deadlineMs;
+  let emitted = 0;
+  for (const event of list) {
+    if (deadline - now() < minSlotMs) break;
+    await emit({ repoRoot, event, timeoutMs: minSlotMs });
+    emitted += 1;
+  }
+  return { emitted, dropped: list.length - emitted };
 }
 
 /**
