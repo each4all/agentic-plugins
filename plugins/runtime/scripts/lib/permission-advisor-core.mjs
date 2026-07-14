@@ -36,7 +36,13 @@
 // fields to this core would re-introduce the sibling-coupling this split exists
 // to prevent.
 
-import { singleLine, sanitizeValue, generalizeCommand } from './permission-sanitize.mjs';
+import {
+  singleLine,
+  sanitizeValue,
+  generalizeCommand,
+  tokenizeCommand,
+  stripEnvAssignments,
+} from './permission-sanitize.mjs';
 
 // Bumped when the rule/fragment shape changes incompatibly. permission-artifacts
 // and doctor stamp/gate artifacts on this so a stale on-disk plan is rejected
@@ -235,12 +241,26 @@ const WRAPPER_SAFE_SUBCOMMANDS = new Map([
 // to end-of-line. Trade-off (peer-noted): the inline-eval rule, not arg
 // scanning, is what catches `bash -c "<hidden>"` — the `-c` flag is outside the
 // quotes and remains visible.
+// The placeholder MUST NOT itself contain a quote character. It used to be
+// `"_"`, which the unbalanced-trailing-quote passes below then re-read as an
+// OPENING quote and swallowed to end-of-line — taking the rest of the command
+// with it. `TOKEN="a b" rm -rf /` collapsed to `TOKEN= "_ "_"`, and
+// `echo "hi" && rm -rf /` collapsed to `echo "_ "_"`, so the danger rules never
+// saw the `rm -rf` at all and the command graded `allow`. That is a danger-rule
+// bypass, not a cosmetic defect: the advisor would then recommend the pattern
+// into the operator's allowlist. A quote-free placeholder cannot be mistaken
+// for an opening quote, so the balanced-span pass and the unbalanced-tail pass
+// stop interfering with each other.
+const QUOTED_SPAN_PLACEHOLDER = ' _Q_ ';
+
 function stripQuoted(cmd) {
   return cmd
-    .replace(/"[^"]*"/g, ' "_" ')
-    .replace(/'[^']*'/g, " '_' ")
-    .replace(/"[^"]*$/g, ' "_" ')
-    .replace(/'[^']*$/g, " '_' ")
+    .replace(/"[^"]*"/g, QUOTED_SPAN_PLACEHOLDER)
+    .replace(/'[^']*'/g, QUOTED_SPAN_PLACEHOLDER)
+    // Whatever quote survives the balanced passes is genuinely unbalanced, so
+    // it does open a span that runs to end-of-line.
+    .replace(/"[^"]*$/g, QUOTED_SPAN_PLACEHOLDER)
+    .replace(/'[^']*$/g, QUOTED_SPAN_PLACEHOLDER)
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -424,12 +444,15 @@ function gradeSegment(seg) {
     return { grade, signals: matched.map((m) => m.id), reason: chosen.title };
   }
 
-  // Drop leading `FOO=bar` env-assignment prefixes to find the real program
-  // (Plan-verify local finding: env-prefixed commands).
-  let tokens = seg.split(' ').filter(Boolean);
-  while (tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) {
-    tokens = tokens.slice(1);
-  }
+  // Drop leading `FOO=bar` / `FOO="a b"` env-assignment prefixes to find the
+  // real program. This used to re-implement `split(' ')` + an assignment strip
+  // locally, which tore a quoted value containing a space in half and promoted
+  // its orphaned tail into the program slot — so `TOKEN="a b" rm -rf /` graded
+  // `ask` (unrecognized program) instead of `deny`. The tokenizer now lives
+  // once in permission-sanitize.mjs and both call sites share it; the
+  // duplication is what let the same defect survive two separate hardenings.
+  const { tokens: rawTokens } = tokenizeCommand(seg);
+  const tokens = stripEnvAssignments(rawTokens);
   const program = tokens[0] || '';
   const sub = tokens[1];
   // reason embeds the program name; sanitize it so a secret-shaped token can

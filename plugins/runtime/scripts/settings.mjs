@@ -2726,6 +2726,32 @@ async function buildPermissionPlan({ repoRoot, homeDir, learner, scan, maxFiles 
         alreadyGoverned += 1;
         continue;
       }
+      // Mirror of the deny/ask branch below. An allow-graded observation whose
+      // pattern the operator has EXPLICITLY denied (or gated behind ask) must
+      // not be silently recommended back into allow[] — their standing decision
+      // outranks a safe-looking observation, and a fragment that re-allows a
+      // denied pattern is the operator's own policy being argued with. Surface
+      // the conflict and emit nothing.
+      //
+      // The reverse direction (dangerous pattern already sitting in allow[])
+      // was hardened by an earlier Plan-verify; this branch only checked its
+      // own bucket, so `deny: ["Bash(node *)"]` still produced a recommended
+      // `allow: ["Bash(node *)"]` with `already_allowed_count = 0`. This is the
+      // missing mirror.
+      const deniedBucket = governedByClaudeRules(hostConfig.deny, item)
+        ? 'deny'
+        : governedByClaudeRules(hostConfig.ask, item)
+          ? 'ask'
+          : null;
+      if (deniedBucket) {
+        conflicts.push({
+          item,
+          grade: rule.grade,
+          reason: `observed as safe but already governed by permissions.${deniedBucket} in .claude/settings; the operator's ${deniedBucket} stands — not recommended for allow`,
+        });
+        alreadyGoverned += 1;
+        continue;
+      }
       allow.push(item);
       fragmentRules.push(rule);
       continue;

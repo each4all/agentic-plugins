@@ -86,21 +86,82 @@ function basenameProgram(token) {
   return slash >= 0 ? t.slice(slash + 1) : t;
 }
 
+const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+// Tokenize a normalized single-line command, keeping a QUOTED run — which may
+// contain spaces — as a single token.
+//
+// This exists because a naive `split(' ')` is not safe here. It tears
+// `TOKEN="a b" npm test` into `TOKEN="a`, `b"`, `npm`, `test`. The
+// env-assignment strip then removes only the assignment-shaped head, which
+// PROMOTES the orphaned tail (`b"`) into the program slot — and the program
+// slot is emitted verbatim into the rule pattern, the JSON report, the text
+// output, and the written advisory artifact. That is a secret leak, not a
+// cosmetic bug: `TOKEN="first s3cr3t" npm test` used to generalize to
+// `s3cr3t" *`.
+//
+// Two earlier reviews each hardened one of the two independent copies of this
+// tokenizer for the UNQUOTED case only (see the `Plan-verify MAJOR #2` and
+// `Plan-verify local finding` comments this replaces). The duplication is what
+// let the same defect survive twice, so the tokenizer now lives here once and
+// `permission-advisor-core.gradeCommand` consumes it too.
+//
+// `unterminated` reports an unbalanced quote so callers can fail closed rather
+// than emit a token whose boundary we could not determine.
+export function tokenizeCommand(normalized) {
+  const tokens = [];
+  let cur = '';
+  let quote = null;
+  for (const ch of String(normalized ?? '')) {
+    if (quote) {
+      cur += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+    if (ch === ' ') {
+      if (cur) tokens.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur) tokens.push(cur);
+  return { tokens, unterminated: quote !== null };
+}
+
+// Drop leading `FOO=bar` / `FOO="a b"` env-assignment prefixes so an
+// env-injected secret can never survive as the kept program token.
+export function stripEnvAssignments(tokens) {
+  let i = 0;
+  while (i < tokens.length && ENV_ASSIGN_RE.test(tokens[i])) i += 1;
+  return tokens.slice(i);
+}
+
 export function generalizeCommand(raw) {
   const normalized = singleLine(raw);
   if (!normalized) return '';
-  let tokens = normalized.split(' ').filter(Boolean);
-  // Strip leading `FOO=bar` env-assignment prefixes (mirrors gradeCommand's
-  // env-prefix handling) so an env-injected secret like `TOKEN=sk-... cmd` can
-  // never survive as the kept program token (Codex Plan-verify MAJOR #2).
-  while (tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) {
-    tokens = tokens.slice(1);
-  }
+  const { tokens: rawTokens, unterminated } = tokenizeCommand(normalized);
+  // An unbalanced quote means we could not determine where the quoted value
+  // ended, so we cannot prove the program token is not part of it. Fail closed:
+  // callers drop an empty pattern (`permission-usage-learner` skips it,
+  // `isValidRule` rejects it), so a dropped observation is strictly safer than
+  // a possibly-leaking one.
+  if (unterminated) return '';
+  const tokens = stripEnvAssignments(rawTokens);
   if (!tokens.length) return '';
   // Basename a path-shaped program so a private path is never retained
   // (Plan-verify MINOR #6).
   const program = basenameProgram(tokens[0]);
   if (!program) return '';
+  // Belt-and-braces: a real program name never carries a quote character. If
+  // one survives, our tokenization lost a value boundary somewhere we did not
+  // anticipate — drop the observation rather than emit it.
+  if (/["']/.test(program)) return '';
   const kept = [program];
   const second = tokens[1];
   if (SUBCOMMAND_WRAPPERS.has(program) && second && /^[a-z][a-z0-9-]*$/i.test(second)) {

