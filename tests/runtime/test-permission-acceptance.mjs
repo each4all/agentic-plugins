@@ -219,4 +219,103 @@ describe('ADR-0038 acceptance: permission advisor end-to-end on fixtures', () =>
     strictEqual(settingsReport.permission_plan.recommended.count, 0);
     strictEqual(settingsReport.permission_plan_codex.recommended.count, 0);
   });
+
+  // Refine-verify MAJOR — the allow branch only checked the existing ALLOW
+  // bucket. An earlier Plan-verify had hardened the mirror direction (a
+  // dangerous pattern already sitting in allow[] must still surface a conflict),
+  // but the direction that matters for the operator's own policy was left open:
+  // with `deny: ["Bash(npm test)"]` explicitly set, settings still recommended
+  // `allow: ["Bash(npm test)"]`, reported no conflict, and counted
+  // already_allowed_count = 0. The advisor was arguing with a standing operator
+  // decision, silently. It must not.
+  it('never recommends allow for a pattern the operator explicitly denied (cross-bucket governance)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-acceptance-repo-'));
+    const { home, codexHome } = await seedAdvisorHome();
+    await mkdir(join(root, '.claude'), { recursive: true });
+    // The fixtures observe `npm test` and grade it allow. The operator has
+    // explicitly denied it — their decision outranks the observation.
+    const claudeSettings = `${JSON.stringify({ permissions: { deny: ['Bash(npm test)'] } }, null, 2)}\n`;
+    await writeFile(join(root, '.claude', 'settings.json'), claudeSettings);
+
+    const report = await runSettings({
+      repoRoot: root, homeDir: home, env: envFor(codexHome), permissionPlan: true, now: NOW, runner: fakeRunner(cliMap()),
+    });
+    const pp = report.permission_plan;
+
+    ok(!pp.recommended.allow.includes('Bash(npm test)'), `denied pattern was recommended back into allow: ${JSON.stringify(pp.recommended.allow)}`);
+    ok(pp.already_allowed_count >= 1, 'the denied pattern counts as already governed');
+    const conflict = pp.conflicts.find((c) => c.item === 'Bash(npm test)');
+    ok(conflict, `no conflict surfaced for the denied pattern: ${JSON.stringify(pp.conflicts)}`);
+    ok(/deny/.test(conflict.reason), `conflict reason must name the governing bucket: ${conflict.reason}`);
+
+    // The unrelated allow-graded observation is still recommended — the fix must
+    // suppress only what the operator governed, not the whole bucket.
+    ok(pp.recommended.allow.includes('Bash(git status *)'), 'ungoverned allow-graded rules still recommended');
+
+    // Host config still byte-identical.
+    strictEqual(await readFile(join(root, '.claude', 'settings.json'), 'utf8'), claudeSettings);
+  });
+
+  // The MIRROR CELL of the test above, found while reviewing its fix. That fix
+  // closed the `allow`-graded row of the 3x3 (grade x existing-bucket) matrix.
+  // The `ask`-graded-against-an-explicit-`deny` cell was still open: the advisor
+  // recommended the pattern straight back into ask[], with conflicts=[] and
+  // already_allowed_count=0 — silently RELAXING a standing deny into a prompt.
+  // Host deny-precedence contained the blast, but the plan still argued with the
+  // operator, and the shipped limits text claims allow/deny/ask are all excluded.
+  //
+  // The invariant, stated once: never recommend a rule WEAKER than what the
+  // operator already set.
+  it('never recommends ask for a pattern the operator explicitly denied (mirror cell)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-acceptance-repo-'));
+    const { home, codexHome } = await seedAdvisorHome();
+    await mkdir(join(root, '.claude'), { recursive: true });
+    // The fixtures observe `aws ...` and grade it ask. The operator has gone
+    // further and denied it outright — deny outranks our ask.
+    const claudeSettings = `${JSON.stringify({ permissions: { deny: ['Bash(aws *)'] } }, null, 2)}\n`;
+    await writeFile(join(root, '.claude', 'settings.json'), claudeSettings);
+
+    const report = await runSettings({
+      repoRoot: root, homeDir: home, env: envFor(codexHome), permissionPlan: true, now: NOW, runner: fakeRunner(cliMap()),
+    });
+    const pp = report.permission_plan;
+
+    ok(!pp.recommended.ask.includes('Bash(aws *)'), `denied pattern was recommended back into ask: ${JSON.stringify(pp.recommended.ask)}`);
+    ok(!pp.recommended.allow.includes('Bash(aws *)'), 'denied pattern must not reach allow either');
+    ok(pp.already_allowed_count >= 1, 'the denied pattern counts as already governed');
+    const conflict = pp.conflicts.find((c) => c.item === 'Bash(aws *)');
+    ok(conflict, `no conflict surfaced for the denied pattern: ${JSON.stringify(pp.conflicts)}`);
+    ok(/deny/.test(conflict.reason), `conflict reason must name the governing bucket: ${conflict.reason}`);
+
+    // Unrelated ask-graded observations are still recommended — suppress only what
+    // the operator governed, not the whole bucket.
+    ok(pp.recommended.ask.includes('Bash(curl *)'), 'ungoverned ask-graded rules still recommended');
+
+    strictEqual(await readFile(join(root, '.claude', 'settings.json'), 'utf8'), claudeSettings);
+  });
+
+  // The safety-escalation direction of the same matrix: when the advisor is
+  // STRICTER than the operator, it must still recommend the corrective rule —
+  // and it must SAY so. A deny-graded pattern merely gated behind `ask` used to
+  // be escalated to deny[] with no conflict recorded at all.
+  it('surfaces a conflict when it escalates a pattern the operator only gated behind ask', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-acceptance-repo-'));
+    const { home, codexHome } = await seedAdvisorHome();
+    await mkdir(join(root, '.claude'), { recursive: true });
+    // The fixtures observe `rm ...` and grade it deny. The operator only asks.
+    const claudeSettings = `${JSON.stringify({ permissions: { ask: ['Bash(rm *)'] } }, null, 2)}\n`;
+    await writeFile(join(root, '.claude', 'settings.json'), claudeSettings);
+
+    const report = await runSettings({
+      repoRoot: root, homeDir: home, env: envFor(codexHome), permissionPlan: true, now: NOW, runner: fakeRunner(cliMap()),
+    });
+    const pp = report.permission_plan;
+
+    ok(pp.recommended.deny.includes('Bash(rm *)'), 'the corrective deny is still recommended');
+    const conflict = pp.conflicts.find((c) => c.item === 'Bash(rm *)');
+    ok(conflict, `escalation must be surfaced as a conflict: ${JSON.stringify(pp.conflicts)}`);
+    ok(/ask/.test(conflict.reason), `conflict reason must name the governing bucket: ${conflict.reason}`);
+
+    strictEqual(await readFile(join(root, '.claude', 'settings.json'), 'utf8'), claudeSettings);
+  });
 });

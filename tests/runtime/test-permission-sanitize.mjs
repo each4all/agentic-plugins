@@ -133,4 +133,41 @@ describe('permission-sanitize generalizeCommand', () => {
     assert.equal(generalizeCommand('/Users/alice/private-tools/scan --target x'), 'scan *');
     assert.equal(generalizeCommand('/usr/bin/git status'), 'git status');
   });
+
+  // Refine-verify BLOCKER — the env-prefix strip above was written against a
+  // naive `split(' ')`, which tears a QUOTED value containing a space in half.
+  // The assignment-shaped head was dropped and the orphaned tail was PROMOTED
+  // into the program slot, where it is emitted verbatim into the rule pattern,
+  // the JSON report, the text output, and the written advisory artifact:
+  //
+  //   TOKEN="first s3cr3t" npm test   ->   s3cr3t" *
+  //
+  // The unquoted case had already been hardened twice (see the comments this
+  // suite's subject replaced); only the quoted mirror was left open. These pins
+  // close it, and the fail-closed cases prove an undecidable boundary drops the
+  // observation rather than guessing.
+  it('does not leak a secret from a QUOTED env assignment (the split(" ") mirror)', () => {
+    const canary = 'SUPERSECRETCANARY';
+    for (const raw of [
+      `TOKEN="first ${canary}" npm test`,
+      `TOKEN='first ${canary}' npm test`,
+      `AWS_SECRET_ACCESS_KEY="${canary} tail" aws s3 ls`,
+    ]) {
+      const out = generalizeCommand(raw);
+      assert.ok(!out.includes(canary), `leaked canary from ${raw}: ${out}`);
+      assert.ok(!/["']/.test(out), `quote survived into the pattern from ${raw}: ${out}`);
+    }
+    // The command itself still generalizes normally — the fix must not blunt it.
+    assert.equal(generalizeCommand(`TOKEN="first ${canary}" npm test`), 'npm test');
+    assert.equal(generalizeCommand(`AWS_SECRET_ACCESS_KEY="${canary} tail" aws s3 ls`), 'aws *');
+  });
+
+  it('fails closed when a quote boundary is undecidable', () => {
+    // An unbalanced quote means we cannot prove the program token is not part of
+    // the quoted value. Callers drop an empty pattern (permission-usage-learner
+    // skips it; isValidRule rejects it), so dropping the observation is strictly
+    // safer than emitting a possibly-leaking one.
+    assert.equal(generalizeCommand('TOKEN="unterminated npm test'), '');
+    assert.equal(generalizeCommand('TOKEN="a b"'), '');
+  });
 });
