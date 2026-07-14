@@ -27,9 +27,12 @@ node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--fo
      the records itself — plan builders never read doctor's output. From that
      evidence it recommends a **safety-graded** configuration for **both** hosts:
      a `.claude/settings.json` `allow` / `deny` / `ask` + `permissions.defaultMode`
-     fragment (cross-referenced against the existing config — a pattern the
-     operator has already governed in **any** bucket is never recommended into a
-     different one, and an allowed-but-dangerous conflict is surfaced) and a Codex
+     fragment (cross-referenced against the existing config — **the operator's
+     standing rules outrank an observation**: a pattern already governed by an
+     equal-or-**stricter** rule is never re-recommended, so the plan never emits a
+     rule *weaker* than one already set; where the advisor is **stricter** than the
+     existing rule — a dangerous pattern sitting in `allow` — it surfaces the
+     conflict **and** still recommends the corrective rule) and a Codex
      `config.toml` `approval_policy` / `sandbox_mode` + bounded project-trust
      fragment (path resolved via `$CODEX_HOME`, defaulting to `~/.codex`). It never
      recommends `bypassPermissions`, `danger-full-access`, or approval policy

@@ -265,18 +265,51 @@ function stripQuoted(cmd) {
     .trim();
 }
 
-// Split a (quote-stripped) command line into its top-level segments on the
-// shell control operators && || ; | . Single `&` is intentionally NOT a split
-// point, so an `2>&1` fd-redirect is never mis-split. Each segment is then
-// graded independently and the worst grade wins — so `ls | wc -l` stays allow
-// (both safe) while `git status && git commit` becomes ask (commit not safe),
+// Split a command line into its top-level segments on the shell control
+// operators && || ; | . Single `&` is intentionally NOT a split point, so an
+// `2>&1` fd-redirect is never mis-split. Each segment is then graded
+// independently and the worst grade wins — so `ls | wc -l` stays allow (both
+// safe) while `git status && git commit` becomes ask (commit not safe),
 // precisely fixing the first-token-only blind spot (AGREED / peer gap #6)
 // without bluntly downgrading every pipe.
-function splitSegments(stripped) {
-  return stripped
-    .split(/\s*(?:\|\||&&|;|\|)\s*/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+//
+// This walks the RAW (quote-preserving) command and tracks quote state, so an
+// operator inside a quoted span (`git commit -m "a && b"`) is not a split point
+// — the same guarantee the previous split-the-stripped-string form got for free,
+// but without forcing every downstream consumer to work from the stripped text.
+// That coupling is what gradeSegment's defect grew out of; see there.
+function splitSegments(normalized) {
+  const segments = [];
+  let cur = '';
+  let quote = null;
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
+    if (quote) {
+      cur += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+    const pair = normalized.slice(i, i + 2);
+    if (pair === '&&' || pair === '||') {
+      segments.push(cur);
+      cur = '';
+      i += 1;
+      continue;
+    }
+    if (ch === ';' || ch === '|') {
+      segments.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  segments.push(cur);
+  return segments.map((s) => s.trim()).filter(Boolean);
 }
 
 // Detect a short clustered flag (e.g. -rf / -Rf contains both r and f) OR a
@@ -423,15 +456,37 @@ function gradeResult(grade, reason, signals = []) {
   return Object.freeze({ grade, reason, signals: Object.freeze(signals.slice()) });
 }
 
-// Classify ONE command segment (no top-level operators). Returns
+// Classify ONE raw (quote-preserving) command segment. Returns
 // { grade, signals[], reason }. Danger rules run first; otherwise the leading
 // program (after any `VAR=val` env prefix) is classified by family.
+//
+// The segment arrives RAW because the two consumers below need opposite things
+// from a quote, and one string cannot serve both:
+//
+//   - danger rules must NOT see quoted CONTENT — `git commit -m "rm -rf /"` is
+//     not a recursive remove — so they match against the quote-NEUTRALIZED form;
+//   - program resolution MUST see quote BOUNDARIES — `VAR="a b"` is one token
+//     and must be stripped whole — so it tokenizes the RAW form.
+//
+// Serving both from one pre-stripped string is the root the last two defects
+// grew from. It produced the danger-rule bypass (the placeholder's own quote was
+// re-read as an opening quote), and — after that was fixed — its mirror: with a
+// quote-free placeholder, `TOKEN="a b" npm test` stripped to `TOKEN= _Q_ npm
+// test`, which severs the assignment from its value, so the env-assignment strip
+// removed the now-valueless `TOKEN=` and PROMOTED the orphaned placeholder into
+// the program slot. `GIT_AUTHOR_NAME="Jane Roe" git status` graded `ask` with the
+// operator-facing reason `unrecognized program '_Q_'` — the same
+// orphaned-fragment-becomes-the-program shape as the secret leak, one path over.
+// The placeholder can no longer reach the program slot because the program slot
+// is no longer resolved from text the placeholder lives in.
 function gradeSegment(seg) {
+  // Quoted content is neutralized for DANGER DETECTION only.
+  const stripped = stripQuoted(seg);
   const matched = [];
   for (const rule of SEGMENT_DANGER_RULES) {
     let hit = false;
     try {
-      hit = rule.match(seg);
+      hit = rule.match(stripped);
     } catch {
       hit = false;
     }
@@ -444,16 +499,26 @@ function gradeSegment(seg) {
     return { grade, signals: matched.map((m) => m.id), reason: chosen.title };
   }
 
-  // Drop leading `FOO=bar` / `FOO="a b"` env-assignment prefixes to find the
-  // real program. This used to re-implement `split(' ')` + an assignment strip
-  // locally, which tore a quoted value containing a space in half and promoted
-  // its orphaned tail into the program slot — so `TOKEN="a b" rm -rf /` graded
-  // `ask` (unrecognized program) instead of `deny`. The tokenizer now lives
-  // once in permission-sanitize.mjs and both call sites share it; the
-  // duplication is what let the same defect survive two separate hardenings.
-  const { tokens: rawTokens } = tokenizeCommand(seg);
+  // Program resolution runs on the RAW segment through the shared quote-aware
+  // tokenizer, so `FOO=bar` / `FOO="a b"` env-assignment prefixes are dropped
+  // whole and the real program is what lands in the program slot.
+  const { tokens: rawTokens, unterminated } = tokenizeCommand(seg);
+  // Fail closed, exactly as generalizeCommand does: an unbalanced quote means we
+  // could not determine where the quoted value ended, so we cannot prove the
+  // token we would call the program is not part of it. (The pattern emitter drops
+  // such an observation outright, so this grade only ever reaches diagnostics.)
+  if (unterminated) {
+    return { grade: 'ask', signals: [], reason: 'unbalanced quote — program not resolvable, conservative ask' };
+  }
   const tokens = stripEnvAssignments(rawTokens);
   const program = tokens[0] || '';
+  // Belt-and-braces, mirroring generalizeCommand: a real program name never
+  // carries a quote. If one survives, tokenization lost a boundary somewhere we
+  // did not anticipate — grade conservatively rather than classify a token we do
+  // not understand.
+  if (/["']/.test(program)) {
+    return { grade: 'ask', signals: [], reason: 'quoted program token — program not resolvable, conservative ask' };
+  }
   const sub = tokens[1];
   // reason embeds the program name; sanitize it so a secret-shaped token can
   // never leak through a diagnostic reason string (local finding D).
@@ -484,13 +549,19 @@ function gradeSegment(seg) {
 // fired. Pure and total: never throws, always returns a valid grade — an
 // empty/unparseable command grades `ask`.
 //
-// Quotes are neutralized first, whole-command danger rules run on the result,
-// then every operator-separated segment is graded and the worst grade wins.
+// Whole-command danger rules run against the quote-NEUTRALIZED command, so
+// quoted content cannot trigger one. Segmentation and per-segment grading then
+// run against the RAW command: the splitter is quote-aware (an operator inside
+// quotes is not a split point) and gradeSegment re-strips for its own danger
+// rules while resolving the program from the raw text. Handing gradeSegment the
+// pre-stripped text is what let the quoted-span placeholder reach the program
+// slot; see gradeSegment.
 // This is the safety judgement the sanitize util deliberately does NOT make
 // (generalizeCommand is pure mechanism). doctor, the usage-learner, and both
 // settings slices call THIS so they grade identically.
 export function gradeCommand(rawCommand) {
-  const stripped = stripQuoted(singleLine(rawCommand));
+  const normalized = singleLine(rawCommand);
+  const stripped = stripQuoted(normalized);
   if (!stripped) {
     return gradeResult('ask', 'empty or unparseable command');
   }
@@ -513,7 +584,7 @@ export function gradeCommand(rawCommand) {
     }
   }
 
-  for (const seg of splitSegments(stripped)) {
+  for (const seg of splitSegments(normalized)) {
     const segResult = gradeSegment(seg);
     const before = grade;
     grade = worstGrade(grade, segResult.grade);

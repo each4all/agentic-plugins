@@ -29,7 +29,7 @@ import {
 } from './lib/runtime-config.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { learnFromSources } from './lib/permission-usage-learner.mjs';
-import { makeFragmentContract, makeModeRecommendation } from './lib/permission-advisor-core.mjs';
+import { makeFragmentContract, makeModeRecommendation, worstGrade } from './lib/permission-advisor-core.mjs';
 import { recordPermissionAdvisoryArtifact, makePermissionRunId } from './lib/permission-artifacts.mjs';
 import { buildCodexNotificationPlan } from './lib/notification-plan.mjs';
 import { buildEgressLauncherPlan } from './lib/egress-launcher-plan.mjs';
@@ -2684,11 +2684,21 @@ function governedByClaudeRules(ruleSet, recommended) {
   return false;
 }
 
+// Which bucket of the operator's OWN .claude/settings already governs this
+// pattern, in the host's precedence order (deny beats ask beats allow) — or null
+// if none does.
+function claudeGoverningBucket(hostConfig, item) {
+  if (governedByClaudeRules(hostConfig.deny, item)) return 'deny';
+  if (governedByClaudeRules(hostConfig.ask, item)) return 'ask';
+  if (governedByClaudeRules(hostConfig.allow, item)) return 'allow';
+  return null;
+}
+
 function permissionPlanLimits(capNote) {
   const limits = [
     'runtime:settings permission plan is a dry-run (M1): it emits the recommended .claude/settings.json fragment and writes plan+evidence to an agentic-plugins-owned artifact, but NEVER writes host config — apply it yourself by merging the fragment.',
     'Recommendations are safety-graded (allow for known-safe families; deny/ask retained for dangerous shapes) and never recommend bypassPermissions as a default.',
-    'Already-governed patterns (present in the host allow/deny/ask sets) are excluded; the host allowlist is read read-only and never added to apply targets.',
+    'The operator\'s standing rules outrank an observation: a pattern already governed by an equal-or-STRICTER host rule (same bucket, or a standing deny/ask over a safer-looking observation) is never re-recommended — the plan never emits a rule WEAKER than one already set. Where the advisor is STRICTER than the existing rule (a dangerous pattern sitting in allow), it surfaces the conflict AND still recommends the corrective rule. The host allow/deny/ask sets are read read-only and never added to apply targets.',
     'Evidence retains only generalized patterns + counts (ADR-0038 §5); raw commands, arguments, and source paths are never surfaced.',
   ];
   if (capNote) limits.push(capNote);
@@ -2718,62 +2728,61 @@ async function buildPermissionPlan({ repoRoot, homeDir, learner, scan, maxFiles 
   const conflicts = [];
   const fragmentRules = [];
   let alreadyGoverned = 0;
+  // The operator's own .claude/settings outranks an observation. That is ONE
+  // strictness comparison (deny > ask > allow), not a per-grade branch — and
+  // writing it as per-grade branches is exactly what left cells of the matrix
+  // unhandled, twice:
+  //
+  //   observed | in allow[]        | in ask[]          | in deny[]
+  //   ---------+-------------------+-------------------+------------------
+  //   allow    | governed, skip    | operator stricter | operator stricter
+  //   ask      | WE are stricter   | governed, skip    | operator stricter
+  //   deny     | WE are stricter   | WE are stricter   | governed, skip
+  //
+  //   same bucket        -> already governed: recommend nothing, no conflict.
+  //   operator stricter  -> their standing decision stands: surface the conflict
+  //                         and recommend NOTHING. Never emit a rule WEAKER than
+  //                         what the operator already set — that is the advisor
+  //                         arguing with its own operator.
+  //   we are stricter    -> safety escalation: surface the conflict AND still
+  //                         recommend the corrective rule, so a dangerous pattern
+  //                         sitting in allow[] is never silently suppressed.
+  //
+  // An earlier Plan-verify closed `deny`/`ask` observed against allow[]. The
+  // commit before this one closed the `allow` row. The `ask`-observed-against-an
+  // explicit-`deny` cell was still open: it recommended the pattern straight back
+  // into ask[], with conflicts=[] and already_allowed_count=0 — silently relaxing
+  // a standing deny into a prompt. Host deny-precedence contained the blast, but
+  // the plan still contradicted the operator and the shipped limits text still
+  // claimed allow/deny/ask were all excluded. Same defect, mirror cell. State the
+  // invariant once so there is no third mirror to find.
   for (const rule of claudeRules) {
     const item = renderClaudePermissionItem(rule);
     if (!item) continue; // file-modification → defaultMode, handled below
-    if (rule.grade === 'allow') {
-      if (governedByClaudeRules(hostConfig.allow, item)) {
-        alreadyGoverned += 1;
-        continue;
-      }
-      // Mirror of the deny/ask branch below. An allow-graded observation whose
-      // pattern the operator has EXPLICITLY denied (or gated behind ask) must
-      // not be silently recommended back into allow[] — their standing decision
-      // outranks a safe-looking observation, and a fragment that re-allows a
-      // denied pattern is the operator's own policy being argued with. Surface
-      // the conflict and emit nothing.
-      //
-      // The reverse direction (dangerous pattern already sitting in allow[])
-      // was hardened by an earlier Plan-verify; this branch only checked its
-      // own bucket, so `deny: ["Bash(node *)"]` still produced a recommended
-      // `allow: ["Bash(node *)"]` with `already_allowed_count = 0`. This is the
-      // missing mirror.
-      const deniedBucket = governedByClaudeRules(hostConfig.deny, item)
-        ? 'deny'
-        : governedByClaudeRules(hostConfig.ask, item)
-          ? 'ask'
-          : null;
-      if (deniedBucket) {
-        conflicts.push({
-          item,
-          grade: rule.grade,
-          reason: `observed as safe but already governed by permissions.${deniedBucket} in .claude/settings; the operator's ${deniedBucket} stands — not recommended for allow`,
-        });
-        alreadyGoverned += 1;
-        continue;
-      }
-      allow.push(item);
-      fragmentRules.push(rule);
-      continue;
-    }
-    // deny / ask: skip only if the SAME bucket already governs it. If it is
-    // currently ALLOWED but graded deny/ask, surface the allowed-but-dangerous
-    // conflict AND still recommend the corrective rule (Plan-verify peer MAJOR —
-    // a dangerous pattern sitting in allow[] must not be silently suppressed).
-    const ownBucket = rule.grade === 'deny' ? hostConfig.deny : hostConfig.ask;
-    if (governedByClaudeRules(ownBucket, item)) {
+    const bucket = claudeGoverningBucket(hostConfig, item);
+    if (bucket === rule.grade) {
       alreadyGoverned += 1;
       continue;
     }
-    if (governedByClaudeRules(hostConfig.allow, item)) {
+    if (bucket && worstGrade(bucket, rule.grade) === bucket) {
       conflicts.push({
         item,
         grade: rule.grade,
-        reason: `currently allowed in .claude/settings but graded ${rule.grade}; move it to permissions.${rule.grade}`,
+        reason: `observed as ${rule.grade} but already governed by permissions.${bucket} in .claude/settings; the operator's ${bucket} stands — not recommended for ${rule.grade}`,
+      });
+      alreadyGoverned += 1;
+      continue;
+    }
+    if (bucket) {
+      conflicts.push({
+        item,
+        grade: rule.grade,
+        reason: `currently ${bucket === 'allow' ? 'allowed' : bucket} in .claude/settings but graded ${rule.grade}; move it to permissions.${rule.grade}`,
       });
     }
     if (rule.grade === 'deny') deny.push(item);
-    else ask.push(item);
+    else if (rule.grade === 'ask') ask.push(item);
+    else allow.push(item);
     fragmentRules.push(rule);
   }
 
