@@ -10,7 +10,7 @@
     {
       "name": "attention",
       "source": "./plugins/attention",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "description": "Attention sensors — hook-only L1 plugin pushing operator notifications (approval prompts, idle prompts, turn/workflow terminals, subagent completion) from Claude Code lifecycle hooks into the runtime notification emitter (ADR-0040 §3). Hooks + sensor scripts only; fail-closed silent observers; inert until the operator opts into a notify_channel via runtime:settings. Zero plugin-owned Codex hook surface: no Codex manifest hooks key and no root default hooks file — the Claude registration is manifest-scoped at adapters/claude/hooks/hooks.json, outside Codex default-file discovery (ADR-0040 §3 amendment); Codex-side attention is the runtime notification-plan fragments (§4).",
       "category": "Productivity"
     },
