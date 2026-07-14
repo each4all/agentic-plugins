@@ -59,8 +59,9 @@ discovery floors, and the footer-rendered marker contract. Designer stays
 out of the `runtime:dashboard` Tier-1 active-workflow view: Tier-1 scoping
 is a deliberate ADR-0040 §6 decision independent of the projection seam
 (designer inclusion is a demand-gated follow-up per ADR-0043 §3), and the
-attention sensors' designer enrichment is likewise a separate post-S4
-follow-up.
+attention sensors enrich designer terminal Stops since
+`plugin-attention-v0.5.0` (the ADR-0043 §3 follow-up — transition-anchored
+freshness, headline omitted on designer's usually-publish-needed `blocked`).
 
 ## Scope boundaries (ADR-0042 Non-Goals)
 
