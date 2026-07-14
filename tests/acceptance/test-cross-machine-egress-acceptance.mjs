@@ -243,7 +243,10 @@ function writeFreshProjection(root, persona, {
   const markerName = persona === 'orchestrator'
     ? `last-session-handoff.json.${String(workflowId).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 128) || 'unknown'}.footer-rendered`
     : 'last-session-handoff.json.footer-rendered';
-  writeFileSync(join(dir, markerName), `${JSON.stringify({ workflow_id: workflowId, status: 'rendered' })}\n`);
+  // `at` is the render-moment transition anchor the attention sensor gates on
+  // (ADR-0043 §3 four-persona extension) — a dated rendered marker is what the
+  // persona writers actually produce.
+  writeFileSync(join(dir, markerName), `${JSON.stringify({ workflow_id: workflowId, status: 'rendered', at: new Date().toISOString() })}\n`);
   return projectionFile;
 }
 

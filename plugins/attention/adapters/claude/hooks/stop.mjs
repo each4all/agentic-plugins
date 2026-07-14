@@ -3,16 +3,19 @@
 //
 // ADR-0040 §3 Claude `Stop` sensor. Stop has no matcher and fires on every
 // turn end for every plugin, with no cross-plugin ordering guarantee — this
-// sensor therefore never assumes a persona Stop hook (engineer/orchestrator
-// archive or sidecar backstop) ran first.
+// sensor therefore never assumes a persona Stop hook (any onboarded
+// persona's archive or sidecar backstop) ran first.
 //
 // Kind/subject mapping per the §1 contract:
 //   Stop with a FRESH terminal workflow projection → workflow-terminal,
-//     subject = workflow_id. Freshness is the §3 three-part gate implemented
-//     in lib/sensor.mjs readFreshProjection: workflow-id consistency + mtime
-//     bound + the per-persona `.footer-rendered` marker (engineer and
-//     orchestrator marker shapes DIFFER; founder writes no sidecar at v1 and
-//     stays bare-Stop-only).
+//     subject = workflow_id. Freshness is the §3 gate implemented in
+//     lib/sensor.mjs readFreshProjection: workflow-id consistency + strict
+//     workflow_kind + mtime bound + the per-persona `.footer-rendered`
+//     marker with a fresh `at` render timestamp (the transition anchor).
+//     All four onboarded personas enrich (ADR-0043 §3 — engineer /
+//     orchestrator / founder / designer); orchestrator alone id-scopes the
+//     marker filename, the other three use the slot-sibling shape documented
+//     in each persona's session-handoff runbook.
 //   Stop otherwise (the bare case) → turn-complete, subject =
 //     session:<session_id>:<prompt_id> — both documented COMMON input fields
 //     present on every hook event, so the bare case never relies on a
@@ -31,6 +34,7 @@ import {
   deriveHeadlineToken,
   deriveRepoIdent,
   emitEvent,
+  emitTerminalEvents,
   readFreshProjection,
   readStdinJson,
   resolveHostname,
@@ -58,8 +62,8 @@ async function main() {
   const sessionHint = buildSessionHint({ sessionId, promptId });
 
   // State enrichment — one workflow-terminal event per persona whose one-shot
-  // projection passes every freshness gate. Both personas can be terminal in
-  // one turn (e.g. a macro closes together with its last engineer child).
+  // projection passes every freshness gate. Multiple personas can be terminal
+  // in one turn (e.g. a macro closes together with its last engineer child).
   const terminalEvents = [];
   for (const persona of SENSOR_PERSONAS) {
     const fresh = readFreshProjection({ repoRoot, persona, now });
@@ -88,7 +92,10 @@ async function main() {
     // turn-complete below deliberately carries none (a kind-only token would
     // overstate a single turn as workflow status). Never derived from free text
     // (title/body/next_action); the runtime opt-in + enum-guard gate egress.
-    const headline = deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: projection.archive_gate });
+    // persona threads through so the manually-published personas' 'blocked'
+    // (usually publish-needed, indistinguishable in the frozen projection)
+    // omits the token rather than overclaiming (sensor.mjs map-or-omit).
+    const headline = deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: projection.archive_gate, persona });
     terminalEvents.push(buildEvent({
       repoIdent,
       kind: 'workflow-terminal',
@@ -105,9 +112,11 @@ async function main() {
     }));
   }
   if (terminalEvents.length > 0) {
-    for (const event of terminalEvents) {
-      await emitEvent({ repoRoot, event });
-    }
+    // Bounded TOTAL emission deadline (ADR-0043 §3 Plan-verify + Codex review
+    // findings): each emission gets the FULL 12s slot or is dropped — a
+    // partial slot would kill an in-flight egress dispatch before its own 8s
+    // network deadline. See emitTerminalEvents (sensor.mjs) for the contract.
+    await emitTerminalEvents({ repoRoot, events: terminalEvents });
     return;
   }
 

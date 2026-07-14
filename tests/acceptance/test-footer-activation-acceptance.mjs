@@ -36,8 +36,8 @@
 //        version floor is a cache-ladder concern, covered precisely at the
 //        resolver level by tests/{engineer,orchestrator}/test-discover-runtime.mjs
 //        "too-old cache → null (no stale-cache fallback)".)
-//   AC4  ADR-0010 §5 boundary: no persona plugin (engineer/orchestrator/founder)
-//        STATICALLY, DYNAMICALLY, or via re-export imports the L1 runtime
+//   AC4  ADR-0010 §5 boundary: no persona plugin (engineer/orchestrator/
+//        founder/designer) STATICALLY, DYNAMICALLY, or via re-export imports the L1 runtime
 //        footer.mjs; the render engine is reached only by subprocess.
 //
 // Host-free + deterministic: throwaway git repos + state homes; the runtime is
@@ -167,7 +167,7 @@ const PERSONAS = [
 // --host codex, the sidecar computes, footer.mjs renders), not just claude.
 const HOSTS = [{ name: 'claude' }, { name: 'codex' }];
 
-// The REAL terminal CLI shared by both personas. runtimeRoot === null forces a
+// The REAL terminal CLI shared by every persona. runtimeRoot === null forces a
 // missing runtime; a string overrides the pinned runtime (e.g. a too-old stub).
 function setTerminal(persona, host, root, wfPath, { runtimeRoot = RUNTIME_ROOT } = {}) {
   return runNode([

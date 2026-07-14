@@ -406,10 +406,22 @@ describe('plugins/attention — buildEvent routing-field sanitization (ADR-0041 
 
 describe('plugins/attention — deriveHeadlineToken (ADR-0041 §3a Guard 1 map-or-omit)', () => {
   it('maps workflow-terminal × the real archive_gate values to the closed vocab', () => {
-    // The three values engineer/orchestrator mapArchiveGate actually emit.
+    // The three values the persona mapArchiveGate copies actually emit.
     strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'ready_to_archive' }), 'complete');
     strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'not_terminal' }), 'in-progress');
     strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'blocked' }), 'blocked');
+  });
+
+  it("manually-published personas omit on 'blocked' — usually publish-needed, indistinguishable in the frozen projection (ADR-0043 §3)", () => {
+    for (const persona of ['founder', 'designer']) {
+      strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'blocked', persona }), null,
+        `${persona} blocked must OMIT the token (map-or-omit; completion-output contract §2 says publish-needed is not blocked)`);
+      strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'ready_to_archive', persona }), 'complete');
+      strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'not_terminal', persona }), 'in-progress');
+    }
+    // The auto-committing personas keep the blocked token (genuinely blocked work).
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'blocked', persona: 'engineer' }), 'blocked');
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: 'blocked', persona: 'orchestrator' }), 'blocked');
   });
 
   it('omits (null) for an unknown/absent gate or a non-workflow-terminal kind — never a guess', () => {
@@ -616,29 +628,195 @@ describe('plugins/attention — Stop freshness gate (readFreshProjection)', () =
     await rm(join(repoRoot, '.agentic-plugins/state/orchestrator', `last-session-handoff.json.${macroId}.footer-rendered`));
     await writeFile(
       join(repoRoot, '.agentic-plugins/state/orchestrator', 'last-session-handoff.json.footer-rendered'),
-      JSON.stringify({ workflow_id: macroId, status: 'rendered' }),
+      JSON.stringify({ workflow_id: macroId, status: 'rendered', at: new Date().toISOString() }),
     );
     strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'orchestrator' }), null);
+  });
+
+  it('accepts fresh founder and designer projections with rendered slot markers (ADR-0043 §3)', async () => {
+    for (const persona of ['founder', 'designer']) {
+      await seed(persona, {
+        marker: { workflow_id: WF_ID, status: 'rendered', at: new Date().toISOString() },
+        markerName: 'last-session-handoff.json.footer-rendered',
+      });
+      const fresh = sensorLib.readFreshProjection({ repoRoot, persona });
+      ok(fresh, `expected a fresh ${persona} projection`);
+      strictEqual(fresh.workflowId, WF_ID);
+      strictEqual(fresh.projection.workflow_kind, persona);
+    }
+  });
+
+  it('founder/designer negatives: claimed, id mismatch, id-scoped marker shape, missing at', async () => {
+    for (const persona of ['founder', 'designer']) {
+      const slotMarker = join(repoRoot, '.agentic-plugins', 'state', persona, 'last-session-handoff.json.footer-rendered');
+      // claimed (render in flight) — never a completed terminal presentation.
+      await seed(persona, {
+        marker: { workflow_id: WF_ID, status: 'claimed', at: new Date().toISOString() },
+        markerName: 'last-session-handoff.json.footer-rendered',
+      });
+      strictEqual(sensorLib.readFreshProjection({ repoRoot, persona }), null, `${persona}: claimed`);
+      // marker for a DIFFERENT workflow.
+      await seed(persona, {
+        marker: { workflow_id: 'compose-other', status: 'rendered', at: new Date().toISOString() },
+        markerName: 'last-session-handoff.json.footer-rendered',
+      });
+      strictEqual(sensorLib.readFreshProjection({ repoRoot, persona }), null, `${persona}: id mismatch`);
+      // an orchestrator-shaped (id-scoped) marker alone must NOT satisfy the
+      // slot contract these personas document (ADR-0043 §2).
+      await rm(slotMarker, { force: true });
+      await seed(persona, {
+        marker: { workflow_id: WF_ID, status: 'rendered', at: new Date().toISOString() },
+        markerName: `last-session-handoff.json.${WF_ID}.footer-rendered`,
+      });
+      strictEqual(sensorLib.readFreshProjection({ repoRoot, persona }), null, `${persona}: id-scoped marker shape`);
+      await rm(join(repoRoot, '.agentic-plugins', 'state', persona, `last-session-handoff.json.${WF_ID}.footer-rendered`), { force: true });
+      // rendered but WITHOUT the at render timestamp — the transition anchor
+      // is part of the gate (fail-closed on an undated render).
+      await seed(persona, {
+        marker: { workflow_id: WF_ID, status: 'rendered' },
+        markerName: 'last-session-handoff.json.footer-rendered',
+      });
+      strictEqual(sensorLib.readFreshProjection({ repoRoot, persona }), null, `${persona}: missing at`);
+    }
+  });
+
+  it('founder/designer are canonical-home-only: a legacy-home-only seed is not read (ADR-0036 SD5 / ADR-0042 SD7)', async () => {
+    for (const persona of ['founder', 'designer']) {
+      const legacyOnly = await mkdtemp(join(tmpdir(), `attention-${persona}-legacy-`));
+      try {
+        await mkdir(join(legacyOnly, '.git'), { recursive: true });
+        const dir = join(legacyOnly, '.claude', `agentic-${persona}`);
+        await mkdir(dir, { recursive: true });
+        await writeFile(join(dir, 'last-session-handoff.json'), JSON.stringify({ ...projection, workflow_kind: persona }));
+        await writeFile(
+          join(dir, 'last-session-handoff.json.footer-rendered'),
+          JSON.stringify({ workflow_id: WF_ID, status: 'rendered', at: new Date().toISOString() }),
+        );
+        strictEqual(sensorLib.readFreshProjection({ repoRoot: legacyOnly, persona }), null,
+          `${persona} never had a legacy home — the sensor must not model one`);
+      } finally {
+        await rm(legacyOnly, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('the transition anchor rejects a stale/invalid marker at even when the projection mtime is fresh (publish-needed idle)', async () => {
+    // A publish-needed founder/designer workflow idles active-terminal while
+    // its persona Stop backstop rewrites the projection every turn — mtime
+    // stays fresh indefinitely. The rendered marker's at (the render moment)
+    // is what expires the enrichment window and restores the bare
+    // turn-complete path.
+    const staleAt = new Date(Date.now() - sensorLib.HANDOFF_FRESHNESS_MS - 60_000).toISOString();
+    await seed('designer', {
+      marker: { workflow_id: WF_ID, status: 'rendered', at: staleAt },
+      markerName: 'last-session-handoff.json.footer-rendered',
+    });
+    strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'designer' }), null,
+      'a lapsed transition anchor must degrade to the bare turn-complete');
+    await seed('designer', {
+      marker: { workflow_id: WF_ID, status: 'rendered', at: 'not-a-date' },
+      markerName: 'last-session-handoff.json.footer-rendered',
+    });
+    strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'designer' }), null,
+      'an unparseable at fail-closes');
+  });
+
+  it('freshness boundaries: far-future anchors are malformed, small skew is tolerated, the window edge is inclusive, non-ISO at fail-closes (Codex review)', async () => {
+    const seedMarkerAt = async (at) => seed('designer', {
+      marker: { workflow_id: WF_ID, status: 'rendered', at },
+      markerName: 'last-session-handoff.json.footer-rendered',
+    });
+    const now = Date.now();
+    // A far-future at (clock lies / crafted state) must degrade, never enrich —
+    // a unidirectional age check would hold it "fresh" for its entire lead.
+    await seedMarkerAt(new Date(now + 24 * 60 * 60 * 1000).toISOString());
+    strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'designer', now }), null, 'far-future at');
+    // Small positive skew stays allowed: `now` is captured before concurrent reads.
+    await seedMarkerAt(new Date(now + sensorLib.FUTURE_SKEW_MS - 1_000).toISOString());
+    ok(sensorLib.readFreshProjection({ repoRoot, persona: 'designer', now }), 'within-skew at accepted');
+    // Just beyond the tolerated skew rejects.
+    await seedMarkerAt(new Date(now + sensorLib.FUTURE_SKEW_MS + 1_000).toISOString());
+    strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'designer', now }), null, 'beyond-skew at');
+    // The past window edge is inclusive at exactly HANDOFF_FRESHNESS_MS…
+    await seedMarkerAt(new Date(now - sensorLib.HANDOFF_FRESHNESS_MS).toISOString());
+    ok(sensorLib.readFreshProjection({ repoRoot, persona: 'designer', now }), 'exact window edge accepted');
+    // …and exclusive one second past it.
+    await seedMarkerAt(new Date(now - sensorLib.HANDOFF_FRESHNESS_MS - 1_000).toISOString());
+    strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'designer', now }), null, 'past the window');
+    // Parseable but non-contract spellings (RFC-2822 / local / date-only) fail closed.
+    for (const nonIso of ['Mon, 14 Jul 2026 00:00:00 GMT', '2026-07-14T00:00:00', '2026-07-14']) {
+      await seedMarkerAt(nonIso);
+      strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'designer', now }), null, `non-ISO at: ${nonIso}`);
+    }
+  });
+
+  it('a FUTURE-dated projection mtime is malformed too (bidirectional mtime bound)', async () => {
+    const file = await seed('engineer', {
+      marker: { workflow_id: WF_ID, status: 'rendered', at: new Date().toISOString() },
+      markerName: 'last-session-handoff.json.footer-rendered',
+    });
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await utimes(file, future, future);
+    strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'engineer' }), null,
+      'a far-future mtime must degrade to the bare turn-complete');
+  });
+
+  it('workflow_kind is strictly required: missing or padded kinds are malformed (canonical bounded schema)', async () => {
+    const { workflow_kind: _unused, ...kindless } = projection;
+    await seed('engineer', {
+      projectionBody: kindless,
+      marker: { workflow_id: WF_ID, status: 'rendered', at: new Date().toISOString() },
+      markerName: 'last-session-handoff.json.footer-rendered',
+    });
+    strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'engineer' }), null, 'missing kind');
+    await seed('engineer', {
+      projectionBody: { ...projection, workflow_kind: ' engineer ' },
+      marker: { workflow_id: WF_ID, status: 'rendered', at: new Date().toISOString() },
+      markerName: 'last-session-handoff.json.footer-rendered',
+    });
+    strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'engineer' }), null, 'padded kind');
+  });
+
+  it('orchestrator legacy home is still read (the pre-ADR-0025 home stays modeled)', async () => {
+    const legacyRepo2 = await mkdtemp(join(tmpdir(), 'attention-orc-legacy-'));
+    try {
+      await mkdir(join(legacyRepo2, '.git'), { recursive: true });
+      const macroId = 'macro-plan-20260704T000000Z-bbbbbb';
+      const dir = join(legacyRepo2, '.claude', 'agentic-orchestrator');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'last-session-handoff.json'),
+        JSON.stringify({ ...projection, workflow_kind: 'orchestrator', workflow_id: macroId }));
+      await writeFile(
+        join(dir, `last-session-handoff.json.${macroId}.footer-rendered`),
+        JSON.stringify({ workflow_id: macroId, status: 'rendered', at: new Date().toISOString() }),
+      );
+      const fresh = sensorLib.readFreshProjection({ repoRoot: legacyRepo2, persona: 'orchestrator' });
+      ok(fresh, 'expected the orchestrator legacy-home projection to be read');
+      strictEqual(fresh.workflowId, macroId);
+    } finally {
+      await rm(legacyRepo2, { recursive: true, force: true });
+    }
   });
 
   it('rejects: claimed marker, id mismatch, stale mtime, kind mismatch, missing marker', async () => {
     // claimed (render in flight) — not a completed terminal presentation.
     await seed('engineer', {
-      marker: { workflow_id: WF_ID, status: 'claimed' },
+      marker: { workflow_id: WF_ID, status: 'claimed', at: new Date().toISOString() },
       markerName: 'last-session-handoff.json.footer-rendered',
     });
     strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'engineer' }), null);
 
     // marker for a DIFFERENT workflow.
     await seed('engineer', {
-      marker: { workflow_id: 'compose-other', status: 'rendered' },
+      marker: { workflow_id: 'compose-other', status: 'rendered', at: new Date().toISOString() },
       markerName: 'last-session-handoff.json.footer-rendered',
     });
     strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'engineer' }), null);
 
-    // stale mtime (beyond HANDOFF_FRESHNESS_MS).
+    // stale mtime (beyond HANDOFF_FRESHNESS_MS) — marker anchor stays valid so
+    // the mtime gate is what rejects.
     const file = await seed('engineer', {
-      marker: { workflow_id: WF_ID, status: 'rendered' },
+      marker: { workflow_id: WF_ID, status: 'rendered', at: new Date().toISOString() },
       markerName: 'last-session-handoff.json.footer-rendered',
     });
     const old = new Date(Date.now() - sensorLib.HANDOFF_FRESHNESS_MS - 60_000);
@@ -648,7 +826,7 @@ describe('plugins/attention — Stop freshness gate (readFreshProjection)', () =
     // workflow_kind disagrees with the persona directory.
     await seed('engineer', {
       projectionBody: { ...projection, workflow_kind: 'orchestrator' },
-      marker: { workflow_id: WF_ID, status: 'rendered' },
+      marker: { workflow_id: WF_ID, status: 'rendered', at: new Date().toISOString() },
       markerName: 'last-session-handoff.json.footer-rendered',
     });
     strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'engineer' }), null);
@@ -668,7 +846,7 @@ describe('plugins/attention — Stop freshness gate (readFreshProjection)', () =
       await writeFile(join(dir, 'last-session-handoff.json'), JSON.stringify(projection));
       await writeFile(
         join(dir, 'last-session-handoff.json.footer-rendered'),
-        JSON.stringify({ workflow_id: WF_ID, status: 'rendered' }),
+        JSON.stringify({ workflow_id: WF_ID, status: 'rendered', at: new Date().toISOString() }),
       );
       const fresh = sensorLib.readFreshProjection({ repoRoot: legacyRepo, persona: 'engineer' });
       ok(fresh, 'expected the legacy-home projection to be read');
@@ -678,9 +856,21 @@ describe('plugins/attention — Stop freshness gate (readFreshProjection)', () =
     }
   });
 
-  it('founder is not a sensor persona at v1 (bare-Stop-only)', () => {
-    deepStrictEqual([...sensorLib.SENSOR_PERSONAS], ['engineer', 'orchestrator']);
-    strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'founder' }), null);
+  it('all four onboarded personas are sensor personas (ADR-0043 §3); a genuinely unsupported one stays null', async () => {
+    deepStrictEqual([...sensorLib.SENSOR_PERSONAS], ['engineer', 'orchestrator', 'founder', 'designer']);
+    // A persona outside the allowlist fail-closes even with a perfect seed —
+    // 'image' is real-but-not-onboarded (it ships no workflow machinery), so
+    // it keeps the degradation path live now that founder/designer joined.
+    const dir = join(repoRoot, '.agentic-plugins', 'state', 'image');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'last-session-handoff.json'), JSON.stringify({ ...projection, workflow_kind: 'image' }));
+    await writeFile(
+      join(dir, 'last-session-handoff.json.footer-rendered'),
+      JSON.stringify({ workflow_id: WF_ID, status: 'rendered', at: new Date().toISOString() }),
+    );
+    strictEqual(sensorLib.readFreshProjection({ repoRoot, persona: 'image' }), null);
+    strictEqual(sensorLib.footerMarkerFileFor('image', '/x/last-session-handoff.json', WF_ID), null,
+      'an unknown persona has no documented marker contract — the explicit shape table fail-closes');
   });
 
   it('mixed homes fail-close: a stale canonical candidate shadows a valid legacy one', async () => {
@@ -700,12 +890,70 @@ describe('plugins/attention — Stop freshness gate (readFreshProjection)', () =
       await writeFile(join(legacyDir, 'last-session-handoff.json'), JSON.stringify(projection));
       await writeFile(
         join(legacyDir, 'last-session-handoff.json.footer-rendered'),
-        JSON.stringify({ workflow_id: WF_ID, status: 'rendered' }),
+        JSON.stringify({ workflow_id: WF_ID, status: 'rendered', at: new Date().toISOString() }),
       );
       strictEqual(sensorLib.readFreshProjection({ repoRoot: mixedRepo, persona: 'engineer' }), null);
     } finally {
       await rm(mixedRepo, { recursive: true, force: true });
     }
+  });
+});
+
+describe('plugins/attention — emitTerminalEvents deadline batching (ADR-0043 §3)', () => {
+  const EVENTS = [{ event_id: 'a' }, { event_id: 'b' }, { event_id: 'c' }, { event_id: 'd' }];
+
+  // A deterministic clock the helper's injectable `now` reads; `advance` is
+  // what a fake emit uses to simulate a slow/hung emitter without sleeping.
+  function fakeClock(start = 0) {
+    let t = start;
+    return { now: () => t, advance: (ms) => { t += ms; } };
+  }
+
+  it('fast emissions all run and each gets the FULL fixed slot (never a partial timeout)', async () => {
+    const clock = fakeClock();
+    const calls = [];
+    const result = await sensorLib.emitTerminalEvents({
+      repoRoot: '/r',
+      events: EVENTS,
+      emit: async ({ event, timeoutMs }) => { calls.push({ id: event.event_id, timeoutMs }); clock.advance(100); },
+      now: clock.now,
+    });
+    deepStrictEqual(result, { emitted: 4, dropped: 0 });
+    deepStrictEqual(calls.map((c) => c.id), ['a', 'b', 'c', 'd']);
+    ok(calls.every((c) => c.timeoutMs === 12_000), 'every emission gets the full 12s slot');
+  });
+
+  it('a slow emitter exhausts the deadline: later events are DROPPED, never given a partial slot', async () => {
+    const clock = fakeClock();
+    const calls = [];
+    const result = await sensorLib.emitTerminalEvents({
+      repoRoot: '/r',
+      events: EVENTS,
+      emit: async ({ event }) => { calls.push(event.event_id); clock.advance(12_000); },
+      now: clock.now,
+    });
+    // 24s deadline / 12s per emit → exactly two full slots; the rest drop.
+    deepStrictEqual(result, { emitted: 2, dropped: 2 });
+    deepStrictEqual(calls, ['a', 'b']);
+  });
+
+  it('a deadline below one full slot emits nothing (full-slot-or-nothing)', async () => {
+    const clock = fakeClock();
+    const calls = [];
+    const result = await sensorLib.emitTerminalEvents({
+      repoRoot: '/r',
+      events: EVENTS,
+      deadlineMs: 5_000,
+      emit: async ({ event }) => { calls.push(event.event_id); },
+      now: clock.now,
+    });
+    deepStrictEqual(result, { emitted: 0, dropped: 4 });
+    deepStrictEqual(calls, []);
+  });
+
+  it('empty/absent event lists are a no-op', async () => {
+    deepStrictEqual(await sensorLib.emitTerminalEvents({ repoRoot: '/r', events: [], emit: async () => {} }), { emitted: 0, dropped: 0 });
+    deepStrictEqual(await sensorLib.emitTerminalEvents({ repoRoot: '/r', emit: async () => {} }), { emitted: 0, dropped: 0 });
   });
 });
 
@@ -959,17 +1207,123 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
       }
     });
 
-    it('two fresh projections (engineer + orchestrator) → two workflow-terminal events with per-persona headline, no bare turn-complete (Codex peer)', async () => {
-      // Both personas can be terminal in one turn (a macro closes with its last
-      // engineer child). Each workflow-terminal event borns its OWN headline from
-      // its OWN projection's archive_gate — engineer blocked → blocked, orchestrator
-      // not_terminal → in-progress — and the bare turn-complete is suppressed.
+    it('Stop with a fresh designer projection → workflow-terminal WITHOUT headline on blocked (ADR-0043 §3)', async () => {
+      const dir = join(repo, '.agentic-plugins', 'state', 'designer');
+      await mkdir(dir, { recursive: true });
+      const wfId = 'compose-20260714T000000Z-d51gn3';
+      await writeFile(join(dir, 'last-session-handoff.json'), JSON.stringify({
+        workflow_kind: 'designer',
+        workflow_id: wfId,
+        workflow_path: '.agentic-plugins/state/designer/workflows/d.md',
+        phase: 'summary-complete',
+        next_action: 'Hand the spec to the frontend',
+        // designer blocked is USUALLY publish-needed (completion-output
+        // contract §2) and the frozen projection cannot distinguish — the
+        // event must therefore carry NO headline token (map-or-omit).
+        archive_gate: 'blocked',
+        routing_recommendation: '/designer:resume',
+      }));
+      await writeFile(
+        join(dir, 'last-session-handoff.json.footer-rendered'),
+        JSON.stringify({ workflow_id: wfId, status: 'rendered', at: new Date().toISOString() }),
+      );
+      try {
+        const result = runSensorE2E('stop.mjs', { cwd: repo, session_id: 'sess-1', prompt_id: 'prompt-d' });
+        strictEqual(result.status, 0);
+        strictEqual(result.stdout, '');
+        const captures = await takeCaptures();
+        strictEqual(captures.length, 1, 'one designer workflow-terminal; the bare turn-complete is suppressed');
+        const { event } = captures[0];
+        strictEqual(event.kind, 'workflow-terminal');
+        strictEqual(event.refs.workflow_id, wfId);
+        strictEqual(event.refs.phase, 'summary-complete');
+        strictEqual('headline' in event, false,
+          'designer blocked must omit the headline token — never a wrong blocked claim for publish-needed');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('composed producer→consumer: the REAL designer sidecar writes projection+marker, the REAL Stop sensor enriches (ADR-0043 §3)', async () => {
+      // Producer half — a real designer set-terminal against the repo's own
+      // runtime renders the completion footer and upgrades the marker to
+      // rendered (the S4 contract as it exists in the wild, not a hand seed).
+      // Consumer half — the real attention Stop sensor reads that documented
+      // contract and hands one workflow-terminal event to the capture stub.
+      const composedRepo = await mkdtemp(join(tmpdir(), 'attention-composed-'));
+      try {
+        for (const args of [
+          ['init', '-q', '-b', 'feat/x'],
+          ['config', 'user.name', 't'],
+          ['config', 'user.email', 't@t'],
+          ['config', 'commit.gpgsign', 'false'],
+          ['commit', '-q', '--allow-empty', '-m', 'baseline', '--no-verify'],
+        ]) {
+          const r = spawnSync('git', args, { cwd: composedRepo, encoding: 'utf8' });
+          strictEqual(r.status, 0, `git ${args[0]}: ${r.stderr}`);
+        }
+        const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: composedRepo, encoding: 'utf8' }).stdout.trim();
+        const designerState = resolve(REPO_ROOT, 'plugins/designer/scripts/state.mjs');
+        const create = spawnSync(process.execPath, [
+          designerState, 'create', '--repo-root', composedRepo,
+          '--verb', 'compose', '--host', 'claude', '--persona', 'designer',
+          '--git-baseline-branch', 'feat/x', '--git-baseline-head', head,
+          '--status-digest', 'deadbeef', '--profile', 'general',
+          '--original-request', 'composed attention e2e',
+          '--current-phase', 'phase-2-presented', '--next-action', 'Run compose skill',
+        ], { encoding: 'utf8' });
+        strictEqual(create.status, 0, create.stderr);
+        const wfPath = create.stdout.trim();
+        const wfId = basename(wfPath, '.md');
+        const term = spawnSync(process.execPath, [
+          designerState, 'set-terminal', '--workflow-path', wfPath, '--host', 'claude',
+          '--terminal-phase', 'summary-complete', '--terminal-marker', 'true',
+          '--next-action', 'Hand the spec to the frontend (/engineer:start)', '--event', 'updated',
+        ], {
+          cwd: composedRepo,
+          encoding: 'utf8',
+          env: { ...process.env, AGENTIC_RUNTIME_ROOT: resolve(REPO_ROOT, 'plugins/runtime') },
+        });
+        strictEqual(term.status, 0, term.stderr);
+        ok(term.stderr.includes('Runtime completion footer'),
+          'the real designer footer must render so the marker upgrades to rendered');
+        const result = runSensorE2E('stop.mjs', { cwd: composedRepo, session_id: 'sess-c', prompt_id: 'prompt-c' });
+        strictEqual(result.status, 0);
+        strictEqual(result.stdout, '');
+        const captures = await takeCaptures();
+        strictEqual(captures.length, 1, 'one designer workflow-terminal event from the composed pipeline');
+        const { event } = captures[0];
+        strictEqual(event.kind, 'workflow-terminal');
+        strictEqual(event.refs.workflow_id, wfId);
+        // baseline == HEAD → head_moved unmet → archive_gate blocked → the
+        // manually-published omit rule applies end-to-end.
+        strictEqual('headline' in event, false,
+          'the composed designer terminal (publish-needed) must omit the headline token');
+      } finally {
+        await rm(composedRepo, { recursive: true, force: true });
+      }
+    });
+
+    it('four fresh projections (one per persona) → four workflow-terminal events with per-persona headline policy, no bare turn-complete', async () => {
+      // Multiple personas can be terminal in one turn (a macro closes with its
+      // last engineer child; a founder/designer deliverable idles at its fresh
+      // transition). Each workflow-terminal event borns its OWN headline from
+      // its OWN projection's archive_gate AND persona — engineer blocked →
+      // blocked, orchestrator not_terminal → in-progress, founder blocked →
+      // OMITTED (manually-published), designer ready_to_archive → complete —
+      // and the bare turn-complete is suppressed.
       const engDir = join(repo, '.agentic-plugins', 'state', 'engineer');
       const orcDir = join(repo, '.agentic-plugins', 'state', 'orchestrator');
+      const fdrDir = join(repo, '.agentic-plugins', 'state', 'founder');
+      const dsgDir = join(repo, '.agentic-plugins', 'state', 'designer');
       await mkdir(engDir, { recursive: true });
       await mkdir(orcDir, { recursive: true });
+      await mkdir(fdrDir, { recursive: true });
+      await mkdir(dsgDir, { recursive: true });
       const engId = 'compose-20260704T112944Z-eeeeee';
       const macroId = 'macro-plan-20260704T112944Z-aaaaaa';
+      const fdrId = 'compose-20260704T112944Z-ffffff';
+      const dsgId = 'compose-20260704T112944Z-dddddd';
       // engineer: archive_gate blocked → 'blocked'; UNSCOPED rendered marker shape.
       await writeFile(join(engDir, 'last-session-handoff.json'), JSON.stringify({
         workflow_kind: 'engineer', workflow_id: engId,
@@ -990,23 +1344,50 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
         join(orcDir, `last-session-handoff.json.${macroId}.footer-rendered`),
         JSON.stringify({ workflow_id: macroId, status: 'rendered', at: new Date().toISOString() }),
       );
+      // founder: archive_gate blocked → headline OMITTED (manually-published);
+      // slot-shaped rendered marker per the founder runbook contract.
+      await writeFile(join(fdrDir, 'last-session-handoff.json'), JSON.stringify({
+        workflow_kind: 'founder', workflow_id: fdrId,
+        workflow_path: '.agentic-plugins/state/founder/workflows/f.md',
+        phase: 'summary-complete', next_action: 'n', archive_gate: 'blocked', routing_recommendation: '/founder:resume',
+      }));
+      await writeFile(
+        join(fdrDir, 'last-session-handoff.json.footer-rendered'),
+        JSON.stringify({ workflow_id: fdrId, status: 'rendered', at: new Date().toISOString() }),
+      );
+      // designer: archive_gate ready_to_archive → 'complete'; slot-shaped marker.
+      await writeFile(join(dsgDir, 'last-session-handoff.json'), JSON.stringify({
+        workflow_kind: 'designer', workflow_id: dsgId,
+        workflow_path: '.agentic-plugins/state/designer/workflows/d.md',
+        phase: 'summary-complete', next_action: 'n', archive_gate: 'ready_to_archive', routing_recommendation: '/designer:resume',
+      }));
+      await writeFile(
+        join(dsgDir, 'last-session-handoff.json.footer-rendered'),
+        JSON.stringify({ workflow_id: dsgId, status: 'rendered', at: new Date().toISOString() }),
+      );
       try {
         const result = runSensorE2E('stop.mjs', { cwd: repo, session_id: 'sess-1', prompt_id: 'prompt-9' });
         strictEqual(result.status, 0);
         strictEqual(result.stdout, '');
         const captures = await takeCaptures();
-        strictEqual(captures.length, 2, 'one workflow-terminal per fresh persona projection; the bare turn-complete is suppressed');
+        strictEqual(captures.length, 4, 'one workflow-terminal per fresh persona projection; the bare turn-complete is suppressed');
         const byWfId = Object.fromEntries(captures.map((c) => [c.event.refs.workflow_id, c.event]));
         strictEqual(byWfId[engId].kind, 'workflow-terminal');
         strictEqual(byWfId[engId].headline, 'blocked', 'engineer archive_gate=blocked → headline blocked');
         strictEqual(byWfId[macroId].kind, 'workflow-terminal');
         strictEqual(byWfId[macroId].headline, 'in-progress', 'orchestrator archive_gate=not_terminal → headline in-progress');
+        strictEqual(byWfId[fdrId].kind, 'workflow-terminal');
+        strictEqual('headline' in byWfId[fdrId], false, 'founder blocked (usually publish-needed) → headline omitted');
+        strictEqual(byWfId[dsgId].kind, 'workflow-terminal');
+        strictEqual(byWfId[dsgId].headline, 'complete', 'designer archive_gate=ready_to_archive → headline complete');
         for (const { event } of captures) {
           strictEqual(event.kind === 'turn-complete', false, 'no bare turn-complete when a terminal event fired');
         }
       } finally {
         await rm(engDir, { recursive: true, force: true });
         await rm(orcDir, { recursive: true, force: true });
+        await rm(fdrDir, { recursive: true, force: true });
+        await rm(dsgDir, { recursive: true, force: true });
       }
     });
 
