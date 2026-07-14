@@ -1,6 +1,6 @@
 {
   "name": "attention",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Attention sensors — hook-only L1 plugin pushing operator notifications from Claude Code lifecycle hooks into the runtime notification emitter (ADR-0040 §3). Hooks + sensor scripts only: no skills, no verbs, no state machinery. The plugin contributes zero plugin-owned Codex hook surface: the Codex manifest declares no hooks AND the Claude registration is manifest-scoped at adapters/claude/hooks/hooks.json, deliberately outside Codex's default-file discovery (host truth: Codex 0.144.1 loads a root hooks/hooks.json regardless of command shape — ADR-0040 §3 amendment). Codex-side attention comes from the runtime's native host-config M1 fragment plans (runtime:settings --notification-plan) per ADR-0040 §4.",
   "skills": "./skills/",
   "interface": {
