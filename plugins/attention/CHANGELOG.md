@@ -2,6 +2,13 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.5.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.4.1...plugin-attention-v0.5.0) (2026-07-14)
+
+
+### Features
+
+* **plugin/attention:** enrich founder/designer terminal Stops via the four-persona sensor set (ADR-0043 §3) ([4764811](https://github.com/each4all/agentic-plugins/commit/476481164fdd15c114efa3df5b37f93aa97ac276))
+
 ## [0.4.1](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.4.0...plugin-attention-v0.4.1) (2026-07-11)
 
 
