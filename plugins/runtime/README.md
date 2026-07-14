@@ -163,7 +163,7 @@ Companion invocation continues to use `companions/contract.md` `--model` and `--
 
 ## Settings behavior
 
-Settings is dry-run by default. It checks marketplace registration and install/cache state for `companions`, `engineer`, `orchestrator`, and `runtime`; reports Claude Code and Codex CLI availability/version; and plans repo-local plus user-global model/effort defaults. When a host CLI is unavailable, settings emits a structured, non-executable host-CLI install plan with host-native installation guidance; it never installs Claude Code or Codex CLI itself.
+Settings is dry-run by default. It checks marketplace registration and install/cache state for `attention`, `companions`, `designer`, `engineer`, `founder`, `image`, `orchestrator`, and `runtime`; reports Claude Code and Codex CLI availability/version; and plans repo-local plus user-global model/effort defaults. When a host CLI is unavailable, settings emits a structured, non-executable host-CLI install plan with host-native installation guidance; it never installs Claude Code or Codex CLI itself.
 
 `--apply` is intentionally narrow. It only upserts flat keys in:
 

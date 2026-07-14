@@ -1,6 +1,6 @@
 ---
 name: settings
-description: "Dry-run runtime settings planner for agentic-plugins. Use when the user wants to inspect marketplace/plugin/CLI readiness, plan repo-local or user-global model/effort defaults, plan ADR-0040 notify_* notification keys, render the ADR-0040 §4 Codex notification-channel fragment plan (--notification-plan: notify=/tui.notifications fragments + receiver shuttle, artifact-only), render the ADR-0041 §12 egress launcher plan (--egress-launcher-plan: read-only activation-state + ~/.claude prototype scan → state-aware per-machine activation runbook, artifact-only; never writes host config, config.local.toml, the credential, or ~/.claude/settings.json), run a probe-free local plan (--skip-host-cli-probes: no runDoctor / host-CLI subprocess probes; filesystem-only model/effort resolution; discriminated report_scope=local_plan report per docs/settings-report-contract.md; rejects the execute/attest flags and their modifiers while --apply and the plan flags stay allowed), explicitly execute allowlisted plugin install/update commands, explicitly clean up retired agentic-plugins Claude plugins, check Codex plugin-hook readiness, or record a Codex /hooks review attestation. Mutates only agentic-plugins-owned config when --apply is explicit; runs plugin management only when --execute-plugin-management is explicit; runs retired plugin cleanup only when --execute-plugin-cleanup is explicit; records hook-review attestation only when --attest-codex-hook-review is explicit. Never writes Codex host config: the former --apply-codex-plugin-hooks plugin_hooks write was removed per ADR-0035 §6 (hook enablement is manual)."
+description: "Dry-run runtime settings planner for agentic-plugins. Use when the user wants to inspect marketplace/plugin/CLI readiness, plan repo-local or user-global model/effort defaults, plan ADR-0040 notify_* notification keys, render the ADR-0038 cross-host permission plan (--permission-plan, bounded by --permission-plan-max-files / --permission-plan-max-file-bytes: safety-graded Claude + Codex fragments, artifact-only, never a host-config write), render the ADR-0040 §4 Codex notification-channel fragment plan (--notification-plan: notify=/tui.notifications fragments + receiver shuttle, artifact-only), render the ADR-0041 §12 egress launcher plan (--egress-launcher-plan: read-only activation-state + ~/.claude prototype scan → state-aware per-machine activation runbook, artifact-only; never writes host config, config.local.toml, the credential, or ~/.claude/settings.json), run a probe-free local plan (--skip-host-cli-probes: no runDoctor / host-CLI subprocess probes; filesystem-only model/effort resolution; discriminated report_scope=local_plan report per docs/settings-report-contract.md; rejects the execute/attest flags and their modifiers while --apply and the plan flags stay allowed), explicitly execute allowlisted plugin install/update commands, explicitly clean up retired agentic-plugins Claude plugins, check Codex plugin-hook readiness, or record a Codex /hooks review attestation. Mutates only agentic-plugins-owned config when --apply is explicit; runs plugin management only when --execute-plugin-management is explicit; runs retired plugin cleanup only when --execute-plugin-cleanup is explicit; records hook-review attestation only when --attest-codex-hook-review is explicit. Never writes Codex host config: the former --apply-codex-plugin-hooks plugin_hooks write was removed per ADR-0035 §6 (hook enablement is manual)."
 ---
 
 # Settings (runtime framework primitive)
@@ -15,11 +15,36 @@ description: "Dry-run runtime settings planner for agentic-plugins. Use when the
 2. Run:
 
 ```bash
-node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>] [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>] [--notification-plan] [--egress-launcher-plan] [--skip-host-cli-probes] [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]
+node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--format text|json] [--target repo|user|both] [--model <id>] [--effort <level>] [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>] [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>] [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>] [--permission-plan] [--permission-plan-max-files <n>] [--permission-plan-max-file-bytes <n>] [--notification-plan] [--egress-launcher-plan] [--skip-host-cli-probes] [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--run-id <settings-run-id>]
 ```
 
 3. Present the result as a settings plan, not as proof of host parity.
    - Dry-run output is the default and must be safe to run repeatedly.
+   - `--permission-plan` is the ADR-0038 M1 **cross-host** permission plan — the
+     first of the three plan flags. It reads the **same usage-record evidence
+     model** as `runtime:doctor --permission-diagnosis` (which observed tool calls
+     are prompt-shaped, by host x mechanism); settings re-enumerates and re-learns
+     the records itself — plan builders never read doctor's output. From that
+     evidence it recommends a **safety-graded** configuration for **both** hosts:
+     a `.claude/settings.json` `allow` / `deny` / `ask` + `permissions.defaultMode`
+     fragment (cross-referenced against the existing config — a pattern the
+     operator has already governed in **any** bucket is never recommended into a
+     different one, and an allowed-but-dangerous conflict is surfaced) and a Codex
+     `config.toml` `approval_policy` / `sandbox_mode` + bounded project-trust
+     fragment (path resolved via `$CODEX_HOME`, defaulting to `~/.codex`). It never
+     recommends `bypassPermissions`, `danger-full-access`, or approval policy
+     `never` (isolated-environment notes only). Both host configs are read
+     **read-only**; the plan is written solely to a sanitized,
+     agentic-plugins-owned advisory artifact under
+     `.agentic-plugins/runs/permission/` for the operator to apply — **runtime
+     never writes host config, even with `--apply`**. Output sanitizes to ADR-0038
+     §5: generalized command patterns and counts only, never verbatim arguments,
+     secrets, or transcript source paths. `--permission-plan-max-files <n>` and
+     `--permission-plan-max-file-bytes <n>` bound how many usage records are
+     **selected per host**; directory traversal carries its own separate budget.
+     One caveat before applying a fragment: generalization collapses distinct
+     commands into a single wildcard, so a recommended `allow` pattern can be
+     **broader** than the one safe command that produced it. Review it.
    - `--skip-host-cli-probes` is the probe-free local plan (contract:
      `docs/settings-report-contract.md`): no `runDoctor`, no host-CLI
      subprocess probes — model/effort and companion directions resolve from
@@ -43,7 +68,12 @@ node "<runtime-plugin-root>/scripts/settings.mjs" --repo-root "$REPO_ROOT" [--fo
 
 Settings reports and plans:
 
-- agentic-plugins marketplace registration for `companions`, `engineer`, `orchestrator`, and `runtime`.
+- agentic-plugins marketplace registration for every plugin in `doctor.mjs`'s
+  `PLUGIN_NAMES` — `attention`, `companions`, `designer`, `engineer`, `founder`,
+  `image`, `orchestrator`, and `runtime`. Settings iterates that list; an earlier
+  four-name list here undercounted it. `tests/plugin-shape/test-runtime-plugin.mjs`
+  now pins this list against `PLUGIN_NAMES` and both marketplace catalogs, so the
+  drift cannot silently return.
 - Known Claude/Codex plugin install/cache state for those plugins.
 - Codex temporary marketplace cache state, reported separately from per-plugin
   install cache evidence.
@@ -68,6 +98,23 @@ Settings reports and plans:
   chain with shipped defaults (`notify_channel = "none"` keeps the emitter
   disabled until the operator opts in), and warnings for shadowed requests or
   invalid existing values the notify emitter would fail closed on.
+- The ADR-0038 cross-host permission M1 plan behind `--permission-plan`: a
+  safety-graded `.claude/settings.json` `allow` / `deny` / `ask` +
+  `permissions.defaultMode` fragment (both host configs read **read-only**; a
+  pattern the operator already governs in **any** bucket is never recommended
+  into a different one; allowed-but-dangerous conflicts are surfaced) and a Codex
+  `config.toml` `approval_policy` / `sandbox_mode` + bounded project-trust
+  fragment (path resolved via `$CODEX_HOME`, defaulting to `~/.codex`). It uses
+  the same usage-record evidence model as `runtime:doctor --permission-diagnosis`
+  — settings re-enumerates the records itself and never reads doctor's output. It
+  never recommends `bypassPermissions`, `danger-full-access`, or approval policy
+  `never`. Rendered only into a sanitized advisory artifact under
+  `.agentic-plugins/runs/permission/` for the operator to apply — **runtime never
+  writes host config, even with `--apply`** — and sanitized to ADR-0038 §5
+  (generalized command patterns and counts only; never verbatim arguments,
+  secrets, or transcript source paths). `--permission-plan-max-files` and
+  `--permission-plan-max-file-bytes` bound how many records are **selected per
+  host**; directory traversal carries its own budget.
 - The ADR-0040 §4 Codex notification-channel M1 plan behind
   `--notification-plan`: a `notify=` fragment for the user-layer
   `~/.codex/config.toml` only (resolved via `$CODEX_HOME`; the project layer

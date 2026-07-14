@@ -212,6 +212,60 @@ describe('plugins/runtime settings surface', () => {
     ok(agent.includes('$runtime:settings'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     ok(agent.includes('--skip-host-cli-probes'));
+
+    // ADR-0038 permission plan is discoverable on every public surface.
+    // It shipped in settings.mjs but was named on none of them, while the
+    // command doc already referred to "the three plan flags" — so the docs
+    // counted it without ever letting a reader find it.
+    //
+    // Pin each flag in the FIELD a reader actually reaches, not merely somewhere
+    // in the file: a whole-file `includes` passes as long as the token survives
+    // anywhere, so dropping a flag from the argument-hint while leaving it in a
+    // prose note would go unnoticed (Refine-verify finding).
+    const PERMISSION_FLAGS = ['--permission-plan', '--permission-plan-max-files', '--permission-plan-max-file-bytes'];
+    const argumentHint = command.split('\n').find((line) => line.startsWith('argument-hint:'));
+    ok(argumentHint, 'commands/settings.md has an argument-hint');
+    const skillInvocation = skill.split('\n').find((line) => line.includes('scripts/settings.mjs') && line.includes('--repo-root'));
+    ok(skillInvocation, 'skills/settings/SKILL.md has the settings.mjs invocation line');
+    const agentPrompt = agent.split('\n').find((line) => line.trim().startsWith('default_prompt:'));
+    ok(agentPrompt, 'settings agent yaml has a default_prompt');
+    for (const flag of PERMISSION_FLAGS) {
+      ok(argumentHint.includes(`[${flag}`), `commands/settings.md argument-hint advertises ${flag}`);
+      ok(skillInvocation.includes(`[${flag}`), `skills/settings/SKILL.md invocation advertises ${flag}`);
+      ok(agentPrompt.includes(flag), `settings agent default_prompt advertises ${flag}`);
+    }
+    // The command and skill also owe a substantive note, not just a flag token.
+    for (const [label, surface] of [['commands/settings.md', command], ['skills/settings/SKILL.md', skill]]) {
+      ok(/never writes host config/i.test(surface), `${label} states the no-host-config-write boundary`);
+      ok(surface.includes('bypassPermissions') && surface.includes('danger-full-access'), `${label} states the ADR-0038 ceiling`);
+    }
+  });
+
+  // The plugin set drifted: this skill claimed four plugins, the runtime README
+  // claimed four, the root README six, and the catalogs eight — with nothing
+  // holding them in agreement. `PLUGIN_NAMES` is what settings and doctor
+  // actually iterate, so it is the authority; every runtime-owned surface that
+  // enumerates the set is pinned against it, and against both catalogs.
+  it('keeps the runtime-owned plugin lists in agreement with PLUGIN_NAMES and both catalogs', async () => {
+    const doctorSrc = await readFile(resolve(PLUGIN_ROOT, 'scripts/doctor.mjs'), 'utf-8');
+    const namesMatch = doctorSrc.match(/export const PLUGIN_NAMES = \[([^\]]+)\]/);
+    ok(namesMatch, 'doctor.mjs exports PLUGIN_NAMES');
+    const pluginNames = namesMatch[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).sort();
+
+    const claudeCatalog = await readJSON(resolve(REPO_ROOT, '.claude-plugin/marketplace.json'));
+    const codexCatalog = await readJSON(resolve(REPO_ROOT, '.agents/plugins/marketplace.json'));
+    deepStrictEqual(claudeCatalog.plugins.map((p) => p.name).sort(), pluginNames, 'Claude catalog matches PLUGIN_NAMES');
+    deepStrictEqual(codexCatalog.plugins.map((p) => p.name).sort(), pluginNames, 'Codex catalog matches PLUGIN_NAMES');
+
+    // Every runtime-owned prose surface that enumerates the set must name all of
+    // them. A four-name list here is how the drift started.
+    const proseSurfaces = ['skills/settings/SKILL.md', 'skills/doctor/SKILL.md', 'README.md'];
+    for (const rel of proseSurfaces) {
+      const text = await readFile(resolve(PLUGIN_ROOT, rel), 'utf-8');
+      for (const name of pluginNames) {
+        ok(text.includes(`\`${name}\``), `${rel} names the ${name} plugin`);
+      }
+    }
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/settings.mjs'));
     ok((scriptStat.mode & 0o111) !== 0, 'settings.mjs has executable bit');
   });
