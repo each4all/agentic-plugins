@@ -139,7 +139,7 @@ export async function runDoctor({
     runner,
     timeoutMs: DEFAULT_TIMEOUT_MS,
   });
-  const { claude, codex, caches, claudePluginList, codexPluginList } = machine;
+  const { claude, codex, caches, claudePluginList, codexPluginList, marketplaceRegistration } = machine;
 
   // The REPO half stays here: source manifests + catalogs enrich the machine facts into
   // the plugin matrix.
@@ -308,6 +308,10 @@ export async function runDoctor({
       claude: redactCommandDetails(claude),
       codex: redactCommandDetails(codex),
     },
+    // §1.2 host-native marketplace-registration + §1.4.1 registered-catalog currentness,
+    // from the machine probe (lib/machine-probe.mjs). Read-only machine fact; settings' C3
+    // repair sources its currentness target from here rather than a repo checkout.
+    marketplace_registration: marketplaceRegistration,
     plugins,
     plugin_command_surface: pluginCommandSurface,
     codex_plugin_hooks: codexPluginHooks,

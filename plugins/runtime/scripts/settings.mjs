@@ -178,6 +178,7 @@ export async function runSettings({
   if (!skipHostCliProbes) {
     pluginPlans = buildPluginPlans(doctor.plugins, {
       codexPerPluginVerbList: codexPerPluginVerbs(doctor.clis?.codex?.feature_surface ?? {}),
+      marketplaceRegistration: doctor.marketplace_registration ?? null,
     });
     pluginManagement = await buildPluginManagementPlan({
       plugins: pluginPlans,
@@ -825,19 +826,42 @@ function summarizePluginCleanupStatus(plans, summary) {
   return 'planned';
 }
 
-function buildPluginPlans(plugins, { codexPerPluginVerbList = [] } = {}) {
+function buildPluginPlans(plugins, { codexPerPluginVerbList = [], marketplaceRegistration = null } = {}) {
   const result = {};
   for (const name of PLUGIN_NAMES) {
     const plugin = plugins[name];
     const sourceVersion = plugin.source?.claude_manifest?.version ?? plugin.source?.codex_manifest?.version ?? null;
+    // `./plugins/<name>` source actually exists ⟺ a source manifest was read. A consumer
+    // machine has none — so a repo-catalog register-marketplace-entry is meaningless there
+    // (machine-bootstrap-contract.md §1.1).
+    const sourceExists = plugin.source?.present === true;
     const claudeInstalled = plugin.installed?.claude_plugin_list ?? null;
     const claudeCacheLatest = plugin.cache?.claude?.latest ?? null;
     const codexCacheLatest = plugin.cache?.codex?.latest ?? null;
     const codexTmpMarketplace = plugin.cache?.codex_tmp_marketplace ?? null;
     const codexResolved = plugin.installed?.codex_resolved ?? null;
+    // §1.4.1 currentness authority: the registered marketplace catalog at installLocation
+    // (from C2's probe), NOT repoRoot/plugins/<name>. Claude catalogs carry versions; Codex
+    // catalogs are versionless, so codex currentness stays `unknown` and keeps the source
+    // fallback below. This is the fix for the silent no-update path — a consumer has no
+    // source manifest, but it does have a registered catalog.
+    const catalogClaudeVersion = marketplaceRegistration?.claude?.catalog?.versions?.[name] ?? null;
+    // Codex catalogs are deliberately versionless (§1.4.1), so this is null today and the
+    // codex currentness target below falls back to the source manifest — but routing codex
+    // through the SAME catalog-preferred target keeps the two hosts symmetric (no claude/codex
+    // mirror) and picks up a per-entry version automatically if a Codex catalog ever gains one.
+    const catalogCodexVersion = marketplaceRegistration?.codex?.catalog?.versions?.[name] ?? null;
+    // Actual per-host INSTALLED version (peer #8 (b)/(c)) — mirrors doctor's list-authoritative
+    // resolution. Bound to attestation/review-targets so they NEVER attest a catalog-latest
+    // version that may not be installed; falls back to the source version so a source-tree run
+    // (where nothing is "installed" via the host list) keeps reporting the built version.
+    const codexInstalledVersion = codexResolved?.decision === 'fallback'
+      ? (codexCacheLatest?.manifest_version ?? null)
+      : (codexResolved?.version ?? null);
     result[name] = {
       status: plugin.status,
       source_version: sourceVersion,
+      installed_version: codexInstalledVersion ?? claudeInstalled?.version ?? claudeCacheLatest?.manifest_version ?? null,
       marketplace: plugin.marketplace,
       installed: {
         claude_plugin_list: claudeInstalled,
@@ -850,6 +874,9 @@ function buildPluginPlans(plugins, { codexPerPluginVerbList = [] } = {}) {
       recommendations: pluginRecommendations({
         name,
         sourceVersion,
+        catalogClaudeVersion,
+        catalogCodexVersion,
+        sourceExists,
         marketplace: plugin.marketplace,
         claudeInstalled,
         claudeCacheLatest,
@@ -880,13 +907,21 @@ function summarizeSingleManifest(manifest) {
   };
 }
 
-function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstalled, claudeCacheLatest, codexCacheLatest, codexTmpMarketplace, codexResolved = null, codexPerPluginVerbList = [] }) {
+function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = null, catalogCodexVersion = null, sourceExists = false, marketplace, claudeInstalled, claudeCacheLatest, codexCacheLatest, codexTmpMarketplace, codexResolved = null, codexPerPluginVerbList = [] }) {
   const recommendations = [];
   // `add` is the per-plugin install verb and the threshold for recognizing the
   // surface; enumerate only the observed verbs so strings never overclaim.
   const codexPerPluginSurface = codexPerPluginVerbList.includes('add');
   const codexPerPluginVerbText = codexPerPluginVerbList.join('/') || 'add';
-  if (!marketplace?.claude) {
+  // register-marketplace-entry is a REPO-CATALOG edit — it only makes sense where the
+  // `./plugins/<name>` source exists (a checkout). On a consumer machine the source is
+  // absent, so doctor honestly reports `marketplace: null`, and emitting "add <name> to
+  // .claude-plugin/marketplace.json with source ./plugins/<name>" is meaningless advice
+  // (machine-bootstrap-contract.md §1.1 — the sixteen false remediations). Gate it behind
+  // source existence. The consumer remedy is Stage-0 host-native `marketplace add`, which
+  // bootstrap detects and prints (§2 Stage 0) from C2's registration probe — not a per-plugin
+  // repo-catalog edit here.
+  if (sourceExists && !marketplace?.claude) {
     recommendations.push({
       host: 'claude',
       action: 'register-marketplace-entry',
@@ -895,7 +930,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
       detail: `Add ${name} to .claude-plugin/marketplace.json with source ./plugins/${name}.`,
     });
   }
-  if (!marketplace?.codex) {
+  if (sourceExists && !marketplace?.codex) {
     recommendations.push({
       host: 'codex',
       action: 'register-marketplace-entry',
@@ -905,6 +940,15 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
     });
   }
 
+  // §1.4.1 currentness target: the registered marketplace catalog version (from C2), falling
+  // back to the source manifest ONLY when no registered catalog answered (a source-tree run,
+  // or an unregistered marketplace). This is what moves the claude currentness check off the
+  // repo checkout so a consumer's stale install is actually detected.
+  const claudeCurrentnessTarget = catalogClaudeVersion ?? sourceVersion;
+  // Same catalog-preferred, source-fallback target for Codex (symmetric with claude). Codex
+  // catalogs are versionless so this is `sourceVersion` today; both hosts route through one
+  // discipline so the currentness path never conflates with the installed-version attestation.
+  const codexCurrentnessTarget = catalogCodexVersion ?? sourceVersion;
   const claudeVersion = claudeInstalled?.version ?? claudeCacheLatest?.manifest_version ?? null;
   if (!claudeInstalled && !claudeCacheLatest) {
     const command = buildPluginCommand({ host: 'claude', action: 'install-plugin', name });
@@ -918,7 +962,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
       executable: true,
       detail: 'Dry-run by default; add --execute-plugin-management to run this allowlisted host-native plugin command.',
     });
-  } else if (sourceVersion && claudeVersion && semverCompare(String(claudeVersion), String(sourceVersion)) < 0) {
+  } else if (claudeCurrentnessTarget && claudeVersion && semverCompare(String(claudeVersion), String(claudeCurrentnessTarget)) < 0) {
     const command = buildPluginCommand({ host: 'claude', action: 'update-plugin', name });
     recommendations.push({
       id: `${name}:claude:update-plugin`,
@@ -928,7 +972,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
       command: command.display,
       argv: command.argv,
       executable: true,
-      detail: `Installed ${claudeVersion}; source/catalog ${sourceVersion}.`,
+      detail: `Installed ${claudeVersion}; ${catalogClaudeVersion ? 'registered catalog' : 'source'} ${claudeCurrentnessTarget}.`,
     });
   }
 
@@ -944,7 +988,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
   const codexInstallCacheStatus = codexCacheLatest ? 'present' : 'missing';
   const codexListAuthoritative = Boolean(codexResolved) && codexDecision !== 'fallback';
   if (codexListAuthoritative && codexDecision === 'installed') {
-    if (sourceVersion && codexListVersion && semverCompare(String(codexListVersion), String(sourceVersion)) < 0) {
+    if (codexCurrentnessTarget && codexListVersion && semverCompare(String(codexListVersion), String(codexCurrentnessTarget)) < 0) {
       const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
       recommendations.push({
         id: `${name}:codex:upgrade-marketplace`,
@@ -954,7 +998,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
         command: command.display,
         argv: command.argv,
         executable: true,
-        detail: `Codex \`plugin list\` reports ${name} ${codexListVersion} installed; source/catalog ${sourceVersion}. Codex upgrades via the marketplace, not a per-plugin update command.`,
+        detail: `Codex \`plugin list\` reports ${name} ${codexListVersion} installed; source/catalog ${codexCurrentnessTarget}. Codex upgrades via the marketplace, not a per-plugin update command.`,
         evidence: { list_decision: codexDecision, list_version: codexListVersion, install_cache_status: codexInstallCacheStatus },
       });
     } else if (!codexCacheLatest) {
@@ -998,7 +1042,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
     // The list authoritatively reports not installed: recommend making it
     // available based on the marketplace cache state, ignoring any stale install
     // cache (which the list overrides).
-    if (sourceVersion && codexTmpVersion && semverCompare(String(codexTmpVersion), String(sourceVersion)) < 0) {
+    if (codexCurrentnessTarget && codexTmpVersion && semverCompare(String(codexTmpVersion), String(codexCurrentnessTarget)) < 0) {
       const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
       recommendations.push({
         id: `${name}:codex:upgrade-marketplace`,
@@ -1008,7 +1052,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
         command: command.display,
         argv: command.argv,
         executable: true,
-        detail: `Codex \`plugin list\` does not report ${name} installed; marketplace cache has ${codexTmpVersion}, source/catalog ${sourceVersion}. Refresh the marketplace before installing.`,
+        detail: `Codex \`plugin list\` does not report ${name} installed; marketplace cache has ${codexTmpVersion}, source/catalog ${codexCurrentnessTarget}. Refresh the marketplace before installing.`,
         evidence: { list_decision: codexDecision, list_version: null, install_cache_status: codexInstallCacheStatus },
       });
     } else if (codexTmpVersion && codexPerPluginSurface) {
@@ -1074,7 +1118,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
       });
     }
   } else if (!codexCacheLatest) {
-    if (sourceVersion && codexTmpVersion && semverCompare(String(codexTmpVersion), String(sourceVersion)) < 0) {
+    if (codexCurrentnessTarget && codexTmpVersion && semverCompare(String(codexTmpVersion), String(codexCurrentnessTarget)) < 0) {
       const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
       recommendations.push({
         id: `${name}:codex:upgrade-marketplace`,
@@ -1084,7 +1128,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
         command: command.display,
         argv: command.argv,
         executable: true,
-        detail: `Codex marketplace cache has ${codexTmpVersion}; source/catalog ${sourceVersion}. Codex upgrades via the marketplace, not a per-plugin update command.`,
+        detail: `Codex marketplace cache has ${codexTmpVersion}; source/catalog ${codexCurrentnessTarget}. Codex upgrades via the marketplace, not a per-plugin update command.`,
       });
     } else if (codexTmpVersion) {
       recommendations.push({
@@ -1122,7 +1166,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
           : `Codex exposes marketplace add/upgrade/remove, not per-plugin install; add the marketplace catalog to make ${name} available.`,
       });
     }
-  } else if (sourceVersion && codexVersion && semverCompare(String(codexVersion), String(sourceVersion)) < 0) {
+  } else if (codexCurrentnessTarget && codexVersion && semverCompare(String(codexVersion), String(codexCurrentnessTarget)) < 0) {
     const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
     recommendations.push({
       id: `${name}:codex:upgrade-marketplace`,
@@ -1132,7 +1176,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
       command: command.display,
       argv: command.argv,
       executable: true,
-      detail: `Cached ${codexVersion}; source/catalog ${sourceVersion}. Codex upgrades via the marketplace, not a per-plugin update command.`,
+      detail: `Cached ${codexVersion}; source/catalog ${codexCurrentnessTarget}. Codex upgrades via the marketplace, not a per-plugin update command.`,
     });
   }
   return recommendations;
@@ -1416,7 +1460,10 @@ function buildCodexHookReviewAttestation({ codexPluginHooks, hookSettings, plugi
   const pluginVersions = {};
   for (const pluginName of bundled) {
     const plugin = plugins?.[pluginName];
-    pluginVersions[pluginName] = plugin?.source_version ?? null;
+    // Bind to the ACTUAL installed/cache version (peer #8 (c)) — an operator attests the
+    // hooks of the plugin that is installed, never a catalog-latest that may not be. The
+    // source-version fallback keeps a source-tree run reporting the built version.
+    pluginVersions[pluginName] = plugin?.installed_version ?? plugin?.source_version ?? null;
   }
   const base = {
     mode: requested ? 'operator-attestation' : 'not_recorded',
@@ -2110,7 +2157,9 @@ function buildCodexHookReviewTargets({ codexPluginHooks, plugins }) {
     const commandAnalysis = hooksFile.command_analysis ?? {};
     targets.push({
       plugin: pluginName,
-      version: plugins?.[pluginName]?.source_version ?? null,
+      // Installed/cache version (peer #8 (c)) — the version an operator reviews in /hooks is
+      // what is installed, not a catalog-latest; source-version fallback for source-tree runs.
+      version: plugins?.[pluginName]?.installed_version ?? plugins?.[pluginName]?.source_version ?? null,
       origin: effective.origin ?? null,
       manifest_exposed: effective.manifest_declared === true,
       hooks_path: sanitizeValue(hooksFile.path),

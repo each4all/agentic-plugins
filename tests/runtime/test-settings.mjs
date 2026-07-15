@@ -823,6 +823,93 @@ describe('runtime settings', () => {
     strictEqual(install.evidence.install_cache_status, 'present');
   });
 
+  // machine-bootstrap-contract.md §1.1/§1.4.1 (S8a1 C3): on a CONSUMER machine there is no
+  // `./plugins/<name>` checkout, so the old branch turned doctor's honest `marketplace: null`
+  // into sixteen meaningless "add <name> to .claude-plugin/marketplace.json" remediations,
+  // and its `sourceVersion` (a repo manifest read) was null so a stale install was never
+  // flagged. This is the direct consumer-repo regression the contract pins.
+  it('consumer repo (no source): registered-catalog currentness flags a stale install AND emits zero false register-marketplace-entry', async () => {
+    // NO seedRepo — this repo is not an agentic-plugins checkout.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-consumer-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-consumer-home-'));
+    // The operator's registered marketplace catalog (machine-scoped, resolved from the C2
+    // registration probe's installLocation), NOT a repo checkout. It carries runtime 0.1.0.
+    const installLoc = await mkdtemp(join(tmpdir(), 'runtime-settings-consumer-mp-'));
+    await mkdir(join(installLoc, '.claude-plugin'), { recursive: true });
+    await writeJson(join(installLoc, '.claude-plugin', 'marketplace.json'), {
+      name: 'agentic-plugins',
+      plugins: [{ name: 'runtime', source: 'each4all/agentic-plugins', version: '0.1.0', category: 'Productivity' }],
+    });
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        // runtime installed at 0.0.5 — older than the registered catalog's 0.1.0.
+        'claude plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.0.5\n    Scope: user\n    Status: enabled\n'),
+        'claude /plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.0.5\n    Scope: user\n    Status: enabled\n'),
+        'claude plugin marketplace list --json': okResult(JSON.stringify([
+          { name: 'agentic-plugins', source: 'github', repo: 'each4all/agentic-plugins', installLocation: installLoc },
+        ])),
+      }),
+    });
+
+    // (1) ZERO false remediations: no `./plugins/<name>` checkout → no register-marketplace-entry
+    // for ANY plugin on ANY host (the sixteen false remediations disappear).
+    for (const name of Object.keys(report.plugins)) {
+      ok(
+        report.plugins[name].recommendations.every((rec) => rec.action !== 'register-marketplace-entry'),
+        `${name} must not get a repo-catalog register-marketplace-entry on a consumer machine`,
+      );
+    }
+    // (2) Stale-update detected via the REGISTERED-CATALOG installLocation, not a repo source.
+    const update = report.plugins.runtime.recommendations.find((rec) => rec.action === 'update-plugin' && rec.host === 'claude');
+    ok(update, 'expected a claude update-plugin driven by the registered-catalog currentness target');
+    ok(update.detail.includes('registered catalog 0.1.0'), `detail must cite the registered catalog, got: ${update.detail}`);
+  });
+
+  // peer #8 (S8a1 C3): the `sourceVersion` that drives currentness ALSO fed Codex hook
+  // attestation + review targets. Sourcing currentness from the registered catalog must NOT
+  // leak a catalog-latest version into the attestation — an operator attests the INSTALLED
+  // hooks, never a version that may not be installed. This is the 3-way split, exercised with
+  // three DISTINCT versions: source 1.0.0, installed 0.0.5, registered catalog 0.9.9.
+  it('binds Codex hook attestation/review-targets to the INSTALLED version, never source or registered catalog (peer #8)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-3way-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-3way-home-'));
+    await seedRepo(root); // source: engineer 1.0.0 + codex hooks (bundled)
+    await seedCodexInstallCache(home, 'engineer', '0.0.5'); // INSTALLED (codex cache) 0.0.5
+    // Registered catalog carries engineer 0.9.9 — distinct from BOTH source and installed.
+    const installLoc = await mkdtemp(join(tmpdir(), 'runtime-settings-3way-mp-'));
+    await mkdir(join(installLoc, '.claude-plugin'), { recursive: true });
+    await writeJson(join(installLoc, '.claude-plugin', 'marketplace.json'), {
+      name: 'agentic-plugins',
+      plugins: [{ name: 'engineer', source: 'each4all/agentic-plugins', version: '0.9.9', category: 'Productivity' }],
+    });
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      attestCodexHookReview: true,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+        'claude plugin marketplace list --json': okResult(JSON.stringify([
+          { name: 'agentic-plugins', source: 'github', repo: 'each4all/agentic-plugins', installLocation: installLoc },
+        ])),
+      }),
+    });
+
+    const engineerTarget = report.codex_hook_review.review_targets.find((target) => target.plugin === 'engineer');
+    ok(engineerTarget, 'engineer is a bundled codex-hook plugin');
+    strictEqual(engineerTarget.version, '0.0.5', 'review target binds the codex-installed version');
+    ok(engineerTarget.version !== '0.9.9', 'must NOT bind the registered-catalog version');
+    ok(engineerTarget.version !== '1.0.0', 'must NOT bind the source version');
+    const artifact = JSON.parse(await readFile(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'), 'utf8'));
+    strictEqual(artifact.codex_hook_review.plugin_versions.engineer, '0.0.5', 'attestation binds the installed version, not the registered catalog');
+  });
+
   it('executes only allowlisted plugin management commands behind an explicit flag', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-execute-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-execute-home-'));
