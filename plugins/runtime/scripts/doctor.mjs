@@ -11,7 +11,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_VERSION } from './version.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
@@ -265,6 +265,7 @@ export async function runDoctor({
     readiness,
     modelEffort,
     repoRoot: resolvedRepoRoot,
+    homeDir: resolvedHomeDir,
     env,
     runner,
     timeoutMs: workflowContinuationProofTimeoutMs,
@@ -3297,9 +3298,11 @@ async function buildWorkflowContinuationProofSection({
   readiness,
   modelEffort,
   repoRoot,
+  homeDir,
   env,
   runner,
   timeoutMs,
+  selfUrl = import.meta.url,
 }) {
   const directionSpecs = {
     claude_to_codex: {
@@ -3366,6 +3369,8 @@ async function buildWorkflowContinuationProofSection({
         key,
         spec,
         repoRoot,
+        homeDir,
+        selfUrl,
         directionSettings,
         runner,
         env,
@@ -3424,17 +3429,121 @@ function summarizeWorkflowContinuationProofExecutionStatus({ requested, directio
   return 'failed';
 }
 
+const ENGINEER_ROOT_ENV_OVERRIDE = 'AGENTIC_ENGINEER_ROOT';
+
+function engineerCacheBases(home) {
+  return {
+    claude: join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'engineer'),
+    codex: join(home, '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'engineer'),
+  };
+}
+
+async function isReadableFile(path) {
+  try {
+    await access(path, fsConstants.R_OK);
+    const st = await stat(path);
+    return st.isFile();
+  } catch {
+    return false;
+  }
+}
+
+// Claude cache is multi-version; pick the SemVer-max install whose manifest name is
+// engineer and whose scripts/state.mjs exists.
+async function resolveClaudeEngineerCacheRoot(claudeBase) {
+  let entries;
+  try {
+    entries = await readdir(claudeBase, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const versionRoot = join(claudeBase, entry.name);
+    let manifest;
+    try {
+      manifest = JSON.parse(await readFile(join(versionRoot, '.claude-plugin', 'plugin.json'), 'utf8'));
+    } catch {
+      continue;
+    }
+    if (manifest?.name !== 'engineer') continue;
+    if (!(await isReadableFile(join(versionRoot, 'scripts', 'state.mjs')))) continue;
+    candidates.push({ version: typeof manifest.version === 'string' ? manifest.version : '0.0.0', root: versionRoot });
+  }
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => semverCompare(String(b.version), String(a.version)));
+  return candidates[0].root;
+}
+
+// Runtime-OWNED resolver for the INSTALLED engineer plugin root
+// (machine-bootstrap-contract.md §8.2). The workflow-continuation proof needs the
+// engineer tool where it actually lives — the host plugin cache — NOT
+// `repoRoot/plugins/engineer`, which is absent on a consumer machine or in the
+// ephemeral scratch repo a machine bootstrap points doctor at. Mirrors the
+// orchestrator discover-engineer.mjs ladder (env override → Claude cache SemVer-max
+// → Codex fixed cache → sibling monorepo) but is a PRIVATE runtime copy: ADR-0010 §5
+// forbids importing across plugins. Deliberately does NOT consult repoRoot — that is
+// the proof workspace's concern, and conflating the two is the §8.2 defect. Returns
+// `{ root, source }` or `null`.
+export async function resolveInstalledEngineerRoot({ env = process.env, home = homedir(), selfUrl = import.meta.url } = {}) {
+  const override = env[ENGINEER_ROOT_ENV_OVERRIDE];
+  if (typeof override === 'string' && override.length > 0) {
+    if (isAbsolute(override) && await isReadableFile(join(override, 'scripts', 'state.mjs'))) {
+      return { root: override, source: 'env-override' };
+    }
+    return null;
+  }
+  const { claude: claudeBase, codex: codexBase } = engineerCacheBases(home);
+  const claudeRoot = await resolveClaudeEngineerCacheRoot(claudeBase);
+  if (claudeRoot) return { root: claudeRoot, source: 'claude-cache' };
+  if (await isReadableFile(join(codexBase, 'scripts', 'state.mjs'))) {
+    return { root: codexBase, source: 'codex-cache' };
+  }
+  // Sibling monorepo — derive runtime's own root from selfUrl (doctor.mjs lives at
+  // <runtime-root>/scripts/doctor.mjs), then look for the sibling engineer checkout.
+  if (typeof selfUrl === 'string' && selfUrl.length > 0) {
+    let here = null;
+    try {
+      here = fileURLToPath(selfUrl);
+    } catch {
+      here = null;
+    }
+    if (here) {
+      const sibling = resolve(dirname(here), '..', '..', 'engineer');
+      if (await isReadableFile(join(sibling, 'scripts', 'state.mjs'))) {
+        return { root: sibling, source: 'sibling-monorepo' };
+      }
+    }
+  }
+  return null;
+}
+
 async function executeWorkflowContinuationProofDirection({
   key,
   spec,
   repoRoot,
+  homeDir,
+  selfUrl,
   directionSettings,
   runner,
   env,
   timeoutMs,
 }) {
-  const statePath = resolve(repoRoot, 'plugins/engineer/scripts/state.mjs');
-  const dispatchPath = resolve(repoRoot, 'plugins/engineer/scripts/dispatch-peer.mjs');
+  // §8.2 — the installed-tool root (host plugin cache), resolved SEPARATELY from the
+  // ephemeral proof workspace (tempRepo below). repoRoot is the caller's repo, which
+  // on a consumer machine or a bootstrap scratch dir has no plugins/engineer.
+  const engineer = await resolveInstalledEngineerRoot({ env, home: homeDir, selfUrl });
+  if (!engineer) {
+    return {
+      status: 'blocked',
+      reason: 'engineer plugin not found — install engineer, or set AGENTIC_ENGINEER_ROOT to a plugin checkout (resolver ladder: env override → Claude cache → Codex cache → sibling monorepo)',
+      installed_tool_root: null,
+      tool_root_source: 'none',
+    };
+  }
+  const statePath = join(engineer.root, 'scripts', 'state.mjs');
+  const dispatchPath = join(engineer.root, 'scripts', 'dispatch-peer.mjs');
   const missingScript = await firstMissingReadablePath([
     { label: 'engineer state script', path: statePath },
     { label: 'engineer dispatch script', path: dispatchPath },
@@ -3443,7 +3552,9 @@ async function executeWorkflowContinuationProofDirection({
     return {
       status: 'blocked',
       reason: `${missingScript.label} is not readable`,
-      missing_path: relative(repoRoot, missingScript.path),
+      missing_path: missingScript.path,
+      installed_tool_root: engineer.root,
+      tool_root_source: engineer.source,
     };
   }
 
@@ -3638,6 +3749,10 @@ async function executeWorkflowContinuationProofDirection({
     return {
       ...dispatchSummary,
       status: passed ? 'passed' : 'failed',
+      // §8.2 — the two roots are distinct: the installed tool (host cache / env / sibling)
+      // and the ephemeral proof workspace the run happened IN.
+      installed_tool_root: engineer.root,
+      tool_root_source: engineer.source,
       workflow: workflowProofWorkflowSummary({ spec, runId, workflowId }),
       state_checks: stateChecks,
       state_failure: passed ? null : 'engineer state did not record pending and committed ensemble continuation as expected',
@@ -4346,6 +4461,9 @@ export function formatText(report) {
       lines.push(`  workflow: host=${direction.workflow.host}; peer=${direction.workflow.peer}; branch=${direction.workflow.branch}; temp-repo=${direction.workflow.temp_repo ?? 'none'}`);
       if (direction.result && direction.execution === 'executed') {
         lines.push(`  result: peer=${direction.result.peer_host ?? '<unknown>'}; envelope=${direction.result.envelope_status ?? '<none>'}; exit=${direction.result.peer_exit_code ?? direction.result.companion_exit_code ?? '<none>'}; expected-token=${direction.result.expected_token_present}; stdout-bytes=${direction.result.stdout_bytes ?? '<none>'}; stdout-sha256=${direction.result.stdout_sha256 ?? '<empty>'}; operator-action-required=${Boolean(direction.result.operator_action_required)}`);
+        if (direction.result.installed_tool_root) {
+          lines.push(`  installed-tool-root: ${direction.result.installed_tool_root} (source=${direction.result.tool_root_source}); proof-workspace=ephemeral (§8.2 — the two roots are distinct)`);
+        }
         if (direction.result.workflow) {
           lines.push(`  state-workflow: id=${direction.result.workflow.workflow_id ?? '<unknown>'}; run-id=${direction.result.workflow.run_id}; temp-repo=${direction.result.workflow.temp_repo}`);
         }

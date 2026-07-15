@@ -1,12 +1,12 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, rejects, deepStrictEqual } from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, symlink, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, symlink, readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { formatText, parseArgs, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES } from '../../plugins/runtime/scripts/doctor.mjs';
+import { formatText, parseArgs, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES, resolveInstalledEngineerRoot } from '../../plugins/runtime/scripts/doctor.mjs';
 
 const PORTABLE_HOOK_COMMAND = '/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${PLUGIN_ROOT}/adapters/codex/hooks/hook.mjs"';
 
@@ -2329,6 +2329,70 @@ describe('runtime doctor', () => {
     ok(!formatText(report).includes('RAW DETAILS MUST NOT LEAK'), 'text report must not include raw peer stdout');
   });
 
+  it('resolves the workflow-proof engineer tool-root from the host cache, separate from the ephemeral workspace (§8.2 C5)', async () => {
+    // Consumer-machine shape: engineer is installed in the host plugin cache, and
+    // the repo has NO plugins/engineer. Pre-C5 the proof looked under
+    // repoRoot/plugins/engineer and would block here.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-consumer-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-consumer-home-'));
+    await seedRepo(root);
+    await rm(join(root, 'plugins', 'engineer'), { recursive: true, force: true });
+    const cacheRoot = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'engineer', '0.9.0');
+    await mkdir(join(cacheRoot, '.claude-plugin'), { recursive: true });
+    await mkdir(join(cacheRoot, 'scripts'), { recursive: true });
+    await writeFile(join(cacheRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'engineer', version: '0.9.0' }));
+    await writeFile(join(cacheRoot, 'scripts', 'state.mjs'), '// cache state script\n');
+    await writeFile(join(cacheRoot, 'scripts', 'dispatch-peer.mjs'), '// cache dispatch script\n');
+
+    const calls = [];
+    const readCounts = new Map();
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      workflowContinuationProof: true,
+      executeWorkflowContinuationProof: true,
+      workflowContinuationProofTimeoutMs: 60000,
+      runner: async (command, args, options = {}) => {
+        calls.push({ command, args, options });
+        if (command === 'git' && args[0] === 'init') return okResult('');
+        if (args[0]?.endsWith('state.mjs') && args[1] === 'create') {
+          const host = args[args.indexOf('--host') + 1];
+          return okResult(`${options.cwd}/.agentic-plugins/state/engineer/workflows/compose-${host}.md\n`);
+        }
+        if (args[0]?.endsWith('dispatch-peer.mjs')) {
+          const peer = args[args.indexOf('--peer') + 1];
+          return okResult(JSON.stringify(smokeEnvelope(peer, `RUNTIME_WORKFLOW_CONTINUATION_OK ${peer}`, 222)));
+        }
+        if (args[0]?.endsWith('state.mjs') && args[1] === 'read') {
+          const workflowPath = args[args.indexOf('--workflow-path') + 1];
+          const count = (readCounts.get(workflowPath) ?? 0) + 1;
+          readCounts.set(workflowPath, count);
+          const runId = workflowPath.endsWith('compose-claude.md') ? 'workflow-proof-claude_to_codex' : 'workflow-proof-codex_to_claude';
+          if (count === 1) {
+            return okResult(JSON.stringify({ workflow_id: workflowPath.split('/').at(-1).replace(/\.md$/, ''), pending_ensemble: [{ phase: 'compose', ensemble_type: 'workflow-continuation-proof', run_id: runId }] }));
+          }
+          return okResult(JSON.stringify({ workflow_id: workflowPath.split('/').at(-1).replace(/\.md$/, ''), pending_ensemble: [], ensemble_results: [{ phase: 'compose', ensemble_type: 'workflow-continuation-proof', run_id: runId, verdict: 'passed' }] }));
+        }
+        if (args[0]?.endsWith('state.mjs') && args[1] === 'ensemble-commit') {
+          return okResult(`${args[args.indexOf('--workflow-path') + 1]}\n`);
+        }
+        return fakeRuntimeProbeRunner(command, args);
+      },
+    });
+
+    strictEqual(report.workflow_continuation_proof.status, 'passed');
+    // The tool-root is the host cache, NOT repoRoot/plugins/engineer (which is gone).
+    const result = report.workflow_continuation_proof.directions.claude_to_codex.result;
+    strictEqual(result.tool_root_source, 'claude-cache');
+    strictEqual(result.installed_tool_root, cacheRoot);
+    // The proof workspace stays ephemeral and distinct from the tool-root.
+    strictEqual(report.workflow_continuation_proof.workflow_state, 'ephemeral_temp_repo');
+    // The engineer scripts the executor invoked came from the CACHE, never repoRoot.
+    const stateCalls = calls.filter((c) => c.args[0]?.endsWith('state.mjs'));
+    ok(stateCalls.length > 0 && stateCalls.every((c) => c.args[0].startsWith(cacheRoot)), 'executor invoked the cache-resolved state.mjs, not repoRoot/plugins/engineer');
+    ok(!calls.some((c) => c.args[0]?.includes(join(root, 'plugins', 'engineer'))), 'never touches repoRoot/plugins/engineer');
+  });
+
   it('records reusable doctor proof artifacts and reuses them when current versions match', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-recorded-proof-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
@@ -2899,6 +2963,52 @@ describe('runtime doctor — codex plugin list read signal (ADR-0034)', () => {
     ok(report.clis.codex.plugin_list_command_status, 'plugin_list_command_status present in redacted clis');
     strictEqual(report.clis.codex.plugin_list, undefined); // raw probe object not persisted
     ok(!JSON.stringify(report.clis.codex).includes('/.tmp/marketplaces/'), 'no raw source path leaked into clis');
+  });
+});
+
+describe('runtime doctor — installed engineer root resolver (§8.2 C5)', () => {
+  it('env override wins when absolute and scripts/state.mjs exists', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'engineer-root-env-'));
+    await mkdir(join(dir, 'scripts'), { recursive: true });
+    await writeFile(join(dir, 'scripts', 'state.mjs'), '// x\n');
+    const res = await resolveInstalledEngineerRoot({ env: { AGENTIC_ENGINEER_ROOT: dir }, home: '/nonexistent-home-xyz', selfUrl: 'file:///nope/x.mjs' });
+    deepStrictEqual(res, { root: dir, source: 'env-override' });
+  });
+
+  it('a relative or unreadable env override resolves to null (no silent fallback)', async () => {
+    strictEqual(await resolveInstalledEngineerRoot({ env: { AGENTIC_ENGINEER_ROOT: 'relative/path' }, home: '/nonexistent-home-xyz', selfUrl: 'file:///nope/x.mjs' }), null);
+    strictEqual(await resolveInstalledEngineerRoot({ env: { AGENTIC_ENGINEER_ROOT: '/absolute/but/missing' }, home: '/nonexistent-home-xyz', selfUrl: 'file:///nope/x.mjs' }), null);
+  });
+
+  it('picks the SemVer-max Claude cache install whose manifest name is engineer', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'engineer-root-cache-'));
+    const base = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'engineer');
+    for (const [version, name] of [['0.9.0', 'engineer'], ['0.21.0', 'engineer'], ['9.9.9', 'notengineer']]) {
+      const r = join(base, version);
+      await mkdir(join(r, '.claude-plugin'), { recursive: true });
+      await mkdir(join(r, 'scripts'), { recursive: true });
+      await writeFile(join(r, '.claude-plugin', 'plugin.json'), JSON.stringify({ name, version }));
+      await writeFile(join(r, 'scripts', 'state.mjs'), '// x\n');
+    }
+    const res = await resolveInstalledEngineerRoot({ env: {}, home, selfUrl: 'file:///nope/x.mjs' });
+    strictEqual(res.source, 'claude-cache');
+    strictEqual(res.root, join(base, '0.21.0')); // 9.9.9 is not-engineer -> skipped; 0.21.0 > 0.9.0
+  });
+
+  it('falls back to the sibling monorepo checkout when no cache exists', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'engineer-root-sibling-'));
+    await mkdir(join(base, 'plugins', 'runtime', 'scripts'), { recursive: true });
+    await mkdir(join(base, 'plugins', 'engineer', 'scripts'), { recursive: true });
+    await writeFile(join(base, 'plugins', 'engineer', 'scripts', 'state.mjs'), '// x\n');
+    const selfUrl = pathToFileURL(join(base, 'plugins', 'runtime', 'scripts', 'doctor.mjs')).href;
+    const res = await resolveInstalledEngineerRoot({ env: {}, home: '/nonexistent-home-xyz', selfUrl });
+    strictEqual(res.source, 'sibling-monorepo');
+    strictEqual(res.root, join(base, 'plugins', 'engineer'));
+  });
+
+  it('returns null when engineer is installed nowhere (uninstalled consumer machine)', async () => {
+    const res = await resolveInstalledEngineerRoot({ env: {}, home: '/nonexistent-home-xyz', selfUrl: 'file:///nowhere/plugins/runtime/scripts/doctor.mjs' });
+    strictEqual(res, null);
   });
 });
 

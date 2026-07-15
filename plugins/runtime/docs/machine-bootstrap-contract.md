@@ -867,6 +867,17 @@ that can only be verified inside one particular checkout is not a machine bootst
 The permission and deep-peer-smoke proofs already run against ephemeral temp repos and
 need no change.
 
+**Resolved (S8a1).** `runtime:doctor`'s workflow-continuation proof now resolves the
+installed-tool root through a runtime-owned `resolveInstalledEngineerRoot` (env
+override `AGENTIC_ENGINEER_ROOT` → Claude cache SemVer-max → Codex fixed cache →
+sibling monorepo — a **private** copy of the discover-engineer.mjs ladder, since
+ADR-0010 §5 forbids importing across plugins). It deliberately does **not** consult
+`repoRoot`, so pointing doctor at an ephemeral scratch root now works; the proof
+workspace remains the `mkdtemp` temp repo, and each executed direction reports
+`installed_tool_root` + `tool_root_source` distinct from that workspace. Engineer
+installed nowhere resolves to `null` and the direction is `blocked` with recovery
+guidance, never a silent source-tree assumption.
+
 ### 8.3 One-host operators — a documented limitation, stated exactly
 
 The reducer requires **both** hosts, because the framework's value is the cross-host
