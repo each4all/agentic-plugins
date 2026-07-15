@@ -329,6 +329,9 @@ export const ARGV_VERB_ALLOWLIST = {
     ['--version'], ['--help'],
     ['auth', 'status'],
     ['plugin', '--help'], ['plugin', 'list'], ['/plugin', 'list'],
+    // machine-probe.mjs §1.2 marketplace-registration read probe. json-native on Claude
+    // (contract §1.2); read-only, source-identity match, never a mutation.
+    ['plugin', 'marketplace', 'list', '--json'],
     ['plugin', 'install', '*'],
     ['plugin', 'update', '*'],
     // 'plugin uninstall' is NOT a general verb here — it is governed solely by
@@ -344,6 +347,10 @@ export const ARGV_VERB_ALLOWLIST = {
     ['plugin', 'list', '--available', '--json'], // C pre-flight policy probe (ADR-0035 §6)
     ['plugin', 'add', '*'], // C: codex plugin add <name>@agentic-plugins (ADR-0035 §5/§6, H2 install)
     ['plugin', 'marketplace', '--help'],
+    // machine-probe.mjs §1.2 marketplace-registration read probe: prefer --json
+    // (host-parity-baseline: source identity as of 0.139.0), text fallback for an older
+    // Codex without --json. Both read-only, source-identity match, never a mutation.
+    ['plugin', 'marketplace', 'list'], ['plugin', 'marketplace', 'list', '--json'],
     ['plugin', 'marketplace', 'add', '*'],
     ['plugin', 'marketplace', 'upgrade', '*'],
   ],

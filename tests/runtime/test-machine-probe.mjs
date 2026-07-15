@@ -22,6 +22,9 @@ import { fileURLToPath } from 'node:url';
 import {
   probeMachineHostState,
   resolveCodexHome,
+  parseMarketplaceRegistration,
+  readRegisteredMarketplaceCatalog,
+  CANONICAL_MARKETPLACE,
 } from '../../plugins/runtime/scripts/lib/machine-probe.mjs';
 
 const MODULE_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '../../plugins/runtime/scripts/lib/machine-probe.mjs');
@@ -31,6 +34,11 @@ function okResult(stdout = '', stderr = '') {
 }
 function enoent(command) {
   return { ok: false, exit_code: null, stdout: '', stderr: '', error_code: 'ENOENT', error_message: `spawn ${command} ENOENT`, timed_out: false };
+}
+// A present CLI whose SUBCOMMAND failed (nonzero exit, no error_code) — an older host
+// that lacks `marketplace list` / rejects `--json`. Distinct from ENOENT (whole CLI absent).
+function nonzero(stderr = '', exit_code = 1) {
+  return { ok: false, exit_code, stdout: '', stderr, error_code: null, timed_out: false };
 }
 function fakeRunner(map) {
   return async (command, args) => map[`${command} ${args.join(' ')}`] ?? enoent(command);
@@ -77,9 +85,26 @@ describe('machine host probe (machine-only seam)', () => {
       const sig = src.match(/export async function probeMachineHostState\(\{([\s\S]*?)\}\s*=/);
       ok(sig, 'probeMachineHostState must be exported with a destructured options object');
       ok(!/\brepoRoot\b/.test(sig[1]), 'the probe must not accept repoRoot — a machine answer must not depend on which repo invoked it');
-      // The machine probe must not reach the repo-scoped readers/catalogs doctor keeps.
-      for (const forbidden of ['inspectCatalogs', 'inspectSourcePluginState', 'marketplace.json', "'.agents'", 'buildPluginMatrix']) {
+      // The machine probe must not reach the repo-scoped readers doctor keeps.
+      for (const forbidden of ['inspectCatalogs', 'inspectSourcePluginState', 'buildPluginMatrix']) {
         ok(!src.includes(forbidden), `machine probe must not reference repo-scoped ${forbidden}`);
+      }
+      // §1.4.1 legitimately reads a marketplace.json — but ONLY the one AT the registered
+      // installLocation (machine-scoped, resolved from the operator's own registration),
+      // NEVER a repo/cwd catalog. So the string `marketplace.json` is now allowed, but
+      // (a) the catalog reader must be keyed on installLocation, not repoRoot/cwd, and
+      // (b) no marketplace.json path may be rooted at a repo/cwd token. This replaces the
+      // old blanket `marketplace.json`/`.agents` ban, which conflated the required
+      // installLocation read with the forbidden repo read.
+      const catalogSig = src.match(/export async function readRegisteredMarketplaceCatalog\(\{([\s\S]*?)\}\s*[=)]/);
+      ok(catalogSig, 'readRegisteredMarketplaceCatalog must be exported with a destructured options object');
+      ok(/\binstallLocation\b/.test(catalogSig[1]), 'the catalog read must be keyed on installLocation (§1.4.1 machine-scoped authority)');
+      ok(!/\brepoRoot\b/.test(catalogSig[1]), 'the catalog read must not accept repoRoot — currentness comes from the registered catalog, not a repo checkout');
+      for (const line of src.split(/\r?\n/)) {
+        if (!line.includes('marketplace.json')) continue;
+        for (const rootToken of ['repoRoot', 'process.cwd', 'probeCwd', 'resolvedRepoRoot']) {
+          ok(!line.includes(rootToken), `a marketplace.json read must not be rooted at ${rootToken} — it must be installLocation-scoped (§1.4.1)`);
+        }
       }
     });
 
@@ -196,6 +221,9 @@ describe('machine host probe (machine-only seam)', () => {
         runner: fakeRunner(baseProbeMap({
           'claude plugin list': okResult(claudeListRaw),
           'codex plugin list --json': okResult(CODEX_LIST_JSON, `noise ${SENTINEL}`),
+          // Marketplace raw stdout must be scrubbed like the plugin lists — a sentinel in
+          // a description/source blob must never survive into the facts.
+          'claude plugin marketplace list --json': okResult(`[{"name":"agentic-plugins","source":"github","repo":"each4all/agentic-plugins","installLocation":"/x","note":"${SENTINEL}"}]`),
         })),
       });
       const serialized = JSON.stringify(result);
@@ -204,6 +232,265 @@ describe('machine host probe (machine-only seam)', () => {
       strictEqual(result.claude.plugin.stdout, undefined, 'raw claude plugin stdout is scrubbed');
       strictEqual(result.claude.plugin.status, 'available');
       strictEqual(result.codex.plugin_list.stdout, undefined, 'raw codex plugin_list stdout is scrubbed');
+      strictEqual(result.claude.marketplace.stdout, undefined, 'raw claude marketplace stdout is scrubbed');
+      strictEqual(result.claude.marketplace.status, 'available');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Marketplace-registration probe (machine-bootstrap-contract.md §1.2 / §1.4.1)
+  // ---------------------------------------------------------------------------
+  describe('marketplace-registration probe', () => {
+    const claudeJson = (entries) => okResult(JSON.stringify(entries));
+
+    it('canonical github source → registered + satisfied (source identity, not name)', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const result = await probeMachineHostState({
+        homeDir: home,
+        env: {},
+        runner: fakeRunner(baseProbeMap({
+          'claude plugin marketplace list --json': claudeJson([
+            { name: 'agentic-plugins', source: 'github', repo: 'each4all/agentic-plugins', installLocation: '/nonexistent/loc' },
+          ]),
+        })),
+      });
+      const reg = result.marketplaceRegistration.claude;
+      strictEqual(reg.status, 'registered');
+      strictEqual(reg.canonical, true);
+      strictEqual(reg.source_kind, 'github');
+      deepStrictEqual(reg.source_identity, { source: 'github', repo: 'each4all/agentic-plugins' });
+      strictEqual(reg.flagged, null);
+    });
+
+    it('a github FORK named agentic-plugins → unknown + not satisfied (name proves nothing)', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const result = await probeMachineHostState({
+        homeDir: home,
+        env: {},
+        runner: fakeRunner(baseProbeMap({
+          'claude plugin marketplace list --json': claudeJson([
+            { name: 'agentic-plugins', source: 'github', repo: 'somefork/agentic-plugins', installLocation: '/x' },
+          ]),
+        })),
+      });
+      const reg = result.marketplaceRegistration.claude;
+      strictEqual(reg.status, 'unknown');
+      strictEqual(reg.canonical, false);
+      strictEqual(reg.flagged, 'fork-repo');
+    });
+
+    it('a substring near-miss (each4all/agentic-plugins-fork) does NOT match canonical', () => {
+      const reg = parseMarketplaceRegistration({
+        host: 'claude',
+        result: { status: 'available', format: 'json', stdout: JSON.stringify([
+          { name: 'agentic-plugins', source: 'github', repo: 'each4all/agentic-plugins-fork', installLocation: '/x' },
+        ]) },
+      });
+      strictEqual(reg.canonical, false, 'anchored slug match rejects the -fork suffix');
+      strictEqual(reg.flagged, 'fork-repo');
+    });
+
+    it('a directory source named agentic-plugins → registered but flagged (contributor checkout)', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const result = await probeMachineHostState({
+        homeDir: home,
+        env: {},
+        runner: fakeRunner(baseProbeMap({
+          'claude plugin marketplace list --json': claudeJson([
+            { name: 'agentic-plugins', source: 'directory', path: '/home/dev/agentic-plugins', installLocation: '/home/dev/agentic-plugins' },
+          ]),
+        })),
+      });
+      const reg = result.marketplaceRegistration.claude;
+      strictEqual(reg.status, 'registered');
+      strictEqual(reg.canonical, false);
+      strictEqual(reg.source_kind, 'directory');
+      strictEqual(reg.flagged, 'directory-source');
+    });
+
+    it('subcommand unavailable/failed → unknown (absence of evidence is not registration)', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const result = await probeMachineHostState({
+        homeDir: home,
+        env: {},
+        runner: fakeRunner(baseProbeMap({
+          'claude plugin marketplace list --json': nonzero('error: unknown subcommand "marketplace"'),
+        })),
+      });
+      strictEqual(result.marketplaceRegistration.claude.status, 'unknown');
+    });
+
+    it('empty registered list → missing (definite absence), not unknown', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+      const result = await probeMachineHostState({
+        homeDir: home,
+        env: {},
+        runner: fakeRunner(baseProbeMap({
+          'claude plugin marketplace list --json': claudeJson([]),
+        })),
+      });
+      strictEqual(result.marketplaceRegistration.claude.status, 'missing');
+    });
+
+    it('malformed json → unknown, never a throw', () => {
+      const reg = parseMarketplaceRegistration({ host: 'claude', result: { status: 'available', format: 'json', stdout: '{not json' } });
+      strictEqual(reg.status, 'unknown');
+    });
+
+    describe('catalog read (§1.4.1 currentness authority)', () => {
+      it('reads per-plugin versions from the catalog AT installLocation', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+        const loc = await mkdtemp(join(tmpdir(), 'mp-mploc-'));
+        await mkdir(join(loc, '.claude-plugin'), { recursive: true });
+        await writeFile(join(loc, '.claude-plugin', 'marketplace.json'), JSON.stringify({
+          plugins: [{ name: 'runtime', version: '0.80.1' }, { name: 'engineer', version: '0.21.0' }],
+        }));
+        const result = await probeMachineHostState({
+          homeDir: home,
+          env: {},
+          runner: fakeRunner(baseProbeMap({
+            'claude plugin marketplace list --json': claudeJson([
+              { name: 'agentic-plugins', source: 'github', repo: 'each4all/agentic-plugins', installLocation: loc },
+            ]),
+          })),
+        });
+        const catalog = result.marketplaceRegistration.claude.catalog;
+        strictEqual(catalog.read_status, 'read');
+        strictEqual(catalog.versions.runtime, '0.80.1');
+        strictEqual(catalog.versions.engineer, '0.21.0');
+        strictEqual(catalog.path, join(loc, '.claude-plugin', 'marketplace.json'));
+      });
+
+      it('canonical registration + UNREADABLE catalog → still registered, currentness unknown, NO repo fallback', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+        const result = await probeMachineHostState({
+          homeDir: home,
+          env: {},
+          runner: fakeRunner(baseProbeMap({
+            'claude plugin marketplace list --json': claudeJson([
+              { name: 'agentic-plugins', source: 'github', repo: 'each4all/agentic-plugins', installLocation: '/nonexistent/loc' },
+            ]),
+          })),
+        });
+        const reg = result.marketplaceRegistration.claude;
+        strictEqual(reg.status, 'registered', 'registration is independent of catalog readability');
+        strictEqual(reg.catalog.read_status, 'unreadable');
+        deepStrictEqual(reg.catalog.versions, {}, 'no repo-checkout fallback for versions');
+      });
+
+      it('is installLocation-scoped, never cwd/repo (poisoned-catalog)', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+        // A poison catalog at the caller cwd claims 9.9.9; the probe must ignore it.
+        const poisonCwd = await mkdtemp(join(tmpdir(), 'mp-poison-cwd-'));
+        await mkdir(join(poisonCwd, '.claude-plugin'), { recursive: true });
+        await writeFile(join(poisonCwd, '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'runtime', version: '9.9.9' }] }));
+        // The REAL registered installLocation claims 1.0.0.
+        const loc = await mkdtemp(join(tmpdir(), 'mp-mploc-'));
+        await mkdir(join(loc, '.claude-plugin'), { recursive: true });
+        await writeFile(join(loc, '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'runtime', version: '1.0.0' }] }));
+        const result = await probeMachineHostState({
+          homeDir: home,
+          cwd: poisonCwd,
+          env: {},
+          runner: fakeRunner(baseProbeMap({
+            'claude plugin marketplace list --json': claudeJson([
+              { name: 'agentic-plugins', source: 'github', repo: 'each4all/agentic-plugins', installLocation: loc },
+            ]),
+          })),
+        });
+        strictEqual(result.marketplaceRegistration.claude.catalog.versions.runtime, '1.0.0', 'versions come from installLocation, not the cwd poison catalog');
+      });
+
+      it('readRegisteredMarketplaceCatalog: no installLocation → unknown', async () => {
+        const catalog = await readRegisteredMarketplaceCatalog({ host: 'claude', installLocation: null });
+        strictEqual(catalog.read_status, 'unknown');
+        deepStrictEqual(catalog.versions, {});
+      });
+
+      it('readRegisteredMarketplaceCatalog: a versionless (Codex) catalog → versionless', async () => {
+        const catalog = await readRegisteredMarketplaceCatalog({
+          host: 'codex',
+          installLocation: '/x',
+          readJson: async () => ({ ok: true, json: { plugins: [{ name: 'runtime', source: { path: './plugins/runtime' } }] } }),
+        });
+        strictEqual(catalog.read_status, 'versionless');
+        strictEqual(catalog.versions.runtime, null);
+      });
+    });
+
+    describe('codex --json and text fallback', () => {
+      it('codex --json with a source-backed canonical marketplace → registered', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+        const result = await probeMachineHostState({
+          homeDir: home,
+          env: {},
+          runner: fakeRunner(baseProbeMap({
+            'codex plugin marketplace list --json': okResult(JSON.stringify([
+              { name: 'agentic-plugins', source: { sourceType: 'github', source: 'each4all/agentic-plugins' }, root: '/x' },
+            ])),
+          })),
+        });
+        const reg = result.marketplaceRegistration.codex;
+        strictEqual(reg.status, 'registered');
+        strictEqual(reg.canonical, true);
+        strictEqual(reg.format, 'json');
+      });
+
+      it('a codex local-path source under a .../each4all/agentic-plugins dir is NOT canonical (peer #5)', () => {
+        // A local checkout that happens to live under an each4all/agentic-plugins directory
+        // must never be read as the canonical github remote — identity ≠ local root.
+        const reg = parseMarketplaceRegistration({
+          host: 'codex',
+          result: { status: 'available', format: 'json', stdout: JSON.stringify([
+            { name: 'agentic-plugins', source: { sourceType: 'local', path: '/home/dev/each4all/agentic-plugins' } },
+          ]) },
+        });
+        strictEqual(reg.canonical, false);
+        strictEqual(reg.status, 'unknown', 'a local root is not a resolvable canonical identity');
+      });
+
+      it('codex non-empty list with no resolvable canonical source → unknown, not missing', () => {
+        const reg = parseMarketplaceRegistration({
+          host: 'codex',
+          result: { status: 'available', format: 'json', stdout: JSON.stringify([
+            { name: 'some-other-marketplace', source: { sourceType: 'github', source: 'acme/widgets' } },
+          ]) },
+        });
+        strictEqual(reg.status, 'unknown');
+      });
+
+      it('text fallback (no --json) WITH an explicit canonical slug → registered', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+        const result = await probeMachineHostState({
+          homeDir: home,
+          env: {},
+          runner: fakeRunner(baseProbeMap({
+            'codex plugin marketplace list --json': nonzero('error: unexpected argument --json'),
+            'codex plugin marketplace list': okResult('agentic-plugins  github:each4all/agentic-plugins  (registered)\n'),
+          })),
+        });
+        const reg = result.marketplaceRegistration.codex;
+        strictEqual(reg.status, 'registered');
+        strictEqual(reg.canonical, true);
+        strictEqual(reg.format, 'text');
+      });
+
+      it('text fallback with only a NAME / local root → unknown (name is not identity)', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'mp-home-'));
+        const result = await probeMachineHostState({
+          homeDir: home,
+          env: {},
+          runner: fakeRunner(baseProbeMap({
+            'codex plugin marketplace list --json': nonzero('error: unexpected argument --json'),
+            'codex plugin marketplace list': okResult('agentic-plugins  (local)\n/home/u/agentic-plugins\n'),
+          })),
+        });
+        strictEqual(result.marketplaceRegistration.codex.status, 'unknown');
+      });
+    });
+
+    it('CANONICAL_MARKETPLACE is exported as the github each4all/agentic-plugins identity', () => {
+      deepStrictEqual(CANONICAL_MARKETPLACE, { source: 'github', repo: 'each4all/agentic-plugins' });
     });
   });
 });

@@ -17,8 +17,10 @@ describe('runtime doctor', () => {
   it('never hands the egress credential to a host-CLI probe', async () => {
     const seen = [];
     // A SUCCEEDING runner, so `available` is true and inspectCli walks the whole probe
-    // chain (6 claude + 8 codex). An ENOENT stub would short-circuit after `--version`
-    // and this gate would only ever inspect 2 of the 14 envs.
+    // chain (7 claude + 9 codex, incl. the §1.2 marketplace-registration read; the codex
+    // marketplace text fallback does NOT run because the json probe succeeds here). An
+    // ENOENT stub would short-circuit after `--version` and this gate would only ever
+    // inspect 2 of the 16 envs.
     const runner = async (command, args = [], options = {}) => {
       seen.push({ command, args, env: options.env });
       return { ok: true, exit_code: 0, stdout: '', stderr: '', error_code: null, error_message: null };
@@ -32,8 +34,8 @@ describe('runtime doctor', () => {
 
     const claudeProbes = seen.filter((call) => call.command === 'claude');
     const codexProbes = seen.filter((call) => call.command === 'codex');
-    strictEqual(claudeProbes.length, 6, 'every claude probe must be inspected, not just --version');
-    strictEqual(codexProbes.length, 8, 'every codex probe must be inspected, not just --version');
+    strictEqual(claudeProbes.length, 7, 'every claude probe must be inspected, not just --version');
+    strictEqual(codexProbes.length, 9, 'every codex probe must be inspected, not just --version');
     const probes = [...claudeProbes, ...codexProbes];
     for (const probe of probes) {
       strictEqual(probe.env?.TELEGRAM_BOT_TOKEN, undefined, `${probe.command} probe received the egress credential`);

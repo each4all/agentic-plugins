@@ -73,6 +73,7 @@ export async function probeMachineHostState({
       authArgs: ['auth', 'status'],
       pluginArgs: ['plugin', 'list'],
       pluginSurfaceArgs: ['/plugin', 'list'],
+      marketplaceArgs: ['plugin', 'marketplace', 'list', '--json'],
       runner,
       cwd: probeCwd,
       env,
@@ -87,6 +88,8 @@ export async function probeMachineHostState({
       pluginArgs: ['plugin', 'marketplace', '--help'],
       pluginRootHelpArgs: ['plugin', '--help'],
       pluginListArgs: ['plugin', 'list', '--json'],
+      marketplaceArgs: ['plugin', 'marketplace', 'list', '--json'],
+      marketplaceFallbackArgs: ['plugin', 'marketplace', 'list'],
       runner,
       cwd: probeCwd,
       env,
@@ -94,14 +97,22 @@ export async function probeMachineHostState({
     }),
   ]);
 
-  // Parse the installed lists from the raw stdout BEFORE it is scrubbed — the raw blobs
-  // never leave this module (§1.1, peer #12).
+  // Parse the installed lists AND the marketplace-registration output from the raw stdout
+  // BEFORE it is scrubbed — the raw blobs never leave this module (§1.1, peer #12).
   const claudePluginList = parseClaudePluginList(claudeRaw.plugin?.stdout ?? '');
   const codexPluginList = parseCodexPluginList(codexRaw.plugin_list);
+  // §1.2 registration identity + §1.4.1 catalog currentness are two SEPARATE facts
+  // (peer #1): parse the host-native registration list, then read the catalog AT the
+  // registered installLocation (never cwd) so C3 can source `sourceVersion` from the
+  // catalog the host actually registered rather than a repo checkout.
+  const claudeMarketplaceReg = parseMarketplaceRegistration({ host: 'claude', result: claudeRaw.marketplace });
+  const codexMarketplaceReg = parseMarketplaceRegistration({ host: 'codex', result: codexRaw.marketplace });
 
-  const [caches, codexHookConfig] = await Promise.all([
+  const [caches, codexHookConfig, claudeCatalog, codexCatalog] = await Promise.all([
     inspectPluginCaches({ homeDir: resolvedHomeDir, codexHome: resolvedCodexHome }),
     readObservedCodexHookConfig({ codexHome: resolvedCodexHome }),
+    readRegisteredMarketplaceCatalog({ host: 'claude', installLocation: claudeMarketplaceReg.install_location }),
+    readRegisteredMarketplaceCatalog({ host: 'codex', installLocation: codexMarketplaceReg.install_location }),
   ]);
 
   return {
@@ -112,6 +123,10 @@ export async function probeMachineHostState({
     claudePluginList,
     codexPluginList,
     installed: normalizeInstalledRows({ claudePluginList, codexPluginList }),
+    marketplaceRegistration: {
+      claude: { ...claudeMarketplaceReg, catalog: claudeCatalog },
+      codex: { ...codexMarketplaceReg, catalog: codexCatalog },
+    },
     codexHookConfig,
   };
 }
@@ -150,6 +165,9 @@ function scrubCliRaw(cli) {
   if (cli.plugin_list) {
     scrubbed.plugin_list = { status: cli.plugin_list.status, exit_code: cli.plugin_list.exit_code, error_code: cli.plugin_list.error_code };
   }
+  if (cli.marketplace) {
+    scrubbed.marketplace = { status: cli.marketplace.status, exit_code: cli.marketplace.exit_code, error_code: cli.marketplace.error_code, format: cli.marketplace.format };
+  }
   return scrubbed;
 }
 
@@ -157,7 +175,7 @@ function scrubCliRaw(cli) {
 // Host CLI inspection
 // ---------------------------------------------------------------------------
 
-async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, featureArgs = null, authArgs, pluginArgs, pluginSurfaceArgs = null, pluginRootHelpArgs = null, pluginListArgs = null, runner, cwd, env, timeoutMs }) {
+async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, featureArgs = null, authArgs, pluginArgs, pluginSurfaceArgs = null, pluginRootHelpArgs = null, pluginListArgs = null, marketplaceArgs = null, marketplaceFallbackArgs = null, runner, cwd, env, timeoutMs }) {
   const version = await runner(name, versionArgs, { cwd, env, timeoutMs });
   const available = version.ok || version.exit_code !== null;
   const help = available ? await runner(name, helpArgs, { cwd, env, timeoutMs }) : skipped('cli unavailable');
@@ -171,6 +189,14 @@ async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, f
   // matching over the combined help blob (which also carries marketplace add/list/remove).
   const pluginRootHelpRaw = available && pluginRootHelpArgs ? await runner(name, pluginRootHelpArgs, { cwd, env, timeoutMs }) : skipped('not requested');
   const pluginListRaw = available && pluginListArgs ? await runner(name, pluginListArgs, { cwd, env, timeoutMs }) : skipped('not requested');
+  // Marketplace-registration probe (§1.2): prefer `--json`, and fall back to the text
+  // list ONLY when the json probe fails (an older Codex without `--json`). Claude passes
+  // no fallback — the contract's Claude read is json-native. Raw stdout is parsed before
+  // the scrub (like the plugin lists) and never leaves the module (peer #12).
+  const marketplaceJsonRaw = available && marketplaceArgs ? await runner(name, marketplaceArgs, { cwd, env, timeoutMs }) : skipped('not requested');
+  const marketplaceFallbackRaw = available && marketplaceFallbackArgs && !marketplaceJsonRaw.ok
+    ? await runner(name, marketplaceFallbackArgs, { cwd, env, timeoutMs })
+    : skipped('not requested');
   const auth = name === 'claude' ? parseClaudeAuth(authRaw, env) : parseCodexAuth(authRaw);
   const featureText = name === 'claude'
     ? `${help.stdout}\n${help.stderr}\n${extraHelp.stdout}\n${extraHelp.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}\n${pluginSurfaceRaw.stdout}\n${pluginSurfaceRaw.stderr}`
@@ -210,8 +236,24 @@ async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, f
       exit_code: pluginListRaw.exit_code,
       error_code: pluginListRaw.error_code,
     },
+    marketplace: selectMarketplaceRaw(marketplaceJsonRaw, marketplaceFallbackRaw),
     plugin_surface: inspectHostPluginSurface({ host: name, result: pluginSurfaceRaw }),
   };
+}
+
+// Pick the marketplace probe result and tag its FORMAT so the parser knows whether it is
+// json or the text fallback. json wins when it succeeded; otherwise the text fallback if
+// it actually ran; otherwise the (failed/absent) json result carries the status with a
+// null format. Raw stdout is retained here for the pre-scrub parse and stripped by
+// scrubCliRaw before the facts leave the module.
+function selectMarketplaceRaw(jsonRaw, fallbackRaw) {
+  if (jsonRaw.ok) {
+    return { status: commandStatus(jsonRaw), stdout: jsonRaw.stdout, stderr: jsonRaw.stderr, exit_code: jsonRaw.exit_code, error_code: jsonRaw.error_code, format: 'json' };
+  }
+  if (fallbackRaw.error_code !== 'skipped') {
+    return { status: commandStatus(fallbackRaw), stdout: fallbackRaw.stdout, stderr: fallbackRaw.stderr, exit_code: fallbackRaw.exit_code, error_code: fallbackRaw.error_code, format: 'text' };
+  }
+  return { status: commandStatus(jsonRaw), stdout: jsonRaw.stdout ?? '', stderr: jsonRaw.stderr ?? '', exit_code: jsonRaw.exit_code, error_code: jsonRaw.error_code, format: null };
 }
 
 function inspectHostPluginSurface({ host, result }) {
@@ -553,6 +595,267 @@ export function resolveCodexInstallState({ name, listStatus, entry }) {
     return { decision: 'not_installed', source: 'list', version: null, enabled: false, evidence: `codex plugin list does not report ${name} as installed` };
   }
   return { decision: 'fallback', source: 'cache', version: null, enabled: null, evidence: null, list_probe_status: listStatus };
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace-registration probe (machine-bootstrap-contract.md §1.2 / §1.4.1)
+// ---------------------------------------------------------------------------
+
+// The canonical agentic-plugins marketplace source identity. Registration is `satisfied`
+// ONLY when a registered marketplace's SOURCE identity matches this — never when a
+// marketplace is merely NAMED agentic-plugins (§1.2: a name proves nothing; it could
+// point at a fork, a stale local directory, or a different project). Exported so C3's
+// settings repair sources currentness from the SAME canonical identity.
+export const CANONICAL_MARKETPLACE = { source: 'github', repo: 'each4all/agentic-plugins' };
+
+// The canonical org/repo slug, anchored so `each4all/agentic-plugins-fork` and
+// `noteach4all/agentic-plugins` do NOT match — substring identity is exactly how a fork
+// gets mistaken for the canonical remote. Used for the loose text / Codex-source scan;
+// the Claude json path compares the structured `repo` field with === instead.
+const CANONICAL_REPO_RE = /(?<![\w-])each4all\/agentic-plugins(?![\w-])/;
+
+function marketplaceFact({ status, canonical = false, source_kind = null, source_identity = null, install_location = null, flagged = null, format = null, reason = null }) {
+  return { status, canonical, source_kind, source_identity, install_location, flagged, format, reason };
+}
+
+// Parse `<host> plugin marketplace list [--json]` into a registration fact keyed on
+// SOURCE identity. Statuses (§1.2 / plan v2 edge pins):
+//   registered — a canonical github source (satisfied), OR a directory source named
+//                agentic-plugins (accepted but `flagged` so a contributor checkout is
+//                never silently equated with a consumer install);
+//   missing    — the list read successfully but carries no agentic-plugins entry
+//                (including the empty list — absence is definite, not `unknown`);
+//   unknown    — the subcommand is unavailable/failed, the output is malformed, or the
+//                only signal is a non-canonical github source (a fork) or a name/local
+//                root with no resolvable canonical identity. `unknown` is never satisfied.
+// The catalog read (§1.4.1) is layered on SEPARATELY by readRegisteredMarketplaceCatalog
+// so registration and currentness stay distinct (peer #1). Never throws.
+export function parseMarketplaceRegistration({ host, result }) {
+  if (!result || result.error_code === 'skipped') {
+    return marketplaceFact({ status: 'unknown', format: result?.format ?? null, reason: 'marketplace probe not requested' });
+  }
+  if (result.status !== 'available') {
+    return marketplaceFact({
+      status: 'unknown',
+      format: result.format ?? null,
+      reason: result.error_code === 'ENOENT' ? 'host CLI unavailable' : 'marketplace list subcommand unavailable or failed',
+    });
+  }
+  const stdout = (result.stdout ?? '').trim();
+  if (!stdout) return marketplaceFact({ status: 'missing', format: result.format ?? null, reason: 'no registered marketplaces' });
+  if (result.format === 'json') {
+    return host === 'claude' ? parseClaudeMarketplaceJson(stdout) : parseCodexMarketplaceJson(stdout);
+  }
+  // Text fallback (older Codex without `--json`): satisfy ONLY on an explicit canonical
+  // source slug; NEVER infer identity from a marketplace name or a local root (peer #5).
+  return parseMarketplaceText(stdout);
+}
+
+// Claude `plugin marketplace list --json` → `[{ name, source: "github"|"directory",
+// repo|path, installLocation }]` (§1.2). Canonical github match wins; a directory source
+// named agentic-plugins is accepted-but-flagged; a github fork or a bare-name entry is
+// not satisfied.
+function parseClaudeMarketplaceJson(stdout) {
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return marketplaceFact({ status: 'unknown', format: 'json', reason: 'marketplace list --json was not valid JSON' });
+  }
+  const entries = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.marketplaces) ? parsed.marketplaces : null;
+  if (!entries) return marketplaceFact({ status: 'unknown', format: 'json', reason: 'unrecognized marketplace list --json shape' });
+  if (entries.length === 0) return marketplaceFact({ status: 'missing', format: 'json', reason: 'no registered marketplaces' });
+  for (const entry of entries) {
+    if (entry?.source === 'github' && typeof entry.repo === 'string' && entry.repo === CANONICAL_MARKETPLACE.repo) {
+      return marketplaceFact({
+        status: 'registered',
+        canonical: true,
+        source_kind: 'github',
+        source_identity: { source: 'github', repo: entry.repo },
+        install_location: marketplaceInstallLocation(entry),
+        format: 'json',
+      });
+    }
+  }
+  // No canonical github entry — is one merely CLAIMING to be agentic-plugins by name?
+  for (const entry of entries) {
+    if (entry?.name !== 'agentic-plugins') continue;
+    if (entry.source === 'directory') {
+      return marketplaceFact({
+        status: 'registered',
+        canonical: false,
+        source_kind: 'directory',
+        source_identity: { source: 'directory', path: typeof entry.path === 'string' ? entry.path : null },
+        install_location: marketplaceInstallLocation(entry),
+        flagged: 'directory-source',
+        format: 'json',
+        reason: 'registered from a local directory checkout, not the canonical github remote',
+      });
+    }
+    if (entry.source === 'github') {
+      return marketplaceFact({
+        status: 'unknown',
+        source_kind: 'github',
+        source_identity: { source: 'github', repo: typeof entry.repo === 'string' ? entry.repo : null },
+        flagged: 'fork-repo',
+        format: 'json',
+        reason: `marketplace named agentic-plugins points at a non-canonical github source (${redactSecrets(String(entry.repo ?? 'unknown'))})`,
+      });
+    }
+  }
+  return marketplaceFact({ status: 'missing', format: 'json', reason: 'no registered marketplace has the canonical source identity' });
+}
+
+// Codex `plugin marketplace list --json` carries the marketplace source for source-backed
+// marketplaces as of 0.139.0 (host-parity-baseline), but the exact object shape is not
+// pinned by non-interactive help. Scan defensively for an explicit canonical github source
+// identity in a SOURCE field; degrade to `unknown` (never `missing`) on an unrecognized
+// shape so absence of a recognizable source is never read as "not registered". Codex is
+// versionless, so currentness comes from the catalog read as `unknown` regardless.
+function parseCodexMarketplaceJson(stdout) {
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return marketplaceFact({ status: 'unknown', format: 'json', reason: 'marketplace list --json was not valid JSON' });
+  }
+  const entries = normalizeCodexMarketplaceEntries(parsed);
+  if (entries === null) {
+    return marketplaceFact({ status: 'unknown', format: 'json', reason: 'unrecognized marketplace list --json shape' });
+  }
+  if (entries.length === 0) return marketplaceFact({ status: 'missing', format: 'json', reason: 'no registered marketplaces' });
+  for (const entry of entries) {
+    for (const src of codexMarketplaceSourceStrings(entry)) {
+      if (CANONICAL_REPO_RE.test(src)) {
+        return marketplaceFact({
+          status: 'registered',
+          canonical: true,
+          source_kind: 'github',
+          source_identity: { source: 'github', repo: CANONICAL_MARKETPLACE.repo },
+          install_location: codexMarketplaceRoot(entry),
+          format: 'json',
+        });
+      }
+    }
+  }
+  // Non-empty, but no entry carries a RESOLVABLE canonical github source. Codex identity
+  // resolution is weaker than Claude's (local-path sources are not identity), so this is
+  // `unknown` — no-resolvable-identity — NOT `missing`; only the empty list proves absence.
+  return marketplaceFact({ status: 'unknown', format: 'json', reason: 'no registered marketplace has a resolvable canonical source identity' });
+}
+
+// Text fallback: only an EXPLICIT canonical source slug satisfies. A marketplace name or a
+// local root alone is not identity (peer #5) — those degrade to `unknown`, never satisfied.
+function parseMarketplaceText(stdout) {
+  if (CANONICAL_REPO_RE.test(stdout)) {
+    return marketplaceFact({
+      status: 'registered',
+      canonical: true,
+      source_kind: 'github',
+      source_identity: { source: 'github', repo: CANONICAL_MARKETPLACE.repo },
+      format: 'text',
+      reason: 'canonical source identity found in marketplace list text output',
+    });
+  }
+  return marketplaceFact({
+    status: 'unknown',
+    format: 'text',
+    reason: 'no explicit canonical source identity in marketplace list text output (name / local root is not identity)',
+  });
+}
+
+// Normalize a parsed Codex marketplace list --json into a flat entry array, or null when
+// the shape is unrecognizable (valid json but no locatable entry list).
+function normalizeCodexMarketplaceEntries(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && typeof parsed === 'object') {
+    for (const key of ['marketplaces', 'installed', 'entries', 'sources']) {
+      if (Array.isArray(parsed[key])) return parsed[key];
+    }
+  }
+  return null;
+}
+
+// Collect every string that could carry a Codex marketplace's REMOTE source identity, from
+// the documented source-backed fields. Nested `{sourceType, source}` shapes are flattened.
+// Name AND local-`path` fields are deliberately NOT scanned — identity must come from a
+// remote source, never from a name OR a local root (peer #5). A local checkout that happens
+// to live under a `.../each4all/agentic-plugins` directory must NOT be read as the canonical
+// github remote; its `path` is still available to codexMarketplaceRoot for the catalog read.
+function codexMarketplaceSourceStrings(entry) {
+  const out = [];
+  const push = (value) => {
+    if (typeof value === 'string') out.push(value);
+    else if (value && typeof value === 'object') {
+      for (const key of ['source', 'repo', 'url']) {
+        if (typeof value[key] === 'string') out.push(value[key]);
+      }
+    }
+  };
+  if (entry && typeof entry === 'object') {
+    push(entry.source);
+    push(entry.marketplaceSource);
+    push(entry.repo);
+    push(entry.url);
+  }
+  return out;
+}
+
+function codexMarketplaceRoot(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  for (const key of ['installLocation', 'install_location', 'root', 'path']) {
+    if (typeof entry[key] === 'string') return entry[key];
+  }
+  if (entry.source && typeof entry.source === 'object' && typeof entry.source.path === 'string') return entry.source.path;
+  return null;
+}
+
+function marketplaceInstallLocation(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  if (typeof entry.installLocation === 'string') return entry.installLocation;
+  if (typeof entry.install_location === 'string') return entry.install_location;
+  if (entry.source === 'directory' && typeof entry.path === 'string') return entry.path;
+  return null;
+}
+
+// Read the marketplace catalog AT the registered installLocation (§1.4.1) — the currentness
+// authority. Per-plugin versions come from the catalog the host actually registered, NEVER
+// from process.cwd() or a repo checkout (that is exactly the source-manifest path the
+// contract rejects). A missing installLocation or an unreadable catalog yields `unknown`
+// currentness with NO repo fallback (edge pin). Codex catalogs are versionless, so their
+// versions stay null. Never throws. `readJson` is injectable for tests.
+export async function readRegisteredMarketplaceCatalog({ host, installLocation, readJson = readJsonIfExists }) {
+  if (!installLocation) {
+    return { read_status: 'unknown', reason: 'no registered installLocation', path: null, last_updated: null, versions: {} };
+  }
+  const catalogPath = host === 'claude'
+    ? join(installLocation, '.claude-plugin', 'marketplace.json')
+    : join(installLocation, '.agents', 'plugins', 'marketplace.json');
+  const read = await readJson(catalogPath);
+  if (!read.ok) {
+    return { read_status: 'unreadable', reason: read.reason ?? 'catalog read failed', path: catalogPath, last_updated: null, versions: {} };
+  }
+  const catalog = read.json;
+  const plugins = Array.isArray(catalog?.plugins) ? catalog.plugins : [];
+  const versions = {};
+  for (const entry of plugins) {
+    if (typeof entry?.name !== 'string') continue;
+    versions[entry.name] = typeof entry.version === 'string' ? entry.version : null;
+  }
+  const lastUpdated = typeof catalog?.metadata?.lastUpdated === 'string'
+    ? catalog.metadata.lastUpdated
+    : typeof catalog?.lastUpdated === 'string' ? catalog.lastUpdated : null;
+  const anyVersion = Object.values(versions).some((v) => v !== null);
+  // Claude catalogs carry per-entry versions; Codex catalogs are deliberately versionless
+  // (§1.4.1), so a Codex catalog — or any catalog with no per-entry version — is reported
+  // `versionless`, which maps to `unknown` currentness (never a failure).
+  return {
+    read_status: anyVersion ? 'read' : 'versionless',
+    reason: null,
+    path: catalogPath,
+    last_updated: lastUpdated,
+    versions,
+  };
 }
 
 // ---------------------------------------------------------------------------
