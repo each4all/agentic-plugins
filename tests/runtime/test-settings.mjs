@@ -1,5 +1,5 @@
 import { describe, it } from 'node:test';
-import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
+import { deepStrictEqual, notStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -70,7 +70,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.17');
+    strictEqual(report.schema_version, 'runtime-settings-1.18');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -246,6 +246,203 @@ describe('runtime settings', () => {
     ok(!JSON.stringify(artifact).includes('RAW CLEANUP OUTPUT MUST NOT LEAK'), 'cleanup artifact must not include raw command output');
     ok(formatText(report).includes(`runtime:settings ${RUNTIME_VERSION} (plugin-cleanup)`));
     ok(formatText(report).includes('result: ok=true'));
+  });
+
+  // ── Write-ahead durability cluster (machine-bootstrap-contract.md §1.5/§1.6) ──
+  // The H2 plugin-management + cleanup executors persist a `planned` record with a
+  // plan hash BEFORE any action, journal after each, and finalize terminal. These
+  // tests assert at the SEAM (the record is on disk when the action runs / survives
+  // an interrupted run) — not by filtering output.
+
+  const MARKETPLACE_ADD = 'codex plugin marketplace add each4all/agentic-plugins';
+
+  it('write-ahead: persists the planned record + plan hash BEFORE the H2 action runs (§1.5 #10)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-writeahead-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-writeahead-home-'));
+    await seedRepo(root);
+    const artifactPath = join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json');
+
+    const calls = [];
+    const base = fakeRunner({ ...defaultCliMap(), [MARKETPLACE_ADD]: okResult('marketplace ok\n') }, calls);
+    let recordAtActionTime = null;
+    const spy = async (command, args) => {
+      const key = `${command} ${args.join(' ')}`;
+      if (key === MARKETPLACE_ADD && recordAtActionTime === null) {
+        // The durable record MUST already be on disk when the mutating action runs.
+        recordAtActionTime = JSON.parse(await readFile(artifactPath, 'utf8'));
+      }
+      return base(command, args);
+    };
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      runner: spy,
+    });
+
+    ok(recordAtActionTime, 'a planned record existed on disk before the action ran');
+    strictEqual(recordAtActionTime.status, 'planned');
+    strictEqual(recordAtActionTime.terminal, false);
+    ok(/^[0-9a-f]{64}$/.test(recordAtActionTime.plan_hash), 'planned record carries the plan hash');
+    ok(
+      recordAtActionTime.planned_actions.some((a) => a.args.join(' ') === 'plugin marketplace add each4all/agentic-plugins'),
+      'planned_actions names the action BEFORE it runs',
+    );
+    strictEqual(recordAtActionTime.journal.length, 0, 'journal is empty before the first action');
+    // Finalize rewrote it terminal, with a journal entry for the executed action.
+    const final = await readJson(artifactPath);
+    strictEqual(final.status, 'completed');
+    strictEqual(final.terminal, true);
+    strictEqual(final.plan_hash, recordAtActionTime.plan_hash);
+    strictEqual(final.journal.length, 1);
+    strictEqual(final.journal[0].status, 'executed');
+    strictEqual(final.journal[0].action, 'add-marketplace');
+    strictEqual(report.plugin_management.plan_hash, recordAtActionTime.plan_hash);
+  });
+
+  it('write-ahead: an interrupted H2 run leaves a durable record naming the landed action (§1.5 #10)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-writeahead-kill-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-writeahead-kill-home-'));
+    await seedRepo(root);
+    const artifactPath = join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json');
+
+    const base = fakeRunner({ ...defaultCliMap(), [MARKETPLACE_ADD]: okResult('marketplace ok\n') });
+    const crashing = async (command, args) => {
+      const key = `${command} ${args.join(' ')}`;
+      if (key === MARKETPLACE_ADD) throw new Error('simulated crash mid-action');
+      return base(command, args);
+    };
+
+    await rejects(
+      runSettings({
+        repoRoot: root,
+        homeDir: home,
+        runId: SETTINGS_RUN_ID,
+        executePluginManagement: true,
+        pluginManagementHost: 'codex',
+        runner: crashing,
+      }),
+      /simulated crash/,
+    );
+
+    // The write-ahead planned record — written before the action — survives the
+    // crash and names the intended action. Today (pre-write-ahead) it would not.
+    const survived = await readJson(artifactPath);
+    strictEqual(survived.status, 'planned');
+    strictEqual(survived.terminal, false);
+    ok(/^[0-9a-f]{64}$/.test(survived.plan_hash));
+    ok(survived.planned_actions.some((a) => a.args.join(' ') === 'plugin marketplace add each4all/agentic-plugins'));
+  });
+
+  it('write-ahead: the retired-plugin cleanup executor journals its action (§1.5 #26)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-cleanup-writeahead-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-cleanup-writeahead-home-'));
+    await seedRepo(root);
+    const artifactPath = join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json');
+    const CLEANUP = 'claude plugin uninstall research@agentic-plugins';
+
+    const calls = [];
+    const base = fakeRunner({
+      ...defaultCliMap(),
+      'claude plugin list': okResult([
+        'Installed plugins:',
+        '',
+        '  > research@agentic-plugins',
+        '    Version: 0.1.0',
+        '    Scope: user',
+        '    Status: failed',
+        '    Error: Plugin research not found in marketplace agentic-plugins',
+      ].join('\n')),
+      [CLEANUP]: okResult('cleanup ok\n'),
+    }, calls);
+    let recordAtActionTime = null;
+    const spy = async (command, args) => {
+      const key = `${command} ${args.join(' ')}`;
+      if (key === CLEANUP && recordAtActionTime === null) {
+        recordAtActionTime = JSON.parse(await readFile(artifactPath, 'utf8'));
+      }
+      return base(command, args);
+    };
+
+    await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      executePluginCleanup: true,
+      runner: spy,
+    });
+
+    ok(recordAtActionTime, 'planned record existed before the cleanup action ran');
+    strictEqual(recordAtActionTime.status, 'planned');
+    ok(recordAtActionTime.planned_actions.some((a) => a.area === 'plugin-cleanup' && a.args.join(' ') === 'plugin uninstall research@agentic-plugins'));
+    const final = await readJson(artifactPath);
+    strictEqual(final.terminal, true);
+    const cleanupEntry = final.journal.find((entry) => entry.area === 'plugin-cleanup');
+    ok(cleanupEntry, 'journal records the cleanup action');
+    strictEqual(cleanupEntry.status, 'executed');
+    strictEqual(cleanupEntry.action, 'uninstall-retired-plugin');
+  });
+
+  it('plan-hash: refuses to execute when the expected hash diverges from the fresh plan (§1.6 #25)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-planhash-refuse-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-planhash-refuse-home-'));
+    await seedRepo(root);
+
+    const calls = [];
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      expectedPlanHash: 'a'.repeat(64),
+      runner: fakeRunner({ ...defaultCliMap(), [MARKETPLACE_ADD]: okResult('marketplace ok\n') }, calls),
+    });
+
+    strictEqual(report.plugin_management.plan_hash_status, 'mismatch');
+    strictEqual(report.plugin_management.plan_hash_expected, 'a'.repeat(64));
+    ok(!calls.includes(MARKETPLACE_ADD), 'the divergent plan is NOT executed');
+    // The freshly recomputed hash is re-presented, not the stale one.
+    ok(/^[0-9a-f]{64}$/.test(report.plugin_management.plan_hash));
+    notStrictEqual(report.plugin_management.plan_hash, 'a'.repeat(64));
+    const artifact = await readJson(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'));
+    strictEqual(artifact.status, 'refused');
+    strictEqual(artifact.terminal, true);
+    strictEqual(artifact.journal.length, 0, 'a refused run runs no actions');
+  });
+
+  it('plan-hash: a matching expected hash validates and executes (§1.6)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-planhash-ok-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-planhash-ok-home-'));
+    await seedRepo(root);
+
+    // Learn the plan hash from a dry-run (what bootstrap would present).
+    const dry = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      pluginManagementHost: 'codex',
+      runner: fakeRunner({ ...defaultCliMap(), [MARKETPLACE_ADD]: okResult('marketplace ok\n') }),
+    });
+    const hash = dry.plugin_management.plan_hash;
+    ok(/^[0-9a-f]{64}$/.test(hash), 'dry-run exposes the plan hash for the operator to carry');
+
+    const calls = [];
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      expectedPlanHash: hash,
+      runner: fakeRunner({ ...defaultCliMap(), [MARKETPLACE_ADD]: okResult('marketplace ok\n') }, calls),
+    });
+
+    strictEqual(report.plugin_management.plan_hash_status, 'validated');
+    strictEqual(report.plugin_management.plan_hash, hash);
+    ok(calls.includes(MARKETPLACE_ADD), 'the validated plan executes');
   });
 
   it('applies only selected agentic-plugins-owned config writes', async () => {
@@ -597,7 +794,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.17');
+    strictEqual(report.schema_version, 'runtime-settings-1.18');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -1191,9 +1388,16 @@ describe('runtime settings', () => {
     ok(failed.result.retry_after.includes('network'));
 
     const artifact = await readJson(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'));
-    strictEqual(artifact.schema_version, 'runtime-settings-execution-artifact-1.1');
+    strictEqual(artifact.schema_version, 'runtime-settings-execution-artifact-1.2');
     strictEqual(artifact.run_id, SETTINGS_RUN_ID);
     strictEqual(artifact.status, 'failed');
+    strictEqual(artifact.terminal, true);
+    // Write-ahead record (machine-bootstrap-contract.md §1.5): the failed run still
+    // carries the plan hash, the durable planned-action list, and a per-action journal.
+    ok(/^[0-9a-f]{64}$/.test(artifact.plan_hash), 'terminal artifact carries the plan hash');
+    ok(Array.isArray(artifact.planned_actions) && artifact.planned_actions.length >= 1, 'planned_actions names the intended action');
+    ok(Array.isArray(artifact.journal) && artifact.journal.length >= 1, 'journal records the executed action');
+    strictEqual(artifact.journal[0].status, 'failed');
     strictEqual(artifact.summary.failed_retryable, 1);
     strictEqual(artifact.failures[0].failure_type, 'network');
     strictEqual(artifact.failures[0].retryable, true);
@@ -1202,6 +1406,7 @@ describe('runtime settings', () => {
     const latest = await readJson(join(root, '.agentic-plugins', 'runs', 'settings', 'latest.json'));
     strictEqual(latest.run_id, SETTINGS_RUN_ID);
     strictEqual(latest.status, 'failed');
+    strictEqual(latest.terminal, true);
     ok(!JSON.stringify(artifact).includes('RAW OUTPUT MUST NOT LEAK'), 'execution artifact must not include raw stdout');
     ok(!JSON.stringify(artifact).includes('RAW ERROR MUST NOT LEAK'), 'execution artifact must not include raw stderr');
     ok(formatText(report).includes('Execution Artifact'));

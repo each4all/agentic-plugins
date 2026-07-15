@@ -421,7 +421,7 @@ describe('runtime doctor', () => {
     const attestRunId = 'settings-20260711T000000Z-ca0501';
     await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', attestRunId), { recursive: true });
     await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', attestRunId, 'settings.json'), {
-      schema_version: 'runtime-settings-execution-artifact-1.1',
+      schema_version: 'runtime-settings-execution-artifact-1.2',
       run_id: attestRunId,
       status: 'recorded',
       created_at: '2026-07-11T00:00:00.000Z',
@@ -675,7 +675,7 @@ describe('runtime doctor', () => {
       const runId = 'settings-20260710T120000Z-abc123';
       await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
       await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
-        schema_version: 'runtime-settings-execution-artifact-1.1',
+        schema_version: 'runtime-settings-execution-artifact-1.2',
         run_id: runId,
         status: 'recorded',
         created_at: '2026-07-10T12:00:00.000Z',
@@ -1425,6 +1425,46 @@ describe('runtime doctor', () => {
     ok(report.overall.warnings.includes('latest settings plugin-management execution has failures'));
     ok(formatText(report).includes('Settings Execution Artifacts'));
     ok(formatText(report).includes('retryable-failed=1'));
+  });
+
+  it('treats a nonterminal (in-progress) settings execution record as NOT available (§1.5 #27)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-settings-nonterminal-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-settings-nonterminal-home-'));
+    const runId = 'settings-20260513T000000Z-abcdef';
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
+    // A write-ahead record interrupted mid-run: ZERO failures precisely because it
+    // has not finished. Pre-migration a zero-failure record read as 'available' —
+    // this pin stops the write-ahead fix from becoming a false-success bug.
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
+      schema_version: 'runtime-settings-execution-artifact-1.2',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      status: 'in-progress',
+      terminal: false,
+      plan_hash: 'b'.repeat(64),
+      planned_actions: [{ area: 'plugin-management', host: 'codex', action: 'add-marketplace', command: 'codex', args: ['plugin', 'marketplace', 'add', 'each4all/agentic-plugins'] }],
+      journal: [],
+      created_at: '2026-05-13T00:00:00.000Z',
+      updated_at: '2026-05-13T00:00:01.000Z',
+      plugin_management: { mode: 'explicit-plugin-management-executor', requested: true, executed: true, host_filter: 'codex', summary: { executed: 0, failed: 0, blocked: 0, failed_retryable: 0, failed_non_retryable: 0 } },
+      plugin_cleanup: { mode: null, requested: false, executed: false, summary: { executed: 0, failed: 0, blocked: 0, failed_retryable: 0, failed_non_retryable: 0 } },
+      codex_hook_review: { requested: false, attested: false, status: 'not_recorded' },
+      failures: [],
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    strictEqual(report.settings_runs.status, 'needs_attention');
+    strictEqual(report.settings_runs.interrupted, true);
+    strictEqual(report.settings_runs.latest.status, 'in-progress');
+    strictEqual(report.settings_runs.latest.terminal, false);
+    ok(report.settings_runs.recovery && report.settings_runs.recovery.includes('interrupted'));
+    ok(report.overall.warnings.includes('latest settings execution is a nonterminal/refused write-ahead record (interrupted run)'));
+    ok(formatText(report).includes('interrupted'));
   });
 
   it('summarizes latest settings cleanup artifact failures separately', async () => {

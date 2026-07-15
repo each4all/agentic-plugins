@@ -70,6 +70,10 @@ const DEFAULT_PERMISSION_DIAGNOSIS_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const PERMISSION_DIAGNOSIS_MAX_SCAN = 20000;
 const PERMISSION_DIAGNOSIS_TOP_PATTERNS = 15;
 const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+// Nonterminal write-ahead settings-execution statuses (machine-bootstrap-contract.md
+// §1.5). Defined locally, not imported from settings.mjs, because settings.mjs
+// imports FROM doctor.mjs — the dependency runs one way only.
+const SETTINGS_EXECUTION_NONTERMINAL_STATUSES = new Set(['planned', 'in-progress']);
 const DOCTOR_RUN_ID_RE = /^doctor-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const DOCTOR_ARTIFACT_SCHEMA_VERSION = 'runtime-doctor-artifact-1.0';
 const DOCTOR_LATEST_SCHEMA_VERSION = 'runtime-doctor-latest-1.0';
@@ -1532,9 +1536,18 @@ async function inspectSettingsRuns({ repoRoot }) {
   runs.sort((a, b) => b.selected_at_ms - a.selected_at_ms || b.run_id.localeCompare(a.run_id));
   const latest = runs[0];
   const latestCodexHookReview = runs.find((run) => run.codex_hook_review?.attested === true && run.codex_hook_review?.status === 'attested')?.codex_hook_review ?? null;
+  // machine-bootstrap-contract.md §1.5 part 3 — the load-bearing reader migration.
+  // An interrupted write-ahead run (planned / in-progress) has zero failures and
+  // MUST NOT read as available; a plan-hash `refused` run and a plugin-management
+  // `blocked` action likewise need operator attention.
+  const latestInterrupted = latest.terminal === false || SETTINGS_EXECUTION_NONTERMINAL_STATUSES.has(latest.status);
+  const latestRefused = latest.status === 'refused';
   const status = malformed > 0
     ? 'blocked'
-    : latest.plugin_management.failed > 0
+    : latestInterrupted
+      || latestRefused
+      || latest.plugin_management.failed > 0
+      || latest.plugin_management.blocked > 0
       || latest.plugin_cleanup.failed > 0
       || latest.plugin_cleanup.blocked > 0
       || (latest.codex_hook_review.requested && latest.codex_hook_review.status !== 'attested')
@@ -1546,6 +1559,10 @@ async function inspectSettingsRuns({ repoRoot }) {
     count: runs.length,
     malformed,
     latest,
+    interrupted: latestInterrupted,
+    recovery: latestInterrupted
+      ? 'Latest settings execution is a nonterminal write-ahead record (interrupted run). Its journal names what landed; re-run runtime:settings to re-probe and re-plan the remaining actions — nothing is auto-rolled-back (machine-bootstrap-contract.md §1.5).'
+      : null,
     codex_hook_review: {
       status: latestCodexHookReview ? 'attested' : 'missing',
       latest: latestCodexHookReview,
@@ -1821,9 +1838,17 @@ function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifact }) 
   const pluginManagementFailures = failures.filter((failure) => failure.area !== 'plugin-cleanup');
   const pluginCleanupFailures = failures.filter((failure) => failure.area === 'plugin-cleanup');
   const selectedAt = artifactTimestampMs(artifact, runId);
+  const runStatus = typeof artifact.status === 'string' ? artifact.status : 'blocked';
   return {
     run_id: sanitizeValue(artifact.run_id) ?? runId,
-    status: typeof artifact.status === 'string' ? artifact.status : 'blocked',
+    status: runStatus,
+    // A write-ahead record is nonterminal (planned / in-progress) precisely because
+    // it has zero failures and HAS NOT FINISHED — the reader must never read it as a
+    // clean run (machine-bootstrap-contract.md §1.5 part 3). `terminal` carries the
+    // artifact's own flag when present, else derives it from the status.
+    terminal: typeof artifact.terminal === 'boolean'
+      ? artifact.terminal
+      : !SETTINGS_EXECUTION_NONTERMINAL_STATUSES.has(runStatus),
     artifact_pointer: pointer(repoRoot, artifactPath),
     selected_at: selectedAt === null ? null : new Date(selectedAt).toISOString(),
     selected_at_ms: selectedAt ?? 0,
@@ -1835,10 +1860,12 @@ function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifact }) 
       summary: {
         executed: safeCount(pluginManagementSummary.executed),
         failed: safeCount(pluginManagementSummary.failed),
+        blocked: safeCount(pluginManagementSummary.blocked),
         failed_retryable: safeCount(pluginManagementSummary.failed_retryable),
         failed_non_retryable: safeCount(pluginManagementSummary.failed_non_retryable),
       },
       failed: safeCount(pluginManagementSummary.failed),
+      blocked: safeCount(pluginManagementSummary.blocked),
       failures: pluginManagementFailures,
     },
     plugin_cleanup: {
@@ -4038,8 +4065,17 @@ function summarizeOverall(report) {
   if (report.settings_runs.status === 'blocked') {
     warnings.push('settings execution artifact health blocked');
   } else {
+    // An interrupted write-ahead run (planned / in-progress) is the load-bearing
+    // signal (machine-bootstrap-contract.md §1.5) — surface it even though it has
+    // zero failures, else the reader migration would be invisible to the operator.
+    if (report.settings_runs.interrupted || report.settings_runs.latest?.status === 'refused') {
+      warnings.push('latest settings execution is a nonterminal/refused write-ahead record (interrupted run)');
+    }
     if (report.settings_runs.latest?.plugin_management?.failed > 0) {
       warnings.push('latest settings plugin-management execution has failures');
+    }
+    if ((report.settings_runs.latest?.plugin_management?.blocked ?? 0) > 0) {
+      warnings.push('latest settings plugin-management execution has blocked actions');
     }
     if ((report.settings_runs.latest?.plugin_cleanup?.failed ?? 0) > 0 || (report.settings_runs.latest?.plugin_cleanup?.blocked ?? 0) > 0) {
       warnings.push('latest settings plugin-cleanup execution has failures');
@@ -4337,8 +4373,11 @@ export function formatText(report) {
   lines.push(`- status: ${report.settings_runs.status}; count=${report.settings_runs.count}; malformed=${report.settings_runs.malformed}`);
   if (report.settings_runs.latest) {
     const latest = report.settings_runs.latest;
-    lines.push(`- latest: ${latest.run_id}; status=${latest.status}; artifact=${latest.artifact_pointer}`);
-    lines.push(`  plugin-management: mode=${latest.plugin_management.mode ?? '<unknown>'}; executed=${latest.plugin_management.summary.executed}; failed=${latest.plugin_management.summary.failed}; retryable-failed=${latest.plugin_management.summary.failed_retryable}; non-retryable-failed=${latest.plugin_management.summary.failed_non_retryable}`);
+    lines.push(`- latest: ${latest.run_id}; status=${latest.status}; terminal=${latest.terminal !== false}; artifact=${latest.artifact_pointer}`);
+    if (report.settings_runs.interrupted) {
+      lines.push(`  ⚠ interrupted: ${report.settings_runs.recovery}`);
+    }
+    lines.push(`  plugin-management: mode=${latest.plugin_management.mode ?? '<unknown>'}; executed=${latest.plugin_management.summary.executed}; failed=${latest.plugin_management.summary.failed}; blocked=${latest.plugin_management.summary.blocked ?? 0}; retryable-failed=${latest.plugin_management.summary.failed_retryable}; non-retryable-failed=${latest.plugin_management.summary.failed_non_retryable}`);
     lines.push(`  plugin-cleanup: mode=${latest.plugin_cleanup.mode ?? '<unknown>'}; executed=${latest.plugin_cleanup.summary.executed}; failed=${latest.plugin_cleanup.summary.failed}; blocked=${latest.plugin_cleanup.summary.blocked}; retryable-failed=${latest.plugin_cleanup.summary.failed_retryable}; non-retryable-failed=${latest.plugin_cleanup.summary.failed_non_retryable}`);
     lines.push(`  codex-hook-review: status=${latest.codex_hook_review.status}; attested=${latest.codex_hook_review.attested}; bundled=${latest.codex_hook_review.bundled_plugins.join(',') || 'none'}`);
     for (const failure of latest.plugin_management.failures) {

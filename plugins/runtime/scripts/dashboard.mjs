@@ -62,6 +62,9 @@ const DEFAULT_ARTIFACT_RETENTION_MAX_BYTES = 50 * 1024 * 1024;
 
 const DOCTOR_RUN_ID_RE = /^doctor-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+// Nonterminal write-ahead settings-execution statuses (machine-bootstrap-contract.md
+// §1.5) — an interrupted run the recency view must flag, never present as healthy.
+const SETTINGS_EXECUTION_NONTERMINAL_STATUSES = new Set(['planned', 'in-progress']);
 // Doctor's own recorded-artifact contract (doctor.mjs isDoctorArtifact):
 // a parseable JSON blob is NOT doctor evidence unless it carries the doctor
 // artifact schema and an embedded report — the dashboard must not report
@@ -320,9 +323,15 @@ export async function inspectSettingsRecency({ repoRoot }) {
     }
     const selectedAtMs = artifactTimestampMs(artifact.json, runId);
     if (!latest) {
+      const runStatus = sanitizeValue(artifact.json.status) ?? 'recorded';
       latest = {
         run_id: sanitizeValue(artifact.json.run_id) ?? runId,
-        status: sanitizeValue(artifact.json.status) ?? 'recorded',
+        status: runStatus,
+        // A nonterminal write-ahead record is an interrupted run — flagged so the
+        // recency view never presents it as a healthy latest (§1.5 part 3).
+        terminal: typeof artifact.json.terminal === 'boolean'
+          ? artifact.json.terminal
+          : !SETTINGS_EXECUTION_NONTERMINAL_STATUSES.has(runStatus),
         artifact_pointer: pointer(repoRoot, artifactPath),
         selected_at: selectedAtMs === null ? null : new Date(selectedAtMs).toISOString(),
         selected_at_ms: selectedAtMs ?? 0,
@@ -347,11 +356,13 @@ export async function inspectSettingsRecency({ repoRoot }) {
     }
     if (latest && attestation) break;
   }
+  const interrupted = latest ? latest.terminal === false : false;
   return {
     status: blocked > 0 && latest?.status === 'blocked' ? 'blocked' : 'available',
     root,
     count: runIds.length,
     latest,
+    interrupted,
     hook_attestation: attestation,
   };
 }
@@ -752,7 +763,12 @@ export function renderDashboardText(report) {
     const attestation = settings.hook_attestation
       ? `hook attestation ${settings.hook_attestation.attested_at ?? settings.hook_attestation.run_id} (${formatAge(nowMs, settings.hook_attestation.attested_at)}; recency only — doctor judges currency)`
       : 'no codex hook attestation recorded';
-    lines.push(`- settings: ${settings.latest.run_id} (${formatAge(nowMs, settings.latest.selected_at)}); ${attestation}`);
+    // An interrupted write-ahead run (planned / in-progress) is an attention item,
+    // never a healthy latest (machine-bootstrap-contract.md §1.5).
+    const interruptedNote = settings.interrupted
+      ? ` — ⚠ INTERRUPTED (${settings.latest.status}); journal names what landed, re-run runtime:settings to re-plan`
+      : '';
+    lines.push(`- settings: ${settings.latest.run_id} (${formatAge(nowMs, settings.latest.selected_at)}); ${attestation}${interruptedNote}`);
   } else {
     lines.push(`- settings: ${settings.status} — no recorded runtime:settings execution/attestation artifact (plan-only and probe-free runs record none by design)`);
   }

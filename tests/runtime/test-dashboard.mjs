@@ -272,7 +272,8 @@ describe('runtime dashboard report — populated repository', () => {
       path.join(root, '.agentic-plugins', 'runs', 'settings', 'settings-20260620T000000Z-aaaaaa', 'settings.json'),
       JSON.stringify({
         run_id: 'settings-20260620T000000Z-aaaaaa',
-        status: 'planned',
+        status: 'completed',
+        terminal: true,
         created_at: '2026-06-20T00:00:00Z',
         codex_hook_review: {
           requested: true,
@@ -285,10 +286,11 @@ describe('runtime dashboard report — populated repository', () => {
       }),
     );
     // A newer settings run WITHOUT an attestation: latest recency comes from
-    // it while the attestation falls back to the older attested run.
+    // it while the attestation falls back to the older attested run. Terminal, so
+    // the recency view treats it as a healthy latest (§1.5).
     writeFileDeep(
       path.join(root, '.agentic-plugins', 'runs', 'settings', 'settings-20260701T000000Z-bbbbbb', 'settings.json'),
-      JSON.stringify({ run_id: 'settings-20260701T000000Z-bbbbbb', status: 'planned', created_at: '2026-07-01T00:00:00Z' }),
+      JSON.stringify({ run_id: 'settings-20260701T000000Z-bbbbbb', status: 'completed', terminal: true, created_at: '2026-07-01T00:00:00Z' }),
     );
     writeFileDeep(
       path.join(root, '.agentic-plugins', 'runs', 'compat', 'compat-20260701T000000Z-aaaaaa', 'snapshot.json'),
@@ -346,6 +348,9 @@ describe('runtime dashboard report — populated repository', () => {
     assert.equal(report.tier2.doctor.latest.runtime_version_current, false);
 
     assert.equal(report.tier2.settings.latest.run_id, 'settings-20260701T000000Z-bbbbbb');
+    // The terminal latest is not an interrupted run (machine-bootstrap-contract.md §1.5).
+    assert.equal(report.tier2.settings.interrupted, false);
+    assert.equal(report.tier2.settings.latest.terminal, true);
     assert.equal(report.tier2.settings.hook_attestation.run_id, 'settings-20260620T000000Z-aaaaaa');
     assert.equal(report.tier2.settings.hook_attestation.attested_at, '2026-06-20T00:00:00Z');
     assert.deepEqual(report.tier2.settings.hook_attestation.bundled_plugins, ['engineer']);
@@ -578,6 +583,18 @@ describe('runtime dashboard tier2 readers — degraded shapes', () => {
     const settings = await inspectSettingsRecency({ repoRoot: root });
     assert.equal(settings.status, 'empty');
     assert.equal(settings.hook_attestation, null);
+  });
+
+  it('flags a nonterminal (in-progress) settings latest as interrupted (§1.5)', async () => {
+    const root = makeRepo();
+    writeFileDeep(
+      path.join(root, '.agentic-plugins', 'runs', 'settings', 'settings-20260702T000000Z-cccccc', 'settings.json'),
+      JSON.stringify({ run_id: 'settings-20260702T000000Z-cccccc', status: 'in-progress', terminal: false, created_at: '2026-07-02T00:00:00Z' }),
+    );
+    const settings = await inspectSettingsRecency({ repoRoot: root });
+    assert.equal(settings.interrupted, true);
+    assert.equal(settings.latest.status, 'in-progress');
+    assert.equal(settings.latest.terminal, false);
   });
 
   it('reports an unparsed baseline file distinctly from a missing one', async () => {
