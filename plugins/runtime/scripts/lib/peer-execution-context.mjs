@@ -31,21 +31,26 @@ export const CONTRACT_COMPATIBLE_MAJOR = 0;
  * Resolve everything a peer dispatch needs, from the filesystem alone.
  * Returns the same two sections doctor embeds as `report.companions` and
  * `report.model_effort`.
+ *
+ * `codexHome` honors `$CODEX_HOME` (machine-bootstrap-contract.md §2/§10.2); it is passed
+ * as an already-resolved path so this env-free seam never reads `env` itself. It defaults
+ * to `~/.codex` for callers that do not thread it.
  */
 export async function resolvePeerExecutionContext({
   repoRoot,
   homeDir,
+  codexHome = join(homeDir, '.codex'),
   explicitModel = null,
   explicitEffort = null,
 }) {
   const [companions, modelEffort] = await Promise.all([
-    inspectCompanionContract({ repoRoot, homeDir }),
+    inspectCompanionContract({ repoRoot, homeDir, codexHome }),
     inspectModelEffort({ repoRoot, homeDir, explicitModel, explicitEffort }),
   ]);
   return { companions, model_effort: modelEffort };
 }
 
-async function inspectCompanionContract({ repoRoot, homeDir }) {
+async function inspectCompanionContract({ repoRoot, homeDir, codexHome }) {
   const contractPath = join(repoRoot, 'companions', 'contract.md');
   const contractText = await readTextIfExists(contractPath);
   const contractVersion = contractText.ok ? parseContractDocVersion(contractText.text) : null;
@@ -75,11 +80,11 @@ async function inspectCompanionContract({ repoRoot, homeDir }) {
         join(sourceRoot, 'claude-companion.mjs'),
         join(localRoot, 'scripts', 'claude-companion.mjs'),
         ...(await latestVersionedScriptCandidates({
-          baseDir: join(homeDir, '.codex', 'plugins', 'cache', 'agentic-plugins', 'companions'),
+          baseDir: join(codexHome, 'plugins', 'cache', 'agentic-plugins', 'companions'),
           scriptRel: join('scripts', 'claude-companion.mjs'),
           manifestRel: join('.codex-plugin', 'plugin.json'),
         })),
-        join(homeDir, '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'companions', 'scripts', 'claude-companion.mjs'),
+        join(codexHome, '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'companions', 'scripts', 'claude-companion.mjs'),
       ],
       contractVersion,
     }),

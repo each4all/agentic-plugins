@@ -224,11 +224,12 @@ export const ALLOWED_COMMAND_LITERALS = ['claude', 'codex', 'git', '/usr/bin/osa
 export const NODE_COMMAND_SENTINEL = 'process.execPath';
 
 // Command tokens that are identifiers (not literals) but human-verified safe,
-// per file. doctor.mjs inspectCli `runner(name, ...)` loops name over
-// {claude, codex}. A `runCommand`/`spawn` with any OTHER bare identifier as its
-// command fails the command-gate.
+// per file. lib/machine-probe.mjs inspectCli `runner(name, ...)` loops name over
+// {claude, codex} (extracted from doctor.mjs for the machine-bootstrap probe seam).
+// A `runCommand`/`spawn` with any OTHER bare identifier as its command fails the
+// command-gate.
 export const ALLOWED_COMMAND_VARIABLES = {
-  'doctor.mjs': ['name'], // inspectCli(name, …) loops name over {claude, codex}
+  'machine-probe.mjs': ['name'], // inspectCli(name, …) loops name over {claude, codex}
   'compat.mjs': ['host'], // observeHost(host, …) probes host versions over {claude, codex}
 };
 
@@ -298,13 +299,14 @@ export const ALLOWED_DYNAMIC_PROJECTIONS = [
   },
 ];
 
-// Call sites that pass host-CLI argv as inline object properties. doctor.mjs
-// calls inspectCli('claude'|'codex', { versionArgs:[…], authArgs:[…], … }): the
-// command is positional arg 0, and every array-literal property of the options
-// object (arg 1) is argv to validate against that command. (There is no
-// CLI_PROBES variable — the probe arrays are inline at the call.)
+// Call sites that pass host-CLI argv as inline object properties. lib/machine-probe.mjs
+// (the machine-bootstrap probe seam, extracted from doctor.mjs) calls
+// inspectCli('claude'|'codex', { versionArgs:[…], authArgs:[…], … }): the command is
+// positional arg 0, and every array-literal property of the options object (arg 1) is
+// argv to validate against that command. (There is no CLI_PROBES variable — the probe
+// arrays are inline at the call.)
 export const PROBE_CONFIGS = {
-  'doctor.mjs': [
+  'machine-probe.mjs': [
     { callee: 'inspectCli', commandArgIndex: 0, optionsArgIndex: 1 },
   ],
 };

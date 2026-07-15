@@ -135,11 +135,13 @@ describe('ADR-0035 §4 guard — gates catch real violations', () => {
   it('claude with fully dynamic argv → argv-unresolved', () => {
     ok(rules(scan('doctor.mjs', `runner('claude', userArgs);`)).includes('argv-unresolved'));
   });
-  it('doctor inspectCli inline probe argv IS validated (not dead config)', () => {
+  it('machine-probe inspectCli inline probe argv IS validated (not dead config)', () => {
+    // inspectCli was extracted from doctor.mjs to lib/machine-probe.mjs (the
+    // machine-bootstrap probe seam); the PROBE_CONFIGS recognition moved with it.
     // a tampered inline probe (auth mutation) must be caught …
-    ok(rules(scan('doctor.mjs', `inspectCli('codex', { authArgs: ['login'], runner, cwd });`)).includes('argv-verb-gate'));
+    ok(rules(scan('machine-probe.mjs', `inspectCli('codex', { authArgs: ['login'], runner, cwd });`)).includes('argv-verb-gate'));
     // … while the real read probes pass
-    deepStrictEqual(scan('doctor.mjs', `inspectCli('codex', { authArgs: ['login', 'status'], versionArgs: ['--version'], runner, cwd });`), []);
+    deepStrictEqual(scan('machine-probe.mjs', `inspectCli('codex', { authArgs: ['login', 'status'], versionArgs: ['--version'], runner, cwd });`), []);
   });
   it('non-allowlisted command literal → command-gate', () => {
     ok(rules(scan('doctor.mjs', `runner('rm', ['-rf', '/']);`)).includes('command-gate'));
