@@ -183,7 +183,7 @@ plugins/runtime/data/plugin-set.json     (packaged; PLUGIN_ROOT-relative)
       "bundles": ["base", "engineering"],
       "hosts": ["claude", "codex"],
       "hard_requires": [{ "name": "<plugin>", "hosts": ["claude"] }],
-      "soft_requires": ["<plugin>"],
+      "soft_requires": [{ "name": "<plugin>", "hosts": ["claude", "codex"] }],
       "hook_bearing": { "claude": true, "codex": false },
       "minimum_version": "<semver|null>"
     }

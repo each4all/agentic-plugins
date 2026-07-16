@@ -1,0 +1,70 @@
+{
+  "schema": "runtime-plugin-set-1.0",
+  "canonical_marketplace": { "source": "github", "repo": "each4all/agentic-plugins" },
+  "plugins": {
+    "attention": {
+      "bundles": ["base", "engineering", "business", "design", "full"],
+      "hosts": ["claude", "codex"],
+      "hard_requires": [],
+      "soft_requires": [{ "name": "runtime", "hosts": ["claude", "codex"] }],
+      "hook_bearing": { "claude": true, "codex": false },
+      "minimum_version": null
+    },
+    "companions": {
+      "bundles": ["base", "engineering", "business", "design", "full"],
+      "hosts": ["claude", "codex"],
+      "hard_requires": [],
+      "soft_requires": [],
+      "hook_bearing": { "claude": false, "codex": false },
+      "minimum_version": "0.3.0"
+    },
+    "designer": {
+      "bundles": ["design", "full"],
+      "hosts": ["claude", "codex"],
+      "hard_requires": [],
+      "soft_requires": [{ "name": "companions", "hosts": ["claude", "codex"] }],
+      "hook_bearing": { "claude": true, "codex": true },
+      "minimum_version": null
+    },
+    "engineer": {
+      "bundles": ["engineering", "full"],
+      "hosts": ["claude", "codex"],
+      "hard_requires": [],
+      "soft_requires": [{ "name": "companions", "hosts": ["claude", "codex"] }],
+      "hook_bearing": { "claude": true, "codex": true },
+      "minimum_version": "0.7.0"
+    },
+    "founder": {
+      "bundles": ["business", "full"],
+      "hosts": ["claude", "codex"],
+      "hard_requires": [],
+      "soft_requires": [{ "name": "companions", "hosts": ["claude", "codex"] }],
+      "hook_bearing": { "claude": true, "codex": true },
+      "minimum_version": null
+    },
+    "image": {
+      "bundles": ["design", "full"],
+      "hosts": ["claude", "codex"],
+      "hard_requires": [{ "name": "companions", "hosts": ["claude"] }],
+      "soft_requires": [],
+      "hook_bearing": { "claude": false, "codex": false },
+      "minimum_version": null
+    },
+    "orchestrator": {
+      "bundles": ["engineering", "full"],
+      "hosts": ["claude", "codex"],
+      "hard_requires": [{ "name": "engineer", "hosts": ["claude", "codex"] }],
+      "soft_requires": [{ "name": "companions", "hosts": ["claude", "codex"] }],
+      "hook_bearing": { "claude": true, "codex": true },
+      "minimum_version": null
+    },
+    "runtime": {
+      "bundles": ["base", "engineering", "business", "design", "full"],
+      "hosts": ["claude", "codex"],
+      "hard_requires": [],
+      "soft_requires": [],
+      "hook_bearing": { "claude": false, "codex": false },
+      "minimum_version": null
+    }
+  }
+}
