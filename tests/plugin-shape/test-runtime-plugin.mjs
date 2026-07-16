@@ -247,9 +247,14 @@ describe('plugins/runtime settings surface', () => {
   // actually iterate, so it is the authority; every runtime-owned surface that
   // enumerates the set is pinned against it, and against both catalogs.
   it('keeps the runtime-owned plugin lists in agreement with PLUGIN_NAMES and both catalogs', async () => {
+    // PLUGIN_NAMES's single definition now lives in the machine probe (the machine-
+    // bootstrap seam extracted from doctor); doctor re-exports it. Read the authority
+    // from its source of truth, and pin that doctor still re-exports it.
+    const machineProbeSrc = await readFile(resolve(PLUGIN_ROOT, 'scripts/lib/machine-probe.mjs'), 'utf-8');
+    const namesMatch = machineProbeSrc.match(/export const PLUGIN_NAMES = \[([^\]]+)\]/);
+    ok(namesMatch, 'machine-probe.mjs defines PLUGIN_NAMES');
     const doctorSrc = await readFile(resolve(PLUGIN_ROOT, 'scripts/doctor.mjs'), 'utf-8');
-    const namesMatch = doctorSrc.match(/export const PLUGIN_NAMES = \[([^\]]+)\]/);
-    ok(namesMatch, 'doctor.mjs exports PLUGIN_NAMES');
+    ok(/export \{[^}]*\bPLUGIN_NAMES\b[^}]*\}/.test(doctorSrc), 'doctor.mjs re-exports PLUGIN_NAMES for its public surface');
     const pluginNames = namesMatch[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).sort();
 
     const claudeCatalog = await readJSON(resolve(REPO_ROOT, '.claude-plugin/marketplace.json'));

@@ -11,10 +11,10 @@ import { createHash, randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_VERSION } from './version.mjs';
-import { singleLine, redactSecrets, sanitizeValue } from './lib/permission-sanitize.mjs';
+import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { learnFromSources } from './lib/permission-usage-learner.mjs';
 import { getPromptCause } from './lib/permission-advisor-core.mjs';
 import { makePermissionAdvisoryArtifact, makePermissionRunId } from './lib/permission-artifacts.mjs';
@@ -31,13 +31,28 @@ import {
   safeCount,
 } from './lib/state-readers.mjs';
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
+import {
+  PLUGIN_NAMES,
+  probeMachineHostState,
+  resolveCodexHome,
+  resolveCodexInstallState,
+  summarizeManifestHookField,
+  manifestHooksFileSummary,
+  hooksFileSummary,
+  normalizeCodexHookStatePath,
+  normalizeCodexHookStateEvent,
+  parseCodexHookStateConfigToml,
+} from './lib/machine-probe.mjs';
 import { semverCompare } from './lib/semver.mjs';
 import { redactEgressCredentialFromEnv } from './lib/egress-config.mjs';
 
 export { RUNTIME_VERSION };
 
 export { CONTRACT_COMPATIBLE_MAJOR } from './lib/peer-execution-context.mjs';
-export const PLUGIN_NAMES = ['attention', 'companions', 'designer', 'engineer', 'founder', 'image', 'orchestrator', 'runtime'];
+// PLUGIN_NAMES and the pure Codex hook-config parser now live in the machine probe
+// (their single source of truth); re-exported here to preserve doctor's public surface
+// (settings.mjs / tests import PLUGIN_NAMES from doctor).
+export { PLUGIN_NAMES, parseCodexHookStateConfigToml };
 export { TERMINAL_PEER_RUN_STATUSES, VALID_PEER_RUN_STATUSES } from './lib/state-readers.mjs';
 
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -55,10 +70,13 @@ const DEFAULT_PERMISSION_DIAGNOSIS_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const PERMISSION_DIAGNOSIS_MAX_SCAN = 20000;
 const PERMISSION_DIAGNOSIS_TOP_PATTERNS = 15;
 const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+// Nonterminal write-ahead settings-execution statuses (machine-bootstrap-contract.md
+// §1.5). Defined locally, not imported from settings.mjs, because settings.mjs
+// imports FROM doctor.mjs — the dependency runs one way only.
+const SETTINGS_EXECUTION_NONTERMINAL_STATUSES = new Set(['planned', 'in-progress']);
 const DOCTOR_RUN_ID_RE = /^doctor-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const DOCTOR_ARTIFACT_SCHEMA_VERSION = 'runtime-doctor-artifact-1.0';
 const DOCTOR_LATEST_SCHEMA_VERSION = 'runtime-doctor-latest-1.0';
-const CLAUDE_PLUGIN_SURFACE_UNAVAILABLE_RE = /\/plugin (?:isn't|is not) available in this environment/i;
 
 export async function runDoctor({
   repoRoot = process.cwd(),
@@ -110,44 +128,32 @@ export async function runDoctor({
   // they spawn companions/workflows whose own attention hooks need the credential to
   // egress notifications (ADR-0041 §3).
   const probeEnv = redactEgressCredentialFromEnv(env);
+  const resolvedCodexHome = resolveCodexHome(env, resolvedHomeDir);
 
-  const [claude, codex] = await Promise.all([
-    inspectCli('claude', {
-      versionArgs: ['--version'],
-      helpArgs: ['--help'],
-      extraHelpArgs: ['plugin', '--help'],
-      authArgs: ['auth', 'status'],
-      pluginArgs: ['plugin', 'list'],
-      pluginSurfaceArgs: ['/plugin', 'list'],
-      runner,
-      cwd: resolvedRepoRoot,
-      env: probeEnv,
-    }),
-    inspectCli('codex', {
-      versionArgs: ['--version'],
-      helpArgs: ['--help'],
-      extraHelpArgs: ['exec', '--help'],
-      featureArgs: ['features', 'list'],
-      authArgs: ['login', 'status'],
-      pluginArgs: ['plugin', 'marketplace', '--help'],
-      pluginRootHelpArgs: ['plugin', '--help'],
-      pluginListArgs: ['plugin', 'list', '--json'],
-      runner,
-      cwd: resolvedRepoRoot,
-      env: probeEnv,
-    }),
-  ]);
+  // The MACHINE half — host CLI presence/auth/feature-surface, installed rows, plugin
+  // cache, observed Codex hook config — comes from the ONE machine probe so a machine
+  // answer never depends on the repo (machine-bootstrap-contract.md §1.1). The probe runs
+  // host CLIs in a NEUTRAL cwd (never resolvedRepoRoot), honors $CODEX_HOME, keeps raw
+  // stdout internal, and bounds each probe by the doctor timeout.
+  const machine = await probeMachineHostState({
+    homeDir: resolvedHomeDir,
+    codexHome: resolvedCodexHome,
+    env: probeEnv,
+    cwd: tmpdir(),
+    runner,
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+  });
+  const { claude, codex, caches, claudePluginList, codexPluginList, marketplaceRegistration } = machine;
 
+  // The REPO half stays here: source manifests + catalogs enrich the machine facts into
+  // the plugin matrix.
   const source = await inspectSourcePluginState(resolvedRepoRoot);
   const catalogs = await inspectCatalogs(resolvedRepoRoot);
-  const caches = await inspectPluginCaches(resolvedHomeDir);
-  const claudePluginList = parseClaudePluginList(claude.plugin?.stdout ?? '');
-  const codexPluginList = parseCodexPluginList(codex.plugin_list);
   const plugins = buildPluginMatrix({ source, catalogs, caches, claudePluginList, codexPluginList });
   const codexPluginHooks = await buildCodexPluginHookReport({
     codex,
     plugins,
-    homeDir: resolvedHomeDir,
+    observedCodexHookConfig: machine.codexHookConfig,
   });
   const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginList, codexPluginHooks });
   const hostParityBaseline = await buildHostParityBaseline({ repoRoot, claude, codex });
@@ -161,6 +167,7 @@ export async function runDoctor({
   const { companions: companion, model_effort: modelEffort } = await resolvePeerExecutionContext({
     repoRoot: resolvedRepoRoot,
     homeDir: resolvedHomeDir,
+    codexHome: resolvedCodexHome,
     explicitModel,
     explicitEffort,
   });
@@ -258,6 +265,7 @@ export async function runDoctor({
     readiness,
     modelEffort,
     repoRoot: resolvedRepoRoot,
+    homeDir: resolvedHomeDir,
     env,
     runner,
     timeoutMs: workflowContinuationProofTimeoutMs,
@@ -305,6 +313,10 @@ export async function runDoctor({
       claude: redactCommandDetails(claude),
       codex: redactCommandDetails(codex),
     },
+    // §1.2 host-native marketplace-registration + §1.4.1 registered-catalog currentness,
+    // from the machine probe (lib/machine-probe.mjs). Read-only machine fact; settings' C3
+    // repair sources its currentness target from here rather than a repo checkout.
+    marketplace_registration: marketplaceRegistration,
     plugins,
     plugin_command_surface: pluginCommandSurface,
     codex_plugin_hooks: codexPluginHooks,
@@ -411,260 +423,6 @@ export async function runCommand(command, args = [], { cwd = process.cwd(), env 
   });
 }
 
-async function inspectCli(name, { versionArgs, helpArgs, extraHelpArgs = null, featureArgs = null, authArgs, pluginArgs, pluginSurfaceArgs = null, pluginRootHelpArgs = null, pluginListArgs = null, runner, cwd, env }) {
-  const version = await runner(name, versionArgs, { cwd, env });
-  const available = version.ok || version.exit_code !== null;
-  const help = available ? await runner(name, helpArgs, { cwd, env }) : skipped('cli unavailable');
-  const extraHelp = available && extraHelpArgs ? await runner(name, extraHelpArgs, { cwd, env }) : skipped('not requested');
-  const featuresRaw = available && featureArgs ? await runner(name, featureArgs, { cwd, env }) : skipped('not requested');
-  const authRaw = available ? await runner(name, authArgs, { cwd, env }) : skipped('cli unavailable');
-  const pluginRaw = available ? await runner(name, pluginArgs, { cwd, env }) : skipped('cli unavailable');
-  const pluginSurfaceRaw = available && pluginSurfaceArgs ? await runner(name, pluginSurfaceArgs, { cwd, env }) : skipped('not requested');
-  // Codex `plugin --help` is captured separately so the per-plugin add/list/remove
-  // subcommands are detected from their own Commands block, not from loose substring
-  // matching over the combined help blob (which also carries marketplace add/list/remove).
-  const pluginRootHelpRaw = available && pluginRootHelpArgs ? await runner(name, pluginRootHelpArgs, { cwd, env }) : skipped('not requested');
-  const pluginListRaw = available && pluginListArgs ? await runner(name, pluginListArgs, { cwd, env }) : skipped('not requested');
-  const auth = name === 'claude' ? parseClaudeAuth(authRaw, env) : parseCodexAuth(authRaw);
-  const featureText = name === 'claude'
-    ? `${help.stdout}\n${help.stderr}\n${extraHelp.stdout}\n${extraHelp.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}\n${pluginSurfaceRaw.stdout}\n${pluginSurfaceRaw.stderr}`
-    : `${help.stdout}\n${help.stderr}\n${extraHelp.stdout}\n${extraHelp.stderr}\n${pluginRaw.stdout}\n${pluginRaw.stderr}`;
-  const pluginRootHelpText = `${pluginRootHelpRaw.stdout}\n${pluginRootHelpRaw.stderr}`;
-  const featureSurface = name === 'claude'
-    ? inspectClaudeFeatureSurface(featureText)
-    : inspectCodexFeatureSurface(featureText, featuresRaw, pluginRootHelpText);
-
-  return {
-    name,
-    status: available ? 'available' : 'unavailable',
-    version: {
-      status: commandStatus(version),
-      text: singleLine(version.ok ? version.stdout || version.stderr : version.stderr || version.error_message || ''),
-      exit_code: version.exit_code,
-      error_code: version.error_code,
-    },
-    auth,
-    feature_surface: featureSurface,
-    features: {
-      status: commandStatus(featuresRaw),
-      exit_code: featuresRaw.exit_code,
-      error_code: featuresRaw.error_code,
-    },
-    plugin: {
-      status: commandStatus(pluginRaw),
-      stdout: pluginRaw.stdout,
-      stderr: pluginRaw.stderr,
-      exit_code: pluginRaw.exit_code,
-      error_code: pluginRaw.error_code,
-    },
-    plugin_list: {
-      status: commandStatus(pluginListRaw),
-      stdout: pluginListRaw.stdout,
-      stderr: pluginListRaw.stderr,
-      exit_code: pluginListRaw.exit_code,
-      error_code: pluginListRaw.error_code,
-    },
-    plugin_surface: inspectHostPluginSurface({ host: name, result: pluginSurfaceRaw }),
-  };
-}
-
-function inspectHostPluginSurface({ host, result }) {
-  if (result.error_code === 'skipped') {
-    return {
-      status: 'unknown',
-      exit_code: null,
-      error_code: 'skipped',
-      reason: 'not requested',
-    };
-  }
-  const text = singleLine(`${result.stdout} ${result.stderr} ${result.error_message ?? ''}`);
-  if (host === 'claude' && CLAUDE_PLUGIN_SURFACE_UNAVAILABLE_RE.test(text)) {
-    return {
-      status: 'unavailable',
-      exit_code: result.exit_code,
-      error_code: 'HOST_PLUGIN_SURFACE_UNAVAILABLE',
-      reason: 'host plugin command surface is unavailable in this environment',
-    };
-  }
-  return {
-    status: commandStatus(result),
-    exit_code: result.exit_code,
-    error_code: result.error_code,
-    reason: result.ok ? null : redactSecrets(text),
-  };
-}
-
-function skipped(reason) {
-  return { ok: false, exit_code: null, stdout: '', stderr: reason, error_code: 'skipped', timed_out: false };
-}
-
-function commandStatus(result) {
-  if (result.ok) return 'available';
-  if (result.error_code === 'ENOENT') return 'unavailable';
-  if (result.error_code === 'ETIMEDOUT') return 'blocked';
-  if (result.error_code === 'skipped') return 'unknown';
-  return 'unknown';
-}
-
-function parseClaudeAuth(result, env = {}) {
-  const jsonAuth = parseClaudeAuthJson(result.stdout, env) ?? parseClaudeAuthJson(result.stderr, env);
-  if (jsonAuth) return jsonAuth;
-  if (!result.ok) return classifyAuthFailure(result, { host: 'claude', env });
-
-  const text = singleLine(`${result.stdout} ${result.stderr}`);
-  if (/not logged in|login required|unauth/i.test(text)) {
-    if (isCodexSandboxEnv(env)) return sandboxLimitedAuth({ sensitiveFields: [] });
-    return { status: 'unauthenticated', logged_in: false, sensitive_fields_redacted: [] };
-  }
-  return { status: 'unknown', logged_in: null, detail: redactSecrets(text), sensitive_fields_redacted: [] };
-}
-
-function parseClaudeAuthJson(text, env = {}) {
-  if (!text || !text.trim()) return null;
-  try {
-    const json = JSON.parse(text);
-    if (json.loggedIn === true) {
-      return {
-        status: 'available',
-        logged_in: true,
-        method: sanitizeValue(json.authMethod),
-        provider: sanitizeValue(json.apiProvider),
-        subscription: sanitizeValue(json.subscriptionType),
-        sensitive_fields_redacted: ['email', 'orgId', 'orgName'],
-      };
-    }
-    if (json.loggedIn === false) {
-      if (isCodexSandboxEnv(env)) {
-        return sandboxLimitedAuth({ sensitiveFields: ['email', 'orgId', 'orgName'] });
-      }
-      return { status: 'unauthenticated', logged_in: false, sensitive_fields_redacted: ['email', 'orgId', 'orgName'] };
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-function isCodexSandboxEnv(env = {}) {
-  return Boolean(env.CODEX_SANDBOX);
-}
-
-function sandboxLimitedAuth({ sensitiveFields }) {
-  return {
-    status: 'sandbox_limited',
-    logged_in: null,
-    observed_logged_in: false,
-    detail: 'auth status returned loggedIn=false inside the current Codex sandbox; host credentials may be inaccessible to this probe',
-    next_step: 'Verify with an approved direct host auth command or rerun runtime:doctor outside the current sandbox before deciding to login.',
-    sensitive_fields_redacted: sensitiveFields,
-  };
-}
-
-function parseCodexAuth(result) {
-  if (!result.ok) {
-    return classifyAuthFailure(result, { host: 'codex' });
-  }
-  const text = singleLine(`${result.stdout} ${result.stderr}`);
-  if (/logged in/i.test(text) && !/not logged in/i.test(text)) {
-    const method = text.replace(/^Logged in using\s+/i, '').trim();
-    return {
-      status: 'available',
-      logged_in: true,
-      method: sanitizeValue(method),
-      sensitive_fields_redacted: [],
-    };
-  }
-  if (/not logged in|login required|unauth/i.test(text)) {
-    return { status: 'unauthenticated', logged_in: false, sensitive_fields_redacted: [] };
-  }
-  return { status: 'unknown', logged_in: null, detail: redactSecrets(text), sensitive_fields_redacted: [] };
-}
-
-function classifyAuthFailure(result, { host = 'unknown', env = {} } = {}) {
-  const text = singleLine(`${result.stdout} ${result.stderr} ${result.error_message ?? ''}`);
-  if (result.error_code === 'ENOENT') return { status: 'unavailable', logged_in: null, detail: 'cli unavailable' };
-  if (result.error_code === 'ETIMEDOUT') return { status: 'blocked', logged_in: null, detail: 'auth status probe timed out' };
-  if (/not logged in|login required|unauth/i.test(text)) {
-    if (host === 'claude' && isCodexSandboxEnv(env)) return sandboxLimitedAuth({ sensitiveFields: [] });
-    return { status: 'unauthenticated', logged_in: false };
-  }
-  return { status: 'unknown', logged_in: null, detail: redactSecrets(text) };
-}
-
-function inspectClaudeFeatureSurface(helpText) {
-  return {
-    plugin_command: /\bplugin\|plugins\b|\bplugins?\s+Manage Claude Code plugins/i.test(helpText),
-    plugin_list_command: /\bplugin\s+list\b|\bplugin list\b|Installed plugins/i.test(helpText),
-    plugin_install_command: /\bplugin\s+install\b|\binstall\b/i.test(helpText),
-    plugin_update_command: /\bplugin\s+update\b|\bupdate\b/i.test(helpText),
-    plugin_uninstall_command: /\bplugin\s+uninstall\b|\buninstall\b/i.test(helpText),
-    auth_status: /\bauth\b[\s\S]*\bstatus\b/i.test(helpText),
-    print_mode: /--print|-p,\s*--print/.test(helpText),
-    no_session_persistence: /--no-session-persistence/.test(helpText),
-    model_flag: /--model\b/.test(helpText),
-    effort_flag: /--effort\b/.test(helpText),
-    permission_mode: /--permission-mode/.test(helpText),
-    plugin_dir: /--plugin-dir/.test(helpText),
-    automatic_plugin_hooks: true,
-  };
-}
-
-function inspectCodexFeatureSurface(helpText, featuresRaw, pluginRootHelpText = '') {
-  const featureList = parseCodexFeatureList(featuresRaw);
-  const hooks = featureList.features.hooks ?? null;
-  const pluginHooks = featureList.features.plugin_hooks ?? null;
-  // Per-plugin surface (Codex >= ~0.137): detect the `codex plugin add/list/remove`
-  // subcommands precisely from the `codex plugin --help` Commands block. `^\s+<cmd>\b`
-  // matches only an indented subcommand entry, never a description word ("Add," in the
-  // marketplace subcommand line), a flag (`--add`), or a longer token ("added").
-  const pluginAddCommand = /^\s+add\b/im.test(pluginRootHelpText);
-  const pluginListCommand = /^\s+list\b/im.test(pluginRootHelpText);
-  const pluginRemoveCommand = /^\s+remove\b/im.test(pluginRootHelpText);
-  return {
-    exec_command: /\bexec\b[\s\S]*Run Codex non-interactively/i.test(helpText) || /\bexec\b/.test(helpText),
-    login_status: /\blogin\b[\s\S]*\bstatus\b/i.test(helpText),
-    plugin_marketplace: /\bplugin\b[\s\S]*\bmarketplace\b/i.test(helpText),
-    plugin_marketplace_add: /\badd\b/.test(helpText),
-    plugin_marketplace_list: /\blist\b/.test(helpText),
-    plugin_marketplace_upgrade: /\bupgrade\b/.test(helpText),
-    plugin_marketplace_remove: /\bremove\b/.test(helpText),
-    // `codex plugin add` is Codex's per-plugin install verb; `list`/`remove` are the
-    // per-plugin inventory/uninstall verbs. Absent: update/enable/disable/details/
-    // validate/prune (not full Claude plugin parity).
-    plugin_install_command: pluginAddCommand,
-    plugin_list_command: pluginListCommand,
-    plugin_remove_command: pluginRemoveCommand,
-    model_flag: /--model\b|-m,\s*--model/.test(helpText),
-    config_flag: /--config\b|-c,\s*--config/.test(helpText),
-    cd_flag: /--cd\b|-C,\s*--cd/.test(helpText),
-    sandbox_flag: /--sandbox\b/.test(helpText),
-    approval_flag: /--ask-for-approval\b/.test(helpText),
-    feature_list_command: featureList.status,
-    codex_global_hooks: hooks?.enabled ?? null,
-    codex_global_hooks_stage: hooks?.stage ?? null,
-    codex_plugin_hooks: pluginHooks?.enabled ?? null,
-    codex_plugin_hooks_stage: pluginHooks?.stage ?? null,
-    automatic_plugin_hooks: pluginHooks?.enabled === true,
-  };
-}
-
-function parseCodexFeatureList(result) {
-  const status = commandStatus(result);
-  const features = {};
-  if (!result.ok) return { status, features };
-  for (const rawLine of String(result.stdout ?? '').split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const match = line.match(/^([A-Za-z0-9_]+)\s+(.+?)\s+(true|false)$/);
-    if (!match) continue;
-    features[match[1]] = {
-      stage: match[2].trim(),
-      enabled: match[3] === 'true',
-    };
-  }
-  return { status: 'available', features };
-}
-
 async function inspectSourcePluginState(repoRoot) {
   const result = {};
   for (const name of PLUGIN_NAMES) {
@@ -715,92 +473,6 @@ function catalogSummary(readResult, host) {
         };
   }
   return { status: 'available', entries };
-}
-
-async function inspectPluginCaches(homeDir) {
-  const result = {
-    claude: {},
-    codex: {},
-    codex_tmp_marketplace: {},
-  };
-  for (const name of PLUGIN_NAMES) {
-    result.claude[name] = await scanVersionedManifestDir({
-      baseDir: join(homeDir, '.claude', 'plugins', 'cache', 'agentic-plugins', name),
-      manifestRel: join('.claude-plugin', 'plugin.json'),
-    });
-    result.codex[name] = await scanVersionedManifestDir({
-      baseDir: join(homeDir, '.codex', 'plugins', 'cache', 'agentic-plugins', name),
-      manifestRel: join('.codex-plugin', 'plugin.json'),
-    });
-    result.codex_tmp_marketplace[name] = await readSingleManifest({
-      manifestPath: join(
-        homeDir,
-        '.codex',
-        '.tmp',
-        'marketplaces',
-        'agentic-plugins',
-        'plugins',
-        name,
-        '.codex-plugin',
-        'plugin.json',
-      ),
-    });
-  }
-  return result;
-}
-
-async function scanVersionedManifestDir({ baseDir, manifestRel }) {
-  let entries;
-  try {
-    entries = await readdir(baseDir, { withFileTypes: true });
-  } catch (err) {
-    return { status: 'missing', base_dir: baseDir, versions: [], error: err.code ?? err.message };
-  }
-  const versions = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const manifestPath = join(baseDir, entry.name, manifestRel);
-    const manifest = await readJsonIfExists(manifestPath);
-    if (!manifest.ok) continue;
-    const pluginRoot = dirname(dirname(manifestPath));
-    versions.push({
-      version_dir: entry.name,
-      manifest_version: manifest.json.version ?? null,
-      manifest_name: manifest.json.name ?? null,
-      path: pluginRoot,
-      manifest_hooks: summarizeManifestHookField(manifest.json.hooks),
-      manifest_hooks_file: await manifestHooksFileSummary({
-        pluginRoot,
-        manifestHooks: summarizeManifestHookField(manifest.json.hooks),
-      }),
-      default_hooks_file: await hooksFileSummary(join(pluginRoot, 'hooks', 'hooks.json')),
-    });
-  }
-  versions.sort((a, b) => semverCompare(String(b.manifest_version ?? b.version_dir), String(a.manifest_version ?? a.version_dir)));
-  return {
-    status: versions.length > 0 ? 'available' : 'not_installed',
-    base_dir: baseDir,
-    latest: versions[0] ?? null,
-    versions,
-  };
-}
-
-async function readSingleManifest({ manifestPath }) {
-  const manifest = await readJsonIfExists(manifestPath);
-  if (!manifest.ok) return { status: 'missing', manifest_path: manifestPath, error: manifest.reason };
-  return {
-    status: 'available',
-    manifest_path: manifestPath,
-    manifest_name: manifest.json.name ?? null,
-    manifest_version: manifest.json.version ?? null,
-    path: dirname(dirname(manifestPath)),
-    manifest_hooks: summarizeManifestHookField(manifest.json.hooks),
-    manifest_hooks_file: await manifestHooksFileSummary({
-      pluginRoot: dirname(dirname(manifestPath)),
-      manifestHooks: summarizeManifestHookField(manifest.json.hooks),
-    }),
-    default_hooks_file: await hooksFileSummary(join(dirname(dirname(manifestPath)), 'hooks', 'hooks.json')),
-  };
 }
 
 function buildPluginMatrix({ source, catalogs, caches, claudePluginList, codexPluginList = { status: 'unavailable', entries: {} } }) {
@@ -861,139 +533,7 @@ function summarizePluginStatus({ source, claudeEntry, codexEntry, claudeCache, c
   return 'source_available';
 }
 
-function parseClaudePluginList(stdout) {
-  const result = {};
-  const lines = stdout.split(/\r?\n/);
-  let current = null;
-  for (const raw of lines) {
-    const line = raw.trim();
-    const start = line.match(/^\S?\s*([A-Za-z0-9._-]+)@([A-Za-z0-9._-]+)/);
-    if (start) {
-      current = {
-        name: start[1],
-        marketplace: start[2],
-        version: null,
-        scope: null,
-        status: null,
-        error: null,
-      };
-      if (current.marketplace === 'agentic-plugins') {
-        result[current.name] = current;
-      }
-      continue;
-    }
-    if (!current || current.marketplace !== 'agentic-plugins') continue;
-    if (/^Version:/i.test(line)) current.version = line.replace(/^Version:\s*/i, '');
-    if (/^Scope:/i.test(line)) current.scope = line.replace(/^Scope:\s*/i, '');
-    if (/^Status:/i.test(line)) {
-      const statusText = line.replace(/^Status:\s*/i, '');
-      current.status = /failed/i.test(statusText) ? 'failed' : /enabled/i.test(statusText) ? 'enabled' : redactSecrets(statusText);
-    }
-    if (/^Error:/i.test(line)) current.error = redactSecrets(line.replace(/^Error:\s*/i, ''));
-  }
-  return result;
-}
-
-// Parse `codex plugin list --json` into a sanitized, Claude-comparable installed
-// map. STDOUT only — Codex 0.137 prints valid JSON on stdout while emitting
-// warnings on stderr, so a non-empty stderr must NOT downgrade a successful
-// parse. Never throws: a missing/older subcommand, nonzero exit, or malformed
-// JSON degrades to a status that callers treat as "list unavailable -> cache
-// fallback" (ADR-0034). Raw JSON / source paths are NOT retained — only the
-// fields the readiness decision needs.
-function parseCodexPluginList(pluginListResult) {
-  const degraded = (status) => ({ status, entries: {}, warnings: [] });
-  if (!pluginListResult || pluginListResult.error_code === 'skipped') return degraded('unavailable');
-  // commandStatus() returns 'available' only when the probe ran successfully
-  // (ok). A present-but-older Codex returns a nonzero "unknown subcommand"
-  // ('unknown'); a missing CLI returns ENOENT ('unavailable'). Both are
-  // non-authoritative -> fallback; the label is reporting-only.
-  if (pluginListResult.status !== 'available') {
-    return degraded(pluginListResult.error_code === 'ENOENT' ? 'unavailable' : 'unsupported');
-  }
-  const stdout = (pluginListResult.stdout ?? '').trim();
-  if (!stdout) return degraded('empty');
-  let parsed;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    return degraded('parse_error');
-  }
-  if (!parsed || !Array.isArray(parsed.installed)) return degraded('malformed');
-  const entries = {};
-  const warnings = [];
-  for (const raw of parsed.installed) {
-    if (!raw || typeof raw.name !== 'string' || raw.marketplaceName !== 'agentic-plugins') continue;
-    const installed = raw.installed === true;
-    const enabled = typeof raw.enabled === 'boolean' ? raw.enabled : null;
-    const status = !installed
-      ? 'not_installed'
-      : enabled === true ? 'enabled' : enabled === false ? 'disabled' : 'installed';
-    const candidate = {
-      name: raw.name,
-      marketplace: 'agentic-plugins',
-      version: typeof raw.version === 'string' ? raw.version : null,
-      installed,
-      enabled,
-      status,
-      install_policy: typeof raw.installPolicy === 'string' ? raw.installPolicy : null,
-      auth_policy: typeof raw.authPolicy === 'string' ? raw.authPolicy : null,
-      error: null,
-    };
-    if (entries[raw.name]) {
-      warnings.push(`duplicate agentic-plugins entry for ${raw.name}; kept strongest install state`);
-      entries[raw.name] = pickStrongerCodexEntry(entries[raw.name], candidate);
-    } else {
-      entries[raw.name] = candidate;
-    }
-  }
-  return { status: 'available', entries, warnings };
-}
-
-const CODEX_INSTALL_STATUS_RANK = { enabled: 4, installed: 3, disabled: 2, not_installed: 1 };
-function pickStrongerCodexEntry(a, b) {
-  const ra = CODEX_INSTALL_STATUS_RANK[a.status] ?? 0;
-  const rb = CODEX_INSTALL_STATUS_RANK[b.status] ?? 0;
-  return rb > ra ? b : a;
-}
-
-// Single-source the Codex installed-state decision used across the doctor report
-// (plugin matrix status, readiness row, version parity). List-authoritative:
-// when the list probe succeeded, the list is the source of truth and a stale
-// filesystem cache must NOT claim an install the list omits; only a
-// list-unavailable probe (older Codex, nonzero exit, parse error) falls back to
-// cache evidence (decision='fallback', caller applies existing cache logic).
-// Read-only; never mutates host state (ADR-0024 / ADR-0034).
-//
-// `name` is the plugin the decision is about. It exists only to render an
-// honest evidence string: the not-installed branch used to hardcode "runtime",
-// so a not-installed `designer` reported "codex plugin list does not report
-// runtime as installed". The founder RT slice (ADR-0036) recorded this as a
-// deferred generic-name fix; the designer RT slice closes it, because the
-// inventory addition is exactly what surfaces the wrong name to an operator.
-function resolveCodexInstallState({ name, listStatus, entry }) {
-  if (listStatus === 'available') {
-    if (entry) {
-      // Defensive: an `installed:false` entry (only expected under --available,
-      // which we never pass) must resolve to not-installed, not the installed
-      // fall-through below.
-      if (entry.status === 'not_installed') {
-        return { decision: 'not_installed', source: 'list', version: null, enabled: false, evidence: 'codex plugin list reports the entry as not installed' };
-      }
-      if (entry.status === 'disabled') {
-        return { decision: 'disabled', source: 'list', version: entry.version ?? null, enabled: false, evidence: 'codex plugin list reports installed but disabled' };
-      }
-      if (entry.status === 'enabled') {
-        return { decision: 'installed', source: 'list', version: entry.version ?? null, enabled: true, evidence: 'codex plugin list reports enabled' };
-      }
-      return { decision: 'installed', source: 'list', version: entry.version ?? null, enabled: entry.enabled ?? null, evidence: 'codex plugin list reports installed' };
-    }
-    return { decision: 'not_installed', source: 'list', version: null, enabled: false, evidence: `codex plugin list does not report ${name} as installed` };
-  }
-  return { decision: 'fallback', source: 'cache', version: null, enabled: null, evidence: null, list_probe_status: listStatus };
-}
-
-async function buildCodexPluginHookReport({ codex, plugins, homeDir }) {
+async function buildCodexPluginHookReport({ codex, plugins, observedCodexHookConfig }) {
   const plugin_entries = {};
   const summary = {
     bundled_plugins: [],
@@ -1073,7 +613,7 @@ async function buildCodexPluginHookReport({ codex, plugins, homeDir }) {
 
   for (const value of Object.values(summary)) value.sort();
   const reviewTargets = buildCodexHookReviewTargets({ summary, plugin_entries, plugins });
-  const hookState = await buildCodexHookStateReport({ homeDir, reviewTargets });
+  const hookState = buildCodexHookStateReport({ observedConfig: observedCodexHookConfig, reviewTargets });
   const recommendations = [];
   if (summary.default_file_only_plugins.length > 0) {
     recommendations.push({
@@ -1219,22 +759,12 @@ function buildCodexHookReviewTargets({ summary, plugin_entries, plugins }) {
 // materializing a new event self-heals without a code change.
 const CODEX_HOOK_STATE_EVENTS = new Set(['pre_compact', 'session_start', 'stop', 'subagent_stop']);
 
-async function buildCodexHookStateReport({ homeDir, reviewTargets }) {
-  const configPath = join(homeDir, '.codex', 'config.toml');
-  const currentText = await readTextIfExists(configPath);
-  const parsed = currentText.ok
-    ? parseCodexHookStateConfigToml(currentText.text)
-    : { entries: [] };
-  const entries = parsed.entries.map((entry) => ({
-    id: entry.id,
-    plugin_id: entry.plugin_id,
-    plugin: entry.plugin,
-    marketplace: entry.marketplace,
-    hooks_path: entry.hooks_path,
-    event: entry.event,
-    enabled: entry.enabled,
-    trusted: Boolean(entry.trusted_hash),
-  }));
+// The OBSERVED Codex hook config (read + parse) is produced by the machine probe; this
+// function keeps the repo-derived correlation — expected review targets → observed
+// entries — in doctor (machine-bootstrap-contract.md §1.1, peer #11). It receives the
+// observed config rather than reading the file itself.
+function buildCodexHookStateReport({ observedConfig, reviewTargets }) {
+  const { config_path: configPath, config_status: configStatus, read_error: readError, entries } = observedConfig;
   const expected = [];
   const unmappedEvents = [];
   for (const target of reviewTargets ?? []) {
@@ -1308,8 +838,8 @@ async function buildCodexHookStateReport({ homeDir, reviewTargets }) {
   return {
     schema_version: 'runtime-codex-hook-state-1.1',
     config_path: configPath,
-    config_status: currentText.ok ? 'available' : 'missing',
-    read_error: currentText.ok ? null : currentText.reason,
+    config_status: configStatus,
+    read_error: readError,
     summary: {
       total_entries: entries.length,
       agentic_entries: entries.filter((entry) => entry.marketplace === 'agentic-plugins').length,
@@ -1328,94 +858,6 @@ async function buildCodexHookStateReport({ homeDir, reviewTargets }) {
     untrusted_expected: untrustedExpected,
     unexpected_agentic_entries: unexpectedAgenticEntries,
   };
-}
-
-export function parseCodexHookStateConfigToml(text) {
-  const entries = [];
-  let current = null;
-  const commit = () => {
-    if (current) entries.push(current);
-  };
-  for (const raw of String(text ?? '').replace(/\r\n/g, '\n').split('\n')) {
-    const section = raw.match(/^\s*\[hooks\.state\."([^"]+)"]\s*(?:#.*)?$/);
-    if (section) {
-      commit();
-      current = parseCodexHookStateId(section[1]);
-      continue;
-    }
-    if (/^\s*\[[^\]]+]\s*(?:#.*)?$/.test(raw)) {
-      commit();
-      current = null;
-      continue;
-    }
-    if (!current) continue;
-    const withoutComment = raw.replace(/#.*/, '').trim();
-    const enabled = withoutComment.match(/^enabled\s*=\s*(true|false)\s*$/);
-    if (enabled) {
-      current.enabled = enabled[1] === 'true';
-      continue;
-    }
-    const trustedHash = withoutComment.match(/^trusted_hash\s*=\s*"([^"]+)"\s*$/);
-    if (trustedHash) current.trusted_hash = trustedHash[1];
-  }
-  commit();
-  return { entries };
-}
-
-function parseCodexHookStateId(id) {
-  const parts = String(id ?? '').split(':');
-  const pluginId = parts[0] ?? null;
-  const pluginMatch = pluginId?.match(/^([^@]+)@(.+)$/);
-  return {
-    id,
-    plugin_id: pluginId,
-    plugin: pluginMatch?.[1] ?? null,
-    marketplace: pluginMatch?.[2] ?? null,
-    hooks_path: normalizeCodexHookStatePath(parts[1] ?? null, pluginMatch?.[1] ?? null),
-    event: normalizeCodexHookStateEvent(parts[2] ?? null),
-    group_index: parts[3] ?? null,
-    hook_index: parts[4] ?? null,
-    enabled: null,
-    trusted_hash: null,
-  };
-}
-
-function normalizeCodexHookStatePath(path, plugin) {
-  const text = sanitizeValue(path);
-  if (!text) return null;
-  const normalized = text.replaceAll('\\', '/').replace(/^\.\//, '');
-  if (plugin) {
-    const marker = `/plugins/${plugin}/`;
-    const markerIndex = normalized.indexOf(marker);
-    if (markerIndex >= 0) return normalized.slice(markerIndex + marker.length);
-    const bareMarker = `plugins/${plugin}/`;
-    if (normalized.startsWith(bareMarker)) return normalized.slice(bareMarker.length);
-    // Versioned install-cache layout (`…/cache/agentic-plugins/<plugin>/<version>/…`):
-    // Codex writes hooks.state paths RELATIVE to the plugin root regardless of
-    // install origin, but cache inspection records the absolute hooks-file
-    // path. Without this marker a cache-only consumer repo (no plugins/
-    // source) could never match a single hooks.state row — every expected
-    // entry read `missing` and every trusted row read unexpected
-    // (refine-verify reproduced expected_missing=14 / unexpected=14), which
-    // also kept the attestation disabled-gate unreachable.
-    const escapedPlugin = plugin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const cacheMarker = new RegExp(`(?:^|/)${escapedPlugin}/\\d+\\.\\d+\\.\\d+[^/]*/`);
-    const cacheMatch = normalized.match(cacheMarker);
-    if (cacheMatch) return normalized.slice(cacheMatch.index + cacheMatch[0].length);
-  }
-  return normalized;
-}
-
-function normalizeCodexHookStateEvent(event) {
-  const text = sanitizeValue(event);
-  if (!text) return null;
-  if (text === 'PreCompact') return 'pre_compact';
-  if (text === 'SessionStart') return 'session_start';
-  if (text === 'Stop') return 'stop';
-  return text
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    .replace(/[-\s]+/g, '_')
-    .toLowerCase();
 }
 
 function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooksFile, origin }) {
@@ -2095,9 +1537,18 @@ async function inspectSettingsRuns({ repoRoot }) {
   runs.sort((a, b) => b.selected_at_ms - a.selected_at_ms || b.run_id.localeCompare(a.run_id));
   const latest = runs[0];
   const latestCodexHookReview = runs.find((run) => run.codex_hook_review?.attested === true && run.codex_hook_review?.status === 'attested')?.codex_hook_review ?? null;
+  // machine-bootstrap-contract.md §1.5 part 3 — the load-bearing reader migration.
+  // An interrupted write-ahead run (planned / in-progress) has zero failures and
+  // MUST NOT read as available; a plan-hash `refused` run and a plugin-management
+  // `blocked` action likewise need operator attention.
+  const latestInterrupted = latest.terminal === false || SETTINGS_EXECUTION_NONTERMINAL_STATUSES.has(latest.status);
+  const latestRefused = latest.status === 'refused';
   const status = malformed > 0
     ? 'blocked'
-    : latest.plugin_management.failed > 0
+    : latestInterrupted
+      || latestRefused
+      || latest.plugin_management.failed > 0
+      || latest.plugin_management.blocked > 0
       || latest.plugin_cleanup.failed > 0
       || latest.plugin_cleanup.blocked > 0
       || (latest.codex_hook_review.requested && latest.codex_hook_review.status !== 'attested')
@@ -2109,6 +1560,10 @@ async function inspectSettingsRuns({ repoRoot }) {
     count: runs.length,
     malformed,
     latest,
+    interrupted: latestInterrupted,
+    recovery: latestInterrupted
+      ? 'Latest settings execution is a nonterminal write-ahead record (interrupted run). Its journal names what landed; re-run runtime:settings to re-probe and re-plan the remaining actions — nothing is auto-rolled-back (machine-bootstrap-contract.md §1.5).'
+      : null,
     codex_hook_review: {
       status: latestCodexHookReview ? 'attested' : 'missing',
       latest: latestCodexHookReview,
@@ -2384,9 +1839,17 @@ function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifact }) 
   const pluginManagementFailures = failures.filter((failure) => failure.area !== 'plugin-cleanup');
   const pluginCleanupFailures = failures.filter((failure) => failure.area === 'plugin-cleanup');
   const selectedAt = artifactTimestampMs(artifact, runId);
+  const runStatus = typeof artifact.status === 'string' ? artifact.status : 'blocked';
   return {
     run_id: sanitizeValue(artifact.run_id) ?? runId,
-    status: typeof artifact.status === 'string' ? artifact.status : 'blocked',
+    status: runStatus,
+    // A write-ahead record is nonterminal (planned / in-progress) precisely because
+    // it has zero failures and HAS NOT FINISHED — the reader must never read it as a
+    // clean run (machine-bootstrap-contract.md §1.5 part 3). `terminal` carries the
+    // artifact's own flag when present, else derives it from the status.
+    terminal: typeof artifact.terminal === 'boolean'
+      ? artifact.terminal
+      : !SETTINGS_EXECUTION_NONTERMINAL_STATUSES.has(runStatus),
     artifact_pointer: pointer(repoRoot, artifactPath),
     selected_at: selectedAt === null ? null : new Date(selectedAt).toISOString(),
     selected_at_ms: selectedAt ?? 0,
@@ -2398,10 +1861,12 @@ function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifact }) 
       summary: {
         executed: safeCount(pluginManagementSummary.executed),
         failed: safeCount(pluginManagementSummary.failed),
+        blocked: safeCount(pluginManagementSummary.blocked),
         failed_retryable: safeCount(pluginManagementSummary.failed_retryable),
         failed_non_retryable: safeCount(pluginManagementSummary.failed_non_retryable),
       },
       failed: safeCount(pluginManagementSummary.failed),
+      blocked: safeCount(pluginManagementSummary.blocked),
       failures: pluginManagementFailures,
     },
     plugin_cleanup: {
@@ -2499,7 +1964,7 @@ async function collectRecordFiles(dir, matchFn, budget, maxFileBytes) {
 // hardened (no-follow, budgeted, byte-capped) enumeration instead of duplicating it.
 export async function collectUsageRecordSources({ homeDir, env, maxFiles, maxFileBytes }) {
   const claudeDir = join(homeDir, '.claude', 'projects');
-  const codexHome = env && env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(homeDir, '.codex');
+  const codexHome = resolveCodexHome(env, homeDir);
   const codexDir = join(codexHome, 'sessions');
 
   const claude = await collectRecordFiles(
@@ -3833,9 +3298,11 @@ async function buildWorkflowContinuationProofSection({
   readiness,
   modelEffort,
   repoRoot,
+  homeDir,
   env,
   runner,
   timeoutMs,
+  selfUrl = import.meta.url,
 }) {
   const directionSpecs = {
     claude_to_codex: {
@@ -3902,6 +3369,8 @@ async function buildWorkflowContinuationProofSection({
         key,
         spec,
         repoRoot,
+        homeDir,
+        selfUrl,
         directionSettings,
         runner,
         env,
@@ -3960,17 +3429,121 @@ function summarizeWorkflowContinuationProofExecutionStatus({ requested, directio
   return 'failed';
 }
 
+const ENGINEER_ROOT_ENV_OVERRIDE = 'AGENTIC_ENGINEER_ROOT';
+
+function engineerCacheBases(home) {
+  return {
+    claude: join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'engineer'),
+    codex: join(home, '.codex', '.tmp', 'marketplaces', 'agentic-plugins', 'plugins', 'engineer'),
+  };
+}
+
+async function isReadableFile(path) {
+  try {
+    await access(path, fsConstants.R_OK);
+    const st = await stat(path);
+    return st.isFile();
+  } catch {
+    return false;
+  }
+}
+
+// Claude cache is multi-version; pick the SemVer-max install whose manifest name is
+// engineer and whose scripts/state.mjs exists.
+async function resolveClaudeEngineerCacheRoot(claudeBase) {
+  let entries;
+  try {
+    entries = await readdir(claudeBase, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const versionRoot = join(claudeBase, entry.name);
+    let manifest;
+    try {
+      manifest = JSON.parse(await readFile(join(versionRoot, '.claude-plugin', 'plugin.json'), 'utf8'));
+    } catch {
+      continue;
+    }
+    if (manifest?.name !== 'engineer') continue;
+    if (!(await isReadableFile(join(versionRoot, 'scripts', 'state.mjs')))) continue;
+    candidates.push({ version: typeof manifest.version === 'string' ? manifest.version : '0.0.0', root: versionRoot });
+  }
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => semverCompare(String(b.version), String(a.version)));
+  return candidates[0].root;
+}
+
+// Runtime-OWNED resolver for the INSTALLED engineer plugin root
+// (machine-bootstrap-contract.md §8.2). The workflow-continuation proof needs the
+// engineer tool where it actually lives — the host plugin cache — NOT
+// `repoRoot/plugins/engineer`, which is absent on a consumer machine or in the
+// ephemeral scratch repo a machine bootstrap points doctor at. Mirrors the
+// orchestrator discover-engineer.mjs ladder (env override → Claude cache SemVer-max
+// → Codex fixed cache → sibling monorepo) but is a PRIVATE runtime copy: ADR-0010 §5
+// forbids importing across plugins. Deliberately does NOT consult repoRoot — that is
+// the proof workspace's concern, and conflating the two is the §8.2 defect. Returns
+// `{ root, source }` or `null`.
+export async function resolveInstalledEngineerRoot({ env = process.env, home = homedir(), selfUrl = import.meta.url } = {}) {
+  const override = env[ENGINEER_ROOT_ENV_OVERRIDE];
+  if (typeof override === 'string' && override.length > 0) {
+    if (isAbsolute(override) && await isReadableFile(join(override, 'scripts', 'state.mjs'))) {
+      return { root: override, source: 'env-override' };
+    }
+    return null;
+  }
+  const { claude: claudeBase, codex: codexBase } = engineerCacheBases(home);
+  const claudeRoot = await resolveClaudeEngineerCacheRoot(claudeBase);
+  if (claudeRoot) return { root: claudeRoot, source: 'claude-cache' };
+  if (await isReadableFile(join(codexBase, 'scripts', 'state.mjs'))) {
+    return { root: codexBase, source: 'codex-cache' };
+  }
+  // Sibling monorepo — derive runtime's own root from selfUrl (doctor.mjs lives at
+  // <runtime-root>/scripts/doctor.mjs), then look for the sibling engineer checkout.
+  if (typeof selfUrl === 'string' && selfUrl.length > 0) {
+    let here = null;
+    try {
+      here = fileURLToPath(selfUrl);
+    } catch {
+      here = null;
+    }
+    if (here) {
+      const sibling = resolve(dirname(here), '..', '..', 'engineer');
+      if (await isReadableFile(join(sibling, 'scripts', 'state.mjs'))) {
+        return { root: sibling, source: 'sibling-monorepo' };
+      }
+    }
+  }
+  return null;
+}
+
 async function executeWorkflowContinuationProofDirection({
   key,
   spec,
   repoRoot,
+  homeDir,
+  selfUrl,
   directionSettings,
   runner,
   env,
   timeoutMs,
 }) {
-  const statePath = resolve(repoRoot, 'plugins/engineer/scripts/state.mjs');
-  const dispatchPath = resolve(repoRoot, 'plugins/engineer/scripts/dispatch-peer.mjs');
+  // §8.2 — the installed-tool root (host plugin cache), resolved SEPARATELY from the
+  // ephemeral proof workspace (tempRepo below). repoRoot is the caller's repo, which
+  // on a consumer machine or a bootstrap scratch dir has no plugins/engineer.
+  const engineer = await resolveInstalledEngineerRoot({ env, home: homeDir, selfUrl });
+  if (!engineer) {
+    return {
+      status: 'blocked',
+      reason: 'engineer plugin not found — install engineer, or set AGENTIC_ENGINEER_ROOT to a plugin checkout (resolver ladder: env override → Claude cache → Codex cache → sibling monorepo)',
+      installed_tool_root: null,
+      tool_root_source: 'none',
+    };
+  }
+  const statePath = join(engineer.root, 'scripts', 'state.mjs');
+  const dispatchPath = join(engineer.root, 'scripts', 'dispatch-peer.mjs');
   const missingScript = await firstMissingReadablePath([
     { label: 'engineer state script', path: statePath },
     { label: 'engineer dispatch script', path: dispatchPath },
@@ -3979,7 +3552,9 @@ async function executeWorkflowContinuationProofDirection({
     return {
       status: 'blocked',
       reason: `${missingScript.label} is not readable`,
-      missing_path: relative(repoRoot, missingScript.path),
+      missing_path: missingScript.path,
+      installed_tool_root: engineer.root,
+      tool_root_source: engineer.source,
     };
   }
 
@@ -4174,6 +3749,10 @@ async function executeWorkflowContinuationProofDirection({
     return {
       ...dispatchSummary,
       status: passed ? 'passed' : 'failed',
+      // §8.2 — the two roots are distinct: the installed tool (host cache / env / sibling)
+      // and the ephemeral proof workspace the run happened IN.
+      installed_tool_root: engineer.root,
+      tool_root_source: engineer.source,
       workflow: workflowProofWorkflowSummary({ spec, runId, workflowId }),
       state_checks: stateChecks,
       state_failure: passed ? null : 'engineer state did not record pending and committed ensemble continuation as expected',
@@ -4601,8 +4180,17 @@ function summarizeOverall(report) {
   if (report.settings_runs.status === 'blocked') {
     warnings.push('settings execution artifact health blocked');
   } else {
+    // An interrupted write-ahead run (planned / in-progress) is the load-bearing
+    // signal (machine-bootstrap-contract.md §1.5) — surface it even though it has
+    // zero failures, else the reader migration would be invisible to the operator.
+    if (report.settings_runs.interrupted || report.settings_runs.latest?.status === 'refused') {
+      warnings.push('latest settings execution is a nonterminal/refused write-ahead record (interrupted run)');
+    }
     if (report.settings_runs.latest?.plugin_management?.failed > 0) {
       warnings.push('latest settings plugin-management execution has failures');
+    }
+    if ((report.settings_runs.latest?.plugin_management?.blocked ?? 0) > 0) {
+      warnings.push('latest settings plugin-management execution has blocked actions');
     }
     if ((report.settings_runs.latest?.plugin_cleanup?.failed ?? 0) > 0 || (report.settings_runs.latest?.plugin_cleanup?.blocked ?? 0) > 0) {
       warnings.push('latest settings plugin-cleanup execution has failures');
@@ -4873,6 +4461,9 @@ export function formatText(report) {
       lines.push(`  workflow: host=${direction.workflow.host}; peer=${direction.workflow.peer}; branch=${direction.workflow.branch}; temp-repo=${direction.workflow.temp_repo ?? 'none'}`);
       if (direction.result && direction.execution === 'executed') {
         lines.push(`  result: peer=${direction.result.peer_host ?? '<unknown>'}; envelope=${direction.result.envelope_status ?? '<none>'}; exit=${direction.result.peer_exit_code ?? direction.result.companion_exit_code ?? '<none>'}; expected-token=${direction.result.expected_token_present}; stdout-bytes=${direction.result.stdout_bytes ?? '<none>'}; stdout-sha256=${direction.result.stdout_sha256 ?? '<empty>'}; operator-action-required=${Boolean(direction.result.operator_action_required)}`);
+        if (direction.result.installed_tool_root) {
+          lines.push(`  installed-tool-root: ${direction.result.installed_tool_root} (source=${direction.result.tool_root_source}); proof-workspace=ephemeral (§8.2 — the two roots are distinct)`);
+        }
         if (direction.result.workflow) {
           lines.push(`  state-workflow: id=${direction.result.workflow.workflow_id ?? '<unknown>'}; run-id=${direction.result.workflow.run_id}; temp-repo=${direction.result.workflow.temp_repo}`);
         }
@@ -4900,8 +4491,11 @@ export function formatText(report) {
   lines.push(`- status: ${report.settings_runs.status}; count=${report.settings_runs.count}; malformed=${report.settings_runs.malformed}`);
   if (report.settings_runs.latest) {
     const latest = report.settings_runs.latest;
-    lines.push(`- latest: ${latest.run_id}; status=${latest.status}; artifact=${latest.artifact_pointer}`);
-    lines.push(`  plugin-management: mode=${latest.plugin_management.mode ?? '<unknown>'}; executed=${latest.plugin_management.summary.executed}; failed=${latest.plugin_management.summary.failed}; retryable-failed=${latest.plugin_management.summary.failed_retryable}; non-retryable-failed=${latest.plugin_management.summary.failed_non_retryable}`);
+    lines.push(`- latest: ${latest.run_id}; status=${latest.status}; terminal=${latest.terminal !== false}; artifact=${latest.artifact_pointer}`);
+    if (report.settings_runs.interrupted) {
+      lines.push(`  ⚠ interrupted: ${report.settings_runs.recovery}`);
+    }
+    lines.push(`  plugin-management: mode=${latest.plugin_management.mode ?? '<unknown>'}; executed=${latest.plugin_management.summary.executed}; failed=${latest.plugin_management.summary.failed}; blocked=${latest.plugin_management.summary.blocked ?? 0}; retryable-failed=${latest.plugin_management.summary.failed_retryable}; non-retryable-failed=${latest.plugin_management.summary.failed_non_retryable}`);
     lines.push(`  plugin-cleanup: mode=${latest.plugin_cleanup.mode ?? '<unknown>'}; executed=${latest.plugin_cleanup.summary.executed}; failed=${latest.plugin_cleanup.summary.failed}; blocked=${latest.plugin_cleanup.summary.blocked}; retryable-failed=${latest.plugin_cleanup.summary.failed_retryable}; non-retryable-failed=${latest.plugin_cleanup.summary.failed_non_retryable}`);
     lines.push(`  codex-hook-review: status=${latest.codex_hook_review.status}; attested=${latest.codex_hook_review.attested}; bundled=${latest.codex_hook_review.bundled_plugins.join(',') || 'none'}`);
     for (const failure of latest.plugin_management.failures) {
@@ -5042,153 +4636,6 @@ function manifestSummary(readResult) {
     name: readResult.json.name ?? null,
     version: readResult.json.version ?? null,
     hooks: summarizeManifestHookField(readResult.json.hooks),
-  };
-}
-
-function summarizeManifestHookField(value) {
-  if (value === undefined || value === null) {
-    return {
-      declared: false,
-      type: null,
-      paths: [],
-    };
-  }
-  if (typeof value === 'string') {
-    return {
-      declared: true,
-      type: 'path',
-      paths: [value],
-    };
-  }
-  if (Array.isArray(value)) {
-    const paths = value.filter((item) => typeof item === 'string');
-    return {
-      declared: true,
-      type: paths.length === value.length ? 'path-array' : 'mixed-array',
-      paths,
-    };
-  }
-  if (typeof value === 'object') {
-    return {
-      declared: true,
-      type: 'inline',
-      paths: [],
-    };
-  }
-  return {
-    declared: true,
-    type: typeof value,
-    paths: [],
-  };
-}
-
-async function manifestHooksFileSummary({ pluginRoot, manifestHooks }) {
-  if (!manifestHooks?.declared) {
-    return {
-      status: 'not_declared',
-      path: null,
-      events: [],
-      handler_count: 0,
-    };
-  }
-  if (!Array.isArray(manifestHooks.paths) || manifestHooks.paths.length === 0) {
-    return {
-      status: 'missing',
-      path: null,
-      error: `manifest hooks field is ${manifestHooks.type ?? 'declared'}; no file path is available`,
-      events: [],
-      handler_count: 0,
-    };
-  }
-  const summaries = [];
-  for (const path of manifestHooks.paths) {
-    const resolved = resolve(pluginRoot, path);
-    const rel = relative(pluginRoot, resolved);
-    if (rel.startsWith('..') || rel === '..' || rel.startsWith(`..${sep}`)) {
-      summaries.push({
-        status: 'missing',
-        path: resolved,
-        error: 'manifest hooks path escapes plugin root',
-        events: [],
-        handler_count: 0,
-      });
-      continue;
-    }
-    summaries.push(await hooksFileSummary(resolved));
-  }
-  if (summaries.length === 1) return summaries[0];
-
-  const available = summaries.filter((entry) => entry.status === 'available');
-  if (available.length === 0) {
-    return {
-      ...summaries[0],
-      paths: summaries.map((entry) => entry.path).filter(Boolean),
-      summaries,
-    };
-  }
-  const commands = available.flatMap((entry) => entry.command_analysis?.commands ?? []);
-  return {
-    status: 'available',
-    path: available[0].path,
-    paths: available.map((entry) => entry.path).filter(Boolean),
-    events: uniqueStrings(available.flatMap((entry) => entry.events ?? [])).sort(),
-    handler_count: available.reduce((sum, entry) => sum + (entry.handler_count ?? 0), 0),
-    command_analysis: analyzeHookCommands(commands),
-    summaries,
-  };
-}
-
-async function hooksFileSummary(path) {
-  const readResult = await readJsonIfExists(path);
-  if (!readResult.ok) {
-    return {
-      status: 'missing',
-      path,
-      error: readResult.reason,
-      events: [],
-      handler_count: 0,
-    };
-  }
-  const hooks = readResult.json?.hooks && typeof readResult.json.hooks === 'object'
-    ? readResult.json.hooks
-    : {};
-  const events = Object.keys(hooks).sort();
-  let handlerCount = 0;
-  const commands = [];
-  for (const groups of Object.values(hooks)) {
-    if (!Array.isArray(groups)) continue;
-    for (const group of groups) {
-      if (!Array.isArray(group?.hooks)) continue;
-      handlerCount += group.hooks.length;
-      for (const hook of group.hooks) {
-        if (hook?.type === 'command' && typeof hook.command === 'string') commands.push(hook.command);
-      }
-    }
-  }
-  return {
-    status: 'available',
-    path,
-    events,
-    handler_count: handlerCount,
-    command_analysis: analyzeHookCommands(commands),
-  };
-}
-
-function analyzeHookCommands(commands) {
-  const uniqueCommands = uniqueStrings(commands);
-  const claudePluginRootReferences = uniqueCommands.filter((command) => command.includes('${CLAUDE_PLUGIN_ROOT}') || command.includes('$CLAUDE_PLUGIN_ROOT')).length;
-  const claudeAdapterReferences = uniqueCommands.filter((command) => /\/adapters\/claude\/hooks\//.test(command)).length;
-  const bareNodeCommandReferences = uniqueCommands.filter((command) => /^node(?:\s|$)/.test(command.trim())).length;
-  const warnings = [];
-  if (claudeAdapterReferences > 0) warnings.push('claude-adapter-hook-command');
-  if (bareNodeCommandReferences > 0) warnings.push('bare-node-hook-command');
-  return {
-    commands: uniqueCommands,
-    command_count: uniqueCommands.length,
-    claude_plugin_root_references: claudePluginRootReferences,
-    claude_adapter_references: claudeAdapterReferences,
-    bare_node_command_references: bareNodeCommandReferences,
-    warnings,
   };
 }
 

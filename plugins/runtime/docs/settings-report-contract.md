@@ -42,9 +42,10 @@ Line references below are anchors observed at decision time
     `doctor.clis`), `--execute-plugin-cleanup` (consumes
     `doctor.host_parity.issues`), `--attest-codex-hook-review` (consumes
     `doctor.codex_plugin_hooks`), plus `--plugin-management-host`,
-    `--plugin-management-timeout-ms`, and `--run-id` (each exclusively
-    parameterizes a rejected surface — `--run-id`'s only consumer is the
-    settings execution artifact writer).
+    `--plugin-management-timeout-ms`, `--run-id`, and `--expected-plan-hash`
+    (each exclusively parameterizes a rejected surface — `--run-id`'s only
+    consumer is the settings execution artifact writer, and
+    `--expected-plan-hash` only guards the plugin-management/cleanup executor).
   - **Allowed**: `--format`, `--host`, `--target`, `--repo-root`, every config
     flag (`--model`/`--effort`/direction-specific/`--notify-*`), `--apply`
     (`applyConfigPlans` consumes zero doctor evidence — it is a pure
@@ -99,16 +100,40 @@ Line references below are anchors observed at decision time
   an applied config and earlier plan artifacts behind. This is deliberate —
   each write is independently idempotent and re-runnable; recovery is re-run,
   not rollback. The probe-free mode does not change this ordering.
+  - **Superseded, narrowly, for the plugin-management and cleanup executors**
+    ([machine-bootstrap-contract.md §1.5](machine-bootstrap-contract.md),
+    ADR-0046 §5): those two H2 executors are now **write-ahead**. They persist
+    a `planned` record — carrying the `plan_hash` and the durable
+    `planned_actions` list — *before* any host mutation, append a `journal[]`
+    entry after *each* action, and finalize a terminal `completed`/`failed`
+    record. A crash therefore leaves a durable record that names what landed
+    (`planned`/`in-progress` are nonterminal statuses; the reader treats them as
+    interrupted, never as a clean run). Recovery is still re-run, not rollback —
+    nothing is auto-uninstalled — but the record is no longer written only
+    *after* the mutation. The "re-run, not rollback" ordering above still governs
+    config apply and every other plan-artifact writer.
+  - **Plan/executor drift** (§1.6): `--expected-plan-hash <sha256>` guards
+    execution — the executor recomputes the mode-invariant executable-action
+    hash and, on divergence, refuses (terminal `refused`, no action) and
+    re-presents the fresh hash rather than running a plan the operator never saw.
 - `dry_run` keeps its current meaning (mutation axis only:
   `!(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview)`).
   Evidence collection never affects `dry_run`.
 
-## 3. Report schema contract (`runtime-settings-1.17`)
+## 3. Report schema contract (`runtime-settings-1.18`)
 
-`SETTINGS_SCHEMA_VERSION` bumps `runtime-settings-1.16` → `runtime-settings-1.17`
-(additive, consistent with the 1.x bump history). The discriminator exists in
-**both** modes — a narrowed report must never be distinguishable only by what
-it lacks:
+`SETTINGS_SCHEMA_VERSION` bumped `runtime-settings-1.16` → `runtime-settings-1.17`
+for the discriminator below, then `runtime-settings-1.17` →
+`runtime-settings-1.18` (additive, consistent with the 1.x bump history) when the
+§1.6 write-ahead work added `plan_hash` to `report.plugin_management` and
+`report.plugin_cleanup` — the mode-invariant executable-action hash bootstrap
+reads from a dry-run plan to present `--expected-plan-hash`. It is probe-derived,
+so it is `null` alongside its section in `local_plan` mode; the execution artifact
+carries the same hash plus the `planned_actions`/`journal[]` write-ahead fields
+under its own `runtime-settings-execution-artifact-1.2` schema
+([machine-bootstrap-contract.md §1.5/§1.6](machine-bootstrap-contract.md)). The
+discriminator exists in **both** modes — a narrowed report must never be
+distinguishable only by what it lacks:
 
 - `report_scope`: `"full"` | `"local_plan"`. Top-level, both modes.
 - `host_cli_probes`: `{ status: "run", flag: null }` in full mode;
@@ -210,9 +235,12 @@ it lacks:
    output byte-compatible (modulo nothing), JSON delta limited to the §3 keys.
 3. Renderer guards: `summarizeSettings` and `formatText` on a narrowed report
    (no throw, qualified output, explicit not-evaluated lines).
-4. Schema-version lockstep: the `runtime-settings-1.17` constant, and the
-   exact-version assertion in `tests/runtime/test-notification-plan.mjs`,
-   updated together.
+4. Schema-version lockstep: the `runtime-settings-1.18` report constant and the
+   `runtime-settings-execution-artifact-1.2` execution-artifact constant, and the
+   exact-version assertions that pin each (`test-settings-probe-boundary.mjs` pins
+   both constants; `test-notification-plan.mjs` and `test-settings.mjs` pin the
+   report version; `test-settings.mjs` pins the artifact version), updated
+   together.
 5. Conflict rejection: each rejected flag, exercised through the **exported
    `runSettings` API** (not only argv), rejects before any probe, config
    write, or artifact write.

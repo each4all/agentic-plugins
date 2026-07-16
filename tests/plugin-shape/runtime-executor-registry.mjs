@@ -224,11 +224,12 @@ export const ALLOWED_COMMAND_LITERALS = ['claude', 'codex', 'git', '/usr/bin/osa
 export const NODE_COMMAND_SENTINEL = 'process.execPath';
 
 // Command tokens that are identifiers (not literals) but human-verified safe,
-// per file. doctor.mjs inspectCli `runner(name, ...)` loops name over
-// {claude, codex}. A `runCommand`/`spawn` with any OTHER bare identifier as its
-// command fails the command-gate.
+// per file. lib/machine-probe.mjs inspectCli `runner(name, ...)` loops name over
+// {claude, codex} (extracted from doctor.mjs for the machine-bootstrap probe seam).
+// A `runCommand`/`spawn` with any OTHER bare identifier as its command fails the
+// command-gate.
 export const ALLOWED_COMMAND_VARIABLES = {
-  'doctor.mjs': ['name'], // inspectCli(name, …) loops name over {claude, codex}
+  'machine-probe.mjs': ['name'], // inspectCli(name, …) loops name over {claude, codex}
   'compat.mjs': ['host'], // observeHost(host, …) probes host versions over {claude, codex}
 };
 
@@ -298,13 +299,14 @@ export const ALLOWED_DYNAMIC_PROJECTIONS = [
   },
 ];
 
-// Call sites that pass host-CLI argv as inline object properties. doctor.mjs
-// calls inspectCli('claude'|'codex', { versionArgs:[…], authArgs:[…], … }): the
-// command is positional arg 0, and every array-literal property of the options
-// object (arg 1) is argv to validate against that command. (There is no
-// CLI_PROBES variable — the probe arrays are inline at the call.)
+// Call sites that pass host-CLI argv as inline object properties. lib/machine-probe.mjs
+// (the machine-bootstrap probe seam, extracted from doctor.mjs) calls
+// inspectCli('claude'|'codex', { versionArgs:[…], authArgs:[…], … }): the command is
+// positional arg 0, and every array-literal property of the options object (arg 1) is
+// argv to validate against that command. (There is no CLI_PROBES variable — the probe
+// arrays are inline at the call.)
 export const PROBE_CONFIGS = {
-  'doctor.mjs': [
+  'machine-probe.mjs': [
     { callee: 'inspectCli', commandArgIndex: 0, optionsArgIndex: 1 },
   ],
 };
@@ -327,6 +329,9 @@ export const ARGV_VERB_ALLOWLIST = {
     ['--version'], ['--help'],
     ['auth', 'status'],
     ['plugin', '--help'], ['plugin', 'list'], ['/plugin', 'list'],
+    // machine-probe.mjs §1.2 marketplace-registration read probe. json-native on Claude
+    // (contract §1.2); read-only, source-identity match, never a mutation.
+    ['plugin', 'marketplace', 'list', '--json'],
     ['plugin', 'install', '*'],
     ['plugin', 'update', '*'],
     // 'plugin uninstall' is NOT a general verb here — it is governed solely by
@@ -342,6 +347,10 @@ export const ARGV_VERB_ALLOWLIST = {
     ['plugin', 'list', '--available', '--json'], // C pre-flight policy probe (ADR-0035 §6)
     ['plugin', 'add', '*'], // C: codex plugin add <name>@agentic-plugins (ADR-0035 §5/§6, H2 install)
     ['plugin', 'marketplace', '--help'],
+    // machine-probe.mjs §1.2 marketplace-registration read probe: prefer --json
+    // (host-parity-baseline: source identity as of 0.139.0), text fallback for an older
+    // Codex without --json. Both read-only, source-identity match, never a mutation.
+    ['plugin', 'marketplace', 'list'], ['plugin', 'marketplace', 'list', '--json'],
     ['plugin', 'marketplace', 'add', '*'],
     ['plugin', 'marketplace', 'upgrade', '*'],
   ],

@@ -71,8 +71,17 @@
 // were private to doctor.mjs.
 
 import { lstat, readdir, readFile } from 'node:fs/promises';
-import { basename, dirname, join, relative, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { sanitizeValue } from './permission-sanitize.mjs';
+
+// $CODEX_HOME resolution — the ONE canonical form (the `collectUsageRecordSources`
+// precedent). `~/.codex` is the default, never a hardcode (machine-bootstrap-contract.md
+// §10.2). Lives in this pure, host-CLI-free leaf so every caller (doctor, machine-probe,
+// settings, consensus) resolves it identically without dragging the host-CLI probe into a
+// spawn-sensitive import closure.
+export function resolveCodexHome(env, homeDir) {
+  return env && env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(homeDir, '.codex');
+}
 
 export const TERMINAL_PEER_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled', 'orphaned', 'pruned']);
 export const VALID_PEER_RUN_STATUSES = new Set([

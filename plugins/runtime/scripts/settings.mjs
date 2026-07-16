@@ -10,14 +10,15 @@
 // Codex hook review/trust is host-session UI state, so runtime can only record
 // an explicit operator attestation artifact after the user reviews /hooks.
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor, codexPerPluginVerbs, collectUsageRecordSources } from './doctor.mjs';
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
+import { resolveCodexHome } from './lib/state-readers.mjs';
 import { semverCompare } from './lib/semver.mjs';
 import {
   CONFIG_KEYS,
@@ -35,13 +36,20 @@ import { buildCodexNotificationPlan } from './lib/notification-plan.mjs';
 import { buildEgressLauncherPlan } from './lib/egress-launcher-plan.mjs';
 import { redactEgressCredentialFromEnv } from './lib/egress-config.mjs';
 
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.17';
+// 1.17 → 1.18 (additive): report.plugin_management / report.plugin_cleanup gain
+// `plan_hash` (§1.6 drift guard) so bootstrap can read a dry-run plan's hash and
+// present `--expected-plan-hash`. Probe-derived, so still null in local_plan mode.
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.18';
 
 // ADR-0038 settings-claude permission plan (M1): how many recent usage records to
 // read per host, and a per-file byte cap, when building the dry-run plan.
 const DEFAULT_PERMISSION_PLAN_MAX_FILES = 100;
 const DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES = 8 * 1024 * 1024;
-export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.1';
+// 1.1 → 1.2 (machine-bootstrap-contract.md §1.5, ADR-0046 §5): the plugin-
+// management and cleanup executors are now write-ahead — the artifact gains the
+// nonterminal `planned` / `in-progress` statuses, a per-action `journal[]`, the
+// `planned_actions` durable-intent list, and the `plan_hash` (§1.6 drift guard).
+export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.2';
 // The config-key contract — key families, notify channel/defaults, per-key
 // validators, and the TOML read parser — lives in lib/runtime-config.mjs so
 // the ADR-0040 §2 notify emitter consumes the OFFICIAL key surface without
@@ -61,6 +69,11 @@ const EXECUTABLE_PLUGIN_ACTIONS = new Set(['install-plugin', 'update-plugin', 'a
 const EXECUTABLE_PLUGIN_CLEANUP_ACTIONS = new Set(['uninstall-retired-plugin']);
 const DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS = 120000;
 const SETTINGS_RUN_ID_RE = /^settings-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
+// Write-ahead status taxonomy (machine-bootstrap-contract.md §1.5). A nonterminal
+// record is an INTERRUPTED run — it has zero failures precisely because it has not
+// finished, so readers MUST treat it as not-available, never as a clean success.
+const SETTINGS_EXECUTION_TERMINAL_STATUSES = new Set(['completed', 'failed', 'refused']);
+const SETTINGS_EXECUTION_NONTERMINAL_STATUSES = new Set(['planned', 'in-progress']);
 const DEFAULT_HOST_INSTALL_COMMANDS = {
   claude: 'install Claude Code with the host-native installer, then run `claude --version`',
   codex: 'install Codex CLI with the host-native installer, then run `codex --version`',
@@ -93,6 +106,9 @@ export async function runSettings({
   notificationPlan = false,
   egressLauncherPlan = false,
   runId = null,
+  // §1.6 plan/executor drift: an operator-supplied hash the executor revalidates
+  // against the freshly recomputed plan, refusing on divergence. Null = no guard.
+  expectedPlanHash = null,
 } = {}) {
   if (!TARGETS.has(target)) throw new Error('--target must be repo, user, or both');
   // Probe-free conflict gate (settings-report-contract.md §1-§2) — MUST run
@@ -108,6 +124,7 @@ export async function runSettings({
     if (pluginManagementHost !== undefined) conflicts.push('--plugin-management-host exclusively parameterizes the rejected plugin-management executor');
     if (pluginManagementTimeoutMs !== undefined) conflicts.push('--plugin-management-timeout-ms exclusively parameterizes the rejected plugin-management executor');
     if (runId !== null && runId !== undefined) conflicts.push('--run-id exclusively parameterizes the rejected settings execution artifact');
+    if (expectedPlanHash !== null && expectedPlanHash !== undefined) conflicts.push('--expected-plan-hash exclusively parameterizes the rejected plugin-management executor');
     if (conflicts.length > 0) {
       throw new Error(`--skip-host-cli-probes conflicts (plugins/runtime/docs/settings-report-contract.md §1): ${conflicts.join('; ')}`);
     }
@@ -142,6 +159,7 @@ export async function runSettings({
     const peerContext = await resolvePeerExecutionContext({
       repoRoot: resolvedRepoRoot,
       homeDir: resolvedHomeDir,
+      codexHome: resolveCodexHome(env, resolvedHomeDir),
     });
     peerModelEffort = peerContext.model_effort;
   } else {
@@ -173,31 +191,101 @@ export async function runSettings({
   let pluginCleanup = null;
   let hookSettings = null;
   let codexHookReview = null;
+  // Write-ahead execution state, threaded from the H2 loop to the terminal
+  // finalize below (machine-bootstrap-contract.md §1.5/§1.6).
+  let planHashRefused = false;
+  let writeAhead = null;
+  let settingsExecutionCommand = null;
+  let mutationPlanHash = null;
+  let mutationActions = [];
   if (!skipHostCliProbes) {
     pluginPlans = buildPluginPlans(doctor.plugins, {
       codexPerPluginVerbList: codexPerPluginVerbs(doctor.clis?.codex?.feature_surface ?? {}),
+      marketplaceRegistration: doctor.marketplace_registration ?? null,
     });
-    pluginManagement = await buildPluginManagementPlan({
+    // PURE plan halves (§1.3) — build candidates with NO subprocess. Execution is
+    // the separate write-ahead block below so the durable record precedes any
+    // machine mutation (§1.5).
+    pluginManagement = buildPluginManagementPlan({
       plugins: pluginPlans,
       clis: doctor.clis,
       execute: executePluginManagement,
       hostFilter: effectivePluginManagementHost,
-      runner: commandRunner,
-      cwd: resolvedRepoRoot,
-      env,
       timeoutMs: effectivePluginManagementTimeoutMs,
     });
-    applyPluginManagementResults(pluginPlans, pluginManagement);
     cliPlans = buildCliPlans(doctor.clis);
-    pluginCleanup = await buildPluginCleanupPlans({
+    pluginCleanup = buildPluginCleanupPlans({
       hostParityIssues: doctor.host_parity?.issues ?? [],
       clis: doctor.clis,
       execute: executePluginCleanup,
-      runner: commandRunner,
-      cwd: resolvedRepoRoot,
-      env,
       timeoutMs: effectivePluginManagementTimeoutMs,
     });
+
+    // §1.6 plan hash over the mode-invariant executable-action set — exposed on
+    // both plan objects (and thus the report) so bootstrap can present it and the
+    // executor can revalidate against it.
+    mutationActions = collectMutationActions({ pluginManagement, pluginCleanup });
+    mutationPlanHash = computeMutationPlanHash(mutationActions);
+    pluginManagement.plan_hash = mutationPlanHash;
+    pluginCleanup.plan_hash = mutationPlanHash;
+
+    if ((executePluginManagement || executePluginCleanup) && expectedPlanHash && expectedPlanHash !== mutationPlanHash) {
+      // §1.6 drift refusal: the operator's hash no longer matches the freshly
+      // recomputed plan — REFUSE and re-present rather than run a plan they never
+      // saw. No execution, no write-ahead; finalize records status `refused`.
+      planHashRefused = true;
+      pluginManagement.plan_hash_status = 'mismatch';
+      pluginManagement.plan_hash_expected = expectedPlanHash;
+      pluginCleanup.plan_hash_status = 'mismatch';
+      pluginCleanup.plan_hash_expected = expectedPlanHash;
+    } else if (executePluginManagement || executePluginCleanup) {
+      // Write-ahead H2 execution (§1.5): persist `planned` + hash BEFORE any
+      // action, journal after EACH action, finalize terminal below.
+      if (expectedPlanHash) {
+        pluginManagement.plan_hash_status = 'validated';
+        pluginCleanup.plan_hash_status = 'validated';
+      }
+      settingsExecutionCommand = buildSettingsExecutionCommand({
+        executePluginManagement,
+        executePluginCleanup,
+        attestCodexHookReview,
+        apply,
+        pluginManagement,
+        configTargets: configPlans.targets,
+      });
+      writeAhead = await beginWriteAheadSettingsExecution({
+        repoRoot: resolvedRepoRoot,
+        runId: settingsRunId,
+        planHash: mutationPlanHash,
+        plannedActions: mutationActions,
+        command: settingsExecutionCommand,
+        pluginManagement,
+        pluginCleanup,
+        createdAt: startedAt,
+        now,
+      });
+      if (executePluginManagement) {
+        await executePluginManagementPlans({
+          plan: pluginManagement,
+          runner: commandRunner,
+          cwd: resolvedRepoRoot,
+          env,
+          timeoutMs: effectivePluginManagementTimeoutMs,
+          onAction: writeAhead.appendJournal,
+        });
+      }
+      if (executePluginCleanup) {
+        await executePluginCleanupPlans({
+          plan: pluginCleanup,
+          runner: commandRunner,
+          cwd: resolvedRepoRoot,
+          env,
+          timeoutMs: effectivePluginManagementTimeoutMs,
+          onAction: writeAhead.appendJournal,
+        });
+      }
+    }
+    applyPluginManagementResults(pluginPlans, pluginManagement);
   }
 
   const companionSettings = buildCompanionSettingPlans({
@@ -379,11 +467,28 @@ export async function runSettings({
   };
   report.overall = summarizeSettings(report);
   if (settingsExecutionRequested) {
-    report.artifacts = await writeSettingsExecutionArtifact({
+    // Terminal finalize (§1.5): rewrites the write-ahead record — or, for an
+    // attestation-only or plan-hash-refused run that never entered the loop,
+    // writes the sole terminal record. Attestation-only runs never allocated a
+    // command, so build it lazily here from the same inputs.
+    const command = settingsExecutionCommand ?? buildSettingsExecutionCommand({
+      executePluginManagement,
+      executePluginCleanup,
+      attestCodexHookReview,
+      apply,
+      pluginManagement,
+      configTargets: configPlans.targets,
+    });
+    report.artifacts = await finalizeSettingsExecutionArtifact({
       repoRoot: resolvedRepoRoot,
       runId: settingsRunId,
       report,
       now,
+      command,
+      planHash: mutationPlanHash,
+      plannedActions: mutationActions,
+      journal: writeAhead?.journal ?? [],
+      refused: planHashRefused,
     });
   }
   return report;
@@ -655,7 +760,10 @@ function buildCliAuthPlan(name, cli) {
   };
 }
 
-async function buildPluginCleanupPlans({ hostParityIssues, clis, execute, runner, cwd, env, timeoutMs }) {
+// PURE plan half — identical durability rationale as buildPluginManagementPlan.
+// The retired-plugin cleanup executor had the identical ordering defect
+// (machine-bootstrap-contract.md §1.5 part 4), so it is split the same way.
+function buildPluginCleanupPlans({ hostParityIssues, clis, execute, timeoutMs }) {
   const plans = [];
   for (const issue of hostParityIssues) {
     if (issue.id !== 'claude_retired_or_unknown_plugin') continue;
@@ -694,26 +802,6 @@ async function buildPluginCleanupPlans({ hostParityIssues, clis, execute, runner
       ],
     });
   }
-  if (execute) {
-    for (const plan of plans) {
-      if (plan.status !== 'planned') continue;
-      const startedAt = new Date();
-      const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs });
-      const completedAt = new Date();
-      const semanticFailure = classifyPluginManagementSemanticFailure({ plan, result });
-      const effectiveResult = semanticFailure
-        ? {
-            ...result,
-            ok: false,
-            error_code: semanticFailure.error_code,
-            error_message: semanticFailure.error_message,
-          }
-        : result;
-      plan.executed = true;
-      plan.status = effectiveResult.ok ? 'executed' : 'failed';
-      plan.result = sanitizeCommandResult({ result: effectiveResult, startedAt, completedAt });
-    }
-  }
   const summary = summarizePluginCleanupPlans(plans);
   return {
     requested: execute,
@@ -732,9 +820,56 @@ async function buildPluginCleanupPlans({ hostParityIssues, clis, execute, runner
   };
 }
 
+// EXECUTE half — mutates pluginCleanup.plans in place, journaling each action
+// through the same write-ahead sink as plugin-management (§1.5 part 4).
+async function executePluginCleanupPlans({ plan: pluginCleanup, runner, cwd, env, timeoutMs, onAction }) {
+  const plans = pluginCleanup.plans;
+  for (const plan of plans) {
+    if (plan.status !== 'planned') continue;
+    const startedAt = new Date();
+    const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs });
+    const completedAt = new Date();
+    const semanticFailure = classifyPluginManagementSemanticFailure({ plan, result });
+    const effectiveResult = semanticFailure
+      ? {
+          ...result,
+          ok: false,
+          error_code: semanticFailure.error_code,
+          error_message: semanticFailure.error_message,
+        }
+      : result;
+    plan.executed = true;
+    plan.status = effectiveResult.ok ? 'executed' : 'failed';
+    plan.result = sanitizeCommandResult({ result: effectiveResult, startedAt, completedAt });
+    if (onAction) await onAction(makeExecutionJournalEntry({ area: 'plugin-cleanup', plan }));
+  }
+  const summary = summarizePluginCleanupPlans(plans);
+  pluginCleanup.summary = summary;
+  pluginCleanup.status = summarizePluginCleanupStatus(plans, summary);
+}
+
 function buildPluginCleanupCommand({ host, plugin }) {
   if (host !== 'claude' || typeof plugin !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(plugin)) return null;
   return commandSpec('claude', ['plugin', 'uninstall', `${plugin}@agentic-plugins`]);
+}
+
+// The write-ahead journal entry appended after each executed action
+// (machine-bootstrap-contract.md §1.5 part 1): { action, host, status,
+// started_at, finished_at, exit_code } plus area/id/plugin for traceability.
+// Timing is read from the already-sanitized plan.result (null for a plan that
+// was blocked before any subprocess ran).
+function makeExecutionJournalEntry({ area, plan }) {
+  return {
+    area,
+    id: plan.id ?? `${plan.plugin ?? ''}:${plan.host}:${plan.action}`,
+    action: plan.action,
+    host: plan.host,
+    plugin: plan.plugin ?? null,
+    status: plan.status,
+    started_at: plan.result?.started_at ?? null,
+    finished_at: plan.result?.completed_at ?? null,
+    exit_code: plan.result?.exit_code ?? null,
+  };
 }
 
 function classifyPluginCleanupPlan({ host, action, argv, clis, execute }) {
@@ -823,19 +958,42 @@ function summarizePluginCleanupStatus(plans, summary) {
   return 'planned';
 }
 
-function buildPluginPlans(plugins, { codexPerPluginVerbList = [] } = {}) {
+function buildPluginPlans(plugins, { codexPerPluginVerbList = [], marketplaceRegistration = null } = {}) {
   const result = {};
   for (const name of PLUGIN_NAMES) {
     const plugin = plugins[name];
     const sourceVersion = plugin.source?.claude_manifest?.version ?? plugin.source?.codex_manifest?.version ?? null;
+    // `./plugins/<name>` source actually exists ⟺ a source manifest was read. A consumer
+    // machine has none — so a repo-catalog register-marketplace-entry is meaningless there
+    // (machine-bootstrap-contract.md §1.1).
+    const sourceExists = plugin.source?.present === true;
     const claudeInstalled = plugin.installed?.claude_plugin_list ?? null;
     const claudeCacheLatest = plugin.cache?.claude?.latest ?? null;
     const codexCacheLatest = plugin.cache?.codex?.latest ?? null;
     const codexTmpMarketplace = plugin.cache?.codex_tmp_marketplace ?? null;
     const codexResolved = plugin.installed?.codex_resolved ?? null;
+    // §1.4.1 currentness authority: the registered marketplace catalog at installLocation
+    // (from C2's probe), NOT repoRoot/plugins/<name>. Claude catalogs carry versions; Codex
+    // catalogs are versionless, so codex currentness stays `unknown` and keeps the source
+    // fallback below. This is the fix for the silent no-update path — a consumer has no
+    // source manifest, but it does have a registered catalog.
+    const catalogClaudeVersion = marketplaceRegistration?.claude?.catalog?.versions?.[name] ?? null;
+    // Codex catalogs are deliberately versionless (§1.4.1), so this is null today and the
+    // codex currentness target below falls back to the source manifest — but routing codex
+    // through the SAME catalog-preferred target keeps the two hosts symmetric (no claude/codex
+    // mirror) and picks up a per-entry version automatically if a Codex catalog ever gains one.
+    const catalogCodexVersion = marketplaceRegistration?.codex?.catalog?.versions?.[name] ?? null;
+    // Actual per-host INSTALLED version (peer #8 (b)/(c)) — mirrors doctor's list-authoritative
+    // resolution. Bound to attestation/review-targets so they NEVER attest a catalog-latest
+    // version that may not be installed; falls back to the source version so a source-tree run
+    // (where nothing is "installed" via the host list) keeps reporting the built version.
+    const codexInstalledVersion = codexResolved?.decision === 'fallback'
+      ? (codexCacheLatest?.manifest_version ?? null)
+      : (codexResolved?.version ?? null);
     result[name] = {
       status: plugin.status,
       source_version: sourceVersion,
+      installed_version: codexInstalledVersion ?? claudeInstalled?.version ?? claudeCacheLatest?.manifest_version ?? null,
       marketplace: plugin.marketplace,
       installed: {
         claude_plugin_list: claudeInstalled,
@@ -848,6 +1006,9 @@ function buildPluginPlans(plugins, { codexPerPluginVerbList = [] } = {}) {
       recommendations: pluginRecommendations({
         name,
         sourceVersion,
+        catalogClaudeVersion,
+        catalogCodexVersion,
+        sourceExists,
         marketplace: plugin.marketplace,
         claudeInstalled,
         claudeCacheLatest,
@@ -878,13 +1039,21 @@ function summarizeSingleManifest(manifest) {
   };
 }
 
-function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstalled, claudeCacheLatest, codexCacheLatest, codexTmpMarketplace, codexResolved = null, codexPerPluginVerbList = [] }) {
+function pluginRecommendations({ name, sourceVersion, catalogClaudeVersion = null, catalogCodexVersion = null, sourceExists = false, marketplace, claudeInstalled, claudeCacheLatest, codexCacheLatest, codexTmpMarketplace, codexResolved = null, codexPerPluginVerbList = [] }) {
   const recommendations = [];
   // `add` is the per-plugin install verb and the threshold for recognizing the
   // surface; enumerate only the observed verbs so strings never overclaim.
   const codexPerPluginSurface = codexPerPluginVerbList.includes('add');
   const codexPerPluginVerbText = codexPerPluginVerbList.join('/') || 'add';
-  if (!marketplace?.claude) {
+  // register-marketplace-entry is a REPO-CATALOG edit — it only makes sense where the
+  // `./plugins/<name>` source exists (a checkout). On a consumer machine the source is
+  // absent, so doctor honestly reports `marketplace: null`, and emitting "add <name> to
+  // .claude-plugin/marketplace.json with source ./plugins/<name>" is meaningless advice
+  // (machine-bootstrap-contract.md §1.1 — the sixteen false remediations). Gate it behind
+  // source existence. The consumer remedy is Stage-0 host-native `marketplace add`, which
+  // bootstrap detects and prints (§2 Stage 0) from C2's registration probe — not a per-plugin
+  // repo-catalog edit here.
+  if (sourceExists && !marketplace?.claude) {
     recommendations.push({
       host: 'claude',
       action: 'register-marketplace-entry',
@@ -893,7 +1062,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
       detail: `Add ${name} to .claude-plugin/marketplace.json with source ./plugins/${name}.`,
     });
   }
-  if (!marketplace?.codex) {
+  if (sourceExists && !marketplace?.codex) {
     recommendations.push({
       host: 'codex',
       action: 'register-marketplace-entry',
@@ -903,6 +1072,15 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
     });
   }
 
+  // §1.4.1 currentness target: the registered marketplace catalog version (from C2), falling
+  // back to the source manifest ONLY when no registered catalog answered (a source-tree run,
+  // or an unregistered marketplace). This is what moves the claude currentness check off the
+  // repo checkout so a consumer's stale install is actually detected.
+  const claudeCurrentnessTarget = catalogClaudeVersion ?? sourceVersion;
+  // Same catalog-preferred, source-fallback target for Codex (symmetric with claude). Codex
+  // catalogs are versionless so this is `sourceVersion` today; both hosts route through one
+  // discipline so the currentness path never conflates with the installed-version attestation.
+  const codexCurrentnessTarget = catalogCodexVersion ?? sourceVersion;
   const claudeVersion = claudeInstalled?.version ?? claudeCacheLatest?.manifest_version ?? null;
   if (!claudeInstalled && !claudeCacheLatest) {
     const command = buildPluginCommand({ host: 'claude', action: 'install-plugin', name });
@@ -916,7 +1094,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
       executable: true,
       detail: 'Dry-run by default; add --execute-plugin-management to run this allowlisted host-native plugin command.',
     });
-  } else if (sourceVersion && claudeVersion && semverCompare(String(claudeVersion), String(sourceVersion)) < 0) {
+  } else if (claudeCurrentnessTarget && claudeVersion && semverCompare(String(claudeVersion), String(claudeCurrentnessTarget)) < 0) {
     const command = buildPluginCommand({ host: 'claude', action: 'update-plugin', name });
     recommendations.push({
       id: `${name}:claude:update-plugin`,
@@ -926,7 +1104,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
       command: command.display,
       argv: command.argv,
       executable: true,
-      detail: `Installed ${claudeVersion}; source/catalog ${sourceVersion}.`,
+      detail: `Installed ${claudeVersion}; ${catalogClaudeVersion ? 'registered catalog' : 'source'} ${claudeCurrentnessTarget}.`,
     });
   }
 
@@ -942,7 +1120,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
   const codexInstallCacheStatus = codexCacheLatest ? 'present' : 'missing';
   const codexListAuthoritative = Boolean(codexResolved) && codexDecision !== 'fallback';
   if (codexListAuthoritative && codexDecision === 'installed') {
-    if (sourceVersion && codexListVersion && semverCompare(String(codexListVersion), String(sourceVersion)) < 0) {
+    if (codexCurrentnessTarget && codexListVersion && semverCompare(String(codexListVersion), String(codexCurrentnessTarget)) < 0) {
       const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
       recommendations.push({
         id: `${name}:codex:upgrade-marketplace`,
@@ -952,7 +1130,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
         command: command.display,
         argv: command.argv,
         executable: true,
-        detail: `Codex \`plugin list\` reports ${name} ${codexListVersion} installed; source/catalog ${sourceVersion}. Codex upgrades via the marketplace, not a per-plugin update command.`,
+        detail: `Codex \`plugin list\` reports ${name} ${codexListVersion} installed; source/catalog ${codexCurrentnessTarget}. Codex upgrades via the marketplace, not a per-plugin update command.`,
         evidence: { list_decision: codexDecision, list_version: codexListVersion, install_cache_status: codexInstallCacheStatus },
       });
     } else if (!codexCacheLatest) {
@@ -996,7 +1174,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
     // The list authoritatively reports not installed: recommend making it
     // available based on the marketplace cache state, ignoring any stale install
     // cache (which the list overrides).
-    if (sourceVersion && codexTmpVersion && semverCompare(String(codexTmpVersion), String(sourceVersion)) < 0) {
+    if (codexCurrentnessTarget && codexTmpVersion && semverCompare(String(codexTmpVersion), String(codexCurrentnessTarget)) < 0) {
       const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
       recommendations.push({
         id: `${name}:codex:upgrade-marketplace`,
@@ -1006,7 +1184,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
         command: command.display,
         argv: command.argv,
         executable: true,
-        detail: `Codex \`plugin list\` does not report ${name} installed; marketplace cache has ${codexTmpVersion}, source/catalog ${sourceVersion}. Refresh the marketplace before installing.`,
+        detail: `Codex \`plugin list\` does not report ${name} installed; marketplace cache has ${codexTmpVersion}, source/catalog ${codexCurrentnessTarget}. Refresh the marketplace before installing.`,
         evidence: { list_decision: codexDecision, list_version: null, install_cache_status: codexInstallCacheStatus },
       });
     } else if (codexTmpVersion && codexPerPluginSurface) {
@@ -1072,7 +1250,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
       });
     }
   } else if (!codexCacheLatest) {
-    if (sourceVersion && codexTmpVersion && semverCompare(String(codexTmpVersion), String(sourceVersion)) < 0) {
+    if (codexCurrentnessTarget && codexTmpVersion && semverCompare(String(codexTmpVersion), String(codexCurrentnessTarget)) < 0) {
       const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
       recommendations.push({
         id: `${name}:codex:upgrade-marketplace`,
@@ -1082,7 +1260,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
         command: command.display,
         argv: command.argv,
         executable: true,
-        detail: `Codex marketplace cache has ${codexTmpVersion}; source/catalog ${sourceVersion}. Codex upgrades via the marketplace, not a per-plugin update command.`,
+        detail: `Codex marketplace cache has ${codexTmpVersion}; source/catalog ${codexCurrentnessTarget}. Codex upgrades via the marketplace, not a per-plugin update command.`,
       });
     } else if (codexTmpVersion) {
       recommendations.push({
@@ -1120,7 +1298,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
           : `Codex exposes marketplace add/upgrade/remove, not per-plugin install; add the marketplace catalog to make ${name} available.`,
       });
     }
-  } else if (sourceVersion && codexVersion && semverCompare(String(codexVersion), String(sourceVersion)) < 0) {
+  } else if (codexCurrentnessTarget && codexVersion && semverCompare(String(codexVersion), String(codexCurrentnessTarget)) < 0) {
     const command = buildPluginCommand({ host: 'codex', action: 'upgrade-marketplace', name });
     recommendations.push({
       id: `${name}:codex:upgrade-marketplace`,
@@ -1130,7 +1308,7 @@ function pluginRecommendations({ name, sourceVersion, marketplace, claudeInstall
       command: command.display,
       argv: command.argv,
       executable: true,
-      detail: `Cached ${codexVersion}; source/catalog ${sourceVersion}. Codex upgrades via the marketplace, not a per-plugin update command.`,
+      detail: `Cached ${codexVersion}; source/catalog ${codexCurrentnessTarget}. Codex upgrades via the marketplace, not a per-plugin update command.`,
     });
   }
   return recommendations;
@@ -1219,48 +1397,13 @@ async function codexInstallPostverify({ plan, runner, cwd, env, timeoutMs }) {
   return { installed, evidence: { probed: true, installed, version: entry?.version ?? null, enabled: entry?.enabled ?? null } };
 }
 
-async function buildPluginManagementPlan({ plugins, clis, execute, hostFilter, runner, cwd, env, timeoutMs }) {
+// PURE plan half (machine-bootstrap-contract.md §1.3/§1.5): builds the candidate
+// plan set with NO runner, NO subprocess, NO artifact write. The execute half is
+// executePluginManagementPlans() below, which the write-ahead orchestrator drives
+// AFTER the `planned` record lands on disk. Splitting alone changes nothing about
+// durability (§1.5) — the write-ahead sequencing in runSettings is the fix.
+function buildPluginManagementPlan({ plugins, clis, execute, hostFilter, timeoutMs }) {
   const plans = buildPluginManagementCandidates({ plugins, clis, hostFilter });
-  if (execute) {
-    for (const plan of plans) {
-      if (plan.status !== 'planned') continue;
-      const isCodexInstall = plan.host === 'codex' && plan.action === 'install-plugin';
-      // ADR-0035 §6 pre-flight: gate the codex install on installPolicy/authPolicy
-      // read from `codex plugin list --available --json` (the plain list omits
-      // not-installed plugins). If not safe, BLOCK — never run `codex plugin add`.
-      if (isCodexInstall) {
-        const preflight = await codexInstallPreflight({ plan, runner, cwd, env, timeoutMs });
-        plan.preflight = preflight.evidence;
-        if (!preflight.ok) {
-          plan.executed = false;
-          plan.status = 'blocked';
-          plan.block_reason = preflight.reason;
-          continue;
-        }
-      }
-      const startedAt = new Date();
-      const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs });
-      const completedAt = new Date();
-      // ADR-0035 §6 post-verify: confirm the install landed via a read-only list.
-      let postVerify = null;
-      if (isCodexInstall && result.ok) {
-        postVerify = await codexInstallPostverify({ plan, runner, cwd, env, timeoutMs });
-        plan.post_verify = postVerify.evidence;
-      }
-      const semanticFailure = classifyPluginManagementSemanticFailure({ plan, result, postVerify });
-      const effectiveResult = semanticFailure
-        ? {
-            ...result,
-            ok: false,
-            error_code: semanticFailure.error_code,
-            error_message: semanticFailure.error_message,
-          }
-        : result;
-      plan.executed = true;
-      plan.status = effectiveResult.ok ? 'executed' : 'failed';
-      plan.result = sanitizeCommandResult({ result: effectiveResult, startedAt, completedAt });
-    }
-  }
   return {
     requested: execute,
     executed: execute,
@@ -1278,6 +1421,56 @@ async function buildPluginManagementPlan({ plugins, clis, execute, hostFilter, r
       'Raw stdout and stderr are omitted from settings output.',
     ],
   };
+}
+
+// EXECUTE half — mutates pluginManagement.plans in place. `onAction` is the
+// write-ahead journal sink (machine-bootstrap-contract.md §1.5): it is awaited
+// after EACH action so the durable record advances with the machine mutation,
+// never lagging it. Recomputes the post-execution summary + manual_followups.
+async function executePluginManagementPlans({ plan: pluginManagement, runner, cwd, env, timeoutMs, onAction }) {
+  const plans = pluginManagement.plans;
+  for (const plan of plans) {
+    if (plan.status !== 'planned') continue;
+    const isCodexInstall = plan.host === 'codex' && plan.action === 'install-plugin';
+    // ADR-0035 §6 pre-flight: gate the codex install on installPolicy/authPolicy
+    // read from `codex plugin list --available --json` (the plain list omits
+    // not-installed plugins). If not safe, BLOCK — never run `codex plugin add`.
+    if (isCodexInstall) {
+      const preflight = await codexInstallPreflight({ plan, runner, cwd, env, timeoutMs });
+      plan.preflight = preflight.evidence;
+      if (!preflight.ok) {
+        plan.executed = false;
+        plan.status = 'blocked';
+        plan.block_reason = preflight.reason;
+        if (onAction) await onAction(makeExecutionJournalEntry({ area: 'plugin-management', plan }));
+        continue;
+      }
+    }
+    const startedAt = new Date();
+    const result = await runner(plan.argv.command, plan.argv.args, { cwd, env, timeoutMs });
+    const completedAt = new Date();
+    // ADR-0035 §6 post-verify: confirm the install landed via a read-only list.
+    let postVerify = null;
+    if (isCodexInstall && result.ok) {
+      postVerify = await codexInstallPostverify({ plan, runner, cwd, env, timeoutMs });
+      plan.post_verify = postVerify.evidence;
+    }
+    const semanticFailure = classifyPluginManagementSemanticFailure({ plan, result, postVerify });
+    const effectiveResult = semanticFailure
+      ? {
+          ...result,
+          ok: false,
+          error_code: semanticFailure.error_code,
+          error_message: semanticFailure.error_message,
+        }
+      : result;
+    plan.executed = true;
+    plan.status = effectiveResult.ok ? 'executed' : 'failed';
+    plan.result = sanitizeCommandResult({ result: effectiveResult, startedAt, completedAt });
+    if (onAction) await onAction(makeExecutionJournalEntry({ area: 'plugin-management', plan }));
+  }
+  pluginManagement.summary = summarizePluginManagementPlans(plans);
+  pluginManagement.manual_followups = buildPluginManagementManualFollowups(plans);
 }
 
 function buildPluginManagementCandidates({ plugins, clis, hostFilter }) {
@@ -1414,7 +1607,10 @@ function buildCodexHookReviewAttestation({ codexPluginHooks, hookSettings, plugi
   const pluginVersions = {};
   for (const pluginName of bundled) {
     const plugin = plugins?.[pluginName];
-    pluginVersions[pluginName] = plugin?.source_version ?? null;
+    // Bind to the ACTUAL installed/cache version (peer #8 (c)) — an operator attests the
+    // hooks of the plugin that is installed, never a catalog-latest that may not be. The
+    // source-version fallback keeps a source-tree run reporting the built version.
+    pluginVersions[pluginName] = plugin?.installed_version ?? plugin?.source_version ?? null;
   }
   const base = {
     mode: requested ? 'operator-attestation' : 'not_recorded',
@@ -1727,52 +1923,111 @@ function buildSettingsArtifactReport({ repoRoot, runId, written, executePluginMa
   };
 }
 
-async function writeSettingsExecutionArtifact({ repoRoot, runId, report, now }) {
-  const validRunId = validateSettingsRunId(runId);
-  const runDir = settingsRunDir(repoRoot, validRunId);
-  await assertInside(settingsArtifactRoot(repoRoot), runDir);
-  await mkdir(runDir, { recursive: true });
-  const reportPath = settingsArtifactFile(repoRoot, validRunId);
-  const latestPath = resolve(settingsArtifactRoot(repoRoot), 'latest.json');
-  const failedCount = report.plugin_management.summary.failed
-    + report.plugin_cleanup.summary.failed
-    + report.plugin_cleanup.summary.blocked
-    + (report.codex_hook_review.requested && report.codex_hook_review.status !== 'attested' ? 1 : 0);
-  const status = failedCount > 0 ? 'failed' : 'completed';
-  const artifact = {
+// The mode-invariant executable-action set both the dry-run plan (which bootstrap
+// reads) and the execute run compute identically — keyed on argv + allowlisted
+// action, NEVER on execute-derived status. Plugin-management drops host-filtered
+// (`skipped`) and `deduplicated` plans (they will not run under this invocation);
+// CLI-availability (`blocked`) is environmental, not a plan-identity change, so it
+// stays in the set. Cleanup has no host filter. This is the input to the plan hash
+// (machine-bootstrap-contract.md §1.6) and the durable `planned_actions` record.
+function collectMutationActions({ pluginManagement, pluginCleanup }) {
+  const actions = [];
+  for (const plan of pluginManagement?.plans ?? []) {
+    if (!EXECUTABLE_PLUGIN_ACTIONS.has(plan.action)) continue;
+    if (!plan.argv?.command || !Array.isArray(plan.argv?.args)) continue;
+    if (plan.status === 'skipped' || plan.status === 'deduplicated') continue;
+    actions.push({ area: 'plugin-management', host: plan.host, plugin: plan.plugin ?? null, action: plan.action, command: plan.argv.command, args: plan.argv.args });
+  }
+  for (const plan of pluginCleanup?.plans ?? []) {
+    if (!EXECUTABLE_PLUGIN_CLEANUP_ACTIONS.has(plan.action)) continue;
+    if (!plan.argv?.command || !Array.isArray(plan.argv?.args)) continue;
+    actions.push({ area: 'plugin-cleanup', host: plan.host, plugin: plan.plugin ?? null, action: plan.action, command: plan.argv.command, args: plan.argv.args });
+  }
+  const sortKey = (a) => JSON.stringify([a.area, a.command, a.args, a.host, a.plugin ?? '']);
+  actions.sort((a, b) => {
+    const ka = sortKey(a);
+    const kb = sortKey(b);
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+  return actions;
+}
+
+// §1.6 drift guard: bootstrap presents `runtime:settings --execute-plugin-management`
+// carrying this hash; the executor recomputes it against a fresh plan and refuses on
+// divergence rather than run a plan the operator never saw.
+function computeMutationPlanHash(actions) {
+  return createHash('sha256').update(JSON.stringify(actions)).digest('hex');
+}
+
+// The `command` block recorded in every write-ahead phase — built once (before the
+// `planned` write) so the interrupted record and the terminal record agree on what
+// was invoked.
+function buildSettingsExecutionCommand({ executePluginManagement, executePluginCleanup, attestCodexHookReview, apply, pluginManagement, configTargets }) {
+  return {
+    execute_plugin_management: executePluginManagement,
+    execute_plugin_cleanup: executePluginCleanup,
+    plugin_management_host: pluginManagement?.host_filter ?? null,
+    plugin_management_timeout_ms: pluginManagement?.timeout_ms ?? null,
+    attest_codex_hook_review: attestCodexHookReview,
+    apply,
+    target: (configTargets ?? []).filter((target) => target.selected).map((target) => target.kind),
+  };
+}
+
+// blocked-counts-as-failure (Plan-verify): a `blocked` action — a CLI that went
+// unavailable, or an ADR-0035 §6 codex-install preflight refusal — is not a clean
+// run. Cleanup already counted its blocked; plugin-management now does too, so the
+// terminal status is honest about a run that could not complete its intent.
+function settingsExecutionTerminalStatus({ pluginManagement, pluginCleanup, codexHookReview }) {
+  const failedCount = (pluginManagement?.summary?.failed ?? 0)
+    + (pluginManagement?.summary?.blocked ?? 0)
+    + (pluginCleanup?.summary?.failed ?? 0)
+    + (pluginCleanup?.summary?.blocked ?? 0)
+    + (codexHookReview?.requested && codexHookReview?.status !== 'attested' ? 1 : 0);
+  return failedCount > 0 ? 'failed' : 'completed';
+}
+
+// The single serializer used for EVERY write-ahead phase — `planned` (pre-action),
+// `in-progress` (after each action), and terminal `completed`/`failed`/`refused`
+// (finalize). It reads the current (in-place-mutating) plan objects, so an
+// interrupted run's last durable record always reflects what actually landed
+// (machine-bootstrap-contract.md §1.5). New fields vs 1.1: `terminal`, `plan_hash`,
+// `planned_actions`, `journal`.
+function buildSettingsExecutionArtifactObject({
+  status, runId, planHash, plannedActions, journal, command,
+  pluginManagement, pluginCleanup, codexHookReview, createdAt, updatedAt, overallStatus,
+}) {
+  return {
     schema_version: SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION,
     runtime_version: RUNTIME_VERSION,
-    run_id: validRunId,
+    run_id: runId,
     status,
-    created_at: report.generated_at,
-    updated_at: toIso(now),
+    terminal: SETTINGS_EXECUTION_TERMINAL_STATUSES.has(status),
+    plan_hash: planHash ?? null,
+    planned_actions: plannedActions ?? [],
+    journal: journal ?? [],
+    created_at: createdAt,
+    updated_at: updatedAt,
     repo_root_pointer: '.',
-    command: {
-      execute_plugin_management: report.execute_plugin_management,
-      execute_plugin_cleanup: report.execute_plugin_cleanup,
-      plugin_management_host: report.plugin_management.host_filter,
-      plugin_management_timeout_ms: report.plugin_management.timeout_ms,
-      attest_codex_hook_review: report.attest_codex_hook_review,
-      apply: report.apply,
-      target: report.config.targets.filter((target) => target.selected).map((target) => target.kind),
-    },
-    plugin_management: report.plugin_management,
-    plugin_cleanup: report.plugin_cleanup,
-    codex_hook_review: report.codex_hook_review,
+    command,
+    plugin_management: pluginManagement,
+    plugin_cleanup: pluginCleanup,
+    codex_hook_review: codexHookReview,
     summary: {
-      overall_status: report.overall.status,
-      executed: report.plugin_management.summary.executed,
-      failed: report.plugin_management.summary.failed,
-      failed_retryable: report.plugin_management.summary.failed_retryable,
-      failed_non_retryable: report.plugin_management.summary.failed_non_retryable,
-      plugin_cleanup_executed: report.plugin_cleanup.summary.executed,
-      plugin_cleanup_failed: report.plugin_cleanup.summary.failed,
-      plugin_cleanup_blocked: report.plugin_cleanup.summary.blocked,
-      codex_hook_review_attested: Boolean(report.codex_hook_review?.attested),
+      overall_status: overallStatus ?? status,
+      executed: pluginManagement?.summary?.executed ?? 0,
+      failed: pluginManagement?.summary?.failed ?? 0,
+      blocked: pluginManagement?.summary?.blocked ?? 0,
+      failed_retryable: pluginManagement?.summary?.failed_retryable ?? 0,
+      failed_non_retryable: pluginManagement?.summary?.failed_non_retryable ?? 0,
+      plugin_cleanup_executed: pluginCleanup?.summary?.executed ?? 0,
+      plugin_cleanup_failed: pluginCleanup?.summary?.failed ?? 0,
+      plugin_cleanup_blocked: pluginCleanup?.summary?.blocked ?? 0,
+      codex_hook_review_attested: Boolean(codexHookReview?.attested),
     },
     failures: [
-      ...extractPluginManagementFailures(report.plugin_management.plans),
-      ...extractPluginCleanupFailures(report.plugin_cleanup.plans),
+      ...extractPluginManagementFailures(pluginManagement?.plans ?? []),
+      ...extractPluginCleanupFailures(pluginCleanup?.plans ?? []),
     ],
     doctor_integration: {
       status: 'readable_by_runtime_doctor',
@@ -1785,16 +2040,98 @@ async function writeSettingsExecutionArtifact({ repoRoot, runId, report, now }) 
       'Artifacts do not authorize automatic retry, install, update, general uninstall, auth, sandbox, or permission mutation.',
     ],
   };
+}
+
+// Low-level write: the detailed record FIRST, then the latest.json pointer, so the
+// pointer never names a record that is not on disk. Each write is atomic (writeJson
+// temp+rename), so a crash never leaves a torn record that reads as nonterminal.
+async function writeSettingsExecutionRecord({ repoRoot, runId, artifact }) {
+  const runDir = settingsRunDir(repoRoot, runId);
+  await assertInside(settingsArtifactRoot(repoRoot), runDir);
+  await mkdir(runDir, { recursive: true });
+  const reportPath = settingsArtifactFile(repoRoot, runId);
+  const latestPath = resolve(settingsArtifactRoot(repoRoot), 'latest.json');
   await writeJson(reportPath, artifact);
   await writeJson(latestPath, {
     schema_version: `${SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION}-latest`,
     runtime_version: RUNTIME_VERSION,
-    run_id: validRunId,
-    status,
+    run_id: runId,
+    status: artifact.status,
+    terminal: artifact.terminal,
     updated_at: artifact.updated_at,
     report_pointer: pointer(repoRoot, reportPath),
     summary: artifact.summary,
   });
+  return { reportPath, latestPath };
+}
+
+// Write-ahead lifecycle (machine-bootstrap-contract.md §1.5, ADR-0046 §5): persist
+// the `planned` intent + plan hash BEFORE any action, then hand back an
+// `appendJournal` sink the executors call after EACH action, which advances the
+// same record to `in-progress`. finalizeSettingsExecutionArtifact rewrites it
+// terminal. If the process dies at any point, the last durable record already
+// names the landed actions — the fix the split alone does not deliver.
+async function beginWriteAheadSettingsExecution({
+  repoRoot, runId, planHash, plannedActions, command, pluginManagement, pluginCleanup, createdAt, now,
+}) {
+  const validRunId = validateSettingsRunId(runId);
+  const journal = [];
+  const persist = async (status) => {
+    const artifact = buildSettingsExecutionArtifactObject({
+      status,
+      runId: validRunId,
+      planHash,
+      plannedActions,
+      journal,
+      command,
+      pluginManagement,
+      pluginCleanup,
+      codexHookReview: null,
+      createdAt,
+      updatedAt: toIso(now),
+      overallStatus: status,
+    });
+    await writeSettingsExecutionRecord({ repoRoot, runId: validRunId, artifact });
+  };
+  await persist('planned');
+  return {
+    journal,
+    async appendJournal(entry) {
+      journal.push(entry);
+      await persist('in-progress');
+    },
+  };
+}
+
+// Terminal finalize (also the sole writer for attestation-only and plan-hash-
+// refused runs, which never enter the write-ahead loop). Rewrites the record with
+// the terminal status, the full codex_hook_review, and the completed journal.
+async function finalizeSettingsExecutionArtifact({
+  repoRoot, runId, report, now, command, planHash = null, plannedActions = [], journal = [], refused = false,
+}) {
+  const validRunId = validateSettingsRunId(runId);
+  const status = refused
+    ? 'refused'
+    : settingsExecutionTerminalStatus({
+        pluginManagement: report.plugin_management,
+        pluginCleanup: report.plugin_cleanup,
+        codexHookReview: report.codex_hook_review,
+      });
+  const artifact = buildSettingsExecutionArtifactObject({
+    status,
+    runId: validRunId,
+    planHash,
+    plannedActions,
+    journal,
+    command,
+    pluginManagement: report.plugin_management,
+    pluginCleanup: report.plugin_cleanup,
+    codexHookReview: report.codex_hook_review,
+    createdAt: report.generated_at,
+    updatedAt: toIso(now),
+    overallStatus: report.overall.status,
+  });
+  await writeSettingsExecutionRecord({ repoRoot, runId: validRunId, artifact });
   return buildSettingsArtifactReport({
     repoRoot,
     runId: validRunId,
@@ -2108,7 +2445,9 @@ function buildCodexHookReviewTargets({ codexPluginHooks, plugins }) {
     const commandAnalysis = hooksFile.command_analysis ?? {};
     targets.push({
       plugin: pluginName,
-      version: plugins?.[pluginName]?.source_version ?? null,
+      // Installed/cache version (peer #8 (c)) — the version an operator reviews in /hooks is
+      // what is installed, not a catalog-latest; source-version fallback for source-tree runs.
+      version: plugins?.[pluginName]?.installed_version ?? plugins?.[pluginName]?.source_version ?? null,
       origin: effective.origin ?? null,
       manifest_exposed: effective.manifest_declared === true,
       hooks_path: sanitizeValue(hooksFile.path),
@@ -3173,8 +3512,15 @@ async function buildCrossHostPermissionPlan({ repoRoot, homeDir, env, now, maxFi
   };
 }
 
+// Atomic write (sibling temp + same-directory rename). The write-ahead
+// settings-execution record (machine-bootstrap-contract.md §1.5) is re-written
+// after every H2 action; a torn half-write must never be readable as a
+// nonterminal record, so each write lands atomically. rename(2) within one
+// directory is atomic on POSIX.
 async function writeJson(path, value) {
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  const tmp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await rename(tmp, path);
 }
 
 function validateSettingsRunId(runId) {
@@ -3182,6 +3528,13 @@ function validateSettingsRunId(runId) {
     throw new Error('Invalid --run-id; expected settings-YYYYMMDDTHHMMSSZ-abcdef');
   }
   return runId;
+}
+
+function validatePlanHash(value) {
+  if (!/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error('Invalid --expected-plan-hash; expected a 64-char sha256 hex digest');
+  }
+  return value;
 }
 
 function makeSettingsRunId(now) {
@@ -3228,7 +3581,8 @@ function usage() {
     '  [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>]',
     '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
     '  [--permission-plan] [--permission-plan-max-files <n>] [--permission-plan-max-file-bytes <n>] [--notification-plan] [--egress-launcher-plan] [--run-id <settings-run-id>]',
-    '  [--skip-host-cli-probes]  (probe-free local plan: no runDoctor / host-CLI subprocess probes; rejects --execute-*, --attest-codex-hook-review, --plugin-management-*, --run-id; --apply and the plan flags stay allowed)',
+    '  [--expected-plan-hash <sha256>]  (§1.6 drift guard: refuse plugin-management/cleanup execution unless the freshly recomputed plan hash matches)',
+    '  [--skip-host-cli-probes]  (probe-free local plan: no runDoctor / host-CLI subprocess probes; rejects --execute-*, --attest-codex-hook-review, --plugin-management-*, --run-id, --expected-plan-hash; --apply and the plan flags stay allowed)',
     '',
   ].join('\n');
 }
@@ -3263,6 +3617,7 @@ export function parseArgs(argv) {
     notificationPlan: false,
     egressLauncherPlan: false,
     runId: null,
+    expectedPlanHash: null,
     desired: {},
   };
   for (let i = 0; i < argv.length; i++) {
@@ -3307,6 +3662,8 @@ export function parseArgs(argv) {
       opts.permissionPlanMaxFileBytes = parsePositiveInt(requireValue(argv, ++i, arg), arg);
     } else if (arg === '--run-id') {
       opts.runId = validateSettingsRunId(requireValue(argv, ++i, arg));
+    } else if (arg === '--expected-plan-hash') {
+      opts.expectedPlanHash = validatePlanHash(requireValue(argv, ++i, arg));
     } else if (CONFIG_FLAG_TO_KEY[arg]) {
       opts.desired[CONFIG_FLAG_TO_KEY[arg]] = requireValue(argv, ++i, arg);
     } else {

@@ -102,8 +102,8 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.value, 'fixture-model');
     strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.source, 'repo config codex_model');
     strictEqual(report.config.resolution_order[0], 'explicit command flags');
-    strictEqual(report.schema_version, 'runtime-settings-1.17');
-    strictEqual(SETTINGS_SCHEMA_VERSION, 'runtime-settings-1.17');
+    strictEqual(report.schema_version, 'runtime-settings-1.18');
+    strictEqual(SETTINGS_SCHEMA_VERSION, 'runtime-settings-1.18');
   });
 
   it('emits the dual-mode discriminator with null (never empty) probe sections', async () => {
@@ -145,8 +145,9 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     ok(narrowed.recommendations.length > 0, 'local recommendations must not be empty in this fixture');
     ok(narrowed.recommendations.every((rec) => rec.area === 'config'), 'local recommendations derive from evaluated inputs only');
 
-    // The execution-artifact schema is a separate contract and does not move.
-    strictEqual(SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION, 'runtime-settings-execution-artifact-1.1');
+    // The execution-artifact schema is a separate contract; it moved 1.1 → 1.2 for
+    // the write-ahead protocol (machine-bootstrap-contract.md §1.5).
+    strictEqual(SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION, 'runtime-settings-execution-artifact-1.2');
   });
 
   it('keeps dry_run semantics on the mutation axis and snapshots current values before --apply', async () => {

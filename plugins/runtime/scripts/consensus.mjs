@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 import { runCommand } from './doctor.mjs';
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
+import { resolveCodexHome } from './lib/state-readers.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -768,6 +769,7 @@ export async function executeRound(options = {}) {
   const peerContext = await resolvePeerExecutionContext({
     repoRoot,
     homeDir,
+    codexHome: resolveCodexHome(env, homeDir),
     explicitModel: options.model ?? null,
     explicitEffort: options.effort ?? null,
   });

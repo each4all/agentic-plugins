@@ -1,5 +1,5 @@
 import { describe, it } from 'node:test';
-import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
+import { deepStrictEqual, notStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -70,7 +70,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.17');
+    strictEqual(report.schema_version, 'runtime-settings-1.18');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -246,6 +246,203 @@ describe('runtime settings', () => {
     ok(!JSON.stringify(artifact).includes('RAW CLEANUP OUTPUT MUST NOT LEAK'), 'cleanup artifact must not include raw command output');
     ok(formatText(report).includes(`runtime:settings ${RUNTIME_VERSION} (plugin-cleanup)`));
     ok(formatText(report).includes('result: ok=true'));
+  });
+
+  // ── Write-ahead durability cluster (machine-bootstrap-contract.md §1.5/§1.6) ──
+  // The H2 plugin-management + cleanup executors persist a `planned` record with a
+  // plan hash BEFORE any action, journal after each, and finalize terminal. These
+  // tests assert at the SEAM (the record is on disk when the action runs / survives
+  // an interrupted run) — not by filtering output.
+
+  const MARKETPLACE_ADD = 'codex plugin marketplace add each4all/agentic-plugins';
+
+  it('write-ahead: persists the planned record + plan hash BEFORE the H2 action runs (§1.5 #10)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-writeahead-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-writeahead-home-'));
+    await seedRepo(root);
+    const artifactPath = join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json');
+
+    const calls = [];
+    const base = fakeRunner({ ...defaultCliMap(), [MARKETPLACE_ADD]: okResult('marketplace ok\n') }, calls);
+    let recordAtActionTime = null;
+    const spy = async (command, args) => {
+      const key = `${command} ${args.join(' ')}`;
+      if (key === MARKETPLACE_ADD && recordAtActionTime === null) {
+        // The durable record MUST already be on disk when the mutating action runs.
+        recordAtActionTime = JSON.parse(await readFile(artifactPath, 'utf8'));
+      }
+      return base(command, args);
+    };
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      runner: spy,
+    });
+
+    ok(recordAtActionTime, 'a planned record existed on disk before the action ran');
+    strictEqual(recordAtActionTime.status, 'planned');
+    strictEqual(recordAtActionTime.terminal, false);
+    ok(/^[0-9a-f]{64}$/.test(recordAtActionTime.plan_hash), 'planned record carries the plan hash');
+    ok(
+      recordAtActionTime.planned_actions.some((a) => a.args.join(' ') === 'plugin marketplace add each4all/agentic-plugins'),
+      'planned_actions names the action BEFORE it runs',
+    );
+    strictEqual(recordAtActionTime.journal.length, 0, 'journal is empty before the first action');
+    // Finalize rewrote it terminal, with a journal entry for the executed action.
+    const final = await readJson(artifactPath);
+    strictEqual(final.status, 'completed');
+    strictEqual(final.terminal, true);
+    strictEqual(final.plan_hash, recordAtActionTime.plan_hash);
+    strictEqual(final.journal.length, 1);
+    strictEqual(final.journal[0].status, 'executed');
+    strictEqual(final.journal[0].action, 'add-marketplace');
+    strictEqual(report.plugin_management.plan_hash, recordAtActionTime.plan_hash);
+  });
+
+  it('write-ahead: an interrupted H2 run leaves a durable record naming the landed action (§1.5 #10)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-writeahead-kill-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-writeahead-kill-home-'));
+    await seedRepo(root);
+    const artifactPath = join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json');
+
+    const base = fakeRunner({ ...defaultCliMap(), [MARKETPLACE_ADD]: okResult('marketplace ok\n') });
+    const crashing = async (command, args) => {
+      const key = `${command} ${args.join(' ')}`;
+      if (key === MARKETPLACE_ADD) throw new Error('simulated crash mid-action');
+      return base(command, args);
+    };
+
+    await rejects(
+      runSettings({
+        repoRoot: root,
+        homeDir: home,
+        runId: SETTINGS_RUN_ID,
+        executePluginManagement: true,
+        pluginManagementHost: 'codex',
+        runner: crashing,
+      }),
+      /simulated crash/,
+    );
+
+    // The write-ahead planned record — written before the action — survives the
+    // crash and names the intended action. Today (pre-write-ahead) it would not.
+    const survived = await readJson(artifactPath);
+    strictEqual(survived.status, 'planned');
+    strictEqual(survived.terminal, false);
+    ok(/^[0-9a-f]{64}$/.test(survived.plan_hash));
+    ok(survived.planned_actions.some((a) => a.args.join(' ') === 'plugin marketplace add each4all/agentic-plugins'));
+  });
+
+  it('write-ahead: the retired-plugin cleanup executor journals its action (§1.5 #26)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-cleanup-writeahead-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-cleanup-writeahead-home-'));
+    await seedRepo(root);
+    const artifactPath = join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json');
+    const CLEANUP = 'claude plugin uninstall research@agentic-plugins';
+
+    const calls = [];
+    const base = fakeRunner({
+      ...defaultCliMap(),
+      'claude plugin list': okResult([
+        'Installed plugins:',
+        '',
+        '  > research@agentic-plugins',
+        '    Version: 0.1.0',
+        '    Scope: user',
+        '    Status: failed',
+        '    Error: Plugin research not found in marketplace agentic-plugins',
+      ].join('\n')),
+      [CLEANUP]: okResult('cleanup ok\n'),
+    }, calls);
+    let recordAtActionTime = null;
+    const spy = async (command, args) => {
+      const key = `${command} ${args.join(' ')}`;
+      if (key === CLEANUP && recordAtActionTime === null) {
+        recordAtActionTime = JSON.parse(await readFile(artifactPath, 'utf8'));
+      }
+      return base(command, args);
+    };
+
+    await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      executePluginCleanup: true,
+      runner: spy,
+    });
+
+    ok(recordAtActionTime, 'planned record existed before the cleanup action ran');
+    strictEqual(recordAtActionTime.status, 'planned');
+    ok(recordAtActionTime.planned_actions.some((a) => a.area === 'plugin-cleanup' && a.args.join(' ') === 'plugin uninstall research@agentic-plugins'));
+    const final = await readJson(artifactPath);
+    strictEqual(final.terminal, true);
+    const cleanupEntry = final.journal.find((entry) => entry.area === 'plugin-cleanup');
+    ok(cleanupEntry, 'journal records the cleanup action');
+    strictEqual(cleanupEntry.status, 'executed');
+    strictEqual(cleanupEntry.action, 'uninstall-retired-plugin');
+  });
+
+  it('plan-hash: refuses to execute when the expected hash diverges from the fresh plan (§1.6 #25)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-planhash-refuse-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-planhash-refuse-home-'));
+    await seedRepo(root);
+
+    const calls = [];
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      expectedPlanHash: 'a'.repeat(64),
+      runner: fakeRunner({ ...defaultCliMap(), [MARKETPLACE_ADD]: okResult('marketplace ok\n') }, calls),
+    });
+
+    strictEqual(report.plugin_management.plan_hash_status, 'mismatch');
+    strictEqual(report.plugin_management.plan_hash_expected, 'a'.repeat(64));
+    ok(!calls.includes(MARKETPLACE_ADD), 'the divergent plan is NOT executed');
+    // The freshly recomputed hash is re-presented, not the stale one.
+    ok(/^[0-9a-f]{64}$/.test(report.plugin_management.plan_hash));
+    notStrictEqual(report.plugin_management.plan_hash, 'a'.repeat(64));
+    const artifact = await readJson(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'));
+    strictEqual(artifact.status, 'refused');
+    strictEqual(artifact.terminal, true);
+    strictEqual(artifact.journal.length, 0, 'a refused run runs no actions');
+  });
+
+  it('plan-hash: a matching expected hash validates and executes (§1.6)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-planhash-ok-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-planhash-ok-home-'));
+    await seedRepo(root);
+
+    // Learn the plan hash from a dry-run (what bootstrap would present).
+    const dry = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      pluginManagementHost: 'codex',
+      runner: fakeRunner({ ...defaultCliMap(), [MARKETPLACE_ADD]: okResult('marketplace ok\n') }),
+    });
+    const hash = dry.plugin_management.plan_hash;
+    ok(/^[0-9a-f]{64}$/.test(hash), 'dry-run exposes the plan hash for the operator to carry');
+
+    const calls = [];
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      executePluginManagement: true,
+      pluginManagementHost: 'codex',
+      expectedPlanHash: hash,
+      runner: fakeRunner({ ...defaultCliMap(), [MARKETPLACE_ADD]: okResult('marketplace ok\n') }, calls),
+    });
+
+    strictEqual(report.plugin_management.plan_hash_status, 'validated');
+    strictEqual(report.plugin_management.plan_hash, hash);
+    ok(calls.includes(MARKETPLACE_ADD), 'the validated plan executes');
   });
 
   it('applies only selected agentic-plugins-owned config writes', async () => {
@@ -597,7 +794,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.17');
+    strictEqual(report.schema_version, 'runtime-settings-1.18');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -821,6 +1018,93 @@ describe('runtime settings', () => {
     strictEqual(install.command, 'codex plugin add runtime@agentic-plugins');
     strictEqual(install.evidence.list_decision, 'not_installed');
     strictEqual(install.evidence.install_cache_status, 'present');
+  });
+
+  // machine-bootstrap-contract.md §1.1/§1.4.1 (S8a1 C3): on a CONSUMER machine there is no
+  // `./plugins/<name>` checkout, so the old branch turned doctor's honest `marketplace: null`
+  // into sixteen meaningless "add <name> to .claude-plugin/marketplace.json" remediations,
+  // and its `sourceVersion` (a repo manifest read) was null so a stale install was never
+  // flagged. This is the direct consumer-repo regression the contract pins.
+  it('consumer repo (no source): registered-catalog currentness flags a stale install AND emits zero false register-marketplace-entry', async () => {
+    // NO seedRepo — this repo is not an agentic-plugins checkout.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-consumer-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-consumer-home-'));
+    // The operator's registered marketplace catalog (machine-scoped, resolved from the C2
+    // registration probe's installLocation), NOT a repo checkout. It carries runtime 0.1.0.
+    const installLoc = await mkdtemp(join(tmpdir(), 'runtime-settings-consumer-mp-'));
+    await mkdir(join(installLoc, '.claude-plugin'), { recursive: true });
+    await writeJson(join(installLoc, '.claude-plugin', 'marketplace.json'), {
+      name: 'agentic-plugins',
+      plugins: [{ name: 'runtime', source: 'each4all/agentic-plugins', version: '0.1.0', category: 'Productivity' }],
+    });
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        // runtime installed at 0.0.5 — older than the registered catalog's 0.1.0.
+        'claude plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.0.5\n    Scope: user\n    Status: enabled\n'),
+        'claude /plugin list': okResult('Installed plugins:\n\n  > runtime@agentic-plugins\n    Version: 0.0.5\n    Scope: user\n    Status: enabled\n'),
+        'claude plugin marketplace list --json': okResult(JSON.stringify([
+          { name: 'agentic-plugins', source: 'github', repo: 'each4all/agentic-plugins', installLocation: installLoc },
+        ])),
+      }),
+    });
+
+    // (1) ZERO false remediations: no `./plugins/<name>` checkout → no register-marketplace-entry
+    // for ANY plugin on ANY host (the sixteen false remediations disappear).
+    for (const name of Object.keys(report.plugins)) {
+      ok(
+        report.plugins[name].recommendations.every((rec) => rec.action !== 'register-marketplace-entry'),
+        `${name} must not get a repo-catalog register-marketplace-entry on a consumer machine`,
+      );
+    }
+    // (2) Stale-update detected via the REGISTERED-CATALOG installLocation, not a repo source.
+    const update = report.plugins.runtime.recommendations.find((rec) => rec.action === 'update-plugin' && rec.host === 'claude');
+    ok(update, 'expected a claude update-plugin driven by the registered-catalog currentness target');
+    ok(update.detail.includes('registered catalog 0.1.0'), `detail must cite the registered catalog, got: ${update.detail}`);
+  });
+
+  // peer #8 (S8a1 C3): the `sourceVersion` that drives currentness ALSO fed Codex hook
+  // attestation + review targets. Sourcing currentness from the registered catalog must NOT
+  // leak a catalog-latest version into the attestation — an operator attests the INSTALLED
+  // hooks, never a version that may not be installed. This is the 3-way split, exercised with
+  // three DISTINCT versions: source 1.0.0, installed 0.0.5, registered catalog 0.9.9.
+  it('binds Codex hook attestation/review-targets to the INSTALLED version, never source or registered catalog (peer #8)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-3way-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-3way-home-'));
+    await seedRepo(root); // source: engineer 1.0.0 + codex hooks (bundled)
+    await seedCodexInstallCache(home, 'engineer', '0.0.5'); // INSTALLED (codex cache) 0.0.5
+    // Registered catalog carries engineer 0.9.9 — distinct from BOTH source and installed.
+    const installLoc = await mkdtemp(join(tmpdir(), 'runtime-settings-3way-mp-'));
+    await mkdir(join(installLoc, '.claude-plugin'), { recursive: true });
+    await writeJson(join(installLoc, '.claude-plugin', 'marketplace.json'), {
+      name: 'agentic-plugins',
+      plugins: [{ name: 'engineer', source: 'each4all/agentic-plugins', version: '0.9.9', category: 'Productivity' }],
+    });
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      attestCodexHookReview: true,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+        'claude plugin marketplace list --json': okResult(JSON.stringify([
+          { name: 'agentic-plugins', source: 'github', repo: 'each4all/agentic-plugins', installLocation: installLoc },
+        ])),
+      }),
+    });
+
+    const engineerTarget = report.codex_hook_review.review_targets.find((target) => target.plugin === 'engineer');
+    ok(engineerTarget, 'engineer is a bundled codex-hook plugin');
+    strictEqual(engineerTarget.version, '0.0.5', 'review target binds the codex-installed version');
+    ok(engineerTarget.version !== '0.9.9', 'must NOT bind the registered-catalog version');
+    ok(engineerTarget.version !== '1.0.0', 'must NOT bind the source version');
+    const artifact = JSON.parse(await readFile(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'), 'utf8'));
+    strictEqual(artifact.codex_hook_review.plugin_versions.engineer, '0.0.5', 'attestation binds the installed version, not the registered catalog');
   });
 
   it('executes only allowlisted plugin management commands behind an explicit flag', async () => {
@@ -1104,9 +1388,16 @@ describe('runtime settings', () => {
     ok(failed.result.retry_after.includes('network'));
 
     const artifact = await readJson(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'));
-    strictEqual(artifact.schema_version, 'runtime-settings-execution-artifact-1.1');
+    strictEqual(artifact.schema_version, 'runtime-settings-execution-artifact-1.2');
     strictEqual(artifact.run_id, SETTINGS_RUN_ID);
     strictEqual(artifact.status, 'failed');
+    strictEqual(artifact.terminal, true);
+    // Write-ahead record (machine-bootstrap-contract.md §1.5): the failed run still
+    // carries the plan hash, the durable planned-action list, and a per-action journal.
+    ok(/^[0-9a-f]{64}$/.test(artifact.plan_hash), 'terminal artifact carries the plan hash');
+    ok(Array.isArray(artifact.planned_actions) && artifact.planned_actions.length >= 1, 'planned_actions names the intended action');
+    ok(Array.isArray(artifact.journal) && artifact.journal.length >= 1, 'journal records the executed action');
+    strictEqual(artifact.journal[0].status, 'failed');
     strictEqual(artifact.summary.failed_retryable, 1);
     strictEqual(artifact.failures[0].failure_type, 'network');
     strictEqual(artifact.failures[0].retryable, true);
@@ -1115,6 +1406,7 @@ describe('runtime settings', () => {
     const latest = await readJson(join(root, '.agentic-plugins', 'runs', 'settings', 'latest.json'));
     strictEqual(latest.run_id, SETTINGS_RUN_ID);
     strictEqual(latest.status, 'failed');
+    strictEqual(latest.terminal, true);
     ok(!JSON.stringify(artifact).includes('RAW OUTPUT MUST NOT LEAK'), 'execution artifact must not include raw stdout');
     ok(!JSON.stringify(artifact).includes('RAW ERROR MUST NOT LEAK'), 'execution artifact must not include raw stderr');
     ok(formatText(report).includes('Execution Artifact'));

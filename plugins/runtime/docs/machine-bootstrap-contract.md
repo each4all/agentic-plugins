@@ -284,6 +284,25 @@ An interrupted run is **resumable, not rolled back**: the journal names what
 landed, bootstrap re-probes, and the remaining actions are re-planned. Nothing is
 ever auto-uninstalled (§10.3).
 
+**Concrete shape (shipped by S8a1, `runtime:settings`).** The execution artifact
+schema moved `runtime-settings-execution-artifact-1.1` → `-1.2`. The added fields:
+
+| Field | Shape |
+|---|---|
+| `status` | `planned` \| `in-progress` \| `completed` \| `failed` \| `refused` (was only `completed`/`failed`) |
+| `terminal` | boolean — `false` for `planned`/`in-progress` (the reader's not-available signal) |
+| `plan_hash` | the §1.6 sha256 over the mode-invariant executable-action set |
+| `planned_actions[]` | the durable intent, each `{ area, host, plugin, action, command, args }` — written before any action |
+| `journal[]` | one entry per executed action: `{ area, id, action, host, plugin, status, started_at, finished_at, exit_code }` |
+
+The `planned` record (with `plan_hash` + `planned_actions`) is written **before**
+the first action; each action appends a `journal[]` entry and re-persists as
+`in-progress`; finalize rewrites the terminal record. Every write is atomic
+(sibling temp + rename), so a crash never leaves a torn record. Doctor and the
+dashboard both key off `terminal === false` (or a nonterminal `status`) to read an
+interrupted run as **not available** / an attention item — the reader migration
+that stops write-ahead from becoming a false-success bug.
+
 ### 1.6 Plan/executor drift
 
 Bootstrap *presents* `runtime:settings --execute-plugin-management`, and that
@@ -848,6 +867,17 @@ that can only be verified inside one particular checkout is not a machine bootst
 The permission and deep-peer-smoke proofs already run against ephemeral temp repos and
 need no change.
 
+**Resolved (S8a1).** `runtime:doctor`'s workflow-continuation proof now resolves the
+installed-tool root through a runtime-owned `resolveInstalledEngineerRoot` (env
+override `AGENTIC_ENGINEER_ROOT` → Claude cache SemVer-max → Codex fixed cache →
+sibling monorepo — a **private** copy of the discover-engineer.mjs ladder, since
+ADR-0010 §5 forbids importing across plugins). It deliberately does **not** consult
+`repoRoot`, so pointing doctor at an ephemeral scratch root now works; the proof
+workspace remains the `mkdtemp` temp repo, and each executed direction reports
+`installed_tool_root` + `tool_root_source` distinct from that workspace. Engineer
+installed nowhere resolves to `null` and the direction is `blocked` with recovery
+guidance, never a silent source-tree assumption.
+
 ### 8.3 One-host operators — a documented limitation, stated exactly
 
 The reducer requires **both** hosts, because the framework's value is the cross-host
@@ -1123,7 +1153,7 @@ nobody mistakes "the contract did not say" for "the contract left it open".
 | Exact JSON Schema files for `agentic-machine-profile-1.0`, `runtime-bootstrap-run-1.0`, `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order |
 | Exact permission-mode enums per host | §4.5 safety grading; the values are whatever the hosts accept, minus the unsafe postures that may never be *presented* |
 | The complete `minimum_version` floor table | §1.4 — two are known (`companions` 0.3.0, `engineer` 0.7.0); S8 verifies the rest against the plugins' own changelogs |
-| The write-ahead journal's exact transition table and the settings-artifact schema minor | §1.5 — the four parts are named; the field names are not |
+| ~~The write-ahead journal's exact transition table and the settings-artifact schema minor~~ | **Resolved (S8a1)** — §1.5 "Concrete shape" specifies the fields; artifact schema is `runtime-settings-execution-artifact-1.2`, statuses `planned → in-progress → completed/failed/refused` |
 | The `probeMachineHostState()` return schema | §1.1 — the signals are enumerated; their exact serialization is not |
 | Codex `plugin marketplace list` output parsing (it is not JSON today) | §1.2 — the match rule is source identity; the parse is S8's |
 | Stale-lock age bound and retention `N` | §10.2 — the defaults are named (10 runs); the lock bound is not |
