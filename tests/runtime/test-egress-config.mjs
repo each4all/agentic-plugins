@@ -34,6 +34,7 @@ import {
   parseEgressLocalToml,
   readVerifiedIgnoredLocal,
   loadEgressActivation,
+  loadEgressExportConfig,
 } from '../../plugins/runtime/scripts/lib/egress-config.mjs';
 import { NOTIFY_CHANNELS, CONFIG_KEYS } from '../../plugins/runtime/scripts/lib/runtime-config.mjs';
 
@@ -475,5 +476,43 @@ describe('egress-config separation invariants', () => {
       egressLocalConfigPath('/home/op'),
       path.join('/home/op', '.agentic-plugins', 'config.local.toml'),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadEgressExportConfig — the §4.4 profile export reader (credential-independent)
+// ---------------------------------------------------------------------------
+
+describe('egress-config loadEgressExportConfig', () => {
+  it('surfaces channel+recipient from a verified-local file with verified-local provenance', () => {
+    const home = tmpDir('egress-home-');
+    const repo = makeRepoRoot();
+    writeHomeLocal(home, 'egress_channel = "telegram"\negress_chat_id = "555"\n');
+    const e = loadEgressExportConfig({ repoRoot: repo, homeDir: home, env: {} });
+    assert.equal(e.channel, 'telegram');
+    assert.equal(e.recipient, '555');
+    assert.equal(e.provenance.channel, 'verified-local');
+    assert.equal(e.provenance.recipient, 'verified-local');
+    // Credential-independent: the SAME facts leave loadEgressActivation inactive
+    // (missing-credential), but the export reader still surfaces the routing config.
+    const act = loadEgressActivation({ repoRoot: repo, homeDir: home, env: {} });
+    assert.equal(act.active, false);
+    assert.equal(act.reason, 'missing-credential');
+    assert.equal(act.recipient, null);
+  });
+
+  it('env overrides verified-local (env-first precedence, shared with activation)', () => {
+    const home = tmpDir('egress-home-');
+    const repo = makeRepoRoot();
+    writeHomeLocal(home, 'egress_channel = "telegram"\negress_chat_id = "555"\n');
+    const e = loadEgressExportConfig({
+      repoRoot: repo,
+      homeDir: home,
+      env: { [EGRESS_ENV_KEYS.recipient]: '999' },
+    });
+    assert.equal(e.recipient, '999');
+    assert.equal(e.provenance.recipient, 'env');
+    assert.equal(e.channel, 'telegram');
+    assert.equal(e.provenance.channel, 'verified-local');
   });
 });

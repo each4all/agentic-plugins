@@ -517,23 +517,30 @@ function egressLauncherLimits() {
 // detectPrototypeHooks); nothing is mutated. `env` is injected so tests run
 // hermetically (ambient real credentials/chat-id never enter). The credential is
 // never read into the result.
-export async function buildEgressLauncherPlan({
-  repoRoot,
-  homeDir,
-  env = {},
-  host = 'claude',
-  now = new Date(),
-  runtimeVersion = RUNTIME_VERSION,
-} = {}) {
+// GATHER (machine-bootstrap-contract.md §1.3): every read — the egress activation,
+// the headline opt-in, and the ~/.claude prototype hooks — up front, so the pure
+// builder below touches no filesystem. `env` is injected so tests run hermetically
+// (ambient real credentials/chat-id never enter). The credential is never read into
+// the result.
+export async function gatherEgressLauncherInputs({ repoRoot, homeDir, env = {} }) {
+  return {
+    activation: loadEgressActivation({ repoRoot, homeDir, env }),
+    headlineOn: loadEgressHeadlineOptIn({ repoRoot, homeDir, env }),
+    prototype: await detectPrototypeHooks({ homeDir }),
+  };
+}
+
+// PURE BUILD (machine-bootstrap-contract.md §1.3): deterministic over the gathered
+// reads + injected clock (`now`) + injected `runId`. No fs, no randomBytes. Returns
+// { section, artifactBody }; the caller owns the persist target (repo-relative for
+// settings, machine-global for bootstrap).
+export function buildEgressLauncherPlanSection({ gathered, host = 'claude', now = new Date(), runId, runtimeVersion = RUNTIME_VERSION }) {
+  const { activation, headlineOn, prototype } = gathered;
   const resolvedHost = VALID_HOSTS.has(host) ? host : 'claude';
-  const activation = loadEgressActivation({ repoRoot, homeDir, env });
-  const headlineOn = loadEgressHeadlineOptIn({ repoRoot, homeDir, env });
-  const prototype = await detectPrototypeHooks({ homeDir });
   const mode = computeEgressLauncherMode({ activation, prototype });
 
   const steps = buildSteps({ mode, activation, prototype, headlineOn });
   const createdAt = now.toISOString();
-  const runId = makeEgressLauncherRunId(now);
 
   // activation_state: NO credential value. recipient (chat-id, routing not
   // secret per §2b) is surfaced only when active — the operator's own configured
@@ -574,19 +581,42 @@ export async function buildEgressLauncherPlan({
     },
   };
 
-  const pointers = await writeEgressLauncherPlanArtifact({ repoRoot, artifact: artifactBody });
-
   return {
-    requested: true,
-    executed: true,
-    status: 'planned',
-    host: resolvedHost,
-    mode,
-    activation_state: activationState,
-    prototype,
-    steps,
-    config_local_path_pointer: join('~', '.agentic-plugins', 'config.local.toml'),
-    artifact: { written: true, ...pointers },
-    limits: egressLauncherLimits(),
+    section: {
+      requested: true,
+      executed: true,
+      status: 'planned',
+      host: resolvedHost,
+      mode,
+      activation_state: activationState,
+      prototype,
+      steps,
+      config_local_path_pointer: join('~', '.agentic-plugins', 'config.local.toml'),
+      // Persist-result pointer; the orchestrator overwrites this in place (preserving
+      // key position) after it writes artifactBody to the caller-chosen target.
+      artifact: { written: true },
+      limits: egressLauncherLimits(),
+    },
+    artifactBody,
   };
+}
+
+// ORCHESTRATOR (settings surface): gather → deterministic build → persist repo-
+// relative. Behavior-compatible with the pre-§1.3 single function. Bootstrap composes
+// gatherEgressLauncherInputs + buildEgressLauncherPlanSection itself and persists
+// artifactBody under its machine-global run instead (§10).
+export async function buildEgressLauncherPlan({
+  repoRoot,
+  homeDir,
+  env = {},
+  host = 'claude',
+  now = new Date(),
+  runtimeVersion = RUNTIME_VERSION,
+} = {}) {
+  const gathered = await gatherEgressLauncherInputs({ repoRoot, homeDir, env });
+  const runId = makeEgressLauncherRunId(now);
+  const { section, artifactBody } = buildEgressLauncherPlanSection({ gathered, host, now, runId, runtimeVersion });
+  const pointers = await writeEgressLauncherPlanArtifact({ repoRoot, artifact: artifactBody });
+  section.artifact = { written: true, ...pointers };
+  return section;
 }

@@ -415,11 +415,15 @@ export const DANGEROUS_ARGV_EXCEPTIONS = [
 // ---------------------------------------------------------------------------
 
 // "a general uninstall/remove/prune/delete ... only the ADR-approved,
-// doctor-detected retired-plugin cleanup may exist." settings.mjs:559
-// commandSpec('claude', ['plugin','uninstall', `${plugin}@agentic-plugins`]).
+// doctor-detected retired-plugin cleanup may exist." The retired-cleanup command
+// template moved with buildPluginCleanupCommand out of settings.mjs into the pure
+// plan-half lib (machine-bootstrap-contract.md §1.3 extraction 5):
+// lib/plugin-management-plan.mjs commandSpec('claude', ['plugin','uninstall',
+// `${plugin}@agentic-plugins`]). The executor that runs it (executePluginCleanupPlans
+// → runner) stays in settings.mjs (ALLOWED_DYNAMIC_PROJECTIONS above).
 export const ALLOWED_DESTRUCTIVE_TEMPLATES = [
   {
-    file: 'settings.mjs',
+    file: 'plugin-management-plan.mjs',
     command: 'claude',
     verb: 'uninstall',
     targetSuffix: '@agentic-plugins',

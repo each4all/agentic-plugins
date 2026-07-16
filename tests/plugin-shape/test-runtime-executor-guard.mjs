@@ -158,10 +158,11 @@ describe('ADR-0035 §4 guard — gates catch real violations', () => {
   it('claude plugin uninstall WITHOUT @agentic-plugins suffix → argv-verb-gate', () => {
     ok(rules(scan('settings.mjs', `commandSpec('claude', ['plugin', 'uninstall', 'someplugin']);`)).includes('argv-verb-gate'));
   });
-  it('claude plugin uninstall *@agentic-plugins in settings.mjs → NO finding (the one §4 exception)', () => {
-    deepStrictEqual(scan('settings.mjs', "commandSpec('claude', ['plugin', 'uninstall', `${plugin}@agentic-plugins`]);"), []);
+  it('claude plugin uninstall *@agentic-plugins in plugin-management-plan.mjs → NO finding (the one §4 exception)', () => {
+    deepStrictEqual(scan('plugin-management-plan.mjs', "commandSpec('claude', ['plugin', 'uninstall', `${plugin}@agentic-plugins`]);"), []);
   });
-  it('that same retired-cleanup uninstall in a DIFFERENT file → argv-verb-gate', () => {
+  it('that same retired-cleanup uninstall in a DIFFERENT file (now incl. settings.mjs, which no longer owns it) → argv-verb-gate', () => {
+    ok(rules(scan('settings.mjs', "commandSpec('claude', ['plugin', 'uninstall', `${plugin}@agentic-plugins`]);")).includes('argv-verb-gate'));
     ok(rules(scan('doctor.mjs', "commandSpec('claude', ['plugin', 'uninstall', `${plugin}@agentic-plugins`]);")).includes('argv-verb-gate'));
   });
   it('process.kill → kill-gate', () => {
@@ -956,12 +957,18 @@ describe('ADR-0035 §4 guard — registry drift', () => {
   });
 
   it('every ALLOWED_KILL_SITES / ALLOWED_DESTRUCTIVE_TEMPLATES file exists', async () => {
+    // Registry `.file` values are basenames matched against the scanner's basename
+    // fileName, so resolve them across the whole runtime tree — scripts/ AND
+    // scripts/lib/ (the retired-cleanup template now lives in lib/plugin-management-plan.mjs).
+    const byName = new Map((await listRuntimeScripts()).map((s) => [s.fileName, s.path]));
     const files = new Set([
       ...registry.ALLOWED_KILL_SITES.map((s) => s.file),
       ...registry.ALLOWED_DESTRUCTIVE_TEMPLATES.map((s) => s.file),
     ]);
     for (const file of files) {
-      const src = await readFile(resolve(RUNTIME_SCRIPTS, file), 'utf-8');
+      const path = byName.get(file);
+      ok(path, `${file} should exist in the runtime scripts tree`);
+      const src = await readFile(path, 'utf-8');
       ok(src.length > 0, `${file} should exist`);
     }
   });
