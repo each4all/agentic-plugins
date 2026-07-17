@@ -1229,8 +1229,24 @@ export function scanFile({ fileName, source, registry }) {
   // Only the exact registered own-child timeout kill is allowed:
   // child.kill('SIGTERM') in a kill-site file. process.kill / SIGKILL / any other
   // receiver or signal fails — even inside doctor.mjs (Codex review MAJOR #3).
-  if (/\bprocess\.kill\s*\(/.test(code)) {
-    violations.push({ rule: 'kill-gate', file: fileName, detail: 'process.kill(...) is forbidden (external-process kill)' });
+  // process.kill is forbidden — EXCEPT the registered signal-0 liveness probe,
+  // which sends no signal (see ALLOWED_PID_LIVENESS_SITES). The exemption is
+  // form-pinned to a literal `0`: every OTHER process.kill in the file still fails,
+  // including one whose signal is a variable, since a variable could hold 'SIGKILL'.
+  const livenessSite = (registry.ALLOWED_PID_LIVENESS_SITES || []).find((s) => s.file === fileName);
+  const processKillRe = /\bprocess\.kill\s*\(([^)]*)\)/g;
+  let pkm;
+  while ((pkm = processKillRe.exec(code))) {
+    const args = pkm[1].split(',').map((a) => a.trim());
+    const isLivenessProbe = args.length === 2 && /^[\w$]+$/.test(args[0]) && args[1] === '0';
+    if (livenessSite && isLivenessProbe) continue;
+    violations.push({
+      rule: 'kill-gate',
+      file: fileName,
+      detail: isLivenessProbe
+        ? `process.kill(${truncate(pkm[1], 24)}) is a signal-0 liveness probe, but ${fileName} is not in ALLOWED_PID_LIVENESS_SITES`
+        : 'process.kill(...) is forbidden (external-process kill)',
+    });
   }
   if (/\bSIGKILL\b/.test(code)) {
     violations.push({ rule: 'kill-gate', file: fileName, detail: 'SIGKILL is forbidden' });

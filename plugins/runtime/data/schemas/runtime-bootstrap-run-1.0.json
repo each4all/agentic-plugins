@@ -1,0 +1,339 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime-bootstrap-run-1.0",
+  "title": "Bootstrap run manifest",
+  "description": "machine-bootstrap-contract.md §5. The durable record of one machine-bootstrap run. It records CHOICES and HISTORY, never TRUTH (§7): every plan/status/resume/verify re-probes, and a recorded step is invalidated when the versions it was observed against change. Key order here IS the canonical serialization order.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "started_at", "updated_at", "status", "selection", "steps", "boundary"],
+  "properties": {
+    "schema": {
+      "description": "Pins FAMILY and MAJOR; the minor is deliberately free, because §4.1's forward-compat rule is the validator's to apply — a const on the full string would reject the newer-minor documents that rule exists to accept.",
+      "type": "string",
+      "pattern": "^runtime-bootstrap-run-1\\.[0-9]+$"
+    },
+    "run_id": { "type": "string", "pattern": "^bootstrap-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$" },
+    "started_at": { "$ref": "#/$defs/timestamp" },
+    "updated_at": { "$ref": "#/$defs/timestamp" },
+    "status": {
+      "description": "`open` is the only non-terminal status. A crashed run leaves an open run behind, which is why `abandon` exists (§10.2) — without it one interrupted run would block the machine permanently.",
+      "enum": ["open", "complete", "configured-not-verified", "abandoned"]
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundle", "desired", "excluded"],
+      "properties": {
+        "bundle": { "enum": ["base", "engineering", "business", "design", "full", "custom"] },
+        "desired": { "$ref": "#/$defs/pluginNameArray" },
+        "excluded": { "$ref": "#/$defs/pluginNameArray" }
+      }
+    },
+    "seeded_from": {
+      "description": "§5 — a profile id and HASH, never a filesystem path: a path can itself reveal operator layout.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["profile_id", "profile_hash"],
+      "properties": {
+        "profile_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+        "profile_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "choices": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["step_id", "answer", "at"],
+        "properties": {
+          "step_id": { "$ref": "#/$defs/stepId" },
+          "answer": { "type": ["string", "null"], "maxLength": 1024 },
+          "at": { "$ref": "#/$defs/timestamp" }
+        }
+      }
+    },
+    "history": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["step_id", "from", "to", "reason", "at"],
+        "properties": {
+          "step_id": { "type": ["string", "null"], "maxLength": 128 },
+          "from": { "type": ["string", "null"], "maxLength": 64 },
+          "to": { "type": "string", "maxLength": 64 },
+          "reason": { "type": ["string", "null"], "maxLength": 1024 },
+          "at": { "$ref": "#/$defs/timestamp" }
+        }
+      }
+    },
+    "probe": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["probed_at", "runtime_version", "hosts"],
+      "properties": {
+        "probed_at": { "$ref": "#/$defs/timestamp" },
+        "runtime_version": { "$ref": "#/$defs/semver" },
+        "hosts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["claude", "codex"],
+          "properties": {
+            "claude": { "$ref": "#/$defs/claudeHostProbe" },
+            "codex": { "$ref": "#/$defs/codexHostProbe" }
+          }
+        }
+      }
+    },
+    "plan_hash": {
+      "description": "§1.6 — sha256 over the canonical planned action set. The presented `runtime:settings --execute-plugin-management` carries it, and the executor refuses a plan whose hash diverged from the one the operator read (test #25).",
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "steps": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/step" }
+    },
+    "completion": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["state", "unsatisfied", "missing_steps", "proofs", "hook_attestation"],
+      "properties": {
+        "state": { "enum": ["complete", "configured-not-verified", "incomplete"] },
+        "unsatisfied": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/stepId" } },
+        "missing_steps": {
+          "description": "§6.1 — a step ABSENT from steps[] is counted here and BLOCKS completion. Without this a manifest that simply omits a required step passes the reducer, which is the exact false-pass this command exists to prevent (test #11).",
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/stepId" }
+        },
+        "proofs": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/proof" } },
+        "hook_attestation": { "$ref": "#/$defs/hookAttestation" }
+      }
+    },
+    "boundary": {
+      "description": "§5 — MUST all be false; the artifact validator refuses the write otherwise.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["writes_host_config", "writes_credential", "writes_config_local_toml", "performs_network_request"],
+      "properties": {
+        "writes_host_config": { "const": false },
+        "writes_credential": { "const": false },
+        "writes_config_local_toml": { "const": false },
+        "performs_network_request": { "const": false }
+      }
+    },
+    "limits": { "type": "array", "maxItems": 32, "items": { "type": "string", "maxLength": 512 } }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,3})?Z$"
+    },
+    "nullableTimestamp": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,3})?Z$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "nullableSemver": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "pluginName": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+    "pluginNameArray": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/pluginName" } },
+    "stepId": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z0-9-]+)+$", "maxLength": 128 },
+    "auth": {
+      "description": "§5 — an ENUM, not a boolean, because probeMachineHostState genuinely distinguishes these. A boolean would collapse `unauthenticated` into `unknown` and let a `sandbox_limited` read masquerade as authenticated.",
+      "enum": ["available", "unauthenticated", "unknown", "sandbox_limited"]
+    },
+    "marketplace": { "enum": ["registered", "missing", "unknown"] },
+    "claudeHostProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cli_version", "auth", "marketplace", "plugins"],
+      "properties": {
+        "cli_version": { "$ref": "#/$defs/nullableSemver" },
+        "auth": { "$ref": "#/$defs/auth" },
+        "marketplace": { "$ref": "#/$defs/marketplace" },
+        "plugins": {
+          "description": "Test #31 — Claude never expects an `enabled`/`disabled` field, because Claude does not report one. Only Codex carries `disabled`.",
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[a-z][a-z0-9-]{0,63}$": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["version", "state"],
+              "properties": {
+                "version": { "$ref": "#/$defs/nullableSemver" },
+                "state": { "enum": ["installed", "missing", "unknown"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "codexHostProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cli_version", "auth", "marketplace", "plugins"],
+      "properties": {
+        "cli_version": { "$ref": "#/$defs/nullableSemver" },
+        "auth": { "$ref": "#/$defs/auth" },
+        "marketplace": { "$ref": "#/$defs/marketplace" },
+        "plugins": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[a-z][a-z0-9-]{0,63}$": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["version", "state"],
+              "properties": {
+                "version": { "$ref": "#/$defs/nullableSemver" },
+                "state": { "enum": ["installed", "disabled", "missing", "unknown"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "stage", "status", "declinable", "blocked_by"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stepId" },
+        "stage": { "type": "integer", "enum": [1, 2, 3, 4, 5, 6, 7, 8] },
+        "status": {
+          "description": "§6 — `satisfied` is reserved for OBSERVED state. A step is never satisfied because the operator said so, because a previous run recorded it, or because a fragment was rendered. Only a post-probe promotes a step, and `unknown` is never satisfied.",
+          "enum": ["satisfied", "pending", "blocked", "manual-follow-up", "declined", "unknown", "not-applicable"]
+        },
+        "declinable": { "type": "boolean" },
+        "blocked_by": {
+          "description": "§5/§6.1 — the predecessor edges. The registry is the authority for these (lib/step-registry.mjs); a copy carried in a manifest is operator-editable data and is never trusted for stage/applicability/declinable/edges.",
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/stepId" }
+        },
+        "applied_by": { "enum": ["operator", "h2-executor", "agentic-config", null] },
+        "desired": { "type": ["string", "null"], "maxLength": 1024 },
+        "observed": { "type": ["string", "null"], "maxLength": 1024 },
+        "observed_at": { "$ref": "#/$defs/nullableTimestamp" },
+        "fragment_pointer": { "type": ["string", "null"], "maxLength": 512 },
+        "apply_command": { "type": ["string", "null"], "maxLength": 1024 },
+        "fragment_applied": {
+          "description": "§5 — marks that THIS run rendered a fragment and a post-probe observed the operator applying it; distinct from a pre-existing matching config. The §8.1 `permission` proof is required IFF a permission.*.applied step carries true, so a machine whose permissions already matched does not trip a proof it never needed.",
+          "type": "boolean"
+        },
+        "failure_class": { "type": ["string", "null"], "maxLength": 128 },
+        "retryable": { "type": "boolean" },
+        "recovery": { "type": ["string", "null"], "maxLength": 1024 },
+        "invalidated": {
+          "description": "§7 — stamped when a recorded step is reset to `pending` because the runtime version, either host CLI version, or any installed plugin version in the selection changed since probed_at. A step satisfied against Codex 0.136 says nothing about 0.140.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["at", "reason"],
+          "properties": {
+            "at": { "$ref": "#/$defs/timestamp" },
+            "reason": { "enum": ["version-drift", "manual-reset"] }
+          }
+        }
+      }
+    },
+    "directionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "ran_at"],
+      "properties": {
+        "status": { "enum": ["passed", "failed", "blocked", "absent"] },
+        "ran_at": { "$ref": "#/$defs/nullableTimestamp" }
+      }
+    },
+    "boundVersions": {
+      "description": "§8.1 — binds EVERY selected plugin version, per host, not only runtime + the two CLIs. Freshness compares exact key SETS and values; a missing or null required version never counts as current.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime", "claude", "codex", "plugins"],
+      "properties": {
+        "runtime": { "$ref": "#/$defs/semver" },
+        "claude": { "$ref": "#/$defs/nullableSemver" },
+        "codex": { "$ref": "#/$defs/nullableSemver" },
+        "plugins": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["claude", "codex"],
+          "properties": {
+            "claude": { "$ref": "#/$defs/pluginVersionMap" },
+            "codex": { "$ref": "#/$defs/pluginVersionMap" }
+          }
+        }
+      }
+    },
+    "pluginVersionMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": { "^[a-z][a-z0-9-]{0,63}$": { "$ref": "#/$defs/semver" } }
+    },
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "status", "directions", "artifact_pointer", "artifact_hash", "bound_versions", "ran_at"],
+      "properties": {
+        "kind": { "enum": ["deep-peer-smoke", "workflow-continuation", "permission"] },
+        "status": {
+          "description": "§5 — the AGGREGATE, recomputed from `directions` on every read and NEVER trusted from storage. A smoke that passed claude->codex and failed codex->claude is `failed` (test #22); a stored `passed` would be a claim the evidence contradicts.",
+          "enum": ["passed", "failed", "stale", "not-applicable", "absent"]
+        },
+        "directions": {
+          "description": "§8.1 — a per-direction RESULT MAP, not a list of direction names. A schema that could only say `directions: [...]` could not express a one-way failure at all. BOTH keys are required: an empty map would let a `passed` aggregate be stored with no evidence behind it at all, which is precisely the forgery the per-direction shape exists to prevent. A direction that did not run says so with `absent`.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["claude->codex", "codex->claude"],
+          "properties": {
+            "claude->codex": { "$ref": "#/$defs/directionResult" },
+            "codex->claude": { "$ref": "#/$defs/directionResult" }
+          }
+        },
+        "artifact_pointer": { "type": ["string", "null"], "maxLength": 512 },
+        "artifact_hash": { "$ref": "#/$defs/sha256" },
+        "bound_versions": { "$ref": "#/$defs/boundVersions" },
+        "ran_at": { "$ref": "#/$defs/nullableTimestamp" }
+      }
+    },
+    "hookAttestation": {
+      "description": "§5/§8.1 — carries its own Codex-bound versions and the EXACT retained Codex-hook-bearing plugin set, and stales on a Codex CLI change, a hook-plugin add/remove/version change, or a disabled expected hook (test #24). Runtime cannot query Codex `/hooks` trust non-interactively, so this records an operator CLAIM, never host truth (ADR-0030).",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["status", "attested_plugins", "bound_versions", "artifact_pointer", "artifact_hash", "attested_at"],
+      "properties": {
+        "status": { "enum": ["attested", "stale", "absent", "not-applicable"] },
+        "attested_plugins": { "$ref": "#/$defs/pluginNameArray" },
+        "bound_versions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["codex", "plugins"],
+          "properties": {
+            "codex": { "$ref": "#/$defs/nullableSemver" },
+            "plugins": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["codex"],
+              "properties": { "codex": { "$ref": "#/$defs/pluginVersionMap" } }
+            }
+          }
+        },
+        "artifact_pointer": { "type": ["string", "null"], "maxLength": 512 },
+        "artifact_hash": { "$ref": "#/$defs/sha256" },
+        "attested_at": { "$ref": "#/$defs/nullableTimestamp" }
+      }
+    }
+  }
+}

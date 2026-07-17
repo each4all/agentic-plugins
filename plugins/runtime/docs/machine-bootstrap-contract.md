@@ -183,7 +183,7 @@ plugins/runtime/data/plugin-set.json     (packaged; PLUGIN_ROOT-relative)
       "bundles": ["base", "engineering"],
       "hosts": ["claude", "codex"],
       "hard_requires": [{ "name": "<plugin>", "hosts": ["claude"] }],
-      "soft_requires": ["<plugin>"],
+      "soft_requires": [{ "name": "<plugin>", "hosts": ["claude", "codex"] }],
       "hook_bearing": { "claude": true, "codex": false },
       "minimum_version": "<semver|null>"
     }
@@ -191,10 +191,21 @@ plugins/runtime/data/plugin-set.json     (packaged; PLUGIN_ROOT-relative)
 }
 ```
 
-**`hook_bearing` is per-host, not a boolean.** `attention` declares Claude hooks and
-**explicitly declares none on Codex**. A scalar would either invent a false Codex
-`/hooks` requirement or hide Claude's hook metadata. Stage 7 keys off the Claude
-value.
+**`hook_bearing` is per-host, not a boolean, and is derived from *effective host
+registration*** — a manifest-declared hook path **or** the host's default-discovery of
+the root `hooks/hooks.json` (the dual-source rule `kit/lint` validates and `doctor`'s
+`bundled_plugins` uses — *not* bare manifest-key presence). By that rule: `attention` is
+**Claude-only** (its `.claude-plugin/plugin.json` declares `adapters/claude/hooks/`, and
+it declares nothing on Codex); `engineer`, `orchestrator`, `founder`, and `designer` are
+**hook-bearing on both hosts** — Claude via their root `hooks/hooks.json`
+(`SessionStart`/`PreCompact`/`Stop`) and Codex via their `.codex-plugin/plugin.json`
+`hooks` key; `runtime`, `companions`, and `image` bear none. A scalar would either invent
+a false Codex `/hooks` requirement or hide a plugin's Claude hook metadata. **Stage 7 is
+the Codex `/hooks` review + trust, so it keys off the `hook_bearing.codex` value** — an
+earlier draft said "the Claude value", which was a host-flip error: the Claude value
+drives no completion step because Claude trusts plugin hooks by install and has no
+`/hooks` flow. A field recording only manifest-key presence would encode false host truth
+and must be named `manifest_declares_hooks`, never `hook_bearing`.
 
 **`minimum_version` is a correctness floor, never an update target** (the ADR-0043
 discovery-floor precedent). It is `null` unless a real incompatibility forces one.
@@ -638,10 +649,10 @@ any unknown key at all. Downgrade is never attempted.
     "probed_at": "<iso-8601-utc>",
     "runtime_version": "<semver>",
     "hosts": {
-      "claude": { "cli_version": "<semver|null>", "authenticated": true,
+      "claude": { "cli_version": "<semver|null>", "auth": "available|unauthenticated|unknown|sandbox_limited",
                   "marketplace": "registered|missing|unknown",
                   "plugins": { "<name>": { "version": "<semver|null>", "state": "installed|missing|unknown" } } },
-      "codex":  { "cli_version": "<semver|null>", "authenticated": true,
+      "codex":  { "cli_version": "<semver|null>", "auth": "available|unauthenticated|unknown|sandbox_limited",
                   "marketplace": "registered|missing|unknown",
                   "plugins": { "<name>": { "version": "<semver|null>", "state": "installed|disabled|missing|unknown" } } }
     }
@@ -660,6 +671,7 @@ any unknown key at all. Downgrade is never attempted.
       "observed_at": "<iso-8601-utc|null>",
       "fragment_pointer": "<path|null>",
       "apply_command": "<string|null>",
+      "fragment_applied": false,
       "failure_class": "<class|null>",
       "retryable": false,
       "recovery": "<operator guidance|null>",
@@ -673,12 +685,26 @@ any unknown key at all. Downgrade is never attempted.
     "proofs": [
       { "kind": "deep-peer-smoke|workflow-continuation|permission",
         "status": "passed|failed|stale|not-applicable|absent",
-        "directions": ["claude->codex", "codex->claude"],
+        "directions": {
+          "claude->codex": { "status": "passed|failed|blocked|absent", "ran_at": "<iso-8601-utc|null>" },
+          "codex->claude": { "status": "passed|failed|blocked|absent", "ran_at": "<iso-8601-utc|null>" }
+        },
         "artifact_pointer": "<path|null>",
         "artifact_hash": "<sha256|null>",
-        "bound_versions": { "runtime": "<semver>", "claude": "<semver|null>", "codex": "<semver|null>" },
+        "bound_versions": {
+          "runtime": "<semver>", "claude": "<semver|null>", "codex": "<semver|null>",
+          "plugins": { "claude": { "<name>": "<semver>" }, "codex": { "<name>": "<semver>" } }
+        },
         "ran_at": "<iso-8601-utc|null>" }
-    ]
+    ],
+    "hook_attestation": {
+      "status": "attested|stale|absent|not-applicable",
+      "attested_plugins": ["<name>"],
+      "bound_versions": { "codex": "<semver|null>", "plugins": { "codex": { "<name>": "<semver>" } } },
+      "artifact_pointer": "<path|null>",
+      "artifact_hash": "<sha256|null>",
+      "attested_at": "<iso-8601-utc|null>"
+    }
   },
   "boundary": {
     "writes_host_config": false,
@@ -697,6 +723,28 @@ wrong one.
 
 `seeded_from` records a **profile id and hash**, never a filesystem path (a path
 can itself reveal operator layout).
+
+Four shapes are load-bearing and agree with §8 / §8.1:
+
+- **`probe.hosts.<h>.auth` is an enum**, not a boolean — `available` / `unauthenticated`
+  / `unknown` / `sandbox_limited` — because the machine probe (`probeMachineHostState`,
+  §1.1) genuinely distinguishes them; a boolean would collapse "not authenticated" into
+  "unknown" and let a `sandbox_limited` read masquerade as authenticated.
+- **`proofs[].directions` is a per-direction result map**, not a list of direction
+  names (§8.1). `proofs[].status` is the **aggregate recomputed from `directions`**, never
+  trusted from storage: a smoke that passed `claude->codex` and failed `codex->claude` is
+  `failed`, and a schema that could only say `directions: [...]` could not express it.
+- **`bound_versions.plugins` is per-host** (`{ claude: {…}, codex: {…} }`) and binds
+  **every** selected plugin version, not only runtime + the two CLIs (§8.1). Freshness
+  compares exact key **sets and values**; a missing or null required version never counts
+  as current. `hook_attestation` carries its own Codex-bound versions + the exact retained
+  Codex-hook-bearing plugin set, and stales on a Codex CLI change, a hook-plugin
+  add/remove/version change, or a disabled expected hook.
+- **`steps[].fragment_applied`** marks that *this run rendered a fragment and a post-probe
+  observed the operator applying it* — distinct from a pre-existing matching config. The
+  §8.1 `permission` proof is required **iff** a `permission.*.applied` step carries
+  `fragment_applied: true`, so a machine whose permissions already matched does not trip
+  a proof it never needed.
 
 ---
 
@@ -743,13 +791,43 @@ exists to prevent. The registry is therefore enumerated here, not left to S8:
 | `hooks.codex.attested` | 7 | iff any selected plugin has `hook_bearing.codex` | no (but `not-applicable` when no Codex hook-bearing plugin is selected) |
 | `proof.deep-peer-smoke` | 8 | always | **yes** (declining caps at `configured-not-verified`) |
 | `proof.workflow-continuation` | 8 | iff `engineer` ∈ selection | **yes** (same cap) |
-| `proof.permission` | 8 | iff `permission.*.applied` is `satisfied` | **yes** (same cap) |
+| `proof.permission` | 8 | iff a `permission.*.applied` step carries `fragment_applied: true` | **yes** (same cap) |
 
-`hook_bearing` is per-host (§1.4); today only `attention` declares Claude hooks and
-it explicitly declares **none** on Codex, so `hooks.codex.attested` is
-`not-applicable` for every bundle until a Codex hook-bearing plugin ships. The step
-exists anyway, because "no Codex hooks today" is a fact about the current plugin set,
-not a property of the contract.
+**`blocked_by` edges** (the column §5's `steps[].blocked_by` serializes; enumerated here
+because §5 referenced them and this table did not define them — S8a2 C4). Each step is
+blocked by its *structural* predecessors only — the things without which the step cannot
+be attempted at all, never a mere stage ordering:
+
+| step | blocked_by |
+|---|---|
+| `host.<h>.present` | — (nothing; the root of every chain) |
+| `host.<h>.authenticated` | `host.<h>.present` |
+| `marketplace.<h>.registered` | `host.<h>.present` |
+| `plugin.<name>.<h>.installed` | `marketplace.<h>.registered` |
+| `plugin.<name>.codex.enabled` | `plugin.<name>.codex.installed` |
+| `config.model_effort` | — (agentic-plugins' own config; no host needed) |
+| `notify.configured`, `egress.configured` | — (same) |
+| `permission.<h>.applied` | `host.<h>.present` |
+| `hooks.codex.attested` | every selected Codex-hook-bearing plugin's `.codex.installed` **and** `.codex.enabled` |
+| `proof.deep-peer-smoke` | both hosts' `.authenticated`, plus `companions` `.installed` on both and `.enabled` on Codex |
+| `proof.workflow-continuation` | `engineer`'s `.installed` on both hosts and `.enabled` on Codex |
+| `proof.permission` | every applicable `permission.<h>.applied` |
+
+An empty `blocked_by` is written **explicitly** (`[]`), never omitted: an absent edge list
+and "this step has no predecessors" must not be the same byte. The graph is acyclic, and
+the registry — not `run.steps[]` — is the authority for stage, applicability, declinable,
+and these edges. A manifest's copy is operator-editable data; trusting it would let an
+edited file grant itself a stage or drop a blocker.
+
+`hook_bearing` is per-host (§1.4), derived from effective registration. `attention` is
+Claude-only; `engineer`, `orchestrator`, `founder`, and `designer` bear Codex hooks
+(their `.codex-plugin/plugin.json` declares them) **and** Claude hooks (their root
+`hooks/hooks.json`). So `hooks.codex.attested` is **applicable** — `pending` until a
+post-probe observes the attestation — for every bundle carrying a persona (`engineering`,
+`business`, `design`, `full`), and `not-applicable` only for `base`
+(`runtime`+`companions`+`attention`, none Codex-hook-bearing). The step keys off
+`hook_bearing.codex`; the Claude hook values drive no step, because Claude trusts plugin
+hooks by install and exposes no `/hooks` review flow.
 
 ### 6.2 The declinable set is narrow
 
@@ -806,19 +884,41 @@ settings flag:
 
 ## 8. Completion reducer
 
+Partition the expected steps by stage: **CONFIG** = the Stage 1–7 steps; **PROOF** =
+the Stage 8 proof steps. The two terminal states differ *only* on PROOF; both require
+every CONFIG step resolved.
+
 ```
 complete  ⟺  missing_steps = ∅
-          ∧  every expected step ∈ {satisfied, declined, not-applicable}
-          ∧  the required proofs (§8.1) are `passed` at the current bound versions
+          ∧  every CONFIG (Stage 1–7) step ∈ {satisfied, declined, not-applicable}
+          ∧  every required proof (§8.1) is `passed` at the current bound versions
 
 configured-not-verified
           ⟺  missing_steps = ∅
-          ∧  every expected step ∈ {satisfied, declined, not-applicable}
-          ∧  the required proofs are not all `passed`
+          ∧  every CONFIG (Stage 1–7) step ∈ {satisfied, declined, not-applicable}
+          ∧  NOT every required proof is `passed`
+             (a required proof is absent / failed / stale / declined)
 
 incomplete
           ⟺  otherwise
+             (a CONFIG step is pending / blocked / manual-follow-up / unknown,
+              or a required step is missing)
 ```
+
+`missing_steps` counts an omitted **CONFIG** step (§6.1); a machine missing a host has a
+`pending` Stage-1 CONFIG step and so reduces to `incomplete` (§8.3), never
+`configured-not-verified`.
+
+> **Why the CONFIG/PROOF partition (errata).** An earlier formula required *every
+> expected step* — proof steps included — to be `∈ {satisfied, declined, not-applicable}`
+> for **both** terminal states. But the Stage 8 proof steps (`proof.deep-peer-smoke`
+> etc.) are themselves expected steps (§6.1); an absent or failed proof leaves that
+> expected step unresolved, so the shared clause failed and the reducer fell through to
+> `incomplete` — making `configured-not-verified` **unreachable** and test #14
+> (§11.2) impossible. Evaluating PROOF steps separately from CONFIG steps is what makes
+> "I installed it" and "it works" different terminal states, as §Decision-10 (ADR-0046)
+> requires. A declined proof caps at `configured-not-verified` (§6.2); it never grants
+> `complete`.
 
 ### 8.1 Which proofs are required
 
@@ -1150,13 +1250,17 @@ nobody mistakes "the contract did not say" for "the contract left it open".
 
 | Item | Constrained by |
 |---|---|
-| Exact JSON Schema files for `agentic-machine-profile-1.0`, `runtime-bootstrap-run-1.0`, `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order |
-| Exact permission-mode enums per host | §4.5 safety grading; the values are whatever the hosts accept, minus the unsafe postures that may never be *presented* |
-| The complete `minimum_version` floor table | §1.4 — two are known (`companions` 0.3.0, `engineer` 0.7.0); S8 verifies the rest against the plugins' own changelogs |
+| Exact JSON Schema files for `agentic-machine-profile-1.0`, `runtime-bootstrap-run-1.0`, `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order. Ship as data (§11.1); S8a2 C4. |
+| ~~Exact permission-mode enums per host~~ | **Resolved (S8a2 C0).** The **stored** enum carries whatever each host accepts, unsafe values included, because §4.5.3 shows a source machine's value as a labelled note — it must have a field to live in. Safety grading is a **present/seed-side** rule, not a second schema field: never *present* Claude `bypassPermissions`, Codex `approval_policy = "never"`, or `sandbox_mode = "danger-full-access"` as a default. Presentable Claude `defaultMode`: `default` / `acceptEdits` / `plan`. Presentable Codex `approval_policy`: `untrusted` / `on-request` / `on-failure`; `sandbox_mode`: `read-only` / `workspace-write`. |
+| The complete `minimum_version` floor table | §1.4 — two are known (`companions` 0.3.0, `engineer` 0.7.0); S8a2 C1 verifies the rest against the plugins' own changelogs. Compare **prerelease-aware** (not the numeric `semverCompare`, which treats `0.3.0-beta == 0.3.0`; discover-runtime.mjs precedent); an unknown installed version with a non-null floor stays **unresolved**, never "installed". |
 | ~~The write-ahead journal's exact transition table and the settings-artifact schema minor~~ | **Resolved (S8a1)** — §1.5 "Concrete shape" specifies the fields; artifact schema is `runtime-settings-execution-artifact-1.2`, statuses `planned → in-progress → completed/failed/refused` |
-| The `probeMachineHostState()` return schema | §1.1 — the signals are enumerated; their exact serialization is not |
-| Codex `plugin marketplace list` output parsing (it is not JSON today) | §1.2 — the match rule is source identity; the parse is S8's |
-| Stale-lock age bound and retention `N` | §10.2 — the defaults are named (10 runs); the lock bound is not |
+| ~~The `probeMachineHostState()` return schema~~ | **Resolved (S8a2 C0)** — §5 `probe.hosts.<h>` pins the serialization: `cli_version`, `auth` enum (`available` / `unauthenticated` / `unknown` / `sandbox_limited`), `marketplace`, and the per-host nested `plugins` map. |
+| ~~Codex `plugin marketplace list` output parsing (it is not JSON today)~~ | **Resolved (S8a2 C0)** — parse the human-readable output to the marketplace **source identity**; the step is `satisfied` only on `{ source: "github", repo: "each4all/agentic-plugins" }`, a `directory`/`local` source is accepted-but-flagged, and a parse failure or absent subcommand is `unknown`, never `satisfied` (§1.2). The parse *implementation* is S8a2 C2; the rule is fixed here. |
+| ~~Stale-lock age bound and retention `N`~~ | **Resolved (S8a2 C0)** — retention `N` = **10** runs; a lock is stale when its owning pid is gone (`kill(pid, 0)` → `ESRCH`; `EPERM` means it exists) **or** its age exceeds **10 minutes**, broken only after an owner-token recheck (never check-then-unlink) and with a reported diagnostic (§10.2). |
+
+Two contract **corrections** landed with S8a2 C0 (they were errors, not open items — recorded so the change is auditable):
+- **`hook_bearing`** (§1.4, §6.1): derived from *effective* registration (manifest hook path **or** root `hooks/hooks.json`), so `engineer`/`orchestrator`/`founder`/`designer` are hook-bearing on **both** hosts; `hooks.codex.attested` is **applicable** for every persona bundle; and Stage 7 keys off the **codex** value (an earlier "keys off the Claude value" was host-flipped).
+- **Reducer §8**: partitioned CONFIG (Stage 1–7) from PROOF (Stage 8) so `configured-not-verified` is reachable — the prior single "every expected step resolved" clause made it unreachable (test #14 impossible), since proof steps are themselves expected steps.
 
 Anything **not** on this list, and not decided above, is a gap in this contract —
 report it rather than inventing a policy.

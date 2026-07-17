@@ -369,10 +369,13 @@ function jsStringArrayLiteral(values) {
 // receivers are never imported or spawned by runtime — the plan renders them
 // into an artifact and the USER installs and runs them. Each placeholder is
 // substituted exactly once; substituteOnce fail-closes on template drift.
-export function renderCodexNotifyShuttleScript({ minRuntimeVersion = RUNTIME_VERSION } = {}) {
+// `template` (the receiver source TEXT) is injectable so the pure plan builder can
+// render without a disk read (machine-bootstrap-contract.md §1.3 "injected …
+// templates"); omitted, it reads the plugin-shipped source as before.
+export function renderCodexNotifyShuttleScript({ minRuntimeVersion = RUNTIME_VERSION, template } = {}) {
   const minVersion = assertSemver(minRuntimeVersion, 'minRuntimeVersion');
   return substituteOnce(
-    readReceiverTemplate(SHUTTLE_BASENAME),
+    template ?? readReceiverTemplate(SHUTTLE_BASENAME),
     "'__AGENTIC_MIN_RUNTIME_VERSION__'",
     jsStringLiteral(minVersion),
     'MIN_RUNTIME_VERSION',
@@ -386,13 +389,13 @@ export function renderCodexNotifyShuttleScript({ minRuntimeVersion = RUNTIME_VER
 // DATA that happens to contain a placeholder token is inserted afterwards and
 // never re-scanned (and substituteOnce's exactly-once check fail-closes if an
 // earlier substitution ever introduced a duplicate token).
-export function renderCodexNotifyChainScript({ priorNotify, shuttleInstallPath }) {
+export function renderCodexNotifyChainScript({ priorNotify, shuttleInstallPath, template }) {
   if (!Array.isArray(priorNotify) || priorNotify.length === 0) {
     throw new Error('renderCodexNotifyChainScript requires a non-empty prior notify argv');
   }
   const priorLiteral = jsStringArrayLiteral(priorNotify);
   const withShuttle = substituteOnce(
-    readReceiverTemplate(CHAIN_BASENAME),
+    template ?? readReceiverTemplate(CHAIN_BASENAME),
     '"__AGENTIC_SHUTTLE_PATH__"',
     jsStringLiteral(shuttleInstallPath),
     'SHUTTLE_PATH',
@@ -558,42 +561,74 @@ const RECEIVER_CONTRACT = Object.freeze({
 // decides direct vs wrapper-chain vs manual-merge, renders every fragment and
 // receiver script as TEXT, and persists one plan artifact per run. Never
 // writes host config; never creates the receiver install dir.
-export async function buildCodexNotificationPlan({
-  repoRoot,
-  homeDir,
-  env = {},
-  now = new Date(),
-  runtimeVersion = RUNTIME_VERSION,
-} = {}) {
+// The mandatory-read-check fail-closed predicate (machine-bootstrap-contract.md
+// §notification): an unreadable user config that is NOT a plain absence blocks the
+// plan. Defined ONCE so the gather (which then skips the receiver-template reads) and
+// the pure build (which returns the blocked section) never drift on the condition.
+function isNotificationReadBlocked(read) {
+  return !read.ok && read.reason !== 'ENOENT' && read.reason !== 'ENOTDIR';
+}
+
+// GATHER (machine-bootstrap-contract.md §1.3): all reads — the user config.toml
+// AND the plugin-shipped receiver templates — plus the homeDir-derived install
+// paths, so the pure builder below touches no filesystem. Returns everything the
+// deterministic build needs as data. When the read-check is blocked, the templates
+// are skipped: the build discards them on that path, and reading them eagerly would
+// turn a broken-install missing template into a throw where the old lazy code
+// returned a clean blocked section.
+export async function gatherCodexNotificationInputs({ homeDir, env = {} }) {
   const codexHome = env && env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(homeDir, '.codex');
   const codexHomeSource = env && env.CODEX_HOME ? 'CODEX_HOME env override' : 'default ~/.codex';
-  const configPath = join(codexHome, 'config.toml');
-  const read = await readTextIfExists(configPath);
+  const read = await readTextIfExists(join(codexHome, 'config.toml'));
+  return {
+    read,
+    codexHomeSource,
+    templates: isNotificationReadBlocked(read) ? null : {
+      shuttle: readReceiverTemplate(SHUTTLE_BASENAME),
+      chain: readReceiverTemplate(CHAIN_BASENAME),
+    },
+    installPaths: {
+      shuttle: join(homeDir, '.agentic-plugins', 'bin', SHUTTLE_BASENAME),
+      chain: join(homeDir, '.agentic-plugins', 'bin', CHAIN_BASENAME),
+    },
+  };
+}
+
+// PURE BUILD (machine-bootstrap-contract.md §1.3): deterministic over the gathered
+// data + injected clock (`now`) + injected `runId` + injected templates. No fs, no
+// randomBytes. Returns { section, artifactBody }; artifactBody is null on the blocked
+// path (nothing to persist) and the caller owns the persist target (repo-relative for
+// settings, machine-global for bootstrap).
+export function buildCodexNotificationPlanSection({ gathered, now = new Date(), runId, runtimeVersion = RUNTIME_VERSION }) {
+  const { read, codexHomeSource, templates, installPaths } = gathered;
+  const shuttleInstallPath = installPaths.shuttle;
+  const chainInstallPath = installPaths.chain;
 
   if (!read.ok && read.reason !== 'ENOENT' && read.reason !== 'ENOTDIR') {
     // Fail-closed: an unreadable user config means the MANDATORY read-check
     // cannot run, so no fragment is safe to recommend (a blind notify=
     // merge could clobber an invisible existing notifier).
     return {
-      requested: true,
-      executed: true,
-      status: 'blocked',
-      host: 'codex',
-      error: `user config.toml unreadable (${read.reason}); the mandatory notify read-check cannot run`,
-      host_config: { read_only: true, codex_home_source: codexHomeSource, sources: [{ scope: 'user', status: 'unreadable' }] },
-      read_check: { performed: false },
-      recommended: null,
-      fragments: null,
-      scripts: null,
-      receiver_contract: RECEIVER_CONTRACT,
-      artifact: { written: false, reason: 'read-check blocked' },
-      limits: notificationPlanLimits({ chained: false }),
+      section: {
+        requested: true,
+        executed: true,
+        status: 'blocked',
+        host: 'codex',
+        error: `user config.toml unreadable (${read.reason}); the mandatory notify read-check cannot run`,
+        host_config: { read_only: true, codex_home_source: codexHomeSource, sources: [{ scope: 'user', status: 'unreadable' }] },
+        read_check: { performed: false },
+        recommended: null,
+        fragments: null,
+        scripts: null,
+        receiver_contract: RECEIVER_CONTRACT,
+        artifact: { written: false, reason: 'read-check blocked' },
+        limits: notificationPlanLimits({ chained: false }),
+      },
+      artifactBody: null,
     };
   }
 
   const parsed = parseCodexNotifyConfigToml(read.ok ? read.text : '');
-  const shuttleInstallPath = join(homeDir, '.agentic-plugins', 'bin', SHUTTLE_BASENAME);
-  const chainInstallPath = join(homeDir, '.agentic-plugins', 'bin', CHAIN_BASENAME);
 
   const priorValues = parsed.notify.values;
   // Exact install-path match ONLY (Plan-verify peer MINOR): a basename
@@ -624,9 +659,9 @@ export async function buildCodexNotificationPlan({
     warning = 'existing notify found but not parseable as a flat string argv array; a safe chain cannot be rendered — merge manually (the direct fragment below replaces the existing value).';
   }
 
-  const shuttleScript = renderCodexNotifyShuttleScript({ minRuntimeVersion: runtimeVersion });
+  const shuttleScript = renderCodexNotifyShuttleScript({ minRuntimeVersion: runtimeVersion, template: templates.shuttle });
   const chainScript = mode === 'wrapper-chain'
-    ? renderCodexNotifyChainScript({ priorNotify: priorValues, shuttleInstallPath })
+    ? renderCodexNotifyChainScript({ priorNotify: priorValues, shuttleInstallPath, template: templates.chain })
     : null;
   const receiverPath = mode === 'wrapper-chain' ? chainInstallPath : shuttleInstallPath;
   const notifyFragment = renderCodexNotifyFragmentToml({ receiverPath });
@@ -637,7 +672,6 @@ export async function buildCodexNotificationPlan({
 
   const limits = notificationPlanLimits({ chained: mode === 'wrapper-chain' });
   const createdAt = now.toISOString();
-  const runId = makeNotificationRunId(now);
   const readCheck = {
     performed: true,
     config_path_scope: 'user',
@@ -684,26 +718,50 @@ export async function buildCodexNotificationPlan({
     limits,
     boundary: { writes_host_config: false, installs_receiver: false },
   };
-  const pointers = await writeNotificationPlanArtifact({ repoRoot, artifact: artifactBody });
 
   return {
-    requested: true,
-    executed: true,
-    status: 'planned',
-    host: 'codex',
-    host_config: {
-      read_only: true,
-      codex_home_source: codexHomeSource,
-      sources: [{ scope: 'user', status: read.ok ? 'readable' : 'missing' }],
+    section: {
+      requested: true,
+      executed: true,
+      status: 'planned',
+      host: 'codex',
+      host_config: {
+        read_only: true,
+        codex_home_source: codexHomeSource,
+        sources: [{ scope: 'user', status: read.ok ? 'readable' : 'missing' }],
+      },
+      read_check: readCheck,
+      warning,
+      tui_warning: tuiWarning,
+      recommended,
+      fragments,
+      scripts,
+      receiver_contract: RECEIVER_CONTRACT,
+      // Persist-result pointer; the orchestrator overwrites this in place (preserving
+      // key position) after it writes artifactBody to the caller-chosen target.
+      artifact: { written: true },
+      limits,
     },
-    read_check: readCheck,
-    warning,
-    tui_warning: tuiWarning,
-    recommended,
-    fragments,
-    scripts,
-    receiver_contract: RECEIVER_CONTRACT,
-    artifact: { written: true, ...pointers },
-    limits,
+    artifactBody,
   };
+}
+
+// ORCHESTRATOR (settings surface): gather → deterministic build → persist repo-
+// relative. Behavior-compatible with the pre-§1.3 single function. Bootstrap composes
+// gatherCodexNotificationInputs + buildCodexNotificationPlanSection itself and persists
+// artifactBody under its machine-global run instead (§10).
+export async function buildCodexNotificationPlan({
+  repoRoot,
+  homeDir,
+  env = {},
+  now = new Date(),
+  runtimeVersion = RUNTIME_VERSION,
+} = {}) {
+  const gathered = await gatherCodexNotificationInputs({ homeDir, env });
+  const runId = makeNotificationRunId(now);
+  const { section, artifactBody } = buildCodexNotificationPlanSection({ gathered, now, runId, runtimeVersion });
+  if (!artifactBody) return section;
+  const pointers = await writeNotificationPlanArtifact({ repoRoot, artifact: artifactBody });
+  section.artifact = { written: true, ...pointers };
+  return section;
 }

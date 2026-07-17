@@ -158,14 +158,43 @@ describe('ADR-0035 §4 guard — gates catch real violations', () => {
   it('claude plugin uninstall WITHOUT @agentic-plugins suffix → argv-verb-gate', () => {
     ok(rules(scan('settings.mjs', `commandSpec('claude', ['plugin', 'uninstall', 'someplugin']);`)).includes('argv-verb-gate'));
   });
-  it('claude plugin uninstall *@agentic-plugins in settings.mjs → NO finding (the one §4 exception)', () => {
-    deepStrictEqual(scan('settings.mjs', "commandSpec('claude', ['plugin', 'uninstall', `${plugin}@agentic-plugins`]);"), []);
+  it('claude plugin uninstall *@agentic-plugins in plugin-management-plan.mjs → NO finding (the one §4 exception)', () => {
+    deepStrictEqual(scan('plugin-management-plan.mjs', "commandSpec('claude', ['plugin', 'uninstall', `${plugin}@agentic-plugins`]);"), []);
   });
-  it('that same retired-cleanup uninstall in a DIFFERENT file → argv-verb-gate', () => {
+  it('that same retired-cleanup uninstall in a DIFFERENT file (now incl. settings.mjs, which no longer owns it) → argv-verb-gate', () => {
+    ok(rules(scan('settings.mjs', "commandSpec('claude', ['plugin', 'uninstall', `${plugin}@agentic-plugins`]);")).includes('argv-verb-gate'));
     ok(rules(scan('doctor.mjs', "commandSpec('claude', ['plugin', 'uninstall', `${plugin}@agentic-plugins`]);")).includes('argv-verb-gate'));
   });
   it('process.kill → kill-gate', () => {
     ok(rules(scan('doctor.mjs', `process.kill(pid, 'SIGTERM');`)).includes('kill-gate'));
+  });
+  // The signal-0 liveness exemption (ALLOWED_PID_LIVENESS_SITES). Signal 0 sends
+  // nothing; every neighbouring shape that COULD signal still fails, in the very
+  // same file — the exemption is a form, not a licence for the file.
+  it('process.kill(pid, 0) in the registered liveness site → NO finding', () => {
+    deepStrictEqual(scan('bootstrap-artifacts.mjs', `process.kill(pid, 0);`), []);
+  });
+  it('that same signal-0 probe in an UNREGISTERED file → kill-gate', () => {
+    ok(rules(scan('doctor.mjs', `process.kill(pid, 0);`)).includes('kill-gate'));
+    ok(rules(scan('consensus.mjs', `process.kill(pid, 0);`)).includes('kill-gate'));
+  });
+  it('a real signal in the liveness site → kill-gate (the exemption is signal-0 only)', () => {
+    ok(rules(scan('bootstrap-artifacts.mjs', `process.kill(pid, 'SIGTERM');`)).includes('kill-gate'));
+    ok(rules(scan('bootstrap-artifacts.mjs', `process.kill(pid, 9);`)).includes('kill-gate'));
+    ok(rules(scan('bootstrap-artifacts.mjs', `process.kill(pid);`)).includes('kill-gate'));
+  });
+  it('a VARIABLE signal in the liveness site → kill-gate (it could hold SIGKILL)', () => {
+    ok(rules(scan('bootstrap-artifacts.mjs', `process.kill(pid, sig);`)).includes('kill-gate'));
+    ok(rules(scan('bootstrap-artifacts.mjs', `process.kill(pid, zero);`)).includes('kill-gate'));
+  });
+  it('the liveness site is not exempt from the OTHER kill rules', () => {
+    ok(rules(scan('bootstrap-artifacts.mjs', `child.kill('SIGTERM');`)).includes('kill-gate'));
+    ok(rules(scan('bootstrap-artifacts.mjs', `const s = 'SIGKILL';`)).includes('kill-gate'));
+  });
+  it('a second process.kill alongside the probe is still caught', () => {
+    // The exemption must not blanket the file: one legal probe plus one illegal
+    // kill is one violation, not zero.
+    ok(rules(scan('bootstrap-artifacts.mjs', `process.kill(pid, 0); process.kill(other, 'SIGTERM');`)).includes('kill-gate'));
   });
   it('child.kill in doctor.mjs (own-child timeout) → NO finding', () => {
     deepStrictEqual(scan('doctor.mjs', `child.kill('SIGTERM');`), []);
@@ -955,13 +984,20 @@ describe('ADR-0035 §4 guard — registry drift', () => {
     }
   });
 
-  it('every ALLOWED_KILL_SITES / ALLOWED_DESTRUCTIVE_TEMPLATES file exists', async () => {
+  it('every ALLOWED_KILL_SITES / ALLOWED_DESTRUCTIVE_TEMPLATES / ALLOWED_PID_LIVENESS_SITES file exists', async () => {
+    // Registry `.file` values are basenames matched against the scanner's basename
+    // fileName, so resolve them across the whole runtime tree — scripts/ AND
+    // scripts/lib/ (the retired-cleanup template now lives in lib/plugin-management-plan.mjs).
+    const byName = new Map((await listRuntimeScripts()).map((s) => [s.fileName, s.path]));
     const files = new Set([
       ...registry.ALLOWED_KILL_SITES.map((s) => s.file),
       ...registry.ALLOWED_DESTRUCTIVE_TEMPLATES.map((s) => s.file),
+      ...registry.ALLOWED_PID_LIVENESS_SITES.map((s) => s.file),
     ]);
     for (const file of files) {
-      const src = await readFile(resolve(RUNTIME_SCRIPTS, file), 'utf-8');
+      const path = byName.get(file);
+      ok(path, `${file} should exist in the runtime scripts tree`);
+      const src = await readFile(path, 'utf-8');
       ok(src.length > 0, `${file} should exist`);
     }
   });

@@ -192,6 +192,10 @@ export async function runDoctor({
         now,
         retentionCap: artifactRetentionCap,
         maxBytes: artifactMaxBytes,
+        // ADR-0046 §4 — the machine-global bootstrap home MUST be inventoried too.
+        // Passing doctor's already-injected homeDir keeps this read hermetic in
+        // tests; the inventory itself never reaches for os.homedir().
+        homeDir: resolvedHomeDir,
       })
     : {
         requested: false,
@@ -4221,6 +4225,15 @@ function summarizeOverall(report) {
   } else if (report.artifact_inventory?.executed && report.artifact_inventory.status === 'needs_attention') {
     warnings.push('runtime artifact inventory exceeds retention guidance');
   }
+  // The machine scope has its OWN status; the top-level status is repo-only by
+  // design (backward compatibility). Without this, an unreadable machine home or a
+  // bootstrap family over its cap would headline `pass` — doctor reporting healthy on
+  // an inventory ADR-0046 §4 makes mandatory.
+  if (report.artifact_inventory?.executed && report.artifact_inventory.machine?.status === 'blocked') {
+    warnings.push('machine-global artifact inventory blocked');
+  } else if (report.artifact_inventory?.executed && report.artifact_inventory.machine?.status === 'needs_attention') {
+    warnings.push('machine-global artifact inventory exceeds retention guidance');
+  }
   if (report.permission_diagnosis?.executed && report.permission_diagnosis.status === 'blocked') {
     warnings.push('permission diagnosis blocked');
   }
@@ -4561,6 +4574,26 @@ export function formatText(report) {
     }
     for (const limit of report.artifact_inventory.limits ?? []) lines.push(`- limit: ${limit}`);
     lines.push('');
+    // The machine-global scope renders SEPARATELY (ADR-0046 §4, artifact-policy.md
+    // §Inventory). Folding its families into the block above would put two roots and
+    // two retention caps behind one set of numbers, so `bootstrap: runs=12` would
+    // read against the repo cap of 20 and look fine while it is over its own cap
+    // of 10.
+    const machine = report.artifact_inventory.machine;
+    if (machine) {
+      lines.push('Machine-Global Artifact Inventory (~/.agentic-plugins)');
+      lines.push(`- status: ${machine.status}; total-runs=${machine.total.run_count}; total-files=${machine.total.file_count}; total-bytes=${machine.total.bytes}; unreadable=${machine.total.unreadable}`);
+      lines.push(`- policy: run-count-cap=${machine.policy.run_count_cap}; byte-cap=${machine.policy.byte_cap}; retention-exempt=${(machine.policy.retention_exempt ?? []).join(',') || '<none>'}`);
+      for (const family of Object.values(machine.families ?? {})) {
+        lines.push(`- ${family.family}: status=${family.status}; runs=${family.run_count}; files=${family.file_count}; bytes=${family.bytes}; pointer=${family.pointer}`);
+      }
+      for (const attention of machine.attention ?? []) {
+        lines.push(`  retention-attention: ${attention.family}/${attention.kind}; observed=${attention.observed}; limit=${attention.limit}`);
+        lines.push(`    next: ${attention.recommendation}`);
+      }
+      for (const limit of machine.limits ?? []) lines.push(`- limit: ${limit}`);
+      lines.push('');
+    }
   }
   if (report.permission_diagnosis?.requested) {
     const pd = report.permission_diagnosis;
