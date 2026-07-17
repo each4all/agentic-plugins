@@ -216,6 +216,16 @@ function buildPluginPlans(plugins, { codexPerPluginVerbList = [], marketplaceReg
       status: plugin.status,
       source_version: sourceVersion,
       installed_version: codexInstalledVersion ?? claudeInstalled?.version ?? claudeCacheLatest?.manifest_version ?? null,
+      // Codex list-authoritative installed evidence, kept SEPARATE from the generic
+      // installed_version above (which falls through Codex → Claude → source). A /hooks
+      // attestation must bind the version Codex actually loaded, so it reads this
+      // decision + version via resolveCodexInstalledPluginVersion rather than the
+      // fall-through field (machine-bootstrap-contract.md §8.2, S8a4).
+      codex_installed: {
+        version: codexInstalledVersion,
+        decision: codexResolved?.decision ?? null,
+        enabled: codexResolved?.enabled ?? null,
+      },
       marketplace: plugin.marketplace,
       installed: {
         claude_plugin_list: claudeInstalled,
