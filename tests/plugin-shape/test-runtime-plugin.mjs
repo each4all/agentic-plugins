@@ -284,6 +284,43 @@ describe('plugins/runtime settings surface', () => {
     ok(/Claude agent teams must not be treated as the portable cross-host team-mode substrate/i.test(followUps), 'Claude team-mode boundary documented');
   });
 
+  // artifact-policy.md was cited by three surfaces and opened by NO test — the exact
+  // drift hole machine-bootstrap-contract.md §11 names (a doc "cited by filename but
+  // no test ever opens it" can drift arbitrarily while CI stays green). It is a
+  // PACKAGED doc that must be correct when bootstrap ships, so pin it by content:
+  // the machine-global root, each governed axis, and the constants it shares with
+  // the code. The cap is asserted against the CODE's constant rather than a literal,
+  // so a future cap change cannot leave the doc quietly lying.
+  it('documents the machine-global artifact scope with its root, security, pointer, inventory, and retention rules', async () => {
+    const policy = await readFile(resolve(PLUGIN_ROOT, 'docs/artifact-policy.md'), 'utf-8');
+    for (const token of [
+      '## Machine-global artifacts',
+      '~/.agentic-plugins/runs/bootstrap/<run-id>/run.json',
+      '~/.agentic-plugins/profiles/<name>.json',
+      '~/.agentic-plugins/.locks/bootstrap.lock',
+      '### Security',
+      '### Pointers',
+      '### Inventory',
+      '### Retention',
+    ]) {
+      ok(policy.includes(token), `artifact-policy.md documents ${token}`);
+    }
+    ok(/fails? closed/i.test(policy), 'the $HOME-is-the-repo fail-closed posture is documented');
+    ok(/0700/.test(policy) && /0600/.test(policy), 'the filesystem modes are documented');
+    ok(/never auto-deleted/i.test(policy), 'the no-auto-delete retention posture is documented');
+    ok(/retention-exempt|retention pressure/i.test(policy), 'profile retention exemption is documented');
+
+    // Doc/code agreement, not just doc existence: the machine cap and the repo cap
+    // are both stated, and the machine one matches the constant the inventory uses.
+    const stateReaders = await readFile(resolve(PLUGIN_ROOT, 'scripts/lib/state-readers.mjs'), 'utf-8');
+    const capMatch = stateReaders.match(/export const MACHINE_BOOTSTRAP_RETENTION_CAP = (\d+)/);
+    ok(capMatch, 'state-readers.mjs defines MACHINE_BOOTSTRAP_RETENTION_CAP');
+    ok(
+      new RegExp(`\\b${capMatch[1]} runs`).test(policy) || new RegExp(`last \\*\\*${capMatch[1]}\\*\\*`).test(policy),
+      `artifact-policy.md states the machine retention cap of ${capMatch[1]} that the code enforces`,
+    );
+  });
+
   it('documents the Codex capability baseline with source-backed host boundaries', async () => {
     const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/codex-capability-baseline.md'), 'utf-8');
     for (const token of [

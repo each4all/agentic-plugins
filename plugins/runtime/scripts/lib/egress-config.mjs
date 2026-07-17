@@ -57,6 +57,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { validateTelegramChatId } from './egress-channel.mjs';
+import { isUnder } from './path-containment.mjs';
 
 // The E1 egress service enum — deliberately DISTINCT from NOTIFY_CHANNELS
 // (lib/runtime-config.mjs) so egress activation can never share the tracked
@@ -145,13 +146,6 @@ export function parseEgressLocalToml(text) {
 // ---------------------------------------------------------------------------
 // Verified-ignored-local reader (fail-closed)
 // ---------------------------------------------------------------------------
-
-function isUnder(child, parent) {
-  if (!parent) return false;
-  const c = path.resolve(child);
-  const p = path.resolve(parent);
-  return c === p || c.startsWith(p + path.sep);
-}
 
 // Fail-closed read of a candidate verified-ignored-local file. Returns
 // { ok, reason, text }. `text` is the raw file content ONLY when ok===true;

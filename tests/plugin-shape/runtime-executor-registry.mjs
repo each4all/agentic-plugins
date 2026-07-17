@@ -448,6 +448,35 @@ export const ALLOWED_KILL_SITES = [
   },
 ];
 
+// ---------------------------------------------------------------------------
+// Signal-0 liveness probes — NOT kills, and deliberately a separate list
+// ---------------------------------------------------------------------------
+
+// `process.kill(pid, 0)` sends NO signal. POSIX defines signal 0 as an
+// existence/permission check: ESRCH means the process is gone, EPERM means it
+// exists under another uid. It cannot terminate, stop, or signal anything — the
+// only thing it shares with a kill is the function name, which is a Node/POSIX
+// spelling accident.
+//
+// This is a SEPARATE list from ALLOWED_KILL_SITES, not an entry in it, because the
+// two authorize different things: a kill site authorizes terminating a process,
+// this authorizes asking whether one exists. Folding the probe into the kill list
+// would make "runtime may terminate a child it spawned, and nothing else" quietly
+// untrue, and the next reader of that list would have to re-derive which entries
+// actually kill.
+//
+// The form is pinned exactly — `process.kill(<ident>, 0)`. A literal `0` second
+// argument is the whole exemption; `process.kill(pid, sig)` where sig is a variable
+// is NOT covered and still fails, because a variable could hold 'SIGKILL'.
+export const ALLOWED_PID_LIVENESS_SITES = [
+  {
+    file: 'bootstrap-artifacts.mjs',
+    form: 'process.kill(pid, 0)',
+    justification:
+      'stale family-lock reclaim needs to know whether the owning pid is gone; machine-bootstrap-contract.md §13 fixes this exact probe (ESRCH ⇒ gone, EPERM ⇒ exists) as the staleness rule, alongside the 10-minute age bound (ADR-0035 §4 — a liveness read, not a mutation)',
+  },
+];
+
 // The runtime scripts the guard scans. Anything matching plugins/runtime/scripts
 // recursively; listed explicitly so a deleted/renamed executor is visible.
 export const RUNTIME_SCRIPT_GLOB_ROOT = 'plugins/runtime/scripts';
