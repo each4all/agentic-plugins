@@ -12,7 +12,7 @@
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual } from 'node:assert';
-import { chmod, mkdtemp, mkdir, readFile, writeFile, symlink, stat, rm, readdir, utimes } from 'node:fs/promises';
+import { chmod, link, mkdtemp, mkdir, readFile, writeFile, symlink, stat, rm, readdir, utimes } from 'node:fs/promises';
 import { unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1111,6 +1111,56 @@ describe('runtime bootstrap artifacts — machine-global inventory + retention (
       ok(!family.pointer.includes(homeDir));
     }
     strictEqual(machinePointer(homeDir, join(homeDir, '.agentic-plugins', 'runs')), '~/.agentic-plugins/runs');
+    await rm(homeDir, { recursive: true, force: true });
+  });
+});
+
+describe('runtime bootstrap artifacts — file identity survives inode reuse', () => {
+  // CI (Linux) found this and macOS could not: unlink frees an inode number and the very
+  // next create can REUSE it, so a lock released and immediately recreated lands on the
+  // inode a slow breaker judged — a dev/ino-only recheck then waves a LIVE holder's lock
+  // through as "the same file I judged", deletes it, and leaves two holders. APFS does
+  // not recycle as eagerly, which is precisely why the platform difference WAS the bug
+  // report.
+  //
+  // Reproducing it by unlink+create would only fail on filesystems that happen to
+  // recycle — a test that passes locally for a reason the platform chose. So the
+  // condition is FORCED instead: a second hard link lets the swap rewrite the very same
+  // inode, giving "same dev/ino, different lock" deterministically everywhere.
+  it('a lock rewritten on the SAME dev/ino is not mistaken for the one that was judged', async () => {
+    const homeDir = await tempHome();
+    const lockPath = bootstrapLockFile(homeDir);
+    const alias = `${lockPath}.alias`;
+    await mkdir(join(homeDir, '.agentic-plugins', '.locks'), { recursive: true, mode: 0o700 });
+    const ancient = new Date(Date.now() - LOCK_STALE_MS - 60_000);
+    await writeFile(lockPath, `${JSON.stringify({ pid: 4242, acquired_at: ancient.toISOString() })}\n`, { mode: 0o600 });
+    await link(lockPath, alias);
+    await utimes(lockPath, ancient, ancient);
+    const judged = await stat(lockPath);
+
+    let swapped = false;
+    const isPidAlive = () => {
+      if (!swapped) {
+        swapped = true;
+        // Written THROUGH the alias: lockPath keeps its dev/ino, and gets a live
+        // holder's bytes and a fresh mtime.
+        writeFileSync(alias, `${JSON.stringify({ owner_token: 'fresh-holder', pid: process.pid, acquired_at: new Date().toISOString() })}\n`);
+      }
+      return false; // the judged pid is "gone", so the break proceeds
+    };
+
+    const live = await stat(lockPath).catch(() => null);
+    const result = await acquireBootstrapFamilyLock({ homeDir, repoRoot: null, attempts: 1, isPidAlive });
+
+    strictEqual(result.ok, false, 'the breaker must not take a lock it never judged');
+    ok(result.diagnostics.some((d) => /re-acquired while a stale break was in flight/.test(d)), 'it CONCEDED — the identity check noticed, rather than reclaiming');
+    ok(!result.diagnostics.some((d) => /Reclaimed a stale/.test(d)), 'and did not report a reclaim it must not have performed');
+    const survivor = JSON.parse(await readFile(lockPath, 'utf8'));
+    strictEqual(survivor.owner_token, 'fresh-holder', "the live holder's lock survived");
+    // The premise the test rests on: the inode really is unchanged, so dev/ino alone
+    // could not have told these two locks apart.
+    strictEqual((await stat(lockPath)).ino, judged.ino, 'same inode throughout — identity had to come from elsewhere');
+    ok(live);
     await rm(homeDir, { recursive: true, force: true });
   });
 });

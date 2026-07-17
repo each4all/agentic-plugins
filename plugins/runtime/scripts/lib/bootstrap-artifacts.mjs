@@ -758,10 +758,22 @@ async function tryBreakStaleLock({ lockPath, nowMs, staleMs, isPidAlive, diagnos
   // later D both believing they hold the family lock, which is exactly the "two
   // processes both create a run" outcome the lock exists to prevent.
   // Identity is compared whatever the body's readability — an unreadable lock is
-  // still a recognizable inode, and requiring a successful READ here would concede
+  // still a recognizable file, and requiring a successful READ here would concede
   // every break of one, i.e. never reclaim it.
+  //
+  // dev/ino is NOT sufficient on its own, and CI proved it: Linux REUSES an inode
+  // number as soon as it is freed, so a lock that was unlinked and immediately
+  // recreated can land on the very inode we judged — and the recheck would wave a LIVE
+  // holder's lock through as "the same file". (macOS/APFS does not reuse as eagerly,
+  // which is exactly why this passed locally and failed on Linux.) mtime and the raw
+  // bytes are compared too: an inode may be recycled, but a recreated lock does not
+  // also reproduce the nanosecond it was written AND the token inside it.
   const moved = await readLockFile(parked);
-  const sameFile = moved.status !== 'missing' && moved.dev === judged.dev && moved.ino === judged.ino;
+  const sameFile = moved.status !== 'missing'
+    && moved.dev === judged.dev
+    && moved.ino === judged.ino
+    && moved.mtimeMs === judged.mtimeMs
+    && moved.text === judged.text;
   const sameToken = holder?.owner_token === undefined
     ? true
     : moved.value?.owner_token === holder.owner_token;
@@ -788,15 +800,16 @@ async function readLockFile(path) {
   try {
     handle = await open(path, 'r');
   } catch (err) {
-    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return { status: 'missing', value: null, dev: null, ino: null, mtimeMs: 0 };
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return { status: 'missing', value: null, text: null, dev: null, ino: null, mtimeMs: 0 };
     // Unreadable (mode 000, an I/O error) — but IDENTITY and MTIME survive, because
     // lstat needs only the directory. They must: without them the post-rename recheck
     // has nothing to compare, concedes every time, and an unreadable lock becomes
     // unbreakable — the permanent block, rebuilt one layer down. A body we cannot
     // read is still a file we can recognize.
     const st = await lstat(path).catch(() => null);
-    if (st === null) return { status: 'missing', value: null, dev: null, ino: null, mtimeMs: 0 };
-    return { status: 'unreadable', value: null, dev: st.dev, ino: st.ino, mtimeMs: st.mtimeMs };
+    if (st === null) return { status: 'missing', value: null, text: null, dev: null, ino: null, mtimeMs: 0 };
+    // No text to compare, so identity rests on dev/ino/mtime alone for this one case.
+    return { status: 'unreadable', value: null, text: null, dev: st.dev, ino: st.ino, mtimeMs: st.mtimeMs };
   }
   try {
     const st = await handle.stat();
@@ -807,9 +820,9 @@ async function readLockFile(path) {
     } catch {
       value = null; // an unparseable body is still a lock: identity and mtime hold.
     }
-    return { status: 'ok', value, dev: st.dev, ino: st.ino, mtimeMs: st.mtimeMs };
+    return { status: 'ok', value, text, dev: st.dev, ino: st.ino, mtimeMs: st.mtimeMs };
   } catch {
-    return { status: 'unreadable', value: null, dev: null, ino: null, mtimeMs: 0 };
+    return { status: 'unreadable', value: null, text: null, dev: null, ino: null, mtimeMs: 0 };
   } finally {
     await handle.close().catch(() => {});
   }
