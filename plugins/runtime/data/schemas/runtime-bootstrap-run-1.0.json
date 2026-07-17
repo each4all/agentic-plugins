@@ -97,23 +97,7 @@
       "maxItems": 256,
       "items": { "$ref": "#/$defs/step" }
     },
-    "completion": {
-      "type": ["object", "null"],
-      "additionalProperties": false,
-      "required": ["state", "unsatisfied", "missing_steps", "proofs", "hook_attestation"],
-      "properties": {
-        "state": { "enum": ["complete", "configured-not-verified", "incomplete"] },
-        "unsatisfied": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/stepId" } },
-        "missing_steps": {
-          "description": "§6.1 — a step ABSENT from steps[] is counted here and BLOCKS completion. Without this a manifest that simply omits a required step passes the reducer, which is the exact false-pass this command exists to prevent (test #11).",
-          "type": "array",
-          "maxItems": 256,
-          "items": { "$ref": "#/$defs/stepId" }
-        },
-        "proofs": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/proof" } },
-        "hook_attestation": { "$ref": "#/$defs/hookAttestation" }
-      }
-    },
+    "completion": { "$ref": "#/$defs/completion" },
     "boundary": {
       "description": "§5 — MUST all be false; the artifact validator refuses the write otherwise.",
       "type": "object",
@@ -318,6 +302,89 @@
         "attested_plugins": { "$ref": "#/$defs/pluginNameArray" },
         "bound_versions": {
           "type": "object",
+          "additionalProperties": false,
+          "required": ["codex", "plugins"],
+          "properties": {
+            "codex": { "$ref": "#/$defs/nullableSemver" },
+            "plugins": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["codex"],
+              "properties": { "codex": { "$ref": "#/$defs/pluginVersionMap" } }
+            }
+          }
+        },
+        "artifact_pointer": { "type": ["string", "null"], "maxLength": 512 },
+        "artifact_hash": { "$ref": "#/$defs/sha256" },
+        "attested_at": { "$ref": "#/$defs/nullableTimestamp" }
+      }
+    },
+    "completion": {
+      "description": "§8 — the reduced completion verdict reduceCompletion writes. Extracted to a $def so the reducer's output can be validated against exactly this shape (the seam that caught the reasons/directions mismatch before wiring).",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["state", "unsatisfied", "missing_steps", "proofs", "hook_attestation"],
+      "properties": {
+        "state": { "enum": ["complete", "configured-not-verified", "incomplete"] },
+        "unsatisfied": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/stepId" } },
+        "missing_steps": {
+          "description": "§6.1 — a step ABSENT from steps[] is counted here and BLOCKS completion. Without this a manifest that simply omits a required step passes the reducer, which is the exact false-pass this command exists to prevent (test #11).",
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/stepId" }
+        },
+        "proofs": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/evaluatedProof" } },
+        "hook_attestation": { "$ref": "#/$defs/hookAttestationVerdict" }
+      }
+    },
+    "evaluatedProof": {
+      "description": "§8 — the REDUCED proof reduceCompletion writes into `completion.proofs`: a recomputed AGGREGATE status plus its reasons, NOT the recorded per-direction `proof` (that stays in the proof/ files and keeps its `directions`). The directions collapse into `status`; step_id/declined/required/reasons are the reduction's own fields. A distinct def because the reduced shape is not the recorded shape — reusing `proof` here is the mismatch that would reject every persisted completion once the reducer is wired.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "step_id", "declined", "status", "reasons", "required", "artifact_pointer", "artifact_hash", "bound_versions", "ran_at"],
+      "properties": {
+        "kind": { "enum": ["deep-peer-smoke", "workflow-continuation", "permission"] },
+        "step_id": { "$ref": "#/$defs/stepId" },
+        "declined": { "type": "boolean" },
+        "status": { "enum": ["passed", "failed", "stale", "not-applicable", "absent"] },
+        "reasons": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 512 } },
+        "required": { "type": "boolean" },
+        "artifact_pointer": { "type": ["string", "null"], "maxLength": 512 },
+        "artifact_hash": { "$ref": "#/$defs/sha256" },
+        "bound_versions": {
+          "description": "The recorded proof's bound versions (or null when no proof was recorded). Inlined as nullable because the validator implements a closed subset with no anyOf — a $ref cannot also carry `type: null` here.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["runtime", "claude", "codex", "plugins"],
+          "properties": {
+            "runtime": { "$ref": "#/$defs/semver" },
+            "claude": { "$ref": "#/$defs/nullableSemver" },
+            "codex": { "$ref": "#/$defs/nullableSemver" },
+            "plugins": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["claude", "codex"],
+              "properties": {
+                "claude": { "$ref": "#/$defs/pluginVersionMap" },
+                "codex": { "$ref": "#/$defs/pluginVersionMap" }
+              }
+            }
+          }
+        },
+        "ran_at": { "$ref": "#/$defs/nullableTimestamp" }
+      }
+    },
+    "hookAttestationVerdict": {
+      "description": "§8 — the REDUCED hook attestation reduceCompletion writes into `completion.hook_attestation`: the recomputed currency `status` plus its reasons. The recorded operator claim is `hookAttestation`; this is the verdict computed over it, and it carries `reasons` the closed `hookAttestation` def rejects — hence a separate def.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reasons", "attested_plugins", "bound_versions", "artifact_pointer", "artifact_hash", "attested_at"],
+      "properties": {
+        "status": { "enum": ["attested", "stale", "absent", "not-applicable"] },
+        "reasons": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 512 } },
+        "attested_plugins": { "$ref": "#/$defs/pluginNameArray" },
+        "bound_versions": {
+          "type": ["object", "null"],
           "additionalProperties": false,
           "required": ["codex", "plugins"],
           "properties": {
