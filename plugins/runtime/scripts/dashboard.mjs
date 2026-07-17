@@ -351,6 +351,12 @@ export async function inspectSettingsRecency({ repoRoot }) {
             .filter(([, value]) => typeof value === 'string')
             .map(([key, value]) => [sanitizeValue(key), sanitizeValue(value)]),
         ),
+        // Canonical S8a4 fields carried through so the recency view names the same
+        // Codex-bound versions the attestation records (avoids a stale third mirror).
+        attested_plugins: Array.isArray(review.attested_plugins)
+          ? review.attested_plugins.map((value) => sanitizeValue(value)).filter(Boolean).sort()
+          : [],
+        bound_codex_cli: typeof review.bound_versions?.codex === 'string' ? sanitizeValue(review.bound_versions.codex) : null,
         artifact_pointer: pointer(repoRoot, artifactPath),
       };
     }

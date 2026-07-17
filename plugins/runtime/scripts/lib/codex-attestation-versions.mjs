@@ -80,3 +80,36 @@ export function resolveCodexInstalledPluginVersion(plugin) {
   }
   return { version, attestable: true, reason: null };
 }
+
+/**
+ * The Codex list-authoritative installed version, from the raw codex_resolved decision +
+ * Codex install-cache manifest. ONE rule, so the two callers that need it — buildPluginPlans
+ * (which bakes it into `codex_installed`) and doctor's currency mirror (which reads the
+ * plugin matrix directly) — cannot drift on the fallback semantics: a 'fallback' decision
+ * means the list probe was unavailable, so the Codex cache manifest is the best remaining
+ * Codex evidence; any other decision trusts the list version.
+ */
+export function pickCodexInstalledVersion(codexResolved, codexCacheLatest) {
+  return codexResolved?.decision === 'fallback'
+    ? (codexCacheLatest?.manifest_version ?? null)
+    : (codexResolved?.version ?? null);
+}
+
+/**
+ * Resolve a doctor plugin-MATRIX entry (installed.codex_resolved + cache.codex.latest) the
+ * same way resolveCodexInstalledPluginVersion resolves a buildPluginPlans entry. Doctor's
+ * matrix carries the raw evidence rather than the pre-baked `codex_installed` field, so this
+ * adapts it — the point of S8a4 §SCOPE-2 is that settings (producer) and doctor (mirror)
+ * bind an attestation's plugin versions through the IDENTICAL authority.
+ */
+export function resolveCodexInstalledVersionFromMatrix(matrixPlugin) {
+  const codexResolved = matrixPlugin?.installed?.codex_resolved ?? null;
+  const codexCacheLatest = matrixPlugin?.cache?.codex?.latest ?? null;
+  return resolveCodexInstalledPluginVersion({
+    codex_installed: {
+      version: pickCodexInstalledVersion(codexResolved, codexCacheLatest),
+      decision: codexResolved?.decision ?? null,
+      enabled: codexResolved?.enabled ?? null,
+    },
+  });
+}
