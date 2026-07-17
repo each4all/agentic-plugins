@@ -51,6 +51,7 @@ import { fileURLToPath } from 'node:url';
 
 import { RUNTIME_VERSION } from '../version.mjs';
 import { readTextIfExists } from './state-readers.mjs';
+import { tomlBasicString } from './toml.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -280,25 +281,12 @@ export function parseCodexNotifyConfigToml(text) {
 // Fragment renderers
 // ---------------------------------------------------------------------------
 
-// Full TOML basic-string escape (mirrors settings.mjs tomlBasicString):
-// backslash, quote, named control escapes, other C0/DEL as \uXXXX — safe for
-// a home path that could theoretically carry a control char on POSIX.
-export function tomlBasicString(value) {
-  let out = '';
-  for (const ch of String(value)) {
-    const code = ch.codePointAt(0);
-    if (ch === '\\') out += '\\\\';
-    else if (ch === '"') out += '\\"';
-    else if (ch === '\b') out += '\\b';
-    else if (ch === '\t') out += '\\t';
-    else if (ch === '\n') out += '\\n';
-    else if (ch === '\f') out += '\\f';
-    else if (ch === '\r') out += '\\r';
-    else if (code < 0x20 || code === 0x7f) out += `\\u${code.toString(16).padStart(4, '0')}`;
-    else out += ch;
-  }
-  return `"${out}"`;
-}
+// Full TOML basic-string escape: backslash, quote, named control escapes, other
+// C0/DEL as \uXXXX — safe for a home path that could theoretically carry a control
+// char on POSIX. Canonical home is lib/toml.mjs (this module's copy and settings.mjs's
+// had drifted into two byte-identical definitions); re-exported to preserve this
+// module's public surface.
+export { tomlBasicString };
 
 // The notify= fragment: /usr/bin/env node <receiver> — never a version-pinned
 // cache path; Codex appends the payload JSON as one extra argv item.
