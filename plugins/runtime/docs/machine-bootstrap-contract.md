@@ -791,7 +791,33 @@ exists to prevent. The registry is therefore enumerated here, not left to S8:
 | `hooks.codex.attested` | 7 | iff any selected plugin has `hook_bearing.codex` | no (but `not-applicable` when no Codex hook-bearing plugin is selected) |
 | `proof.deep-peer-smoke` | 8 | always | **yes** (declining caps at `configured-not-verified`) |
 | `proof.workflow-continuation` | 8 | iff `engineer` ∈ selection | **yes** (same cap) |
-| `proof.permission` | 8 | iff `permission.*.applied` is `satisfied` | **yes** (same cap) |
+| `proof.permission` | 8 | iff a `permission.*.applied` step carries `fragment_applied: true` | **yes** (same cap) |
+
+**`blocked_by` edges** (the column §5's `steps[].blocked_by` serializes; enumerated here
+because §5 referenced them and this table did not define them — S8a2 C4). Each step is
+blocked by its *structural* predecessors only — the things without which the step cannot
+be attempted at all, never a mere stage ordering:
+
+| step | blocked_by |
+|---|---|
+| `host.<h>.present` | — (nothing; the root of every chain) |
+| `host.<h>.authenticated` | `host.<h>.present` |
+| `marketplace.<h>.registered` | `host.<h>.present` |
+| `plugin.<name>.<h>.installed` | `marketplace.<h>.registered` |
+| `plugin.<name>.codex.enabled` | `plugin.<name>.codex.installed` |
+| `config.model_effort` | — (agentic-plugins' own config; no host needed) |
+| `notify.configured`, `egress.configured` | — (same) |
+| `permission.<h>.applied` | `host.<h>.present` |
+| `hooks.codex.attested` | every selected Codex-hook-bearing plugin's `.codex.installed` **and** `.codex.enabled` |
+| `proof.deep-peer-smoke` | both hosts' `.authenticated`, plus `companions` `.installed` on both and `.enabled` on Codex |
+| `proof.workflow-continuation` | `engineer`'s `.installed` on both hosts and `.enabled` on Codex |
+| `proof.permission` | every applicable `permission.<h>.applied` |
+
+An empty `blocked_by` is written **explicitly** (`[]`), never omitted: an absent edge list
+and "this step has no predecessors" must not be the same byte. The graph is acyclic, and
+the registry — not `run.steps[]` — is the authority for stage, applicability, declinable,
+and these edges. A manifest's copy is operator-editable data; trusting it would let an
+edited file grant itself a stage or drop a blocker.
 
 `hook_bearing` is per-host (§1.4), derived from effective registration. `attention` is
 Claude-only; `engineer`, `orchestrator`, `founder`, and `designer` bear Codex hooks

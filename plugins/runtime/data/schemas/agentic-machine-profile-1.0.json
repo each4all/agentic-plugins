@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agentic-machine-profile-1.0",
+  "title": "Portable machine profile",
+  "description": "machine-bootstrap-contract.md §4. A secrets-free, enumerated snapshot of one machine's choices, written by `profile export` and consumed by `profile seed`. The profile is an UNTRUSTED source of interview defaults: it is never configuration to apply, and never an input to any activation or config loader (§4 invariant). Key order here IS the canonical serialization order (§4.1); validated by lib/schema-validate.mjs, whose closed keyword subset means every constraint below is enforced or the schema is rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "exported_at", "boundary", "source", "selection", "model_effort", "notify", "egress", "permissions"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "pattern": "^agentic-machine-profile-1\\.[0-9]+$",
+      "description": "Carries a MINOR, not a bare major, because the §4.1 forward-compat rule turns on it: a newer minor forgives unknown scalar keys, a same-or-older minor does not, and an unknown major is refused outright."
+    },
+    "exported_at": { "$ref": "#/$defs/timestamp" },
+    "boundary": {
+      "description": "§4.3 guard 2. Part of the schema, not an afterthought: the write is refused unless EVERY flag is false — including performs_network_request, not merely the writes_* trio.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["writes_host_config", "writes_credential", "writes_config_local_toml", "performs_network_request"],
+      "properties": {
+        "writes_host_config": { "const": false },
+        "writes_credential": { "const": false },
+        "writes_config_local_toml": { "const": false },
+        "performs_network_request": { "const": false }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostname_hash", "runtime_version", "claude_cli_version", "codex_cli_version"],
+      "properties": {
+        "hostname_hash": {
+          "description": "§4.2 — a sha256 prefix, NEVER the raw hostname.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{16,64}$"
+        },
+        "runtime_version": { "$ref": "#/$defs/semver" },
+        "claude_cli_version": { "$ref": "#/$defs/nullableSemver" },
+        "codex_cli_version": { "$ref": "#/$defs/nullableSemver" }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundle", "desired", "excluded", "observed"],
+      "properties": {
+        "bundle": { "enum": ["base", "engineering", "business", "design", "full", "custom"] },
+        "desired": { "$ref": "#/$defs/pluginNameArray" },
+        "excluded": { "$ref": "#/$defs/pluginNameArray" },
+        "observed": {
+          "description": "Per-host and NEVER flattened (§5): a flat map would collapse a Claude/Codex version divergence. Only Codex carries `disabled` — Claude reports no enabled/disabled state (test #31).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["claude", "codex"],
+          "properties": {
+            "claude": {
+              "type": "array",
+              "maxItems": 256,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "version", "state"],
+                "properties": {
+                  "name": { "$ref": "#/$defs/pluginName" },
+                  "version": { "$ref": "#/$defs/nullableSemver" },
+                  "state": { "enum": ["installed", "missing", "unknown"] }
+                }
+              }
+            },
+            "codex": {
+              "type": "array",
+              "maxItems": 256,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "version", "state"],
+                "properties": {
+                  "name": { "$ref": "#/$defs/pluginName" },
+                  "version": { "$ref": "#/$defs/nullableSemver" },
+                  "state": { "enum": ["installed", "disabled", "missing", "unknown"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "model_effort": {
+      "description": "§4.4 — every value is read from USER-GLOBAL config only, so a repository's policy is never exported as another machine's global default. `scope` is always `machine`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "effort", "claude_model", "claude_effort", "codex_model", "codex_effort"],
+      "properties": {
+        "model": { "$ref": "#/$defs/scalarField" },
+        "effort": { "$ref": "#/$defs/scalarField" },
+        "claude_model": { "$ref": "#/$defs/scalarField" },
+        "claude_effort": { "$ref": "#/$defs/scalarField" },
+        "codex_model": { "$ref": "#/$defs/scalarField" },
+        "codex_effort": { "$ref": "#/$defs/scalarField" }
+      }
+    },
+    "notify": {
+      "description": "§4.0 — `notify_channel` is NOT an egress channel. `telegram` is not a value here and must never become one; egress lives on a separate axis below, precisely so tracked configuration can never activate egress (ADR-0041 §2c).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["notify_channel", "notify_quiet_hours", "notify_quiet_hours_tz", "notify_dedupe_ttl_seconds", "notify_urgent_bypass_quiet_hours", "notify_kinds"],
+      "properties": {
+        "notify_channel": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "scope", "provenance"],
+          "properties": {
+            "value": { "enum": ["none", "macos-osascript", "file-log", null] },
+            "scope": { "const": "machine" },
+            "provenance": { "$ref": "#/$defs/provenance" }
+          }
+        },
+        "notify_quiet_hours": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "scope", "provenance"],
+          "properties": {
+            "value": { "type": ["string", "null"], "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$" },
+            "scope": { "const": "machine" },
+            "provenance": { "$ref": "#/$defs/provenance" }
+          }
+        },
+        "notify_quiet_hours_tz": { "$ref": "#/$defs/scalarField" },
+        "notify_dedupe_ttl_seconds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "scope", "provenance"],
+          "properties": {
+            "value": {
+              "description": "§4.1 — a POSITIVE integer string; the existing validator rejects `0`. The profile uses the validator's own accepted form rather than inventing a second encoding.",
+              "type": ["string", "null"],
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "scope": { "const": "machine" },
+            "provenance": { "$ref": "#/$defs/provenance" }
+          }
+        },
+        "notify_urgent_bypass_quiet_hours": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "scope", "provenance"],
+          "properties": {
+            "value": { "enum": ["true", "false", null] },
+            "scope": { "const": "machine" },
+            "provenance": { "$ref": "#/$defs/provenance" }
+          }
+        },
+        "notify_kinds": { "$ref": "#/$defs/scalarField" }
+      }
+    },
+    "egress": {
+      "description": "A SEPARATE axis from notify (§4.0). `profile seed` must not map one onto the other. The credential is never here — only its environment-variable NAME and a required boolean (§4.2).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["declined", "channel", "recipient", "headline_opt_in", "credential_env_var", "credential_required"],
+      "properties": {
+        "declined": { "type": "boolean" },
+        "channel": { "$ref": "#/$defs/scalarField" },
+        "recipient": { "$ref": "#/$defs/scalarField" },
+        "headline_opt_in": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "scope", "provenance"],
+          "properties": {
+            "value": { "type": ["boolean", "null"] },
+            "scope": { "const": "machine" },
+            "provenance": { "$ref": "#/$defs/provenance" }
+          }
+        },
+        "credential_env_var": { "type": ["string", "null"], "maxLength": 128 },
+        "credential_required": {
+          "description": "§4.1 — true ONLY when declined === false AND channel.value !== null. The exact conditional is enforced in code (a schema cannot express a cross-field implication) and tested.",
+          "type": "boolean"
+        }
+      }
+    },
+    "permissions": {
+      "description": "§4.5 — the STORED enum carries whatever each host accepts, unsafe values included, because a source machine's value is shown as a labelled note and must have a field to live in. Safety grading is a present/seed-side rule, not a second schema field.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claude", "codex"],
+      "properties": {
+        "claude": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["allow", "ask", "deny", "defaultMode", "scope", "provenance"],
+          "properties": {
+            "allow": { "$ref": "#/$defs/ruleArray" },
+            "ask": { "$ref": "#/$defs/ruleArray" },
+            "deny": { "$ref": "#/$defs/ruleArray" },
+            "defaultMode": { "enum": ["default", "acceptEdits", "plan", "bypassPermissions", null] },
+            "scope": { "const": "machine" },
+            "provenance": { "const": "user-global" }
+          }
+        },
+        "codex": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["approval_policy", "sandbox_mode", "scope", "provenance"],
+          "properties": {
+            "approval_policy": { "enum": ["untrusted", "on-request", "on-failure", "never", null] },
+            "sandbox_mode": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
+            "scope": { "const": "machine" },
+            "provenance": { "const": "user-global" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,3})?Z$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "nullableSemver": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "pluginName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "pluginNameArray": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/pluginName" }
+    },
+    "provenance": {
+      "description": "§4.4 — every exported value carries USER-GLOBAL provenance, or it is not exportable. A CLOSED set, not free text: these are the three sources the §4.4 readers actually read — the user config.toml (`user-global`), and egress's env / fail-closed-verified local layer, both of which are user-scope by construction. A label outside this set means a reader nobody vetted for the §4.4 rule, and `repo`/`repo-local` must never appear. `null` accompanies a null value (nothing was found to export).",
+      "enum": ["user-global", "env", "verified-local", null]
+    },
+    "scalarField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "scope", "provenance"],
+      "properties": {
+        "value": { "type": ["string", "null"], "maxLength": 1024 },
+        "scope": { "const": "machine" },
+        "provenance": { "$ref": "#/$defs/provenance" }
+      }
+    },
+    "ruleArray": {
+      "description": "§4.1 — capped at 256 entries EACH and sanitized through lib/permission-sanitize.mjs. A profile exceeding the cap is refused, not truncated: a silently truncated permission list is a security artifact, not a convenience.",
+      "type": "array",
+      "maxItems": 256,
+      "items": { "type": "string", "maxLength": 512 }
+    }
+  }
+}

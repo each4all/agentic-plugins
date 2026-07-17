@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime-plugin-set-1.0",
+  "title": "Packaged plugin-set definition",
+  "description": "machine-bootstrap-contract.md §1.4 / §9. The machine-readable source of truth for bundle membership, host-qualified dependency edges, per-host hook-bearing metadata, and minimum-version floors — shipped as data/plugin-set.json INSIDE the runtime package so a bootstrap invoked from an arbitrary consumer repo can read it. This schema is the STRUCTURAL layer; lib/plugin-set.mjs carries the SEMANTIC layer (edge targets resolve, hard graph is acyclic, bundle closure holds, `full` = all, mandatory membership). Both are required: a structurally perfect definition can still describe an impossible dependency graph.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "canonical_marketplace", "plugins"],
+  "properties": {
+    "schema": { "type": "string", "pattern": "^runtime-plugin-set-1\\.[0-9]+$" },
+    "canonical_marketplace": {
+      "description": "§1.2 — the marketplace SOURCE IDENTITY a registration step is checked against. The step is `satisfied` only on this exact source; a directory/local source is accepted-but-flagged, and a parse failure or absent subcommand is `unknown`, never `satisfied`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "repo"],
+      "properties": {
+        "source": { "enum": ["github"] },
+        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" }
+      }
+    },
+    "plugins": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z][a-z0-9-]{0,63}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bundles", "hosts", "hard_requires", "soft_requires", "hook_bearing", "minimum_version"],
+          "properties": {
+            "bundles": {
+              "type": "array",
+              "maxItems": 8,
+              "items": { "enum": ["base", "engineering", "business", "design", "full"] }
+            },
+            "hosts": { "$ref": "#/$defs/hostArray" },
+            "hard_requires": {
+              "description": "§9.1 — behavioral and HOST-QUALIFIED. A hard edge from a retained plugin makes its target non-declinable, and declining it re-runs the closure (§6.2).",
+              "type": "array",
+              "maxItems": 32,
+              "items": { "$ref": "#/$defs/edge" }
+            },
+            "soft_requires": {
+              "description": "The contract's §1.4 example shows a bare name list; §9.1 gives soft edges a host scope, and this schema follows §9.1 so hard and soft edges share one shape and one validation path.",
+              "type": "array",
+              "maxItems": 32,
+              "items": { "$ref": "#/$defs/edge" }
+            },
+            "hook_bearing": {
+              "description": "§1.4 (as corrected by S8a2 C0) — derived from EFFECTIVE registration: a manifest hook path OR the root hooks/hooks.json default-discovery. So attention is Claude-only, while engineer/orchestrator/founder/designer bear hooks on BOTH hosts. Stage 7 keys off the `codex` value, because Claude trusts plugin hooks by install and exposes no /hooks review flow.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["claude", "codex"],
+              "properties": {
+                "claude": { "type": "boolean" },
+                "codex": { "type": "boolean" }
+              }
+            },
+            "minimum_version": {
+              "description": "§1.4 — the floor, compared PRERELEASE-AWARE (never the numeric semverCompare, which treats 0.3.0-beta == 0.3.0). An unknown installed version with a non-null floor stays `unresolved`, never `installed`. `null` means no floor is claimed.",
+              "type": ["string", "null"],
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hostArray": {
+      "type": "array",
+      "maxItems": 2,
+      "minItems": 1,
+      "items": { "enum": ["claude", "codex"] }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "hosts"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "hosts": { "$ref": "#/$defs/hostArray" }
+      }
+    }
+  }
+}

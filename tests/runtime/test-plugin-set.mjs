@@ -235,3 +235,69 @@ describe('plugin-set — validator rejects malformed definitions', () => {
     assert.equal(validatePluginSet(set).ok, false);
   });
 });
+
+// The other half of §11.1's "assert the prose tables in §9 and §6 agree with
+// plugin-set.json and the step registry". §6 is pinned in test-step-registry.mjs;
+// §9's table said "§11 pins that the two agree" while nothing did — so the bundle
+// membership a reader sees could drift from the membership the code resolves, with CI
+// green the whole way. Added in S8a2 C4.
+describe('plugin set — the §9 bundle table agrees with the packaged data (§11.1)', () => {
+  const CONTRACT = resolve(REPO_ROOT, 'plugins/runtime/docs/machine-bootstrap-contract.md');
+  const NUMBER_WORDS = { five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+
+  async function parseBundleTable() {
+    const doc = await readFile(CONTRACT, 'utf8');
+    const start = doc.indexOf('## 9. Bundle membership');
+    const end = doc.indexOf('### 9.1 Dependency closure');
+    if (start < 0 || end < 0 || end <= start) throw new Error('could not locate the §9 bundle table');
+    const rows = [...doc.slice(start, end).matchAll(/^\|\s*`([a-z]+)`\s*\|\s*(.+?)\s*\|$/gm)]
+      .map(([, bundle, members]) => ({ bundle, members: members.trim() }))
+      .filter((r) => r.bundle !== 'Bundle');
+    // A parse that silently matched nothing would pass every assertion below.
+    if (rows.length < 6) throw new Error(`§9 table parsed only ${rows.length} rows — the parser has drifted from the table`);
+    return rows;
+  }
+
+  it('every named bundle resolves to exactly the plugins the table lists', async () => {
+    const pluginSet = await loadPluginSet();
+    const rows = await parseBundleTable();
+    const all = Object.keys(pluginSet.plugins).sort();
+    let checked = 0;
+
+    for (const row of rows) {
+      if (row.bundle === 'custom') {
+        assert.ok(/operator-enumerated/.test(row.members), 'custom is operator-enumerated, not a fixed membership');
+        assert.ok(!BUNDLE_NAMES.includes('custom'), 'and so it is not a plugin-set bundle');
+        continue;
+      }
+      assert.ok(BUNDLE_NAMES.includes(row.bundle), `${row.bundle} is a known bundle`);
+
+      // "all eight" — the COUNT WORD is load-bearing: adding a ninth plugin without
+      // touching the prose leaves the document saying something false.
+      let expected;
+      const allMatch = /^all (\w+)$/.exec(row.members);
+      if (allMatch) {
+        const stated = NUMBER_WORDS[allMatch[1]];
+        assert.ok(stated !== undefined, `the table's count word "${allMatch[1]}" is one this test knows`);
+        assert.equal(stated, all.length, `§9 says "all ${allMatch[1]}" but the plugin-set carries ${all.length} plugins`);
+        expected = all;
+      } else {
+        const names = [...row.members.matchAll(/`([a-z-]+)`/g)].map((m) => m[1]);
+        // "`base` + `engineer`, `orchestrator`" — a bundle name inside the cell means
+        // that bundle's membership, unioned with the rest.
+        const expanded = names.flatMap((n) => (BUNDLE_NAMES.includes(n) ? resolveBundle(pluginSet, n) : [n]));
+        expected = [...new Set(expanded)].sort();
+      }
+
+      assert.deepEqual(resolveBundle(pluginSet, row.bundle), expected, `§9's ${row.bundle} row disagrees with plugin-set.json`);
+      checked += 1;
+    }
+    assert.ok(checked >= 5, `compared ${checked} documented bundles against the data`);
+  });
+
+  it('the table names every bundle the data defines, and vice versa', async () => {
+    const rows = await parseBundleTable();
+    const documented = rows.map((r) => r.bundle).filter((b) => b !== 'custom').sort();
+    assert.deepEqual(documented, [...BUNDLE_NAMES].sort(), 'the §9 table and BUNDLE_NAMES enumerate the same bundles');
+  });
+});

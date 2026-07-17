@@ -258,6 +258,37 @@ export function hardClosureViolations(pluginSet, selectedNames) {
 }
 
 /**
+ * The set of plugins REACHED BY A HARD EDGE from a retained plugin — transitively
+ * (§6.2: "any plugin reached by a hard edge from a retained plugin" is never
+ * declinable).
+ *
+ * Derived from the validated plugin-set, never accepted from a caller. Taking it as
+ * an argument is the same forgery the registry-authority rule bans one level up: a
+ * caller that simply forgot to compute it would be offering an ILLEGAL DECLINE —
+ * `engineering` retains `orchestrator`, which hard-requires `engineer`, so an
+ * un-derived set marks `engineer` declinable and the operator is invited to break
+ * their own selection.
+ *
+ * Transitive because a hard edge's target has hard edges of its own; a one-hop walk
+ * would protect the first rank and abandon the second. Cycle-safe by construction
+ * (`seen`), though validatePluginSet already rejects a cyclic hard graph.
+ */
+export function hardRequiredClosure(pluginSet, retainedNames) {
+  const required = new Set();
+  const walk = (name) => {
+    const p = pluginSet.plugins?.[name];
+    if (!p) return;
+    for (const edge of p.hard_requires ?? []) {
+      if (required.has(edge.name)) continue;
+      required.add(edge.name);
+      walk(edge.name);
+    }
+  };
+  for (const name of retainedNames) walk(name);
+  return required;
+}
+
+/**
  * Mechanical authority equality — the plugin-set's plugin names and canonical
  * marketplace MUST equal the probe's PLUGIN_NAMES + CANONICAL_MARKETPLACE, so a
  * third silent authority cannot drift (Codex Plan-verify finding). Returns
