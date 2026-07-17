@@ -16,7 +16,8 @@ import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
-import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor, codexPerPluginVerbs, collectUsageRecordSources } from './doctor.mjs';
+import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor, codexPerPluginVerbs } from './doctor.mjs';
+import { collectUsageRecordSources } from './lib/permission-usage-sources.mjs';
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
 import { resolveCodexHome } from './lib/state-readers.mjs';
 import { semverCompare } from './lib/semver.mjs';
