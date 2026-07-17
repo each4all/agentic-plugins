@@ -160,6 +160,41 @@ injected:
 
 Bootstrap persists **only** under its machine-global run (§10).
 
+**Resolved (S8a1 → S8a3).** All five rows are extracted; the *Today* column above
+records the pre-extraction state, not the tree. Where each planner lives now:
+
+| Planner | Gather | Pure build | Injected persist |
+|---|---|---|---|
+| notification | `gatherCodexNotificationInputs` | `buildCodexNotificationPlanSection` | `writeNotificationPlanArtifact` |
+| egress launcher | `gatherEgressLauncherInputs` | `buildEgressLauncherPlanSection` | `writeEgressLauncherPlanArtifact` |
+| permission (both hosts) | `gatherPermissionPlanInputs` | `buildPermissionPlanSection` | `writePermissionAdvisoryArtifact` |
+| `readClaudePermissionConfig` | `lib/permission-config.mjs` | — | — (user-global-only reads: `lib/profile-readers.mjs` `readUserGlobalClaudePermission` / `readUserGlobalCodexPermission`, §4.4) |
+| plugin-management plan half | `lib/plugin-management-plan.mjs` | — | — (execute half stays in `scripts/settings.mjs`) |
+
+Two S8a3 findings worth carrying forward, because a consumer that assumes otherwise
+will be wrong:
+
+1. **No pure build takes a `repoRoot`** — including the permission builder, whose old
+   parameter was a pure string stamped into a `[projects."…"]` header. The point is
+   capability, not referential purity: a builder that accepts a repo root can grow a
+   repo-relative read later. The Codex trust target is passed inside `gathered` as an
+   explicit `{ applicable, path }` pair. A caller with no project context sets
+   `applicable: false` and gets no `[projects]` entry — passing a null path instead
+   renders a `[projects."null"]` header, because the TOML renderer stringifies whatever
+   it receives.
+2. **Purity is a property of the build FUNCTION, not of the import graph.** These
+   closures legitimately contain filesystem modules — the usage learner reads records
+   synchronously, and `version.mjs` reads manifests at module initialization. The
+   promise a caller may rely on is: synchronous, deterministic for identical
+   `gathered` + injected clock/run-id, writes nothing, holds no repository capability,
+   and never reaches `doctor.mjs`. `tests/runtime/test-planner-purity.mjs` is the gate.
+
+The permission planner's **failure boundary** is narrower than it looks and is
+preserved deliberately: only usage-record enumeration degrades to the dual `blocked`
+plan. The learner, both host-config reads, artifact construction and persistence
+propagate. Bootstrap must not wrap the gatherer in a catch that converts a real fault
+into a serene "blocked" report.
+
 ### 1.4 Plugin selection input and version policy
 
 `buildPluginManagementPlan` does not compute machine recommendations — it
