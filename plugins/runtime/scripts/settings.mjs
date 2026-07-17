@@ -56,6 +56,10 @@ import {
   summarizePluginManagementPlans,
   uniqueStrings,
 } from './lib/plugin-management-plan.mjs';
+// The single version authority for the Codex /hooks attestation (S8a4). The producer
+// here and doctor's currency mirror MUST resolve "the installed version" through the
+// SAME leaf, or a freshly recorded attestation reads stale on the machine that wrote it.
+import { parseCodexCliVersion, resolveCodexInstalledPluginVersion } from './lib/codex-attestation-versions.mjs';
 
 // 1.17 → 1.18 (additive): report.plugin_management / report.plugin_cleanup gain
 // `plan_hash` (§1.6 drift guard) so bootstrap can read a dry-run plan's hash and
@@ -147,6 +151,19 @@ export async function runSettings({
     if (conflicts.length > 0) {
       throw new Error(`--skip-host-cli-probes conflicts (plugins/runtime/docs/settings-report-contract.md §1): ${conflicts.join('; ')}`);
     }
+  }
+  // A hook-review attestation snapshots the OBSERVED hook/plugin state at probe time
+  // and binds it as the operator's claim (machine-bootstrap-contract.md §8.2, S8a4). A
+  // plugin-management/cleanup execution in the SAME run mutates that state AFTER the
+  // probe, so the attestation would bind a pre-execution snapshot the run itself then
+  // invalidated — recorded `attested` against versions/hook state that no longer hold.
+  // Refuse the combination; attest in a separate run once the install/cleanup settled.
+  if (attestCodexHookReview && (executePluginManagement || executePluginCleanup)) {
+    const combined = [
+      executePluginManagement ? '--execute-plugin-management' : null,
+      executePluginCleanup ? '--execute-plugin-cleanup' : null,
+    ].filter(Boolean);
+    throw new Error(`--attest-codex-hook-review cannot be combined with ${combined.join(' or ')}: the attestation snapshots hook/plugin state at probe time, which the execution then mutates — attest in a separate run after the plugin change settles.`);
   }
   const effectivePluginManagementHost = pluginManagementHost ?? 'all';
   const effectivePluginManagementTimeoutMs = pluginManagementTimeoutMs ?? DEFAULT_PLUGIN_MANAGEMENT_TIMEOUT_MS;
@@ -329,6 +346,10 @@ export async function runSettings({
       plugins: pluginPlans,
       requested: attestCodexHookReview,
       attestedAt: startedAt,
+      // The RAW Codex CLI version text — parsed strictly inside the builder so an
+      // unparseable/unavailable version binds nothing (not a guess). Same authority
+      // doctor's currency mirror reads (doctor.clis.codex.version.text).
+      codexCliText: doctor.clis?.codex?.version?.text ?? null,
     });
     pluginManagement.manual_followups = mergeManualFollowups(
       pluginManagement.manual_followups,
@@ -969,18 +990,32 @@ function buildCodexHookReviewManualFollowups(codexPluginHooks, hookSettings, cod
   }];
 }
 
-function buildCodexHookReviewAttestation({ codexPluginHooks, hookSettings, plugins, requested, attestedAt }) {
+function buildCodexHookReviewAttestation({ codexPluginHooks, hookSettings, plugins, requested, attestedAt, codexCliText = null }) {
   const bundled = hookSettings?.packaged_plugins?.bundled ?? codexPluginHooks?.summary?.bundled_plugins ?? [];
   const manifestExposed = hookSettings?.packaged_plugins?.manifest_exposed ?? codexPluginHooks?.summary?.manifest_exposed_plugins ?? [];
   const status = hookSettings?.status ?? codexPluginHooks?.status ?? 'unknown';
   const pluginVersions = {};
+  const boundPluginsCodex = {};
   for (const pluginName of bundled) {
     const plugin = plugins?.[pluginName];
-    // Bind to the ACTUAL installed/cache version (peer #8 (c)) — an operator attests the
-    // hooks of the plugin that is installed, never a catalog-latest that may not be. The
-    // source-version fallback keeps a source-tree run reporting the built version.
+    // Legacy flat map, kept for the compat window (doctor's mirror still reads it as a
+    // fallback): the ACTUAL installed/cache version (peer #8 (c)) with a source-version
+    // fallback so a source-tree run reports the built version.
     pluginVersions[pluginName] = plugin?.installed_version ?? plugin?.source_version ?? null;
+    // Canonical binding (§8.2, S8a4): the Codex LIST-authoritative installed version,
+    // never the generic installed_version (which falls through Codex → Claude → source).
+    // An operator attests the hooks Codex actually loaded, so a version Codex never
+    // installed contributes no key — exactly matching the reducer's currentBoundVersions,
+    // which omits a non-installed plugin so a stale claim cannot read as current.
+    const resolved = resolveCodexInstalledPluginVersion(plugin);
+    if (typeof resolved.version === 'string') boundPluginsCodex[pluginName] = resolved.version;
   }
+  // Strictly parse the Codex CLI version; an unparseable/unavailable version binds null
+  // (NOT a guess), which the reducer treats as never-current — an attestation that cannot
+  // name the Codex it was made against is not attestable, and must read stale until
+  // re-recorded on a machine that can (machine-bootstrap-contract.md §8.2).
+  const codexCliVersion = parseCodexCliVersion(codexCliText);
+  const boundVersions = { codex: codexCliVersion, plugins: { codex: boundPluginsCodex } };
   const base = {
     mode: requested ? 'operator-attestation' : 'not_recorded',
     requested: Boolean(requested),
@@ -992,6 +1027,11 @@ function buildCodexHookReviewAttestation({ codexPluginHooks, hookSettings, plugi
     bundled_plugins: bundled,
     manifest_exposed_plugins: manifestExposed,
     plugin_versions: pluginVersions,
+    // The EXACT Codex-hook-bearing plugin set this attestation covers, empty until the
+    // final `attested: true` return — the reducer requires it to equal the bootstrap
+    // selection's hook-bearing set, and the importer projects it to that subset (§8.2).
+    attested_plugins: [],
+    bound_versions: boundVersions,
     review_targets: hookSettings?.review_targets ?? [],
     plugin_hooks_enabled: codexPluginHooks?.feature_flags?.plugin_hooks === true,
     plugin_hooks_stage: codexPluginHooks?.feature_flags?.plugin_hooks_stage ?? null,
@@ -1037,6 +1077,9 @@ function buildCodexHookReviewAttestation({ codexPluginHooks, hookSettings, plugi
     attested: true,
     status: 'attested',
     reason: null,
+    // The set is only populated on a SUCCESSFUL attestation: a blocked/not-recorded
+    // record covers nothing, so its attested_plugins stays [] from base above.
+    attested_plugins: uniqueStrings(bundled).sort(),
   };
 }
 
