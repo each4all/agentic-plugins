@@ -132,7 +132,7 @@
     "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
     "pluginName": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
     "pluginNameArray": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/pluginName" } },
-    "stepId": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z0-9-]+)+$", "maxLength": 128 },
+    "stepId": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z0-9_-]+)+$", "maxLength": 128 },
     "auth": {
       "description": "§5 — an ENUM, not a boolean, because probeMachineHostState genuinely distinguishes these. A boolean would collapse `unauthenticated` into `unknown` and let a `sandbox_limited` read masquerade as authenticated.",
       "enum": ["available", "unauthenticated", "unknown", "sandbox_limited"]

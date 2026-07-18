@@ -52,6 +52,13 @@ export const CAPABILITY_IMPORTERS = {
   // migrate-workflow-storage.mjs:678 defaultRunner → spawn('git', [...]) for a
   // read-only `git status` probe during dry-run. Tier M1.
   'migrate-workflow-storage.mjs': { modules: ['node:child_process'], primitives: ['spawn'] },
+  // bootstrap.mjs defaultRunner → spawn(name, args, {stdio}) — the injected
+  // probe runner for probeMachineHostState (name loops over {claude, codex} in
+  // machine-probe's inspectCli) plus the node-subprocess runner for the settings
+  // DRY-RUN plan-hash read and the §8.2 `doctor --record` proof delegation
+  // (resume-only, explicit-answer-gated). Tier M1 per ADR-0046 §4; bootstrap
+  // itself executes no plugin management (no second executor, ADR-0046 §5).
+  'bootstrap.mjs': { modules: ['node:child_process'], primitives: ['spawn'] },
   // source-snapshot.mjs:109 execFile('git', ['-C', root, ...readArgs]) — git
   // read snapshot (rev-parse / status). Tier R0/M1.
   'source-snapshot.mjs': { modules: ['node:child_process'], primitives: ['execFile'] },
@@ -240,6 +247,11 @@ export const ALLOWED_COMMAND_VARIABLES = {
 export const EXEC_PASSTHROUGH_FNS = {
   'doctor.mjs': [{ fn: 'runCommand', param: 'command' }],
   'migrate-workflow-storage.mjs': [{ fn: 'defaultRunner', param: 'command' }],
+  // bootstrap.defaultRunner(name, …) is the injected machine-probe runner (name
+  // loops over {claude, codex} inside machine-probe's inspectCli) and the base
+  // of defaultSubprocessRunner(scriptPath, …) → defaultRunner(process.execPath,
+  // [scriptPath, …]) for the settings dry-run + doctor --record delegations.
+  'bootstrap.mjs': [{ fn: 'defaultRunner', param: 'name' }],
 };
 
 // Wrappers that hardcode their command internally, so their call sites pass only
@@ -445,6 +457,13 @@ export const ALLOWED_KILL_SITES = [
     signal: 'SIGTERM',
     form: "child.kill('SIGTERM')",
     justification: 'SIGTERM on self-spawned child to enforce runCommand timeout (ADR-0035 §4)',
+  },
+  {
+    file: 'bootstrap.mjs',
+    receiver: 'child', // the spawn() return bound in defaultRunner
+    signal: 'SIGTERM',
+    form: "child.kill('SIGTERM')",
+    justification: 'SIGTERM on self-spawned child to enforce the bootstrap probe/subprocess runner timeout (ADR-0035 §4, ADR-0046 §4)',
   },
 ];
 

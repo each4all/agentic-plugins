@@ -41,7 +41,12 @@ drift; **the contract text governs**.
   CLIs, installed plugins), never about the agentic-plugins source tree.
 - **artifact-only (M1)** — it writes only agentic-plugins-owned artifacts under
   the machine-global home in §10. It never writes host config, never writes a
-  credential, and never performs a network request.
+  credential, and never performs a network request **itself** (S8b errata: the
+  Stage-8 proofs it delegates to `runtime:doctor`'s explicit `--execute-*`
+  executors invoke networked host agents — that network effect belongs to the
+  doctor executor the operator explicitly approved, not to bootstrap, whose own
+  process and artifacts stay network-free; the manifest's
+  `boundary.performs_network_request: false` declares bootstrap's own conduct).
 - **non-executing** — it introduces **no new executor**. Plugin install/update
   remains the existing H2 executor reached through
   `runtime:settings --execute-plugin-management`. Bootstrap consumes the
@@ -416,9 +421,10 @@ registration, which can be removed after install and MUST still be probed (§1.2
 
 ```
 runtime:bootstrap plan     [--bundle <id>] [--plugins <csv>] [--profile-file <path>]
-                           [--format text|json]
+                           [--answers <path>] [--format text|json]
 runtime:bootstrap status   [--run-id <id> | --latest | --latest-open] [--format text|json]
-runtime:bootstrap resume   [--run-id <id> | --latest-open] [--format text|json]
+runtime:bootstrap resume   [--run-id <id> | --latest-open] [--answers <path>]
+                           [--format text|json]
 runtime:bootstrap verify   [--run-id <id> | --latest] [--format text|json]
 runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
 runtime:bootstrap profile export [--name <id>] [--from-run <id>] [--overwrite]
@@ -434,6 +440,24 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   **persists** the invalidation stamps and any new step transitions, and continues
   the interview. Invalidation (§7) is therefore *computed* by the read-only verbs
   and *persisted* only by `resume`; an R0 verb that wrote a stamp would not be R0.
+- **`verify` does not run proofs — it re-judges the recorded ones (errata).** The
+  verb's name invites the opposite reading, and §8.2's proof recording (a
+  `runtime:doctor --record` invocation plus the machine-global metadata copy) is
+  unambiguously a **write**. Wiring it under `verify` would make the contract's own
+  R0 claim false. So, explicitly:
+  - `verify` reads the run's already-recorded proof metadata, recomputes each
+    proof's `status` against the **current** probe's bound versions (§8.1), and
+    reports `passed` / `failed` / `stale` / `not-applicable` / `absent`. A proof
+    that was never recorded is `absent` — `verify` reports it and exits `10`
+    (`configured-not-verified`); it never records one to make itself pass.
+  - `resume` is the **only** verb that executes Stage 8: it invokes
+    `runtime:doctor --record` with the relevant `--execute-*` flag and an explicit
+    repo-root, then copies the proof metadata into the run's `proof/` directory
+    (§8.2). The Codex `/hooks` attestation is carried on the same verb, the same
+    way.
+  This is why the two verbs exist separately: `resume` **produces** evidence,
+  `verify` **judges** it, and a machine can be re-judged as often as the operator
+  likes without re-running a single peer smoke.
 - With **no run**, `status` and `verify` report `no-active-run` and exit `30`; they
   never synthesize one.
 - `abandon` closes an open run (`status: abandoned`) so a new `plan` can start. A
@@ -464,6 +488,33 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   file is the run's `choices[]` in serialized form, so a conversational run and a
   scripted run take the same path and a run is **replayable** from its own manifest.
   Prose-to-flag translation by the skill would be unauditable and untestable.
+  `--answers` is accepted on exactly the two **interview** verbs — `plan` and
+  `resume` — and on no other. `status`, `verify`, and `abandon` conduct no
+  interview, and `profile seed` takes a *profile* (`--profile-file`, which seeds
+  **defaults**), not *answers* (which record decisions); accepting answers there
+  would let a seed silently decide a step it is only allowed to pre-fill (§4.5.4).
+  An answer whose `step_id` is not an expected step of the run is rejected (exit
+  `40`) rather than recorded, so a stale answers file cannot smuggle a step into a
+  manifest the registry never derived (§6.1). The answer vocabulary is exactly
+  three values (S8b errata — the file's *shape* was specified but its *values*
+  were not, and an implementation had to invent them): **`decline`** marks a
+  declinable step declined (a non-declinable target is exit `40`, and a plugin
+  decline re-runs the §9.1 closure over the retained set); **`accept`** records
+  the operator's go-ahead without changing step state (steps are promoted only
+  by post-probes, §6); **`execute`** — meaningful on `proof.*` steps under
+  `resume` only — is the explicit approval that lets `resume` run that proof
+  through `runtime:doctor --record`. Duplicate answers for one step apply in
+  file order (the last wins the step state) and every one is recorded in
+  `choices[]`, keeping the run replayable from its own manifest.
+- **Run terminalization is asymmetric** (S8b errata — closing on the reduction
+  alone made Stage 8 unreachable): `resume` closes a run as `complete` when the
+  reducer says so, and as `configured-not-verified` **only when every required
+  proof was explicitly declined** (§6.2 — nothing is left for `resume` to
+  produce). Any other reduction leaves `status: open` — a machine whose CONFIG
+  just resolved still needs an open run for the `resume` that records its
+  proofs — while the verb's **exit code** always reports the reduction (§3.1),
+  so "reduces to configured-not-verified" and "the run file is closed" are
+  deliberately different claims.
 
 ### 3.1 Exit codes
 
@@ -1005,6 +1056,16 @@ and never printed. The Codex `/hooks` attestation is carried the same way, as a
 `hook_attestation` record with its own bound versions — it is an operator claim, and
 a claim made against Codex `0.137` does not survive an upgrade.
 
+**Under `resume`, and only `resume` (§3 errata).** Both halves of that decision —
+the `--record` invocation and the metadata copy — are writes, so they belong to the
+one **M1** verb. `verify` re-judges what `resume` recorded and records nothing
+itself; `status` likewise. Read this section's "Bootstrap invokes" as "`resume`
+invokes": an implementation that reached for `--record` from `verify` because the
+name fit would break the R0 guarantee §3 makes, and test #33 (§11.2) pins that it
+does not. Note that test #8's byte-identical assertion covers **host config** only;
+it would stay green while `verify` wrote a proof into the run's own directory, which
+is exactly why #33 is a separate obligation rather than a corollary.
+
 **The workflow-continuation proof needs a second input, and today it does not have
 one.** It resolves engineer under `repoRoot/plugins/engineer/...` *before* creating
 its temporary proof repository — so pointing it at an ephemeral scratch root does not
@@ -1260,6 +1321,20 @@ tokens (§11.3) remain as a floor, not as the enforcement.
 32. **Machine-global inventory + retention** — the `bootstrap` family is inventoried at
     the machine-global home (not the repo home) and retention pressure is reported
     without deletion.
+33. **R0 verbs write nothing at all** (§3 errata) — with a run open, `status` and
+    `verify` each leave the **entire artifact home** byte-identical: the run
+    manifest, `latest.json`, the `proof/` directory, and the family lock file. Assert
+    over a recursive digest of `~/.agentic-plugins/`, not over host config — test #8
+    would stay green while `verify` recorded a proof into the run's own directory.
+    Includes the negative half: `verify` against a run with no recorded proof reports
+    that proof `absent` and exits `10`; it never invokes `runtime:doctor --record` to
+    manufacture one. Assert the non-invocation at the **seam** (injected runner spy),
+    per #1 — an output-only check cannot distinguish "did not record" from "recorded
+    and did not print".
+34. **`--answers` is refused off the interview verbs** (§3 errata) — `--answers` on
+    `status` / `verify` / `abandon` / `profile export` / `profile seed` exits `40`
+    rather than being silently ignored, and an answers file naming a `step_id` that
+    is not an expected step of the run exits `40` rather than recording it.
 
 ### 11.3 `tests/plugin-shape/test-runtime-plugin.mjs`
 
@@ -1313,6 +1388,50 @@ nobody mistakes "the contract did not say" for "the contract left it open".
 Two contract **corrections** landed with S8a2 C0 (they were errors, not open items — recorded so the change is auditable):
 - **`hook_bearing`** (§1.4, §6.1): derived from *effective* registration (manifest hook path **or** root `hooks/hooks.json`), so `engineer`/`orchestrator`/`founder`/`designer` are hook-bearing on **both** hosts; `hooks.codex.attested` is **applicable** for every persona bundle; and Stage 7 keys off the **codex** value (an earlier "keys off the Claude value" was host-flipped).
 - **Reducer §8**: partitioned CONFIG (Stage 1–7) from PROOF (Stage 8) so `configured-not-verified` is reachable — the prior single "every expected step resolved" clause made it unreachable (test #14 impossible), since proof steps are themselves expected steps.
+
+Two further contract **corrections** landed with S8b (again errors, not open items —
+both were found by writing the public surface against this text and discovering it
+did not say what the implementation had to do):
+
+- **§3 grammar — `--answers`**: the prose mandated the answers file as the *only*
+  route for interview answers, but the grammar block listed it on **no verb at
+  all**, so the normative shape of the surface disagreed with the normative rule
+  three paragraphs below it. It is now on `plan` and `resume` — the two interview
+  verbs — and explicitly on no other, with the seed-vs-answers distinction and the
+  unexpected-`step_id` rejection stated rather than left to be inferred.
+- **§3 / §8.2 — which verb records a proof**: §3 declared `status`/`verify` **R0**
+  and §8.2 mandated a `runtime:doctor --record` invocation plus a metadata copy
+  without naming the verb that performs them. Since "verify" is the verb whose name
+  fits, the two sections contradicted: the natural implementation would have made
+  the R0 claim false on its first release. Proof **production** is now `resume`
+  (M1) exclusively; `verify` **judges** recorded evidence and reports `absent`
+  rather than manufacturing it.
+
+Three further corrections landed with the S8b public surface itself (the same
+pattern: found by implementing against the text):
+
+- **§1 — "never performs a network request"** now carries the qualifier the
+  Stage-8 delegation always implied: bootstrap's own process and artifacts are
+  network-free, while the doctor executors it presents (and, under `resume`, an
+  explicit `execute` answer invokes) run networked host agents. Without the
+  qualifier the sentence contradicted §8.2 on its first live proof.
+- **§3 — the answer vocabulary** (`decline` / `accept` / `execute`, last-wins
+  duplicates, closure re-run on plugin decline) is now normative. The answers
+  file's shape was specified; its values were left to be invented, which is
+  exactly what §13's closing rule exists to prevent.
+- **§3 — run terminalization** is now explicit and asymmetric: `complete`
+  closes; `configured-not-verified` closes only on an all-required-proofs
+  declined run; everything else stays `open` so `resume` can still produce the
+  missing proofs. The naive "copy the reduction into `status`" implementation
+  closed the run at the exact moment Stage 8 became reachable, making the
+  proofs unreachable instead.
+
+One S8b scope note, recorded rather than absorbed (§1.6): the presented
+`--expected-plan-hash` seals `runtime:settings`' **machine-wide** plan — every
+plugin it manages plus cleanup actions — not a selection-scoped subset;
+bootstrap therefore surfaces settings' own action summary alongside its
+selection view. A selection-scoped executor would need a settings-side plan
+filter; that is settings work with its own regression, not bootstrap glue.
 
 Anything **not** on this list, and not decided above, is a gap in this contract —
 report it rather than inventing a policy.

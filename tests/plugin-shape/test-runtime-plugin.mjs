@@ -10,6 +10,7 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
 const RELEASE_PLEASE_PR = process.env.AGENTIC_RELEASE_PLEASE_PR === '1';
 const RUNTIME_COMMAND_SURFACES = [
+  { name: 'bootstrap', script: 'bootstrap.mjs' },
   { name: 'compat', script: 'compat.mjs' },
   { name: 'consensus', script: 'consensus.mjs' },
   { name: 'context', script: 'context.mjs' },
@@ -183,6 +184,83 @@ describe('plugins/runtime doctor surface', () => {
     ok(/allow_implicit_invocation:\s*false/.test(agent));
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/doctor.mjs'));
     ok((scriptStat.mode & 0o111) !== 0, 'doctor.mjs has executable bit');
+  });
+});
+
+describe('plugins/runtime bootstrap surface', () => {
+  it('ships bootstrap command, skill wrapper, agent yaml, and executable script with the §3 grammar advertised', async () => {
+    const command = await readFile(resolve(PLUGIN_ROOT, 'commands/bootstrap.md'), 'utf-8');
+    ok(command.startsWith('---\n'));
+    ok(command.includes('scripts/bootstrap.mjs'));
+    const argumentHint = command.split('\n').find((line) => line.startsWith('argument-hint:'));
+    ok(argumentHint, 'commands/bootstrap.md has an argument-hint');
+    // The §3 grammar, advertised: every verb and every flag the parser accepts.
+    for (const verb of ['plan', 'status', 'resume', 'verify', 'abandon', 'profile export', 'profile seed']) {
+      ok(argumentHint.includes(verb), `commands/bootstrap.md argument-hint advertises the '${verb}' verb`);
+    }
+    for (const flag of ['--bundle', '--plugins', '--profile-file', '--answers', '--format', '--run-id', '--latest', '--latest-open', '--reason', '--name', '--from-run', '--overwrite']) {
+      ok(argumentHint.includes(flag), `commands/bootstrap.md argument-hint advertises ${flag}`);
+    }
+    ok(!argumentHint.includes('--out'), 'there is no --out (§3: writes are constrained to the authorized home)');
+    // Interview pacing is the command's ONLY ownership — schema decisions live
+    // in the packaged contract, and the pacing order is the contract's §Decision-8.
+    ok(/diagnose/i.test(command) && /profile-seeded-default/i.test(command) && /re-probe/i.test(command), 'commands/bootstrap.md carries the interview pacing order');
+    ok(/--expected-plan-hash/.test(command), 'commands/bootstrap.md presents the §1.6 plan-hash executor handoff');
+
+    const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/bootstrap/SKILL.md'), 'utf-8');
+    ok(/^name:\s*bootstrap\s*$/m.test(skill));
+    ok(skill.includes('machine-bootstrap-contract.md'), 'skill points at the packaged normative contract');
+    ok(/never an? (second )?executor|no second executor/i.test(skill), 'skill states the no-second-executor boundary');
+    ok(/read-only/i.test(skill) && skill.includes('status'), 'skill states the R0 status/verify boundary');
+
+    const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/bootstrap/agents/openai.yaml'), 'utf-8');
+    ok(agent.includes('$runtime:bootstrap'));
+    ok(/allow_implicit_invocation:\s*false/.test(agent));
+    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/bootstrap.mjs'));
+    ok((scriptStat.mode & 0o111) !== 0, 'bootstrap.mjs has executable bit');
+  });
+
+  // machine-bootstrap-contract.md §11.3 — the packaged contract is asserted BY
+  // CONTENT (the footer-contract.md precedent): these tokens are the floor that
+  // keeps the document from drifting while CI stays green.
+  it('pins the packaged machine-bootstrap contract by content (§11.3)', async () => {
+    const contract = await readFile(resolve(PLUGIN_ROOT, 'docs/machine-bootstrap-contract.md'), 'utf-8');
+    for (const token of [
+      'Machine Bootstrap Contract',
+      'runtime:bootstrap',
+      'scripts/bootstrap.mjs',
+      'agentic-machine-profile-1',
+      'runtime-bootstrap-run-1',
+      'configured-not-verified',
+      'never an input to any activation or config loader',
+      'Stage 0',
+      'probeMachineHostState',
+    ]) {
+      ok(contract.includes(token), `machine-bootstrap-contract.md contains ${JSON.stringify(token)}`);
+    }
+    ok(/artifact-only/i.test(contract), 'contract states the artifact-only boundary');
+    ok(/machine-scoped/i.test(contract), 'contract states the machine scope');
+    ok(/write-ahead/i.test(contract), 'contract states the write-ahead durability rule');
+  });
+
+  // §11.3 second half — README.md's Stage 0 block and the contract's §2 block
+  // carry the SAME commands, and the in-code STAGE0_COMMANDS copy matches both,
+  // so the operator-facing doc, the normative contract, and the printed
+  // detection output cannot drift apart.
+  it('keeps the README, contract §2, and in-code Stage 0 command blocks identical', async () => {
+    const contract = await readFile(resolve(PLUGIN_ROOT, 'docs/machine-bootstrap-contract.md'), 'utf-8');
+    const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf-8');
+    const script = await readFile(resolve(PLUGIN_ROOT, 'scripts/bootstrap.mjs'), 'utf-8');
+    for (const command of [
+      'claude plugin marketplace add each4all/agentic-plugins',
+      'claude plugin install runtime@agentic-plugins',
+      'codex plugin marketplace add each4all/agentic-plugins',
+      'codex plugin add runtime@agentic-plugins',
+    ]) {
+      ok(contract.includes(command), `contract §2 carries: ${command}`);
+      ok(readme.includes(command), `README Stage 0 block carries: ${command}`);
+      ok(script.includes(`'${command}'`), `bootstrap.mjs STAGE0_COMMANDS carries: ${command}`);
+    }
   });
 });
 
