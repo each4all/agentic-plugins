@@ -684,7 +684,7 @@ describe('runtime doctor', () => {
       const runId = 'settings-20260710T120000Z-abc123';
       await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
       await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
-        schema_version: 'runtime-settings-execution-artifact-1.2',
+        schema_version: 'runtime-settings-execution-artifact-1.3',
         run_id: runId,
         status: 'recorded',
         created_at: '2026-07-10T12:00:00.000Z',

@@ -64,7 +64,10 @@ import { parseCodexCliVersion, resolveCodexInstalledPluginVersion } from './lib/
 // 1.17 → 1.18 (additive): report.plugin_management / report.plugin_cleanup gain
 // `plan_hash` (§1.6 drift guard) so bootstrap can read a dry-run plan's hash and
 // present `--expected-plan-hash`. Probe-derived, so still null in local_plan mode.
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.18';
+// 1.18 → 1.19 (additive, S8a4): report.codex_hook_review gains the canonical
+// `bound_versions` (Codex CLI + per-plugin, list-authoritative) and `attested_plugins`
+// alongside the retained legacy `plugin_versions` (settings-report-contract.md §additive).
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.19';
 
 // ADR-0038 settings-claude permission plan (M1): how many recent usage records to
 // read per host, and a per-file byte cap, when building the dry-run plan.
@@ -74,7 +77,10 @@ const DEFAULT_PERMISSION_PLAN_MAX_FILE_BYTES = 8 * 1024 * 1024;
 // management and cleanup executors are now write-ahead — the artifact gains the
 // nonterminal `planned` / `in-progress` statuses, a per-action `journal[]`, the
 // `planned_actions` durable-intent list, and the `plan_hash` (§1.6 drift guard).
-export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.2';
+// 1.2 → 1.3 (additive, S8a4): artifact.codex_hook_review gains the canonical
+// `bound_versions` + `attested_plugins` the completion reducer re-validates (§8.2),
+// alongside the retained legacy `plugin_versions` for the compat window.
+export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-execution-artifact-1.3';
 // The config-key contract — key families, notify channel/defaults, per-key
 // validators, and the TOML read parser — lives in lib/runtime-config.mjs so
 // the ADR-0040 §2 notify emitter consumes the OFFICIAL key surface without
