@@ -2,13 +2,14 @@
 
 ## Status
 
-Proposed
+Accepted (2026-07-18 — the S8a1–S8b implementation series and the
+S8c released-`0.81.0` acceptance slice shipped against this decision)
 
 <!--
-Per AGENTS.md §ADR process and docs/adr/README.md §Process, an ADR merges as
-`Proposed` and flips to `Accepted` on review. The owner approved this
-*direction* on 2026-07-14 (see §Provenance); the document itself goes through
-review as Proposed.
+Merged as `Proposed` (macro subtask S7) per AGENTS.md §ADR process; flipped
+to `Accepted` on 2026-07-18 after the S8 implementation series and the S8c
+released-package acceptance landed. The owner approved this *direction* on
+2026-07-14 (see §Provenance).
 
 This ADR sits inside the ADR-0024 runtime/operator control-plane track and
 does not modify ADR-0035's mutation-tier model or ADR-0041's §2c host-config

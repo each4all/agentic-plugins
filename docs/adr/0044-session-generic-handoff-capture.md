@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (2026-07-18)
 
 ## Context
 
@@ -305,7 +305,7 @@ directory:
   `state/runtime/` (precedent: `state/runtime/notify/`); append-only
   ledgers under `runs/`. Repo-scoped only — the machine-global
   `~/.agentic-plugins` home stays bootstrap-only (the ADR-0046
-  location extension, itself still Proposed, is not extended here).
+  location extension (Accepted 2026-07-18) is not extended here).
 - **ADR-0031 §6 narrow amendment, declared**: §6 ruled that the
   in-workflow next-session prompt reuses the existing `runtime:context`
   artifact "rather than introducing a second state-like artifact". That
@@ -749,7 +749,7 @@ weigh it against the persona surfaces keeps every party truthful.
   here; 2026-07-11 packaging amendment), ADR-0041 (§3a opt-in shape;
   Claude-only-field degradation — shape, not equivalence), ADR-0043
   (slot concession; footer-rendered cross-package contract;
-  released-floor rule; rollback shape), ADR-0046 (Proposed;
+  released-floor rule; rollback shape), ADR-0046 (Accepted;
   packaged-contract vehicle; machine-global M1 location not extended
   here).
 - Host truth: `plugins/runtime/docs/host-parity-baseline.md:95`

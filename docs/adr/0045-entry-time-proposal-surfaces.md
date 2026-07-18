@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted (2026-07-18)
 
 ## Context
 
@@ -11,7 +11,7 @@ Proposed
 The completion side of the guidance system is code-fired: every verb
 terminal path emits the ADR-0031 sidecar footer (ADR-0039, ADR-0043),
 the ADR-0029 six-field proposal is structure-pinned on every completion
-surface (S9 output contract), and ADR-0044 — merged as **Proposed** and
+surface (S9 output contract), and ADR-0044 — Accepted, and
 not yet implemented (`context.mjs:11-13` still ships only
 `capture`/`status`/`check`) — has **decided** the out-of-workflow exit
 checkpoint. The **entry** side has nothing:
