@@ -16,7 +16,7 @@ import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
-import { PLUGIN_NAMES, RUNTIME_VERSION, runCommand, runDoctor, codexPerPluginVerbs } from './doctor.mjs';
+import { PLUGIN_NAMES, RUNTIME_VERSION, codexHookStateAttestHint, evaluateCodexHookStateGate, formatCodexHookStateLines, runCommand, runDoctor, codexPerPluginVerbs } from './doctor.mjs';
 import { buildCrossHostPermissionPlan, renderCodexConfigToml } from './lib/permission-plan.mjs';
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
 import { resolveCodexHome } from './lib/state-readers.mjs';
@@ -978,10 +978,9 @@ function buildCodexHookReviewManualFollowups(codexPluginHooks, hookSettings, cod
   const status = hookSettings?.status ?? codexPluginHooks?.status;
   const targets = hookSettings?.review_targets ?? [];
   if (bundled.length === 0 || status !== 'ready') return [];
-  const hookState = hookSettings?.hook_state?.summary ?? codexPluginHooks?.hook_state?.summary ?? {};
-  const hookStateHint = hookState.expected_disabled > 0
-    ? ` Current Codex config reports ${hookState.expected_disabled}/${hookState.expected} expected bundled hook entries disabled; enable them in /hooks before attesting.`
-    : '';
+  // One shared hint derived from the ONE gate predicate in doctor.mjs (S8a5) — this
+  // sentence was previously a char-identical copy edited in lockstep with doctor's.
+  const hookStateHint = codexHookStateAttestHint(hookSettings?.hook_state ?? codexPluginHooks?.hook_state ?? null);
   return [{
     id: 'codex-hook-review',
     host: 'codex',
@@ -1069,13 +1068,39 @@ function buildCodexHookReviewAttestation({ codexPluginHooks, hookSettings, plugi
       reason: 'No bundled Codex plugin hooks were observed for attestation.',
     };
   }
-  const disabledExpected = hookSettings?.hook_state?.summary?.expected_disabled ?? codexPluginHooks?.hook_state?.summary?.expected_disabled ?? 0;
-  const expected = hookSettings?.hook_state?.summary?.expected ?? codexPluginHooks?.hook_state?.summary?.expected ?? 0;
-  if (disabledExpected > 0) {
+  // Hook-state evidence gate — the ONE shared predicate doctor's currency mirror also
+  // consults, in the SAME order the mirror applies it (S8a5): a machine that can be
+  // attested is exactly a machine whose fresh attestation reads current, with the
+  // same first reason. Blocks on an unobservable trust store (missing or unreadable
+  // config.toml — trust is RECORDED there, so disabled_handlers=0 from an empty entry
+  // list is no evidence; attesting through it minted a born-stale artifact that
+  // doctor immediately reported hook_state_unavailable) and on any explicitly
+  // disabled handler at the per-handler grain (the group-state count reads 0 when a
+  // disabled handler sits beside an enabled sibling).
+  const hookStateGate = evaluateCodexHookStateGate(hookSettings?.hook_state ?? codexPluginHooks?.hook_state ?? null);
+  if (hookStateGate.blocked) {
     return {
       ...base,
       status: 'blocked',
-      reason: `Codex hook review cannot be attested while ${disabledExpected}/${expected} expected bundled hook entries are disabled in Codex hook state. Open /hooks, enable/trust them, then rerun attestation.`,
+      reason: hookStateGate.reason === 'hook_state_unavailable'
+        ? `Codex hook review cannot be attested: the Codex hook-state config (where /hooks records trust) is ${hookStateGate.observation}. Review/trust the bundled hooks in /hooks so trust is recorded, then rerun attestation.`
+        : `Codex hook review cannot be attested while ${hookStateGate.disabled_handlers} expected bundled hook handler(s) across ${hookStateGate.expected} expected entries are explicitly disabled in Codex hook state. Open /hooks, enable/trust them, then rerun attestation.`,
+    };
+  }
+  // Plugin-grain attestability (S8a5 refine-verify, peer finding): the S8a4 version
+  // authority returns attestable:false for a plugin the Codex list reports disabled —
+  // "a disabled plugin loads no hooks" — but the binding loop above consumed only its
+  // `.version`, so a disabled plugin with a resolvable version attested straight
+  // through (and doctor's mirror, reading the same authority the same way, called it
+  // current while the completion reducer staled it on plugin state).
+  const nonAttestable = bundled
+    .map((pluginName) => ({ pluginName, resolved: resolveCodexInstalledPluginVersion(plugins?.[pluginName]) }))
+    .filter((entry) => entry.resolved.attestable !== true);
+  if (nonAttestable.length > 0) {
+    return {
+      ...base,
+      status: 'blocked',
+      reason: `Codex hook review cannot be attested: ${nonAttestable.map((entry) => `${entry.pluginName} (${entry.resolved.reason})`).join('; ')}.`,
     };
   }
   return {
@@ -2010,13 +2035,9 @@ export function formatText(report) {
     lines.push(NOT_EVALUATED_LINE);
   } else {
   lines.push(`- status=${report.hook_settings.status}; bundled=${report.hook_settings.packaged_plugins.bundled.join(',') || 'none'}; manifest-exposed=${report.hook_settings.packaged_plugins.manifest_exposed.join(',') || 'none'}; default-file-only=${report.hook_settings.packaged_plugins.default_file_only.join(',') || 'none'}; command-warnings=${report.hook_settings.packaged_plugins.command_warnings.join(',') || 'none'}`);
-  if (report.hook_settings.hook_state) {
-    const state = report.hook_settings.hook_state;
-    lines.push(`- hook-state: config=${state.config_status}; expected=${state.summary.expected}; enabled=${state.summary.expected_enabled}; disabled=${state.summary.expected_disabled}; missing=${state.summary.expected_missing}; untrusted=${state.summary.expected_untrusted}; unexpected-agentic=${state.summary.unexpected_agentic_entries}; unmapped=${state.summary.unmapped_events ?? 0}`);
-    for (const entry of state.disabled_expected ?? []) {
-      lines.push(`  disabled-hook-state: ${entry.plugin}; event=${entry.event}; path=${entry.hooks_path}; ids=${entry.ids.join(',') || 'none'}`);
-    }
-  }
+  // Shared with doctor's renderer (S8a5) — one template, so the two surfaces cannot
+  // describe the same machine differently.
+  lines.push(...formatCodexHookStateLines(report.hook_settings.hook_state));
   const hookFlags = report.hook_settings.feature_flags ?? {};
   if (hookFlags.plugin_hooks_stage === 'removed') {
     lines.push('- plugin-hooks: removed on this Codex; plugin hooks load via generic [features].hooks (default on) + /hooks trust');

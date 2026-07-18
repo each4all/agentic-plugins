@@ -171,7 +171,12 @@ export function recomputeProofStatus(proof, { current, applicable = true, requir
 /**
  * The Codex `/hooks` attestation, evaluated on the same terms (§5/§8.1). It stales on
  * a Codex CLI change, a hook-plugin add/remove/version change, or a disabled expected
- * hook (test #24).
+ * hook (test #24) — the last at the INDIVIDUAL-HANDLER grain (S8a5): the plugin-level
+ * `state` check below cannot see a single `enabled = false` handler inside an
+ * installed plugin, so the persisted `probe.hosts.codex.hook_state.disabled_expected`
+ * rows are consulted too, and a probe carrying NO available hook-state observation
+ * never supports a current claim (the field is structurally optional for 1.0 reads,
+ * semantically required here — resume-means-re-probe supplies it, §7).
  *
  * It is an operator CLAIM, not host truth — runtime cannot query Codex trust
  * non-interactively (ADR-0030) — so the only thing that can be checked is whether the
@@ -216,6 +221,31 @@ export function recomputeHookAttestation(record, { current, expectedPlugins, pro
       reasons.push(`${name} is ${state} on Codex, so its attested hooks are not active`);
     }
   }
+
+  // PER-HANDLER disabled evidence (S8a5). The plugin-level check above false-passed
+  // an installed plugin with one explicitly disabled handler: `state === 'installed'`
+  // is true, and the pre-1.1 probe carried nothing finer. The persisted hook_state is
+  // SEMANTICALLY required for a current claim — "we could not observe the hook state"
+  // is not evidence the hooks are on, the same rule §8.1 applies to a null version.
+  const hookState = probe?.hosts?.codex?.hook_state;
+  if (!isPlainObject(hookState)) {
+    reasons.push('the probe carries no Codex hook-state observation (pre-1.1 probe), so per-handler disabled state is unknown — re-probe to record it');
+  } else if (hookState.observation !== 'available') {
+    reasons.push(`the Codex hook-state config was ${hookState.observation === 'missing' ? 'not found' : 'not readable'} at probe time — trust is recorded there, so the attested hook state cannot be standing`);
+  } else if (!Array.isArray(hookState.disabled_expected)) {
+    // Malformed evidence FAILS CLOSED (peer finding): an `available` observation whose
+    // disabled_expected is null/missing/not-an-array is not "no disabled handlers" —
+    // it is evidence that does not parse, and treating it as [] is the same fail-open
+    // this module refuses everywhere else (§7: a claim its own evidence cannot back).
+    reasons.push('the probe hook-state evidence is malformed (disabled_expected is not an array) — malformed evidence never supports a current claim; re-probe');
+  } else {
+    for (const row of hookState.disabled_expected) {
+      if (!expected.includes(row?.plugin)) continue;
+      const coords = [row.event, row.group_index, row.hook_index].filter((v) => v !== null && v !== undefined).join(':');
+      reasons.push(`${row.plugin} has an explicitly disabled hook handler (${row.hooks_path ?? 'unknown path'}${coords ? `:${coords}` : ''}) — a disabled handler bears no hook, whatever sibling handlers are enabled`);
+    }
+  }
+
   return reasons.length > 0 ? { status: 'stale', reasons } : { status: 'attested', reasons: [] };
 }
 

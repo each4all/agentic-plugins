@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "runtime-bootstrap-run-1.0",
+  "$id": "runtime-bootstrap-run-1.1",
   "title": "Bootstrap run manifest",
   "description": "machine-bootstrap-contract.md §5. The durable record of one machine-bootstrap run. It records CHOICES and HISTORY, never TRUTH (§7): every plan/status/resume/verify re-probes, and a recorded step is invalidated when the versions it was observed against change. Key order here IS the canonical serialization order.",
   "type": "object",
@@ -186,6 +186,32 @@
               }
             }
           }
+        },
+        "hook_state": { "$ref": "#/$defs/codexHookStateProbe" }
+      }
+    },
+    "codexHookStateProbe": {
+      "description": "1.1 (S8a5) — the probe's PER-HANDLER Codex hook-state evidence. Plugin-level `state` above says nothing about a single explicitly disabled handler (`enabled = false` in `[hooks.state]`) whose sibling is enabled, which is exactly what let an attestation read current while a hook was off. STRUCTURALLY OPTIONAL — deliberately absent from codexHostProbe's `required` — so a 1.0 document still validates; SEMANTICALLY required for a current applicable attestation: the completion reducer stales an attestation whose probe carries no `observation: available` hook_state. `disabled_expected` lists every expected handler explicitly disabled; absence of an `enabled` key means ENABLED (verified on codex-cli 0.142.5), so only explicit `false` rows appear here. `observation` distinguishes a config that does not exist (`missing` — no hook was ever trusted) from one that could not be read (`unreadable` — state unknown); the reducer stales on both, the operator recovery differs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation", "disabled_expected"],
+      "properties": {
+        "observation": { "enum": ["available", "missing", "unreadable"] },
+        "disabled_expected": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["plugin", "hooks_path", "event", "group_index", "hook_index"],
+            "properties": {
+              "plugin": { "$ref": "#/$defs/pluginName" },
+              "hooks_path": { "type": ["string", "null"], "maxLength": 512 },
+              "event": { "type": ["string", "null"], "maxLength": 64 },
+              "group_index": { "type": ["string", "null"], "maxLength": 16 },
+              "hook_index": { "type": ["string", "null"], "maxLength": 16 }
+            }
+          }
         }
       }
     },
@@ -293,7 +319,7 @@
       }
     },
     "hookAttestation": {
-      "description": "§5/§8.1 — carries its own Codex-bound versions and the EXACT retained Codex-hook-bearing plugin set, and stales on a Codex CLI change, a hook-plugin add/remove/version change, or a disabled expected hook (test #24). Runtime cannot query Codex `/hooks` trust non-interactively, so this records an operator CLAIM, never host truth (ADR-0030).",
+      "description": "§5/§8.1 — carries its own Codex-bound versions and the EXACT retained Codex-hook-bearing plugin set, and stales on a Codex CLI change, a hook-plugin add/remove/version change, or a disabled expected hook (test #24) — enforced at the INDIVIDUAL-HANDLER grain via probe hosts.codex.hook_state (S8a5): a handler explicitly disabled beside an enabled sibling still stales the claim, and a probe with no available hook_state observation never supports a current one. Runtime cannot query Codex `/hooks` trust non-interactively, so this records an operator CLAIM, never host truth (ADR-0030).",
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["status", "attested_plugins", "bound_versions", "artifact_pointer", "artifact_hash", "attested_at"],

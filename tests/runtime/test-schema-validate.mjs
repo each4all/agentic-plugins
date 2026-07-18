@@ -371,3 +371,70 @@ describe('runtime schema validator — REAL artifacts (§11.1)', () => {
     match(result.errors.join(' '), /expected boolean, got string/);
   });
 });
+
+// S8a5 — runtime-bootstrap-run 1.0 → 1.1: the probe's per-handler Codex hook_state.
+// Structurally OPTIONAL (a 1.0 document without it must keep validating — old runs
+// are retained artifacts, not migration debts), semantically required by the
+// completion reducer for a current applicable attestation (test-completion-reducer).
+describe('runtime schema validator — bootstrap-run 1.1 hook_state (S8a5)', () => {
+  const manifest = (over = {}) => ({
+    schema: 'runtime-bootstrap-run-1.1',
+    run_id: 'bootstrap-20260718T000000Z-a5f001',
+    started_at: '2026-07-18T00:00:00Z',
+    updated_at: '2026-07-18T00:00:00Z',
+    status: 'open',
+    selection: { bundle: 'engineering', desired: ['runtime', 'companions', 'engineer'], excluded: [] },
+    steps: [],
+    boundary: { writes_host_config: false, writes_credential: false, writes_config_local_toml: false, performs_network_request: false },
+    ...over,
+  });
+  const probe = (codexOver = {}) => ({
+    probed_at: '2026-07-18T00:00:00Z',
+    runtime_version: '0.80.1',
+    hosts: {
+      claude: { cli_version: '2.1.208', auth: 'available', marketplace: 'registered', plugins: {} },
+      codex: { cli_version: '0.144.1', auth: 'available', marketplace: 'registered', plugins: { engineer: { version: '1.0.0', state: 'installed' } }, ...codexOver },
+    },
+  });
+  const hookState = () => ({
+    observation: 'available',
+    disabled_expected: [
+      { plugin: 'engineer', hooks_path: 'hooks/hooks.json', event: 'stop', group_index: '0', hook_index: '1' },
+    ],
+  });
+
+  it('a 1.0 document with no hook_state still validates against the packaged 1.1 reader', async () => {
+    const validate = await makeValidator('runtime-bootstrap-run');
+    const legacy = manifest({ schema: 'runtime-bootstrap-run-1.0', probe: probe() });
+    const result = validate(legacy);
+    strictEqual(result.ok, true, `a pre-S8a5 run keeps validating: ${result.errors.join('; ')}`);
+  });
+
+  it('a 1.1 document round-trips hook_state.disabled_expected through validate + canonicalize', async () => {
+    const schema = await loadSchema('runtime-bootstrap-run');
+    const doc = manifest({ probe: probe({ hook_state: hookState() }) });
+    const result = validateAgainstSchema(doc, schema, { readerVersion: schema.$id });
+    strictEqual(result.ok, true, `the per-handler evidence conforms: ${result.errors.join('; ')}`);
+    // The canonical serialization PRESERVES the evidence — a canonicalize that dropped
+    // or reordered rows would hash two different machines identically.
+    const roundTripped = JSON.parse(canonicalJson(doc, schema));
+    deepStrictEqual(roundTripped.probe.hosts.codex.hook_state, hookState());
+  });
+
+  it('hook_state is a closed shape: unknown structural keys and off-enum observations are refused', async () => {
+    const validate = await makeValidator('runtime-bootstrap-run');
+
+    const offEnum = manifest({ probe: probe({ hook_state: { ...hookState(), observation: 'partial' } }) });
+    strictEqual(validate(offEnum).ok, false, 'an observation outside available|missing|unreadable is refused');
+
+    const extraKey = manifest({ probe: probe({ hook_state: { ...hookState(), extra: { surprising: true } } }) });
+    const extraResult = validate(extraKey);
+    strictEqual(extraResult.ok, false, 'an unknown structural key inside hook_state is refused at any minor');
+    match(extraResult.errors.join(' '), /unknown key/);
+
+    const badRow = manifest({ probe: probe({ hook_state: { observation: 'available', disabled_expected: [{ plugin: 'engineer', hooks_path: null, event: 'stop', group_index: '0' }] } }) });
+    const badRowResult = validate(badRow);
+    strictEqual(badRowResult.ok, false, 'a row missing hook_index is refused — the coordinates are the evidence');
+    match(badRowResult.errors.join(' '), /missing required key 'hook_index'/);
+  });
+});

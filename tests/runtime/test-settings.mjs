@@ -676,6 +676,13 @@ describe('runtime settings', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-attest-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-review-attest-home-'));
     await seedRepo(root);
+    // An attestable machine (S8a5): the hooks are actually reviewable/trusted there —
+    // Codex-installed plugin evidence + the trusted hook-state rows /hooks records.
+    // The pre-S8a5 version of this test attested against an EMPTY home, which pinned
+    // the exact born-stale artifact the producer gate now refuses.
+    await seedCodexInstallCache(home, 'engineer', '1.0.0');
+    await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
+    await writeTrustedCodexHookStateConfig(home);
 
     const report = await runSettings({
       repoRoot: root,
@@ -720,6 +727,7 @@ describe('runtime settings', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-versions-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-versions-home-'));
     await seedRepo(root); // source: engineer + orchestrator 1.0.0, both codex-hook-bearing
+    await writeTrustedCodexHookStateConfig(home);
 
     const report = await runSettings({
       repoRoot: root,
@@ -728,13 +736,12 @@ describe('runtime settings', () => {
       attestCodexHookReview: true,
       runner: fakeRunner(codex0137Map({
         'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
-        // Codex list is AUTHORITATIVE: engineer installed at 0.7.0, orchestrator NOT
-        // installed on Codex. The canonical map must reflect the Codex list, never the
-        // generic installed_version (which falls through to source) — so orchestrator,
-        // codex-not-installed, gets NO canonical key while the legacy map still shows
-        // its source fallback. This is what bites a resolver → installed_version swap.
+        // Codex list is AUTHORITATIVE: engineer AND orchestrator installed at 0.7.0 —
+        // distinct from the 1.0.0 source manifests, so a resolver → installed_version
+        // swap (which falls through to source) is what these pins bite.
         'codex plugin list --json': codexListJson([
           { name: 'engineer', marketplaceName: 'agentic-plugins', version: '0.7.0', installed: true, enabled: true },
+          { name: 'orchestrator', marketplaceName: 'agentic-plugins', version: '0.7.0', installed: true, enabled: true },
         ]),
       })),
     });
@@ -743,20 +750,118 @@ describe('runtime settings', () => {
     strictEqual(review.status, 'attested');
     // (a) Codex CLI version is bound from the probe text (codex0137Map → 0.137.0).
     strictEqual(review.bound_versions.codex, '0.137.0');
-    // (b) plugins.codex is LIST-authoritative: engineer 0.7.0 present, orchestrator omitted.
-    deepStrictEqual(review.bound_versions.plugins.codex, { engineer: '0.7.0' });
-    ok(!('orchestrator' in review.bound_versions.plugins.codex), 'a codex-not-installed plugin binds no canonical version');
+    // (b) plugins.codex is LIST-authoritative: both bound at the list version 0.7.0,
+    // never the 1.0.0 the generic installed_version fallback would report.
+    deepStrictEqual(review.bound_versions.plugins.codex, { engineer: '0.7.0', orchestrator: '0.7.0' });
     // (c) attested_plugins is the full bundled hook set (importer projects to selection later).
     deepStrictEqual(review.attested_plugins, ['engineer', 'orchestrator']);
-    // (d) the legacy flat map is retained through the compat window and still carries
-    // orchestrator via its source fallback — proving canonical ≠ legacy here.
+    // (d) the legacy flat map is retained through the compat window.
     strictEqual(review.plugin_versions.engineer, '0.7.0');
-    strictEqual(review.plugin_versions.orchestrator, '1.0.0');
 
     const artifact = JSON.parse(await readFile(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'), 'utf8'));
-    deepStrictEqual(artifact.codex_hook_review.bound_versions.plugins.codex, { engineer: '0.7.0' });
+    deepStrictEqual(artifact.codex_hook_review.bound_versions.plugins.codex, { engineer: '0.7.0', orchestrator: '0.7.0' });
     strictEqual(artifact.codex_hook_review.bound_versions.codex, '0.137.0');
     deepStrictEqual(artifact.codex_hook_review.attested_plugins, ['engineer', 'orchestrator']);
+  });
+
+  // The pre-S8a5 twin of the test above deliberately attested a machine where
+  // orchestrator was NOT Codex-installed, pinning "a codex-not-installed plugin binds
+  // no canonical version". That artifact was born stale: doctor's mirror resolves the
+  // missing plugin to a null version, which never counts as current — so the producer
+  // was minting claims its own mirror rejected on arrival. The attestable verdict from
+  // the S8a4 version authority (attestable:false for not_installed AND disabled) is
+  // now CONSUMED, and the same fixture pins the refusal instead. The resolver →
+  // installed_version swap this used to bite still bites: the generic fallback would
+  // resolve orchestrator from source (1.0.0), flip it attestable, and fail the
+  // blocked assertion below.
+  it('blocks attestation when a bundled hook plugin is not Codex-installed (attestable:false, S8a5)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-not-installed-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-not-installed-home-'));
+    await seedRepo(root);
+    await writeTrustedCodexHookStateConfig(home);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      attestCodexHookReview: true,
+      runner: fakeRunner(codex0137Map({
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+        'codex plugin list --json': codexListJson([
+          { name: 'engineer', marketplaceName: 'agentic-plugins', version: '0.7.0', installed: true, enabled: true },
+        ]),
+      })),
+    });
+
+    const review = report.codex_hook_review;
+    strictEqual(review.status, 'blocked');
+    ok(review.reason.includes('orchestrator (plugin is not installed on Codex (list-authoritative))'), review.reason);
+    deepStrictEqual(review.attested_plugins, [], 'a blocked attestation covers nothing');
+    // Diagnostics still emitted on the blocked record: canonical map omits the
+    // not-installed plugin while the legacy map carries its source fallback —
+    // canonical ≠ legacy is exactly the list-authority distinction.
+    deepStrictEqual(review.bound_versions.plugins.codex, { engineer: '0.7.0' });
+    strictEqual(review.plugin_versions.orchestrator, '1.0.0');
+  });
+
+  it('blocks attestation for a Codex-DISABLED bundled hook plugin (a disabled plugin loads no hooks, S8a5)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-disabled-plugin-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-disabled-plugin-home-'));
+    await seedRepo(root);
+    // Hook-state rows all trusted and enabled — the PLUGIN, not any handler, is what
+    // is off, so only the attestable verdict can catch it (the peer-found gap: both
+    // producer and mirror consumed only `.version` from the authority and let a
+    // disabled plugin with a matching version attest and read current).
+    await writeTrustedCodexHookStateConfig(home);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      attestCodexHookReview: true,
+      runner: fakeRunner(codex0137Map({
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+        'codex plugin list --json': codexListJson([
+          { name: 'engineer', marketplaceName: 'agentic-plugins', version: '0.7.0', installed: true, enabled: false },
+          { name: 'orchestrator', marketplaceName: 'agentic-plugins', version: '0.7.0', installed: true, enabled: true },
+        ]),
+      })),
+    });
+
+    const review = report.codex_hook_review;
+    strictEqual(review.status, 'blocked');
+    ok(review.reason.includes('engineer (plugin is installed but disabled on Codex — a disabled plugin loads no hooks)'), review.reason);
+    deepStrictEqual(review.attested_plugins, []);
+  });
+
+  it('blocks attestation when the Codex hook-state config is missing — trust is recorded there (S8a5)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-no-config-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-no-config-home-'));
+    await seedRepo(root);
+    // Codex-installed evidence present; ONLY the trust store is absent. Pre-S8a5 this
+    // attested (disabled_handlers is necessarily 0 over an empty entry list) and the
+    // very next doctor called the fresh artifact hook_state_unavailable — the
+    // born-stale producer/mirror disagreement the shared gate closes.
+    await seedCodexInstallCache(home, 'engineer', '1.0.0');
+    await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      attestCodexHookReview: true,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    const review = report.codex_hook_review;
+    strictEqual(review.status, 'blocked');
+    ok(review.reason.includes('the Codex hook-state config (where /hooks records trust) is missing'), review.reason);
+    deepStrictEqual(review.attested_plugins, []);
+    const artifact = JSON.parse(await readFile(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'), 'utf8'));
+    strictEqual(artifact.codex_hook_review.status, 'blocked', 'the blocked verdict is what persists');
   });
 
   it('threads the OBSERVED Codex CLI version into bound_versions.codex, not a constant (S8a4-2)', async () => {
@@ -873,16 +978,63 @@ describe('runtime settings', () => {
     });
 
     strictEqual(report.codex_hook_review.status, 'blocked');
-    ok(report.codex_hook_review.reason.includes('6/6 expected bundled hook entries are disabled'));
+    // The gate blocks on the PER-HANDLER count (S8a5) — the group count false-passed a
+    // disabled handler beside an enabled sibling.
+    ok(report.codex_hook_review.reason.includes('6 expected bundled hook handler(s) across 6 expected entries are explicitly disabled'));
     strictEqual(report.hook_settings.hook_state.summary.expected_disabled, 6);
+    strictEqual(report.hook_settings.hook_state.summary.disabled_handlers, 6);
     ok(report.hook_settings.recommendations.some((rec) => rec.action === 'enable-codex-hook-state'));
     const followup = report.plugin_management.manual_followups.find((entry) => entry.id === 'codex-hook-review');
-    ok(followup.verify.includes('6/6 expected bundled hook entries disabled'));
+    ok(followup.verify.includes('6 explicitly disabled hook handler(s) across 6 expected bundled hook entries'));
     const artifact = JSON.parse(await readFile(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'), 'utf8'));
     strictEqual(artifact.codex_hook_review.status, 'blocked');
-    ok(formatText(report).includes('hook-state: config=available; expected=6; enabled=0; disabled=6'));
+    ok(formatText(report).includes('hook-state: config=available; expected=6; enabled=0; disabled=6; disabled-handlers=6'));
     ok(/hook-state: [^\n]*unmapped=0/.test(formatText(report)), 'settings renders the hook-state unmapped counter');
-    ok(formatText(report).includes('disabled-hook-state: engineer; event=pre_compact; path=hooks/hooks.json'));
+    ok(formatText(report).includes('disabled-hook-handler: engineer; event=pre_compact; path=hooks/hooks.json; group=0; hook=0; group-state=disabled'));
+  });
+
+  // THE S8a5 FALSE-PASS PIN, producer side. The group grain reads this machine as
+  // nothing-disabled (every expected entry has an enabled trusted row), so the
+  // pre-S8a5 gate attested straight through it — and doctor's mirror then called the
+  // fresh attestation stale on the same evidence. The per-handler gate blocks first.
+  it('blocks attestation on a disabled handler masked by an enabled sibling (S8a5)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-sibling-mask-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-sibling-mask-home-'));
+    await seedRepo(root);
+    // TWO real Stop handlers (peer finding: with the default single-handler fixture
+    // the 0:1 row below would model a STALE index, not a live sibling — the
+    // aggregation treats both alike today, but this test's name promises the sibling
+    // case, so the fixture delivers it).
+    await writeJson(join(root, 'plugins', 'engineer', 'hooks', 'hooks.json'), {
+      hooks: {
+        SessionStart: [{ matcher: 'compact', hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
+        PreCompact: [{ hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
+        Stop: [{ hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }, { type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
+      },
+    });
+    await writeSiblingMaskedCodexHookStateConfig(home);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      attestCodexHookReview: true,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    // Premise pins: this IS the masked case — the group grain sees nothing.
+    strictEqual(report.hook_settings.hook_state.summary.expected_disabled, 0, 'no group is fully disabled');
+    strictEqual(report.hook_settings.hook_state.summary.disabled_handlers, 1, 'the handler grain sees the disabled sibling');
+
+    strictEqual(report.codex_hook_review.status, 'blocked');
+    ok(report.codex_hook_review.reason.includes('1 expected bundled hook handler(s)'), report.codex_hook_review.reason);
+    strictEqual(report.codex_hook_review.attested, false);
+    const artifact = JSON.parse(await readFile(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'), 'utf8'));
+    strictEqual(artifact.codex_hook_review.status, 'blocked', 'the blocked verdict is what persists');
+    ok(formatText(report).includes('disabled-hook-handler: engineer; event=stop; path=hooks/hooks.json; group=0; hook=1; group-state=enabled_trusted'));
   });
 
   it('never writes Codex host config: the removed --apply-codex-plugin-hooks executor stays gone', async () => {
@@ -2343,7 +2495,11 @@ async function seedRepo(root) {
   });
 }
 
-async function writeDisabledCodexHookStateConfig(home, hooksPath = 'hooks/hooks.json') {
+// ONE base TOML builder for the Codex `[hooks.state]` fixture shape. The id format
+// (`plugin@marketplace:path:event:group:hook`) is regression-critical — the S8a5
+// false-pass pins depend on it matching what the machine-probe parser reads — so it
+// is encoded here exactly once; the named builders below only vary the row body.
+async function writeCodexHookStateConfig(home, hooksPath, { rowLines, extraLines = [] }) {
   await mkdir(join(home, '.codex'), { recursive: true });
   const lines = [
     '[features]',
@@ -2355,12 +2511,34 @@ async function writeDisabledCodexHookStateConfig(home, hooksPath = 'hooks/hooks.
   for (const plugin of ['engineer', 'orchestrator']) {
     for (const event of ['pre_compact', 'session_start', 'stop']) {
       lines.push(`[hooks.state."${plugin}@agentic-plugins:${hooksPath}:${event}:0:0"]`);
-      lines.push('enabled = false');
-      lines.push('trusted_hash = "sha256:abc123"');
+      lines.push(...rowLines);
       lines.push('');
     }
   }
+  lines.push(...extraLines);
   await writeFile(join(home, '.codex', 'config.toml'), lines.join('\n'));
+}
+
+async function writeDisabledCodexHookStateConfig(home, hooksPath = 'hooks/hooks.json') {
+  await writeCodexHookStateConfig(home, hooksPath, { rowLines: ['enabled = false', 'trusted_hash = "sha256:abc123"'] });
+}
+
+async function writeTrustedCodexHookStateConfig(home, hooksPath = 'hooks/hooks.json', { extraLines = [] } = {}) {
+  await writeCodexHookStateConfig(home, hooksPath, { rowLines: ['trusted_hash = "sha256:abc123"'], extraLines });
+}
+
+// The S8a5 sibling-masked shape: every expected entry trusted+enabled, plus ONE extra
+// handler row for engineer:stop (hook index 1) explicitly disabled. The group grain
+// reads nothing disabled; only the per-handler grain sees it.
+async function writeSiblingMaskedCodexHookStateConfig(home, hooksPath = 'hooks/hooks.json') {
+  await writeTrustedCodexHookStateConfig(home, hooksPath, {
+    extraLines: [
+      `[hooks.state."engineer@agentic-plugins:${hooksPath}:stop:0:1"]`,
+      'enabled = false',
+      'trusted_hash = "sha256:sibling"',
+      '',
+    ],
+  });
 }
 
 async function seedCodexTmpMarketplace(home, name, version) {

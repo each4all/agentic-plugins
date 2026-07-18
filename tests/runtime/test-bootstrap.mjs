@@ -46,6 +46,7 @@ import {
 } from '../../plugins/runtime/scripts/lib/bootstrap-artifacts.mjs';
 import { inspectRuntimeArtifactInventory, machinePointer } from '../../plugins/runtime/scripts/lib/state-readers.mjs';
 import { isUnder } from '../../plugins/runtime/scripts/lib/path-containment.mjs';
+import { makeValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 
 const NOW = new Date('2026-07-17T09:00:00Z');
 const RUNTIME_SCRIPTS = new URL('../../plugins/runtime/scripts/', import.meta.url).pathname;
@@ -671,6 +672,15 @@ describe('runtime bootstrap artifacts — abandonment (#29)', () => {
     const abandoned = await abandonBootstrapRun({ homeDir, repoRoot: null, runId, now: NOW });
     strictEqual(abandoned.abandoned, true, 'closable by id — the id comes from the directory name');
     strictEqual(abandoned.recovered_unreadable, true);
+    // The recovery tombstone must ITSELF validate against the packaged run schema
+    // (peer finding, S8a5): it previously omitted the required selection/boundary, so
+    // recovering one unreadable manifest wrote the next record every schema-aware
+    // reader rejects.
+    const tombstone = JSON.parse(await readFile(join(dir, 'run.json'), 'utf8'));
+    const validate = await makeValidator('runtime-bootstrap-run');
+    const verdict = validate(tombstone);
+    strictEqual(verdict.ok, true, `the replacement record conforms to the run schema: ${verdict.errors.join('; ')}`);
+    strictEqual(tombstone.schema, 'runtime-bootstrap-run-1.1');
     const next = await createBootstrapRun({ homeDir, repoRoot: null, now: NOW, manifest: baseManifest() });
     strictEqual(next.created, true);
     await rm(homeDir, { recursive: true, force: true });
