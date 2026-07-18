@@ -1276,6 +1276,75 @@ export async function abandonBootstrapRun({ homeDir, repoRoot, runId, reason = '
   return { ...result.value, diagnostics: [...result.diagnostics, ...result.value.diagnostics] };
 }
 
+// Rewrite an OPEN run's manifest under the family lock (contract §3 — `resume` and
+// `profile seed` are the M1 verbs that persist invalidation stamps, step
+// transitions, choices, and seeded defaults). The mutation is a caller-supplied
+// pure function over a deep copy of the previous manifest; `updated_at` is stamped
+// here so no caller can forget it, and a terminal run is refused rather than
+// silently reopened — `abandon` is the only verb that may rewrite a non-open run,
+// and even it refuses a terminal one.
+export async function updateBootstrapRun({ homeDir, repoRoot, runId, mutate, validate = null, now, ...lockOptions }) {
+  validateBootstrapRunId(runId);
+  if (typeof mutate !== 'function') throw new Error('updateBootstrapRun requires a mutate(manifest) function');
+  const nowMs = resolveNowMs(now);
+  const at = new Date(nowMs).toISOString();
+
+  const result = await withBootstrapFamilyLock({ homeDir, repoRoot, now, ...lockOptions }, async (handle) => {
+    const home = await resolveMachineArtifactHome({ homeDir, repoRoot });
+    /* c8 ignore next */
+    if (!home.ok) return { updated: false, reason: home.reason, run_id: runId, manifest: null, diagnostics: [home.diagnostic] };
+
+    const manifestPath = bootstrapRunManifestFile(homeDir, runId);
+    const read = await readJsonSafe(manifestPath);
+    if (read.status !== 'ok' || !read.value || typeof read.value !== 'object') {
+      return {
+        updated: false,
+        reason: read.status === 'missing' ? 'run-missing' : 'manifest-unreadable',
+        run_id: runId,
+        manifest: null,
+        diagnostics: [
+          read.status === 'missing'
+            ? `No run ${runId} under ${machinePointer(homeDir, bootstrapFamilyRoot(homeDir))}.`
+            : `Run ${runId} has an unreadable manifest (${read.status}); it cannot be updated. Close it with \`abandon ${runId}\` and start a new plan.`,
+        ],
+      };
+    }
+    const previous = read.value;
+    if (BOOTSTRAP_TERMINAL_RUN_STATUSES.includes(previous.status)) {
+      return { updated: false, reason: 'already-terminal', run_id: runId, status: previous.status, manifest: null, diagnostics: [`Run ${runId} is already ${previous.status}; a terminal run is never rewritten.`] };
+    }
+
+    const next = mutate(structuredClone(previous));
+    if (!next || typeof next !== 'object') {
+      return { updated: false, reason: 'mutate-returned-nothing', run_id: runId, manifest: null, diagnostics: ['The update produced no manifest; refusing to write nothing over a run record.'] };
+    }
+    const value = { ...next, run_id: runId, updated_at: at };
+    if (validate) {
+      const verdict = validate(value);
+      if (!verdict?.ok) {
+        return { updated: false, reason: 'invalid-manifest', run_id: runId, manifest: null, diagnostics: verdict?.errors ?? ['The updated run manifest failed validation; refusing to write it.'] };
+      }
+    }
+
+    if (!(await handle.assertOwned())) {
+      return { updated: false, reason: 'lock-lost', run_id: runId, manifest: null, diagnostics: ['The family lock was reclaimed mid-update; refusing to rewrite the run record without it. Re-run.'] };
+    }
+    const write = await writeJsonAtomic({ root: home.root, path: manifestPath, value });
+    if (!write.ok) return { updated: false, reason: write.reason, run_id: runId, manifest: null, diagnostics: [write.diagnostic] };
+
+    const diagnostics = [];
+    const latest = await readBootstrapLatest({ homeDir });
+    if (latest.status !== 'blocked' && latest.run_id === runId && typeof value.status === 'string' && BOOTSTRAP_RUN_STATUSES.includes(value.status)) {
+      const latestWrite = await writeLatestLocked({ root: home.root, homeDir, runId, status: value.status, updatedAt: at, handle });
+      if (!latestWrite.ok) diagnostics.push(`The run was updated, but the latest.json pointer could not be refreshed (${latestWrite.diagnostic}).`);
+    }
+    return { updated: true, reason: 'ok', run_id: runId, manifest: value, diagnostics };
+  });
+
+  if (!result.ok) return { updated: false, reason: result.reason, run_id: runId, manifest: null, diagnostics: result.diagnostics };
+  return { ...result.value, diagnostics: [...result.diagnostics, ...result.value.diagnostics] };
+}
+
 // ---------------------------------------------------------------------------
 // Fragment + proof writers
 // ---------------------------------------------------------------------------

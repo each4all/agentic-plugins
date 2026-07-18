@@ -348,6 +348,57 @@ findings remain, and the branch is pushable. Incomplete evidence returns
 `defer`; failed criteria return `block`. The helper never commits, pushes,
 opens PRs, updates PR metadata, merges, or marks a PR ready for review.
 
+## Bootstrap behavior
+
+`runtime:bootstrap` is the ADR-0046 machine-scoped, artifact-only bootstrap
+lifecycle — the staged path from a bare host to a proven agentic-plugins
+install. The normative contract is
+[`docs/machine-bootstrap-contract.md`](docs/machine-bootstrap-contract.md)
+(packaged in this plugin); the script owns facts, schemas, state, and the
+completion reducer, and the command/skill markdown owns interview pacing only.
+
+**Stage 0 is pre-runtime, document-only, and host-native** — runtime does not
+exist on the machine yet, so these exact commands are run manually (they are
+the same block the contract's §2 carries):
+
+```sh
+# Claude Code
+claude plugin marketplace add each4all/agentic-plugins
+claude plugin install runtime@agentic-plugins
+
+# Codex CLI
+codex plugin marketplace add each4all/agentic-plugins
+codex plugin add runtime@agentic-plugins
+```
+
+From Stage 1 on, `runtime:bootstrap plan` starts a run: it probes both host
+CLIs live (neutral cwd, `$CODEX_HOME` honored), resolves the selected bundle
+(`base` | `engineering` | `business` | `design` | `full` | `custom` with
+`--plugins`, hard-dependency closure enforced), judges the expected-step
+registry from observed state only, renders Stage 4–6 fragments (model/effort,
+Codex notification channel, egress launcher, and **both** hosts' permission
+plans) with per-fragment backup/verify/manual-revert guidance, and presents —
+never executes — the plugin-management command carrying the §1.6 plan hash
+(`runtime:settings --execute-plugin-management --expected-plan-hash <hash>`;
+the executor refuses on divergence). `status` and `verify` are read-only:
+they re-probe and re-judge in memory and write nothing; `verify` judges the
+**recorded** proof evidence (`passed` / `failed` / `stale` / `absent`) and
+never runs a proof to make itself pass. `resume` is the only verb that
+produces Stage-8 evidence: on an explicit operator `execute` answer it invokes
+`runtime:doctor --record` with the relevant `--execute-*` flag and copies the
+proof's metadata only (per-direction results, pointers, hashes, bound
+versions) into the run. `abandon` closes a crashed or unwanted run so a new
+plan can start; nothing the operator already applied is ever reversed.
+`profile export` / `profile seed` carry a secrets-free, enumerated,
+user-global-only machine profile between machines: seeded values are interview
+defaults requiring confirmation, never configuration to apply, and never an
+input to any activation or config loader. Completion has two terminal states —
+`complete` (config resolved **and** every required proof passed at current
+bound versions) and `configured-not-verified` — because "installed" and
+"proven" are different claims. Run artifacts and profiles live only under the
+machine-global `~/.agentic-plugins/` home (0700/0600, atomic writes,
+family-wide lock, retention reported but never auto-deleted).
+
 ## Install
 
 ```sh

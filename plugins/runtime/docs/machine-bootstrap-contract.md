@@ -41,7 +41,12 @@ drift; **the contract text governs**.
   CLIs, installed plugins), never about the agentic-plugins source tree.
 - **artifact-only (M1)** — it writes only agentic-plugins-owned artifacts under
   the machine-global home in §10. It never writes host config, never writes a
-  credential, and never performs a network request.
+  credential, and never performs a network request **itself** (S8b errata: the
+  Stage-8 proofs it delegates to `runtime:doctor`'s explicit `--execute-*`
+  executors invoke networked host agents — that network effect belongs to the
+  doctor executor the operator explicitly approved, not to bootstrap, whose own
+  process and artifacts stay network-free; the manifest's
+  `boundary.performs_network_request: false` declares bootstrap's own conduct).
 - **non-executing** — it introduces **no new executor**. Plugin install/update
   remains the existing H2 executor reached through
   `runtime:settings --execute-plugin-management`. Bootstrap consumes the
@@ -490,7 +495,26 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   would let a seed silently decide a step it is only allowed to pre-fill (§4.5.4).
   An answer whose `step_id` is not an expected step of the run is rejected (exit
   `40`) rather than recorded, so a stale answers file cannot smuggle a step into a
-  manifest the registry never derived (§6.1).
+  manifest the registry never derived (§6.1). The answer vocabulary is exactly
+  three values (S8b errata — the file's *shape* was specified but its *values*
+  were not, and an implementation had to invent them): **`decline`** marks a
+  declinable step declined (a non-declinable target is exit `40`, and a plugin
+  decline re-runs the §9.1 closure over the retained set); **`accept`** records
+  the operator's go-ahead without changing step state (steps are promoted only
+  by post-probes, §6); **`execute`** — meaningful on `proof.*` steps under
+  `resume` only — is the explicit approval that lets `resume` run that proof
+  through `runtime:doctor --record`. Duplicate answers for one step apply in
+  file order (the last wins the step state) and every one is recorded in
+  `choices[]`, keeping the run replayable from its own manifest.
+- **Run terminalization is asymmetric** (S8b errata — closing on the reduction
+  alone made Stage 8 unreachable): `resume` closes a run as `complete` when the
+  reducer says so, and as `configured-not-verified` **only when every required
+  proof was explicitly declined** (§6.2 — nothing is left for `resume` to
+  produce). Any other reduction leaves `status: open` — a machine whose CONFIG
+  just resolved still needs an open run for the `resume` that records its
+  proofs — while the verb's **exit code** always reports the reduction (§3.1),
+  so "reduces to configured-not-verified" and "the run file is closed" are
+  deliberately different claims.
 
 ### 3.1 Exit codes
 
@@ -1382,6 +1406,32 @@ did not say what the implementation had to do):
   the R0 claim false on its first release. Proof **production** is now `resume`
   (M1) exclusively; `verify` **judges** recorded evidence and reports `absent`
   rather than manufacturing it.
+
+Three further corrections landed with the S8b public surface itself (the same
+pattern: found by implementing against the text):
+
+- **§1 — "never performs a network request"** now carries the qualifier the
+  Stage-8 delegation always implied: bootstrap's own process and artifacts are
+  network-free, while the doctor executors it presents (and, under `resume`, an
+  explicit `execute` answer invokes) run networked host agents. Without the
+  qualifier the sentence contradicted §8.2 on its first live proof.
+- **§3 — the answer vocabulary** (`decline` / `accept` / `execute`, last-wins
+  duplicates, closure re-run on plugin decline) is now normative. The answers
+  file's shape was specified; its values were left to be invented, which is
+  exactly what §13's closing rule exists to prevent.
+- **§3 — run terminalization** is now explicit and asymmetric: `complete`
+  closes; `configured-not-verified` closes only on an all-required-proofs
+  declined run; everything else stays `open` so `resume` can still produce the
+  missing proofs. The naive "copy the reduction into `status`" implementation
+  closed the run at the exact moment Stage 8 became reachable, making the
+  proofs unreachable instead.
+
+One S8b scope note, recorded rather than absorbed (§1.6): the presented
+`--expected-plan-hash` seals `runtime:settings`' **machine-wide** plan — every
+plugin it manages plus cleanup actions — not a selection-scoped subset;
+bootstrap therefore surfaces settings' own action summary alongside its
+selection view. A selection-scoped executor would need a settings-side plan
+filter; that is settings work with its own regression, not bootstrap glue.
 
 Anything **not** on this list, and not decided above, is a gap in this contract —
 report it rather than inventing a policy.

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Runtime - Bootstrap"
+  short_description: "Machine bootstrap lifecycle: probe, plan, fragments, presented installs, proofs, portable profiles"
+  default_prompt: "Use $runtime:bootstrap to take this machine from a bare host to a proven agentic-plugins install: plan a bundle with a live two-host probe, follow the rendered fragments and presented commands, resume to re-probe and record proofs, and verify the recorded evidence."
+
+policy:
+  allow_implicit_invocation: false

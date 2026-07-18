@@ -109,11 +109,17 @@ claude plugin install runtime@agentic-plugins
 
 # OpenAI Codex CLI
 codex plugin marketplace add each4all/agentic-plugins
-# then enable plugins in ~/.codex/config.toml — see plugins/companions/README.md
+codex plugin add runtime@agentic-plugins
+# repeat `codex plugin add <plugin>@agentic-plugins` per plugin — the add
+# command records `enabled = true` in ~/.codex/config.toml itself; a manual
+# enable edit is only a fallback when a post-check still shows it disabled
 ```
 
 Each plugin's README documents its invocation surface and environment
-variables.
+variables. Once `runtime` is installed, `runtime:bootstrap` conducts the rest
+of the machine setup (staged plan, rendered fragments, presented installs,
+proofs) — see
+[`plugins/runtime/docs/machine-bootstrap-contract.md`](plugins/runtime/docs/machine-bootstrap-contract.md).
 
 ## For developers
 
