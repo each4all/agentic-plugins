@@ -30,6 +30,17 @@ Code and OpenAI Codex CLI per the Hexagonal architecture
   `AGENTIC_COMPANIONS_ROOT` env override). See
   [`plugins/companions/README.md`](companions/README.md) for install,
   discovery, and drift-protection details.
+- **`designer/`** — third L3 persona per
+  [ADR-0042](../docs/adr/0042-designer-persona-design-ux-workbench.md)
+  (Accepted): the design-domain plugin, redesigned from omcc-designer's
+  experience rather than ported — a code-first design/UX **decision &
+  quality** workbench with a post-code critique loop over rendered
+  screens + frontend code (usability / accessibility / conversion /
+  consistency lenses, accessibility as a veto gate), a 7-axis decision
+  registry whose decisive axis shifts with the L4 archetype, and a
+  non-dispatch lifecycle. `print` / `brand` / `motion` are explicit
+  Non-Goals, Figma is excluded in v1, and generated imagery composes
+  the `image` L2 capability. Same 4-layer composition model.
 - **`engineer/`** — Stage 2 L3 persona plugin: 6 universal cognitive
   verbs (`investigate`, `frame`, `decide`, `compose`, `critique`,
   `refine`) plus the `audit` sugar alias, with bidirectional
@@ -103,13 +114,11 @@ Per `docs/adr/0007-migration-cutover-plan.md`, plugin names and
 structures are agentic-plugins' own design — not 1:1 ports of omcc.
 omcc plugins serve as **experiential reference**, not porting targets.
 
-- **`designer`** (L3 persona, ADR-0042) — the design-domain plugin,
-  redesigned from omcc-designer's experience (poster, social-graphics,
-  frontend, brief, evaluation) rather than ported. Scoped down to a
-  code-first design/UX **decision & quality** workbench: `print` /
-  `brand` / `motion` are explicit Non-Goals, Figma is excluded in v1,
-  and generated imagery composes the `image` L2 capability instead of
-  being re-implemented. Same 4-layer composition model.
+- **`decision`** (L2 capability) — a persona-agnostic decision
+  capability remains future work per
+  [ADR-0010 §6](../docs/adr/0010-plugin-boundary-policy.md); it is
+  evaluated on its own trigger now that `designer` has shipped
+  (see the shipped list above).
 
 ## Plugin layout convention
 

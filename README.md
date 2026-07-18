@@ -24,12 +24,26 @@ bridges implemented and tested:
 - [`companions/claude-companion.mjs`](companions/claude-companion.mjs) — Codex → Claude bridge
 - [`companions/codex-companion.mjs`](companions/codex-companion.mjs) — Claude → Codex bridge
 
-Six installable plugins ship in this repository:
+Eight installable plugins ship in this repository:
 
+- [`plugins/attention/`](plugins/attention/) — hook-only L1 attention
+  sensors per [ADR-0040 §3](docs/adr/0040-operator-observability.md):
+  Claude `Notification` / `Stop` / `SubagentStop` sensors emitting into
+  the runtime notification pipeline via a version-gated runtime
+  discovery ladder; manifest-declared Claude hook registration and zero
+  Codex hook surface
 - [`plugins/companions/`](plugins/companions/) — script-only library
   plugin that bundles the canonical companion CLIs for cache-glob
   discovery by consumer plugins (per
   [ADR-0008](docs/adr/0008-companion-distribution-model.md))
+- [`plugins/designer/`](plugins/designer/) — third L3 persona per
+  [ADR-0042](docs/adr/0042-designer-persona-design-ux-workbench.md)
+  (Accepted): code-first design/UX decision & quality workbench — the
+  six cognitive verbs with a post-code critique loop over rendered
+  screens + frontend code (usability / accessibility / conversion /
+  consistency lenses, accessibility as a veto gate), a 7-axis decision
+  registry, `image` L2 composition instead of re-implemented imagery,
+  and a non-dispatch lifecycle; Figma excluded in v1
 - [`plugins/engineer/`](plugins/engineer/) — Stage 2 L3 persona
   plugin: 6 universal cognitive verbs (investigate / frame / decide
   / compose / critique / refine) with bidirectional companion
@@ -97,29 +111,46 @@ cited-brief contract is now folded into `engineer:investigate`.
 
 ## For consumers
 
+Machine setup is staged (see the
+[machine bootstrap contract](plugins/runtime/docs/machine-bootstrap-contract.md)
+§2). **Stage 0** is the irreducible pre-runtime step — the one step runtime cannot
+conduct for itself. Register the marketplace and install `runtime` on each host
+CLI:
+
 ```sh
 # Claude Code
 claude plugin marketplace add each4all/agentic-plugins
-claude plugin install companions@agentic-plugins
-claude plugin install engineer@agentic-plugins
-claude plugin install founder@agentic-plugins
-claude plugin install image@agentic-plugins
-claude plugin install orchestrator@agentic-plugins
 claude plugin install runtime@agentic-plugins
 
-# OpenAI Codex CLI
+# Codex CLI
 codex plugin marketplace add each4all/agentic-plugins
 codex plugin add runtime@agentic-plugins
-# repeat `codex plugin add <plugin>@agentic-plugins` per plugin — the add
-# command records `enabled = true` in ~/.codex/config.toml itself; a manual
-# enable edit is only a fallback when a post-check still shows it disabled
 ```
 
-Each plugin's README documents its invocation surface and environment
-variables. Once `runtime` is installed, `runtime:bootstrap` conducts the rest
-of the machine setup (staged plan, rendered fragments, presented installs,
-proofs) — see
-[`plugins/runtime/docs/machine-bootstrap-contract.md`](plugins/runtime/docs/machine-bootstrap-contract.md).
+`codex plugin add` records `enabled = true` in `~/.codex/config.toml` itself; a
+manual enable edit is only a fallback when a post-check still shows the plugin
+disabled.
+
+From there `runtime:bootstrap` conducts Stages 1–8: it probes both hosts, plans
+a bundle (`base` | `engineering` | `business` | `design` | `full` | `custom`),
+presents the remaining plugin installs (`attention`, `companions`, `designer`,
+`engineer`, `founder`, `image`, `orchestrator`), renders the model/effort,
+notification, and permission fragments, and verifies execution proofs. Each
+plugin's README documents its invocation surface and environment variables.
+
+### Cross-machine notification egress (optional)
+
+The Telegram egress channel (ADR-0041) activates only behind an explicit
+per-machine opt-in — default is off. Its operator-environment contract:
+
+- `AGENTIC_NOTIFY_EGRESS_CHANNEL` — explicit activation (`telegram`); a
+  separate key from the `notify_channel` setting by design (ADR-0041 §2c)
+- `TELEGRAM_CHAT_ID` — recipient chat id
+- `TELEGRAM_BOT_TOKEN` — bot credential, env-only: never read from any file
+  and never written to one
+
+`runtime:settings --egress-launcher-plan` renders the state-aware per-machine
+activation runbook (artifact-only; host config is never written).
 
 ## For developers
 

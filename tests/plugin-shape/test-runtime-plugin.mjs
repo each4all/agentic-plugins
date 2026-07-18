@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert/strict';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const PLUGIN_ROOT = resolve(REPO_ROOT, 'plugins/runtime');
@@ -246,21 +246,47 @@ describe('plugins/runtime bootstrap surface', () => {
   // §11.3 second half — README.md's Stage 0 block and the contract's §2 block
   // carry the SAME commands, and the in-code STAGE0_COMMANDS copy matches both,
   // so the operator-facing doc, the normative contract, and the printed
-  // detection output cannot drift apart.
-  it('keeps the README, contract §2, and in-code Stage 0 command blocks identical', async () => {
-    const contract = await readFile(resolve(PLUGIN_ROOT, 'docs/machine-bootstrap-contract.md'), 'utf-8');
-    const readme = await readFile(resolve(PLUGIN_ROOT, 'README.md'), 'utf-8');
-    const script = await readFile(resolve(PLUGIN_ROOT, 'scripts/bootstrap.mjs'), 'utf-8');
-    for (const command of [
-      'claude plugin marketplace add each4all/agentic-plugins',
-      'claude plugin install runtime@agentic-plugins',
-      'codex plugin marketplace add each4all/agentic-plugins',
-      'codex plugin add runtime@agentic-plugins',
-    ]) {
-      ok(contract.includes(command), `contract §2 carries: ${command}`);
-      ok(readme.includes(command), `README Stage 0 block carries: ${command}`);
-      ok(script.includes(`'${command}'`), `bootstrap.mjs STAGE0_COMMANDS carries: ${command}`);
+  // detection output cannot drift apart. The ROOT README is bound too (S8c):
+  // ADR-0046 Context §1 names it as the drift site where the marketplace-add
+  // step diverged into four mutually inconsistent forms. Each surface must
+  // carry a fenced block whose ordered, comment-free command lines EQUAL the
+  // exported STAGE0_COMMANDS exactly — a whole-file includes() would accept
+  // reordered, duplicated, or extra commands (Plan-verify finding).
+  it('keeps the README, contract §2, root README, and in-code Stage 0 command blocks identical', async () => {
+    const { STAGE0_COMMANDS } = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/bootstrap.mjs')).href);
+    const canonical = [...STAGE0_COMMANDS.claude, ...STAGE0_COMMANDS.codex];
+    strictEqual(canonical.length, 4, 'STAGE0_COMMANDS carries the four canonical commands');
+    const surfaces = [
+      ['contract §2', resolve(PLUGIN_ROOT, 'docs/machine-bootstrap-contract.md')],
+      ['plugin README', resolve(PLUGIN_ROOT, 'README.md')],
+      ['root README', resolve(REPO_ROOT, 'README.md')],
+    ];
+    for (const [label, path] of surfaces) {
+      const text = await readFile(path, 'utf-8');
+      const blocks = [...text.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) =>
+        m[1].split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#')));
+      const exact = blocks.filter((commands) => {
+        try { deepStrictEqual(commands, canonical); return true; } catch { return false; }
+      });
+      ok(exact.length >= 1, `${label} carries a fenced Stage 0 block exactly equal to STAGE0_COMMANDS (ordered, no extras)`);
     }
+  });
+
+  // ADR-0046 Context §2 — the egress env-var names appeared in ZERO markdown
+  // files before the bootstrap track; the root README Stage 0 section is their
+  // first consistent operator-facing home. Import EGRESS_ENV_KEYS from
+  // egress-config.mjs (the code authority — PLUGIN_NAMES precedent) so a
+  // rename cannot leave the README documenting dead variables, and pin the
+  // ADR-0041 safety semantics that ride with the names.
+  it('documents the canonical egress env-var names in the root README', async () => {
+    const { EGRESS_ENV_KEYS } = await import(pathToFileURL(resolve(PLUGIN_ROOT, 'scripts/lib/egress-config.mjs')).href);
+    deepStrictEqual(Object.keys(EGRESS_ENV_KEYS).sort(), ['channel', 'credential', 'recipient'], 'EGRESS_ENV_KEYS carries the three canonical roles');
+    const rootReadme = await readFile(resolve(REPO_ROOT, 'README.md'), 'utf-8');
+    for (const [role, name] of Object.entries(EGRESS_ENV_KEYS)) {
+      ok(rootReadme.includes(name), `root README.md documents the egress ${role} env var ${name}`);
+    }
+    ok(/default is off/i.test(rootReadme), 'root README states the egress default-off posture');
+    ok(/env-only/i.test(rootReadme), 'root README states the env-only credential rule');
   });
 });
 
@@ -348,6 +374,12 @@ describe('plugins/runtime settings surface', () => {
       for (const name of pluginNames) {
         ok(text.includes(`\`${name}\``), `${rel} names the ${name} plugin`);
       }
+    }
+    // The ROOT README consumer inventory drifted to six names (attention and
+    // designer missing) — the exact ADR-0046 Context §1 site. Pin it too (S8c).
+    const rootReadme = await readFile(resolve(REPO_ROOT, 'README.md'), 'utf-8');
+    for (const name of pluginNames) {
+      ok(rootReadme.includes(`\`${name}\``), `root README.md names the ${name} plugin`);
     }
     const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/settings.mjs'));
     ok((scriptStat.mode & 0o111) !== 0, 'settings.mjs has executable bit');
@@ -715,5 +747,25 @@ describe('plugins/runtime repo documentation freshness', () => {
 
     ok(!readme.includes('### Coming next'), 'README.md should not list shipped runtime surfaces as coming next');
     ok(!readme.includes('Runtime dynamic consensus, context hygiene, and completion footer'), 'README.md must not carry stale ADR-0024 follow-up wording');
+  });
+
+  // cutover-audit.mjs accepts only single-line `| Rn | ... |` rows; a wrapped
+  // requirement row silently drops out of the live audit (R3 spanned 40+
+  // physical lines and the audit reported 11 rows while the scorecard intended
+  // 12 — Plan-verify finding). Pin the exact ID set as single-line rows.
+  it('keeps every scorecard requirement row single-line so the cutover audit sees all twelve', async () => {
+    const scorecard = await readFile(resolve(REPO_ROOT, 'docs/assurance/omcc-cutover-scorecard.md'), 'utf-8');
+    const rows = scorecard.split('\n')
+      .filter((line) => line.startsWith('| R') && line.trim().endsWith('|'))
+      .map((line) => line.split('|'))
+      .filter((parts) => /^R\d+[ab]?$/.test((parts[1] ?? '').trim()));
+    for (const parts of rows) {
+      // 5 table columns → exactly 7 split parts; a wrapped or stub row loses
+      // cells and silently drops out of the live cutover audit.
+      strictEqual(parts.length, 7, `requirement row ${parts[1].trim()} carries all five cells on one line`);
+    }
+    deepStrictEqual([...new Set(rows.map((parts) => parts[1].trim()))].sort(),
+      ['R1', 'R10', 'R11', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7a', 'R7b', 'R8', 'R9'],
+      'all twelve requirement rows are single-line audit-parseable');
   });
 });
