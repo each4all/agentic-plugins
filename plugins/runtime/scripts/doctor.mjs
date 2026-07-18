@@ -35,6 +35,10 @@ import {
   safeCount,
 } from './lib/state-readers.mjs';
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
+// The single version authority shared with the settings producer (S8a4 §SCOPE-2): the
+// currency mirror MUST parse the Codex CLI version and resolve plugin versions through the
+// same leaf, or a freshly recorded attestation reads stale on the machine that wrote it.
+import { parseCodexCliVersion, resolveCodexInstalledVersionFromMatrix } from './lib/codex-attestation-versions.mjs';
 import {
   PLUGIN_NAMES,
   probeMachineHostState,
@@ -167,6 +171,11 @@ export async function runDoctor({
   const hostParityBaseline = await buildHostParityBaseline({ repoRoot, claude, codex });
   const settingsRuns = await inspectSettingsRuns({
     repoRoot: resolvedRepoRoot,
+    // The currency mirror needs the SAME inputs the producer bound against: the strictly
+    // parsed Codex CLI version and the plugin matrix (§SCOPE-2/§SCOPE-3, S8a4).
+    codexPluginHooks,
+    plugins,
+    codexCliVersion: parseCodexCliVersion(codex.version?.text ?? null),
   });
   const pluginCommandSurface = buildPluginCommandSurface({ claude, codex, plugins, hostParity, codexPluginHooks, settingsRuns });
   // The same two filesystem-only inspectors as before, now behind the seam that
@@ -1382,8 +1391,10 @@ function buildClaudeRetiredPluginCleanupCommands(issues) {
 function buildCodexHookReviewManualFollowup(codexPluginHooks, surface, settingsRuns = null, plugins = null) {
   const bundled = codexPluginHooks?.summary?.bundled_plugins ?? [];
   if (bundled.length === 0 || codexPluginHooks?.status !== 'ready') return null;
-  const attestation = getCurrentCodexHookReviewAttestation(settingsRuns, codexPluginHooks, plugins);
-  if (attestation.current) return null;
+  // Read the SINGLE currency verdict computed in inspectSettingsRuns rather than recomputing
+  // it here: the two must never disagree (a doctor that says `attested` in one surface and
+  // "re-review required" in another is exactly the inconsistency S8a4 §SCOPE-3 closes).
+  if (settingsRuns?.codex_hook_review?.current === true) return null;
   const reviewTargets = codexPluginHooks?.review_targets ?? [];
   const hookState = codexPluginHooks?.hook_state?.summary ?? {};
   const hookStateHint = hookState.expected_disabled > 0
@@ -1401,32 +1412,66 @@ function buildCodexHookReviewManualFollowup(codexPluginHooks, surface, settingsR
   };
 }
 
-function getCurrentCodexHookReviewAttestation(settingsRuns, codexPluginHooks, plugins) {
+// The Codex /hooks attestation currency mirror (machine-bootstrap-contract.md §8.2, S8a4).
+// It must reach the SAME verdict the completion reducer's recomputeHookAttestation reaches,
+// on the SAME evidence: an attestation is an operator claim bound to specific versions, and
+// hook trust is version-bound (ADR-0030). `codexCliVersion` is the STRICTLY parsed current
+// Codex CLI version — the same value the producer bound — so the mirror and producer agree.
+function getCurrentCodexHookReviewAttestation(settingsRuns, codexPluginHooks, plugins, codexCliVersion = null) {
   const attestation = settingsRuns?.codex_hook_review?.latest ?? null;
   if (!attestation || attestation.attested !== true || attestation.status !== 'attested') {
-    return { current: false, reason: 'missing' };
+    return { current: false, reason: 'missing', attestation: null };
   }
   if ((codexPluginHooks?.hook_state?.summary?.expected_disabled ?? 0) > 0) {
     return { current: false, reason: 'disabled_hook_state', attestation };
   }
   const expectedPlugins = codexPluginHooks?.summary?.bundled_plugins ?? [];
-  const attestedPlugins = attestation.bundled_plugins ?? [];
+  // Prefer the canonical attested_plugins set; fall back to legacy bundled_plugins so a
+  // pre-S8a4 attestation still resolves its covered set during the compat window.
+  const attestedPlugins = attestation.attested_plugins ?? attestation.bundled_plugins ?? [];
   if (!sameStringSet(expectedPlugins, attestedPlugins)) {
     return { current: false, reason: 'plugin_set_changed', attestation };
   }
-  const expectedVersions = {};
-  for (const pluginName of expectedPlugins) {
-    const plugin = plugins?.[pluginName];
-    expectedVersions[pluginName] = resolveHookPluginVersion(plugin);
+  // Codex CLI version binding — the dead-pipe repair's core. A legacy attestation with no
+  // bound codex version, or a machine whose Codex version cannot be resolved, is NEVER
+  // current: an attestation that cannot name the Codex it was made against is not proof,
+  // and a null-vs-null match is two unknowns agreeing, not evidence nothing changed.
+  const boundCodex = attestation.bound_versions?.codex ?? null;
+  if (boundCodex === null || codexCliVersion === null || boundCodex !== codexCliVersion) {
+    return { current: false, reason: 'codex_cli_version_changed', attestation };
   }
+  // Per-plugin versions resolved through the SAME list authority the producer bound with
+  // (§SCOPE-2), preferring the canonical bound map and falling back to the legacy flat map.
+  const boundPlugins = attestation.bound_versions?.plugins?.codex ?? null;
   for (const pluginName of expectedPlugins) {
-    const expected = expectedVersions[pluginName] ?? null;
-    const actual = attestation.plugin_versions?.[pluginName] ?? null;
-    if (expected !== actual) {
+    const attested = (boundPlugins?.[pluginName] ?? attestation.plugin_versions?.[pluginName]) ?? null;
+    const actual = resolveCodexInstalledVersionFromMatrix(plugins?.[pluginName]).version;
+    if (attested === null || actual === null || attested !== actual) {
       return { current: false, reason: 'plugin_version_changed', attestation };
     }
   }
   return { current: true, reason: null, attestation };
+}
+
+// The ONE place doctor decides an attestation's currency, so every doctor surface reads the
+// same verdict (§SCOPE-3). Consumers get an operator-facing `status` (attested only when the
+// claim still holds, else stale), the boolean `current`, and the machine `currency_reason`.
+function buildCodexHookReviewCurrency({ latestCodexHookReview, codexPluginHooks, plugins, codexCliVersion }) {
+  if (!latestCodexHookReview) {
+    return { status: 'missing', current: false, currency_reason: 'missing', latest: null };
+  }
+  const verdict = getCurrentCodexHookReviewAttestation(
+    { codex_hook_review: { latest: latestCodexHookReview } },
+    codexPluginHooks,
+    plugins,
+    codexCliVersion,
+  );
+  return {
+    status: verdict.current ? 'attested' : 'stale',
+    current: verdict.current,
+    currency_reason: verdict.reason,
+    latest: latestCodexHookReview,
+  };
 }
 
 function compareInstalledVersion({ plugin, host, actual, expected, source }) {
@@ -1487,7 +1532,7 @@ async function inspectWorkflowLedgers({ repoRoot, now, staleGraceMs }) {
   };
 }
 
-async function inspectSettingsRuns({ repoRoot }) {
+async function inspectSettingsRuns({ repoRoot, codexPluginHooks = null, plugins = null, codexCliVersion = null }) {
   const root = join(repoRoot, '.agentic-plugins', 'runs', 'settings');
   let entries;
   try {
@@ -1499,7 +1544,7 @@ async function inspectSettingsRuns({ repoRoot }) {
       count: 0,
       malformed: 0,
       latest: null,
-      codex_hook_review: { status: 'missing', latest: null },
+      codex_hook_review: { status: 'missing', current: false, currency_reason: 'missing', latest: null },
       error: err.code ?? err.message,
     };
   }
@@ -1525,7 +1570,7 @@ async function inspectSettingsRuns({ repoRoot }) {
       });
       continue;
     }
-    const summary = summarizeSettingsArtifact({
+    const summary = await summarizeSettingsArtifact({
       repoRoot,
       runId: entry.name,
       artifactPath,
@@ -1542,7 +1587,7 @@ async function inspectSettingsRuns({ repoRoot }) {
       count: 0,
       malformed,
       latest: null,
-      codex_hook_review: { status: 'missing', latest: null },
+      codex_hook_review: { status: 'missing', current: false, currency_reason: 'missing', latest: null },
     };
   }
 
@@ -1576,10 +1621,12 @@ async function inspectSettingsRuns({ repoRoot }) {
     recovery: latestInterrupted
       ? 'Latest settings execution is a nonterminal write-ahead record (interrupted run). Its journal names what landed; re-run runtime:settings to re-probe and re-plan the remaining actions — nothing is auto-rolled-back (machine-bootstrap-contract.md §1.5).'
       : null,
-    codex_hook_review: {
-      status: latestCodexHookReview ? 'attested' : 'missing',
-      latest: latestCodexHookReview,
-    },
+    codex_hook_review: buildCodexHookReviewCurrency({
+      latestCodexHookReview,
+      codexPluginHooks,
+      plugins,
+      codexCliVersion,
+    }),
   };
 }
 
@@ -1826,10 +1873,20 @@ function emptySettingsCodexHookReview() {
     attested_at: null,
     bundled_plugins: [],
     plugin_versions: {},
+    attested_plugins: [],
+    bound_versions: { codex: null, plugins: { codex: {} } },
+    artifact_hash: null,
   };
 }
 
-function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifact }) {
+async function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifact }) {
+  // artifact_hash binds the attestation to the EXACT settings.json bytes on disk (owner
+  // decision 2026-07-18): read the file, never re-serialize `artifact` — a reconstructed
+  // summary can differ from the written bytes (key order, whitespace, escaping) and would
+  // certify a file that never existed. The producer cannot self-hash (the attestation lives
+  // inside these bytes), so the hash is computed here, read-time (§8.2).
+  const rawArtifact = await readTextIfExists(artifactPath);
+  const artifactHash = rawArtifact.ok ? sha256(rawArtifact.text) : null;
   const pluginManagement = artifact.plugin_management ?? {};
   const pluginManagementSummary = pluginManagement.summary ?? {};
   const pluginCleanup = artifact.plugin_cleanup ?? {};
@@ -1908,9 +1965,25 @@ function summarizeSettingsArtifact({ repoRoot, runId, artifactPath, artifact }) 
       bundled_plugins: Array.isArray(codexHookReview.bundled_plugins) ? uniqueStrings(codexHookReview.bundled_plugins.map((value) => sanitizeValue(value)).filter(Boolean)).sort() : [],
       manifest_exposed_plugins: Array.isArray(codexHookReview.manifest_exposed_plugins) ? uniqueStrings(codexHookReview.manifest_exposed_plugins.map((value) => sanitizeValue(value)).filter(Boolean)).sort() : [],
       plugin_versions: sanitizeStringMap(codexHookReview.plugin_versions),
+      // Canonical fields (§8.2, S8a4) — carried so the currency mirror can read the same
+      // shape the completion reducer re-validates. A pre-S8a4 artifact has neither, which the
+      // mirror correctly reads as a legacy attestation that can only be stale until re-recorded.
+      // The set this attestation covers. A pre-S8a4 artifact has no attested_plugins, so
+      // fall back to bundled_plugins — the set legacy recorded — rather than an empty set,
+      // which would make the mirror read a version drift as a plugin-SET change instead.
+      attested_plugins: Array.isArray(codexHookReview.attested_plugins)
+        ? uniqueStrings(codexHookReview.attested_plugins.map((value) => sanitizeValue(value)).filter(Boolean)).sort()
+        : (Array.isArray(codexHookReview.bundled_plugins)
+            ? uniqueStrings(codexHookReview.bundled_plugins.map((value) => sanitizeValue(value)).filter(Boolean)).sort()
+            : []),
+      bound_versions: {
+        codex: typeof codexHookReview.bound_versions?.codex === 'string' ? sanitizeValue(codexHookReview.bound_versions.codex) : null,
+        plugins: { codex: sanitizeStringMap(codexHookReview.bound_versions?.plugins?.codex) },
+      },
       plugin_hooks_enabled: codexHookReview.plugin_hooks_enabled === true,
       plugin_hooks_stage: sanitizeValue(codexHookReview.plugin_hooks_stage),
       artifact_pointer: pointer(repoRoot, artifactPath),
+      artifact_hash: artifactHash,
     },
   };
 }
@@ -4435,8 +4508,12 @@ export function formatText(report) {
     }
   }
   if (report.settings_runs.codex_hook_review?.latest) {
-    const review = report.settings_runs.codex_hook_review.latest;
-    lines.push(`  latest-codex-hook-review: status=${review.status}; attested-at=${review.attested_at ?? '<unknown>'}; plugins=${Object.entries(review.plugin_versions ?? {}).map(([name, version]) => `${name}@${version ?? 'unknown'}`).join(',') || 'none'}`);
+    // Render the CURRENCY status, not the recorded one — a stale attestation must never read
+    // as `attested` here while doctor's own mirror asks the operator to re-review (§SCOPE-3).
+    const currency = report.settings_runs.codex_hook_review;
+    const review = currency.latest;
+    const reasonSuffix = currency.current ? '' : `; currency-reason=${currency.currency_reason ?? 'unknown'}`;
+    lines.push(`  latest-codex-hook-review: status=${currency.status}${reasonSuffix}; attested-at=${review.attested_at ?? '<unknown>'}; codex-cli=${review.bound_versions?.codex ?? '<unbound>'}; plugins=${Object.entries(review.plugin_versions ?? {}).map(([name, version]) => `${name}@${version ?? 'unknown'}`).join(',') || 'none'}`);
   }
   lines.push('');
   lines.push('Consensus Execution Artifacts');

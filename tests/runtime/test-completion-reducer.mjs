@@ -21,6 +21,7 @@ import {
   recomputeHookAttestation,
   requiredBoundPlugins,
   importProofMetadata,
+  importHookAttestation,
   recomputeProofStatus,
   reduceCompletion,
 } from '../../plugins/runtime/scripts/lib/completion-reducer.mjs';
@@ -664,5 +665,110 @@ describe('runtime completion reducer — invalidation is scoped to the selection
     const { steps: next, invalidated } = invalidateStaleSteps({ steps, probe: m.probe, current: { ...m.current, codex: '0.145.0' }, selection: m.selection, at: AT });
     ok(!invalidated.includes('notify.configured'), 're-asking because Codex shipped a patch would be noise');
     strictEqual(next.find((s) => s.id === 'notify.configured').status, 'declined');
+  });
+});
+
+describe('runtime completion reducer — the reduced completion validates against the schema (S8a4-4)', () => {
+  it('a stale hook_attestation carrying reasons conforms to $defs/completion (the reasons/directions repair)', async () => {
+    const validateCompletion = await makeDefValidator('runtime-bootstrap-run', 'completion');
+    const m = await completeMachine({ bundle: 'engineering' });
+    // A STALE attestation carries `reasons` — the field the closed hookAttestation def rejected
+    // before the repair (the codex bound version drifts 0.99.0 → the probe's 0.144.1). The
+    // reduced proofs also carry aggregate status + reasons and NO directions, exercising the
+    // evaluatedProof def; a whole reduceCompletion output must validate against the schema now.
+    const result = reduce(m, {
+      hookAttestation: {
+        status: 'attested',
+        attested_plugins: ['engineer', 'orchestrator'],
+        bound_versions: { codex: '0.99.0', plugins: { codex: { engineer: '1.0.0', orchestrator: '1.0.0' } } },
+        artifact_pointer: null,
+        artifact_hash: null,
+        attested_at: AT,
+      },
+    });
+    strictEqual(result.hook_attestation.status, 'stale');
+    ok(result.hook_attestation.reasons.length > 0, 'a stale verdict carries reasons — the field under repair');
+    const verdict = validateCompletion(result);
+    ok(verdict.ok, `reduced completion must validate against the schema; errors: ${JSON.stringify(verdict.errors)}`);
+  });
+
+  it('a complete run with passing proofs also conforms', async () => {
+    const validateCompletion = await makeDefValidator('runtime-bootstrap-run', 'completion');
+    const m = await completeMachine();
+    const result = reduce(m);
+    strictEqual(result.state, 'complete');
+    const verdict = validateCompletion(result);
+    ok(verdict.ok, `errors: ${JSON.stringify(verdict.errors)}`);
+  });
+});
+
+describe('runtime completion reducer — importHookAttestation (§8.2, S8a4-4)', () => {
+  const doctorAttestation = (over = {}) => ({
+    attested: true,
+    status: 'attested',
+    // Machine-wide: MORE plugins than any one selection carries.
+    attested_plugins: ['designer', 'engineer', 'orchestrator'],
+    bundled_plugins: ['designer', 'engineer', 'orchestrator'],
+    plugin_versions: { designer: '2.0.0', engineer: '1.0.0', orchestrator: '1.0.0' },
+    bound_versions: { codex: '0.144.1', plugins: { codex: { designer: '2.0.0', engineer: '1.0.0', orchestrator: '1.0.0' } } },
+    artifact_pointer: '~/.agentic-plugins/runs/settings/x/settings.json',
+    artifact_hash: 'a'.repeat(64),
+    attested_at: AT,
+    ...over,
+  });
+
+  it('projects an EXACT subset to the selection (extra machine-wide plugins are not copied)', () => {
+    const r = importHookAttestation(doctorAttestation(), { expectedPlugins: ['orchestrator', 'engineer'] });
+    ok(r.ok, JSON.stringify(r.errors));
+    deepStrictEqual(r.record.attested_plugins, ['engineer', 'orchestrator']);
+    deepStrictEqual(r.record.bound_versions.plugins.codex, { engineer: '1.0.0', orchestrator: '1.0.0' });
+    ok(!('designer' in r.record.bound_versions.plugins.codex), 'a machine-wide plugin outside the selection is not copied');
+    strictEqual(r.record.bound_versions.codex, '0.144.1');
+    strictEqual(r.record.artifact_hash, 'a'.repeat(64));
+    strictEqual(r.record.artifact_pointer, '~/.agentic-plugins/runs/settings/x/settings.json');
+  });
+
+  it('rejects when the source does not cover a selected plugin', () => {
+    const r = importHookAttestation(doctorAttestation(), { expectedPlugins: ['engineer', 'founder'] });
+    strictEqual(r.ok, false);
+    match(r.errors.join(' '), /does not cover selected hook plugin\(s\): founder/);
+  });
+
+  it('rejects a source that is not actually attested', () => {
+    const r = importHookAttestation(doctorAttestation({ attested: false, status: 'blocked' }), { expectedPlugins: ['engineer'] });
+    strictEqual(r.ok, false);
+    match(r.errors.join(' '), /not attested/);
+  });
+
+  it('refuses conflicting legacy vs canonical version maps rather than pick a winner', () => {
+    const r = importHookAttestation(doctorAttestation({
+      plugin_versions: { engineer: '1.0.0', designer: '2.0.0', orchestrator: '1.0.0' },
+      bound_versions: { codex: '0.144.1', plugins: { codex: { engineer: '9.9.9', designer: '2.0.0', orchestrator: '1.0.0' } } },
+    }), { expectedPlugins: ['engineer'] });
+    strictEqual(r.ok, false);
+    match(r.errors.join(' '), /engineer has conflicting attested versions \(canonical 9\.9\.9 vs legacy 1\.0\.0\)/);
+  });
+
+  it('imports a legacy attestation (no bound_versions) with a NULL codex version — never rebound', () => {
+    const r = importHookAttestation({
+      attested: true,
+      status: 'attested',
+      bundled_plugins: ['engineer'],
+      plugin_versions: { engineer: '1.0.0' },
+      artifact_pointer: null,
+      artifact_hash: null,
+      attested_at: AT,
+    }, { expectedPlugins: ['engineer'] });
+    ok(r.ok, JSON.stringify(r.errors));
+    strictEqual(r.record.bound_versions.codex, null, 'a legacy attestation is never silently rebound to the current Codex');
+    deepStrictEqual(r.record.bound_versions.plugins.codex, { engineer: '1.0.0' });
+  });
+
+  it('the imported record validates against the recorded $defs/hookAttestation shape', async () => {
+    const validate = await makeDefValidator('runtime-bootstrap-run', 'hookAttestation');
+    const r = importHookAttestation(doctorAttestation(), { expectedPlugins: ['engineer', 'orchestrator'] });
+    ok(r.ok, JSON.stringify(r.errors));
+    const verdict = validate(r.record);
+    ok(verdict.ok, `imported record must match the recorded hookAttestation def; errors: ${JSON.stringify(verdict.errors)}`);
   });
 });

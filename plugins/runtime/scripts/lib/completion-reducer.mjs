@@ -368,6 +368,89 @@ export function importProofMetadata(doctorProof) {
   return { ok: true, errors: [], record, dropped };
 }
 
+/**
+ * Import a doctor Codex `/hooks` attestation summary into the machine-global run (§8.2),
+ * SELECTION-AWARE and METADATA ONLY — the same reconstruct-every-scalar discipline as
+ * importProofMetadata, applied to an operator claim.
+ *
+ * `expectedPlugins` is THIS bootstrap's Codex-hook-bearing selection. A settings run attests
+ * every INSTALLED hook plugin machine-wide, so the importer PROJECTS that down to exactly the
+ * selection:
+ *   - a selected plugin the source does not cover, or binds no version for, is a REJECT — the
+ *     attestation was made about a different machine shape, and a partial copy would read as a
+ *     valid claim about hooks nobody attested;
+ *   - a machine-wide plugin OUTSIDE the selection is simply not copied.
+ *
+ * A legacy attestation carrying no bound_versions.codex is importable, but ONLY as a record
+ * whose codex version is null — which the reducer reads as never-current until re-recorded.
+ * It is never silently rebound to the current version. When BOTH the legacy plugin_versions
+ * map and the canonical bound_versions.plugins.codex map bind a plugin and DISAGREE, the
+ * record is refused rather than one map silently chosen.
+ *
+ * artifact_pointer/artifact_hash come from the doctor summary (computed read-time from the
+ * settings.json bytes, S8a4 §SCOPE-4) and are carried through, reconstructed against grammar.
+ */
+export function importHookAttestation(doctorAttestation, { expectedPlugins = [] } = {}) {
+  const expected = [...new Set(expectedPlugins)].sort();
+  if (!isPlainObject(doctorAttestation)) {
+    return { ok: false, errors: ['attestation record is not an object'], record: null };
+  }
+  // Require an ACTUALLY-attested source: a blocked / not-recorded summary is not a claim.
+  if (doctorAttestation.attested !== true || doctorAttestation.status !== 'attested') {
+    return { ok: false, errors: ['the source attestation is not attested'], record: null };
+  }
+
+  const errors = [];
+  // A pre-S8a4 attestation carries bundled_plugins but no attested_plugins; the covered set
+  // is whichever it recorded.
+  const attestedSet = new Set(
+    Array.isArray(doctorAttestation.attested_plugins) && doctorAttestation.attested_plugins.length > 0
+      ? doctorAttestation.attested_plugins
+      : (Array.isArray(doctorAttestation.bundled_plugins) ? doctorAttestation.bundled_plugins : []),
+  );
+  const uncovered = expected.filter((name) => !attestedSet.has(name));
+  if (uncovered.length > 0) {
+    errors.push(`the attestation does not cover selected hook plugin(s): ${uncovered.join(', ')}`);
+  }
+
+  const canonicalMap = isPlainObject(doctorAttestation.bound_versions?.plugins?.codex) ? doctorAttestation.bound_versions.plugins.codex : {};
+  const legacyMap = isPlainObject(doctorAttestation.plugin_versions) ? doctorAttestation.plugin_versions : {};
+  const projected = {};
+  for (const name of expected) {
+    const canonical = matchOr(canonicalMap[name], SEMVER_RE);
+    const legacy = matchOr(legacyMap[name], SEMVER_RE);
+    // Both maps binding the plugin but DISAGREEING is a corrupt/ambiguous record — refuse,
+    // never pick a winner (a silently chosen version is a fabricated claim).
+    if (canonical !== null && legacy !== null && canonical !== legacy) {
+      errors.push(`${name} has conflicting attested versions (canonical ${canonical} vs legacy ${legacy})`);
+      continue;
+    }
+    const version = canonical ?? legacy;
+    if (version === null) {
+      errors.push(`${name} is selected but the attestation binds no version for it`);
+      continue;
+    }
+    projected[name] = version;
+  }
+
+  if (errors.length > 0) return { ok: false, errors, record: null };
+
+  const record = {
+    status: 'attested',
+    // The EXACT selected set, so the reducer's set comparison is against the selection.
+    attested_plugins: expected,
+    bound_versions: {
+      // A legacy/unparseable codex version reconstructs to null — importable, never rebound.
+      codex: matchOr(doctorAttestation.bound_versions?.codex, SEMVER_RE),
+      plugins: { codex: projected },
+    },
+    artifact_pointer: matchOr(doctorAttestation.artifact_pointer, POINTER_RE),
+    artifact_hash: matchOr(doctorAttestation.artifact_hash, SHA256_RE),
+    attested_at: matchOr(doctorAttestation.attested_at, TIMESTAMP_RE),
+  };
+  return { ok: true, errors: [], record };
+}
+
 // ---------------------------------------------------------------------------
 // The reducer
 // ---------------------------------------------------------------------------

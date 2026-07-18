@@ -70,7 +70,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.18');
+    strictEqual(report.schema_version, 'runtime-settings-1.19');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -716,6 +716,145 @@ describe('runtime settings', () => {
     ok(formatText(report).includes('not host-native proof'));
   });
 
+  it('emits canonical bound_versions (list-authoritative) + attested_plugins, keeping the legacy map (S8a4-2)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-versions-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-versions-home-'));
+    await seedRepo(root); // source: engineer + orchestrator 1.0.0, both codex-hook-bearing
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      attestCodexHookReview: true,
+      runner: fakeRunner(codex0137Map({
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+        // Codex list is AUTHORITATIVE: engineer installed at 0.7.0, orchestrator NOT
+        // installed on Codex. The canonical map must reflect the Codex list, never the
+        // generic installed_version (which falls through to source) — so orchestrator,
+        // codex-not-installed, gets NO canonical key while the legacy map still shows
+        // its source fallback. This is what bites a resolver → installed_version swap.
+        'codex plugin list --json': codexListJson([
+          { name: 'engineer', marketplaceName: 'agentic-plugins', version: '0.7.0', installed: true, enabled: true },
+        ]),
+      })),
+    });
+
+    const review = report.codex_hook_review;
+    strictEqual(review.status, 'attested');
+    // (a) Codex CLI version is bound from the probe text (codex0137Map → 0.137.0).
+    strictEqual(review.bound_versions.codex, '0.137.0');
+    // (b) plugins.codex is LIST-authoritative: engineer 0.7.0 present, orchestrator omitted.
+    deepStrictEqual(review.bound_versions.plugins.codex, { engineer: '0.7.0' });
+    ok(!('orchestrator' in review.bound_versions.plugins.codex), 'a codex-not-installed plugin binds no canonical version');
+    // (c) attested_plugins is the full bundled hook set (importer projects to selection later).
+    deepStrictEqual(review.attested_plugins, ['engineer', 'orchestrator']);
+    // (d) the legacy flat map is retained through the compat window and still carries
+    // orchestrator via its source fallback — proving canonical ≠ legacy here.
+    strictEqual(review.plugin_versions.engineer, '0.7.0');
+    strictEqual(review.plugin_versions.orchestrator, '1.0.0');
+
+    const artifact = JSON.parse(await readFile(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'), 'utf8'));
+    deepStrictEqual(artifact.codex_hook_review.bound_versions.plugins.codex, { engineer: '0.7.0' });
+    strictEqual(artifact.codex_hook_review.bound_versions.codex, '0.137.0');
+    deepStrictEqual(artifact.codex_hook_review.attested_plugins, ['engineer', 'orchestrator']);
+  });
+
+  it('threads the OBSERVED Codex CLI version into bound_versions.codex, not a constant (S8a4-2)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-cli-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-cli-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      attestCodexHookReview: true,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        // A version DISTINCT from every other version in the harness — a hardcoded or
+        // wrong-field binding cannot coincidentally match it.
+        'codex --version': okResult('codex-cli 0.144.1\n'),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    strictEqual(report.codex_hook_review.bound_versions.codex, '0.144.1');
+  });
+
+  it('binds a null Codex CLI version when --version is unparseable, never a guess (S8a4-2)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-cli-null-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-bound-cli-null-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      attestCodexHookReview: true,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        // The command succeeds (Codex is available) but the text carries no parseable
+        // semver — the attestation must record the CLI version as unbound (null), never
+        // fabricate one, so the reducer reads it as never-current until re-recorded.
+        'codex --version': okResult('codex-cli\n'),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    strictEqual(report.codex_hook_review.bound_versions.codex, null);
+  });
+
+  it('leaves attested_plugins empty when the attestation is blocked (S8a4-2)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-attested-empty-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-attested-empty-home-'));
+    await seedRepo(root);
+    await writeDisabledCodexHookStateConfig(home); // forces status=blocked
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runId: SETTINGS_RUN_ID,
+      attestCodexHookReview: true,
+      runner: fakeRunner({
+        ...defaultCliMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    strictEqual(report.codex_hook_review.status, 'blocked');
+    deepStrictEqual(report.codex_hook_review.attested_plugins, [], 'a blocked attestation covers nothing');
+    // bound_versions is still emitted for diagnostics — only attested_plugins gates on success.
+    strictEqual(report.codex_hook_review.bound_versions.codex, '0.130.0');
+  });
+
+  it('refuses --attest-codex-hook-review combined with an execution flag (stale pre-exec snapshot, S8a4-2)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-combo-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-attest-combo-home-'));
+    await seedRepo(root);
+
+    await rejects(
+      () => runSettings({
+        repoRoot: root,
+        homeDir: home,
+        attestCodexHookReview: true,
+        executePluginManagement: true,
+        runner: fakeRunner(defaultCliMap()),
+      }),
+      /attest-codex-hook-review cannot be combined with --execute-plugin-management/,
+    );
+
+    await rejects(
+      () => runSettings({
+        repoRoot: root,
+        homeDir: home,
+        attestCodexHookReview: true,
+        executePluginCleanup: true,
+        runner: fakeRunner(defaultCliMap()),
+      }),
+      /attest-codex-hook-review cannot be combined with --execute-plugin-cleanup/,
+    );
+  });
+
   it('blocks Codex hook review attestation while expected hook states are disabled', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-state-disabled-repo-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-settings-hook-state-disabled-home-'));
@@ -794,7 +933,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.18');
+    strictEqual(report.schema_version, 'runtime-settings-1.19');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -1388,7 +1527,7 @@ describe('runtime settings', () => {
     ok(failed.result.retry_after.includes('network'));
 
     const artifact = await readJson(join(root, '.agentic-plugins', 'runs', 'settings', SETTINGS_RUN_ID, 'settings.json'));
-    strictEqual(artifact.schema_version, 'runtime-settings-execution-artifact-1.2');
+    strictEqual(artifact.schema_version, 'runtime-settings-execution-artifact-1.3');
     strictEqual(artifact.run_id, SETTINGS_RUN_ID);
     strictEqual(artifact.status, 'failed');
     strictEqual(artifact.terminal, true);

@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import { strictEqual, ok, rejects, deepStrictEqual } from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, symlink, readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -414,19 +415,25 @@ describe('runtime doctor', () => {
         SubagentStop: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/adapters/claude/hooks/subagent-stop.mjs"' }] }],
       },
     });
-    // Seed a CURRENT matching attestation (bundled set + source versions)
+    // Seed a CURRENT matching attestation (bundled set + canonical bound versions)
     // so the missing-attestation follow-up cannot confound the lifecycle
     // assertion below — `partial` must be caused by command-portability
-    // warnings ALONE (refine-verify causal-isolation finding).
+    // warnings ALONE (refine-verify causal-isolation finding). Currency is now
+    // list-authoritative (S8a4 §SCOPE-2), so the three plugins must be Codex-installed
+    // at the bound versions and the record must carry bound_versions matching the pinned
+    // codex-cli 0.144.1 — a source-only match no longer reads as current.
+    await seedCodexInstallCache(home, 'attention', '0.2.0');
+    await seedCodexInstallCache(home, 'engineer', '1.0.0');
+    await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
     const attestRunId = 'settings-20260711T000000Z-ca0501';
     await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', attestRunId), { recursive: true });
     await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', attestRunId, 'settings.json'), {
-      schema_version: 'runtime-settings-execution-artifact-1.2',
+      schema_version: 'runtime-settings-execution-artifact-1.3',
       run_id: attestRunId,
       status: 'recorded',
       created_at: '2026-07-11T00:00:00.000Z',
       codex_hook_review: {
-        mode: 'attest',
+        mode: 'operator-attestation',
         requested: true,
         attested: true,
         status: 'attested',
@@ -434,7 +441,9 @@ describe('runtime doctor', () => {
         command: '/hooks',
         attested_at: '2026-07-11T00:00:00.000Z',
         bundled_plugins: ['attention', 'engineer', 'orchestrator'],
+        attested_plugins: ['attention', 'engineer', 'orchestrator'],
         plugin_versions: { attention: '0.2.0', engineer: '1.0.0', orchestrator: '1.0.0' },
+        bound_versions: { codex: '0.144.1', plugins: { codex: { attention: '0.2.0', engineer: '1.0.0', orchestrator: '1.0.0' } } },
       },
     });
 
@@ -675,7 +684,7 @@ describe('runtime doctor', () => {
       const runId = 'settings-20260710T120000Z-abc123';
       await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
       await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
-        schema_version: 'runtime-settings-execution-artifact-1.2',
+        schema_version: 'runtime-settings-execution-artifact-1.3',
         run_id: runId,
         status: 'recorded',
         created_at: '2026-07-10T12:00:00.000Z',
@@ -688,7 +697,12 @@ describe('runtime doctor', () => {
           command: '/hooks',
           attested_at: '2026-07-10T12:00:00.000Z',
           bundled_plugins: ['engineer'],
+          attested_plugins: ['engineer'],
+          // Canonical binding: attested against engineer@0.20.0 on codex-cli 0.130.0 (the
+          // default probe). The cache-version move drives the ONLY plugin-version drift;
+          // the codex-cli binding matches both cases so it is never the drift signal.
           plugin_versions: { engineer: '0.20.0' },
+          bound_versions: { codex: '0.130.0', plugins: { codex: { engineer: '0.20.0' } } },
         },
       });
 
@@ -1075,6 +1089,10 @@ describe('runtime doctor', () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-review-attested-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
     await seedRepo(root);
+    // The plugins must be Codex-installed at the attested versions for the currency mirror
+    // to read them current (list-authoritative, S8a4 §SCOPE-2) — a source-only match no longer counts.
+    await seedCodexInstallCache(home, 'engineer', '1.0.0');
+    await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
     const runId = 'settings-20260513T000000Z-abcdef';
     await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
     await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
@@ -1118,10 +1136,14 @@ describe('runtime doctor', () => {
         attested_at: '2026-05-13T00:00:05.000Z',
         bundled_plugins: ['engineer', 'orchestrator'],
         manifest_exposed_plugins: ['engineer', 'orchestrator'],
+        attested_plugins: ['engineer', 'orchestrator'],
         plugin_versions: {
           engineer: '1.0.0',
           orchestrator: '1.0.0',
         },
+        // Canonical binding matching the default probe (codex-cli 0.130.0) and the
+        // Codex-installed caches seeded below — currency is now list-authoritative.
+        bound_versions: { codex: '0.130.0', plugins: { codex: { engineer: '1.0.0', orchestrator: '1.0.0' } } },
         plugin_hooks_enabled: true,
         plugin_hooks_stage: 'under development',
       },
@@ -1139,9 +1161,109 @@ describe('runtime doctor', () => {
 
     strictEqual(report.plugin_command_surface.manual_followups.find((entry) => entry.id === 'codex-hook-review'), undefined);
     strictEqual(report.settings_runs.codex_hook_review.status, 'attested');
+    strictEqual(report.settings_runs.codex_hook_review.current, true);
+    strictEqual(report.settings_runs.codex_hook_review.currency_reason, null);
     strictEqual(report.settings_runs.codex_hook_review.latest.run_id, runId);
+    // Canonical fields survive the summary projection (S8a4-3): the mirror reads them.
+    deepStrictEqual(report.settings_runs.codex_hook_review.latest.attested_plugins, ['engineer', 'orchestrator']);
+    strictEqual(report.settings_runs.codex_hook_review.latest.bound_versions.codex, '0.130.0');
+    deepStrictEqual(report.settings_runs.codex_hook_review.latest.bound_versions.plugins.codex, { engineer: '1.0.0', orchestrator: '1.0.0' });
+    // artifact_hash is the sha256 of the EXACT settings.json bytes, not a reconstruction.
+    const rawArtifactBytes = await readFile(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), 'utf8');
+    strictEqual(report.settings_runs.codex_hook_review.latest.artifact_hash, createHash('sha256').update(rawArtifactBytes).digest('hex'));
     ok(report.experience_parity.criteria.some((entry) => entry.id === 'lifecycle_hook_continuity' && entry.status === 'satisfied'));
     ok(formatText(report).includes('latest-codex-hook-review: status=attested'));
+  });
+
+  it('stales a /hooks attestation when only the Codex CLI version moves (version-bound trust, S8a4-3)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-cli-drift-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-cli-drift-home-'));
+    await seedRepo(root);
+    // Plugins ARE installed and match; ONLY the Codex CLI version differs from the bound
+    // one — the dimension the pre-S8a4 mirror was blind to (the dead pipe).
+    await seedCodexInstallCache(home, 'engineer', '1.0.0');
+    await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
+    const runId = 'settings-20260713T000000Z-c11001';
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
+      schema_version: 'runtime-settings-execution-artifact-1.3',
+      run_id: runId,
+      status: 'recorded',
+      created_at: '2026-07-13T00:00:00.000Z',
+      codex_hook_review: {
+        mode: 'operator-attestation',
+        requested: true,
+        attested: true,
+        status: 'attested',
+        host: 'codex',
+        command: '/hooks',
+        attested_at: '2026-07-13T00:00:00.000Z',
+        bundled_plugins: ['engineer', 'orchestrator'],
+        attested_plugins: ['engineer', 'orchestrator'],
+        plugin_versions: { engineer: '1.0.0', orchestrator: '1.0.0' },
+        // Attested against codex-cli 0.99.0; the machine below reports 0.130.0.
+        bound_versions: { codex: '0.99.0', plugins: { codex: { engineer: '1.0.0', orchestrator: '1.0.0' } } },
+      },
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(), // codex-cli 0.130.0
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    strictEqual(report.codex_plugin_hooks.status, 'ready', 'precondition: hook surface ready');
+    strictEqual(report.settings_runs.codex_hook_review.status, 'stale');
+    strictEqual(report.settings_runs.codex_hook_review.current, false);
+    strictEqual(report.settings_runs.codex_hook_review.currency_reason, 'codex_cli_version_changed');
+    // The operator is told to re-review — and the two doctor surfaces AGREE (§SCOPE-3).
+    ok(report.plugin_command_surface.manual_followups.some((entry) => entry.id === 'codex-hook-review'), 'a Codex CLI upgrade re-opens the re-review follow-up');
+    ok(formatText(report).includes('currency-reason=codex_cli_version_changed'));
+    ok(!formatText(report).includes('latest-codex-hook-review: status=attested'), 'a stale attestation must never render as attested');
+  });
+
+  it('stales a legacy attestation carrying no bound_versions (never silently current, S8a4-3)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-legacy-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-legacy-home-'));
+    await seedRepo(root);
+    await seedCodexInstallCache(home, 'engineer', '1.0.0');
+    await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
+    const runId = 'settings-20260713T010000Z-1e6ac0';
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
+      schema_version: 'runtime-settings-execution-artifact-1.2', // pre-S8a4 artifact
+      run_id: runId,
+      status: 'recorded',
+      created_at: '2026-07-13T01:00:00.000Z',
+      codex_hook_review: {
+        mode: 'attest',
+        requested: true,
+        attested: true,
+        status: 'attested',
+        host: 'codex',
+        command: '/hooks',
+        attested_at: '2026-07-13T01:00:00.000Z',
+        bundled_plugins: ['engineer', 'orchestrator'],
+        plugin_versions: { engineer: '1.0.0', orchestrator: '1.0.0' },
+        // NO bound_versions / attested_plugins — the pre-S8a4 dead-pipe shape.
+      },
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    strictEqual(report.settings_runs.codex_hook_review.status, 'stale');
+    strictEqual(report.settings_runs.codex_hook_review.currency_reason, 'codex_cli_version_changed');
+    ok(report.plugin_command_surface.manual_followups.some((entry) => entry.id === 'codex-hook-review'), 'a legacy attestation is re-review-required until re-recorded');
   });
 
   it('classifies nonzero Claude auth JSON as unauthenticated', async () => {
@@ -3271,6 +3393,16 @@ async function seedHome(home) {
     name: 'runtime',
     version: '0.1.0',
   });
+}
+
+// Seed the per-plugin Codex install cache doctor reads at
+// ~/.codex/plugins/cache/agentic-plugins/<name>/<version>/.codex-plugin/plugin.json.
+// With no `codex plugin list` probe the install decision is 'fallback', so this cache
+// version is what the currency mirror resolves (S8a4 §SCOPE-2).
+async function seedCodexInstallCache(home, name, version) {
+  const dir = join(home, '.codex', 'plugins', 'cache', 'agentic-plugins', name, version, '.codex-plugin');
+  await mkdir(dir, { recursive: true });
+  await writeJson(join(dir, 'plugin.json'), { name, version, description: `${name} plugin` });
 }
 
 async function seedCodexTmpMarketplace(home) {

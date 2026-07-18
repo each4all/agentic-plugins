@@ -24,6 +24,7 @@ import { createHash } from 'node:crypto';
 
 import { PLUGIN_NAMES } from './machine-probe.mjs';
 import { semverCompare } from './semver.mjs';
+import { pickCodexInstalledVersion } from './codex-attestation-versions.mjs';
 
 const EXECUTABLE_PLUGIN_ACTIONS = new Set(['install-plugin', 'update-plugin', 'add-marketplace', 'upgrade-marketplace']);
 
@@ -209,13 +210,23 @@ function buildPluginPlans(plugins, { codexPerPluginVerbList = [], marketplaceReg
     // resolution. Bound to attestation/review-targets so they NEVER attest a catalog-latest
     // version that may not be installed; falls back to the source version so a source-tree run
     // (where nothing is "installed" via the host list) keeps reporting the built version.
-    const codexInstalledVersion = codexResolved?.decision === 'fallback'
-      ? (codexCacheLatest?.manifest_version ?? null)
-      : (codexResolved?.version ?? null);
+    // The fallback rule lives in codex-attestation-versions.mjs so doctor's currency
+    // mirror resolves an attestation's plugin versions through the identical authority.
+    const codexInstalledVersion = pickCodexInstalledVersion(codexResolved, codexCacheLatest);
     result[name] = {
       status: plugin.status,
       source_version: sourceVersion,
       installed_version: codexInstalledVersion ?? claudeInstalled?.version ?? claudeCacheLatest?.manifest_version ?? null,
+      // Codex list-authoritative installed evidence, kept SEPARATE from the generic
+      // installed_version above (which falls through Codex → Claude → source). A /hooks
+      // attestation must bind the version Codex actually loaded, so it reads this
+      // decision + version via resolveCodexInstalledPluginVersion rather than the
+      // fall-through field (machine-bootstrap-contract.md §8.2, S8a4).
+      codex_installed: {
+        version: codexInstalledVersion,
+        decision: codexResolved?.decision ?? null,
+        enabled: codexResolved?.enabled ?? null,
+      },
       marketplace: plugin.marketplace,
       installed: {
         claude_plugin_list: claudeInstalled,

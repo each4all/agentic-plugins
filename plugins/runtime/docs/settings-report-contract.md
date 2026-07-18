@@ -120,7 +120,7 @@ Line references below are anchors observed at decision time
   `!(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview)`).
   Evidence collection never affects `dry_run`.
 
-## 3. Report schema contract (`runtime-settings-1.18`)
+## 3. Report schema contract (`runtime-settings-1.19`)
 
 `SETTINGS_SCHEMA_VERSION` bumped `runtime-settings-1.16` → `runtime-settings-1.17`
 for the discriminator below, then `runtime-settings-1.17` →
@@ -128,10 +128,15 @@ for the discriminator below, then `runtime-settings-1.17` →
 §1.6 write-ahead work added `plan_hash` to `report.plugin_management` and
 `report.plugin_cleanup` — the mode-invariant executable-action hash bootstrap
 reads from a dry-run plan to present `--expected-plan-hash`. It is probe-derived,
-so it is `null` alongside its section in `local_plan` mode; the execution artifact
-carries the same hash plus the `planned_actions`/`journal[]` write-ahead fields
-under its own `runtime-settings-execution-artifact-1.2` schema
-([machine-bootstrap-contract.md §1.5/§1.6](machine-bootstrap-contract.md)). The
+so it is `null` alongside its section in `local_plan` mode; then
+`runtime-settings-1.18` → `runtime-settings-1.19` (additive, S8a4) when
+`report.codex_hook_review` gained the canonical `bound_versions` (Codex CLI +
+list-authoritative per-plugin) and `attested_plugins` the completion reducer
+re-validates, alongside the retained legacy `plugin_versions`. The execution artifact
+carries the same hash plus the `planned_actions`/`journal[]` write-ahead fields, and
+the same additive `codex_hook_review` canonical fields,
+under its own `runtime-settings-execution-artifact-1.3` schema
+([machine-bootstrap-contract.md §1.5/§1.6/§8.2](machine-bootstrap-contract.md)). The
 discriminator exists in **both** modes — a narrowed report must never be
 distinguishable only by what it lacks:
 
@@ -235,8 +240,8 @@ distinguishable only by what it lacks:
    output byte-compatible (modulo nothing), JSON delta limited to the §3 keys.
 3. Renderer guards: `summarizeSettings` and `formatText` on a narrowed report
    (no throw, qualified output, explicit not-evaluated lines).
-4. Schema-version lockstep: the `runtime-settings-1.18` report constant and the
-   `runtime-settings-execution-artifact-1.2` execution-artifact constant, and the
+4. Schema-version lockstep: the `runtime-settings-1.19` report constant and the
+   `runtime-settings-execution-artifact-1.3` execution-artifact constant, and the
    exact-version assertions that pin each (`test-settings-probe-boundary.mjs` pins
    both constants; `test-notification-plan.mjs` and `test-settings.mjs` pin the
    report version; `test-settings.mjs` pins the artifact version), updated
