@@ -70,7 +70,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.19');
+    strictEqual(report.schema_version, 'runtime-settings-1.20');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -1085,7 +1085,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.19');
+    strictEqual(report.schema_version, 'runtime-settings-1.20');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -2191,6 +2191,100 @@ describe('settings: notify config keys (ADR-0040 §2)', () => {
     strictEqual(report.notify_settings.keys.notify_channel.current_value, 'file-log');
   });
 
+  // ADR-0044 §3 — the session family rides the same generic family-plan core
+  // as notify: projection, shadow warnings, per-target validation, defaults.
+  it('plans the session_capture key with the shipped default off and renders the section', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-session-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-session-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      desired: { session_capture: 'stop-hook' },
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    strictEqual(report.dry_run, true);
+    const repoTarget = report.config.targets.find((target) => target.kind === 'repo');
+    ok(repoTarget.planned_writes.some((write) => write.key === 'session_capture' && write.op === 'add' && write.after === 'stop-hook'));
+
+    const session = report.session_settings;
+    deepStrictEqual(session.config_keys, ['session_capture']);
+    strictEqual(session.effective_mode, 'projected');
+    strictEqual(session.keys.session_capture.value, 'stop-hook');
+    strictEqual(session.keys.session_capture.status, 'effective');
+    strictEqual(session.keys.session_capture.default, 'off');
+    deepStrictEqual(session.warnings, []);
+    strictEqual(report.section_presence.session_settings, 'evaluated');
+
+    const text = formatText(report);
+    ok(text.includes('Session capture (ADR-0044'));
+    ok(text.includes('session_capture: stop-hook (repo config session_capture)'));
+
+    // Default projection when nothing is requested: the shipped default off.
+    const defaulted = await runSettings({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultCliMap()) });
+    strictEqual(defaulted.session_settings.keys.session_capture.value, null);
+    strictEqual(defaulted.session_settings.keys.session_capture.effective_value, 'off');
+    strictEqual(defaulted.session_settings.keys.session_capture.source, 'shipped default');
+  });
+
+  it('surfaces an invalid stored session_capture value as a fail-closed warning', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-session-bad-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-session-bad-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "always"\n');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultCliMap()),
+    });
+    ok(
+      report.session_settings.warnings.some((w) => /session_capture/.test(w) && /session-capture publisher will fail closed/.test(w)),
+      `expected a publisher fail-closed warning, got: ${JSON.stringify(report.session_settings.warnings)}`,
+    );
+    strictEqual(report.overall.session_warnings, 1, 'session warnings carry their own overall counter');
+    strictEqual(report.overall.status, 'warning', 'a session warning degrades overall status');
+  });
+
+  // S2 plan-verify fail-closed hardening: an unreadable (not absent) config
+  // layer must plan nothing and refuse apply — never be rebuilt from an
+  // empty base.
+  it('refuses to plan or apply against an unreadable config target', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-unreadable-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-unreadable-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins', 'config.toml'), { recursive: true }); // a DIRECTORY: present but unreadable (EISDIR)
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      desired: { session_capture: 'stop-hook' },
+      apply: true,
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    const repoTarget = report.config.targets.find((target) => target.kind === 'repo');
+    strictEqual(repoTarget.status, 'unreadable');
+    ok(/EISDIR/.test(repoTarget.read_error ?? ''), `read_error carries the code: ${repoTarget.read_error}`);
+    deepStrictEqual(repoTarget.planned_writes, [], 'an unreadable target plans no writes');
+    strictEqual(repoTarget.applied, false, 'apply is refused for the unreadable target');
+    ok(/fail-closed/.test(repoTarget.message), repoTarget.message);
+    const { stat: statDir } = await import('node:fs/promises');
+    ok((await statDir(join(root, '.agentic-plugins', 'config.toml'))).isDirectory(), 'the unreadable path is preserved, not rebuilt');
+
+    // The user target stays independently plannable and applies (absent →
+    // plannable): the unreadable repo layer must not block the healthy layer.
+    const userTarget = report.config.targets.find((target) => target.kind === 'user');
+    strictEqual(userTarget.applied, true, 'absent user layer applies normally');
+    strictEqual(userTarget.status, 'available');
+    ok(userTarget.planned_writes.some((w) => w.key === 'session_capture'));
+    const userToml = await readFile(join(home, '.agentic-plugins', 'config.toml'), 'utf8');
+    ok(userToml.includes('session_capture = "stop-hook"'), 'the applied user layer carries the key');
+  });
+
   it('rejects invalid notify values at parse/normalize time per key', () => {
     const cases = [
       [['--notify-channel', 'growl'], /notify_channel/],
@@ -2201,6 +2295,8 @@ describe('settings: notify config keys (ADR-0040 §2)', () => {
       [['--notify-dedupe-ttl-seconds', 'abc'], /notify_dedupe_ttl_seconds/],
       [['--notify-urgent-bypass-quiet-hours', 'yes'], /notify_urgent_bypass_quiet_hours/],
       [['--notify-kinds', 'approval,bogus-kind'], /bogus-kind/],
+      [['--session-capture', 'always'], /session_capture must be one of off, stop-hook/],
+      [['--session-capture', 'on'], /session_capture/],
     ];
     for (const [argv, expected] of cases) {
       throws(() => parseArgs(argv), expected, `expected parse rejection for ${argv.join(' ')}`);

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime-session-note-1.0",
+  "title": "Session-capture staged note (note.json)",
+  "description": "session-capture-contract.md §3.3 / ADR-0044 §6. The repo-global staging slot written only by the explicit `runtime:context note` invocation (the write itself is the ADR-0035 invariant-1 opt-in). Deliberately per-repo, not per-session: the CLI has no trustworthy session identity, so the staging-time git context below is what lets a consumer see that a note staged on another branch or hours earlier is being republished. The 4096-byte content cap is enforced by the writer in BYTES; the maxLength here is a codepoint-level backstop, not the normative cap.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "staged_at", "host", "branch", "head_short", "content", "content_hash"],
+  "properties": {
+    "schema": { "type": "string", "pattern": "^runtime-session-note-1\\.0$" },
+    "staged_at": {
+      "description": "UTC instant of THIS staging write. Re-staging identical text refreshes it, and §5's fingerprint note component includes it — so a re-staged note always republishes the slot (settlement of the plan-verify re-staging gap).",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "host": {
+      "description": "Supplied by the invoking wrapper when known; null when the CLI was invoked bare.",
+      "type": ["string", "null"],
+      "enum": ["claude", "codex", null]
+    },
+    "branch": {
+      "description": "Staging-time branch; null on detached HEAD or when the git probe degraded (§6).",
+      "type": ["string", "null"],
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+    },
+    "head_short": {
+      "description": "Staging-time short HEAD; null on unborn HEAD or probe degradation.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{7,40}$"
+    },
+    "content": {
+      "description": "The staged note verbatim. Writer-enforced 4096-BYTE cap (§4); multi-line allowed here — single-line clamping happens at the entry projection, never at staging.",
+      "type": "string",
+      "maxLength": 4096
+    },
+    "content_hash": {
+      "description": "sha256 of the exact content bytes; feeds the §5 fingerprint note component together with staged_at.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

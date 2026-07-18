@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime-session-entry-1.0",
+  "title": "Session-capture sanitized entry projection + commit record (entry.json)",
+  "description": "session-capture-contract.md §3.2 / ADR-0044 §7. The ONLY session-capture file the entry side (ADR-0045) reads, and simultaneously the §7 commit record: the publisher's refresh no-op decision reads THIS file, never the possibly-newer slot.json. Enumerated, injection-hardened: every string is single-line and length-clamped; deliberately NO imperative field (no next_action / recommended command — the SessionStart reinjection exclusion ruling is inherited), NO repo_root and NO paths (settlement (a)), NO note body — only the clamped first line. Consumers recompute staleness from captured_at / note_staged_at; there is no pre-computed age field that would freeze at publication.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "captured_at",
+    "origin",
+    "summary_source",
+    "host",
+    "branch",
+    "head_short",
+    "dirty_count",
+    "repo_recent_terminal_evidence",
+    "summary_line",
+    "note_staged_at",
+    "fingerprint"
+  ],
+  "properties": {
+    "schema": { "type": "string", "pattern": "^runtime-session-entry-1\\.0$" },
+    "captured_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "origin": { "type": "string", "enum": ["stop-hook"] },
+    "summary_source": { "type": "string", "enum": ["staged-note", "structural"] },
+    "host": { "type": "string", "enum": ["claude", "codex"] },
+    "branch": {
+      "description": "The one generic-source field that lets ADR-0045 branch-check this artifact; null on detached HEAD.",
+      "type": ["string", "null"],
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+    },
+    "head_short": { "type": ["string", "null"], "pattern": "^[0-9a-f]{7,40}$" },
+    "dirty_count": { "type": ["number", "null"] },
+    "repo_recent_terminal_evidence": { "type": "string", "enum": ["none", "fresh"] },
+    "summary_line": {
+      "description": "Clamped FIRST LINE of the folded note (≤160 chars, single-line — the clampReinjectField discipline); null when summary_source = structural. Untrusted quoted data for every consumer; ADR-0045 §2.4 presents it conditionally or omits it entirely.",
+      "type": ["string", "null"],
+      "maxLength": 160,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+    },
+    "note_staged_at": {
+      "description": "Staging instant of the folded note so consumers recompute note staleness themselves; null when no note was folded.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "fingerprint": {
+      "description": "Commit-record fingerprint: must equal slot.json's within one committed generation (§7); the no-op decision and mixed-generation detection key on it.",
+      "type": "string",
+      "pattern": "^fp1:[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,7 +1,9 @@
 // plugins/runtime/scripts/lib/schema-validate.mjs
 //
-// The zero-dependency JSON Schema validator for the three packaged bootstrap
-// schemas (machine-bootstrap-contract.md §4, §5, §1.4; ADR-0046 §4). Ships as
+// The zero-dependency JSON Schema validator for the packaged runtime schemas:
+// the three bootstrap families (machine-bootstrap-contract.md §4, §5, §1.4;
+// ADR-0046 §4) and the three ADR-0044 session-capture families
+// (session-capture-contract.md §3). Ships as
 // runtime code, so it obeys the same zero-dependency rule as every other runtime
 // script — `ajv` is not available to us, and the ADR-0035 §4 guard deferral
 // decision (2026-06-11, converged) keeps tests-only devDependencies out of the
@@ -204,7 +206,7 @@ function resolveRef(ref, root, path, errors) {
     errors.push(`${path}: only internal '#/$defs/<name>' refs are supported, got '${ref}'`);
     return null;
   }
-  const target = root.$defs?.[m[1]];
+  const target = Object.hasOwn(root.$defs ?? {}, m[1]) ? root.$defs[m[1]] : undefined;
   if (!target) {
     errors.push(`${path}: $ref '${ref}' does not resolve`);
     return null;
@@ -289,7 +291,12 @@ function validateNode({ value, schema, root, path, ctx }) {
       // first match and not one or the other. Stopping at the first would let a second,
       // stricter pattern silently not apply.
       let matched = false;
-      const propSchema = schema.properties?.[key];
+      // Own-property lookup ONLY: a JSON.parse'd document key like `constructor`,
+      // `toString`, or `__proto__` must never resolve through the schema object's
+      // prototype chain — `schema.properties?.[key]` would return Object.prototype
+      // members as truthy "known property schemas" and silently bypass the
+      // closed-schema rule (S2 plan-verify finding, live-reproduced).
+      const propSchema = Object.hasOwn(schema.properties ?? {}, key) ? schema.properties[key] : undefined;
       if (propSchema) {
         validateNode({ value: child, schema: propSchema, root, path: `${path}.${key}`, ctx });
         matched = true;
@@ -408,7 +415,10 @@ export function canonicalize(document, schema, root = schema) {
 
 function resolveRefLoose(ref, root) {
   const m = /^#\/\$defs\/([A-Za-z0-9_-]+)$/.exec(ref);
-  return m ? root.$defs?.[m[1]] : undefined;
+  // Own-property lookup only (same prototype-chain discipline as property
+  // resolution): a $def named `constructor` must resolve to the schema's own
+  // definition or nothing, never to Object.prototype members.
+  return m && Object.hasOwn(root.$defs ?? {}, m[1]) ? root.$defs[m[1]] : undefined;
 }
 
 // Canonical JSON text for hashing/writing: canonical key order, two-space indent,
@@ -421,7 +431,7 @@ export function canonicalJson(document, schema) {
 // Packaged schema loading
 // ---------------------------------------------------------------------------
 
-export const BOOTSTRAP_SCHEMA_FILES = Object.freeze({
+export const PACKAGED_SCHEMA_FILES = Object.freeze({
   'agentic-machine-profile': 'agentic-machine-profile-1.0.json',
   // 1.1 (S8a5): adds the OPTIONAL probe hosts.codex.hook_state per-handler disabled
   // evidence. A 1.0 document (no hook_state) still validates against this reader —
@@ -429,7 +439,19 @@ export const BOOTSTRAP_SCHEMA_FILES = Object.freeze({
   // be refused (unknown structural key), which is why the minor bumps at all.
   'runtime-bootstrap-run': 'runtime-bootstrap-run-1.1.json',
   'runtime-plugin-set': 'runtime-plugin-set-1.0.json',
+  // ADR-0044 session-capture families (session-capture-contract.md §3). Load-bearing
+  // from S2 on: the packaged schemas ARE the validation source for the slot/entry/note
+  // artifacts — the S3 executors and every consumer validate through loadSchema of
+  // these families, never through a second hand-rolled field list.
+  'runtime-session-capture': 'runtime-session-capture-1.0.json',
+  'runtime-session-entry': 'runtime-session-entry-1.0.json',
+  'runtime-session-note': 'runtime-session-note-1.0.json',
 });
+
+// Deprecated alias — the pre-S2 name for the registry, kept so an external
+// import written against the bootstrap-only era keeps resolving. New code uses
+// PACKAGED_SCHEMA_FILES.
+export const BOOTSTRAP_SCHEMA_FILES = PACKAGED_SCHEMA_FILES;
 
 /**
  * Load a packaged schema by family. Resolved from `import.meta.url`, never from
@@ -438,8 +460,8 @@ export const BOOTSTRAP_SCHEMA_FILES = Object.freeze({
  * plugin rather than whatever the current directory happens to contain.
  */
 export async function loadSchema(family, { pluginRoot } = {}) {
-  const file = BOOTSTRAP_SCHEMA_FILES[family];
-  if (!file) throw new Error(`unknown schema family '${family}' (known: ${Object.keys(BOOTSTRAP_SCHEMA_FILES).join(', ')})`);
+  const file = Object.hasOwn(PACKAGED_SCHEMA_FILES, family) ? PACKAGED_SCHEMA_FILES[family] : undefined;
+  if (!file) throw new Error(`unknown schema family '${family}' (known: ${Object.keys(PACKAGED_SCHEMA_FILES).join(', ')})`);
   const base = pluginRoot ? resolve(pluginRoot, 'data', 'schemas') : resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'data', 'schemas');
   const raw = await readFile(resolve(base, file), 'utf8');
   try {
@@ -501,7 +523,7 @@ export async function makeValidator(family, { pluginRoot, readerVersion } = {}) 
  */
 export async function makeDefValidator(family, defName, { pluginRoot } = {}) {
   const schema = await loadSchema(family, { pluginRoot });
-  const def = schema.$defs?.[defName];
+  const def = Object.hasOwn(schema.$defs ?? {}, defName) ? schema.$defs[defName] : undefined;
   if (!def) throw new Error(`schema ${family} has no $defs/${defName}`);
   const schemaErrors = assertSupportedSchema(schema);
   if (schemaErrors.length > 0) throw new Error(`schema is not supported by this validator:\n  ${schemaErrors.join('\n  ')}`);

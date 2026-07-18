@@ -25,6 +25,7 @@ import {
   CONFIG_KEYS,
   CONFIG_KEY_FAMILIES,
   NOTIFY_KEY_DEFAULTS,
+  SESSION_KEY_DEFAULTS,
   normalizeConfigKey,
   parseRuntimeConfigToml,
   validateConfigValue,
@@ -67,7 +68,7 @@ import { parseCodexCliVersion, resolveCodexInstalledPluginVersion } from './lib/
 // 1.18 → 1.19 (additive, S8a4): report.codex_hook_review gains the canonical
 // `bound_versions` (Codex CLI + per-plugin, list-authoritative) and `attested_plugins`
 // alongside the retained legacy `plugin_versions` (settings-report-contract.md §additive).
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.19';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.20';
 
 // ADR-0038 settings-claude permission plan (M1): how many recent usage records to
 // read per host, and a per-file byte cap, when building the dry-run plan.
@@ -91,6 +92,8 @@ export {
   CONFIG_KEYS,
   NOTIFY_CHANNELS,
   NOTIFY_KEY_DEFAULTS,
+  SESSION_CAPTURE_MODES,
+  SESSION_KEY_DEFAULTS,
   parseRuntimeConfigToml,
 } from './lib/runtime-config.mjs';
 
@@ -341,6 +344,11 @@ export async function runSettings({
     configTargets: configPlans.targets,
     apply,
   });
+  const sessionSettings = buildSessionSettingPlans({
+    desiredConfig,
+    configTargets: configPlans.targets,
+    apply,
+  });
   if (!skipHostCliProbes) {
     hookSettings = buildHookSettingsPlan({
       codexPluginHooks: doctor.codex_plugin_hooks,
@@ -470,6 +478,7 @@ export async function runSettings({
     },
     companion_settings: companionSettings,
     notify_settings: notifySettings,
+    session_settings: sessionSettings,
     permission_plan: permissionPlanSection,
     permission_plan_codex: permissionPlanCodexSection,
     notification_plan: notificationPlanSection,
@@ -492,6 +501,7 @@ export async function runSettings({
       desiredConfig,
       companionSettings,
       notifySettings,
+      sessionSettings,
       hookSettings,
     }),
     limits: [
@@ -590,6 +600,7 @@ function buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationP
     config: 'evaluated',
     companion_settings: 'evaluated',
     notify_settings: 'evaluated',
+    session_settings: 'evaluated',
     mutation_boundary: 'evaluated',
     artifacts: 'evaluated',
     limits: 'evaluated',
@@ -621,12 +632,22 @@ async function buildConfigPlans({ repoRoot, homeDir, target, desiredConfig }) {
   return { targets };
 }
 
+// Only a genuinely absent config layer is plannable-from-empty; any other read
+// failure (EACCES, EISDIR, EIO) is present-but-unreadable and must fail closed
+// — the shared lib/runtime-config.mjs loader rule, applied to the plan/apply
+// path too (S2 plan-verify finding: unreadable-as-missing let --apply rebuild
+// an unreadable config file from an empty base, destroying its contents).
+function isAbsentReadFailure(readResult) {
+  return !readResult.ok && ['ENOENT', 'ENOTDIR'].includes(readResult.reason);
+}
+
 async function buildOneConfigPlan({ kind, path, selected, desiredConfig }) {
   const currentText = await readTextIfExists(path);
+  const unreadable = !currentText.ok && !isAbsentReadFailure(currentText);
   const current = currentText.ok ? parseRuntimeConfigToml(currentText.text) : {};
   const actions = [];
   for (const [key, after] of Object.entries(desiredConfig)) {
-    const before = current[key] ?? null;
+    const before = Object.hasOwn(current, key) ? current[key] : null;
     actions.push({
       op: before === after ? 'keep' : before === null ? 'add' : 'update',
       key,
@@ -637,19 +658,22 @@ async function buildOneConfigPlan({ kind, path, selected, desiredConfig }) {
   return {
     kind,
     path,
-    status: currentText.ok ? 'available' : 'missing',
+    status: currentText.ok ? 'available' : unreadable ? 'unreadable' : 'missing',
+    read_error: unreadable ? `${path}: ${currentText.reason}` : null,
     selected,
     current_config: sortConfig(current),
-    projected_config: sortConfig(selected ? { ...current, ...desiredConfig } : current),
+    projected_config: sortConfig(selected && !unreadable ? { ...current, ...desiredConfig } : current),
     current_keys: Object.keys(current).sort(),
-    planned_writes: actions.filter((action) => action.op !== 'keep'),
-    unchanged: actions.filter((action) => action.op === 'keep'),
+    planned_writes: unreadable ? [] : actions.filter((action) => action.op !== 'keep'),
+    unchanged: unreadable ? [] : actions.filter((action) => action.op === 'keep'),
     applied: false,
-    message: Object.keys(desiredConfig).length === 0
-      ? 'No config values requested; pass --model/--effort, direction-specific flags, or --notify-* flags to plan config writes.'
-      : selected
-        ? 'Selected for apply when --apply is present.'
-        : 'Not selected by --target.',
+    message: unreadable
+      ? `Config layer unreadable (${currentText.reason}) — planning and apply are refused for this target (fail-closed; the file is preserved byte-for-byte).`
+      : Object.keys(desiredConfig).length === 0
+        ? 'No config values requested; pass --model/--effort, direction-specific flags, --notify-* flags, or --session-capture to plan config writes.'
+        : selected
+          ? 'Selected for apply when --apply is present.'
+          : 'Not selected by --target.',
   };
 }
 
@@ -657,6 +681,14 @@ async function applyConfigPlans(configPlans) {
   for (const plan of configPlans.targets) {
     if (!plan.selected || plan.planned_writes.length === 0) continue;
     const currentText = await readTextIfExists(plan.path);
+    if (!currentText.ok && !isAbsentReadFailure(currentText)) {
+      // The layer became unreadable between plan and apply — never rebuild an
+      // unreadable file from an empty base.
+      plan.status = 'unreadable';
+      plan.read_error = `${plan.path}: ${currentText.reason}`;
+      plan.message = `Apply refused: config layer unreadable (${currentText.reason}) — fail-closed; the file is preserved byte-for-byte.`;
+      continue;
+    }
     const desired = Object.fromEntries(plan.planned_writes.map((action) => [action.key, action.after]));
     const nextText = upsertRuntimeConfigToml(currentText.ok ? currentText.text : '', desired);
     await mkdir(dirname(plan.path), { recursive: true });
@@ -1630,7 +1662,11 @@ function resolveProjectedSetting({ keys, projection, field = 'projected_config',
     if (!target) continue;
     for (const key of keys) {
       const value = target[field][key];
-      if (value) {
+      // Presence-based, not truthy: an explicit empty value in a
+      // higher-precedence layer must be diagnosed (it reaches the per-key
+      // validator and warns/fail-closes), never silently skipped in favor of
+      // a lower layer (S2 plan-verify finding).
+      if (value !== undefined && value !== null) {
         return {
           value,
           source: `${targetKind} config ${key}`,
@@ -1650,17 +1686,19 @@ function resolveProjectedSetting({ keys, projection, field = 'projected_config',
   };
 }
 
-// ADR-0040 §2 notify key-family plan: per-key effective projection over the
-// same repo -> user precedence chain as model/effort, falling back to the
-// shipped default instead of a host-native default (the emitter, not a host,
-// owns unset behavior). Warns on shadowed requests and on existing config
-// values that fail the per-key validators — the §2 emitter fail-closes on
-// those, so surfacing them here is the operator's only signal.
-function buildNotifySettingPlans({ desiredConfig, configTargets, apply }) {
+// Generic key-family plan core (ADR-0040 §2 shape, generalized for ADR-0044):
+// per-key effective projection over the same repo -> user precedence chain as
+// model/effort, falling back to the shipped default instead of a host-native
+// default (the consuming executor, not a host, owns unset behavior). Warns on
+// shadowed requests and on existing config values that fail the per-key
+// validators — the consuming executors fail-close on those, so surfacing them
+// here is the operator's only signal. One core for every gated family so a
+// precedence/validation fix lands once, never per-family.
+function buildConfigFamilyPlans({ familyKeys, defaults, emitterLabel, desiredConfig, configTargets, apply }) {
   const projection = buildConfigProjection(configTargets);
   const keys = {};
   const warnings = [];
-  for (const key of CONFIG_KEY_FAMILIES.notify) {
+  for (const key of familyKeys) {
     const requested = desiredConfig[key] ?? null;
     const projected = resolveProjectedSetting({ keys: [key], projection, defaultSource: 'shipped default' });
     const current = resolveProjectedSetting({ keys: [key], projection, field: 'current_config', defaultSource: 'shipped default' });
@@ -1680,7 +1718,7 @@ function buildNotifySettingPlans({ desiredConfig, configTargets, apply }) {
       try {
         validateConfigValue(key, projected.value);
       } catch (err) {
-        keyWarnings.push(`${key} effective value "${projected.value}" (${projected.source}) is invalid and the notify emitter will fail closed: ${err.message}`);
+        keyWarnings.push(`${key} effective value "${projected.value}" (${projected.source}) is invalid and ${emitterLabel} will fail closed: ${err.message}`);
       }
     }
     // Validate every target's stored value, not just the winning projection:
@@ -1693,18 +1731,18 @@ function buildNotifySettingPlans({ desiredConfig, configTargets, apply }) {
       try {
         validateConfigValue(key, stored);
       } catch (err) {
-        keyWarnings.push(`${key} ${targetKind} config value "${stored}" is invalid and the notify emitter will fail closed on it if it becomes effective: ${err.message}`);
+        keyWarnings.push(`${key} ${targetKind} config value "${stored}" is invalid and ${emitterLabel} will fail closed on it if it becomes effective: ${err.message}`);
       }
     }
     const warning = keyWarnings.length > 0 ? keyWarnings.join('; ') : null;
     if (warning) warnings.push(warning);
     keys[key] = {
       value: projected.value,
-      effective_value: projected.value ?? NOTIFY_KEY_DEFAULTS[key],
+      effective_value: projected.value ?? defaults[key],
       source: projected.source,
       target: projected.target,
       path: projected.path,
-      default: NOTIFY_KEY_DEFAULTS[key],
+      default: defaults[key],
       status,
       requested_value: requested,
       current_value: current.value,
@@ -1713,17 +1751,43 @@ function buildNotifySettingPlans({ desiredConfig, configTargets, apply }) {
     };
   }
   return {
-    config_keys: [...CONFIG_KEY_FAMILIES.notify],
+    config_keys: [...familyKeys],
     effective_mode: apply ? 'applied' : 'projected',
     resolution_order: [
       'repo-local .agentic-plugins/config.toml',
       'user-global ~/.agentic-plugins/config.toml',
       'shipped default',
     ],
-    defaults: { ...NOTIFY_KEY_DEFAULTS },
+    defaults: { ...defaults },
     keys,
     warnings,
   };
+}
+
+// ADR-0040 §2 notify family plan — the generic core with notify's keys/defaults.
+function buildNotifySettingPlans({ desiredConfig, configTargets, apply }) {
+  return buildConfigFamilyPlans({
+    familyKeys: CONFIG_KEY_FAMILIES.notify,
+    defaults: NOTIFY_KEY_DEFAULTS,
+    emitterLabel: 'the notify emitter',
+    desiredConfig,
+    configTargets,
+    apply,
+  });
+}
+
+// ADR-0044 §3 session family plan — same core; the consuming executor is the
+// future publish-session config gate, and the settings surface must agree with
+// it byte-for-byte on key, default, and validity (both read lib/runtime-config.mjs).
+function buildSessionSettingPlans({ desiredConfig, configTargets, apply }) {
+  return buildConfigFamilyPlans({
+    familyKeys: CONFIG_KEY_FAMILIES.session,
+    defaults: SESSION_KEY_DEFAULTS,
+    emitterLabel: 'the session-capture publisher',
+    desiredConfig,
+    configTargets,
+    apply,
+  });
 }
 
 function buildHookSettingsPlan({ codexPluginHooks, plugins = {} }) {
@@ -1786,7 +1850,7 @@ function buildCodexHookReviewTargets({ codexPluginHooks, plugins }) {
   return targets.sort((a, b) => a.plugin.localeCompare(b.plugin));
 }
 
-function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredConfig, companionSettings, notifySettings, hookSettings }) {
+function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredConfig, companionSettings, notifySettings, sessionSettings, hookSettings }) {
   const recommendations = [];
   for (const [name, cli] of Object.entries(clis)) {
     if (cli.status !== 'available') {
@@ -1838,7 +1902,7 @@ function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredCon
       detail: 'No config writes planned. Use --model/--effort, --claude-model/--codex-model, or --notify-* flags with optional --apply.',
     });
   }
-  for (const warning of [...collectCompanionSettingWarnings(companionSettings), ...(notifySettings?.warnings ?? [])]) {
+  for (const warning of [...collectCompanionSettingWarnings(companionSettings), ...(notifySettings?.warnings ?? []), ...(sessionSettings?.warnings ?? [])]) {
     recommendations.push({
       area: 'config',
       executed: false,
@@ -1856,6 +1920,7 @@ function summarizeSettings(report) {
   const appliedCount = report.config.targets.filter((target) => target.applied).length;
   const settingWarnings = collectCompanionSettingWarnings(report.companion_settings).length;
   const notifyWarnings = report.notify_settings?.warnings?.length ?? 0;
+  const sessionWarnings = report.session_settings?.warnings?.length ?? 0;
   if (report.report_scope === 'local_plan') {
     // settings-report-contract.md §3 — status is computed over evaluated
     // sections only, which includes requested plan sections: a blocked or
@@ -1867,12 +1932,13 @@ function summarizeSettings(report) {
       .filter((section) => section?.requested && ['blocked', 'failed'].includes(section.status)).length;
     return {
       scope: 'local_plan',
-      status: settingWarnings > 0 || notifyWarnings > 0 || blockedPlanSections > 0 ? 'warning' : 'pass',
+      status: settingWarnings > 0 || notifyWarnings > 0 || sessionWarnings > 0 || blockedPlanSections > 0 ? 'warning' : 'pass',
       planned_config_writes: writeCount,
       applied_config_targets: appliedCount,
       plugin_recommendations: null,
       setting_warnings: settingWarnings,
       notify_warnings: notifyWarnings,
+      session_warnings: sessionWarnings,
       hook_warnings: null,
       hook_review_warnings: null,
       auth_warnings: null,
@@ -1891,12 +1957,13 @@ function summarizeSettings(report) {
   const hookReviewWarnings = report.codex_hook_review?.requested && report.codex_hook_review.status !== 'attested' ? 1 : 0;
   return {
     scope: 'full',
-    status: missingCli > 0 || settingWarnings > 0 || notifyWarnings > 0 || hookWarnings > 0 || hookReviewWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 || pluginCleanupWarnings > 0 ? 'warning' : 'pass',
+    status: missingCli > 0 || settingWarnings > 0 || notifyWarnings > 0 || sessionWarnings > 0 || hookWarnings > 0 || hookReviewWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 || pluginCleanupWarnings > 0 ? 'warning' : 'pass',
     planned_config_writes: writeCount,
     applied_config_targets: appliedCount,
     plugin_recommendations: Object.values(report.plugins).reduce((sum, plugin) => sum + plugin.recommendations.length, 0),
     setting_warnings: settingWarnings,
     notify_warnings: notifyWarnings,
+    session_warnings: sessionWarnings,
     hook_warnings: hookWarnings,
     hook_review_warnings: hookReviewWarnings,
     auth_warnings: authWarnings,
@@ -2116,6 +2183,20 @@ export function formatText(report) {
       if (entry.warning) lines.push(`  warning: ${entry.warning}`);
     }
   }
+  if (report.session_settings) {
+    lines.push('');
+    lines.push(`Session capture (ADR-0044 §3, effective-${report.session_settings.effective_mode})`);
+    for (const key of report.session_settings.config_keys) {
+      const entry = report.session_settings.keys[key];
+      const rendered = entry.value !== null
+        ? `${entry.value} (${entry.source})`
+        : entry.default !== null
+          ? `<shipped default: ${entry.default}>`
+          : '<unset>';
+      lines.push(`- ${key}: ${rendered}`);
+      if (entry.warning) lines.push(`  warning: ${entry.warning}`);
+    }
+  }
   if (report.permission_plan?.requested) {
     const pp = report.permission_plan;
     lines.push('');
@@ -2303,6 +2384,7 @@ function usage() {
     '  [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>]',
     '  [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>]',
     '  [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>]',
+    '  [--session-capture off|stop-hook]',
     '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
     '  [--permission-plan] [--permission-plan-max-files <n>] [--permission-plan-max-file-bytes <n>] [--notification-plan] [--egress-launcher-plan] [--run-id <settings-run-id>]',
     '  [--expected-plan-hash <sha256>]  (§1.6 drift guard: refuse plugin-management/cleanup execution unless the freshly recomputed plan hash matches)',
