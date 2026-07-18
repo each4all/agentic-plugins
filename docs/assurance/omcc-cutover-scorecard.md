@@ -97,32 +97,64 @@ For each runtime/engineer/orchestrator slice, use this continuity loop:
 Current local dry-run evidence: `runtime:settings` reports all agentic-plugins
 surfaces available with source/cache versions matching the current repo
 manifest, and zero plugin-management config writes planned against the installed
-`plugin-runtime` `0.80.1` state (both the Claude plugin cache and `codex plugin
-list --json` report the runtime plugin installed and enabled at 0.80.1 —
-claude=installed/0.80.1, codex=installed/0.80.1 — alongside engineer 0.21.0 and
-orchestrator 0.13.0, per the 2026-07-14Z doctor read; the runtime-only patch was
-a version bump over the 0.80.0 install and left no `runtime:settings
+`plugin-runtime` `0.81.0` state (both the Claude plugin cache and `codex plugin
+list --json` report the runtime plugin installed and enabled at 0.81.0 —
+claude=installed/0.81.0, codex=installed/0.81.0 — alongside engineer 0.21.0 and
+orchestrator 0.13.0, per the 2026-07-18Z doctor read; the Stage-0-form installs
+ran host-native — Claude `claude plugin update runtime@agentic-plugins`, Codex
+`codex plugin marketplace upgrade agentic-plugins` + `codex plugin add
+runtime@agentic-plugins` — so this upgrade left no `runtime:settings
 --execute-plugin-management` executor artifact of its own). Current runtime
 execution evidence is native to the installed
-`plugin-runtime` `0.80.1`: permission proof, deep peer smoke, and workflow
-continuation proof passed in both directions (`source=current-run`), recorded on
-2026-07-14Z as `doctor-20260714T235550Z-60336c` — the **S1 permission-advisor
-defect-class fix loop** (feature PR #573 squash-merged `89c16ad` — closing the
-permission-advisor defect class: secret leak, danger-rule bypass, cross-bucket
-governance, and their two mirrors; release PR #574 squash `6d82617`, tag
-`plugin-runtime-v0.80.1`, marketplace sync `160b3d8`; Claude Code `2.1.209` /
-`codex-cli 0.144.1`). `overall` reads `pass` and **experience parity reads
-`ready` `100%` 8/8** with zero manual follow-ups; Codex hook state reads
-**12/12** expected `enabled_trusted` with `unexpected_agentic_entries=2` (the
-retained pre-relocation attention rows, display-only); the four-plugin `/hooks`
-attestation `settings-20260713T234950Z-f08600` (designer@0.3.0 / engineer@0.21.0
-/ founder@0.4.0 / orchestrator@0.13.0) stays current because runtime ships no
-hooks, so this runtime-only bump did not change the hook-bearing set.
-**`host_parity_baseline` reads `stale`** — the recorded baseline is 2026-07-14
-Claude Code `2.1.208` while the observed CLI is `2.1.209`, a Claude
-`2.1.208`→`2.1.209` patch drift tracked to a baseline-refresh follow-up slice
-per the 0.77.2 / attention-0.4.1 precedents and not pretended current. This
-supersedes the **S9 completion-output-contract loop** recorded on 2026-07-13Z as
+`plugin-runtime` `0.81.0`: permission proof, deep peer smoke, and workflow
+continuation proof executed and passed in both directions, recorded on
+2026-07-18Z as `doctor-20260718T080955Z-6eba4e` — the **ADR-0046 S8
+machine-bootstrap stack** loop (feature commits S8a1 #576 `267cd33`, S8a2
+`5af386e`, S8a4 `29bb5b1`, S8a5 #581 `8712eb9`, and S8b #582 `960c8bc`; release
+PR #577 squash `7adb9ef`, tag `plugin-runtime-v0.81.0`, marketplace sync
+`769b527`; Claude Code `2.1.214` / `codex-cli 0.144.1`). `overall` reads `pass`;
+Codex hook state reads **12/12** expected `enabled_trusted` with
+`unexpected_agentic_entries=2` (the retained pre-relocation attention rows,
+display-only); **experience parity deliberately reads `partial` (6/8 satisfied;
+manual follow-up `codex-hook-review`)** — the S8a4-hardened currency evaluation
+refuses to prove the pre-S8a4 four-plugin attestation
+`settings-20260713T234950Z-f08600` (designer@0.3.0 / engineer@0.21.0 /
+founder@0.4.0 / orchestrator@0.13.0) current: the artifact predates the
+canonical `bound_versions` capture (`bound_versions.codex=null`), so it
+evaluates `stale` (`currency_reason=codex_cli_version_changed`) against
+`codex-cli 0.144.1` instead of being silently trusted — the fail-closed
+half of contract §11.2 #24 observed live: attestation currency binds the Codex
+CLI and the hook-bearing plugin versions, and the legacy null binding is
+refused rather than trusted, while the hook-bearing-upgrade invalidation half
+is unit-pinned in S8a2 and demonstrated by the recorded designer/founder
+upgrade precedents; the trusted hook entries themselves are unchanged (this
+runtime-only release changed no hook-bearing plugin), and a fresh operator
+`/hooks` confirmation plus `runtime:settings --attest-codex-hook-review`
+restores `ready`. **`host_parity_baseline` reads `stale`** — the recorded
+baseline is 2026-07-14 Claude Code `2.1.208` while the observed CLI is
+`2.1.214`, a Claude patch-level drift tracked to a baseline-refresh follow-up
+slice per the 0.77.2 / attention-0.4.1 precedents and not pretended current.
+The S8c released-package acceptance additionally exercised the installed 0.81.0
+from a consumer repo: `bootstrap.mjs` `status`/`verify` returned the contract
+§3.1 exit-30 `no-active-run` semantics, a full `plan --bundle base` → `status`
+→ `abandon` lifecycle ran as `bootstrap-20260718T081054Z-9be0cf` (24 expected
+steps); a full installed `settings.mjs` probe run from the consumer repo
+planned zero source-tree catalog remediations (the S8a1 regression observed
+against the released package), the probe-free `--skip-host-cli-probes` mode
+separately returned its discriminated `report_scope=local_plan` R0 report, and
+a consumer-root deep-peer-smoke passed in both directions selecting the
+**installed** companions `0.4.0` from both host caches (no workspace scripts on
+the discovery ladder). This
+supersedes the 0.80.1-native **S1 permission-advisor defect-class fix loop**
+recorded on 2026-07-14Z as doctor-20260714T235550Z-60336c (feature PR #573
+squash-merged `89c16ad` — closing the permission-advisor defect class: secret
+leak, danger-rule bypass, cross-bucket governance, and their two mirrors;
+release PR #574 squash `6d82617`, tag plugin-runtime-v0.80.1 — backticks
+deliberately omitted for the freshness gate — marketplace sync `160b3d8`;
+Claude Code `2.1.209` / `codex-cli 0.144.1`; that record read `overall` `pass`,
+experience parity `ready` `100%` 8/8 with zero manual follow-ups, and the
+four-plugin attestation as current because that runtime-only bump changed no
+hook-bearing plugin), and in turn the **S9 completion-output-contract loop** recorded on 2026-07-13Z as
 `doctor-20260713T025136Z-7758d3` on the then-installed runtime 0.80.0 (feature
 PR #558 rebase-merged as `00dbc80`/`85bbd3d`/`4c8e59f` per the ADR-0016
 three-package split; release PR #559 squash `1d02390`, tag
@@ -240,24 +272,43 @@ operator attestation claim and does not mutate or independently prove Codex trus
 state; the attestation is valid only while the hook-bearing plugin set and source
 versions still match — which is exactly why adding designer invalidated the prior
 `settings-20260704T170801Z-b66656` attestation and required a fresh `/hooks` review.
-The latest `plugin-runtime` `0.80.1` release/install proof loop is the
-**S1 permission-advisor defect-class fix** slice — feature PR #573
-(squash-merged `89c16ad`) closed the permission-advisor defect class (secret
-leak, danger-rule bypass, cross-bucket governance, and their two mirrors);
-release PR #574 cut tag `plugin-runtime-v0.80.1` and marketplace sync commit
-`160b3d8`, and the 0.80.1-native proof `doctor-20260714T235550Z-60336c`
-(2026-07-14Z; `overall` `pass`, experience parity `ready` `100%` 8/8 with zero
-manual follow-ups, three execute proofs passed both directions with
-`source=current-run`, Codex hook state `12/12` expected `enabled_trusted` with
-`unexpected_agentic_entries=2` retained pre-relocation attention rows,
-display-only) was taken against that released binary, not a patched working
-tree. The runtime-only patch ships no hooks, so it did not change the
-hook-bearing set and the four-plugin `/hooks` attestation
-`settings-20260713T234950Z-f08600` stays current. Its one honest caveat is
-`host_parity_baseline` `stale` — the recorded baseline is 2026-07-14 Claude Code
-`2.1.208` while the observed CLI is `2.1.209` (a Claude `2.1.208`→`2.1.209`
-patch drift), tracked to a baseline-refresh follow-up slice per the 0.77.2 /
-attention-0.4.1 precedents and not pretended current. This supersedes the
+The latest `plugin-runtime` `0.81.0` release/install proof loop is the
+**ADR-0046 S8 machine-bootstrap stack** slice — feature commits S8a1 #576
+`267cd33` (hardening the existing doctor/settings production surfaces), S8a2
+`5af386e` (machine-bootstrap core + schemas), S8a4 `29bb5b1` (the §8.2 Codex
+`/hooks` attestation dead-pipe repair), S8a5 #581 `8712eb9` (per-handler Codex
+hook-disabled evidence), and S8b #582 `960c8bc` (`runtime:bootstrap` public
+surface, the tenth runtime command); release PR #577 cut tag
+`plugin-runtime-v0.81.0` and marketplace sync commit `769b527`, and the
+0.81.0-native proof `doctor-20260718T080955Z-6eba4e` (2026-07-18Z; `overall`
+`pass`, three execute proofs executed and passed in both directions, Codex hook
+state `12/12` expected `enabled_trusted` with `unexpected_agentic_entries=2`
+retained pre-relocation attention rows, display-only) was taken against that
+released binary, not a patched working tree — with the S8c released-package
+acceptance additionally exercising the installed plugin from a consumer repo
+(exit-30 `no-active-run` semantics, the `plan --bundle base` → `abandon`
+lifecycle `bootstrap-20260718T081054Z-9be0cf`, a full installed settings probe
+run planning zero source-tree catalog remediations, and a consumer-root
+deep-peer-smoke selecting the installed companions from both host caches). The release changed no
+hook-bearing plugin, but experience parity deliberately reads `partial` (6/8;
+manual follow-up `codex-hook-review`): the S8a4-hardened currency evaluation
+now finds the pre-repair four-plugin attestation
+`settings-20260713T234950Z-f08600` `stale` (`bound_versions.codex=null`,
+`currency_reason=codex_cli_version_changed`) instead of silently trusting it —
+the fail-closed half of contract §11.2 #24 observed live (currency binds the
+Codex CLI + hook-bearing plugin versions; the upgrade-invalidation half is
+unit-pinned in S8a2) — and a
+fresh `/hooks` review plus `runtime:settings --attest-codex-hook-review`
+restores `ready`. Its other honest caveat is `host_parity_baseline` `stale` —
+the recorded baseline is 2026-07-14 Claude Code `2.1.208` while the observed
+CLI is `2.1.214` (Claude patch-level drift), tracked to a baseline-refresh
+follow-up slice per the 0.77.2 / attention-0.4.1 precedents and not pretended
+current. This supersedes the preceding 0.80.1 S1 permission-advisor
+defect-class loop — feature PR #573 squash `89c16ad`; release PR #574 squash
+`6d82617`, tag plugin-runtime-v0.80.1 — backticks deliberately omitted for the
+freshness gate — marketplace sync `160b3d8`; its 0.80.1-native proof
+doctor-20260714T235550Z-60336c read `overall` `pass` with experience parity
+`ready` `100%` 8/8 and zero manual follow-ups — and the
 preceding 0.80.0 loop, the **S9 completion-output-contract** slice — feature PR
 #558 (rebase-merged `00dbc80`/`85bbd3d`/`4c8e59f`) added the runtime-owned
 `completion-output-contract.md` (flag minimum-content floors + the
@@ -338,40 +389,8 @@ hand-maintained here.
 | Req | User requirement | Current repo evidence | Status | Cutover gate |
 |---|---|---|---|---|
 | R1 | agentic-plugins must be superior-compatible with omcc/omcc-dev, not a simple baseline copy. | ADR-0007 mandates redesign-over-port; ADR-0010 maps omcc experience into a 4-layer/6-verb model; ADR-0019 and ADR-0020 replace omcc-dev single and multi-deliverable workflow shapes with engineer plus orchestrator. `omcc-legacy-pattern-map.md` inventories D1-D20 legacy surfaces and maps each to an agentic-plugins improvement, retained behavior, or explicit rejection/deferment rationale. | satisfied | Every retained omcc-dev behavior has an agentic-plugins equivalent, improvement, or documented rejection with rationale. |
-| R2 | Overbuilt or unnecessary parts should be improved or removed. | `plugins/research` was retired and cited-brief moved into `engineer:investigate`; `plugins/designer` is deferred rather than shipped prematurely; hidden automatic ensembles and raw peer output are rejected. `runtime:cutover` reads `omcc-legacy-pattern-map.md` and blocks readiness when required D1-D20 rows are missing, statuses are invalid, or a rejected/deferred row is still an active daily dependency. | satisfied | A cutover audit lists all legacy omcc patterns as retained, improved, rejected, or deferred; no active daily workflow depends on a rejected/deferred pattern. |
-| R3 | Switching development tools must work in both directions: Claude Code to Codex and Codex to Claude. | Cross-host tests cover resume and stop-archive behavior for engineer/orchestrator; companions exist in both directions. Installed `plugin-runtime` `0.80.1` carries the native `runtime:doctor
---permission-proof --execute-permission-proof --deep-peer-smoke
---execute-deep-peer-smoke --workflow-continuation-proof
---execute-workflow-continuation-proof` proof re-recorded under the 0.80.1
-install on 2026-07-14Z (`doctor-20260714T235550Z-60336c`, Claude Code `2.1.209`
-/ Codex `0.144.1`, runtime installed 0.80.1 on both hosts —
-claude=installed/0.80.1, codex=installed/0.80.1 — with engineer 0.21.0 /
-orchestrator 0.13.0; release tag `plugin-runtime-v0.80.1`, marketplace sync
-`160b3d8`; hook state `12/12` expected `enabled_trusted`,
-`unexpected_agentic_entries=2` retained pre-relocation attention rows,
-display-only; experience parity `ready` `100%` 8/8 with zero manual follow-ups,
-all three execute proofs passed both directions with `source=current-run`; the
-runtime-only patch ships no hooks, so the four-plugin `/hooks` attestation
-`settings-20260713T234950Z-f08600` stays current and the hook-bearing set is
-unchanged; the one honest caveat is `host_parity_baseline` `stale` — the
-recorded baseline is 2026-07-14 Claude Code `2.1.208` while the observed CLI is
-`2.1.209`, a Claude `2.1.208`→`2.1.209` patch drift tracked to a baseline-refresh
-follow-up slice per the 0.77.2 / attention-0.4.1 precedents, not pretended
-current). This supersedes the 0.80.0-native S9 completion-output-contract record
-re-recorded under the 0.80.0 install on 2026-07-13Z
-(`doctor-20260713T025136Z-7758d3`, Claude Code `2.1.207` / Codex `0.144.1`,
-runtime installed 0.80.0 on both hosts with engineer 0.21.0 / orchestrator
-0.13.0; release tag plugin-runtime-v0.80.0 — backticks deliberately omitted for
-the freshness gate — marketplace sync `ddb43d4`; hook state `12/12` expected
-`enabled_trusted`, `unexpected_agentic_entries=2` retained pre-relocation
-attention rows, display-only; experience parity deliberately `partial` `91%` at
-that initial post-install measurement — the engineer/orchestrator hook-bearing
-upgrades version-invalidated the four-plugin `/hooks` attestation
-`settings-20260712T015100Z-312fbb`; the same-day fresh attestation
-`settings-20260713T030937Z-f50815` and post-attestation record
-`doctor-20260713T030956Z-20dcc3` restored `ready` `100%` 8/8 with all three
-execute proofs re-passed both directions; `host_parity_baseline` `current`
-against the 2026-07-11 baseline). The superseded 0.79.0-native 2026-07-12Z four-persona-seam record (doctor-20260712T080638Z-005af5, release tag plugin-runtime-v0.79.0, sync 8ca4651 — backticks deliberately omitted for the freshness gate) read `ready` `100%` 8/8 with that attestation then current, since runtime ships no hooks and the 0.79.0 upgrade left the hook-bearing set unchanged. The superseded 2026-07-11Z attention-relocation record `doctor-20260711T045954Z-731e34` (then-installed runtime 0.78.1) also read `ready` `100%` 8/8, with an honest baseline-stale caveat the same-day #550 refresh closed; before it the 0.78.1-native 2026-07-10Z record `doctor-20260710T153802Z-276226` (Claude Code `2.1.206`, tag plugin-runtime-v0.78.1 — backticks deliberately omitted for the freshness gate; hook state `14/14` `enabled_trusted`, `unexpected=0`, `unmapped=1`; five-plugin re-attestation `settings-20260710T153728Z-5796b6`) read experience parity **deliberately** `partial` `95%` 7/8 — that release's command-portability gate held `lifecycle_hook_continuity` `partial` with `command-warnings=attention` until the relocation landed, while the bidirectional proof surfaces themselves all passed. The superseded 0.78.0 record `doctor-20260710T135955Z-d752f5` read `ready` `100%` 8/8 under the pre-#543 criterion; before it, the 0.77.2 record `doctor-20260710T044745Z-1a789e` (same host versions, parity `ready` `100%`) honestly read `stale` on baseline freshness at measurement time; the same-day baseline-refresh slice closed it. The intermediate 0.77.0 record `doctor-20260709T131625Z-33c54d` read `partial` `91%` because doctor mis-read the newly-trusted designer hooks as disabled; the classifier fix released as 0.77.1 restored `ready` `100%`. Both `claude -> codex` and `codex -> claude` passed the permission proof, deep peer smoke, and engineer workflow continuation proof through `state.mjs create`, `dispatch-peer.mjs`, `pending_ensemble`, and `ensemble_results` in an ephemeral temp repo. | satisfied | Keep the explicit installed-runtime proof in the release/install continuity loop whenever the peer path changes. |
+| R2 | Overbuilt or unnecessary parts should be improved or removed. | `plugins/research` was retired and cited-brief moved into `engineer:investigate`; `plugins/designer` was deferred until real demand arrived, then shipped as the third L3 persona (ADR-0042); hidden automatic ensembles and raw peer output are rejected. `runtime:cutover` reads `omcc-legacy-pattern-map.md` and blocks readiness when required D1-D20 rows are missing, statuses are invalid, or a rejected/deferred row is still an active daily dependency. | satisfied | A cutover audit lists all legacy omcc patterns as retained, improved, rejected, or deferred; no active daily workflow depends on a rejected/deferred pattern. |
+| R3 | Switching development tools must work in both directions: Claude Code to Codex and Codex to Claude. | Cross-host tests cover resume and stop-archive behavior for engineer/orchestrator; companions exist in both directions. Installed `plugin-runtime` `0.81.0` carries the native `runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof` proof re-recorded under the 0.81.0 install on 2026-07-18Z (`doctor-20260718T080955Z-6eba4e`, Claude Code `2.1.214` / Codex `0.144.1`, runtime installed 0.81.0 on both hosts — claude=installed/0.81.0, codex=installed/0.81.0 — with engineer 0.21.0 / orchestrator 0.13.0; release tag `plugin-runtime-v0.81.0`, marketplace sync `769b527`; hook state `12/12` expected `enabled_trusted`, `unexpected_agentic_entries=2` retained pre-relocation attention rows, display-only; all three execute proofs executed and passed in both directions; experience parity deliberately `partial` 6/8 with manual follow-up `codex-hook-review` — the S8a4-hardened currency evaluation finds the pre-repair four-plugin attestation `settings-20260713T234950Z-f08600` `stale` (`bound_versions.codex=null`, `currency_reason=codex_cli_version_changed`) instead of silently trusting it — the fail-closed half of contract §11.2 #24 observed live (currency binds the Codex CLI + hook-bearing plugin versions); this runtime-only release changed no hook-bearing plugin, and a fresh `/hooks` review plus `runtime:settings --attest-codex-hook-review` restores `ready`; the other honest caveat is `host_parity_baseline` `stale` — the recorded baseline is 2026-07-14 Claude Code `2.1.208` while the observed CLI is `2.1.214`, Claude patch-level drift tracked to a baseline-refresh follow-up slice per the 0.77.2 / attention-0.4.1 precedents, not pretended current). This supersedes the 0.80.1-native S1 permission-advisor defect-class record re-recorded under the 0.80.1 install on 2026-07-14Z (doctor-20260714T235550Z-60336c, Claude Code 2.1.209 / Codex 0.144.1; release tag plugin-runtime-v0.80.1 — backticks deliberately omitted for the freshness gate — marketplace sync `160b3d8`; experience parity ready 100% 8/8 with zero manual follow-ups, all three execute proofs passed both directions), and before it the 0.80.0-native S9 completion-output-contract record re-recorded under the 0.80.0 install on 2026-07-13Z (`doctor-20260713T025136Z-7758d3`, Claude Code `2.1.207` / Codex `0.144.1`, runtime installed 0.80.0 on both hosts with engineer 0.21.0 / orchestrator 0.13.0; release tag plugin-runtime-v0.80.0 — backticks deliberately omitted for the freshness gate — marketplace sync `ddb43d4`; hook state `12/12` expected `enabled_trusted`, `unexpected_agentic_entries=2` retained pre-relocation attention rows, display-only; experience parity deliberately `partial` `91%` at that initial post-install measurement — the engineer/orchestrator hook-bearing upgrades version-invalidated the four-plugin `/hooks` attestation `settings-20260712T015100Z-312fbb`; the same-day fresh attestation `settings-20260713T030937Z-f50815` and post-attestation record `doctor-20260713T030956Z-20dcc3` restored `ready` `100%` 8/8 with all three execute proofs re-passed both directions; `host_parity_baseline` `current` against the 2026-07-11 baseline). The superseded 0.79.0-native 2026-07-12Z four-persona-seam record (doctor-20260712T080638Z-005af5, release tag plugin-runtime-v0.79.0, sync 8ca4651 — backticks deliberately omitted for the freshness gate) read `ready` `100%` 8/8 with that attestation then current, since runtime ships no hooks and the 0.79.0 upgrade left the hook-bearing set unchanged. The superseded 2026-07-11Z attention-relocation record `doctor-20260711T045954Z-731e34` (then-installed runtime 0.78.1) also read `ready` `100%` 8/8, with an honest baseline-stale caveat the same-day #550 refresh closed; before it the 0.78.1-native 2026-07-10Z record `doctor-20260710T153802Z-276226` (Claude Code `2.1.206`, tag plugin-runtime-v0.78.1 — backticks deliberately omitted for the freshness gate; hook state `14/14` `enabled_trusted`, `unexpected=0`, `unmapped=1`; five-plugin re-attestation `settings-20260710T153728Z-5796b6`) read experience parity **deliberately** `partial` `95%` 7/8 — that release's command-portability gate held `lifecycle_hook_continuity` `partial` with `command-warnings=attention` until the relocation landed, while the bidirectional proof surfaces themselves all passed. The superseded 0.78.0 record `doctor-20260710T135955Z-d752f5` read `ready` `100%` 8/8 under the pre-#543 criterion; before it, the 0.77.2 record `doctor-20260710T044745Z-1a789e` (same host versions, parity `ready` `100%`) honestly read `stale` on baseline freshness at measurement time; the same-day baseline-refresh slice closed it. The intermediate 0.77.0 record `doctor-20260709T131625Z-33c54d` read `partial` `91%` because doctor mis-read the newly-trusted designer hooks as disabled; the classifier fix released as 0.77.1 restored `ready` `100%`. Both `claude -> codex` and `codex -> claude` passed the permission proof, deep peer smoke, and engineer workflow continuation proof through `state.mjs create`, `dispatch-peer.mjs`, `pending_ensemble`, and `ensemble_results` in an ephemeral temp repo. | satisfied | Keep the explicit installed-runtime proof in the release/install continuity loop whenever the peer path changes. |
 | R4 | Claude Code and Codex user experience must be equivalent where possible; non-portable host-specific features must not become hard dependencies. | Architecture documents host-specific adapter boundaries; runtime baseline documents command/hook/subagent differences; Codex macro/meta skill mirrors exist. The native `runtime:doctor` execute proofs re-recorded under the 0.77.1 install on 2026-07-09 (`doctor-20260709T141930Z-515ebf`, Claude Code `2.1.205` / Codex `0.143.0`, runtime `0.77.1` on both hosts) confirmed bidirectional peer execution and engineer workflow continuation passed both directions, and `runtime:settings` reports source/cache version parity with zero plugin-management config writes planned. Installing designer `0.2.0` grew the hook-bearing set to `designer@0.2.0`/`engineer@0.20.0`/`orchestrator@0.12.0`/`founder@0.3.0`, invalidating the 2026-07-04 attestation `settings-20260704T170801Z-b66656` and requiring a fresh Codex `/hooks` review — which in turn exposed the doctor hook-state defect fixed in 0.77.1 (an absent `enabled` key means enabled, not disabled), after which `~/.codex/config.toml` hook-state reads `12/12` `enabled_trusted` (`untrusted=0`/`disabled=0`/`missing=0`) and the attestation `settings-20260709T141913Z-8b7122` covers all four bundled plugins; At that 0.77.1-era measurement `attention@0.4.0` was still read as a deliberately Claude-hook-only plugin (`claude_adapter_only`, excluded from the Codex sets) and `image` ships no Codex hooks manifest, so observed experience parity then read `ready` (score `100%`, 8/8 satisfied) per this row's gate — a record superseded by the #543 host-truth fold (its 0.78.1 proof read **deliberately** `partial` `95%` with `command-warnings=attention`) and restated by the 2026-07-11 attention relocation install proof `doctor-20260711T045954Z-731e34`: attention `0.4.1` supplies zero Codex hook surface (machine-proven `not_packaged` on the installed cache), the four-plugin attestation `settings-20260711T045915Z-5ca22a` reads current, and observed experience parity is back to `ready` (`100%`, 8/8) per this row's gate — the honest `host_parity_baseline` `stale` caveat (Claude Code `2.1.207` patch drift) was closed by the same-day #550 baseline refresh, and the 0.79.0-native 2026-07-12Z four-persona-seam record (`doctor-20260712T080638Z-005af5`; attestation `settings-20260712T015100Z-312fbb` still current, since runtime ships no hooks and the hook-bearing set is unchanged) re-confirms `ready` (`100%`, 8/8) with the baseline `current` — while the 0.80.0-native 2026-07-13Z S9 completion-output-contract record (`doctor-20260713T025136Z-7758d3`) reads observed parity **deliberately `partial` `91%`** per this row's own gate: the engineer `0.21.0` / orchestrator `0.13.0` hook-bearing upgrades version-invalidated that attestation, and parity was not claimed `ready` until the post-attestation evidence landed (hook trust entries themselves read `12/12` `enabled_trusted`; no hook file changed in this release). The operator's same-day `/hooks` confirmation produced the fresh four-plugin attestation `settings-20260713T030937Z-f50815` (designer@0.2.1 / engineer@0.21.0 / founder@0.3.1 / orchestrator@0.13.0), and the post-attestation record `doctor-20260713T030956Z-20dcc3` restores observed parity to `ready` (`100%`, 8/8, zero manual follow-ups) per this row's gate, with all three execute proofs re-passed both directions. | satisfied | Refresh the active-session `/hooks` review/trust attestation after hook-bearing plugin upgrades or hook packaging changes; do not claim observed parity `ready` until the post-attestation doctor/cutover evidence is recorded. |
 | R5 | Optimize for best results, not token minimization. | Engineer now publishes a tested quality-first default contract: phase-boundary ensembles are the default peer breadth, model/effort defaults stay host-native or `runtime:settings` configured without token-saving downshift, and review depth follows the workflow phase through `parallel-review` and re-review after refine. `runtime:consensus` also records `best-results-over-token-minimization` in manifest, prompt artifacts, and text output with all-requested-peer breadth by default unless the operator constrains it. `tests/engineer/test-start-command.mjs` and `tests/runtime/test-consensus.mjs` cover these fields. | satisfied | Keep quality-first defaults explicit; budget, latency, model, effort, or peer limits must be user constraints with stated quality tradeoffs. |
 | R6 | Context engineering should improve output quality; decisions requested from the user must be concrete, comparative, and evidence-based. | Runtime context artifacts, footer guidance, engineer/orchestrator presentation protocols, and the engineer entry-routing contract exist. `tests/engineer/test-start-command.mjs` verifies the decision prompt fields across `/engineer:start`, `$engineer:start`, and the shared contract. | satisfied | Keep every user decision prompt on the same options/tradeoffs/risks/recommendation/confidence/evidence/default-next-command shape. |
