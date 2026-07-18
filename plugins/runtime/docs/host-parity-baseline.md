@@ -102,6 +102,55 @@ header-only refreshes had left it at `2.1.173`/`0.139.0`):
 | MCP | Claude `claude mcp` manages MCP servers and hook MCP tools can participate in Claude hook decisions. | Codex `codex mcp` manages MCP server entries in Codex config. Plugins can bundle MCP servers. | Runtime may observe MCP command surfaces and plugin packaging, but should not auto-add or rewrite MCP servers outside an explicit settings executor. |
 | Worktrees | Claude CLI exposes `--worktree` and `--tmux`, and agent view can move dispatched sessions into worktrees when edits are needed. Claude Code 2.1.143 added a `worktree.bgIsolation: "none"` setting and changed failed worktree cleanup to avoid force-deleting in-progress or gitignored files. | Codex has app worktree docs and the local CLI supports ordinary git worktree workflows through shell commands, but runtime has no host-native Codex worktree executor. | `runtime:worktree plan` stays read-only. Actual `git worktree add/remove/prune`, host session spawning, and PR handling remain operator actions. Runtime worktree guidance should prefer conservative cleanup and never synthesize forced deletion as a hidden fallback. |
 
+## Claude `SessionStart` Matrix (probed 2026-07-18)
+
+ADR-0045 §7 probe-gate record. Probed live on Claude Code `2.1.214`
+(darwin; isolated project directory; probe hooks loaded via an explicit
+`--settings` file; headless `-p` runs), cross-checked against the
+official hooks reference and the `v2.1.214` changelog. **This section is
+version-bound**: the attention startup-sensor work (ADR-0045 §12 step 4)
+must re-validate this verdict against the then-installed CLI before
+registering a hook. The baseline header's observed-version line is
+governed by the full compat refresh flow and is deliberately not bumped
+by this section.
+
+| Question | Observation / documented truth | Evidence |
+| --- | --- | --- |
+| Matcher vocabulary | Documented semantic matchers: `startup` (new session), `resume` (`--resume` / `--continue` / `/resume`), `clear` (`/clear`), `compact` (auto/manual compaction). `"*"`, `""`, and an omitted matcher are match-all forms (omitted matcher observed live matching a fresh session); regex/alternation matcher patterns are documented. **`2.1.214` adds a fifth emitted source `"fork"`** while the docs matcher table still lists four — whether literal `matcher: "fork"` is accepted is unproven. | docs + changelog + live probe |
+| Fresh session | Exactly one `startup` firing per fresh session — headless `-p` included; `resume`/`clear`/`compact` did not fire. | live probe |
+| Resume | `claude -p --resume <id>` fired `resume` only — no `startup` double-fire; payload `session_id` preserved (`2.1.73` fixed historical double-firing on `--resume`/`--continue`). `/resume`, conversation recovery, and crash restore were not probed. | live probe + changelog |
+| `clear` / `compact` | Not non-interactively probeable (interactive slash commands). Documented sources; `compact` reinjection is separately evidenced by the four persona plugins' production `matcher: "compact"` hooks. | docs + indirect |
+| Payload | stdin JSON carried `session_id`, `transcript_path`, `cwd`, `hook_event_name: "SessionStart"`, `source`. | live probe |
+| stdout injection | Both channels enter model context on exit 0: raw stdout (probe token verbatim-echoed by the model) and JSON `hookSpecificOutput.additionalContext` (wrapped in a system reminder; not a user-visible chat message). Hook-output strings cap at 10,000 chars (overflow spills to a session file + preview). Special outputs: `initialUserMessage` (`-p`), `sessionTitle` (startup/resume only), `watchPaths`, `reloadSkills` (`2.1.152`). | live probe + docs |
+| Ordering | **No ordering guarantee** — all matching handlers run in parallel; array order is not execution order (three identical 3-hook runs completed `B A C`, `A C B`, `A B C`). Plugin hooks merge with user/project hooks into the same parallel pool with no documented precedence; `additionalContext` concatenation order is unspecified; identical command+args handlers are deduplicated. | live probe + docs (mutually confirming) |
+| Failure isolation | Hook `exit 1` non-blocking (observed: session proceeded). `exit 2` also cannot block SessionStart (documented; stderr surfaces as a hook-error notice). Exception: an exit-0 structured `"continue": false` response can halt Claude entirely — an entry sensor must never emit it. | live probe + docs |
+| Timeout | Per-hook `timeout` field honored in **seconds** (observed: `sleep 8` + `timeout: 3` → killed, no side effect, session proceeded). Documented default: **600 s**, and synchronous SessionStart handlers delay session entry until they finish — a registered entry hook must set an explicit small timeout. `2.1.210` fixed hook-callback timeouts misreported as user rejection. | live probe + docs |
+| Safe mode | `--safe-mode` produced zero hook firings **even from an explicitly passed `--settings` file** (observed — closes a documentation gap); session proceeded normally. Documented scope: disables hooks/plugins/skills; managed-policy hooks may remain active. | live probe + docs |
+| Headless | SessionStart fires in `-p` (observed; docs confirm headless loads hooks; `--bare` is the opt-out that skips hook discovery; `2.1.204` fixed headless SessionStart hook-event streaming). | live probe + docs |
+| `2.1.208` → `2.1.214` | Only explicit SessionStart lifecycle change: the new `"fork"` source (`2.1.214`; `/fork` became a copied background session in `2.1.212`). Also `2.1.214`: fixed `--settings`-enabled plugins not loading (regression since `2.1.181`); settings-file startup hardening (2 MiB cap). | changelog |
+
+**Verdict (version-bound, `2.1.214`): PASS.** A usable
+startup-equivalent matcher exists — `startup` — defined as: *fires
+exactly once per fresh session (headless included), carries a parseable
+JSON payload, is non-blocking on failure, honors a bounded per-hook
+timeout, and injects hook stdout into model context*. All five
+properties were observed live on `2.1.214`.
+
+**S9 gate policy** (ADR-0045 §7/§12): the attention startup sensor may
+register `matcher: "startup"` while a current-CLI re-validation of this
+verdict holds; on a failed or stale re-validation the hook surface stays
+unshipped (that subtask goes `deferred`) and the CLI + dashboard
+surfaces ship regardless. Design constraints this matrix pins: the
+sensor MUST pin an explicit `startup` matcher (an omitted matcher
+matches every source, including `compact` — colliding with the persona
+compact-hook lane) and MUST set an explicit small `timeout` (the 600 s
+default delays session entry); `"fork"`-source sessions will not fire a
+`startup`-matched sensor — acceptable for v1 (a fork is a copied
+session, not a fresh entry), re-examined if fork adoption grows; the
+parallel/no-precedence execution model is the probed ground for
+ADR-0045 §1's single-arbiter ruling — independent SessionStart hooks
+cannot be sequenced.
+
 ## What Fails If We Assume Claude Semantics On Codex
 
 - A Claude plugin command plan that says `codex plugin install runtime` is still
