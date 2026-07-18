@@ -50,8 +50,7 @@ import {
 import {
   CONFIG_KEY_FAMILIES,
   NOTIFY_KEY_DEFAULTS,
-  parseRuntimeConfigToml,
-  validateConfigValue,
+  loadEffectiveConfig,
 } from './lib/runtime-config.mjs';
 import {
   EGRESS_ENV_KEYS,
@@ -130,50 +129,22 @@ export function resolveRepoRoot({ cwd = process.cwd(), explicit = null } = {}) {
   }
 }
 
-function readTomlIfExists(filePath) {
-  // ONLY a genuinely absent layer reads as empty (ENOENT; ENOTDIR = a parent
-  // path component is a file). Any other failure (EACCES, EISDIR, EIO) is NOT
-  // "absent" and fail-closes the whole load (Codex review MAJOR): treating an
-  // unreadable HIGHER-precedence layer as missing would let a lower-precedence
-  // layer flip the channel on against the operator's recorded intent.
-  try {
-    return { ok: true, text: fs.readFileSync(filePath, 'utf8') };
-  } catch (error) {
-    if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) {
-      return { ok: true, text: '' };
-    }
-    return { ok: false, error: `${filePath}: ${error?.code ?? error?.message ?? 'unreadable'}` };
-  }
-}
-
 // Effective notify config over repo → user → shipped default, validated per
 // key by the OFFICIAL settings validators. The emitter validates EFFECTIVE
 // values only — surfacing shadowed-invalid lower-precedence entries is the
-// settings plan's per-target scan job.
+// settings plan's per-target scan job. Layering, fail-closed unreadable-layer
+// semantics, and per-key validation live in the shared lib/runtime-config.mjs
+// core (one copy — the ADR-0044 session loader shares it); this wrapper adds
+// only notify's own post-processing (kinds parse, type coercion).
 export function loadNotifyConfig({ repoRoot, homeDir = os.homedir() } = {}) {
-  const repoRead = readTomlIfExists(path.join(repoRoot, '.agentic-plugins', 'config.toml'));
-  const userRead = readTomlIfExists(path.join(homeDir, '.agentic-plugins', 'config.toml'));
-  const readErrors = [repoRead, userRead]
-    .filter((layer) => !layer.ok)
-    .map((layer) => `config layer unreadable (fail-closed): ${layer.error}`);
-  if (readErrors.length > 0) return { ok: false, config: null, errors: readErrors };
-  const repoConfig = parseRuntimeConfigToml(repoRead.text);
-  const userConfig = parseRuntimeConfigToml(userRead.text);
-  const errors = [];
-  const effective = {};
-  for (const key of CONFIG_KEY_FAMILIES.notify) {
-    const value = repoConfig[key] ?? userConfig[key] ?? NOTIFY_KEY_DEFAULTS[key];
-    if (value !== null) {
-      try {
-        validateConfigValue(key, value);
-      } catch (error) {
-        errors.push(error.message);
-        continue;
-      }
-    }
-    effective[key] = value;
-  }
-  if (errors.length > 0) return { ok: false, config: null, errors };
+  const loaded = loadEffectiveConfig({
+    repoRoot,
+    homeDir,
+    keys: CONFIG_KEY_FAMILIES.notify,
+    defaults: NOTIFY_KEY_DEFAULTS,
+  });
+  if (!loaded.ok) return { ok: false, config: null, errors: loaded.errors };
+  const effective = loaded.effective;
   const kinds = parseKindsFilter(effective.notify_kinds);
   if (!kinds.ok) return { ok: false, config: null, errors: kinds.errors };
   return {

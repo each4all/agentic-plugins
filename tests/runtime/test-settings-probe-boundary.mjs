@@ -40,7 +40,7 @@ const PROBE_SECTIONS = ['clis', 'plugins', 'plugin_command_surface', 'plugin_man
 const NULL_OVERALL_COUNTERS = ['plugin_recommendations', 'hook_warnings', 'hook_review_warnings', 'auth_warnings', 'plugin_cleanup_warnings', 'plugin_management_executed', 'plugin_management_failed'];
 const PRESENCE_KEYS = [
   'clis', 'plugins', 'plugin_command_surface', 'plugin_management', 'plugin_cleanup', 'hook_settings', 'codex_hook_review',
-  'config', 'companion_settings', 'notify_settings', 'mutation_boundary', 'artifacts', 'limits', 'overall',
+  'config', 'companion_settings', 'notify_settings', 'session_settings', 'mutation_boundary', 'artifacts', 'limits', 'overall',
   'recommendations', 'permission_plan', 'permission_plan_codex', 'notification_plan', 'egress_launcher_plan',
 ];
 
@@ -102,8 +102,8 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.value, 'fixture-model');
     strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.source, 'repo config codex_model');
     strictEqual(report.config.resolution_order[0], 'explicit command flags');
-    strictEqual(report.schema_version, 'runtime-settings-1.19');
-    strictEqual(SETTINGS_SCHEMA_VERSION, 'runtime-settings-1.19');
+    strictEqual(report.schema_version, 'runtime-settings-1.20');
+    strictEqual(SETTINGS_SCHEMA_VERSION, 'runtime-settings-1.20');
   });
 
   it('emits the dual-mode discriminator with null (never empty) probe sections', async () => {

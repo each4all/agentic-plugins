@@ -691,6 +691,63 @@ describe('plugins/runtime footer helper', () => {
   });
 });
 
+describe('plugins/runtime session-capture foundation (ADR-0044 S2)', () => {
+  // session-capture-contract.md §11 — the packaged contract is asserted BY
+  // CONTENT (the machine-bootstrap-contract §11.3 / footer-contract precedent):
+  // these tokens are the floor that keeps the document from drifting while CI
+  // stays green.
+  it('pins the packaged session-capture contract by content (§11)', async () => {
+    const contract = await readFile(resolve(PLUGIN_ROOT, 'docs/session-capture-contract.md'), 'utf-8');
+    for (const token of [
+      'Session Capture Contract',
+      'runtime-session-capture-1.0',
+      'runtime-session-entry-1.0',
+      'runtime-session-note-1.0',
+      'session_capture',
+      'publish-session',
+      'slot.json',
+      'entry.json',
+      'note.json',
+      'commit record',
+      'fp1:',
+      'last-writer-wins',
+      'never suppressed on',
+      'unknown, never clean',
+      '4096',
+      '300 s',
+      '60 s',
+      '24 h',
+      '160',
+      'O_EXCL',
+      'UTF-8 bytes',
+      'stop-hook',
+      'loadSessionConfig',
+    ]) {
+      ok(contract.includes(token), `session-capture-contract.md contains ${JSON.stringify(token)}`);
+    }
+    ok(/fail-closed/i.test(contract), 'contract states the fail-closed consumer rule');
+    ok(/untrusted\s+quoted\s+data/i.test(contract), 'contract states the untrusted-data rule');
+    // Whitespace-tolerant: markdown reflows can split the phrase across lines
+    // or emphasis markers without weakening the stated rule.
+    ok(/no\s+imperative[\s*]+field/i.test(contract), 'contract states the no-imperative-field rule');
+  });
+
+  // The three schemas the contract names must actually be packaged — a doc
+  // pointing at an unpackaged schema is exactly the "cited by filename but
+  // not shipped" drift hole the packaged-contract vehicle exists to close.
+  it('packages the three session-capture schemas the contract names', async () => {
+    for (const file of [
+      'data/schemas/runtime-session-capture-1.0.json',
+      'data/schemas/runtime-session-entry-1.0.json',
+      'data/schemas/runtime-session-note-1.0.json',
+    ]) {
+      const schema = await readJSON(resolve(PLUGIN_ROOT, file));
+      strictEqual(schema.additionalProperties, false, `${file} follows the closed-schema rule`);
+      ok(Array.isArray(schema.required) && schema.required.includes('schema'), `${file} requires its schema id`);
+    }
+  });
+});
+
 describe('plugins/runtime repo documentation freshness', () => {
   it('keeps root and stage docs aligned with the shipped runtime version and surfaces', async () => {
     const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));

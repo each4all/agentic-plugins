@@ -21,6 +21,7 @@ import {
   canonicalJson,
   canonicalize,
   compareSchemaVersion,
+  PACKAGED_SCHEMA_FILES,
   loadSchema,
   makeDefValidator,
   makeValidator,
@@ -83,10 +84,16 @@ describe('runtime schema validator — the keyword subset is closed', () => {
     throws(() => validateAgainstSchema(toy(), { type: 'object', anyOf: [] }, { readerVersion: READER }), /not supported by this validator/);
   });
 
-  it('every packaged schema is inside the subset', async () => {
-    for (const family of ['agentic-machine-profile', 'runtime-bootstrap-run', 'runtime-plugin-set']) {
+  it('every packaged schema is inside the subset — iterated from the registry, not a hand copy', async () => {
+    const families = Object.keys(PACKAGED_SCHEMA_FILES);
+    ok(families.length >= 6, `registry covers bootstrap + session families (got ${families.length})`);
+    for (const family of families) {
       const schema = await loadSchema(family);
       deepStrictEqual(assertSupportedSchema(schema), [], `${family} uses only implemented keywords`);
+      // Registry key, packaged filename, and the schema's own $id must agree —
+      // a mismatch is exactly the drift a hand-maintained list would hide.
+      ok(schema.$id.startsWith(`${family}-`), `${family}: $id '${schema.$id}' carries the family name`);
+      ok(PACKAGED_SCHEMA_FILES[family].startsWith(`${schema.$id}`), `${family}: filename matches $id`);
     }
   });
 });

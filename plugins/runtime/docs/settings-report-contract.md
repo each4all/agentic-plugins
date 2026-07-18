@@ -120,7 +120,7 @@ Line references below are anchors observed at decision time
   `!(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview)`).
   Evidence collection never affects `dry_run`.
 
-## 3. Report schema contract (`runtime-settings-1.19`)
+## 3. Report schema contract (`runtime-settings-1.20`)
 
 `SETTINGS_SCHEMA_VERSION` bumped `runtime-settings-1.16` → `runtime-settings-1.17`
 for the discriminator below, then `runtime-settings-1.17` →
@@ -132,7 +132,15 @@ so it is `null` alongside its section in `local_plan` mode; then
 `runtime-settings-1.18` → `runtime-settings-1.19` (additive, S8a4) when
 `report.codex_hook_review` gained the canonical `bound_versions` (Codex CLI +
 list-authoritative per-plugin) and `attested_plugins` the completion reducer
-re-validates, alongside the retained legacy `plugin_versions`. The execution artifact
+re-validates, alongside the retained legacy `plugin_versions`; then
+`runtime-settings-1.19` → `runtime-settings-1.20` (additive, ADR-0044 S2) when
+the `session` config family landed: `report.session_settings` (same shape as
+`notify_settings`, evaluated in both modes), `config.key_families.session`,
+`overall.session_warnings` (numeric in both modes), the `session_settings`
+`section_presence` row, and the fail-closed config-target hardening
+(`config.targets[*].status` gains `unreadable` with a `read_error` field —
+an unreadable layer plans no writes and refuses apply; absent stays
+plannable). The execution artifact
 carries the same hash plus the `planned_actions`/`journal[]` write-ahead fields, and
 the same additive `codex_hook_review` canonical fields,
 under its own `runtime-settings-execution-artifact-1.3` schema
@@ -149,7 +157,7 @@ distinguishable only by what it lacks:
   | Section | full | local_plan |
   |---|---|---|
   | `clis`, `plugins`, `plugin_command_surface`, `plugin_management`, `plugin_cleanup`, `hook_settings`, `codex_hook_review` | `evaluated` | `not_evaluated` (value `null`) |
-  | `config`, `companion_settings`, `notify_settings`, `mutation_boundary`, `artifacts`, `limits`, `overall` | `evaluated` | `evaluated` |
+  | `config`, `companion_settings`, `notify_settings`, `session_settings`, `mutation_boundary`, `artifacts`, `limits`, `overall` | `evaluated` | `evaluated` |
   | `permission_plan`, `permission_plan_codex`, `notification_plan`, `egress_launcher_plan` | `evaluated` when requested, else `not_requested` | same |
   | `recommendations` | `evaluated` | `local_only` |
 
@@ -161,8 +169,9 @@ distinguishable only by what it lacks:
   `Object.values(undefined)`; the discriminator carries the semantics, `null`
   carries the ergonomics).
 - `recommendations` in `local_plan` mode is rebuilt from evaluated inputs only
-  (config-derived hints, `companion_settings`, `notify_settings` — erratum
-  2026-07-10: the config-area hints are evaluated-derived and stay) and marked
+  (config-derived hints, `companion_settings`, `notify_settings`,
+  `session_settings` — erratum 2026-07-10: the config-area hints are
+  evaluated-derived and stay) and marked
   `local_only` in `section_presence` — it MUST NOT silently present as full
   coverage.
 - `overall`: gains `scope: "full" | "local_plan"`. The `status` enum is
@@ -177,8 +186,8 @@ distinguishable only by what it lacks:
   `plugin_recommendations`, `hook_warnings`, `hook_review_warnings`,
   `auth_warnings`, `plugin_cleanup_warnings`, `plugin_management_executed`,
   `plugin_management_failed`. Evaluated counters (`planned_config_writes`,
-  `applied_config_targets`, `setting_warnings`, `notify_warnings`) stay
-  numeric. (`summarizeSettings`, today `settings.mjs:2096`, dereferences
+  `applied_config_targets`, `setting_warnings`, `notify_warnings`,
+  `session_warnings`) stay numeric. (`summarizeSettings`, today `settings.mjs:2096`, dereferences
   `report.clis`/`report.plugins`/`report.plugin_management` unconditionally
   and MUST gain scope-aware guards.)
 - `mutation_boundary` honesty amendment (**both modes** — fixes a
@@ -240,7 +249,7 @@ distinguishable only by what it lacks:
    output byte-compatible (modulo nothing), JSON delta limited to the §3 keys.
 3. Renderer guards: `summarizeSettings` and `formatText` on a narrowed report
    (no throw, qualified output, explicit not-evaluated lines).
-4. Schema-version lockstep: the `runtime-settings-1.19` report constant and the
+4. Schema-version lockstep: the `runtime-settings-1.20` report constant and the
    `runtime-settings-execution-artifact-1.3` execution-artifact constant, and the
    exact-version assertions that pin each (`test-settings-probe-boundary.mjs` pins
    both constants; `test-notification-plan.mjs` and `test-settings.mjs` pin the
