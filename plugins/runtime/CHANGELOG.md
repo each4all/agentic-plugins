@@ -20,6 +20,17 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.81.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.80.1...plugin-runtime-v0.81.0) (2026-07-18)
+
+
+### Features
+
+* **runtime:** S8a1 — harden existing doctor/settings production surfaces ([#576](https://github.com/each4all/agentic-plugins/issues/576)) ([267cd33](https://github.com/each4all/agentic-plugins/commit/267cd336ecc5f40518fd54ba089bb5ae951da875))
+* **runtime:** S8a2 — machine-bootstrap core + schemas ([5af386e](https://github.com/each4all/agentic-plugins/commit/5af386ef9acd8f01fcbcc89812d192047df253dc))
+* **runtime:** S8a4 — repair the §8.2 Codex /hooks attestation dead pipe end-to-end ([29bb5b1](https://github.com/each4all/agentic-plugins/commit/29bb5b10d52783a192ab805239bae2062a3eb5c3))
+* **runtime:** S8a5 — per-handler Codex hook-disabled evidence ([#581](https://github.com/each4all/agentic-plugins/issues/581)) ([8712eb9](https://github.com/each4all/agentic-plugins/commit/8712eb9b647fe76a4303b94434efbc3f419338b3))
+* **runtime:** S8b — wire the runtime:bootstrap public surface (tenth runtime command) ([#582](https://github.com/each4all/agentic-plugins/issues/582)) ([960c8bc](https://github.com/each4all/agentic-plugins/commit/960c8bc0c4e9a073e7df93e269c8a4e7286c2956))
+
 ## [0.80.1](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.80.0...plugin-runtime-v0.80.1) (2026-07-14)
 
 
