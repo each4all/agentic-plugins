@@ -423,7 +423,11 @@ export function canonicalJson(document, schema) {
 
 export const BOOTSTRAP_SCHEMA_FILES = Object.freeze({
   'agentic-machine-profile': 'agentic-machine-profile-1.0.json',
-  'runtime-bootstrap-run': 'runtime-bootstrap-run-1.0.json',
+  // 1.1 (S8a5): adds the OPTIONAL probe hosts.codex.hook_state per-handler disabled
+  // evidence. A 1.0 document (no hook_state) still validates against this reader —
+  // the key is not required — while a 1.1 document read by a 1.0-only runtime would
+  // be refused (unknown structural key), which is why the minor bumps at all.
+  'runtime-bootstrap-run': 'runtime-bootstrap-run-1.1.json',
   'runtime-plugin-set': 'runtime-plugin-set-1.0.json',
 });
 

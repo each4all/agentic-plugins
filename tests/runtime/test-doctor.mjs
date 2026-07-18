@@ -7,7 +7,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { formatText, parseArgs, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES, resolveInstalledEngineerRoot } from '../../plugins/runtime/scripts/doctor.mjs';
+import { evaluateCodexHookStateGate, formatText, parseArgs, projectCodexHookStateForProbe, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES, resolveInstalledEngineerRoot } from '../../plugins/runtime/scripts/doctor.mjs';
+import { recomputeHookAttestation } from '../../plugins/runtime/scripts/lib/completion-reducer.mjs';
+import { makeDefValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 
 const PORTABLE_HOOK_COMMAND = '/bin/sh "${PLUGIN_ROOT}/adapters/codex/hooks/run-node-hook.sh" "${PLUGIN_ROOT}/adapters/codex/hooks/hook.mjs"';
 
@@ -425,6 +427,12 @@ describe('runtime doctor', () => {
     await seedCodexInstallCache(home, 'attention', '0.2.0');
     await seedCodexInstallCache(home, 'engineer', '1.0.0');
     await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
+    // The attestation below claims reviewed/trusted hooks, and currency now demands the
+    // hook-state config that trust writes actually EXISTS (S8a5 hook_state_unavailable
+    // gate) — so the fixture machine carries the trusted engineer/orchestrator rows.
+    // Attention's rows stay deliberately absent: expected-but-missing rows do not stale
+    // an attestation, which the assertions below pin.
+    await writeTrustedCodexHookStateConfig(home);
     const attestRunId = 'settings-20260711T000000Z-ca0501';
     await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', attestRunId), { recursive: true });
     await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', attestRunId, 'settings.json'), {
@@ -499,7 +507,7 @@ describe('runtime doctor', () => {
     // it surfaces as unmapped instead of a permanently-missing expectation.
     const attentionExpected = report.codex_plugin_hooks.hook_state.expected.filter((entry) => entry.plugin === 'attention');
     deepStrictEqual(attentionExpected.map((entry) => entry.event).sort(), ['stop', 'subagent_stop']);
-    for (const entry of attentionExpected) strictEqual(entry.state, 'missing', 'empty home: expected but not yet reviewed/trusted');
+    for (const entry of attentionExpected) strictEqual(entry.state, 'missing', 'attention rows absent from hooks.state: expected but not yet reviewed/trusted');
     deepStrictEqual(report.codex_plugin_hooks.hook_state.unmapped_events, [
       { plugin: 'attention', hooks_path: 'hooks/hooks.json', event: 'Notification', normalized_event: 'notification' },
     ]);
@@ -569,7 +577,7 @@ describe('runtime doctor', () => {
     // Pin that doctor actually SAW the synthetic attention source.
     strictEqual(report.plugins.attention.status, 'source_available', 'premise pin: the relocated attention source must be visible to doctor');
     strictEqual(report.plugins.attention.source.present, true, 'premise pin: attention source directory present');
-    strictEqual(report.codex_plugin_hooks.hook_state.schema_version, 'runtime-codex-hook-state-1.1');
+    strictEqual(report.codex_plugin_hooks.hook_state.schema_version, 'runtime-codex-hook-state-1.2');
 
     // Absent from EVERY Codex hook surface set.
     const summary = report.codex_plugin_hooks.summary;
@@ -922,12 +930,15 @@ describe('runtime doctor', () => {
     strictEqual(report.codex_plugin_hooks.hook_state.summary.expected, 6);
     strictEqual(report.codex_plugin_hooks.hook_state.summary.expected_enabled, 0);
     strictEqual(report.codex_plugin_hooks.hook_state.summary.expected_disabled, 6);
+    // Fully disabled groups also surface at the per-handler grain (S8a5): the handler
+    // count is a strict superset of the handlers behind the group count.
+    strictEqual(report.codex_plugin_hooks.hook_state.summary.disabled_handlers, 6);
     ok(report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'enable-codex-hook-state'));
     const followup = report.plugin_command_surface.manual_followups.find((entry) => entry.id === 'codex-hook-review');
-    ok(followup.verify.includes('6/6 expected bundled hook entries disabled'));
+    ok(followup.verify.includes('6 explicitly disabled hook handler(s) across 6 expected bundled hook entries'));
     const text = formatText(report);
-    ok(text.includes('hook-state: config=available; expected=6; enabled=0; disabled=6'));
-    ok(text.includes('disabled-hook-state: engineer; event=pre_compact; path=hooks/hooks.json'));
+    ok(text.includes('hook-state: config=available; expected=6; enabled=0; disabled=6; disabled-handlers=6'));
+    ok(text.includes('disabled-hook-handler: engineer; event=pre_compact; path=hooks/hooks.json; group=0; hook=0; group-state=disabled'));
     ok(text.includes('enable-codex-hook-state'));
   });
 
@@ -993,6 +1004,332 @@ describe('runtime doctor', () => {
 
     strictEqual(report.codex_plugin_hooks.hook_state.summary.expected_disabled, 6,
       'the widening must not swallow a deliberate opt-out');
+  });
+
+  // THE S8a5 FALSE-PASS PIN. Group state is derived enabled-wins, so a handler
+  // explicitly `enabled = false` beside an enabled sibling for the SAME
+  // (plugin, path, event) left `expected_disabled` at 0 — doctor called a recorded
+  // attestation current, settings let a new one through, and the machine-bootstrap
+  // schema's "stales on a disabled expected hook" claim was unenforced. Every
+  // assertion here targets the sibling-masked grain specifically; a fixture that
+  // disabled the whole group (like test #24's plugin-level twin) passes even
+  // without the per-handler derivation, which is exactly how this shipped.
+  it('surfaces a disabled handler masked by an enabled sibling, and stales attestation currency on it (S8a5)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-sibling-mask-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-sibling-mask-home-'));
+    await seedRepo(root);
+    // TWO real Stop handlers (peer finding: with the default single-handler fixture
+    // the 0:1 row below would model a STALE index, not a live sibling — the
+    // aggregation treats both alike today, but this test's name promises the sibling
+    // case, so the fixture delivers it; the orphan-index case has its own test).
+    await writeJson(join(root, 'plugins', 'engineer', 'hooks', 'hooks.json'), {
+      hooks: {
+        SessionStart: [{ matcher: 'compact', hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
+        PreCompact: [{ hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
+        Stop: [{ hooks: [{ type: 'command', command: PORTABLE_HOOK_COMMAND }, { type: 'command', command: PORTABLE_HOOK_COMMAND }] }],
+      },
+    });
+    await seedCodexInstallCache(home, 'engineer', '1.0.0');
+    await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
+    // All six expected entries trusted — plus a SECOND handler row for engineer:stop
+    // (hook index 1) that Codex recorded explicitly disabled.
+    await writeTrustedCodexHookStateConfig(home, 'hooks/hooks.json', {
+      extraLines: [
+        '[hooks.state."engineer@agentic-plugins:hooks/hooks.json:stop:0:1"]',
+        'enabled = false',
+        'trusted_hash = "sha256:sibling"',
+        '',
+      ],
+    });
+    // An otherwise-CURRENT attestation (matching plugin set, versions, and the pinned
+    // codex-cli 0.130.0), so the disabled handler is the only thing that can stale it.
+    const runId = 'settings-20260718T000000Z-a5f001';
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
+      schema_version: 'runtime-settings-execution-artifact-1.3',
+      run_id: runId,
+      status: 'recorded',
+      created_at: '2026-07-18T00:00:00.000Z',
+      codex_hook_review: {
+        mode: 'operator-attestation',
+        requested: true,
+        attested: true,
+        status: 'attested',
+        host: 'codex',
+        command: '/hooks',
+        attested_at: '2026-07-18T00:00:00.000Z',
+        bundled_plugins: ['engineer', 'orchestrator'],
+        attested_plugins: ['engineer', 'orchestrator'],
+        plugin_versions: { engineer: '1.0.0', orchestrator: '1.0.0' },
+        bound_versions: { codex: '0.130.0', plugins: { codex: { engineer: '1.0.0', orchestrator: '1.0.0' } } },
+      },
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    // The group taxonomy is PRESERVED: enabled-wins still reads engineer:stop as
+    // enabled_trusted, and the old group grain still sees nothing disabled. These two
+    // pins prove this is the masked case, not a fully-disabled group re-test.
+    const hookState = report.codex_plugin_hooks.hook_state;
+    const stopGroup = hookState.expected.find((entry) => entry.plugin === 'engineer' && entry.event === 'stop');
+    strictEqual(stopGroup.state, 'enabled_trusted', 'the sibling keeps the group enabled');
+    strictEqual(stopGroup.configured, 2);
+    strictEqual(stopGroup.disabled, 1);
+    strictEqual(hookState.summary.expected_disabled, 0, 'the group grain cannot see the disabled handler');
+    // The per-handler grain CAN.
+    strictEqual(hookState.summary.disabled_handlers, 1);
+    deepStrictEqual(hookState.disabled_handlers, [{
+      plugin: 'engineer',
+      hooks_path: 'hooks/hooks.json',
+      event: 'stop',
+      group_index: '0',
+      hook_index: '1',
+      id: 'engineer@agentic-plugins:hooks/hooks.json:stop:0:1',
+      group_state: 'enabled_trusted',
+    }]);
+    ok(report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'enable-codex-hook-state'),
+      'the enable recommendation fires on per-handler evidence');
+
+    // Currency: the otherwise-current attestation is NOT current while the handler is
+    // disabled — the exact verdict that false-passed before the per-handler derivation.
+    strictEqual(report.settings_runs.codex_hook_review.current, false);
+    strictEqual(report.settings_runs.codex_hook_review.currency_reason, 'disabled_hook_state');
+    strictEqual(report.settings_runs.codex_hook_review.status, 'stale');
+    const followup = report.plugin_command_surface.manual_followups.find((entry) => entry.id === 'codex-hook-review');
+    ok(followup, 'the re-review follow-up re-opens');
+    ok(followup.verify.includes('1 explicitly disabled hook handler(s)'), 'the hint names the handler count');
+    ok(formatText(report).includes('disabled-hook-handler: engineer; event=stop; path=hooks/hooks.json; group=0; hook=1; group-state=enabled_trusted'));
+
+    // Producer→schema→reducer parity: the probe projection of THIS report validates
+    // against the packaged 1.1 $defs shape, and the completion reducer reaches the
+    // SAME stale verdict on it for the same reason.
+    const projected = projectCodexHookStateForProbe(hookState);
+    deepStrictEqual(projected, {
+      observation: 'available',
+      disabled_expected: [{ plugin: 'engineer', hooks_path: 'hooks/hooks.json', event: 'stop', group_index: '0', hook_index: '1' }],
+    });
+    const validateHookState = await makeDefValidator('runtime-bootstrap-run', 'codexHookStateProbe');
+    const validated = validateHookState(projected);
+    strictEqual(validated.ok, true, `the projection conforms to the persisted probe shape: ${validated.errors.join('; ')}`);
+    const verdict = recomputeHookAttestation({
+      status: 'attested',
+      attested_plugins: ['engineer', 'orchestrator'],
+      bound_versions: { codex: '0.130.0', plugins: { codex: { engineer: '1.0.0', orchestrator: '1.0.0' } } },
+      artifact_pointer: null,
+      artifact_hash: null,
+      attested_at: '2026-07-18T00:00:00.000Z',
+    }, {
+      current: { runtime: RUNTIME_VERSION, claude: '2.1.208', codex: '0.130.0', plugins: { claude: {}, codex: { engineer: '1.0.0', orchestrator: '1.0.0' } } },
+      expectedPlugins: ['engineer', 'orchestrator'],
+      probe: {
+        hosts: {
+          claude: { cli_version: '2.1.208', auth: 'available', marketplace: 'registered', plugins: {} },
+          codex: {
+            cli_version: '0.130.0',
+            auth: 'available',
+            marketplace: 'registered',
+            plugins: { engineer: { version: '1.0.0', state: 'installed' }, orchestrator: { version: '1.0.0', state: 'installed' } },
+            hook_state: projected,
+          },
+        },
+      },
+      applicable: true,
+    });
+    strictEqual(verdict.status, 'stale', 'the reducer agrees with the mirror on the same evidence');
+    ok(verdict.reasons.some((reason) => reason.includes('engineer has an explicitly disabled hook handler (hooks/hooks.json:stop:0:1)')),
+      `the stale reason names the handler: ${verdict.reasons.join(' | ')}`);
+    ok(!verdict.reasons.some((reason) => reason.includes('is disabled on Codex')),
+      'the plugin-level check is NOT the cause — the plugin is installed; only the handler is off');
+  });
+
+  // The probe projection carries the read-site verdict VERBATIM — the three-way
+  // available/missing/unreadable classification lives in machine-probe's
+  // readObservedCodexHookConfig (refine-verify: an earlier draft re-split the errno
+  // here and disagreed with the live report about the same EACCES machine). A null
+  // report projects to NULL (omit the optional field — nothing was observed), never
+  // to a fabricated 'unreadable' read failure.
+  it('projects the hook-state observation verbatim, and null input to null (S8a5)', () => {
+    deepStrictEqual(
+      projectCodexHookStateForProbe({ config_status: 'available', disabled_handlers: [] }),
+      { observation: 'available', disabled_expected: [] },
+    );
+    deepStrictEqual(
+      projectCodexHookStateForProbe({ config_status: 'missing', disabled_handlers: [] }),
+      { observation: 'missing', disabled_expected: [] },
+    );
+    deepStrictEqual(
+      projectCodexHookStateForProbe({ config_status: 'unreadable', disabled_handlers: [] }),
+      { observation: 'unreadable', disabled_expected: [] },
+    );
+    // An unknown legacy status maps to the conservative "state unknown" verdict.
+    deepStrictEqual(
+      projectCodexHookStateForProbe({ config_status: 'weird', disabled_handlers: [] }).observation,
+      'unreadable',
+    );
+    strictEqual(projectCodexHookStateForProbe(null), null);
+    strictEqual(projectCodexHookStateForProbe(undefined), null);
+    // The shared gate treats an ABSENT report as an unavailable trust store — zero
+    // evidence must gate exactly like an unobservable config, never pass (the
+    // truthiness-guard form skipped both gates on null and returned current).
+    strictEqual(evaluateCodexHookStateGate(null).blocked, true);
+    strictEqual(evaluateCodexHookStateGate(null).reason, 'hook_state_unavailable');
+    strictEqual(evaluateCodexHookStateGate({ config_status: 'available', summary: { disabled_handlers: 0, expected: 6 } }).blocked, false);
+  });
+
+  // Stale `[hooks.state]` rows whose coordinates no longer exist in the current hooks
+  // file (the plugin removed a handler after the operator disabled it) COUNT as
+  // disabled evidence — deliberately fail-closed: the aggregation matches on
+  // (plugin, path, event) and does not confirm group/hook indexes against the file,
+  // because runtime cannot query which coordinates current Codex still honors
+  // (ADR-0030 — trust state is not queryable non-interactively). The operator
+  // recovery is /hooks review, which rewrites the plugin's rows. Quarantining orphan
+  // coordinates instead needs empirical evidence of Codex's stale-row cleanup
+  // behavior — recorded as a follow-up trigger, not guessed here.
+  it('counts a disabled row for a REMOVED handler coordinate (orphan index) as disabled evidence — fail-closed (S8a5)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-orphan-index-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-orphan-index-home-'));
+    await seedRepo(root); // engineer Stop has exactly ONE handler (0:0)
+    await writeTrustedCodexHookStateConfig(home, 'hooks/hooks.json', {
+      extraLines: [
+        // A row for a handler index the current hooks.json does not define.
+        '[hooks.state."engineer@agentic-plugins:hooks/hooks.json:stop:0:9"]',
+        'enabled = false',
+        'trusted_hash = "sha256:orphan"',
+        '',
+      ],
+    });
+
+    const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    const hookState = report.codex_plugin_hooks.hook_state;
+    strictEqual(hookState.summary.disabled_handlers, 1, 'the orphan row still surfaces as disabled evidence');
+    deepStrictEqual(hookState.disabled_handlers[0].hook_index, '9');
+    ok(report.codex_plugin_hooks.recommendations.some((rec) => rec.action === 'enable-codex-hook-state'),
+      'the operator is pointed at /hooks, whose review rewrites the stale rows');
+  });
+
+  // The plugin-grain twin of the per-handler gate (S8a5 refine-verify, peer finding):
+  // the S8a4 version authority says a Codex-DISABLED plugin is not attestable, but the
+  // mirror consumed only its `.version` — so a disabled plugin with a matching version
+  // read `current` here while the completion reducer staled the same machine on plugin
+  // state. The attestable verdict is now consumed.
+  it('stales attestation currency for a Codex-DISABLED bundled hook plugin (plugin_not_attestable, S8a5)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-attest-disabled-plugin-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-attest-disabled-plugin-home-'));
+    await seedRepo(root);
+    await writeTrustedCodexHookStateConfig(home);
+    const runId = 'settings-20260718T020000Z-a5f003';
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
+      schema_version: 'runtime-settings-execution-artifact-1.3',
+      run_id: runId,
+      status: 'recorded',
+      created_at: '2026-07-18T02:00:00.000Z',
+      codex_hook_review: {
+        mode: 'operator-attestation',
+        requested: true,
+        attested: true,
+        status: 'attested',
+        host: 'codex',
+        command: '/hooks',
+        attested_at: '2026-07-18T02:00:00.000Z',
+        bundled_plugins: ['engineer', 'orchestrator'],
+        attested_plugins: ['engineer', 'orchestrator'],
+        plugin_versions: { engineer: '0.7.0', orchestrator: '0.7.0' },
+        bound_versions: { codex: '0.130.0', plugins: { codex: { engineer: '0.7.0', orchestrator: '0.7.0' } } },
+      },
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+        // The Codex list — the S8a4 authority — reports engineer installed at the
+        // attested version but DISABLED; orchestrator enabled at the attested version.
+        'codex plugin list --json': okResult(JSON.stringify({ installed: [
+          { name: 'engineer', marketplaceName: 'agentic-plugins', version: '0.7.0', installed: true, enabled: false },
+          { name: 'orchestrator', marketplaceName: 'agentic-plugins', version: '0.7.0', installed: true, enabled: true },
+        ] })),
+      }),
+    });
+
+    strictEqual(report.settings_runs.codex_hook_review.current, false);
+    strictEqual(report.settings_runs.codex_hook_review.currency_reason, 'plugin_not_attestable');
+    ok(report.plugin_command_surface.manual_followups.some((entry) => entry.id === 'codex-hook-review'),
+      'a disabled hook plugin re-opens the re-review follow-up');
+  });
+
+  // The machine-probe read-site classification: a config.toml that EXISTS but cannot
+  // be read as text (here: it is a directory — EISDIR) is `unreadable`, not `missing`
+  // — the operator recovery is "fix the file", not "trust hooks for the first time".
+  it('classifies an unreadable Codex config as config=unreadable and stales currency on it (S8a5)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-state-unreadable-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-state-unreadable-home-'));
+    await seedRepo(root);
+    await mkdir(join(home, '.codex', 'config.toml'), { recursive: true }); // a DIRECTORY at the config path
+
+    const report = await runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultRuntimeProbeMap()) });
+    strictEqual(report.codex_plugin_hooks.hook_state.config_status, 'unreadable');
+    ok(formatText(report).includes('hook-state: config=unreadable'));
+    deepStrictEqual(
+      projectCodexHookStateForProbe(report.codex_plugin_hooks.hook_state).observation,
+      'unreadable',
+      'the persisted observation carries the same read-site verdict the live report shows',
+    );
+  });
+
+  it('stales an otherwise-current attestation when no hook-state config exists — trust is recorded there (S8a5)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-state-absent-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-state-absent-home-'));
+    await seedRepo(root);
+    await seedCodexInstallCache(home, 'engineer', '1.0.0');
+    await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
+    // NO ~/.codex/config.toml at all: the machine carries an attestation claiming
+    // reviewed/trusted hooks, but the config trust writes to does not exist.
+    const runId = 'settings-20260718T010000Z-a5f002';
+    await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
+    await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
+      schema_version: 'runtime-settings-execution-artifact-1.3',
+      run_id: runId,
+      status: 'recorded',
+      created_at: '2026-07-18T01:00:00.000Z',
+      codex_hook_review: {
+        mode: 'operator-attestation',
+        requested: true,
+        attested: true,
+        status: 'attested',
+        host: 'codex',
+        command: '/hooks',
+        attested_at: '2026-07-18T01:00:00.000Z',
+        bundled_plugins: ['engineer', 'orchestrator'],
+        attested_plugins: ['engineer', 'orchestrator'],
+        plugin_versions: { engineer: '1.0.0', orchestrator: '1.0.0' },
+        bound_versions: { codex: '0.130.0', plugins: { codex: { engineer: '1.0.0', orchestrator: '1.0.0' } } },
+      },
+    });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner({
+        ...defaultRuntimeProbeMap(),
+        'codex features list': okResult('hooks stable true\nplugin_hooks under development true\nplugins stable true\nmulti_agent stable true\n'),
+      }),
+    });
+
+    strictEqual(report.codex_plugin_hooks.hook_state.config_status, 'missing', 'premise: no config observed');
+    strictEqual(report.settings_runs.codex_hook_review.current, false);
+    strictEqual(report.settings_runs.codex_hook_review.currency_reason, 'hook_state_unavailable');
+    ok(report.plugin_command_surface.manual_followups.some((entry) => entry.id === 'codex-hook-review'),
+      'the re-review follow-up re-opens when the trust store is gone');
   });
 
   it('reports Codex hook command portability warnings when hook commands still point at Claude adapter paths', async () => {
@@ -1093,6 +1430,9 @@ describe('runtime doctor', () => {
     // to read them current (list-authoritative, S8a4 §SCOPE-2) — a source-only match no longer counts.
     await seedCodexInstallCache(home, 'engineer', '1.0.0');
     await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
+    // A current attestation also requires the hook-state config trust writes to exist
+    // (S8a5 hook_state_unavailable gate) with no explicitly disabled handler.
+    await writeTrustedCodexHookStateConfig(home);
     const runId = 'settings-20260513T000000Z-abcdef';
     await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
     await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
@@ -1180,9 +1520,11 @@ describe('runtime doctor', () => {
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-hook-cli-drift-home-'));
     await seedRepo(root);
     // Plugins ARE installed and match; ONLY the Codex CLI version differs from the bound
-    // one — the dimension the pre-S8a4 mirror was blind to (the dead pipe).
+    // one — the dimension the pre-S8a4 mirror was blind to (the dead pipe). The trusted
+    // hook-state config exists so the S8a5 evidence gates cannot be the cause either.
     await seedCodexInstallCache(home, 'engineer', '1.0.0');
     await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
+    await writeTrustedCodexHookStateConfig(home);
     const runId = 'settings-20260713T000000Z-c11001';
     await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
     await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
@@ -1231,6 +1573,9 @@ describe('runtime doctor', () => {
     await seedRepo(root);
     await seedCodexInstallCache(home, 'engineer', '1.0.0');
     await seedCodexInstallCache(home, 'orchestrator', '1.0.0');
+    // Trusted hook-state config present, so the legacy record's missing bound_versions —
+    // not an S8a5 evidence gate — is what stales it.
+    await writeTrustedCodexHookStateConfig(home);
     const runId = 'settings-20260713T010000Z-1e6ac0';
     await mkdir(join(root, '.agentic-plugins', 'runs', 'settings', runId), { recursive: true });
     await writeJson(join(root, '.agentic-plugins', 'runs', 'settings', runId, 'settings.json'), {
@@ -3367,7 +3712,7 @@ async function writeDisabledCodexHookStateConfig(home, hooksPath = 'hooks/hooks.
 // this is the only reachable trusted state for a newly-installed hook-bearing
 // plugin. `enabled = true` appears in older configs as residue from an earlier
 // Codex; both must read as ENABLED.
-async function writeTrustedCodexHookStateConfig(home, hooksPath = 'hooks/hooks.json', { explicitEnabled = false } = {}) {
+async function writeTrustedCodexHookStateConfig(home, hooksPath = 'hooks/hooks.json', { explicitEnabled = false, extraLines = [] } = {}) {
   await mkdir(join(home, '.codex'), { recursive: true });
   const lines = [
     '[features]',
@@ -3384,6 +3729,7 @@ async function writeTrustedCodexHookStateConfig(home, hooksPath = 'hooks/hooks.j
       lines.push('');
     }
   }
+  lines.push(...extraLines);
   await writeFile(join(home, '.codex', 'config.toml'), lines.join('\n'));
 }
 

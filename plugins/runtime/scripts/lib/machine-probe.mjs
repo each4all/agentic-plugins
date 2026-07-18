@@ -1125,12 +1125,29 @@ async function readObservedCodexHookConfig({ codexHome }) {
     marketplace: entry.marketplace,
     hooks_path: entry.hooks_path,
     event: entry.event,
+    // The INDIVIDUAL-HANDLER coordinates from the `[hooks.state]` id
+    // (`plugin@marketplace:path:event:group:hook`). Dropping them here is what made
+    // per-handler disabled evidence underivable downstream (S8a5): doctor's
+    // aggregation could only reason at the (plugin,path,event) group grain, so an
+    // explicitly disabled handler beside an enabled sibling vanished.
+    group_index: entry.group_index,
+    hook_index: entry.hook_index,
     enabled: entry.enabled,
     trusted: Boolean(entry.trusted_hash),
   }));
+  // The read verdict is classified HERE, at the read site, three ways — not collapsed
+  // to available/missing and re-derived downstream (refine-verify: doctor's probe
+  // projection re-split the errno and disagreed with this flat status on an EACCES
+  // machine — the live report said `missing` while the persisted evidence said
+  // `unreadable`, two derivations of one read). Plain absence follows the repo's
+  // ENOENT||ENOTDIR rule (lib/notification-plan.mjs isNotificationReadBlocked
+  // precedent — a $CODEX_HOME component that is a regular file is absence, not an
+  // I/O failure); anything else is `unreadable`: the state is unknown, which is a
+  // different operator recovery than "no hook was ever trusted".
+  const readAbsent = currentText.reason === 'ENOENT' || currentText.reason === 'ENOTDIR';
   return {
     config_path: configPath,
-    config_status: currentText.ok ? 'available' : 'missing',
+    config_status: currentText.ok ? 'available' : readAbsent ? 'missing' : 'unreadable',
     read_error: currentText.ok ? null : currentText.reason,
     entries,
   };

@@ -687,13 +687,16 @@ async function buildCodexPluginHookReport({ codex, plugins, observedCodexHookCon
     // --apply-codex-plugin-hooks host-config write, which was removed per
     // ADR-0035 §6; enablement on legacy hosts is a manual config edit.
   }
-  if (hookState.summary.expected_disabled > 0) {
+  // Keyed on the PER-HANDLER count (S8a5), not the group-state count: a handler
+  // explicitly disabled beside an enabled sibling leaves `expected_disabled` at 0
+  // while the hook is genuinely not firing.
+  if (hookState.summary.disabled_handlers > 0) {
     recommendations.push({
       host: 'codex',
       area: 'hooks',
       action: 'enable-codex-hook-state',
       executable: false,
-      detail: `Codex user config has disabled hook state for ${hookState.summary.expected_disabled}/${hookState.summary.expected} expected bundled hook entries.`,
+      detail: `Codex user config has ${hookState.summary.disabled_handlers} explicitly disabled hook handler(s) across ${hookState.summary.expected} expected bundled hook entries (${hookState.summary.expected_disabled} fully disabled).`,
       next_step: 'Open /hooks, enable and trust the listed agentic-plugins hooks. If /hooks still shows old cache-version node commands, restart Codex so the latest plugin registry is loaded, then review again.',
     });
   }
@@ -788,6 +791,7 @@ function buildCodexHookStateReport({ observedConfig, reviewTargets }) {
   const { config_path: configPath, config_status: configStatus, read_error: readError, entries } = observedConfig;
   const expected = [];
   const unmappedEvents = [];
+  const disabledHandlers = [];
   for (const target of reviewTargets ?? []) {
     const hooksPath = normalizeCodexHookStatePath(target.hooks_path, target.plugin);
     for (const event of target.events ?? []) {
@@ -845,6 +849,26 @@ function buildCodexHookStateReport({ observedConfig, reviewTargets }) {
         trusted: trustedMatches.length,
         ids: matches.map((entry) => entry.id).sort(),
       });
+      // PER-HANDLER disabled evidence (S8a5). The group `state` above is derived
+      // enabled-wins: ANY sibling with enabled!==false makes the group enabled_*, so
+      // an entry explicitly disabled beside an enabled sibling never reaches
+      // `disabled_expected` — the exact false-pass that let doctor call an
+      // attestation current while a handler was off. Disabled evidence is therefore
+      // ALSO derived at the individual-handler grain, without changing the group
+      // taxonomy: an expected (plugin,path,event) with ANY handler enabled===false
+      // surfaces that handler here, absent-key=enabled preserved (only an explicit
+      // `false` lands in disabledMatches).
+      for (const entry of disabledMatches) {
+        disabledHandlers.push({
+          plugin: target.plugin,
+          hooks_path: hooksPath,
+          event: normalizedEvent,
+          group_index: entry.group_index ?? null,
+          hook_index: entry.hook_index ?? null,
+          id: entry.id,
+          group_state: state,
+        });
+      }
     }
   }
   const expectedKey = new Set(expected.map((entry) => `${entry.plugin}:${entry.hooks_path}:${entry.event}`));
@@ -856,8 +880,13 @@ function buildCodexHookStateReport({ observedConfig, reviewTargets }) {
   const enabledExpected = expected.filter((entry) => entry.state === 'enabled_trusted' || entry.state === 'enabled_untrusted');
   const untrustedExpected = expected.filter((entry) => entry.state === 'enabled_untrusted');
   const missingExpected = expected.filter((entry) => entry.state === 'missing');
+  // Code-unit compare, NOT localeCompare: these are machine ids, and ICU collation is
+  // locale-dependent — the same hook state must serialize in the same order on every
+  // machine (the order flows into the persisted probe via the projection).
+  disabledHandlers.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return {
-    schema_version: 'runtime-codex-hook-state-1.1',
+    // 1.2: adds the per-handler `disabled_handlers` rows + summary count (S8a5).
+    schema_version: 'runtime-codex-hook-state-1.2',
     config_path: configPath,
     config_status: configStatus,
     read_error: readError,
@@ -870,15 +899,122 @@ function buildCodexHookStateReport({ observedConfig, reviewTargets }) {
       expected_disabled: disabledExpected.length,
       expected_untrusted: untrustedExpected.length,
       expected_missing: missingExpected.length,
+      // Individual handlers explicitly `enabled = false` across ALL expected groups —
+      // a strict superset of the handlers behind `expected_disabled` (a fully disabled
+      // group's handlers all count here). This, not `expected_disabled`, is the
+      // disabled-gate signal: the group count misses a disabled handler whose sibling
+      // is enabled.
+      disabled_handlers: disabledHandlers.length,
       unexpected_agentic_entries: unexpectedAgenticEntries.length,
       unmapped_events: unmappedEvents.length,
     },
     unmapped_events: unmappedEvents,
     expected,
+    // TWO grains, ONE authority: `disabled_handlers` (every explicitly disabled
+    // handler, sibling-masked included) is what every gate keys on —
+    // evaluateCodexHookStateGate, the attest hint, the enable recommendation, and the
+    // persisted-probe projection all read it. `disabled_expected` (groups whose EVERY
+    // handler is disabled) is retained as display taxonomy for external report
+    // consumers; keying a gate on it is the S8a5 false-pass — do not.
     disabled_expected: disabledExpected,
+    disabled_handlers: disabledHandlers,
     untrusted_expected: untrustedExpected,
     unexpected_agentic_entries: unexpectedAgenticEntries,
   };
+}
+
+// Project the observed hook-state report onto the bootstrap-run probe shape
+// (`probe.hosts.codex.hook_state`, runtime-bootstrap-run-1.1, S8a5): the OBSERVATION
+// verdict plus the per-handler disabled coordinates, nothing else. The correlation
+// itself stays in buildCodexHookStateReport (machine-bootstrap-contract.md §1.1);
+// this is the S8b writer's seam, exported so the persisted evidence and the live
+// report can never be assembled from two different derivations.
+//
+// `observation` IS the report's `config_status` — the three-way read verdict is
+// classified once, at the read site (machine-probe.mjs readObservedCodexHookConfig),
+// so the live report text and the persisted evidence cannot disagree about the same
+// read (refine-verify: an earlier draft re-split the errno here and called an EACCES
+// machine `unreadable` while the live report said `missing`). An unknown legacy
+// status maps to `unreadable` — the conservative "state unknown" verdict.
+//
+// A NULL report returns NULL: there is no observation to persist, and fabricating an
+// `unreadable` row would tell the operator a read failed when nothing was ever read.
+// A writer receiving null omits the optional field, which the completion reducer
+// reads as "no observation — re-probe" (its own distinct stale reason).
+export function projectCodexHookStateForProbe(hookState) {
+  if (!hookState) return null;
+  const observation = ['available', 'missing', 'unreadable'].includes(hookState.config_status)
+    ? hookState.config_status
+    : 'unreadable';
+  return {
+    observation,
+    disabled_expected: (hookState.disabled_handlers ?? []).map((row) => ({
+      plugin: row.plugin,
+      hooks_path: row.hooks_path,
+      event: row.event,
+      group_index: row.group_index,
+      hook_index: row.hook_index,
+    })),
+  };
+}
+
+// The ONE attestation-blocking predicate over live hook-state evidence (S8a5
+// refine-verify). It existed as three hand-edited copies — doctor's currency mirror,
+// settings' attest gate, and the reducer's persisted twin — and the settings copy
+// missed the observation dimension IN THE SAME DIFF that added it to the other two:
+// a machine with no config.toml attested cleanly and the very next doctor called the
+// fresh artifact stale. Producer and mirror now consult this single predicate; the
+// completion reducer stays the persisted-evidence twin (it reads the probe shape and
+// speaks in reasons[], but its verdicts must match this one — pinned by tests).
+//
+//   - absent report / config_status !== 'available'  → hook_state_unavailable
+//     (trust is RECORDED in config.toml; a claim with no observable trust store
+//     behind it is not evidence, whatever the handler counts say — entries are
+//     necessarily empty exactly when the store is unobservable)
+//   - any explicitly disabled handler (per-handler grain) → disabled_hook_state
+export function evaluateCodexHookStateGate(hookState) {
+  const summary = hookState?.summary ?? {};
+  if (!hookState || hookState.config_status !== 'available') {
+    return {
+      blocked: true,
+      reason: 'hook_state_unavailable',
+      observation: hookState?.config_status ?? 'unobserved',
+      disabled_handlers: 0,
+      expected: summary.expected ?? 0,
+    };
+  }
+  const disabledHandlers = summary.disabled_handlers ?? 0;
+  if (disabledHandlers > 0) {
+    return { blocked: true, reason: 'disabled_hook_state', observation: 'available', disabled_handlers: disabledHandlers, expected: summary.expected ?? 0 };
+  }
+  return { blocked: false, reason: null, observation: 'available', disabled_handlers: 0, expected: summary.expected ?? 0 };
+}
+
+// The pre-attest operator hint derived from the SAME gate — one sentence, one home,
+// after this diff had to edit the identical string in doctor and settings in lockstep.
+export function codexHookStateAttestHint(hookState) {
+  const gate = evaluateCodexHookStateGate(hookState);
+  if (gate.reason === 'disabled_hook_state') {
+    return ` Current Codex config reports ${gate.disabled_handlers} explicitly disabled hook handler(s) across ${gate.expected} expected bundled hook entries; enable them in /hooks before attesting.`;
+  }
+  if (gate.reason === 'hook_state_unavailable') {
+    return ` The Codex hook-state config (where /hooks records trust) is ${gate.observation}; review/trust the bundled hooks in /hooks so trust is recorded before attesting.`;
+  }
+  return '';
+}
+
+// The hook-state text block, shared by doctor's and settings' formatText renderers —
+// previously a char-identical copy in each (both edited in lockstep by this diff).
+export function formatCodexHookStateLines(state) {
+  if (!state) return [];
+  const lines = [];
+  lines.push(`- hook-state: config=${state.config_status}; expected=${state.summary.expected}; enabled=${state.summary.expected_enabled}; disabled=${state.summary.expected_disabled}; disabled-handlers=${state.summary.disabled_handlers ?? 0}; missing=${state.summary.expected_missing}; untrusted=${state.summary.expected_untrusted}; unexpected-agentic=${state.summary.unexpected_agentic_entries}; unmapped=${state.summary.unmapped_events ?? 0}`);
+  // Per-handler rows (S8a5): each explicitly disabled handler renders individually —
+  // including one whose group reads enabled because a sibling is on.
+  for (const handler of state.disabled_handlers ?? []) {
+    lines.push(`  disabled-hook-handler: ${handler.plugin}; event=${handler.event}; path=${handler.hooks_path}; group=${handler.group_index ?? '?'}; hook=${handler.hook_index ?? '?'}; group-state=${handler.group_state}`);
+  }
+  return lines;
 }
 
 function buildCodexHookLocation({ manifestHooks, manifestHooksFile, defaultHooksFile, origin }) {
@@ -1396,10 +1532,9 @@ function buildCodexHookReviewManualFollowup(codexPluginHooks, surface, settingsR
   // "re-review required" in another is exactly the inconsistency S8a4 §SCOPE-3 closes).
   if (settingsRuns?.codex_hook_review?.current === true) return null;
   const reviewTargets = codexPluginHooks?.review_targets ?? [];
-  const hookState = codexPluginHooks?.hook_state?.summary ?? {};
-  const hookStateHint = hookState.expected_disabled > 0
-    ? ` Current Codex config reports ${hookState.expected_disabled}/${hookState.expected} expected bundled hook entries disabled; enable them in /hooks before attesting.`
-    : '';
+  // One shared hint derived from the ONE gate predicate (S8a5) — the per-handler
+  // grain, plus the unavailable-trust-store case, phrased once for both surfaces.
+  const hookStateHint = codexHookStateAttestHint(codexPluginHooks?.hook_state ?? null);
   return {
     id: 'codex-hook-review',
     host: 'codex',
@@ -1422,8 +1557,18 @@ function getCurrentCodexHookReviewAttestation(settingsRuns, codexPluginHooks, pl
   if (!attestation || attestation.attested !== true || attestation.status !== 'attested') {
     return { current: false, reason: 'missing', attestation: null };
   }
-  if ((codexPluginHooks?.hook_state?.summary?.expected_disabled ?? 0) > 0) {
-    return { current: false, reason: 'disabled_hook_state', attestation };
+  // Hook-state evidence gate (S8a5) — the ONE shared predicate (see
+  // evaluateCodexHookStateGate) settings' producer gate also consults, so a machine
+  // that can be attested is exactly a machine whose attestation reads current. It
+  // blocks on an unobservable trust store (absent report or config_status !==
+  // 'available' — an ABSENT report must not skip the gate: zero evidence reading as
+  // current is the opposite of the reducer's verdict on the same machine) and on any
+  // explicitly disabled handler at the per-handler grain (`disabled_handlers` is a
+  // strict superset of the group-state `expected_disabled` count, which missed a
+  // handler disabled beside an enabled sibling).
+  const hookStateGate = evaluateCodexHookStateGate(codexPluginHooks?.hook_state ?? null);
+  if (hookStateGate.blocked) {
+    return { current: false, reason: hookStateGate.reason, attestation };
   }
   const expectedPlugins = codexPluginHooks?.summary?.bundled_plugins ?? [];
   // Prefer the canonical attested_plugins set; fall back to legacy bundled_plugins so a
@@ -1445,7 +1590,16 @@ function getCurrentCodexHookReviewAttestation(settingsRuns, codexPluginHooks, pl
   const boundPlugins = attestation.bound_versions?.plugins?.codex ?? null;
   for (const pluginName of expectedPlugins) {
     const attested = (boundPlugins?.[pluginName] ?? attestation.plugin_versions?.[pluginName]) ?? null;
-    const actual = resolveCodexInstalledVersionFromMatrix(plugins?.[pluginName]).version;
+    const resolvedActual = resolveCodexInstalledVersionFromMatrix(plugins?.[pluginName]);
+    // The authority's attestable verdict is CONSUMED, not just its version (S8a5
+    // refine-verify, peer finding): a plugin the Codex list reports disabled resolves
+    // to its version with attestable:false — reading only `.version` let a disabled
+    // plugin with a matching version stay `current` here while the completion reducer
+    // staled the same machine on plugin state ("a disabled plugin loads no hooks").
+    if (!resolvedActual.attestable) {
+      return { current: false, reason: 'plugin_not_attestable', attestation };
+    }
+    const actual = resolvedActual.version;
     if (attested === null || actual === null || attested !== actual) {
       return { current: false, reason: 'plugin_version_changed', attestation };
     }
@@ -4299,13 +4453,9 @@ export function formatText(report) {
   lines.push('Codex Plugin Hooks');
   const codexHooks = report.codex_plugin_hooks;
   lines.push(`- status=${codexHooks.status}; bundled=${codexHooks.summary.bundled_plugins.join(',') || 'none'}; manifest-exposed=${codexHooks.summary.manifest_exposed_plugins.join(',') || 'none'}; default-file-only=${codexHooks.summary.default_file_only_plugins.join(',') || 'none'}; command-warnings=${(codexHooks.summary.command_warning_plugins ?? []).join(',') || 'none'}`);
-  if (codexHooks.hook_state) {
-    const state = codexHooks.hook_state;
-    lines.push(`- hook-state: config=${state.config_status}; expected=${state.summary.expected}; enabled=${state.summary.expected_enabled}; disabled=${state.summary.expected_disabled}; missing=${state.summary.expected_missing}; untrusted=${state.summary.expected_untrusted}; unexpected-agentic=${state.summary.unexpected_agentic_entries}; unmapped=${state.summary.unmapped_events ?? 0}`);
-    for (const entry of state.disabled_expected ?? []) {
-      lines.push(`  disabled-hook-state: ${entry.plugin}; event=${entry.event}; path=${entry.hooks_path}; ids=${entry.ids.join(',') || 'none'}`);
-    }
-  }
+  // Shared with settings' renderer (S8a5) — one template, so the two surfaces cannot
+  // describe the same machine differently.
+  lines.push(...formatCodexHookStateLines(codexHooks.hook_state));
   for (const target of codexHooks.review_targets ?? []) {
     lines.push(`  review-target: ${target.plugin}@${target.version ?? 'unknown'}; origin=${target.origin ?? '<unknown>'}; manifest-exposed=${target.manifest_exposed}; path=${target.hooks_path ?? '<unknown>'}; events=${target.events.join(',') || 'none'}; handlers=${target.handler_count}; commands=${target.command_count}; warnings=${target.command_warnings.join(',') || 'none'}`);
     for (const command of target.commands ?? []) {

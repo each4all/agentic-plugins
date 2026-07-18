@@ -1213,13 +1213,21 @@ export async function abandonBootstrapRun({ homeDir, repoRoot, runId, reason = '
           history: [...(Array.isArray(previous.history) ? previous.history : []), { step_id: null, from: previous.status ?? 'open', to: 'abandoned', reason, at }],
         }
       : {
-          schema: 'runtime-bootstrap-run-1.0',
+          schema: 'runtime-bootstrap-run-1.1',
           run_id: runId,
           started_at: at,
           updated_at: at,
           status: 'abandoned',
+          // The recovery tombstone must ITSELF validate against the run schema (peer
+          // finding): schema-required selection/boundary were omitted, so replacing a
+          // corrupt manifest wrote a record every schema-aware reader rejects — a
+          // recovery that manufactures the next unreadable run. `custom`+empty is the
+          // honest selection for a run whose real selection is unrecoverable, and the
+          // boundary is the §5 all-false invariant this writer honors anyway.
+          selection: { bundle: 'custom', desired: [], excluded: [] },
           history: [{ step_id: null, from: 'unknown', to: 'abandoned', reason: `${reason} (manifest was ${read.status}; the previous record could not be read and was replaced)`, at }],
           steps: [],
+          boundary: { writes_host_config: false, writes_credential: false, writes_config_local_toml: false, performs_network_request: false },
         };
 
     // Re-prove ownership before the manifest rewrite, on the same grounds as create:

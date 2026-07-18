@@ -671,7 +671,7 @@ any unknown key at all. Downgrade is never attempted.
 
 ```jsonc
 {
-  "schema": "runtime-bootstrap-run-1.0",
+  "schema": "runtime-bootstrap-run-1.1",
   "run_id": "<run-id>",
   "started_at": "<iso-8601-utc>",
   "updated_at": "<iso-8601-utc>",
@@ -689,7 +689,14 @@ any unknown key at all. Downgrade is never attempted.
                   "plugins": { "<name>": { "version": "<semver|null>", "state": "installed|missing|unknown" } } },
       "codex":  { "cli_version": "<semver|null>", "auth": "available|unauthenticated|unknown|sandbox_limited",
                   "marketplace": "registered|missing|unknown",
-                  "plugins": { "<name>": { "version": "<semver|null>", "state": "installed|disabled|missing|unknown" } } }
+                  "plugins": { "<name>": { "version": "<semver|null>", "state": "installed|disabled|missing|unknown" } },
+                  "hook_state": {                                             // 1.1 (S8a5); structurally optional
+                    "observation": "available|missing|unreadable",
+                    "disabled_expected": [
+                      { "plugin": "<name>", "hooks_path": "<path|null>", "event": "<event|null>",
+                        "group_index": "<index|null>", "hook_index": "<index|null>" }
+                    ]
+                  } }
     }
   },
   "plan_hash": "<sha256 of the canonical planned action set>",
@@ -774,7 +781,17 @@ Four shapes are load-bearing and agree with §8 / §8.1:
   compares exact key **sets and values**; a missing or null required version never counts
   as current. `hook_attestation` carries its own Codex-bound versions + the exact retained
   Codex-hook-bearing plugin set, and stales on a Codex CLI change, a hook-plugin
-  add/remove/version change, or a disabled expected hook.
+  add/remove/version change, or a disabled expected hook — at the **individual-handler
+  grain** (S8a5): `probe.hosts.codex.hook_state.disabled_expected` lists every expected
+  handler explicitly `enabled = false` in Codex `[hooks.state]`, so a disabled handler
+  beside an enabled sibling for the same (plugin, path, event) still stales the claim.
+  The plugin-level `plugins.<name>.state` check alone missed exactly that case.
+  `hook_state` is structurally optional (a 1.0 probe validates) but **semantically
+  required** for a current applicable attestation: a probe without an
+  `observation: available` hook_state cannot support a current claim — the reducer
+  stales it, and resume-means-re-probe (§7) supplies the evidence on the next run.
+  Absence of an `enabled` key in `[hooks.state]` means ENABLED (verified on codex-cli
+  0.142.5); only an explicit `false` is disabled evidence.
 - **`steps[].fragment_applied`** marks that *this run rendered a fragment and a post-probe
   observed the operator applying it* — distinct from a pre-existing matching config. The
   §8.1 `permission` proof is required **iff** a `permission.*.applied` step carries
@@ -1285,7 +1302,7 @@ nobody mistakes "the contract did not say" for "the contract left it open".
 
 | Item | Constrained by |
 |---|---|
-| Exact JSON Schema files for `agentic-machine-profile-1.0`, `runtime-bootstrap-run-1.0`, `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order. Ship as data (§11.1); S8a2 C4. |
+| Exact JSON Schema files for `agentic-machine-profile-1.0`, `runtime-bootstrap-run-1.1` (1.0 + optional probe `hook_state`, S8a5), `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order. Ship as data (§11.1); S8a2 C4. |
 | ~~Exact permission-mode enums per host~~ | **Resolved (S8a2 C0).** The **stored** enum carries whatever each host accepts, unsafe values included, because §4.5.3 shows a source machine's value as a labelled note — it must have a field to live in. Safety grading is a **present/seed-side** rule, not a second schema field: never *present* Claude `bypassPermissions`, Codex `approval_policy = "never"`, or `sandbox_mode = "danger-full-access"` as a default. Presentable Claude `defaultMode`: `default` / `acceptEdits` / `plan`. Presentable Codex `approval_policy`: `untrusted` / `on-request` / `on-failure`; `sandbox_mode`: `read-only` / `workspace-write`. |
 | The complete `minimum_version` floor table | §1.4 — two are known (`companions` 0.3.0, `engineer` 0.7.0); S8a2 C1 verifies the rest against the plugins' own changelogs. Compare **prerelease-aware** (not the numeric `semverCompare`, which treats `0.3.0-beta == 0.3.0`; discover-runtime.mjs precedent); an unknown installed version with a non-null floor stays **unresolved**, never "installed". |
 | ~~The write-ahead journal's exact transition table and the settings-artifact schema minor~~ | **Resolved (S8a1)** — §1.5 "Concrete shape" specifies the fields; artifact schema is `runtime-settings-execution-artifact-1.3` (S8a4 added the `codex_hook_review` canonical `bound_versions`/`attested_plugins`), statuses `planned → in-progress → completed/failed/refused` |

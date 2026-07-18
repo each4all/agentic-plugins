@@ -44,7 +44,10 @@ function probeFor(plugins, over = {}) {
     runtime_version: RUNTIME_VERSION,
     hosts: {
       claude: hostProbe({ cli: '2.1.208', plugins: installed(plugins) }),
-      codex: hostProbe({ cli: '0.144.1', plugins: installed(plugins) }),
+      // A COMPLETE machine's probe carries per-handler hook-state evidence (S8a5):
+      // hook_state is semantically required for a current applicable attestation, so
+      // the baseline fixture records an available observation with nothing disabled.
+      codex: { ...hostProbe({ cli: '0.144.1', plugins: installed(plugins) }), hook_state: { observation: 'available', disabled_expected: [] } },
       ...over,
     },
   };
@@ -366,6 +369,73 @@ describe('runtime completion reducer — hook attestation (#24)', () => {
     const verdict = recomputeHookAttestation(attestation(), { current: m.current, expectedPlugins: ['engineer', 'orchestrator'], probe, applicable: true });
     strictEqual(verdict.status, 'stale');
     match(verdict.reasons.join(' '), /engineer is disabled on Codex/);
+  });
+
+  // THE S8a5 FALSE-PASS PIN, reducer side. The plugin-level twin above disables the
+  // WHOLE plugin — which is exactly how the per-handler gap stayed masked: an
+  // installed plugin with ONE explicitly disabled handler passed `state ===
+  // 'installed'` and the pre-1.1 probe carried nothing finer. The disabled handler
+  // here sits beside enabled siblings (the plugin stays installed), so only the
+  // per-handler check can catch it.
+  it('goes stale when an expected HANDLER is explicitly disabled while its plugin stays installed (S8a5)', async () => {
+    const m = await completeMachine({ bundle: 'engineering' });
+    const probe = structuredClone(m.probe);
+    probe.hosts.codex.hook_state.disabled_expected = [
+      { plugin: 'engineer', hooks_path: 'hooks/hooks.json', event: 'stop', group_index: '0', hook_index: '1' },
+    ];
+    const verdict = recomputeHookAttestation(attestation(), { current: m.current, expectedPlugins: ['engineer', 'orchestrator'], probe, applicable: true });
+    strictEqual(verdict.status, 'stale');
+    match(verdict.reasons.join(' '), /engineer has an explicitly disabled hook handler \(hooks\/hooks\.json:stop:0:1\)/);
+    ok(!verdict.reasons.some((reason) => reason.includes('is disabled on Codex')),
+      'the plugin-level check is NOT the cause — this is the handler grain');
+  });
+
+  it('a disabled handler for an UNSELECTED plugin does not stale the claim', async () => {
+    const m = await completeMachine({ bundle: 'engineering' });
+    const probe = structuredClone(m.probe);
+    probe.hosts.codex.hook_state.disabled_expected = [
+      { plugin: 'designer', hooks_path: 'hooks/hooks.json', event: 'stop', group_index: '0', hook_index: '0' },
+    ];
+    const verdict = recomputeHookAttestation(attestation(), { current: m.current, expectedPlugins: ['engineer', 'orchestrator'], probe, applicable: true });
+    strictEqual(verdict.status, 'attested', `a plugin outside the selection is not this claim's evidence: ${verdict.reasons.join(' | ')}`);
+  });
+
+  // hook_state is SEMANTICALLY required for a current applicable attestation (S8a5):
+  // structurally a 1.0 probe without it still validates, but "we could not observe the
+  // hook state" is not evidence the hooks are on. Resume-means-re-probe (§7) supplies
+  // the field on the next run.
+  it('is never current without an available hook-state observation', async () => {
+    const m = await completeMachine({ bundle: 'engineering' });
+
+    const pre11 = structuredClone(m.probe);
+    delete pre11.hosts.codex.hook_state;
+    const absent = recomputeHookAttestation(attestation(), { current: m.current, expectedPlugins: ['engineer', 'orchestrator'], probe: pre11, applicable: true });
+    strictEqual(absent.status, 'stale');
+    match(absent.reasons.join(' '), /no Codex hook-state observation \(pre-1\.1 probe\)/);
+
+    for (const [observation, reasonRe] of [['missing', /not found at probe time/], ['unreadable', /not readable at probe time/]]) {
+      const probe = structuredClone(m.probe);
+      probe.hosts.codex.hook_state = { observation, disabled_expected: [] };
+      const verdict = recomputeHookAttestation(attestation(), { current: m.current, expectedPlugins: ['engineer', 'orchestrator'], probe, applicable: true });
+      strictEqual(verdict.status, 'stale', `observation=${observation} never supports a current claim`);
+      match(verdict.reasons.join(' '), reasonRe);
+    }
+  });
+
+  // Malformed evidence FAILS CLOSED (peer finding): an `available` observation whose
+  // disabled_expected is null/missing/not-an-array previously coerced to [] — the
+  // exact fail-open shape (§7) everywhere else in this module refuses.
+  it('goes stale on malformed hook-state evidence — an unparseable disabled_expected is never "nothing disabled"', async () => {
+    const m = await completeMachine({ bundle: 'engineering' });
+    for (const malformed of [null, undefined, 'not-an-array', { plugin: 'engineer' }]) {
+      const probe = structuredClone(m.probe);
+      probe.hosts.codex.hook_state = malformed === undefined
+        ? { observation: 'available' }
+        : { observation: 'available', disabled_expected: malformed };
+      const verdict = recomputeHookAttestation(attestation(), { current: m.current, expectedPlugins: ['engineer', 'orchestrator'], probe, applicable: true });
+      strictEqual(verdict.status, 'stale', `disabled_expected=${JSON.stringify(malformed)} must fail closed`);
+      match(verdict.reasons.join(' '), /malformed/);
+    }
   });
 
   it('is not-applicable for base and absent when never recorded', async () => {
