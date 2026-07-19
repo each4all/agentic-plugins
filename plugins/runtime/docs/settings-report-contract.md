@@ -120,7 +120,7 @@ Line references below are anchors observed at decision time
   `!(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview)`).
   Evidence collection never affects `dry_run`.
 
-## 3. Report schema contract (`runtime-settings-1.20`)
+## 3. Report schema contract (`runtime-settings-1.21`)
 
 `SETTINGS_SCHEMA_VERSION` bumped `runtime-settings-1.16` → `runtime-settings-1.17`
 for the discriminator below, then `runtime-settings-1.17` →
@@ -140,7 +140,34 @@ the `session` config family landed: `report.session_settings` (same shape as
 `section_presence` row, and the fail-closed config-target hardening
 (`config.targets[*].status` gains `unreadable` with a `read_error` field —
 an unreadable layer plans no writes and refuses apply; absent stays
-plannable). The execution artifact
+plannable); then `runtime-settings-1.20` → `runtime-settings-1.21`
+(additive, ADR-0044 S4) when the session-capture readiness diagnosis
+landed: `report.session_readiness` (the shared
+`lib/session-readiness.mjs` assessment — overall status
+`off | ready | blocked | config-fail-closed`, the half-enabled states of
+[session-capture-contract.md §13](session-capture-contract.md), attention
+install/enablement evidence, and the dynamically-read publisher-floor
+declaration; filesystem+env reads only, so it is evaluated in **both**
+report scopes, with `attention.enablement` honestly `unverified` in
+`local_plan` mode where the host-CLI plugin list is not probed), the
+`session_readiness` `section_presence` row, and
+`overall.session_readiness_warnings` (numeric in both modes — derived
+from the readiness **status**, never from recommendation counts: the
+number of blocking states when `blocked`, `1` when `config-fail-closed`,
+else `0`; `blocked` / `config-fail-closed` therefore degrade
+`overall.status` to `warning` while `off` stays informational). The
+section is **observed-current**: it rereads the on-disk config, so a
+dry-run planning `stop-hook` renders the projected value under
+`session_settings` beside a readiness that still reports the current
+`off` — by design, and labeled `observed-current` in the text render. An
+invalid stored `session_capture` value surfaces in both the
+`session_settings` fail-closed warning and the readiness
+`config-fail-closed` status; the two counters are independent views of
+the same root cause by design. The additive-section erratum: the §2/§4
+"byte-identical full-mode text" clauses are scoped to the sections that
+existed at 1.17 — each additive 1.x section (1.20 `session_settings`,
+1.21 `session_readiness`) appends its own text block in both scopes.
+The execution artifact
 carries the same hash plus the `planned_actions`/`journal[]` write-ahead fields, and
 the same additive `codex_hook_review` canonical fields,
 under its own `runtime-settings-execution-artifact-1.3` schema
@@ -157,7 +184,7 @@ distinguishable only by what it lacks:
   | Section | full | local_plan |
   |---|---|---|
   | `clis`, `plugins`, `plugin_command_surface`, `plugin_management`, `plugin_cleanup`, `hook_settings`, `codex_hook_review` | `evaluated` | `not_evaluated` (value `null`) |
-  | `config`, `companion_settings`, `notify_settings`, `session_settings`, `mutation_boundary`, `artifacts`, `limits`, `overall` | `evaluated` | `evaluated` |
+  | `config`, `companion_settings`, `notify_settings`, `session_settings`, `session_readiness`, `mutation_boundary`, `artifacts`, `limits`, `overall` | `evaluated` | `evaluated` |
   | `permission_plan`, `permission_plan_codex`, `notification_plan`, `egress_launcher_plan` | `evaluated` when requested, else `not_requested` | same |
   | `recommendations` | `evaluated` | `local_only` |
 
@@ -170,8 +197,8 @@ distinguishable only by what it lacks:
   carries the ergonomics).
 - `recommendations` in `local_plan` mode is rebuilt from evaluated inputs only
   (config-derived hints, `companion_settings`, `notify_settings`,
-  `session_settings` — erratum 2026-07-10: the config-area hints are
-  evaluated-derived and stay) and marked
+  `session_settings`, `session_readiness` — erratum 2026-07-10: the
+  config-area hints are evaluated-derived and stay) and marked
   `local_only` in `section_presence` — it MUST NOT silently present as full
   coverage.
 - `overall`: gains `scope: "full" | "local_plan"`. The `status` enum is
@@ -187,7 +214,7 @@ distinguishable only by what it lacks:
   `auth_warnings`, `plugin_cleanup_warnings`, `plugin_management_executed`,
   `plugin_management_failed`. Evaluated counters (`planned_config_writes`,
   `applied_config_targets`, `setting_warnings`, `notify_warnings`,
-  `session_warnings`) stay numeric. (`summarizeSettings`, today `settings.mjs:2096`, dereferences
+  `session_warnings`, `session_readiness_warnings`) stay numeric. (`summarizeSettings`, today `settings.mjs:2096`, dereferences
   `report.clis`/`report.plugins`/`report.plugin_management` unconditionally
   and MUST gain scope-aware guards.)
 - `mutation_boundary` honesty amendment (**both modes** — fixes a
@@ -249,7 +276,7 @@ distinguishable only by what it lacks:
    output byte-compatible (modulo nothing), JSON delta limited to the §3 keys.
 3. Renderer guards: `summarizeSettings` and `formatText` on a narrowed report
    (no throw, qualified output, explicit not-evaluated lines).
-4. Schema-version lockstep: the `runtime-settings-1.20` report constant and the
+4. Schema-version lockstep: the `runtime-settings-1.21` report constant and the
    `runtime-settings-execution-artifact-1.3` execution-artifact constant, and the
    exact-version assertions that pin each (`test-settings-probe-boundary.mjs` pins
    both constants; `test-notification-plan.mjs` and `test-settings.mjs` pin the

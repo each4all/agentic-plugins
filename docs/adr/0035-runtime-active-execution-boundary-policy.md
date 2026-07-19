@@ -15,6 +15,18 @@ on the enumerated field set + pinned request + mechanically-verified local
 activation, never on ownership of the data. See ADR-0041 §1–§2 and the §4 note
 below.
 
+**§3 invariant 1 amended by
+[ADR-0044](0044-session-generic-handoff-capture.md) §3 (2026-07-18), scoped to
+the `publish-session` executor only.** For that one hook-auto-invoked executor,
+the explicit action-specific *flag* is replaced by the explicit
+action-specific **config key** `session_capture` (shipped default `"off"` —
+the publisher mutates nothing until the operator opts in), following the shape
+ADR-0040 §2 established for the notification emitter. The amendment
+additionally authorizes the publisher and `note` executor to delete **only**
+their own lock, temp/staging, and expired-claim files under
+`.agentic-plugins/state/runtime/session-capture/`. Every other executor
+remains bound by §3 as written; the §4 ceiling is untouched.
+
 <!--
 Refines (does not supersede) ADR-0024. ADR-0024 established
 `plugins/runtime` as the operator control plane that is "read-only by

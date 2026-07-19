@@ -70,7 +70,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.20');
+    strictEqual(report.schema_version, 'runtime-settings-1.21');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -1085,7 +1085,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.20');
+    strictEqual(report.schema_version, 'runtime-settings-1.21');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -2247,6 +2247,64 @@ describe('settings: notify config keys (ADR-0040 §2)', () => {
     );
     strictEqual(report.overall.session_warnings, 1, 'session warnings carry their own overall counter');
     strictEqual(report.overall.status, 'warning', 'a session warning degrades overall status');
+  });
+
+  // ADR-0044 S4 (session-capture-contract.md §13): the readiness section —
+  // off stays informational; a half-enabled chain warns, recommends, renders.
+  it('reports session-capture readiness: off is informational, a gate-on half-enabled chain warns', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-readiness-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-readiness-home-'));
+    await seedRepo(root);
+
+    // Control: shipped default off — evaluated, zero warnings, no states.
+    const offReport = await runSettings({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultCliMap()) });
+    strictEqual(offReport.session_readiness.status, 'off');
+    deepStrictEqual(offReport.session_readiness.states, []);
+    strictEqual(offReport.section_presence.session_readiness, 'evaluated');
+    strictEqual(offReport.overall.session_readiness_warnings, 0);
+    ok(formatText(offReport).includes('Session capture readiness (session-capture-contract.md §13, observed-current, off)'));
+
+    // Gate on with no attention install anywhere in this home: blocked,
+    // counted in overall, surfaced in recommendations, rendered in text.
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "stop-hook"\n');
+    const blocked = await runSettings({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultCliMap()) });
+    strictEqual(blocked.session_readiness.status, 'blocked');
+    deepStrictEqual(blocked.session_readiness.states, ['attention-missing']);
+    strictEqual(blocked.overall.session_readiness_warnings, 1);
+    strictEqual(blocked.overall.status, 'warning', 'a half-enabled chain degrades overall status');
+    ok(
+      blocked.recommendations.some((rec) => rec.area === 'session-capture' && rec.state === 'attention-missing' && rec.next_step),
+      `expected a session-capture recommendation, got: ${JSON.stringify(blocked.recommendations)}`,
+    );
+    const text = formatText(blocked);
+    ok(text.includes('Session capture readiness (session-capture-contract.md §13, observed-current, blocked)'));
+    ok(text.includes('attention-missing'));
+  });
+
+  it('evaluates session-capture readiness in local_plan scope with honestly-unverified enablement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-readiness-local-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-readiness-local-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "stop-hook"\n');
+    // A ready chain: installed attention declaring a satisfied publisher floor.
+    const attentionRoot = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'attention', '0.5.0');
+    await mkdir(join(attentionRoot, '.claude-plugin'), { recursive: true });
+    await writeFile(join(attentionRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'attention', version: '0.5.0' }));
+    await mkdir(join(attentionRoot, 'data'), { recursive: true });
+    await writeFile(
+      join(attentionRoot, 'data', 'runtime-floors.json'),
+      JSON.stringify({ schema: 'attention-runtime-floors-1.0', floors: { publish_session: '0.1.0' } }),
+    );
+
+    const narrowed = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, runner: fakeRunner(defaultCliMap()) });
+    strictEqual(narrowed.report_scope, 'local_plan');
+    strictEqual(narrowed.section_presence.session_readiness, 'evaluated', 'filesystem+env assessment runs in local_plan too');
+    strictEqual(narrowed.session_readiness.status, 'ready');
+    strictEqual(narrowed.session_readiness.attention.enablement, 'unverified', 'no host-CLI probe means enablement is never guessed');
+    strictEqual(narrowed.session_readiness.publisher_floor.satisfied, true);
+    strictEqual(narrowed.overall.session_readiness_warnings, 0, 'evaluated counter stays numeric in local_plan');
   });
 
   // S2 plan-verify fail-closed hardening: an unreadable (not absent) config

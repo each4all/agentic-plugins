@@ -35,6 +35,7 @@ import {
   safeCount,
 } from './lib/state-readers.mjs';
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
+import { assessSessionCaptureReadiness, claudePluginListEnablement } from './lib/session-readiness.mjs';
 // The single version authority shared with the settings producer (S8a4 §SCOPE-2): the
 // currency mirror MUST parse the Codex CLI version and resolve plugin versions through the
 // same leaf, or a freshly recorded attestation reads stale on the machine that wrote it.
@@ -199,6 +200,20 @@ export async function runDoctor({
   const compatRuns = await inspectCompatRuns({
     repoRoot: resolvedRepoRoot,
   });
+  // ADR-0044 S4 — session-capture readiness via the shared assessment
+  // (session-capture-contract.md §13): filesystem+env reads only, plus the
+  // Claude plugin-list row the machine probe already collected, mapped
+  // through the shared status→enablement adapter (the row carries a status
+  // string, not an enabled boolean). The publisher floor is read
+  // dynamically from the installed attention build's declaration — never a
+  // hardcoded constant.
+  const sessionCaptureReadiness = await assessSessionCaptureReadiness({
+    repoRoot: resolvedRepoRoot,
+    homeDir: resolvedHomeDir,
+    env,
+    runtimeVersion: RUNTIME_VERSION,
+    attentionEnablement: claudePluginListEnablement(claudePluginList?.attention ?? null),
+  });
   const inspectedDoctorRuns = await inspectDoctorRuns({
     repoRoot: resolvedRepoRoot,
   });
@@ -348,6 +363,7 @@ export async function runDoctor({
     settings_runs: settingsRuns,
     consensus_runs: consensusRuns,
     compat_runs: compatRuns,
+    session_capture: sessionCaptureReadiness,
     doctor_runs: doctorRuns,
     recorded_doctor_proof: recordedDoctorProof,
     artifact_inventory: artifactInventorySection,
@@ -4359,6 +4375,14 @@ function summarizeOverall(report) {
   } else if (report.compat_runs.status === 'needs_attention') {
     warnings.push('latest compatibility check needs follow-up');
   }
+  // ADR-0044 S4 — a half-enabled capture chain is exactly the state the
+  // readiness diagnosis exists to surface; `off` and `ready` stay silent.
+  // Advisory infrastructure: warnings, never hard failures.
+  if (report.session_capture.status === 'blocked') {
+    warnings.push(`session capture blocked (${report.session_capture.states.join(', ')})`);
+  } else if (report.session_capture.status === 'config-fail-closed') {
+    warnings.push('session capture config fail-closed (session config unreadable or invalid)');
+  }
   if (report.artifact_inventory?.executed && report.artifact_inventory.status === 'blocked') {
     warnings.push('runtime artifact inventory blocked');
   } else if (report.artifact_inventory?.executed && report.artifact_inventory.status === 'needs_attention') {
@@ -4698,6 +4722,17 @@ export function formatText(report) {
     for (const step of latest.next_steps ?? []) {
       lines.push(`  next: ${step}`);
     }
+  }
+  lines.push('');
+  lines.push(`Session Capture Readiness (${report.session_capture.status})`);
+  lines.push(`- gate: session_capture=${report.session_capture.gate.value ?? '<fail-closed>'}; safe-mode=${report.session_capture.safe_mode.active}`);
+  if (!['off', 'config-fail-closed'].includes(report.session_capture.status)) {
+    lines.push(`- attention: installed=${report.session_capture.attention.installed}; version=${report.session_capture.attention.version ?? '<none>'}; enablement=${report.session_capture.attention.enablement}`);
+    lines.push(`- publisher-floor: declared=${report.session_capture.publisher_floor.declared}; floor=${report.session_capture.publisher_floor.floor ?? '<none>'}; runtime=${report.session_capture.publisher_floor.runtime_version ?? '<unknown>'}; satisfied=${report.session_capture.publisher_floor.satisfied ?? '<n/a>'}`);
+  }
+  for (const recommendation of report.session_capture.recommendations) {
+    lines.push(`- ${recommendation.state}: ${recommendation.detail}`);
+    lines.push(`  next: ${recommendation.next_step}`);
   }
   lines.push('');
   if (report.artifact_inventory?.requested) {

@@ -318,6 +318,14 @@ from silently resurfacing after a re-upgrade. Rollback order is
 consumer-first: ADR-0045 surfaces (when they exist) → `session_capture =
 "off"` → attention sensor → runtime.
 
+The half-enabled states between "off" and a working chain — key on but
+attention missing/disabled, key on but the installed runtime below the
+declared publisher floor (§13), safe mode disabling hooks entirely — are
+surfaced by the `runtime:doctor` / `runtime:settings` readiness diagnosis
+(ADR-0044 §3): the diagnosis and the publisher gate read the same
+`loadSessionConfig` loader, so they can never disagree about what "on"
+means.
+
 ## 10. Consumer rules
 
 - The entry side reads **`entry.json` only** — never `slot.json`, never
@@ -363,6 +371,17 @@ within a committed generation; injection clamps; hostile-path and
 `note --file` FIFO/oversize/symlink rejection; non-git no-op;
 capture-before-notification ordering (attention side, S5).
 
+S4 (the readiness slice) adds, all mutation-verified: shared readiness
+assessment — gate off ⇒ informational `off` (never a warning); config
+fail-closed ⇒ `config-fail-closed`; each §13 half-enabled state detected
+independently and composably (safe mode + missing attention both reported);
+floor-declaration absence vs malformation distinguished; a below-floor
+runtime detected against an injected declaration; ready-state control case
+proving the blockers are reachable; settings `session_readiness` section
+shape + `section_presence` row in both report scopes + text token + overall
+counter; doctor `session_capture` section shape + text token + overall
+warning on blocked (and silence on `off`/`ready`).
+
 ## 12. Non-goals (v1)
 
 - No Codex firing point — Claude limb only (ADR-0044 §8); artifacts stay
@@ -371,3 +390,75 @@ capture-before-notification ordering (attention side, S5).
 - No per-event run ledger for the auto path (Alternatives F) and no
   PreCompact binding (Alternatives G — a ≤1-turn window).
 - No machine-global home; no host-config writes; no host-session mutation.
+
+## 13. Publisher-floor declaration and the readiness diagnosis
+
+ADR-0044 §2 gives the publisher spawn its **own capability floor**,
+separate from the notify floor (`MIN_RUNTIME_VERSION` in
+`plugins/attention/scripts/discover-runtime.mjs`) — "the two gates never
+share a constant" — and the §10 rollout order means the floor can only be
+pinned **after** the runtime release carrying `publish-session` exists.
+The runtime-side readiness diagnosis therefore never hardcodes an
+attention constant; it reads a **declaration file** the attention plugin
+ships:
+
+```
+<attention plugin root>/data/runtime-floors.json
+```
+
+```json
+{
+  "schema": "attention-runtime-floors-1.0",
+  "floors": {
+    "publish_session": "<first released runtime version shipping publish-session>"
+  }
+}
+```
+
+- **Producer (attention, S5)**: ships the file in the same release that
+  adds the capture spawn to the Stop sensor, with `floors.publish_session`
+  pinned to the first **released** runtime version carrying
+  `publish-session` (the ADR-0043 released-floor rule — a
+  planned-but-unreleased version is never pinned, and the declared floor
+  is a plain `X.Y.Z` release version: a prerelease or build-suffixed floor
+  is malformed by definition). The sensor's own spawn
+  gate and this declaration must agree byte-for-byte on the floor. Future
+  sensor-fed executors add sibling keys under `floors` (additive; the
+  schema id bumps `1.<minor>` per the §3 versioning posture — but unlike
+  the slot/entry/note schemas this file crosses plugin versions by design,
+  so consumers accept any `attention-runtime-floors-1.*` id and read only
+  the keys they know).
+- **Consumer (runtime readiness diagnosis, S4)**: discovers the newest
+  installed attention build (Claude cache scan — the v1 firing point is
+  Claude-only per §12, so the Claude cache is the load-bearing install),
+  then reads the declaration dynamically:
+  - attention not installed ⇒ state `attention-missing`;
+  - installed but host reports it disabled ⇒ `attention-disabled`
+    (enablement is host-CLI evidence; filesystem-only callers report it
+    `unverified`, never guessed);
+  - installed but no declaration file ⇒ `publisher-sensor-not-shipped`
+    (the installed attention build predates the capture sensor — the
+    honest pre-S5 state on every machine);
+  - declaration unreadable/malformed ⇒ `floor-declaration-malformed`
+    (fail-closed: never treated as satisfied);
+  - declared floor newer than the installed runtime ⇒
+    `runtime-below-publisher-floor`;
+  - safe mode (`CLAUDE_CODE_SAFE_MODE`, `host-parity-baseline.md` hooks
+    row) disables the whole hook chain ⇒ `safe-mode-hooks-disabled`.
+- States compose (a machine can be in safe mode **and** below floor);
+  the diagnosis reports all of them, plus a single overall status:
+  `off` (gate off — informational, not a warning), `ready`,
+  `blocked` (gate on, one or more states above), or `config-fail-closed`
+  (the shared loader refused — same refusal the publisher makes, §1).
+- **Stated limits**: the floor comparison uses the runtime version
+  executing the diagnosis; the sensor resolves its own runtime through
+  attention's discovery ladder (env override, cache, sibling), so a
+  machine running the diagnosis from a source checkout or an overridden
+  root can differ from the sensor's selection — the diagnosis is
+  advisory, not a re-implementation of the sensor's ladder. Enablement is
+  a host-CLI evidence injection: when the caller's plugin-list evidence
+  names the active version, the declaration is read from that build's
+  cache directory; otherwise the newest cached build is read.
+- The diagnosis is **read-only** and never repairs, deletes, or writes
+  anything — it is the ADR-0044 §3 surface that makes a silently-broken
+  "code-guaranteed" chain distinguishable from a working one.

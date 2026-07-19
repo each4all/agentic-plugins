@@ -3479,6 +3479,106 @@ describe('runtime doctor — installed engineer root resolver (§8.2 C5)', () =>
   });
 });
 
+// ADR-0044 S4 (session-capture-contract.md §13 / §11 S4): the doctor surface
+// of the shared readiness assessment — section shape, text rendering, and
+// the overall-warning gate (blocked warns; off and ready stay silent).
+describe('runtime doctor — session capture readiness (ADR-0044 S4)', () => {
+  it('reports the shipped default off silently and renders the section header', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'doctor-session-off-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'doctor-session-off-home-'));
+    await seedRepo(root);
+    const report = await runDoctor({ repoRoot: root, homeDir: home, format: 'json', runner: fakeRunner({}), env: {} });
+    strictEqual(report.session_capture.status, 'off');
+    deepStrictEqual(report.session_capture.states, []);
+    ok(
+      !report.overall.warnings.some((warning) => warning.includes('session capture')),
+      'off must not warn — it is a chosen state, not a half-enabled one',
+    );
+    const text = formatText(report);
+    ok(text.includes('Session Capture Readiness (off)'));
+    ok(text.includes('- gate: session_capture=off'));
+  });
+
+  it('surfaces a gate-on half-enabled chain as an overall warning with rendered states', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'doctor-session-blocked-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'doctor-session-blocked-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "stop-hook"\n');
+    const report = await runDoctor({ repoRoot: root, homeDir: home, format: 'json', runner: fakeRunner({}), env: {} });
+    strictEqual(report.session_capture.status, 'blocked');
+    deepStrictEqual(report.session_capture.states, ['attention-missing']);
+    strictEqual(report.session_capture.attention.enablement, 'unverified');
+    ok(
+      report.overall.warnings.includes('session capture blocked (attention-missing)'),
+      `expected the blocked warning, got: ${JSON.stringify(report.overall.warnings)}`,
+    );
+    const text = formatText(report);
+    ok(text.includes('Session Capture Readiness (blocked)'));
+    ok(text.includes('attention-missing'));
+  });
+
+  it('reads a satisfied dynamically-declared publisher floor as ready (no warning)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'doctor-session-ready-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'doctor-session-ready-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "stop-hook"\n');
+    const attentionRoot = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'attention', '0.5.0');
+    await mkdir(join(attentionRoot, '.claude-plugin'), { recursive: true });
+    await writeJson(join(attentionRoot, '.claude-plugin', 'plugin.json'), { name: 'attention', version: '0.5.0' });
+    await mkdir(join(attentionRoot, 'data'), { recursive: true });
+    await writeJson(join(attentionRoot, 'data', 'runtime-floors.json'), {
+      schema: 'attention-runtime-floors-1.0',
+      floors: { publish_session: '0.1.0' },
+    });
+    const report = await runDoctor({ repoRoot: root, homeDir: home, format: 'json', runner: fakeRunner({}), env: {} });
+    strictEqual(report.session_capture.status, 'ready');
+    strictEqual(report.session_capture.publisher_floor.declared, true);
+    strictEqual(report.session_capture.publisher_floor.floor, '0.1.0');
+    strictEqual(report.session_capture.publisher_floor.satisfied, true);
+    strictEqual(report.session_capture.publisher_floor.runtime_version, RUNTIME_VERSION);
+    ok(!report.overall.warnings.some((warning) => warning.includes('session capture')));
+    strictEqual(report.session_capture.attention.enablement, 'unverified', 'no plugin-list row for attention -> unverified');
+  });
+
+  it('feeds real `claude plugin list` text through the status→enablement adapter', async () => {
+    // Peer finding: integration coverage must exercise the actual list-text
+    // path (parseClaudePluginList → claudePluginListEnablement), not only
+    // unit tests injecting a pre-built {enabled} object.
+    const root = await mkdtemp(join(tmpdir(), 'doctor-session-list-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'doctor-session-list-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'session_capture = "stop-hook"\n');
+    const attentionRoot = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'attention', '0.4.0');
+    await mkdir(join(attentionRoot, '.claude-plugin'), { recursive: true });
+    await writeJson(join(attentionRoot, '.claude-plugin', 'plugin.json'), { name: 'attention', version: '0.4.0' });
+    await mkdir(join(attentionRoot, 'data'), { recursive: true });
+    await writeJson(join(attentionRoot, 'data', 'runtime-floors.json'), {
+      schema: 'attention-runtime-floors-1.0',
+      floors: { publish_session: '0.1.0' },
+    });
+    const listText = 'Installed plugins:\n\n  > attention@agentic-plugins\n    Version: 0.4.0\n    Scope: user\n    Status: enabled\n';
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      format: 'json',
+      runner: fakeRunner({
+        'claude --version': okResult('2.1.140 (Claude Code)\n'),
+        'claude --help': okResult('Usage: claude --print\nCommands:\n  auth status\n  plugin list\n'),
+        'claude plugin --help': okResult('Commands:\n  install\n  list\n  update\n  uninstall\n'),
+        'claude plugin list': okResult(listText),
+        'claude /plugin list': okResult(listText),
+      }),
+      env: {},
+    });
+    strictEqual(report.session_capture.attention.enablement, 'enabled');
+    strictEqual(report.session_capture.attention.version, '0.4.0', 'declaration bound to the list-named build');
+    strictEqual(report.session_capture.status, 'ready');
+  });
+});
+
 function okResult(stdout = '', stderr = '') {
   return { ok: true, exit_code: 0, stdout, stderr, error_code: null, timed_out: false };
 }

@@ -4,6 +4,17 @@
 
 Accepted
 
+**§3's attention charter widened by
+[ADR-0044](0044-session-generic-handoff-capture.md) §2 (2026-07-18)** — from
+"notification sensors" to *host-lifecycle sensors feeding allowlisted
+runtime-owned executors* (today: `notify.mjs emit` and `context.mjs
+publish-session`). The widening is bounded: attention remains hook-only (no
+skills, verbs, or state), remains Claude-manifest-scoped with zero Codex hook
+surface (the two-part invariant stands), and the capture spawn gets its own
+publisher capability floor, separate from the notify floor — the two gates
+never share a constant, and the publisher floor is pinned only after the
+runtime release shipping `publish-session` exists.
+
 <!--
 Relates to ADR-0024 (runtime operator control plane — doctor/settings/
 context scope this ADR extends), ADR-0030/0035 §6 (context on Codex hook
