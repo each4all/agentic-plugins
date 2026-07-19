@@ -6,11 +6,16 @@ import { fileURLToPath } from 'node:url';
 
 import { runConsensus } from './consensus.mjs';
 import { buildHandoffGuidance, evaluateSessionHandoff, loadWorkflowProjection } from './context.mjs';
+import {
+  isLocalizationHost,
+  localizeCommandFields,
+  localizeCommandList,
+  localizePluginCommands,
+} from './lib/host-localization.mjs';
 import { buildSourceFreshness, formatSourceFreshness, resolveSourceSnapshot } from './source-snapshot.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
-const VALID_HOSTS = new Set(['claude', 'codex', 'neutral']);
 const VALID_CONTEXT_STATES = new Set(['green', 'yellow', 'red']);
 const VALID_COMPLETION_STATES = new Set([
   'review-needed',
@@ -1126,41 +1131,11 @@ function localizeStatusGuidanceCommands(guidance, host) {
   };
 }
 
-function localizeCommandList(values, host) {
-  return (values ?? []).map((value) => localizePluginCommands(value, host));
-}
-
-// Colon-commands of every plugin with a command surface (companions is
-// script-only, attention hook-only — both deliberately absent). An optional
-// leading `/` or `$` is absorbed and rewritten to the render host's prefix, so
-// a command reaches the user host-correct whether the source produced it bare
-// (consensus/context guidance), Claude-shaped (persona projection routing like
-// /engineer:resume), or Codex-shaped (a projection consumed cross-host). The
-// leading-boundary guard keeps path-like text (plugins/runtime, a/engineer:x)
-// unmatched. designer joined via ADR-0043 §1 (a latent omission before that —
-// same "persona projection routing" contract surface as the seam expansion).
-const PLUGIN_COMMAND_RE = /(^|[\s`"'([])([/$])?((?:runtime|engineer|orchestrator|founder|designer|image):[A-Za-z0-9:_-]+)/g;
-
-function localizePluginCommands(value, host) {
-  if (!value || host === 'neutral') return value;
-  const prefix = host === 'claude' ? '/' : '$';
-  return String(value).replace(
-    PLUGIN_COMMAND_RE,
-    (_match, leading, _hostPrefix, command) => `${leading}${prefix}${command}`,
-  );
-}
-
-// Rewrite only the named string fields; absent fields are not introduced and
-// non-string values pass through, so callers asserting object shape (e.g.
-// `'archive_gate' in report.workflow`) are unaffected.
-function localizeCommandFields(target, host, fields) {
-  if (!target) return target;
-  const out = { ...target };
-  for (const field of fields) {
-    if (typeof out[field] === 'string') out[field] = localizePluginCommands(out[field], host);
-  }
-  return out;
-}
+// The localization core (PLUGIN_COMMAND_RE, localizePluginCommands,
+// localizeCommandList, localizeCommandFields) lives in
+// lib/host-localization.mjs so context.mjs can import it without the
+// footer→context cycle (ADR-0045 §10). Only the footer-shape wrappers above
+// stay here.
 
 function artifactTimestampMs(artifact, fallbackRunId) {
   for (const value of [artifact.updated_at, artifact.created_at]) {
@@ -1203,7 +1178,7 @@ function footerLimits() {
 }
 
 function validateHost(value) {
-  if (!VALID_HOSTS.has(value)) {
+  if (!isLocalizationHost(value)) {
     throw new Error('--host must be claude, codex, or neutral');
   }
   return value;
