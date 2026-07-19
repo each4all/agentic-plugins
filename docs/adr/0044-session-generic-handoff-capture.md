@@ -4,6 +4,38 @@
 
 Accepted (2026-07-18)
 
+**Implementation evidence — S4a release-proof gate (2026-07-19, per the
+ADR-0043 released-floor rule)**: the first released runtime version
+containing the complete S2–S4 capture surface is **`plugin-runtime`
+0.82.0** — tag `plugin-runtime-v0.82.0` (release commit `717c4c3`,
+"chore: release main (#589)"), published as a plain GitHub release (not
+a draft or prerelease) at 2026-07-19T07:12:26Z. Verified in the tag tree
+and in both installed host caches
+(`~/.claude/plugins/cache/agentic-plugins/runtime/0.82.0`,
+`~/.codex/plugins/cache/agentic-plugins/runtime/0.82.0`):
+
+- schemas `runtime-session-capture-1.0` / `runtime-session-entry-1.0` /
+  `runtime-session-note-1.0` (`plugins/runtime/data/schemas/`);
+- the packaged contract doc `docs/session-capture-contract.md`
+  including the §13 publisher-floor declaration contract;
+- the `session` config family (`session_capture` in
+  `scripts/lib/runtime-config.mjs` `CONFIG_KEY_FAMILIES`, default
+  `off`);
+- the `context.mjs` executors `note` (`--text`/`--file`/`--clear`),
+  `status --slot`, and `publish-session`;
+- the readiness diagnosis (`scripts/lib/session-readiness.mjs` wired
+  into doctor `session_capture` and settings `session_readiness`,
+  settings report schema 1.21).
+
+The S2–S4 squash commits (`9dc3eff` #588, `8b7d887` #590, `7f5710a`
+#591, `417bee6` #592) are all ancestors of the release tag; the
+preceding release `plugin-runtime-v0.81.0` contains none of these
+surfaces. Per the released-floor rule a planned-but-unreleased version
+is never recorded — 0.82.0 qualifies because the release exists and is
+plain `X.Y.Z`. **0.82.0 is therefore the S4a-recorded released version
+that S5 pins as `floors.publish_session` in attention's
+`data/runtime-floors.json` (§13 declaration contract).**
+
 ## Context
 
 ### The gap: handoff coverage ends where workflows end
