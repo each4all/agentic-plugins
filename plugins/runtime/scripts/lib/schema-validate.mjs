@@ -446,6 +446,10 @@ export const PACKAGED_SCHEMA_FILES = Object.freeze({
   'runtime-session-capture': 'runtime-session-capture-1.0.json',
   'runtime-session-entry': 'runtime-session-entry-1.0.json',
   'runtime-session-note': 'runtime-session-note-1.0.json',
+  // ADR-0045 §4 entry brief (session-capture-contract.md §15). Load-bearing the
+  // same way: the arbiter self-validates its output against this family before
+  // any surface renders it, and the S8 dashboard consumer validates through it.
+  'runtime-entry-brief': 'runtime-entry-brief-1.0.json',
 });
 
 // Deprecated alias — the pre-S2 name for the registry, kept so an external

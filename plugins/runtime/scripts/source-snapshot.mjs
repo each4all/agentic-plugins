@@ -142,16 +142,10 @@ export async function resolveGitTopLevel(startDir) {
 //     digest is "unknown", never "clean".
 export async function observeSessionGitFacts(repoRoot) {
   const facts = { branch: null, headShort: null, dirtyCount: null, statusDigest: null };
-  try {
-    const branch = (await execGit(repoRoot, ['branch', '--show-current'])).trim();
-    facts.branch = branch !== ''
-      && branch.length <= 256
-      && !/[\u0000-\u001f\u007f]/.test(branch)
-      ? branch
-      : null;
-  } catch {
-    facts.branch = null;
-  }
+  // The capture contract collapses detached HEAD ('') into null (§6); only
+  // the entry-side observeCurrentBranch keeps the distinction.
+  const branch = await probeCurrentBranch(repoRoot);
+  facts.branch = branch === '' ? null : branch;
   try {
     const head = (await execGit(repoRoot, ['rev-parse', '--short', 'HEAD'])).trim();
     facts.headShort = /^[0-9a-f]{7,40}$/.test(head) ? head : null;
@@ -159,15 +153,7 @@ export async function observeSessionGitFacts(repoRoot) {
     facts.headShort = null;
   }
   try {
-    // --no-optional-locks: a plain `git status` may refresh and WRITE the
-    // index under .git — outside this executor's declared session-capture
-    // write authority (ADR-0035 M1; plan-verify peer). The exact argv form
-    // is registered in the guard's git verb-path allowlist.
-    // latin1 decoding is byte-preserving (1:1 code points), so hashing its
-    // re-encoding digests the ACTUAL porcelain output bytes even for
-    // non-UTF-8 filenames (contract §6: sha256 over the command output);
-    // NUL positions are byte-identical, so the entry counter is unaffected.
-    const porcelain = await execGit(repoRoot, ['--no-optional-locks', 'status', '--porcelain=v1', '-z'], { encoding: 'latin1' });
+    const porcelain = await probeStatusPorcelain(repoRoot);
     facts.statusDigest = createHash('sha256').update(Buffer.from(porcelain, 'latin1')).digest('hex');
     facts.dirtyCount = countPorcelainEntries(porcelain);
   } catch {
@@ -175,6 +161,49 @@ export async function observeSessionGitFacts(repoRoot) {
     facts.dirtyCount = null;
   }
   return facts;
+}
+
+// ADR-0045 §3/§5 — the entry arbiter's branch probe, satisfying the S7a
+// collectEntrySources branchProbe contract exactly: a branch name string,
+// '' for detached HEAD, or null when the probe fails or the value is
+// hostile (>256 chars or control characters — degraded, never surfaced).
+// Shared primitive with observeSessionGitFacts so the two surfaces cannot
+// drift on the probe argv or the hostile-value guard.
+export async function observeCurrentBranch(repoRoot) {
+  return probeCurrentBranch(repoRoot);
+}
+
+// ADR-0045 §5.3 — the dirty gate's worktree probe (`orchestrator:next` is
+// synthesized only on a provably clean tree; null is "unknown, never
+// clean"). Same bounded porcelain probe the capture publisher uses.
+export async function observeWorktreeDirtyCount(repoRoot) {
+  try {
+    return countPorcelainEntries(await probeStatusPorcelain(repoRoot));
+  } catch {
+    return null;
+  }
+}
+
+async function probeCurrentBranch(repoRoot) {
+  try {
+    const branch = (await execGit(repoRoot, ['branch', '--show-current'])).trim();
+    if (branch === '') return '';
+    return branch.length <= 256 && !/[\u0000-\u001f\u007f]/.test(branch) ? branch : null;
+  } catch {
+    return null;
+  }
+}
+
+// --no-optional-locks: a plain `git status` may refresh and WRITE the
+// index under .git — outside the declared session-capture / entry-brief
+// write authority (ADR-0035 M1/R0; plan-verify peer). The exact argv form
+// is registered in the guard's git verb-path allowlist.
+// latin1 decoding is byte-preserving (1:1 code points), so hashing its
+// re-encoding digests the ACTUAL porcelain output bytes even for
+// non-UTF-8 filenames (contract §6: sha256 over the command output);
+// NUL positions are byte-identical, so the entry counter is unaffected.
+function probeStatusPorcelain(repoRoot) {
+  return execGit(repoRoot, ['--no-optional-locks', 'status', '--porcelain=v1', '-z'], { encoding: 'latin1' });
 }
 
 // porcelain v1 -z: each entry is `XY PATH\0`, and a rename/copy entry carries

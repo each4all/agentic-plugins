@@ -86,7 +86,7 @@ describe('runtime schema validator — the keyword subset is closed', () => {
 
   it('every packaged schema is inside the subset — iterated from the registry, not a hand copy', async () => {
     const families = Object.keys(PACKAGED_SCHEMA_FILES);
-    ok(families.length >= 6, `registry covers bootstrap + session families (got ${families.length})`);
+    ok(families.length >= 7, `registry covers bootstrap + session + entry-brief families (got ${families.length})`);
     for (const family of families) {
       const schema = await loadSchema(family);
       deepStrictEqual(assertSupportedSchema(schema), [], `${family} uses only implemented keywords`);

@@ -47,7 +47,10 @@ async function makeConfigFixture({ repoToml = null, userToml = null } = {}) {
 
 describe('session config family (ADR-0044 §3)', () => {
   it('registers session_capture as its own family with the shipped default off', () => {
-    deepStrictEqual([...CONFIG_KEY_FAMILIES.session], ['session_capture']);
+    // ADR-0045 S7b widened the family with the user-scope-only entry-brief
+    // pair; loadSessionConfig still resolves only session_capture (the
+    // capture gate and the entry gate are independent failure domains).
+    deepStrictEqual([...CONFIG_KEY_FAMILIES.session], ['session_capture', 'entry_brief', 'entry_brief_empty']);
     ok(CONFIG_KEYS.includes('session_capture'), 'session_capture derives into CONFIG_KEYS');
     strictEqual(SESSION_KEY_DEFAULTS.session_capture, 'off');
     deepStrictEqual([...SESSION_CAPTURE_MODES], ['off', 'stop-hook']);

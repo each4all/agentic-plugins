@@ -70,7 +70,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.21');
+    strictEqual(report.schema_version, 'runtime-settings-1.22');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -1085,7 +1085,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.21');
+    strictEqual(report.schema_version, 'runtime-settings-1.22');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -2210,7 +2210,7 @@ describe('settings: notify config keys (ADR-0040 §2)', () => {
     ok(repoTarget.planned_writes.some((write) => write.key === 'session_capture' && write.op === 'add' && write.after === 'stop-hook'));
 
     const session = report.session_settings;
-    deepStrictEqual(session.config_keys, ['session_capture']);
+    deepStrictEqual(session.config_keys, ['session_capture', 'entry_brief', 'entry_brief_empty']);
     strictEqual(session.effective_mode, 'projected');
     strictEqual(session.keys.session_capture.value, 'stop-hook');
     strictEqual(session.keys.session_capture.status, 'effective');
@@ -2227,6 +2227,130 @@ describe('settings: notify config keys (ADR-0040 §2)', () => {
     strictEqual(defaulted.session_settings.keys.session_capture.value, null);
     strictEqual(defaulted.session_settings.keys.session_capture.effective_value, 'off');
     strictEqual(defaulted.session_settings.keys.session_capture.source, 'shipped default');
+  });
+
+  // ADR-0045 §7 — the user-scope-only pair lands atomically with its
+  // registration: repo-write prevention is structural (stripped before the
+  // repo plan), and a tracked repo value is reported as ignored, never
+  // shadowing.
+  it('refuses to plan the user-scope-only entry-brief keys repo-side and routes them to the user target', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-home-'));
+    await seedRepo(root);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      desired: { entry_brief: 'startup', entry_brief_empty: 'report' },
+      runner: fakeRunner(defaultCliMap()),
+    });
+    const repoTarget = report.config.targets.find((target) => target.kind === 'repo');
+    const userTarget = report.config.targets.find((target) => target.kind === 'user');
+    // Control first: the USER target does plan both writes — proving the keys
+    // flowed through planning and only the repo strip removed them there.
+    ok(userTarget.planned_writes.some((write) => write.key === 'entry_brief' && write.after === 'startup'));
+    ok(userTarget.planned_writes.some((write) => write.key === 'entry_brief_empty' && write.after === 'report'));
+    deepStrictEqual(userTarget.refused_user_scope_only, []);
+    deepStrictEqual(repoTarget.refused_user_scope_only, ['entry_brief', 'entry_brief_empty']);
+    ok(!repoTarget.planned_writes.some((write) => write.key === 'entry_brief' || write.key === 'entry_brief_empty'),
+      'repo target never stages a user-scope-only key');
+    ok(/user-scope-only/i.test(repoTarget.message), 'repo plan names the refusal');
+
+    const session = report.session_settings;
+    strictEqual(session.keys.entry_brief.user_scope_only, true);
+    strictEqual(session.keys.entry_brief.env_override, 'AGENTIC_ENTRY_BRIEF');
+    strictEqual(session.keys.entry_brief_empty.env_override, 'AGENTIC_ENTRY_BRIEF_EMPTY');
+    strictEqual(session.keys.session_capture.user_scope_only, false);
+    strictEqual(session.keys.session_capture.env_override, null);
+    deepStrictEqual(session.user_scope_only_keys, ['entry_brief', 'entry_brief_empty']);
+    ok(Array.isArray(session.user_scope_resolution_order), 'user-scope resolution order is stated');
+  });
+
+  it('apply with --target repo keeps the repo file byte-identical when only user-scope-only keys are requested', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-apply-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-apply-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    const repoConfigPath = join(root, '.agentic-plugins', 'config.toml');
+    const before = 'model = "opus"\n';
+    await writeFile(repoConfigPath, before);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      target: 'repo',
+      apply: true,
+      desired: { entry_brief: 'startup' },
+      runner: fakeRunner(defaultCliMap()),
+    });
+    const repoTarget = report.config.targets.find((target) => target.kind === 'repo');
+    deepStrictEqual(repoTarget.refused_user_scope_only, ['entry_brief']);
+    deepStrictEqual(repoTarget.planned_writes, []);
+    strictEqual(repoTarget.applied, false, 'nothing to apply repo-side');
+    const after = await readFile(repoConfigPath, 'utf-8');
+    strictEqual(after, before, 'the repo config file is byte-identical');
+  });
+
+  it('a user config path aliasing the repo file is refused the user-scope-only keys too', async () => {
+    // repoRoot === homeDir: the "user" file IS the repo-trackable file
+    // (codex review MAJOR, reproduced) — both targets must strip the keys.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-alias-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    const configPath = join(root, '.agentic-plugins', 'config.toml');
+    const before = 'model = "opus"\n';
+    await writeFile(configPath, before);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: root,
+      apply: true,
+      desired: { entry_brief: 'startup', entry_brief_empty: 'report' },
+      runner: fakeRunner(defaultCliMap()),
+    });
+    for (const target of report.config.targets) {
+      deepStrictEqual(target.refused_user_scope_only, ['entry_brief', 'entry_brief_empty'], `${target.kind} refuses under aliasing`);
+      ok(!target.planned_writes.some((write) => write.key === 'entry_brief' || write.key === 'entry_brief_empty'));
+    }
+    const after = await readFile(configPath, 'utf-8');
+    strictEqual(after, before, 'the aliased file is byte-identical');
+  });
+
+  it('surfaces the observed loader-effective value when an env override is active', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-env-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-env-home-'));
+    await seedRepo(root);
+    await mkdir(join(home, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'entry_brief = "off"\n');
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      env: { ...process.env, AGENTIC_ENTRY_BRIEF: 'startup' },
+      runner: fakeRunner(defaultCliMap()),
+    });
+    const entry = report.session_settings.keys.entry_brief;
+    strictEqual(entry.observed_effective_value, 'startup', 'the loader-observed winner is surfaced');
+    strictEqual(entry.observed_source, 'env AGENTIC_ENTRY_BRIEF');
+    const text = formatText(report);
+    ok(text.includes('observed effective (loader): startup (env AGENTIC_ENTRY_BRIEF)'), 'text names the env winner');
+  });
+
+  it('reports a tracked repo entry_brief value as ignored (user-scope-only), never shadowing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-ignored-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entrybrief-ignored-home-'));
+    await seedRepo(root);
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'entry_brief = "startup"\n');
+
+    const report = await runSettings({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultCliMap()) });
+    const session = report.session_settings;
+    strictEqual(session.keys.entry_brief.value, null, 'a repo value is never effective for a user-scope-only key');
+    strictEqual(session.keys.entry_brief.effective_value, 'off');
+    ok(
+      session.warnings.some((warning) => /entry_brief/.test(warning) && /ignored/.test(warning) && /user-scope-only/.test(warning)),
+      `expected an ignored-repo-value warning, got: ${JSON.stringify(session.warnings)}`,
+    );
   });
 
   it('surfaces an invalid stored session_capture value as a fail-closed warning', async () => {
@@ -2355,6 +2479,8 @@ describe('settings: notify config keys (ADR-0040 §2)', () => {
       [['--notify-kinds', 'approval,bogus-kind'], /bogus-kind/],
       [['--session-capture', 'always'], /session_capture must be one of off, stop-hook/],
       [['--session-capture', 'on'], /session_capture/],
+      [['--entry-brief', 'always'], /entry_brief must be one of off, startup/],
+      [['--entry-brief-empty', 'loud'], /entry_brief_empty must be one of silent, report/],
     ];
     for (const [argv, expected] of cases) {
       throws(() => parseArgs(argv), expected, `expected parse rejection for ${argv.join(' ')}`);

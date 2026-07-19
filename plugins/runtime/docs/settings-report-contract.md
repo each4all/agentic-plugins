@@ -120,7 +120,7 @@ Line references below are anchors observed at decision time
   `!(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview)`).
   Evidence collection never affects `dry_run`.
 
-## 3. Report schema contract (`runtime-settings-1.21`)
+## 3. Report schema contract (`runtime-settings-1.22`)
 
 `SETTINGS_SCHEMA_VERSION` bumped `runtime-settings-1.16` → `runtime-settings-1.17`
 for the discriminator below, then `runtime-settings-1.17` →
@@ -276,7 +276,7 @@ distinguishable only by what it lacks:
    output byte-compatible (modulo nothing), JSON delta limited to the §3 keys.
 3. Renderer guards: `summarizeSettings` and `formatText` on a narrowed report
    (no throw, qualified output, explicit not-evaluated lines).
-4. Schema-version lockstep: the `runtime-settings-1.21` report constant and the
+4. Schema-version lockstep: the `runtime-settings-1.22` report constant and the
    `runtime-settings-execution-artifact-1.3` execution-artifact constant, and the
    exact-version assertions that pin each (`test-settings-probe-boundary.mjs` pins
    both constants; `test-notification-plan.mjs` and `test-settings.mjs` pin the
