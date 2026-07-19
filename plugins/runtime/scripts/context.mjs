@@ -7,13 +7,14 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path
 import { fileURLToPath } from 'node:url';
 
 import { canonicalJson, loadSchema, validateAgainstSchema } from './lib/schema-validate.mjs';
+import { loadSessionConfig } from './lib/runtime-config.mjs';
 import { resolveRepoRoot } from './notify.mjs';
-import { buildSourceFreshness, formatSourceFreshness, resolveSourceSnapshot } from './source-snapshot.mjs';
+import { buildSourceFreshness, formatSourceFreshness, observeSessionGitFacts, resolveGitTopLevel, resolveSourceSnapshot } from './source-snapshot.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
 const ARTIFACT_SCHEMA = 'runtime-context-artifact-1.0';
-const VALID_COMMANDS = new Set(['capture', 'status', 'check', 'note']);
+const VALID_COMMANDS = new Set(['capture', 'status', 'check', 'note', 'publish-session']);
 const RISK_LEVELS = new Set(['green', 'yellow', 'red']);
 // ADR-0044 session-capture staging surface (S3a executors). The normative
 // field tables, caps, and temp naming live in the packaged contract doc
@@ -68,6 +69,12 @@ export async function runContext(options = {}) {
     // honest error (operator) / silent no-op (hook-grade), never an implicit
     // cwd write root.
     return noteContext(options);
+  }
+  if (command === 'publish-session') {
+    // publish-session resolves its own repo root through the contract §6
+    // probe (`git rev-parse --show-toplevel`) — never the generic cwd
+    // resolution below; a non-git start dir is a silent no-op.
+    return publishSessionCapture(options);
   }
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
   if (command === 'capture') {
@@ -384,7 +391,8 @@ export async function readSlotStatus(options = {}) {
   const slotDoc = inspected.slot.document;
   const entryDoc = inspected.entry.document;
   let generation;
-  if (slotDoc && entryDoc && slotDoc.fingerprint === entryDoc.fingerprint) {
+  if (slotDoc && entryDoc && slotDoc.fingerprint === entryDoc.fingerprint
+    && slotDoc.captured_at === entryDoc.captured_at) {
     generation = 'committed';
   } else if (inspected.slot.state === 'absent' && inspected.entry.state === 'absent') {
     generation = 'absent';
@@ -410,6 +418,421 @@ export async function readSlotStatus(options = {}) {
     },
     limits: slotStatusLimits(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0044 S3b — `publish-session` publisher executor (contract §5-§8, §10)
+// ---------------------------------------------------------------------------
+
+// Contract §4 policy numbers. The normative home is the packaged
+// docs/session-capture-contract.md — changing a value there is a contract
+// change, and these constants must follow it.
+export const PUBLISH_REFRESH_TTL_MS = 300 * 1000;
+export const LOCK_STALE_AGE_MS = 60 * 1000;
+export const SWEEP_MAX_AGE_MS = 10 * 60 * 1000;
+export const SWEEP_MAX_REMOVALS = 8;
+const SLOT_SCHEMA_ID = 'runtime-session-capture-1.0';
+const ENTRY_SCHEMA_ID = 'runtime-session-entry-1.0';
+const SESSION_ID_MAX_CHARS = 128;
+const ENTRY_SUMMARY_LINE_MAX_CHARS = 160;
+const SESSION_EVIDENCE_VALUES = new Set(['none', 'fresh']);
+// §2 temp naming: `<final-name>.tmp-<pid>-<random-hex>`. The sweep matches
+// ONLY this pattern, so slot/entry/note.json and .lock are never candidates.
+const CAPTURE_TEMP_RE = /\.tmp-\d+-[0-9a-f]+$/;
+const CONTROL_RE_G = /[\u0000-\u001f\u007f]/g;
+
+// The hook-fired slot publisher (ADR-0044 §10). Transaction order is
+// contract-fixed: config gate → canonical write-root containment → O_EXCL
+// slot lock (owner token, stale takeover, bounded future skew) → committed
+// entry.json read (§7.2) → bounded structural + note inputs → fingerprint →
+// no-op or slot-then-entry publish → own-staging sweep → release in finally.
+// This function throws for hostile/invalid inputs; the hook-grade CLI layer
+// (main) converts every throw into exit-0 + at most one stderr line (§9) —
+// a capture failure must never break a turn, hook, or commit.
+export async function publishSessionCapture(options = {}) {
+  // Sensor-relayed argv is validated and clamped, never trusted as a
+  // publisher observation (ADR-0044 §1): --host is required (the sensor
+  // always passes it), the session id is CLAMPED rather than rejected (§2),
+  // and an absent evidence flag is recorded as none (§5.3).
+  const host = validateNoteHost(required(options.host, '--host'));
+  const sessionId = options.sessionId === undefined ? null : clampSessionId(options.sessionId);
+  const workflowEvidence = options.workflowEvidence === undefined
+    ? 'none'
+    : validateWorkflowEvidence(options.workflowEvidence);
+  const now = options.now ?? new Date();
+  const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
+
+  // Repo scoping via the contract §6 root probe: non-git start dir ⇒ silent
+  // no-op — v1 is repo-scoped and produces nothing. ONLY the root probe
+  // precedes the config gate (the gate itself is repo-scoped), so the
+  // gate-off path costs exactly one spawn per turn (ADR-0044 Consequences);
+  // the remaining structural probes run inside the lock, in their §10
+  // transaction position.
+  const startDir = options.repoRoot ? resolve(options.repoRoot) : resolve(options.cwd ?? process.cwd());
+  const repoRoot = await resolveGitTopLevel(startDir);
+  if (!repoRoot) {
+    return publishSkipReport('no-repo-root');
+  }
+
+  // Config gate (contract §1), evaluated INSIDE the publisher — the
+  // notify_channel shape: shipped default off, fail-closed loader, so a
+  // broken config never turns capture on. Gate-off mutates NOTHING — no
+  // mkdir, no lock, no sweep.
+  const gate = loadSessionConfig({ repoRoot, ...(options.homeDir ? { homeDir: options.homeDir } : {}) });
+  if (!gate.ok) return publishSkipReport('config-fail-closed');
+  if (gate.config.sessionCapture !== 'stop-hook') return publishSkipReport('gate-off');
+
+  // Canonicalized write-root containment (ADR-0044 §10): realpath'd ancestor
+  // chain, symlinked parents refused — BEFORE any mutation.
+  const dir = await ensureSessionCaptureDir(repoRoot);
+
+  // A real mutex (contract §8), not a dedupe claim.
+  const lock = await acquireSlotLock({ dir, nowMs });
+  if (!lock.acquired) return publishSkipReport(lock.reason);
+  try {
+    // Committed-generation read (§7.2): the refresh no-op decision reads the
+    // committed entry.json — never the possibly-newer slot.json. slot.json
+    // participates only through the fingerprint-equality check that detects
+    // a mixed (incomplete) generation; note.json is the §6 semantic inlet.
+    // Each file reads fail-closed independently.
+    const entry = await inspectSessionCaptureFile({ repoRoot, dir, fileName: 'entry.json', family: 'runtime-session-entry', now });
+    const slot = await inspectSessionCaptureFile({ repoRoot, dir, fileName: 'slot.json', family: 'runtime-session-capture', now });
+    const note = await inspectSessionCaptureFile({ repoRoot, dir, fileName: 'note.json', family: 'runtime-session-note', now });
+    // Bounded structural observation in its §10 position: after the
+    // committed-generation read, inside the lock, before the fingerprint.
+    const gitFacts = await observeSessionGitFacts(repoRoot);
+    // Decision clock, re-sampled AFTER the bounded probes when the caller
+    // did not inject one (plan-verify peer): up to three ~3s probes elapse
+    // above, and the fold/TTL/sweep decisions plus captured_at should
+    // reflect the actual publication instant. An injected options.now stays
+    // authoritative so tests remain deterministic.
+    const decisionNow = options.now ?? new Date();
+    const decisionMs = decisionNow.getTime();
+    const folded = foldableNote(note, decisionMs);
+
+    const fingerprint = computeSessionFingerprint({
+      branch: gitFacts.branch,
+      headShort: gitFacts.headShort,
+      statusDigest: gitFacts.statusDigest,
+      sessionId,
+      note: folded,
+      workflowEvidence,
+    });
+
+    // §5.1 no-op: committed entry valid, fingerprint-matched with slot,
+    // unchanged from the computed value, and younger than the refresh TTL.
+    // Any mixed or malformed generation fails this check and republishes.
+    // §7.2 same-generation identity is fingerprint AND captured_at: a crash
+    // between a refreshed slot rename and its entry rename leaves a
+    // same-fingerprint pair with diverging timestamps, which must republish
+    // (plan-verify peer, reproduced by editing slot.captured_at alone).
+    const fresh = entry.state === 'valid'
+      && slot.state === 'valid'
+      && slot.document.fingerprint === entry.document.fingerprint
+      && slot.document.captured_at === entry.document.captured_at
+      && entry.document.fingerprint === fingerprint
+      && withinRefreshTtl(entry.document.captured_at, decisionMs);
+    if (fresh) {
+      const swept = await sweepOwnStaging({ dir, nowMs: decisionMs }); // §7.3 — a no-op publication still sweeps
+      return { ...publishSkipReport('fresh-no-op'), fingerprint, swept_temps: swept };
+    }
+
+    const capturedAt = toIsoSeconds(decisionNow);
+    const summarySource = folded ? 'staged-note' : 'structural';
+    const slotSchema = await loadSchema('runtime-session-capture');
+    const entrySchema = await loadSchema('runtime-session-entry');
+    const slotDocument = {
+      schema: SLOT_SCHEMA_ID,
+      captured_at: capturedAt,
+      origin: 'stop-hook',
+      summary_source: summarySource,
+      host,
+      session_id: sessionId,
+      repo_recent_terminal_evidence: workflowEvidence,
+      repo_root: repoRoot,
+      branch: gitFacts.branch,
+      head_short: gitFacts.headShort,
+      dirty_count: gitFacts.dirtyCount,
+      status_digest: gitFacts.statusDigest,
+      note: folded,
+      fingerprint,
+    };
+    assertOwnDocumentValid(slotDocument, slotSchema, SLOT_SCHEMA_ID, 'slot.json');
+    const entryDocument = {
+      schema: ENTRY_SCHEMA_ID,
+      captured_at: capturedAt,
+      origin: 'stop-hook',
+      summary_source: summarySource,
+      host,
+      branch: gitFacts.branch,
+      head_short: gitFacts.headShort,
+      dirty_count: gitFacts.dirtyCount,
+      repo_recent_terminal_evidence: workflowEvidence,
+      summary_line: folded ? clampEntrySummaryLine(folded.content) : null,
+      note_staged_at: folded ? folded.staged_at : null,
+      fingerprint,
+    };
+    assertOwnDocumentValid(entryDocument, entrySchema, ENTRY_SCHEMA_ID, 'entry.json');
+    // §7.2 publication order: slot.json FIRST, then entry.json (the commit
+    // record) — both documents fully assembled and validated BEFORE the
+    // first rename, so a deterministic assembly/validation failure cannot
+    // manufacture a mixed generation (plan-verify peer); only the
+    // unavoidable crash window between the two renames remains.
+    await atomicWriteSessionCaptureFile({ dir, fileName: 'slot.json', document: slotDocument, schema: slotSchema });
+    await atomicWriteSessionCaptureFile({ dir, fileName: 'entry.json', document: entryDocument, schema: entrySchema });
+
+    const swept = await sweepOwnStaging({ dir, nowMs: decisionMs });
+    return {
+      command: 'publish-session',
+      version: VERSION,
+      status: 'published',
+      summary_source: summarySource,
+      fingerprint,
+      captured_at: capturedAt,
+      slot_pointer: pointer(repoRoot, resolve(dir, 'slot.json')),
+      entry_pointer: pointer(repoRoot, resolve(dir, 'entry.json')),
+      note_folded: folded !== null,
+      lock_takeover: lock.takeover,
+      swept_temps: swept,
+      limits: publishLimits(),
+    };
+  } finally {
+    await releaseSlotLock({ dir, token: lock.token });
+  }
+}
+
+// Contract §5.1 — the fingerprint recipe: EXACTLY these six keys in EXACTLY
+// this insertion order, serialized by plain compact JSON.stringify and hashed
+// over the UTF-8 bytes; null for every absent component. This is deliberately
+// NOT lib/schema-validate's canonicalJson() — that helper pretty-prints with
+// a trailing newline for artifact writing and must never be reused as the
+// fingerprint encoding. Any change to the key set, order, or serialization
+// is fp2:.
+export function computeSessionFingerprint({ branch, headShort, statusDigest, sessionId, note, workflowEvidence }) {
+  const input = JSON.stringify({
+    branch: branch ?? null,
+    head_short: headShort ?? null,
+    status_digest: statusDigest ?? null,
+    session_id: sessionId ?? null,
+    note: note ? { content_hash: note.content_hash, staged_at: note.staged_at } : null,
+    workflow_evidence: workflowEvidence,
+  });
+  return `fp1:${createHash('sha256').update(Buffer.from(input, 'utf8')).digest('hex')}`;
+}
+
+function publishSkipReport(reason) {
+  return { command: 'publish-session', version: VERSION, status: 'skipped', reason, limits: publishLimits() };
+}
+
+function publishLimits() {
+  return [
+    'Hook-grade executor: at the CLI it exits 0 always, writes nothing to stdout, and emits at most one stderr line (contract §1).',
+    'Gated by session_capture (shipped default off, fail-closed loader) — evaluated inside this executor, never in the sensor.',
+    'Writes only the repo-local session-capture slot; deletion authority is limited to its own lock and staging temps (ADR-0044 §3).',
+    'The slot is a durable last-writer-wins advisory; consumers are read-only and recompute staleness themselves (contract §10).',
+  ];
+}
+
+// Sensor-relayed and CLAMPED, never rejected (ADR-0044 §2): strip the C0
+// range and DEL (the schema pattern excludes them), cap at 128 chars; an
+// empty result is recorded as null (omitted-when-absent equivalence).
+function clampSessionId(value) {
+  const text = String(value).replace(CONTROL_RE_G, '').slice(0, SESSION_ID_MAX_CHARS);
+  return text === '' ? null : text;
+}
+
+function validateWorkflowEvidence(value) {
+  if (!SESSION_EVIDENCE_VALUES.has(value)) {
+    throw new Error('--workflow-evidence must be none or fresh');
+  }
+  return value;
+}
+
+// Contract §3.2 — the clamped FIRST line of the folded note: C0/DEL stripped
+// (the clampReinjectField discipline), ≤160 chars. Untrusted quoted data for
+// every consumer downstream.
+function clampEntrySummaryLine(content) {
+  // CR|LF|CRLF all end the first line — a bare CR would otherwise merge
+  // two lines after control stripping (plan-verify peer).
+  const firstLine = String(content).split(/\r\n|[\r\n]/, 1)[0] ?? '';
+  return firstLine.replace(CONTROL_RE_G, '').slice(0, ENTRY_SUMMARY_LINE_MAX_CHARS);
+}
+
+// Contract §4 fold window: a valid staged note whose staged_at is within
+// 24 h of the publication instant. Future skew ≤ 60 s reads as age 0; beyond
+// the bound the note must NOT read as fresh. Expired or future-skewed notes
+// are ignored, never deleted. Returns the §3.1 slot mirror (note.json minus
+// the schema id) or null.
+function foldableNote(noteInspection, nowMs) {
+  if (noteInspection.state !== 'valid') return null;
+  const doc = noteInspection.document;
+  const stagedMs = Date.parse(doc.staged_at);
+  if (!Number.isFinite(stagedMs)) return null;
+  if (stagedMs - nowMs > FUTURE_SKEW_TOLERANCE_MS) return null;
+  if (Math.max(0, nowMs - stagedMs) > NOTE_FOLD_WINDOW_MS) return null;
+  return {
+    staged_at: doc.staged_at,
+    host: doc.host,
+    branch: doc.branch,
+    head_short: doc.head_short,
+    content: doc.content,
+    content_hash: doc.content_hash,
+  };
+}
+
+function withinRefreshTtl(capturedAt, nowMs) {
+  const capturedMs = Date.parse(capturedAt);
+  if (!Number.isFinite(capturedMs)) return false;
+  // A committed timestamp more than the skew bound in the future cannot be
+  // trusted as fresh (contract §4) — republish is the conservative side.
+  if (capturedMs - nowMs > FUTURE_SKEW_TOLERANCE_MS) return false;
+  // strictly YOUNGER than the TTL (contract §4 wording; plan-verify peer)
+  return Math.max(0, nowMs - capturedMs) < PUBLISH_REFRESH_TTL_MS;
+}
+
+// A document THIS writer assembled that fails its own schema or a §11
+// semantic invariant is a writer bug — refuse before rename, never publish
+// (contract §3 validate-before-rename).
+function assertOwnDocumentValid(document, schema, readerVersion, fileName) {
+  const verdict = validateAgainstSchema(document, schema, { readerVersion });
+  if (!verdict.ok) {
+    throw new Error(`assembled ${fileName} failed its own schema before rename: ${sanitizeValidationReason(verdict.errors)}`);
+  }
+  const semantic = semanticCaptureViolation(fileName, document);
+  if (semantic) {
+    throw new Error(`assembled ${fileName} violates a semantic invariant before rename: ${semantic}`);
+  }
+}
+
+// Contract §8 — a real mutex, not a dedupe claim: `.lock` created O_EXCL
+// with an owner token (`<pid>:<random-hex>` as the content), stale takeover
+// by age with the future-skew bound applied FIRST, token-checked release. A
+// losing publisher exits silently — another publisher is doing this turn's
+// work.
+async function acquireSlotLock({ dir, nowMs }) {
+  const lockPath = resolve(dir, '.lock');
+  const token = `${process.pid}:${randomBytes(8).toString('hex')}`;
+  let tookOver = false;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let handle = null;
+    try {
+      handle = await open(lockPath, 'wx');
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      let entryStat;
+      try {
+        entryStat = await lstat(lockPath);
+      } catch (statError) {
+        if (statError?.code === 'ENOENT') continue; // released between EEXIST and stat — one retry
+        return { acquired: false, reason: 'lock-unreadable', token: null };
+      }
+      if (entryStat.isSymbolicLink() || !entryStat.isFile()) {
+        // A planted non-regular .lock is hostile input, not a peer publisher:
+        // refuse — never write through or take over a symlink.
+        return { acquired: false, reason: 'lock-not-regular', token: null };
+      }
+      // Future-skew bound first (contract §4/§8): a lock mtime within the
+      // bound reads as age 0 (held); BEYOND the bound the timestamp is
+      // untrustworthy and the lock is treated as stale — takeover is the
+      // self-healing side, since holding forever would wedge capture
+      // permanently on a crash or clock artifact.
+      const farFuture = entryStat.mtimeMs - nowMs > FUTURE_SKEW_TOLERANCE_MS;
+      const age = farFuture ? Number.POSITIVE_INFINITY : Math.max(0, nowMs - entryStat.mtimeMs);
+      if (age <= LOCK_STALE_AGE_MS) {
+        return { acquired: false, reason: 'lock-held', token: null };
+      }
+      // Stale takeover as a REAL mutual exclusion (contract §8 — the
+      // plan-verify peer reproduced two last-rename-wins takeovers both
+      // acquiring): CLAIM the stale lock by atomically renaming it away to
+      // a unique temp name. rename succeeds for exactly one contender;
+      // every loser sees ENOENT and exits silently. The winner removes its
+      // claimed file (own-lock deletion, the ADR-0044 §3 grant — a leftover
+      // matches the temp pattern and falls to the sweep) and loops back to
+      // the O_EXCL create; a third publisher that slips in between wins the
+      // create and this one exits lock-held at the next EEXIST. The
+      // displaced owner's release no-ops on the token check either way.
+      const claimPath = resolve(dir, `.lock.tmp-${process.pid}-${randomBytes(4).toString('hex')}`);
+      try {
+        await rename(lockPath, claimPath);
+      } catch {
+        return { acquired: false, reason: 'lock-takeover-race', token: null };
+      }
+      try {
+        await rm(claimPath, { force: true });
+      } catch {
+        // best effort — the claim matches the sweep's temp pattern
+      }
+      tookOver = true;
+      continue;
+    }
+    try {
+      await handle.writeFile(token, 'utf8');
+    } catch {
+      // The wx create succeeded but the token write failed — remove the
+      // half-created lock so it cannot wedge publishers until stale
+      // takeover (plan-verify peer).
+      await handle.close().catch(() => {});
+      try {
+        await rm(lockPath, { force: true });
+      } catch {
+        // best effort
+      }
+      return { acquired: false, reason: 'lock-write-failed', token: null };
+    }
+    await handle.close();
+    return { acquired: true, reason: null, token, takeover: tookOver };
+  }
+  return { acquired: false, reason: 'lock-vanished-race', token: null };
+}
+
+// Token-checked release (contract §8): delete ONLY a lock still carrying our
+// token, so a displaced owner cannot delete a successor's lock. The
+// read-compare-delete window is the documented residual (no compare-and-
+// unlink primitive exists); best-effort — a vanished or foreign lock is left
+// alone.
+async function releaseSlotLock({ dir, token }) {
+  if (!token) return;
+  const lockPath = resolve(dir, '.lock');
+  try {
+    const entryStat = await lstat(lockPath);
+    if (entryStat.isSymbolicLink() || !entryStat.isFile() || entryStat.size > 256) return;
+    const current = await readFile(lockPath, 'utf8');
+    if (current !== token) return;
+    await rm(lockPath, { force: true });
+  } catch {
+    // ENOENT (swept / taken over) or unreadable — release is best-effort.
+  }
+}
+
+// Contract §7.3 — bounded sweep of the publisher's OWN staging area only:
+// files matching the §2 temp pattern, older than the max writer lifetime,
+// at most SWEEP_MAX_REMOVALS per run. Deletion authority is the narrow
+// ADR-0044 §3 grant; nothing else in the directory is ever a candidate. A
+// far-future mtime cannot prove age, so it is skipped (same skew bound).
+async function sweepOwnStaging({ dir, nowMs }) {
+  let names;
+  try {
+    names = await readdir(dir);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    if (removed >= SWEEP_MAX_REMOVALS) break;
+    if (!CAPTURE_TEMP_RE.test(name)) continue;
+    const tempPath = resolve(dir, name);
+    try {
+      const entryStat = await lstat(tempPath);
+      if (entryStat.isSymbolicLink() || !entryStat.isFile()) continue;
+      if (entryStat.mtimeMs - nowMs > FUTURE_SKEW_TOLERANCE_MS) continue;
+      if (Math.max(0, nowMs - entryStat.mtimeMs) <= SWEEP_MAX_AGE_MS) continue;
+      await rm(tempPath, { force: true });
+      removed += 1;
+    } catch {
+      // a vanished or unremovable temp is not a publish failure
+    }
+  }
+  return removed;
 }
 
 function sessionCaptureDir(repoRoot) {
@@ -668,6 +1091,9 @@ function semanticCaptureViolation(fileName, document) {
     if (document.summary_source === 'structural' && (document.summary_line !== null || document.note_staged_at !== null)) {
       return 'summary_source=structural requires summary_line and note_staged_at to be null';
     }
+    if (document.summary_source === 'staged-note' && (document.summary_line === null || document.note_staged_at === null)) {
+      return 'summary_source=staged-note requires summary_line and note_staged_at (contract §11 biconditional)';
+    }
     return dirtyCountViolation(document.dirty_count);
   }
   return null;
@@ -771,7 +1197,7 @@ function noteLimits() {
   return [
     'Explicit staging write only — this invocation is the ADR-0035 invariant-1 opt-in; nothing stages notes automatically.',
     `Note content is capped at ${NOTE_CONTENT_MAX_BYTES} UTF-8 bytes and stays repo-local under .agentic-plugins/state/runtime/session-capture/.`,
-    'The staged note reaches the auto slot only through the publish-session publisher (a later slice) and only within the 24h fold window; --clear empties the staging slot explicitly.',
+    'The staged note reaches the auto slot only through the publish-session publisher, and only within the 24h fold window; --clear empties the staging slot explicitly.',
     'Note content is untrusted quoted data for every consumer — never instructions, never a command source.',
   ];
 }
@@ -878,6 +1304,12 @@ export function parseArgs(argv) {
       case '--host':
         options.host = requireValue(args, arg);
         break;
+      case '--session-id':
+        options.sessionId = requireValue(args, arg);
+        break;
+      case '--workflow-evidence':
+        options.workflowEvidence = requireValue(args, arg);
+        break;
       case '--hook-grade':
         options.hookGrade = true;
         break;
@@ -899,7 +1331,7 @@ export function parseArgs(argv) {
 function assertFlagCombination(options) {
   const command = options.command;
   if (options.hookGrade === true && command !== 'note') {
-    throw new Error('--hook-grade applies only to note (the hook/sidecar-invoked staging mode)');
+    throw new Error('--hook-grade applies only to note (the hook/sidecar-invoked staging mode; publish-session is hook-grade by definition and needs no flag)');
   }
   if (options.hookGrade === true && options.format !== undefined) {
     throw new Error('--hook-grade writes nothing to stdout; it does not combine with --format');
@@ -911,7 +1343,31 @@ function assertFlagCombination(options) {
     if (options.text !== undefined) throw new Error('--text applies only to note');
     if (options.file !== undefined) throw new Error('--file applies only to note');
     if (options.clear === true) throw new Error('--clear applies only to note');
-    if (options.host !== undefined) throw new Error('--host applies only to note');
+  }
+  if (command !== 'note' && command !== 'publish-session') {
+    if (options.host !== undefined) throw new Error('--host applies only to note and publish-session');
+  }
+  if (command !== 'publish-session') {
+    if (options.sessionId !== undefined) throw new Error('--session-id applies only to publish-session');
+    if (options.workflowEvidence !== undefined) throw new Error('--workflow-evidence applies only to publish-session');
+  }
+  if (command === 'publish-session') {
+    // Hook-grade by command (contract §1): nothing may reach stdout, so the
+    // reporter/help flags are refused outright, alongside every selector or
+    // staging flag from the other command families.
+    for (const [flag, present] of [
+      ...captureAndLedgerFlagPresence(options),
+      ['--run-id', options.runId !== undefined],
+      ['--latest', options.latest === true],
+      ['--stale-after-hours', options.staleAfterMs !== undefined],
+      ['--workflow-projection-file', options.workflowProjectionFile !== undefined],
+      ['--routing-recommendation', options.routingRecommendation !== undefined],
+      ['--slot', options.slot === true],
+      ['--format', options.format !== undefined],
+      ['--help', options.help === true],
+    ]) {
+      if (present) throw new Error(`${flag} does not apply to publish-session (hook-grade executor, contract §1)`);
+    }
   }
   if (command === 'note') {
     for (const [flag, present] of [
@@ -1326,10 +1782,11 @@ Usage:
   runtime:context status (--run-id <id>|--latest) [--workflow-projection-file <path>]
   runtime:context note (--text <text>|--file <path>|--clear) [--host claude|codex] [--hook-grade]
   runtime:context status --slot
+  runtime:context publish-session --host claude|codex [--repo-root <dir>] [--session-id <id>] [--workflow-evidence none|fresh]
 
 This MVP writes repo-local context artifacts under .agentic-plugins/runs/context/ for capture/status, including a read-only git source snapshot when available. Status reports age-based stale metadata plus source-freshness metadata. The check command is read-only and does not create artifacts or mutate host session context. When a bounded --workflow-projection-file is supplied (ADR-0031), check/status also compose the session-level continue-vs-fresh preflight from the caller-supplied risk and the projection's archive_gate; a malformed projection is reported and degraded, never interpreted.
 
-The ADR-0044 session-capture staging surface: note stages a semantic handoff note (repo-global, 4096 UTF-8 bytes max, atomic temp+rename, staging-time git context) under .agentic-plugins/state/runtime/session-capture/; --clear empties the staging slot. Operator invocations report on stdout and exit 1 on error; --hook-grade is the hook/sidecar mode — exit 0 always, nothing on stdout, at most one stderr line. status --slot is a read-only inspection of the validated slot/entry/note files with per-file fail-closed skip; the slot pair itself is produced by the publish-session publisher (a later slice).`;
+The ADR-0044 session-capture surface: note stages a semantic handoff note (repo-global, 4096 UTF-8 bytes max, atomic temp+rename, staging-time git context) under .agentic-plugins/state/runtime/session-capture/; --clear empties the staging slot. Operator invocations report on stdout and exit 1 on error; --hook-grade is note's hook/sidecar mode — exit 0 always, nothing on stdout, at most one stderr line. status --slot is a read-only inspection of the validated slot/entry/note files with per-file fail-closed skip. publish-session is the hook-fired slot publisher (hook-grade by definition — no reporter mode): gated by the session_capture config key (default off), it serializes through an O_EXCL owner-token lock, reads the committed entry.json for the fingerprint no-op decision, folds a staged note within the 24h window, publishes slot.json then entry.json via temp+rename, and sweeps only its own stale temps.`;
 }
 
 function requireValue(args, flag) {
@@ -1885,17 +2342,26 @@ function preview(text) {
 async function main() {
   const argv = process.argv.slice(2);
   // ADR-0044 §9 output-mode split, made explicit: operator invocations stay on
-  // the reporter path (stdout report, exit 1 on error) while --hook-grade —
-  // note's hook/sidecar mode — is fail-closed silent: exit 0 always, nothing
-  // on stdout, at most ONE stderr line (the notify.mjs emit discipline).
-  // Detected on the RAW argv too, so even a parseArgs failure cannot make a
-  // hook invocation exit non-zero or print a report.
+  // the reporter path (stdout report, exit 1 on error) while the hook/sidecar
+  // modes are fail-closed silent: exit 0 always, nothing on stdout, at most
+  // ONE stderr line (the notify.mjs emit discipline). note opts in via
+  // --hook-grade; publish-session is hook-grade BY COMMAND (the publisher
+  // path has no operator reporter mode, contract §1). Both are detected on
+  // the RAW argv too, so even a parseArgs failure cannot make a hook
+  // invocation exit non-zero or print a report.
+  // Scan the WHOLE argv: parseArgs accepts options before the command, so
+  // `--repo-root X publish-session` must still classify as hook-grade
+  // (plan-verify peer reproduced it exiting 1). A flag VALUE that happens to
+  // equal 'publish-session' misclassifies toward silent-exit-0 — the
+  // conservative side for a hook path.
+  const publisherInvocation = argv.includes('publish-session');
   let options;
   try {
     options = parseArgs(argv);
   } catch (error) {
-    if (argv.includes('--hook-grade')) {
-      process.stderr.write(`runtime:context: note failed at args: ${truncateReason(error?.message)}\n`);
+    if (argv.includes('--hook-grade') || publisherInvocation) {
+      const label = publisherInvocation ? 'publish-session' : 'note';
+      process.stderr.write(`runtime:context: ${label} failed at args: ${truncateReason(error?.message)}\n`);
       return;
     }
     throw error;
@@ -1903,11 +2369,12 @@ async function main() {
   // Hook-grade is classified BEFORE --help: `note --hook-grade --help` must
   // not print help to stdout (parse already refuses the combination; this
   // ordering is the belt for any future flag that slips past it).
-  if (options.hookGrade === true) {
+  if (options.hookGrade === true || options.command === 'publish-session') {
     try {
       await runContext(options);
+      // A skip is silent — the single stderr line is reserved for failures.
     } catch (error) {
-      process.stderr.write(`runtime:context: note failed: ${truncateReason(error?.message)}\n`);
+      process.stderr.write(`runtime:context: ${options.command} failed: ${truncateReason(error?.message)}\n`);
     }
     return;
   }
@@ -1927,8 +2394,9 @@ const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(imp
 if (isMain) {
   main().catch((error) => {
     // Backstop for the hook-grade contract: a failure that escapes main()
-    // must still exit 0 with no report when --hook-grade was requested.
-    if (process.argv.includes('--hook-grade')) {
+    // must still exit 0 with no report when --hook-grade was requested or
+    // the command is the intrinsically hook-grade publish-session.
+    if (process.argv.includes('--hook-grade') || process.argv.includes('publish-session')) {
       process.exitCode = 0;
       return;
     }

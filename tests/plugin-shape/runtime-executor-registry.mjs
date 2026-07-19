@@ -375,6 +375,16 @@ export const ARGV_VERB_ALLOWLIST = {
     ['--version'],
     ['rev-parse', '...'],
     ['status', '...'],
+    // observeSessionGitFacts branch probe — the session-capture-contract.md §6
+    // NORMATIVE branch observation for the ADR-0044 publisher (read-only;
+    // detached HEAD ⇒ empty output). Exactly this two-token form; a bare
+    // `git branch` (list) or any mutating branch subcommand still fails.
+    ['branch', '--show-current'],
+    // observeSessionGitFacts porcelain probe with optional index locks
+    // DISABLED: a plain `git status` may refresh and write .git/index —
+    // outside the publisher's declared session-capture write authority
+    // (ADR-0035 M1; plan-verify peer). Exactly this leading global flag.
+    ['--no-optional-locks', 'status', '...'],
     ['show-ref', '--verify', '*'],
     ['worktree', 'list', '...'],
     ['init', '-q', '-b', '*'],
@@ -495,6 +505,155 @@ export const ALLOWED_PID_LIVENESS_SITES = [
       'stale family-lock reclaim needs to know whether the owning pid is gone; machine-bootstrap-contract.md §13 fixes this exact probe (ESRCH ⇒ gone, EPERM ⇒ exists) as the staleness rule, alongside the 10-minute age bound (ADR-0035 §4 — a liveness read, not a mutation)',
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Filesystem mutation modeling (ADR-0044 S3b — the ADR-0035 §5 registry
+// extension the publish-session add-gate requires)
+// ---------------------------------------------------------------------------
+
+// Until this section, the guard modeled process/network/kill reach only and
+// the registry header explicitly deferred "fs-mutation path scoping". The
+// publish-session executor introduces new mutation primitives (O_EXCL lock
+// creation, bounded temp writes, rename publication, scoped sweep deletion),
+// so the registry now models the filesystem mutation surface: WHICH runtime
+// script may import/call WHICH mutating fs primitive, the write-open shape
+// (read-only or O_EXCL-create — overwrite/append opens bypass the temp+rename
+// atomicity discipline), pinned recursive removals, and each file's declared
+// write roots. Read-only fs use (readFile/readdir/lstat/stat/realpath/access)
+// stays ungated. This is a token-level model, not a path-flow analysis —
+// state-root declarations are drift-checked against the source's literal
+// path segments, and the behavioral truth stays with each executor's tests
+// (KEEP-ZERO-DEP: no AST dependency).
+
+export const WATCHED_FS_MODULES = ['node:fs', 'fs', 'node:fs/promises', 'fs/promises'];
+
+// Mutating primitives (async + callback/sync twins, plus the fd-anchored
+// forms — plan-verify peer: `write`/`writev`/`ftruncate` were omitted).
+// `open`/`openSync` are watched because they can create/truncate; the
+// fs-open-gate then constrains every call site to read-only or
+// O_EXCL-create shapes — which also bounds FileHandle methods (a handle
+// opened read-only cannot write, so handle.writeFile is covered by the
+// open-shape gate rather than name-anchored detection).
+export const FS_MUTATION_PRIMITIVES = [
+  'writeFile', 'appendFile', 'rename', 'rm', 'rmdir', 'unlink', 'mkdir', 'mkdtemp',
+  'open', 'copyFile', 'cp', 'link', 'symlink', 'truncate', 'chmod', 'chown', 'lchmod',
+  'lchown', 'utimes', 'lutimes', 'createWriteStream', 'watch',
+  'write', 'writev', 'ftruncate', 'fchmod', 'fchown', 'futimes',
+  'writeFileSync', 'appendFileSync', 'renameSync', 'rmSync', 'rmdirSync', 'unlinkSync',
+  'mkdirSync', 'mkdtempSync', 'openSync', 'copyFileSync', 'cpSync', 'linkSync',
+  'symlinkSync', 'truncateSync', 'chmodSync', 'chownSync', 'utimesSync',
+  'writeSync', 'writevSync', 'ftruncateSync', 'fchmodSync', 'fchownSync', 'futimesSync',
+];
+
+// The only runtime scripts permitted to import/call mutating fs primitives,
+// with the exact primitive set each may bind and the write roots it declares.
+// `stateRoots` is the documented write surface, drift-checked segment-wise
+// against the file's source (registry never looser than the code): a
+// `HOME:`-prefixed root lives under ~/.agentic-plugins (machine-global,
+// bootstrap-only per ADR-0046), `os-tmpdir` marks self-created mkdtemp
+// scratch. Justifications cite the observed source sites.
+export const FS_MUTATION_USERS = {
+  // compat run artifacts + release-note copies under runs/compat.
+  'compat.mjs': {
+    primitives: ['copyFile', 'mkdir', 'writeFile'],
+    stateRoots: ['.agentic-plugins/runs/compat'],
+    justification: 'compat snapshot/check/plan artifacts (runs/compat) incl. release-note copyFile',
+  },
+  // consensus run artifacts (task/prompt/raw/synthesis/decision files).
+  'consensus.mjs': {
+    primitives: ['mkdir', 'writeFile'],
+    stateRoots: ['.agentic-plugins/runs/consensus'],
+    justification: 'ADR-0024 consensus run artifacts under runs/consensus',
+  },
+  // context capture ledger + ADR-0044 session-capture slot (note staging,
+  // publish-session slot/entry + O_EXCL lock + bounded sweep).
+  'context.mjs': {
+    primitives: ['mkdir', 'open', 'rename', 'rm', 'writeFile'],
+    stateRoots: ['.agentic-plugins/runs/context', '.agentic-plugins/state/runtime/session-capture'],
+    justification: 'context run ledger (runs/context) + ADR-0044 slot home: temp+rename writes, wx lock, own-temp sweep and note --clear removals (ADR-0044 §3 deletion grant)',
+  },
+  'cutover-audit.mjs': {
+    primitives: ['mkdir', 'writeFile'],
+    stateRoots: ['.agentic-plugins/runs/cutover'],
+    justification: 'cutover audit artifacts under runs/cutover (incl. latest.json)',
+  },
+  // doctor run artifacts + ephemeral temp-repo probes (mkdtemp under the OS
+  // tmpdir, recursively removed — the pinned recursive-removal site below).
+  'doctor.mjs': {
+    primitives: ['mkdir', 'mkdtemp', 'rm', 'writeFile'],
+    stateRoots: ['.agentic-plugins/runs/doctor', 'os-tmpdir'],
+    justification: 'doctor run artifacts + self-created mkdtemp temp-repo teardown',
+  },
+  'migrate-workflow-storage.mjs': {
+    primitives: ['mkdir', 'rename', 'rm', 'writeFile'],
+    stateRoots: ['.agentic-plugins/state'],
+    justification: 'ADR-0025 explicit workflow-storage migration: legacy→canonical renames, non-recursive collision removal, migration receipt',
+  },
+  // notify emit path: file-log channel append + rotation, dedupe lock dirs.
+  'notify.mjs': {
+    primitives: ['appendFileSync', 'renameSync', 'rmSync', 'mkdirSync'],
+    stateRoots: ['.agentic-plugins/state/runtime/notify'],
+    justification: 'ADR-0040 notify-owned state: log.ndjson append/rotate + reclaim-lock removal',
+  },
+  'settings.mjs': {
+    primitives: ['mkdir', 'rename', 'writeFile'],
+    stateRoots: ['.agentic-plugins/config.toml', 'HOME:.agentic-plugins/config.toml', '.agentic-plugins/runs/settings'],
+    justification: 'explicit --apply config.toml upsert (repo + user-global) and settings run artifacts',
+  },
+  // lib/ (basename-keyed like every other registry table)
+  'bootstrap-artifacts.mjs': {
+    primitives: ['link', 'mkdir', 'open', 'rename', 'rmdir', 'unlink', 'writeFile'],
+    stateRoots: ['HOME:.agentic-plugins'],
+    justification: 'ADR-0046 machine-global bootstrap run/profile artifacts: temp+rename writes, hardlink family locks, bounded lock/temp cleanup',
+  },
+  'egress-config.mjs': {
+    primitives: ['openSync'],
+    stateRoots: [],
+    justification: 'read-only O_RDONLY|O_NOFOLLOW credential open (no write flags) — registered because openSync is a watched primitive; the fs-open-gate pins it read-only',
+  },
+  'egress-launcher-plan.mjs': {
+    primitives: ['mkdir', 'writeFile', 'rename'],
+    stateRoots: ['.agentic-plugins/runs'],
+    justification: 'ADR-0041 §12 egress launcher plan artifacts (temp+rename) under runs/',
+  },
+  'egress-semantics.mjs': {
+    primitives: ['writeFileSync', 'unlinkSync', 'mkdirSync'],
+    stateRoots: ['.agentic-plugins/state/runtime/notify/egress-throttle'],
+    justification: 'egress throttle records under the notify state home + their bounded expiry removal',
+  },
+  'notification-plan.mjs': {
+    primitives: ['mkdir', 'writeFile', 'rename'],
+    stateRoots: ['.agentic-plugins/runs'],
+    justification: 'ADR-0040 §4 notification-channel plan artifacts (temp+rename) under runs/',
+  },
+  'notify-schema.mjs': {
+    primitives: ['writeFileSync', 'writeSync', 'rmSync', 'unlinkSync', 'mkdirSync', 'openSync', 'utimesSync'],
+    stateRoots: ['.agentic-plugins/state/runtime/notify'],
+    justification: 'ADR-0040 §1 dedupe claims: wx exclusive create + fd writeSync of the claim record, mkdir reclaim locks + their removal, claim touch/expiry (the bounded retention-deletion grant)',
+  },
+  'permission-artifacts.mjs': {
+    primitives: ['mkdir', 'writeFile', 'rename'],
+    stateRoots: ['.agentic-plugins/runs'],
+    justification: 'ADR-0038 permission plan artifacts (temp+rename) under runs/',
+  },
+};
+
+// The only recursive removals runtime may perform, pinned to the exact
+// callee + first-argument identifier (the ALLOWED_KILL_SITES shape). A
+// recursive:true removal anywhere else — or with any other target — fails
+// closed: recursive deletion is the highest-blast-radius fs primitive and
+// every legitimate site removes something the same file provably created.
+export const ALLOWED_RECURSIVE_REMOVALS = {
+  'doctor.mjs': [
+    { callee: 'rm', target: 'tempRepo', justification: 'teardown of the self-created mkdtemp temp repo used for workflow-continuation proofs' },
+  ],
+  'notify.mjs': [
+    { callee: 'rmSync', target: 'lockDir', justification: 'own dedupe reclaim-lock dir removal (ADR-0040 §1 bounded retention deletion)' },
+  ],
+  'notify-schema.mjs': [
+    { callee: 'rmSync', target: 'lockDir', justification: 'own dedupe reclaim-lock dir removal in the claim lifecycle (ADR-0040 §1)' },
+  ],
+};
 
 // The runtime scripts the guard scans. Anything matching plugins/runtime/scripts
 // recursively; listed explicitly so a deleted/renamed executor is visible.
