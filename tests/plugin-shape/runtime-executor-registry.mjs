@@ -584,6 +584,16 @@ export const FS_MUTATION_USERS = {
     stateRoots: ['.agentic-plugins/runs/doctor', 'os-tmpdir'],
     justification: 'doctor run artifacts + self-created mkdtemp temp-repo teardown',
   },
+  // ADR-0045 S7a entry-brief read layer: `open` is imported ONLY for
+  // read-only TOCTOU-safe handle reads (O_RDONLY|O_NOFOLLOW|O_NONBLOCK +
+  // fstat-on-handle + bounded read — the lstat→readFile pair it replaces was
+  // swappable between check and read). No write flag is ever passed and no
+  // state root is mutated; the module stays R0.
+  'entry-brief-readers.mjs': {
+    primitives: ['open'],
+    stateRoots: [],
+    justification: 'R0 entry-brief reader: read-only O_NOFOLLOW handle opens for TOCTOU-safe bounded reads; never a write flag, no mutation',
+  },
   'migrate-workflow-storage.mjs': {
     primitives: ['mkdir', 'rename', 'rm', 'writeFile'],
     stateRoots: ['.agentic-plugins/state'],

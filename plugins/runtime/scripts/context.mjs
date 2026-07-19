@@ -8,6 +8,21 @@ import { fileURLToPath } from 'node:url';
 
 import { canonicalJson, loadSchema, validateAgainstSchema } from './lib/schema-validate.mjs';
 import { loadSessionConfig } from './lib/runtime-config.mjs';
+import {
+  NOTE_CONTENT_MAX_BYTES,
+  SESSION_CAPTURE_FILE_FAMILIES,
+  SESSION_CAPTURE_SEGMENTS,
+  inspectSessionCaptureFileCore,
+  sanitizeValidationReason,
+  semanticCaptureViolation,
+  sessionCaptureDir,
+  truncateReason,
+} from './lib/session-capture-inspect.mjs';
+
+// Re-export for existing consumers — the value moved to the session-capture
+// inspection leaf (ADR-0045 S7a) so entry-brief-readers can share the gate
+// sequence without importing context.mjs back (cycle).
+export { NOTE_CONTENT_MAX_BYTES };
 import { resolveRepoRoot } from './notify.mjs';
 import { buildSourceFreshness, formatSourceFreshness, observeSessionGitFacts, resolveGitTopLevel, resolveSourceSnapshot } from './source-snapshot.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
@@ -21,19 +36,10 @@ const RISK_LEVELS = new Set(['green', 'yellow', 'red']);
 // (docs/session-capture-contract.md §2-§4); slot.json/entry.json are produced
 // by the S3b publisher — this slice ships only the explicit `note` staging
 // write and the read-only `status --slot` inspection.
-const SESSION_CAPTURE_SEGMENTS = ['state', 'runtime', 'session-capture'];
 const NOTE_SCHEMA_ID = 'runtime-session-note-1.0';
-const SESSION_CAPTURE_FILE_FAMILIES = Object.freeze({
-  'slot.json': 'runtime-session-capture',
-  'entry.json': 'runtime-session-entry',
-  'note.json': 'runtime-session-note',
-});
-export const NOTE_CONTENT_MAX_BYTES = 4096; // contract §4 — writer-enforced UTF-8 BYTES (schema maxLength is a codepoint backstop)
 export const NOTE_FOLD_WINDOW_MS = 24 * 60 * 60 * 1000; // contract §4 — reported here as a diagnostic; enforced by the publisher
 const FUTURE_SKEW_TOLERANCE_MS = 60 * 1000; // contract §4 — one uniform bound for fold-window arithmetic
-const CAPTURE_FILE_MAX_BYTES = 256 * 1024; // read bound before JSON.parse — the schema's 64 KiB cap runs after a full read
 const NOTE_HOSTS = new Set(['claude', 'codex']);
-const REASON_LINE_CAP = 200;
 // ADR-0031 bounded workflow projection (session-level continue-vs-fresh
 // preflight). The owning plugin (engineer/founder/designer L3 /
 // orchestrator L2) computes these generic-semantic fields from its OWN
@@ -835,9 +841,7 @@ async function sweepOwnStaging({ dir, nowMs }) {
   return removed;
 }
 
-function sessionCaptureDir(repoRoot) {
-  return resolve(repoRoot, '.agentic-plugins', ...SESSION_CAPTURE_SEGMENTS);
-}
+// sessionCaptureDir moved to lib/session-capture-inspect.mjs (ADR-0045 S7a).
 
 // ADR-0044 §10 containment hardening, checked BEFORE any mutation: walk the
 // ancestor chain with lstat (no-follow) and refuse on any symlinked or
@@ -997,127 +1001,18 @@ async function atomicWriteSessionCaptureFile({ dir, fileName, document, schema }
 }
 
 // Read one session-capture file for `status --slot`: absent | valid | invalid.
-// Fail-closed per file (contract §3/§10): a malformed file is skipped with a
-// one-line reason and its fields are NOT exposed; it is never repaired or
-// deleted on read. Each of slot/entry/note recovers independently.
+// The fail-closed gate sequence lives in lib/session-capture-inspect.mjs
+// (shared with the ADR-0045 entry-brief readers — one gate, no mirrors);
+// this wrapper layers the report-facing pointer and summary on top.
 async function inspectSessionCaptureFile({ repoRoot, dir, fileName, family, now }) {
-  const filePath = resolve(dir, fileName);
-  const base = { pointer: pointer(repoRoot, filePath), state: 'absent', reason: null, summary: null, document: null };
-  // lstat no-follow gates BEFORE the read: a symlinked artifact file, a
-  // non-regular entry, or an oversized file is skipped fail-closed without
-  // reading it (the consumer never follows links and never slurps unbounded
-  // bytes ahead of the validator's post-parse cap).
-  let entryStat;
-  try {
-    entryStat = await lstat(filePath);
-  } catch (error) {
-    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return base;
-    return { ...base, state: 'invalid', reason: truncateReason(`unreadable: ${error?.code ?? error?.message ?? 'unknown'}`) };
-  }
-  if (entryStat.isSymbolicLink()) {
-    return { ...base, state: 'invalid', reason: 'symlinked artifact file refused (lstat no-follow)' };
-  }
-  if (!entryStat.isFile()) {
-    return { ...base, state: 'invalid', reason: 'not a regular file' };
-  }
-  if (entryStat.size > CAPTURE_FILE_MAX_BYTES) {
-    return { ...base, state: 'invalid', reason: `file is ${entryStat.size} bytes, over the ${CAPTURE_FILE_MAX_BYTES}-byte read bound` };
-  }
-  let raw;
-  try {
-    raw = await readFile(filePath, 'utf8');
-  } catch (error) {
-    return { ...base, state: 'invalid', reason: truncateReason(`unreadable: ${error?.code ?? error?.message ?? 'unknown'}`) };
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { ...base, state: 'invalid', reason: 'not valid JSON' };
-  }
-  let verdict;
-  try {
-    const schema = await loadSchema(family);
-    verdict = validateAgainstSchema(parsed, schema, { readerVersion: schema.$id });
-  } catch (error) {
-    return { ...base, state: 'invalid', reason: truncateReason(`schema load failed: ${error?.message ?? 'unknown'}`) };
-  }
-  if (!verdict.ok) {
-    // Sanitized reason: field paths only, never the validator's value
-    // quotations — a rejected string is untrusted data and must not flow
-    // into the report through its own rejection message.
-    return { ...base, state: 'invalid', reason: sanitizeValidationReason(verdict.errors) };
-  }
-  const semantic = semanticCaptureViolation(fileName, parsed);
-  if (semantic) {
-    return { ...base, state: 'invalid', reason: truncateReason(`semantic invariant violated: ${semantic}`) };
-  }
-  return { ...base, state: 'valid', document: parsed, summary: summarizeSessionCaptureFile({ fileName, document: parsed, now }) };
-}
-
-function sanitizeValidationReason(errors) {
-  const paths = [];
-  for (const error of errors) {
-    const m = /^([^:]{1,120}):/.exec(String(error));
-    paths.push(m ? m[1] : 'document');
-  }
-  const unique = [...new Set(paths)];
-  const shown = unique.slice(0, 5);
-  const more = unique.length > shown.length ? ` (+${unique.length - shown.length} more)` : '';
-  return truncateReason(`schema validation failed at ${shown.join(', ')}${more}`);
-}
-
-// Contract §11 — the semantic invariants structural JSON Schema cannot
-// express, enforced by this inspection consumer for every family it reads.
-// A violation is a fail-closed skip exactly like a schema violation.
-function semanticCaptureViolation(fileName, document) {
-  if (fileName === 'note.json') return noteShapeViolation(document);
-  if (fileName === 'slot.json') {
-    if (document.summary_source === 'structural' && document.note !== null) {
-      return 'summary_source=structural requires note=null';
-    }
-    if (document.summary_source === 'staged-note' && document.note === null) {
-      return 'summary_source=staged-note requires a folded note';
-    }
-    const dirty = dirtyCountViolation(document.dirty_count);
-    if (dirty) return dirty;
-    if (document.note !== null) {
-      const folded = noteShapeViolation(document.note);
-      if (folded) return `folded note: ${folded}`;
-    }
-    return null;
-  }
-  if (fileName === 'entry.json') {
-    if (document.summary_source === 'structural' && (document.summary_line !== null || document.note_staged_at !== null)) {
-      return 'summary_source=structural requires summary_line and note_staged_at to be null';
-    }
-    if (document.summary_source === 'staged-note' && (document.summary_line === null || document.note_staged_at === null)) {
-      return 'summary_source=staged-note requires summary_line and note_staged_at (contract §11 biconditional)';
-    }
-    return dirtyCountViolation(document.dirty_count);
-  }
-  return null;
-}
-
-function dirtyCountViolation(value) {
-  if (value !== null && (!Number.isInteger(value) || value < 0)) {
-    return 'dirty_count must be a non-negative integer when non-null';
-  }
-  return null;
-}
-
-// Shared between note.json and slot.json's folded note — one checker for
-// both copies of the note shape, so a cap/hash rule fix can never land on
-// only one of the two mirrors.
-function noteShapeViolation(note) {
-  const bytes = Buffer.byteLength(note.content, 'utf8');
-  if (bytes === 0) return 'content must not be empty';
-  if (bytes > NOTE_CONTENT_MAX_BYTES) {
-    return `content is ${bytes} UTF-8 bytes, over the ${NOTE_CONTENT_MAX_BYTES}-byte cap`;
-  }
-  const expected = `sha256:${createHash('sha256').update(Buffer.from(note.content, 'utf8')).digest('hex')}`;
-  if (note.content_hash !== expected) return 'content_hash does not match the content bytes';
-  return null;
+  const core = await inspectSessionCaptureFileCore({ dir, fileName, family });
+  return {
+    pointer: pointer(repoRoot, resolve(dir, fileName)),
+    state: core.state,
+    reason: core.reason,
+    summary: core.state === 'valid' ? summarizeSessionCaptureFile({ fileName, document: core.document, now }) : null,
+    document: core.document,
+  };
 }
 
 function summarizeSessionCaptureFile({ fileName, document, now }) {
@@ -1182,16 +1077,7 @@ function publicCaptureFileEntry({ pointer: filePointer, state, reason, summary }
   return { pointer: filePointer, state, reason, summary };
 }
 
-function truncateReason(reason) {
-  // Control characters (C0 + DEL + C1) are stripped, not just whitespace-
-  // folded: reasons can quote hostile file content and must never carry
-  // terminal-control bytes into a report or a stderr line.
-  const text = String(reason ?? 'unknown')
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return text.length > REASON_LINE_CAP ? `${text.slice(0, REASON_LINE_CAP)}…` : text;
-}
+// truncateReason moved to lib/session-capture-inspect.mjs (ADR-0045 S7a).
 
 function noteLimits() {
   return [
