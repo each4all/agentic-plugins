@@ -5,6 +5,19 @@
 Accepted (amended 2026-06-22 — *active firing via completion-script
 sidecar*; see [Amendment](#amendment-2026-06-22-active-firing-via-completion-script-sidecar) below. The original projection-model decision stands unchanged; the amendment adds how it **actively fires**.)
 
+**Decision §6's second-artifact clause narrowly amended by
+[ADR-0044](0044-session-generic-handoff-capture.md) §4 (2026-07-18).**
+§6 ruled that cross-session persistence of the next-session prompt
+"reuses the existing `runtime:context` artifact rather than introducing a
+second state-like artifact" — a ruling that governed the in-workflow
+prompt-persistence surface and did not contemplate a turn-frequency
+automatic producer, for which the append-only run ledger is structurally
+unsuitable. ADR-0044 §4 authorizes the session-capture **slot**
+(`.agentic-plugins/state/runtime/session-capture/`) as a second,
+bounded-by-construction artifact home for the out-of-workflow limb only;
+everything else in §6 — non-mutating runtime, no host-session mutation —
+stands.
+
 ## Context
 
 The active-guidance work to date (ADR-0029) operates at **verb

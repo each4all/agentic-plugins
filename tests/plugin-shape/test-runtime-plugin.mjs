@@ -722,6 +722,18 @@ describe('plugins/runtime session-capture foundation (ADR-0044 S2)', () => {
       'UTF-8 bytes',
       'stop-hook',
       'loadSessionConfig',
+      // §13 (ADR-0044 S4): the dynamically-read publisher-floor declaration
+      // and the half-enabled readiness states the diagnosis surfaces.
+      'data/runtime-floors.json',
+      'attention-runtime-floors-1.0',
+      'publish_session',
+      'attention-missing',
+      'attention-disabled',
+      'publisher-sensor-not-shipped',
+      'floor-declaration-malformed',
+      'runtime-below-publisher-floor',
+      'safe-mode-hooks-disabled',
+      'CLAUDE_CODE_SAFE_MODE',
     ]) {
       ok(contract.includes(token), `session-capture-contract.md contains ${JSON.stringify(token)}`);
     }

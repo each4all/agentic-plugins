@@ -21,6 +21,7 @@ import { buildCrossHostPermissionPlan, renderCodexConfigToml } from './lib/permi
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
 import { resolveCodexHome } from './lib/state-readers.mjs';
 import { semverCompare } from './lib/semver.mjs';
+import { assessSessionCaptureReadiness, claudePluginListEnablement } from './lib/session-readiness.mjs';
 import {
   CONFIG_KEYS,
   CONFIG_KEY_FAMILIES,
@@ -68,7 +69,11 @@ import { parseCodexCliVersion, resolveCodexInstalledPluginVersion } from './lib/
 // 1.18 → 1.19 (additive, S8a4): report.codex_hook_review gains the canonical
 // `bound_versions` (Codex CLI + per-plugin, list-authoritative) and `attested_plugins`
 // alongside the retained legacy `plugin_versions` (settings-report-contract.md §additive).
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.20';
+// 1.20 → 1.21 (additive, ADR-0044 S4): report.session_readiness — the shared
+// lib/session-readiness.mjs assessment of the half-enabled capture states
+// (session-capture-contract.md §13), evaluated in BOTH report scopes
+// (filesystem+env reads only), with overall.session_readiness_warnings.
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.21';
 
 // ADR-0038 settings-claude permission plan (M1): how many recent usage records to
 // read per host, and a per-file byte cap, when building the dry-run plan.
@@ -349,6 +354,24 @@ export async function runSettings({
     configTargets: configPlans.targets,
     apply,
   });
+  // ADR-0044 S4 — the readiness diagnosis runs in BOTH report scopes: it is
+  // filesystem+env reads only (settings-report-contract.md §3), and it is
+  // OBSERVED-CURRENT — it rereads the on-disk config, never the projected
+  // desired-config plan, so a dry-run planning `stop-hook` renders projected
+  // "on" beside a readiness that still says `off` (by design). Host-CLI
+  // enablement evidence exists only in full mode (doctor's Claude plugin
+  // list, mapped through the shared status→enablement adapter); local_plan
+  // passes null and the assessment reports the enablement honestly as
+  // `unverified`, never guessed.
+  const sessionReadiness = await assessSessionCaptureReadiness({
+    repoRoot: resolvedRepoRoot,
+    homeDir: resolvedHomeDir,
+    env: launcherEnv,
+    runtimeVersion: RUNTIME_VERSION,
+    attentionEnablement: skipHostCliProbes
+      ? null
+      : claudePluginListEnablement(doctor.plugins?.attention?.installed?.claude_plugin_list ?? null),
+  });
   if (!skipHostCliProbes) {
     hookSettings = buildHookSettingsPlan({
       codexPluginHooks: doctor.codex_plugin_hooks,
@@ -479,6 +502,7 @@ export async function runSettings({
     companion_settings: companionSettings,
     notify_settings: notifySettings,
     session_settings: sessionSettings,
+    session_readiness: sessionReadiness,
     permission_plan: permissionPlanSection,
     permission_plan_codex: permissionPlanCodexSection,
     notification_plan: notificationPlanSection,
@@ -502,6 +526,7 @@ export async function runSettings({
       companionSettings,
       notifySettings,
       sessionSettings,
+      sessionReadiness,
       hookSettings,
     }),
     limits: [
@@ -584,7 +609,7 @@ function mutationBoundaryWritesAllowed({ apply, executePluginManagement, execute
 }
 
 // settings-report-contract.md §3 — one authoritative map over every
-// top-level report section (19 entries). Enum: evaluated | not_evaluated |
+// top-level report section (21 entries). Enum: evaluated | not_evaluated |
 // not_requested | local_only. An empty container or zero counter must never
 // stand in for "not evaluated"; this map carries the semantics.
 function buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationPlan, egressLauncherPlan }) {
@@ -601,6 +626,7 @@ function buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationP
     companion_settings: 'evaluated',
     notify_settings: 'evaluated',
     session_settings: 'evaluated',
+    session_readiness: 'evaluated',
     mutation_boundary: 'evaluated',
     artifacts: 'evaluated',
     limits: 'evaluated',
@@ -1850,7 +1876,7 @@ function buildCodexHookReviewTargets({ codexPluginHooks, plugins }) {
   return targets.sort((a, b) => a.plugin.localeCompare(b.plugin));
 }
 
-function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredConfig, companionSettings, notifySettings, sessionSettings, hookSettings }) {
+function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredConfig, companionSettings, notifySettings, sessionSettings, sessionReadiness, hookSettings }) {
   const recommendations = [];
   for (const [name, cli] of Object.entries(clis)) {
     if (cli.status !== 'available') {
@@ -1909,6 +1935,19 @@ function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredCon
       detail: warning,
     });
   }
+  // ADR-0044 S4 — half-enabled capture states (contract §13). `off` and
+  // `ready` produce no recommendations by construction.
+  for (const recommendation of sessionReadiness?.recommendations ?? []) {
+    recommendations.push({
+      area: 'session-capture',
+      severity: 'warning',
+      executable: false,
+      executed: false,
+      state: recommendation.state,
+      detail: recommendation.detail,
+      next_step: recommendation.next_step,
+    });
+  }
   for (const recommendation of hookSettings?.recommendations ?? []) {
     recommendations.push(recommendation);
   }
@@ -1921,6 +1960,15 @@ function summarizeSettings(report) {
   const settingWarnings = collectCompanionSettingWarnings(report.companion_settings).length;
   const notifyWarnings = report.notify_settings?.warnings?.length ?? 0;
   const sessionWarnings = report.session_settings?.warnings?.length ?? 0;
+  // ADR-0044 S4 — evaluated in both scopes. Derived from the readiness
+  // STATUS, never from recommendations.length (peer finding: presentation
+  // changes must not alter health): the count of blocking states, with
+  // config-fail-closed counting one. `off`/`ready` are zero by definition.
+  const sessionReadinessWarnings = report.session_readiness
+    ? report.session_readiness.status === 'blocked'
+      ? report.session_readiness.states.length
+      : report.session_readiness.status === 'config-fail-closed' ? 1 : 0
+    : 0;
   if (report.report_scope === 'local_plan') {
     // settings-report-contract.md §3 — status is computed over evaluated
     // sections only, which includes requested plan sections: a blocked or
@@ -1932,13 +1980,14 @@ function summarizeSettings(report) {
       .filter((section) => section?.requested && ['blocked', 'failed'].includes(section.status)).length;
     return {
       scope: 'local_plan',
-      status: settingWarnings > 0 || notifyWarnings > 0 || sessionWarnings > 0 || blockedPlanSections > 0 ? 'warning' : 'pass',
+      status: settingWarnings > 0 || notifyWarnings > 0 || sessionWarnings > 0 || sessionReadinessWarnings > 0 || blockedPlanSections > 0 ? 'warning' : 'pass',
       planned_config_writes: writeCount,
       applied_config_targets: appliedCount,
       plugin_recommendations: null,
       setting_warnings: settingWarnings,
       notify_warnings: notifyWarnings,
       session_warnings: sessionWarnings,
+      session_readiness_warnings: sessionReadinessWarnings,
       hook_warnings: null,
       hook_review_warnings: null,
       auth_warnings: null,
@@ -1957,13 +2006,14 @@ function summarizeSettings(report) {
   const hookReviewWarnings = report.codex_hook_review?.requested && report.codex_hook_review.status !== 'attested' ? 1 : 0;
   return {
     scope: 'full',
-    status: missingCli > 0 || settingWarnings > 0 || notifyWarnings > 0 || sessionWarnings > 0 || hookWarnings > 0 || hookReviewWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 || pluginCleanupWarnings > 0 ? 'warning' : 'pass',
+    status: missingCli > 0 || settingWarnings > 0 || notifyWarnings > 0 || sessionWarnings > 0 || sessionReadinessWarnings > 0 || hookWarnings > 0 || hookReviewWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 || pluginCleanupWarnings > 0 ? 'warning' : 'pass',
     planned_config_writes: writeCount,
     applied_config_targets: appliedCount,
     plugin_recommendations: Object.values(report.plugins).reduce((sum, plugin) => sum + plugin.recommendations.length, 0),
     setting_warnings: settingWarnings,
     notify_warnings: notifyWarnings,
     session_warnings: sessionWarnings,
+    session_readiness_warnings: sessionReadinessWarnings,
     hook_warnings: hookWarnings,
     hook_review_warnings: hookReviewWarnings,
     auth_warnings: authWarnings,
@@ -2195,6 +2245,22 @@ export function formatText(report) {
           : '<unset>';
       lines.push(`- ${key}: ${rendered}`);
       if (entry.warning) lines.push(`  warning: ${entry.warning}`);
+    }
+  }
+  if (report.session_readiness) {
+    const readiness = report.session_readiness;
+    lines.push('');
+    // observed-current: this section rereads the on-disk config; the
+    // projected desired-config plan renders above as `session_settings`.
+    lines.push(`Session capture readiness (session-capture-contract.md §13, observed-current, ${readiness.status})`);
+    lines.push(`- gate: session_capture=${readiness.gate.value ?? '<fail-closed>'}; safe-mode=${readiness.safe_mode.active}`);
+    if (readiness.status !== 'off' && readiness.status !== 'config-fail-closed') {
+      lines.push(`- attention: installed=${readiness.attention.installed}; version=${readiness.attention.version ?? '<none>'}; enablement=${readiness.attention.enablement}`);
+      lines.push(`- publisher-floor: declared=${readiness.publisher_floor.declared}; floor=${readiness.publisher_floor.floor ?? '<none>'}; runtime=${readiness.publisher_floor.runtime_version ?? '<unknown>'}; satisfied=${readiness.publisher_floor.satisfied ?? '<n/a>'}`);
+    }
+    for (const recommendation of readiness.recommendations) {
+      lines.push(`- ${recommendation.state}: ${recommendation.detail}`);
+      lines.push(`  next: ${recommendation.next_step}`);
     }
   }
   if (report.permission_plan?.requested) {
