@@ -16,7 +16,14 @@
 //      it, exits 0 with EMPTY stdout on garbage/missing input AND on the
 //      happy path, and the Stop sensor's freshness gate routes
 //      workflow-terminal vs bare turn-complete correctly end-to-end
-//      against a stub runtime.
+//      against a stub runtime;
+//   5. capture gate (ADR-0044 §2/§13) — the publisher-floor declaration
+//      (data/runtime-floors.json) agrees byte-for-byte with the sensor's
+//      spawn-gate constant, the Stop hot-path budget values are pinned as
+//      contract, and the capture spawn runs before + independent of
+//      notification work (short-circuits never skip capture, capture
+//      failure never skips notification, below-floor/capability-drift
+//      skip silently) end-to-end against a 0.82.0 stub runtime.
 //
 // Run via `node --test tests/plugin-shape/test-attention-plugin.mjs`.
 
@@ -1418,5 +1425,686 @@ describe('plugins/attention — sensors are fail-closed silent observers (black-
       strictEqual(event.hostname, E2E_HOSTNAME);
       ok(typeof event.session_hint === 'string' && event.session_hint.length > 0);
     });
+  });
+});
+
+describe('plugins/attention — ADR-0044 §13 publisher-floor declaration (data/runtime-floors.json)', () => {
+  it('ships the declaration file with the schema id and a plain-release publish_session floor', async () => {
+    const declaration = await readJSON(resolve(PLUGIN_ROOT, 'data/runtime-floors.json'));
+    strictEqual(declaration.schema, 'attention-runtime-floors-1.0');
+    // The §13 released-floor rule: a plain X.Y.Z release version — a
+    // prerelease or build-suffixed floor is malformed by definition.
+    ok(
+      /^\d+\.\d+\.\d+$/.test(declaration.floors.publish_session),
+      `publish_session floor "${declaration.floors.publish_session}" is not a plain X.Y.Z release version`,
+    );
+  });
+
+  it('the sensor spawn gate and the declaration agree byte-for-byte on the floor (§13 producer rule)', async () => {
+    const declaration = await readJSON(resolve(PLUGIN_ROOT, 'data/runtime-floors.json'));
+    strictEqual(
+      discoverLib.PUBLISH_SESSION_MIN_RUNTIME_VERSION,
+      declaration.floors.publish_session,
+      'discover-runtime.mjs PUBLISH_SESSION_MIN_RUNTIME_VERSION must equal floors.publish_session byte-for-byte',
+    );
+    // S4a-recorded first capable released version (ADR-0044 §Status).
+    strictEqual(declaration.floors.publish_session, '0.82.0');
+  });
+
+  it('the publisher floor never shares the notify floor constant (ADR-0044 §2 dual-floor)', () => {
+    ok(
+      typeof discoverLib.PUBLISH_SESSION_MIN_RUNTIME_VERSION === 'string',
+      'publisher floor must be its own exported constant',
+    );
+    ok(
+      discoverLib.PUBLISH_SESSION_MIN_RUNTIME_VERSION !== discoverLib.MIN_RUNTIME_VERSION,
+      'the two gates never share a constant — notify stays at its own floor while capture pins the publish-session release',
+    );
+  });
+});
+
+describe('plugins/attention — ADR-0044 §2 Stop hot-path budget contract values', () => {
+  it('pins the per-slot / batch / capture / aggregate budgets', () => {
+    // Contract values, not tunables: notification batching may already consume
+    // two full 12s slots (ADR-0043 §3); the capture spawn adds AT MOST one more
+    // slot ahead of it. Changing any value is a contract change.
+    strictEqual(sensorLib.EMIT_SLOT_MS, 12_000);
+    strictEqual(sensorLib.TERMINAL_BATCH_DEADLINE_MS, 24_000);
+    strictEqual(sensorLib.TERMINAL_BATCH_DEADLINE_MS, 2 * sensorLib.EMIT_SLOT_MS);
+    strictEqual(sensorLib.PUBLISH_SESSION_TIMEOUT_MS, 12_000);
+    strictEqual(
+      sensorLib.STOP_HOT_PATH_BUDGET_MS,
+      sensorLib.PUBLISH_SESSION_TIMEOUT_MS + sensorLib.TERMINAL_BATCH_DEADLINE_MS,
+      'aggregate Stop budget = one capture slot + the two-slot notification batch deadline',
+    );
+    strictEqual(sensorLib.STOP_HOT_PATH_BUDGET_MS, 36_000);
+  });
+
+  it('emitTerminalEvents defaults are wired to the contract constants', async () => {
+    // Injected fake emit records the slot each emission receives; the default
+    // deadline must admit exactly TERMINAL_BATCH_DEADLINE_MS / EMIT_SLOT_MS
+    // full slots (the pre-existing batching tests prove the drop behavior).
+    const calls = [];
+    let t = 0;
+    const result = await sensorLib.emitTerminalEvents({
+      repoRoot: '/r',
+      events: [{ event_id: 'a' }, { event_id: 'b' }, { event_id: 'c' }],
+      emit: async ({ timeoutMs }) => { calls.push(timeoutMs); t += sensorLib.EMIT_SLOT_MS; },
+      now: () => t,
+    });
+    deepStrictEqual(result, { emitted: 2, dropped: 1 });
+    ok(calls.every((slot) => slot === sensorLib.EMIT_SLOT_MS));
+  });
+});
+
+describe('plugins/attention — ADR-0044 §2 spawnPublishSession (unit)', () => {
+  let stubHome;
+  let captureFile;
+  const savedCaptureEnv = process.env.ATTENTION_TEST_CAPTURE;
+
+  before(async () => {
+    stubHome = await mkdtemp(join(tmpdir(), 'attention-publish-unit-'));
+    captureFile = join(stubHome, 'capture.ndjson');
+    process.env.ATTENTION_TEST_CAPTURE = captureFile;
+  });
+  after(async () => {
+    if (savedCaptureEnv === undefined) delete process.env.ATTENTION_TEST_CAPTURE;
+    else process.env.ATTENTION_TEST_CAPTURE = savedCaptureEnv;
+    await rm(stubHome, { recursive: true, force: true });
+  });
+
+  const RECORDING_CONTEXT_STUB = [
+    '#!/usr/bin/env node',
+    "import fs from 'node:fs';",
+    'fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({',
+    "  tool: 'context',",
+    '  argv: process.argv.slice(2),',
+    "  git_env: Object.keys(process.env).filter((k) => k.startsWith('GIT_')).sort(),",
+    "}) + '\\n');",
+  ].join('\n');
+
+  async function makePublisherStub(name, version, { withContext = true, contextSource = RECORDING_CONTEXT_STUB } = {}) {
+    const root = join(stubHome, name);
+    await mkdir(join(root, '.claude-plugin'), { recursive: true });
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(
+      join(root, '.claude-plugin/plugin.json'),
+      JSON.stringify({ name: 'runtime', version, description: 'stub' }),
+    );
+    // The discovery ladder gates on notify.mjs (the notify floor's marker);
+    // the capture path additionally requires context.mjs at the SAME root.
+    await writeFile(join(root, 'scripts/notify.mjs'), '// stub\n');
+    if (withContext) {
+      await writeFile(join(root, 'scripts/context.mjs'), contextSource);
+    }
+    return root;
+  }
+
+  async function takeUnitCaptures() {
+    let text = '';
+    try {
+      text = await readFile(captureFile, 'utf8');
+    } catch {
+      return [];
+    }
+    await rm(captureFile, { force: true });
+    return text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  }
+
+  it('spawns publish-session with the fixed argv: repo-root, host claude, session id, fresh evidence', async () => {
+    const root = await makePublisherStub('happy', '0.82.0');
+    const result = await sensorLib.spawnPublishSession({
+      repoRoot: '/repo/x',
+      sessionId: 'sess-9',
+      workflowEvidence: 'fresh',
+      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile },
+      home: stubHome,
+    });
+    deepStrictEqual(result, { spawned: true });
+    const captures = await takeUnitCaptures();
+    strictEqual(captures.length, 1);
+    deepStrictEqual(captures[0].argv, [
+      'publish-session',
+      '--repo-root', '/repo/x',
+      '--host', 'claude',
+      '--session-id', 'sess-9',
+      '--workflow-evidence', 'fresh',
+    ]);
+  });
+
+  it('omits --session-id when absent and --workflow-evidence when not fresh (publisher records none)', async () => {
+    const root = await makePublisherStub('omit', '0.82.0');
+    const result = await sensorLib.spawnPublishSession({
+      repoRoot: '/repo/x',
+      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile },
+      home: stubHome,
+    });
+    deepStrictEqual(result, { spawned: true });
+    const captures = await takeUnitCaptures();
+    strictEqual(captures.length, 1);
+    deepStrictEqual(captures[0].argv, ['publish-session', '--repo-root', '/repo/x', '--host', 'claude']);
+  });
+
+  it('clamps a hostile session id (C0/DEL stripped, 128-char cap) before it reaches argv', async () => {
+    const root = await makePublisherStub('clamp', '0.82.0');
+    const hostile = `evil\u0000\u001f\u007fid${'x'.repeat(200)}`;
+    const result = await sensorLib.spawnPublishSession({
+      repoRoot: '/repo/x',
+      sessionId: hostile,
+      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile },
+      home: stubHome,
+    });
+    deepStrictEqual(result, { spawned: true });
+    const captures = await takeUnitCaptures();
+    strictEqual(captures.length, 1);
+    const idx = captures[0].argv.indexOf('--session-id');
+    ok(idx !== -1);
+    const relayed = captures[0].argv[idx + 1];
+    strictEqual(relayed, `evilid${'x'.repeat(200)}`.slice(0, 128));
+    strictEqual(relayed.length, 128);
+    // Mirrors the publisher's own clampSessionId — same strip + cap rule.
+    strictEqual(relayed, sensorLib.clampSessionId(hostile));
+  });
+
+  it('a session id that clamps to empty is omitted entirely (matches the publisher null)', async () => {
+    const root = await makePublisherStub('clamp-empty', '0.82.0');
+    const result = await sensorLib.spawnPublishSession({
+      repoRoot: '/repo/x',
+      sessionId: '\u0000\u001f',
+      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile },
+      home: stubHome,
+    });
+    deepStrictEqual(result, { spawned: true });
+    const captures = await takeUnitCaptures();
+    strictEqual(captures.length, 1);
+    strictEqual(captures[0].argv.includes('--session-id'), false);
+  });
+
+  it('a leading-hyphen session id is omitted — the 0.82.0 publisher argv parser rejects option-shaped values (Codex review MAJOR)', async () => {
+    // runtime context.mjs requireValue throws "requires a value" for any
+    // option value starting with '-', so relaying such an id would silently
+    // lose the WHOLE capture. Omitting the id keeps the structural capture.
+    const root = await makePublisherStub('hyphen-id', '0.82.0');
+    const result = await sensorLib.spawnPublishSession({
+      repoRoot: '/repo/x',
+      sessionId: '-abc',
+      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile },
+      home: stubHome,
+    });
+    deepStrictEqual(result, { spawned: true });
+    const captures = await takeUnitCaptures();
+    strictEqual(captures.length, 1);
+    strictEqual(captures[0].argv.includes('--session-id'), false);
+    strictEqual(captures[0].argv.includes('-abc'), false);
+  });
+
+  it('GIT_* environment never reaches the publisher child (fixed-argv/no-inheritance, Codex review MAJOR)', async () => {
+    // Inherited GIT_DIR/GIT_WORK_TREE would override the publisher's own
+    // `git -C <repo>` probes and let a capture invoked for repo A resolve
+    // and write under repo B. The spawn env is scrubbed of GIT_*.
+    const root = await makePublisherStub('git-env', '0.82.0');
+    const result = await sensorLib.spawnPublishSession({
+      repoRoot: '/repo/x',
+      env: {
+        AGENTIC_RUNTIME_ROOT: root,
+        ATTENTION_TEST_CAPTURE: captureFile,
+        GIT_DIR: '/somewhere/else/.git',
+        GIT_WORK_TREE: '/somewhere/else',
+        GIT_INDEX_FILE: '/somewhere/else/index',
+      },
+      home: stubHome,
+    });
+    deepStrictEqual(result, { spawned: true });
+    const captures = await takeUnitCaptures();
+    strictEqual(captures.length, 1);
+    deepStrictEqual(captures[0].git_env, [], 'no GIT_* variable may be inherited by the publisher');
+  });
+
+  it('emitEvent scrubs GIT_* from the notify child too (mirror of the capture scrub)', async () => {
+    // notify.mjs runs no git subprocess today, but the two spawn seams must
+    // not diverge — a future emitter probe would silently re-open the same
+    // repo-misdirection hole the capture scrub closes.
+    const root = await makePublisherStub('git-env-notify', '0.82.0');
+    const NOTIFY_RECORDING_STUB = [
+      '#!/usr/bin/env node',
+      "import fs from 'node:fs';",
+      'const chunks = [];',
+      'for await (const chunk of process.stdin) chunks.push(chunk);',
+      'fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({',
+      "  tool: 'notify',",
+      "  git_env: Object.keys(process.env).filter((k) => k.startsWith('GIT_')).sort(),",
+      "}) + '\\n');",
+    ].join('\n');
+    await writeFile(join(root, 'scripts/notify.mjs'), NOTIFY_RECORDING_STUB);
+    const result = await sensorLib.emitEvent({
+      repoRoot: '/repo/x',
+      event: { event_id: 'x', kind: 'turn-complete', title: 't', body: '', urgency: 'normal' },
+      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile, GIT_DIR: '/somewhere/else/.git' },
+      home: stubHome,
+    });
+    deepStrictEqual(result, { emitted: true });
+    const captures = await takeUnitCaptures();
+    strictEqual(captures.length, 1);
+    deepStrictEqual(captures[0].git_env, [], 'no GIT_* variable may be inherited by the emitter');
+  });
+
+  it('below-floor runtime (0.81.0) skips silently — the notify floor alone never enables capture', async () => {
+    const root = await makePublisherStub('below-floor', '0.81.0');
+    const result = await sensorLib.spawnPublishSession({
+      repoRoot: '/repo/x',
+      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile },
+      home: stubHome,
+    });
+    deepStrictEqual(result, { spawned: false, reason: 'runtime-below-publisher-floor' });
+    deepStrictEqual(await takeUnitCaptures(), []);
+  });
+
+  it('capability drift: floor passes but scripts/context.mjs is absent → no-op, never a throw', async () => {
+    const root = await makePublisherStub('drift', '0.82.0', { withContext: false });
+    const result = await sensorLib.spawnPublishSession({
+      repoRoot: '/repo/x',
+      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile },
+      home: stubHome,
+    });
+    deepStrictEqual(result, { spawned: false, reason: 'publisher-executor-absent' });
+    deepStrictEqual(await takeUnitCaptures(), []);
+  });
+
+  it('bad args return a reason instead of throwing (fail-closed observer)', async () => {
+    deepStrictEqual(
+      await sensorLib.spawnPublishSession({ env: {}, home: stubHome }),
+      { spawned: false, reason: 'bad-args' },
+    );
+  });
+
+  it('a hung publisher is killed at the injected timeout — the hook never hangs past its slot', async () => {
+    const HANG_STUB = [
+      '#!/usr/bin/env node',
+      '// Hang far past any test timeout BEFORE recording anything, so a kill',
+      '// leaves no capture line and a missing kill fails the wall-clock bound.',
+      'await new Promise((resolveHang) => setTimeout(resolveHang, 30_000));',
+      "import('node:fs').then((fs) => fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, 'late\\n'));",
+    ].join('\n');
+    const root = await makePublisherStub('hang', '0.82.0', { contextSource: HANG_STUB });
+    const startedAt = Date.now();
+    const result = await sensorLib.spawnPublishSession({
+      repoRoot: '/repo/x',
+      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile },
+      home: stubHome,
+      timeoutMs: 500,
+    });
+    const elapsedMs = Date.now() - startedAt;
+    deepStrictEqual(result, { spawned: true });
+    ok(elapsedMs < 10_000, `spawn returned in ${elapsedMs}ms — the timeout must kill a hung publisher`);
+    deepStrictEqual(await takeUnitCaptures(), [], 'a killed publisher must not have recorded output');
+  });
+});
+
+describe('plugins/attention — ADR-0044 §2 Stop capture spawn (end-to-end, 0.82.0 stub runtime)', () => {
+  let repo;
+  let captureFile;
+
+  const RECORDING_NOTIFY_STUB = [
+    '#!/usr/bin/env node',
+    "import fs from 'node:fs';",
+    'const chunks = [];',
+    'for await (const chunk of process.stdin) chunks.push(chunk);',
+    'fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({',
+    "  tool: 'notify',",
+    '  argv: process.argv.slice(2),',
+    "  event: JSON.parse(Buffer.concat(chunks).toString('utf8')),",
+    "}) + '\\n');",
+  ].join('\n');
+  const RECORDING_CONTEXT_STUB = [
+    '#!/usr/bin/env node',
+    "import fs from 'node:fs';",
+    'fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({',
+    "  tool: 'context',",
+    '  argv: process.argv.slice(2),',
+    "}) + '\\n');",
+  ].join('\n');
+
+  before(async () => {
+    repo = await mkdtemp(join(tmpdir(), 'attention-capture-e2e-'));
+    await mkdir(join(repo, '.git'), { recursive: true });
+    captureFile = join(repo, 'capture.ndjson');
+  });
+  after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  async function makeRuntimeStub(name, version, { withContext = true, contextSource = RECORDING_CONTEXT_STUB } = {}) {
+    const root = join(repo, name);
+    await mkdir(join(root, '.claude-plugin'), { recursive: true });
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(
+      join(root, '.claude-plugin/plugin.json'),
+      JSON.stringify({ name: 'runtime', version, description: 'stub' }),
+    );
+    await writeFile(join(root, 'scripts/notify.mjs'), RECORDING_NOTIFY_STUB);
+    if (withContext) {
+      await writeFile(join(root, 'scripts/context.mjs'), contextSource);
+    }
+    return root;
+  }
+
+  function runStop(payload, runtimeRoot) {
+    return spawnSync(
+      process.execPath,
+      [resolve(PLUGIN_ROOT, 'adapters/claude/hooks/stop.mjs')],
+      {
+        input: JSON.stringify(payload),
+        env: {
+          ...process.env,
+          AGENTIC_RUNTIME_ROOT: runtimeRoot,
+          ATTENTION_TEST_CAPTURE: captureFile,
+          AGENTIC_NOTIFY_HOSTNAME: 'e2e-host',
+        },
+        encoding: 'utf8',
+        timeout: 30_000,
+      },
+    );
+  }
+
+  async function takeCaptures() {
+    let text = '';
+    try {
+      text = await readFile(captureFile, 'utf8');
+    } catch {
+      return [];
+    }
+    await rm(captureFile, { force: true });
+    return text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  }
+
+  it('bare Stop: capture spawns BEFORE the notification emit, with the fixed argv', async () => {
+    const runtimeRoot = await makeRuntimeStub('rt-happy', '0.82.0');
+    const result = runStop({ cwd: repo, session_id: 'sess-1', prompt_id: 'prompt-1' }, runtimeRoot);
+    strictEqual(result.status, 0);
+    strictEqual(result.stdout, '');
+    const captures = await takeCaptures();
+    deepStrictEqual(captures.map((c) => c.tool), ['context', 'notify'],
+      'capture must run before, and independent of, notification work (ADR-0044 §2)');
+    const expectedRepoRoot = sensorLib.resolveRepoRoot(repo);
+    deepStrictEqual(captures[0].argv, [
+      'publish-session',
+      '--repo-root', expectedRepoRoot,
+      '--host', 'claude',
+      '--session-id', 'sess-1',
+    ]);
+    strictEqual(captures[1].event.kind, 'turn-complete');
+  });
+
+  it('notification short-circuit (missing prompt_id) still captures — nothing is emitted', async () => {
+    const runtimeRoot = await makeRuntimeStub('rt-shortcircuit', '0.82.0');
+    const result = runStop({ cwd: repo, session_id: 'sess-2' }, runtimeRoot);
+    strictEqual(result.status, 0);
+    strictEqual(result.stdout, '');
+    const captures = await takeCaptures();
+    deepStrictEqual(captures.map((c) => c.tool), ['context'],
+      'the bare-notification short-circuit must not skip or abort the capture spawn');
+    ok(captures[0].argv.includes('--session-id'));
+  });
+
+  it('notification short-circuit (no session identity at all) still captures, omitting --session-id', async () => {
+    const runtimeRoot = await makeRuntimeStub('rt-anonymous', '0.82.0');
+    const result = runStop({ cwd: repo }, runtimeRoot);
+    strictEqual(result.status, 0);
+    strictEqual(result.stdout, '');
+    const captures = await takeCaptures();
+    deepStrictEqual(captures.map((c) => c.tool), ['context']);
+    strictEqual(captures[0].argv.includes('--session-id'), false);
+  });
+
+  it('fresh terminal projection: --workflow-evidence fresh AND the workflow-terminal notification both happen', async () => {
+    const runtimeRoot = await makeRuntimeStub('rt-fresh', '0.82.0');
+    const dir = join(repo, '.agentic-plugins', 'state', 'engineer');
+    await mkdir(dir, { recursive: true });
+    const wfId = 'compose-20260719T000000Z-abcdef';
+    await writeFile(join(dir, 'last-session-handoff.json'), JSON.stringify({
+      workflow_kind: 'engineer', workflow_id: wfId,
+      workflow_path: '.agentic-plugins/state/engineer/workflows/e.md',
+      phase: 'summary-complete', next_action: 'n',
+      archive_gate: 'ready_to_archive', routing_recommendation: 'continue',
+    }));
+    await writeFile(
+      join(dir, 'last-session-handoff.json.footer-rendered'),
+      JSON.stringify({ workflow_id: wfId, status: 'rendered', at: new Date().toISOString() }),
+    );
+    try {
+      const result = runStop({ cwd: repo, session_id: 'sess-3', prompt_id: 'prompt-3' }, runtimeRoot);
+      strictEqual(result.status, 0);
+      strictEqual(result.stdout, '');
+      const captures = await takeCaptures();
+      deepStrictEqual(captures.map((c) => c.tool), ['context', 'notify']);
+      const evIdx = captures[0].argv.indexOf('--workflow-evidence');
+      ok(evIdx !== -1, 'a fresh projection must relay --workflow-evidence');
+      strictEqual(captures[0].argv[evIdx + 1], 'fresh');
+      strictEqual(captures[1].event.kind, 'workflow-terminal');
+      strictEqual(captures[1].event.refs.workflow_id, wfId);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('capture failure (publisher exits non-zero) never skips notification; the sensor stays exit-0 silent', async () => {
+    const FAILING_CONTEXT_STUB = [
+      '#!/usr/bin/env node',
+      "import fs from 'node:fs';",
+      "fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({ tool: 'context', argv: process.argv.slice(2) }) + '\\n');",
+      "process.stderr.write('publisher exploded\\n');",
+      'process.exit(1);',
+    ].join('\n');
+    const runtimeRoot = await makeRuntimeStub('rt-capture-fails', '0.82.0', { contextSource: FAILING_CONTEXT_STUB });
+    const result = runStop({ cwd: repo, session_id: 'sess-4', prompt_id: 'prompt-4' }, runtimeRoot);
+    strictEqual(result.status, 0);
+    strictEqual(result.stdout, '');
+    const captures = await takeCaptures();
+    deepStrictEqual(captures.map((c) => c.tool), ['context', 'notify'],
+      'capture failure must not skip notification (ADR-0044 §2)');
+    strictEqual(captures[1].event.kind, 'turn-complete');
+  });
+
+  it('below-floor runtime (0.81.0): capture silently skipped, notification still works at the notify floor', async () => {
+    const runtimeRoot = await makeRuntimeStub('rt-below-floor', '0.81.0');
+    const result = runStop({ cwd: repo, session_id: 'sess-5', prompt_id: 'prompt-5' }, runtimeRoot);
+    strictEqual(result.status, 0);
+    strictEqual(result.stdout, '');
+    const captures = await takeCaptures();
+    deepStrictEqual(captures.map((c) => c.tool), ['notify'],
+      'below the publisher floor attention skips the capture spawn while notifications keep working');
+    strictEqual(captures[0].event.kind, 'turn-complete');
+  });
+
+  it('capability drift (0.82.0 but context.mjs absent): capture no-ops without disabling notifications', async () => {
+    const runtimeRoot = await makeRuntimeStub('rt-drift', '0.82.0', { withContext: false });
+    const result = runStop({ cwd: repo, session_id: 'sess-6', prompt_id: 'prompt-6' }, runtimeRoot);
+    strictEqual(result.status, 0);
+    strictEqual(result.stdout, '');
+    const captures = await takeCaptures();
+    deepStrictEqual(captures.map((c) => c.tool), ['notify']);
+    strictEqual(captures[0].event.kind, 'turn-complete');
+  });
+
+  it('non-git cwd: neither capture nor notification, exit 0 (repo-scoped v1)', async () => {
+    const runtimeRoot = await makeRuntimeStub('rt-nogit', '0.82.0');
+    const outside = await mkdtemp(join(tmpdir(), 'attention-nogit-'));
+    try {
+      const result = runStop({ cwd: outside, session_id: 'sess-7', prompt_id: 'prompt-7' }, runtimeRoot);
+      strictEqual(result.status, 0);
+      strictEqual(result.stdout, '');
+      deepStrictEqual(await takeCaptures(), []);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('empty/malformed stdin never captures — the cwd fallback must not publish an anonymous slot (Codex review MAJOR)', async () => {
+    // readStdinJson degrades malformed input to {}, and the repo-root cwd
+    // FALLBACK (process.cwd()) still serves the pre-ADR-0044 notification
+    // path — but an automatic WRITE keyed off a fallback would let invalid
+    // hook input inside a repo replace a valid session generation with an
+    // anonymous structural slot. Capture requires a payload-carried cwd.
+    const runtimeRoot = await makeRuntimeStub('rt-badstdin', '0.82.0');
+    for (const input of ['', '{not json', JSON.stringify({ session_id: 's', prompt_id: 'p' })]) {
+      const result = spawnSync(
+        process.execPath,
+        [resolve(PLUGIN_ROOT, 'adapters/claude/hooks/stop.mjs')],
+        {
+          input,
+          cwd: repo, // the process-cwd fallback WOULD resolve this repo
+          env: {
+            ...process.env,
+            AGENTIC_RUNTIME_ROOT: runtimeRoot,
+            ATTENTION_TEST_CAPTURE: captureFile,
+            AGENTIC_NOTIFY_HOSTNAME: 'e2e-host',
+          },
+          encoding: 'utf8',
+          timeout: 30_000,
+        },
+      );
+      strictEqual(result.status, 0, `exit ${result.status} on ${JSON.stringify(input)}`);
+      strictEqual(result.stdout, '');
+      const captures = await takeCaptures();
+      deepStrictEqual(
+        captures.filter((c) => c.tool === 'context'),
+        [],
+        `no capture spawn without a payload cwd (input ${JSON.stringify(input)})`,
+      );
+    }
+  });
+
+  it('a FIFO planted at a projection path cannot block the sensor — capture and notification still run (Codex review MAJOR)', async () => {
+    // readFreshProjection's projection/marker reads must be regular-file
+    // gated: an unbounded readFileSync on a repo-controlled FIFO blocked the
+    // whole Stop sensor (before capture AND notification), making the budget
+    // constants arithmetic rather than an enforced ceiling.
+    const runtimeRoot = await makeRuntimeStub('rt-fifo', '0.82.0');
+    const dir = join(repo, '.agentic-plugins', 'state', 'engineer');
+    await mkdir(dir, { recursive: true });
+    const fifoPath = join(dir, 'last-session-handoff.json');
+    const mkfifo = spawnSync('mkfifo', [fifoPath]);
+    strictEqual(mkfifo.status, 0, 'mkfifo failed');
+    try {
+      const startedAt = Date.now();
+      const result = runStop({ cwd: repo, session_id: 'sess-8', prompt_id: 'prompt-8' }, runtimeRoot);
+      const elapsedMs = Date.now() - startedAt;
+      strictEqual(result.status, 0);
+      strictEqual(result.stdout, '');
+      ok(elapsedMs < 10_000, `sensor took ${elapsedMs}ms — a FIFO projection must not block it`);
+      const captures = await takeCaptures();
+      deepStrictEqual(captures.map((c) => c.tool), ['context', 'notify'],
+        'the FIFO persona degrades to null; capture and the bare notification both proceed');
+      strictEqual(captures[1].event.kind, 'turn-complete');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a hung publisher is killed at its slot and notification still runs (real-timeout end-to-end)', async () => {
+    // Slow by construction: the stub sleeps far past the 12s capture slot.
+    // The sensor must kill it at PUBLISH_SESSION_TIMEOUT_MS and proceed to
+    // the notification stage — exit 0, nothing on stdout. (~12s test.)
+    const HANG_CONTEXT_STUB = [
+      '#!/usr/bin/env node',
+      'await new Promise((resolveHang) => setTimeout(resolveHang, 60_000));',
+    ].join('\n');
+    const runtimeRoot = await makeRuntimeStub('rt-hang-e2e', '0.82.0', { contextSource: HANG_CONTEXT_STUB });
+    const startedAt = Date.now();
+    const result = runStop({ cwd: repo, session_id: 'sess-9', prompt_id: 'prompt-9' }, runtimeRoot);
+    const elapsedMs = Date.now() - startedAt;
+    strictEqual(result.status, 0);
+    strictEqual(result.stdout, '');
+    ok(elapsedMs < 25_000, `sensor took ${elapsedMs}ms — the capture slot must bound a hung publisher`);
+    ok(elapsedMs >= 10_000, `sensor took ${elapsedMs}ms — expected to ride out the full capture slot`);
+    const captures = await takeCaptures();
+    deepStrictEqual(captures.map((c) => c.tool), ['notify'],
+      'capture timed out (recorded nothing); notification still ran');
+    strictEqual(captures[0].event.kind, 'turn-complete');
+  });
+});
+
+describe('plugins/attention — ADR-0044 §2 Stop capture against the REAL 0.82.0 publisher (integration)', () => {
+  // Stub-only coverage let two producer/publisher contract mismatches slip
+  // (inherited git env; leading-hyphen argv rejection — Codex review). This
+  // block runs the real Stop sensor against the repo's own runtime plugin
+  // (source version 0.82.0): a real git fixture repo, session_capture opted
+  // in via the repo config layer, HOME isolated so no user-global layer
+  // interferes. The real notify.mjs runs too (notify_channel default none ⇒
+  // silent no-op) — capture evidence is the published slot/entry pair.
+  let fixtureRepo;
+  let fixtureHome;
+  const realRuntimeRoot = resolve(REPO_ROOT, 'plugins/runtime');
+
+  before(async () => {
+    fixtureRepo = await mkdtemp(join(tmpdir(), 'attention-real-pub-'));
+    fixtureHome = await mkdtemp(join(tmpdir(), 'attention-real-home-'));
+    for (const args of [
+      ['init', '-q', '-b', 'feat/capture'],
+      ['config', 'user.name', 't'],
+      ['config', 'user.email', 't@t'],
+      ['config', 'commit.gpgsign', 'false'],
+      ['commit', '-q', '--allow-empty', '-m', 'baseline', '--no-verify'],
+    ]) {
+      const r = spawnSync('git', args, { cwd: fixtureRepo, encoding: 'utf8' });
+      strictEqual(r.status, 0, `git ${args[0]}: ${r.stderr}`);
+    }
+    await mkdir(join(fixtureRepo, '.agentic-plugins'), { recursive: true });
+    await writeFile(
+      join(fixtureRepo, '.agentic-plugins', 'config.toml'),
+      'session_capture = "stop-hook"\n',
+    );
+  });
+  after(async () => {
+    await rm(fixtureRepo, { recursive: true, force: true });
+    await rm(fixtureHome, { recursive: true, force: true });
+  });
+
+  function runStopReal(payload) {
+    return spawnSync(
+      process.execPath,
+      [resolve(PLUGIN_ROOT, 'adapters/claude/hooks/stop.mjs')],
+      {
+        input: JSON.stringify(payload),
+        env: {
+          ...process.env,
+          HOME: fixtureHome,
+          AGENTIC_RUNTIME_ROOT: realRuntimeRoot,
+        },
+        encoding: 'utf8',
+        timeout: 30_000,
+      },
+    );
+  }
+
+  async function readCaptureFile(name) {
+    const p = join(fixtureRepo, '.agentic-plugins', 'state', 'runtime', 'session-capture', name);
+    return JSON.parse(await readFile(p, 'utf8'));
+  }
+
+  it('gate-on Stop publishes a real slot/entry generation with the relayed session id', async () => {
+    const result = runStopReal({ cwd: fixtureRepo, session_id: 'real-sess-1', prompt_id: 'real-prompt-1' });
+    strictEqual(result.status, 0, result.stderr);
+    strictEqual(result.stdout, '');
+    const slot = await readCaptureFile('slot.json');
+    const entry = await readCaptureFile('entry.json');
+    strictEqual(slot.schema, 'runtime-session-capture-1.0');
+    strictEqual(entry.schema, 'runtime-session-entry-1.0');
+    strictEqual(slot.origin, 'stop-hook');
+    strictEqual(slot.host, 'claude');
+    strictEqual(slot.session_id, 'real-sess-1');
+    strictEqual(slot.branch, 'feat/capture');
+    strictEqual(slot.fingerprint, entry.fingerprint, 'committed generation: slot and entry fingerprints agree');
+    strictEqual(slot.repo_recent_terminal_evidence, 'none');
+  });
+
+  it('the bare-notification short-circuit still publishes through the real publisher (no prompt_id)', async () => {
+    const result = runStopReal({ cwd: fixtureRepo, session_id: 'real-sess-2' });
+    strictEqual(result.status, 0, result.stderr);
+    strictEqual(result.stdout, '');
+    const slot = await readCaptureFile('slot.json');
+    const entry = await readCaptureFile('entry.json');
+    strictEqual(slot.session_id, 'real-sess-2', 'the session change republished the generation');
+    strictEqual(slot.fingerprint, entry.fingerprint);
   });
 });

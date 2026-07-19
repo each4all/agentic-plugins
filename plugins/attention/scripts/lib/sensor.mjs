@@ -39,7 +39,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { discoverRuntimePluginRoot } from '../discover-runtime.mjs';
+import {
+  PUBLISH_SESSION_MIN_RUNTIME_VERSION,
+  discoverRuntimePluginRoot,
+  resolveRuntimePluginRoot,
+  runtimeVersionAtLeast,
+} from '../discover-runtime.mjs';
 
 // ── ADR-0040 §1 contract copies (canonical: runtime lib/notify-schema.mjs) ──
 
@@ -420,9 +425,17 @@ export function footerMarkerFileFor(persona, projectionFile, workflowId) {
   return null; // unknown persona — no documented marker contract; caller fail-closes
 }
 
+// Projection/marker reads go through the SAME regular-file gate as the
+// .git/HEAD reads below (readRegularFileSync): an unbounded readFileSync on
+// a repo-controlled FIFO/device at a projection path would block the WHOLE
+// Stop sensor before capture and notification — outside every timeout, so
+// the budget constants would be arithmetic rather than an enforced ceiling
+// (Codex review MAJOR). Non-regular or oversized targets degrade to null.
 function readJsonIfObject(filePath) {
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const text = readRegularFileSync(filePath);
+    if (text === null) return null;
+    const parsed = JSON.parse(text);
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -499,6 +512,131 @@ export function readFreshProjection({ repoRoot, persona, now = Date.now() } = {}
 
 // ── Event assembly + emit seam ──
 
+// ── ADR-0044 §2 Stop hot-path budget (contract values) ──
+
+// The Stop hook's worst-case latency is a CONTRACT, not an accident of local
+// defaults. One emission slot must exceed the runtime emitter's own 8s network
+// budget plus node-startup/preflight headroom (see the emitEvent timeout notes
+// below); the terminal-notification batch may consume at most TWO full slots
+// (ADR-0043 §3 full-slot-or-nothing batching); and the ADR-0044 capture spawn
+// gets AT MOST one more slot, ordered AHEAD of the notification work. The
+// aggregate is therefore three slots (36s) in the worst case — reached only
+// when the capture publisher AND two egress dispatches all run to their kill
+// bounds simultaneously. Changing any value here is a contract change
+// (README § Stop hot-path budget); the plugin-shape test pins all four.
+export const EMIT_SLOT_MS = 12_000;
+export const TERMINAL_BATCH_DEADLINE_MS = 2 * EMIT_SLOT_MS;
+export const PUBLISH_SESSION_TIMEOUT_MS = 12_000;
+export const STOP_HOT_PATH_BUDGET_MS = PUBLISH_SESSION_TIMEOUT_MS + TERMINAL_BATCH_DEADLINE_MS;
+
+// ── ADR-0044 §2 capture spawn seam ──
+
+// Publisher-mirror clamp for the relayed session id (session-capture-contract
+// §3.1: C0/DEL stripped, 128-char cap, empty ⇒ null). COPY-NOT-IMPORT sibling
+// of the runtime publisher's own clampSessionId (context.mjs) — the publisher
+// clamps again on its side; mirroring here keeps the argv bounded even against
+// a hostile hook payload, and an id that clamps to empty omits the flag
+// entirely (matching the publisher's null).
+const SESSION_ID_MAX_CHARS = 128;
+const SESSION_ID_CONTROL_RE_G = /[\u0000-\u001f\u007f]/g;
+export function clampSessionId(value) {
+  const text = String(value).replace(SESSION_ID_CONTROL_RE_G, '').slice(0, SESSION_ID_MAX_CHARS);
+  return text === '' ? null : text;
+}
+
+// Scrub GIT_* from a child spawn env (ADR-0044 §2 fixed-argv/no-inheritance).
+// Inherited GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE override git's own
+// `-C <repo>` resolution inside the runtime executors, so a capture invoked
+// for repo A could resolve configuration and write its slot under repo B
+// (Codex review MAJOR). Applied to BOTH spawn seams — the capture publisher
+// AND the notify emitter — so the two never diverge: notify.mjs runs no git
+// subprocess today, but an emitter probe added later would silently re-open
+// the same repo-misdirection hole.
+function sanitizeSpawnEnv(env) {
+  const clean = {};
+  for (const [key, value] of Object.entries(env ?? {})) {
+    if (key.startsWith('GIT_')) continue;
+    clean[key] = value;
+  }
+  return clean;
+}
+
+/**
+ * Spawn the runtime session-capture publisher (`context.mjs publish-session`)
+ * with the ADR-0044 §2 fixed argv — explicit `--repo-root`/`--host claude`,
+ * optional clamped `--session-id`, `--workflow-evidence fresh` only when the
+ * sensor's own projection read observed a fresh terminal projection (an
+ * absent flag is recorded as `none` publisher-side, contract §5.3). No shell,
+ * no behavior via inherited env — the child env is the caller's env scrubbed
+ * of GIT_* (sanitizeSpawnEnv above).
+ *
+ * Own capability floor (ADR-0044 §2 dual-floor rule): the resolved runtime
+ * root must satisfy PUBLISH_SESSION_MIN_RUNTIME_VERSION — never the notify
+ * floor. The ladder resolves ONE best root (ADR-0039 §5, no stale-cache
+ * fallback), then that root is gated twice on this path: version below the
+ * publisher floor ⇒ silent skip; version passes but `scripts/context.mjs` is
+ * absent at the root (capability drift) ⇒ silent skip — in both cases
+ * notifications are entirely unaffected.
+ *
+ * The publisher is hook-grade on its own (exit 0 always, nothing on stdout,
+ * at most one stderr line) and applies the `session_capture` config gate
+ * itself — the sensor stays policy-free (ADR-0044 §3) and discards child
+ * output entirely.
+ *
+ * spawnSync bounded by ONE budget slot (PUBLISH_SESSION_TIMEOUT_MS): the
+ * publisher runs bounded git probes (root, branch, head, porcelain — each
+ * under its own ~3s cap, sequential) plus local file IO — no network. The
+ * probes' theoretical sum can graze the slot, and the accepted degradation
+ * for a killed publisher is bounded: it may die holding the capture `.lock`,
+ * suppressing further captures until the contract stale-age (60s) allows
+ * takeover — notifications are unaffected and the previous turn's slot
+ * remains the handoff (the rolling-checkpoint limit; ADR-0040 §7 fail-closed
+ * choice, never a blocked host).
+ *
+ * @returns {Promise<{spawned: boolean, reason?: string}>}
+ */
+export async function spawnPublishSession({
+  repoRoot,
+  sessionId = undefined,
+  workflowEvidence = undefined,
+  env = process.env,
+  home = undefined,
+  timeoutMs = PUBLISH_SESSION_TIMEOUT_MS,
+} = {}) {
+  try {
+    if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
+      return { spawned: false, reason: 'bad-args' };
+    }
+    const runtimeRoot = await resolveRuntimePluginRoot({ env, home });
+    if (!runtimeRoot
+      || !(await runtimeVersionAtLeast(runtimeRoot, PUBLISH_SESSION_MIN_RUNTIME_VERSION))) {
+      return { spawned: false, reason: 'runtime-below-publisher-floor' };
+    }
+    const contextPath = path.join(runtimeRoot, 'scripts', 'context.mjs');
+    if (!fs.existsSync(contextPath)) {
+      return { spawned: false, reason: 'publisher-executor-absent' };
+    }
+    const argv = [contextPath, 'publish-session', '--repo-root', repoRoot, '--host', 'claude'];
+    const clamped = sessionId === undefined || sessionId === null ? null : clampSessionId(sessionId);
+    // Leading-hyphen ids are OMITTED, not relayed: the released 0.82.0
+    // publisher's argv parser (requireValue) rejects any option value
+    // starting with '-', which would silently lose the WHOLE capture.
+    // Omitting keeps the structural capture; the root cause is the runtime
+    // parser (a future runtime release may accept option-shaped values, but
+    // this sensor must stay compatible with the already-released floor).
+    if (clamped !== null && !clamped.startsWith('-')) argv.push('--session-id', clamped);
+    if (workflowEvidence === 'fresh') argv.push('--workflow-evidence', 'fresh');
+    spawnSync(process.execPath, argv, {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      env: sanitizeSpawnEnv(env),
+      timeout: timeoutMs,
+    });
+    return { spawned: true };
+  } catch {
+    return { spawned: false, reason: 'spawn-failed' };
+  }
+}
+
 // ── ADR-0041 §4 cross-machine routing/display field resolution ──
 
 // The machine label woven into every attention event_id (per-machine dedupe
@@ -521,14 +659,18 @@ export function resolveHostname({ env = process.env } = {}) {
   return raw.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, ROUTING_FIELD_CAPS.hostname);
 }
 
-// Read a path ONLY if it is a regular file. statSync returns metadata without
-// blocking (even on a FIFO); readFileSync on a FIFO/device WOULD block the hook
-// path indefinitely — the isFile() gate is what keeps a malicious or broken
-// `.git/HEAD` (a FIFO, directory, or device node) from hanging the sensor
-// (ADR-0040 §7 never-block contract). Returns null for any non-regular target.
+// Read a path ONLY if it is a regular file under the size cap. statSync
+// returns metadata without blocking (even on a FIFO); readFileSync on a
+// FIFO/device WOULD block the hook path indefinitely — the isFile() gate is
+// what keeps a malicious or broken target (a FIFO, directory, or device
+// node) from hanging the sensor (ADR-0040 §7 never-block contract). Shared
+// by the `.git/HEAD` reads AND the projection/marker reads above; the size
+// cap bounds a pathological regular file on the same hot path. Returns null
+// for any non-regular or oversized target.
+const REGULAR_FILE_MAX_BYTES = 1024 * 1024;
 function readRegularFileSync(filePath) {
   const st = fs.statSync(filePath);
-  if (!st.isFile()) return null;
+  if (!st.isFile() || st.size > REGULAR_FILE_MAX_BYTES) return null;
   return fs.readFileSync(filePath, 'utf8');
 }
 
@@ -662,8 +804,8 @@ export function buildEvent({
 export async function emitTerminalEvents({
   repoRoot,
   events,
-  deadlineMs = 24_000,
-  minSlotMs = 12_000,
+  deadlineMs = TERMINAL_BATCH_DEADLINE_MS,
+  minSlotMs = EMIT_SLOT_MS,
   emit = emitEvent,
   now = Date.now,
 } = {}) {
@@ -709,7 +851,7 @@ export async function emitEvent({
   event,
   env = process.env,
   home = undefined,
-  timeoutMs = 12000,
+  timeoutMs = EMIT_SLOT_MS,
 } = {}) {
   try {
     if (typeof repoRoot !== 'string' || repoRoot.length === 0 || !event) {
@@ -721,6 +863,7 @@ export async function emitEvent({
     spawnSync(process.execPath, [notifyPath, 'emit', '--repo-root', repoRoot], {
       input: `${JSON.stringify(event)}\n`,
       stdio: ['pipe', 'ignore', 'ignore'],
+      env: sanitizeSpawnEnv(env),
       timeout: timeoutMs,
     });
     return { emitted: true };
