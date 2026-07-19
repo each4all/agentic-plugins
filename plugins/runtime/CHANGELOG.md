@@ -20,6 +20,16 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.82.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.81.0...plugin-runtime-v0.82.0) (2026-07-19)
+
+
+### Features
+
+* **runtime:** S2 — session-capture foundation: contract, schemas, session config family ([#588](https://github.com/each4all/agentic-plugins/issues/588)) ([9dc3eff](https://github.com/each4all/agentic-plugins/commit/9dc3eff21d8b4bf45d8759043a93f12aa3252817))
+* **runtime:** S3a — session-capture staging executors: note (--text/--file/--clear) + status --slot, explicit hook-grade output-mode split ([#590](https://github.com/each4all/agentic-plugins/issues/590)) ([8b7d887](https://github.com/each4all/agentic-plugins/commit/8b7d887f94d116993f2f18ee7b52356b7e8c6ef6))
+* **runtime:** S3b — session-capture publisher: publish-session transaction, fs-mutation guard modeling, mutation-verified suite ([#591](https://github.com/each4all/agentic-plugins/issues/591)) ([7f5710a](https://github.com/each4all/agentic-plugins/commit/7f5710a5274c1fd9a46fafe4a1ef7779e5593454))
+* **runtime:** S4 — session-capture readiness: shared half-enabled-chain diagnosis in doctor/settings, dynamic publisher-floor declaration, ADR-0044 §10 operator docs + ADR pointers ([#592](https://github.com/each4all/agentic-plugins/issues/592)) ([417bee6](https://github.com/each4all/agentic-plugins/commit/417bee682deb9d35120d1b8754d78fedb02b697c))
+
 ## [0.81.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.80.1...plugin-runtime-v0.81.0) (2026-07-18)
 
 
