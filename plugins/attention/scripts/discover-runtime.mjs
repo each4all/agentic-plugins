@@ -40,6 +40,17 @@ const ENV_OVERRIDE = 'AGENTIC_RUNTIME_ROOT';
 // below fail-closes on anything older (missing/too-old ⇒ silent no-op).
 export const MIN_RUNTIME_VERSION = '0.71.0';
 
+// The SEPARATE capability floor for the ADR-0044 §2 capture spawn: the first
+// RELEASED runtime version shipping `context.mjs publish-session` —
+// plugin-runtime-v0.82.0, recorded by the S4a release-proof gate (ADR-0044
+// §Status, 2026-07-19). The two gates never share a constant (ADR-0044 §2
+// dual-floor rule): below THIS floor the Stop sensor silently skips the
+// capture spawn while notifications keep working at MIN_RUNTIME_VERSION.
+// The §13 declaration the plugin ships (data/runtime-floors.json,
+// floors.publish_session) must agree with this constant byte-for-byte —
+// the plugin-shape test pins the pair.
+export const PUBLISH_SESSION_MIN_RUNTIME_VERSION = '0.82.0';
+
 async function fileExists(path) {
   try {
     const st = await stat(path);

@@ -1,0 +1,6 @@
+{
+  "schema": "attention-runtime-floors-1.0",
+  "floors": {
+    "publish_session": "0.82.0"
+  }
+}
