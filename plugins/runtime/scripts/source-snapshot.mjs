@@ -1,7 +1,9 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 const SOURCE_SNAPSHOT_SCHEMA = 'runtime-source-snapshot-1.0';
 const GIT_TIMEOUT_MS = 3000;
+const LINE_TERMINATOR_RE = /\r?\n$/;
 
 export async function resolveSourceSnapshot({ repoRoot, snapshot, observedAt }) {
   if (snapshot) {
@@ -104,12 +106,99 @@ async function observeGitSnapshot(repoRoot, observedAt) {
   }
 }
 
-function execGit(repoRoot, args) {
+// ADR-0044 §6 repo-root probe, split from the structural facts below so
+// the publisher's gate-off path costs exactly ONE spawn per turn (the
+// accepted notify cost shape, ADR-0044 Consequences) and the remaining
+// probes can run in their §10 transaction position — inside the slot
+// lock, after the committed-generation read. Failure or a suspicious
+// toplevel ⇒ null (non-git start dir; the publisher no-ops upstream).
+export async function resolveGitTopLevel(startDir) {
+  try {
+    // Strip ONLY git's terminating line break — never trim(): a repository
+    // path may legitimately begin or end with spaces, and trimming them
+    // resolves a DIFFERENT sibling directory, redirecting every subsequent
+    // write outside the real repo (plan-verify peer critical, reproduced
+    // with sibling dirs `repo ` vs `repo`).
+    const top = String(await execGit(startDir, ['rev-parse', '--show-toplevel'])).replace(LINE_TERMINATOR_RE, '');
+    if (!top || /[\r\n\u0000]/.test(top)) return null;
+    return top;
+  } catch {
+    return null;
+  }
+}
+
+// ADR-0044 §6/§9 — the publish-session publisher's bounded structural git
+// observation over an ALREADY-RESOLVED repo root (resolveGitTopLevel above).
+// Sequential bounded probes under the execGit discipline (~3 s timeout,
+// 1 MiB maxBuffer per probe), with per-field HONEST degradation
+// (session-capture-contract.md §6): a failed probe nulls its own fields and
+// the capture still publishes.
+//   - branch: `git branch --show-current` (the contract-normative probe);
+//     detached HEAD ⇒ empty output ⇒ null.
+//   - head: short form; unborn HEAD / non-hex output ⇒ null.
+//   - status digest + dirty count: sha256 hex over the
+//     `git status --porcelain=v1 -z` output with the entry count; output past
+//     the probe byte cap (maxBuffer) or a probe error ⇒ BOTH null — a null
+//     digest is "unknown", never "clean".
+export async function observeSessionGitFacts(repoRoot) {
+  const facts = { branch: null, headShort: null, dirtyCount: null, statusDigest: null };
+  try {
+    const branch = (await execGit(repoRoot, ['branch', '--show-current'])).trim();
+    facts.branch = branch !== ''
+      && branch.length <= 256
+      && !/[\u0000-\u001f\u007f]/.test(branch)
+      ? branch
+      : null;
+  } catch {
+    facts.branch = null;
+  }
+  try {
+    const head = (await execGit(repoRoot, ['rev-parse', '--short', 'HEAD'])).trim();
+    facts.headShort = /^[0-9a-f]{7,40}$/.test(head) ? head : null;
+  } catch {
+    facts.headShort = null;
+  }
+  try {
+    // --no-optional-locks: a plain `git status` may refresh and WRITE the
+    // index under .git — outside this executor's declared session-capture
+    // write authority (ADR-0035 M1; plan-verify peer). The exact argv form
+    // is registered in the guard's git verb-path allowlist.
+    // latin1 decoding is byte-preserving (1:1 code points), so hashing its
+    // re-encoding digests the ACTUAL porcelain output bytes even for
+    // non-UTF-8 filenames (contract §6: sha256 over the command output);
+    // NUL positions are byte-identical, so the entry counter is unaffected.
+    const porcelain = await execGit(repoRoot, ['--no-optional-locks', 'status', '--porcelain=v1', '-z'], { encoding: 'latin1' });
+    facts.statusDigest = createHash('sha256').update(Buffer.from(porcelain, 'latin1')).digest('hex');
+    facts.dirtyCount = countPorcelainEntries(porcelain);
+  } catch {
+    facts.statusDigest = null;
+    facts.dirtyCount = null;
+  }
+  return facts;
+}
+
+// porcelain v1 -z: each entry is `XY PATH\0`, and a rename/copy entry carries
+// one extra `ORIG\0` field — count entries, not NUL-separated fragments. The
+// rename/copy marker can sit in EITHER column (index `R `, worktree ` R` —
+// plan-verify peer reproduced the worktree form miscounting as two entries).
+function countPorcelainEntries(porcelain) {
+  const parts = String(porcelain).split('\0');
+  let count = 0;
+  for (let i = 0; i < parts.length; i += 1) {
+    if (parts[i] === '') continue;
+    count += 1;
+    const status = parts[i].slice(0, 2);
+    if (/[RC]/.test(status)) i += 1;
+  }
+  return count;
+}
+
+function execGit(repoRoot, args, { encoding = 'utf8' } = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
     execFile(
       'git',
       ['-C', repoRoot, ...args],
-      { timeout: GIT_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
+      { timeout: GIT_TIMEOUT_MS, maxBuffer: 1024 * 1024, encoding },
       (error, stdout) => {
         if (error) {
           rejectPromise(error);

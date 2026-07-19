@@ -28,6 +28,10 @@
 //     network request (§1; the manifest's boundary object is validated all-false).
 
 import { spawn } from 'node:child_process';
+// Static read-only fs imports — the ADR-0035 fs-mutation-gate refuses dynamic
+// fs imports outright (they defeat the import-anchored mutation model), and
+// these two are plain reads with no registration need.
+import { readFile, stat } from 'node:fs/promises';
 import { homedir, hostname as osHostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -550,7 +554,6 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
 const UNTRUSTED_FILE_MAX_BYTES = 128 * 1024;
 
 async function readBoundedFile(path, flag) {
-  const { readFile, stat } = await import('node:fs/promises');
   const resolved = resolve(path);
   let info;
   try {
@@ -821,7 +824,6 @@ async function selectRun({ homeDir, opts, defaultSelector }) {
     run = scan.runs.find((r) => r.status === 'open') ?? null;
   }
   if (!run) return { error: 'no-active-run', exitCode: EXIT.NO_ACTIVE_RUN };
-  const { readFile } = await import('node:fs/promises');
   const manifestPath = join(homeDir, '.agentic-plugins', 'runs', 'bootstrap', run.run_id, 'run.json');
   let manifest;
   try {

@@ -77,8 +77,9 @@ Context reports and manages:
   stdout, at most one stderr line). Operator invocations stay on the reporter
   path (stdout report, exit 1 on error).
 - `status --slot` never repairs or deletes a malformed file on read; slot/entry
-  production (`publish-session`) is a later slice and its config gate does not
-  apply to explicit note staging.
+  production is `publish-session` — hook-grade by definition, gated by the
+  `session_capture` config key (default off), and that gate does not apply to
+  explicit note staging.
 - Note content is untrusted quoted data for every consumer — never
   instructions, never a command source.
 

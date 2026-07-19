@@ -17,6 +17,8 @@
 // argv at such a call is validated against the UNION of host-CLI allowlists.
 const HOST_UNION = '*host-cli*';
 
+const RECURSIVE_TRUE_RE = /\brecursive\s*:\s*true\b/;
+
 // ---------------------------------------------------------------------------
 // Tokenizer: strip comments, preserve strings/templates/regex
 // ---------------------------------------------------------------------------
@@ -1265,7 +1267,216 @@ export function scanFile({ fileName, source, registry }) {
     }
   }
 
+  // --- FS-mutation gates (ADR-0044 S3b — the ADR-0035 §5 fs-modeling
+  // extension) --------------------------------------------------------------
+  // Three layers over the registry's FS model:
+  //   fs-mutation-gate — which file may import/call which mutating primitive
+  //     (named imports gate on the import itself; default/namespace bindings
+  //     gate on member CALLS, so a read-only `import fs from 'node:fs'` stays
+  //     quiet);
+  //   fs-open-gate — every open/openSync site must be read-only or
+  //     O_EXCL-create ('wx'/'ax'), never an overwrite/append open that would
+  //     bypass the temp+rename atomicity discipline;
+  //   fs-delete-gate — a recursive:true removal must be a registered
+  //     ALLOWED_RECURSIVE_REMOVALS site pinned to its exact target identifier.
+  // Detection runs on string-blanked code (an `open(` inside an error-message
+  // string must not count — the same discipline as analyzeFetchUse); each
+  // call's real inner is re-extracted from the unblanked source, which is
+  // position-identical because blankStrings preserves length.
+  {
+    const fsModules = registry.WATCHED_FS_MODULES || [];
+    const fsPrimitives = registry.FS_MUTATION_PRIMITIVES || [];
+    const fsSpec = (registry.FS_MUTATION_USERS || {})[fileName] || null;
+    const codeNoStr = blankStrings(code);
+    const openLike = new Set(['open', 'openSync']);
+    const removeLike = new Set(['rm', 'rmSync', 'rmdir', 'rmdirSync']);
+    const openSites = [];
+    const removeSites = [];
+    const reExtract = (openParen) => {
+      const close = matchDelimiter(code, openParen);
+      return close === -1 ? '' : code.slice(openParen + 1, close);
+    };
+    // Dynamic import()/require() or a re-export of an fs module defeats the
+    // import-anchored model outright — fail closed regardless of
+    // registration (plan-verify peer: `await import('node:fs/promises')`
+    // scanned clean before this).
+    for (const dyn of dynamic) {
+      if (dyn.module && fsModules.includes(dyn.module)) {
+        violations.push({ rule: 'fs-mutation-gate', file: fileName, detail: `dynamic import of fs module '${dyn.module}' is not allowed (it defeats the import-anchored mutation model)` });
+      }
+    }
+    for (const mod of reExports) {
+      if (fsModules.includes(mod)) {
+        violations.push({ rule: 'fs-mutation-gate', file: fileName, detail: `re-export from fs module '${mod}' is not allowed` });
+      }
+    }
+    const mutationSites = [];
+    for (const imp of staticImports) {
+      if (!fsModules.includes(imp.module)) continue;
+      for (const nm of imp.names) {
+        if (nm.imported === 'default') continue; // handled as a namespace below
+        if (!fsPrimitives.includes(nm.imported)) continue;
+        if (!fsSpec || !(fsSpec.primitives || []).includes(nm.imported)) {
+          violations.push({
+            rule: 'fs-mutation-gate', file: fileName,
+            detail: `imports fs mutation primitive '${nm.imported}'${nm.local !== nm.imported ? ` (as ${nm.local})` : ''} but is not registered for it in FS_MUTATION_USERS`,
+          });
+        }
+        const calls = findBareCalls(codeNoStr, [nm.local]);
+        for (const call of calls) {
+          const site = { prim: nm.imported, callee: nm.imported, inner: reExtract(call.openParen) };
+          mutationSites.push(site);
+          if (openLike.has(nm.imported)) openSites.push(site);
+          if (removeLike.has(nm.imported)) removeSites.push(site);
+        }
+        // The open/remove primitives carry SITE-shape gates below, so their
+        // bindings may only appear as direct calls — a value use (alias,
+        // argument, destructure source) would evade the site validation
+        // (plan-verify peer). One extra reference is the import clause.
+        if (openLike.has(nm.imported) || removeLike.has(nm.imported)) {
+          const bareTokens = (codeNoStr.match(new RegExp(`(?<![.\\w$])${escapeRegExp(nm.local)}(?![\\w$])`, 'g')) || []).length;
+          if (bareTokens - calls.length - 1 > 0) {
+            violations.push({
+              rule: 'fs-mutation-gate', file: fileName,
+              detail: `fs primitive '${nm.local}' is referenced as a value (alias/argument) — open/remove primitives may only be called directly, else their site-shape gates are evaded`,
+            });
+          }
+        }
+      }
+      const nsBindings = [
+        ...(imp.namespace ? [imp.namespace] : []),
+        ...imp.names.filter((nm) => nm.imported === 'default').map((nm) => nm.local),
+      ];
+      for (const ns of nsBindings) {
+        // Computed access (`fs['writeFileSync']`) and the `.promises`
+        // sub-namespace hop (`fs.promises.writeFile`) both evade
+        // member-anchored primitive detection — fail closed on the form
+        // (plan-verify peer bypasses, both reproduced).
+        if (new RegExp(`(?<![.\\w$])${escapeRegExp(ns)}\\s*\\[`).test(codeNoStr)) {
+          violations.push({ rule: 'fs-mutation-gate', file: fileName, detail: `computed member access on fs binding '${ns}' is not allowed (it evades primitive detection)` });
+        }
+        if (new RegExp(`(?<![.\\w$])${escapeRegExp(ns)}\\s*\\.\\s*promises(?![\\w$])`).test(codeNoStr)) {
+          violations.push({ rule: 'fs-mutation-gate', file: fileName, detail: `'${ns}.promises' sub-namespace access is not allowed (it evades primitive detection)` });
+        }
+        for (const prim of fsPrimitives) {
+          const memberCalls = findMemberCalls(codeNoStr, ns, prim);
+          if (memberCalls.length === 0) continue;
+          if (!fsSpec || !(fsSpec.primitives || []).includes(prim)) {
+            violations.push({
+              rule: 'fs-mutation-gate', file: fileName,
+              detail: `calls fs mutation primitive '${ns}.${prim}' but is not registered for it in FS_MUTATION_USERS`,
+            });
+          }
+          for (const call of memberCalls) {
+            const site = { prim, callee: prim, inner: reExtract(call.openParen) };
+            mutationSites.push(site);
+            if (openLike.has(prim)) openSites.push(site);
+            if (removeLike.has(prim)) removeSites.push(site);
+          }
+        }
+      }
+    }
+    // A mutating call whose first argument is a LITERAL absolute path can
+    // never be a repo/home-scoped computed root — refuse outright; computed
+    // paths stay owned by each executor's behavioral tests plus the
+    // stateRoots drift check (plan-verify peer: the declaration alone was
+    // purely documentary).
+    for (const site of mutationSites) {
+      const first = (splitTopLevel(site.inner)[0] || '').trim();
+      const lit = normalizeElement(first);
+      if (lit !== null && (lit.startsWith('/') || lit.startsWith('~') || /^[A-Za-z]:[\\/]/.test(lit))) {
+        violations.push({
+          rule: 'fs-mutation-gate', file: fileName,
+          detail: `mutating fs primitive '${site.prim}' targets a literal absolute path (${truncate(lit, 40)}) — runtime mutates only computed repo/home-scoped roots`,
+        });
+      }
+    }
+    for (const site of openSites) {
+      const v = validateOpenFlags(site.inner, code);
+      if (v) violations.push({ rule: 'fs-open-gate', file: fileName, detail: `${site.prim}(${truncate(site.inner, 60)}): ${v}` });
+    }
+    const recursiveSites = (registry.ALLOWED_RECURSIVE_REMOVALS || {})[fileName] || [];
+    for (const site of removeSites) {
+      const args = splitTopLevel(site.inner);
+      const optsText = (args[1] || '').trim();
+      if (optsText !== '') {
+        // Options must be an INLINE object literal with no spread and no
+        // computed/bracket forms — a variable, spread, or computed key can
+        // smuggle recursive:true past the token check (plan-verify peer).
+        const inlineObject = optsText.startsWith('{') && matchDelimiter(optsText, 0) === optsText.length - 1;
+        if (!inlineObject || optsText.includes('...') || optsText.includes('[')) {
+          violations.push({
+            rule: 'fs-delete-gate', file: fileName,
+            detail: `removal options for ${site.callee}(${truncate(site.inner, 50)}) must be an inline object literal without spread/computed keys (a variable can hide recursive:true)`,
+          });
+          continue;
+        }
+      }
+      if (!RECURSIVE_TRUE_RE.test(optsText)) continue;
+      const target = (args[0] || '').trim();
+      const ok = recursiveSites.some((s) => s.callee === site.callee && s.target === target);
+      if (!ok) {
+        violations.push({
+          rule: 'fs-delete-gate', file: fileName,
+          detail: `recursive removal ${site.callee}(${truncate(site.inner, 60)}) is not a registered ALLOWED_RECURSIVE_REMOVALS site (callee + first-arg identifier pinned)`,
+        });
+      }
+    }
+  }
+
   return { violations };
+}
+
+// open/openSync write-shape validation (fs-open-gate): a runtime script may
+// open for READ (no write flags) or for EXCLUSIVE CREATE ('wx'/'ax' /
+// O_CREAT|O_EXCL) — never an overwrite/append open, which would bypass the
+// temp+rename atomicity discipline every runtime writer follows. The flags
+// argument may be a string literal, an inline constants expression, or a
+// local const/let identifier — resolved by folding its definition plus every
+// `|=` augmentation in the file (the egress-config read-open shape). Anything
+// the scanner cannot recognize fails closed. Returns a violation string or
+// null.
+export function validateOpenFlags(inner, code) {
+  const args = splitTopLevel(inner);
+  if (args.length < 2) return null; // fs default 'r' — read-only
+  let flagText = (args[1] || '').trim();
+  if (/^[\w$]+$/.test(flagText)) {
+    // Resolve a flag identifier by folding its declaration AND every later
+    // assignment (`flags = …` as well as `flags |= …`) — resolving only the
+    // initializer let a later `flags = O_WRONLY | O_CREAT` smuggle a write
+    // open past a read-only declaration (plan-verify peer). No resolvable
+    // assignment (e.g. a bare parameter) fails closed.
+    const ident = flagText;
+    let assembled = '';
+    const assignRe = new RegExp(`(?<![.\\w$])${escapeRegExp(ident)}\\s*(?:\\|=|(?<![=!<>])=(?![=>]))\\s*([^;\\n]+)`, 'g');
+    let am;
+    while ((am = assignRe.exec(code))) assembled += ` | ${am[1]}`;
+    if (assembled === '') {
+      return `flags identifier '${ident}' has no local assignment the scanner can resolve — use a literal or a locally-assigned flag expression`;
+    }
+    flagText = assembled;
+  }
+  const literal = normalizeElement(flagText);
+  if (literal !== null) {
+    if (literal === 'r' || literal === 'rs') return null;
+    if (/^(?:wx|ax)\+?$/.test(literal)) return null;
+    return `flag string '${literal}' is neither read-only ('r') nor exclusive-create ('wx'/'ax')`;
+  }
+  // Arithmetic on flag constants can zero a token the text scan still sees
+  // (`0 * O_EXCL` — plan-verify peer); only |, ??, ?:, and member access are
+  // recognizably pure flag composition.
+  if (/[+*%-]|<<|>>/.test(flagText)) {
+    return `flags expression uses arithmetic — cannot be statically trusted: ${truncate(flagText, 60)}`;
+  }
+  const hasWrite = /O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND/.test(flagText);
+  const hasExcl = /O_EXCL/.test(flagText);
+  const hasCreat = /O_CREAT/.test(flagText);
+  const hasRead = /O_RDONLY/.test(flagText);
+  if (!hasWrite && hasRead) return null;
+  // O_EXCL is meaningful only WITH O_CREAT — `O_WRONLY|O_EXCL` alone opens
+  // an existing file for overwrite (plan-verify peer).
+  if (hasWrite && hasExcl && hasCreat) return null;
+  return `flags expression is not recognizably read-only or O_CREAT|O_EXCL-create: ${truncate(flagText, 60)}`;
 }
 
 // ---------------------------------------------------------------------------

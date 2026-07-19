@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import * as registry from './runtime-executor-registry.mjs';
 import {
   stripComments, scanFile, auditScripts, parseArgvArray, normalizeElement, matchVerbPath,
-  validatePinnedHttpsRequest, findImports,
+  validatePinnedHttpsRequest, validateOpenFlags, findImports,
 } from './runtime-executor-scan.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -971,6 +971,155 @@ describe('ADR-0041 §2d guard — pinned node:https egress (per-source negative 
 });
 
 // ---------------------------------------------------------------------------
+// (c) Negative-conformance — ADR-0044 S3b fs mutation modeling
+// ---------------------------------------------------------------------------
+
+describe('ADR-0044 S3b guard — fs mutation gates (per-source negative conformance)', () => {
+  // --- fs-mutation-gate: which file may bind which mutating primitive -------
+  it('a mutating fs import in an UNREGISTERED file → fs-mutation-gate', () => {
+    ok(rules(scan('footer.mjs', "import { writeFile } from 'node:fs/promises';")).includes('fs-mutation-gate'));
+  });
+  it('an unregistered primitive in a REGISTERED file (unlink in consensus) → fs-mutation-gate', () => {
+    ok(rules(scan('consensus.mjs', "import { mkdir, writeFile, unlink } from 'node:fs/promises';")).includes('fs-mutation-gate'));
+  });
+  it('an aliased mutating import (rm as cleanup) is still gated → fs-mutation-gate', () => {
+    ok(rules(scan('footer.mjs', "import { rm as cleanup } from 'node:fs/promises';")).includes('fs-mutation-gate'));
+  });
+  it('a default-import member mutation call in an unregistered file → fs-mutation-gate', () => {
+    ok(rules(scan('footer.mjs', "import fs from 'node:fs'; fs.writeFileSync(p, d);")).includes('fs-mutation-gate'));
+  });
+  it('a namespace-import member mutation call (fsp.rename) in an unregistered file → fs-mutation-gate', () => {
+    ok(rules(scan('footer.mjs', "import * as fsp from 'node:fs/promises'; await fsp.rename(a, b);")).includes('fs-mutation-gate'));
+  });
+  it('an unregistered member primitive on a registered default import (fs.utimesSync in notify) → fs-mutation-gate', () => {
+    ok(rules(scan('notify.mjs', "import fs from 'node:fs'; fs.utimesSync(p, a, m);")).includes('fs-mutation-gate'));
+  });
+  it('read-only named fs imports stay quiet (no over-reject)', () => {
+    deepStrictEqual(scan('footer.mjs', "import { readFile, readdir } from 'node:fs/promises'; const t = await readFile(p, 'utf8');"), []);
+  });
+  it('a read-only default fs import with NO mutation member calls stays quiet', () => {
+    deepStrictEqual(scan('runtime-config.mjs', "import fs from 'node:fs'; const t = fs.readFileSync(p, 'utf8'); const s = fs.statSync(p);"), []);
+  });
+  it('a registered file using exactly its registered primitives stays quiet', () => {
+    deepStrictEqual(scan('consensus.mjs', "import { mkdir, writeFile } from 'node:fs/promises'; await mkdir(d, { recursive: true }); await writeFile(p, t);"), []);
+  });
+
+  // --- fs-open-gate: read-only or O_EXCL-create, never overwrite/append -----
+  it("an exclusive-create open ('wx') in a registered file → NO finding", () => {
+    deepStrictEqual(scan('context.mjs', "import { open } from 'node:fs/promises'; const h = await open(p, 'wx');"), []);
+  });
+  it("an overwrite open ('w') → fs-open-gate", () => {
+    ok(rules(scan('context.mjs', "import { open } from 'node:fs/promises'; const h = await open(p, 'w');")).includes('fs-open-gate'));
+  });
+  it("an append open ('a') → fs-open-gate", () => {
+    ok(rules(scan('context.mjs', "import { open } from 'node:fs/promises'; const h = await open(p, 'a');")).includes('fs-open-gate'));
+  });
+  it("a read-write open ('r+') → fs-open-gate", () => {
+    ok(rules(scan('context.mjs', "import { open } from 'node:fs/promises'; const h = await open(p, 'r+');")).includes('fs-open-gate'));
+  });
+  it("a read open ('r') → NO finding", () => {
+    deepStrictEqual(scan('bootstrap-artifacts.mjs', "import { open } from 'node:fs/promises'; const h = await open(p, 'r');"), []);
+  });
+  it('an O_CREAT-without-O_EXCL constants expression → fs-open-gate', () => {
+    ok(rules(scan('context.mjs', "import { open } from 'node:fs/promises'; const h = await open(p, fsConstants.O_WRONLY | fsConstants.O_CREAT);")).includes('fs-open-gate'));
+  });
+  it('an O_CREAT|O_EXCL constants expression → NO finding', () => {
+    deepStrictEqual(scan('context.mjs', "import { open } from 'node:fs/promises'; const h = await open(p, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL);"), []);
+  });
+  it('the real local-const O_RDONLY|O_NOFOLLOW flags shape resolves as read → NO finding', () => {
+    deepStrictEqual(scan('context.mjs', "import { open } from 'node:fs/promises'; const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0); const h = await open(p, flags);"), []);
+  });
+  it('the |=-augmented let-flags read shape (egress-config) resolves → NO finding', () => {
+    deepStrictEqual(scan('egress-config.mjs', "import fs from 'node:fs'; let flags = fs.constants.O_RDONLY; flags |= fs.constants.O_NOFOLLOW; const fd = fs.openSync(p, flags);"), []);
+  });
+  it('a |=-augmentation smuggling a write flag onto a read base → fs-open-gate', () => {
+    ok(rules(scan('egress-config.mjs', "import fs from 'node:fs'; let flags = fs.constants.O_RDONLY; flags |= fs.constants.O_CREAT; const fd = fs.openSync(p, flags);")).includes('fs-open-gate'));
+  });
+  it('an unresolvable flags identifier fails closed → fs-open-gate', () => {
+    ok(rules(scan('context.mjs', "import { open } from 'node:fs/promises'; const h = await open(p, mystery);")).includes('fs-open-gate'));
+  });
+  it('an open( inside a string literal is NOT a call (no over-reject)', () => {
+    deepStrictEqual(scan('bootstrap-artifacts.mjs', 'import { open } from \'node:fs/promises\'; const msg = `open(started ${x})`; const h = await open(p, \'r\');'), []);
+  });
+
+  // --- fs-delete-gate: recursive removals pinned to registered sites --------
+  it('an unregistered recursive rm → fs-delete-gate', () => {
+    ok(rules(scan('context.mjs', "import { rm } from 'node:fs/promises'; await rm(dir, { recursive: true });")).includes('fs-delete-gate'));
+  });
+  it('the registered doctor tempRepo recursive rm → NO finding', () => {
+    deepStrictEqual(scan('doctor.mjs', "import { rm } from 'node:fs/promises'; await rm(tempRepo, { recursive: true, force: true });"), []);
+  });
+  it('the registered site with a DIFFERENT target identifier → fs-delete-gate', () => {
+    ok(rules(scan('doctor.mjs', "import { rm } from 'node:fs/promises'; await rm(repoRoot, { recursive: true, force: true });")).includes('fs-delete-gate'));
+  });
+  it('the registered notify lockDir recursive rmSync → NO finding', () => {
+    deepStrictEqual(scan('notify.mjs', "import fs from 'node:fs'; fs.rmSync(lockDir, { recursive: true, force: true });"), []);
+  });
+  it('a recursive rmSync in notify with a different target → fs-delete-gate', () => {
+    ok(rules(scan('notify.mjs', "import fs from 'node:fs'; fs.rmSync(stateDir, { recursive: true, force: true });")).includes('fs-delete-gate'));
+  });
+  it('a non-recursive rm needs no site registration → NO finding', () => {
+    deepStrictEqual(scan('context.mjs', "import { rm } from 'node:fs/promises'; await rm(p, { force: true });"), []);
+  });
+
+  // --- validateOpenFlags direct unit coverage --------------------------------
+  it('validateOpenFlags: default-args read, wx/ax accepted; w/a/r+ rejected', () => {
+    strictEqual(validateOpenFlags('p', ''), null);
+    strictEqual(validateOpenFlags("p, 'wx'", ''), null);
+    strictEqual(validateOpenFlags("p, 'ax+'", ''), null);
+    ok(typeof validateOpenFlags("p, 'w'", '') === 'string');
+    ok(typeof validateOpenFlags("p, 'a'", '') === 'string');
+    ok(typeof validateOpenFlags("p, 'r+'", '') === 'string');
+  });
+
+  // --- plan-verify hardening: the peer's reproduced bypasses now fail closed -
+  it('a dynamic fs import → fs-mutation-gate (even in a registered file)', () => {
+    ok(rules(scan('context.mjs', "const { writeFile } = await import('node:fs/promises'); await writeFile(p, d);")).includes('fs-mutation-gate'));
+    ok(rules(scan('footer.mjs', "const fsp = await import('node:fs/promises');")).includes('fs-mutation-gate'));
+  });
+  it('a re-export from an fs module → fs-mutation-gate', () => {
+    ok(rules(scan('footer.mjs', "export { writeFile } from 'node:fs/promises';")).includes('fs-mutation-gate'));
+  });
+  it("computed member access on an fs binding (fs['writeFileSync']) → fs-mutation-gate", () => {
+    ok(rules(scan('notify.mjs', "import fs from 'node:fs'; fs['writeFileSync'](p, d);")).includes('fs-mutation-gate'));
+  });
+  it('the fs.promises sub-namespace hop → fs-mutation-gate', () => {
+    ok(rules(scan('notify.mjs', "import fs from 'node:fs'; await fs.promises.writeFile(p, d);")).includes('fs-mutation-gate'));
+  });
+  it('an fd-anchored mutation (fs.writeSync) in an unregistered file → fs-mutation-gate', () => {
+    ok(rules(scan('footer.mjs', "import fs from 'node:fs'; fs.writeSync(fd, d);")).includes('fs-mutation-gate'));
+  });
+  it('an open/remove binding used as a VALUE (alias defeats the site gates) → fs-mutation-gate', () => {
+    ok(rules(scan('context.mjs', "import { open } from 'node:fs/promises'; const o = open; const h = await o(p, 'w');")).includes('fs-mutation-gate'));
+    ok(rules(scan('context.mjs', "import { rm } from 'node:fs/promises'; const del = rm; await del(d, { recursive: true });")).includes('fs-mutation-gate'));
+  });
+  it('a mutating call on a LITERAL absolute path → fs-mutation-gate', () => {
+    ok(rules(scan('context.mjs', "import { rm } from 'node:fs/promises'; await rm('/tmp/not-owned', { force: true });")).includes('fs-mutation-gate'));
+    ok(rules(scan('compat.mjs', "import { writeFile } from 'node:fs/promises'; await writeFile('/etc/evil', d);")).includes('fs-mutation-gate'));
+  });
+  it('O_EXCL WITHOUT O_CREAT (overwrite of an existing file) → fs-open-gate', () => {
+    ok(rules(scan('context.mjs', "import { open } from 'node:fs/promises'; const h = await open(p, fsConstants.O_WRONLY | fsConstants.O_EXCL);")).includes('fs-open-gate'));
+  });
+  it('a later reassignment smuggling a write flag onto a read declaration → fs-open-gate', () => {
+    ok(rules(scan('egress-config.mjs', "import fs from 'node:fs'; let flags = fs.constants.O_RDONLY; flags = fs.constants.O_WRONLY | fs.constants.O_CREAT; const fd = fs.openSync(p, flags);")).includes('fs-open-gate'));
+  });
+  it('arithmetic flag spoofing (0 * O_EXCL) fails closed → fs-open-gate', () => {
+    ok(rules(scan('context.mjs', "import { open } from 'node:fs/promises'; const h = await open(p, fsConstants.O_WRONLY | fsConstants.O_CREAT | (0 * fsConstants.O_EXCL));")).includes('fs-open-gate'));
+  });
+  it('removal options in a VARIABLE (can hide recursive:true) → fs-delete-gate', () => {
+    ok(rules(scan('context.mjs', "import { rm } from 'node:fs/promises'; const opts = { recursive: true }; await rm(d, opts);")).includes('fs-delete-gate'));
+  });
+  it('removal options with a spread → fs-delete-gate', () => {
+    ok(rules(scan('context.mjs', "import { rm } from 'node:fs/promises'; await rm(d, { force: true, ...extra });")).includes('fs-delete-gate'));
+  });
+  it('the real inline shapes stay accepted (no over-reject)', () => {
+    deepStrictEqual(scan('context.mjs', "import { rm } from 'node:fs/promises'; await rm(p, { force: true });"), []);
+    deepStrictEqual(scan('migrate-workflow-storage.mjs', "import { rm } from 'node:fs/promises'; await rm(dest, { recursive: false });"), []);
+    deepStrictEqual(scan('notify-schema.mjs', "import fs from 'node:fs'; const fd = fs.openSync(p, 'wx'); fs.writeSync(fd, payload); fs.closeSync ? null : null;"), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // (c) Registry drift — registry never looser than the code
 // ---------------------------------------------------------------------------
 
@@ -1011,6 +1160,41 @@ describe('ADR-0035 §4 guard — registry drift', () => {
       const src = await readFile(resolve(RUNTIME_SCRIPTS, file), 'utf-8');
       ok(src.length > 0, `${file} should exist`);
       ok(registry.WATCHED_CAPABILITY_MODULES.includes(spec.module), `${file} pinned module ${spec.module} must be watched`);
+    }
+  });
+
+  it('every FS_MUTATION_USERS file exists, uses each registered primitive, and references its declared write roots', async () => {
+    const byName = new Map((await listRuntimeScripts()).map((s) => [s.fileName, s.path]));
+    for (const [file, spec] of Object.entries(registry.FS_MUTATION_USERS)) {
+      const path = byName.get(file);
+      ok(path, `${file} should exist in the runtime scripts tree`);
+      const src = await readFile(path, 'utf-8');
+      for (const prim of spec.primitives) {
+        ok(new RegExp(`\\b${prim}\\b`).test(src),
+          `${file} should still use registered fs primitive '${prim}' (registry never looser than code)`);
+      }
+      for (const root of spec.stateRoots) {
+        // `HOME:` marks the machine-global home; `os-tmpdir` marks self-created
+        // mkdtemp scratch — both are declaration tokens, not literal segments.
+        if (root === 'os-tmpdir') continue;
+        const segments = root.replace(/^HOME:/, '').split('/').filter(Boolean);
+        const lowered = src.toLowerCase();
+        ok(segments.some((seg) => lowered.includes(seg.toLowerCase())),
+          `${file} should reference at least one segment of declared write root '${root}'`);
+      }
+    }
+  });
+
+  it('every ALLOWED_RECURSIVE_REMOVALS site file exists and still pins a real recursive call', async () => {
+    const byName = new Map((await listRuntimeScripts()).map((s) => [s.fileName, s.path]));
+    for (const [file, sites] of Object.entries(registry.ALLOWED_RECURSIVE_REMOVALS)) {
+      const path = byName.get(file);
+      ok(path, `${file} should exist in the runtime scripts tree`);
+      const src = await readFile(path, 'utf-8');
+      for (const site of sites) {
+        ok(new RegExp(`${site.callee}\\(\\s*${site.target}\\b`).test(src),
+          `${file} should still contain the pinned recursive removal ${site.callee}(${site.target}, …) (registry never looser than code)`);
+      }
     }
   });
 });
