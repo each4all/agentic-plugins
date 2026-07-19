@@ -1,11 +1,11 @@
 ---
 name: context
-description: "Runtime-owned ADR-0024 context hygiene artifact scaffold, read-only budget check, ADR-0044 session-capture note staging (--text/--file/--clear), and validated slot inspection (status --slot). Use when the user wants a bounded context summary, risk level, artifact pointers, recommended next-session prompt/action, explicit context-budget status, to stage a semantic handoff note, or to inspect the session-capture slot — without mutating host session context."
+description: "Runtime-owned ADR-0024 context hygiene artifact scaffold, read-only budget check, ADR-0044 session-capture note staging (--text/--file/--clear), validated slot inspection (status --slot), and the ADR-0045 read-only entry-brief arbiter (entry-brief). Use when the user wants a bounded context summary, risk level, artifact pointers, recommended next-session prompt/action, explicit context-budget status, to stage a semantic handoff note, or to inspect the session-capture slot — without mutating host session context."
 ---
 
 # Context (runtime framework primitive)
 
-`runtime:context` is the first ADR-0024 context hygiene scaffold. It writes runtime-owned artifacts for capture/status, offers read-only explicit/latest status lookup and budget checks, records a read-only git source snapshot when available, and keeps the main session output bounded. As of ADR-0044 S3a it also owns the session-capture staging surface: `note` stages a semantic handoff note into the repo-local session-capture staging slot, and `status --slot` inspects the validated slot/entry/note files read-only.
+`runtime:context` is the first ADR-0024 context hygiene scaffold. It writes runtime-owned artifacts for capture/status, offers read-only explicit/latest status lookup and budget checks, records a read-only git source snapshot when available, and keeps the main session output bounded. As of ADR-0044 S3a it also owns the session-capture staging surface: `note` stages a semantic handoff note into the repo-local session-capture staging slot, and `status --slot` inspects the validated slot/entry/note files read-only. As of ADR-0045 S7b it also owns `entry-brief`: the R0 entry arbiter that reads the persona/orchestrator state homes, the macro bridge, the handoff slots, the session-capture entry.json, and the runtime ledgers (bounded, consuming nothing), applies the contract §16 precedence lattice, and renders one pointer-only brief.
 
 ## When invoked by command (`/runtime:context` or `$runtime:context`)
 
@@ -22,6 +22,7 @@ node "<runtime-plugin-root>/scripts/context.mjs" --repo-root "$REPO_ROOT" check 
 node "<runtime-plugin-root>/scripts/context.mjs" --repo-root "$REPO_ROOT" check --risk green|yellow|red [--risk-reason <text>]
 node "<runtime-plugin-root>/scripts/context.mjs" --repo-root "$REPO_ROOT" note (--text <text>|--file <path>|--clear) [--host claude|codex]
 node "<runtime-plugin-root>/scripts/context.mjs" --repo-root "$REPO_ROOT" status --slot
+node "<runtime-plugin-root>/scripts/context.mjs" --repo-root "$REPO_ROOT" entry-brief --host codex [--surface cli|dashboard]
 ```
 
 3. Present only the returned context summary, risk level, artifact pointers, handoff guidance, and recommended next-session prompt/action.
@@ -54,6 +55,14 @@ Context reports and manages:
   slot.json/entry.json/note.json against their packaged schemas with
   per-file fail-closed skip, reports the slot/entry generation verdict
   (committed / mixed / absent) and advisory age diagnostics.
+- read-only entry arbitration (`entry-brief`, ADR-0045 / contract §14-§17):
+  one pointer-only brief (schema `runtime-entry-brief-1.0` — closed enums,
+  per-family validated ids, ages, counts, derived pointers; no stored free
+  text, not even phase) with at most one leader and a command synthesized
+  only from the contract §16 state table, host-localized via the explicit
+  `--host`. `--surface cli` (default) and `--surface dashboard` always
+  compute; `--surface session-start-hook` is the attention sensor's
+  hook-grade emission path, gated by the user-scope-only `entry_brief` key.
 
 ## Boundaries
 
@@ -101,6 +110,13 @@ Context reports and manages:
 - Half-enabled chains (key on but attention missing/disabled, runtime below
   the declared publisher floor, safe mode disabling hooks) are diagnosed by
   `runtime:doctor` / `runtime:settings` (contract §13), not by this skill.
+- `entry-brief` is R0: it consumes nothing (no one-shot markers, no claims,
+  no writes), synthesizes commands only from the contract §16 table (never
+  from stored text), and suppresses every command under uncertainty
+  (`indeterminate`) or peer ambiguity (`owner-choice-required`). The
+  `entry_brief` gate binds only the session-start-hook surface and is
+  user-scope-only (env > user-global > default; a tracked repo value is
+  ignored and reported) — cli/dashboard invocations always compute.
 
 ## Example
 
@@ -112,4 +128,5 @@ $runtime:context check --token-budget 100000 --remaining-tokens 12000
 $runtime:context note --text "S3a executor landed; tests green; PR next."
 $runtime:context note --clear
 $runtime:context status --slot
+$runtime:context entry-brief --host codex
 ```

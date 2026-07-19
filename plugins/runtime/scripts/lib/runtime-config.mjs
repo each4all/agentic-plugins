@@ -52,8 +52,15 @@ export const CONFIG_KEY_FAMILIES = Object.freeze({
   // The shipped default "off" is what makes the hook-auto-invoked publisher
   // mutate nothing until the operator opts in (the narrow ADR-0035 §3
   // invariant-1 amendment scoped to publish-session).
+  // ADR-0045 §7 adds the entry-brief pair to the same family. Being listed
+  // here is what auto-generates their settings CLI flags — which is why the
+  // §7 scope asymmetry (user-scope-only activation) must land in the same
+  // change: without USER_SCOPE_ONLY_CONFIG_KEYS below, --target both (the
+  // settings default) would write them repo-side the moment they exist.
   session: Object.freeze([
     'session_capture',
+    'entry_brief',
+    'entry_brief_empty',
   ]),
 });
 export const CONFIG_KEYS = Object.freeze(Object.values(CONFIG_KEY_FAMILIES).flat());
@@ -62,8 +69,30 @@ export const NOTIFY_CHANNELS = Object.freeze(['none', 'macos-osascript', 'file-l
 
 export const SESSION_CAPTURE_MODES = Object.freeze(['off', 'stop-hook']);
 
+export const ENTRY_BRIEF_MODES = Object.freeze(['off', 'startup']);
+
+export const ENTRY_BRIEF_EMPTY_MODES = Object.freeze(['silent', 'report']);
+
 export const SESSION_KEY_DEFAULTS = Object.freeze({
   session_capture: 'off',
+  entry_brief: 'off',
+  entry_brief_empty: 'silent',
+});
+
+// ADR-0045 §7 — the deliberate deviation from repo → user precedence: these
+// keys activate a session-shaping injected line, so a tracked repo value can
+// NEVER enable them (a cloned repository could otherwise flip the key against
+// the operator's global off). They are read from user-global config and env
+// only; a repo value is detected and reported as ignored, and the settings
+// plan/apply path refuses to write them repo-side.
+export const USER_SCOPE_ONLY_CONFIG_KEYS = Object.freeze(['entry_brief', 'entry_brief_empty']);
+
+// Env overrides sit ABOVE user-global config for the user-scope-only keys —
+// env is per-machine operator state, never repo-trackable, so it keeps the
+// same trust class as the user layer while allowing per-session overrides.
+export const ENTRY_BRIEF_ENV_KEYS = Object.freeze({
+  entry_brief: 'AGENTIC_ENTRY_BRIEF',
+  entry_brief_empty: 'AGENTIC_ENTRY_BRIEF_EMPTY',
 });
 
 // Shipped defaults the emitter uses when a key is unset (ADR-0040 §2).
@@ -126,6 +155,16 @@ export const CONFIG_KEY_VALIDATORS = {
   session_capture: (value, key) => {
     if (!SESSION_CAPTURE_MODES.includes(value)) {
       throw new Error(`${key} must be one of ${SESSION_CAPTURE_MODES.join(', ')}`);
+    }
+  },
+  entry_brief: (value, key) => {
+    if (!ENTRY_BRIEF_MODES.includes(value)) {
+      throw new Error(`${key} must be one of ${ENTRY_BRIEF_MODES.join(', ')}`);
+    }
+  },
+  entry_brief_empty: (value, key) => {
+    if (!ENTRY_BRIEF_EMPTY_MODES.includes(value)) {
+      throw new Error(`${key} must be one of ${ENTRY_BRIEF_EMPTY_MODES.join(', ')}`);
     }
   },
 };
@@ -221,16 +260,24 @@ export function loadEffectiveConfig({ repoRoot, homeDir = os.homedir(), keys, de
   return { ok: true, effective, errors: [] };
 }
 
-// Effective `session` family config (ADR-0044 §3). Consumed by the
+// Effective `session_capture` config (ADR-0044 §3). Consumed by the
 // publish-session executor's config gate and by the settings/doctor
 // readiness surfaces — one loader so the gate and the diagnosis can never
 // disagree about what "on" means. Fail-closed on unreadable layers or an
 // invalid effective value: a broken config never turns capture on.
+//
+// Deliberately loads ONLY session_capture, not the whole session family: the
+// ADR-0045 entry-brief keys share the family (settings surface + CLI flags)
+// but have their own user-scope-only loader below — an invalid entry_brief
+// value in some layer must not fail-close the capture gate, and vice versa
+// (independent gates, independent failure domains).
+const SESSION_CAPTURE_KEYS = Object.freeze(['session_capture']);
+
 export function loadSessionConfig({ repoRoot, homeDir = os.homedir() } = {}) {
   const loaded = loadEffectiveConfig({
     repoRoot,
     homeDir,
-    keys: CONFIG_KEY_FAMILIES.session,
+    keys: SESSION_CAPTURE_KEYS,
     defaults: SESSION_KEY_DEFAULTS,
   });
   if (!loaded.ok) return { ok: false, config: null, errors: loaded.errors };
@@ -239,4 +286,112 @@ export function loadSessionConfig({ repoRoot, homeDir = os.homedir() } = {}) {
     errors: [],
     config: { sessionCapture: loaded.effective.session_capture },
   };
+}
+
+// Effective entry-brief config (ADR-0045 §7) — the deliberate precedence
+// deviation: env (per-machine operator state) > user-global config > shipped
+// default, with the REPO layer never effective. The repo file is still read
+// (best-effort) so callers can report a tracked value as ignored; an
+// unreadable repo layer cannot affect the gate (this key has no repo
+// precedence to protect) and degrades to `repo_layer: 'unreadable'` instead
+// of fail-closing. The USER layer keeps the shared fail-closed rule: an
+// unreadable user config or an invalid effective value never turns the
+// injected line on.
+export function loadEntryBriefConfig({ repoRoot = null, homeDir = os.homedir(), env = process.env } = {}) {
+  const userPath = path.join(homeDir, '.agentic-plugins', 'config.toml');
+  const userRead = readTomlIfExists(userPath);
+  if (!userRead.ok) {
+    return {
+      ok: false,
+      config: null,
+      errors: [`config layer unreadable (fail-closed): ${userRead.error}`],
+      ignoredRepoKeys: [],
+      repoLayer: 'unknown',
+    };
+  }
+  let userConfig = parseRuntimeConfigToml(userRead.text);
+
+  let repoLayer = 'absent';
+  const ignoredRepoKeys = [];
+  if (repoRoot) {
+    const repoPath = path.join(repoRoot, '.agentic-plugins', 'config.toml');
+    const repoRead = readTomlIfExists(repoPath);
+    if (!repoRead.ok) {
+      repoLayer = 'unreadable';
+    } else {
+      const repoConfig = parseRuntimeConfigToml(repoRead.text);
+      repoLayer = repoRead.text === '' ? 'absent' : 'read';
+      for (const key of USER_SCOPE_ONLY_CONFIG_KEYS) {
+        if (Object.hasOwn(repoConfig, key)) ignoredRepoKeys.push(key);
+      }
+    }
+    // Path-alias defense (codex review MAJOR, reproduced with
+    // repoRoot === homeDir): when the "user" file IS the repo file, its
+    // values are repo-trackable and must not become user-effective — the
+    // user layer is stripped of the user-scope-only keys and the aliasing
+    // is reported. realpath collapses symlink aliases; a vanished file
+    // falls back to the resolved-path comparison.
+    if (repoLayer !== 'absent' || Object.keys(userConfig).length > 0) {
+      if (sameConfigFile(repoPath, userPath)) {
+        const stripped = { ...userConfig };
+        for (const key of USER_SCOPE_ONLY_CONFIG_KEYS) {
+          if (Object.hasOwn(stripped, key)) {
+            delete stripped[key];
+            if (!ignoredRepoKeys.includes(key)) ignoredRepoKeys.push(key);
+          }
+        }
+        userConfig = stripped;
+        repoLayer = 'aliased-to-user';
+      }
+    }
+  }
+
+  const errors = [];
+  const effective = {};
+  for (const key of USER_SCOPE_ONLY_CONFIG_KEYS) {
+    const envName = ENTRY_BRIEF_ENV_KEYS[key];
+    const envRaw = envName ? env?.[envName] : undefined;
+    // Presence semantics mirror the TOML parser's security rule (plan-verify
+    // peer): an env var that EXISTS with an empty/whitespace value reaches
+    // the validator and fails closed — it never falls through to the user
+    // layer as if absent.
+    const envValue = typeof envRaw === 'string' ? envRaw.trim() : null;
+    const userValue = userConfig[key] ?? null;
+    // BOTH layers validate, not just the winner (codex review MAJOR): a
+    // valid env over an invalid stored user value must still fail-close —
+    // contract §17 binds any invalid env or user value for either key.
+    for (const [candidate, label] of [[envValue, envName], [userValue, null]]) {
+      if (candidate === null) continue;
+      try {
+        validateConfigValue(key, candidate);
+      } catch (error) {
+        errors.push(label !== null ? `${label}: ${error.message}` : error.message);
+      }
+    }
+    effective[key] = envValue ?? userValue ?? SESSION_KEY_DEFAULTS[key] ?? null;
+  }
+  if (errors.length > 0) {
+    return { ok: false, config: null, errors, ignoredRepoKeys, repoLayer };
+  }
+  return {
+    ok: true,
+    errors: [],
+    config: {
+      entryBrief: effective.entry_brief,
+      entryBriefEmpty: effective.entry_brief_empty,
+    },
+    ignoredRepoKeys,
+    repoLayer,
+  };
+}
+
+function sameConfigFile(aPath, bPath) {
+  const canonical = (candidate) => {
+    try {
+      return fs.realpathSync(candidate);
+    } catch {
+      return path.resolve(candidate);
+    }
+  };
+  return canonical(aPath) === canonical(bPath);
 }

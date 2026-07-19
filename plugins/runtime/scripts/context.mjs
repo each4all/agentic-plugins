@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path
 import { fileURLToPath } from 'node:url';
 
 import { canonicalJson, loadSchema, validateAgainstSchema } from './lib/schema-validate.mjs';
-import { loadSessionConfig } from './lib/runtime-config.mjs';
+import { loadEntryBriefConfig, loadSessionConfig } from './lib/runtime-config.mjs';
 import {
   NOTE_CONTENT_MAX_BYTES,
   SESSION_CAPTURE_FILE_FAMILIES,
@@ -24,12 +24,14 @@ import {
 // sequence without importing context.mjs back (cycle).
 export { NOTE_CONTENT_MAX_BYTES };
 import { resolveRepoRoot } from './notify.mjs';
-import { buildSourceFreshness, formatSourceFreshness, observeSessionGitFacts, resolveGitTopLevel, resolveSourceSnapshot } from './source-snapshot.mjs';
+import { buildSourceFreshness, formatSourceFreshness, observeCurrentBranch, observeSessionGitFacts, observeWorktreeDirtyCount, resolveGitTopLevel, resolveSourceSnapshot } from './source-snapshot.mjs';
+import { collectEntrySources } from './lib/entry-brief-readers.mjs';
+import { ENTRY_BRIEF_SCHEMA_ID, arbitrateEntryBrief, semanticEntryBriefViolation } from './lib/entry-brief-arbiter.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
 const ARTIFACT_SCHEMA = 'runtime-context-artifact-1.0';
-const VALID_COMMANDS = new Set(['capture', 'status', 'check', 'note', 'publish-session']);
+const VALID_COMMANDS = new Set(['capture', 'status', 'check', 'note', 'publish-session', 'entry-brief']);
 const RISK_LEVELS = new Set(['green', 'yellow', 'red']);
 // ADR-0044 session-capture staging surface (S3a executors). The normative
 // field tables, caps, and temp naming live in the packaged contract doc
@@ -81,6 +83,12 @@ export async function runContext(options = {}) {
     // probe (`git rev-parse --show-toplevel`) — never the generic cwd
     // resolution below; a non-git start dir is a silent no-op.
     return publishSessionCapture(options);
+  }
+  if (command === 'entry-brief') {
+    // entry-brief resolves its own repo root through the same §6 probe —
+    // a non-git start dir is an honest skip (silent on the hook surface,
+    // ADR-0045 §3).
+    return entryBriefContext(options);
   }
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
   if (command === 'capture') {
@@ -636,6 +644,178 @@ function publishLimits() {
     'Gated by session_capture (shipped default off, fail-closed loader) — evaluated inside this executor, never in the sensor.',
     'Writes only the repo-local session-capture slot; deletion authority is limited to its own lock and staging temps (ADR-0044 §3).',
     'The slot is a durable last-writer-wins advisory; consumers are read-only and recompute staleness themselves (contract §10).',
+  ];
+}
+
+
+// ---------------------------------------------------------------------------
+// ADR-0045 S7b — `entry-brief` arbiter executor (contract §14-§17)
+// ---------------------------------------------------------------------------
+
+export const ENTRY_BRIEF_SURFACES = new Set(['session-start-hook', 'cli', 'dashboard']);
+// Contract §15.3 — the single marker-paired line's byte cap; enforced by
+// deterministic tail-row shrink, never truncation.
+export const ENTRY_BRIEF_LINE_MAX_BYTES = 4096;
+const ENTRY_BRIEF_MARKER_OPEN = '[agentic-entry-brief]';
+const ENTRY_BRIEF_MARKER_CLOSE = '[/agentic-entry-brief]';
+
+// The ADR-0045 §1 arbiter executor: R0 (reads only, writes nothing, consumes
+// nothing). The pure lattice lives in lib/entry-brief-arbiter.mjs; this layer
+// owns the probes (repo root, dirty count, branch — the S7a reader is
+// spawn-free by contract), the config gate, the double validation (packaged
+// schema + semantic invariants), and the per-surface output split (§7): the
+// gate binds the session-start-hook emission path ONLY; cli/dashboard always
+// compute (invoking a read-only CLI by hand IS the opt-in).
+export async function entryBriefContext(options = {}) {
+  const surface = options.surface ?? 'cli';
+  if (!ENTRY_BRIEF_SURFACES.has(surface)) {
+    throw new Error('--surface must be session-start-hook, cli, or dashboard');
+  }
+  // Explicit trusted render host (ADR-0045 §10) — no default: the sensor
+  // passes claude; the invoking wrapper passes its own host for cli/dashboard.
+  const host = validateNoteHost(required(options.host, '--host'));
+  const now = options.now ?? new Date();
+  const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  const startDir = options.repoRoot ? resolve(options.repoRoot) : resolve(options.cwd ?? process.cwd());
+  const repoRoot = await resolveGitTopLevel(startDir);
+  if (!repoRoot) {
+    return {
+      command: 'entry-brief',
+      version: VERSION,
+      status: 'skipped',
+      reason: 'no-repo-root',
+      surface,
+      host,
+      gate: null,
+      brief: null,
+      emitted_line: null,
+      limits: entryBriefLimits(),
+    };
+  }
+  const gate = loadEntryBriefConfig({
+    repoRoot,
+    ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+    ...(options.env ? { env: options.env } : {}),
+  });
+  const gateMode = gate.ok ? gate.config.entryBrief : 'off';
+  const emptyMode = gate.ok ? gate.config.entryBriefEmpty : 'silent';
+  const gateReport = {
+    entry_brief: gateMode,
+    entry_brief_empty: emptyMode,
+    config_ok: gate.ok,
+    config_errors: gate.errors ?? [],
+    ignored_repo_keys: gate.ignoredRepoKeys ?? [],
+    repo_layer: gate.repoLayer ?? 'unknown',
+  };
+  // Early hook gate (contract §17 latency budget; plan-verify peer): a
+  // disabled hook invocation resolves the repo root and the gate, then
+  // returns BEFORE any bounded read or further git probe — the disabled-state
+  // cost is one spawn plus two config-file reads. cli/dashboard fall through:
+  // the gate is informational there, never a short-circuit.
+  if (surface === 'session-start-hook' && gateMode !== 'startup') {
+    return {
+      command: 'entry-brief',
+      version: VERSION,
+      status: 'skipped',
+      reason: gate.ok ? 'gate-off' : 'config-fail-closed',
+      surface,
+      host,
+      gate: gateReport,
+      brief: null,
+      emitted_line: null,
+      limits: entryBriefLimits(),
+    };
+  }
+  // Observation bracket (contract §14.4; plan-verify + review peers): the
+  // dirty probe runs FIRST, then the collector's initial→reads→final branch
+  // bracket, then the dirty probe AGAIN — a branch switch inside the bracket
+  // surfaces as the unstable snapshot, and any dirty-count movement across
+  // it (an A→B→A round trip, a clean→dirty mutation mid-scan) degrades the
+  // count to null: unknown, never clean, so a stale 0 can never synthesize
+  // the clean-tree-gated orchestrator:next.
+  const dirtyBefore = await observeWorktreeDirtyCount(repoRoot);
+  const collected = await collectEntrySources({ repoRoot, branchProbe: observeCurrentBranch, now: nowMs });
+  const dirtyAfter = await observeWorktreeDirtyCount(repoRoot);
+  const brief = arbitrateEntryBrief({ collected, dirtyCount: reconcileDirtyBracket(dirtyBefore, dirtyAfter), host, nowMs });
+  const schema = await loadSchema('runtime-entry-brief');
+  // Load-bearing double validation (the S3b assertOwnDocumentValid pattern
+  // plus the semantic invariants the structural schema cannot express): a
+  // drift throws here and the hook-grade CLI layer converts it to exit-0 +
+  // one stderr line — a malformed brief is never injected.
+  assertEntryBriefDocument(brief, schema);
+
+  // Emit policy (contract §17): `lead` emits whenever the gate is on;
+  // `owner-choice-required` emits only under entry_brief_empty = "report"
+  // (ADR-0045 §6 binds the switch to exactly that disposition);
+  // `no-branch-context` (the explicit non-firing case) and `indeterminate`
+  // stay hook-silent — visible on the cli/dashboard surfaces.
+  const emitted = surface === 'session-start-hook'
+    && (brief.disposition === 'lead'
+      || (brief.disposition === 'owner-choice-required' && emptyMode === 'report'));
+  const rendered = emitted ? renderEntryBriefLine(brief, schema) : null;
+  return {
+    command: 'entry-brief',
+    version: VERSION,
+    status: 'computed',
+    surface,
+    host,
+    gate: gateReport,
+    // The report carries the document the line carries (codex review MINOR):
+    // when the line-cap shrink dropped rows, the shrunk document IS the
+    // brief — a report/line disagreement would be two truths.
+    brief: rendered ? rendered.brief : brief,
+    emitted_line: rendered ? rendered.line : null,
+    limits: entryBriefLimits(),
+  };
+}
+
+// The §14.4 dirty-bracket reconciliation, exported for its unit tests: only
+// a probe pair that AGREES on a known count survives; any movement across
+// the bracket, or a failed probe on either side, is unknown — never clean.
+export function reconcileDirtyBracket(before, after) {
+  return before !== null && before === after ? before : null;
+}
+
+function assertEntryBriefDocument(brief, schema) {
+  assertOwnDocumentValid(brief, schema, ENTRY_BRIEF_SCHEMA_ID, 'entry-brief');
+  const violation = semanticEntryBriefViolation(brief);
+  if (violation) {
+    throw new Error(`entry-brief semantic violation: ${violation}`);
+  }
+}
+
+// Deterministic tail-row shrink under the §15.3 line cap: drop rows from the
+// tail (rows_dropped counts each) and re-serialize until the marker-paired
+// line fits; if even the row-free brief exceeds the cap the line is withheld
+// entirely — no emission is safer than a truncated one. The FINAL emitted
+// document is re-validated (schema + semantic); intermediate oversized
+// candidates are never emitted anywhere. Returns { line, brief } so the
+// caller reports the exact document the line carries, or null when the
+// line is withheld. Exported for the shrink-determinism tests.
+export function renderEntryBriefLine(brief, schema) {
+  let candidate = brief;
+  for (;;) {
+    const payload = JSON.stringify(candidate).replace(CONTROL_RE_G, '');
+    const line = `${ENTRY_BRIEF_MARKER_OPEN} ${payload} ${ENTRY_BRIEF_MARKER_CLOSE}`;
+    if (Buffer.byteLength(line, 'utf8') <= ENTRY_BRIEF_LINE_MAX_BYTES) {
+      assertEntryBriefDocument(candidate, schema);
+      return { line, brief: candidate };
+    }
+    if (candidate.rows.length === 0) return null;
+    candidate = {
+      ...candidate,
+      rows: candidate.rows.slice(0, -1),
+      rows_dropped: candidate.rows_dropped + 1,
+    };
+  }
+}
+
+function entryBriefLimits() {
+  return [
+    'R0 arbiter: reads persona/orchestrator state, handoff slots, the session-capture entry.json, and runtime ledgers; writes nothing, consumes nothing (ADR-0045 §2).',
+    'Pointer-only brief: closed enums, per-family validated ids, ages, counts, safe-alphabet derived pointers; commands are synthesized from the contract state table and host-localized — stored free text never crosses (contract §15).',
+    'The entry_brief gate binds the session-start-hook surface only (user-scope-only key: env > user-global > default; a tracked repo value is ignored and reported); cli/dashboard surfaces always compute (ADR-0045 §7).',
+    'Hook surface is hook-grade: exit 0 always, at most one marker-paired stdout line, at most one stderr line; a disabled gate returns before any read or probe beyond the repo-root resolution (contract §17).',
   ];
 }
 
@@ -1199,6 +1379,14 @@ export function parseArgs(argv) {
       case '--hook-grade':
         options.hookGrade = true;
         break;
+      case '--surface': {
+        const surface = requireValue(args, arg);
+        if (!ENTRY_BRIEF_SURFACES.has(surface)) {
+          throw new Error('--surface must be session-start-hook, cli, or dashboard');
+        }
+        options.surface = surface;
+        break;
+      }
       case '--help':
         options.help = true;
         break;
@@ -1230,8 +1418,33 @@ function assertFlagCombination(options) {
     if (options.file !== undefined) throw new Error('--file applies only to note');
     if (options.clear === true) throw new Error('--clear applies only to note');
   }
-  if (command !== 'note' && command !== 'publish-session') {
-    if (options.host !== undefined) throw new Error('--host applies only to note and publish-session');
+  if (command !== 'note' && command !== 'publish-session' && command !== 'entry-brief') {
+    if (options.host !== undefined) throw new Error('--host applies only to note, publish-session, and entry-brief');
+  }
+  if (options.surface !== undefined && command !== 'entry-brief') {
+    throw new Error('--surface applies only to entry-brief');
+  }
+  if (command === 'entry-brief') {
+    // The arbiter surface takes no selector, staging, or projection flags —
+    // its inputs are the probes and the config gate (contract §14). The
+    // note/publish/hook-grade scoping above already refuses those families.
+    for (const [flag, present] of [
+      ...captureAndLedgerFlagPresence(options),
+      ['--run-id', options.runId !== undefined],
+      ['--latest', options.latest === true],
+      ['--stale-after-hours', options.staleAfterMs !== undefined],
+      ['--workflow-projection-file', options.workflowProjectionFile !== undefined],
+      ['--routing-recommendation', options.routingRecommendation !== undefined],
+      ['--slot', options.slot === true],
+    ]) {
+      if (present) throw new Error(`${flag} does not apply to entry-brief`);
+    }
+    if (options.surface === 'session-start-hook' && options.format !== undefined) {
+      throw new Error('--format does not combine with --surface session-start-hook (hook-grade surface, contract §17)');
+    }
+    if (options.surface === 'session-start-hook' && options.help === true) {
+      throw new Error('--help does not combine with --surface session-start-hook (hook-grade surface)');
+    }
   }
   if (command !== 'publish-session') {
     if (options.sessionId !== undefined) throw new Error('--session-id applies only to publish-session');
@@ -1306,6 +1519,38 @@ function captureAndLedgerFlagPresence(options) {
 export function formatText(report) {
   if (report.help) return helpText();
   const lines = [`runtime:context ${report.version ?? VERSION} (${report.command})`];
+  if (report.command === 'entry-brief') {
+    lines.push(`status: ${report.status}`);
+    if (report.reason) lines.push(`reason: ${report.reason}`);
+    lines.push(`surface: ${report.surface}`);
+    if (report.gate) {
+      lines.push(`gate: entry_brief=${report.gate.entry_brief} entry_brief_empty=${report.gate.entry_brief_empty}${report.gate.config_ok ? '' : ' (config fail-closed)'}`);
+      for (const key of report.gate.ignored_repo_keys ?? []) {
+        lines.push(`- ignored repo value: ${key} (user-scope-only, ADR-0045 §7)`);
+      }
+      for (const err of report.gate.config_errors ?? []) {
+        lines.push(`- config error: ${err}`);
+      }
+    }
+    if (report.brief) {
+      lines.push('', `disposition: ${report.brief.disposition}`);
+      if (report.brief.leading) {
+        const lead = report.brief.leading;
+        lines.push(`leading: ${lead.source}${lead.kind ? `/${lead.kind}` : ''}${lead.id ? ` ${lead.id}` : ''} state=${lead.state} → ${lead.command}`);
+      }
+      if (report.brief.rows.length > 0) {
+        lines.push('rows:');
+        for (const entry of report.brief.rows) {
+          lines.push(`- ${entry.source}${entry.kind ? `/${entry.kind}` : ''} state=${entry.state}${entry.id ? ` id=${entry.id}` : ''}${entry.age_seconds === null ? '' : ` age=${entry.age_seconds}s`}${entry.pointer ? ` → ${entry.pointer}` : ''}`);
+        }
+      }
+      lines.push(`dirty_count: ${report.brief.dirty_count === null ? 'null' : report.brief.dirty_count}; sources_skipped: ${report.brief.sources_skipped}; rows_dropped: ${report.brief.rows_dropped}`);
+      lines.push(`note: ${report.brief.note}`);
+    }
+    if (report.emitted_line) lines.push('', `emitted line: ${report.emitted_line}`);
+    pushLimits(lines, report.limits);
+    return lines.join('\n');
+  }
   if (report.command === 'note') {
     lines.push(`status: ${report.status}`);
     if (report.status === 'cleared') lines.push(`removed: ${report.removed}`);
@@ -1669,10 +1914,13 @@ Usage:
   runtime:context note (--text <text>|--file <path>|--clear) [--host claude|codex] [--hook-grade]
   runtime:context status --slot
   runtime:context publish-session --host claude|codex [--repo-root <dir>] [--session-id <id>] [--workflow-evidence none|fresh]
+  runtime:context entry-brief --host claude|codex [--surface session-start-hook|cli|dashboard] [--repo-root <dir>]
 
 This MVP writes repo-local context artifacts under .agentic-plugins/runs/context/ for capture/status, including a read-only git source snapshot when available. Status reports age-based stale metadata plus source-freshness metadata. The check command is read-only and does not create artifacts or mutate host session context. When a bounded --workflow-projection-file is supplied (ADR-0031), check/status also compose the session-level continue-vs-fresh preflight from the caller-supplied risk and the projection's archive_gate; a malformed projection is reported and degraded, never interpreted.
 
-The ADR-0044 session-capture surface: note stages a semantic handoff note (repo-global, 4096 UTF-8 bytes max, atomic temp+rename, staging-time git context) under .agentic-plugins/state/runtime/session-capture/; --clear empties the staging slot. Operator invocations report on stdout and exit 1 on error; --hook-grade is note's hook/sidecar mode — exit 0 always, nothing on stdout, at most one stderr line. status --slot is a read-only inspection of the validated slot/entry/note files with per-file fail-closed skip. publish-session is the hook-fired slot publisher (hook-grade by definition — no reporter mode): gated by the session_capture config key (default off), it serializes through an O_EXCL owner-token lock, reads the committed entry.json for the fingerprint no-op decision, folds a staged note within the 24h window, publishes slot.json then entry.json via temp+rename, and sweeps only its own stale temps.`;
+The ADR-0044 session-capture surface: note stages a semantic handoff note (repo-global, 4096 UTF-8 bytes max, atomic temp+rename, staging-time git context) under .agentic-plugins/state/runtime/session-capture/; --clear empties the staging slot. Operator invocations report on stdout and exit 1 on error; --hook-grade is note's hook/sidecar mode — exit 0 always, nothing on stdout, at most one stderr line. status --slot is a read-only inspection of the validated slot/entry/note files with per-file fail-closed skip. publish-session is the hook-fired slot publisher (hook-grade by definition — no reporter mode): gated by the session_capture config key (default off), it serializes through an O_EXCL owner-token lock, reads the committed entry.json for the fingerprint no-op decision, folds a staged note within the 24h window, publishes slot.json then entry.json via temp+rename, and sweeps only its own stale temps.
+
+The ADR-0045 entry-brief surface: entry-brief is the R0 entry arbiter — it reads the four persona/orchestrator state homes, the macro bridge, the persona handoff slots, the session-capture entry.json, and the context/consensus ledgers (all bounded, consuming nothing), applies the contract §16 precedence lattice, and renders one pointer-only brief (schema runtime-entry-brief-1.0; no stored free text, commands synthesized from the state table only, double-validated against the packaged schema plus the semantic invariants). --surface cli (default) and --surface dashboard always compute and report; --surface session-start-hook is hook-grade (exit 0 always) and emits at most one marker-paired stdout line, gated by the user-scope-only entry_brief key (env > user-global > default; default off) with a disabled gate returning before any read — entry_brief_empty decides whether owner-choice-required emits (no-branch-context and indeterminate stay hook-silent). --host names the trusted render host for command localization.`;
 }
 
 function requireValue(args, flag) {
@@ -2225,6 +2473,16 @@ function preview(text) {
   return `${trimmed.slice(0, REPORT_PREVIEW_LIMIT)}...`;
 }
 
+// Raw-argv hook-grade classification, shared by main()'s parse-failure path
+// and the outer .catch backstop (plan-verify peer: two classification sites
+// must not drift). A flag VALUE colliding with these tokens misclassifies
+// toward silent-exit-0 — the conservative side for a hook path.
+function isHookGradeArgv(argv) {
+  return argv.includes('--hook-grade')
+    || argv.includes('publish-session')
+    || (argv.includes('entry-brief') && argv.includes('session-start-hook'));
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   // ADR-0044 §9 output-mode split, made explicit: operator invocations stay on
@@ -2241,12 +2499,13 @@ async function main() {
   // equal 'publish-session' misclassifies toward silent-exit-0 — the
   // conservative side for a hook path.
   const publisherInvocation = argv.includes('publish-session');
+  const entryHookInvocation = argv.includes('entry-brief') && argv.includes('session-start-hook');
   let options;
   try {
     options = parseArgs(argv);
   } catch (error) {
-    if (argv.includes('--hook-grade') || publisherInvocation) {
-      const label = publisherInvocation ? 'publish-session' : 'note';
+    if (isHookGradeArgv(argv)) {
+      const label = publisherInvocation ? 'publish-session' : entryHookInvocation ? 'entry-brief' : 'note';
       process.stderr.write(`runtime:context: ${label} failed at args: ${truncateReason(error?.message)}\n`);
       return;
     }
@@ -2255,10 +2514,15 @@ async function main() {
   // Hook-grade is classified BEFORE --help: `note --hook-grade --help` must
   // not print help to stdout (parse already refuses the combination; this
   // ordering is the belt for any future flag that slips past it).
-  if (options.hookGrade === true || options.command === 'publish-session') {
+  if (options.hookGrade === true || options.command === 'publish-session'
+    || (options.command === 'entry-brief' && options.surface === 'session-start-hook')) {
     try {
-      await runContext(options);
+      const report = await runContext(options);
       // A skip is silent — the single stderr line is reserved for failures.
+      // ADR-0045 §2.2 sensor-output exception: the entry brief's single
+      // marker-paired line is the hook surface's deliberate stdout channel;
+      // a gated-off, empty-silent, or skipped run prints nothing.
+      if (report?.emitted_line) process.stdout.write(`${report.emitted_line}\n`);
     } catch (error) {
       process.stderr.write(`runtime:context: ${options.command} failed: ${truncateReason(error?.message)}\n`);
     }
@@ -2282,7 +2546,7 @@ if (isMain) {
     // Backstop for the hook-grade contract: a failure that escapes main()
     // must still exit 0 with no report when --hook-grade was requested or
     // the command is the intrinsically hook-grade publish-session.
-    if (process.argv.includes('--hook-grade') || process.argv.includes('publish-session')) {
+    if (isHookGradeArgv(process.argv)) {
       process.exitCode = 0;
       return;
     }

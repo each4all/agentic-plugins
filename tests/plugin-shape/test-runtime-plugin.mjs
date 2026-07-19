@@ -734,6 +734,21 @@ describe('plugins/runtime session-capture foundation (ADR-0044 S2)', () => {
       'runtime-below-publisher-floor',
       'safe-mode-hooks-disabled',
       'CLAUDE_CODE_SAFE_MODE',
+      // §14-§17 (ADR-0045 S7b): the entry-side extension — schema id, gate
+      // keys and env channel, dispositions, marker pair, linkage token, and
+      // the entry-side staleness threshold.
+      'runtime-entry-brief-1.0',
+      'entry-brief',
+      'entry_brief_empty',
+      'AGENTIC_ENTRY_BRIEF',
+      'user-scope-only',
+      'owner-choice-required',
+      'no-branch-context',
+      'indeterminate',
+      '[agentic-entry-brief]',
+      'linkageToken',
+      '7 d',
+      'aliased-to-user',
     ]) {
       ok(contract.includes(token), `session-capture-contract.md contains ${JSON.stringify(token)}`);
     }
@@ -747,11 +762,12 @@ describe('plugins/runtime session-capture foundation (ADR-0044 S2)', () => {
   // The three schemas the contract names must actually be packaged — a doc
   // pointing at an unpackaged schema is exactly the "cited by filename but
   // not shipped" drift hole the packaged-contract vehicle exists to close.
-  it('packages the three session-capture schemas the contract names', async () => {
+  it('packages the session-capture and entry-brief schemas the contract names', async () => {
     for (const file of [
       'data/schemas/runtime-session-capture-1.0.json',
       'data/schemas/runtime-session-entry-1.0.json',
       'data/schemas/runtime-session-note-1.0.json',
+      'data/schemas/runtime-entry-brief-1.0.json',
     ]) {
       const schema = await readJSON(resolve(PLUGIN_ROOT, file));
       strictEqual(schema.additionalProperties, false, `${file} follows the closed-schema rule`);

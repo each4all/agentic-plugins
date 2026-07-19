@@ -12,7 +12,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
@@ -25,8 +25,11 @@ import { assessSessionCaptureReadiness, claudePluginListEnablement } from './lib
 import {
   CONFIG_KEYS,
   CONFIG_KEY_FAMILIES,
+  ENTRY_BRIEF_ENV_KEYS,
   NOTIFY_KEY_DEFAULTS,
   SESSION_KEY_DEFAULTS,
+  USER_SCOPE_ONLY_CONFIG_KEYS,
+  loadEntryBriefConfig,
   normalizeConfigKey,
   parseRuntimeConfigToml,
   validateConfigValue,
@@ -73,7 +76,13 @@ import { parseCodexCliVersion, resolveCodexInstalledPluginVersion } from './lib/
 // lib/session-readiness.mjs assessment of the half-enabled capture states
 // (session-capture-contract.md §13), evaluated in BOTH report scopes
 // (filesystem+env reads only), with overall.session_readiness_warnings.
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.21';
+// 1.21 → 1.22 (additive, ADR-0045 S7b): the session family gains the
+// user-scope-only entry_brief / entry_brief_empty keys — config target plans
+// gain refused_user_scope_only, session_settings keys gain user_scope_only /
+// env_override plus the family-level user_scope_only_keys /
+// user_scope_resolution_order, and the repo target structurally refuses the
+// user-scope-only pair (settings-report-contract.md version lockstep).
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.22';
 
 // ADR-0038 settings-claude permission plan (M1): how many recent usage records to
 // read per host, and a per-file byte cap, when building the dry-run plan.
@@ -95,10 +104,13 @@ export const SETTINGS_EXECUTION_ARTIFACT_SCHEMA_VERSION = 'runtime-settings-exec
 export {
   CONFIG_KEY_FAMILIES,
   CONFIG_KEYS,
+  ENTRY_BRIEF_EMPTY_MODES,
+  ENTRY_BRIEF_MODES,
   NOTIFY_CHANNELS,
   NOTIFY_KEY_DEFAULTS,
   SESSION_CAPTURE_MODES,
   SESSION_KEY_DEFAULTS,
+  USER_SCOPE_ONLY_CONFIG_KEYS,
   parseRuntimeConfigToml,
 } from './lib/runtime-config.mjs';
 
@@ -353,6 +365,13 @@ export async function runSettings({
     desiredConfig,
     configTargets: configPlans.targets,
     apply,
+    // Observed-current entry-brief resolution (codex review MAJOR): the
+    // file-layer projection cannot see the env channel, so the same loader
+    // the executor gates on supplies the observed effective values —
+    // settings and the runtime gate can never disagree (filesystem+env
+    // reads only, valid in both report scopes).
+    entryBriefObserved: loadEntryBriefConfig({ repoRoot: resolvedRepoRoot, homeDir: resolvedHomeDir, env }),
+    env,
   });
   // ADR-0044 S4 — the readiness diagnosis runs in BOTH report scopes: it is
   // filesystem+env reads only (settings-report-contract.md §3), and it is
@@ -641,21 +660,59 @@ function buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationP
 
 async function buildConfigPlans({ repoRoot, homeDir, target, desiredConfig }) {
   const selectedTargets = target === 'both' ? new Set(['repo', 'user']) : new Set([target]);
-  const targets = [
-    await buildOneConfigPlan({
-      kind: 'repo',
-      path: join(repoRoot, '.agentic-plugins', 'config.toml'),
-      selected: selectedTargets.has('repo'),
-      desiredConfig,
-    }),
-    await buildOneConfigPlan({
-      kind: 'user',
-      path: join(homeDir, '.agentic-plugins', 'config.toml'),
-      selected: selectedTargets.has('user'),
-      desiredConfig,
-    }),
-  ];
-  return { targets };
+  // ADR-0045 §7 repo-write prevention: the user-scope-only keys are stripped
+  // from the REPO target's desired set before planning, so neither the
+  // default --target both nor an explicit --target repo can ever stage them
+  // repo-side — the refusal is structural (the key never enters the repo
+  // plan/upsert path), not a post-hoc warning. It lands in the same change
+  // that registers the keys, because registration alone would auto-generate
+  // the CLI flags into a both-scope writer.
+  const repoDesired = Object.fromEntries(
+    Object.entries(desiredConfig).filter(([key]) => !USER_SCOPE_ONLY_CONFIG_KEYS.includes(key)),
+  );
+  const refusedUserScopeOnly = Object.keys(desiredConfig)
+    .filter((key) => USER_SCOPE_ONLY_CONFIG_KEYS.includes(key))
+    .sort();
+  const repoConfigPath = join(repoRoot, '.agentic-plugins', 'config.toml');
+  const userConfigPath = join(homeDir, '.agentic-plugins', 'config.toml');
+  // Path-alias defense (codex review MAJOR, reproduced with
+  // repoRoot === homeDir): when the two targets resolve to ONE file, the
+  // "user" plan would write the very repo file the repo plan just refused —
+  // so the alias strips the user target too. realpath collapses symlink
+  // aliases; a not-yet-existing file falls back to resolved-path identity.
+  const aliased = await sameCanonicalPath(repoConfigPath, userConfigPath);
+  const repoPlan = await buildOneConfigPlan({
+    kind: 'repo',
+    path: repoConfigPath,
+    selected: selectedTargets.has('repo'),
+    desiredConfig: repoDesired,
+  });
+  repoPlan.refused_user_scope_only = refusedUserScopeOnly;
+  if (refusedUserScopeOnly.length > 0) {
+    repoPlan.message = `${repoPlan.message} User-scope-only key(s) ${refusedUserScopeOnly.join(', ')} are excluded from the repo target (ADR-0045 §7: a tracked repo value cannot activate a session-shaping key).`;
+  }
+  const userPlan = await buildOneConfigPlan({
+    kind: 'user',
+    path: userConfigPath,
+    selected: selectedTargets.has('user'),
+    desiredConfig: aliased ? repoDesired : desiredConfig,
+  });
+  userPlan.refused_user_scope_only = aliased ? refusedUserScopeOnly : [];
+  if (aliased && refusedUserScopeOnly.length > 0) {
+    userPlan.message = `${userPlan.message} User-scope-only key(s) ${refusedUserScopeOnly.join(', ')} are excluded: the user config path aliases the repo config file, so writing them here would write the repo file (ADR-0045 §7).`;
+  }
+  return { targets: [repoPlan, userPlan] };
+}
+
+async function sameCanonicalPath(aPath, bPath) {
+  const canonical = async (candidate) => {
+    try {
+      return await realpath(candidate);
+    } catch {
+      return resolve(candidate);
+    }
+  };
+  return (await canonical(aPath)) === (await canonical(bPath));
 }
 
 // Only a genuinely absent config layer is plannable-from-empty; any other read
@@ -1720,14 +1777,22 @@ function resolveProjectedSetting({ keys, projection, field = 'projected_config',
 // validators — the consuming executors fail-close on those, so surfacing them
 // here is the operator's only signal. One core for every gated family so a
 // precedence/validation fix lands once, never per-family.
-function buildConfigFamilyPlans({ familyKeys, defaults, emitterLabel, desiredConfig, configTargets, apply }) {
+function buildConfigFamilyPlans({ familyKeys, defaults, emitterLabel, desiredConfig, configTargets, apply, entryBriefObserved = null, env = process.env }) {
   const projection = buildConfigProjection(configTargets);
   const keys = {};
   const warnings = [];
+  const userScopeOnlyKeys = familyKeys.filter((key) => USER_SCOPE_ONLY_CONFIG_KEYS.includes(key));
   for (const key of familyKeys) {
+    const userScopeOnly = USER_SCOPE_ONLY_CONFIG_KEYS.includes(key);
+    // ADR-0045 §7: a user-scope-only key resolves env > user-global config >
+    // shipped default — the repo layer is never effective, so its projection
+    // excludes the repo target entirely. The plan surface reports the
+    // file-layer resolution; the env channel is named per key (env_override)
+    // and applied by the loader at execution time.
+    const keyProjection = userScopeOnly ? { user: projection.user } : projection;
     const requested = desiredConfig[key] ?? null;
-    const projected = resolveProjectedSetting({ keys: [key], projection, defaultSource: 'shipped default' });
-    const current = resolveProjectedSetting({ keys: [key], projection, field: 'current_config', defaultSource: 'shipped default' });
+    const projected = resolveProjectedSetting({ keys: [key], projection: keyProjection, defaultSource: 'shipped default' });
+    const current = resolveProjectedSetting({ keys: [key], projection: keyProjection, field: 'current_config', defaultSource: 'shipped default' });
     const status = requested === null
       ? 'unchanged'
       : projected.value === requested
@@ -1753,7 +1818,15 @@ function buildConfigFamilyPlans({ familyKeys, defaults, emitterLabel, desiredCon
     // removed and the emitter starts fail-closing on it.
     for (const targetKind of ['repo', 'user']) {
       const stored = projection[targetKind]?.current_config?.[key];
-      if (!stored || (projected.target === targetKind && projected.value === stored)) continue;
+      if (stored === undefined || stored === null) continue;
+      if (userScopeOnly && targetKind === 'repo') {
+        // Ignored-repo-value reporting (ADR-0045 §7): the value can never
+        // become effective, so the honest diagnosis is "ignored", not a
+        // shadowing or fail-closed warning.
+        keyWarnings.push(`${key} repo config value is ignored — ${key} is user-scope-only (ADR-0045 §7); a tracked repo value cannot activate it. Remove it from the repo config or set it in the user-global config.`);
+        continue;
+      }
+      if (projected.target === targetKind && projected.value === stored) continue;
       try {
         validateConfigValue(key, stored);
       } catch (err) {
@@ -1773,6 +1846,9 @@ function buildConfigFamilyPlans({ familyKeys, defaults, emitterLabel, desiredCon
       requested_value: requested,
       current_value: current.value,
       current_source: current.value !== null ? current.source : null,
+      user_scope_only: userScopeOnly,
+      env_override: userScopeOnly ? ENTRY_BRIEF_ENV_KEYS[key] ?? null : null,
+      ...(userScopeOnly ? observedUserScopeFields({ key, entryBriefObserved, env }) : {}),
       warning,
     };
   }
@@ -1784,9 +1860,35 @@ function buildConfigFamilyPlans({ familyKeys, defaults, emitterLabel, desiredCon
       'user-global ~/.agentic-plugins/config.toml',
       'shipped default',
     ],
+    user_scope_only_keys: userScopeOnlyKeys,
+    user_scope_resolution_order: userScopeOnlyKeys.length > 0
+      ? ['env override (see per-key env_override)', 'user-global ~/.agentic-plugins/config.toml', 'shipped default']
+      : null,
     defaults: { ...defaults },
     keys,
     warnings,
+  };
+}
+
+// The observed-current effective value for a user-scope-only key — from the
+// SAME loader the entry-brief executor gates on, so the plan surface names
+// the env channel's actual winner instead of silently reporting the
+// file-layer projection as effective (codex review MAJOR: user off + env
+// startup previously read as effective off with no trace of the override).
+function observedUserScopeFields({ key, entryBriefObserved, env }) {
+  if (!entryBriefObserved) return {};
+  const envName = ENTRY_BRIEF_ENV_KEYS[key] ?? null;
+  const envPresent = envName !== null && typeof env?.[envName] === 'string';
+  if (!entryBriefObserved.ok) {
+    return { observed_effective_value: null, observed_source: 'fail-closed' };
+  }
+  const value = key === 'entry_brief'
+    ? entryBriefObserved.config.entryBrief
+    : key === 'entry_brief_empty' ? entryBriefObserved.config.entryBriefEmpty : null;
+  if (value === null) return {};
+  return {
+    observed_effective_value: value,
+    observed_source: envPresent ? `env ${envName}` : 'user-global config or shipped default',
   };
 }
 
@@ -1805,7 +1907,7 @@ function buildNotifySettingPlans({ desiredConfig, configTargets, apply }) {
 // ADR-0044 §3 session family plan — same core; the consuming executor is the
 // future publish-session config gate, and the settings surface must agree with
 // it byte-for-byte on key, default, and validity (both read lib/runtime-config.mjs).
-function buildSessionSettingPlans({ desiredConfig, configTargets, apply }) {
+function buildSessionSettingPlans({ desiredConfig, configTargets, apply, entryBriefObserved = null, env = process.env }) {
   return buildConfigFamilyPlans({
     familyKeys: CONFIG_KEY_FAMILIES.session,
     defaults: SESSION_KEY_DEFAULTS,
@@ -1813,6 +1915,8 @@ function buildSessionSettingPlans({ desiredConfig, configTargets, apply }) {
     desiredConfig,
     configTargets,
     apply,
+    entryBriefObserved,
+    env,
   });
 }
 
@@ -2243,7 +2347,10 @@ export function formatText(report) {
         : entry.default !== null
           ? `<shipped default: ${entry.default}>`
           : '<unset>';
-      lines.push(`- ${key}: ${rendered}`);
+      lines.push(`- ${key}: ${rendered}${entry.user_scope_only ? ` [user-scope-only; env ${entry.env_override} > user-global > default]` : ''}`);
+      if (entry.observed_effective_value !== undefined) {
+        lines.push(`  observed effective (loader): ${entry.observed_effective_value ?? '<fail-closed>'} (${entry.observed_source})`);
+      }
       if (entry.warning) lines.push(`  warning: ${entry.warning}`);
     }
   }
@@ -2450,7 +2557,8 @@ function usage() {
     '  [--claude-model <id>] [--claude-effort <level>] [--codex-model <id>] [--codex-effort <level>]',
     '  [--notify-channel none|macos-osascript|file-log] [--notify-quiet-hours HH:MM-HH:MM] [--notify-quiet-hours-tz <iana-tz>]',
     '  [--notify-dedupe-ttl-seconds <n>] [--notify-urgent-bypass-quiet-hours true|false] [--notify-kinds <csv>]',
-    '  [--session-capture off|stop-hook]',
+    '  [--session-capture off|stop-hook] [--entry-brief off|startup] [--entry-brief-empty silent|report]',
+    '    (entry-brief keys are user-scope-only per ADR-0045 §7: the repo target refuses them; effective value resolves env > user-global > default)',
     '  [--apply] [--attest-codex-hook-review] [--execute-plugin-management] [--execute-plugin-cleanup] [--plugin-management-host all|claude|codex] [--plugin-management-timeout-ms <n>]',
     '  [--permission-plan] [--permission-plan-max-files <n>] [--permission-plan-max-file-bytes <n>] [--notification-plan] [--egress-launcher-plan] [--run-id <settings-run-id>]',
     '  [--expected-plan-hash <sha256>]  (§1.6 drift guard: refuse plugin-management/cleanup execution unless the freshly recomputed plan hash matches)',
