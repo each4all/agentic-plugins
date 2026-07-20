@@ -218,8 +218,11 @@ export function parseBootstrapArgs(argv) {
 }
 
 // ---------------------------------------------------------------------------
-// Prerelease-aware semver floors (§13: the numeric compare treats
-// 0.3.0-beta == 0.3.0; the discover-runtime.mjs precedent does not)
+// Prerelease-aware semver floors (§13): SemVer §11 identifier ranking
+// (1.0.0-alpha < 1.0.0-beta; numeric identifiers compare as JS numbers —
+// lossy only above 2^53, far beyond real release ids), which the shared
+// semverCompare deliberately omits — its prerelease tie-break ranks a
+// release above its own prereleases but never identifiers against each other
 // ---------------------------------------------------------------------------
 
 export function comparePrereleaseAware(a, b) {
