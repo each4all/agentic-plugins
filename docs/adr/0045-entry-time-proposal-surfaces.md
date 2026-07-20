@@ -4,6 +4,72 @@
 
 Accepted (2026-07-18)
 
+**Implementation evidence — S8a release-proof gate (2026-07-20, per the
+ADR-0043 released-floor rule)**: the first released runtime version
+containing the complete S6–S8 runtime-side entry-brief surface is
+**`plugin-runtime` 0.83.0** — tag `plugin-runtime-v0.83.0` (release
+commit `e249ac7`, "chore: release main (#596)"), published as a plain
+GitHub release (not a draft or prerelease) at 2026-07-20T03:39:34Z,
+with both tagged runtime manifests reporting `0.83.0`. Verified in the
+tag tree and in both installed host caches
+(`~/.claude/plugins/cache/agentic-plugins/runtime/0.83.0`,
+`~/.codex/plugins/cache/agentic-plugins/runtime/0.83.0`):
+
+- the `entry-brief` arbiter executor (`scripts/context.mjs`
+  `VALID_COMMANDS` + `entryBriefContext`, contract §14–§17: the
+  `session-start-hook` / `cli` / `dashboard` surfaces, gate handling,
+  bounded collection, arbitration, schema validation, marker-paired
+  rendering) with its read/arbitration leaves
+  `scripts/lib/entry-brief-readers.mjs` and
+  `scripts/lib/entry-brief-arbiter.mjs`;
+- the shared host-localization leaf `scripts/lib/host-localization.mjs`
+  (§10), which the arbiter applies when synthesizing the leading
+  command;
+- the user-scope-only `entry_brief` / `entry_brief_empty` config keys
+  (`scripts/lib/runtime-config.mjs` `CONFIG_KEY_FAMILIES` +
+  `USER_SCOPE_ONLY_CONFIG_KEYS`, env `AGENTIC_ENTRY_BRIEF` /
+  `AGENTIC_ENTRY_BRIEF_EMPTY`, shipped defaults `off` / `silent`,
+  resolution env > user-global > shipped default; `settings.mjs` strips
+  the keys from every repo target plan and reports them via
+  `refused_user_scope_only`);
+- the snapshot-only dashboard entry advisory (`scripts/dashboard.mjs`
+  reusing the `entryBriefContext` executor, `tier1.entry_advisory`,
+  dashboard schema 1.0 → 1.1 additive; `--watch` iterations never opt
+  in, so the key — and the arbiter's git probes — stay absent there);
+- the entry readiness diagnosis (`scripts/lib/session-readiness.mjs`
+  `assessEntryBriefReadiness`, the §18 half-enabled-state taxonomy,
+  wired into doctor `entry_brief` and settings `entry_readiness`
+  including `local_plan`);
+- the packaged contract extension `docs/session-capture-contract.md`
+  §14–§18 (sources/parser tolerance, `runtime-entry-brief-1.0` shape,
+  the §16 precedence lattice and state-to-command table, surface/gate
+  /emission policy, and the readiness taxonomy);
+- the schema `runtime-entry-brief-1.0` (`data/schemas/`, registered by
+  `scripts/lib/schema-validate.mjs`) atop the S1-era
+  `runtime-session-entry-1.0`, and the entry-brief test suite
+  (`tests/runtime/test-context-entry-brief.mjs`,
+  `test-entry-brief-arbiter.mjs`, `test-entry-brief-readers.mjs`,
+  `test-host-localization.mjs`, plus the dashboard / session-readiness
+  / doctor / settings / schema-validate coverage).
+
+The S6–S8 squash commits (`932c135` #597, `5c6dae8` #598, `45624bf`
+#599, `de20853` #600) are all ancestors of the release tag and all
+non-ancestors of the preceding release `plugin-runtime-v0.82.0`, whose
+tag tree contains none of these surfaces (`context.mjs` registers only
+the five exit-side commands, no entry-brief/host-localization modules,
+no entry-brief schema, no `entry_brief` config keys, and the packaged
+contract stops at §13). S6 (`932c135`) is the localization-extraction
+refactor precursor; the executor itself landed in S7b (`45624bf`) —
+a nomenclature note, not a surface gap. Per the released-floor rule a
+planned-but-unreleased version is never recorded — 0.83.0 qualifies
+because the release exists and is plain `X.Y.Z`. **0.83.0 is therefore
+the S8a-recorded released version that S9 pins as `floors.entry_brief`
+in attention's `data/runtime-floors.json` (the ADR-0043 rule that the
+notify, publisher, and entry-brief floors never share a constant).**
+This proves the runtime provider surface; live SessionStart firing
+additionally depends on the attention entry sensor + floor chain that
+S9 ships and §18 diagnoses.
+
 ## Context
 
 ### The gap: entry time has zero active surfaces
