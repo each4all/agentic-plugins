@@ -51,6 +51,23 @@ export const MIN_RUNTIME_VERSION = '0.71.0';
 // the plugin-shape test pins the pair.
 export const PUBLISH_SESSION_MIN_RUNTIME_VERSION = '0.82.0';
 
+// The THIRD capability floor, for the ADR-0045 §7 SessionStart entry-brief
+// spawn: the first RELEASED runtime version shipping `context.mjs
+// entry-brief` — plugin-runtime-v0.83.0, recorded by the S8a release-proof
+// gate (ADR-0045 §Status, 2026-07-20). The notify, publisher, and
+// entry-brief floors never share a constant (ADR-0045 §12 / ADR-0043
+// released-floor rule): below THIS floor the SessionStart sensor silently
+// skips the entry-brief spawn while notifications and capture keep their
+// own gates. Prerelease semantics are the shared strict `versionGte` below
+// — a prerelease of the floor core (`0.83.0-beta.1`) fails, a prerelease of
+// a higher core passes — matching the runtime-side §18 diagnosis, whose
+// declaration validation (`CLEAN_RELEASE_SEMVER_RE` in
+// session-readiness.mjs) refuses any non-clean-`X.Y.Z` declared floor. The
+// §18 declaration this plugin ships (data/runtime-floors.json,
+// floors.entry_brief — an additive sibling key) must agree with this
+// constant byte-for-byte — the plugin-shape test pins the pair.
+export const ENTRY_BRIEF_MIN_RUNTIME_VERSION = '0.83.0';
+
 async function fileExists(path) {
   try {
     const st = await stat(path);
@@ -70,16 +87,23 @@ async function dirExists(path) {
 }
 
 // Ordering compare for CACHE SELECTION (pick the latest). Prereleases sort by
-// their numeric core here — good enough for "newest candidate"; the strict
-// gate below (`versionGte`) is what actually enforces the floor.
+// their numeric core, with a SemVer-standard tie-break on an equal core: a
+// clean release orders ABOVE its own prereleases, so a cache holding both
+// `0.83.0-beta.1` and `0.83.0` selects the release deterministically instead
+// of inheriting readdir order (Codex Plan-verify). The strict gate below
+// (`versionGte`) is still what actually enforces the floor.
 function semverCompare(a, b) {
-  const pa = String(a).split('-', 1)[0].split('.').map((x) => Number.parseInt(x, 10) || 0);
-  const pb = String(b).split('-', 1)[0].split('.').map((x) => Number.parseInt(x, 10) || 0);
+  const [coreA, preA] = String(a).split('-', 2);
+  const [coreB, preB] = String(b).split('-', 2);
+  const pa = coreA.split('.').map((x) => Number.parseInt(x, 10) || 0);
+  const pb = coreB.split('.').map((x) => Number.parseInt(x, 10) || 0);
   for (let i = 0; i < 3; i++) {
     const av = pa[i] ?? 0;
     const bv = pb[i] ?? 0;
     if (av !== bv) return av - bv;
   }
+  if (!preA && preB) return 1;
+  if (preA && !preB) return -1;
   return 0;
 }
 
@@ -286,6 +310,130 @@ export async function discoverRuntimePluginRoot({
   if (!root) return null;
   if (!(await runtimeVersionAtLeast(root, minVersion))) return null;
   return root;
+}
+
+/**
+ * Resolve the NEWEST runtime plugin root by manifest identity alone — the
+ * ADR-0045 §7 capability-neutral rung for the entry-brief dispatcher. The
+ * notify-gated resolver above requires `scripts/notify.mjs` before it will
+ * even consider a root, which is capability-specific GATING, not the
+ * capability-specific DISCOVERY the entry seam needs (a runtime build
+ * carrying `context.mjs` but not `notify.mjs` must still be discoverable —
+ * Codex Plan-verify reproduction), and it disagrees with the §18 readiness
+ * diagnosis, which stats `context.mjs` in the NEWEST installed build.
+ *
+ * Candidates are directories whose manifest declares `name: "runtime"` —
+ * no capability-file filter. That keeps the ADR-0039 §5 no-stale-fallback
+ * invariant intact for the caller: this resolves ONE newest root; the
+ * caller then applies its own floor gate and executor-existence probe to
+ * THAT root and no-ops when either fails, never re-descending to an
+ * older-but-capable build (exactly the dispatcher shape §18 mirrors).
+ * Ladder (same order as resolveRuntimePluginRoot): env override (absolute,
+ * manifest-identified) → same-host-first Claude/Codex caches → sibling.
+ *
+ * @param {object} [args]
+ * @param {Record<string,string>} [args.env=process.env]
+ * @param {string} [args.home=homedir()]
+ * @param {string} [args.selfUrl=import.meta.url]
+ * @returns {Promise<?string>}
+ */
+export async function resolveNewestRuntimePluginRoot({
+  env = process.env,
+  home = homedir(),
+  selfUrl = import.meta.url,
+} = {}) {
+  async function isRuntimeManifestRoot(root) {
+    return (await readRuntimeManifestName(root)) === 'runtime';
+  }
+
+  // 1. Env override — absolute + manifest-identified (no capability filter).
+  const overrideRoot = env[ENV_OVERRIDE];
+  if (typeof overrideRoot === 'string' && overrideRoot.length > 0) {
+    if (!isAbsolute(overrideRoot)) return null;
+    return (await isRuntimeManifestRoot(overrideRoot)) ? overrideRoot : null;
+  }
+
+  const { claude: claudeBase, codex: codexBase } = cacheBases(home);
+  let sameHost = null;
+  if (typeof selfUrl === 'string' && selfUrl.length > 0) {
+    if (selfUrl.includes('/.codex/')) sameHost = 'codex';
+    else if (selfUrl.includes('/.claude/')) sameHost = 'claude';
+  }
+
+  async function probeClaudeCacheNewest() {
+    if (!(await dirExists(claudeBase))) return null;
+    let entries = [];
+    try {
+      entries = await readdir(claudeBase, { withFileTypes: true });
+    } catch {
+      entries = [];
+    }
+    const candidates = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const versionRoot = join(claudeBase, entry.name);
+      let manifest;
+      try {
+        manifest = JSON.parse(await fsReadFile(join(versionRoot, '.claude-plugin', 'plugin.json'), 'utf8'));
+      } catch {
+        continue;
+      }
+      if (manifest?.name !== 'runtime') continue;
+      candidates.push({
+        version: typeof manifest.version === 'string' ? manifest.version : '0.0.0',
+        root: versionRoot,
+      });
+    }
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => semverCompare(b.version, a.version));
+    return candidates[0].root;
+  }
+  async function probeCodexCacheNewest() {
+    if ((await dirExists(codexBase)) && (await isRuntimeManifestRoot(codexBase))) {
+      return codexBase;
+    }
+    return null;
+  }
+
+  const order = sameHost === 'codex'
+    ? [probeCodexCacheNewest, probeClaudeCacheNewest]
+    : [probeClaudeCacheNewest, probeCodexCacheNewest];
+  for (const probe of order) {
+    const root = await probe();
+    if (root) return root;
+  }
+
+  // Sibling fallback — manifest-identified.
+  if (typeof selfUrl === 'string' && selfUrl.length > 0) {
+    let here;
+    try {
+      here = fileURLToPath(selfUrl);
+    } catch {
+      here = null;
+    }
+    if (here) {
+      const sibling = resolve(dirname(here), '..', '..', 'runtime');
+      if (await isRuntimeManifestRoot(sibling)) return sibling;
+    }
+  }
+
+  return null;
+}
+
+// Read the plugin `name` from either manifest layout; null when unreadable.
+async function readRuntimeManifestName(root) {
+  for (const rel of [
+    join('.claude-plugin', 'plugin.json'),
+    join('.codex-plugin', 'plugin.json'),
+  ]) {
+    try {
+      const manifest = JSON.parse(await fsReadFile(join(root, rel), 'utf8'));
+      if (typeof manifest?.name === 'string') return manifest.name;
+    } catch {
+      /* try the other manifest layout */
+    }
+  }
+  return null;
 }
 
 // -----------------------------------------------------------------------------
