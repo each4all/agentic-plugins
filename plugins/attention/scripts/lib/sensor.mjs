@@ -40,8 +40,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  ENTRY_BRIEF_MIN_RUNTIME_VERSION,
   PUBLISH_SESSION_MIN_RUNTIME_VERSION,
   discoverRuntimePluginRoot,
+  resolveNewestRuntimePluginRoot,
   resolveRuntimePluginRoot,
   runtimeVersionAtLeast,
 } from '../discover-runtime.mjs';
@@ -528,6 +530,232 @@ export const EMIT_SLOT_MS = 12_000;
 export const TERMINAL_BATCH_DEADLINE_MS = 2 * EMIT_SLOT_MS;
 export const PUBLISH_SESSION_TIMEOUT_MS = 12_000;
 export const STOP_HOT_PATH_BUDGET_MS = PUBLISH_SESSION_TIMEOUT_MS + TERMINAL_BATCH_DEADLINE_MS;
+
+// ── ADR-0045 §11 SessionStart latency budget (contract values) ──
+
+// The entry-brief executor spawn's kill bound: one emission-sized slot. This
+// is a KILL bound, not a completion guarantee — the enabled executor pays ≤5
+// sequential bounded git spawns (each under the runtime's own ~3 s per-probe
+// cap) plus the contract §14.1 bounded reads, so the theoretical worst-case
+// probe sum alone can exceed this slot; in that regime the spawn is killed
+// and the brief line is lost — the ADR-0040 §7 fail-closed choice (a lost
+// brief, never a session entry delayed past the host-enforced hook timeout).
+// The typical local path (disabled gate: 1 git spawn + 2 config reads;
+// enabled: warm-cache git probes in milliseconds, §15.3) completes far
+// inside the slot.
+export const ENTRY_BRIEF_TIMEOUT_MS = 12_000;
+
+// The host-side per-hook `timeout` (SECONDS — the Claude hooks.json unit,
+// probed 2026-07-18 / re-validated 2026-07-20) registered on the SessionStart
+// entry sensor. It must exceed ENTRY_BRIEF_TIMEOUT_MS plus node-startup +
+// discovery-walk headroom so the host never kills a dispatcher whose child
+// spawn is still inside its own bound. The registered hooks.json value must
+// agree with this constant — the plugin-shape test pins the pair.
+export const SESSION_START_HOOK_TIMEOUT_S = 15;
+
+// Aggregate SessionStart budget: attention registers exactly ONE
+// SessionStart hook (the entry sensor), so the aggregate equals the single
+// host-enforced hook timeout. Synchronous SessionStart handlers delay
+// session entry until they finish (probed matrix), which is why this is a
+// stated contract, not an accident: worst case the operator waits 15 s for
+// session entry, reached only when discovery + the executor both run to
+// their kill bounds. Changing any value here is a contract change
+// (README § SessionStart budget); the plugin-shape test pins all three.
+export const SESSION_START_BUDGET_MS = SESSION_START_HOOK_TIMEOUT_S * 1000;
+
+// ── ADR-0045 §7 entry-brief dispatch seam (stdout-capturing) ──
+
+// Marker pair for the one permitted stdout line (contract §17; canonical:
+// runtime context.mjs ENTRY_BRIEF_MARKER_OPEN/CLOSE — COPY-NOT-IMPORT,
+// parity relied on by the validation boundary below), and the §15.1 schema
+// id the wrapped document must self-declare (canonical: runtime
+// entry-brief-arbiter.mjs ENTRY_BRIEF_SCHEMA_ID).
+export const ENTRY_BRIEF_MARKER_OPEN = '[agentic-entry-brief]';
+export const ENTRY_BRIEF_MARKER_CLOSE = '[/agentic-entry-brief]';
+export const ENTRY_BRIEF_SCHEMA_ID = 'runtime-entry-brief-1.0';
+
+// Contract §15.3 hook-line byte cap, mirrored as the dispatcher's own
+// validation bound: the runtime enforces the cap by tail-row shrink before
+// emitting; a line arriving here OVER the cap is therefore malformed output
+// from a non-conforming executor and is suppressed, never relayed.
+export const ENTRY_BRIEF_LINE_MAX_BYTES = 4096;
+
+// spawnSync maxBuffer for the captured stdout — the "bounded buffer" of the
+// validation boundary. A conforming executor emits ≤4096 bytes + newline;
+// 64 KiB gives structural headroom while still killing a runaway child
+// (spawnSync ENOBUFS ⇒ suppressed) long before an unbounded read.
+export const ENTRY_BRIEF_MAX_BUFFER_BYTES = 64 * 1024;
+
+// Any C0/C1 control character (including a bare CR — the line is split on
+// LF only), the U+2028/U+2029 line/paragraph separators (line-shaped to a
+// separator-honoring consumer), or U+FFFD (the utf8-decode replacement —
+// proof of malformed executor bytes) makes the captured line malformed. The
+// runtime control-strips before emitting, so any of these here proves a
+// non-conforming producer; suppress rather than relay (ADR-0045 §12
+// malformed suppression).
+const ENTRY_BRIEF_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F\u2028\u2029\uFFFD]/;
+
+// Count non-overlapping occurrences of `needle` in `text` (marker
+// singularity check below; the two markers are not substrings of each other).
+function countOccurrences(text, needle) {
+  let count = 0;
+  let index = text.indexOf(needle);
+  while (index !== -1) {
+    count += 1;
+    index = text.indexOf(needle, index + needle.length);
+  }
+  return count;
+}
+
+/**
+ * The ADR-0045 §7 validation boundary over the captured executor stdout.
+ * Accepts EXACTLY one of:
+ *   - empty stdout — the gate-off / hook-silent-disposition no-op
+ *     (`{ line: null, reason: 'no-line' }`), or
+ *   - exactly one marker-paired line (one trailing LF permitted, nothing
+ *     else before or after) whose markers each occur exactly once and whose
+ *     wrapped payload parses as a plain JSON object self-declaring the
+ *     §15.1 schema id — control-free (incl. the U+2028/U+2029 separators a
+ *     line-splitting consumer may honor, and U+FFFD, the utf8-decode
+ *     replacement that proves malformed executor bytes), within the §15.3
+ *     byte cap — returned verbatim as `{ line }` for the hook to relay.
+ * Everything else — extra lines, prefix/suffix bytes, an unmarked or
+ * half-marked line, duplicate marker pairs on one line, a non-JSON or
+ * non-object or wrong-schema payload, an oversized line — is suppressed
+ * (`line: null` with a diagnostic reason), never trimmed and never relayed
+ * (Codex Plan-verify: the relay must not become an arbitrary
+ * context-injection channel for a nonconforming executor). The marker
+ * requirement is also what keeps the relayed stdout from ever parsing as a
+ * bare JSON hook response: a marker-paired line can never be a
+ * `{"continue": false}` document, so the sensor cannot be steered into the
+ * one structured output that halts Claude entirely (probed matrix,
+ * failure-isolation row) — a marker-WRAPPED `{"continue": false}` is inert
+ * data and additionally fails the schema check here.
+ */
+export function validateEntryBriefStdout(stdoutText) {
+  if (typeof stdoutText !== 'string') return { line: null, reason: 'malformed-output' };
+  if (stdoutText.length === 0) return { line: null, reason: 'no-line' };
+  const body = stdoutText.endsWith('\n') ? stdoutText.slice(0, -1) : stdoutText;
+  if (body.length === 0 || body.includes('\n')) {
+    return { line: null, reason: 'malformed-output' };
+  }
+  if (ENTRY_BRIEF_CONTROL_RE.test(body)) {
+    return { line: null, reason: 'malformed-output' };
+  }
+  if (!body.startsWith(`${ENTRY_BRIEF_MARKER_OPEN} `)
+    || !body.endsWith(` ${ENTRY_BRIEF_MARKER_CLOSE}`)
+    || body.length < ENTRY_BRIEF_MARKER_OPEN.length + ENTRY_BRIEF_MARKER_CLOSE.length + 3) {
+    return { line: null, reason: 'malformed-output' };
+  }
+  if (countOccurrences(body, ENTRY_BRIEF_MARKER_OPEN) !== 1
+    || countOccurrences(body, ENTRY_BRIEF_MARKER_CLOSE) !== 1) {
+    return { line: null, reason: 'malformed-output' };
+  }
+  if (Buffer.byteLength(body, 'utf8') > ENTRY_BRIEF_LINE_MAX_BYTES) {
+    return { line: null, reason: 'oversized-output' };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(body.slice(
+      ENTRY_BRIEF_MARKER_OPEN.length + 1,
+      -(ENTRY_BRIEF_MARKER_CLOSE.length + 1),
+    ));
+  } catch {
+    return { line: null, reason: 'malformed-output' };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+    || parsed.schema !== ENTRY_BRIEF_SCHEMA_ID) {
+    return { line: null, reason: 'malformed-output' };
+  }
+  return { line: body };
+}
+
+/**
+ * Resolve the runtime root and spawn the ADR-0045 entry-brief arbiter
+ * (`context.mjs entry-brief`) with the fixed argv — explicit `--repo-root`,
+ * `--host claude`, `--surface session-start-hook` — capturing stdout through
+ * the validation boundary above. This is the capability-specific dispatcher
+ * ADR-0045 §7 requires as NEW machinery: the notify emit seam discards
+ * stdout by contract, while this seam's captured single line IS the payload
+ * (the scoped ADR-0040 §2.2 sensor-output exception).
+ *
+ * Capability-specific DISCOVERY, not just gating (Codex Plan-verify HIGH):
+ * the root comes from resolveNewestRuntimePluginRoot — manifest identity
+ * alone, no notify.mjs filter — so a runtime build carrying `context.mjs`
+ * without `notify.mjs` is still discoverable, and the rung matches the §18
+ * readiness diagnosis (newest installed build, then the executor stat).
+ *
+ * Own capability floor (ADR-0045 §12 triple-floor rule): the resolved
+ * runtime root must satisfy ENTRY_BRIEF_MIN_RUNTIME_VERSION — never the
+ * notify or publisher floor. The ladder resolves ONE newest root (ADR-0039
+ * §5, no stale-cache fallback), then that root is gated twice on this path:
+ * version below the entry floor ⇒ silent skip; version passes but
+ * `scripts/context.mjs` is absent at the root (capability drift) ⇒ silent
+ * skip — never a re-descent to an older-but-capable build; in both cases
+ * the other attention capabilities (notifications, capture) are entirely
+ * unaffected, and the §18 readiness diagnosis mirrors exactly this
+ * executor-existence probe.
+ *
+ * The executor applies the user-scope-only `entry_brief` gate itself and is
+ * hook-grade on its own (exit 0 always, at most the one marker-paired
+ * stdout line, at most one stderr line — discarded here); the sensor stays
+ * policy-free and relays only a line that survives the validation boundary.
+ * spawnSync is bounded by ENTRY_BRIEF_TIMEOUT_MS and
+ * ENTRY_BRIEF_MAX_BUFFER_BYTES, with `killSignal: 'SIGKILL'` — the default
+ * SIGTERM is trappable, so a misbehaving child could ride past the deadline
+ * until the host's own hook timeout (Codex Plan-verify reproduction);
+ * SIGKILL makes the slot a real kill bound. A timeout/overflow kills the
+ * child and the brief is lost (ADR-0040 §7 fail-closed, never a blocked
+ * session entry). The child env is scrubbed of GIT_* (sanitizeSpawnEnv) —
+ * the arbiter runs bounded git probes, and inherited GIT_DIR/GIT_WORK_TREE
+ * would misdirect them to another repo exactly as on the publisher seam.
+ *
+ * @returns {Promise<{line: ?string, reason?: string}>}
+ */
+export async function spawnEntryBrief({
+  repoRoot,
+  env = process.env,
+  home = undefined,
+  timeoutMs = ENTRY_BRIEF_TIMEOUT_MS,
+} = {}) {
+  try {
+    if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
+      return { line: null, reason: 'bad-args' };
+    }
+    const runtimeRoot = await resolveNewestRuntimePluginRoot({ env, home });
+    if (!runtimeRoot
+      || !(await runtimeVersionAtLeast(runtimeRoot, ENTRY_BRIEF_MIN_RUNTIME_VERSION))) {
+      return { line: null, reason: 'runtime-below-entry-floor' };
+    }
+    const contextPath = path.join(runtimeRoot, 'scripts', 'context.mjs');
+    if (!fs.existsSync(contextPath)) {
+      return { line: null, reason: 'entry-executor-absent' };
+    }
+    const child = spawnSync(process.execPath, [
+      contextPath, 'entry-brief',
+      '--repo-root', repoRoot,
+      '--host', 'claude',
+      '--surface', 'session-start-hook',
+    ], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: sanitizeSpawnEnv(env),
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL',
+      maxBuffer: ENTRY_BRIEF_MAX_BUFFER_BYTES,
+      encoding: 'utf8',
+    });
+    // "Successful child exit" is all three signals at once: no spawn/kill
+    // error (timeout and ENOBUFS surface here), no terminating signal, and
+    // an exit status of exactly 0 (a conforming hook-grade executor exits 0
+    // even for its no-line dispositions — nonzero proves non-conformance).
+    if (child.error || child.signal || child.status !== 0) {
+      return { line: null, reason: 'executor-failed' };
+    }
+    return validateEntryBriefStdout(child.stdout ?? '');
+  } catch {
+    return { line: null, reason: 'spawn-failed' };
+  }
+}
 
 // ── ADR-0044 §2 capture spawn seam ──
 

@@ -2,10 +2,12 @@
 
 Hook-only **Layer 1 framework primitive** per
 [ADR-0040 §3](../../docs/adr/0040-operator-observability.md), amended by
-[ADR-0044 §2](../../docs/adr/0044-session-generic-handoff-capture.md) from
+[ADR-0044 §2](../../docs/adr/0044-session-generic-handoff-capture.md) and
+[ADR-0045 §2](../../docs/adr/0045-entry-time-proposal-surfaces.md) from
 "notification sensors" to **host-lifecycle sensors feeding allowlisted
-runtime-owned executors** — today `notify.mjs emit` (operator notifications)
-and `context.mjs publish-session` (the session-capture publisher). It ships
+runtime-owned executors** — today `notify.mjs emit` (operator notifications),
+`context.mjs publish-session` (the session-capture publisher), and
+`context.mjs entry-brief` (the R0 entry arbiter). It ships
 **hooks + sensor scripts only** — no skills, no verbs, no state machinery —
 the hook-bearing sibling of the
 [ADR-0008](../../docs/adr/0008-companion-distribution-model.md)
@@ -21,12 +23,15 @@ hook review/trust burden never attaches to frequently-releasing packages
 | `Notification` | `idle_prompt` | `idle` | `session:<session_id>` | normal |
 | `Stop` | — (none exists) | `workflow-terminal` when a **fresh** persona projection proves a terminal workflow, else `turn-complete` | `<workflow_id>` / `session:<session_id>:<prompt_id>` | normal |
 | `SubagentStop` | — (`agent_type` available for tuning) | `subagent-complete` | `<agent_id>` | normal |
+| `SessionStart` | `startup` (explicit, `timeout: 15`) | — (no notify event; relays the ADR-0045 entry-brief line, or nothing) | — | — |
 
 The kind/subject mapping is the ADR-0040 §1 **contract**, not sensor
 discretion — the approval content-hash keeps two different approval prompts
 in one session from deduping against each other; the bare-Stop subject uses
 only documented common input fields (`session_id`, `prompt_id`), never a
-Stop-specific payload field.
+Stop-specific payload field. The SessionStart row is not a notify-pipeline
+sensor at all: it is the ADR-0045 §7 entry sensor (below), whose only
+output channel is the hook's own stdout-into-context line.
 
 ### The Stop sensor's freshness gate
 
@@ -87,28 +92,42 @@ default `off`), fingerprint no-op, lock, and atomic publication are all
 evaluated inside the runtime publisher (ADR-0044 §3). Capture is
 repo-scoped — a non-git `cwd` produces nothing on either stage.
 
-**Dual capability floors** (ADR-0044 §2 — the two gates never share a
-constant): the notify emit seam stays gated at `MIN_RUNTIME_VERSION`
-(`0.71.0`, the first runtime release shipping `notify.mjs`), while the
-capture spawn is gated at `PUBLISH_SESSION_MIN_RUNTIME_VERSION` (`0.82.0`,
-the first **released** runtime shipping `publish-session`, recorded by the
-ADR-0044 §Status S4a release-proof gate). Below the publisher floor the
-sensor skips the capture spawn silently while notifications keep working;
-when the floor passes but the resolved runtime root lacks
-`scripts/context.mjs` (capability drift), capture no-ops equally silently
-without disabling notifications. The plugin ships the floor as a
-**declaration file** for the runtime-side readiness diagnosis
-(session-capture-contract §13):
+**Triple capability floors** (ADR-0044 §2 + ADR-0045 §12 — the three gates
+never share a constant): the notify emit seam stays gated at
+`MIN_RUNTIME_VERSION` (`0.71.0`, the first runtime release shipping
+`notify.mjs`), the capture spawn at `PUBLISH_SESSION_MIN_RUNTIME_VERSION`
+(`0.82.0`, the first **released** runtime shipping `publish-session`,
+recorded by the ADR-0044 §Status S4a release-proof gate), and the entry
+spawn at `ENTRY_BRIEF_MIN_RUNTIME_VERSION` (`0.83.0`, the first **released**
+runtime shipping `entry-brief`, recorded by the ADR-0045 §Status S8a
+release-proof gate). Below its own floor each spawn skips silently while the
+other capabilities keep working; when a floor passes but the resolved
+runtime root lacks `scripts/context.mjs` (capability drift), that spawn
+no-ops equally silently without disabling anything else. The plugin ships
+the floors as a **declaration file** for the runtime-side readiness
+diagnosis (session-capture-contract §13 + §18; `entry_brief` is the §18
+additive sibling key — a floors file without it is the honest
+pre-entry-sensor state, never malformed):
 
 ```
 data/runtime-floors.json
   { "schema": "attention-runtime-floors-1.0",
-    "floors": { "publish_session": "0.82.0" } }
+    "floors": { "publish_session": "0.82.0", "entry_brief": "0.83.0" } }
 ```
 
-The sensor's spawn-gate constant and this declaration must agree
+Each declared spawn-gate constant and its declaration key must agree
 byte-for-byte — `tests/plugin-shape/test-attention-plugin.mjs` pins the
-pair, alongside the plain-`X.Y.Z` released-floor rule.
+pairs, alongside the plain-`X.Y.Z` released-floor rule (the notify floor
+stays code-pinned only; the declaration file carries the two
+runtime-diagnosed keys). Prerelease semantics: the DECLARATION rule is
+aligned on both sides (this file must carry clean released `X.Y.Z` values,
+and the runtime-side diagnosis refuses anything else), while the GATE
+comparators differ in strictness — the sensors' strict `versionGte` holds
+an equal-core prerelease (`0.83.0-beta.1`) below the floor, whereas the
+runtime diagnosis's numeric comparator treats it as equal. A
+prerelease-versioned runtime install does not occur under release-please
+(plain `X.Y.Z` only), so the divergence is theoretical; tightening the
+runtime comparator is a recorded runtime-owned follow-up.
 
 ### Stop hot-path budget (contract values)
 
@@ -126,6 +145,92 @@ A publisher or emitter that overruns its slot is killed and the event/capture
 is lost — the ADR-0040 §7 fail-closed choice (never a blocked host; the
 previous turn's slot remains the session handoff).
 
+### The SessionStart entry sensor (ADR-0045 §7)
+
+`adapters/claude/hooks/session-start.mjs` is the entry-brief rollout's one
+hook surface: it resolves the repo root from the **payload-carried** cwd
+(no process-cwd fallback — this surface injects into model context, so
+malformed/empty hook input degrades to injecting nothing; non-git cwd ⇒
+silent no-op), shells the runtime's `context.mjs entry-brief` with fixed
+argv (`--repo-root <resolved> --host claude --surface session-start-hook`),
+and relays **at most one marker-paired line**
+(`[agentic-entry-brief] {…} [/agentic-entry-brief]`) into model context via
+the hook's documented stdout channel. Discovery is **capability-neutral**
+(`resolveNewestRuntimePluginRoot`: manifest identity, no `notify.mjs`
+filter — a runtime build carrying only the arbiter is still discoverable),
+then the entry floor and the executor-existence probe gate that ONE newest
+root with no re-descent to an older build — the exact dispatcher shape the
+§18 readiness diagnosis mirrors. Every arbitration/precedence/gate decision
+is arbiter-side (ADR-0045 §1); the user-scope-only `entry_brief` key
+(default `off`) is evaluated inside the executor, so the sensor stays
+policy-free — the gate-off spawn is the accepted cost shape
+(session-capture-contract §15.3: 1 git spawn + 2 config reads, zero state
+reads).
+
+This sensor is the **scoped ADR-0040 §2.2 sensor-output exception**: stdout
+carries exactly the one brief line or nothing; every notify-pipeline sensor
+remains stdout-silent by the original invariant. The relay sits behind a
+**validation boundary** (`sensor.mjs validateEntryBriefStdout`, dispatched
+by `spawnEntryBrief`):
+
+- **bounded buffer** — `spawnSync` `maxBuffer` 64 KiB; overflow kills the
+  child and suppresses;
+- **successful child exit** — no spawn error, no signal, exit status 0 (a
+  conforming hook-grade executor exits 0 even for its no-line
+  dispositions); the kill signal is **SIGKILL** (SIGTERM is trappable — a
+  misbehaving child could otherwise ride to the host hook timeout);
+- **exactly one marker-paired line** — one trailing LF permitted, nothing
+  before or after, each marker occurring exactly once; empty stdout is the
+  normal gate-off no-op;
+- **a schema-declaring JSON payload** — the wrapped content must parse as
+  a plain JSON object with `schema: "runtime-entry-brief-1.0"`, so a
+  nonconforming executor cannot turn the relay into an arbitrary
+  context-injection channel;
+- **no extra output, no control characters (incl. U+2028/U+2029/U+FFFD),
+  byte-capped** — a line over the contract's 4096-byte hook-line cap, a
+  control character, or any second line is suppressed, never trimmed and
+  never relayed.
+
+The marker requirement doubles as the `"continue": false` defense: a
+marker-paired line can never parse as a bare JSON hook response, so the
+sensor cannot be steered into the one structured output that halts Claude
+entirely (probed matrix, failure-isolation row); a marker-*wrapped*
+`{"continue": false}` is inert data and additionally fails the schema
+check.
+
+**Probe gate** (ADR-0045 §7/§12, S9 gate policy): registration is valid only
+while the version-bound SessionStart matrix verdict in
+`plugins/runtime/docs/host-parity-baseline.md` holds for the installed CLI —
+`matcher: "startup"` fires exactly once per fresh session, injects stdout
+into context, is non-blocking on failure, and honors the explicit per-hook
+`timeout` (seconds). Probed PASS on `2.1.214` (2026-07-18), re-validated
+live on `2.1.215` (2026-07-20). On a failed or stale re-validation the hook
+surface stays unshipped; the CLI + dashboard surfaces ship regardless.
+
+### SessionStart budget (contract values)
+
+Synchronous SessionStart handlers delay session entry until they finish
+(probed matrix), so the entry sensor's latency is a stated contract
+(`scripts/lib/sensor.mjs`, test-pinned):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `ENTRY_BRIEF_TIMEOUT_MS` | 12 s | the executor spawn's **kill bound** (SIGKILL), not a completion guarantee — the runtime's ≤5 sequential bounded git probes can theoretically sum past it, in which regime the spawn is killed and the brief lost; the typical warm-cache path completes in milliseconds |
+| `SESSION_START_HOOK_TIMEOUT_S` | 15 s | the explicit per-hook `timeout` registered in hooks.json (seconds — the Claude unit); host-enforced ceiling over node startup + discovery + the spawn |
+| `SESSION_START_BUDGET_MS` | 15 s | aggregate worst case: attention registers exactly ONE SessionStart hook, so the aggregate equals that hook's host-enforced timeout |
+
+An executor that overruns its slot is killed and the brief line is lost —
+the ADR-0040 §7 fail-closed choice (never a delayed session entry beyond
+the budget; the operator still has the CLI and dashboard surfaces).
+
+**Rollback** (ADR-0045 §12, consumer-first): set `entry_brief = "off"` in
+the **user-global** config — and clear any `AGENTIC_ENTRY_BRIEF` /
+`AGENTIC_ENTRY_BRIEF_EMPTY` environment values first, since env outranks
+user config and a lingering `startup` env value keeps the line firing —
+then remove/release the attention sensor, verify no firing, and remove the
+runtime surface last. The entry side is R0: no durable entry-side
+artifacts exist to clean.
+
 ## How events reach a channel
 
 Each sensor resolves the runtime plugin root via a copied
@@ -138,20 +243,30 @@ then shells out to `notify.mjs emit` with the event JSON on stdin; the §1
 pipeline (validate → kinds-filter → dedupe → quiet-hours → redact →
 dispatch) runs runtime-side. The Stop sensor's capture spawn resolves the
 same ladder but applies its **own higher floor** (≥ 0.82.0, above) before
-shelling out to `context.mjs publish-session`.
+shelling out to `context.mjs publish-session`; the SessionStart entry
+spawn does the same with its own floor (≥ 0.83.0) and, uniquely, captures
+the executor's stdout through the validation boundary instead of
+discarding it.
 
 **Notifications are off by default**: the runtime ships
 `notify_channel = "none"`. Opt in via `runtime:settings` (`notify_channel`,
 `notify_quiet_hours`, `notify_dedupe_ttl_seconds`, `notify_kinds`, …).
 Delivery/troubleshooting history is pull-side: `runtime:dashboard` Tier 2 and
 the `file-log` channel's `.agentic-plugins/state/runtime/notify/log.ndjson`.
+**The entry brief is equally off by default**: the user-scope-only
+`entry_brief` key ships `off` (a tracked repo value can never enable it);
+opt in via `runtime:settings --entry-brief startup`, diagnosed by the §18
+`entry_readiness` section in settings/doctor.
 
 ## Invariants (ADR-0040 §7)
 
 - **Fail-closed silent everywhere**: sensors exit 0 always, never write
   stdout (hook stdout is a decision channel), and degrade to no-op on any
   failure — a notification or capture failure must never break a workflow,
-  commit, or hook.
+  commit, or hook. The ONE scoped exception is the ADR-0045 §2.2 entry
+  sensor, whose single validated marker-paired stdout line is its
+  deliberate output channel; it emits nothing else, never a structured
+  hook response, and stays exit-0-always.
 - **Observers, not actors**: no Stop `decision` output, no host-session
   mutation, no persona-Stop ordering assumption (Claude fires all plugins'
   Stop hooks without ordering guarantees). The capture spawn relays
@@ -197,14 +312,18 @@ plugins/attention/
 │   │                              #   NOT at the Codex default-discovery path)
 │   ├── notification.mjs           # sensor entry scripts
 │   ├── stop.mjs                   # 3-stage: shared evidence → capture → notify
-│   └── subagent-stop.mjs
+│   ├── subagent-stop.mjs
+│   └── session-start.mjs          # ADR-0045 §7 entry sensor (startup matcher,
+│                                  #   validated single-line stdout relay)
 ├── data/
-│   └── runtime-floors.json        # §13 publisher-floor declaration (byte-for-byte
-│                                  #   with the sensor spawn gate; test-pinned)
+│   └── runtime-floors.json        # §13+§18 floor declarations (byte-for-byte
+│                                  #   with the sensor spawn gates; test-pinned)
 ├── scripts/
 │   ├── discover-runtime.mjs       # ADR-0039 §5 ladder copy; notify ≥ 0.71.0 gate
-│   │                              #   + publish-session ≥ 0.82.0 gate (dual floors)
+│   │                              #   + publish-session ≥ 0.82.0 + entry-brief
+│   │                              #   ≥ 0.83.0 gates (triple floors)
 │   └── lib/sensor.mjs             # §1 contract copies + freshness gate + emit seam
-│                                  #   + capture spawn seam + budget contract values
+│                                  #   + capture spawn seam + entry-brief dispatch
+│                                  #   seam (validation boundary) + budget values
 └── skills/README.md               # Codex manifest-spec placeholder (ADR-0008 carve-out)
 ```
