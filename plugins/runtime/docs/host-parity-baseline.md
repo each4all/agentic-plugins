@@ -1,7 +1,7 @@
 # Host Parity Baseline
 
-Observed on 2026-07-14 with Claude Code `2.1.208`, Codex CLI
-`0.144.1`, official OpenAI Codex developer docs, and official Claude Code docs.
+Observed on 2026-07-20 with Claude Code `2.1.215`, Codex CLI
+`0.144.6`, official OpenAI Codex developer docs, and official Claude Code docs.
 This file is a runtime-owned host-truth checkpoint for Claude-vs-Codex
 differences. It is not a promise that either host will keep this behavior.
 
@@ -32,57 +32,59 @@ Official Claude Code docs:
 - <https://code.claude.com/docs/ko/hooks-guide>
 - <https://code.claude.com/docs/en/changelog>
 
-Local CLI evidence (version probe re-observed 2026-07-14 for the Claude
-`2.1.208` patch drift — `claude plugin --help` / `claude mcp --help`
-surfaces re-checked unchanged, so their `2.1.206`-tagged observations
-stand; the full block was last repaired 2026-07-10 after earlier
-header-only refreshes had left it at `2.1.173`/`0.139.0`):
+Local CLI evidence (full block re-observed 2026-07-20 for the dual drift
+Claude `2.1.208`→`2.1.215` / Codex `0.144.1`→`0.144.6` — every listed
+surface was re-run live; verb sets are unchanged on both hosts, so the
+earlier version-tagged observations stand with the re-check noted):
 
-- `claude --version` -> `2.1.208 (Claude Code)`
+- `claude --version` -> `2.1.215 (Claude Code)`
 - `claude --help` (the global `--safe-mode` flag / `CLAUDE_CODE_SAFE_MODE`
   added in 2.1.169 — starts a session with CLAUDE.md, plugins, skills, hooks,
-  and MCP servers disabled for troubleshooting — is still present)
-- `claude plugin --help` (2.1.206: `details`, `disable`, `enable`, `eval`,
-  `init`/`new`, `install`, `list`, `marketplace`, `prune`/`autoremove`, `tag`,
-  `uninstall`/`remove`, `update`, `validate` — `eval`, `init`/`new`, and `tag`
-  are additive since the 2.1.14x observations; runtime's allowlisted
-  `install`/`update`/`uninstall`/`list` set is unaffected)
+  and MCP servers disabled for troubleshooting — is still present on 2.1.215)
+- `claude plugin --help` (re-checked on 2.1.215: `details`, `disable`,
+  `enable`, `eval`, `init`/`new`, `install`, `list`, `marketplace`,
+  `prune`/`autoremove`, `tag`, `uninstall`/`remove`, `update`, `validate` —
+  verb set unchanged from the 2.1.206 observations; `eval`, `init`/`new`, and
+  `tag` remain additive relative to the 2.1.14x observations; runtime's
+  allowlisted `install`/`update`/`uninstall`/`list` set is unaffected)
 - `claude agents --help` (`--json` with `--all` plus `id`/`state` fields,
-  added in 2.1.169, still present)
-- `claude mcp --help` (2.1.206: `add`, `add-from-claude-desktop`, `add-json`,
-  `get`, `list`, `login`, `logout`, `remove`, `reset-project-choices`,
-  `serve` — `login`/`logout` cover MCP OAuth flows)
-- `codex --version` -> `codex-cli 0.144.1`
-- `codex --help` (0.144.1 top-level surface: `exec`, `review`, `login`/`logout`,
-  `mcp`, `plugin`, `mcp-server`, `app-server`, `remote-control`, `app`,
-  `completion`, `update`, `doctor`, `sandbox`, `debug`, `apply`, `resume`,
-  `archive`/`delete`/`unarchive`, `fork`, `cloud`, `exec-server`, `features`;
-  `delete` is additive since 0.139.0; the `doctor`/`update`/`login`/`logout`/
-  `archive` additions date to 0.137.0)
-- `codex plugin --help` (0.144.1: `add`, `list`, `marketplace`, `remove` —
-  command set unchanged from 0.137.0, whose per-plugin `add`/`list`/`remove`
-  went beyond the prior marketplace-only surface; 0.138.0 added `--json` to
-  `add`/`remove`, and `list` supports `--json` plus a `-m`/`--marketplace`
-  filter)
-- `codex plugin list --json` (0.144.1: root object is `{installed, available}`;
-  installed entries carry `pluginId`/`name`/`marketplaceName`/`version`/
-  `installed`/`enabled`/`installPolicy`/`authPolicy`, the 0.138.0
-  `marketplaceSource` `{sourceType, source}` field on source-backed entries,
-  and an additive `source` `{source, path}` object; with `remote_plugin` now
-  stable, remotely-sourced plugins appear alongside marketplace-sourced ones —
-  all additive relative to the field-selective ADR-0034 resolver)
-- `codex plugin marketplace --help` (0.144.1: `add`, `list`, `upgrade`,
-  `remove` — unchanged from 0.137.0; `marketplace list --json` includes the
-  marketplace source for source-backed marketplaces as of 0.139.0, not every
-  entry)
-- `codex features list` (0.144.1: `plugin_hooks` reported `removed`, generic
-  `hooks` stable/true, `plugins`/`plugin_sharing`/`multi_agent` stable/true,
-  `enable_fanout` and `multi_agent_v2` under development, `collaboration_modes`
-  removed — all unchanged from 0.139.0 except `remote_plugin`, which moved
-  from under-development to **stable/true** (0.143.0 enabled remote plugins by
-  default: npm marketplace sources and remote catalog rows — an additive
-  catalog-source surface; agentic-plugins' git-source marketplace flows are
-  unchanged))
+  added in 2.1.169, still present on 2.1.215 alongside `--model`/`--effort`)
+- `claude mcp --help` (re-checked on 2.1.215: `add`,
+  `add-from-claude-desktop`, `add-json`, `get`, `list`, `login`, `logout`,
+  `remove`, `reset-project-choices`, `serve` — verb set unchanged from the
+  2.1.206 observations; `login`/`logout` cover MCP OAuth flows)
+- `codex --version` -> `codex-cli 0.144.6`
+- `codex --help` (re-checked on 0.144.6: top-level surface `exec`, `review`,
+  `login`/`logout`, `mcp`, `plugin`, `mcp-server`, `app-server`,
+  `remote-control`, `app`, `completion`, `update`, `doctor`, `sandbox`,
+  `debug`, `apply`, `resume`, `archive`/`delete`/`unarchive`, `fork`,
+  `cloud`, `exec-server`, `features` — unchanged from 0.144.1; `delete` is
+  additive since 0.139.0; the `doctor`/`update`/`login`/`logout`/`archive`
+  additions date to 0.137.0)
+- `codex plugin --help` (re-checked on 0.144.6: `add`, `list`, `marketplace`,
+  `remove` — command set unchanged from 0.137.0, whose per-plugin
+  `add`/`list`/`remove` went beyond the prior marketplace-only surface;
+  0.138.0 added `--json` to `add`/`remove`, and `list` supports `--json` plus
+  a `-m`/`--marketplace` filter)
+- `codex plugin list --json` (re-checked on 0.144.6: root object is
+  `{installed, available}`; installed entries carry
+  `pluginId`/`name`/`marketplaceName`/`version`/`installed`/`enabled`/
+  `installPolicy`/`authPolicy`, the 0.138.0 `marketplaceSource`
+  `{sourceType, source}` field on source-backed entries, and the additive
+  `source` `{source, path}` object; with `remote_plugin` stable,
+  remotely-sourced plugins appear alongside marketplace-sourced ones — all
+  additive relative to the field-selective ADR-0034 resolver)
+- `codex plugin marketplace --help` (re-checked on 0.144.6: `add`, `list`,
+  `upgrade`, `remove` — unchanged from 0.137.0; `marketplace list --json`
+  includes the marketplace source for source-backed marketplaces as of
+  0.139.0, not every entry)
+- `codex features list` (re-checked on 0.144.6: `plugin_hooks` still
+  reported `removed`, generic `hooks` stable/true,
+  `plugins`/`plugin_sharing`/`multi_agent`/`remote_plugin` stable/true,
+  `enable_fanout` and `multi_agent_v2` under development,
+  `collaboration_modes` removed — one additive row relative to the 0.144.1
+  observation: `multi_agent_mode` now listed as `removed`, a flag-inventory
+  change with no plugin/hook surface impact)
 
 ## Parity Matrix
 
@@ -271,3 +273,4 @@ line, not this table.
 | 2026-07-10 | `2.1.206` | `0.144.1` | Re-observed during `runtime:doctor` baseline-freshness recovery (compat run `compat-20260710T054356Z-34315e`, content-backed ingest of the Claude Code `CHANGELOG.md` 2.1.202–2.1.206 excerpt and the Codex GitHub release notes `rust-v0.143.0`/`rust-v0.144.0`/`rust-v0.144.1`). Both drifts are additive/fix-only with no plugin-CLI or hook-contract surface break; the `plugin-runtime` `0.77.2` proof `doctor-20260710T044745Z-1a789e` (ready 100% 8/8, host_parity pass) was measured on exactly this host pair, corroborating that no adaptation is required. Claude `2.1.201`→`2.1.206`: no hook-contract change (`2.1.204` fixes SessionStart hook-event streaming in headless sessions — a delivery fix, not a payload change; `2.1.205` adds a transcript-tamper auto-mode rule and promotes `/doctor` to a full checkup; `2.1.206` adds `/cd` path suggestions and worktree-entry confirmation); `--safe-mode` and `claude agents --json --all` remain. Codex `0.142.5`→`0.144.1`: `codex plugin` and `codex plugin marketplace` verb sets unchanged; `codex features list` keeps `plugin_hooks` `removed` and generic `hooks` stable — the one stage change is `remote_plugin` under-development→stable (`0.143.0` enables remote plugins by default with npm marketplace sources; additive catalog-source surface, agentic-plugins' git-source marketplace flows unchanged); `0.144.0` adds a `writes` app-approval mode and default MCP auth elicitation; `0.144.1` is installer/code-mode reliability backports. Because the Local CLI evidence block had sat at `2.1.173`/`0.139.0`, several re-observed surfaces are new relative to that last full observation rather than to this drift interval — `claude plugin` `eval`/`init`/`new`/`tag`, `claude mcp` `login`/`logout`, Codex top-level `delete`, and the `codex plugin list --json` `{installed, available}` root with the per-entry `source` `{source, path}` object (all additive; runtime's allowlisted command set and the field-selective ADR-0034 resolver are unaffected; retained-binary evidence dates several of these to before `0.144.x`/`2.1.20x`, e.g. `delete` absent at `0.139.0` but present by `0.142.5`). Also repaired this file's internally inconsistent Local CLI evidence block, which header-only refreshes had left at `2.1.173`/`0.139.0` since 2026-06-11. Baseline refresh only; no adoption work required. |
 | 2026-07-11 | `2.1.207` | `0.144.1` | Re-observed during the attention 0.4.1 relocation cascade's baseline-freshness follow-up (compat run `compat-20260711T081920Z-d8885f`, content-backed ingest of the Claude Code `CHANGELOG.md` 2.1.207 entry via explicit `--fetch-release-notes-url`). Claude `2.1.206`→`2.1.207` is fix-only with no plugin-CLI or hook-contract surface change: auto mode no longer needs the `CLAUDE_CODE_ENABLE_AUTO_MODE` opt-in on Bedrock/Vertex/Foundry (first-party auth flows unaffected; `disableAutoMode` opts out), plus streaming/TUI freezes, non-interactive remote-managed-settings consent recording, spurious prompt-injection warnings, the auto-updater overwriting a custom `~/.local/bin/claude` launcher (`/doctor` now reports an externally managed launcher), `cd`-compound permission prompts with `/dev/null` redirects, and transcript jump fixes. `claude plugin --help` and `claude mcp --help` re-checked on `2.1.207`: verb sets unchanged from the `2.1.206` observations. Codex `0.144.1` unchanged. The attention `0.4.1` install proof `doctor-20260711T045954Z-731e34` (parity `ready` `100%` 8/8, overall `pass`) was measured on exactly this host pair — its honest `host_parity_baseline` `stale` caveat is what this refresh closes. Baseline refresh only; no adoption work required. |
 | 2026-07-14 | `2.1.208` | `0.144.1` | Re-observed during the attention 0.5.0 four-persona sensor cascade's baseline-freshness follow-up (compat run `compat-20260714T033123Z-85e463`, content-backed ingest of the Claude Code `CHANGELOG.md` 2.1.208 entry via explicit `--fetch-release-notes-url`). Claude `2.1.207`→`2.1.208` is additive/fix-only with no plugin-CLI or hook-contract surface change: adds an opt-in screen reader mode (`--ax-screen-reader` / `CLAUDE_AX_SCREEN_READER` / `axScreenReader`), a `vimInsertModeRemaps` setting, `CLAUDE_CODE_PROCESS_WRAPPER` (self-spawns honor a corporate launcher wrapper), and mouse-click support for fullscreen multi-select menus; fixes fast-mode restore after model switches, lost replies to background agents, and background-session attach after an updater binary swap. `claude plugin --help` and `claude mcp --help` re-checked on `2.1.208`: verb sets unchanged from the `2.1.206` observations. Codex `0.144.1` unchanged. The attention `0.5.0` install proof `doctor-20260714T021309Z-0cd852` (parity `ready` `100%` 8/8, overall `pass`) was measured on exactly this host pair — its honest `host_parity_baseline` `stale` caveat is what this refresh closes. Baseline refresh only; no adoption work required. |
+| 2026-07-20 | `2.1.215` | `0.144.6` | Re-observed during the attention 0.7.0 post-release freshness recovery (compat run `compat-20260720T104815Z-9323ec`, content-backed ingest of the Claude Code `CHANGELOG.md` and the Codex GitHub releases atom feed, with `gh release view` closing the 0.144.2–0.144.5 gap the feed's alpha-heavy window dropped). Both drifts are additive/fix-only with no plugin-CLI or hook-contract surface break. Claude `2.1.208`→`2.1.215` (`2.1.213` unpublished): the hook-relevant entries are fixes — `2.1.210` fixes a hook-callback timeout misreported as user rejection, `2.1.211` floors a PreToolUse `ask` under auto mode, `2.1.212` fixes a `continue:false` hook halt dropped mid-stream and hook infrastructure errors misreported as user rejections — and `2.1.212` turns `/fork` into a copied background session (the `"fork"` SessionStart source noted by the probed matrix arrived in `2.1.214`), adds session-wide WebSearch/subagent caps, and deprecates the Task tool `mode` parameter; `2.1.214` is an extensive permission-fix release adding the EndConversation tool; `2.1.215` stops auto-invoking `/verify`/`/code-review`. The full Local CLI evidence block was re-run live on this pair: `claude plugin`/`claude mcp`/`claude agents` and all `codex plugin`/`codex plugin marketplace` verb sets unchanged. The SessionStart matrix verdict was separately re-validated live on `2.1.215` (PASS — §Claude `SessionStart` Matrix re-validation trail) and the attention `0.7.0` SessionStart entry sensor shipped against it. Codex `0.144.1`→`0.144.6` is fix/chore-only (`0.144.2` reverts a Guardian auto-review prompting regression, `0.144.3`/`0.144.4` are version-only/no-user-facing, `0.144.5` expands dangerous-command detection with clearer rejection reasons, `0.144.6` refreshes bundled GPT-5.6 model metadata/context windows); `plugin_hooks` stays `removed`, generic `hooks` stays stable, and one flag-inventory row is additive — `multi_agent_mode` now listed `removed`, no plugin/hook surface impact. Baseline refresh only; no adoption work required. |

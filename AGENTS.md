@@ -54,13 +54,17 @@ agentic-plugins/
 │   └── lint/                       # Plugin shape conformance checks
 ├── plugins/                        # Reference dual-host plugins (4-layer per ADR-0010)
 │   ├── README.md
-│   ├── attention/                  # L1 framework primitive — HOOK-ONLY plugin (ADR-0040 §3):
-│   │                               # Claude Notification/Stop/SubagentStop sensors emitting into
-│   │                               # the runtime notification pipeline via a version-gated
-│   │                               # discover-runtime ladder; no skills/verbs/state. Claude hook
-│   │                               # registration is manifest-declared at adapters/claude/hooks/
-│   │                               # (NOT the Codex default-discovery path) and the Codex manifest
-│   │                               # declares no hooks → zero Codex hook surface (§3 amendment)
+│   ├── attention/                  # L1 framework primitive — HOOK-ONLY plugin (ADR-0040 §3,
+│   │                               # amended by ADR-0044 §2 + ADR-0045 §2): Claude
+│   │                               # Notification/Stop/SubagentStop sensors feeding the runtime
+│   │                               # notify pipeline + the Stop-ordered session-capture spawn,
+│   │                               # and the SessionStart entry sensor relaying the ADR-0045
+│   │                               # entry-brief line — all via a version-gated discover-runtime
+│   │                               # ladder with triple capability floors; no skills/verbs/state.
+│   │                               # Claude hook registration is manifest-declared at
+│   │                               # adapters/claude/hooks/ (NOT the Codex default-discovery
+│   │                               # path) and the Codex manifest declares no hooks → zero Codex
+│   │                               # hook surface (§3 amendment)
 │   ├── companions/                 # L1 framework primitive — script-only library plugin (ADR-0008).
 │   │                               # As of v0.3.0 also bundles canonical companion discovery
 │   │                               # library (scripts/discover-peer.mjs); Stage 2 Deliverable B
