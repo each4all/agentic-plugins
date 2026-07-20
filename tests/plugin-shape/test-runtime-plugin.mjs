@@ -434,7 +434,7 @@ describe('plugins/runtime settings surface', () => {
   it('documents the Codex capability baseline with source-backed host boundaries', async () => {
     const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/codex-capability-baseline.md'), 'utf-8');
     for (const token of [
-      'codex-cli 0.144.1',
+      'codex-cli 0.144.6',
       'marketplaceSource',
       'https://developers.openai.com/codex/skills',
       'https://developers.openai.com/codex/plugins/build',
@@ -454,8 +454,8 @@ describe('plugins/runtime settings surface', () => {
   it('documents the Claude-vs-Codex host parity baseline with source-backed non-parity boundaries', async () => {
     const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
     for (const token of [
-      'Claude Code `2.1.208`',
-      'Codex CLI\n`0.144.1`',
+      'Claude Code `2.1.215`',
+      'Codex CLI\n`0.144.6`',
       'https://developers.openai.com/codex/subagents',
       'https://developers.openai.com/codex/hooks',
       'https://code.claude.com/docs/en/plugins',

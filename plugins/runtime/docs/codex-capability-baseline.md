@@ -1,6 +1,6 @@
 # Codex Capability Baseline
 
-Observed on 2026-07-10 with Codex CLI `0.144.1` plus official OpenAI
+Observed on 2026-07-20 with Codex CLI `0.144.6` plus official OpenAI
 developer docs. This file is a runtime-owned host-truth checkpoint, not a
 replacement for the upstream docs.
 
@@ -29,9 +29,15 @@ Official OpenAI developer docs:
 functional. A coordinated URL migration across both baseline docs and their
 test tokens is deliberately deferred to a follow-up.)
 
-Local CLI evidence (re-observed 2026-07-10 on `0.144.1`):
+Local CLI evidence (re-observed 2026-07-20 on `0.144.6`): the
+0.144.2–0.144.6 patch train is fix/chore-only per the GitHub release
+notes — a Guardian auto-review prompting revert, two no-user-facing
+patches, expanded dangerous-command detection, and refreshed GPT-5.6
+model metadata; every listed surface was re-run live, with verb sets
+and flag stages unchanged except the additive `multi_agent_mode`
+`removed` inventory row.
 
-- `codex --version` -> `codex-cli 0.144.1`
+- `codex --version` -> `codex-cli 0.144.6`
 - `codex --help` (0.144.1 top-level surface: `exec`, `review`, `login`/`logout`,
   `mcp`, `plugin`, `mcp-server`, `app-server`, `remote-control`, `app`,
   `completion`, `update`, `doctor`, `sandbox`, `debug`, `apply`, `resume`,
@@ -64,8 +70,12 @@ Local CLI evidence (re-observed 2026-07-10 on `0.144.1`):
     agentic-plugins hook-bearing plugins use exactly `session_start`,
     `pre_compact`, `stop`, and `subagent_stop`. A hooks-file event Codex does
     not recognize — Claude's `Notification` — produced **no** state entry at
-    all (attention's file declares Notification/Stop/SubagentStop; only
-    `stop` and `subagent_stop` materialized). `runtime:doctor` mirrors this
+    all (attention's file at that observation declared
+    Notification/Stop/SubagentStop; only `stop` and `subagent_stop`
+    materialized. The 2026-07-20 attention `0.7.0` adds a Claude-only
+    `SessionStart` registration to that same manifest-scoped file — Codex
+    still reads none of it, zero Codex hook surface, so the observation
+    stands). `runtime:doctor` mirrors this
     vocabulary (`CODEX_HOOK_STATE_EVENTS`) so an event the host can never
     materialize surfaces as `unmapped`, not as a permanently-`missing`
     expectation; an event actually observed in `[hooks.state]` is always
