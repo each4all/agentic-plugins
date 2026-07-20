@@ -2,6 +2,13 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.7.1](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.7.0...plugin-attention-v0.7.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* **plugin/attention:** SIGKILL kill bound on both Stop-seam spawns + build-metadata-safe semver copy ([eb480f3](https://github.com/each4all/agentic-plugins/commit/eb480f36b3e2694842ac368c2a1dcdebbb256454))
+
 ## [0.7.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.6.0...plugin-attention-v0.7.0) (2026-07-20)
 
 
