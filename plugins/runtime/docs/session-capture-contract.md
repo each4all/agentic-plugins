@@ -467,11 +467,12 @@ ships:
 
 # Entry-side contract — the arbitrated entry brief (ADR-0045)
 
-Sections §14-§17 extend this document to the entry side, as ADR-0045 §12
+Sections §14-§18 extend this document to the entry side, as ADR-0045 §12
 directed: this file is the shared exit+entry contract home. The exit side
 (§1-§13) is unchanged. Decided 2026-07-19 (macro
 `macro-plan-20260718T111223Z-ccc3c7` subtask S7b-brief-arbiter; plan-verify
-peer settlements folded).
+peer settlements folded; §18 and the dashboard-surface rules added by
+subtask S8-brief-surfaces).
 
 ## 14. Entry-side scope, sources, and parser tolerance
 
@@ -678,6 +679,18 @@ The complete command vocabulary (neutral form, localized per §17):
   disabled (or fail-closed) gate on the hook surface returns **before any
   bounded read or state probe** (§15.3 latency row); on cli/dashboard the
   gate state is informational and never a short-circuit.
+- **Dashboard advisory** (ADR-0045 §7(ii), S8): `runtime:dashboard` renders
+  the same executor's `dashboard`-surface report as a Tier-1 section in
+  **snapshot mode only** — the `--watch` loop is filesystem-only by policy
+  and excludes the advisory **before** the arbiter (and its bounded git
+  probes) can run: a watch report carries no `entry_advisory` key at all.
+  The trusted host is the invoking wrapper's `--host`; without one the
+  advisory reports `skipped (host-not-threaded)` instead of guessing a
+  localization. The advisory arbitrates over all four personas in one
+  section without changing the dashboard's Tier-1 persona rows
+  (`DASHBOARD_PERSONAS` and designer's row exclusion stay untouched —
+  ADR-0045 §7 scope note). An executor failure degrades to an error row
+  and never takes the rest of the dashboard down.
 - **Activation is user-scope-only** (ADR-0045 §7): `entry_brief`
   (`off | startup`, default `off`) and `entry_brief_empty`
   (`silent | report`, default `silent`) resolve **env > user-global config >
@@ -741,3 +754,78 @@ prevented, unreadable-user fail-closed over valid env); brief schema
 mutations plus the semantic-validator mutations (lead⇔leading, negative
 counts, kind/state/id-family mismatches, row-carried command, mutated
 note); line-cap shrink determinism with post-shrink revalidation.
+
+## 18. Entry-side readiness diagnosis (`entry_brief` half-enabled states)
+
+ADR-0045 §10 extends the §13 readiness-diagnosis shape to the entry side:
+settings and doctor both consume the shared
+`lib/session-readiness.mjs` `assessEntryBriefReadiness` so the operator
+diagnosis can never disagree with itself across surfaces. The assessment
+is read-only and filesystem+env only (valid in the settings `local_plan`
+scope); the gate reads the SAME user-scope-only `loadEntryBriefConfig`
+loader the entry-brief executor gates on (§17) — one authority for what
+"on" means. This diagnosis covers the **hook emission chain only**: `off`
+is a chosen state, informational and never a warning, and the
+cli/dashboard surfaces always compute regardless.
+
+- **Floor declaration**: the entry sensor's floor is the **additive
+  sibling key** `floors.entry_brief` in the same
+  `<attention plugin root>/data/runtime-floors.json` file (§13). The
+  attention release that ships the SessionStart entry sensor pins it to
+  the first **released** runtime version carrying `entry-brief`
+  (ADR-0043 released-floor rule; notify, publisher, and entry-brief
+  floors never share a constant — ADR-0045 §12). Key semantics differ
+  from the founding key by design: `publish_session` is required by the
+  1.x family (its absence in a present file is malformed, §13), while an
+  absent `entry_brief` key in a present, well-formed file is the honest
+  pre-entry-sensor state — `entry-sensor-not-shipped`, never malformed.
+- **States** (composable, mirroring §13):
+  - `safe-mode-hooks-disabled`, `attention-missing`,
+    `attention-disabled` — shared vocabulary with §13: the same
+    hook-chain condition never renders under two labels; only the
+    recommendation text is entry-flavored (SessionStart sensor).
+  - floors file absent, or present without `floors.entry_brief` ⇒
+    `entry-sensor-not-shipped` (the installed attention build predates
+    the entry sensor).
+  - floors file unreadable/malformed — including a non-object or
+    array `floors` value, or a present file whose founding
+    `publish_session` key is missing or not a clean released `X.Y.Z`
+    (document-level integrity: an additive sibling key never validates
+    out of a corrupt file) — or an `entry_brief` value that is not a
+    clean released `X.Y.Z` ⇒ `floor-declaration-malformed`
+    (fail-closed: never treated as satisfied).
+  - declared floor newer than the runtime executing the diagnosis ⇒
+    `runtime-below-entry-floor`.
+  - **`entry-executor-missing`** — the ADR-0045 §10 determination made
+    diagnosable: version floors prove version, not capability presence,
+    so at a **passing** floor the assessment mirrors the dispatcher's
+    executor-existence probe. It stats `scripts/context.mjs` in the
+    newest installed runtime build under the Claude plugin cache (the
+    dispatcher's primary discovery rung); a missing executor at a
+    passing floor is the state in which the dispatcher no-ops and no
+    line is ever injected. Below a failing floor the probe is moot and
+    is not run (`entry_executor.probed: false`).
+- **Stated limits** (the §13 advisory shape): no cached runtime build ⇒
+  `entry_executor.present: null` — unverifiable, **not** a blocking
+  state (the sensor resolves its runtime through attention's discovery
+  ladder — env override, cache, sibling — which the advisory diagnosis
+  does not re-implement). The floor comparison uses the runtime version
+  executing the diagnosis, exactly as §13.
+- **Statuses**: `off` (informational) | `ready` | `blocked` (gate on,
+  one or more states) | `config-fail-closed` (the user-scope-only loader
+  refused — same refusal the executor makes, §17). The gate report
+  carries `entry_brief`, `entry_brief_empty`, `ignored_repo_keys`, and
+  `repo_layer` so a tracked-repo activation attempt stays visible.
+
+### 18.1 Surface obligations (S8, mutation-verified)
+
+Dashboard advisory absent in `--watch` (no `entry_advisory` key) and
+present in the opted-in snapshot; `host-not-threaded` skip when no
+`--host` reaches the snapshot; the advisory carries the executor's own
+report (same brief, same gate) and an executor failure degrades to an
+error section without failing the dashboard; entry readiness surfaces in
+BOTH settings report scopes and in doctor, with status derived from
+states (`off`/`ready` silent); the sibling-absent floors file diagnoses
+`entry-sensor-not-shipped` (never `floor-declaration-malformed`); the
+executor-existence probe runs only at a passing floor and its absence
+there blocks.

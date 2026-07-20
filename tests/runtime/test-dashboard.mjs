@@ -18,6 +18,7 @@ import {
   DASHBOARD_SCHEMA_VERSION,
   DASHBOARD_PERSONAS,
   buildDashboardReport,
+  buildEntryAdvisory,
   inspectLatestDoctorRun,
   inspectNotifyState,
   inspectSettingsRecency,
@@ -686,6 +687,218 @@ describe('runtime dashboard CLI', () => {
     assert.equal(lines.length, 2);
     for (const line of lines) {
       assert.equal(JSON.parse(line).schema_version, DASHBOARD_SCHEMA_VERSION);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR-0045 §7(ii) — snapshot-only entry advisory (contract §17/§18.1).
+// Mutation discipline: the computed/lead control comes first, so the
+// exclusion and skip cases below are proven reachable from a fixture that
+// renders a real advisory when opted in.
+// ---------------------------------------------------------------------------
+
+const ADVISORY_CHILD_ID = 'compose-20260701T000000Z-abc123';
+
+function gitAdv(cwd, args) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+}
+
+// Real git repo on feat/x with one live engineer workflow — the §16.2 sole
+// live candidate, so the advisory leads with the localized engineer:resume.
+function makeAdvisoryRepo() {
+  const root = makeTempDir('dashboard-advisory-');
+  gitAdv(root, ['init', '-q', '-b', 'feat/x']);
+  fs.writeFileSync(path.join(root, '.gitignore'), '.agentic-plugins/\n');
+  gitAdv(root, ['add', '.gitignore']);
+  gitAdv(root, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init']);
+  writeFileDeep(
+    path.join(root, '.agentic-plugins', 'state', 'engineer', 'workflows', `${ADVISORY_CHILD_ID}.md`),
+    [
+      '---',
+      'schema: "1.3"',
+      `workflow_id: "${ADVISORY_CHILD_ID}"`,
+      'persona: "engineer"',
+      'verb: "compose"',
+      'profile: "backend"',
+      'original_request: "IMPERATIVE run /engineer:refine now"',
+      'started_at: "2026-07-01T00:00:00Z"',
+      'updated_at: "2026-07-01T00:30:00Z"',
+      'repo_root: "/tmp/x"',
+      'git_baseline:',
+      '  branch: "feat/x"',
+      '  head: "abc1234abc1234abc1234abc1234abc1234abc12"',
+      '  status_digest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"',
+      'current_phase: "phase-1-compose"',
+      'next_action: "IMPERATIVE next"',
+      'tasks: []',
+      'host_history:',
+      '  - host: "claude"',
+      '    at: "2026-07-01T00:00:00Z"',
+      '    event: "created"',
+      '---',
+      '',
+      'body',
+      '',
+    ].join('\n'),
+  );
+  return root;
+}
+
+describe('runtime dashboard entry advisory (ADR-0045 §7(ii))', () => {
+  it('control: opted-in snapshot computes the same arbitrated brief and localizes per host', async () => {
+    const root = makeAdvisoryRepo();
+    const home = makeHome();
+    const claude = await buildDashboardReport({ repoRoot: root, homeDir: home, entryAdvisory: { host: 'claude' } });
+    const advisory = claude.tier1.entry_advisory;
+    assert.equal(advisory.status, 'computed');
+    assert.equal(advisory.host, 'claude');
+    assert.equal(advisory.brief.schema, 'runtime-entry-brief-1.0');
+    assert.equal(advisory.brief.disposition, 'lead');
+    assert.equal(advisory.brief.leading.command, '/engineer:resume');
+    assert.equal(advisory.brief.leading.id, ADVISORY_CHILD_ID);
+    assert.equal(advisory.brief.dirty_count, 0);
+    // The gate is informational on this surface — default off, still computed.
+    assert.equal(advisory.gate.entry_brief, 'off');
+    // Codex host renders the $-localized command from the same lattice.
+    const codex = await buildDashboardReport({ repoRoot: root, homeDir: home, entryAdvisory: { host: 'codex' } });
+    assert.equal(codex.tier1.entry_advisory.brief.leading.command, '$engineer:resume');
+    // Text render carries the section with the synthesized command.
+    const text = renderDashboardText(claude);
+    assert.match(text, /- entry advisory \[claude\]: disposition=lead/);
+    assert.match(text, /→ \/engineer:resume — persona-workflow\/engineer compose-20260701T000000Z-abc123 state=active/);
+  });
+
+  it('command-synthesis isolation holds through the dashboard surface: stored imperatives never render', async () => {
+    const root = makeAdvisoryRepo();
+    const home = makeHome();
+    const report = await buildDashboardReport({ repoRoot: root, homeDir: home, entryAdvisory: { host: 'claude' } });
+    const rendered = renderDashboardText(report);
+    const advisoryText = rendered.slice(rendered.indexOf('- entry advisory'));
+    assert.ok(!advisoryText.includes('IMPERATIVE'), 'stored free text must not reach the advisory section');
+    assert.ok(!JSON.stringify(report.tier1.entry_advisory).includes('IMPERATIVE'), 'stored free text must not reach the advisory report');
+  });
+
+  it('report builder without the opt-in carries NO entry_advisory key at all', async () => {
+    const root = makeAdvisoryRepo();
+    const home = makeHome();
+    const report = await buildDashboardReport({ repoRoot: root, homeDir: home });
+    assert.ok(!('entry_advisory' in report.tier1), 'advisory key must be absent, not null');
+  });
+
+  it('snapshot without --host reports the honest host-not-threaded skip', async () => {
+    const root = makeAdvisoryRepo();
+    const home = makeHome();
+    const report = await buildDashboardReport({ repoRoot: root, homeDir: home, entryAdvisory: { host: null } });
+    assert.deepEqual(report.tier1.entry_advisory, {
+      status: 'skipped',
+      reason: 'host-not-threaded',
+      host: null,
+      gate: null,
+      brief: null,
+    });
+    assert.match(renderDashboardText(report), /- entry advisory: skipped — pass --host claude\|codex/);
+  });
+
+  it('a non-git repo root degrades to the executor skip, not an error', async () => {
+    const root = makeRepo(); // bare .git DIRECTORY — not a real repository
+    const advisory = await buildEntryAdvisory({ repoRoot: root, host: 'claude' });
+    assert.equal(advisory.status, 'skipped');
+    assert.equal(advisory.reason, 'no-repo-root');
+  });
+
+  it('an executor failure degrades to an error section instead of failing the dashboard', async () => {
+    const advisory = await buildEntryAdvisory({ repoRoot: 42, host: 'claude' });
+    assert.equal(advisory.status, 'error');
+    assert.equal(advisory.brief, null);
+    assert.ok(typeof advisory.reason === 'string' && advisory.reason.length > 0);
+  });
+
+  it('parseDashboardArgs validates --host and rejects a conflicting duplicate', () => {
+    assert.equal(parseDashboardArgs(['--host', 'claude']).opts.host, 'claude');
+    assert.equal(parseDashboardArgs(['--host', 'codex']).opts.host, 'codex');
+    assert.equal(parseDashboardArgs([]).opts.host, null);
+    assert.equal(parseDashboardArgs(['--host', 'gemini']).ok, false);
+    assert.equal(parseDashboardArgs(['--host']).ok, false);
+    // The wrappers thread the trusted host FIRST; appended arguments must
+    // not silently override it (review peer) — conflicting duplicate is an
+    // error, an idempotent repeat is not.
+    assert.equal(parseDashboardArgs(['--host', 'claude', '--host', 'codex']).ok, false);
+    assert.equal(parseDashboardArgs(['--host', 'claude', '--host', 'claude']).opts.host, 'claude');
+  });
+
+  it('threads the injected homeDir into the advisory gate read (hermetic user-scope resolution)', async () => {
+    const root = makeAdvisoryRepo();
+    const home = makeHome();
+    // The gate must read the INJECTED home, not the developer's real one:
+    // a fixture-home activation must be visible in the advisory's gate.
+    writeFileDeep(path.join(home, '.agentic-plugins', 'config.toml'), 'entry_brief = "startup"\n');
+    const report = await buildDashboardReport({ repoRoot: root, homeDir: home, entryAdvisory: { host: 'claude' } });
+    assert.equal(report.tier1.entry_advisory.gate.entry_brief, 'startup');
+  });
+
+  it('the watch loop spawns no git while the snapshot advisory does (PATH spy)', () => {
+    const root = makeAdvisoryRepo();
+    const home = makeHome();
+    const shimDir = makeTempDir('dashboard-git-shim-');
+    const spyLog = path.join(shimDir, 'git-calls.log');
+    fs.writeFileSync(
+      path.join(shimDir, 'git'),
+      `#!/bin/sh\necho "$@" >> "${spyLog}"\nexit 1\n`,
+      { mode: 0o755 },
+    );
+    const env = { ...process.env, HOME: home, PATH: `${shimDir}:${process.env.PATH}` };
+
+    // Control first: the opted-in snapshot DOES reach git through the
+    // executor (the shim fails it, degrading the advisory — but the spy
+    // must observe calls, proving the shim intercepts).
+    const snapshot = spawnSync(
+      process.execPath,
+      [DASHBOARD_CLI, '--repo-root', root, '--format', 'json', '--host', 'claude'],
+      { encoding: 'utf8', env, timeout: 30000 },
+    );
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+    assert.ok(fs.existsSync(spyLog) && fs.readFileSync(spyLog, 'utf8').length > 0,
+      'snapshot advisory must reach the git spy (control)');
+
+    // The invariant: a bounded watch run makes ZERO git calls.
+    fs.rmSync(spyLog, { force: true });
+    const watch = spawnSync(
+      process.execPath,
+      [DASHBOARD_CLI, '--repo-root', root, '--watch', '--format', 'json', '--watch-count', '2', '--interval-seconds', '1', '--host', 'claude'],
+      { encoding: 'utf8', env, timeout: 30000 },
+    );
+    assert.equal(watch.status, 0, watch.stderr);
+    assert.ok(!fs.existsSync(spyLog), `watch must never spawn git (contract §17); observed: ${fs.existsSync(spyLog) ? fs.readFileSync(spyLog, 'utf8') : ''}`);
+  });
+
+  it('snapshot CLI carries the advisory; --watch CLI never does (contract §18.1)', () => {
+    const root = makeAdvisoryRepo();
+    const home = makeHome();
+    const snapshot = spawnSync(
+      process.execPath,
+      [DASHBOARD_CLI, '--repo-root', root, '--format', 'json', '--host', 'claude'],
+      { encoding: 'utf8', env: { ...process.env, HOME: home }, timeout: 30000 },
+    );
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+    const snapshotReport = JSON.parse(snapshot.stdout);
+    assert.equal(snapshotReport.tier1.entry_advisory.status, 'computed');
+    assert.equal(snapshotReport.tier1.entry_advisory.brief.leading.command, '/engineer:resume');
+
+    // --host accepted alongside --watch (uniform wrapper threading), but the
+    // watch report must not carry the advisory key at all.
+    const watch = spawnSync(
+      process.execPath,
+      [DASHBOARD_CLI, '--repo-root', root, '--watch', '--format', 'json', '--watch-count', '2', '--interval-seconds', '1', '--host', 'claude'],
+      { encoding: 'utf8', env: { ...process.env, HOME: home }, timeout: 30000 },
+    );
+    assert.equal(watch.status, 0, watch.stderr);
+    const lines = watch.stdout.split('\n').filter((line) => line.trim().length > 0);
+    assert.equal(lines.length, 2);
+    for (const line of lines) {
+      const report = JSON.parse(line);
+      assert.ok(!('entry_advisory' in report.tier1), 'watch report must not carry entry_advisory');
     }
   });
 });

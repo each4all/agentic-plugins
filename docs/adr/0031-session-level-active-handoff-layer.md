@@ -5,6 +5,19 @@
 Accepted (amended 2026-06-22 — *active firing via completion-script
 sidecar*; see [Amendment](#amendment-2026-06-22-active-firing-via-completion-script-sidecar) below. The original projection-model decision stands unchanged; the amendment adds how it **actively fires**.)
 
+**Alternatives §Approach A's reader-boundary rejection narrowly amended
+by [ADR-0045](0045-entry-time-proposal-surfaces.md) §2.1 (2026-07-19),
+scoped to the entry-brief observer only.** The rejection stands for the
+completion/handoff seam: personas keep computing and pushing their own
+projections, and runtime's footer path stays push-not-pull. For the
+*entry* surface only, ADR-0045 authorizes one runtime-owned, read-only
+observer (the `runtime:context entry-brief` arbiter) over
+persona/orchestrator state through a **versioned, tolerant parser layer**
+that degrades to `indeterminate` on any schema drift, parse failure,
+ambiguity, or scan overflow instead of interpreting. Approach C
+(persona-produced neutral entry projections) remains the recorded
+escalation shape if that parser's drift cost materializes.
+
 **Decision §6's second-artifact clause narrowly amended by
 [ADR-0044](0044-session-generic-handoff-capture.md) §4 (2026-07-18).**
 §6 ruled that cross-session persistence of the next-session prompt
@@ -186,6 +199,9 @@ making runtime brittle to higher-layer schema drift. It also pulls
 runtime toward owning persona/macro semantics (archive-gate
 interpretation) it explicitly does not own (ADR-0024). Tempting only for
 implementation speed (smallest change to completion surfaces).
+*(Narrowly amended for the entry surface only by
+[ADR-0045](0045-entry-time-proposal-surfaces.md) §2.1 — see Status; the
+completion/handoff rejection recorded here stands.)*
 
 **Approach C — neutral session-handoff projection artifact.** Define a
 versioned neutral projection artifact written by engineer/orchestrator

@@ -16,7 +16,10 @@ import { join } from 'node:path';
 
 import {
   ATTENTION_RUNTIME_FLOORS_REL_PATH,
+  ENTRY_BRIEF_READINESS_STATES,
+  RUNTIME_ENTRY_EXECUTOR_REL_PATH,
   SESSION_READINESS_STATES,
+  assessEntryBriefReadiness,
   assessSessionCaptureReadiness,
   claudePluginListEnablement,
 } from '../../plugins/runtime/scripts/lib/session-readiness.mjs';
@@ -30,10 +33,13 @@ function floorsDocument({ schema = 'attention-runtime-floors-1.0', floors = { pu
 
 // homeDir/.claude/plugins/cache/agentic-plugins/attention/<version>/ with a
 // Claude manifest, plus an optional data/runtime-floors.json declaration.
+// `runtimeVersions` mints cached runtime builds the same way for the
+// entry-executor probe (`executor: false` omits scripts/context.mjs).
 async function makeFixture({
   repoToml = 'session_capture = "stop-hook"\n',
   userToml = null,
   attentionVersions = [{ version: '0.5.0', floorsText: floorsDocument() }],
+  runtimeVersions = [],
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'session-readiness-'));
   const repoRoot = join(root, 'repo');
@@ -52,6 +58,18 @@ async function makeFixture({
     if (entry.floorsText !== undefined) {
       await mkdir(join(pluginRoot, 'data'), { recursive: true });
       await writeFile(join(pluginRoot, ATTENTION_RUNTIME_FLOORS_REL_PATH), entry.floorsText);
+    }
+  }
+  for (const entry of runtimeVersions) {
+    const pluginRoot = join(homeDir, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime', entry.version);
+    await mkdir(join(pluginRoot, '.claude-plugin'), { recursive: true });
+    await writeFile(
+      join(pluginRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'runtime', version: entry.version }),
+    );
+    if (entry.executor !== false) {
+      await mkdir(join(pluginRoot, 'scripts'), { recursive: true });
+      await writeFile(join(pluginRoot, RUNTIME_ENTRY_EXECUTOR_REL_PATH), '// executor stub\n');
     }
   }
   return {
@@ -347,5 +365,340 @@ describe('assessSessionCaptureReadiness (contract §13)', () => {
       }
     }
     deepStrictEqual([...emitted].sort(), [...SESSION_READINESS_STATES].sort());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR-0045 §10 entry-side assessment (contract §18): the same mutation
+// discipline — the ready control first, every blocker reachable from a
+// fixture that passes when intact.
+// ---------------------------------------------------------------------------
+
+const ENTRY_USER_TOML = 'entry_brief = "startup"\n';
+
+function entryFloorsDocument({ entryFloor = READY_FLOOR, publishFloor = READY_FLOOR, omitEntry = false } = {}) {
+  const floors = { publish_session: publishFloor };
+  if (!omitEntry) floors.entry_brief = entryFloor;
+  return floorsDocument({ floors });
+}
+
+async function makeEntryFixture(overrides = {}) {
+  return makeFixture({
+    repoToml: null,
+    userToml: ENTRY_USER_TOML,
+    attentionVersions: [{ version: '0.6.0', floorsText: entryFloorsDocument() }],
+    runtimeVersions: [{ version: '0.90.0' }],
+    ...overrides,
+  });
+}
+
+function assessEntry(fx, overrides = {}) {
+  return assessEntryBriefReadiness({
+    repoRoot: fx.repoRoot,
+    homeDir: fx.homeDir,
+    env: {},
+    runtimeVersion: READY_RUNTIME_VERSION,
+    ...overrides,
+  });
+}
+
+describe('assessEntryBriefReadiness (contract §18)', () => {
+  it('control: gate on + installed attention + entry floor + executor present => ready', async () => {
+    const fx = await makeEntryFixture();
+    try {
+      const result = await assessEntry(fx);
+      strictEqual(result.status, 'ready');
+      deepStrictEqual(result.states, []);
+      deepStrictEqual(result.recommendations, []);
+      strictEqual(result.gate.value, 'startup');
+      strictEqual(result.gate.empty_value, 'silent');
+      strictEqual(result.safe_mode.active, false);
+      strictEqual(result.attention.installed, true);
+      strictEqual(result.attention.version, '0.6.0');
+      strictEqual(result.attention.enablement, 'unverified');
+      strictEqual(result.entry_floor.declared, true);
+      strictEqual(result.entry_floor.floor, READY_FLOOR);
+      strictEqual(result.entry_floor.satisfied, true);
+      strictEqual(result.entry_floor.runtime_version, READY_RUNTIME_VERSION);
+      deepStrictEqual(result.entry_executor, { probed: true, present: true, runtime_version: '0.90.0' });
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('shipped default off is informational: no states, no chain checks, executor unprobed', async () => {
+    const fx = await makeEntryFixture({ userToml: null });
+    try {
+      const result = await assessEntry(fx);
+      strictEqual(result.status, 'off');
+      strictEqual(result.gate.value, 'off');
+      deepStrictEqual(result.states, []);
+      deepStrictEqual(result.recommendations, []);
+      strictEqual(result.attention.installed, false); // chain not evaluated
+      deepStrictEqual(result.entry_executor, { probed: false, present: null, runtime_version: null });
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('a tracked repo value never activates: off, reported as ignored', async () => {
+    const fx = await makeEntryFixture({ userToml: null, repoToml: 'entry_brief = "startup"\n' });
+    try {
+      const result = await assessEntry(fx);
+      strictEqual(result.status, 'off');
+      strictEqual(result.gate.value, 'off');
+      ok(result.gate.ignored_repo_keys.includes('entry_brief'));
+      strictEqual(result.gate.repo_layer, 'read');
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('the env channel activates without a user file (env > user-global > default)', async () => {
+    const fx = await makeEntryFixture({ userToml: null });
+    try {
+      const result = await assessEntry(fx, { env: { AGENTIC_ENTRY_BRIEF: 'startup' } });
+      strictEqual(result.status, 'ready');
+      strictEqual(result.gate.value, 'startup');
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('an invalid user value fail-closes as config-fail-closed with a recommendation', async () => {
+    const fx = await makeEntryFixture({ userToml: 'entry_brief = "always"\n' });
+    try {
+      const result = await assessEntry(fx);
+      strictEqual(result.status, 'config-fail-closed');
+      strictEqual(result.gate.value, null);
+      strictEqual(result.recommendations.length, 1);
+      strictEqual(result.recommendations[0].state, 'config-fail-closed');
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('safe mode env blocks the entry chain', async () => {
+    const fx = await makeEntryFixture();
+    try {
+      const result = await assessEntry(fx, { env: { CLAUDE_CODE_SAFE_MODE: '1' } });
+      strictEqual(result.status, 'blocked');
+      deepStrictEqual(result.states, ['safe-mode-hooks-disabled']);
+      strictEqual(result.safe_mode.active, true);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('gate on with no attention install => attention-missing', async () => {
+    const fx = await makeEntryFixture({ attentionVersions: [] });
+    try {
+      const result = await assessEntry(fx);
+      strictEqual(result.status, 'blocked');
+      deepStrictEqual(result.states, ['attention-missing']);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('injected enablement refines the verdict: false blocks, true verifies, absent stays unverified', async () => {
+    const fx = await makeEntryFixture();
+    try {
+      const disabled = await assessEntry(fx, { attentionEnablement: { enabled: false, version: '0.6.0' } });
+      strictEqual(disabled.attention.enablement, 'disabled');
+      ok(disabled.states.includes('attention-disabled'));
+      const enabled = await assessEntry(fx, { attentionEnablement: { enabled: true, version: '0.6.0' } });
+      strictEqual(enabled.attention.enablement, 'enabled');
+      strictEqual(enabled.status, 'ready');
+      const absent = await assessEntry(fx);
+      strictEqual(absent.attention.enablement, 'unverified');
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('no floors file at all => entry-sensor-not-shipped', async () => {
+    const fx = await makeEntryFixture({ attentionVersions: [{ version: '0.6.0' }] });
+    try {
+      const result = await assessEntry(fx);
+      strictEqual(result.status, 'blocked');
+      deepStrictEqual(result.states, ['entry-sensor-not-shipped']);
+      strictEqual(result.entry_floor.declared, false);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('a valid floors file WITHOUT the entry_brief sibling key => entry-sensor-not-shipped, never malformed', async () => {
+    // The additive sibling-key rule (§13): the S5-era file legitimately
+    // exists with publish_session only until the entry sensor ships.
+    const fx = await makeEntryFixture({
+      attentionVersions: [{ version: '0.6.0', floorsText: entryFloorsDocument({ omitEntry: true }) }],
+    });
+    try {
+      const result = await assessEntry(fx);
+      strictEqual(result.status, 'blocked');
+      deepStrictEqual(result.states, ['entry-sensor-not-shipped']);
+      strictEqual(result.entry_floor.declared, false);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('each malformed entry-floor shape => floor-declaration-malformed (fail-closed)', async () => {
+    for (const entryFloor of ['0.90', 1, '1.0.0-rc.1', '']) {
+      const fx = await makeEntryFixture({
+        attentionVersions: [{ version: '0.6.0', floorsText: entryFloorsDocument({ entryFloor }) }],
+      });
+      try {
+        const result = await assessEntry(fx);
+        strictEqual(result.status, 'blocked', `entry floor ${JSON.stringify(entryFloor)} must be malformed`);
+        deepStrictEqual(result.states, ['floor-declaration-malformed']);
+        strictEqual(result.entry_floor.floor, null);
+      } finally {
+        await fx.cleanup();
+      }
+    }
+  });
+
+  it('a present file missing the FOUNDING publish_session key is malformed — an additive sibling never validates out of a corrupt document', async () => {
+    // Review-peer repro: {floors:{entry_brief:"0.90.0"}} must never read
+    // as ready — §13 makes publish_session required by the 1.x family.
+    const fx = await makeEntryFixture({
+      attentionVersions: [{
+        version: '0.6.0',
+        floorsText: JSON.stringify({ schema: 'attention-runtime-floors-1.0', floors: { entry_brief: READY_FLOOR } }),
+      }],
+    });
+    try {
+      const result = await assessEntry(fx);
+      strictEqual(result.status, 'blocked');
+      deepStrictEqual(result.states, ['floor-declaration-malformed']);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('an array-shaped floors value is malformed, never sibling-absent', async () => {
+    const fx = await makeEntryFixture({
+      attentionVersions: [{
+        version: '0.6.0',
+        floorsText: JSON.stringify({ schema: 'attention-runtime-floors-1.0', floors: [] }),
+      }],
+    });
+    try {
+      const result = await assessEntry(fx);
+      strictEqual(result.status, 'blocked');
+      deepStrictEqual(result.states, ['floor-declaration-malformed']);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('config-fail-closed keeps the repo-layer observations visible (ignored keys, repo_layer)', async () => {
+    const fx = await makeEntryFixture({
+      userToml: 'entry_brief = "always"\n',
+      repoToml: 'entry_brief = "startup"\n',
+    });
+    try {
+      const result = await assessEntry(fx);
+      strictEqual(result.status, 'config-fail-closed');
+      deepStrictEqual(result.gate.ignored_repo_keys, ['entry_brief']);
+      strictEqual(result.gate.repo_layer, 'read');
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('declared entry floor above the installed runtime => runtime-below-entry-floor', async () => {
+    const fx = await makeEntryFixture({
+      attentionVersions: [{ version: '0.6.0', floorsText: entryFloorsDocument({ entryFloor: '99.0.0' }) }],
+    });
+    try {
+      const result = await assessEntry(fx);
+      strictEqual(result.status, 'blocked');
+      deepStrictEqual(result.states, ['runtime-below-entry-floor']);
+      strictEqual(result.entry_floor.satisfied, false);
+      // Below the floor the executor probe is moot — never reached.
+      deepStrictEqual(result.entry_executor, { probed: false, present: null, runtime_version: null });
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('executor absent at a passing floor => entry-executor-missing (ADR-0045 §10)', async () => {
+    const fx = await makeEntryFixture({ runtimeVersions: [{ version: '0.90.0', executor: false }] });
+    try {
+      const result = await assessEntry(fx);
+      strictEqual(result.status, 'blocked');
+      deepStrictEqual(result.states, ['entry-executor-missing']);
+      strictEqual(result.entry_floor.satisfied, true);
+      deepStrictEqual(result.entry_executor, { probed: true, present: false, runtime_version: '0.90.0' });
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('no cached runtime build => executor unverifiable (present null), not a blocking state', async () => {
+    const fx = await makeEntryFixture({ runtimeVersions: [] });
+    try {
+      const result = await assessEntry(fx);
+      strictEqual(result.status, 'ready');
+      deepStrictEqual(result.entry_executor, { probed: true, present: null, runtime_version: null });
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('probes the NEWEST cached runtime build (numeric semver order)', async () => {
+    const fx = await makeEntryFixture({
+      runtimeVersions: [
+        { version: '0.9.0', executor: true },
+        { version: '0.100.0', executor: false },
+      ],
+    });
+    try {
+      const result = await assessEntry(fx);
+      deepStrictEqual(result.entry_executor, { probed: true, present: false, runtime_version: '0.100.0' });
+      deepStrictEqual(result.states, ['entry-executor-missing']);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('states compose: safe mode + missing attention are both reported', async () => {
+    const fx = await makeEntryFixture({ attentionVersions: [] });
+    try {
+      const result = await assessEntry(fx, { env: { CLAUDE_CODE_SAFE_MODE: '1' } });
+      strictEqual(result.status, 'blocked');
+      deepStrictEqual([...result.states].sort(), ['attention-missing', 'safe-mode-hooks-disabled']);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('every emitted entry state is a member of the exported entry state enum', async () => {
+    const emitted = new Set();
+    const scenarios = [
+      { overrides: { attentionVersions: [] }, env: { CLAUDE_CODE_SAFE_MODE: '1' } },
+      { overrides: {}, enablement: { enabled: false, version: '0.6.0' } },
+      { overrides: { attentionVersions: [{ version: '0.6.0', floorsText: entryFloorsDocument({ omitEntry: true }) }] } },
+      { overrides: { attentionVersions: [{ version: '0.6.0', floorsText: entryFloorsDocument({ entryFloor: 'nope' }) }] } },
+      { overrides: { attentionVersions: [{ version: '0.6.0', floorsText: entryFloorsDocument({ entryFloor: '99.0.0' }) }] } },
+      { overrides: { runtimeVersions: [{ version: '0.90.0', executor: false }] } },
+    ];
+    for (const scenario of scenarios) {
+      const fx = await makeEntryFixture(scenario.overrides);
+      try {
+        const result = await assessEntry(fx, {
+          env: scenario.env ?? {},
+          attentionEnablement: scenario.enablement ?? null,
+        });
+        for (const state of result.states) emitted.add(state);
+      } finally {
+        await fx.cleanup();
+      }
+    }
+    deepStrictEqual([...emitted].sort(), [...ENTRY_BRIEF_READINESS_STATES].sort());
   });
 });

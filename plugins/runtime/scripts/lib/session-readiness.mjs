@@ -18,11 +18,11 @@
 // unreleased version would violate the ADR-0043 released-floor rule.
 
 import { readFileSync } from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
 
-import { loadSessionConfig } from './runtime-config.mjs';
+import { loadEntryBriefConfig, loadSessionConfig } from './runtime-config.mjs';
 import { semverCompare } from './semver.mjs';
 
 // Contract §13 — the declaration file attention ships relative to its
@@ -32,10 +32,17 @@ import { semverCompare } from './semver.mjs';
 export const ATTENTION_RUNTIME_FLOORS_REL_PATH = join('data', 'runtime-floors.json');
 export const ATTENTION_RUNTIME_FLOORS_SCHEMA_RE = /^attention-runtime-floors-1\.\d+$/;
 
-// The v1 firing point is the Claude Stop sensor (ADR-0044 §8), so the
-// Claude plugin cache is the load-bearing install location — a Codex-only
-// attention install cannot fire the publisher and does not count as ready.
-const ATTENTION_CLAUDE_CACHE_SEGMENTS = ['.claude', 'plugins', 'cache', 'agentic-plugins', 'attention'];
+// The v1 firing points are Claude hooks (ADR-0044 §8 Stop, ADR-0045 §10
+// SessionStart), so the Claude plugin cache is the load-bearing install
+// location — a Codex-only install cannot fire either sensor and does not
+// count as ready.
+const CLAUDE_PLUGIN_CACHE_SEGMENTS = ['.claude', 'plugins', 'cache', 'agentic-plugins'];
+
+// ADR-0045 §10 — the entry executor the SessionStart dispatcher probes for:
+// version floors prove version, not capability presence, so the readiness
+// diagnosis mirrors the dispatcher's existence probe against the installed
+// runtime build (contract §18).
+export const RUNTIME_ENTRY_EXECUTOR_REL_PATH = join('scripts', 'context.mjs');
 
 // Contract §13: the declared floor is a plain released X.Y.Z — the
 // ADR-0043 released-floor rule means a prerelease/build-suffixed floor is
@@ -52,6 +59,20 @@ export const SESSION_READINESS_STATES = Object.freeze([
   'publisher-sensor-not-shipped',
   'floor-declaration-malformed',
   'runtime-below-publisher-floor',
+]);
+
+// Entry-side half-enabled states (ADR-0045 §10; contract §18). The first
+// three are shared vocabulary with the exit side — same condition, same
+// name — so a composed diagnosis never renders one hook-chain fact under
+// two labels.
+export const ENTRY_BRIEF_READINESS_STATES = Object.freeze([
+  'safe-mode-hooks-disabled',
+  'attention-missing',
+  'attention-disabled',
+  'entry-sensor-not-shipped',
+  'floor-declaration-malformed',
+  'runtime-below-entry-floor',
+  'entry-executor-missing',
 ]);
 
 function safeModeActive(env) {
@@ -78,7 +99,7 @@ export function claudePluginListEnablement(row) {
   return { enabled: null, version };
 }
 
-// Installed attention build under the Claude cache. When the caller's
+// Installed plugin build under the Claude cache. When the caller's
 // plugin-list evidence names a version (`preferredVersion`) and that build
 // is present in the cache, it is the one the host actually activates — read
 // the declaration from it. Otherwise fall back to the newest manifest
@@ -86,9 +107,9 @@ export function claudePluginListEnablement(row) {
 // rule). Filesystem-only; ENOENT-class absence is "not installed", any
 // other readdir failure degrades the same way (a cache we cannot enumerate
 // cannot prove an install). A version dir whose manifest is unreadable or
-// names a different plugin is not an attention install.
-async function discoverClaudeAttentionInstall(homeDir, { preferredVersion = null } = {}) {
-  const baseDir = join(homeDir, ...ATTENTION_CLAUDE_CACHE_SEGMENTS);
+// names a different plugin is not an install of that plugin.
+async function discoverClaudePluginInstall(homeDir, pluginName, { preferredVersion = null } = {}) {
+  const baseDir = join(homeDir, ...CLAUDE_PLUGIN_CACHE_SEGMENTS, pluginName);
   let entries;
   try {
     entries = await readdir(baseDir, { withFileTypes: true });
@@ -101,7 +122,7 @@ async function discoverClaudeAttentionInstall(homeDir, { preferredVersion = null
     const root = join(baseDir, entry.name);
     try {
       const manifest = JSON.parse(readFileSync(join(root, '.claude-plugin', 'plugin.json'), 'utf8'));
-      if (manifest?.name !== 'attention') continue;
+      if (manifest?.name !== pluginName) continue;
       const version = typeof manifest.version === 'string' && manifest.version.trim()
         ? manifest.version.trim()
         : entry.name;
@@ -119,38 +140,75 @@ async function discoverClaudeAttentionInstall(homeDir, { preferredVersion = null
   return { installed: true, version: candidates[0].version, root: candidates[0].root };
 }
 
-// Contract §13 — read the publisher-floor declaration from the installed
-// attention build. Absence (ENOENT-class) is the honest pre-S5 state
-// (`declared: false`); any other failure — unreadable, bad JSON, wrong
-// schema family, missing/non-semver floor — is `malformed: true` and
-// fail-closed (never treated as satisfied).
-async function readPublisherFloorDeclaration(attentionRoot) {
+// The floors document itself: absent (ENOENT-class) vs malformed (any other
+// read failure, bad JSON, wrong schema family, non-object floors) vs ok.
+async function readRuntimeFloorsDocument(attentionRoot) {
   const path = join(attentionRoot, ATTENTION_RUNTIME_FLOORS_REL_PATH);
   let text;
   try {
     text = await readFile(path, 'utf8');
   } catch (error) {
     if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) {
-      return { declared: false, malformed: false, floor: null };
+      return { status: 'absent', floors: null };
     }
-    return { declared: true, malformed: true, floor: null };
+    return { status: 'malformed', floors: null };
   }
   let parsed;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return { declared: true, malformed: true, floor: null };
+    return { status: 'malformed', floors: null };
   }
   if (
     !parsed
     || typeof parsed !== 'object'
+    || Array.isArray(parsed)
     || !ATTENTION_RUNTIME_FLOORS_SCHEMA_RE.test(String(parsed.schema ?? ''))
     || !parsed.floors
     || typeof parsed.floors !== 'object'
+    || Array.isArray(parsed.floors)
   ) {
+    return { status: 'malformed', floors: null };
+  }
+  // The founding key is required by the 1.x family (§13): a present
+  // document without a clean released publish_session floor is malformed
+  // as a DOCUMENT — every per-key reader inherits this, so an additive
+  // sibling key can never validate out of a corrupt file (review peer).
+  const founding = parsed.floors.publish_session;
+  if (typeof founding !== 'string' || !CLEAN_RELEASE_SEMVER_RE.test(founding.trim())) {
+    return { status: 'malformed', floors: null };
+  }
+  return { status: 'ok', floors: parsed.floors };
+}
+
+// Contract §13 — read the publisher-floor declaration from the installed
+// attention build. Absence of the FILE (ENOENT-class) is the honest pre-S5
+// state (`declared: false`); any other failure — unreadable, bad JSON, wrong
+// schema family, missing/non-semver `publish_session` (the file's founding
+// key, required by the 1.x family) — is `malformed: true` and fail-closed
+// (never treated as satisfied).
+async function readPublisherFloorDeclaration(attentionRoot) {
+  const document = await readRuntimeFloorsDocument(attentionRoot);
+  if (document.status === 'absent') return { declared: false, malformed: false, floor: null };
+  if (document.status === 'malformed') return { declared: true, malformed: true, floor: null };
+  const floor = document.floors.publish_session;
+  if (typeof floor !== 'string' || !CLEAN_RELEASE_SEMVER_RE.test(floor.trim())) {
     return { declared: true, malformed: true, floor: null };
   }
-  const floor = parsed.floors.publish_session;
+  return { declared: true, malformed: false, floor: floor.trim() };
+}
+
+// Contract §18 — the entry-brief floor. Unlike `publish_session`,
+// `entry_brief` is an ADDITIVE sibling key (§13 sibling-key rule): a
+// present, well-formed floors file without it is the honest pre-entry-
+// sensor state (`declared: false`), not corruption. A present key that is
+// not a clean released X.Y.Z is malformed and fail-closed.
+async function readEntryFloorDeclaration(attentionRoot) {
+  const document = await readRuntimeFloorsDocument(attentionRoot);
+  if (document.status === 'absent') return { declared: false, malformed: false, floor: null };
+  if (document.status === 'malformed') return { declared: true, malformed: true, floor: null };
+  const floor = document.floors.entry_brief;
+  if (floor === undefined) return { declared: false, malformed: false, floor: null };
   if (typeof floor !== 'string' || !CLEAN_RELEASE_SEMVER_RE.test(floor.trim())) {
     return { declared: true, malformed: true, floor: null };
   }
@@ -219,7 +277,7 @@ export async function assessSessionCaptureReadiness({
     });
   }
 
-  const install = await discoverClaudeAttentionInstall(homeDir, {
+  const install = await discoverClaudePluginInstall(homeDir, 'attention', {
     preferredVersion: attentionEnablement?.version ?? null,
   });
   result.attention.installed = install.installed;
@@ -273,6 +331,173 @@ export async function assessSessionCaptureReadiness({
       });
     } else {
       result.publisher_floor.satisfied = true;
+    }
+  }
+
+  result.status = result.states.length > 0 ? 'blocked' : 'ready';
+  return result;
+}
+
+// ADR-0045 §10 — the entry executor existence probe the readiness diagnosis
+// mirrors from the SessionStart dispatcher: the newest installed runtime
+// build under the Claude cache (the dispatcher's primary discovery rung)
+// either carries scripts/context.mjs or it does not. No cached runtime
+// build ⇒ `present: null` — unverifiable, not blocking (the sensor's
+// ladder may resolve an env-override or sibling root the advisory
+// diagnosis does not re-implement, the §13 stated-limit shape).
+async function probeEntryExecutor(homeDir) {
+  const install = await discoverClaudePluginInstall(homeDir, 'runtime');
+  if (!install.installed) {
+    return { probed: true, present: null, runtime_version: null };
+  }
+  try {
+    const stats = await stat(join(install.root, RUNTIME_ENTRY_EXECUTOR_REL_PATH));
+    return { probed: true, present: stats.isFile(), runtime_version: install.version };
+  } catch {
+    return { probed: true, present: false, runtime_version: install.version };
+  }
+}
+
+// The entry-side readiness assessment (ADR-0045 §10; contract §18) —
+// doctor and settings both consume THIS function, mirroring the exit-side
+// shape above. Returns
+//   {
+//     status: 'off' | 'ready' | 'blocked' | 'config-fail-closed',
+//     gate: { value, empty_value, errors, ignored_repo_keys, repo_layer },
+//     safe_mode: { active, source },
+//     attention: { installed, version, enablement },
+//     entry_floor: { declared, floor, runtime_version, satisfied },
+//     entry_executor: { probed, present, runtime_version },
+//     states: [...],
+//     recommendations: [...],
+//   }
+// The gate reads the SAME user-scope-only loader the entry-brief executor
+// gates on (`loadEntryBriefConfig`: env > user-global > default; a tracked
+// repo value is ignored and reported) — one authority for what "on" means.
+// `off` is informational, never a warning: the cli/dashboard surfaces
+// always compute regardless (contract §17); this diagnosis covers the
+// hook emission chain only.
+export async function assessEntryBriefReadiness({
+  repoRoot,
+  homeDir = os.homedir(),
+  env = process.env,
+  runtimeVersion,
+  attentionEnablement = null,
+} = {}) {
+  const result = {
+    status: 'off',
+    gate: { value: null, empty_value: null, errors: [], ignored_repo_keys: [], repo_layer: 'unknown' },
+    safe_mode: { active: false, source: null },
+    attention: { installed: false, version: null, enablement: 'unverified' },
+    entry_floor: { declared: false, floor: null, runtime_version: runtimeVersion ?? null, satisfied: null },
+    entry_executor: { probed: false, present: null, runtime_version: null },
+    states: [],
+    recommendations: [],
+  };
+
+  const gate = loadEntryBriefConfig({ repoRoot, homeDir, env });
+  if (!gate.ok) {
+    // The same fail-closed refusal the executor's hook surface makes
+    // (contract §17): a broken config never turns the injected line on —
+    // and never reads as clean. The repo-layer observations survive the
+    // refusal (review peer): an ignored tracked-repo activation attempt
+    // stays visible even while the user layer fail-closes.
+    result.status = 'config-fail-closed';
+    result.gate.errors = gate.errors;
+    result.gate.ignored_repo_keys = gate.ignoredRepoKeys ?? [];
+    result.gate.repo_layer = gate.repoLayer ?? 'unknown';
+    result.recommendations.push({
+      state: 'config-fail-closed',
+      detail: `entry-brief config unreadable or invalid (fail-closed, hook emission off): ${gate.errors.join('; ')}`,
+      next_step: 'Fix the user-global ~/.agentic-plugins/config.toml or the AGENTIC_ENTRY_BRIEF / AGENTIC_ENTRY_BRIEF_EMPTY env values so entry_brief resolves to off or startup, then re-run the diagnosis.',
+    });
+    return result;
+  }
+  result.gate.value = gate.config.entryBrief;
+  result.gate.empty_value = gate.config.entryBriefEmpty;
+  result.gate.ignored_repo_keys = gate.ignoredRepoKeys ?? [];
+  result.gate.repo_layer = gate.repoLayer ?? 'unknown';
+  if (gate.config.entryBrief !== 'startup') {
+    // Shipped default. Informational, never a warning: off is a chosen
+    // state, not a half-enabled one (contract §18).
+    return result;
+  }
+
+  if (safeModeActive(env)) {
+    result.safe_mode = { active: true, source: 'CLAUDE_CODE_SAFE_MODE' };
+    result.states.push('safe-mode-hooks-disabled');
+    result.recommendations.push({
+      state: 'safe-mode-hooks-disabled',
+      detail: 'Claude safe mode disables plugins and hooks entirely (host-parity-baseline.md hooks row), so the SessionStart entry sensor cannot run in this session.',
+      next_step: 'Leave safe mode (unset CLAUDE_CODE_SAFE_MODE / drop --safe-mode) to restore the hook chain, or set entry_brief=off while troubleshooting.',
+    });
+  }
+
+  const install = await discoverClaudePluginInstall(homeDir, 'attention', {
+    preferredVersion: attentionEnablement?.version ?? null,
+  });
+  result.attention.installed = install.installed;
+  result.attention.version = install.version;
+  if (!install.installed) {
+    result.states.push('attention-missing');
+    result.recommendations.push({
+      state: 'attention-missing',
+      detail: 'entry_brief=startup but the attention plugin is not installed in the Claude plugin cache — nothing fires the entry arbiter (the hook surface is attention\'s Claude SessionStart sensor, ADR-0045 §7).',
+      next_step: 'Install attention@agentic-plugins for Claude (claude plugin install attention@agentic-plugins), or set entry_brief=off.',
+    });
+  } else {
+    if (attentionEnablement && attentionEnablement.enabled === false) {
+      result.attention.enablement = 'disabled';
+      result.states.push('attention-disabled');
+      result.recommendations.push({
+        state: 'attention-disabled',
+        detail: 'attention is installed but the Claude plugin list reports it disabled — its SessionStart sensor will not fire the entry arbiter.',
+        next_step: 'Enable the attention plugin (claude plugin enable attention@agentic-plugins), or set entry_brief=off.',
+      });
+    } else if (attentionEnablement && attentionEnablement.enabled === true) {
+      result.attention.enablement = 'enabled';
+    } else {
+      result.attention.enablement = 'unverified';
+    }
+
+    const declaration = await readEntryFloorDeclaration(install.root);
+    result.entry_floor.declared = declaration.declared;
+    result.entry_floor.floor = declaration.floor;
+    if (!declaration.declared) {
+      result.states.push('entry-sensor-not-shipped');
+      result.recommendations.push({
+        state: 'entry-sensor-not-shipped',
+        detail: `installed attention ${install.version ?? '<unknown>'} declares no floors.entry_brief in ${ATTENTION_RUNTIME_FLOORS_REL_PATH} — it predates the entry sensor, so no SessionStart hook spawns entry-brief (session-capture-contract.md §18).`,
+        next_step: 'Update attention@agentic-plugins to a release that ships the SessionStart entry sensor and its entry-brief floor declaration.',
+      });
+    } else if (declaration.malformed) {
+      result.states.push('floor-declaration-malformed');
+      result.recommendations.push({
+        state: 'floor-declaration-malformed',
+        detail: `installed attention ${install.version ?? '<unknown>'} ships an unreadable or malformed ${ATTENTION_RUNTIME_FLOORS_REL_PATH} — the entry-brief floor cannot be verified (fail-closed, session-capture-contract.md §18).`,
+        next_step: 'Reinstall or update attention@agentic-plugins so the declaration parses, then re-run the diagnosis.',
+      });
+    } else if (typeof runtimeVersion === 'string' && semverCompare(runtimeVersion, declaration.floor) < 0) {
+      result.entry_floor.satisfied = false;
+      result.states.push('runtime-below-entry-floor');
+      result.recommendations.push({
+        state: 'runtime-below-entry-floor',
+        detail: `attention declares entry-brief floor ${declaration.floor} but the installed runtime is ${runtimeVersion} — the sensor skips the entry-brief spawn below its floor (ADR-0045 §12).`,
+        next_step: 'Update runtime@agentic-plugins to at least the declared floor, or set entry_brief=off until then.',
+      });
+    } else {
+      result.entry_floor.satisfied = true;
+      // ADR-0045 §10: a passing floor proves version, not capability
+      // presence — mirror the dispatcher's executor-existence probe.
+      result.entry_executor = await probeEntryExecutor(homeDir);
+      if (result.entry_executor.present === false) {
+        result.states.push('entry-executor-missing');
+        result.recommendations.push({
+          state: 'entry-executor-missing',
+          detail: `the entry-brief floor passes but the installed runtime build (${result.entry_executor.runtime_version ?? '<unknown>'}) is missing ${RUNTIME_ENTRY_EXECUTOR_REL_PATH} — the dispatcher no-ops on executor absence at a passing floor (ADR-0045 §10), so no line is ever injected.`,
+          next_step: 'Reinstall runtime@agentic-plugins so the cached build ships scripts/context.mjs, then re-run the diagnosis.',
+        });
+      }
     }
   }
 

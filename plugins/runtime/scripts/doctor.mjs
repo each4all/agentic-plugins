@@ -35,7 +35,7 @@ import {
   safeCount,
 } from './lib/state-readers.mjs';
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
-import { assessSessionCaptureReadiness, claudePluginListEnablement } from './lib/session-readiness.mjs';
+import { assessEntryBriefReadiness, assessSessionCaptureReadiness, claudePluginListEnablement } from './lib/session-readiness.mjs';
 // The single version authority shared with the settings producer (S8a4 §SCOPE-2): the
 // currency mirror MUST parse the Codex CLI version and resolve plugin versions through the
 // same leaf, or a freshly recorded attestation reads stale on the machine that wrote it.
@@ -214,6 +214,17 @@ export async function runDoctor({
     runtimeVersion: RUNTIME_VERSION,
     attentionEnablement: claudePluginListEnablement(claudePluginList?.attention ?? null),
   });
+  // ADR-0045 S8 — the entry-side mirror (session-capture-contract.md §18):
+  // same shared assessment module, same injected enablement evidence, plus
+  // the executor-existence probe against the cached runtime build (floors
+  // prove version, not capability presence — ADR-0045 §10).
+  const entryBriefReadiness = await assessEntryBriefReadiness({
+    repoRoot: resolvedRepoRoot,
+    homeDir: resolvedHomeDir,
+    env,
+    runtimeVersion: RUNTIME_VERSION,
+    attentionEnablement: claudePluginListEnablement(claudePluginList?.attention ?? null),
+  });
   const inspectedDoctorRuns = await inspectDoctorRuns({
     repoRoot: resolvedRepoRoot,
   });
@@ -364,6 +375,7 @@ export async function runDoctor({
     consensus_runs: consensusRuns,
     compat_runs: compatRuns,
     session_capture: sessionCaptureReadiness,
+    entry_brief: entryBriefReadiness,
     doctor_runs: doctorRuns,
     recorded_doctor_proof: recordedDoctorProof,
     artifact_inventory: artifactInventorySection,
@@ -4383,6 +4395,12 @@ function summarizeOverall(report) {
   } else if (report.session_capture.status === 'config-fail-closed') {
     warnings.push('session capture config fail-closed (session config unreadable or invalid)');
   }
+  // ADR-0045 S8 — the entry-side hook-chain mirror; same advisory posture.
+  if (report.entry_brief.status === 'blocked') {
+    warnings.push(`entry brief hook chain blocked (${report.entry_brief.states.join(', ')})`);
+  } else if (report.entry_brief.status === 'config-fail-closed') {
+    warnings.push('entry brief config fail-closed (entry-brief config unreadable or invalid)');
+  }
   if (report.artifact_inventory?.executed && report.artifact_inventory.status === 'blocked') {
     warnings.push('runtime artifact inventory blocked');
   } else if (report.artifact_inventory?.executed && report.artifact_inventory.status === 'needs_attention') {
@@ -4731,6 +4749,21 @@ export function formatText(report) {
     lines.push(`- publisher-floor: declared=${report.session_capture.publisher_floor.declared}; floor=${report.session_capture.publisher_floor.floor ?? '<none>'}; runtime=${report.session_capture.publisher_floor.runtime_version ?? '<unknown>'}; satisfied=${report.session_capture.publisher_floor.satisfied ?? '<n/a>'}`);
   }
   for (const recommendation of report.session_capture.recommendations) {
+    lines.push(`- ${recommendation.state}: ${recommendation.detail}`);
+    lines.push(`  next: ${recommendation.next_step}`);
+  }
+  lines.push('');
+  // ADR-0045 S8 — entry-side hook-chain readiness (contract §18). The gate
+  // diagnoses the SessionStart hook emission chain only; the cli/dashboard
+  // entry-brief surfaces always compute regardless.
+  lines.push(`Entry Brief Readiness (${report.entry_brief.status})`);
+  lines.push(`- gate: entry_brief=${report.entry_brief.gate.value ?? '<fail-closed>'}; entry_brief_empty=${report.entry_brief.gate.empty_value ?? '<fail-closed>'}; safe-mode=${report.entry_brief.safe_mode.active}${report.entry_brief.gate.ignored_repo_keys.length > 0 ? `; ignored-repo-keys=${report.entry_brief.gate.ignored_repo_keys.join(',')}` : ''}`);
+  if (!['off', 'config-fail-closed'].includes(report.entry_brief.status)) {
+    lines.push(`- attention: installed=${report.entry_brief.attention.installed}; version=${report.entry_brief.attention.version ?? '<none>'}; enablement=${report.entry_brief.attention.enablement}`);
+    lines.push(`- entry-floor: declared=${report.entry_brief.entry_floor.declared}; floor=${report.entry_brief.entry_floor.floor ?? '<none>'}; runtime=${report.entry_brief.entry_floor.runtime_version ?? '<unknown>'}; satisfied=${report.entry_brief.entry_floor.satisfied ?? '<n/a>'}`);
+    lines.push(`- entry-executor: probed=${report.entry_brief.entry_executor.probed}; present=${report.entry_brief.entry_executor.present ?? '<unverified>'}; cached-runtime=${report.entry_brief.entry_executor.runtime_version ?? '<none>'}`);
+  }
+  for (const recommendation of report.entry_brief.recommendations) {
     lines.push(`- ${recommendation.state}: ${recommendation.detail}`);
     lines.push(`  next: ${recommendation.next_step}`);
   }

@@ -63,6 +63,10 @@ Context reports and manages:
   `--host`. `--surface cli` (default) and `--surface dashboard` always
   compute; `--surface session-start-hook` is the attention sensor's
   hook-grade emission path, gated by the user-scope-only `entry_brief` key.
+  `$runtime:dashboard` renders the `dashboard`-surface report as its
+  snapshot-only Tier-1 entry advisory (excluded from `--watch`), and the
+  hook-chain readiness (`entry_brief` half-enabled states, contract §18)
+  is diagnosed by `$runtime:doctor` / `$runtime:settings`.
 
 ## Boundaries
 

@@ -1,6 +1,6 @@
 ---
 name: doctor
-description: "Read-only runtime operator diagnostic for agentic-plugins. Use when the user wants to inspect Claude/Codex CLI availability, auth state, plugin marketplace/cache state, companion contract compatibility, model/effort observation, sandbox/permission readiness, workflow/peer-run ledger health, latest runtime:compat drift artifacts, ADR-0044 session-capture readiness (the half-enabled capture-chain states per session-capture-contract.md §13), generated runtime artifact inventory, or explicitly opted-in permission proof / deep peer smoke / workflow continuation proof execution. Does not mutate settings."
+description: "Read-only runtime operator diagnostic for agentic-plugins. Use when the user wants to inspect Claude/Codex CLI availability, auth state, plugin marketplace/cache state, companion contract compatibility, model/effort observation, sandbox/permission readiness, workflow/peer-run ledger health, latest runtime:compat drift artifacts, ADR-0044 session-capture readiness (the half-enabled capture-chain states per session-capture-contract.md §13), ADR-0045 entry-brief hook-chain readiness (the entry_brief half-enabled states per contract §18, executor-existence probe included), generated runtime artifact inventory, or explicitly opted-in permission proof / deep peer smoke / workflow continuation proof execution. Does not mutate settings."
 ---
 
 # Doctor (runtime framework primitive)

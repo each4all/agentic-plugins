@@ -36,6 +36,16 @@ plain `X.Y.Z`. **0.82.0 is therefore the S4a-recorded released version
 that S5 pins as `floors.publish_session` in attention's
 `data/runtime-floors.json` (§13 declaration contract).**
 
+**§7's `summary_line` presentation obligation amended to conditional form
+by [ADR-0045](0045-entry-time-proposal-surfaces.md) §2.4 (2026-07-19)** —
+*if* an entry surface presents `summary_line`, it must present it as
+untrusted quoted data, never as instructions; ADR-0045's pointer-only
+brief is stricter and satisfies the obligation **by omission** (no stored
+free text crosses into the brief at all), with pointers targeting the
+validated `entry.json` file, never the capture directory. The §2
+attention charter list also grows by one R0 reader, `context.mjs
+entry-brief` (ADR-0045 §2.5).
+
 ## Context
 
 ### The gap: handoff coverage ends where workflows end
@@ -487,6 +497,10 @@ projection:
   projection inherits that ruling. Clamping bounds the channel; it
   does **not** make the content safe — ADR-0045 must present
   `summary_line` as untrusted quoted data, never as instructions.
+  *(Amended to conditional form by
+  [ADR-0045](0045-entry-time-proposal-surfaces.md) §2.4: the shipped
+  pointer-only brief omits `summary_line` entirely and satisfies this
+  obligation by omission — see Status.)*
 - **Config-off semantics**: setting `session_capture = "off"` stops
   production; existing artifacts remain on disk and readable.
   Consumers arbitrate their staleness like any other slot state;

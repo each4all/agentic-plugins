@@ -3542,6 +3542,77 @@ describe('runtime doctor — session capture readiness (ADR-0044 S4)', () => {
     strictEqual(report.session_capture.attention.enablement, 'unverified', 'no plugin-list row for attention -> unverified');
   });
 
+  // ADR-0045 S8 (session-capture-contract.md §18): the entry-side mirror on
+  // the doctor surface — gate scope, floor sibling key, executor probe.
+  it('reports entry-brief readiness: off silently, repo value ignored, user-scope gate-on chain warns', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'doctor-entry-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'doctor-entry-home-'));
+    await seedRepo(root);
+
+    // Control: shipped default off — section present, header rendered, silent.
+    const offReport = await runDoctor({ repoRoot: root, homeDir: home, format: 'json', runner: fakeRunner({}), env: {} });
+    strictEqual(offReport.entry_brief.status, 'off');
+    deepStrictEqual(offReport.entry_brief.states, []);
+    ok(!offReport.overall.warnings.some((warning) => warning.includes('entry brief')));
+    const offText = formatText(offReport);
+    ok(offText.includes('Entry Brief Readiness (off)'));
+    ok(offText.includes('- gate: entry_brief=off'));
+
+    // A tracked repo value never activates the user-scope-only key.
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'entry_brief = "startup"\n');
+    const repoAttempt = await runDoctor({ repoRoot: root, homeDir: home, format: 'json', runner: fakeRunner({}), env: {} });
+    strictEqual(repoAttempt.entry_brief.status, 'off');
+    deepStrictEqual(repoAttempt.entry_brief.gate.ignored_repo_keys, ['entry_brief']);
+    ok(formatText(repoAttempt).includes('ignored-repo-keys=entry_brief'));
+
+    // User-scope gate on with nothing installed: blocked + overall warning.
+    await mkdir(join(home, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'entry_brief = "startup"\n');
+    const blocked = await runDoctor({ repoRoot: root, homeDir: home, format: 'json', runner: fakeRunner({}), env: {} });
+    strictEqual(blocked.entry_brief.status, 'blocked');
+    deepStrictEqual(blocked.entry_brief.states, ['attention-missing']);
+    ok(
+      blocked.overall.warnings.includes('entry brief hook chain blocked (attention-missing)'),
+      `expected the blocked warning, got: ${JSON.stringify(blocked.overall.warnings)}`,
+    );
+    ok(formatText(blocked).includes('Entry Brief Readiness (blocked)'));
+  });
+
+  it('entry floor satisfied + executor present is ready; executor absent at a passing floor blocks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'doctor-entry-exec-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'doctor-entry-exec-home-'));
+    await seedRepo(root);
+    await mkdir(join(home, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'entry_brief = "startup"\n');
+    const attentionRoot = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'attention', '0.6.0');
+    await mkdir(join(attentionRoot, '.claude-plugin'), { recursive: true });
+    await writeJson(join(attentionRoot, '.claude-plugin', 'plugin.json'), { name: 'attention', version: '0.6.0' });
+    await mkdir(join(attentionRoot, 'data'), { recursive: true });
+    await writeJson(join(attentionRoot, 'data', 'runtime-floors.json'), {
+      schema: 'attention-runtime-floors-1.0',
+      floors: { publish_session: '0.1.0', entry_brief: '0.1.0' },
+    });
+    const runtimeRoot = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime', '0.90.0');
+    await mkdir(join(runtimeRoot, '.claude-plugin'), { recursive: true });
+    await writeJson(join(runtimeRoot, '.claude-plugin', 'plugin.json'), { name: 'runtime', version: '0.90.0' });
+
+    // Executor absent at a passing floor: the ADR-0045 §10 blocked state.
+    const missing = await runDoctor({ repoRoot: root, homeDir: home, format: 'json', runner: fakeRunner({}), env: {} });
+    strictEqual(missing.entry_brief.entry_floor.satisfied, true);
+    deepStrictEqual(missing.entry_brief.states, ['entry-executor-missing']);
+    deepStrictEqual(missing.entry_brief.entry_executor, { probed: true, present: false, runtime_version: '0.90.0' });
+    ok(missing.overall.warnings.includes('entry brief hook chain blocked (entry-executor-missing)'));
+
+    // Ship the executor: ready, no warning.
+    await mkdir(join(runtimeRoot, 'scripts'), { recursive: true });
+    await writeFile(join(runtimeRoot, 'scripts', 'context.mjs'), '// stub\n');
+    const ready = await runDoctor({ repoRoot: root, homeDir: home, format: 'json', runner: fakeRunner({}), env: {} });
+    strictEqual(ready.entry_brief.status, 'ready');
+    deepStrictEqual(ready.entry_brief.entry_executor, { probed: true, present: true, runtime_version: '0.90.0' });
+    ok(!ready.overall.warnings.some((warning) => warning.includes('entry brief')));
+  });
+
   it('feeds real `claude plugin list` text through the status→enablement adapter', async () => {
     // Peer finding: integration coverage must exercise the actual list-text
     // path (parseClaudePluginList → claudePluginListEnablement), not only
