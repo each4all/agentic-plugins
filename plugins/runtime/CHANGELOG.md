@@ -20,6 +20,15 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.83.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.82.0...plugin-runtime-v0.83.0) (2026-07-20)
+
+
+### Features
+
+* **plugin/runtime:** S7a — ADR-0045 entry-brief bounded read layer (versioned tolerant parsers + bounded scans) ([#598](https://github.com/each4all/agentic-plugins/issues/598)) ([5c6dae8](https://github.com/each4all/agentic-plugins/commit/5c6dae8f93d3254a97bfdd41246032260c986e55))
+* **plugin/runtime:** S7b — ADR-0045 entry-brief arbiter (§16 lattice + pointer-only brief + user-scope-only session keys + context CLI) ([#599](https://github.com/each4all/agentic-plugins/issues/599)) ([45624bf](https://github.com/each4all/agentic-plugins/commit/45624bf2254a591fa676f3fc6ca404a99ae46e8d))
+* **plugin/runtime:** S8 — ADR-0045 dashboard entry advisory + entry-brief readiness diagnosis (§7 snapshot-only advisory + §18 half-enabled states + trusted-host threading) ([#600](https://github.com/each4all/agentic-plugins/issues/600)) ([de20853](https://github.com/each4all/agentic-plugins/commit/de20853d591f887a96e1c0826dca2002c95f0ca8))
+
 ## [0.82.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.81.0...plugin-runtime-v0.82.0) (2026-07-19)
 
 
