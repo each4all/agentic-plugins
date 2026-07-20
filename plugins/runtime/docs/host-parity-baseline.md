@@ -151,6 +151,13 @@ parallel/no-precedence execution model is the probed ground for
 ADR-0045 §1's single-arbiter ruling — independent SessionStart hooks
 cannot be sequenced.
 
+**Re-validation trail** (append a row per S9-gate re-validation; the
+verdict above stays version-bound to the newest PASS row):
+
+| Re-validated | Installed CLI | Method | Result |
+| --- | --- | --- | --- |
+| 2026-07-20 | `2.1.215` | Changelog delta `2.1.214`→`2.1.215` (one entry: `/verify`·`/code-review` no longer self-invoked — no SessionStart/hook/timeout/stdout/safe-mode change) + live probe (isolated git repo, explicit `--settings` hooks, headless `-p`, three `startup`-matched hooks + one `resume`-matched hook) | **PASS — verdict holds.** All five verdict properties re-observed: exactly one `startup` firing (the `resume` hook did not fire); payload carried `session_id`/`transcript_path`/`cwd`/`hook_event_name`/`source: "startup"`; raw-stdout probe token verbatim-echoed by the model (context injection); `timeout: 3` (seconds) killed a `sleep 8` hook with no side effect while the session proceeded; a hook `exit 1` was non-blocking and the CLI exited 0. Attention `matcher: "startup"` + explicit `timeout: 15` registration proceeds (ADR-0045 §12 step 4). |
+
 ## What Fails If We Assume Claude Semantics On Codex
 
 - A Claude plugin command plan that says `codex plugin install runtime` is still
