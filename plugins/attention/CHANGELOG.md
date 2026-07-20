@@ -2,6 +2,13 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.6.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.5.0...plugin-attention-v0.6.0) (2026-07-20)
+
+
+### Features
+
+* **plugin/attention:** S5 — Stop sensor session-capture spawn, publisher floor 0.82.0 pin, hot-path budget contract (ADR-0044 §2/§13) ([#595](https://github.com/each4all/agentic-plugins/issues/595)) ([3b8ed8d](https://github.com/each4all/agentic-plugins/commit/3b8ed8d64b8e2c1f03950e120e04d683c7cd0532))
+
 ## [0.5.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.4.1...plugin-attention-v0.5.0) (2026-07-14)
 
 
