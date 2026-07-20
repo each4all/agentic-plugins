@@ -14,12 +14,18 @@
 //     Codex hook-attestation recency, artifact-inventory attention items,
 //     notify-state health, and the file-log channel's recent notifications
 //     when configured.
+//   Tier 1 also carries the ADR-0045 §7(ii) entry advisory in SNAPSHOT mode
+//     only: the same arbitrated entry brief the `runtime:context entry-brief`
+//     executor computes for the current branch, rendered as one section.
 //
-// R0 per ADR-0035: pure filesystem reads — no spawning, no host-CLI probing
-// (that is doctor's job; the dashboard reports the RECORDED doctor/compat
-// evidence and its age instead of re-probing), no mutation. `--watch`
-// re-renders from filesystem reads only, with a bounded poll interval
-// (default 2s, floor 1s) and an explicit exit (SIGINT/SIGTERM, or a bounded
+// R0 per ADR-0035: filesystem reads — no host-CLI probing (that is doctor's
+// job; the dashboard reports the RECORDED doctor/compat evidence and its age
+// instead of re-probing), no mutation. One declared exception to the
+// no-spawn shape (ADR-0045 §7/§11): the snapshot-mode entry advisory pays
+// the entry arbiter's bounded git probes (repo-root/branch/porcelain via the
+// shared executor) — `--watch` NEVER does: the watch loop stays
+// filesystem-only, re-renders with a bounded poll interval (default 2s,
+// floor 1s) and an explicit exit (SIGINT/SIGTERM, or a bounded
 // --watch-count) — never an unattended daemon.
 //
 // Notify state (.agentic-plugins/state/runtime/notify/) is read directly as
@@ -31,6 +37,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { RUNTIME_VERSION } from './version.mjs';
+// The entry advisory reuses the ADR-0045 entry-brief EXECUTOR, not a
+// re-implementation: one probe/gate/validation stack, so the dashboard
+// section can never disagree with `runtime:context entry-brief` (§7 "the
+// same arbiter output"). Sibling-script import, same shape as notify.mjs.
+import { entryBriefContext } from './context.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { notifyDedupeDir, notifyStateDir } from './lib/notify-schema.mjs';
 import { egressThrottleDir, inspectEgressThrottles } from './lib/egress-semantics.mjs';
@@ -48,7 +59,10 @@ import {
   artifactTimestampMs,
 } from './lib/state-readers.mjs';
 
-export const DASHBOARD_SCHEMA_VERSION = 'runtime-dashboard-1.0';
+// 1.0 → 1.1 (additive, ADR-0045 S8): tier1.entry_advisory — present only
+// when the caller opts the snapshot into the entry advisory; never present
+// in --watch reports.
+export const DASHBOARD_SCHEMA_VERSION = 'runtime-dashboard-1.1';
 export const DEFAULT_WATCH_INTERVAL_SECONDS = 2;
 export const MIN_WATCH_INTERVAL_SECONDS = 1;
 export const DEFAULT_RECENT_NOTIFICATIONS = 5;
@@ -575,6 +589,51 @@ export async function readRecentNotifications({ repoRoot, limit = DEFAULT_RECENT
 }
 
 // ---------------------------------------------------------------------------
+// Tier 1 — ADR-0045 §7(ii) entry advisory (snapshot mode only)
+// ---------------------------------------------------------------------------
+
+// One section, same arbiter output: delegate to the entry-brief executor
+// (surface `dashboard` always computes; the entry_brief gate is
+// informational there, never a short-circuit — contract §17). The trusted
+// render host is threaded explicitly (ADR-0045 §10, no default): without a
+// host the advisory reports the skip honestly instead of guessing a
+// localization. An executor failure degrades to an error row — the
+// advisory must never take the rest of the dashboard down with it.
+export async function buildEntryAdvisory({ repoRoot, host = null, now = new Date(), homeDir = undefined } = {}) {
+  if (host !== 'claude' && host !== 'codex') {
+    return { status: 'skipped', reason: 'host-not-threaded', host: null, gate: null, brief: null };
+  }
+  try {
+    // homeDir threads through to the executor's user-scope-only gate read
+    // (review peer): the advisory must resolve the SAME injected home the
+    // rest of the report uses, or programmatic reports mix two homes and
+    // advisory tests silently depend on the developer's real user config.
+    const report = await entryBriefContext({
+      repoRoot,
+      surface: 'dashboard',
+      host,
+      now,
+      ...(homeDir !== undefined ? { homeDir } : {}),
+    });
+    return {
+      status: report.status,
+      reason: report.reason ?? null,
+      host: report.host,
+      gate: report.gate,
+      brief: report.brief,
+    };
+  } catch (error) {
+    return {
+      status: 'error',
+      reason: sanitizeValue(error?.message ?? 'entry advisory failed'),
+      host,
+      gate: null,
+      brief: null,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Report assembly
 // ---------------------------------------------------------------------------
 
@@ -584,6 +643,14 @@ export async function buildDashboardReport({
   homeDir = os.homedir(),
   staleGraceMs = DEFAULT_STALE_GRACE_MS,
   recentLimit = DEFAULT_RECENT_NOTIFICATIONS,
+  // ADR-0045 §7(ii) — the entry advisory is OPT-IN per report: the snapshot
+  // path passes `{ host }`; the --watch loop never passes it, so the
+  // exclusion is enforced BEFORE the arbiter (and its bounded git probes)
+  // can run. `null`/omitted ⇒ the report carries no `entry_advisory` key at
+  // all. The advisory arbitrates over all four personas in one section
+  // WITHOUT flipping DASHBOARD_PERSONAS or designer's Tier-1 row exclusion
+  // — that demand-gate stays untouched (§7 scope note).
+  entryAdvisory = null,
 } = {}) {
   const personas = {};
   let orchestratorNamespace = null;
@@ -602,6 +669,9 @@ export async function buildDashboardReport({
 
   const macros = await inspectMacroProgress({ repoRoot, orchestratorNamespace });
   const consensus = await inspectConsensusRuns({ repoRoot });
+  const advisory = entryAdvisory
+    ? await buildEntryAdvisory({ repoRoot, host: entryAdvisory.host ?? null, now, homeDir })
+    : null;
 
   const doctor = await inspectLatestDoctorRun({ repoRoot });
   const compat = await inspectCompatRuns({ repoRoot });
@@ -652,6 +722,9 @@ export async function buildDashboardReport({
             }
           : null,
       },
+      // Key absent entirely outside the opted-in snapshot (ADR-0045 §12:
+      // "dashboard advisory absent in --watch").
+      ...(advisory ? { entry_advisory: advisory } : {}),
     },
     tier2: {
       doctor,
@@ -711,6 +784,46 @@ function listCapped(rows, renderRow, lines) {
   if (rows.length > MAX_LISTED_ROWS) lines.push(`    … and ${rows.length - MAX_LISTED_ROWS} more`);
 }
 
+// Brief rows carry age_seconds (already skew-bounded by the arbiter);
+// null is "age unknown", never zero.
+function formatAgeSeconds(seconds) {
+  if (!Number.isInteger(seconds) || seconds < 0) return 'age unknown';
+  if (seconds < 90) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+function briefEntryLabel(entry) {
+  const kind = entry.kind ? `/${entry.kind}` : '';
+  const id = entry.id ? ` ${entry.id}` : '';
+  return `${entry.source}${kind}${id} state=${entry.state} (${formatAgeSeconds(entry.age_seconds)})`;
+}
+
+// ADR-0045 §7(ii) — the snapshot-only entry advisory section. Renders the
+// SAME pointer-only brief the entry-brief executor computes; commands appear
+// only on the leading row (synthesized + host-localized by the arbiter, never
+// by this renderer).
+function renderEntryAdvisory(advisory, lines) {
+  if (advisory.status === 'skipped' && advisory.reason === 'host-not-threaded') {
+    lines.push('- entry advisory: skipped — pass --host claude|codex to render the arbitrated entry brief (ADR-0045 §7)');
+    return;
+  }
+  if (advisory.status !== 'computed' || !advisory.brief) {
+    lines.push(`- entry advisory: ${advisory.status}${advisory.reason ? ` (${advisory.reason})` : ''}`);
+    return;
+  }
+  const brief = advisory.brief;
+  const gateNote = advisory.gate
+    ? `; gate entry_brief=${advisory.gate.entry_brief} (hook surface only — this section always computes)`
+    : '';
+  lines.push(`- entry advisory [${advisory.host}]: disposition=${brief.disposition}; dirty=${brief.dirty_count ?? 'unknown'}; sources-skipped=${brief.sources_skipped}; rows-dropped=${brief.rows_dropped}${gateNote}`);
+  if (brief.leading) {
+    lines.push(`    → ${brief.leading.command} — ${briefEntryLabel(brief.leading)}`);
+  }
+  listCapped(brief.rows, (row) => `    · ${briefEntryLabel(row)}`, lines);
+}
+
 export function renderDashboardText(report) {
   const nowMs = Date.parse(report.generated_at);
   const lines = [];
@@ -739,6 +852,9 @@ export function renderDashboardText(report) {
   lines.push(consensus.latest
     ? `- consensus: ${consensus.count} run(s); latest ${consensus.latest.run_id} status=${consensus.latest.status} round=${consensus.latest.round}${consensus.latest.failed > 0 ? ` FAILED=${consensus.latest.failed}` : ''}`
     : `- consensus: ${consensus.status}`);
+  if (report.tier1.entry_advisory) {
+    renderEntryAdvisory(report.tier1.entry_advisory, lines);
+  }
   lines.push('');
   lines.push('## Tier 2 — operator health');
   const doctor = report.tier2.doctor;
@@ -824,10 +940,11 @@ export function parseDashboardArgs(argv) {
     intervalSeconds: DEFAULT_WATCH_INTERVAL_SECONDS,
     watchCount: null,
     recent: DEFAULT_RECENT_NOTIFICATIONS,
+    host: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    const needsValue = ['--repo-root', '--format', '--interval-seconds', '--watch-count', '--recent'].includes(arg);
+    const needsValue = ['--repo-root', '--format', '--interval-seconds', '--watch-count', '--recent', '--host'].includes(arg);
     if (needsValue) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith('--')) {
@@ -856,6 +973,21 @@ export function parseDashboardArgs(argv) {
           return { ok: false, reason: '--recent must be a positive integer' };
         }
         opts.recent = Number.parseInt(value, 10);
+      } else if (arg === '--host') {
+        // Explicit trusted render host for the snapshot entry advisory
+        // (ADR-0045 §10 — the invoking wrapper's host, never a default).
+        // Accepted alongside --watch so wrappers can thread it uniformly;
+        // the watch loop still excludes the advisory entirely. A repeated
+        // --host is rejected, not last-wins (review peer): the command
+        // wrappers thread the trusted host FIRST, so silent overwrite
+        // would let appended arguments override the wrapper's provenance.
+        if (value !== 'claude' && value !== 'codex') {
+          return { ok: false, reason: '--host must be claude or codex' };
+        }
+        if (opts.host !== null && opts.host !== value) {
+          return { ok: false, reason: '--host given twice with conflicting values — the invoking wrapper threads the trusted host exactly once' };
+        }
+        opts.host = value;
       }
     } else if (arg === '--watch') {
       opts.watch = true;
@@ -876,8 +1008,16 @@ function sleep(ms, signalState) {
   });
 }
 
-async function renderOnce(opts, repoRoot, { ndjson = false } = {}) {
-  const report = await buildDashboardReport({ repoRoot, recentLimit: opts.recent });
+async function renderOnce(opts, repoRoot, { ndjson = false, includeEntryAdvisory = false } = {}) {
+  // ADR-0045 §7(ii) exclusion, enforced at the caller boundary BEFORE the
+  // shared report builder can reach the arbiter: only the one-shot snapshot
+  // opts in; every watch iteration builds with entryAdvisory=null and stays
+  // filesystem-only.
+  const report = await buildDashboardReport({
+    repoRoot,
+    recentLimit: opts.recent,
+    entryAdvisory: includeEntryAdvisory ? { host: opts.host } : null,
+  });
   if (opts.format === 'json') {
     // Watch mode frames JSON as NDJSON — one report per line — so the
     // stream stays machine-parseable (Codex review MINOR); the one-shot
@@ -891,7 +1031,7 @@ async function main(argv) {
   const parsed = parseDashboardArgs(argv);
   if (!parsed.ok) {
     process.stderr.write(`dashboard: ${parsed.reason}\n`);
-    process.stderr.write('usage: dashboard.mjs [--repo-root <path>] [--format text|json] [--watch] [--interval-seconds <n>] [--watch-count <n>] [--recent <n>]\n');
+    process.stderr.write('usage: dashboard.mjs [--repo-root <path>] [--format text|json] [--host claude|codex] [--watch] [--interval-seconds <n>] [--watch-count <n>] [--recent <n>]\n');
     process.exitCode = 1;
     return;
   }
@@ -904,7 +1044,7 @@ async function main(argv) {
   }
 
   if (!opts.watch) {
-    process.stdout.write(await renderOnce(opts, repoRoot));
+    process.stdout.write(await renderOnce(opts, repoRoot, { includeEntryAdvisory: true }));
     return;
   }
 

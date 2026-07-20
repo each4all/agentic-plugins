@@ -1,5 +1,5 @@
 ---
-description: Read-only runtime readiness diagnosis for Claude/Codex hosts, plugins, companions, model/effort, permissions, artifacts, workflow ledgers, and ADR-0044 session-capture readiness
+description: Read-only runtime readiness diagnosis for Claude/Codex hosts, plugins, companions, model/effort, permissions, artifacts, workflow ledgers, ADR-0044 session-capture readiness, and ADR-0045 entry-brief hook-chain readiness
 argument-hint: "[--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--artifact-inventory] [--record]"
 ---
 

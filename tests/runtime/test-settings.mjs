@@ -70,7 +70,7 @@ describe('runtime settings', () => {
       runner: fakeRunner({}),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.22');
+    strictEqual(report.schema_version, 'runtime-settings-1.23');
     strictEqual(report.clis.claude.status, 'unavailable');
     strictEqual(report.clis.codex.status, 'unavailable');
     for (const host of ['claude', 'codex']) {
@@ -1085,7 +1085,7 @@ describe('runtime settings', () => {
       runner: fakeRunner(defaultCliMap()),
     });
 
-    strictEqual(report.schema_version, 'runtime-settings-1.22');
+    strictEqual(report.schema_version, 'runtime-settings-1.23');
     strictEqual(report.plugins.runtime.installed.codex_cache, null);
     strictEqual(report.plugins.runtime.marketplace_cache.codex_tmp_marketplace.version, '0.1.0');
     const codexRecommendations = report.plugins.runtime.recommendations.filter((rec) => rec.host === 'codex');
@@ -2429,6 +2429,99 @@ describe('settings: notify config keys (ADR-0040 §2)', () => {
     strictEqual(narrowed.session_readiness.attention.enablement, 'unverified', 'no host-CLI probe means enablement is never guessed');
     strictEqual(narrowed.session_readiness.publisher_floor.satisfied, true);
     strictEqual(narrowed.overall.session_readiness_warnings, 0, 'evaluated counter stays numeric in local_plan');
+  });
+
+  // ADR-0045 S8 (session-capture-contract.md §18): the entry-side mirror —
+  // off informational; the user-scope-only gate on with a half-enabled hook
+  // chain warns; a tracked repo value never activates.
+  it('reports entry-brief readiness: off informational, user-scope gate-on chain warns, repo value ignored', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entry-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entry-home-'));
+    await seedRepo(root);
+
+    // Control: shipped default off — evaluated, zero warnings.
+    const offReport = await runSettings({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultCliMap()) });
+    strictEqual(offReport.entry_readiness.status, 'off');
+    deepStrictEqual(offReport.entry_readiness.states, []);
+    strictEqual(offReport.section_presence.entry_readiness, 'evaluated');
+    strictEqual(offReport.overall.entry_readiness_warnings, 0);
+    ok(formatText(offReport).includes('Entry brief readiness (session-capture-contract.md §18, observed-current, off)'));
+
+    // A tracked REPO value never activates (user-scope-only key): still off,
+    // reported as ignored — and no warning.
+    await mkdir(join(root, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(root, '.agentic-plugins', 'config.toml'), 'entry_brief = "startup"\n');
+    const repoAttempt = await runSettings({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultCliMap()) });
+    strictEqual(repoAttempt.entry_readiness.status, 'off');
+    deepStrictEqual(repoAttempt.entry_readiness.gate.ignored_repo_keys, ['entry_brief']);
+    strictEqual(repoAttempt.overall.entry_readiness_warnings, 0);
+
+    // USER-scope gate on with no attention install: blocked, counted,
+    // recommended, rendered.
+    await mkdir(join(home, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'entry_brief = "startup"\n');
+    const blocked = await runSettings({ repoRoot: root, homeDir: home, runner: fakeRunner(defaultCliMap()) });
+    strictEqual(blocked.entry_readiness.status, 'blocked');
+    deepStrictEqual(blocked.entry_readiness.states, ['attention-missing']);
+    strictEqual(blocked.overall.entry_readiness_warnings, 1);
+    strictEqual(blocked.overall.status, 'warning', 'a half-enabled entry chain degrades overall status');
+    ok(
+      blocked.recommendations.some((rec) => rec.area === 'entry-brief' && rec.state === 'attention-missing' && rec.next_step),
+      `expected an entry-brief recommendation, got: ${JSON.stringify(blocked.recommendations)}`,
+    );
+    const text = formatText(blocked);
+    ok(text.includes('Entry brief readiness (session-capture-contract.md §18, observed-current, blocked)'));
+  });
+
+  it('evaluates entry-brief readiness in local_plan scope, executor probe included', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entry-local-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entry-local-home-'));
+    await seedRepo(root);
+    await mkdir(join(home, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'entry_brief = "startup"\n');
+    // Ready entry chain: attention declaring the additive entry_brief floor
+    // plus a cached runtime build shipping the executor.
+    const attentionRoot = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'attention', '0.6.0');
+    await mkdir(join(attentionRoot, '.claude-plugin'), { recursive: true });
+    await writeFile(join(attentionRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'attention', version: '0.6.0' }));
+    await mkdir(join(attentionRoot, 'data'), { recursive: true });
+    await writeFile(
+      join(attentionRoot, 'data', 'runtime-floors.json'),
+      JSON.stringify({ schema: 'attention-runtime-floors-1.0', floors: { publish_session: '0.1.0', entry_brief: '0.1.0' } }),
+    );
+    const runtimeRoot = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime', '0.90.0');
+    await mkdir(join(runtimeRoot, '.claude-plugin'), { recursive: true });
+    await writeFile(join(runtimeRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version: '0.90.0' }));
+    await mkdir(join(runtimeRoot, 'scripts'), { recursive: true });
+    await writeFile(join(runtimeRoot, 'scripts', 'context.mjs'), '// stub\n');
+
+    const narrowed = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, runner: fakeRunner(defaultCliMap()) });
+    strictEqual(narrowed.report_scope, 'local_plan');
+    strictEqual(narrowed.section_presence.entry_readiness, 'evaluated', 'filesystem+env assessment runs in local_plan too');
+    strictEqual(narrowed.entry_readiness.status, 'ready');
+    strictEqual(narrowed.entry_readiness.entry_floor.satisfied, true);
+    deepStrictEqual(narrowed.entry_readiness.entry_executor, { probed: true, present: true, runtime_version: '0.90.0' });
+    strictEqual(narrowed.overall.entry_readiness_warnings, 0, 'evaluated counter stays numeric in local_plan');
+  });
+
+  it('a blocked entry chain degrades the local_plan overall too (review-peer mutation coverage)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-entry-local-blocked-repo-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-entry-local-blocked-home-'));
+    await seedRepo(root);
+    await mkdir(join(home, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'entry_brief = "startup"\n');
+
+    const narrowed = await runSettings({ repoRoot: root, homeDir: home, skipHostCliProbes: true, runner: fakeRunner(defaultCliMap()) });
+    strictEqual(narrowed.report_scope, 'local_plan');
+    strictEqual(narrowed.entry_readiness.status, 'blocked');
+    deepStrictEqual(narrowed.entry_readiness.states, ['attention-missing']);
+    strictEqual(narrowed.overall.entry_readiness_warnings, 1);
+    strictEqual(narrowed.overall.status, 'warning', 'local_plan overall must degrade on a blocked entry chain');
+    ok(
+      narrowed.recommendations.some((rec) => rec.area === 'entry-brief' && rec.state === 'attention-missing'),
+      'local_plan recommendations rebuild from evaluated inputs — the entry chain is one',
+    );
+    ok(formatText(narrowed).includes('Entry brief readiness (session-capture-contract.md §18, observed-current, blocked)'));
   });
 
   // S2 plan-verify fail-closed hardening: an unreadable (not absent) config

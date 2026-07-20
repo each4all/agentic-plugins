@@ -21,7 +21,7 @@ import { buildCrossHostPermissionPlan, renderCodexConfigToml } from './lib/permi
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
 import { resolveCodexHome } from './lib/state-readers.mjs';
 import { semverCompare } from './lib/semver.mjs';
-import { assessSessionCaptureReadiness, claudePluginListEnablement } from './lib/session-readiness.mjs';
+import { assessEntryBriefReadiness, assessSessionCaptureReadiness, claudePluginListEnablement } from './lib/session-readiness.mjs';
 import {
   CONFIG_KEYS,
   CONFIG_KEY_FAMILIES,
@@ -82,7 +82,12 @@ import { parseCodexCliVersion, resolveCodexInstalledPluginVersion } from './lib/
 // env_override plus the family-level user_scope_only_keys /
 // user_scope_resolution_order, and the repo target structurally refuses the
 // user-scope-only pair (settings-report-contract.md version lockstep).
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.22';
+// 1.22 → 1.23 (additive, ADR-0045 S8): report.entry_readiness — the shared
+// lib/session-readiness.mjs entry-side assessment of the entry_brief
+// half-enabled hook-chain states (session-capture-contract.md §18),
+// evaluated in BOTH report scopes (filesystem+env reads only), with
+// overall.entry_readiness_warnings.
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.23';
 
 // ADR-0038 settings-claude permission plan (M1): how many recent usage records to
 // read per host, and a per-file byte cap, when building the dry-run plan.
@@ -391,6 +396,18 @@ export async function runSettings({
       ? null
       : claudePluginListEnablement(doctor.plugins?.attention?.installed?.claude_plugin_list ?? null),
   });
+  // ADR-0045 S8 — the entry-side mirror (contract §18), same discipline:
+  // observed-current, both report scopes, filesystem+env reads only (the
+  // entry-executor existence probe is a cache stat, not a host-CLI spawn).
+  const entryReadiness = await assessEntryBriefReadiness({
+    repoRoot: resolvedRepoRoot,
+    homeDir: resolvedHomeDir,
+    env: launcherEnv,
+    runtimeVersion: RUNTIME_VERSION,
+    attentionEnablement: skipHostCliProbes
+      ? null
+      : claudePluginListEnablement(doctor.plugins?.attention?.installed?.claude_plugin_list ?? null),
+  });
   if (!skipHostCliProbes) {
     hookSettings = buildHookSettingsPlan({
       codexPluginHooks: doctor.codex_plugin_hooks,
@@ -522,6 +539,7 @@ export async function runSettings({
     notify_settings: notifySettings,
     session_settings: sessionSettings,
     session_readiness: sessionReadiness,
+    entry_readiness: entryReadiness,
     permission_plan: permissionPlanSection,
     permission_plan_codex: permissionPlanCodexSection,
     notification_plan: notificationPlanSection,
@@ -546,6 +564,7 @@ export async function runSettings({
       notifySettings,
       sessionSettings,
       sessionReadiness,
+      entryReadiness,
       hookSettings,
     }),
     limits: [
@@ -628,7 +647,7 @@ function mutationBoundaryWritesAllowed({ apply, executePluginManagement, execute
 }
 
 // settings-report-contract.md §3 — one authoritative map over every
-// top-level report section (21 entries). Enum: evaluated | not_evaluated |
+// top-level report section (22 entries). Enum: evaluated | not_evaluated |
 // not_requested | local_only. An empty container or zero counter must never
 // stand in for "not evaluated"; this map carries the semantics.
 function buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationPlan, egressLauncherPlan }) {
@@ -646,6 +665,7 @@ function buildSectionPresence({ skipHostCliProbes, permissionPlan, notificationP
     notify_settings: 'evaluated',
     session_settings: 'evaluated',
     session_readiness: 'evaluated',
+    entry_readiness: 'evaluated',
     mutation_boundary: 'evaluated',
     artifacts: 'evaluated',
     limits: 'evaluated',
@@ -1980,7 +2000,7 @@ function buildCodexHookReviewTargets({ codexPluginHooks, plugins }) {
   return targets.sort((a, b) => a.plugin.localeCompare(b.plugin));
 }
 
-function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredConfig, companionSettings, notifySettings, sessionSettings, sessionReadiness, hookSettings }) {
+function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredConfig, companionSettings, notifySettings, sessionSettings, sessionReadiness, entryReadiness, hookSettings }) {
   const recommendations = [];
   for (const [name, cli] of Object.entries(clis)) {
     if (cli.status !== 'available') {
@@ -2052,6 +2072,18 @@ function buildTopLevelRecommendations({ clis, plugins, pluginCleanup, desiredCon
       next_step: recommendation.next_step,
     });
   }
+  // ADR-0045 S8 — entry-side half-enabled hook-chain states (contract §18).
+  for (const recommendation of entryReadiness?.recommendations ?? []) {
+    recommendations.push({
+      area: 'entry-brief',
+      severity: 'warning',
+      executable: false,
+      executed: false,
+      state: recommendation.state,
+      detail: recommendation.detail,
+      next_step: recommendation.next_step,
+    });
+  }
   for (const recommendation of hookSettings?.recommendations ?? []) {
     recommendations.push(recommendation);
   }
@@ -2073,6 +2105,13 @@ function summarizeSettings(report) {
       ? report.session_readiness.states.length
       : report.session_readiness.status === 'config-fail-closed' ? 1 : 0
     : 0;
+  // ADR-0045 S8 — the entry-side mirror, same derivation (status-derived,
+  // never recommendations.length).
+  const entryReadinessWarnings = report.entry_readiness
+    ? report.entry_readiness.status === 'blocked'
+      ? report.entry_readiness.states.length
+      : report.entry_readiness.status === 'config-fail-closed' ? 1 : 0
+    : 0;
   if (report.report_scope === 'local_plan') {
     // settings-report-contract.md §3 — status is computed over evaluated
     // sections only, which includes requested plan sections: a blocked or
@@ -2084,7 +2123,7 @@ function summarizeSettings(report) {
       .filter((section) => section?.requested && ['blocked', 'failed'].includes(section.status)).length;
     return {
       scope: 'local_plan',
-      status: settingWarnings > 0 || notifyWarnings > 0 || sessionWarnings > 0 || sessionReadinessWarnings > 0 || blockedPlanSections > 0 ? 'warning' : 'pass',
+      status: settingWarnings > 0 || notifyWarnings > 0 || sessionWarnings > 0 || sessionReadinessWarnings > 0 || entryReadinessWarnings > 0 || blockedPlanSections > 0 ? 'warning' : 'pass',
       planned_config_writes: writeCount,
       applied_config_targets: appliedCount,
       plugin_recommendations: null,
@@ -2092,6 +2131,7 @@ function summarizeSettings(report) {
       notify_warnings: notifyWarnings,
       session_warnings: sessionWarnings,
       session_readiness_warnings: sessionReadinessWarnings,
+      entry_readiness_warnings: entryReadinessWarnings,
       hook_warnings: null,
       hook_review_warnings: null,
       auth_warnings: null,
@@ -2110,7 +2150,7 @@ function summarizeSettings(report) {
   const hookReviewWarnings = report.codex_hook_review?.requested && report.codex_hook_review.status !== 'attested' ? 1 : 0;
   return {
     scope: 'full',
-    status: missingCli > 0 || settingWarnings > 0 || notifyWarnings > 0 || sessionWarnings > 0 || sessionReadinessWarnings > 0 || hookWarnings > 0 || hookReviewWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 || pluginCleanupWarnings > 0 ? 'warning' : 'pass',
+    status: missingCli > 0 || settingWarnings > 0 || notifyWarnings > 0 || sessionWarnings > 0 || sessionReadinessWarnings > 0 || entryReadinessWarnings > 0 || hookWarnings > 0 || hookReviewWarnings > 0 || authWarnings > 0 || pluginManagementFailed > 0 || pluginCleanupWarnings > 0 ? 'warning' : 'pass',
     planned_config_writes: writeCount,
     applied_config_targets: appliedCount,
     plugin_recommendations: Object.values(report.plugins).reduce((sum, plugin) => sum + plugin.recommendations.length, 0),
@@ -2118,6 +2158,7 @@ function summarizeSettings(report) {
     notify_warnings: notifyWarnings,
     session_warnings: sessionWarnings,
     session_readiness_warnings: sessionReadinessWarnings,
+    entry_readiness_warnings: entryReadinessWarnings,
     hook_warnings: hookWarnings,
     hook_review_warnings: hookReviewWarnings,
     auth_warnings: authWarnings,
@@ -2364,6 +2405,23 @@ export function formatText(report) {
     if (readiness.status !== 'off' && readiness.status !== 'config-fail-closed') {
       lines.push(`- attention: installed=${readiness.attention.installed}; version=${readiness.attention.version ?? '<none>'}; enablement=${readiness.attention.enablement}`);
       lines.push(`- publisher-floor: declared=${readiness.publisher_floor.declared}; floor=${readiness.publisher_floor.floor ?? '<none>'}; runtime=${readiness.publisher_floor.runtime_version ?? '<unknown>'}; satisfied=${readiness.publisher_floor.satisfied ?? '<n/a>'}`);
+    }
+    for (const recommendation of readiness.recommendations) {
+      lines.push(`- ${recommendation.state}: ${recommendation.detail}`);
+      lines.push(`  next: ${recommendation.next_step}`);
+    }
+  }
+  if (report.entry_readiness) {
+    const readiness = report.entry_readiness;
+    lines.push('');
+    // ADR-0045 S8 — the entry-side hook-chain mirror. `off` diagnoses the
+    // HOOK emission chain only; cli/dashboard surfaces always compute.
+    lines.push(`Entry brief readiness (session-capture-contract.md §18, observed-current, ${readiness.status})`);
+    lines.push(`- gate: entry_brief=${readiness.gate.value ?? '<fail-closed>'}; entry_brief_empty=${readiness.gate.empty_value ?? '<fail-closed>'}; safe-mode=${readiness.safe_mode.active}${readiness.gate.ignored_repo_keys.length > 0 ? `; ignored-repo-keys=${readiness.gate.ignored_repo_keys.join(',')}` : ''}`);
+    if (readiness.status !== 'off' && readiness.status !== 'config-fail-closed') {
+      lines.push(`- attention: installed=${readiness.attention.installed}; version=${readiness.attention.version ?? '<none>'}; enablement=${readiness.attention.enablement}`);
+      lines.push(`- entry-floor: declared=${readiness.entry_floor.declared}; floor=${readiness.entry_floor.floor ?? '<none>'}; runtime=${readiness.entry_floor.runtime_version ?? '<unknown>'}; satisfied=${readiness.entry_floor.satisfied ?? '<n/a>'}`);
+      lines.push(`- entry-executor: probed=${readiness.entry_executor.probed}; present=${readiness.entry_executor.present ?? '<unverified>'}; cached-runtime=${readiness.entry_executor.runtime_version ?? '<none>'}`);
     }
     for (const recommendation of readiness.recommendations) {
       lines.push(`- ${recommendation.state}: ${recommendation.detail}`);

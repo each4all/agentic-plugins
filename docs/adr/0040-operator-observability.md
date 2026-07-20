@@ -7,13 +7,24 @@ Accepted
 **§3's attention charter widened by
 [ADR-0044](0044-session-generic-handoff-capture.md) §2 (2026-07-18)** — from
 "notification sensors" to *host-lifecycle sensors feeding allowlisted
-runtime-owned executors* (today: `notify.mjs emit` and `context.mjs
-publish-session`). The widening is bounded: attention remains hook-only (no
+runtime-owned executors* (today: `notify.mjs emit`, `context.mjs
+publish-session`, and — per
+[ADR-0045](0045-entry-time-proposal-surfaces.md) §2.5 — the R0
+`context.mjs entry-brief`). The widening is bounded: attention remains hook-only (no
 skills, verbs, or state), remains Claude-manifest-scoped with zero Codex hook
 surface (the two-part invariant stands), and the capture spawn gets its own
 publisher capability floor, separate from the notify floor — the two gates
 never share a constant, and the publisher floor is pinned only after the
 runtime release shipping `publish-session` exists.
+
+**§3's sensor stdout-silent invariant excepted for the entry sensor only
+by [ADR-0045](0045-entry-time-proposal-surfaces.md) §2.2 (2026-07-19)** —
+the SessionStart entry sensor's single marker-paired
+`[agentic-entry-brief]` line is its deliberate output channel
+(stdout-into-context is the point of a SessionStart hook). The exception
+is bounded: that sensor remains stderr-bounded and exit-0-always, and
+every notify-pipeline sensor stays bound by the original "exit 0 always,
+nothing on stdout ever" invariant.
 
 <!--
 Relates to ADR-0024 (runtime operator control plane — doctor/settings/
