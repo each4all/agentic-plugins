@@ -56,7 +56,7 @@
               }
             },
             "minimum_version": {
-              "description": "§1.4 — the floor, compared PRERELEASE-AWARE (never the numeric semverCompare, which treats 0.3.0-beta == 0.3.0). An unknown installed version with a non-null floor stays `unresolved`, never `installed`. `null` means no floor is claimed.",
+              "description": "§1.4 — the floor, compared PRERELEASE-AWARE with SemVer §11 identifier ranking (numeric identifiers as JS numbers, lossy only above 2^53; beyond the shared semverCompare, whose prerelease tie-break ranks a release above its own prereleases but never identifiers against each other). An unknown installed version with a non-null floor stays `unresolved`, never `installed`. `null` means no floor is claimed.",
               "type": ["string", "null"],
               "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
             }

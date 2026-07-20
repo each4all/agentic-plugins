@@ -47,7 +47,8 @@ export const RUNTIME_ENTRY_EXECUTOR_REL_PATH = join('scripts', 'context.mjs');
 // Contract §13: the declared floor is a plain released X.Y.Z — the
 // ADR-0043 released-floor rule means a prerelease/build-suffixed floor is
 // never a valid declaration, so it is malformed (fail-closed), which also
-// keeps the numeric semverCompare sufficient for the comparison.
+// keeps the shared semverCompare (numeric core + prerelease tie-break)
+// sufficient for the comparison.
 const CLEAN_RELEASE_SEMVER_RE = /^\d+\.\d+\.\d+$/;
 
 // Half-enabled / blocking states (contract §13). Composable: a machine can
