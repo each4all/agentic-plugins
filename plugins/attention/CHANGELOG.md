@@ -2,6 +2,13 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.7.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.6.0...plugin-attention-v0.7.0) (2026-07-20)
+
+
+### Features
+
+* **plugin/attention:** ADR-0045 S9 — SessionStart entry sensor + entry-brief floor pin ([9460682](https://github.com/each4all/agentic-plugins/commit/946068226dae96aa042d2ebc626710f64cde5470))
+
 ## [0.6.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.5.0...plugin-attention-v0.6.0) (2026-07-20)
 
 
