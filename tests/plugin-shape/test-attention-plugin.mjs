@@ -558,6 +558,32 @@ describe('plugins/attention — discover-runtime copy (ADR-0039 §5 ladder)', ()
     return root;
   }
 
+  it('hyphenated build metadata is not a prerelease — a +build-N release satisfies its own floor (SemVer §10)', async () => {
+    const buildMeta = await makeRuntimeStub('build-meta', '0.71.0+build-5');
+    strictEqual(
+      await discoverLib.discoverRuntimePluginRoot({ env: { AGENTIC_RUNTIME_ROOT: buildMeta }, home: stubHome }),
+      buildMeta,
+    );
+  });
+
+  it('semverCompare body stays byte-identical to the runtime lib/semver.mjs original (mirror-drift pin)', async () => {
+    // The comparator ships as a deliberate sibling copy (ADR-0010 §5 import
+    // ban). A semantics fix that lands in only one copy re-opens the S9
+    // build-metadata mirror gap — fix both or neither.
+    const extract = (text) => {
+      const m = text.match(/function semverCompare\(a, b\) \{[\s\S]*?\n\}/);
+      ok(m, 'semverCompare body not found');
+      return m[0];
+    };
+    const attentionSrc = await readFile(resolve(PLUGIN_ROOT, 'scripts/discover-runtime.mjs'), 'utf8');
+    const runtimeSrc = await readFile(resolve(PLUGIN_ROOT, '..', 'runtime', 'scripts', 'lib', 'semver.mjs'), 'utf8');
+    strictEqual(
+      extract(attentionSrc),
+      extract(runtimeSrc),
+      'the two semverCompare copies must not drift (fix both or neither)',
+    );
+  });
+
   it('env override resolves only when scripts/notify.mjs exists AND version >= floor', async () => {
     const okRoot = await makeRuntimeStub('ok', '0.71.0');
     strictEqual(
@@ -1828,6 +1854,62 @@ describe('plugins/attention — ADR-0044 §2 spawnPublishSession (unit)', () => 
     deepStrictEqual(captures[0].git_env, [], 'no GIT_* variable may be inherited by the emitter');
   });
 
+  it("all three sensor spawnSync seams pin killSignal: 'SIGKILL' (entry + capture + emit; source-level exact pin)", async () => {
+    // The behavioral trap tests cannot enumerate every catchable signal;
+    // this pins the exact spawn option so a weakening to any OTHER signal —
+    // catchable or not — is a test failure, not a silent contract change.
+    const sensorSrc = await readFile(resolve(PLUGIN_ROOT, 'scripts/lib/sensor.mjs'), 'utf8');
+    const codeLines = sensorSrc.match(/^\s*killSignal: 'SIGKILL',$/gm) ?? [];
+    strictEqual(codeLines.length, 3, "sensor.mjs must carry exactly three spawnSync seams, each pinned to killSignal: 'SIGKILL'");
+  });
+
+  // Trap-and-sleep stub with a start sentinel: the sentinel write proves the
+  // child actually started and installed its traps before being killed (an
+  // immediate syntax failure cannot vacuously pass), and trapping the
+  // catchable termination signals means a catchable-signal weakening rides
+  // past — only SIGKILL bounds it (the source pin above closes the rest).
+  const SIGNAL_TRAP_STUB = [
+    '#!/usr/bin/env node',
+    "import fs from 'node:fs';",
+    "for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT', 'SIGUSR1', 'SIGUSR2']) process.on(sig, () => {});",
+    "fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({ tool: 'trap-started' }) + '\\n');",
+    'await new Promise((r) => setTimeout(r, 30_000));',
+  ].join('\n');
+
+  it('capture spawn: a signal-trapping publisher cannot ride past the deadline — killSignal is SIGKILL (Stop-seam mirror of the entry-brief bound)', async () => {
+    const root = await makePublisherStub('sigterm-trap-capture', '0.82.0', { contextSource: SIGNAL_TRAP_STUB });
+    const startedAt = Date.now();
+    const result = await sensorLib.spawnPublishSession({
+      repoRoot: '/repo/x',
+      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile },
+      home: stubHome,
+      timeoutMs: 2_500,
+    });
+    const elapsedMs = Date.now() - startedAt;
+    deepStrictEqual(result, { spawned: true });
+    deepStrictEqual(await takeUnitCaptures(), [{ tool: 'trap-started' }], 'the publisher must have started and installed its traps before the kill');
+    ok(elapsedMs >= 2_400, `capture spawn returned in ${elapsedMs}ms — before the timeout, so the child cannot have been timeout-killed`);
+    ok(elapsedMs < 10_000, `capture spawn took ${elapsedMs}ms — SIGKILL must bound a signal-trapping publisher`);
+  });
+
+  it('emit spawn: a signal-trapping emitter cannot ride past the deadline — killSignal is SIGKILL (Stop-seam mirror of the entry-brief bound)', async () => {
+    const root = await makePublisherStub('sigterm-trap-emit', '0.82.0');
+    await writeFile(join(root, 'scripts/notify.mjs'), SIGNAL_TRAP_STUB);
+    const startedAt = Date.now();
+    const result = await sensorLib.emitEvent({
+      repoRoot: '/repo/x',
+      event: { event_id: 'x', kind: 'turn-complete', title: 't', body: '', urgency: 'normal' },
+      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile },
+      home: stubHome,
+      timeoutMs: 2_500,
+    });
+    const elapsedMs = Date.now() - startedAt;
+    deepStrictEqual(result, { emitted: true });
+    deepStrictEqual(await takeUnitCaptures(), [{ tool: 'trap-started' }], 'the emitter must have started and installed its traps before the kill');
+    ok(elapsedMs >= 2_400, `emit spawn returned in ${elapsedMs}ms — before the timeout, so the child cannot have been timeout-killed`);
+    ok(elapsedMs < 10_000, `emit spawn took ${elapsedMs}ms — SIGKILL must bound a signal-trapping emitter`);
+  });
+
   it('below-floor runtime (0.81.0) skips silently — the notify floor alone never enables capture', async () => {
     const root = await makePublisherStub('below-floor', '0.81.0');
     const result = await sensorLib.spawnPublishSession({
@@ -2556,24 +2638,31 @@ describe('plugins/attention — ADR-0045 §7 spawnEntryBrief (dispatcher, unit)'
     }
   });
 
-  it('a SIGTERM-trapping child cannot ride past the deadline — killSignal is SIGKILL (Codex Plan-verify reproduction)', async () => {
+  it('a signal-trapping child cannot ride past the deadline — killSignal is SIGKILL (Codex Plan-verify reproduction)', async () => {
+    // Start sentinel + SIGINT trap (S9 follow-up peer review): the sentinel
+    // proves the child started and installed its traps before the kill, and
+    // any catchable signal would ride past — only SIGKILL bounds it.
     const root = await makeEntryStub('sigterm-trap', '0.83.0', {
       contextSource: [
         '#!/usr/bin/env node',
-        "process.on('SIGTERM', () => {});",
+        "import fs from 'node:fs';",
+        "for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT', 'SIGUSR1', 'SIGUSR2']) process.on(sig, () => {});",
+        "fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({ tool: 'trap-started' }) + '\\n');",
         'await new Promise((r) => setTimeout(r, 30_000));',
       ].join('\n'),
     });
     const startedAt = Date.now();
     const result = await sensorLib.spawnEntryBrief({
       repoRoot: '/repo/x',
-      env: { AGENTIC_RUNTIME_ROOT: root },
+      env: { AGENTIC_RUNTIME_ROOT: root, ATTENTION_TEST_CAPTURE: captureFile },
       home: stubHome,
-      timeoutMs: 1_500,
+      timeoutMs: 2_500,
     });
     const elapsedMs = Date.now() - startedAt;
     deepStrictEqual(result, { line: null, reason: 'executor-failed' });
-    ok(elapsedMs < 10_000, `spawn took ${elapsedMs}ms — SIGKILL must bound a SIGTERM-trapping child`);
+    deepStrictEqual(await takeEntryCaptures(), [{ tool: 'trap-started' }], 'the executor must have started and installed its traps before the kill');
+    ok(elapsedMs >= 2_400, `spawn returned in ${elapsedMs}ms — before the timeout, so the child cannot have been timeout-killed`);
+    ok(elapsedMs < 10_000, `spawn took ${elapsedMs}ms — SIGKILL must bound a signal-trapping child`);
   });
 
   it('a nonzero executor exit suppresses even a well-formed line (successful-child-exit gate)', async () => {

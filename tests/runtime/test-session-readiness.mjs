@@ -244,6 +244,20 @@ describe('assessSessionCaptureReadiness (contract §13)', () => {
     }
   });
 
+  it('an equal-core prerelease install sits BELOW the declared publisher floor (strict prerelease semantics)', async () => {
+    // The sensors' strict versionGte holds `X.Y.Z-pre` below floor `X.Y.Z`;
+    // the diagnosis must agree, not report ready for a spawn the sensor skips.
+    const fx = await makeFixture();
+    try {
+      const result = await assess(fx, { runtimeVersion: `${READY_FLOOR}-beta.1` });
+      strictEqual(result.status, 'blocked');
+      deepStrictEqual(result.states, ['runtime-below-publisher-floor']);
+      strictEqual(result.publisher_floor.satisfied, false);
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
   it('reads the declaration from the NEWEST installed attention (numeric semver order)', async () => {
     const fx = await makeFixture({
       attentionVersions: [
@@ -620,6 +634,19 @@ describe('assessEntryBriefReadiness (contract §18)', () => {
       deepStrictEqual(result.states, ['runtime-below-entry-floor']);
       strictEqual(result.entry_floor.satisfied, false);
       // Below the floor the executor probe is moot — never reached.
+      deepStrictEqual(result.entry_executor, { probed: false, present: null, runtime_version: null });
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  it('an equal-core prerelease install sits BELOW the declared entry floor (strict prerelease semantics)', async () => {
+    const fx = await makeEntryFixture();
+    try {
+      const result = await assessEntry(fx, { runtimeVersion: `${READY_FLOOR}-beta.1` });
+      strictEqual(result.status, 'blocked');
+      deepStrictEqual(result.states, ['runtime-below-entry-floor']);
+      strictEqual(result.entry_floor.satisfied, false);
       deepStrictEqual(result.entry_executor, { probed: false, present: null, runtime_version: null });
     } finally {
       await fx.cleanup();
