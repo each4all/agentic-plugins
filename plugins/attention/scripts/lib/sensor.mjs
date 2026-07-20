@@ -811,11 +811,15 @@ function sanitizeSpawnEnv(env) {
  * itself — the sensor stays policy-free (ADR-0044 §3) and discards child
  * output entirely.
  *
- * spawnSync bounded by ONE budget slot (PUBLISH_SESSION_TIMEOUT_MS): the
- * publisher runs bounded git probes (root, branch, head, porcelain — each
- * under its own ~3s cap, sequential) plus local file IO — no network. The
- * probes' theoretical sum can graze the slot, and the accepted degradation
- * for a killed publisher is bounded: it may die holding the capture `.lock`,
+ * spawnSync bounded by ONE budget slot (PUBLISH_SESSION_TIMEOUT_MS) with
+ * `killSignal: 'SIGKILL'` — the default SIGTERM is trappable, so a trapped
+ * publisher would ride past the slot to the host's own hook timeout (the
+ * S9 peer reproduction on the entry-brief spawn; this seam mirrors that
+ * bound). The publisher runs bounded git probes (root, branch, head,
+ * porcelain — each under its own ~3s cap, sequential) plus local file IO —
+ * no network. The probes' theoretical sum can graze the slot, and the
+ * accepted degradation for a killed publisher is bounded: it may die
+ * holding the capture `.lock`,
  * suppressing further captures until the contract stale-age (60s) allows
  * takeover — notifications are unaffected and the previous turn's slot
  * remains the handoff (the rolling-checkpoint limit; ADR-0040 §7 fail-closed
@@ -858,6 +862,7 @@ export async function spawnPublishSession({
       stdio: ['ignore', 'ignore', 'ignore'],
       env: sanitizeSpawnEnv(env),
       timeout: timeoutMs,
+      killSignal: 'SIGKILL',
     });
     return { spawned: true };
   } catch {
@@ -1055,9 +1060,13 @@ export async function emitTerminalEvents({
  * child's stdout/stderr are discarded: the sensor owns the "never stdout"
  * contract and the emitter is fail-closed silent on its own.
  *
- * spawnSync (bounded by `timeoutMs`) rather than fire-and-forget: a synchronous
- * bound keeps the hook's lifetime deterministic. A timeout kills the child and
- * loses the notification — acceptable by the ADR-0040 §7 fail-closed contract.
+ * spawnSync (bounded by `timeoutMs`, `killSignal: 'SIGKILL'`) rather than
+ * fire-and-forget: a synchronous bound keeps the hook's lifetime
+ * deterministic. A timeout kills the child and loses the notification —
+ * acceptable by the ADR-0040 §7 fail-closed contract. SIGKILL because the
+ * default SIGTERM is trappable — a trapped emitter would ride past the slot
+ * to the host's own hook timeout (the S9 peer reproduction on the
+ * entry-brief spawn; this seam mirrors that bound).
  *
  * `timeoutMs` MUST exceed the runtime emitter's OWN network budget (notify.mjs
  * TELEGRAM_API_TIMEOUT_MS, currently 8s for the ADR-0041 §2d Telegram egress
@@ -1093,6 +1102,7 @@ export async function emitEvent({
       stdio: ['pipe', 'ignore', 'ignore'],
       env: sanitizeSpawnEnv(env),
       timeout: timeoutMs,
+      killSignal: 'SIGKILL',
     });
     return { emitted: true };
   } catch {
