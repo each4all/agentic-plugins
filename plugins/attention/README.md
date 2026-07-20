@@ -121,13 +121,14 @@ pairs, alongside the plain-`X.Y.Z` released-floor rule (the notify floor
 stays code-pinned only; the declaration file carries the two
 runtime-diagnosed keys). Prerelease semantics: the DECLARATION rule is
 aligned on both sides (this file must carry clean released `X.Y.Z` values,
-and the runtime-side diagnosis refuses anything else), while the GATE
-comparators differ in strictness — the sensors' strict `versionGte` holds
-an equal-core prerelease (`0.83.0-beta.1`) below the floor, whereas the
-runtime diagnosis's numeric comparator treats it as equal. A
-prerelease-versioned runtime install does not occur under release-please
-(plain `X.Y.Z` only), so the divergence is theoretical; tightening the
-runtime comparator is a recorded runtime-owned follow-up.
+and the runtime-side diagnosis refuses anything else), and the GATE
+comparators agree in strictness — the sensors' strict `versionGte` and the
+runtime diagnosis's shared `semverCompare` (runtime `lib/semver.mjs`,
+prerelease tie-break) both hold an equal-core prerelease
+(`0.83.0-beta.1`) below the floor (the S9 runtime-owned follow-up, closed).
+A prerelease-versioned runtime install still does not occur under
+release-please (plain `X.Y.Z` only), so the case stays theoretical on both
+sides.
 
 ### Stop hot-path budget (contract values)
 
@@ -141,9 +142,11 @@ The Stop hook's worst-case latency is a stated contract
 | `PUBLISH_SESSION_TIMEOUT_MS` | 12 s | the capture spawn's own slot — bounded git probes + local IO, no network |
 | `STOP_HOT_PATH_BUDGET_MS` | 36 s | aggregate worst case: one capture slot + the two-slot notification deadline |
 
-A publisher or emitter that overruns its slot is killed and the event/capture
-is lost — the ADR-0040 §7 fail-closed choice (never a blocked host; the
-previous turn's slot remains the session handoff).
+A publisher or emitter that overruns its slot is killed — **SIGKILL**,
+mirroring the entry-brief spawn's kill bound (SIGTERM is trappable: a
+trapped child would ride past the slot to the host's own hook timeout) —
+and the event/capture is lost — the ADR-0040 §7 fail-closed choice (never a
+blocked host; the previous turn's slot remains the session handoff).
 
 ### The SessionStart entry sensor (ADR-0045 §7)
 

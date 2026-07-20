@@ -93,8 +93,13 @@ async function dirExists(path) {
 // of inheriting readdir order (Codex Plan-verify). The strict gate below
 // (`versionGte`) is still what actually enforces the floor.
 function semverCompare(a, b) {
-  const [coreA, preA] = String(a).split('-', 2);
-  const [coreB, preB] = String(b).split('-', 2);
+  // Build metadata (`+…`) strips FIRST: it may itself contain hyphens
+  // (`1.0.0+build-5` is a clean release, SemVer §10), so splitting on `-`
+  // before dropping it would misread the metadata as a prerelease.
+  const [bareA] = String(a).split('+', 2);
+  const [bareB] = String(b).split('+', 2);
+  const [coreA, preA] = bareA.split('-', 2);
+  const [coreB, preB] = bareB.split('-', 2);
   const pa = coreA.split('.').map((x) => Number.parseInt(x, 10) || 0);
   const pb = coreB.split('.').map((x) => Number.parseInt(x, 10) || 0);
   for (let i = 0; i < 3; i++) {
@@ -115,7 +120,10 @@ function semverCompare(a, b) {
 // floor release and therefore carries notify.mjs (SemVer ordering; same
 // semantics as the engineer sibling copy).
 function versionGte(version, min) {
-  const [core, prerelease] = String(version).split('-', 2);
+  // Same build-metadata-first strip as semverCompare: `X.Y.Z+build-5` is a
+  // clean release of core X.Y.Z, never a prerelease (SemVer §10).
+  const [bare] = String(version).split('+', 2);
+  const [core, prerelease] = bare.split('-', 2);
   const parts = core.split('.').map((x) => Number.parseInt(x, 10) || 0);
   const floor = String(min).split('-', 1)[0].split('.').map((x) => Number.parseInt(x, 10) || 0);
   for (let i = 0; i < 3; i++) {
