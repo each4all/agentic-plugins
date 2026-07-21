@@ -1,0 +1,7 @@
+interface:
+  display_name: "Runtime - Retention"
+  short_description: "Plan (read-only) or explicitly apply citation-aware artifact retention deletion under a reviewed plan hash"
+  default_prompt: "Use $runtime:retention plan to review the actionable/pinned split and the plan hash. Add apply --family <f> --expected-plan-hash <hash> --execute only after reviewing the plan."
+
+policy:
+  allow_implicit_invocation: false
