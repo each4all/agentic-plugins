@@ -14,11 +14,47 @@ const VERSION = RUNTIME_VERSION;
 const SNAPSHOT_SCHEMA = 'runtime-compat-snapshot-1.0';
 const GAP_SCHEMA = 'runtime-compat-gap-1.0';
 const RELEASE_NOTES_SCHEMA = 'runtime-compat-release-notes-1.0';
-const PLAN_SCHEMA = 'runtime-compat-plan-1.0';
+const PLAN_SCHEMA = 'runtime-compat-plan-1.1';
 const LATEST_SCHEMA = 'runtime-compat-latest-1.0';
 const POLICY_SCHEMA = 'runtime-compat-policy-1.0';
 const POLICY_ADR = 'ADR-0026';
 const POLICY_ADR_POINTER = 'docs/adr/0026-runtime-compatibility-drift-and-release-notes.md';
+const NOTIFICATION_WATCH_ADR = 'ADR-0047';
+const NOTIFICATION_WATCH_ADR_POINTER = 'docs/adr/0047-notify-attention-gating-gc.md';
+// ADR-0047 §5 — seeded standing notification watch. Standing means these rows
+// are emitted on every plan run whether or not versions drifted — unlike the
+// generic surface classifier, which only fires on newly ingested text — so the
+// recorded notification gaps stay visible until resolved. A signal hit
+// annotates the row and adds a review step; it never wires a mapping. Wiring a
+// newly observed variant requires a source-verified payload and a dedicated
+// follow-up decision (ADR-0030 discipline); until then the Codex shuttle's
+// unknown-variant silent no-op is contractual.
+const NOTIFICATION_WATCH_ROWS = [
+  {
+    id: 'codex-notify-payload-variants',
+    host: 'codex',
+    subject: 'Codex notify= payload variants beyond agent-turn-complete (especially approval/permission shapes)',
+    baseline_behavior: 'receivers/codex-notify-shuttle.mjs silently no-ops on any payload type other than agent-turn-complete; no approval payload reaches notify= at the recorded baseline.',
+    resolution_requires: 'A source-verified payload shape recorded in the host-parity baseline plus a dedicated follow-up decision before any shuttle mapping (ADR-0030).',
+    signal_patterns: [
+      /\bnotify\s*=/i,
+      /\bnotif\w*\b[\s\S]{0,200}?\b(?:payload|variant|approval|permission|type)\b/i,
+      /\b(?:payload|variant|approval|permission|type)\b[\s\S]{0,200}?\bnotif\w*\b/i,
+    ],
+  },
+  {
+    id: 'claude-notification-agent-types',
+    host: 'claude',
+    subject: 'Claude Notification hook agent_needs_input / agent_completed notification types (observed at 2.1.198)',
+    baseline_behavior: 'The attention Notification sensor matches permission_prompt/idle_prompt and ignores the 2.1.198 agent_needs_input/agent_completed types; recorded in host-parity-baseline.md Version History (2026-07-04).',
+    resolution_requires: 'A source-verified payload shape for the new notification types plus a dedicated follow-up decision before any sensor mapping (ADR-0030).',
+    signal_patterns: [
+      /\bagent_needs_input\b/i,
+      /\bagent_completed\b/i,
+      /\bnotification_type\b/i,
+    ],
+  },
+];
 const VALID_COMMANDS = new Set(['snapshot', 'check', 'ingest-release-notes', 'plan']);
 const RUN_ID_RE = /^compat-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -143,12 +179,24 @@ export async function ingestReleaseNotes(options = {}) {
   const now = toIso(options.now ?? new Date());
   const entries = [];
   const urlFetcher = options.urlFetcher ?? fetchReleaseNotesUrl;
+  // Load the existing index BEFORE assigning ids: the id sequence must
+  // continue across invocations, or a second ingest of a same-named file
+  // (e.g. CHANGELOG.md twice) reuses the same id and silently overwrites
+  // the first stored body (Review ensemble finding).
+  const indexPath = resolve(notesDir, 'index.json');
+  const previous = await readJsonIfExists(indexPath, {
+    schema_version: RELEASE_NOTES_SCHEMA,
+    run_id: selected.runId,
+    notes: [],
+  });
+  const previousNotes = previous.notes ?? [];
+  const idOffset = previousNotes.length;
 
   for (const file of files) {
     const sourcePath = resolve(file);
     const sourceText = await readFile(sourcePath, 'utf8');
     if (!sourceText.trim()) throw new Error(`release notes file is empty: ${file}`);
-    const id = noteId(sourcePath, entries.length + 1);
+    const id = noteId(sourcePath, idOffset + entries.length + 1);
     const target = resolve(notesDir, `${id}.md`);
     await copyFile(sourcePath, target);
     entries.push({
@@ -164,7 +212,7 @@ export async function ingestReleaseNotes(options = {}) {
 
   for (const url of urls) {
     if (!/^https?:\/\//i.test(url)) throw new Error('--release-notes-url must be http(s)');
-    const id = noteId(url, entries.length + 1);
+    const id = noteId(url, idOffset + entries.length + 1);
     const metadataTarget = resolve(notesDir, `${id}.json`);
     if (fetchUrls) {
       const fetched = await urlFetcher(url, { timeoutMs });
@@ -218,18 +266,12 @@ export async function ingestReleaseNotes(options = {}) {
     });
   }
 
-  const indexPath = resolve(notesDir, 'index.json');
-  const previous = await readJsonIfExists(indexPath, {
-    schema_version: RELEASE_NOTES_SCHEMA,
-    run_id: selected.runId,
-    notes: [],
-  });
   const index = {
     schema_version: RELEASE_NOTES_SCHEMA,
     run_id: selected.runId,
     updated_at: now,
     policy: compatibilityPolicy(),
-    notes: [...(previous.notes ?? []), ...entries],
+    notes: [...previousNotes, ...entries],
     limits: [
       'Release note ingestion stores explicit files, URL pointers, or explicitly fetched URL content.',
       'Network fetching is not automatic; --fetch-release-notes-url is required for URL content.',
@@ -275,6 +317,16 @@ export async function planCompatibility(options = {}) {
   });
   await writeJson(gapPath, gap);
   const surfaces = classifySurfaces({ gap, releaseNotes });
+  const notificationWatch = buildNotificationWatch(releaseNotes);
+  // Actionability is explicit so shared readers can distinguish an
+  // informational standing-watch plan (no drift, no surfaces, no signals)
+  // from a plan that carries real update work — without it, running plan on
+  // a current host pair would flip doctor/cutover compat state to
+  // plan_ready/needs_attention forever (Review ensemble finding).
+  const actionable = gap.overall.release_notes_required
+    || gap.overall.drift_class !== 'none'
+    || surfaces.length > 0
+    || notificationWatch.some((row) => row.signal_detected);
   const plan = {
     schema_version: PLAN_SCHEMA,
     runtime_version: VERSION,
@@ -283,9 +335,11 @@ export async function planCompatibility(options = {}) {
     status: gap.overall.release_notes_required
       ? 'blocked_release_notes_required'
       : 'planned',
+    actionable,
     gap_pointer: pointer(repoRoot, gapPath),
     affected_surfaces: surfaces,
-    recommended_sequence: buildRecommendedSequence({ gap, surfaces, releaseNotes }),
+    notification_watch: notificationWatch,
+    recommended_sequence: buildRecommendedSequence({ gap, surfaces, releaseNotes, notificationWatch }),
     policy: compatibilityPolicy(),
     limits: [
       'Compatibility plans are advisory and do not mutate host CLIs, host config, or plugin artifacts.',
@@ -302,8 +356,10 @@ export async function planCompatibility(options = {}) {
     version: VERSION,
     run_id: selected.runId,
     status: plan.status,
+    actionable,
     plan_pointer: pointer(repoRoot, planPath),
     affected_surfaces: surfaces,
+    notification_watch: notificationWatch,
     recommended_sequence: plan.recommended_sequence,
     policy: plan.policy,
     next_steps: nextStepsForPlan(plan),
@@ -440,7 +496,7 @@ function classifySurfaces({ gap, releaseNotes }) {
   return [...surfaces].sort();
 }
 
-function buildRecommendedSequence({ gap, surfaces, releaseNotes }) {
+function buildRecommendedSequence({ gap, surfaces, releaseNotes, notificationWatch }) {
   const sequence = [];
   sequence.push({
     step: 'refresh-baseline',
@@ -461,6 +517,14 @@ function buildRecommendedSequence({ gap, surfaces, releaseNotes }) {
       required: true,
     });
   }
+  for (const row of notificationWatch ?? []) {
+    if (!row.signal_detected) continue;
+    sequence.push({
+      step: `review-notification-watch-${row.id}`,
+      reason: `Ingested release notes signal the standing notification watch row ${row.id}; verify the payload at the source before any mapping (${NOTIFICATION_WATCH_ADR} §5, ADR-0030).`,
+      required: true,
+    });
+  }
   sequence.push({
     step: 'run-validation',
     reason: 'Run marketplace/version/artifact validation and relevant runtime tests after any compatibility update.',
@@ -469,12 +533,38 @@ function buildRecommendedSequence({ gap, surfaces, releaseNotes }) {
   return sequence;
 }
 
+function buildNotificationWatch(releaseNotes) {
+  const noteAnalyses = releaseNotes.note_analyses ?? [];
+  return NOTIFICATION_WATCH_ROWS.map((row) => {
+    const signalNotes = noteAnalyses
+      .filter((note) => (note.notification_watch ?? []).includes(row.id))
+      .map((note) => note.id);
+    return {
+      id: row.id,
+      host: row.host,
+      subject: row.subject,
+      status: 'open',
+      standing: true,
+      signal_detected: signalNotes.length > 0,
+      signal_notes: signalNotes,
+      baseline_behavior: row.baseline_behavior,
+      resolution_requires: row.resolution_requires,
+      policy: {
+        adr: NOTIFICATION_WATCH_ADR,
+        adr_pointer: NOTIFICATION_WATCH_ADR_POINTER,
+        rule: 'Standing planning row evaluated on every plan run — never an automatic mapping; a source-verified payload and a dedicated follow-up decision are required before wiring a newly observed variant (ADR-0030).',
+      },
+    };
+  });
+}
+
 function renderPlanMarkdown(plan) {
   const lines = [
     '# Runtime Compatibility Update Plan',
     '',
     `Run: ${plan.run_id}`,
     `Status: ${plan.status}`,
+    `Actionable: ${plan.actionable ? 'yes' : 'no (informational — standing watch only)'}`,
     `Gap analysis: ${plan.gap_pointer}`,
     '',
     '## Affected Surfaces',
@@ -484,6 +574,13 @@ function renderPlanMarkdown(plan) {
     lines.push('- none detected');
   } else {
     for (const surface of plan.affected_surfaces) lines.push(`- ${surface}`);
+  }
+  lines.push('', `## Notification Watch (standing — ${NOTIFICATION_WATCH_ADR} §5)`, '');
+  for (const row of plan.notification_watch ?? []) {
+    lines.push(`- ${row.id} [${row.host}] ${row.signal_detected ? 'signal detected' : 'no new signal'}: ${row.subject}`);
+    lines.push(`  - baseline behavior: ${row.baseline_behavior}`);
+    lines.push(`  - resolution requires: ${row.resolution_requires}`);
+    if (row.signal_detected) lines.push(`  - signal notes: ${row.signal_notes.join(', ')}`);
   }
   lines.push('', '## Recommended Sequence', '');
   for (const item of plan.recommended_sequence) {
@@ -559,7 +656,7 @@ async function readReleaseNoteBodies(repoRoot, runId) {
   };
 }
 
-function analyzeReleaseNote({ note, text }) {
+export function analyzeReleaseNote({ note, text }) {
   const body = String(text ?? '');
   const lower = body.toLowerCase();
   const hosts = [];
@@ -567,12 +664,21 @@ function analyzeReleaseNote({ note, text }) {
   if (/\bcodex(?:\s+cli)?\b/i.test(body)) hosts.push('codex');
   const versions = [...new Set([...body.matchAll(/[0-9]+(?:\.[0-9]+){1,3}/g)].map((match) => match[0]))];
   const surfaces = classifyReleaseNoteSurfaces(lower);
+  // Host-scoped signal detection: a note that names a host can only signal
+  // that host's watch rows (a Claude note about notification_type must not
+  // flag the Codex notify= row). A note naming no host stays conservative
+  // and may signal any row — a hit is an annotation, never a mapping.
+  const notificationWatch = NOTIFICATION_WATCH_ROWS
+    .filter((row) => (hosts.length === 0 || hosts.includes(row.host))
+      && row.signal_patterns.some((pattern) => pattern.test(body)))
+    .map((row) => row.id);
   return {
     id: note.id,
     kind: note.kind,
     hosts: [...new Set(hosts)],
     versions,
     surfaces,
+    notification_watch: notificationWatch,
   };
 }
 
@@ -809,6 +915,7 @@ export function formatText(report) {
   const lines = [`runtime:compat ${report.version ?? VERSION} (${report.command})`];
   if (report.run_id) lines.push(`run: ${report.run_id}`);
   if (report.status) lines.push(`status: ${report.status}`);
+  if (typeof report.actionable === 'boolean') lines.push(`actionable: ${report.actionable}`);
   if (report.drift_class) lines.push(`drift: ${report.drift_class}`);
   if (report.snapshot_pointer) lines.push(`snapshot: ${report.snapshot_pointer}`);
   if (report.gap_pointer) lines.push(`gap analysis: ${report.gap_pointer}`);
@@ -840,6 +947,12 @@ export function formatText(report) {
   if (report.affected_surfaces?.length) {
     lines.push('', 'affected surfaces:');
     for (const surface of report.affected_surfaces) lines.push(`- ${surface}`);
+  }
+  if (report.notification_watch?.length) {
+    lines.push('', 'notification watch (standing):');
+    for (const row of report.notification_watch) {
+      lines.push(`- ${row.id} [${row.host}]: ${row.signal_detected ? `signal detected (${row.signal_notes.join(',')})` : 'no new signal'}; ${row.subject}`);
+    }
   }
   if (report.recommended_sequence?.length) {
     lines.push('', 'recommended sequence:');

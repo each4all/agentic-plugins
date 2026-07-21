@@ -250,6 +250,27 @@ Refresh this baseline when any of these change:
   removed), packaging hooks, or launching host-native subagent/team workflows
   automatically.
 
+### Standing Notification Watch (ADR-0047 §5)
+
+Two recorded notification gaps are under a **standing** `runtime:compat` watch
+— seeded rows emitted on every `plan` run, not keywords that only fire on
+future drift — so they stay visible until resolved:
+
+- **Codex `notify=` payload variants beyond `agent-turn-complete`**
+  (especially approval/permission shapes). At this baseline no approval
+  payload reaches `notify=`, and the rendered
+  `receivers/codex-notify-shuttle.mjs` silently no-ops on any other payload
+  `type` — that no-op is contractual, pinned by test.
+- **Claude `Notification` hook `agent_needs_input` / `agent_completed` types**
+  (added in `2.1.198`, recorded in the Version History row of 2026-07-04).
+  The attention `Notification` sensor continues to match only
+  `permission_prompt`/`idle_prompt` and ignores the new types.
+
+A watch signal in ingested release notes adds a required review step to the
+compat plan but never wires a mapping: resolving a row requires a
+source-verified payload shape recorded here plus a dedicated follow-up
+decision (ADR-0030 discipline) before any shuttle or sensor change.
+
 ## Version History
 
 This trail records each human-reviewed baseline observation so a drift alert

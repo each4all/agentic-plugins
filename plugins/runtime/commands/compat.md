@@ -40,4 +40,10 @@ Notes:
 - Changed host versions require release-note content that mentions both the
   changed host and observed version. A note for the wrong host or version stays
   a stored artifact but does not clear the gap.
+- Every `plan` run also emits the ADR-0047 §5 standing notification watch
+  (Codex `notify=` payload variants beyond `agent-turn-complete`; Claude
+  `agent_needs_input`/`agent_completed` notification types). A release-note
+  signal on a watch row adds a required review step but never wires a mapping —
+  wiring needs a source-verified payload and its own follow-up decision
+  (ADR-0030).
 - Use this before claiming host parity after Claude Code or Codex CLI changes.

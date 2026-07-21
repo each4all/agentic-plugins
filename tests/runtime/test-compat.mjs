@@ -1,10 +1,11 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual, rejects } from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  analyzeReleaseNote,
   extractBaselineVersions,
   formatText,
   parseArgs,
@@ -307,6 +308,253 @@ describe('runtime compat', () => {
     const parsed = extractBaselineVersions('Observed with Claude Code `2.1.141`, Codex CLI\n`0.130.0`.');
     strictEqual(parsed.claude.version, '2.1.141');
     strictEqual(parsed.codex.version, '0.130.0');
+  });
+
+  it('emits the ADR-0047 standing notification watch on a no-drift plan run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-watch-standing-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({
+        claude: '2.1.141 (Claude Code)',
+        codex: 'codex-cli 0.130.0',
+      }),
+    });
+
+    const plan = await runCompat({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+    });
+    strictEqual(plan.status, 'planned');
+    strictEqual(plan.actionable, false, 'standing watch alone never makes a plan actionable');
+
+    const watch = plan.notification_watch;
+    strictEqual(watch.length, 2);
+    const codexRow = watch.find((row) => row.id === 'codex-notify-payload-variants');
+    const claudeRow = watch.find((row) => row.id === 'claude-notification-agent-types');
+    ok(codexRow, 'codex notify= payload variant row is seeded');
+    ok(claudeRow, 'claude agent notification-type row is seeded');
+    strictEqual(codexRow.host, 'codex');
+    strictEqual(claudeRow.host, 'claude');
+    for (const row of watch) {
+      strictEqual(row.standing, true);
+      strictEqual(row.status, 'open');
+      strictEqual(row.signal_detected, false);
+      deepStrictEqual(row.signal_notes, []);
+      strictEqual(row.policy.adr, 'ADR-0047');
+      strictEqual(row.policy.adr_pointer, 'docs/adr/0047-notify-attention-gating-gc.md');
+      ok(row.policy.rule.includes('never an automatic mapping'), row.policy.rule);
+      ok(row.resolution_requires.includes('source-verified'), row.resolution_requires);
+    }
+    ok(codexRow.baseline_behavior.includes('silently no-ops'), codexRow.baseline_behavior);
+
+    const planJson = await readJson(join(root, `.agentic-plugins/runs/compat/${RUN_ID}/plan.json`));
+    strictEqual(planJson.schema_version, 'runtime-compat-plan-1.1');
+    strictEqual(planJson.actionable, false);
+    strictEqual(planJson.notification_watch.length, 2);
+    const planText = await readFile(join(root, plan.plan_pointer), 'utf8');
+    ok(planText.includes('Actionable: no'));
+    ok(planText.includes('Notification Watch'));
+    ok(planText.includes('codex-notify-payload-variants'));
+    ok(planText.includes('claude-notification-agent-types'));
+    ok(formatText(plan).includes('notification watch'));
+    ok(
+      !plan.recommended_sequence.some((item) => item.step.startsWith('review-notification-watch')),
+      'no review step is injected without a detected signal',
+    );
+  });
+
+  it('flags the Claude agent-notification watch row from ingested notes and requires a review step', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-watch-claude-'));
+    const notePath = join(root, 'claude-release-notes.md');
+    await writeFile(notePath, [
+      'Claude Code 2.1.198',
+      'Adds agent_needs_input and agent_completed notification_type values to the Notification hook.',
+      '',
+    ].join('\n'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({
+        claude: '2.1.198 (Claude Code)',
+        codex: 'codex-cli 0.130.0',
+      }),
+    });
+
+    const blockedPlan = await runCompat({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+    });
+    strictEqual(blockedPlan.status, 'blocked_release_notes_required');
+    strictEqual(blockedPlan.notification_watch.length, 2, 'watch rows stand even on a blocked plan');
+
+    const ingest = await runCompat({
+      command: 'ingest-release-notes',
+      repoRoot: root,
+      runId: RUN_ID,
+      releaseNotesFiles: [notePath],
+    });
+    const plan = await runCompat({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+    });
+    strictEqual(plan.status, 'planned');
+    strictEqual(plan.actionable, true, 'a detected watch signal makes the plan actionable');
+    const claudeRow = plan.notification_watch.find((row) => row.id === 'claude-notification-agent-types');
+    const codexRow = plan.notification_watch.find((row) => row.id === 'codex-notify-payload-variants');
+    strictEqual(claudeRow.signal_detected, true);
+    deepStrictEqual(claudeRow.signal_notes, [ingest.notes[0].id]);
+    strictEqual(claudeRow.status, 'open', 'a signal annotates; it never resolves the row');
+    strictEqual(codexRow.signal_detected, false);
+    const reviewStep = plan.recommended_sequence.find(
+      (item) => item.step === 'review-notification-watch-claude-notification-agent-types',
+    );
+    ok(reviewStep, 'signal adds a required review step');
+    strictEqual(reviewStep.required, true);
+    ok(reviewStep.reason.includes('source'), reviewStep.reason);
+    const planText = await readFile(join(root, plan.plan_pointer), 'utf8');
+    ok(planText.includes('signal detected'));
+  });
+
+  it('flags the Codex notify payload-variant watch row without ever mapping it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-watch-codex-'));
+    const notePath = join(root, 'codex-release-notes.md');
+    await writeFile(notePath, [
+      'Codex CLI 0.145.0',
+      'notify now delivers approval-requested payloads to the configured program.',
+      '',
+    ].join('\n'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({
+        claude: '2.1.141 (Claude Code)',
+        codex: 'codex-cli 0.145.0',
+      }),
+    });
+    const ingest = await runCompat({
+      command: 'ingest-release-notes',
+      repoRoot: root,
+      runId: RUN_ID,
+      releaseNotesFiles: [notePath],
+    });
+
+    const plan = await runCompat({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+    });
+    strictEqual(plan.status, 'planned');
+    const codexRow = plan.notification_watch.find((row) => row.id === 'codex-notify-payload-variants');
+    const claudeRow = plan.notification_watch.find((row) => row.id === 'claude-notification-agent-types');
+    strictEqual(codexRow.signal_detected, true);
+    deepStrictEqual(codexRow.signal_notes, [ingest.notes[0].id]);
+    strictEqual(claudeRow.signal_detected, false);
+    ok(plan.recommended_sequence.some(
+      (item) => item.step === 'review-notification-watch-codex-notify-payload-variants' && item.required,
+    ));
+    ok(
+      codexRow.policy.rule.includes('never an automatic mapping'),
+      'a watch hit is a planning row only — wiring needs a source-verified payload and its own decision',
+    );
+  });
+
+  it('scopes notification-watch signals per token and per host (analyzeReleaseNote table)', () => {
+    const CODEX_ROW = 'codex-notify-payload-variants';
+    const CLAUDE_ROW = 'claude-notification-agent-types';
+    const cases = [
+      // Each Claude token must detect in isolation — a single fixture with
+      // all three tokens would let one matcher silently die.
+      ['Claude Code 2.1.198\nAdds agent_needs_input to the Notification hook.', [CLAUDE_ROW]],
+      ['Claude Code 2.1.198\nAdds an agent_completed notification.', [CLAUDE_ROW]],
+      ['Claude Code 2.1.198\nNew notification_type values are available.', [CLAUDE_ROW]],
+      // Codex phrasings: notify=, forward order, reverse order, cross-line.
+      ['Codex CLI 0.145.0\nnotify = ["notify-send"] is now honored.', [CODEX_ROW]],
+      ['Codex CLI 0.145.0\nnotify now delivers approval-requested payloads.', [CODEX_ROW]],
+      ['Codex CLI 0.145.0\nApproval requests now trigger notifications for operators.', [CODEX_ROW]],
+      ['Codex CLI 0.145.0\nA new payload variant is emitted by\nnotify receivers.', [CODEX_ROW]],
+      // Host scoping: host-named notes cannot signal the other host's row.
+      ['Claude Code 2.1.198\nNew notification_type values are available.', [CLAUDE_ROW]],
+      ['Codex CLI 0.145.0\nagent_needs_input is quoted here without its own host.', []],
+      ['Claude Code 2.1.198\nnotify = changes quoted here belong to the other host.', []],
+      // Known-variant negative: the recorded baseline variant is not a signal.
+      ['Codex CLI 0.145.0\nnotify still emits agent-turn-complete only.', []],
+      // Host-unknown note stays conservative: patterns may flag any row.
+      ['The notify = program now receives approval payloads.', [CODEX_ROW]],
+      // Both hosts named, both signal families present.
+      ['Claude Code 2.1.198 and Codex CLI 0.145.0: notify = adds approval payloads; agent_needs_input added.', [CODEX_ROW, CLAUDE_ROW]],
+    ];
+    for (const [text, expected] of cases) {
+      const analysis = analyzeReleaseNote({ note: { id: 'n', kind: 'file' }, text });
+      deepStrictEqual(
+        [...analysis.notification_watch].sort(),
+        [...expected].sort(),
+        `text: ${text.replace(/\n/g, ' / ')}`,
+      );
+    }
+  });
+
+  it('keeps distinct note ids and bodies across sequential ingests of same-named files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-ingest-collision-'));
+    await mkdir(join(root, 'a'), { recursive: true });
+    await mkdir(join(root, 'b'), { recursive: true });
+    await writeFile(join(root, 'a', 'CHANGELOG.md'), 'Claude Code 2.1.198\nagent_needs_input added.\n');
+    await writeFile(join(root, 'b', 'CHANGELOG.md'), 'Codex CLI 0.145.0\nUnrelated fix notes.\n');
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({
+        claude: '2.1.198 (Claude Code)',
+        codex: 'codex-cli 0.130.0',
+      }),
+    });
+
+    const first = await runCompat({
+      command: 'ingest-release-notes',
+      repoRoot: root,
+      runId: RUN_ID,
+      releaseNotesFiles: [join(root, 'a', 'CHANGELOG.md')],
+    });
+    const second = await runCompat({
+      command: 'ingest-release-notes',
+      repoRoot: root,
+      runId: RUN_ID,
+      releaseNotesFiles: [join(root, 'b', 'CHANGELOG.md')],
+    });
+    ok(first.notes[0].id !== second.notes[0].id, 'sequential ingests must not reuse note ids');
+    ok(first.notes[0].pointer !== second.notes[0].pointer, 'sequential ingests must not reuse artifact paths');
+    const firstBody = await readFile(join(root, first.notes[0].pointer), 'utf8');
+    const secondBody = await readFile(join(root, second.notes[0].pointer), 'utf8');
+    ok(firstBody.includes('agent_needs_input'), 'first ingested body survives the second ingest');
+    ok(secondBody.includes('Unrelated fix notes'), 'second ingested body is stored separately');
+    const index = await readJson(join(root, `.agentic-plugins/runs/compat/${RUN_ID}/release-notes/index.json`));
+    strictEqual(index.notes.length, 2);
+    strictEqual(new Set(index.notes.map((note) => note.id)).size, 2);
+
+    // The earlier Claude signal must survive the later unrelated ingest.
+    const plan = await runCompat({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+    });
+    const claudeRow = plan.notification_watch.find((row) => row.id === 'claude-notification-agent-types');
+    deepStrictEqual(claudeRow.signal_notes, [first.notes[0].id]);
   });
 });
 

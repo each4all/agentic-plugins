@@ -2191,6 +2191,79 @@ describe('runtime doctor', () => {
     ok(!text.includes('RAW RELEASE NOTES'), 'doctor must not print raw compatibility release-note bodies');
   });
 
+  it('keeps compat state current when the only plan is a non-actionable standing-watch plan (ADR-0047 §5)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-compat-standing-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    const runId = 'compat-20260721T000000Z-abcdef';
+    const runDir = join(root, '.agentic-plugins', 'runs', 'compat', runId);
+    await mkdir(join(runDir, 'release-notes'), { recursive: true });
+    await writeJson(join(runDir, 'snapshot.json'), {
+      schema_version: 'runtime-compat-snapshot-1.0',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      created_at: '2026-07-21T00:00:00.000Z',
+      updated_at: '2026-07-21T00:00:00.000Z',
+      hosts: {
+        claude: { available: true, version: '2.1.215', version_text: '2.1.215 (Claude Code)' },
+        codex: { available: true, version: '0.144.6', version_text: 'codex-cli 0.144.6' },
+      },
+      remembered_baseline: {
+        claude: { version: '2.1.215' },
+        codex: { version: '0.144.6' },
+      },
+    });
+    await writeJson(join(runDir, 'gap-analysis.json'), {
+      schema_version: 'runtime-compat-gap-1.0',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      created_at: '2026-07-21T00:01:00.000Z',
+      updated_at: '2026-07-21T00:01:00.000Z',
+      overall: { status: 'current', drift_class: 'none', release_notes_required: false },
+      host_gaps: [
+        { host: 'claude', status: 'matches', observed_version: '2.1.215', baseline_version: '2.1.215' },
+        { host: 'codex', status: 'matches', observed_version: '0.144.6', baseline_version: '0.144.6' },
+      ],
+      next_steps: [],
+    });
+    const planFixture = {
+      schema_version: 'runtime-compat-plan-1.1',
+      runtime_version: RUNTIME_VERSION,
+      run_id: runId,
+      created_at: '2026-07-21T00:02:00.000Z',
+      status: 'planned',
+      actionable: false,
+      affected_surfaces: [],
+      notification_watch: [
+        { id: 'codex-notify-payload-variants', host: 'codex', standing: true, status: 'open', signal_detected: false, signal_notes: [] },
+        { id: 'claude-notification-agent-types', host: 'claude', standing: true, status: 'open', signal_detected: false, signal_notes: [] },
+      ],
+      recommended_sequence: [
+        { step: 'run-validation', reason: 'generic epilogue', required: true },
+      ],
+    };
+    await writeJson(join(runDir, 'plan.json'), planFixture);
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+    strictEqual(report.compat_runs.latest.status, 'current', 'a standing-watch-only plan must not outrank a current gap');
+    strictEqual(report.compat_runs.status, 'available');
+
+    // Control: the same plan marked actionable (a detected watch signal or
+    // real update work) must surface as plan_ready/needs_attention.
+    await writeJson(join(runDir, 'plan.json'), { ...planFixture, actionable: true });
+    const actionableReport = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+    strictEqual(actionableReport.compat_runs.latest.status, 'plan_ready');
+    strictEqual(actionableReport.compat_runs.status, 'needs_attention');
+  });
+
   it('reports runtime artifact inventory pressure without reading artifact bodies', async () => {
     const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-artifact-inventory-'));
     const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));

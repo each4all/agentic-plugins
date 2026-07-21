@@ -302,6 +302,82 @@ describe('notification plan: fragment + receiver script renderers', () => {
     strictEqual(record.body, 'All done');
     ok(record.event_id.endsWith(':turn-complete:codex-turn:turn-e2e-1:fired'), record.event_id);
   });
+
+  it('preserves the contractual silent no-op for unknown Codex notify payload variants (ADR-0047 §5)', async () => {
+    // The shuttle's unknown-type return is a contract, not an accident: no
+    // approval payload reaches notify= at the recorded baseline, and wiring a
+    // newly observed variant requires a source-verified payload plus its own
+    // follow-up decision (the compat notification watch guards the trigger).
+    // Until then every non-agent-turn-complete payload must no-op silently —
+    // meaning notify.mjs is NEVER INVOKED, not merely that no channel record
+    // appears (an emit rejected by validation would also leave no record).
+    // A sentinel notify.mjs stub proves non-invocation directly, with a
+    // known-type control run proving the sentinel wiring actually detects
+    // invocations (absence evidence is worthless without a positive control).
+    const dir = await mkdtemp(join(tmpdir(), 'runtime-notification-noop-'));
+    const repo = join(dir, 'repo');
+    await mkdir(join(repo, '.git'), { recursive: true });
+    const fakeRoot = join(dir, 'fake-runtime');
+    const markerPath = join(dir, 'notify-invocations.log');
+    await mkdir(join(fakeRoot, 'scripts'), { recursive: true });
+    await mkdir(join(fakeRoot, '.claude-plugin'), { recursive: true });
+    await writeFile(
+      join(fakeRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'runtime', version: '99.0.0' }),
+    );
+    await writeFile(join(fakeRoot, 'scripts', 'notify.mjs'), [
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(markerPath)}, process.argv.slice(2).join(' ') + '\\n');`,
+      '',
+    ].join('\n'));
+    const bin = join(dir, 'bin');
+    await mkdir(bin, { recursive: true });
+    const shuttlePath = join(bin, SHUTTLE_BASENAME);
+    await writeFile(shuttlePath, renderCodexNotifyShuttleScript());
+    const env = { ...process.env, AGENTIC_RUNTIME_ROOT: fakeRoot, HOME: dir };
+    const unknownPayloads = [
+      // Hypothetical approval/permission shapes — the exact variants the
+      // standing compat watch exists to catch when they become real.
+      JSON.stringify({ type: 'approval-requested', 'turn-id': 'noop-1', call: 'exec' }),
+      JSON.stringify({ type: 'agent-approval-needed', 'turn-id': 'noop-2' }),
+      JSON.stringify({ type: 'some-future-variant' }),
+    ];
+    for (const payload of unknownPayloads) {
+      const { stdout, stderr } = await execFileAsync(process.execPath, [shuttlePath, payload], {
+        cwd: repo,
+        env,
+      });
+      strictEqual(stdout, '', 'unknown variants write nothing to stdout');
+      strictEqual(stderr, '', 'unknown variants are silent — not even a diagnostic');
+    }
+    let leaked = true;
+    try {
+      await stat(markerPath);
+    } catch {
+      leaked = false;
+    }
+    ok(!leaked, 'unknown payload variants must never invoke notify.mjs');
+
+    // Positive control: the known type MUST invoke the sentinel through the
+    // exact same wiring, or the absence above proves nothing.
+    const control = JSON.stringify({ type: 'agent-turn-complete', 'turn-id': 'control-1', 'last-assistant-message': 'ok' });
+    await execFileAsync(process.execPath, [shuttlePath, control], { cwd: repo, env });
+    let markerText = '';
+    for (let i = 0; i < 100; i += 1) {
+      try {
+        markerText = await readFile(markerPath, 'utf8');
+        if (markerText.trim()) break;
+      } catch {}
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    }
+    ok(markerText.trim(), 'control run proves the sentinel detects invocations');
+    // Settle briefly, then require the control to be the ONLY invocation —
+    // a straggler child from an unknown payload would append a second line.
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+    const finalLines = (await readFile(markerPath, 'utf8')).trim().split('\n');
+    strictEqual(finalLines.length, 1, 'exactly one invocation: the known-type control');
+    ok(finalLines[0].includes('emit'), 'the control invocation is a notify.mjs emit call');
+  });
 });
 
 describe('notification plan: artifact validation', () => {
