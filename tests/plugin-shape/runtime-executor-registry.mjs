@@ -603,6 +603,11 @@ export const FS_MUTATION_USERS = {
     stateRoots: [],
     justification: 'R0 entry-brief reader: read-only O_NOFOLLOW handle opens for TOCTOU-safe bounded reads; never a write flag, no mutation',
   },
+  'retention-planner.mjs': {
+    primitives: ['open'],
+    stateRoots: [],
+    justification: "R0 retention planner: readBoundedRegularFile opens latest/live/cross-artifact pin sources read-only ('r') with an fstat-on-handle regular-file re-check for TOCTOU-safe bounded reads; never a write flag, no mutation (the fs-open-gate pins it read-only)",
+  },
   'migrate-workflow-storage.mjs': {
     primitives: ['mkdir', 'rename', 'rm', 'writeFile'],
     stateRoots: ['.agentic-plugins/state'],
