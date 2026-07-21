@@ -2,6 +2,13 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.8.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.7.1...plugin-attention-v0.8.0) (2026-07-21)
+
+
+### Features
+
+* **plugin/attention:** mirror response-needed into the copy-not-import notify vocabulary (ADR-0047 §1) ([952af14](https://github.com/each4all/agentic-plugins/commit/952af142f43e6cb316fd216aaf3eebe37157baed))
+
 ## [0.7.1](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.7.0...plugin-attention-v0.7.1) (2026-07-20)
 
 
