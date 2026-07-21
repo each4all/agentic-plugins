@@ -171,11 +171,16 @@ describe('notification plan: fragment + receiver script renderers', () => {
     ok(script.includes('process.argv[process.argv.length - 1]'), 'payload is the LAST argv argument');
     ok(script.includes("'turn-id'"), 'kebab-case turn-id field');
     ok(script.includes("'last-assistant-message'"), 'nullable last-assistant-message field');
-    ok(script.includes('agent-turn-complete'), 'single payload variant');
+    ok(script.includes('agent-turn-complete'), 'single accepted INPUT payload variant is unchanged');
     ok(script.includes('client'), 'undocumented client field tolerance is documented');
     ok(script.includes('process.exitCode = 0'), 'fail-closed exit posture');
     ok(!/runtime[/\\]\d/.test(script), 'no version-pinned runtime cache path literal');
-    ok(script.includes(":turn-complete:' + subject + ':fired'"), '§1 event_id composition with the default status token');
+    // ADR-0047 §5 remap: the EMITTED kind is response-needed while the input
+    // type check stays agent-turn-complete; subject namespace and the fixed
+    // fired status are preserved in the event_id composition.
+    ok(script.includes(":response-needed:' + subject + ':fired'"), '§1 event_id composition with the remapped kind');
+    ok(script.includes("kind: 'response-needed'"), 'emitted kind is remapped per ADR-0047 §5');
+    ok(!script.includes("kind: 'turn-complete'"), 'the shuttle no longer emits the interim kind');
   });
 
   it('rejects a non-SemVer version floor (rendered-literal guard)', () => {
@@ -296,11 +301,14 @@ describe('notification plan: fragment + receiver script renderers', () => {
     }
     ok(text.trim(), 'file-log record appears within the poll budget');
     const record = JSON.parse(text.trim().split('\n')[0]);
-    strictEqual(record.kind, 'turn-complete');
+    // ADR-0047 §5: the shuttle remaps agent-turn-complete → response-needed
+    // (accepted approximation). Kind and the event_id kind segment change;
+    // subject namespace, status, source, title, and body are preserved.
+    strictEqual(record.kind, 'response-needed');
     strictEqual(record.source, 'codex-notify');
     strictEqual(record.title, 'Codex turn complete');
     strictEqual(record.body, 'All done');
-    ok(record.event_id.endsWith(':turn-complete:codex-turn:turn-e2e-1:fired'), record.event_id);
+    ok(record.event_id.endsWith(':response-needed:codex-turn:turn-e2e-1:fired'), record.event_id);
   });
 
   it('preserves the contractual silent no-op for unknown Codex notify payload variants (ADR-0047 §5)', async () => {
