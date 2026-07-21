@@ -51,6 +51,10 @@ import {
 // ── ADR-0040 §1 contract copies (canonical: runtime lib/notify-schema.mjs) ──
 
 // The §1 kind enum. Order is contractual documentation, not priority.
+// `response-needed` (ADR-0047 §1) marks a FINAL turn — vocabulary only here:
+// the ADR-0047 §2 structural Stop classifier that would PRODUCE it on the
+// Claude limb is a separate slice behind its own released-runtime floor;
+// until it ships, this sensor keeps emitting bare `turn-complete`.
 export const NOTIFY_KINDS = Object.freeze([
   'approval',
   'idle',
@@ -59,17 +63,20 @@ export const NOTIFY_KINDS = Object.freeze([
   'workflow-terminal',
   'peer-run-terminal',
   'health',
+  'response-needed',
 ]);
 
 // Fixed status token for kinds without a natural terminal status.
 export const DEFAULT_STATUS_TOKEN = 'fired';
 
-// The ONLY kinds the default token applies to (ADR-0040 §1). Every other kind
-// carries a real status moment; an absent status there is a producer bug.
+// The ONLY kinds the default token applies to (ADR-0040 §1; response-needed
+// added by ADR-0047 §1). Every other kind carries a real status moment; an
+// absent status there is a producer bug.
 export const KINDS_WITH_DEFAULT_STATUS = Object.freeze([
   'approval',
   'idle',
   'turn-complete',
+  'response-needed',
 ]);
 
 // ADR-0041 §4 cross-machine routing/display fields — OPTIONAL, backward-
