@@ -10,7 +10,7 @@
     {
       "name": "attention",
       "source": "./plugins/attention",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "description": "Attention sensors — hook-only L1 plugin whose Claude lifecycle-hook sensors feed allowlisted runtime-owned executors (ADR-0040 §3, amended by ADR-0044 §2 and ADR-0045 §2): operator notifications (approval prompts, idle prompts, turn/workflow terminals, subagent completion) into the runtime notification emitter, the Stop-ordered session-capture spawn into context.mjs publish-session, and the SessionStart entry-brief spawn into context.mjs entry-brief (explicit startup matcher + explicit timeout, relaying at most one validated marker-paired line into context — the scoped ADR-0045 §2.2 stdout exception; every notify-pipeline sensor stays stdout-silent). Triple capability floors that never share a constant: notify >= 0.71.0 (code-pinned), publish-session >= 0.82.0 and entry-brief >= 0.83.0 (both declared in data/runtime-floors.json). Notifications stay inert until the operator opts into a notify_channel, session capture until session_capture is opted in (evaluated publisher-side), and the entry line until the user-scope-only entry_brief key is set (evaluated arbiter-side) — each gate independent, all via runtime:settings. Zero plugin-owned Codex hook surface: no Codex manifest hooks key and no root default hooks file — the Claude registration is manifest-scoped at adapters/claude/hooks/hooks.json, outside Codex default-file discovery (ADR-0040 §3 amendment); Codex-side attention is the runtime notification-plan fragments (§4), and the capture + entry firing points are Claude-only at v1 (ADR-0044 §8 / ADR-0045 §10 — Codex gets the CLI + dashboard surfaces).",
       "category": "Productivity"
     },
@@ -59,7 +59,7 @@
     {
       "name": "runtime",
       "source": "./plugins/runtime",
-      "version": "0.83.1",
+      "version": "0.84.0",
       "description": "Runtime operator control plane for agentic-plugins host readiness, doctor diagnostics, settings planning, machine bootstrap lifecycle (ADR-0046), workflow storage migration, consensus artifacts, compatibility drift planning, worktree planning, context hygiene artifacts, model/effort config, companion readiness, and workflow ledger health. L1 framework primitive per ADR-0024.",
       "category": "Productivity"
     }
