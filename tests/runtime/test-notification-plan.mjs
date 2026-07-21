@@ -15,7 +15,7 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, rejects, strictEqual, throws } from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -309,6 +309,10 @@ describe('notification plan: fragment + receiver script renderers', () => {
     strictEqual(record.title, 'Codex turn complete');
     strictEqual(record.body, 'All done');
     ok(record.event_id.endsWith(':response-needed:codex-turn:turn-e2e-1:fired'), record.event_id);
+    // §5 preservation set: normal urgency (quiet-hours behavior) and the
+    // no-headline posture must survive the remap.
+    strictEqual(record.urgency, 'normal', 'the remap preserves normal urgency');
+    strictEqual(record.headline ?? null, null, 'the no-headline posture is preserved');
   });
 
   it('preserves the contractual silent no-op for unknown Codex notify payload variants (ADR-0047 §5)', async () => {
@@ -581,9 +585,125 @@ describe('settings: notification plan (ADR-0040 §4, M1)', () => {
 
     const np = report.notification_plan;
     strictEqual(np.recommended.mode, 'already-configured');
+    strictEqual(np.recommended.chain_install_path, null, 'a direct install carries no chain pointer');
     strictEqual(np.scripts.chain, null, 'never chain the receiver to itself');
     match(np.warning, /idempotent/);
     strictEqual(await readFile(join(home, '.codex', 'config.toml'), 'utf8'), originalConfig);
+  });
+
+  it('keeps the chain pointer when notify already points at the wrapper chain (ADR-0047 re-render path)', async () => {
+    // The ADR-0047 §8 migration mandates a shuttle re-render on every install
+    // shape. On a chain install the chain script (which wraps the prior
+    // notifier) forwards to the shuttle install path, so re-installing the
+    // re-rendered shuttle IS the migration — the plan must reproduce the
+    // existing chain pointer, never downgrade the fragment to the direct
+    // shuttle (that would clobber the chain and drop the prior notifier).
+    const root = await mkdtemp(join(tmpdir(), 'runtime-settings-notifplan-chaincfg-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-settings-notifplan-home-'));
+    await seedRepo(root);
+    await mkdir(join(home, '.codex'), { recursive: true });
+    const chainPath = join(home, '.agentic-plugins', 'bin', CHAIN_BASENAME);
+    const originalConfig = `notify = ["/usr/bin/env", "node", "${chainPath}"]\n`;
+    await writeFile(join(home, '.codex', 'config.toml'), originalConfig);
+
+    const report = await runSettings({
+      repoRoot: root,
+      homeDir: home,
+      env: { ...process.env, CODEX_HOME: join(home, '.codex') },
+      notificationPlan: true,
+      runner: fakeRunner(defaultCliMap()),
+    });
+
+    const np = report.notification_plan;
+    strictEqual(np.recommended.mode, 'already-configured');
+    strictEqual(np.recommended.chain_install_path, chainPath, 'the in-use chain pointer is surfaced');
+    strictEqual(np.scripts.chain, null, 'the existing chain script is untouched — only the shuttle re-renders');
+    ok(np.scripts.shuttle.content.includes("kind: 'response-needed'"), 'the re-rendered shuttle carries the remap');
+    ok(np.fragments.notify_toml.includes(CHAIN_BASENAME), 'the fragment reproduces the chain pointer');
+    ok(!np.fragments.notify_toml.includes(SHUTTLE_BASENAME), 'the fragment never downgrades to the direct shuttle');
+    match(np.warning, /wrapper chain/);
+    match(np.warning, /idempotent/);
+    strictEqual(await readFile(join(home, '.codex', 'config.toml'), 'utf8'), originalConfig);
+  });
+
+  it('shuttle version handling: build metadata is not a prerelease, and a clean release outranks its own prerelease', async () => {
+    // versionGte: `X.Y.Z+build-N` must pass an equal-core floor — without the
+    // metadata strip the '-N' tail reads as a prerelease and a valid runtime
+    // is silently rejected (Review ensemble finding).
+    const dir = await mkdtemp(join(tmpdir(), 'runtime-notification-semver-'));
+    const repo = join(dir, 'repo');
+    await mkdir(join(repo, '.git'), { recursive: true });
+    const invokedLog = join(dir, 'invoked.log');
+    const stubNotify = (label) => `import fs from 'node:fs';\nfs.appendFileSync(${JSON.stringify(invokedLog)}, ${JSON.stringify(label)} + '\\n');\n`;
+    const mkRuntime = async (root, version, label) => {
+      await mkdir(join(root, '.claude-plugin'), { recursive: true });
+      await mkdir(join(root, 'scripts'), { recursive: true });
+      await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'runtime', version }));
+      await writeFile(join(root, 'scripts', 'notify.mjs'), stubNotify(label));
+    };
+    const bin = join(dir, 'bin');
+    await mkdir(bin, { recursive: true });
+    const shuttlePath = join(bin, SHUTTLE_BASENAME);
+    await writeFile(shuttlePath, renderCodexNotifyShuttleScript({ minRuntimeVersion: '99.0.0' }));
+    const payload = JSON.stringify({ type: 'agent-turn-complete', 'turn-id': 'semver-1', 'last-assistant-message': null });
+
+    // Case 1: env-override runtime at 99.0.0+build-5 passes the 99.0.0 floor.
+    const metaRoot = join(dir, 'meta-runtime');
+    await mkRuntime(metaRoot, '99.0.0+build-5', 'build-metadata');
+    await execFileAsync(process.execPath, [shuttlePath, payload], {
+      cwd: repo,
+      env: { ...process.env, AGENTIC_RUNTIME_ROOT: metaRoot, HOME: dir },
+    });
+    let text = '';
+    for (let i = 0; i < 100; i += 1) {
+      try {
+        text = await readFile(invokedLog, 'utf8');
+        if (text.trim()) break;
+      } catch {}
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    }
+    strictEqual(text.trim(), 'build-metadata', 'build metadata must not read as a below-floor prerelease');
+
+    // Case 2: Claude-cache candidate sort prefers the clean release over an
+    // equal-core prerelease regardless of directory order.
+    await rm(invokedLog, { force: true });
+    const home = join(dir, 'home');
+    const cacheBase = join(home, '.claude', 'plugins', 'cache', 'agentic-plugins', 'runtime');
+    await mkRuntime(join(cacheBase, '99.1.0-beta.1'), '99.1.0-beta.1', 'prerelease');
+    await mkRuntime(join(cacheBase, '99.1.0'), '99.1.0', 'clean-release');
+    const env = { ...process.env, HOME: home };
+    delete env.AGENTIC_RUNTIME_ROOT;
+    delete env.CODEX_HOME;
+    await execFileAsync(process.execPath, [shuttlePath, payload], { cwd: repo, env });
+    text = '';
+    for (let i = 0; i < 100; i += 1) {
+      try {
+        text = await readFile(invokedLog, 'utf8');
+        if (text.trim()) break;
+      } catch {}
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    }
+    strictEqual(text.trim(), 'clean-release', 'a clean release outranks its own equal-core prerelease');
+
+    // Deterministic unit assertions on the template's private comparators —
+    // the fs case above cannot force an adverse readdir order, so a broken
+    // equal-core tie-break could pass it by directory-listing luck
+    // (hermetic-by-accident). Extract the functions from the rendered script
+    // and pin the semantics directly.
+    const script = await readFile(shuttlePath, 'utf8');
+    const extractFn = (name) => {
+      const m = script.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
+      ok(m, `${name} present in the rendered shuttle`);
+      return (0, eval)(`(${m[0]})`);
+    };
+    const gte = extractFn('versionGte');
+    const cmp = extractFn('semverCompare');
+    strictEqual(gte('99.0.0+build-5', '99.0.0'), true, 'build metadata is not a prerelease');
+    strictEqual(gte('99.0.0-beta.1', '99.0.0'), false, 'strict floor: a prerelease of the floor is below it');
+    strictEqual(gte('99.0.1', '99.0.0'), true, 'plain core comparison still holds');
+    ok(cmp('99.1.0', '99.1.0-beta.1') > 0, 'clean release outranks its equal-core prerelease');
+    ok(cmp('99.1.0-beta.1', '99.1.0') < 0, 'symmetric direction of the tie-break');
+    strictEqual(cmp('1.2.3+build', '1.2.3'), 0, 'build metadata never affects precedence');
   });
 
   it('fail-closes to blocked when the user config exists but cannot be read', async () => {

@@ -20,14 +20,17 @@
 //     must pass hostname UNIFORMLY (all with, or all without) or they build
 //     distinct ids. This is safe for the built-in producer set because the
 //     attention sensor is the sole producer of the hostname-bearing kinds
-//     (approval / idle / turn-complete / workflow-terminal / subagent-complete)
-//     and passes hostname on every one; other producers (peer-run self-sensors,
-//     the Codex shuttle) emit different kinds and never collide. A future
-//     producer of an attention kind MUST also pass hostname;
+//     (approval / idle / turn-complete / workflow-terminal / subagent-complete,
+//     and response-needed once the ADR-0047 §2 classifier ships) and passes
+//     hostname on every one; peer-run self-sensors emit different kinds, and
+//     the Codex shuttle — which emits response-needed WITHOUT hostname —
+//     stays collision-safe through its disjoint `codex-turn:` subject
+//     namespace (ADR-0047 §1: the two limbs never observe the same moment).
+//     A future producer of an attention kind MUST also pass hostname;
 //   - ONLY kinds without a natural terminal status (approval / idle /
-//     turn-complete) get the FIXED default status token; for every
-//     status-bearing kind an absent status throws, so distinct status
-//     moments can never silently collapse into one key;
+//     turn-complete / response-needed) get the FIXED default status token;
+//     for every status-bearing kind an absent status throws, so distinct
+//     status moments can never silently collapse into one key;
 //   - the kinds filter runs BEFORE dedupe, so a disabled event never
 //     consumes a TTL slot and suppresses a later enabled one;
 //   - concurrent claims race safely: first-claim via O_EXCL, stale-claim

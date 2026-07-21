@@ -97,7 +97,14 @@ Settings reports and plans:
   `notify_urgent_bypass_quiet_hours`, `notify_kinds`) with per-key validation
   (channel enum, `HH:MM-HH:MM` window, IANA timezone, positive-integer TTL,
   `"true"`/`"false"`, and kind names checked against the notify-schema lib's
-  kind enum), effective projection over the same repo -> user precedence
+  kind enum). During the ADR-0047 §8 `response-needed` migration keep a
+  `notify_kinds` filter listing **both** `turn-complete` and
+  `response-needed` (or leave the filter unset) until every producer on the
+  machine — including a re-rendered Codex shuttle — is verified upgraded: a
+  single-kind filter silently loses the other side of the mixed-producer
+  window, and the `response-needed` token on a pre-ADR-0047 runtime is a
+  parse error that fail-closes the whole notify pipeline. Effective
+  projection over the same repo -> user precedence
   chain with shipped defaults (`notify_channel = "none"` keeps the emitter
   disabled until the operator opts in), and warnings for shadowed requests or
   invalid existing values the notify emitter would fail closed on.
