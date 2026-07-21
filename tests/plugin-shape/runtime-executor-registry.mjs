@@ -608,6 +608,11 @@ export const FS_MUTATION_USERS = {
     stateRoots: [],
     justification: "R0 retention planner: readBoundedRegularFile opens latest/live/cross-artifact pin sources read-only ('r') with an fstat-on-handle regular-file re-check for TOCTOU-safe bounded reads; never a write flag, no mutation (the fs-open-gate pins it read-only)",
   },
+  'retention-apply.mjs': {
+    primitives: ['mkdir', 'writeFile', 'rename', 'rm', 'rmSync', 'open'],
+    stateRoots: ['.agentic-plugins/state/runtime/retention', '.agentic-plugins/runs'],
+    justification: 'ADR-0047 §7 M1 retention-apply executor: write-ahead receipts + family lock under state/runtime/retention (mkdir/open-wx/writeFile/rename/rm), and the enumerated recursive removal of unpinned/over-cap/age-cleared run dirs under runs/<family> (rmSync recursive, the ALLOWED_RECURSIVE_REMOVALS site below); dry-run default, plan-hash-bound, containment + no-follow re-run at the destructive boundary',
+  },
   'migrate-workflow-storage.mjs': {
     primitives: ['mkdir', 'rename', 'rm', 'writeFile'],
     stateRoots: ['.agentic-plugins/state'],
@@ -677,6 +682,9 @@ export const ALLOWED_RECURSIVE_REMOVALS = {
   'notify-schema.mjs': [
     { callee: 'rmSync', target: 'lockDir', justification: 'own dedupe reclaim-lock dir removal in the claim lifecycle (ADR-0040 §1)' },
     { callee: 'rmSync', target: 'tombstone', justification: 'ADR-0047 §6 capture-verified stale-lock removal: rm acts only on the atomically-renamed nonce-unique tombstone (never the live lock path), plus leaked-tombstone GC (isLockStale-gated, name-shape-pinned, per-entry contained)' },
+  ],
+  'retention-apply.mjs': [
+    { callee: 'rmSync', target: 'runDir', justification: 'ADR-0047 §7 the ONE enumerated deletion: recursive removal of an unpinned/over-cap/age-cleared run directory under runs/<family>, gated by dry-run default + plan-hash binding + scan_complete + family lock + write-ahead receipt + containment/no-follow re-validated at the destructive boundary (validateDeletionTarget). Containment and no-follow are proven by the behavioral/mutation tests, not this static scan (ADR-0047 §7 enforcement-honesty)' },
   ],
 };
 

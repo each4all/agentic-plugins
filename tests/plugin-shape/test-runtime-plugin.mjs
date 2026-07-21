@@ -18,6 +18,7 @@ const RUNTIME_COMMAND_SURFACES = [
   { name: 'dashboard', script: 'dashboard.mjs' },
   { name: 'doctor', script: 'doctor.mjs' },
   { name: 'migrate', script: 'migrate-workflow-storage.mjs' },
+  { name: 'retention', script: 'retention.mjs' },
   { name: 'settings', script: 'settings.mjs' },
   { name: 'worktree', script: 'worktree.mjs' },
 ];
