@@ -32,7 +32,17 @@
 //      else (bounded buffer, child exit, extra output, control chars,
 //      oversize, timeout, below-floor, executor-absent), and the
 //      SessionStart sensor is exit-0-always with at most that one line —
-//      including end-to-end against the repo's REAL 0.83.0 runtime.
+//      including end-to-end against the repo's REAL 0.83.0 runtime;
+//   7. response-needed gate (ADR-0047 §2/§3/§4/§9) — the response-signal
+//      floor declaration agrees byte-for-byte with its gate constant (four
+//      floors, pairwise distinct), the classifier scan bounds are pinned as
+//      contract and the ledger-mirror tables stay parity-locked to the
+//      persona peer-runners, the bounded structural classifier holds the
+//      hostile-state matrix (malformed payloads/handles, future skew,
+//      dual-home ambiguity, caps, budget, FIFO), the §3 one-signal-class
+//      precedence and §4 headline producers hold end-to-end against 0.84.0
+//      / 0.83.0 / 0.71.0 stub runtimes, and the emit seam's minVersion
+//      threading refuses a pre-contract runtime.
 //
 // Run via `node --test tests/plugin-shape/test-attention-plugin.mjs`.
 
@@ -459,13 +469,32 @@ describe('plugins/attention — deriveHeadlineToken (ADR-0041 §3a Guard 1 map-o
     strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal', archiveGate: undefined }), null);
     strictEqual(sensorLib.deriveHeadlineToken({ kind: 'workflow-terminal' }), null);
     // ADR-0041 §3a — the bare turn-complete deliberately carries no token (a
-    // kind-only token would overstate a single turn as workflow status). Every
-    // non-workflow-terminal kind omits.
+    // kind-only token would overstate an interim turn as session status;
+    // doubly so after ADR-0047 §3 narrowed it to interim turns). Every kind
+    // outside the closed table (workflow-terminal, and the two ADR-0047 §4
+    // end-state kinds tested in their own describe) omits.
     strictEqual(sensorLib.deriveHeadlineToken({ kind: 'turn-complete', archiveGate: 'ready_to_archive' }), null);
     strictEqual(sensorLib.deriveHeadlineToken({ kind: 'subagent-complete', archiveGate: 'ready_to_archive' }), null);
-    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'approval' }), null);
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'idle' }), null);
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'peer-run-terminal' }), null);
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'health' }), null);
     strictEqual(sensorLib.deriveHeadlineToken({}), null);
     strictEqual(sensorLib.deriveHeadlineToken(), null);
+  });
+
+  it('ADR-0047 §4 — the two end-state kinds map totally: response-needed → your-turn, approval → needs-approval', () => {
+    // The kind itself encodes the structural verdict (§2 final verdict /
+    // the host's permission_prompt matcher), so the map is total for these
+    // kinds — map-or-omit is preserved UPSTREAM: an uncertain classification
+    // never produces the kind at all. archiveGate/persona are irrelevant.
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'response-needed' }), 'your-turn');
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'approval' }), 'needs-approval');
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'response-needed', archiveGate: 'blocked', persona: 'founder' }), 'your-turn');
+    strictEqual(sensorLib.deriveHeadlineToken({ kind: 'approval', archiveGate: 'nonsense' }), 'needs-approval');
+    // Both mapped values are canonical Guard-2 vocab members (no silent
+    // drift out of vocab — the exact failure this parity file exists to catch).
+    strictEqual(canonical.isHeadlineToken('your-turn'), true);
+    strictEqual(canonical.isHeadlineToken('needs-approval'), true);
   });
 
   it('every mapping value is a canonical closed-vocab member (no silent drift out of vocab)', () => {
@@ -1586,7 +1615,7 @@ describe('plugins/attention — ADR-0044 §13 + ADR-0045 §18 floor declarations
     // The §13/§18 released-floor rule: a plain X.Y.Z release version — a
     // prerelease or build-suffixed floor is malformed by definition (the
     // runtime-side diagnosis refuses it; prerelease alignment on both sides).
-    for (const key of ['publish_session', 'entry_brief']) {
+    for (const key of ['publish_session', 'entry_brief', 'response_signal']) {
       ok(
         /^\d+\.\d+\.\d+$/.test(declaration.floors[key]),
         `${key} floor "${declaration.floors[key]}" is not a plain X.Y.Z release version`,
@@ -1610,22 +1639,464 @@ describe('plugins/attention — ADR-0044 §13 + ADR-0045 §18 floor declarations
     );
     // S8a-recorded first capable released version (ADR-0045 §Status).
     strictEqual(declaration.floors.entry_brief, '0.83.0');
+    strictEqual(
+      discoverLib.RESPONSE_SIGNAL_MIN_RUNTIME_VERSION,
+      declaration.floors.response_signal,
+      'discover-runtime.mjs RESPONSE_SIGNAL_MIN_RUNTIME_VERSION must equal floors.response_signal byte-for-byte',
+    );
+    // ADR-0047 §9 — Release A of the §8 rollout: the first released runtime
+    // carrying the response-needed contract (recorded by the
+    // signal-runtime-release macro subtask; plugin-runtime-v0.84.0).
+    strictEqual(declaration.floors.response_signal, '0.84.0');
+    // The sensor lib re-exports the floor for the Stop sensor's emit-seam
+    // threading — it must be the SAME constant, not a drifted copy.
+    strictEqual(sensorLib.RESPONSE_SIGNAL_MIN_RUNTIME_VERSION, discoverLib.RESPONSE_SIGNAL_MIN_RUNTIME_VERSION);
   });
 
-  it('the three capability floors never share a constant (ADR-0044 §2 / ADR-0045 §12 triple-floor)', () => {
+  it('the four capability floors never share a constant (ADR-0044 §2 / ADR-0045 §12 / ADR-0047 §9)', () => {
     const floors = [
       discoverLib.MIN_RUNTIME_VERSION,
       discoverLib.PUBLISH_SESSION_MIN_RUNTIME_VERSION,
       discoverLib.ENTRY_BRIEF_MIN_RUNTIME_VERSION,
+      discoverLib.RESPONSE_SIGNAL_MIN_RUNTIME_VERSION,
     ];
     for (const floor of floors) {
       ok(typeof floor === 'string' && floor.length > 0, 'each floor must be its own exported constant');
     }
     strictEqual(
       new Set(floors).size,
-      3,
-      'notify, publisher, and entry-brief floors are pairwise distinct — no gate ever borrows another capability\'s floor',
+      4,
+      'notify, publisher, entry-brief, and response-signal floors are pairwise distinct — no gate ever borrows another capability\'s floor',
     );
+  });
+});
+
+describe('plugins/attention — ADR-0047 §2 classifier constants + peer-runner ledger mirror parity', () => {
+  it('pins the scan bounds as contract values (alongside the four Stop-budget constants)', () => {
+    strictEqual(sensorLib.PEER_SCAN_PER_PERSONA_CAP, 1024);
+    strictEqual(sensorLib.PEER_SCAN_BUDGET_MS, 1_000);
+    strictEqual(sensorLib.PEER_RUN_STALE_GRACE_MS, 60_000);
+    // The cap must clear the ledger's own retention cap with headroom — a
+    // swept repo must never be permanently unpromotable (cap-exhausted).
+    ok(sensorLib.PEER_SCAN_PER_PERSONA_CAP > 200, 'cap must exceed the peer-runner DEFAULT_RETENTION_CAP (200)');
+    // The classifier budget rides INSIDE one emission slot — it must never
+    // approach a slot of its own (adds no slot to the 36s contract).
+    ok(sensorLib.PEER_SCAN_BUDGET_MS < sensorLib.EMIT_SLOT_MS / 2, 'scan budget must stay well inside one emit slot');
+  });
+
+  it('the ledger homes table mirrors each persona peer-runner byte-for-byte (copy-not-import, ADR-0010 §5)', () => {
+    deepStrictEqual(sensorLib.PEER_RUN_HOMES_BY_PERSONA, {
+      engineer: ['.agentic-plugins/state/engineer/peer-runs', '.claude/agentic-engineer/peer-runs'],
+      orchestrator: ['.agentic-plugins/state/orchestrator/peer-runs', '.claude/agentic-orchestrator/peer-runs'],
+      founder: ['.agentic-plugins/state/founder/peer-runs'],
+      designer: ['.agentic-plugins/state/designer/peer-runs'],
+    });
+    // Every SENSOR_PERSONAS member has a modeled home set (a future persona
+    // addition fails closed here, not silently at runtime).
+    for (const persona of sensorLib.SENSOR_PERSONAS) {
+      ok(Array.isArray(sensorLib.PEER_RUN_HOMES_BY_PERSONA[persona]), `${persona} must have a modeled ledger home set`);
+    }
+  });
+
+  it('status vocabulary + stale-grace mirror the engineer peer-runner (the ledger contract source)', async () => {
+    const peerRunner = await import(resolve(REPO_ROOT, 'plugins/engineer/scripts/peer-runner.mjs'));
+    deepStrictEqual(
+      [...sensorLib.PEER_RUN_TERMINAL_STATUSES].sort(),
+      [...peerRunner.TERMINAL_STATUSES].sort(),
+      'terminal statuses must mirror the ledger TERMINAL_STATUSES',
+    );
+    const expectedNonTerminal = [...peerRunner.VALID_STATUSES]
+      .filter((status) => !peerRunner.TERMINAL_STATUSES.has(status))
+      .sort();
+    deepStrictEqual(
+      [...sensorLib.PEER_RUN_NON_TERMINAL_STATUSES].sort(),
+      expectedNonTerminal,
+      'non-terminal statuses must mirror VALID_STATUSES minus TERMINAL_STATUSES',
+    );
+    strictEqual(
+      sensorLib.PEER_RUN_STALE_GRACE_MS,
+      peerRunner.DEFAULT_STALE_GRACE_MS,
+      'the queued/spawning liveness window is the ledger\'s own stale-grace, never a private tunable',
+    );
+  });
+});
+
+describe('plugins/attention — ADR-0047 §2 classifyStopFinality (bounded structural classifier)', () => {
+  // ── rows 1/2: payload evidence (probed 2.1.216 contract) ──
+
+  it('payload rows: running background task or any session cron ⇒ interim (entry-shape-independent)', () => {
+    const repoRoot = tmpdir(); // rows 1/2 short-circuit before any ledger read
+    deepStrictEqual(
+      sensorLib.classifyStopFinality({
+        payload: { background_tasks: [{ id: 'x', type: 'shell', status: 'running' }], session_crons: [] },
+        repoRoot,
+      }),
+      { verdict: 'interim', reason: 'background-tasks-pending' },
+    );
+    deepStrictEqual(
+      sensorLib.classifyStopFinality({
+        payload: { background_tasks: [], session_crons: [{ id: 'c', schedule: '*/10 * * * *', recurring: true, prompt: 'noop' }] },
+        repoRoot,
+      }),
+      { verdict: 'interim', reason: 'session-crons-pending' },
+    );
+    // ANY resident entry is interim evidence — completed tasks were observed
+    // REMOVED from the list (probe B'), and no terminal token was ever
+    // observed surviving; residents therefore read not-terminal (the
+    // accepted false-negative direction, never a guess at a token set).
+    deepStrictEqual(
+      sensorLib.classifyStopFinality({
+        payload: { background_tasks: [{ id: 'x', status: 'completed' }], session_crons: [] },
+        repoRoot,
+      }),
+      { verdict: 'interim', reason: 'background-tasks-pending' },
+    );
+  });
+
+  it('absent/malformed payload surface ⇒ unpromotable WITHOUT running the ledger scan (conservative row 4)', () => {
+    let scanCalls = 0;
+    const scan = () => { scanCalls += 1; return { live: false, complete: true }; };
+    for (const payload of [
+      {},                                              // pre-2.1.145 host
+      null,
+      undefined,
+      [],                                              // non-object payload
+      { background_tasks: null, session_crons: null }, // present-but-null is UNOBSERVABLE, never "empty"
+      { background_tasks: 3, session_crons: 'x' },     // scalars
+      { background_tasks: { 0: 'a' } },                // object is not an array
+    ]) {
+      deepStrictEqual(
+        sensorLib.classifyStopFinality({ payload, repoRoot: tmpdir(), scan }),
+        { verdict: 'unpromotable', reason: 'payload-surface-unobservable' },
+        `payload ${JSON.stringify(payload)} must be unpromotable`,
+      );
+    }
+    strictEqual(scanCalls, 0, 'row 3 must not run when the payload surface is unobservable (§2 + hot-path cost)');
+  });
+
+  it('one observable empty field is enough to reach row 3 even when the sibling field is malformed', () => {
+    const scan = () => ({ live: false, complete: true });
+    deepStrictEqual(
+      sensorLib.classifyStopFinality({
+        payload: { background_tasks: [], session_crons: 'garbage' },
+        repoRoot: tmpdir(),
+        scan,
+      }),
+      { verdict: 'final', reason: 'no-interim-evidence' },
+    );
+  });
+
+  it('row 1/2 interim evidence short-circuits BEFORE the ledger scan (no wasted row-3 work)', () => {
+    let scanCalls = 0;
+    const scan = () => { scanCalls += 1; return { live: false, complete: true }; };
+    sensorLib.classifyStopFinality({
+      payload: { background_tasks: [{ status: 'running' }], session_crons: [] },
+      repoRoot: tmpdir(),
+      scan,
+    });
+    strictEqual(scanCalls, 0);
+  });
+
+  it('row 3 verdict wiring: live ⇒ interim, incomplete ⇒ unpromotable with the scan reason, hostile scan results fail closed', () => {
+    const supported = { background_tasks: [], session_crons: [] };
+    deepStrictEqual(
+      sensorLib.classifyStopFinality({ payload: supported, repoRoot: tmpdir(), scan: () => ({ live: true, complete: false }) }),
+      { verdict: 'interim', reason: 'peer-run-live' },
+    );
+    deepStrictEqual(
+      sensorLib.classifyStopFinality({
+        payload: supported,
+        repoRoot: tmpdir(),
+        scan: () => ({ live: false, complete: false, reason: 'home-unreadable:engineer' }),
+      }),
+      { verdict: 'unpromotable', reason: 'scan-incomplete:home-unreadable:engineer' },
+    );
+    // A hostile/broken injected scan (wrong shape, throw) degrades to
+    // unpromotable — never a false final, never a throw to the hook.
+    deepStrictEqual(
+      sensorLib.classifyStopFinality({ payload: supported, repoRoot: tmpdir(), scan: () => null }),
+      { verdict: 'unpromotable', reason: 'scan-incomplete:unknown' },
+    );
+    deepStrictEqual(
+      sensorLib.classifyStopFinality({ payload: supported, repoRoot: tmpdir(), scan: () => { throw new Error('boom'); } }),
+      { verdict: 'unpromotable', reason: 'classifier-error' },
+    );
+    deepStrictEqual(
+      sensorLib.classifyStopFinality({
+        payload: supported,
+        repoRoot: tmpdir(),
+        scan: () => ({ live: 'yes', complete: 'yes' }), // non-boolean truthy — must not promote
+      }),
+      { verdict: 'unpromotable', reason: 'scan-incomplete:unknown' },
+    );
+  });
+
+  // ── row 3: the real ledger scan over fixture repos ──
+
+  describe('scanPeerRunLedgers (fixture repos)', () => {
+    let repo;
+    const CANON_ENGINEER = '.agentic-plugins/state/engineer/peer-runs';
+    const LEGACY_ENGINEER = '.claude/agentic-engineer/peer-runs';
+
+    async function seedHandle(homeRel, runId, handle, { mtime } = {}) {
+      const dir = join(repo, homeRel, runId);
+      await mkdir(dir, { recursive: true });
+      const file = join(dir, 'handle.json');
+      await writeFile(file, typeof handle === 'string' ? handle : JSON.stringify(handle));
+      if (mtime) await utimes(dir, mtime, mtime);
+    }
+
+    function freshHandle(overrides = {}) {
+      return {
+        schema_version: '1.0',
+        run_id: 'r',
+        status: 'completed',
+        pid: null,
+        updated_at: new Date().toISOString(),
+        ...overrides,
+      };
+    }
+
+    before(async () => {
+      repo = await mkdtemp(join(tmpdir(), 'attention-ledger-'));
+    });
+    after(async () => {
+      await rm(repo, { recursive: true, force: true });
+    });
+    async function resetRepo() {
+      await rm(join(repo, '.agentic-plugins'), { recursive: true, force: true });
+      await rm(join(repo, '.claude'), { recursive: true, force: true });
+    }
+
+    it('absent homes everywhere ⇒ complete, nothing live (ENOENT is zero runs, not unreadable)', async () => {
+      await resetRepo();
+      deepStrictEqual(sensorLib.scanPeerRunLedgers({ repoRoot: repo }), { live: false, complete: true });
+    });
+
+    it('all five terminal statuses read not-live; a full terminal ledger scan completes ⇒ classifier promotes', async () => {
+      await resetRepo();
+      let i = 0;
+      for (const status of sensorLib.PEER_RUN_TERMINAL_STATUSES) {
+        await seedHandle(CANON_ENGINEER, `run-${i += 1}`, freshHandle({ status }));
+      }
+      deepStrictEqual(sensorLib.scanPeerRunLedgers({ repoRoot: repo }), { live: false, complete: true });
+      deepStrictEqual(
+        sensorLib.classifyStopFinality({ payload: { background_tasks: [], session_crons: [] }, repoRoot: repo }),
+        { verdict: 'final', reason: 'no-interim-evidence' },
+      );
+    });
+
+    it('running with a LIVE recorded pid ⇒ live (kill(pid,0) probe; the classifier reads interim)', async () => {
+      await resetRepo();
+      await seedHandle(CANON_ENGINEER, 'run-live', freshHandle({ status: 'running', pid: process.pid }));
+      const result = sensorLib.scanPeerRunLedgers({ repoRoot: repo });
+      deepStrictEqual(result, { live: true, complete: false });
+      deepStrictEqual(
+        sensorLib.classifyStopFinality({ payload: { background_tasks: [], session_crons: [] }, repoRoot: repo }),
+        { verdict: 'interim', reason: 'peer-run-live' },
+      );
+    });
+
+    it('running with a DEAD pid ⇒ not live (ESRCH); EPERM-style probe answers ⇒ live (PID-reuse reads interim)', async () => {
+      await resetRepo();
+      // A just-exited child pid is reliably dead. Spawn+reap one.
+      const child = spawnSync(process.execPath, ['-e', 'process.exit(0)']);
+      strictEqual(child.status, 0);
+      await seedHandle(CANON_ENGINEER, 'run-dead', freshHandle({ status: 'running', pid: child.pid }));
+      deepStrictEqual(sensorLib.scanPeerRunLedgers({ repoRoot: repo }), { live: false, complete: true });
+      // EPERM path via injected probe (a foreign-owner pid answers the probe).
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo, probePid: () => true }),
+        { live: true, complete: false },
+      );
+    });
+
+    it('running/cancel_requested WITHOUT a recorded pid is a malformed handle ⇒ scan incomplete (never a guess)', async () => {
+      for (const status of ['running', 'cancel_requested']) {
+        await resetRepo();
+        await seedHandle(CANON_ENGINEER, 'run-nopid', freshHandle({ status, pid: null }));
+        deepStrictEqual(
+          sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
+          { live: false, complete: false, reason: 'handle-pid-missing:engineer' },
+        );
+      }
+    });
+
+    it('queued/spawning are PID-less BY DESIGN: live inside the ledger stale-grace window (boundary inclusive, sweep parity), stale beyond it', async () => {
+      const nowMs = Date.now();
+      for (const status of ['queued', 'spawning']) {
+        await resetRepo();
+        await seedHandle(CANON_ENGINEER, 'run-q', freshHandle({
+          status,
+          updated_at: new Date(nowMs - 1_000).toISOString(),
+        }));
+        deepStrictEqual(
+          sensorLib.scanPeerRunLedgers({ repoRoot: repo, now: () => nowMs }),
+          { live: true, complete: false },
+          `${status} fresh must be live`,
+        );
+        await resetRepo();
+        await seedHandle(CANON_ENGINEER, 'run-q', freshHandle({
+          status,
+          updated_at: new Date(nowMs - sensorLib.PEER_RUN_STALE_GRACE_MS).toISOString(),
+        }));
+        deepStrictEqual(
+          sensorLib.scanPeerRunLedgers({ repoRoot: repo, now: () => nowMs }),
+          { live: true, complete: false },
+          `${status} at exactly the grace boundary is still live (sweep: stale is strictly-greater)`,
+        );
+        await resetRepo();
+        await seedHandle(CANON_ENGINEER, 'run-q', freshHandle({
+          status,
+          updated_at: new Date(nowMs - sensorLib.PEER_RUN_STALE_GRACE_MS - 1).toISOString(),
+        }));
+        deepStrictEqual(
+          sensorLib.scanPeerRunLedgers({ repoRoot: repo, now: () => nowMs }),
+          { live: false, complete: true },
+          `${status} past the grace window is not live`,
+        );
+      }
+    });
+
+    it('hostile handles fail the scan closed: malformed JSON, non-object, unknown status, malformed/future updated_at, missing handle', async () => {
+      const cases = [
+        ['{not json', 'handle-malformed:engineer'],
+        ['[1,2]', 'handle-malformed:engineer'],
+        [freshHandle({ status: 'exploded' }), 'handle-status-unknown:engineer'],
+        [freshHandle({ status: 42 }), 'handle-status-unknown:engineer'],
+        [freshHandle({ updated_at: 'yesterday' }), 'handle-updated-at-malformed:engineer'],
+        [freshHandle({ updated_at: '2026-07-21 12:00:00' }), 'handle-updated-at-malformed:engineer'],
+        [freshHandle({ updated_at: new Date(Date.now() + 10 * 60_000).toISOString() }), 'handle-future-skew:engineer'],
+      ];
+      for (const [handle, reason] of cases) {
+        await resetRepo();
+        await seedHandle(CANON_ENGINEER, 'run-x', handle);
+        deepStrictEqual(
+          sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
+          { live: false, complete: false, reason },
+          `handle ${JSON.stringify(handle).slice(0, 60)} must fail closed with ${reason}`,
+        );
+      }
+      // A run directory with NO handle.json (mid-write/mid-sweep race) also
+      // blocks promotion rather than being silently skipped.
+      await resetRepo();
+      await mkdir(join(repo, CANON_ENGINEER, 'run-empty'), { recursive: true });
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
+        { live: false, complete: false, reason: 'handle-unreadable:engineer' },
+      );
+    });
+
+    it('a small future skew within FUTURE_SKEW_MS is tolerated (concurrent writer), far-future is malformed', async () => {
+      await resetRepo();
+      const nowMs = Date.now();
+      await seedHandle(CANON_ENGINEER, 'run-skew', freshHandle({
+        status: 'completed',
+        updated_at: new Date(nowMs + sensorLib.FUTURE_SKEW_MS - 1_000).toISOString(),
+      }));
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo, now: () => nowMs }),
+        { live: false, complete: true },
+      );
+    });
+
+    it('a FIFO planted at a handle path degrades via the bounded-read guard (never blocks, scan incomplete)', async (t) => {
+      await resetRepo();
+      const dir = join(repo, CANON_ENGINEER, 'run-fifo');
+      await mkdir(dir, { recursive: true });
+      const mkfifo = spawnSync('mkfifo', [join(dir, 'handle.json')]);
+      if (mkfifo.status !== 0) {
+        t.skip('mkfifo unavailable on this platform');
+        return;
+      }
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
+        { live: false, complete: false, reason: 'handle-nonregular:engineer' },
+      );
+    });
+
+    it('ambiguous dual-home state (runs in BOTH engineer homes) fail-closes the scan — the peer-runner mirror', async () => {
+      await resetRepo();
+      await seedHandle(CANON_ENGINEER, 'run-a', freshHandle());
+      await seedHandle(LEGACY_ENGINEER, 'run-b', freshHandle());
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
+        { live: false, complete: false, reason: 'ambiguous-dual-home:engineer' },
+      );
+    });
+
+    it('a legacy-only engineer home IS scanned (pre-ADR-0025 repos stay modeled)', async () => {
+      await resetRepo();
+      await seedHandle(LEGACY_ENGINEER, 'run-live', freshHandle({ status: 'running', pid: process.pid }));
+      deepStrictEqual(sensorLib.scanPeerRunLedgers({ repoRoot: repo }), { live: true, complete: false });
+    });
+
+    it('founder/designer are canonical-only: a live handle planted in a NEVER-EXISTED legacy home is not read', async () => {
+      await resetRepo();
+      await seedHandle('.claude/agentic-founder/peer-runs', 'run-live', freshHandle({ status: 'running', pid: process.pid }));
+      await seedHandle('.claude/agentic-designer/peer-runs', 'run-live', freshHandle({ status: 'running', pid: process.pid }));
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
+        { live: false, complete: true },
+        'homes that never existed for a persona are deliberately not modeled (ADR-0036 SD5 / ADR-0042 SD7)',
+      );
+    });
+
+    it('per-persona cap: over-cap ⇒ incomplete; a live handle inside the NEWEST-first truncation still reads live', async () => {
+      await resetRepo();
+      const nowS = Math.floor(Date.now() / 1000);
+      // Three all-terminal runs against cap 2 ⇒ cap-exhausted, no promotion.
+      await seedHandle(CANON_ENGINEER, 'run-1', freshHandle(), { mtime: nowS - 300 });
+      await seedHandle(CANON_ENGINEER, 'run-2', freshHandle(), { mtime: nowS - 200 });
+      await seedHandle(CANON_ENGINEER, 'run-3', freshHandle(), { mtime: nowS - 100 });
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo, perPersonaCap: 2 }),
+        { live: false, complete: false, reason: 'cap-exhausted:engineer' },
+      );
+      // The NEWEST run is live ⇒ the truncated scan still discovers it.
+      await seedHandle(CANON_ENGINEER, 'run-4', freshHandle({ status: 'running', pid: process.pid }), { mtime: nowS - 10 });
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo, perPersonaCap: 2 }),
+        { live: true, complete: false },
+      );
+      // At exactly the cap the scan is complete (bound not EXHAUSTED).
+      await resetRepo();
+      await seedHandle(CANON_ENGINEER, 'run-1', freshHandle());
+      await seedHandle(CANON_ENGINEER, 'run-2', freshHandle());
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo, perPersonaCap: 2 }),
+        { live: false, complete: true },
+      );
+    });
+
+    it('wall-clock budget exhaustion ⇒ incomplete (deterministic injected clock)', async () => {
+      await resetRepo();
+      await seedHandle(CANON_ENGINEER, 'run-1', freshHandle());
+      let tick = 0;
+      const clock = () => { tick += 600; return tick; }; // every call advances 600ms
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo, now: clock, budgetMs: 1_000 }),
+        { live: false, complete: false, reason: 'budget-exhausted' },
+      );
+    });
+
+    it('non-directory clutter (lock files, temp files) inside a home is a non-candidate, not a malformed handle', async () => {
+      await resetRepo();
+      await seedHandle(CANON_ENGINEER, 'run-1', freshHandle());
+      await writeFile(join(repo, CANON_ENGINEER, 'sweep.lock'), 'x');
+      deepStrictEqual(sensorLib.scanPeerRunLedgers({ repoRoot: repo }), { live: false, complete: true });
+    });
+
+    it('bad args fail closed', () => {
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({}),
+        { live: false, complete: false, reason: 'bad-args' },
+      );
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo, personas: ['engineer', 'intruder'] }),
+        { live: false, complete: false, reason: 'unknown-persona:intruder' },
+      );
+    });
   });
 });
 
@@ -1959,6 +2430,275 @@ describe('plugins/attention — ADR-0044 §2 spawnPublishSession (unit)', () => 
     deepStrictEqual(result, { spawned: true });
     ok(elapsedMs < 10_000, `spawn returned in ${elapsedMs}ms — the timeout must kill a hung publisher`);
     deepStrictEqual(await takeUnitCaptures(), [], 'a killed publisher must not have recorded output');
+  });
+});
+
+describe('plugins/attention — ADR-0047 §2/§3/§9 Stop response-needed (end-to-end, stub runtimes)', () => {
+  let repo;
+  let stub084;
+  let stub083;
+  let stub071;
+  let captureFile;
+  const E2E_HOSTNAME = 'e2e-host-47';
+
+  async function makeRuntimeStub(version) {
+    const root = join(repo, `runtime-stub-${version}`);
+    await mkdir(join(root, '.claude-plugin'), { recursive: true });
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(
+      join(root, '.claude-plugin/plugin.json'),
+      JSON.stringify({ name: 'runtime', version, description: 'stub' }),
+    );
+    await writeFile(
+      join(root, 'scripts/notify.mjs'),
+      [
+        '#!/usr/bin/env node',
+        "import fs from 'node:fs';",
+        'const chunks = [];',
+        'for await (const chunk of process.stdin) chunks.push(chunk);',
+        'fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({',
+        '  argv: process.argv.slice(2),',
+        "  event: JSON.parse(Buffer.concat(chunks).toString('utf8')),",
+        "}) + '\\n');",
+      ].join('\n'),
+    );
+    return root;
+  }
+
+  before(async () => {
+    repo = await mkdtemp(join(tmpdir(), 'attention-rn-e2e-'));
+    await mkdir(join(repo, '.git'), { recursive: true });
+    captureFile = join(repo, 'capture.json');
+    stub084 = await makeRuntimeStub('0.84.0');
+    stub083 = await makeRuntimeStub('0.83.0');
+    stub071 = await makeRuntimeStub('0.71.0');
+  });
+  after(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  function runStop(payload, { runtimeRoot } = {}) {
+    return spawnSync(
+      process.execPath,
+      [resolve(PLUGIN_ROOT, 'adapters/claude/hooks/stop.mjs')],
+      {
+        input: JSON.stringify(payload),
+        env: {
+          ...process.env,
+          AGENTIC_RUNTIME_ROOT: runtimeRoot ?? stub084,
+          ATTENTION_TEST_CAPTURE: captureFile,
+          AGENTIC_NOTIFY_HOSTNAME: E2E_HOSTNAME,
+        },
+        encoding: 'utf8',
+        timeout: 30_000,
+      },
+    );
+  }
+
+  async function takeCaptures() {
+    let text = '';
+    try {
+      text = await readFile(captureFile, 'utf8');
+    } catch {
+      return [];
+    }
+    await rm(captureFile, { force: true });
+    return text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  }
+
+  const FINAL_PAYLOAD_FIELDS = { background_tasks: [], session_crons: [] };
+
+  it('final verdict ⇒ EXACTLY ONE response-needed: your-turn headline, canonical event_id, default fired status, accepted by the canonical validateEvent', async () => {
+    const result = runStop({
+      cwd: repo, session_id: 'sess-rn', prompt_id: 'prompt-rn', ...FINAL_PAYLOAD_FIELDS,
+    });
+    strictEqual(result.status, 0);
+    strictEqual(result.stdout, '');
+    const captures = await takeCaptures();
+    strictEqual(captures.length, 1, '§3 no-duplicate default: exactly one bare signal class per Stop');
+    const { argv, event } = captures[0];
+    deepStrictEqual(argv, ['emit', '--repo-root', sensorLib.resolveRepoRoot(repo)]);
+    strictEqual(event.kind, 'response-needed');
+    strictEqual(event.headline, 'your-turn');
+    strictEqual(event.urgency, 'normal', 'approval stays the only urgent-by-contract kind (§1)');
+    strictEqual(event.title, `Response needed — ${basename(sensorLib.resolveRepoRoot(repo))}`);
+    // §1 — same subject shape as turn-complete (the two documented common
+    // fields), status defaulted to the fixed token by KINDS_WITH_DEFAULT_STATUS.
+    strictEqual(
+      event.event_id,
+      canonical.buildEventId({
+        repoIdent: canonical.deriveRepoIdent(sensorLib.resolveRepoRoot(repo)),
+        kind: 'response-needed',
+        subject: canonical.turnCompleteSubject({ sessionId: 'sess-rn', promptId: 'prompt-rn' }),
+        hostname: E2E_HOSTNAME,
+      }),
+    );
+    ok(event.event_id.endsWith(':fired'));
+    // The CANONICAL (0.84.0+) contract accepts the event — the §9 floor is
+    // what guarantees the resolving runtime is at least this contract.
+    strictEqual(canonical.validateEvent(event).ok, true);
+    strictEqual(event.hostname, E2E_HOSTNAME);
+  });
+
+  it('interim evidence (running background task / session cron) ⇒ turn-complete, no headline', async () => {
+    for (const fields of [
+      { background_tasks: [{ id: 'b1', type: 'shell', status: 'running', command: 'sleep 45' }], session_crons: [] },
+      { background_tasks: [], session_crons: [{ id: 'c1', schedule: '*/10 * * * *', recurring: true, prompt: 'noop' }] },
+    ]) {
+      const result = runStop({ cwd: repo, session_id: 's', prompt_id: 'p', ...fields });
+      strictEqual(result.status, 0);
+      const captures = await takeCaptures();
+      strictEqual(captures.length, 1);
+      strictEqual(captures[0].event.kind, 'turn-complete');
+      strictEqual('headline' in captures[0].event, false);
+    }
+  });
+
+  it('pre-2.1.145 payload (fields absent) ⇒ turn-complete (conservative row 4 — never promoted on an unobservable surface)', async () => {
+    const result = runStop({ cwd: repo, session_id: 's', prompt_id: 'p' });
+    strictEqual(result.status, 0);
+    const captures = await takeCaptures();
+    strictEqual(captures.length, 1);
+    strictEqual(captures[0].event.kind, 'turn-complete');
+    strictEqual('headline' in captures[0].event, false);
+  });
+
+  it('a live peer-run handle in the repo ⇒ turn-complete (row 3 repo-scoped fallback)', async () => {
+    const runDir = join(repo, '.agentic-plugins/state/engineer/peer-runs/run-live');
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, 'handle.json'), JSON.stringify({
+      schema_version: '1.0', run_id: 'run-live', status: 'running', pid: process.pid,
+      updated_at: new Date().toISOString(),
+    }));
+    try {
+      const result = runStop({ cwd: repo, session_id: 's', prompt_id: 'p', ...FINAL_PAYLOAD_FIELDS });
+      strictEqual(result.status, 0);
+      const captures = await takeCaptures();
+      strictEqual(captures.length, 1);
+      strictEqual(captures[0].event.kind, 'turn-complete');
+    } finally {
+      await rm(join(repo, '.agentic-plugins'), { recursive: true, force: true });
+    }
+  });
+
+  it('§3 precedence: a fresh terminal projection emits workflow-terminal ONLY — no response-needed, no turn-complete', async () => {
+    const dir = join(repo, '.agentic-plugins', 'state', 'engineer');
+    await mkdir(dir, { recursive: true });
+    const wfId = 'compose-20260721T121515Z-abc123';
+    await writeFile(join(dir, 'last-session-handoff.json'), JSON.stringify({
+      workflow_kind: 'engineer', workflow_id: wfId, phase: 'summary-complete',
+      next_action: 'Commit', archive_gate: 'ready_to_archive',
+    }));
+    await writeFile(
+      join(dir, 'last-session-handoff.json.footer-rendered'),
+      JSON.stringify({ workflow_id: wfId, status: 'rendered', at: new Date().toISOString() }),
+    );
+    try {
+      const result = runStop({ cwd: repo, session_id: 's', prompt_id: 'p', ...FINAL_PAYLOAD_FIELDS });
+      strictEqual(result.status, 0);
+      const captures = await takeCaptures();
+      strictEqual(captures.length, 1, 'exactly one signal class per Stop (§3)');
+      strictEqual(captures[0].event.kind, 'workflow-terminal');
+    } finally {
+      await rm(join(repo, '.agentic-plugins'), { recursive: true, force: true });
+    }
+  });
+
+  it('§9 graceful degradation: below the floor the SAME final-looking payload stays a bare turn-complete with no headline', async () => {
+    for (const runtimeRoot of [stub071, stub083]) {
+      const result = runStop(
+        { cwd: repo, session_id: 's', prompt_id: 'p', ...FINAL_PAYLOAD_FIELDS },
+        { runtimeRoot },
+      );
+      strictEqual(result.status, 0);
+      const captures = await takeCaptures();
+      strictEqual(captures.length, 1, 'the bare notification itself still fires (notify floor satisfied)');
+      strictEqual(captures[0].event.kind, 'turn-complete');
+      strictEqual('headline' in captures[0].event, false);
+    }
+  });
+
+  it('responseSignalRuntimeReady: true at 0.84.0, false below, false on a void root (unit)', async () => {
+    strictEqual(await sensorLib.responseSignalRuntimeReady({ env: { AGENTIC_RUNTIME_ROOT: stub084 } }), true);
+    strictEqual(await sensorLib.responseSignalRuntimeReady({ env: { AGENTIC_RUNTIME_ROOT: stub083 } }), false);
+    strictEqual(await sensorLib.responseSignalRuntimeReady({ env: { AGENTIC_RUNTIME_ROOT: stub071 } }), false);
+    strictEqual(await sensorLib.responseSignalRuntimeReady({ env: { AGENTIC_RUNTIME_ROOT: join(repo, 'nowhere') } }), false);
+  });
+
+  it('emitEvent minVersion threading (§9 belt-and-suspenders): a 0.83.x runtime resolves for the notify floor but refuses the response-signal floor', async () => {
+    const env = { ...process.env, AGENTIC_RUNTIME_ROOT: stub083, ATTENTION_TEST_CAPTURE: captureFile };
+    const eventBase = {
+      repoIdent: 'repo-x', kind: 'turn-complete', subject: 'session:s:p',
+      title: 't', urgency: 'normal',
+    };
+    const ok083 = await sensorLib.emitEvent({ repoRoot: repo, env, event: sensorLib.buildEvent(eventBase) });
+    strictEqual(ok083.emitted, true, 'default (notify) floor accepts 0.83.x');
+    await takeCaptures();
+    const refused = await sensorLib.emitEvent({
+      repoRoot: repo,
+      env,
+      minVersion: sensorLib.RESPONSE_SIGNAL_MIN_RUNTIME_VERSION,
+      event: sensorLib.buildEvent({ ...eventBase, kind: 'response-needed' }),
+    });
+    deepStrictEqual(refused, { emitted: false, reason: 'runtime-unresolved' },
+      'a cache swap to a pre-contract runtime cannot receive a response-needed event');
+    deepStrictEqual(await takeCaptures(), []);
+  });
+
+  it('the Notification sensor borns needs-approval on permission_prompt (ADR-0047 §4) — floor-independent optional field', async () => {
+    const result = spawnSync(
+      process.execPath,
+      [resolve(PLUGIN_ROOT, 'adapters/claude/hooks/notification.mjs')],
+      {
+        input: JSON.stringify({
+          cwd: repo, session_id: 'sess-a', notification_type: 'permission_prompt', message: 'Allow Bash?',
+        }),
+        env: {
+          ...process.env,
+          // Deliberately the OLD notify-floor stub: headline is a
+          // backward-compatible OPTIONAL field (the ADR-0041 §3a shipped
+          // precedent) — Guard 2 validate-or-drop lives runtime-side.
+          AGENTIC_RUNTIME_ROOT: stub071,
+          ATTENTION_TEST_CAPTURE: captureFile,
+          AGENTIC_NOTIFY_HOSTNAME: E2E_HOSTNAME,
+        },
+        encoding: 'utf8',
+        timeout: 30_000,
+      },
+    );
+    strictEqual(result.status, 0);
+    strictEqual(result.stdout, '');
+    const captures = await takeCaptures();
+    strictEqual(captures.length, 1);
+    strictEqual(captures[0].event.kind, 'approval');
+    strictEqual(captures[0].event.headline, 'needs-approval');
+    strictEqual(captures[0].event.urgency, 'urgent');
+    strictEqual(canonical.validateEvent(captures[0].event).ok, true);
+  });
+
+  it('the idle_prompt path stays headline-free (§4)', async () => {
+    const result = spawnSync(
+      process.execPath,
+      [resolve(PLUGIN_ROOT, 'adapters/claude/hooks/notification.mjs')],
+      {
+        input: JSON.stringify({
+          cwd: repo, session_id: 'sess-a', notification_type: 'idle_prompt', message: 'waiting',
+        }),
+        env: {
+          ...process.env,
+          AGENTIC_RUNTIME_ROOT: stub084,
+          ATTENTION_TEST_CAPTURE: captureFile,
+          AGENTIC_NOTIFY_HOSTNAME: E2E_HOSTNAME,
+        },
+        encoding: 'utf8',
+        timeout: 30_000,
+      },
+    );
+    strictEqual(result.status, 0);
+    const captures = await takeCaptures();
+    strictEqual(captures.length, 1);
+    strictEqual(captures[0].event.kind, 'idle');
+    strictEqual('headline' in captures[0].event, false);
   });
 });
 

@@ -21,7 +21,7 @@ hook review/trust burden never attaches to frequently-releasing packages
 |---|---|---|---|---|
 | `Notification` | `permission_prompt` | `approval` | `session:<session_id>:<message-content-hash>` | urgent |
 | `Notification` | `idle_prompt` | `idle` | `session:<session_id>` | normal |
-| `Stop` | — (none exists) | `workflow-terminal` when a **fresh** persona projection proves a terminal workflow, else `turn-complete` | `<workflow_id>` / `session:<session_id>:<prompt_id>` | normal |
+| `Stop` | — (none exists) | `workflow-terminal` when a **fresh** persona projection proves a terminal workflow; else EXACTLY ONE of `response-needed` (classified **final**, ADR-0047 §2) or `turn-complete` (interim / unpromotable / below the §9 floor) | `<workflow_id>` / `session:<session_id>:<prompt_id>` (shared by both bare kinds; the differing kind keeps dedupe keys distinct) | normal |
 | `SubagentStop` | — (`agent_type` available for tuning) | `subagent-complete` | `<agent_id>` | normal |
 | `SessionStart` | `startup` (explicit, `timeout: 15`) | — (no notify event; relays the ADR-0045 entry-brief line, or nothing) | — | — |
 
@@ -69,6 +69,60 @@ the completion contract's `publish-needed` state, which the frozen 8-field
 projection cannot distinguish from a genuine blocker — so their
 `workflow-terminal` events omit the opt-in `headline` token on `blocked`
 rather than overclaim (map-or-omit).
+
+### The Stop sensor's finality classifier (ADR-0047 §2/§3/§9)
+
+At a **bare** Stop (no fresh terminal projection), the sensor classifies
+interim vs final from **structural evidence only** and emits exactly one
+signal class (§3 no-duplicate default — dedupe cannot enforce this, the
+producer rule does):
+
+| # | Evidence | Reading |
+|---|---|---|
+| 1 | `payload.background_tasks` (Stop input, Claude ≥ 2.1.145; shape probed live on 2.1.216) | well-formed array = observable; **any resident entry ⇒ interim** (completed tasks were observed *removed* from the list, and no terminal status token was ever observed surviving in it — residents read not-terminal, never a guessed token set) |
+| 2 | `payload.session_crons` (same) | well-formed array = observable; **non-empty ⇒ interim** (a scheduled session cron resumes the session by itself) |
+| 3 | Peer-run ledgers of all four personas (canonical + the engineer/orchestrator legacy homes) | `running`/`cancel_requested` with a recorded PID answering `process.kill(pid, 0)` ⇒ live; PID-less `queued`/`spawning` inside the ledger's own 60 s stale-grace ⇒ live; **any live handle ⇒ interim** |
+| 4 | Neither payload field observable | **no promotion** — the bare `turn-complete` exactly as pre-ADR-0047 |
+
+**Final** — and therefore `response-needed` with the `your-turn` headline —
+requires ALL of: at least one payload field observable **and well-formed**
+(a present-but-null/scalar/malformed field is *unobservable*, never
+"empty"), no interim evidence from any row, and a **complete** row-3 scan
+(every home readable, every handle well-formed and non-future-skewed, no
+per-persona cap or wall-clock budget exhaustion, no ambiguous dual-home
+state). Any incomplete scan blocks promotion — a live handle hiding beyond
+a cap must not produce a false final. Classifier errors of any kind degrade
+to `turn-complete` (fail-closed observer, ADR-0040 §7).
+
+Honest blind spots (accepted, conservative-direction — these suppress
+`response-needed`, never fabricate it): peer-run handles carry no session
+identity, so row 3 is **repo-scoped** (a live peer run from a different
+session in the same repo reads interim); the classifier never runs the
+ledger's `ps` fingerprint verifier (no spawn on the hot path), so a PID
+recycled by an unrelated process reads live ⇒ interim; and hosts below
+2.1.145 never promote (row 4). Repo-scoped row-3 false negatives are
+accepted behavior, not classifier defects. The classifier never opens
+`transcript_path` (ADR-0044 Alt E stands).
+
+The whole path sits behind the **dedicated released-runtime floor**
+`RESPONSE_SIGNAL_MIN_RUNTIME_VERSION` (`0.84.0` — ADR-0047 §8 Release A,
+declared in `data/runtime-floors.json` as `floors.response_signal`; the
+fourth floor, never shared with the notify/publisher/entry gates). Below
+it the sensor takes the pre-ADR-0047 bare path — `turn-complete`, no
+classifier work, no headline — and the emit seam re-checks the same floor
+(`emitEvent({ minVersion })`) so a cache swap cannot hand the kind to a
+pre-contract runtime. Keep the ADR-0047 §8 **dual-kind window** open
+(`notify_kinds` including both `turn-complete` and `response-needed`, or
+unset) until both producers are verified upgraded.
+
+Headline producers (ADR-0047 §4, the narrow ADR-0041 §3a amendment):
+`response-needed` ⇒ `your-turn` and `approval` ⇒ `needs-approval` are
+**total** maps — the kind/matcher IS the structural signal, so map-or-omit
+is preserved upstream (an uncertain classification never produces the kind;
+the host's `permission_prompt` matcher involves no inference). The
+`idle_prompt` path and the (now interim-only) `turn-complete` stay
+headline-free. Headlines remain egress-display fields behind the §3a
+default-OFF opt-in.
 
 ### The Stop sensor's session-capture spawn (ADR-0044 §2)
 
@@ -141,6 +195,8 @@ The Stop hook's worst-case latency is a stated contract
 | `TERMINAL_BATCH_DEADLINE_MS` | 24 s | terminal-notification batching: at most two FULL slots, full-slot-or-nothing (ADR-0043 §3) |
 | `PUBLISH_SESSION_TIMEOUT_MS` | 12 s | the capture spawn's own slot — bounded git probes + local IO, no network |
 | `STOP_HOT_PATH_BUDGET_MS` | 36 s | aggregate worst case: one capture slot + the two-slot notification deadline |
+| `PEER_SCAN_PER_PERSONA_CAP` | 1024 | ADR-0047 §2 row-3 bound: handles scanned per persona (newest-first when over; exhaustion blocks promotion, never a false final) |
+| `PEER_SCAN_BUDGET_MS` | 1 s | ADR-0047 §2 row-3 wall-clock cutoff — runs INSIDE the bare path's single emission slot; the classifier adds **no slot** to the 36 s aggregate and spawns nothing (`process.kill(pid, 0)` only) |
 
 A publisher or emitter that overruns its slot is killed — **SIGKILL**,
 mirroring the entry-brief spawn's kill bound (SIGTERM is trappable: a

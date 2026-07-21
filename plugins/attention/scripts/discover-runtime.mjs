@@ -68,6 +68,24 @@ export const PUBLISH_SESSION_MIN_RUNTIME_VERSION = '0.82.0';
 // constant byte-for-byte — the plugin-shape test pins the pair.
 export const ENTRY_BRIEF_MIN_RUNTIME_VERSION = '0.83.0';
 
+// The FOURTH capability floor, for the ADR-0047 §2/§9 response-needed
+// classifier/producer path: the first RELEASED runtime version whose
+// notify-schema carries the `response-needed` kind contract (schema +
+// filter vocabulary + shuttle remap template) — plugin-runtime-v0.84.0,
+// Release A of the ADR-0047 §8 two-release rollout, recorded by the
+// `signal-runtime-release` macro subtask (2026-07-21). It deliberately
+// does NOT raise the notify floor above (ADR-0044 "two gates never share
+// a constant"): below THIS floor the Stop sensor takes the pre-ADR-0047
+// bare path (turn-complete, no classifier, no headline) while
+// notifications keep working at MIN_RUNTIME_VERSION — graceful
+// degradation, never an error, and never a kind the resolving runtime's
+// validateEvent would reject (§8 enable-sequence failure 1). Prerelease
+// semantics are the shared strict `versionGte` below. The §9 declaration
+// this plugin ships (data/runtime-floors.json, floors.response_signal —
+// an additive sibling key) must agree with this constant byte-for-byte —
+// the plugin-shape test pins the pair.
+export const RESPONSE_SIGNAL_MIN_RUNTIME_VERSION = '0.84.0';
+
 async function fileExists(path) {
   try {
     const st = await stat(path);
