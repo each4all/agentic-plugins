@@ -38,8 +38,8 @@ const NOTIFICATION_WATCH_ROWS = [
     resolution_requires: 'A source-verified payload shape recorded in the host-parity baseline plus a dedicated follow-up decision before any shuttle mapping (ADR-0030).',
     signal_patterns: [
       /\bnotify\s*=/i,
-      /\bnotify\b[^\n]*\b(?:payload|variant|approval|permission|type)\b/i,
-      /\b(?:approval|permission)\b[^\n]*\bnotify\b/i,
+      /\bnotif\w*\b[\s\S]{0,200}?\b(?:payload|variant|approval|permission|type)\b/i,
+      /\b(?:payload|variant|approval|permission|type)\b[\s\S]{0,200}?\bnotif\w*\b/i,
     ],
   },
   {
@@ -179,12 +179,24 @@ export async function ingestReleaseNotes(options = {}) {
   const now = toIso(options.now ?? new Date());
   const entries = [];
   const urlFetcher = options.urlFetcher ?? fetchReleaseNotesUrl;
+  // Load the existing index BEFORE assigning ids: the id sequence must
+  // continue across invocations, or a second ingest of a same-named file
+  // (e.g. CHANGELOG.md twice) reuses the same id and silently overwrites
+  // the first stored body (Review ensemble finding).
+  const indexPath = resolve(notesDir, 'index.json');
+  const previous = await readJsonIfExists(indexPath, {
+    schema_version: RELEASE_NOTES_SCHEMA,
+    run_id: selected.runId,
+    notes: [],
+  });
+  const previousNotes = previous.notes ?? [];
+  const idOffset = previousNotes.length;
 
   for (const file of files) {
     const sourcePath = resolve(file);
     const sourceText = await readFile(sourcePath, 'utf8');
     if (!sourceText.trim()) throw new Error(`release notes file is empty: ${file}`);
-    const id = noteId(sourcePath, entries.length + 1);
+    const id = noteId(sourcePath, idOffset + entries.length + 1);
     const target = resolve(notesDir, `${id}.md`);
     await copyFile(sourcePath, target);
     entries.push({
@@ -200,7 +212,7 @@ export async function ingestReleaseNotes(options = {}) {
 
   for (const url of urls) {
     if (!/^https?:\/\//i.test(url)) throw new Error('--release-notes-url must be http(s)');
-    const id = noteId(url, entries.length + 1);
+    const id = noteId(url, idOffset + entries.length + 1);
     const metadataTarget = resolve(notesDir, `${id}.json`);
     if (fetchUrls) {
       const fetched = await urlFetcher(url, { timeoutMs });
@@ -254,18 +266,12 @@ export async function ingestReleaseNotes(options = {}) {
     });
   }
 
-  const indexPath = resolve(notesDir, 'index.json');
-  const previous = await readJsonIfExists(indexPath, {
-    schema_version: RELEASE_NOTES_SCHEMA,
-    run_id: selected.runId,
-    notes: [],
-  });
   const index = {
     schema_version: RELEASE_NOTES_SCHEMA,
     run_id: selected.runId,
     updated_at: now,
     policy: compatibilityPolicy(),
-    notes: [...(previous.notes ?? []), ...entries],
+    notes: [...previousNotes, ...entries],
     limits: [
       'Release note ingestion stores explicit files, URL pointers, or explicitly fetched URL content.',
       'Network fetching is not automatic; --fetch-release-notes-url is required for URL content.',
@@ -312,6 +318,15 @@ export async function planCompatibility(options = {}) {
   await writeJson(gapPath, gap);
   const surfaces = classifySurfaces({ gap, releaseNotes });
   const notificationWatch = buildNotificationWatch(releaseNotes);
+  // Actionability is explicit so shared readers can distinguish an
+  // informational standing-watch plan (no drift, no surfaces, no signals)
+  // from a plan that carries real update work — without it, running plan on
+  // a current host pair would flip doctor/cutover compat state to
+  // plan_ready/needs_attention forever (Review ensemble finding).
+  const actionable = gap.overall.release_notes_required
+    || gap.overall.drift_class !== 'none'
+    || surfaces.length > 0
+    || notificationWatch.some((row) => row.signal_detected);
   const plan = {
     schema_version: PLAN_SCHEMA,
     runtime_version: VERSION,
@@ -320,6 +335,7 @@ export async function planCompatibility(options = {}) {
     status: gap.overall.release_notes_required
       ? 'blocked_release_notes_required'
       : 'planned',
+    actionable,
     gap_pointer: pointer(repoRoot, gapPath),
     affected_surfaces: surfaces,
     notification_watch: notificationWatch,
@@ -340,6 +356,7 @@ export async function planCompatibility(options = {}) {
     version: VERSION,
     run_id: selected.runId,
     status: plan.status,
+    actionable,
     plan_pointer: pointer(repoRoot, planPath),
     affected_surfaces: surfaces,
     notification_watch: notificationWatch,
@@ -547,6 +564,7 @@ function renderPlanMarkdown(plan) {
     '',
     `Run: ${plan.run_id}`,
     `Status: ${plan.status}`,
+    `Actionable: ${plan.actionable ? 'yes' : 'no (informational — standing watch only)'}`,
     `Gap analysis: ${plan.gap_pointer}`,
     '',
     '## Affected Surfaces',
@@ -638,7 +656,7 @@ async function readReleaseNoteBodies(repoRoot, runId) {
   };
 }
 
-function analyzeReleaseNote({ note, text }) {
+export function analyzeReleaseNote({ note, text }) {
   const body = String(text ?? '');
   const lower = body.toLowerCase();
   const hosts = [];
@@ -646,8 +664,13 @@ function analyzeReleaseNote({ note, text }) {
   if (/\bcodex(?:\s+cli)?\b/i.test(body)) hosts.push('codex');
   const versions = [...new Set([...body.matchAll(/[0-9]+(?:\.[0-9]+){1,3}/g)].map((match) => match[0]))];
   const surfaces = classifyReleaseNoteSurfaces(lower);
+  // Host-scoped signal detection: a note that names a host can only signal
+  // that host's watch rows (a Claude note about notification_type must not
+  // flag the Codex notify= row). A note naming no host stays conservative
+  // and may signal any row — a hit is an annotation, never a mapping.
   const notificationWatch = NOTIFICATION_WATCH_ROWS
-    .filter((row) => row.signal_patterns.some((pattern) => pattern.test(body)))
+    .filter((row) => (hosts.length === 0 || hosts.includes(row.host))
+      && row.signal_patterns.some((pattern) => pattern.test(body)))
     .map((row) => row.id);
   return {
     id: note.id,
@@ -892,6 +915,7 @@ export function formatText(report) {
   const lines = [`runtime:compat ${report.version ?? VERSION} (${report.command})`];
   if (report.run_id) lines.push(`run: ${report.run_id}`);
   if (report.status) lines.push(`status: ${report.status}`);
+  if (typeof report.actionable === 'boolean') lines.push(`actionable: ${report.actionable}`);
   if (report.drift_class) lines.push(`drift: ${report.drift_class}`);
   if (report.snapshot_pointer) lines.push(`snapshot: ${report.snapshot_pointer}`);
   if (report.gap_pointer) lines.push(`gap analysis: ${report.gap_pointer}`);

@@ -391,9 +391,19 @@ async function summarizeCompatArtifact({ repoRoot, runId, snapshotPath, snapshot
     releaseNotesPath,
     releaseNotes,
   });
+  // A plan that declares itself non-actionable (runtime-compat-plan-1.1
+  // `actionable: false` — no drift, no surfaces, no notification-watch
+  // signal; the plan exists only to render the ADR-0047 standing watch)
+  // must not outrank a current gap: without this, every routine standing-
+  // watch plan run would flip doctor/dashboard/cutover compat state to
+  // plan_ready/needs_attention. Older plans without the field keep today's
+  // plan-presence-wins behavior.
+  const planInformationalOnly = plan.status === 'available'
+    && plan.json?.actionable === false
+    && gapOverall.status === 'current';
   const status = malformed.length > 0
     ? 'blocked'
-    : plan.status === 'available'
+    : plan.status === 'available' && !planInformationalOnly
       ? planStatus === 'blocked_release_notes_required'
         ? 'release_notes_required'
         : 'plan_ready'
