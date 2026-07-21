@@ -35,9 +35,12 @@ Official Claude Code docs:
 Local CLI evidence (full block re-observed 2026-07-20 for the dual drift
 Claude `2.1.208`→`2.1.215` / Codex `0.144.1`→`0.144.6` — every listed
 surface was re-run live; verb sets are unchanged on both hosts, so the
-earlier version-tagged observations stand with the re-check noted):
+earlier version-tagged observations stand with the re-check noted.
+2026-07-21: `claude --version` and `claude plugin --help` re-checked live
+on the fix-only `2.1.216` patch — verb set unchanged; all other listed
+surfaces stand from the 2026-07-20 full re-run, Codex unchanged):
 
-- `claude --version` -> `2.1.215 (Claude Code)`
+- `claude --version` -> `2.1.216 (Claude Code)`
 - `claude --help` (the global `--safe-mode` flag / `CLAUDE_CODE_SAFE_MODE`
   added in 2.1.169 — starts a session with CLAUDE.md, plugins, skills, hooks,
   and MCP servers disabled for troubleshooting — is still present on 2.1.215)
