@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, rejects, deepStrictEqual } from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, symlink, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, symlink, readFile, rm, utimes } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -2299,6 +2300,82 @@ describe('runtime doctor', () => {
     ok(text.includes('retention-attention: consensus/run_count_exceeds_cap'));
     ok(!JSON.stringify(report).includes('RAW PEER OUTPUT'), 'doctor must not read raw peer artifacts');
     ok(!text.includes('RAW CONTEXT SUMMARY'), 'doctor must not print context artifact bodies');
+  });
+
+  // ADR-0047 §7 — doctor adopts the retention actionable/pinned split: a
+  // registry family over cap ONLY because its runs are pinned is informational,
+  // not a fault.
+  it('demotes a pinned-only over-cap registry family out of the retention-guidance warning', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-retention-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    // A real git repo so the citation scan's `git ls-files` succeeds.
+    execFileSync('git', ['-C', root, 'init', '-q'], { stdio: 'ignore' });
+    const compatA = 'compat-20260101T000000Z-000001';
+    const compatB = 'compat-20260102T000000Z-000002';
+    for (const runId of [compatA, compatB]) {
+      await mkdir(join(root, '.agentic-plugins', 'runs', 'compat', runId), { recursive: true });
+      await writeFile(join(root, '.agentic-plugins', 'runs', 'compat', runId, 'snapshot.json'), '{}\n');
+    }
+    // A TRACKED doc citing BOTH runs → both pinned → the whole overage is pinned.
+    await writeFile(join(root, 'CITES.md'), `pinned: ${compatA} ${compatB}\n`);
+    execFileSync('git', ['-C', root, 'add', 'CITES.md'], { stdio: 'ignore' });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      artifactInventory: true,
+      artifactRetentionCap: 1, // 2 runs over a cap of 1
+      now: new Date('2026-07-21T00:00:00.000Z'),
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+
+    strictEqual(report.retention.executed, true);
+    strictEqual(report.retention.scan_complete, true);
+    strictEqual(report.retention.projection.compat.over_cap, true);
+    strictEqual(report.retention.projection.compat.actionable, 0);
+    strictEqual(report.retention.projection.compat.pinned_overage, 2);
+    ok(report.retention.reconciled.demoted.some((d) => d.family === 'compat'));
+    // The fault warning must NOT fire — the overage is entirely pinned.
+    ok(!report.overall.warnings.includes('runtime artifact inventory exceeds retention guidance'),
+      `pinned-only overage must not raise a fault; warnings=${JSON.stringify(report.overall.warnings)}`);
+    const text = formatText(report);
+    ok(text.includes('Runtime Retention Plan'));
+    ok(text.includes('retention-informational: compat/pinned_overage'));
+  });
+
+  it('keeps the retention-guidance warning when a registry family has genuine actionable overage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-retention-actionable-'));
+    const home = await mkdtemp(join(tmpdir(), 'runtime-doctor-home-'));
+    await seedRepo(root);
+    execFileSync('git', ['-C', root, 'init', '-q'], { stdio: 'ignore' });
+    // Two OLD compat runs, NEITHER pinned → both actionable over a cap of 1.
+    // Backdate their mtime well before the injected `now` so they clear the
+    // minimum-age guard (a fresh run is never a candidate).
+    const oldStamp = new Date('2026-07-01T00:00:00.000Z');
+    for (const runId of ['compat-20260101T000000Z-000001', 'compat-20260102T000000Z-000002']) {
+      const dir = join(root, '.agentic-plugins', 'runs', 'compat', runId);
+      await mkdir(dir, { recursive: true });
+      const f = join(dir, 'snapshot.json');
+      await writeFile(f, '{}\n');
+      await utimes(f, oldStamp, oldStamp);
+      await utimes(dir, oldStamp, oldStamp);
+    }
+    await writeFile(join(root, 'README.md'), 'no citations here\n');
+    execFileSync('git', ['-C', root, 'add', 'README.md'], { stdio: 'ignore' });
+
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      artifactInventory: true,
+      artifactRetentionCap: 1,
+      now: new Date('2026-07-21T00:00:00.000Z'),
+      runner: fakeRunner(defaultRuntimeProbeMap()),
+    });
+    strictEqual(report.retention.executed, true);
+    ok(report.retention.projection.compat.actionable >= 1);
+    ok(report.overall.warnings.includes('runtime artifact inventory exceeds retention guidance'),
+      `actionable overage must raise the fault; warnings=${JSON.stringify(report.overall.warnings)}`);
   });
 
   it('inventories the ADR-0038 permission advisory family and excludes its latest.json singleton from run counts', async () => {

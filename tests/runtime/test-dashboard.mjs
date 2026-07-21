@@ -480,6 +480,38 @@ describe('runtime dashboard notify sections', () => {
   });
 });
 
+// ADR-0047 §7 — the dashboard adopts the retention projection in the SNAPSHOT
+// only (the citation scan spawns git; the --watch loop stays filesystem-only,
+// contract §17).
+describe('runtime dashboard retention projection (ADR-0047 §7)', () => {
+  it('carries the retention section (with the actionable/pinned split) in a snapshot', async () => {
+    const root = makeAdvisoryRepo(); // git-inited so the citation scan can enumerate
+    const compatA = 'compat-20260101T000000Z-000001';
+    const compatB = 'compat-20260102T000000Z-000002';
+    for (const runId of [compatA, compatB]) {
+      writeFileDeep(path.join(root, '.agentic-plugins', 'runs', 'compat', runId, 'snapshot.json'), '{}\n');
+    }
+    // A tracked doc citing one run → that run is pinned; the other is not.
+    fs.writeFileSync(path.join(root, 'CITES.md'), `pinned: ${compatA}\n`);
+    gitAdv(root, ['add', 'CITES.md']);
+
+    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome(), entryAdvisory: { host: 'claude' } });
+    assert.ok(report.tier2.retention, 'snapshot must carry tier2.retention');
+    assert.equal(report.tier2.retention.scan_complete, true);
+    assert.ok(report.tier2.retention.projection.compat, 'compat projected');
+    assert.ok(report.tier2.retention.plan_hash.startsWith('sha256:'));
+    const text = renderDashboardText(report);
+    assert.match(text, /- retention:/);
+  });
+
+  it('omits the retention section entirely in a watch iteration (no git spawn, §17)', async () => {
+    const root = makeAdvisoryRepo();
+    // entryAdvisory omitted ⇒ watch-shaped build ⇒ no retention, no git.
+    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
+    assert.ok(!('retention' in report.tier2), 'watch report must not carry tier2.retention');
+  });
+});
+
 describe('runtime dashboard egress attempt visibility (ADR-0041 §6)', () => {
   it('projects egress overlay fields on mirror rows and omits them on local rows', async () => {
     const root = makeRepo();

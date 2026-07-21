@@ -75,6 +75,11 @@ export const CAPABILITY_IMPORTERS = {
   // surface — config-key gating via notify_channel=none default, detached+
   // unref fire-and-forget, fail-closed silent emit path).
   'notify.mjs': { modules: ['node:child_process'], primitives: ['spawn'] },
+  // retention-planner.mjs defaultGitTrackedFiles → execFile('git', ['-C', repoRoot,
+  // 'ls-files', '-z']) — the ADR-0047 §7 read-only tracked-file enumeration for the
+  // citation pin scan. Tier R0: read-only, injectable (tests pass gitTrackedFiles
+  // and never spawn), single fixed verb-path pinned in ARGV_VERB_ALLOWLIST.git.
+  'retention-planner.mjs': { modules: ['node:child_process'], primitives: ['execFile'] },
 };
 
 // Raw child_process primitives. Any of these called in a file that is not a
@@ -388,6 +393,10 @@ export const ARGV_VERB_ALLOWLIST = {
     ['show-ref', '--verify', '*'],
     ['worktree', 'list', '...'],
     ['init', '-q', '-b', '*'],
+    // retention-planner.mjs defaultGitTrackedFiles — the ADR-0047 §7 citation
+    // pin scan's read-only tracked-file enumeration. `ls-files` never mutates;
+    // `-z` is NUL-delimited output. Exact four-token literal (repoRoot → '*').
+    ['-C', '*', 'ls-files', '-z'],
   ],
   // notify.mjs macos-osascript channel (ADR-0040 §2): ONE verb-path pinning
   // the FIXED AppleScript program byte-for-byte, arity-locked. The program

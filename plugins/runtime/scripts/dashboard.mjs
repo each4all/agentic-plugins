@@ -58,6 +58,11 @@ import {
   readTextIfExists,
   artifactTimestampMs,
 } from './lib/state-readers.mjs';
+import {
+  planRetention,
+  projectRetentionAttention,
+  reconcileRetentionAttention,
+} from './lib/retention-planner.mjs';
 
 // 1.0 → 1.1 (additive, ADR-0045 S8): tier1.entry_advisory — present only
 // when the caller opts the snapshot into the entry advisory; never present
@@ -692,6 +697,34 @@ export async function buildDashboardReport({
     retentionCap: DEFAULT_ARTIFACT_RETENTION_CAP,
     maxBytes: DEFAULT_ARTIFACT_RETENTION_MAX_BYTES,
   });
+  // ADR-0047 §7 — the read-only retention projection, reconciled with the raw
+  // inventory attention so a registry family over cap only because its runs are
+  // pinned reads as informational. SNAPSHOT-ONLY (contract §17): the citation
+  // scan spawns `git ls-files`, so it pays the cost only on the one-shot
+  // snapshot, exactly like the entry advisory — the --watch loop stays
+  // filesystem-only and never spawns git. Gated on the same snapshot signal
+  // (`entryAdvisory !== null`). Fail-closed: a planner failure degrades to a
+  // blocked section, never aborting the snapshot.
+  let retention = null;
+  if (entryAdvisory) {
+    try {
+      const plan = await planRetention({
+        repoRoot,
+        now,
+        caps: { runCap: DEFAULT_ARTIFACT_RETENTION_CAP, maxBytes: DEFAULT_ARTIFACT_RETENTION_MAX_BYTES },
+      });
+      const projection = projectRetentionAttention(plan);
+      retention = {
+        status: plan.scan_complete ? 'available' : 'scan-incomplete',
+        scan_complete: plan.scan_complete,
+        plan_hash: plan.plan_hash,
+        projection: projection.families,
+        reconciled: reconcileRetentionAttention(artifacts.attention, projection),
+      };
+    } catch (err) {
+      retention = { status: 'blocked', scan_complete: false, error: err?.message ?? String(err), projection: {}, reconciled: { attention: artifacts.attention, demoted: [] } };
+    }
+  }
   const notifyConfig = summarizeNotifyConfig({ repoRoot, homeDir });
   const notifyState = await inspectNotifyState({
     repoRoot,
@@ -761,6 +794,9 @@ export async function buildDashboardReport({
         attention: artifacts.attention,
         root: artifacts.root,
       },
+      // Present ONLY in the snapshot (like tier1.entry_advisory); the --watch
+      // loop omits it and never spawns the citation-scan git (contract §17).
+      ...(retention ? { retention } : {}),
       notify: {
         config: { status: notifyConfig.status, channel: notifyConfig.channel, errors: notifyConfig.errors },
         state: notifyState,
@@ -905,8 +941,25 @@ export function renderDashboardText(report) {
   }
   const artifacts = report.tier2.artifacts;
   lines.push(`- artifacts: ${artifacts.status} (${artifacts.total.run_count} runs, ${artifacts.total.bytes} bytes)`);
-  for (const item of artifacts.attention) {
+  // ADR-0047 §7 — render the retention-RECONCILED attention: a registry family
+  // over cap only because its runs are pinned is shown as informational (ℹ), not
+  // a fault (!). Falls back to the raw inventory attention when retention could
+  // not be computed.
+  const retention = report.tier2.retention;
+  const faultAttention = retention?.reconciled?.attention ?? artifacts.attention;
+  for (const item of faultAttention) {
     lines.push(`    ! ${item.family}: ${item.kind} observed=${item.observed} limit=${item.limit}`);
+  }
+  for (const item of retention?.reconciled?.demoted ?? []) {
+    lines.push(`    ℹ ${item.family}: over cap because pinned (${item.pinned_overage} runs cited/live/latest); not a fault`);
+  }
+  if (retention && retention.status !== 'blocked') {
+    lines.push(`- retention: ${retention.status}; scan-complete=${retention.scan_complete}; plan-hash=${retention.plan_hash}`);
+    for (const [family, f] of Object.entries(retention.projection ?? {})) {
+      if (f.over_cap || f.actionable > 0) {
+        lines.push(`    ${family}: over-cap=${f.over_cap}; actionable=${f.actionable}; pinned-overage=${f.pinned_overage}`);
+      }
+    }
   }
   const notify = report.tier2.notify;
   if (notify.config.status === 'invalid') {

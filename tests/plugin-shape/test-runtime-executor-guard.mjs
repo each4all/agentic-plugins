@@ -1125,8 +1125,16 @@ describe('ADR-0044 S3b guard — fs mutation gates (per-source negative conforma
 
 describe('ADR-0035 §4 guard — registry drift', () => {
   it('every CAPABILITY_IMPORTERS file exists and imports its declared module', async () => {
+    // Registry keys are basenames matched against the scanner's basename
+    // fileName (scanFile keys CAPABILITY_IMPORTERS[fileName]); resolve them via
+    // the whole-tree basename map like the sibling drift checks below, so a
+    // lib/ capability importer (e.g. lib/retention-planner.mjs) is found where
+    // it actually lives rather than assumed top-level.
+    const byName = new Map((await listRuntimeScripts()).map((s) => [s.fileName, s.path]));
     for (const [file, spec] of Object.entries(registry.CAPABILITY_IMPORTERS)) {
-      const src = await readFile(resolve(RUNTIME_SCRIPTS, file), 'utf-8');
+      const path = byName.get(file);
+      ok(path, `${file} should exist in the runtime scripts tree`);
+      const src = await readFile(path, 'utf-8');
       for (const mod of spec.modules) {
         ok(src.includes(`from '${mod}'`), `${file} should still import ${mod}`);
       }
