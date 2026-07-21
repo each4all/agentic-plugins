@@ -1006,7 +1006,8 @@ describe('ADR-0041 acceptance (E) -- one channel serves both host producers (rea
     const rows = await pollEgressRows(root);
     ok(rows.length >= 1, `the Codex shuttle drove a telegram egress attempt; shuttle stderr:\n${res.stderr}`);
     strictEqual(rows[0].egress_channel, 'telegram', 'the same channel serves the Codex host');
-    strictEqual(rows[0].kind, 'turn-complete', 'the real codex-notify turn-complete event drove the egress');
+    // ADR-0047 §5: the shuttle remaps agent-turn-complete → response-needed.
+    strictEqual(rows[0].kind, 'response-needed', 'the real codex-notify response-needed event drove the egress');
   });
 });
 

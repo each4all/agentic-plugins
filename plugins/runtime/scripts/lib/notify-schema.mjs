@@ -39,6 +39,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 // The §1 kind enum. Order is contractual documentation, not priority.
+// `response-needed` (ADR-0047 §1) marks a FINAL turn — the agent is waiting
+// on the user — while `turn-complete` narrows to interim turns; it is a new
+// kind (not a status refinement) so the exact-kind `notify_kinds` filter can
+// select it.
 export const NOTIFY_KINDS = Object.freeze([
   'approval',
   'idle',
@@ -47,6 +51,7 @@ export const NOTIFY_KINDS = Object.freeze([
   'workflow-terminal',
   'peer-run-terminal',
   'health',
+  'response-needed',
 ]);
 
 export const URGENCY_LEVELS = Object.freeze(['urgent', 'normal']);
@@ -125,6 +130,10 @@ export const KINDS_WITH_DEFAULT_STATUS = Object.freeze([
   'approval',
   'idle',
   'turn-complete',
+  // ADR-0047 §1 — like the three above, response-needed marks a moment with
+  // no natural terminal status; urgency stays normal by contract (approval
+  // remains the only urgent-by-contract kind).
+  'response-needed',
 ]);
 
 function requireNonEmptyString(value, label) {
@@ -239,6 +248,18 @@ export function idleSubject({ sessionId } = {}) {
 // common input fields on every hook event, so this subject never relies
 // on a Stop-specific payload field.
 export function turnCompleteSubject({ sessionId, promptId } = {}) {
+  requireNonEmptyString(sessionId, 'sessionId');
+  requireNonEmptyString(promptId, 'promptId');
+  return `session:${sessionId}:${promptId}`;
+}
+
+// ADR-0047 §1 — response-needed uses the SAME two documented common input
+// fields as turn-complete: identical subjects are contractual (the kind
+// segment alone keeps the dedupe identities distinct), and the classifier
+// never adds Stop-specific payload material to the subject. The Codex limb
+// keeps its own `codex-turn:<turn-id>` namespace (§5) — the two namespaces
+// cannot collide.
+export function responseNeededSubject({ sessionId, promptId } = {}) {
   requireNonEmptyString(sessionId, 'sessionId');
   requireNonEmptyString(promptId, 'promptId');
   return `session:${sessionId}:${promptId}`;

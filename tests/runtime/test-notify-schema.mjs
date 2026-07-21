@@ -23,6 +23,7 @@ import {
   approvalSubject,
   idleSubject,
   turnCompleteSubject,
+  responseNeededSubject,
   workflowTerminalSubject,
   subagentCompleteSubject,
   peerRunTerminalSubject,
@@ -74,7 +75,7 @@ function validSampleEvent(overrides = {}) {
 }
 
 describe('notify-schema kind enum and pipeline order contract', () => {
-  it('pins the ADR-0040 §1 kind enum exactly', () => {
+  it('pins the ADR-0040 §1 kind enum exactly (+ ADR-0047 §1 response-needed)', () => {
     assert.deepEqual(
       [...NOTIFY_KINDS],
       [
@@ -85,6 +86,7 @@ describe('notify-schema kind enum and pipeline order contract', () => {
         'workflow-terminal',
         'peer-run-terminal',
         'health',
+        'response-needed',
       ],
     );
     assert.ok(Object.isFrozen(NOTIFY_KINDS));
@@ -195,15 +197,50 @@ describe('notify-schema event_id composition', () => {
   it('keeps default-status keys distinct across kinds (no collisions)', () => {
     const mk = (kind) =>
       buildEventId({ repoIdent: 'repo-abcd1234', kind, subject: 'session:s1' });
-    const ids = new Set(['approval', 'idle', 'turn-complete'].map(mk));
-    assert.equal(ids.size, 3);
+    const ids = new Set(['approval', 'idle', 'turn-complete', 'response-needed'].map(mk));
+    assert.equal(ids.size, 4);
   });
 
-  it('pins the default-status kinds to the ADR-0040 §1 three', () => {
+  it('pins the default-status kinds to the ADR-0040 §1 three + ADR-0047 §1 response-needed', () => {
     assert.deepEqual(
       [...KINDS_WITH_DEFAULT_STATUS],
-      ['approval', 'idle', 'turn-complete'],
+      ['approval', 'idle', 'turn-complete', 'response-needed'],
     );
+  });
+
+  it('response-needed is a first-class kind: default fired status, normal urgency, distinct dedupe identity (ADR-0047 §1)', () => {
+    assert.ok(NOTIFY_KINDS.includes('response-needed'), 'enum membership');
+    // Marks a moment with no natural terminal status — the fixed token applies.
+    assert.equal(
+      buildEventId({ repoIdent: 'repo-a', kind: 'response-needed', subject: 'session:s1:p1' }),
+      'repo-a:response-needed:session:s1:p1:fired',
+    );
+    // Same-subject events of the two kinds keep distinct dedupe keys — the
+    // narrowed turn-complete (interim) and response-needed (final) can never
+    // collapse into one TTL slot.
+    assert.notEqual(
+      buildEventId({ repoIdent: 'repo-a', kind: 'turn-complete', subject: 'session:s1:p1' }),
+      buildEventId({ repoIdent: 'repo-a', kind: 'response-needed', subject: 'session:s1:p1' }),
+    );
+    // Normal urgency by contract — approval stays the only urgent-by-contract kind.
+    const id = buildEventId({ repoIdent: 'repo-a', kind: 'response-needed', subject: 'session:s1:p1' });
+    const res = validateEvent({
+      event_id: id,
+      source: 'attention-stop',
+      kind: 'response-needed',
+      title: 'Agent is waiting on you',
+      urgency: 'normal',
+    });
+    assert.equal(res.ok, true, res.errors?.join('; '));
+  });
+
+  it('parseKindsFilter accepts response-needed and the §8 dual-kind window', () => {
+    const res = parseKindsFilter('turn-complete,response-needed');
+    assert.equal(res.ok, true);
+    assert.deepEqual([...res.kinds].sort(), ['response-needed', 'turn-complete']);
+    assert.equal(kindEnabled('response-needed', res.kinds), true);
+    assert.equal(kindEnabled('turn-complete', res.kinds), true);
+    assert.equal(kindEnabled('approval', res.kinds), false);
   });
 
   it('requires status for status-bearing kinds (no silent collapse to the default token)', () => {
@@ -324,6 +361,19 @@ describe('notify-schema kind/subject mapping contract', () => {
     assert.equal(
       turnCompleteSubject({ sessionId: 's1', promptId: 'p9' }),
       'session:s1:p9',
+    );
+  });
+
+  it('response-needed subject mirrors turn-complete: the same two documented common fields (ADR-0047 §1)', () => {
+    assert.equal(
+      responseNeededSubject({ sessionId: 's1', promptId: 'p9' }),
+      'session:s1:p9',
+    );
+    // Identical subjects across the two kinds are contractual — the kind
+    // segment alone keeps their event identities distinct.
+    assert.equal(
+      responseNeededSubject({ sessionId: 's1', promptId: 'p9' }),
+      turnCompleteSubject({ sessionId: 's1', promptId: 'p9' }),
     );
   });
 

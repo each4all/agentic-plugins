@@ -180,11 +180,20 @@ function main() {
     : 'codex-turn:payload-' + createHash('sha256').update(payloadText).digest('hex').slice(0, 12);
   const event = {
     // <repo-ident>:<kind>:<subject>:<status> — 'fired' is the §1 default
-    // status token for turn-complete (a kind without a natural terminal
+    // status token for response-needed (a kind without a natural terminal
     // status), matching buildEventId's default.
-    event_id: deriveRepoIdent(repoRoot) + ':turn-complete:' + subject + ':fired',
+    //
+    // ADR-0047 §5: agent-turn-complete maps to response-needed as an
+    // ACCEPTED APPROXIMATION (a completed Codex turn with nobody watching is
+    // at worst an early your-turn, never a lost one) — kind only; the
+    // codex-turn subject namespace, fired status, codex-notify source, and
+    // the no-headline posture are preserved. An older installed shuttle
+    // keeps emitting turn-complete, which the runtime still accepts (§8
+    // soft-degrade); re-render + re-install via `runtime:settings
+    // --notification-plan` to migrate.
+    event_id: deriveRepoIdent(repoRoot) + ':response-needed:' + subject + ':fired',
     source: 'codex-notify',
-    kind: 'turn-complete',
+    kind: 'response-needed',
     urgency: 'normal',
     title: 'Codex turn complete',
     body: lastMessage,
