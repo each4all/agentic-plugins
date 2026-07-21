@@ -1197,6 +1197,12 @@ describe('notify runEmit bounded claim sweep (ADR-0047 §6)', () => {
     assert.equal(fs.existsSync(gcClaim), false, 'foreign gc-eligible claim must be swept');
     assert.equal(fs.existsSync(freshClaim), true, 'fresh foreign claim must survive');
     assert.equal(dedupeClaimCount(repoRoot), 2, 'current claim + fresh foreign claim remain');
+    // The rotation cursor lives BESIDE the dedupe dir, never inside it — the
+    // dedupe dir stays exclusively claim-machinery entries, so per-file claim
+    // counters (including older dashboards) can never mistake the cursor for
+    // a stale claim (ADR-0047 §6, Codex review M6).
+    assert.equal(fs.existsSync(path.join(notifyDedupeDir(repoRoot), 'sweep.cursor')), false);
+    assert.equal(fs.existsSync(path.join(notifyStateDir(repoRoot), 'sweep.cursor')), true);
   });
 
   it('a deduped emit still does maintenance (claimed and deduped both sweep)', async () => {

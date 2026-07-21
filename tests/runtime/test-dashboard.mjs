@@ -936,6 +936,23 @@ describe('runtime dashboard notify observer semantics (ADR-0047 §6)', () => {
     assert.equal(state.dedupe.expired_claims, 1, 'age == ttl is expired — the reclaimable boundary');
   });
 
+  it('the sweep cursor beside the dedupe dir is invisible to the per-file claim count (M6)', async () => {
+    const root = makeRepo();
+    const notifyDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify');
+    const dedupeDir = path.join(notifyDir, 'dedupe');
+    fs.mkdirSync(dedupeDir, { recursive: true });
+    // The cursor at its ADR-0047 §6 home (notify state dir), aged far past
+    // any TTL — it must never surface as a stale claim.
+    const cursor = path.join(notifyDir, 'sweep.cursor');
+    fs.writeFileSync(cursor, '{"last":"x"}\n');
+    const past = new Date(NOW.getTime() - 60 * 60000);
+    fs.utimesSync(cursor, past, past);
+    const state = await inspectNotifyState({ repoRoot: root, now: NOW.getTime(), ttlSeconds: 300 });
+    assert.equal(state.dedupe.claims, 0);
+    assert.equal(state.dedupe.expired_claims, 0);
+    assert.notEqual(state.status, 'needs_attention');
+  });
+
   it('genuinely unreadable entries (EACCES) still count and flip the state to blocked', { skip: process.getuid?.() === 0 }, async () => {
     const root = makeRepo();
     const dedupeDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify', 'dedupe');

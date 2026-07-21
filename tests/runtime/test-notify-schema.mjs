@@ -42,6 +42,7 @@ import {
   SWEEP_MAX_ENTRIES,
   SWEEP_MAX_DELETIONS,
   SWEEP_MAX_ELAPSED_MS,
+  SWEEP_MAX_LIST,
   isClaimExpired,
   isClaimGcEligible,
   isLockStale,
@@ -897,6 +898,7 @@ describe('notify-schema shared expiry predicates (ADR-0047 §6)', () => {
     assert.equal(SWEEP_MAX_ENTRIES, 64);
     assert.equal(SWEEP_MAX_DELETIONS, 8);
     assert.equal(SWEEP_MAX_ELAPSED_MS, 100);
+    assert.equal(SWEEP_MAX_LIST, 512);
   });
 
   it('isClaimExpired uses the claimDedupe boundary: age == ttl is expired, age == ttl-1 is fresh', () => {
@@ -992,6 +994,36 @@ describe('notify-schema withReclaimLock exclusive locking (ADR-0047 §6 repair)'
     const second = promoteClaim({ dedupeDir: dir, eventId: EVENT_ID, ownerToken: claim.ownerToken, now: t0 + 1 });
     assert.equal(second.promoted, true, 'the slot must not wedge permanently');
   });
+
+  it('concedes the destructive step when lock ownership is lost mid-section (stillOwner re-check)', () => {
+    const dir = tmpDir('notify-lockfix-');
+    const t0 = 1_000_000;
+    const claim = claimDedupe({ dedupeDir: dir, eventId: EVENT_ID, ttlSeconds: 300, now: t0 });
+    // Simulate a mid-section lock takeover deterministically: the FIRST read
+    // of the lock's owner file (the stillOwner re-check, which runs before
+    // the finally-release read) reports a foreign nonce — as if our lock was
+    // swept as stale and a successor stamped it while we were paused.
+    const ownerSuffix = path.join('.reclaim.lock', 'owner');
+    const realReadFileSync = fs.readFileSync;
+    let injected = false;
+    fs.readFileSync = (target, ...rest) => {
+      if (!injected && String(target).endsWith(ownerSuffix)) {
+        injected = true;
+        return 'foreign-successor-nonce';
+      }
+      return realReadFileSync(target, ...rest);
+    };
+    try {
+      const prom = promoteClaim({ dedupeDir: dir, eventId: EVENT_ID, ownerToken: claim.ownerToken, now: t0 + 1_000 });
+      assert.equal(injected, true, 'the ownership re-check must have fired');
+      assert.equal(prom.promoted, false, 'a caller that lost its lock must not rewrite the claim');
+      assert.equal(prom.reason, 'lost-lock');
+      const record = JSON.parse(realReadFileSync(claim.claimPath, 'utf8'));
+      assert.equal(record.finalized, false, 'the claim record must be untouched');
+    } finally {
+      fs.readFileSync = realReadFileSync;
+    }
+  });
 });
 
 // ADR-0047 §6 — the bounded, fair, best-effort expired-claim sweep.
@@ -999,7 +1031,16 @@ describe('notify-schema bounded expired-claim sweep (ADR-0047 §6)', () => {
   const TTL_SECONDS = 300;
   const TTL_MS = TTL_SECONDS * 1000;
 
-  // A conforming claim file aged so that now - mtime == age.
+  // Production layout in miniature: the dedupe dir is a SUBDIR of the notify
+  // state home, so the sweep's default cursor lands beside it (never inside),
+  // per-test isolated.
+  function mkSweepHome() {
+    const root = tmpDir('notify-sweep-');
+    const dedupeDir = path.join(root, 'dedupe');
+    fs.mkdirSync(dedupeDir);
+    return { root, dedupeDir, cursorPath: path.join(root, 'sweep.cursor') };
+  }
+
   function seedClaim(dir, name, { now, age, body = '{"event_id":"seeded"}\n' }) {
     const claimPath = path.join(dir, name);
     fs.writeFileSync(claimPath, body);
@@ -1009,17 +1050,20 @@ describe('notify-schema bounded expired-claim sweep (ADR-0047 §6)', () => {
   }
 
   function hexName(seed) {
-    // 32 lowercase hex chars from a deterministic seed.
     return `${seed.repeat(32).slice(0, 32)}.claim`;
   }
 
+  function seedCursor(cursorPath, last) {
+    fs.writeFileSync(cursorPath, `${JSON.stringify({ last })}\n`);
+  }
+
   it('deletes gc-eligible claims, keeps advisory-expired-within-margin and fresh claims', () => {
-    const dir = tmpDir('notify-sweep-');
+    const { dedupeDir } = mkSweepHome();
     const now = 100_000_000;
-    const gc = seedClaim(dir, hexName('a'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
-    const advisory = seedClaim(dir, hexName('b'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS - 1 });
-    const fresh = seedClaim(dir, hexName('c'), { now, age: 1_000 });
-    const res = sweepExpiredClaims({ dedupeDir: dir, ttlSeconds: TTL_SECONDS, now });
+    const gc = seedClaim(dedupeDir, hexName('a'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
+    const advisory = seedClaim(dedupeDir, hexName('b'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS - 1 });
+    const fresh = seedClaim(dedupeDir, hexName('c'), { now, age: 1_000 });
+    const res = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now });
     assert.equal(res.swept, true);
     assert.equal(res.deleted_claims, 1);
     assert.equal(res.skipped_fresh, 2);
@@ -1029,84 +1073,161 @@ describe('notify-schema bounded expired-claim sweep (ADR-0047 §6)', () => {
   });
 
   it('never touches the excluded current-emit claim path regardless of age', () => {
-    const dir = tmpDir('notify-sweep-');
+    const { dedupeDir } = mkSweepHome();
     const now = 100_000_000;
-    const excludedPath = seedClaim(dir, hexName('d'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS * 10 });
+    const excludedPath = seedClaim(dedupeDir, hexName('d'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS * 10 });
     const res = sweepExpiredClaims({
-      dedupeDir: dir, ttlSeconds: TTL_SECONDS, now, excludeClaimPath: excludedPath,
+      dedupeDir, ttlSeconds: TTL_SECONDS, now, excludeClaimPath: excludedPath,
     });
     assert.equal(res.skipped_excluded, 1);
     assert.equal(res.deleted_claims, 0);
     assert.equal(fs.existsSync(excludedPath), true);
   });
 
-  it('never touches non-conforming entries: foreign names, dirs, symlinks, uppercase hex, the cursor', () => {
-    const dir = tmpDir('notify-sweep-');
+  it('never touches non-conforming entries, and keeps the cursor OUTSIDE the dedupe dir', () => {
+    const { root, dedupeDir } = mkSweepHome();
     const now = 100_000_000;
     const old = new Date(now - TTL_MS - GC_SAFETY_MARGIN_MS * 10);
-    const foreign = path.join(dir, 'claim-expired'); // the dashboard-test fixture shape
+    const foreign = path.join(dedupeDir, 'claim-expired'); // the dashboard-test fixture shape
     fs.writeFileSync(foreign, 'x');
     fs.utimesSync(foreign, old, old);
-    const upper = path.join(dir, `${'A'.repeat(32)}.claim`);
+    const upper = path.join(dedupeDir, `${'A'.repeat(32)}.claim`);
     fs.writeFileSync(upper, 'x');
     fs.utimesSync(upper, old, old);
-    const masqueradeDir = path.join(dir, hexName('e'));
+    const masqueradeDir = path.join(dedupeDir, hexName('e'));
     fs.mkdirSync(masqueradeDir);
     fs.utimesSync(masqueradeDir, old, old);
-    const dangling = path.join(dir, hexName('f'));
-    fs.symlinkSync(path.join(dir, 'nonexistent-target'), dangling);
-    const res = sweepExpiredClaims({ dedupeDir: dir, ttlSeconds: TTL_SECONDS, now });
+    const dangling = path.join(dedupeDir, hexName('f'));
+    fs.symlinkSync(path.join(dedupeDir, 'nonexistent-target'), dangling);
+    const res = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now });
     assert.equal(res.deleted_claims, 0);
     assert.equal(fs.existsSync(foreign), true);
     assert.equal(fs.existsSync(upper), true);
     assert.equal(fs.existsSync(masqueradeDir), true);
     assert.equal(fs.lstatSync(dangling).isSymbolicLink(), true, 'symlink must survive');
-    // Cursor written by the sweep is itself a non-candidate on the next run.
-    const again = sweepExpiredClaims({ dedupeDir: dir, ttlSeconds: TTL_SECONDS, now });
-    assert.equal(again.swept, true);
-    assert.equal(fs.existsSync(path.join(dir, 'sweep.cursor')), true);
+    // The cursor lives beside the dedupe dir (Codex review M6): the dedupe
+    // dir stays exclusively claim-machinery entries so per-file claim
+    // counters (including older dashboards) can never mistake it for a claim.
+    assert.equal(fs.existsSync(path.join(dedupeDir, 'sweep.cursor')), false);
+    assert.equal(fs.existsSync(path.join(root, 'sweep.cursor')), true);
   });
 
   it('concedes a gc-eligible claim whose reclaim lock is LIVE — the owner wins', () => {
-    const dir = tmpDir('notify-sweep-');
+    const { dedupeDir } = mkSweepHome();
     const now = 100_000_000;
-    const claimPath = seedClaim(dir, hexName('1'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
+    const claimPath = seedClaim(dedupeDir, hexName('1'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
     const lockDir = `${claimPath}.reclaim.lock`;
     fs.mkdirSync(lockDir);
     fs.writeFileSync(path.join(lockDir, 'owner'), 'live-owner');
-    // Lock mtime is now → live.
-    const res = sweepExpiredClaims({ dedupeDir: dir, ttlSeconds: TTL_SECONDS, now });
+    const res = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now });
     assert.equal(res.conceded, 1, 'EEXIST on the lock must concede the entry');
     assert.equal(res.deleted_claims, 0);
     assert.equal(fs.existsSync(claimPath), true, 'claim owned by a live lock must survive');
     assert.equal(fs.readFileSync(path.join(lockDir, 'owner'), 'utf8'), 'live-owner');
   });
 
-  it('removes stale reclaim-lock directories and keeps live ones', () => {
-    const dir = tmpDir('notify-sweep-');
+  it('removes stale ORPHAN reclaim-lock directories and keeps live ones', () => {
+    const { dedupeDir } = mkSweepHome();
     const now = 100_000_000;
-    const staleLock = path.join(dir, `${'2'.repeat(32)}.claim.reclaim.lock`);
+    const staleLock = path.join(dedupeDir, `${'2'.repeat(32)}.claim.reclaim.lock`);
     fs.mkdirSync(staleLock);
     const past = new Date(now - DEFAULT_LOCK_STALE_MS);
     fs.utimesSync(staleLock, past, past);
-    const liveLock = path.join(dir, `${'3'.repeat(32)}.claim.reclaim.lock`);
+    const liveLock = path.join(dedupeDir, `${'3'.repeat(32)}.claim.reclaim.lock`);
     fs.mkdirSync(liveLock);
     fs.utimesSync(liveLock, new Date(now), new Date(now));
-    const res = sweepExpiredClaims({ dedupeDir: dir, ttlSeconds: TTL_SECONDS, now });
+    const res = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now });
     assert.equal(res.swept_locks, 1);
     assert.equal(fs.existsSync(staleLock), false, 'stale orphan lock must be removed');
     assert.equal(fs.existsSync(liveLock), true, 'live lock must be preserved');
   });
 
-  it('re-checks gc-eligibility INSIDE the lock: a claim refreshed at lock-acquire time survives', () => {
-    const dir = tmpDir('notify-sweep-');
+  it('sweeping a claim\'s stale lock CONCEDES that claim for the rest of the invocation (C1)', () => {
+    const { dedupeDir, cursorPath } = mkSweepHome();
     const now = 100_000_000;
-    const claimPath = seedClaim(dir, hexName('4'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
-    // Simulate the reclaimer interleave deterministically (the fs.openSync
-    // monkeypatch convention above): the instant the sweep acquires the lock,
-    // a "reclaimer" re-creates the claim fresh. The in-lock re-check must see
-    // the fresh mtime and refuse to delete; without it the sweep would
-    // destroy the fresh claim — the §1 double-fire.
+    const claimName = hexName('4');
+    const claimPath = seedClaim(dedupeDir, claimName, { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
+    const lockDir = `${claimPath}.reclaim.lock`;
+    fs.mkdirSync(lockDir);
+    const past = new Date(now - DEFAULT_LOCK_STALE_MS * 2);
+    fs.utimesSync(lockDir, past, past);
+    // Steer rotation to visit the LOCK before its claim — the ordering that
+    // would otherwise let one invocation sweep the stale lock, wrap, acquire
+    // a new lock itself, and delete the claim (sweep-then-act).
+    seedCursor(cursorPath, claimName);
+    const first = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now });
+    assert.equal(first.swept_locks, 1, 'the stale lock is swept for the NEXT caller');
+    assert.equal(first.conceded, 1, 'the paired claim is conceded THIS invocation');
+    assert.equal(first.deleted_claims, 0);
+    assert.equal(fs.existsSync(claimPath), true, 'the claim must survive the same invocation');
+    // The NEXT caller (a fresh invocation) may now take the claim normally.
+    const second = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now });
+    assert.equal(second.deleted_claims, 1);
+    assert.equal(fs.existsSync(claimPath), false);
+  });
+
+  it('capture-verifies stale-lock removal: a lock recycled FRESH in the lstat→rm gap is restored, not deleted (C2)', () => {
+    const { dedupeDir } = mkSweepHome();
+    const now = 100_000_000;
+    // A LIVE lock on disk (fresh mtime, live owner)…
+    const lockDir = path.join(dedupeDir, `${'5'.repeat(32)}.claim.reclaim.lock`);
+    fs.mkdirSync(lockDir);
+    fs.writeFileSync(path.join(lockDir, 'owner'), 'recycled-live-owner');
+    fs.utimesSync(lockDir, new Date(now), new Date(now));
+    // …that the sweep's FIRST probe observes as stale — the ABA interleave:
+    // between the staleness observation and the removal, the stale dir was
+    // replaced by a fresh one. The capture rename must detect freshness on
+    // the CAPTURED dir and restore it.
+    const realLstatSync = fs.lstatSync;
+    let faked = false;
+    fs.lstatSync = (target, ...rest) => {
+      if (!faked && String(target).endsWith('.reclaim.lock')) {
+        faked = true;
+        return {
+          isDirectory: () => true,
+          isFile: () => false,
+          isSymbolicLink: () => false,
+          mtimeMs: now - DEFAULT_LOCK_STALE_MS * 10,
+        };
+      }
+      return realLstatSync(target, ...rest);
+    };
+    try {
+      const res = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now });
+      assert.equal(faked, true, 'the stale observation must have fired');
+      assert.equal(res.swept_locks, 0, 'a recycled fresh lock must never be removed');
+      assert.equal(res.conceded, 1, 'the ABA detection concedes the entry');
+      assert.equal(fs.existsSync(lockDir), true, 'the fresh lock must be restored at its path');
+      assert.equal(
+        fs.readFileSync(path.join(lockDir, 'owner'), 'utf8'),
+        'recycled-live-owner',
+        'the live owner stamp must survive the capture round-trip',
+      );
+    } finally {
+      fs.lstatSync = realLstatSync;
+    }
+  });
+
+  it('collects leaked capture tombstones once stale, never fresh ones', () => {
+    const { dedupeDir } = mkSweepHome();
+    const now = 100_000_000;
+    const staleTomb = path.join(dedupeDir, `${'6'.repeat(32)}.claim.reclaim.lock.gc-abcdef012345`);
+    fs.mkdirSync(staleTomb);
+    const past = new Date(now - DEFAULT_LOCK_STALE_MS);
+    fs.utimesSync(staleTomb, past, past);
+    const freshTomb = path.join(dedupeDir, `${'7'.repeat(32)}.claim.reclaim.lock.gc-abcdef012345`);
+    fs.mkdirSync(freshTomb);
+    fs.utimesSync(freshTomb, new Date(now), new Date(now));
+    const res = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now });
+    assert.equal(res.swept_locks, 1);
+    assert.equal(fs.existsSync(staleTomb), false);
+    assert.equal(fs.existsSync(freshTomb), true);
+  });
+
+  it('re-checks gc-eligibility INSIDE the lock: a claim refreshed at lock-acquire time survives', () => {
+    const { dedupeDir } = mkSweepHome();
+    const now = 100_000_000;
+    const claimPath = seedClaim(dedupeDir, hexName('4'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
     const realMkdirSync = fs.mkdirSync;
     let interleaved = false;
     fs.mkdirSync = (...args) => {
@@ -1118,7 +1239,7 @@ describe('notify-schema bounded expired-claim sweep (ADR-0047 §6)', () => {
       return realMkdirSync(...args);
     };
     try {
-      const res = sweepExpiredClaims({ dedupeDir: dir, ttlSeconds: TTL_SECONDS, now });
+      const res = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now });
       assert.equal(interleaved, true, 'the interleave must have fired');
       assert.equal(res.deleted_claims, 0, 'in-lock re-check must refuse the just-refreshed claim');
       assert.equal(res.skipped_fresh, 1);
@@ -1129,52 +1250,99 @@ describe('notify-schema bounded expired-claim sweep (ADR-0047 §6)', () => {
   });
 
   it('honors the deletion cap, the entry cap, and the wall-clock cutoff', () => {
-    const dir = tmpDir('notify-sweep-');
     const now = 100_000_000;
-    for (const seed of ['1', '2', '3']) {
-      seedClaim(dir, hexName(seed), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
-    }
-    const capped = sweepExpiredClaims({ dedupeDir: dir, ttlSeconds: TTL_SECONDS, now, maxDeletions: 1 });
+    const a = mkSweepHome();
+    for (const seed of ['1', '2', '3']) seedClaim(a.dedupeDir, hexName(seed), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
+    const capped = sweepExpiredClaims({ dedupeDir: a.dedupeDir, ttlSeconds: TTL_SECONDS, now, maxDeletions: 1 });
     assert.equal(capped.deleted_claims, 1);
     assert.equal(capped.reason, 'deletion-cap');
 
-    const dir2 = tmpDir('notify-sweep-');
-    for (const seed of ['1', '2', '3']) {
-      seedClaim(dir2, hexName(seed), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
-    }
-    const entryCapped = sweepExpiredClaims({ dedupeDir: dir2, ttlSeconds: TTL_SECONDS, now, maxEntries: 2 });
+    const b = mkSweepHome();
+    for (const seed of ['1', '2', '3']) seedClaim(b.dedupeDir, hexName(seed), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
+    const entryCapped = sweepExpiredClaims({ dedupeDir: b.dedupeDir, ttlSeconds: TTL_SECONDS, now, maxEntries: 2 });
     assert.equal(entryCapped.examined, 2);
     assert.equal(entryCapped.reason, 'entry-cap');
 
-    const dir3 = tmpDir('notify-sweep-');
-    for (const seed of ['1', '2', '3']) {
-      seedClaim(dir3, hexName(seed), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
-    }
-    // Injected elapsed clock: 0 at start, huge on the first per-entry check.
+    const c = mkSweepHome();
+    for (const seed of ['1', '2', '3']) seedClaim(c.dedupeDir, hexName(seed), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
     let tick = 0;
     const cutoff = sweepExpiredClaims({
-      dedupeDir: dir3, ttlSeconds: TTL_SECONDS, now,
+      dedupeDir: c.dedupeDir, ttlSeconds: TTL_SECONDS, now,
       elapsedClock: () => (tick++ === 0 ? 0 : 10_000),
     });
     assert.equal(cutoff.reason, 'elapsed-cutoff');
-    assert.ok(cutoff.examined <= 1, 'cutoff must stop the scan almost immediately');
+    assert.equal(cutoff.deleted_claims, 0, 'the budget covers the whole attempt — nothing was scanned');
+    assert.ok(cutoff.examined <= 1, 'cutoff must stop the attempt almost immediately');
   });
 
-  it('converges over successive sweeps via cursor rotation — the tail is never starved', () => {
-    const dir = tmpDir('notify-sweep-');
+  it('bounds the LISTING itself: a truncated listing is reported, never silent (M5)', () => {
+    const { dedupeDir } = mkSweepHome();
     const now = 100_000_000;
-    const seeds = ['1', '2', '3', '4', '5', '6'];
-    const paths = seeds.map((seed) => seedClaim(dir, hexName(seed), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS }));
-    for (let round = 0; round < 3; round++) {
-      const res = sweepExpiredClaims({ dedupeDir: dir, ttlSeconds: TTL_SECONDS, now, maxDeletions: 2 });
-      assert.equal(res.deleted_claims, 2, `round ${round} must delete exactly the cap`);
-    }
-    for (const p of paths) {
-      assert.equal(fs.existsSync(p), false, `${path.basename(p)} must be gone after 3 capped sweeps`);
-    }
+    for (const seed of ['1', '2', '3']) seedClaim(dedupeDir, hexName(seed), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
+    const res = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now, maxList: 2 });
+    assert.equal(res.reason, 'list-cap', 'partial directory coverage must be surfaced');
+    assert.ok(res.examined <= 2, 'only listed candidates are scanned');
   });
 
-  it('reports bad args and a missing dedupe dir as data — never throws', () => {
+  it('converges to the tail past perpetually-fresh heads via cursor rotation (non-vacuous, M7)', () => {
+    const { dedupeDir, cursorPath } = mkSweepHome();
+    const now = 100_000_000;
+    for (const seed of ['0', '1', '2']) seedClaim(dedupeDir, hexName(seed), { now, age: 1_000 }); // fresh heads
+    const tails = ['5', '6', '7'].map((seed) => seedClaim(dedupeDir, hexName(seed), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS }));
+    // Start after the heads; caps tighter than the backlog.
+    seedCursor(cursorPath, hexName('2'));
+    const first = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now, maxEntries: 3, maxDeletions: 2 });
+    assert.equal(first.deleted_claims, 2, 'first pass reaps the visible tail up to the cap');
+    const second = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now, maxEntries: 3, maxDeletions: 2 });
+    assert.equal(second.deleted_claims, 1, 'the persisted cursor resumes past what was already examined');
+    for (const p of tails) assert.equal(fs.existsSync(p), false, `${path.basename(p)} must be reaped within two capped sweeps`);
+    for (const seed of ['0', '1', '2']) assert.equal(fs.existsSync(path.join(dedupeDir, hexName(seed))), true, 'fresh heads survive');
+  });
+
+  it('rotates via the now-derived fallback start when the cursor is persistently unusable (M7)', () => {
+    const { dedupeDir } = mkSweepHome();
+    const unusableCursor = path.join(tmpDir('notify-sweep-'), 'no-such-dir', 'cursor');
+    const base = 100_000_000; // even
+    seedClaim(dedupeDir, hexName('0'), { now: base, age: 1_000 }); // fresh head, sorted first
+    const tail = seedClaim(dedupeDir, hexName('1'), { now: base, age: TTL_MS + GC_SAFETY_MARGIN_MS });
+    // Odd observation clock → start index 1 → the tail is reached even with
+    // maxEntries=1 and no persisted cursor.
+    const res = sweepExpiredClaims({
+      dedupeDir, ttlSeconds: TTL_SECONDS, now: base + 1, maxEntries: 1, cursorPath: unusableCursor,
+    });
+    assert.equal(res.deleted_claims, 1, 'the fallback start must rotate off the head');
+    assert.equal(fs.existsSync(tail), false);
+  });
+
+  it('cursor write never follows a planted symlink — the squatted target survives byte-identical (M4)', () => {
+    const { root, dedupeDir, cursorPath } = mkSweepHome();
+    const now = 100_000_000;
+    seedClaim(dedupeDir, hexName('a'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
+    const target = path.join(root, 'victim.txt');
+    fs.writeFileSync(target, 'precious-bytes');
+    fs.symlinkSync(target, cursorPath);
+    const res = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now });
+    assert.equal(res.deleted_claims, 1, 'the sweep itself proceeds');
+    assert.equal(fs.readFileSync(target, 'utf8'), 'precious-bytes', 'the symlink target must never be written through');
+    assert.equal(fs.lstatSync(cursorPath).isSymbolicLink(), false, 'the squatting link is replaced by a real cursor file');
+    assert.equal(typeof JSON.parse(fs.readFileSync(cursorPath, 'utf8')).last, 'string');
+  });
+
+  it('a FIFO squatting the cursor path never blocks the sweep (M4)', async () => {
+    const { dedupeDir, cursorPath } = mkSweepHome();
+    const now = 100_000_000;
+    try {
+      await execFileAsync('mkfifo', [cursorPath]);
+    } catch {
+      return; // no mkfifo on this platform — skip silently
+    }
+    seedClaim(dedupeDir, hexName('b'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
+    const res = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now });
+    assert.equal(res.swept, true, 'the sweep completes without blocking on the FIFO');
+    assert.equal(res.deleted_claims, 1);
+  });
+
+  it('reports bad args, a missing dedupe dir, and hostile injected options as data — never throws', () => {
     assert.equal(sweepExpiredClaims({ dedupeDir: '', ttlSeconds: 300 }).reason, 'bad-args:dedupeDir');
     assert.equal(sweepExpiredClaims({ dedupeDir: '/tmp/x', ttlSeconds: 0 }).reason, 'bad-args:ttlSeconds');
     const missing = sweepExpiredClaims({
@@ -1183,62 +1351,87 @@ describe('notify-schema bounded expired-claim sweep (ADR-0047 §6)', () => {
     });
     assert.equal(missing.swept, false);
     assert.equal(missing.reason, 'no-dedupe-dir');
+    // Non-string exclusion and a null clock fall back instead of throwing.
+    const { dedupeDir } = mkSweepHome();
+    const now = 100_000_000;
+    seedClaim(dedupeDir, hexName('c'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
+    const odd = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now, excludeClaimPath: 42, elapsedClock: null });
+    assert.equal(odd.swept, true);
+    assert.equal(odd.deleted_claims, 1);
+    // A THROWING injected clock is contained by the outer guard.
+    const thrown = sweepExpiredClaims({
+      dedupeDir, ttlSeconds: TTL_SECONDS, now,
+      elapsedClock: () => { throw new Error('hostile clock'); },
+    });
+    assert.equal(thrown.reason, 'internal-error');
   });
 
   it('contains per-entry failures: an undeletable claim is counted, not thrown', { skip: process.getuid?.() === 0 }, () => {
-    const dir = tmpDir('notify-sweep-');
+    const { dedupeDir } = mkSweepHome();
     const now = 100_000_000;
-    seedClaim(dir, hexName('7'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
-    fs.chmodSync(dir, 0o500); // claim visible+statable, unlink+lock-mkdir denied
+    seedClaim(dedupeDir, hexName('7'), { now, age: TTL_MS + GC_SAFETY_MARGIN_MS });
+    fs.chmodSync(dedupeDir, 0o500); // claim visible+statable, unlink+lock-mkdir denied
     try {
-      const res = sweepExpiredClaims({ dedupeDir: dir, ttlSeconds: TTL_SECONDS, now });
+      const res = sweepExpiredClaims({ dedupeDir, ttlSeconds: TTL_SECONDS, now });
       assert.equal(res.deleted_claims, 0);
       assert.ok(res.failures + res.conceded >= 1, 'the denied mutation must be contained as data');
     } finally {
-      fs.chmodSync(dir, 0o700);
+      fs.chmodSync(dedupeDir, 0o700);
     }
   });
 
-  // The §6 cross-process proof: an expired claim raced by reclaimers AND
-  // sweepers must fire exactly once — the sweep's lock protocol is what
-  // prevents it from destroying a reclaimer's just-created fresh claim
-  // (which would hand a second racer a second `claimed: true`).
-  it('cross-process: claimDedupe reclaimers racing sweepers yield exactly one claimed:true', async () => {
-    const dir = tmpDir('notify-sweep-race-');
+  // The §6 cross-process invariant: an expired claim raced by reclaimers AND
+  // sweepers must never double-fire. A GO-file barrier lines the children up
+  // so their critical sections actually overlap (Codex review m9) — though
+  // the deterministic interleave proofs above, not this canary, carry the
+  // mutation-detection load.
+  it('cross-process: claimDedupe reclaimers racing sweepers never yield two claimed:true', async () => {
+    const { root, dedupeDir, cursorPath } = mkSweepHome();
     const eventId = 'repo-abcd1234:peer-run-terminal:run-99:completed';
     const t0 = Date.now();
-    const first = claimDedupe({ dedupeDir: dir, eventId, ttlSeconds: TTL_SECONDS, now: t0 });
+    const first = claimDedupe({ dedupeDir, eventId, ttlSeconds: TTL_SECONDS, now: t0 });
     assert.equal(first.claimed, true);
     const past = new Date(t0 - TTL_MS - GC_SAFETY_MARGIN_MS - 60_000);
     fs.utimesSync(first.claimPath, past, past);
+    const goPath = path.join(root, 'GO');
 
+    const barrier = `
+      const fs = await import('node:fs');
+      const deadline = Date.now() + 5000;
+      while (!fs.existsSync(${JSON.stringify(goPath)})) {
+        if (Date.now() > deadline) throw new Error('barrier timeout');
+      }
+    `;
     const claimScript = `
       import { claimDedupe } from ${JSON.stringify(LIB_URL)};
+      ${barrier}
       const [dir, eventId, ttl, now] = process.argv.slice(1);
       const res = claimDedupe({ dedupeDir: dir, eventId, ttlSeconds: Number(ttl), now: Number(now) });
       process.stdout.write(JSON.stringify({ claimed: res.claimed }));
     `;
     const sweepScript = `
       import { sweepExpiredClaims } from ${JSON.stringify(LIB_URL)};
-      const [dir, ttl, now] = process.argv.slice(1);
-      const res = sweepExpiredClaims({ dedupeDir: dir, ttlSeconds: Number(ttl), now: Number(now) });
+      ${barrier}
+      const [dir, ttl, now, cursorPath] = process.argv.slice(1);
+      const res = sweepExpiredClaims({ dedupeDir: dir, ttlSeconds: Number(ttl), now: Number(now), cursorPath });
       process.stdout.write(JSON.stringify({ claimed: false, deleted: res.deleted_claims }));
     `;
-    const runs = await Promise.all([
+    const children = [
       ...Array.from({ length: 6 }, () =>
         execFileAsync(process.execPath, [
-          '--input-type=module', '-e', claimScript, '--', dir, eventId, String(TTL_SECONDS), String(t0),
+          '--input-type=module', '-e', claimScript, '--', dedupeDir, eventId, String(TTL_SECONDS), String(t0),
         ])),
       ...Array.from({ length: 4 }, () =>
         execFileAsync(process.execPath, [
-          '--input-type=module', '-e', sweepScript, '--', dir, String(TTL_SECONDS), String(t0),
+          '--input-type=module', '-e', sweepScript, '--', dedupeDir, String(TTL_SECONDS), String(t0), cursorPath,
         ])),
-    ]);
-    const results = runs.map(({ stdout }) => JSON.parse(stdout));
+    ];
+    // Release the barrier only after every child is spawned.
+    fs.writeFileSync(goPath, 'go');
+    const results = (await Promise.all(children)).map(({ stdout }) => JSON.parse(stdout));
     const winners = results.filter((r) => r.claimed);
-    // The §1 invariant is NEVER-two (double-fire); a zero-winner moment is a
-    // theoretically possible (all reclaimers overlapping one sweeper's
-    // microsecond lock hold) but harmless concession round.
+    // The §1 invariant is NEVER-two (double-fire); a zero-winner round is a
+    // theoretically possible harmless concession outcome.
     assert.ok(
       winners.length <= 1,
       `double-fire: expected at most 1 claimed:true under reclaim/sweep contention, got ${winners.length}: ${JSON.stringify(results)}`,

@@ -447,6 +447,21 @@ only which structural signals may born a token:
   over-suppression — one ghost claim, removed by a later sweep, never a
   double-fire — and is accepted for the rollout window rather than gated on
   process quiescence.
+  *(Amended 2026-07-22, implementation-review finding.)* The same window
+  also contains a destructive variant this bullet originally omitted: a
+  pre-repair `releaseClaim` whose fake lock lets it run concurrently with a
+  new-protocol reclaimer has a microseconds-wide read-to-unlink gap in which
+  it can destroy the successor's just-created fresh claim, after which a
+  third emitter can claim again — a transition-window double-fire, not
+  over-suppression. Its preconditions stack: it exists only while a
+  pre-repair process is still running, only for a claim that process itself
+  owns (`owner_token`-gated), and only when that process's `releaseClaim`
+  arrives at least a full TTL after its own claim (a hung egress dispatch
+  failing late) AND interleaves within microseconds of the successor's
+  rewrite. This is accepted under the same no-quiescence-gate posture; the
+  repaired protocol narrows its own side further with an in-section
+  ownership re-check (`stillOwner`) before every destructive step, matching
+  `claimDedupe`'s reclaim discipline.
 
 ### 7. Citation-aware artifact retention: read-only planner + explicit apply (M1)
 
