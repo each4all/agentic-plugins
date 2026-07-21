@@ -45,6 +45,7 @@ import {
   notifyDedupeDir,
   notifyStateDir,
   parseKindsFilter,
+  sweepExpiredClaims,
   validateEvent,
 } from './lib/notify-schema.mjs';
 import {
@@ -786,6 +787,27 @@ export async function runEmit({
     } catch (error) {
       return { status: 'failed', stage: 'dedupe', reason: error?.message ?? 'dedupe claim failed', channel: config.channel };
     }
+
+    // ADR-0047 §6 — ONE bounded, fair, best-effort expired-claim sweep per
+    // emit that reaches the dedupe stage. Placement is contractual: after the
+    // effective-channel gate (an off system touches no notify state) and the
+    // kinds filter (a filtered event does no maintenance), after the current
+    // event's own claimDedupe, and regardless of the claim outcome — claimed
+    // and deduped emits both do maintenance. The current event's claim path
+    // is excluded, and the call is fenced so janitorial failure can never
+    // change this emit's outcome (computed from `claim` alone below).
+    try {
+      sweepExpiredClaims({
+        dedupeDir: notifyDedupeDir(root),
+        ttlSeconds: config.dedupeTtlSeconds,
+        now,
+        excludeClaimPath: claim.claimPath,
+      });
+    } catch {
+      // sweepExpiredClaims never throws by contract; this fence is the
+      // belt-and-suspenders form of the same containment rule.
+    }
+
     if (!claim.claimed) {
       return {
         status: 'suppressed',

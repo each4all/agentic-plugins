@@ -43,7 +43,7 @@ import { RUNTIME_VERSION } from './version.mjs';
 // same arbiter output"). Sibling-script import, same shape as notify.mjs.
 import { entryBriefContext } from './context.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
-import { notifyDedupeDir, notifyStateDir } from './lib/notify-schema.mjs';
+import { isClaimExpired, isLockStale, notifyDedupeDir, notifyStateDir } from './lib/notify-schema.mjs';
 import { egressThrottleDir, inspectEgressThrottles } from './lib/egress-semantics.mjs';
 import { NOTIFY_KEY_DEFAULTS } from './lib/runtime-config.mjs';
 import { loadNotifyConfig, resolveRepoRoot, NOTIFY_LOG_ROTATE_LOCK_STALE_MS } from './notify.mjs';
@@ -480,17 +480,26 @@ export async function inspectNotifyState({
     const entryPath = path.join(dedupeDir, entry.name);
     const info = await statIfExists(entryPath);
     if (!info.ok) {
-      result.dedupe.unreadable += 1;
+      // ADR-0047 §6 unified observer semantics: a path that vanished between
+      // readdir and stat is a CONCURRENT CHANGE (a sweep or reclaim just
+      // removed it) — skipped, not counted, and never a reason to flip the
+      // notify state to blocked. Genuinely unreadable entries (EACCES, EIO,
+      // …) keep counting toward blocked.
+      if (String(info.code ?? '') !== 'ENOENT') result.dedupe.unreadable += 1;
       continue;
     }
     if (entry.isDirectory() && entry.name.endsWith('.reclaim.lock')) {
       result.dedupe.reclaim_locks += 1;
-      if (now - info.stats.mtimeMs >= lockStaleMs) result.dedupe.stale_reclaim_locks += 1;
+      if (isLockStale({ nowMs: now, mtimeMs: info.stats.mtimeMs, lockStaleMs })) result.dedupe.stale_reclaim_locks += 1;
       continue;
     }
     if (entry.isFile()) {
       result.dedupe.claims += 1;
-      if (now - info.stats.mtimeMs > ttlMs) result.dedupe.expired_claims += 1;
+      // Shared boundary predicate (ADR-0047 §6): the advisory expired count
+      // uses the SAME `age >= ttl` boundary as claimDedupe's reclaim, closing
+      // the pre-ADR `>` vs `>=` discrepancy. GC deletion additionally demands
+      // the safety margin (isClaimGcEligible) — this count stays advisory.
+      if (isClaimExpired({ nowMs: now, mtimeMs: info.stats.mtimeMs, ttlMs })) result.dedupe.expired_claims += 1;
     }
   }
 

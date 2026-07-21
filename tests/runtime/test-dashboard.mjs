@@ -902,3 +902,53 @@ describe('runtime dashboard entry advisory (ADR-0045 §7(ii))', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// ADR-0047 §6 — observer semantics unified with the sweep: vanish-between-
+// readdir-and-stat is a concurrent change (skipped), not unreadable/blocked;
+// genuinely unreadable entries keep blocking; the expired boundary is the
+// shared >= predicate.
+// ---------------------------------------------------------------------------
+
+describe('runtime dashboard notify observer semantics (ADR-0047 §6)', () => {
+  it('a path that vanishes between readdir and stat is a concurrent change, not blocked', async () => {
+    const root = makeRepo();
+    const dedupeDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify', 'dedupe');
+    fs.mkdirSync(dedupeDir, { recursive: true });
+    // A dangling symlink is the deterministic vanish simulation: readdir
+    // lists it, the follow-stat probe raises ENOENT.
+    fs.symlinkSync(path.join(dedupeDir, 'nonexistent-target'), path.join(dedupeDir, `${'a'.repeat(32)}.claim`));
+    const state = await inspectNotifyState({ repoRoot: root, now: NOW.getTime(), ttlSeconds: 300 });
+    assert.equal(state.dedupe.unreadable, 0, 'ENOENT from the stat probe must not count as unreadable');
+    assert.equal(state.status, 'available', 'a concurrent change must not flip the state to blocked');
+  });
+
+  it('counts a claim aged EXACTLY ttl as expired (shared >= boundary with claimDedupe)', async () => {
+    const root = makeRepo();
+    const dedupeDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify', 'dedupe');
+    fs.mkdirSync(dedupeDir, { recursive: true });
+    const claim = path.join(dedupeDir, `${'b'.repeat(32)}.claim`);
+    fs.writeFileSync(claim, 'x');
+    const boundary = new Date(NOW.getTime() - 300 * 1000);
+    fs.utimesSync(claim, boundary, boundary);
+    const state = await inspectNotifyState({ repoRoot: root, now: NOW.getTime(), ttlSeconds: 300 });
+    assert.equal(state.dedupe.claims, 1);
+    assert.equal(state.dedupe.expired_claims, 1, 'age == ttl is expired — the reclaimable boundary');
+  });
+
+  it('genuinely unreadable entries (EACCES) still count and flip the state to blocked', { skip: process.getuid?.() === 0 }, async () => {
+    const root = makeRepo();
+    const dedupeDir = path.join(root, '.agentic-plugins', 'state', 'runtime', 'notify', 'dedupe');
+    fs.mkdirSync(dedupeDir, { recursive: true });
+    fs.writeFileSync(path.join(dedupeDir, `${'c'.repeat(32)}.claim`), 'x');
+    // r-- without x: readdir can list names, the per-entry stat probe is denied.
+    fs.chmodSync(dedupeDir, 0o400);
+    try {
+      const state = await inspectNotifyState({ repoRoot: root, now: NOW.getTime(), ttlSeconds: 300 });
+      assert.ok(state.dedupe.unreadable >= 1, 'EACCES must keep counting as unreadable');
+      assert.equal(state.status, 'blocked');
+    } finally {
+      fs.chmodSync(dedupeDir, 0o700);
+    }
+  });
+});
