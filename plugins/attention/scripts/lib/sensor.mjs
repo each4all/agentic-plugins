@@ -41,12 +41,19 @@ import path from 'node:path';
 
 import {
   ENTRY_BRIEF_MIN_RUNTIME_VERSION,
+  MIN_RUNTIME_VERSION,
   PUBLISH_SESSION_MIN_RUNTIME_VERSION,
+  RESPONSE_SIGNAL_MIN_RUNTIME_VERSION,
   discoverRuntimePluginRoot,
   resolveNewestRuntimePluginRoot,
   resolveRuntimePluginRoot,
   runtimeVersionAtLeast,
 } from '../discover-runtime.mjs';
+
+// Re-exported so the Stop sensor can thread the ADR-0047 §9 floor into the
+// emit seam (`emitEvent({ minVersion })`) without importing a second module —
+// the hooks import everything through this lib.
+export { RESPONSE_SIGNAL_MIN_RUNTIME_VERSION };
 
 // ── ADR-0040 §1 contract copies (canonical: runtime lib/notify-schema.mjs) ──
 
@@ -121,15 +128,24 @@ export function isHeadlineToken(value) {
   return typeof value === 'string' && HEADLINE_VOCAB.includes(value);
 }
 
-// ADR-0041 §3a Guard 1 (producer map-or-omit). Maps the STRUCTURED signals the
-// Stop sensor already holds — the event `kind` + the projection `archive_gate`
-// (the real values the persona mapArchiveGate copies emit: ready_to_archive /
-// not_terminal / blocked) — to a closed-vocabulary headline token, or null (OMIT).
-// It NEVER guesses: an unknown/absent archive_gate or a non-workflow-terminal kind
-// yields null so buildEvent omits headline entirely (never a wrong token). At v1
-// only the workflow-terminal kind carries a fresh projection; the bare turn-complete
-// deliberately produces no token (a kind-only token would overstate a single turn as
-// session status — ADR-0041 §3a "Claude-Stop-only", Codex-shuttle-omits). The final
+// ADR-0041 §3a Guard 1 (producer map-or-omit), producer-signal domain widened
+// by the ADR-0047 §4 narrow amendment. Maps the STRUCTURED signals the sensors
+// already hold to a closed-vocabulary headline token, or null (OMIT):
+//   - workflow-terminal × the projection `archive_gate` (the real values the
+//     persona mapArchiveGate copies emit: ready_to_archive / not_terminal /
+//     blocked) — the original ADR-0041 §3a domain;
+//   - response-needed ⇒ 'your-turn' (ADR-0047 §4): the kind itself already
+//     encodes the §2 structural FINAL verdict, so the map is total for this
+//     kind — map-or-omit is preserved because an uncertain classification
+//     never produces the kind in the first place;
+//   - approval ⇒ 'needs-approval' (ADR-0047 §4): the host's
+//     `notification_type: permission_prompt` matcher IS the structural
+//     signal (no inference), total by the same argument.
+// It NEVER guesses: an unknown/absent archive_gate or an unmapped kind yields
+// null so buildEvent omits headline entirely (never a wrong token). The bare
+// turn-complete deliberately produces no token — doubly so after ADR-0047 §3
+// narrowed it to interim turns (a kind-only token would overstate an interim
+// turn as session status); the idle path stays headline-free too. The final
 // isHeadlineToken re-check keeps the table honest: were a mapping value to drift out
 // of vocab it would omit here (and the parity test would fail loudly), never egress.
 //
@@ -147,6 +163,14 @@ const HEADLINE_BY_ARCHIVE_GATE = Object.freeze({
 });
 const MANUALLY_PUBLISHED_PERSONAS = Object.freeze(['founder', 'designer']);
 export function deriveHeadlineToken({ kind, archiveGate, persona } = {}) {
+  // ADR-0047 §4 — the two end-state kinds whose kind IS the structural
+  // verdict: total maps, re-checked against the vocab like every row.
+  if (kind === 'response-needed') {
+    return isHeadlineToken('your-turn') ? 'your-turn' : null;
+  }
+  if (kind === 'approval') {
+    return isHeadlineToken('needs-approval') ? 'needs-approval' : null;
+  }
   if (kind !== 'workflow-terminal') return null;
   // Own-key, STRING-ONLY lookup. archiveGate comes from a parsed projection JSON, so
   // it can be any JSON type — and a bracket lookup would COERCE a non-string key via
@@ -516,6 +540,339 @@ export function readFreshProjection({ repoRoot, persona, now = Date.now() } = {}
     return { workflowId, projection, projectionFile };
   } catch {
     return null;
+  }
+}
+
+// ── ADR-0047 §2 bounded structural Stop finality classifier ──
+
+// Peer-run ledger homes per persona — COPY-NOT-IMPORT siblings of each
+// persona plugin's own peer-runner.mjs `PEER_RUNS_DIR_RELS` (ADR-0010 §5;
+// engineer/orchestrator carry the pre-ADR-0025 legacy home, founder/designer
+// are canonical-only because no legacy home ever existed for them —
+// ADR-0036 SD5 / ADR-0042 SD7, the same table projectionCandidates models).
+// The classifier consults BOTH homes of a dual-home persona (the
+// peer-runner's own dual-home read set); a persona presenting runs in BOTH
+// homes at once is the peer-runner's own ambiguous state and fail-closes the
+// scan below.
+export const PEER_RUN_HOMES_BY_PERSONA = Object.freeze({
+  engineer: Object.freeze([
+    '.agentic-plugins/state/engineer/peer-runs',
+    '.claude/agentic-engineer/peer-runs',
+  ]),
+  orchestrator: Object.freeze([
+    '.agentic-plugins/state/orchestrator/peer-runs',
+    '.claude/agentic-orchestrator/peer-runs',
+  ]),
+  founder: Object.freeze(['.agentic-plugins/state/founder/peer-runs']),
+  designer: Object.freeze(['.agentic-plugins/state/designer/peer-runs']),
+});
+
+// The ledger status vocabulary — COPY-NOT-IMPORT sibling of the persona
+// peer-runners' VALID_STATUSES / TERMINAL_STATUSES (ADR-0023). An unknown
+// status token is a MALFORMED handle to this classifier (fail-closed:
+// a future ledger vocabulary extension must be modeled here deliberately,
+// never guessed live on the Stop hot path).
+export const PEER_RUN_TERMINAL_STATUSES = Object.freeze([
+  'completed',
+  'failed',
+  'cancelled',
+  'orphaned',
+  'pruned',
+]);
+export const PEER_RUN_NON_TERMINAL_STATUSES = Object.freeze([
+  'queued',
+  'spawning',
+  'running',
+  'cancel_requested',
+]);
+
+// The ledger's own stale-grace window (peer-runner DEFAULT_STALE_GRACE_MS
+// mirror): a PID-less `queued|spawning` handle is live only while its
+// `updated_at` is inside this window — the same rule the ledger's own sweep
+// applies before orphaning (ADR-0047 §2 row 3; NOT an mtime-activity
+// heuristic — it reads the ledger's own liveness field under the ledger's
+// own contract, ADR-0047 Alt 4 note). Boundary matches the sweep exactly:
+// stale strictly-greater-than, so age == grace is still live.
+export const PEER_RUN_STALE_GRACE_MS = 60_000;
+
+// §2 scan bounds — implementation constants pinned by the plugin-shape test
+// alongside the four Stop-budget constants. The cap must clear the ledgers'
+// own retention cap (200 per persona, peer-runner DEFAULT_RETENTION_CAP)
+// with headroom: a swept repo stays well under it, and only a pathological
+// backlog exhausts it (⇒ scan incomplete ⇒ no promotion, never a false
+// final). The budget is a wall-clock cutoff INSIDE the existing Stop
+// emission slot — the classifier adds no slot to the 36 s
+// STOP_HOT_PATH_BUDGET_MS contract and spawns nothing (the PID probe is
+// `process.kill(pid, 0)`, ADR-0047 §2 no-fingerprinting rule).
+export const PEER_SCAN_PER_PERSONA_CAP = 1024;
+export const PEER_SCAN_BUDGET_MS = 1_000;
+
+// Zero-cost PID liveness probe. EPERM proves an existing process owned by
+// someone else (alive); ESRCH (and anything unexpected) reads dead. A PID
+// recycled by an unrelated process therefore reads LIVE ⇒ interim — the
+// accepted false-negative-direction error (ADR-0047 §2): the ledger's own
+// sweep, not this hot path, is where fingerprint truth is enforced.
+function defaultProbePid(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return Boolean(err && err.code === 'EPERM');
+  }
+}
+
+// Read ONE ledger handle and judge liveness. Returns
+//   { ok: false, reason }        — malformed/unreadable handle (scan-incomplete)
+//   { ok: true, live: boolean }  — a well-formed verdict.
+// Handle reads go through the same regular-file/size gate as every other
+// hot-path read here (readRegularFileSync) so a planted FIFO/device at a
+// handle path can never stall Stop (ADR-0047 §2 bounded-read rule).
+function readPeerRunHandleLiveness(handlePath, { nowMs, staleGraceMs, probePid }) {
+  let text;
+  try {
+    text = readRegularFileSync(handlePath);
+  } catch {
+    return { ok: false, reason: 'handle-unreadable' };
+  }
+  if (text === null) return { ok: false, reason: 'handle-nonregular' };
+  let handle;
+  try {
+    handle = JSON.parse(text);
+  } catch {
+    return { ok: false, reason: 'handle-malformed' };
+  }
+  if (!handle || typeof handle !== 'object' || Array.isArray(handle)) {
+    return { ok: false, reason: 'handle-malformed' };
+  }
+  const status = handle.status;
+  if (typeof status !== 'string'
+    || (!PEER_RUN_TERMINAL_STATUSES.includes(status)
+      && !PEER_RUN_NON_TERMINAL_STATUSES.includes(status))) {
+    return { ok: false, reason: 'handle-status-unknown' };
+  }
+  // Every handle must carry a well-formed, non-future `updated_at` (the
+  // ledger writes it on every transition): a future-skewed timestamp is
+  // malformed state anywhere in the ledger and blocks promotion (§2
+  // scan-completeness, same FUTURE_SKEW_MS tolerance as the projection
+  // anchors).
+  const updatedMs = typeof handle.updated_at === 'string' && ISO_UTC_RE.test(handle.updated_at)
+    ? Date.parse(handle.updated_at)
+    : NaN;
+  if (!Number.isFinite(updatedMs)) return { ok: false, reason: 'handle-updated-at-malformed' };
+  if (nowMs - updatedMs < -FUTURE_SKEW_MS) return { ok: false, reason: 'handle-future-skew' };
+  if (PEER_RUN_TERMINAL_STATUSES.includes(status)) return { ok: true, live: false };
+  if (status === 'running' || status === 'cancel_requested') {
+    // Live requires the RECORDED pid to answer the zero-signal probe. A
+    // running/cancel_requested handle with no recorded pid violates the
+    // ledger lifecycle (pid is written at spawn, before running) — treat as
+    // malformed, never guess (§2).
+    const pid = handle.pid;
+    if (!Number.isInteger(pid) || pid <= 0) return { ok: false, reason: 'handle-pid-missing' };
+    return { ok: true, live: probePid(pid) };
+  }
+  // queued | spawning — PID-less BY DESIGN (peer-runner records the pid only
+  // at spawn): live while updated_at sits inside the ledger's stale-grace
+  // window, exactly the sweep's own boundary (stale = age strictly greater).
+  return { ok: true, live: nowMs - updatedMs <= staleGraceMs };
+}
+
+/**
+ * ADR-0047 §2 row 3 — the bounded peer-run ledger scan over both storage
+ * homes of all four SENSOR_PERSONAS. Returns
+ *   { live: true,  complete: false }          — a live handle was found (the
+ *     verdict is already decided; completeness no longer matters), or
+ *   { live: false, complete: true }           — every home was readable, every
+ *     handle well-formed, no cap/budget exhaustion, nothing live, or
+ *   { live: false, complete: false, reason }  — the scan could not COMPLETE:
+ *     unreadable home, malformed handle, future skew, ambiguous dual-home
+ *     state, cap or budget exhausted. An incomplete scan BLOCKS promotion
+ *     (a live handle hiding beyond a cap must not produce a false final).
+ * ENOENT on a home directory is zero runs (normal), not unreadable.
+ * Injectables (`now`/`probePid`/caps) exist for deterministic tests only —
+ * production callers use the pinned constants.
+ */
+export function scanPeerRunLedgers({
+  repoRoot,
+  personas = SENSOR_PERSONAS,
+  perPersonaCap = PEER_SCAN_PER_PERSONA_CAP,
+  budgetMs = PEER_SCAN_BUDGET_MS,
+  staleGraceMs = PEER_RUN_STALE_GRACE_MS,
+  now = Date.now,
+  probePid = defaultProbePid,
+} = {}) {
+  try {
+    if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
+      return { live: false, complete: false, reason: 'bad-args' };
+    }
+    const deadline = now() + budgetMs;
+    for (const persona of personas) {
+      const homes = PEER_RUN_HOMES_BY_PERSONA[persona];
+      if (!homes) return { live: false, complete: false, reason: `unknown-persona:${persona}` };
+      const populatedHomes = [];
+      const runDirs = [];
+      for (const rel of homes) {
+        if (now() > deadline) return { live: false, complete: false, reason: 'budget-exhausted' };
+        const homeDir = path.join(repoRoot, rel);
+        let entries;
+        try {
+          entries = fs.readdirSync(homeDir, { withFileTypes: true });
+        } catch (err) {
+          if (err && err.code === 'ENOENT') continue; // absent home = zero runs, normal
+          return { live: false, complete: false, reason: `home-unreadable:${persona}` };
+        }
+        let sawRun = false;
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue; // locks/temp files are non-candidates
+          sawRun = true;
+          runDirs.push(path.join(homeDir, entry.name));
+        }
+        if (sawRun) populatedHomes.push(rel);
+      }
+      // The peer-runner's own ambiguous dual-home state (runs in BOTH the
+      // canonical and legacy home) fail-closes its every read; mirror it.
+      if (populatedHomes.length > 1) {
+        return { live: false, complete: false, reason: `ambiguous-dual-home:${persona}` };
+      }
+      let scanDirs = runDirs;
+      const capExceeded = runDirs.length > perPersonaCap;
+      if (capExceeded) {
+        // Newest-first (directory mtime) truncation: the truncated scan can
+        // still DISCOVER a live handle (⇒ interim), but it can never prove
+        // absence — cap exhaustion below blocks promotion regardless.
+        scanDirs = runDirs
+          .map((dir) => {
+            let mtimeMs = 0;
+            try {
+              mtimeMs = fs.statSync(dir).mtimeMs;
+            } catch {
+              mtimeMs = 0;
+            }
+            return { dir, mtimeMs };
+          })
+          .sort((a, b) => b.mtimeMs - a.mtimeMs)
+          .slice(0, perPersonaCap)
+          .map((item) => item.dir);
+      }
+      for (const dir of scanDirs) {
+        if (now() > deadline) return { live: false, complete: false, reason: 'budget-exhausted' };
+        const verdictOne = readPeerRunHandleLiveness(path.join(dir, 'handle.json'), {
+          nowMs: now(),
+          staleGraceMs,
+          probePid,
+        });
+        if (!verdictOne.ok) {
+          return { live: false, complete: false, reason: `${verdictOne.reason}:${persona}` };
+        }
+        if (verdictOne.live) return { live: true, complete: false };
+      }
+      if (capExceeded) {
+        return { live: false, complete: false, reason: `cap-exhausted:${persona}` };
+      }
+    }
+    return { live: false, complete: true };
+  } catch {
+    return { live: false, complete: false, reason: 'scan-error' };
+  }
+}
+
+// §2 rows 1/2 — one payload field's evidence. Probed contract
+// (Claude Code 2.1.216, 2026-07-21 — host-parity-baseline.md § Claude
+// Stop-payload matrix): on a supporting host BOTH fields are always present
+// as arrays (empty when nothing is pending); `background_tasks` entries
+// carry { id, type, status, … } with `status: "running"` observed live and
+// COMPLETED tasks REMOVED from the list; `session_crons` entries carry
+// { id, schedule, recurring, prompt }. The v1 predicate is therefore
+// entry-shape-independent and maximally conservative: a well-formed array is
+// observable, and ANY entry is interim evidence — no terminal-status token
+// was ever observed surviving in the list, so treating residents as
+// not-terminal errs only in the accepted false-negative direction (§2
+// "never to a guess"; a host version that keeps terminal entries listed is
+// a compat-watch trigger, not a live guess here). A present-but-null,
+// scalar, or otherwise non-array field is UNOBSERVABLE — never "empty".
+function readStopPayloadArrayEvidence(payload, field) {
+  const value = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload[field]
+    : undefined;
+  if (!Array.isArray(value)) return { observable: false, interim: false };
+  return { observable: true, interim: value.length > 0 };
+}
+
+/**
+ * ADR-0047 §2 — classify a BARE Stop (no fresh terminal projection; the
+ * workflow-terminal branch never reaches this) as interim vs final from
+ * structural evidence only. Returns { verdict, reason } where verdict is:
+ *   'interim'      — positive interim evidence (row 1/2 entry, live handle):
+ *                    the turn does not end the agent's work; emit
+ *                    turn-complete.
+ *   'final'        — at least one payload field observable and well-formed,
+ *                    NO interim evidence from any row, and a COMPLETE row-3
+ *                    ledger scan: the agent is waiting on the user; the
+ *                    caller may emit response-needed.
+ *   'unpromotable' — the evidence needed to prove finality is unobservable
+ *                    or incomplete (payload surface absent/malformed, scan
+ *                    incomplete, classifier error): emit the bare
+ *                    turn-complete exactly as pre-ADR-0047 (conservative
+ *                    false-negative policy; fail-closed observer, ADR-0040
+ *                    §7).
+ * When NEITHER payload field is observable the classifier returns
+ * unpromotable WITHOUT running the ledger scan — absence of the primary
+ * payload surface already blocks promotion regardless of row 3 (§2), and
+ * skipping the scan keeps the unsupported-host hot path at its pre-ADR-0047
+ * cost. Session-correlation limit, stated honestly: peer-run handles carry
+ * no session identity, so row 3 is REPO-scoped — a live peer run from a
+ * different session in the same repo reads interim (accepted, conservative
+ * direction; documented, not "fixed" with heuristics). `scan` is injectable
+ * for deterministic tests only. The classifier NEVER opens transcript_path
+ * (ADR-0044 Alt E stands).
+ */
+export function classifyStopFinality({
+  payload,
+  repoRoot,
+  now = Date.now,
+  scan = scanPeerRunLedgers,
+  scanOptions = undefined,
+} = {}) {
+  try {
+    const backgroundTasks = readStopPayloadArrayEvidence(payload, 'background_tasks');
+    const sessionCrons = readStopPayloadArrayEvidence(payload, 'session_crons');
+    if (backgroundTasks.interim) return { verdict: 'interim', reason: 'background-tasks-pending' };
+    if (sessionCrons.interim) return { verdict: 'interim', reason: 'session-crons-pending' };
+    if (!backgroundTasks.observable && !sessionCrons.observable) {
+      return { verdict: 'unpromotable', reason: 'payload-surface-unobservable' };
+    }
+    const ledger = scan({ repoRoot, now, ...(scanOptions ?? {}) });
+    if (ledger && ledger.live === true) return { verdict: 'interim', reason: 'peer-run-live' };
+    if (!ledger || ledger.complete !== true) {
+      const detail = ledger && typeof ledger.reason === 'string' ? ledger.reason : 'unknown';
+      return { verdict: 'unpromotable', reason: `scan-incomplete:${detail}` };
+    }
+    return { verdict: 'final', reason: 'no-interim-evidence' };
+  } catch {
+    return { verdict: 'unpromotable', reason: 'classifier-error' };
+  }
+}
+
+/**
+ * ADR-0047 §9 — the dedicated released-runtime floor gate for the
+ * response-needed classifier/producer path. True only when the SAME
+ * notify-capable root the emit seam resolves (resolveRuntimePluginRoot —
+ * one best root, no stale fallback, ADR-0039 §5) declares a version >=
+ * RESPONSE_SIGNAL_MIN_RUNTIME_VERSION. Below the floor the Stop sensor
+ * takes the pre-ADR-0047 bare path (turn-complete, no classifier, no
+ * headline) — graceful degradation, not an error. The floor never shares a
+ * constant with the notify/publisher/entry gates (ADR-0044 rule). Belt and
+ * suspenders: the caller additionally threads the same floor into
+ * emitEvent({ minVersion }) so a cache swap between this gate and the emit
+ * spawn still cannot hand a response-needed event to a pre-contract
+ * runtime's validateEvent (§8 enable-sequence failure 1).
+ */
+export async function responseSignalRuntimeReady({ env = process.env, home = undefined } = {}) {
+  try {
+    const root = await resolveRuntimePluginRoot({ env, home });
+    if (!root) return false;
+    return await runtimeVersionAtLeast(root, RESPONSE_SIGNAL_MIN_RUNTIME_VERSION);
+  } catch {
+    return false;
   }
 }
 
@@ -1013,10 +1370,10 @@ export function buildEvent({
   // validates the SAME full value — pre-truncating here could only break that match.
   // Emitting it is inert without the runtime opt-in; a non-token/omitted value simply
   // never sets the field, so the base notification is unaffected. buildEvent stays
-  // KIND-AGNOSTIC by design: the vocab carries tokens for non-terminal kinds
-  // (needs-approval / your-turn) reserved for future producers, so the v1
-  // "workflow-terminal-only" rule is enforced UPSTREAM (deriveHeadlineToken + the
-  // Stop call site passing headline only on the workflow-terminal path), not baked
+  // KIND-AGNOSTIC by design: which kinds may born a token is enforced UPSTREAM
+  // (deriveHeadlineToken's closed table — workflow-terminal × archive_gate per
+  // ADR-0041 §3a, plus response-needed → your-turn and approval → needs-approval
+  // per the ADR-0047 §4 narrow amendment — and each hook's call site), not baked
   // into this generic assembler — the invariant here is vocab membership alone.
   if (isHeadlineToken(headline)) {
     event[OPTIONAL_HEADLINE_FIELD] = headline;
@@ -1096,12 +1453,19 @@ export async function emitEvent({
   env = process.env,
   home = undefined,
   timeoutMs = EMIT_SLOT_MS,
+  // ADR-0047 §9 — a kind minted behind a HIGHER capability floor threads
+  // that floor here so the ladder's version gate and the emit spawn judge
+  // the SAME root against the SAME bound (a cache swap between the caller's
+  // gate and this resolve cannot hand e.g. a response-needed event to a
+  // pre-contract runtime whose validateEvent rejects it — silent loss, §8
+  // failure 1). Default stays the notify floor for every pre-ADR-0047 kind.
+  minVersion = MIN_RUNTIME_VERSION,
 } = {}) {
   try {
     if (typeof repoRoot !== 'string' || repoRoot.length === 0 || !event) {
       return { emitted: false, reason: 'bad-args' };
     }
-    const runtimeRoot = await discoverRuntimePluginRoot({ env, home });
+    const runtimeRoot = await discoverRuntimePluginRoot({ env, home, minVersion });
     if (!runtimeRoot) return { emitted: false, reason: 'runtime-unresolved' };
     const notifyPath = path.join(runtimeRoot, 'scripts', 'notify.mjs');
     spawnSync(process.execPath, [notifyPath, 'emit', '--repo-root', repoRoot], {

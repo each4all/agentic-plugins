@@ -23,6 +23,7 @@ import {
   approvalSubject,
   buildEvent,
   buildSessionHint,
+  deriveHeadlineToken,
   deriveRepoIdent,
   emitEvent,
   idleSubject,
@@ -66,6 +67,13 @@ async function main() {
       hostname,
       topic,
       sessionHint,
+      // ADR-0047 §4 (narrow ADR-0041 §3a amendment) — the host's
+      // notification_type matcher IS the structural signal, so the
+      // needs-approval map is total for this path (map-or-omit preserved:
+      // no inference happens here). The idle_prompt path below stays
+      // headline-free. Headlines remain egress-display fields behind the
+      // §3a default-OFF opt-in; local channels are unaffected.
+      headline: deriveHeadlineToken({ kind: 'approval' }),
     });
   } else if (notificationType === 'idle_prompt') {
     event = buildEvent({

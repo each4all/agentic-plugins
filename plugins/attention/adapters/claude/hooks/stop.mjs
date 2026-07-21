@@ -40,10 +40,16 @@
 //     orchestrator / founder / designer); orchestrator alone id-scopes the
 //     marker filename, the other three use the slot-sibling shape documented
 //     in each persona's session-handoff runbook.
-//   Stop otherwise (the bare case) → turn-complete, subject =
-//     session:<session_id>:<prompt_id> — both documented COMMON input fields
-//     present on every hook event, so the bare case never relies on a
-//     Stop-specific payload field.
+//   Stop otherwise (the bare case) → EXACTLY ONE of turn-complete (interim /
+//     unpromotable) or response-needed (final) per the ADR-0047 §2 bounded
+//     structural classifier, behind the §9 dedicated released-runtime floor
+//     (below it: pre-ADR-0047 turn-complete, no classifier, no headline).
+//     Both kinds share subject = session:<session_id>:<prompt_id> — the two
+//     documented COMMON input fields present on every hook event — so the
+//     bare SUBJECT never relies on a Stop-specific payload field; the
+//     classifier reads the 2.1.145+ payload fields (background_tasks /
+//     session_crons, probed 2.1.216) plus the persona peer-run ledgers as
+//     evidence only, never as subject material.
 //
 // Fail-closed observer (ADR-0040 §7): exit 0 always, nothing on stdout ever,
 // no Stop `decision` output (pure observation, never blocks stopping).
@@ -51,10 +57,12 @@
 import path from 'node:path';
 
 import {
+  RESPONSE_SIGNAL_MIN_RUNTIME_VERSION,
   SENSOR_PERSONAS,
   WORKFLOW_TERMINAL_STATUS,
   buildEvent,
   buildSessionHint,
+  classifyStopFinality,
   deriveHeadlineToken,
   deriveRepoIdent,
   emitEvent,
@@ -64,6 +72,7 @@ import {
   resolveHostname,
   resolveRepoRoot,
   resolveTopic,
+  responseSignalRuntimeReady,
   spawnPublishSession,
   turnCompleteSubject,
   workflowTerminalSubject,
@@ -164,24 +173,66 @@ async function notifySession({ repoRoot, payload, sessionId, freshProjections })
       return;
     }
 
-    // Bare case — stale/missing projections degrade to a turn-complete
-    // notification built from common fields only, never a wrong workflow
-    // claim. These short-circuits are notification-eligibility only: capture
-    // already ran in Stage 2.
+    // Bare case — stale/missing projections degrade to the bare signals
+    // built from common fields only, never a wrong workflow claim. These
+    // short-circuits are notification-eligibility only: capture already ran
+    // in Stage 2.
     if (typeof sessionId !== 'string' || sessionId.length === 0) return;
     if (typeof promptId !== 'string' || promptId.length === 0) return;
+
+    // ADR-0047 §2/§3/§9 — exactly ONE bare signal class per Stop, selected
+    // by the bounded structural classifier behind the dedicated
+    // released-runtime floor. `turn-complete` and `response-needed` are
+    // mutually exclusive BY PRODUCER RULE (§3 no-duplicate default): dedupe
+    // cannot enforce it (different kinds build different keys), so the
+    // contract lives here. Below the floor (or on an unresolvable runtime)
+    // this is byte-for-byte the pre-ADR-0047 bare path: turn-complete, no
+    // classifier work, no headline — graceful degradation (§9), and the §8
+    // dual-kind window keeps that fallback visible rather than filtered.
+    let kind = 'turn-complete';
+    let title = `Turn complete — ${repoLabel}`;
+    let headline = null;
+    let minVersion;
+    if (await responseSignalRuntimeReady()) {
+      const { verdict } = classifyStopFinality({ payload, repoRoot });
+      if (verdict === 'final') {
+        // FINAL — the agent's turn genuinely awaits the user (§2: payload
+        // surface observable, no interim evidence, complete ledger scan).
+        // The kind itself encodes the verdict; the §4 headline map is total
+        // for it (map-or-omit preserved upstream — an uncertain
+        // classification never reaches this branch).
+        kind = 'response-needed';
+        title = `Response needed — ${repoLabel}`;
+        headline = deriveHeadlineToken({ kind: 'response-needed' });
+        // §9 belt-and-suspenders: thread the same floor into the emit seam
+        // so a cache swap between the gate above and the emit spawn cannot
+        // hand this kind to a pre-contract runtime (silent validateEvent
+        // loss, §8 failure 1).
+        minVersion = RESPONSE_SIGNAL_MIN_RUNTIME_VERSION;
+      }
+      // interim / unpromotable — emit the bare turn-complete exactly as
+      // today (§2 conservative false-negative policy; classifier errors
+      // degrade the same way, ADR-0040 §7).
+    }
     await emitEvent({
       repoRoot,
+      minVersion,
       event: buildEvent({
         repoIdent,
-        kind: 'turn-complete',
+        kind,
+        // §1 — response-needed shares the turn-complete subject shape
+        // (session:<session_id>:<prompt_id>, the same two documented common
+        // input fields; the classifier never adds Stop-specific payload
+        // material to the subject). The differing `kind` keeps the dedupe
+        // keys distinct even on identical subjects.
         subject: turnCompleteSubject({ sessionId, promptId }),
-        title: `Turn complete — ${repoLabel}`,
+        title,
         body: `session ${sessionId} · prompt ${promptId}`,
         urgency: 'normal',
         hostname,
         topic,
         sessionHint,
+        headline,
       }),
     });
   } catch {
