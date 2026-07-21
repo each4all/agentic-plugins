@@ -662,6 +662,7 @@ export const ALLOWED_RECURSIVE_REMOVALS = {
   ],
   'notify-schema.mjs': [
     { callee: 'rmSync', target: 'lockDir', justification: 'own dedupe reclaim-lock dir removal in the claim lifecycle (ADR-0040 §1)' },
+    { callee: 'rmSync', target: 'staleLockDir', justification: 'ADR-0047 §6 bounded sweep: stale reclaim-lock dir removal (isLockStale-gated, name-shape-pinned candidate, per-entry contained)' },
   ],
 };
 

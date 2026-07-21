@@ -35,7 +35,7 @@ import {
   telegramAttemptTimeoutMs,
 } from '../../plugins/runtime/scripts/notify.mjs';
 import { NOTIFY_KEY_DEFAULTS } from '../../plugins/runtime/scripts/lib/runtime-config.mjs';
-import { notifyDedupeDir, notifyStateDir } from '../../plugins/runtime/scripts/lib/notify-schema.mjs';
+import { GC_SAFETY_MARGIN_MS, notifyDedupeDir, notifyStateDir } from '../../plugins/runtime/scripts/lib/notify-schema.mjs';
 import { egressThrottleDir } from '../../plugins/runtime/scripts/lib/egress-semantics.mjs';
 
 // Module-load egress-triple scrub (mirrors tests/acceptance/test-cross-machine-
@@ -1162,5 +1162,89 @@ describe('ADR-0041 §2d telegramAttemptTimeoutMs (IPv4-favoring reserve budget, 
   });
   it('a single-family list gets the full budget (the only attempt is final)', () => {
     assert.equal(telegramAttemptTimeoutMs({ deadline: TELEGRAM_API_TIMEOUT_MS, now: 0, index: 0, familyCount: 1 }), TELEGRAM_API_TIMEOUT_MS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR-0047 §6 — the bounded expired-claim sweep on the runEmit hot path.
+// Placement contract: the sweep runs ONLY on emits that reach the dedupe
+// stage (after the effective-channel gate and the kinds filter), runs for
+// claimed AND deduped outcomes alike, excludes the current event's claim,
+// and never changes the emit result.
+// ---------------------------------------------------------------------------
+
+describe('notify runEmit bounded claim sweep (ADR-0047 §6)', () => {
+  const TTL_MS = 300 * 1000; // notify_dedupe_ttl_seconds default
+  const GC_AGE = TTL_MS + GC_SAFETY_MARGIN_MS + 60_000;
+
+  function seedForeignClaim(repoRoot, { now, age, seed = 'f' }) {
+    const dir = notifyDedupeDir(repoRoot);
+    fs.mkdirSync(dir, { recursive: true });
+    const claimPath = path.join(dir, `${seed.repeat(32).slice(0, 32)}.claim`);
+    fs.writeFileSync(claimPath, '{"event_id":"foreign"}\n');
+    const stamp = new Date(now - age);
+    fs.utimesSync(claimPath, stamp, stamp);
+    return claimPath;
+  }
+
+  it('a dispatched emit sweeps a foreign gc-eligible claim and keeps fresh ones', async () => {
+    const repoRoot = makeRepo({ configLines: ['notify_channel = "file-log"'] });
+    const args = emitArgs({ repoRoot });
+    const gcClaim = seedForeignClaim(repoRoot, { now: args.now, age: GC_AGE, seed: 'a' });
+    const freshClaim = seedForeignClaim(repoRoot, { now: args.now, age: 1_000, seed: 'b' });
+    const result = await runEmit(args);
+    assert.equal(result.status, 'dispatched', 'sweep must not disturb the emit outcome');
+    assert.equal(fs.existsSync(gcClaim), false, 'foreign gc-eligible claim must be swept');
+    assert.equal(fs.existsSync(freshClaim), true, 'fresh foreign claim must survive');
+    assert.equal(dedupeClaimCount(repoRoot), 2, 'current claim + fresh foreign claim remain');
+  });
+
+  it('a deduped emit still does maintenance (claimed and deduped both sweep)', async () => {
+    const repoRoot = makeRepo({ configLines: ['notify_channel = "file-log"'] });
+    const args = emitArgs({ repoRoot });
+    const first = await runEmit(args);
+    assert.equal(first.status, 'dispatched');
+    const gcClaim = seedForeignClaim(repoRoot, { now: args.now, age: GC_AGE, seed: 'c' });
+    const second = await runEmit(args);
+    assert.equal(second.status, 'suppressed');
+    assert.equal(second.reason, 'dedupe-duplicate', 'the emit result is computed from the claim outcome alone');
+    assert.equal(fs.existsSync(gcClaim), false, 'a deduped emit must still sweep');
+  });
+
+  it('the current emit NEVER sweeps its own claim even when the observation clock makes it gc-aged (exclusion fence)', async () => {
+    const repoRoot = makeRepo({ configLines: ['notify_channel = "file-log"'] });
+    // Observation clock far in the future: the claim this very emit creates
+    // (real filesystem mtime = wall-clock today) already looks gc-eligible to
+    // the sweep that follows in the same emit. Only the exclusion fence keeps
+    // the just-claimed slot alive.
+    const futureNow = Date.now() + GC_AGE + 60_000;
+    const args = emitArgs({ repoRoot, overrides: { now: futureNow } });
+    const result = await runEmit(args);
+    assert.equal(result.status, 'dispatched');
+    const dir = notifyDedupeDir(repoRoot);
+    const own = fs.readdirSync(dir).filter((n) => n.endsWith('.claim'));
+    assert.equal(own.length, 1, 'the current emit\'s own claim must survive its own sweep');
+  });
+
+  it('channel=none leaves notify state completely untouched — no sweep', async () => {
+    const repoRoot = makeRepo({ configLines: ['notify_channel = "none"'] });
+    const args = emitArgs({ repoRoot });
+    const gcClaim = seedForeignClaim(repoRoot, { now: args.now, age: GC_AGE, seed: 'd' });
+    const result = await runEmit(args);
+    assert.equal(result.status, 'suppressed');
+    assert.equal(result.reason, 'channel-none');
+    assert.equal(fs.existsSync(gcClaim), true, 'an off system must do no maintenance');
+  });
+
+  it('a kinds-filtered emit does no maintenance — the sweep sits after the kinds gate', async () => {
+    const repoRoot = makeRepo({
+      configLines: ['notify_channel = "file-log"', 'notify_kinds = "idle"'],
+    });
+    const args = emitArgs({ repoRoot }); // approval event — filtered out
+    const gcClaim = seedForeignClaim(repoRoot, { now: args.now, age: GC_AGE, seed: 'e' });
+    const result = await runEmit(args);
+    assert.equal(result.status, 'suppressed');
+    assert.equal(result.reason, 'kinds-filter');
+    assert.equal(fs.existsSync(gcClaim), true, 'a filtered event must do no maintenance');
   });
 });
