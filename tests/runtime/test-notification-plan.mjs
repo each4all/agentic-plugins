@@ -302,6 +302,56 @@ describe('notification plan: fragment + receiver script renderers', () => {
     strictEqual(record.body, 'All done');
     ok(record.event_id.endsWith(':turn-complete:codex-turn:turn-e2e-1:fired'), record.event_id);
   });
+
+  it('preserves the contractual silent no-op for unknown Codex notify payload variants (ADR-0047 §5)', async () => {
+    // The shuttle's unknown-type return is a contract, not an accident: no
+    // approval payload reaches notify= at the recorded baseline, and wiring a
+    // newly observed variant requires a source-verified payload plus its own
+    // follow-up decision (the compat notification watch guards the trigger).
+    // Until then every non-agent-turn-complete payload must no-op silently.
+    const dir = await mkdtemp(join(tmpdir(), 'runtime-notification-noop-'));
+    const repo = join(dir, 'repo');
+    await mkdir(join(repo, '.git'), { recursive: true });
+    await mkdir(join(repo, '.agentic-plugins'), { recursive: true });
+    await writeFile(
+      join(repo, '.agentic-plugins', 'config.toml'),
+      'notify_channel = "file-log"\n',
+    );
+    const bin = join(dir, 'bin');
+    await mkdir(bin, { recursive: true });
+    const shuttlePath = join(bin, SHUTTLE_BASENAME);
+    await writeFile(shuttlePath, renderCodexNotifyShuttleScript());
+    const runtimeRoot = fileURLToPath(new URL('../../plugins/runtime', import.meta.url));
+    const env = { ...process.env, AGENTIC_RUNTIME_ROOT: runtimeRoot, HOME: dir };
+    const unknownPayloads = [
+      // Hypothetical approval/permission shapes — the exact variants the
+      // standing compat watch exists to catch when they become real.
+      JSON.stringify({ type: 'approval-requested', 'turn-id': 'noop-1', call: 'exec' }),
+      JSON.stringify({ type: 'agent-approval-needed', 'turn-id': 'noop-2' }),
+      JSON.stringify({ type: 'some-future-variant' }),
+    ];
+    for (const payload of unknownPayloads) {
+      const { stdout, stderr } = await execFileAsync(process.execPath, [shuttlePath, payload], {
+        cwd: repo,
+        env,
+      });
+      strictEqual(stdout, '', 'unknown variants write nothing to stdout');
+      strictEqual(stderr, '', 'unknown variants are silent — not even a diagnostic');
+    }
+    // Absence proof over a settle budget: a known-type emit lands well within
+    // this window in the e2e test above, so any appearance here is a real leak.
+    const logPath = join(repo, '.agentic-plugins', 'state', 'runtime', 'notify', 'log.ndjson');
+    for (let i = 0; i < 30; i += 1) {
+      let leaked = true;
+      try {
+        await stat(logPath);
+      } catch {
+        leaked = false;
+      }
+      ok(!leaked, 'unknown payload variants must never reach notify.mjs emit');
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    }
+  });
 });
 
 describe('notification plan: artifact validation', () => {

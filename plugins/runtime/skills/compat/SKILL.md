@@ -41,6 +41,10 @@ Compat reports:
 - the governing ADR-0026 policy block;
 - host-version drift classification;
 - affected compatibility surfaces inferred from release-note content;
+- the ADR-0047 §5 standing notification watch — seeded rows for Codex
+  `notify=` payload variants beyond `agent-turn-complete` and the Claude
+  `agent_needs_input`/`agent_completed` notification types, emitted on every
+  `plan` run (drift or not) with release-note signal annotations;
 - a non-mutating compatibility update plan.
 
 ## Boundaries
@@ -51,6 +55,10 @@ Compat reports:
 - No automatic URL fetch; URL content fetch requires `--fetch-release-notes-url`.
 - No raw command help output in the main session.
 - No claim that a plan proves parity; it only identifies update work.
+- A notification-watch signal never wires a mapping: a hit is a planning row
+  only, and a newly observed variant needs a source-verified payload plus its
+  own follow-up decision (ADR-0047 §5, ADR-0030) before any shuttle or sensor
+  change.
 
 ## Examples
 

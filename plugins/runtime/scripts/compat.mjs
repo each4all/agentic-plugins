@@ -14,11 +14,47 @@ const VERSION = RUNTIME_VERSION;
 const SNAPSHOT_SCHEMA = 'runtime-compat-snapshot-1.0';
 const GAP_SCHEMA = 'runtime-compat-gap-1.0';
 const RELEASE_NOTES_SCHEMA = 'runtime-compat-release-notes-1.0';
-const PLAN_SCHEMA = 'runtime-compat-plan-1.0';
+const PLAN_SCHEMA = 'runtime-compat-plan-1.1';
 const LATEST_SCHEMA = 'runtime-compat-latest-1.0';
 const POLICY_SCHEMA = 'runtime-compat-policy-1.0';
 const POLICY_ADR = 'ADR-0026';
 const POLICY_ADR_POINTER = 'docs/adr/0026-runtime-compatibility-drift-and-release-notes.md';
+const NOTIFICATION_WATCH_ADR = 'ADR-0047';
+const NOTIFICATION_WATCH_ADR_POINTER = 'docs/adr/0047-notify-attention-gating-gc.md';
+// ADR-0047 §5 — seeded standing notification watch. Standing means these rows
+// are emitted on every plan run whether or not versions drifted — unlike the
+// generic surface classifier, which only fires on newly ingested text — so the
+// recorded notification gaps stay visible until resolved. A signal hit
+// annotates the row and adds a review step; it never wires a mapping. Wiring a
+// newly observed variant requires a source-verified payload and a dedicated
+// follow-up decision (ADR-0030 discipline); until then the Codex shuttle's
+// unknown-variant silent no-op is contractual.
+const NOTIFICATION_WATCH_ROWS = [
+  {
+    id: 'codex-notify-payload-variants',
+    host: 'codex',
+    subject: 'Codex notify= payload variants beyond agent-turn-complete (especially approval/permission shapes)',
+    baseline_behavior: 'receivers/codex-notify-shuttle.mjs silently no-ops on any payload type other than agent-turn-complete; no approval payload reaches notify= at the recorded baseline.',
+    resolution_requires: 'A source-verified payload shape recorded in the host-parity baseline plus a dedicated follow-up decision before any shuttle mapping (ADR-0030).',
+    signal_patterns: [
+      /\bnotify\s*=/i,
+      /\bnotify\b[^\n]*\b(?:payload|variant|approval|permission|type)\b/i,
+      /\b(?:approval|permission)\b[^\n]*\bnotify\b/i,
+    ],
+  },
+  {
+    id: 'claude-notification-agent-types',
+    host: 'claude',
+    subject: 'Claude Notification hook agent_needs_input / agent_completed notification types (observed at 2.1.198)',
+    baseline_behavior: 'The attention Notification sensor matches permission_prompt/idle_prompt and ignores the 2.1.198 agent_needs_input/agent_completed types; recorded in host-parity-baseline.md Version History (2026-07-04).',
+    resolution_requires: 'A source-verified payload shape for the new notification types plus a dedicated follow-up decision before any sensor mapping (ADR-0030).',
+    signal_patterns: [
+      /\bagent_needs_input\b/i,
+      /\bagent_completed\b/i,
+      /\bnotification_type\b/i,
+    ],
+  },
+];
 const VALID_COMMANDS = new Set(['snapshot', 'check', 'ingest-release-notes', 'plan']);
 const RUN_ID_RE = /^compat-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -275,6 +311,7 @@ export async function planCompatibility(options = {}) {
   });
   await writeJson(gapPath, gap);
   const surfaces = classifySurfaces({ gap, releaseNotes });
+  const notificationWatch = buildNotificationWatch(releaseNotes);
   const plan = {
     schema_version: PLAN_SCHEMA,
     runtime_version: VERSION,
@@ -285,7 +322,8 @@ export async function planCompatibility(options = {}) {
       : 'planned',
     gap_pointer: pointer(repoRoot, gapPath),
     affected_surfaces: surfaces,
-    recommended_sequence: buildRecommendedSequence({ gap, surfaces, releaseNotes }),
+    notification_watch: notificationWatch,
+    recommended_sequence: buildRecommendedSequence({ gap, surfaces, releaseNotes, notificationWatch }),
     policy: compatibilityPolicy(),
     limits: [
       'Compatibility plans are advisory and do not mutate host CLIs, host config, or plugin artifacts.',
@@ -304,6 +342,7 @@ export async function planCompatibility(options = {}) {
     status: plan.status,
     plan_pointer: pointer(repoRoot, planPath),
     affected_surfaces: surfaces,
+    notification_watch: notificationWatch,
     recommended_sequence: plan.recommended_sequence,
     policy: plan.policy,
     next_steps: nextStepsForPlan(plan),
@@ -440,7 +479,7 @@ function classifySurfaces({ gap, releaseNotes }) {
   return [...surfaces].sort();
 }
 
-function buildRecommendedSequence({ gap, surfaces, releaseNotes }) {
+function buildRecommendedSequence({ gap, surfaces, releaseNotes, notificationWatch }) {
   const sequence = [];
   sequence.push({
     step: 'refresh-baseline',
@@ -461,12 +500,45 @@ function buildRecommendedSequence({ gap, surfaces, releaseNotes }) {
       required: true,
     });
   }
+  for (const row of notificationWatch ?? []) {
+    if (!row.signal_detected) continue;
+    sequence.push({
+      step: `review-notification-watch-${row.id}`,
+      reason: `Ingested release notes signal the standing notification watch row ${row.id}; verify the payload at the source before any mapping (${NOTIFICATION_WATCH_ADR} §5, ADR-0030).`,
+      required: true,
+    });
+  }
   sequence.push({
     step: 'run-validation',
     reason: 'Run marketplace/version/artifact validation and relevant runtime tests after any compatibility update.',
     required: true,
   });
   return sequence;
+}
+
+function buildNotificationWatch(releaseNotes) {
+  const noteAnalyses = releaseNotes.note_analyses ?? [];
+  return NOTIFICATION_WATCH_ROWS.map((row) => {
+    const signalNotes = noteAnalyses
+      .filter((note) => (note.notification_watch ?? []).includes(row.id))
+      .map((note) => note.id);
+    return {
+      id: row.id,
+      host: row.host,
+      subject: row.subject,
+      status: 'open',
+      standing: true,
+      signal_detected: signalNotes.length > 0,
+      signal_notes: signalNotes,
+      baseline_behavior: row.baseline_behavior,
+      resolution_requires: row.resolution_requires,
+      policy: {
+        adr: NOTIFICATION_WATCH_ADR,
+        adr_pointer: NOTIFICATION_WATCH_ADR_POINTER,
+        rule: 'Standing planning row evaluated on every plan run — never an automatic mapping; a source-verified payload and a dedicated follow-up decision are required before wiring a newly observed variant (ADR-0030).',
+      },
+    };
+  });
 }
 
 function renderPlanMarkdown(plan) {
@@ -484,6 +556,13 @@ function renderPlanMarkdown(plan) {
     lines.push('- none detected');
   } else {
     for (const surface of plan.affected_surfaces) lines.push(`- ${surface}`);
+  }
+  lines.push('', `## Notification Watch (standing — ${NOTIFICATION_WATCH_ADR} §5)`, '');
+  for (const row of plan.notification_watch ?? []) {
+    lines.push(`- ${row.id} [${row.host}] ${row.signal_detected ? 'signal detected' : 'no new signal'}: ${row.subject}`);
+    lines.push(`  - baseline behavior: ${row.baseline_behavior}`);
+    lines.push(`  - resolution requires: ${row.resolution_requires}`);
+    if (row.signal_detected) lines.push(`  - signal notes: ${row.signal_notes.join(', ')}`);
   }
   lines.push('', '## Recommended Sequence', '');
   for (const item of plan.recommended_sequence) {
@@ -567,12 +646,16 @@ function analyzeReleaseNote({ note, text }) {
   if (/\bcodex(?:\s+cli)?\b/i.test(body)) hosts.push('codex');
   const versions = [...new Set([...body.matchAll(/[0-9]+(?:\.[0-9]+){1,3}/g)].map((match) => match[0]))];
   const surfaces = classifyReleaseNoteSurfaces(lower);
+  const notificationWatch = NOTIFICATION_WATCH_ROWS
+    .filter((row) => row.signal_patterns.some((pattern) => pattern.test(body)))
+    .map((row) => row.id);
   return {
     id: note.id,
     kind: note.kind,
     hosts: [...new Set(hosts)],
     versions,
     surfaces,
+    notification_watch: notificationWatch,
   };
 }
 
@@ -840,6 +923,12 @@ export function formatText(report) {
   if (report.affected_surfaces?.length) {
     lines.push('', 'affected surfaces:');
     for (const surface of report.affected_surfaces) lines.push(`- ${surface}`);
+  }
+  if (report.notification_watch?.length) {
+    lines.push('', 'notification watch (standing):');
+    for (const row of report.notification_watch) {
+      lines.push(`- ${row.id} [${row.host}]: ${row.signal_detected ? `signal detected (${row.signal_notes.join(',')})` : 'no new signal'}; ${row.subject}`);
+    }
   }
   if (report.recommended_sequence?.length) {
     lines.push('', 'recommended sequence:');

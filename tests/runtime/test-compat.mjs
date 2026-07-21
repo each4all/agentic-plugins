@@ -308,6 +308,164 @@ describe('runtime compat', () => {
     strictEqual(parsed.claude.version, '2.1.141');
     strictEqual(parsed.codex.version, '0.130.0');
   });
+
+  it('emits the ADR-0047 standing notification watch on a no-drift plan run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-watch-standing-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({
+        claude: '2.1.141 (Claude Code)',
+        codex: 'codex-cli 0.130.0',
+      }),
+    });
+
+    const plan = await runCompat({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+    });
+    strictEqual(plan.status, 'planned');
+
+    const watch = plan.notification_watch;
+    strictEqual(watch.length, 2);
+    const codexRow = watch.find((row) => row.id === 'codex-notify-payload-variants');
+    const claudeRow = watch.find((row) => row.id === 'claude-notification-agent-types');
+    ok(codexRow, 'codex notify= payload variant row is seeded');
+    ok(claudeRow, 'claude agent notification-type row is seeded');
+    strictEqual(codexRow.host, 'codex');
+    strictEqual(claudeRow.host, 'claude');
+    for (const row of watch) {
+      strictEqual(row.standing, true);
+      strictEqual(row.status, 'open');
+      strictEqual(row.signal_detected, false);
+      deepStrictEqual(row.signal_notes, []);
+      strictEqual(row.policy.adr, 'ADR-0047');
+      strictEqual(row.policy.adr_pointer, 'docs/adr/0047-notify-attention-gating-gc.md');
+      ok(row.policy.rule.includes('never an automatic mapping'), row.policy.rule);
+      ok(row.resolution_requires.includes('source-verified'), row.resolution_requires);
+    }
+    ok(codexRow.baseline_behavior.includes('silently no-ops'), codexRow.baseline_behavior);
+
+    const planJson = await readJson(join(root, `.agentic-plugins/runs/compat/${RUN_ID}/plan.json`));
+    strictEqual(planJson.schema_version, 'runtime-compat-plan-1.1');
+    strictEqual(planJson.notification_watch.length, 2);
+    const planText = await readFile(join(root, plan.plan_pointer), 'utf8');
+    ok(planText.includes('Notification Watch'));
+    ok(planText.includes('codex-notify-payload-variants'));
+    ok(planText.includes('claude-notification-agent-types'));
+    ok(formatText(plan).includes('notification watch'));
+    ok(
+      !plan.recommended_sequence.some((item) => item.step.startsWith('review-notification-watch')),
+      'no review step is injected without a detected signal',
+    );
+  });
+
+  it('flags the Claude agent-notification watch row from ingested notes and requires a review step', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-watch-claude-'));
+    const notePath = join(root, 'claude-release-notes.md');
+    await writeFile(notePath, [
+      'Claude Code 2.1.198',
+      'Adds agent_needs_input and agent_completed notification_type values to the Notification hook.',
+      '',
+    ].join('\n'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({
+        claude: '2.1.198 (Claude Code)',
+        codex: 'codex-cli 0.130.0',
+      }),
+    });
+
+    const blockedPlan = await runCompat({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+    });
+    strictEqual(blockedPlan.status, 'blocked_release_notes_required');
+    strictEqual(blockedPlan.notification_watch.length, 2, 'watch rows stand even on a blocked plan');
+
+    const ingest = await runCompat({
+      command: 'ingest-release-notes',
+      repoRoot: root,
+      runId: RUN_ID,
+      releaseNotesFiles: [notePath],
+    });
+    const plan = await runCompat({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+    });
+    strictEqual(plan.status, 'planned');
+    const claudeRow = plan.notification_watch.find((row) => row.id === 'claude-notification-agent-types');
+    const codexRow = plan.notification_watch.find((row) => row.id === 'codex-notify-payload-variants');
+    strictEqual(claudeRow.signal_detected, true);
+    deepStrictEqual(claudeRow.signal_notes, [ingest.notes[0].id]);
+    strictEqual(claudeRow.status, 'open', 'a signal annotates; it never resolves the row');
+    strictEqual(codexRow.signal_detected, false);
+    const reviewStep = plan.recommended_sequence.find(
+      (item) => item.step === 'review-notification-watch-claude-notification-agent-types',
+    );
+    ok(reviewStep, 'signal adds a required review step');
+    strictEqual(reviewStep.required, true);
+    ok(reviewStep.reason.includes('source'), reviewStep.reason);
+    const planText = await readFile(join(root, plan.plan_pointer), 'utf8');
+    ok(planText.includes('signal detected'));
+  });
+
+  it('flags the Codex notify payload-variant watch row without ever mapping it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-watch-codex-'));
+    const notePath = join(root, 'codex-release-notes.md');
+    await writeFile(notePath, [
+      'Codex CLI 0.145.0',
+      'notify now delivers approval-requested payloads to the configured program.',
+      '',
+    ].join('\n'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({
+        claude: '2.1.141 (Claude Code)',
+        codex: 'codex-cli 0.145.0',
+      }),
+    });
+    const ingest = await runCompat({
+      command: 'ingest-release-notes',
+      repoRoot: root,
+      runId: RUN_ID,
+      releaseNotesFiles: [notePath],
+    });
+
+    const plan = await runCompat({
+      command: 'plan',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+    });
+    strictEqual(plan.status, 'planned');
+    const codexRow = plan.notification_watch.find((row) => row.id === 'codex-notify-payload-variants');
+    const claudeRow = plan.notification_watch.find((row) => row.id === 'claude-notification-agent-types');
+    strictEqual(codexRow.signal_detected, true);
+    deepStrictEqual(codexRow.signal_notes, [ingest.notes[0].id]);
+    strictEqual(claudeRow.signal_detected, false);
+    ok(plan.recommended_sequence.some(
+      (item) => item.step === 'review-notification-watch-codex-notify-payload-variants' && item.required,
+    ));
+    ok(
+      codexRow.policy.rule.includes('never an automatic mapping'),
+      'a watch hit is a planning row only — wiring needs a source-verified payload and its own decision',
+    );
+  });
 });
 
 function baseline() {
