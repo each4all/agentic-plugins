@@ -2,8 +2,7 @@
 
 ## Status
 
-Proposed (macro subtask `adr` of `macro-plan-20260721T020414Z-7c4166`; flips
-to Accepted at merge per AGENTS.md §ADR process)
+Accepted (2026-07-21)
 
 <!--
 This ADR sits inside the ADR-0024 runtime/operator control-plane track. It
@@ -37,6 +36,12 @@ subtask `adr`'s deliverable; subtasks `compat-watch`, `signal-runtime`,
 `signal-runtime-release`, `signal`, `claim-gc`, `retention-core`,
 `retention-apply`, and `acceptance` implement against it. Decision §8 maps
 the two-release rollout onto that dependency graph explicitly.
+
+Flipped to Accepted 2026-07-21 on merge of the authoring PR #609 (squash
+4faa2da), per the ADR process §3 merge-time default (#554/#586 precedent).
+Authored as macro subtask `adr` of `macro-plan-20260721T020414Z-7c4166`;
+acceptance gates the remaining implementation subtasks (`compat-watch`
+onward) rather than following them — none had shipped at flip time.
 -->
 
 ## Context
