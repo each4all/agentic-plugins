@@ -35,6 +35,11 @@ import {
   safeCount,
 } from './lib/state-readers.mjs';
 import { resolvePeerExecutionContext } from './lib/peer-execution-context.mjs';
+import {
+  planRetention,
+  projectRetentionAttention,
+  reconcileRetentionAttention,
+} from './lib/retention-planner.mjs';
 import { assessEntryBriefReadiness, assessSessionCaptureReadiness, claudePluginListEnablement } from './lib/session-readiness.mjs';
 // The single version authority shared with the settings producer (S8a4 §SCOPE-2): the
 // currency mirror MUST parse the Codex CLI version and resolve plugin versions through the
@@ -245,6 +250,13 @@ export async function runDoctor({
         executed: false,
         status: 'not_requested',
       };
+  // ADR-0047 §7 — the read-only retention projection. Computed alongside the
+  // inventory (same flag, same read-only artifact concern) and reconciled with
+  // the raw inventory attention so a registry family over cap ONLY because its
+  // runs are pinned reads as informational, not a fault. Deletes nothing.
+  const retentionSection = artifactInventory && artifactInventorySection.executed
+    ? await buildRetentionSection({ repoRoot: resolvedRepoRoot, now, artifactRetentionCap, artifactMaxBytes, inventory: artifactInventorySection })
+    : { requested: Boolean(artifactInventory), executed: false, status: 'not_requested' };
   const permissionDiagnosisSection = permissionDiagnosis
     ? await inspectPermissionDiagnosis({
         homeDir: resolvedHomeDir,
@@ -379,6 +391,7 @@ export async function runDoctor({
     doctor_runs: doctorRuns,
     recorded_doctor_proof: recordedDoctorProof,
     artifact_inventory: artifactInventorySection,
+    retention: retentionSection,
     permission_diagnosis: permissionDiagnosisSection,
     readiness_matrix: readinessMatrix,
     experience_parity: experienceParity,
@@ -4404,7 +4417,19 @@ function summarizeOverall(report) {
   if (report.artifact_inventory?.executed && report.artifact_inventory.status === 'blocked') {
     warnings.push('runtime artifact inventory blocked');
   } else if (report.artifact_inventory?.executed && report.artifact_inventory.status === 'needs_attention') {
-    warnings.push('runtime artifact inventory exceeds retention guidance');
+    // ADR-0047 §7 — a registry family (doctor/compat/settings) over cap ONLY
+    // because its runs are pinned (cited / live / latest) is informational, not
+    // a fault. Consult the retention reconciliation: warn only when genuine
+    // (non-demoted) attention remains, and always warn if the pin scan itself
+    // could not complete. Non-registry families keep their raw over-cap fault.
+    const reconciled = report.retention?.executed ? report.retention.reconciled : null;
+    const stillFaulted = reconciled ? reconciled.attention.length > 0 : true;
+    if (stillFaulted) warnings.push('runtime artifact inventory exceeds retention guidance');
+  } else if (report.retention?.executed && report.retention.scan_complete === false) {
+    // Inventory itself was within caps, but a pin source could not be fully
+    // evaluated — surface the fail-closed state so the operator knows deletion
+    // is withheld (an unscannable source is treated as citing everything).
+    warnings.push('runtime retention pin scan incomplete (deletion withheld)');
   }
   // The machine scope has its OWN status; the top-level status is repo-only by
   // design (backward compatibility). Without this, an unreadable machine home or a
@@ -4802,6 +4827,25 @@ export function formatText(report) {
       lines.push('');
     }
   }
+  if (report.retention?.executed) {
+    const r = report.retention;
+    lines.push('Runtime Retention Plan (ADR-0047 §7 — read-only; deletes nothing)');
+    lines.push(`- status: ${r.status}; scan-complete=${r.scan_complete}; plan-hash=${r.plan_hash}`);
+    for (const [family, f] of Object.entries(r.projection ?? {})) {
+      lines.push(`- ${family}: runs=${f.run_count}; pinned=${f.pinned_count}; over-cap=${f.over_cap}; actionable=${f.actionable}; pinned-overage=${f.pinned_overage}`);
+    }
+    for (const item of r.reconciled?.demoted ?? []) {
+      lines.push(`  retention-informational: ${item.family}/${item.kind}; observed=${item.observed}; limit=${item.limit} — ${item.note}`);
+    }
+    for (const item of r.reconciled?.attention ?? []) {
+      lines.push(`  retention-attention: ${item.family}/${item.kind}; observed=${item.observed}; limit=${item.limit}`);
+    }
+    for (const reason of r.scan_incomplete_reasons ?? []) {
+      lines.push(`  scan-incomplete: ${reason.source}${reason.family ? `/${reason.family}` : ''} — ${reason.reason}`);
+    }
+    lines.push('- limit: The retention plan is read-only; the separate retention-apply executor deletes only unpinned, over-cap, age-cleared runs under a reviewed plan hash.');
+    lines.push('');
+  }
   if (report.permission_diagnosis?.requested) {
     const pd = report.permission_diagnosis;
     lines.push('Permission Diagnosis');
@@ -4867,6 +4911,42 @@ function featureFlagEvidence(enabled, stage) {
   if (enabled === true) return stage ? `true/${stage}` : 'true';
   if (enabled === false) return stage ? `false/${stage}` : 'false';
   return 'unknown';
+}
+
+// ADR-0047 §7 — the read-only retention section: run the pure planner, project
+// the per-registry-family actionable/pinned split, and reconcile the raw
+// artifact-inventory attention so pinned-only overage stops reading as a fault.
+// Fail-closed and never throwing: any planner failure degrades to a blocked
+// section rather than aborting doctor (advisory infrastructure).
+async function buildRetentionSection({ repoRoot, now, artifactRetentionCap, artifactMaxBytes, inventory }) {
+  try {
+    const plan = await planRetention({
+      repoRoot,
+      now,
+      caps: { runCap: artifactRetentionCap, maxBytes: artifactMaxBytes },
+    });
+    const projection = projectRetentionAttention(plan);
+    const reconciled = reconcileRetentionAttention(inventory?.attention ?? [], projection);
+    return {
+      requested: true,
+      executed: true,
+      status: plan.scan_complete ? (reconciled.attention.length > 0 ? 'needs_attention' : 'available') : 'scan-incomplete',
+      scan_complete: plan.scan_complete,
+      scan_incomplete_reasons: plan.scan_incomplete_reasons,
+      scan_stats: plan.scan_stats,
+      plan_hash: plan.plan_hash,
+      caps: plan.caps,
+      projection: projection.families,
+      reconciled,
+    };
+  } catch (err) {
+    return {
+      requested: true,
+      executed: false,
+      status: 'blocked',
+      error: err?.message ?? String(err),
+    };
+  }
 }
 
 function manifestSummary(readResult) {
