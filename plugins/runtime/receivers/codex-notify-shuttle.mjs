@@ -60,10 +60,13 @@ function deriveRepoIdent(repoRoot) {
 }
 
 // Prerelease-strict floor gate: a prerelease of the floor version is BELOW it.
+// Build metadata (`1.2.3+build`) is stripped first — it never affects
+// precedence, and splitting on '-' without the strip would misread
+// `1.2.3+build-5` as a prerelease and reject a valid runtime.
 function versionGte(version, min) {
-  const [core, prerelease] = String(version).split('-', 2);
+  const [core, prerelease] = String(version).split('+', 1)[0].split('-', 2);
   const parts = core.split('.').map(function (x) { return Number.parseInt(x, 10) || 0; });
-  const floor = String(min).split('-', 1)[0].split('.').map(function (x) { return Number.parseInt(x, 10) || 0; });
+  const floor = String(min).split('+', 1)[0].split('-', 1)[0].split('.').map(function (x) { return Number.parseInt(x, 10) || 0; });
   for (let i = 0; i < 3; i += 1) {
     const av = parts[i] || 0;
     const bv = floor[i] || 0;
@@ -89,12 +92,19 @@ function readManifestVersion(root) {
 }
 
 function semverCompare(a, b) {
-  const pa = String(a).split('-', 1)[0].split('.').map(function (x) { return Number.parseInt(x, 10) || 0; });
-  const pb = String(b).split('-', 1)[0].split('.').map(function (x) { return Number.parseInt(x, 10) || 0; });
+  const na = String(a).split('+', 1)[0];
+  const nb = String(b).split('+', 1)[0];
+  const pa = na.split('-', 1)[0].split('.').map(function (x) { return Number.parseInt(x, 10) || 0; });
+  const pb = nb.split('-', 1)[0].split('.').map(function (x) { return Number.parseInt(x, 10) || 0; });
   for (let i = 0; i < 3; i += 1) {
     if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
   }
-  return 0;
+  // Equal core: a clean release ranks ABOVE any prerelease of it, so the
+  // candidate sort cannot pick a beta by directory order when the released
+  // version is also installed.
+  const preA = na.indexOf('-') === -1 ? 0 : 1;
+  const preB = nb.indexOf('-') === -1 ? 0 : 1;
+  return preB - preA;
 }
 
 // ADR-0039 §5 discovery ladder, gated on scripts/notify.mjs presence. The

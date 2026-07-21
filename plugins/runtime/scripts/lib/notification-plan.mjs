@@ -86,7 +86,9 @@ export const CHAIN_BASENAME = 'codex-notify-chain.mjs';
 // delivery priority over agent-turn-complete in the Codex TUI coalescing.
 export const TUI_NOTIFICATIONS_VALUES = Object.freeze(['approval-requested', 'agent-turn-complete']);
 
-const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+// SemVer with optional prerelease AND optional build metadata — `1.2.3+build`
+// is a valid version whose metadata is ignored by precedence rules.
+const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 // ---------------------------------------------------------------------------
 // Read-check parser — top-level `notify` + `[tui] notifications`, READ-ONLY
@@ -624,8 +626,18 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
   // silently drop it (skipping the wrapper chain that exists to preserve it).
   // A user copy at a custom path simply takes the wrapper-chain branch, which
   // preserves it like any other prior notifier.
-  const referencesOurReceiver = Array.isArray(priorValues)
-    && priorValues.some((item) => item === shuttleInstallPath || item === chainInstallPath);
+  //
+  // The two receiver paths are tracked SEPARATELY (ADR-0047 Review finding):
+  // a chain install must keep its chain pointer through a re-render — the
+  // chain forwards to the shuttle install path, so re-installing the
+  // re-rendered shuttle is the whole migration. Presenting the direct
+  // fragment there (and calling it idempotent) would clobber the chain and
+  // silently drop the prior notifier the chain exists to preserve.
+  const referencesShuttle = Array.isArray(priorValues)
+    && priorValues.some((item) => item === shuttleInstallPath);
+  const referencesChain = Array.isArray(priorValues)
+    && priorValues.some((item) => item === chainInstallPath);
+  const referencesOurReceiver = referencesShuttle || referencesChain;
 
   let mode;
   let warning = null;
@@ -633,7 +645,9 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
     mode = 'direct';
   } else if (referencesOurReceiver) {
     mode = 'already-configured';
-    warning = 'existing notify already points at the agentic-plugins receiver; re-merging the fragment is idempotent.';
+    warning = referencesChain
+      ? 'existing notify already points at the agentic-plugins wrapper chain; the chain forwards to the shuttle install path, so re-installing the re-rendered shuttle completes a migration — the fragment below reproduces the existing chain pointer and re-merging it is idempotent.'
+      : 'existing notify already points at the agentic-plugins receiver; re-merging the fragment is idempotent.';
   } else if (Array.isArray(priorValues) && priorValues.length === 0) {
     // An empty argv array notifies nothing — there is no notifier to
     // preserve, so the direct fragment simply replaces it.
@@ -651,7 +665,11 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
   const chainScript = mode === 'wrapper-chain'
     ? renderCodexNotifyChainScript({ priorNotify: priorValues, shuttleInstallPath, template: templates.chain })
     : null;
-  const receiverPath = mode === 'wrapper-chain' ? chainInstallPath : shuttleInstallPath;
+  // A chain-already-configured install keeps its chain pointer: the existing
+  // chain script (which wraps the prior notifier) stays untouched and the
+  // fragment must reproduce it, never downgrade to the direct shuttle.
+  const chainInUse = mode === 'wrapper-chain' || (mode === 'already-configured' && referencesChain);
+  const receiverPath = chainInUse ? chainInstallPath : shuttleInstallPath;
   const notifyFragment = renderCodexNotifyFragmentToml({ receiverPath });
   const tuiFragment = renderCodexTuiNotificationsFragmentToml();
   const tuiWarning = parsed.tuiNotifications.present
@@ -676,7 +694,7 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
     mode,
     receiver_install_dir_pointer: RECEIVER_INSTALL_DIR_POINTER,
     shuttle_install_path: shuttleInstallPath,
-    chain_install_path: mode === 'wrapper-chain' ? chainInstallPath : null,
+    chain_install_path: chainInUse ? chainInstallPath : null,
     fragment_target: 'user-layer config.toml (project layer denylists notify; profile tables reject it)',
   };
   const fragments = {
