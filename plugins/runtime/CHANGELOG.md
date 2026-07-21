@@ -20,6 +20,19 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.84.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.83.1...plugin-runtime-v0.84.0) (2026-07-21)
+
+
+### Features
+
+* **plugin/runtime:** ADR-0047 §5 standing notification watch in runtime:compat plan ([#611](https://github.com/each4all/agentic-plugins/issues/611)) ([560527f](https://github.com/each4all/agentic-plugins/commit/560527f5a9d994930c89d7e2ee3b9efad5c8352d))
+* **plugin/runtime:** response-needed kind contract + Codex shuttle remap (ADR-0047 §1/§5) ([54f39c0](https://github.com/each4all/agentic-plugins/commit/54f39c0c1d0caa82383f5e882de2f6413e32993c))
+
+
+### Bug Fixes
+
+* **plugin/runtime:** fold signal-runtime Review findings — chain-aware re-render, shuttle semver hardening ([73b88c1](https://github.com/each4all/agentic-plugins/commit/73b88c140ab8cb979c706cbde406d25d72822663))
+
 ## [0.83.1](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.83.0...plugin-runtime-v0.83.1) (2026-07-20)
 
 
