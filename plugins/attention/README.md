@@ -166,7 +166,8 @@ pre-entry-sensor state, never malformed):
 ```
 data/runtime-floors.json
   { "schema": "attention-runtime-floors-1.0",
-    "floors": { "publish_session": "0.82.0", "entry_brief": "0.83.0" } }
+    "floors": { "publish_session": "0.82.0", "entry_brief": "0.83.0",
+                "response_signal": "0.84.0" } }
 ```
 
 Each declared spawn-gate constant and its declaration key must agree
