@@ -58,10 +58,11 @@ export { RESPONSE_SIGNAL_MIN_RUNTIME_VERSION };
 // ── ADR-0040 §1 contract copies (canonical: runtime lib/notify-schema.mjs) ──
 
 // The §1 kind enum. Order is contractual documentation, not priority.
-// `response-needed` (ADR-0047 §1) marks a FINAL turn — vocabulary only here:
-// the ADR-0047 §2 structural Stop classifier that would PRODUCE it on the
-// Claude limb is a separate slice behind its own released-runtime floor;
-// until it ships, this sensor keeps emitting bare `turn-complete`.
+// `response-needed` (ADR-0047 §1) marks a FINAL turn — produced on the
+// Claude limb by the §2 structural Stop classifier below
+// (classifyStopFinality), behind its own released-runtime floor
+// (RESPONSE_SIGNAL_MIN_RUNTIME_VERSION); below that floor the Stop sensor
+// keeps emitting the bare `turn-complete` (§9 graceful degradation).
 export const NOTIFY_KINDS = Object.freeze([
   'approval',
   'idle',
@@ -586,13 +587,18 @@ export const PEER_RUN_NON_TERMINAL_STATUSES = Object.freeze([
   'cancel_requested',
 ]);
 
-// The ledger's own stale-grace window (peer-runner DEFAULT_STALE_GRACE_MS
-// mirror): a PID-less `queued|spawning` handle is live only while its
-// `updated_at` is inside this window — the same rule the ledger's own sweep
-// applies before orphaning (ADR-0047 §2 row 3; NOT an mtime-activity
-// heuristic — it reads the ledger's own liveness field under the ledger's
-// own contract, ADR-0047 Alt 4 note). Boundary matches the sweep exactly:
-// stale strictly-greater-than, so age == grace is still live.
+// The ledger's stale-grace window (peer-runner DEFAULT_STALE_GRACE_MS
+// mirror, test-pinned): a PID-less `queued|spawning` handle is live only
+// while its `updated_at` is inside this window (ADR-0047 §2 row 3; NOT an
+// mtime-activity heuristic — it reads the ledger's own liveness field
+// under the ledger's own contract, ADR-0047 Alt 4 note). Boundary matches
+// the sweep's staleness test exactly: stale strictly-greater-than, so
+// age == grace is still live. Scope honesty (Codex review): the sweep
+// itself stale-reconciles spawning/running/cancel_requested but never
+// `queued`; extending the window to queued is the §2 rule so an abandoned
+// pre-spawn handle cannot suppress promotion for its whole retention
+// lifetime. The sweep CLI's --stale-grace-ms override is a sweep tunable,
+// not ledger contract — this constant pins the contract default.
 export const PEER_RUN_STALE_GRACE_MS = 60_000;
 
 // §2 scan bounds — implementation constants pinned by the plugin-shape test
@@ -608,16 +614,22 @@ export const PEER_SCAN_PER_PERSONA_CAP = 1024;
 export const PEER_SCAN_BUDGET_MS = 1_000;
 
 // Zero-cost PID liveness probe. EPERM proves an existing process owned by
-// someone else (alive); ESRCH (and anything unexpected) reads dead. A PID
-// recycled by an unrelated process therefore reads LIVE ⇒ interim — the
-// accepted false-negative-direction error (ADR-0047 §2): the ledger's own
-// sweep, not this hot path, is where fingerprint truth is enforced.
+// someone else (alive); ESRCH proves absence (dead). ONLY those two codes
+// are proof — anything else (range errors, platform oddities) is thrown
+// and the caller fail-closes the scan: an unproven death must never
+// underwrite a final verdict (Codex review MINOR; ADR-0040 §7). A PID
+// recycled by an unrelated process reads LIVE ⇒ interim — the accepted
+// false-negative-direction error (ADR-0047 §2): the ledger's own sweep,
+// not this hot path, is where fingerprint truth is enforced.
 function defaultProbePid(pid) {
   try {
     process.kill(pid, 0);
     return true;
   } catch (err) {
-    return Boolean(err && err.code === 'EPERM');
+    const code = err && err.code;
+    if (code === 'EPERM') return true;
+    if (code === 'ESRCH') return false;
+    throw err;
   }
 }
 
@@ -644,6 +656,17 @@ function readPeerRunHandleLiveness(handlePath, { nowMs, staleGraceMs, probePid }
   if (!handle || typeof handle !== 'object' || Array.isArray(handle)) {
     return { ok: false, reason: 'handle-malformed' };
   }
+  // Ledger identity core (Codex review MAJOR, narrowed): every real handle
+  // carries schema_version + run_id from birth (writeHandle refuses to
+  // persist without them, and writes are atomic temp+rename, so their
+  // absence proves a non-ledger artifact, not a torn write). The FULL
+  // peer-runner schema is deliberately NOT mirrored here — a wide mirror
+  // would turn every additive ledger evolution into a promotion blocker;
+  // the liveness verdict needs identity + status + updated_at (+ pid).
+  if (typeof handle.schema_version !== 'string' || handle.schema_version.length === 0
+    || typeof handle.run_id !== 'string' || handle.run_id.length === 0) {
+    return { ok: false, reason: 'handle-identity-missing' };
+  }
   const status = handle.status;
   if (typeof status !== 'string'
     || (!PEER_RUN_TERMINAL_STATUSES.includes(status)
@@ -665,14 +688,32 @@ function readPeerRunHandleLiveness(handlePath, { nowMs, staleGraceMs, probePid }
     // Live requires the RECORDED pid to answer the zero-signal probe. A
     // running/cancel_requested handle with no recorded pid violates the
     // ledger lifecycle (pid is written at spawn, before running) — treat as
-    // malformed, never guess (§2).
+    // malformed, never guess (§2). A probe error beyond the two proof
+    // codes (defaultProbePid throws) equally fail-closes: unproven death
+    // must not underwrite promotion.
     const pid = handle.pid;
     if (!Number.isInteger(pid) || pid <= 0) return { ok: false, reason: 'handle-pid-missing' };
-    return { ok: true, live: probePid(pid) };
+    let alive;
+    try {
+      alive = probePid(pid) === true;
+    } catch {
+      return { ok: false, reason: 'pid-probe-failed' };
+    }
+    return { ok: true, live: alive };
   }
   // queued | spawning — PID-less BY DESIGN (peer-runner records the pid only
   // at spawn): live while updated_at sits inside the ledger's stale-grace
-  // window, exactly the sweep's own boundary (stale = age strictly greater).
+  // window (contract default 60s; boundary inclusive, matching the sweep's
+  // strictly-greater staleness test). Precision note (Codex review): the
+  // ledger's own sweep stale-reconciles only spawning/running/
+  // cancel_requested — `queued` is never reconciled and would otherwise sit
+  // non-terminal until retention TTL. Applying the grace window to queued
+  // here is the ADR-0047 §2 row-3 rule, on purpose: without it one
+  // abandoned pre-spawn handle would suppress response-needed for its
+  // whole retention lifetime. The sweep CLI's operator-configurable
+  // --stale-grace-ms is a sweep tunable, not ledger contract; this
+  // classifier pins the contract default (test-pinned parity with
+  // DEFAULT_STALE_GRACE_MS).
   return { ok: true, live: nowMs - updatedMs <= staleGraceMs };
 }
 
@@ -720,16 +761,30 @@ export function scanPeerRunLedgers({
           if (err && err.code === 'ENOENT') continue; // absent home = zero runs, normal
           return { live: false, complete: false, reason: `home-unreadable:${persona}` };
         }
-        let sawRun = false;
+        let sawEntry = false;
         for (const entry of entries) {
-          if (!entry.isDirectory()) continue; // locks/temp files are non-candidates
-          sawRun = true;
-          runDirs.push(path.join(homeDir, entry.name));
+          // ANY entry marks the home populated — the peer-runner's own
+          // dual-home detector (directoryHasEntries) counts every entry,
+          // so a clutter-only canonical home + a populated legacy home is
+          // ambiguous THERE and must be ambiguous here too (Codex review
+          // MAJOR: a dir-only count read scanner-complete a state the
+          // ledger itself refuses to touch).
+          sawEntry = true;
+          if (entry.isDirectory()) {
+            runDirs.push(path.join(homeDir, entry.name));
+            continue;
+          }
+          if (entry.isFile()) continue; // lock/temp files are non-candidates
+          // Symlinks (and any other non-file/non-dir entry) cannot be
+          // judged without following them — a symlinked run directory
+          // hiding a live handle must not read as a complete scan (Codex
+          // review MAJOR). No real ledger contains them; fail closed.
+          return { live: false, complete: false, reason: `home-entry-unscannable:${persona}` };
         }
-        if (sawRun) populatedHomes.push(rel);
+        if (sawEntry) populatedHomes.push(rel);
       }
-      // The peer-runner's own ambiguous dual-home state (runs in BOTH the
-      // canonical and legacy home) fail-closes its every read; mirror it.
+      // The peer-runner's own ambiguous dual-home state (entries in BOTH
+      // the canonical and legacy home) fail-closes its every read; mirror it.
       if (populatedHomes.length > 1) {
         return { live: false, complete: false, reason: `ambiguous-dual-home:${persona}` };
       }
@@ -738,17 +793,22 @@ export function scanPeerRunLedgers({
       if (capExceeded) {
         // Newest-first (directory mtime) truncation: the truncated scan can
         // still DISCOVER a live handle (⇒ interim), but it can never prove
-        // absence — cap exhaustion below blocks promotion regardless.
-        scanDirs = runDirs
-          .map((dir) => {
-            let mtimeMs = 0;
-            try {
-              mtimeMs = fs.statSync(dir).mtimeMs;
-            } catch {
-              mtimeMs = 0;
-            }
-            return { dir, mtimeMs };
-          })
+        // absence — cap exhaustion below blocks promotion regardless. The
+        // stat pass is deadline-checked per entry: a pathological backlog
+        // must hit the wall-clock bound here, not after materializing every
+        // stat (Codex review MAJOR).
+        const withMtime = [];
+        for (const dir of runDirs) {
+          if (now() > deadline) return { live: false, complete: false, reason: 'budget-exhausted' };
+          let mtimeMs = 0;
+          try {
+            mtimeMs = fs.statSync(dir).mtimeMs;
+          } catch {
+            mtimeMs = 0;
+          }
+          withMtime.push({ dir, mtimeMs });
+        }
+        scanDirs = withMtime
           .sort((a, b) => b.mtimeMs - a.mtimeMs)
           .slice(0, perPersonaCap)
           .map((item) => item.dir);
@@ -769,6 +829,10 @@ export function scanPeerRunLedgers({
         return { live: false, complete: false, reason: `cap-exhausted:${persona}` };
       }
     }
+    // Final deadline check — a scan that USED more than its budget must not
+    // report complete just because each intermediate check slipped under
+    // the wire (Codex review MAJOR: promotion after budget exhaustion).
+    if (now() > deadline) return { live: false, complete: false, reason: 'budget-exhausted' };
     return { live: false, complete: true };
   } catch {
     return { live: false, complete: false, reason: 'scan-error' };
@@ -842,7 +906,11 @@ export function classifyStopFinality({
     }
     const ledger = scan({ repoRoot, now, ...(scanOptions ?? {}) });
     if (ledger && ledger.live === true) return { verdict: 'interim', reason: 'peer-run-live' };
-    if (!ledger || ledger.complete !== true) {
+    // Promotion demands the EXACT well-formed shape: complete === true AND
+    // live === false. A malformed scan result ({complete:true} with live
+    // missing, truthy-but-non-boolean fields) must degrade, never promote
+    // (Codex review MINOR — the injectable seam makes the shape a contract).
+    if (!ledger || ledger.complete !== true || ledger.live !== false) {
       const detail = ledger && typeof ledger.reason === 'string' ? ledger.reason : 'unknown';
       return { verdict: 'unpromotable', reason: `scan-incomplete:${detail}` };
     }
@@ -1256,19 +1324,31 @@ export function resolveHostname({ env = process.env } = {}) {
   return raw.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, ROUTING_FIELD_CAPS.hostname);
 }
 
-// Read a path ONLY if it is a regular file under the size cap. statSync
-// returns metadata without blocking (even on a FIFO); readFileSync on a
-// FIFO/device WOULD block the hook path indefinitely — the isFile() gate is
-// what keeps a malicious or broken target (a FIFO, directory, or device
-// node) from hanging the sensor (ADR-0040 §7 never-block contract). Shared
-// by the `.git/HEAD` reads AND the projection/marker reads above; the size
-// cap bounds a pathological regular file on the same hot path. Returns null
-// for any non-regular or oversized target.
+// Read a path ONLY if it is a regular file under the size cap, via a
+// single fd — open(O_NOFOLLOW|O_NONBLOCK) → fstat → read — so the check
+// and the read judge the SAME inode. The previous stat-then-read pair had
+// two holes the Codex review reproduced: statSync FOLLOWS symlinks (a
+// symlinked target outside the repo read as valid state), and a target
+// swapped between the stat and the read (regular file → FIFO) would block
+// the hook past every budget. O_NOFOLLOW refuses a symlink at open
+// (ELOOP → the caller's catch); O_NONBLOCK keeps a writer-less FIFO open
+// from blocking, and the fstat gate then rejects any non-regular or
+// oversized target with null (ADR-0040 §7 never-block contract). Shared
+// by the `.git/HEAD` reads, the projection/marker reads above, AND the
+// ADR-0047 ledger-handle reads — one guard, every hot-path read.
 const REGULAR_FILE_MAX_BYTES = 1024 * 1024;
 function readRegularFileSync(filePath) {
-  const st = fs.statSync(filePath);
-  if (!st.isFile() || st.size > REGULAR_FILE_MAX_BYTES) return null;
-  return fs.readFileSync(filePath, 'utf8');
+  const fd = fs.openSync(
+    filePath,
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0),
+  );
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > REGULAR_FILE_MAX_BYTES) return null;
+    return fs.readFileSync(fd, 'utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 // Resolve the current git branch by a pure fs read of .git/HEAD — NEVER a git

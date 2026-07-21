@@ -49,7 +49,7 @@
 import { describe, it, before, after } from 'node:test';
 import { strictEqual, ok, deepStrictEqual, throws, doesNotThrow } from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile, utimes } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile, utimes } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -1829,6 +1829,21 @@ describe('plugins/attention — ADR-0047 §2 classifyStopFinality (bounded struc
       }),
       { verdict: 'unpromotable', reason: 'scan-incomplete:unknown' },
     );
+    // Promotion requires live === false EXPLICITLY: a result missing the
+    // field, or carrying a truthy non-boolean, is malformed — never final
+    // (Codex review MINOR).
+    deepStrictEqual(
+      sensorLib.classifyStopFinality({ payload: supported, repoRoot: tmpdir(), scan: () => ({ complete: true }) }),
+      { verdict: 'unpromotable', reason: 'scan-incomplete:unknown' },
+    );
+    deepStrictEqual(
+      sensorLib.classifyStopFinality({
+        payload: supported,
+        repoRoot: tmpdir(),
+        scan: () => ({ live: 'no', complete: true }),
+      }),
+      { verdict: 'unpromotable', reason: 'scan-incomplete:unknown' },
+    );
   });
 
   // ── row 3: the real ledger scan over fixture repos ──
@@ -1962,6 +1977,12 @@ describe('plugins/attention — ADR-0047 §2 classifyStopFinality (bounded struc
       const cases = [
         ['{not json', 'handle-malformed:engineer'],
         ['[1,2]', 'handle-malformed:engineer'],
+        // Ledger identity core: a JSON object WITHOUT schema_version/run_id
+        // is a non-ledger artifact, not a torn write (writeHandle is atomic
+        // and refuses to persist without them) — never judged, scan blocked.
+        [{ status: 'completed', updated_at: new Date().toISOString() }, 'handle-identity-missing:engineer'],
+        [freshHandle({ schema_version: '' }), 'handle-identity-missing:engineer'],
+        [freshHandle({ run_id: 42 }), 'handle-identity-missing:engineer'],
         [freshHandle({ status: 'exploded' }), 'handle-status-unknown:engineer'],
         [freshHandle({ status: 42 }), 'handle-status-unknown:engineer'],
         [freshHandle({ updated_at: 'yesterday' }), 'handle-updated-at-malformed:engineer'],
@@ -2022,6 +2043,94 @@ describe('plugins/attention — ADR-0047 §2 classifyStopFinality (bounded struc
       deepStrictEqual(
         sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
         { live: false, complete: false, reason: 'ambiguous-dual-home:engineer' },
+      );
+    });
+
+    it('dual-home populated is ANY-entry, not directories-only: clutter-only canonical + populated legacy is ambiguous (directoryHasEntries mirror)', async () => {
+      await resetRepo();
+      await mkdir(join(repo, CANON_ENGINEER), { recursive: true });
+      await writeFile(join(repo, CANON_ENGINEER, 'stray.tmp'), 'x'); // file, not a run dir
+      await seedHandle(LEGACY_ENGINEER, 'run-b', freshHandle());
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
+        { live: false, complete: false, reason: 'ambiguous-dual-home:engineer' },
+        'the peer-runner counts ANY entry when detecting dual-home ambiguity — the scanner must not be more permissive',
+      );
+    });
+
+    it('a symlinked handle.json is refused at open (O_NOFOLLOW) — external state never judged, scan blocked', async () => {
+      await resetRepo();
+      const outside = join(repo, 'outside-handle.json');
+      await writeFile(outside, JSON.stringify(freshHandle()));
+      const dir = join(repo, CANON_ENGINEER, 'run-link');
+      await mkdir(dir, { recursive: true });
+      await symlink(outside, join(dir, 'handle.json'));
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
+        { live: false, complete: false, reason: 'handle-unreadable:engineer' },
+      );
+    });
+
+    it('a symlink ENTRY in a home is unscannable — a symlinked run dir hiding a live handle must not read complete', async () => {
+      await resetRepo();
+      const realRun = join(repo, 'outside-run');
+      await mkdir(realRun, { recursive: true });
+      await writeFile(join(realRun, 'handle.json'), JSON.stringify(freshHandle({ status: 'running', pid: process.pid })));
+      await mkdir(join(repo, CANON_ENGINEER), { recursive: true });
+      await symlink(realRun, join(repo, CANON_ENGINEER, 'run-sym'));
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo }),
+        { live: false, complete: false, reason: 'home-entry-unscannable:engineer' },
+      );
+    });
+
+    it('a pid probe error beyond ESRCH/EPERM fail-closes the scan (unproven death never underwrites promotion)', async () => {
+      await resetRepo();
+      await seedHandle(CANON_ENGINEER, 'run-odd', freshHandle({ status: 'running', pid: 12345 }));
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo, probePid: () => { throw new Error('EINVAL-ish'); } }),
+        { live: false, complete: false, reason: 'pid-probe-failed:engineer' },
+      );
+      // A truthy non-boolean probe answer is not proof of life either — it
+      // must read dead-or-alive strictly by boolean contract (=== true).
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo, probePid: () => 'alive' }),
+        { live: false, complete: true },
+      );
+    });
+
+    it('the stat pass of an over-cap home is deadline-checked per entry (budget beats cap in a pathological backlog)', async () => {
+      await resetRepo();
+      await seedHandle(CANON_ENGINEER, 'run-1', freshHandle());
+      await seedHandle(CANON_ENGINEER, 'run-2', freshHandle());
+      await seedHandle(CANON_ENGINEER, 'run-3', freshHandle());
+      // Clock: deadline base, canonical home check, legacy home check pass;
+      // the FIRST stat-loop check then lands past the deadline.
+      const ticks = [0, 100, 200, 1_500];
+      const clock = () => (ticks.length > 1 ? ticks.shift() : ticks[0]);
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo, perPersonaCap: 1, budgetMs: 1_000, now: clock, personas: ['engineer'] }),
+        { live: false, complete: false, reason: 'budget-exhausted' },
+        'over-cap stat enumeration must hit the wall-clock bound, not run to completion (cap-exhausted) first',
+      );
+    });
+
+    it('a scan that exhausted its budget never reports complete — final deadline check (deterministic clock)', async () => {
+      await resetRepo();
+      // The handle timestamp must live in the SAME clock domain as the
+      // injected ticks (a wall-clock updated_at against a small-integer
+      // clock reads as future skew before the final check is reached).
+      await seedHandle(CANON_ENGINEER, 'run-1', freshHandle({ updated_at: new Date(300).toISOString() }));
+      // Clock sequence for personas:['engineer']: deadline base (0), two
+      // home checks (100, 200), the handle deadline check (300), the handle
+      // liveness nowMs (400) — all inside the budget — then the FINAL check
+      // lands past it. Every intermediate gate passed; complete must still
+      // be refused.
+      const ticks = [0, 100, 200, 300, 400, 1_500];
+      const clock = () => (ticks.length > 1 ? ticks.shift() : ticks[0]);
+      deepStrictEqual(
+        sensorLib.scanPeerRunLedgers({ repoRoot: repo, budgetMs: 1_000, now: clock, personas: ['engineer'] }),
+        { live: false, complete: false, reason: 'budget-exhausted' },
       );
     });
 
@@ -2699,6 +2808,45 @@ describe('plugins/attention — ADR-0047 §2/§3/§9 Stop response-needed (end-t
     strictEqual(captures.length, 1);
     strictEqual(captures[0].event.kind, 'idle');
     strictEqual('headline' in captures[0].event, false);
+  });
+
+  it('capture + response-needed compose on one Stop: the ADR-0044 capture spawn runs FIRST, then exactly one response-needed (peer suggestion)', async () => {
+    // A 0.84.0 stub carrying BOTH executors: the capture publisher stub
+    // appends a {publish} line, the notify stub appends the {event} line —
+    // shared capture file, so line order proves stage order.
+    const both = join(repo, 'runtime-stub-both');
+    await mkdir(join(both, '.claude-plugin'), { recursive: true });
+    await mkdir(join(both, 'scripts'), { recursive: true });
+    await writeFile(
+      join(both, '.claude-plugin/plugin.json'),
+      JSON.stringify({ name: 'runtime', version: '0.84.0', description: 'stub' }),
+    );
+    await writeFile(
+      join(both, 'scripts/notify.mjs'),
+      await readFile(join(stub084, 'scripts/notify.mjs'), 'utf8'),
+    );
+    await writeFile(
+      join(both, 'scripts/context.mjs'),
+      [
+        '#!/usr/bin/env node',
+        "import fs from 'node:fs';",
+        'fs.appendFileSync(process.env.ATTENTION_TEST_CAPTURE, JSON.stringify({',
+        '  publish: process.argv.slice(2),',
+        "}) + '\\n');",
+      ].join('\n'),
+    );
+    const result = runStop(
+      { cwd: repo, session_id: 'sess-cap', prompt_id: 'prompt-cap', ...FINAL_PAYLOAD_FIELDS },
+      { runtimeRoot: both },
+    );
+    strictEqual(result.status, 0);
+    strictEqual(result.stdout, '');
+    const captures = await takeCaptures();
+    strictEqual(captures.length, 2, 'one capture spawn + one notification, nothing else');
+    ok(Array.isArray(captures[0].publish), 'the capture spawn precedes the notification (ADR-0044 §2 stage order)');
+    strictEqual(captures[0].publish[0], 'publish-session');
+    strictEqual(captures[1].event.kind, 'response-needed');
+    strictEqual(captures[1].event.headline, 'your-turn');
   });
 });
 
