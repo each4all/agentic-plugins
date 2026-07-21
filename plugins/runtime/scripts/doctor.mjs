@@ -4431,6 +4431,11 @@ function summarizeOverall(report) {
     // is withheld (an unscannable source is treated as citing everything).
     warnings.push('runtime retention pin scan incomplete (deletion withheld)');
   }
+  // A retention section that FAILED to compute (planner exception) must not
+  // headline as pass on an otherwise-clean inventory (Codex review MINOR).
+  if (report.retention?.requested && report.retention.executed === false && report.retention.status === 'blocked') {
+    warnings.push('runtime retention plan blocked (planner failed)');
+  }
   // The machine scope has its OWN status; the top-level status is repo-only by
   // design (backward compatibility). Without this, an unreadable machine home or a
   // bootstrap family over its cap would headline `pass` — doctor reporting healthy on
@@ -4800,7 +4805,18 @@ export function formatText(report) {
     for (const family of Object.values(report.artifact_inventory.families ?? {})) {
       lines.push(`- ${family.family}: status=${family.status}; runs=${family.run_count}; files=${family.file_count}; bytes=${family.bytes}; oldest-age-minutes=${family.oldest_age_minutes ?? '<unknown>'}`);
     }
+    // ADR-0047 §7 (Codex review MAJOR) — do NOT render an over-cap item as a
+    // fault-with-removal-recommendation when the retention reconciliation
+    // demoted it to informational pinned overage; that would tell the operator
+    // to "remove obsolete artifacts" for runs that are pinned evidence, directly
+    // contradicting the softened status. The retention block below renders those
+    // as informational.
+    const demotedKeys = new Set(
+      (report.retention?.executed ? report.retention.reconciled?.demoted ?? [] : []).map((d) => `${d.family}/${d.observed}/${d.limit}`),
+    );
+    const overageKinds = new Set(['run_count_exceeds_cap', 'bytes_exceed_cap']);
     for (const attention of report.artifact_inventory.attention ?? []) {
+      if (overageKinds.has(attention.kind) && demotedKeys.has(`${attention.family}/${attention.observed}/${attention.limit}`)) continue;
       lines.push(`  retention-attention: ${attention.family}/${attention.kind}; observed=${attention.observed}; limit=${attention.limit}`);
       lines.push(`    next: ${attention.recommendation}`);
     }
@@ -4844,6 +4860,11 @@ export function formatText(report) {
       lines.push(`  scan-incomplete: ${reason.source}${reason.family ? `/${reason.family}` : ''} — ${reason.reason}`);
     }
     lines.push('- limit: The retention plan is read-only; the separate retention-apply executor deletes only unpinned, over-cap, age-cleared runs under a reviewed plan hash.');
+    lines.push('');
+  } else if (report.retention?.requested && report.retention.status === 'blocked') {
+    // Never silently hide a failed planner (Codex review MINOR).
+    lines.push('Runtime Retention Plan (ADR-0047 §7 — read-only; deletes nothing)');
+    lines.push(`- status: blocked — the retention planner failed: ${report.retention.error ?? 'unknown'}`);
     lines.push('');
   }
   if (report.permission_diagnosis?.requested) {

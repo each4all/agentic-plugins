@@ -36,9 +36,6 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
 
 // ── Versions (part of the plan hash — a change here invalidates every prior
 // reviewed plan, which is the point) ──
@@ -124,35 +121,79 @@ export function runIdTimestamp(runId) {
 }
 
 // Decode a Buffer as UTF-8 text, refusing binary/undecodable content. A NUL
-// byte or an invalid UTF-8 sequence marks a non-text file: it is recorded and
+// byte OR an invalid UTF-8 sequence marks a non-text file: it is recorded and
 // skipped (not a citation doc), which — deliberately — does NOT flip
 // scan_complete. Treating every image/binary as "might cite everything" would
 // make scan_complete unachievable in any real repo and defeat the pin scanner;
 // the fail-closed triggers are enumeration failure, cap exhaustion, and
 // UNREADABLE (fs-error) or oversized text sources, not "is binary".
+//
+// Uses a FATAL TextDecoder (Codex review MAJOR): a `.toString('utf8')` +
+// `includes('�')` heuristic cannot distinguish invalid UTF-8 from a document
+// that legitimately contains a U+FFFD character — and would skip such a
+// (valid, possibly-citing) doc as binary while leaving scan_complete true, a
+// fail-closed hole. A fatal decoder throws ONLY on genuinely invalid UTF-8, so
+// a legit U+FFFD document decodes and is scanned.
 function decodeText(buffer) {
   if (buffer.includes(0)) return null; // NUL byte ⇒ binary
-  const text = buffer.toString('utf8');
-  // A U+FFFD replacement char only appears from invalid UTF-8 when the source
-  // did not itself contain one; treat any as undecodable (conservative but
-  // still text-oriented — a real doc citing a run-id is clean UTF-8).
-  if (text.includes('�')) return null;
-  return text;
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+  } catch {
+    return null; // invalid UTF-8 ⇒ binary/undecodable
+  }
+}
+
+// A bounded, no-follow, regular-file read for the latest/live/cross-artifact pin
+// sources (Codex review MINOR): lstat first (never follows a symlink), refuse
+// anything that is not a regular file (a FIFO cannot block the planner, a dir
+// cannot be read as a file), and cap the size before reading so a giant file
+// cannot exhaust memory. Returns { ok, code?, buffer? }. The lstat→open race is
+// closed by fstat-on-handle re-checking the regular-file type after open.
+async function readBoundedRegularFile(targetPath, maxBytes) {
+  let info;
+  try {
+    info = await fsp.lstat(targetPath);
+  } catch (err) {
+    return { ok: false, code: err?.code ?? 'ELSTAT' };
+  }
+  if (info.isSymbolicLink()) return { ok: false, code: 'ESYMLINK' };
+  if (!info.isFile()) return { ok: false, code: 'ENOTFILE' };
+  if (info.size > maxBytes) return { ok: false, code: 'E2BIG' };
+  let handle;
+  try {
+    handle = await fsp.open(targetPath, 'r');
+  } catch (err) {
+    return { ok: false, code: err?.code ?? 'EOPEN' };
+  }
+  try {
+    const st = await handle.stat();
+    if (!st.isFile()) return { ok: false, code: 'ENOTFILE' };
+    if (st.size > maxBytes) return { ok: false, code: 'E2BIG' };
+    const buffer = await handle.readFile();
+    return { ok: true, buffer };
+  } catch (err) {
+    return { ok: false, code: err?.code ?? 'EREAD' };
+  } finally {
+    await handle.close().catch(() => {});
+  }
 }
 
 // Default git-tracked-file provider: `git ls-files -z` from the repo root.
 // Injectable so tests are deterministic and hermetic. Returns null on any
 // failure (not-a-repo, git missing) — the caller treats a null list as an
-// enumeration failure (scan_complete:false).
-async function defaultGitTrackedFiles(repoRoot) {
-  try {
-    const { stdout } = await execFileAsync('git', ['-C', repoRoot, 'ls-files', '-z'], {
-      maxBuffer: 64 * 1024 * 1024,
+// enumeration failure (scan_complete:false). Uses the RAW execFile primitive
+// (not a promisify alias) so the ADR-0035 §4 executor guard tracks the call by
+// its imported binding rather than a magic identifier name (Codex review MAJOR).
+function defaultGitTrackedFiles(repoRoot) {
+  return new Promise((resolvePromise) => {
+    execFile('git', ['-C', repoRoot, 'ls-files', '-z'], { maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => {
+      if (err) {
+        resolvePromise(null);
+        return;
+      }
+      resolvePromise(String(stdout).split('\0').filter((name) => name.length > 0));
     });
-    return stdout.split('\0').filter((name) => name.length > 0);
-  } catch {
-    return null;
-  }
+  });
 }
 
 // ── Pin 1: tracked-doc citations ──
@@ -195,31 +236,24 @@ export async function scanTrackedDocCitations({ repoRoot, gitTrackedFiles = null
       break;
     }
     const abs = path.join(repoRoot, rel);
-    let stat;
-    try {
-      stat = await fsp.lstat(abs);
-    } catch (err) {
-      if (String(err?.code ?? '') === 'ENOENT') continue; // tracked-but-deleted: not a source
-      incomplete.push({ source: 'tracked-doc-citations', reason: `unreadable tracked file (${err?.code ?? 'error'})` });
+    const read = await readBoundedRegularFile(abs, CITATION_SCAN_MAX_FILE_BYTES);
+    if (!read.ok) {
+      if (read.code === 'ENOTFILE' || read.code === 'ESYMLINK') continue; // not a citation source
+      if (read.code === 'E2BIG') {
+        // Cannot fully scan an oversized text file ⇒ its citations past the cap
+        // would be missed ⇒ fail-closed.
+        incomplete.push({ source: 'tracked-doc-citations', reason: `tracked file exceeds per-file cap ${CITATION_SCAN_MAX_FILE_BYTES} bytes` });
+        continue;
+      }
+      // ENOENT for a path `git ls-files` returned is a TRACKED source we could
+      // not read — a committed, cited doc deleted only from the worktree still
+      // protects its runs and is restorable, so treating it as "not a source"
+      // would silently unpin a still-cited run. Fail-closed (Codex review MAJOR).
+      incomplete.push({ source: 'tracked-doc-citations', reason: `unreadable tracked file (${read.code})` });
       continue;
     }
-    if (!stat.isFile()) continue; // symlink/dir — not a citation source
-    if (stat.size > CITATION_SCAN_MAX_FILE_BYTES) {
-      incomplete.push({
-        source: 'tracked-doc-citations',
-        reason: `tracked file exceeds per-file cap ${CITATION_SCAN_MAX_FILE_BYTES} bytes`,
-      });
-      continue; // cannot fully scan ⇒ fail-closed, skip
-    }
-    let buffer;
-    try {
-      buffer = await fsp.readFile(abs);
-    } catch (err) {
-      incomplete.push({ source: 'tracked-doc-citations', reason: `unreadable tracked file (${err?.code ?? 'error'})` });
-      continue;
-    }
-    totalBytes += buffer.length;
-    const text = decodeText(buffer);
+    totalBytes += read.buffer.length;
+    const text = decodeText(read.buffer);
     if (text === null) {
       skippedBinary += 1;
       continue; // binary/undecodable — recorded, not a citation source, no flip
@@ -237,15 +271,36 @@ export async function scanTrackedDocCitations({ repoRoot, gitTrackedFiles = null
   };
 }
 
-function harvestRunIdTokens(text, pinned) {
+// Harvest registry run-id tokens from text into the per-family pin buckets.
+// `exclude` (optional Set) drops self-references — a doctor.json embeds its OWN
+// top-level run_id, which without exclusion would self-pin every doctor run and
+// make the doctor family permanently unactionable (Codex review MAJOR).
+function harvestRunIdTokens(text, pinned, exclude = null) {
   RUN_ID_TOKEN_RE.lastIndex = 0;
   let match;
   while ((match = RUN_ID_TOKEN_RE.exec(text)) !== null) {
     const token = match[0];
+    if (exclude && exclude.has(token)) continue;
     const dash = token.indexOf('-');
     const family = token.slice(0, dash);
     const bucket = pinned.get(family);
     if (bucket) bucket.add(token);
+  }
+}
+
+// Harvest run-id tokens from PARSED JSON string values (Codex review MAJOR): a
+// raw-text regex misses a JSON unicode escape (`"compat-…"` parses to a
+// real run-id but never matches the literal-token regex). Walking the parsed
+// value scans the DECODED strings, catching escaped references. Non-string
+// leaves are ignored; the walk is depth-bounded against a pathological blob.
+function harvestRunIdTokensFromJson(value, pinned, exclude, depth = 0) {
+  if (depth > 64) return;
+  if (typeof value === 'string') {
+    harvestRunIdTokens(value, pinned, exclude);
+  } else if (Array.isArray(value)) {
+    for (const item of value) harvestRunIdTokensFromJson(item, pinned, exclude, depth + 1);
+  } else if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) harvestRunIdTokensFromJson(item, pinned, exclude, depth + 1);
   }
 }
 
@@ -275,13 +330,28 @@ export async function resolveLatestPins({ repoRoot }) {
       continue;
     }
     const runId = json?.run_id;
-    if (typeof runId === 'string' && RETENTION_FAMILY_REGISTRY[family].runIdRe.test(runId)) {
-      pinned.get(family).add(runId);
-    } else {
+    if (typeof runId !== 'string' || !RETENTION_FAMILY_REGISTRY[family].runIdRe.test(runId)) {
       // A latest.json referencing a run-id that does not validate is a
       // corrupt pointer — fail-closed (it "references" something we cannot pin).
       incomplete.push({ source: 'latest-pointer', family, reason: 'latest.json run_id missing or malformed' });
+      continue;
     }
+    // The referenced run must actually exist on disk. A DANGLING latest pointer
+    // (points to a missing run) is the ADR's "missing-but-referenced" case:
+    // fail-closed, because the pointer is corrupt and the later inventory merge
+    // would otherwise silently drop the pin (Codex review MAJOR). An absent
+    // latest.json (handled above) is a fresh family with no latest — safe.
+    let runStat;
+    try {
+      runStat = await fsp.lstat(path.join(familyRoot(repoRoot, family), runId));
+    } catch {
+      runStat = null;
+    }
+    if (!runStat || !runStat.isDirectory()) {
+      incomplete.push({ source: 'latest-pointer', family, reason: `latest.json references missing run ${runId}` });
+      continue;
+    }
+    pinned.get(family).add(runId);
   }
   return { pinned, scanComplete: incomplete.length === 0, incomplete };
 }
@@ -316,44 +386,76 @@ export async function resolveLivePins({ repoRoot }) {
     }
   }
   if (Array.isArray(settingsEntries)) {
+    // Track the NEWEST attested run so only the reader-selected attestation is
+    // pinned — pinning EVERY historical attestation would make settings
+    // retention permanently ineffective once attestations repeat (Codex review
+    // MINOR). Newest = highest run-id timestamp.
+    let newestAttested = null;
     for (const entry of settingsEntries) {
       if (!entry.isDirectory() || !settingsFamily.runIdRe.test(entry.name)) continue;
       const artifactPath = path.join(settingsRoot, entry.name, 'settings.json');
-      let json;
-      try {
-        json = JSON.parse(await fsp.readFile(artifactPath, 'utf8'));
-      } catch (err) {
-        if (String(err?.code ?? '') === 'ENOENT') continue; // no execution artifact ⇒ nothing to pin here
-        incomplete.push({ source: 'live-settings', family: 'settings', reason: `settings artifact unreadable/malformed (${err?.code ?? 'error'})` });
+      const read = await readBoundedRegularFile(artifactPath, CROSS_ARTIFACT_MAX_FILE_BYTES);
+      if (!read.ok) {
+        if (read.code === 'ENOENT') {
+          // A settings run dir with no execution artifact is anomalous (an
+          // interrupted create). Conservatively PIN it rather than delete a run
+          // whose terminality we cannot confirm (fail-closed = keep the
+          // uncertain), without flipping the whole scan (Codex review MAJOR).
+          pinned.get('settings').add(entry.name);
+          continue;
+        }
+        incomplete.push({ source: 'live-settings', family: 'settings', reason: `settings artifact unreadable (${read.code})` });
         continue;
       }
-      const status = typeof json?.status === 'string' ? json.status : null;
-      const terminal = typeof json?.terminal === 'boolean'
-        ? json.terminal
-        : status !== null
-          ? !SETTINGS_NONTERMINAL_STATUSES.has(status)
-          : true;
-      if (!terminal) pinned.get('settings').add(entry.name);
-      const review = json?.codex_hook_review;
-      if (review && review.attested === true && review.status === 'attested') {
+      const text = decodeText(read.buffer);
+      let json;
+      try {
+        json = text === null ? null : JSON.parse(text);
+      } catch {
+        json = undefined; // parse failure ⇒ malformed
+      }
+      if (json === null || json === undefined || typeof json !== 'object') {
+        // Undecodable or malformed artifact — cannot confirm terminal ⇒ pin
+        // conservatively (do not delete an unclassifiable run).
         pinned.get('settings').add(entry.name);
+        continue;
+      }
+      const status = typeof json.status === 'string' ? json.status : null;
+      // A status field is REQUIRED to prove terminal; a `{}` or missing/unknown
+      // status is unclassifiable ⇒ pin. The recorded `terminal` flag is trusted
+      // ONLY when it AGREES that a known status is terminal — a nonterminal
+      // status (planned/in-progress) forces the pin even if `terminal:true`
+      // lies (the doctor reader treats `planned` as interrupted). (Codex review MAJOR)
+      const statusNonTerminal = status !== null && SETTINGS_NONTERMINAL_STATUSES.has(status);
+      const statusTerminal = status !== null && !statusNonTerminal;
+      const flagTerminal = json.terminal === true;
+      const confirmedTerminal = statusTerminal && flagTerminal !== false;
+      if (!confirmedTerminal) pinned.get('settings').add(entry.name);
+      const review = json.codex_hook_review;
+      if (review && review.attested === true && review.status === 'attested') {
+        if (newestAttested === null || runIdTimestamp(entry.name) > runIdTimestamp(newestAttested)) {
+          newestAttested = entry.name;
+        }
       }
     }
+    if (newestAttested !== null) pinned.get('settings').add(newestAttested);
   }
 
   // doctor live pin — the reader's latest-fallback floor (see block comment).
+  // A malformed/unreadable/dangling doctor latest is already fail-closed by
+  // resolveLatestPins; here we only mirror the pin, never double-count reasons.
   const doctorLatestPath = path.join(familyRoot(repoRoot, 'doctor'), 'latest.json');
-  try {
-    const json = JSON.parse(await fsp.readFile(doctorLatestPath, 'utf8'));
-    const runId = json?.run_id;
-    if (typeof runId === 'string' && RETENTION_FAMILY_REGISTRY.doctor.runIdRe.test(runId)) {
-      pinned.get('doctor').add(runId);
-    }
-    // A malformed doctor latest is already fail-closed by resolveLatestPins;
-    // do not double-count the reason here.
-  } catch (err) {
-    if (String(err?.code ?? '') !== 'ENOENT') {
-      incomplete.push({ source: 'live-doctor', family: 'doctor', reason: `doctor latest unreadable (${err?.code ?? 'error'})` });
+  const doctorRead = await readBoundedRegularFile(doctorLatestPath, CROSS_ARTIFACT_MAX_FILE_BYTES);
+  if (doctorRead.ok) {
+    const text = decodeText(doctorRead.buffer);
+    try {
+      const json = text === null ? null : JSON.parse(text);
+      const runId = json?.run_id;
+      if (typeof runId === 'string' && RETENTION_FAMILY_REGISTRY.doctor.runIdRe.test(runId)) {
+        pinned.get('doctor').add(runId);
+      }
+    } catch {
+      // resolveLatestPins already recorded the malformed-latest reason.
     }
   }
 
@@ -387,6 +489,11 @@ export async function scanCrossArtifactReferences({ repoRoot }) {
     for (const entry of entries) {
       if (!entry.isDirectory() || !source.runIdRe.test(entry.name)) continue;
       const runDir = path.join(root, entry.name);
+      // Exclude the source run's OWN id from the harvest: a doctor.json embeds
+      // its own top-level run_id, which would self-pin every doctor run and make
+      // the family permanently unactionable (Codex review MAJOR). Cross-refs are
+      // ids of OTHER runs that outlive this one.
+      const exclude = new Set([entry.name]);
       const artifactFiles = source.artifactFile
         ? [path.join(runDir, source.artifactFile)]
         : await listRunArtifactFiles(runDir, incomplete, source.family);
@@ -395,35 +502,40 @@ export async function scanCrossArtifactReferences({ repoRoot }) {
           incomplete.push({ source: 'cross-artifact', family: source.family, reason: `cross-artifact file count reached cap ${CROSS_ARTIFACT_MAX_FILES}` });
           return { pinned, scanComplete: false, incomplete, files_read: filesRead };
         }
-        let stat;
-        try {
-          stat = await fsp.lstat(artifactPath);
-        } catch (err) {
-          if (String(err?.code ?? '') === 'ENOENT') continue;
-          incomplete.push({ source: 'cross-artifact', family: source.family, reason: `artifact unreadable (${err?.code ?? 'error'})` });
-          continue;
-        }
-        if (!stat.isFile()) continue;
-        if (stat.size > CROSS_ARTIFACT_MAX_FILE_BYTES) {
-          incomplete.push({ source: 'cross-artifact', family: source.family, reason: `artifact exceeds per-file cap ${CROSS_ARTIFACT_MAX_FILE_BYTES} bytes` });
-          continue;
-        }
-        let buffer;
-        try {
-          buffer = await fsp.readFile(artifactPath);
-        } catch (err) {
-          incomplete.push({ source: 'cross-artifact', family: source.family, reason: `artifact unreadable (${err?.code ?? 'error'})` });
+        const read = await readBoundedRegularFile(artifactPath, CROSS_ARTIFACT_MAX_FILE_BYTES);
+        if (!read.ok) {
+          if (read.code === 'ENOENT' && !source.artifactFile) continue; // enumerated-then-vanished race for a non-canonical file
+          if (read.code === 'ENOENT' && source.artifactFile) {
+            // A VALIDATED run whose canonical artifact (doctor.json) is missing is
+            // a corrupt source we cannot scan for cross-refs — fail-closed.
+            incomplete.push({ source: 'cross-artifact', family: source.family, reason: `canonical artifact ${source.artifactFile} missing for ${entry.name}` });
+            continue;
+          }
+          if (read.code === 'ENOTFILE' || read.code === 'ESYMLINK') {
+            // A canonical artifact that is a dir/symlink is corrupt — fail-closed.
+            incomplete.push({ source: 'cross-artifact', family: source.family, reason: `artifact not a regular file (${read.code})` });
+            continue;
+          }
+          incomplete.push({ source: 'cross-artifact', family: source.family, reason: `artifact unreadable (${read.code})` });
           continue;
         }
         filesRead += 1;
-        const text = decodeText(buffer);
+        const text = decodeText(read.buffer);
         if (text === null) {
-          // A binary artifact where JSON was expected is a corrupt source —
-          // fail-closed (it could reference anything).
           incomplete.push({ source: 'cross-artifact', family: source.family, reason: 'artifact undecodable (expected JSON text)' });
           continue;
         }
-        harvestRunIdTokens(text, pinned);
+        // Parse as JSON and harvest from the DECODED string values (Codex review
+        // MAJOR): a raw-text regex misses a run-id written as a JSON unicode
+        // escape. A parse failure is a corrupt source — fail-closed.
+        let json;
+        try {
+          json = JSON.parse(text);
+        } catch {
+          incomplete.push({ source: 'cross-artifact', family: source.family, reason: 'artifact malformed (invalid JSON)' });
+          continue;
+        }
+        harvestRunIdTokensFromJson(json, pinned, exclude);
       }
     }
   }
@@ -462,11 +574,25 @@ async function inventoryFamily({ repoRoot, family, now }) {
     // deletable).
     if (!entry.isDirectory() || !registry.runIdRe.test(entry.name)) continue;
     const runDir = path.join(root, entry.name);
+    // Seed newestMtimeMs with the run DIRECTORY's own mtime (Codex review
+    // MAJOR): a fresh EMPTY run has no files, so a file-only walk would leave
+    // newestMtimeMs=0 → age ≈ epoch → the fresh run looks decades old and
+    // becomes actionable, defeating the minimum-age guard. The dir's own mtime
+    // is a real recency signal; nested dir mtimes are folded in by walkRunDir.
     const usage = { bytes: 0, newestMtimeMs: 0 };
+    try {
+      const dirStat = await fsp.lstat(runDir);
+      if (Number.isFinite(dirStat.mtimeMs)) usage.newestMtimeMs = dirStat.mtimeMs;
+    } catch {
+      // lstat of a directory readdir just yielded should not fail; if it does,
+      // treat the run as unreadable below.
+    }
+    let runUnreadable = false;
     try {
       await walkRunDir(runDir, usage);
     } catch {
       unreadable += 1;
+      runUnreadable = true;
     }
     runs.push({
       run_id: entry.name,
@@ -474,6 +600,9 @@ async function inventoryFamily({ repoRoot, family, now }) {
       bytes: usage.bytes,
       newest_mtime_ms: usage.newestMtimeMs,
       age_ms: Math.max(0, now.getTime() - usage.newestMtimeMs),
+      // A run we could not fully walk has unknown size/recency — it is never a
+      // deletion candidate (fail-closed against deleting something we can't see).
+      unreadable: runUnreadable,
     });
   }
   runs.sort((a, b) => a.ts_ms - b.ts_ms || (a.run_id < b.run_id ? -1 : a.run_id > b.run_id ? 1 : 0));
@@ -491,6 +620,9 @@ async function walkRunDir(dir, usage) {
       continue;
     }
     if (info.isDirectory()) {
+      // Fold the nested directory's OWN mtime in too (a run whose only recent
+      // change is a new empty subdir is still recent).
+      if (Number.isFinite(info.mtimeMs)) usage.newestMtimeMs = Math.max(usage.newestMtimeMs, info.mtimeMs);
       await walkRunDir(p, usage);
       continue;
     }
@@ -513,6 +645,10 @@ export async function planRetention({
   }
   const runCap = Number.isFinite(caps.runCap) && caps.runCap >= 0 ? Math.trunc(caps.runCap) : 20;
   const maxBytes = Number.isFinite(caps.maxBytes) && caps.maxBytes >= 0 ? Math.trunc(caps.maxBytes) : 50 * 1024 * 1024;
+  // The minimum-age guard is a SAFETY floor: a null/negative/NaN override would
+  // silently disable it and let a just-written run be deleted. Clamp any invalid
+  // value back to the constant (Codex review MINOR).
+  const effectiveMinAgeMs = Number.isFinite(minAgeMs) && minAgeMs >= 0 ? minAgeMs : RETENTION_MIN_AGE_MS;
 
   // Run every pin source. Each returns its own scanComplete + incomplete
   // reasons; the plan's scan_complete is the AND of all of them.
@@ -557,7 +693,7 @@ export async function planRetention({
       }
     }
     families[family] = classifyFamily({
-      inv, pins, runCap, maxBytes, minAgeMs, scanComplete, now,
+      inv, pins, runCap, maxBytes, minAgeMs: effectiveMinAgeMs, scanComplete, now,
     });
   }
 
@@ -592,25 +728,37 @@ function classifyFamily({ inv, pins, runCap, maxBytes, minAgeMs, scanComplete, n
   const overCapByBytes = totalBytes > maxBytes;
   const overCap = overCapByCount || overCapByBytes;
 
-  // Unpinned runs, oldest-first, are the deletion-candidate pool.
-  const unpinnedOldestFirst = runs.filter((r) => !pinnedRunIds.has(r.run_id));
+  // Pinned totals — the non-deletable floor. When the pins ALONE already meet or
+  // exceed a cap, deleting unpinned runs cannot bring the family under it, and
+  // the ADR is explicit: "when pins alone exceed a cap, nothing is deletable."
+  // So the count/byte pressure that DRIVES deletion is measured against the
+  // pinned floor, not the raw total (Codex review MAJOR — the prior code deleted
+  // unpinned runs even when pins alone were over cap).
+  const pinnedBytes = runs.reduce((acc, r) => acc + (pinnedRunIds.has(r.run_id) ? r.bytes : 0), 0);
+  // pins EXCEED the cap (strictly >) ⇒ deleting unpinned runs can never reach
+  // the cap ⇒ nothing deletable. pins EQUAL the cap is still deletable: dropping
+  // the unpinned runs lands exactly AT the cap (the pinned set). (Codex review
+  // MAJOR — an earlier `>=` wrongly suppressed the pins==cap case too.)
+  const excessCount = pinnedRunIds.size > runCap ? 0 : Math.max(0, runs.length - runCap);
+  const bytesDeletable = pinnedBytes <= maxBytes; // else no unpinned deletion can get under
 
-  // How many runs must go to bring the family within the count cap. Pins count
-  // toward the total, so a family that is over cap purely because of pins yields
-  // zero actionable removals.
-  const excessCount = Math.max(0, runs.length - runCap);
+  // Unpinned, non-unreadable runs, oldest-first, are the deletion-candidate pool.
+  // An unreadable run (walk failed) is never a candidate — its size/recency are
+  // unknown (Codex review MAJOR).
+  const unpinnedOldestFirst = runs.filter((r) => !pinnedRunIds.has(r.run_id) && !r.unreadable);
 
   const actionable = [];
   const tooYoung = [];
   const pinnedOverage = [];
   if (overCap) {
-    // Byte-driven pressure: keep deleting oldest unpinned age-cleared runs until
-    // both the count excess is covered and bytes are back under the cap.
+    // Delete oldest unpinned age-cleared runs until BOTH the count excess is
+    // covered AND bytes are back under the cap — but only pursue byte pressure
+    // when the pinned floor itself is under the byte cap.
     let remainingBytes = totalBytes;
     let removedForCount = 0;
     for (const run of unpinnedOldestFirst) {
       const needCount = removedForCount < excessCount;
-      const needBytes = remainingBytes > maxBytes;
+      const needBytes = bytesDeletable && remainingBytes > maxBytes;
       if (!needCount && !needBytes) break;
       if (run.age_ms < minAgeMs) {
         tooYoung.push(run.run_id);
@@ -672,9 +820,15 @@ export function computeRetentionPlanHash(plan) {
   for (const family of RETENTION_FAMILIES) {
     const f = plan.families[family];
     if (!f) continue;
+    // Sort the run-id KEYS, not just each reasons array (Codex review MAJOR):
+    // JSON.stringify preserves insertion order, and pin discovery order comes
+    // from unsorted filesystem traversal + pin-source order — so the SAME
+    // logical pin set could otherwise hash differently across runs. Rebuild the
+    // pins object with sorted keys so the hash reflects the pin SET, not the
+    // order it was discovered in.
     const pins = {};
-    for (const [runId, reasons] of Object.entries(f.pins)) {
-      pins[runId] = [...reasons].sort();
+    for (const runId of Object.keys(f.pins).sort()) {
+      pins[runId] = [...f.pins[runId]].sort();
     }
     canonical.families[family] = {
       pins,
@@ -699,10 +853,13 @@ export function projectRetentionAttention(plan) {
     families[family] = {
       family,
       over_cap: f.over_cap,
+      over_cap_by_count: f.over_cap_by_count,
+      over_cap_by_bytes: f.over_cap_by_bytes,
       run_count: f.run_count,
       pinned_count: f.pinned_count,
       actionable: f.actionable_excess.length,
       pinned_overage: f.pinned_overage.length,
+      withheld_too_young: f.withheld_too_young.length,
       scan_complete: plan.scan_complete,
     };
   }
@@ -725,15 +882,25 @@ export function projectRetentionAttention(plan) {
 export function reconcileRetentionAttention(inventoryAttention, projection) {
   const attention = [];
   const demoted = [];
-  const overageKinds = new Set(['run_count_exceeds_cap', 'bytes_exceed_cap']);
   const scanComplete = projection?.scan_complete === true;
   for (const item of Array.isArray(inventoryAttention) ? inventoryAttention : []) {
     const projFamily = projection?.families?.[item?.family];
+    // Demote per-KIND against the MATCHING over-cap dimension, and ONLY when
+    // real pinned overage explains it (Codex review MAJOR): a count-cap
+    // attention demotes only if the planner is over its COUNT cap; a byte-cap
+    // attention only if over its BYTE cap. Requiring pinned_overage > 0 and
+    // zero actionable/withheld-young ensures the overage is genuinely
+    // pins-only — a fresh entirely-unpinned over-cap family (actionable 0 only
+    // because its runs are too young, pinned_overage 0) is NOT demoted.
+    let dimensionOverCap = false;
+    if (item?.kind === 'run_count_exceeds_cap') dimensionOverCap = projFamily?.over_cap_by_count === true;
+    else if (item?.kind === 'bytes_exceed_cap') dimensionOverCap = projFamily?.over_cap_by_bytes === true;
     const pinnedOnly = scanComplete
       && projFamily
-      && projFamily.over_cap === true
+      && dimensionOverCap
       && projFamily.actionable === 0
-      && overageKinds.has(item?.kind);
+      && projFamily.withheld_too_young === 0
+      && projFamily.pinned_overage > 0;
     if (pinnedOnly) {
       demoted.push({
         family: item.family,

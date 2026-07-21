@@ -2342,6 +2342,11 @@ describe('runtime doctor', () => {
     const text = formatText(report);
     ok(text.includes('Runtime Retention Plan'));
     ok(text.includes('retention-informational: compat/pinned_overage'));
+    // The raw inventory block must NOT also render the demoted overage as a
+    // fault-with-removal-recommendation (Codex review MAJOR — the double render
+    // would tell the operator to delete pinned evidence).
+    ok(!text.includes('retention-attention: compat/run_count_exceeds_cap'),
+      'a demoted pinned-only overage must not also render as a raw removal fault');
   });
 
   it('keeps the retention-guidance warning when a registry family has genuine actionable overage', async () => {

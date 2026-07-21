@@ -67,7 +67,10 @@ import {
 // 1.0 → 1.1 (additive, ADR-0045 S8): tier1.entry_advisory — present only
 // when the caller opts the snapshot into the entry advisory; never present
 // in --watch reports.
-export const DASHBOARD_SCHEMA_VERSION = 'runtime-dashboard-1.1';
+// 1.1 → 1.2 (additive, ADR-0047 §7): tier2.retention — the read-only retention
+// projection, present in the SNAPSHOT only (gated on the same signal as the
+// entry advisory; the --watch loop omits it and spawns no git).
+export const DASHBOARD_SCHEMA_VERSION = 'runtime-dashboard-1.2';
 export const DEFAULT_WATCH_INTERVAL_SECONDS = 2;
 export const MIN_WATCH_INTERVAL_SECONDS = 1;
 export const DEFAULT_RECENT_NOTIFICATIONS = 5;
@@ -714,12 +717,21 @@ export async function buildDashboardReport({
         caps: { runCap: DEFAULT_ARTIFACT_RETENTION_CAP, maxBytes: DEFAULT_ARTIFACT_RETENTION_MAX_BYTES },
       });
       const projection = projectRetentionAttention(plan);
+      const reconciled = reconcileRetentionAttention(artifacts.attention, projection);
+      // Align the status semantics with doctor (Codex review MINOR): genuine
+      // (non-demoted) attention ⇒ needs_attention; an incomplete scan ⇒
+      // scan-incomplete; otherwise available.
+      const status = !plan.scan_complete
+        ? 'scan-incomplete'
+        : reconciled.attention.length > 0
+          ? 'needs_attention'
+          : 'available';
       retention = {
-        status: plan.scan_complete ? 'available' : 'scan-incomplete',
+        status,
         scan_complete: plan.scan_complete,
         plan_hash: plan.plan_hash,
         projection: projection.families,
-        reconciled: reconcileRetentionAttention(artifacts.attention, projection),
+        reconciled,
       };
     } catch (err) {
       retention = { status: 'blocked', scan_complete: false, error: err?.message ?? String(err), projection: {}, reconciled: { attention: artifacts.attention, demoted: [] } };
@@ -960,6 +972,9 @@ export function renderDashboardText(report) {
         lines.push(`    ${family}: over-cap=${f.over_cap}; actionable=${f.actionable}; pinned-overage=${f.pinned_overage}`);
       }
     }
+  } else if (retention && retention.status === 'blocked') {
+    // Never silently hide a failed planner in the snapshot (Codex review MINOR).
+    lines.push(`- retention: blocked — planner failed${retention.error ? ` (${retention.error})` : ''}`);
   }
   const notify = report.tier2.notify;
   if (notify.config.status === 'invalid') {
