@@ -691,16 +691,11 @@ function withReclaimLock(claimPath, { now, lockStaleMs }, fn) {
     fs.mkdirSync(lockDir);
   } catch (error) {
     if (error && error.code === 'EEXIST') {
-      const lockMtimeMs = statMtimeMs(lockDir);
-      if (lockMtimeMs !== null && isLockStale({ nowMs: now, mtimeMs: lockMtimeMs, lockStaleMs })) {
-        // Sweep a crashed reclaimer's stale lock for the NEXT caller, but
-        // concede this call (never sweep-and-act — the §1 double-fire rule).
-        try {
-          fs.rmSync(lockDir, { recursive: true, force: true });
-        } catch {
-          // Lost the sweep race — concede either way.
-        }
-      }
+      // Sweep a crashed reclaimer's stale lock for the NEXT caller, but
+      // concede this call (never sweep-and-act — the §1 double-fire rule).
+      // Capture-verified removal (Codex review C2): a blind lstat→rm pair
+      // could destroy a FRESH lock recycled at this path in the gap.
+      removeStaleLockDirCaptured(lockDir, { now, lockStaleMs });
       return { locked: false };
     }
     throw error;
@@ -717,7 +712,15 @@ function withReclaimLock(claimPath, { now, lockStaleMs }, fn) {
     throw error;
   }
   try {
-    return { locked: true, value: fn() };
+    // stillOwner mirrors claimDedupe's in-section ownership RE-CHECK (one
+    // protocol for all claim mutators): consumers call it immediately before
+    // their destructive step so a caller whose lock was swept as stale
+    // mid-section (a pause past lockStaleMs) concedes instead of acting on a
+    // successor's state. The check-to-act gap that remains requires a second
+    // lockStaleMs-length pause inside a few statements — the same accepted
+    // residual claimDedupe documents.
+    const stillOwner = () => readLockOwner(lockDir) === nonce;
+    return { locked: true, value: fn({ stillOwner }) };
   } finally {
     if (readLockOwner(lockDir) === nonce) {
       try {
@@ -727,6 +730,60 @@ function withReclaimLock(claimPath, { now, lockStaleMs }, fn) {
       }
     }
   }
+}
+
+// Capture-verified stale-lock-directory removal (ADR-0047 §6, Codex review
+// C2). The naive shape — lstat says stale, rmSync the path — has an ABA hole:
+// between the lstat and the rm, another observer can remove the stale dir and
+// a reclaimer/finalizer can create a FRESH lock at the same reusable path;
+// the delayed rm then destroys a live lock whose owner never paused, handing
+// two actors the critical section at once (the no-double-pause double-fire
+// chain). The repair captures the directory by ATOMIC rename to a unique
+// tombstone first, re-verifies staleness on the CAPTURED directory, and only
+// then removes it; a wrongly-captured fresh lock is renamed back (or, if the
+// path was re-occupied in the interim, dropped — which degrades to the same
+// bounded eviction the pre-existing residual already accepts).
+// Mirror note (fix-the-mirror convention): claimDedupe's reclaim-side stale
+// sweep and notify.mjs maybeRotate keep the naive shape deliberately — both
+// concede after sweeping, so their ABA exposure requires the double-pause
+// precondition already documented as the accepted residual, and both are
+// pinned "verified correct" by ADR-0047 §6. This helper governs the new
+// §6 surfaces (finalization + sweep).
+function removeStaleLockDirCaptured(lockDir, { now, lockStaleMs }) {
+  const probe = lstatIfPresent(lockDir);
+  if (!probe.ok) return { removed: false, reason: probe.code === 'ENOENT' ? 'concurrent' : 'failure' };
+  if (!probe.stats.isDirectory()) return { removed: false, reason: 'non-conforming' };
+  if (!isLockStale({ nowMs: now, mtimeMs: probe.stats.mtimeMs, lockStaleMs })) {
+    return { removed: false, reason: 'live' };
+  }
+  const tombstone = `${lockDir}.gc-${shortHash(`${lockDir}:${now}:${Math.random()}`, 12)}`;
+  try {
+    fs.renameSync(lockDir, tombstone);
+  } catch (error) {
+    return { removed: false, reason: error?.code === 'ENOENT' ? 'concurrent' : 'failure' };
+  }
+  const captured = lstatIfPresent(tombstone);
+  if (captured.ok && !isLockStale({ nowMs: now, mtimeMs: captured.stats.mtimeMs, lockStaleMs })) {
+    // ABA detected: what we captured is FRESH — a live owner's lock. Restore
+    // it; if the original path was already re-occupied, drop the tombstone
+    // (bounded eviction, the accepted residual) rather than leave two locks.
+    try {
+      fs.renameSync(tombstone, lockDir);
+    } catch {
+      try {
+        fs.rmSync(tombstone, { recursive: true, force: true });
+      } catch {
+        // Leaked tombstone — collected by the sweep's tombstone branch.
+      }
+    }
+    return { removed: false, reason: 'aba-restored' };
+  }
+  try {
+    fs.rmSync(tombstone, { recursive: true, force: true });
+  } catch {
+    return { removed: false, reason: 'failure' };
+  }
+  return { removed: true };
 }
 
 // Success finalization: re-pin the owned claim so the TTL window is measured
@@ -747,10 +804,14 @@ export function promoteClaim({
   requireNonEmptyString(ownerToken, 'ownerToken');
   const claimPath = path.join(dedupeDir, claimFileName(eventId));
   try {
-    const outcome = withReclaimLock(claimPath, { now, lockStaleMs }, () => {
+    const outcome = withReclaimLock(claimPath, { now, lockStaleMs }, ({ stillOwner }) => {
       const claim = readClaim(claimPath);
       if (!claim.ok) return { promoted: false, reason: 'no-claim' };
       if (claim.record.owner_token !== ownerToken) return { promoted: false, reason: 'not-owner' };
+      // In-section ownership re-check immediately before the destructive
+      // rewrite (one protocol with claimDedupe's reclaim): if our lock was
+      // swept mid-section, a successor may own this slot — concede.
+      if (!stillOwner()) return { promoted: false, reason: 'lost-lock' };
       fs.writeFileSync(
         claimPath,
         `${JSON.stringify({
@@ -791,10 +852,13 @@ export function releaseClaim({
   requireNonEmptyString(ownerToken, 'ownerToken');
   const claimPath = path.join(dedupeDir, claimFileName(eventId));
   try {
-    const outcome = withReclaimLock(claimPath, { now, lockStaleMs }, () => {
+    const outcome = withReclaimLock(claimPath, { now, lockStaleMs }, ({ stillOwner }) => {
       const claim = readClaim(claimPath);
       if (!claim.ok) return { released: false, reason: 'no-claim' };
       if (claim.record.owner_token !== ownerToken) return { released: false, reason: 'not-owner' };
+      // In-section ownership re-check immediately before the destructive
+      // unlink — see promoteClaim.
+      if (!stillOwner()) return { released: false, reason: 'lost-lock' };
       try {
         fs.unlinkSync(claimPath);
       } catch (error) {
@@ -823,16 +887,22 @@ export function releaseClaim({
 // holding that claim's `.reclaim.lock` via the same non-recursive-mkdir
 // acquisition as claimDedupe's reclaim and promote/release finalization —
 // EEXIST ⇒ concede the entry (a live reclaimer/finalizer owns it) — with a
-// gc-eligibility RE-CHECK on a fresh lstat inside the critical section, so a
-// claim a reclaimer just re-created fresh is never destroyed (that interleave
-// is exactly the two-`claimed:true`-in-one-TTL-window double-fire ADR-0040 §1
-// forbids). Deletion demands isClaimGcEligible (TTL + safety margin), never
-// bare TTL expiry.
+// gc-eligibility RE-CHECK on a fresh lstat plus an ownership re-check inside
+// the critical section, so a claim a reclaimer just re-created fresh is never
+// destroyed (that interleave is exactly the two-`claimed:true`-in-one-TTL-
+// window double-fire ADR-0040 §1 forbids). Deletion demands isClaimGcEligible
+// (TTL + safety margin), never bare TTL expiry. When this sweep removes a
+// claim's STALE lock, that claim is conceded for the REST of this invocation
+// (Codex review C1): sweep-for-the-next-caller means a later sweep/emit, never
+// "and then act on the claim myself" — cursor rotation may visit the lock
+// before its claim, and same-invocation continuation would shrink the paused-
+// owner protection window from a full invocation gap to microseconds.
 //
 // Only entries the claim machinery itself writes are ever touched: regular
-// files named `<32hex>.claim`, and stale `<32hex>.claim.reclaim.lock`
-// directories. Symlinks, directories masquerading as claims, foreign names,
-// and the sweep's own cursor are non-candidates by shape. A path that
+// files named `<32hex>.claim`, stale `<32hex>.claim.reclaim.lock`
+// directories (capture-verified removal — see removeStaleLockDirCaptured),
+// and leaked capture tombstones. Symlinks, directories masquerading as
+// claims, and foreign names are non-candidates by shape. A path that
 // vanishes between readdir and lstat is a CONCURRENT CHANGE — skipped, not
 // counted as a failure (observer semantics unified with the dashboard's
 // inspectNotifyState).
@@ -840,13 +910,23 @@ export function releaseClaim({
 // Per-emit bounds — implementation constants pinned by test. The sweep rides
 // the notification hot path (hook sensors), so each emit does at most this
 // much janitorial work; convergence over a backlog comes from successive
-// emits plus cursor rotation, not from one big scan.
+// emits plus cursor rotation, not from one big scan. The wall-clock cutoff
+// covers the WHOLE attempt — cursor read, directory listing, and the scan —
+// and the listing itself is capped (SWEEP_MAX_LIST dirents via opendir
+// streaming), so a pathologically large dedupe dir cannot make the
+// preprocessing unbounded (Codex review M5).
 export const SWEEP_MAX_ENTRIES = 64;
 export const SWEEP_MAX_DELETIONS = 8;
 export const SWEEP_MAX_ELAPSED_MS = 100;
+export const SWEEP_MAX_LIST = 512;
 
 const CLAIM_NAME_RE = /^[0-9a-f]{32}\.claim$/;
 const RECLAIM_LOCK_NAME_RE = /^[0-9a-f]{32}\.claim\.reclaim\.lock$/;
+// A crashed capture (removeStaleLockDirCaptured) leaks a tombstone; its name
+// is nonce-unique so nothing ever re-creates a FRESH directory at a used
+// tombstone path — blind removal is ABA-free there, gated on the same
+// staleness age.
+const CAPTURE_TOMBSTONE_NAME_RE = /^[0-9a-f]{32}\.claim\.reclaim\.lock\.gc-[0-9a-f]{12}$/;
 const SWEEP_CURSOR_NAME = 'sweep.cursor';
 
 function lstatIfPresent(targetPath) {
@@ -860,44 +940,134 @@ function lstatIfPresent(targetPath) {
 // Rotating enumeration start (fairness): the cursor persists the last
 // candidate name examined, and the next sweep resumes strictly after it in
 // sorted order, wrapping around — so a backlog whose head is perpetually
-// fresh cannot starve the tail. Best-effort on both ends: a missing/corrupt
-// cursor restarts from the beginning, a failed write costs rotation, never
-// correctness.
+// fresh cannot starve the tail. The cursor lives in the notify state dir
+// (BESIDE the dedupe dir, not inside it): the dedupe dir stays exclusively
+// claim-machinery entries, so the dashboard's advisory per-file claim count
+// (including OLDER dashboards) never mistakes the cursor for a stale claim
+// (Codex review M6). Best-effort on both ends — a missing/corrupt/unusable
+// cursor falls back to a `now`-derived rotating start (the ADR's "equivalent
+// randomized start"), so persistent cursor failure degrades fairness to
+// per-emit rotation, never to a permanently-starved tail (Codex review M7).
+function sweepCursorPathFor(dedupeDir) {
+  return path.join(path.dirname(dedupeDir), SWEEP_CURSOR_NAME);
+}
+
+// Cursor IO is fd-based with O_NOFOLLOW + O_NONBLOCK and an fstat isFile
+// re-check, so a pre-planted symlink can never make the sweep read from or
+// truncate-write through to an arbitrary target, and a FIFO can never block
+// the hot path (Codex review M4). Any anomaly reads as "no usable cursor".
 function readSweepCursor(cursorPath) {
+  let fd = null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(cursorPath, 'utf8'));
+    fd = fs.openSync(
+      cursorPath,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+    );
+    if (!fs.fstatSync(fd).isFile()) return null;
+    const parsed = JSON.parse(fs.readFileSync(fd, 'utf8'));
     return typeof parsed?.last === 'string' ? parsed.last : null;
   } catch {
     return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // best effort
+      }
+    }
   }
 }
 
 function writeSweepCursor(cursorPath, last) {
+  // Exclusive-create temp + atomic rename (the repo's sanctioned write shape):
+  // 'wx' can never follow a planted symlink, and renameSync over a squatted
+  // cursor path replaces the LINK itself — the link's target is never opened,
+  // truncated, or written. Best-effort throughout: losing the cursor degrades
+  // fairness, not safety. A crash between create and rename leaks one
+  // `.tmp-*` file beside the state dir's other bookkeeping — bounded and
+  // inert (its name matches no sweep candidate shape).
+  const tmpPath = `${cursorPath}.tmp-${shortHash(`${cursorPath}:${last}:${Math.random()}`, 12)}`;
+  let fd = null;
   try {
-    fs.writeFileSync(cursorPath, `${JSON.stringify({ last })}\n`);
+    fd = fs.openSync(tmpPath, 'wx');
+    fs.writeSync(fd, `${JSON.stringify({ last })}\n`);
   } catch {
-    // Best-effort: losing the cursor degrades fairness, not safety.
+    fd = null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // best effort
+      }
+    }
+  }
+  if (fd === null) return;
+  try {
+    fs.renameSync(tmpPath, cursorPath);
+  } catch {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {
+      // best effort
+    }
   }
 }
 
-// Sweep expired dedupe claims and stale reclaim locks under dedupeDir.
-// Janitorial by contract: NEVER throws (bad args and unreadable state are
-// reported as data), and a per-entry failure is contained — the caller's emit
-// outcome is computed from its claimDedupe result alone. `excludeClaimPath`
-// fences the current emit's own claim regardless of its age. `now` is the
-// TTL observation clock (injectable, measured against mtime like claimDedupe);
+// Bounded conforming-name listing via opendir streaming: reads at most
+// maxList dirents and honors the elapsed cutoff DURING the listing, so the
+// caps genuinely bound the whole attempt, not just the post-listing scan.
+function listSweepCandidates(dedupeDir, { maxList, isOverBudget }) {
+  const names = [];
+  let dir = null;
+  let truncated = false;
+  try {
+    dir = fs.opendirSync(dedupeDir);
+    let seen = 0;
+    for (;;) {
+      if (isOverBudget()) {
+        truncated = true;
+        break;
+      }
+      const entry = dir.readSync();
+      if (entry === null) break;
+      seen += 1;
+      if (
+        CLAIM_NAME_RE.test(entry.name)
+        || RECLAIM_LOCK_NAME_RE.test(entry.name)
+        || CAPTURE_TOMBSTONE_NAME_RE.test(entry.name)
+      ) {
+        names.push(entry.name);
+      }
+      if (seen >= maxList) {
+        truncated = true;
+        break;
+      }
+    }
+  } catch (error) {
+    return { ok: false, code: error?.code ?? 'UNKNOWN', names: [], truncated };
+  } finally {
+    if (dir !== null) {
+      try {
+        dir.closeSync();
+      } catch {
+        // best effort
+      }
+    }
+  }
+  return { ok: true, names, truncated };
+}
+
+// Sweep expired dedupe claims, stale reclaim locks, and leaked capture
+// tombstones under dedupeDir. Janitorial by contract: NEVER throws (bad args,
+// unreadable state, and even a throwing injected clock are reported as data),
+// and a per-entry failure is contained — the caller's emit outcome is
+// computed from its claimDedupe result alone. `excludeClaimPath` fences the
+// current emit's own claim regardless of its age. `now` is the TTL
+// observation clock (injectable, measured against mtime like claimDedupe);
 // `elapsedClock` is the wall-clock source for the cutoff bound.
-export function sweepExpiredClaims({
-  dedupeDir,
-  ttlSeconds,
-  now = Date.now(),
-  lockStaleMs = DEFAULT_LOCK_STALE_MS,
-  excludeClaimPath = null,
-  maxEntries = SWEEP_MAX_ENTRIES,
-  maxDeletions = SWEEP_MAX_DELETIONS,
-  maxElapsedMs = SWEEP_MAX_ELAPSED_MS,
-  elapsedClock = Date.now,
-} = {}) {
+export function sweepExpiredClaims(options = {}) {
   const summary = {
     swept: false,
     reason: null,
@@ -910,6 +1080,27 @@ export function sweepExpiredClaims({
     skipped_excluded: 0,
     failures: 0,
   };
+  try {
+    return sweepExpiredClaimsInner(options, summary);
+  } catch {
+    summary.reason = summary.reason ?? 'internal-error';
+    return summary;
+  }
+}
+
+function sweepExpiredClaimsInner({
+  dedupeDir,
+  ttlSeconds,
+  now = Date.now(),
+  lockStaleMs = DEFAULT_LOCK_STALE_MS,
+  excludeClaimPath = null,
+  maxEntries = SWEEP_MAX_ENTRIES,
+  maxDeletions = SWEEP_MAX_DELETIONS,
+  maxElapsedMs = SWEEP_MAX_ELAPSED_MS,
+  maxList = SWEEP_MAX_LIST,
+  elapsedClock = Date.now,
+  cursorPath = null,
+} = {}, summary) {
   if (typeof dedupeDir !== 'string' || dedupeDir.length === 0) {
     summary.reason = 'bad-args:dedupeDir';
     return summary;
@@ -918,34 +1109,49 @@ export function sweepExpiredClaims({
     summary.reason = 'bad-args:ttlSeconds';
     return summary;
   }
+  const clock = typeof elapsedClock === 'function' ? elapsedClock : Date.now;
   const ttlMs = ttlSeconds * 1000;
-  const excluded = excludeClaimPath ? path.resolve(excludeClaimPath) : null;
+  const excluded = typeof excludeClaimPath === 'string' && excludeClaimPath.length > 0
+    ? path.resolve(excludeClaimPath)
+    : null;
+  const effectiveCursorPath = typeof cursorPath === 'string' && cursorPath.length > 0
+    ? cursorPath
+    : sweepCursorPathFor(dedupeDir);
 
-  let names;
-  try {
-    names = fs.readdirSync(dedupeDir);
-  } catch (error) {
-    summary.reason = error?.code === 'ENOENT' ? 'no-dedupe-dir' : `readdir:${error?.code ?? 'UNKNOWN'}`;
+  // The wall-clock budget covers the ENTIRE attempt from here: cursor read,
+  // listing, and scan (Codex review M5).
+  const startedAt = clock();
+  const isOverBudget = () => clock() - startedAt >= maxElapsedMs;
+
+  const cursor = readSweepCursor(effectiveCursorPath);
+
+  const listing = listSweepCandidates(dedupeDir, { maxList, isOverBudget });
+  if (!listing.ok) {
+    summary.reason = listing.code === 'ENOENT' ? 'no-dedupe-dir' : `readdir:${listing.code}`;
+    return summary;
+  }
+  const candidates = listing.names.sort();
+  summary.swept = true;
+  if (candidates.length === 0) {
+    if (listing.truncated) summary.reason = isOverBudget() ? 'elapsed-cutoff' : 'list-cap';
     return summary;
   }
 
-  // Candidate set by NAME SHAPE only — everything else is invisible to the
-  // sweep. Sorted for deterministic rotation.
-  const candidates = names
-    .filter((name) => CLAIM_NAME_RE.test(name) || RECLAIM_LOCK_NAME_RE.test(name))
-    .sort();
-  summary.swept = true;
-  if (candidates.length === 0) return summary;
-
-  const cursorPath = path.join(dedupeDir, SWEEP_CURSOR_NAME);
-  const cursor = readSweepCursor(cursorPath);
-  let start = 0;
+  let start;
   if (cursor !== null) {
     const after = candidates.findIndex((name) => name > cursor);
     start = after === -1 ? 0 : after;
+  } else {
+    // No usable cursor — `now`-derived rotating start so repeated cursor
+    // failure still rotates across emits instead of re-examining the same
+    // head forever (Codex review M7).
+    start = Math.abs(Math.trunc(now)) % candidates.length;
   }
 
-  const startedAt = elapsedClock();
+  // Claims whose STALE lock this invocation removed: conceded until the next
+  // caller (Codex review C1).
+  const concededClaims = new Set();
+
   let deletions = 0;
   let lastExamined = null;
   for (let i = 0; i < candidates.length; i++) {
@@ -957,7 +1163,7 @@ export function sweepExpiredClaims({
       summary.reason = 'deletion-cap';
       break;
     }
-    if (elapsedClock() - startedAt >= maxElapsedMs) {
+    if (isOverBudget()) {
       summary.reason = 'elapsed-cutoff';
       break;
     }
@@ -966,7 +1172,9 @@ export function sweepExpiredClaims({
     summary.examined += 1;
     lastExamined = name;
     try {
-      if (RECLAIM_LOCK_NAME_RE.test(name)) {
+      if (CAPTURE_TOMBSTONE_NAME_RE.test(name)) {
+        // Leaked capture tombstone: nonce-unique name ⇒ nothing ever
+        // re-creates a fresh dir here ⇒ blind stale-gated removal is safe.
         const info = lstatIfPresent(entryPath);
         if (!info.ok) {
           if (info.code === 'ENOENT') summary.skipped_concurrent += 1;
@@ -975,17 +1183,41 @@ export function sweepExpiredClaims({
         }
         if (!info.stats.isDirectory()) continue; // non-conforming — never touched
         if (!isLockStale({ nowMs: now, mtimeMs: info.stats.mtimeMs, lockStaleMs })) {
-          summary.skipped_fresh += 1; // live lock — a reclaimer/finalizer owns it
+          summary.skipped_fresh += 1;
           continue;
         }
-        const staleLockDir = entryPath;
-        fs.rmSync(staleLockDir, { recursive: true, force: true });
+        const tombstone = entryPath;
+        fs.rmSync(tombstone, { recursive: true, force: true });
         summary.swept_locks += 1;
         deletions += 1;
         continue;
       }
 
+      if (RECLAIM_LOCK_NAME_RE.test(name)) {
+        const removal = removeStaleLockDirCaptured(entryPath, { now, lockStaleMs });
+        if (removal.removed) {
+          summary.swept_locks += 1;
+          deletions += 1;
+          // The paired claim is conceded for the rest of THIS invocation —
+          // sweep-for-the-next-caller, never sweep-then-act (C1).
+          concededClaims.add(name.slice(0, -'.reclaim.lock'.length));
+        } else if (removal.reason === 'live') {
+          summary.skipped_fresh += 1;
+        } else if (removal.reason === 'concurrent') {
+          summary.skipped_concurrent += 1;
+        } else if (removal.reason === 'aba-restored') {
+          summary.conceded += 1;
+        } else if (removal.reason === 'failure') {
+          summary.failures += 1;
+        }
+        continue;
+      }
+
       // `<32hex>.claim` candidate.
+      if (concededClaims.has(name)) {
+        summary.conceded += 1;
+        continue;
+      }
       if (excluded !== null && path.resolve(entryPath) === excluded) {
         summary.skipped_excluded += 1;
         continue;
@@ -1001,7 +1233,7 @@ export function sweepExpiredClaims({
         summary.skipped_fresh += 1;
         continue;
       }
-      const outcome = withReclaimLock(entryPath, { now, lockStaleMs }, () => {
+      const outcome = withReclaimLock(entryPath, { now, lockStaleMs }, ({ stillOwner }) => {
         // Fresh lstat INSIDE the critical section: a reclaimer that owned the
         // lock a moment ago may have re-created this claim fresh.
         const recheck = lstatIfPresent(entryPath);
@@ -1013,6 +1245,9 @@ export function sweepExpiredClaims({
         if (!isClaimGcEligible({ nowMs: now, mtimeMs: recheck.stats.mtimeMs, ttlMs })) {
           return { deleted: false, why: 'fresh' };
         }
+        // Ownership re-check immediately before the destructive step (one
+        // protocol with claimDedupe's reclaim and promote/release).
+        if (!stillOwner()) return { deleted: false, why: 'concurrent' };
         try {
           fs.unlinkSync(entryPath);
         } catch (error) {
@@ -1035,12 +1270,15 @@ export function sweepExpiredClaims({
       } else if (outcome.value.why === 'failure') {
         summary.failures += 1;
       }
-    } catch (error) {
+    } catch {
       // Per-entry containment: count and move on. The emit that hosts this
       // sweep must never observe a janitorial failure.
       summary.failures += 1;
     }
   }
-  if (lastExamined !== null) writeSweepCursor(cursorPath, lastExamined);
+  // No silent caps: a truncated listing that finished its visible scan still
+  // reports that coverage was partial.
+  if (listing.truncated && summary.reason === null) summary.reason = 'list-cap';
+  if (lastExamined !== null) writeSweepCursor(effectiveCursorPath, lastExamined);
   return summary;
 }

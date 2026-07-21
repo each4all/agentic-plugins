@@ -637,9 +637,9 @@ export const FS_MUTATION_USERS = {
     justification: 'ADR-0040 §4 notification-channel plan artifacts (temp+rename) under runs/',
   },
   'notify-schema.mjs': {
-    primitives: ['writeFileSync', 'writeSync', 'rmSync', 'unlinkSync', 'mkdirSync', 'openSync', 'utimesSync'],
+    primitives: ['writeFileSync', 'writeSync', 'rmSync', 'unlinkSync', 'mkdirSync', 'openSync', 'utimesSync', 'renameSync'],
     stateRoots: ['.agentic-plugins/state/runtime/notify'],
-    justification: 'ADR-0040 §1 dedupe claims: wx exclusive create + fd writeSync of the claim record, mkdir reclaim locks + their removal, claim touch/expiry (the bounded retention-deletion grant)',
+    justification: 'ADR-0040 §1 dedupe claims: wx exclusive create + fd writeSync of the claim record, mkdir reclaim locks + their removal, claim touch/expiry (the bounded retention-deletion grant); ADR-0047 §6 renameSync for capture-verified stale-lock tombstoning and the wx-temp+rename sweep cursor',
   },
   'permission-artifacts.mjs': {
     primitives: ['mkdir', 'writeFile', 'rename'],
@@ -662,7 +662,7 @@ export const ALLOWED_RECURSIVE_REMOVALS = {
   ],
   'notify-schema.mjs': [
     { callee: 'rmSync', target: 'lockDir', justification: 'own dedupe reclaim-lock dir removal in the claim lifecycle (ADR-0040 §1)' },
-    { callee: 'rmSync', target: 'staleLockDir', justification: 'ADR-0047 §6 bounded sweep: stale reclaim-lock dir removal (isLockStale-gated, name-shape-pinned candidate, per-entry contained)' },
+    { callee: 'rmSync', target: 'tombstone', justification: 'ADR-0047 §6 capture-verified stale-lock removal: rm acts only on the atomically-renamed nonce-unique tombstone (never the live lock path), plus leaked-tombstone GC (isLockStale-gated, name-shape-pinned, per-entry contained)' },
   ],
 };
 
