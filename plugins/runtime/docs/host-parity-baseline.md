@@ -164,6 +164,39 @@ verdict above stays version-bound to the newest PASS row):
 | --- | --- | --- | --- |
 | 2026-07-20 | `2.1.215` | Changelog delta `2.1.214`→`2.1.215` (one entry: `/verify`·`/code-review` no longer self-invoked — no SessionStart/hook/timeout/stdout/safe-mode change) + live probe (isolated git repo, explicit `--settings` hooks, headless `-p`, three `startup`-matched hooks + one `resume`-matched hook) | **PASS — verdict holds.** All five verdict properties re-observed: exactly one `startup` firing (the `resume` hook did not fire); payload carried `session_id`/`transcript_path`/`cwd`/`hook_event_name`/`source: "startup"`; raw-stdout probe token verbatim-echoed by the model (context injection); `timeout: 3` (seconds) killed a `sleep 8` hook with no side effect while the session proceeded; a hook `exit 1` was non-blocking and the CLI exited 0. Attention `matcher: "startup"` + explicit `timeout: 15` registration proceeds (ADR-0045 §12 step 4). |
 
+## Claude Stop-Payload Matrix (probed 2026-07-21)
+
+ADR-0047 §2 probe-gate record — the source verification the `signal`
+implementation slice is required to run **before** wiring the row-1/2
+classifier predicates ("the parity baseline records the fields'
+existence, not their shape"). Probed live on Claude Code `2.1.216`
+(darwin; isolated non-repo project directory; dump hooks loaded via an
+explicit `--settings` file; headless `-p`; `--model haiku`), four cases:
+bare turn (A), Stop while a `run_in_background` shell task was still
+running (B), Stop after a backgrounded task had completed (B′), and Stop
+after a session-scoped `CronCreate` (C). Binary string-table inspection of
+the installed CLI corroborates the field cluster (`background_tasks`,
+`session_crons`, `stop_hook_active`, `agent_transcript_path`,
+`extendedHookInput`) on the Stop/SubagentStop input constructor.
+
+| Property | Observed (2.1.216) | Evidence |
+| --- | --- | --- |
+| Field presence | `background_tasks` and `session_crons` are BOTH always present on `Stop` input as **arrays** — empty (`[]`) when nothing is pending, never absent/null on a supporting host. Absence therefore identifies a pre-`2.1.145` host (or a malformed payload), not an idle session. | live probe A/B/B′/C |
+| Additional Stop fields | `permission_mode`, `stop_hook_active`, `last_assistant_message` accompany the documented common fields (`session_id`, `transcript_path`, `cwd`, `prompt_id`, `hook_event_name`). | live probe |
+| `background_tasks` entry shape | `{ id, type, status, description, command }` — observed `type: "shell"`, `status: "running"` for a live `run_in_background` Bash task. | live probe B |
+| Completed-task behavior | A backgrounded task that completed before the turn ended was **removed** from `background_tasks` (`[]` at Stop). No terminal status token was ever observed surviving in the list. | live probe B′ |
+| `session_crons` entry shape | `{ id, schedule, recurring, prompt }` — a `*/10 * * * *` session cron created via `CronCreate` in the same turn. | live probe C |
+| Predicate consequence (ADR-0047 §2) | Row 1/2 wire as: well-formed array ⇒ observable; **any resident entry ⇒ interim** (entry-shape-independent — no guessed terminal-token set; residents read not-terminal because terminal residents were never observed, erring only in the accepted false-negative direction); present-but-non-array ⇒ unobservable, never "empty". A future host version observed KEEPING terminal-status entries listed is a compat-watch trigger to widen the predicate with a source-verified token set — never a live guess. | probe A/B/B′/C + ADR-0047 §2 |
+| Not probed | `SubagentStop` payload (out of the `signal` slice's scope — §3 leaves `subagent-complete` untouched); background task `type` vocabulary beyond `"shell"` (irrelevant to the type-agnostic predicate); terminal status tokens (never observed in-list). | — |
+
+**Re-validation trail** (append a row when a Claude drift touches
+Stop-payload semantics; the ADR-0047 §5 standing watch covers the adjacent
+`agent_needs_input`/`agent_completed` evolution surface):
+
+| Re-validated | Installed CLI | Method | Result |
+| --- | --- | --- | --- |
+| 2026-07-21 | `2.1.216` | Initial record (live probe matrix above) | Baseline established; attention `signal` slice wired against it. |
+
 ## What Fails If We Assume Claude Semantics On Codex
 
 - A Claude plugin command plan that says `codex plugin install runtime` is still
