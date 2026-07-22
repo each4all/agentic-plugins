@@ -147,6 +147,18 @@ export function parseEgressLocalToml(text) {
 // Verified-ignored-local reader (fail-closed)
 // ---------------------------------------------------------------------------
 
+// The SINGLE interpretation of the injectable `getuid` seam (undefined ⇒ the
+// real process.getuid when the platform has one; null ⇒ ownership cannot be
+// verified — e.g. Windows; a function ⇒ injected by tests). The ownership gate
+// in readVerifiedIgnoredLocal and the localLayerSupported capability signal in
+// resolveEgressScalars MUST agree on this interpretation — a second copy of
+// these lines would be a mirror waiting to drift.
+function resolveUidReader(getuid) {
+  return getuid === undefined
+    ? (typeof process.getuid === 'function' ? process.getuid : null)
+    : getuid;
+}
+
 // Fail-closed read of a candidate verified-ignored-local file. Returns
 // { ok, reason, text }. `text` is the raw file content ONLY when ok===true;
 // otherwise null. Every failure path (including an absent file) is a caller
@@ -160,9 +172,7 @@ export function parseEgressLocalToml(text) {
 // verified (e.g. Windows) ⇒ fail-closed; a function ⇒ use it (tests inject a
 // mismatching uid). The credential is NEVER read here.
 export function readVerifiedIgnoredLocal({ filePath, repoRoot = null, getuid } = {}) {
-  const resolveUid = getuid === undefined
-    ? (typeof process.getuid === 'function' ? process.getuid : null)
-    : getuid;
+  const resolveUid = resolveUidReader(getuid);
 
   // Without a repoRoot the inside-repo proof cannot run; a user-home file could
   // then be a repo-tracked file when HOME is the repo root (devcontainer / CI /
@@ -273,6 +283,13 @@ function resolveEgressScalars({ repoRoot, homeDir, env, getuid, readLocalImpl })
     credential,
     credentialPresent: credential !== null,
     localReason: read.reason,
+    // MACHINE CAPABILITY, not file state: can the verified-local layer EVER be
+    // honored here? False iff the uid seam resolves to no reader — the exact
+    // condition under which readVerifiedIgnoredLocal fail-closes every read
+    // (ownership-unverifiable — e.g. Windows). Consumers (bootstrap step
+    // judgement, the §12 launcher planner) use it to recommend the env-only
+    // layout instead of a file the loader then silently ignores.
+    localLayerSupported: typeof resolveUidReader(getuid) === 'function',
   };
 }
 
@@ -283,7 +300,7 @@ export function loadEgressActivation({
   getuid,
   readLocalImpl = readVerifiedIgnoredLocal,
 } = {}) {
-  const { channel, recipient, channelSource, recipientSource, credential, credentialPresent, localReason } =
+  const { channel, recipient, channelSource, recipientSource, credential, credentialPresent, localReason, localLayerSupported } =
     resolveEgressScalars({ repoRoot, homeDir, env, getuid, readLocalImpl });
 
   // If a resolved scalar equals the credential (an operator typo pointing
@@ -314,6 +331,7 @@ export function loadEgressActivation({
     recipientSource,
     source: active ? (channelSource === recipientSource ? channelSource : 'mixed') : null,
     localReason,
+    localLayerSupported,
   };
 }
 

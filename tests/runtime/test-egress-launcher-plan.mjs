@@ -17,7 +17,7 @@
 //   - the credential is NEVER read into the artifact (deterministic leak scan).
 
 import { describe, it } from 'node:test';
-import { deepStrictEqual, match, ok, rejects, strictEqual, throws } from 'node:assert/strict';
+import { deepStrictEqual, doesNotMatch, match, ok, rejects, strictEqual, throws } from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
   mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync,
@@ -35,6 +35,8 @@ import {
   detectPrototypeHooks,
   isValidEgressLauncherPlanArtifact,
   isValidEgressLauncherRunId,
+  buildEgressLauncherPlanSection,
+  egressFragmentApplyGuidance,
   makeEgressLauncherRunId,
   renderConfigLocalTomlBlock,
   renderEnvLayoutBlock,
@@ -207,6 +209,10 @@ describe('egress-launcher-plan — layout renderers (never a real token)', () =>
     match(block, new RegExp(`egress_chat_id = "${CHAT_ID}"`));
     ok(!block.includes(FAKE_TOKEN));
     ok(!block.includes('TELEGRAM_BOT_TOKEN'));
+    // ADR-0048 §4 — no token FILE standardization: the rendered file never
+    // offers a token-named key slot an operator could fill in (activation +
+    // recipient only; the credential is env-only forever).
+    doesNotMatch(block, /^\s*[a-z_.-]*token[a-z_.-]*\s*=/im);
     match(block, /# egress_headline = true/); // commented when off
   });
 
@@ -227,6 +233,101 @@ describe('egress-launcher-plan — layout renderers (never a real token)', () =>
     match(block, /export AGENTIC_NOTIFY_EGRESS_CHANNEL="telegram"/);
     match(block, new RegExp(`export TELEGRAM_CHAT_ID="${CHAT_ID}"`));
     ok(!block.includes(FAKE_TOKEN));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Verified-local machine capability (localLayerSupported=false — e.g. Windows):
+// the runbook must not recommend a file the fail-closed reader then silently
+// ignores. On such machines env-only is the ONLY supported layout (the
+// ownership gate itself is unchanged — egress-portability decision: env-only
+// over an ACL probe).
+// ---------------------------------------------------------------------------
+
+describe('egress-launcher-plan — verified-local unsupported machines (env-only swap)', () => {
+  const NO_PROTOTYPE = Object.freeze({
+    scope: 'claude-personal-hook',
+    settings_path_pointer: join('~', '.claude', 'settings.json'),
+    script_file_present: false,
+    settings_present: false,
+    parseable: false,
+    matches: [],
+    match_count: 0,
+  });
+
+  function activation(overrides = {}) {
+    return {
+      active: false,
+      reason: 'missing-credential',
+      channel: 'telegram',
+      recipient: null,
+      credentialPresent: false,
+      channelSource: 'env',
+      recipientSource: null,
+      source: null,
+      localReason: 'absent',
+      localLayerSupported: true,
+      ...overrides,
+    };
+  }
+
+  function build(act) {
+    const { section } = buildEgressLauncherPlanSection({
+      gathered: { activation: act, headlineOn: false, prototype: NO_PROTOTYPE },
+      now: NOW,
+      runId: makeEgressLauncherRunId(NOW),
+    });
+    return section;
+  }
+
+  it('localLayerSupported=false swaps the recommended layout to env-only and offers no unreachable file alternative', () => {
+    const section = build(activation({ localReason: 'ownership-unverifiable', localLayerSupported: false }));
+    const step = section.steps.find((s) => s.id === 'activate-egress');
+    strictEqual(step.recommended_layout.kind, 'env-all');
+    match(step.recommended_layout.env_block, /export AGENTIC_NOTIFY_EGRESS_CHANNEL="telegram"/);
+    match(step.recommended_layout.why_env_only, /never honored|ownership/i);
+    ok(!('alternative_layout' in step), 'no config-local-toml runbook is offered where the reader would ignore it');
+    ok(!JSON.stringify(step).includes('config.local.toml'), 'the unreachable file path does not appear in the step at all');
+    match(step.detail, /env-only/i);
+    strictEqual(section.activation_state.local_layer_supported, false);
+  });
+
+  it('localLayerSupported=true keeps the config-local-toml recommendation + env alternative (regression shape)', () => {
+    const section = build(activation());
+    const step = section.steps.find((s) => s.id === 'activate-egress');
+    strictEqual(step.recommended_layout.kind, 'config-local-toml+env-token');
+    strictEqual(step.alternative_layout.kind, 'env-all');
+    strictEqual(section.activation_state.local_layer_supported, true);
+  });
+
+  it('egressFragmentApplyGuidance points the bootstrap apply/backup target at the layout the machine can actually honor', () => {
+    const posix = egressFragmentApplyGuidance(activation());
+    match(posix.apply_command, /config\.local\.toml/);
+    strictEqual(posix.target, join('~', '.agentic-plugins', 'config.local.toml'));
+    const uidless = egressFragmentApplyGuidance(activation({ localReason: 'ownership-unverifiable', localLayerSupported: false }));
+    match(uidless.apply_command, /env-only/i);
+    doesNotMatch(uidless.apply_command, /config\.local\.toml block/);
+    match(uidless.target, /shell profile/i);
+    // Legacy descriptor without the field defaults to the supported shape.
+    const legacy = egressFragmentApplyGuidance({ active: false, reason: 'missing-credential' });
+    match(legacy.apply_command, /config\.local\.toml/);
+  });
+
+  it('an already-active env-only machine (Windows steady state) still reports already-active mode', () => {
+    const section = build(activation({
+      active: true,
+      reason: 'active',
+      recipient: CHAT_ID,
+      credentialPresent: true,
+      recipientSource: 'env',
+      source: 'env',
+      localReason: 'ownership-unverifiable',
+      localLayerSupported: false,
+    }));
+    strictEqual(section.mode, 'already-active');
+    const step = section.steps.find((s) => s.id === 'activate-egress');
+    strictEqual(step.applicable, false);
+    strictEqual(section.activation_state.local_layer_supported, false);
   });
 });
 

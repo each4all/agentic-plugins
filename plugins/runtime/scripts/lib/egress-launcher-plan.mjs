@@ -270,27 +270,48 @@ function buildSteps({ mode, activation, prototype, headlineOn }) {
   const chatId = activation.recipient; // present only when active (loadEgressActivation contract)
   const needsActivation = mode === 'activate' || mode === 'partial';
   const needsRetire = prototype.match_count > 0;
+  // MACHINE CAPABILITY, not preference: when POSIX uid ownership cannot be
+  // proven (no getuid — e.g. Windows), readVerifiedIgnoredLocal fail-closes
+  // EVERY read of ~/.agentic-plugins/config.local.toml, so a config-local-toml
+  // runbook would instruct the operator to create a file the loader then
+  // silently ignores. On such machines env-only is the ONLY supported layout;
+  // the fail-closed ownership gate itself is deliberately unchanged
+  // (egress-portability decision: env-only over a PowerShell/native ACL probe,
+  // which would breach the zero-dep boundary for no defensive gain). Default
+  // true for an injected legacy descriptor without the field.
+  const localLayerSupported = activation.localLayerSupported !== false;
 
   const steps = [];
 
-  // 1. Activate runtime egress (recommended + alternative layouts).
+  const envAllLayout = {
+    kind: 'env-all',
+    env_block: renderEnvLayoutBlock({ chatId, headlineOn }),
+  };
+
+  // 1. Activate runtime egress (recommended + alternative layouts; env-only
+  // becomes the sole recommendation where the verified-local layer can never
+  // be honored — no unreachable alternative is offered there).
   steps.push({
     id: 'activate-egress',
     title: 'Activate runtime egress on this machine',
     applicable: needsActivation,
     detail: needsActivation
-      ? 'Create the verified-ignored-local file and export the credential. Channel + chat-id persist in the file; the token is env-only (§2c).'
+      ? (localLayerSupported
+        ? 'Create the verified-ignored-local file and export the credential. Channel + chat-id persist in the file; the token is env-only (§2c).'
+        : 'Export channel + chat-id + token in your shell profile (env-only). The verified-local file is never honored on this machine — POSIX uid ownership cannot be proven, so its fail-closed reader ignores it (§2c).')
       : `Egress is already active here (source: ${activation.source ?? 'n/a'}) — no activation needed.`,
-    recommended_layout: {
-      kind: 'config-local-toml+env-token',
-      config_local_toml_pointer: join('~', '.agentic-plugins', 'config.local.toml'),
-      config_local_toml: renderConfigLocalTomlBlock({ chatId, headlineOn }),
-      token_env_line: renderTokenEnvLine(),
-    },
-    alternative_layout: {
-      kind: 'env-all',
-      env_block: renderEnvLayoutBlock({ chatId, headlineOn }),
-    },
+    recommended_layout: localLayerSupported
+      ? {
+        kind: 'config-local-toml+env-token',
+        config_local_toml_pointer: join('~', '.agentic-plugins', 'config.local.toml'),
+        config_local_toml: renderConfigLocalTomlBlock({ chatId, headlineOn }),
+        token_env_line: renderTokenEnvLine(),
+      }
+      : {
+        ...envAllLayout,
+        why_env_only: 'The verified-local file is never honored on this machine (POSIX uid ownership unverifiable — e.g. Windows); its fail-closed reader ignores it, so env-only is the only supported layout here.',
+      },
+    ...(localLayerSupported ? { alternative_layout: envAllLayout } : {}),
   });
 
   // 2. Retire the personal prototype hooks (dedupe): only meaningful if they
@@ -337,6 +358,27 @@ function buildSteps({ mode, activation, prototype, headlineOn }) {
   });
 
   return steps;
+}
+
+// Bootstrap's Stage-5 egress fragment carries an apply command + a §10.3
+// backup target. Both must point at the layout THIS machine can honor —
+// recommending a config.local.toml backup on a machine whose fail-closed
+// reader never honors that file (localLayerSupported=false — e.g. Windows)
+// would re-open the exact misdirection the layout swap above closes. Owned
+// here (not inline in bootstrap.mjs) so the runbook, the layout swap, and the
+// apply guidance stay one vocabulary — a bootstrap-side copy of this branch
+// would be a mirror waiting to drift.
+export function egressFragmentApplyGuidance(activation) {
+  const supported = activation?.localLayerSupported !== false;
+  return supported
+    ? {
+      apply_command: 'Follow the rendered per-machine activation runbook (config.local.toml block + launcher env); the credential is never written by tooling.',
+      target: join('~', '.agentic-plugins', 'config.local.toml'),
+    }
+    : {
+      apply_command: 'Follow the rendered per-machine activation runbook (env-only layout — the verified-local file is never honored on this machine); the credential is never written by tooling.',
+      target: 'your shell profile (~/.zshrc, ~/.bashrc, …) — env-only',
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -555,6 +597,9 @@ export function buildEgressLauncherPlanSection({ gathered, host = 'claude', now 
     recipient: activation.active ? activation.recipient : null,
     credential_present: activation.credentialPresent,
     local_reason: activation.localReason,
+    // Why the runbook recommends env-only on this machine (false ⇔ the
+    // verified-local layer can never be honored here — e.g. Windows).
+    local_layer_supported: activation.localLayerSupported !== false,
     headline_opt_in: headlineOn,
   };
 
