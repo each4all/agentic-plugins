@@ -5,7 +5,7 @@
 // ceilings. Hermetic: gitTrackedFiles is injected so no git spawns.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -35,6 +35,10 @@ const OLD_AGE = APPLY_AGE_MARGIN_MS + 24 * 60 * 60 * 1000; // a day past the mar
 function tmpRepo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'retention-apply-'));
   fs.mkdirSync(path.join(root, '.agentic-plugins', 'runs'), { recursive: true });
+  // A real (empty) git repo: execute mode forces the real `git ls-files` scan
+  // (an injected gitTrackedFiles is ignored for a real deletion), and an empty
+  // repo enumerates to [] — no citations — so the hermetic fixtures still work.
+  execFileSync('git', ['-C', root, 'init', '-q'], { stdio: 'ignore' });
   return root;
 }
 
@@ -106,7 +110,7 @@ describe('retention-apply validateDeletionTarget (containment + no-follow)', () 
     fs.symlinkSync(realFamily, path.join(repo, '.agentic-plugins', 'runs', 'compat'));
     const res = await validateDeletionTarget({ repoRoot: repo, family: 'compat', runId: C1 });
     assert.equal(res.ok, false);
-    assert.equal(res.reason, 'family-root-not-dir');
+    assert.equal(res.reason, 'ancestor-symlink');
   });
 
   it('reports a vanished run as vanished (not an error)', async () => {
@@ -211,10 +215,12 @@ describe('retention-apply execute (happy path + receipts)', () => {
       repoRoot: repo, family: 'compat', now: NOW, caps: { runCap: 0 }, gitTrackedFiles: [],
       execute: true, expectedPlanHash: hash,
       ceilings: {
-        rmImpl: (runDir) => {
+        // rmImpl receives the capture TOMBSTONE (`<runDir>.gc-<nonce>`), which
+        // still contains the run_id before the suffix.
+        rmImpl: (tombstone) => {
           const receipt = JSON.parse(fs.readFileSync(path.join(retentionStateRoot(repo), 'compat', 'receipt.json'), 'utf8'));
-          seen.push(receipt.targets.find((t) => runDir.endsWith(t.run_id))?.state);
-          fs.rmSync(runDir, { recursive: true, force: true });
+          seen.push(receipt.targets.find((t) => tombstone.includes(t.run_id))?.state);
+          fs.rmSync(tombstone, { recursive: true, force: true });
         },
       },
     });
@@ -351,31 +357,234 @@ describe('retention-apply guards', () => {
 });
 
 // Cross-process: two apply processes racing the family lock must not both delete
-// the same run (the lock is a real mutex, not advisory).
+// the same run (the lock is a real mutex, not advisory). A GO-file barrier lines
+// the children up so their critical sections actually OVERLAP — without it the
+// test could pass trivially by the two runs not contending (Codex review MAJOR).
 describe('retention-apply cross-process family lock', () => {
-  it('two concurrent execute applies delete each run at most once', async () => {
+  it('barrier-synchronized concurrent execute applies delete each run at most once', async () => {
     const repo = tmpRepo();
     for (let i = 0; i < 6; i += 1) {
-      seedRun(repo, 'compat', `compat-2026010${i}T000000Z-00000${i}`);
+      seedRun(repo, 'compat', `compat-2026020${i}T000000Z-00000${i}`);
     }
     const hash = await planHashFor(repo, { runCap: 0 });
+    const goPath = path.join(repo, 'GO');
+    const barrier = `
+      const fsb = await import('node:fs');
+      const deadline = Date.now() + 5000;
+      while (!fsb.existsSync(${JSON.stringify(goPath)})) { if (Date.now() > deadline) throw new Error('barrier timeout'); }
+    `;
     const script = `
       import { applyRetention } from ${JSON.stringify(APPLY_LIB_URL)};
+      ${barrier}
       const [repo, hash, nowIso] = process.argv.slice(1);
       const res = await applyRetention({
         repoRoot: repo, family: 'compat', now: new Date(nowIso), caps: { runCap: 0 },
-        gitTrackedFiles: [], execute: true, expectedPlanHash: hash,
+        execute: true, expectedPlanHash: hash,
       });
-      process.stdout.write(JSON.stringify({ status: res.status, deleted: res.deleted ?? [], blocked: res.reason ?? null }));
+      process.stdout.write(JSON.stringify({ status: res.status, deleted: res.deleted ?? [] }));
     `;
-    const runs = await Promise.all([
+    const children = [
       execFileAsync(process.execPath, ['--input-type=module', '-e', script, '--', repo, hash, NOW.toISOString()]),
       execFileAsync(process.execPath, ['--input-type=module', '-e', script, '--', repo, hash, NOW.toISOString()]),
-    ]);
-    const results = runs.map(({ stdout }) => JSON.parse(stdout));
+    ];
+    fs.writeFileSync(goPath, 'go'); // release both at once
+    const results = (await Promise.all(children)).map(({ stdout }) => JSON.parse(stdout));
     const allDeleted = results.flatMap((r) => r.deleted);
-    // No run id deleted by BOTH processes (real mutual exclusion — a double
-    // delete would either double-count here or one process would error).
+    // No run id deleted by BOTH processes — real mutual exclusion. (One process
+    // typically applies; the other blocks on the lock or finds the receipt.)
     assert.equal(new Set(allDeleted).size, allDeleted.length, `a run was deleted twice: ${JSON.stringify(results)}`);
+  });
+});
+
+// ── Codex review fold: the safety-critical fixes ──
+describe('retention-apply guard-layer fixes (Codex review CRITICAL/MAJOR)', () => {
+  it('refuses an ANCESTOR symlink at .agentic-plugins/runs (not just the family root)', async () => {
+    const repo = tmpRepo();
+    const realRuns = fs.mkdtempSync(path.join(os.tmpdir(), 'evil-runs-'));
+    fs.mkdirSync(path.join(realRuns, 'compat', C1), { recursive: true });
+    // Replace .agentic-plugins/runs with a symlink to an external tree.
+    fs.rmSync(path.join(repo, '.agentic-plugins', 'runs'), { recursive: true, force: true });
+    fs.symlinkSync(realRuns, path.join(repo, '.agentic-plugins', 'runs'));
+    const res = await validateDeletionTarget({ repoRoot: repo, family: 'compat', runId: C1 });
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, 'ancestor-symlink', 'a symlink at the runs level must be refused');
+  });
+
+  it('execute:true with a NULL expectedPlanHash THROWS (lib-level plan-hash binding)', async () => {
+    const repo = tmpRepo();
+    seedRun(repo, 'compat', C1);
+    await assert.rejects(
+      () => applyRetention({ repoRoot: repo, family: 'compat', now: NOW, caps: { runCap: 0 }, gitTrackedFiles: [], execute: true }),
+      /requires expectedPlanHash/,
+    );
+    assert.ok(fs.existsSync(path.join(familyDir(repo, 'compat'), C1)), 'a bare execute must delete nothing');
+  });
+
+  it('a truthy non-true execute value does NOT enter deletion mode', async () => {
+    const repo = tmpRepo();
+    seedRun(repo, 'compat', C1);
+    const res = await applyRetention({ repoRoot: repo, family: 'compat', now: NOW, caps: { runCap: 0 }, gitTrackedFiles: [], execute: 'yes' });
+    assert.equal(res.status, 'dry-run', 'only execute === true deletes');
+    assert.ok(fs.existsSync(path.join(familyDir(repo, 'compat'), C1)));
+  });
+
+  it('CONCEDES a run a writer pins (repoints latest.json) AFTER the recompute', async () => {
+    const repo = tmpRepo();
+    seedRun(repo, 'compat', C1);
+    const hash = await planHashFor(repo, { runCap: 0 });
+    // afterValidate simulates the pin-writer racing the deletion: it repoints
+    // latest.json to the candidate between validation and deletion. The
+    // per-target fast pin re-check must then concede it.
+    const res = await applyRetention({
+      repoRoot: repo, family: 'compat', now: NOW, caps: { runCap: 0 }, execute: true, expectedPlanHash: hash,
+      ceilings: {
+        afterValidate: () => { writeLatest(repo, 'compat', C1); },
+      },
+    });
+    assert.equal(res.status, 'applied');
+    assert.deepEqual(res.deleted, [], 'a newly-pinned run must not be deleted');
+    assert.deepEqual(res.conceded.map((c) => c.reason), ['now-pinned']);
+    assert.ok(fs.existsSync(path.join(familyDir(repo, 'compat'), C1)));
+    assert.ok(fs.existsSync(path.join(familyDir(repo, 'compat'), 'latest.json')), 'latest.json is not left dangling');
+  });
+
+  it('BLOCKS on a receipt carrying an UNKNOWN target state (fail-closed, not overwritten)', async () => {
+    const repo = tmpRepo();
+    seedRun(repo, 'compat', C1);
+    const receiptDir = path.join(retentionStateRoot(repo), 'compat');
+    fs.mkdirSync(receiptDir, { recursive: true });
+    fs.writeFileSync(path.join(receiptDir, 'receipt.json'), JSON.stringify({
+      schema_version: RETENTION_RECEIPT_SCHEMA_VERSION, family: 'compat', status: 'closed',
+      targets: [{ run_id: C1, state: 'weird-unknown-state' }],
+    }));
+    const res = await applyRetention({
+      repoRoot: repo, family: 'compat', now: NOW, caps: { runCap: 0 }, execute: true, expectedPlanHash: await planHashFor(repo, { runCap: 0 }),
+    });
+    assert.equal(res.status, 'blocked');
+    assert.equal(res.reason, 'receipt-unknown-target-state');
+  });
+
+  it('BLOCKS on a receipt missing its schema_version (fail-closed)', async () => {
+    const repo = tmpRepo();
+    seedRun(repo, 'compat', C1);
+    const receiptDir = path.join(retentionStateRoot(repo), 'compat');
+    fs.mkdirSync(receiptDir, { recursive: true });
+    fs.writeFileSync(path.join(receiptDir, 'receipt.json'), JSON.stringify({ family: 'compat', status: 'closed', targets: [] }));
+    const res = await applyRetention({
+      repoRoot: repo, family: 'compat', now: NOW, caps: { runCap: 0 }, execute: true, expectedPlanHash: await planHashFor(repo, { runCap: 0 }),
+    });
+    assert.equal(res.status, 'blocked');
+    assert.equal(res.reason, 'receipt-schema-mismatch');
+  });
+
+  it('CLAMPS a raised ceiling to the hard default (cannot widen the deletion budget)', async () => {
+    const repo = tmpRepo();
+    // 3 candidates; a caller tries maxDeletions: 9999 — clamped to APPLY_MAX_DELETIONS,
+    // so it never exceeds the hard cap. (Here just assert the reported ceiling.)
+    for (const id of [C1, C2, C3]) seedRun(repo, 'compat', id);
+    const res = await applyRetention({
+      repoRoot: repo, family: 'compat', now: NOW, caps: { runCap: 0 }, gitTrackedFiles: [],
+      ceilings: { maxDeletions: 9999 },
+    });
+    assert.equal(res.status, 'dry-run');
+    assert.equal(res.ceilings.maxDeletions, APPLY_MAX_DELETIONS, 'a raised ceiling is clamped to the hard default');
+  });
+
+  it('maxBytes:0 deletes NOTHING (the byte ceiling admits nothing)', async () => {
+    const repo = tmpRepo();
+    seedRun(repo, 'compat', C1, { files: { 'x': 'nonempty' } });
+    const hash = await planHashFor(repo, { runCap: 0 });
+    const res = await applyRetention({
+      repoRoot: repo, family: 'compat', now: NOW, caps: { runCap: 0 }, execute: true, expectedPlanHash: hash, ceilings: { maxBytes: 0 },
+    });
+    assert.equal(res.status, 'applied');
+    assert.deepEqual(res.deleted, [], 'maxBytes:0 admits no deletion');
+    assert.ok(fs.existsSync(path.join(familyDir(repo, 'compat'), C1)));
+  });
+
+  it('resolveOpenReceipt reports an UNREADABLE (invalid-JSON) receipt honestly, never silently closed', async () => {
+    const repo = tmpRepo();
+    const receiptDir = path.join(retentionStateRoot(repo), 'compat');
+    fs.mkdirSync(receiptDir, { recursive: true });
+    fs.writeFileSync(path.join(receiptDir, 'receipt.json'), '{ not json');
+    const res = await resolveOpenReceipt({ repoRoot: repo, family: 'compat', now: NOW });
+    assert.equal(res.status, 'unreadable');
+  });
+
+  it('resolveOpenReceipt reports a parseable-but-MALFORMED receipt (non-object targets) honestly', async () => {
+    const repo = tmpRepo();
+    const receiptDir = path.join(retentionStateRoot(repo), 'compat');
+    fs.mkdirSync(receiptDir, { recursive: true });
+    // Valid JSON but `targets` is not an array → malformed, must not be closed.
+    fs.writeFileSync(path.join(receiptDir, 'receipt.json'), JSON.stringify({ schema_version: RETENTION_RECEIPT_SCHEMA_VERSION, targets: 'nope' }));
+    const res = await resolveOpenReceipt({ repoRoot: repo, family: 'compat', now: NOW });
+    assert.equal(res.status, 'malformed');
+  });
+
+  it('a FRESH family lock BLOCKS apply (staleness judged against real time, not injected now)', async () => {
+    const repo = tmpRepo();
+    seedRun(repo, 'compat', C1);
+    // Plant a fresh lock (mtime ~ real now). The injected `now` is in the PAST
+    // (NOW=2026-07-21). A lock judged by the injected clock would look
+    // far-future-stale and be taken over; judged by REAL time it is held.
+    const lockDir = path.join(retentionStateRoot(repo), 'compat');
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(path.join(lockDir, '.lock'), '99999:deadbeefdeadbeef');
+    const res = await applyRetention({
+      repoRoot: repo, family: 'compat', now: NOW, caps: { runCap: 0 }, gitTrackedFiles: [],
+      execute: true, expectedPlanHash: await planHashFor(repo, { runCap: 0 }),
+    });
+    assert.equal(res.status, 'blocked');
+    assert.equal(res.reason, 'family-lock:lock-held', 'a fresh lock must be honored, not taken over');
+    assert.ok(fs.existsSync(path.join(familyDir(repo, 'compat'), C1)), 'a blocked apply deletes nothing');
+  });
+
+  it('a REAL deletion ignores an injected gitTrackedFiles and runs the full git citation scan', async () => {
+    const repo = tmpRepo(); // git-inited
+    seedRun(repo, 'compat', C1);
+    // A TRACKED doc cites C1 → the real git scan pins it. A caller injecting
+    // gitTrackedFiles:[] (an empty scan) must NOT be able to weaken this and
+    // delete the cited run.
+    fs.writeFileSync(path.join(repo, 'CITES.md'), `pinned: ${C1}\n`);
+    execFileSync('git', ['-C', repo, 'add', 'CITES.md'], { stdio: 'ignore' });
+    // Compute the reviewed hash the SAME way execute recomputes (real scan) so
+    // the plan-hash binding passes and we exercise the deletion path.
+    const realPlan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 0 } });
+    const res = await applyRetention({
+      repoRoot: repo, family: 'compat', now: NOW, caps: { runCap: 0 }, gitTrackedFiles: [], // injected empty — must be ignored
+      execute: true, expectedPlanHash: realPlan.plan_hash,
+    });
+    assert.equal(res.status, 'applied');
+    assert.deepEqual(res.deleted, [], 'the git-cited run must not be deleted despite the injected empty scan');
+    assert.ok(fs.existsSync(path.join(familyDir(repo, 'compat'), C1)));
+  });
+
+  it('CONCEDES (never external-deletes) a run swapped to a SYMLINK after validation — capture-rename', async () => {
+    const repo = tmpRepo();
+    seedRun(repo, 'compat', C1);
+    const external = fs.mkdtempSync(path.join(os.tmpdir(), 'external-target-'));
+    fs.writeFileSync(path.join(external, 'precious.txt'), 'must survive');
+    const hash = await planHashFor(repo, { runCap: 0 });
+    const runPath = path.join(familyDir(repo, 'compat'), C1);
+    const res = await applyRetention({
+      repoRoot: repo, family: 'compat', now: NOW, caps: { runCap: 0 }, execute: true, expectedPlanHash: hash,
+      ceilings: {
+        afterValidate: (runDir) => {
+          // A hostile swap: replace the validated run dir with a symlink to an
+          // external tree between validation and deletion. Backdate the link so
+          // the age re-check passes and the capture-rename + re-lstat is the
+          // guard that refuses the recursive removal.
+          fs.rmSync(runDir, { recursive: true, force: true });
+          fs.symlinkSync(external, runDir);
+          const old = new Date(NOW.getTime() - OLD_AGE);
+          fs.lutimesSync(runDir, old, old);
+        },
+      },
+    });
+    assert.equal(res.status, 'applied');
+    assert.deepEqual(res.deleted, [], 'a swapped symlink must not be reported deleted');
+    assert.ok(res.conceded.some((c) => c.reason === 'capture-not-dir'), 'the capture re-lstat must concede a non-dir');
+    assert.ok(fs.existsSync(path.join(external, 'precious.txt')), 'the external symlink target must survive');
+    fs.rmSync(runPath, { recursive: true, force: true }); // cleanup the leftover link
   });
 });

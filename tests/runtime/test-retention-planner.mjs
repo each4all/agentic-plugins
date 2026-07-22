@@ -254,10 +254,12 @@ describe('retention-planner pin 3 — live / reader-selected', () => {
     assert.equal(res.pinned.get('settings').has(SETTINGS_A), false);
   });
 
-  it('pins the doctor latest run as the reader fallback floor', async () => {
+  it('pins EVERY validated doctor run (reader selects any reusable proof; v1 pins all)', async () => {
     const repo = tmpRepo();
-    writeLatest(repo, 'doctor', DOCTOR_B);
+    seedRun(repo, 'doctor', DOCTOR_A);
+    seedRun(repo, 'doctor', DOCTOR_B);
     const res = await resolveLivePins({ repoRoot: repo });
+    assert.ok(res.pinned.get('doctor').has(DOCTOR_A), 'an older doctor run is pinned too');
     assert.ok(res.pinned.get('doctor').has(DOCTOR_B));
   });
 
@@ -366,6 +368,21 @@ describe('retention-planner pin 4 — cross-artifact references', () => {
     assert.ok(res.pinned.get('compat').has(COMPAT_A), 'the escaped reference must be pinned');
   });
 
+  it('FLIPS scan_complete when a cross-artifact JSON nests past the harvest depth cap', async () => {
+    const repo = tmpRepo();
+    // Build a doctor.json nested deeper than JSON_HARVEST_MAX_DEPTH (64) with a
+    // compat citation at the bottom — the harvest can't reach it, so the scan
+    // must fail closed rather than silently drop the pin.
+    let obj = { ref: COMPAT_A };
+    for (let i = 0; i < 70; i += 1) obj = { n: obj };
+    const dir = path.join(familyDir(repo, 'doctor'), DOCTOR_A);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'doctor.json'), JSON.stringify(obj));
+    const res = await scanCrossArtifactReferences({ repoRoot: repo });
+    assert.equal(res.scanComplete, false, 'a too-deep artifact could cite anything below the cap');
+    assert.ok(res.incomplete.some((i) => /nesting exceeds scan depth/.test(i.reason)));
+  });
+
   it('excludes a doctor run\'s OWN run_id from cross-artifact self-pinning', async () => {
     const repo = tmpRepo();
     // doctor.json contains its own top-level run_id (as every real one does) and
@@ -416,6 +433,21 @@ describe('retention-planner planRetention integration', () => {
     const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 1, maxBytes: 50 * 1024 * 1024 }, gitTrackedFiles: ['doc.md'] });
     assert.equal(plan.families.compat.actionable_excess.length, 0, 'pins exceed cap ⇒ nothing deletable');
     assert.equal(plan.families.compat.pinned_overage.length, 2);
+  });
+
+  it('pins exceeding the COUNT cap suppress BYTE-driven deletion too (holistic reading)', async () => {
+    const repo = tmpRepo();
+    // 2 small pinned runs over the count cap (cap 1) + 1 large unpinned run.
+    // Byte pressure would otherwise delete the large unpinned run, but pins
+    // already exceed the count cap ⇒ nothing deletable (Codex review MAJOR).
+    seedRun(repo, 'compat', 'compat-20260101T000000Z-000001', { files: { 'big': '' }, bytes: 5_000_000 }); // large unpinned
+    seedRun(repo, 'compat', 'compat-20260102T000000Z-000002', { files: { 's': 'x' } }); // small
+    seedRun(repo, 'compat', 'compat-20260103T000000Z-000003', { files: { 's': 'x' } }); // small
+    // Pin the two small runs (count 2 > cap 1).
+    fs.writeFileSync(path.join(repo, 'doc.md'), 'compat-20260102T000000Z-000002 compat-20260103T000000Z-000003');
+    const plan = await planRetention({ repoRoot: repo, now: NOW, caps: { runCap: 1, maxBytes: 1_000_000 }, gitTrackedFiles: ['doc.md'] });
+    assert.equal(plan.families.compat.over_cap_by_bytes, true, 'the family is over the byte cap');
+    assert.equal(plan.families.compat.actionable_excess.length, 0, 'pins exceed the count cap ⇒ nothing deletable even for byte pressure');
   });
 
   it('pins EQUAL to the cap still allow deleting the unpinned runs down to the cap', async () => {
