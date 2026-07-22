@@ -123,12 +123,123 @@ Perform in order on the machine; each is the operator's to run:
    dry-run/plan-hash gates, so B is safe to disable without data migration) and
    the dual-kind window handling per ADR §8.
 
+## 5. Owner-exercised real matrix + GC apply — 実証 (performed 2026-07-22)
+
+The owner authorized and this session performed the §4 real-exercise steps on
+this machine (`e16tae.local`; runtime **0.85.0** / attention **0.9.0** installed
+on the Claude cache; egress = Telegram via the ADR-0041 env activation). Real
+notifications were delivered to the owner's Telegram and 16 real compat run
+directories were deleted. Every claim below is backed by an observed artifact —
+the egress file-log mirror (`.agentic-plugins/state/runtime/notify/log.ndjson`),
+the retention receipt, or a command return. The only tracked change is this
+doc; the deleted runs are gitignored state, and the config/shuttle live under
+`~/.agentic-plugins/` (outside the repo).
+
+### 5.1 A(1) — real Stop/Notification sensors → real Telegram, kinds distinguished
+
+Drove the **installed** attention sensors (`stop.mjs` / `notification.mjs`,
+0.9.0) with the two documented Stop payload shapes and a `permission_prompt`;
+each ran the real ADR-0047 §2 finality classifier and spawned the installed
+`notify.mjs` (0.85.0) → real `node:https` egress. Classifier verdicts, exercised
+against the **real repo** peer-run ledgers (all stale ⇒ `live:false`):
+
+| payload shape | classifier verdict | emitted kind |
+| --- | --- | --- |
+| `background_tasks:[]`, `session_crons:[]` | `final` (no-interim-evidence) | **response-needed** |
+| `background_tasks:[{…running}]` | `interim` (background-tasks-pending) | turn-complete |
+| `session_crons:[{…}]` | `interim` (session-crons-pending) | turn-complete |
+| neither field observable | `unpromotable` (payload-surface-unobservable) | turn-complete (fallback) |
+
+Delivered egress mirror rows:
+
+| kind | urgency | egress_status | headline |
+| --- | --- | --- | --- |
+| response-needed | normal | **dispatched** | your-turn |
+| turn-complete | normal | **dispatched** | — |
+| approval | **urgent** | **dispatched** | needs-approval |
+
+`dispatched` = Telegram API returned `ok:true`. response-needed (final turn) and
+turn-complete (interim turn) are distinguished by the real classifier and both
+delivered; approval arrives urgent.
+
+### 5.2 A(2) — kinds filter acts before the dedupe stage
+
+Toggled `notify_kinds` and emitted through the real `runEmit` pipeline (real
+egress), reading `{status, stage, reason}`:
+
+| window (`notify_kinds`) | emit turn-complete | emit response-needed |
+| --- | --- | --- |
+| dual-kind `turn-complete,response-needed` | dispatched @ egress | dispatched @ egress |
+| response-needed only | **suppressed @ kinds-filter** | dispatched @ egress |
+
+Filter-precedes-dedupe proof (one fixed event_id throughout):
+1. response-needed-only, emit turn-complete → suppressed @ **kinds-filter**;
+2. dual-kind, emit the SAME event_id → **dispatched** (NOT deduped) — step 1's
+   filtered emit never claimed the dedupe slot;
+3. dual-kind, emit the SAME event_id a third time → suppressed @ **dedupe**
+   (dedupe-duplicate) — the slot is claimed only once a kind passes the filter.
+
+Confirms the §1 pipeline order: kinds-filter (stage 2) precedes dedupe (stage 3),
+so a disabled kind consumes no TTL slot.
+
+### 5.3 A(3) — Codex shuttle re-rendered + re-installed → response-needed
+
+`runtime:settings --notification-plan` re-rendered the receiver shuttle (mode
+`already-configured` — the Codex user `config.toml` already points `notify=` at
+the install path; re-merging is idempotent) and recorded plan artifact
+`notification-20260722T031438Z-d94910`. The migration:
+
+| | installed (before) | re-rendered (after) |
+| --- | --- | --- |
+| `MIN_RUNTIME_VERSION` | 0.83.1 | 0.85.0 |
+| emitted kind | turn-complete | **response-needed** |
+
+Re-installed the rendered shuttle over
+`~/.agentic-plugins/bin/codex-notify-shuttle.mjs` (the explicit user action —
+runtime never installs it) and exercised it with a real Codex
+`agent-turn-complete` payload → emitted **response-needed** → egress
+**dispatched**. The Codex limb (whose only notify variant is
+`agent-turn-complete`) now maps to response-needed per ADR-0047 §5.
+
+### 5.4 B — 16 uncited compat runs deleted under the reviewed plan hash
+
+Read-only plan (`plan_hash sha256:63119f47…4131a`, `scan_complete: true`):
+compat 36 runs / 19 pinned / **16 actionable**; doctor 41/41 pinned/0 actionable;
+settings 35/35/0. **육안 확인**: every one of the 16 actionable run ids was
+independently confirmed absent from all tracked files (`git grep`), while the
+docs-cited compat runs (`…5af90f`, `…c44cea`, `…32cdf0`, `…34315e` in
+`host-parity-baseline.md` / `DEVELOPMENT.md`) were all pinned, never actionable —
+the citation auto-pin held. The 16 are the oldest uncited over-cap runs; deleting
+them lands compat exactly at the run cap of 20 (19 pinned + 1 newest-uncited kept
+as cap headroom).
+
+Apply (dry-run → `--execute --expected-plan-hash …63119f47…4131a`):
+
+| stage | result |
+| --- | --- |
+| dry-run | would delete 16 of 16 (writes no receipt) |
+| execute | **applied**; deleted 16, conceded 0, failed 0 |
+| receipt | `.../retention/compat/receipt.json` **closed** (closed_at `03:17:45Z`), 16 targets all `completed` |
+| after | compat 36 → 20 dirs (~114 KB freed); cited runs + `latest.json` intact |
+| idempotency | re-plan: compat over-cap=false, **actionable=0** |
+| drift guard | re-apply with the now-stale hash → **REFUSED (plan-hash-mismatch)** (recomputed `…23882a3a…`) |
+
+No cited local evidence was touched; only unpinned, over-cap, age-cleared compat
+runs were removed. `notify_kinds` was restored to its prior `approval` value
+after the exercise.
+
 ## Verdict
 
-**Release B is implementation-complete, adversarially reviewed, and
-safe-validated** (read-only plan + throwaway `--execute` e2e + the plan-hash
-safety gate, full suite green, 22 retention mutants RED). The remaining
-acceptance work is the **owner-gated** publish/install/real-exercise/rollback
-sequence in §4 — surfaced with exact steps, deliberately not performed here
-because it publishes versions, mutates the machine, and sends real
-notifications. Cited local run evidence is intact.
+**Release B is implementation-complete, adversarially reviewed, safe-validated,
+AND owner-exercised on the real machine.** §1–§3 established implementation plus
+safe validation; §4 enumerated the owner-gated sequence; **§5 records that the
+owner authorized and this session performed the real notify matrix (real Telegram
+delivery of response-needed / turn-complete / approval, the kinds filter acting
+pre-dedupe, and the Codex shuttle's turn-complete→response-needed migration) and
+the real GC apply (16 uncited compat runs deleted under the reviewed plan hash,
+receipt closed with all targets completed, cited evidence and `latest.json`
+intact, and the plan-hash drift guard verified).** What remains genuinely
+owner-only is the routine post-bump freshness upkeep and the ongoing rollback
+lever (§4 steps 3 and 5), neither of which sends notifications or deletes
+evidence. Cited local run evidence is intact; `notify_kinds` restored to
+`approval`.
