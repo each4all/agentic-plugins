@@ -501,7 +501,10 @@ write):
   stay deferred.** Evidence recorded: `statusLine` is not
   plugin-bundlable, so a future Tier 4 is an M1 settings-fragment plan
   (the user pastes the statusLine command into their own
-  `settings.json`), mirroring §4's shape.
+  `settings.json`), mirroring §4's shape. *(Tier 4 deferral partially
+  superseded by [ADR-0048](0048-bootstrap-observability.md) §§1–2,
+  2026-07-23 — see the Amendment at the end of this file; Tier 3 stays
+  deferred.)*
 
 ### 7. Boundaries and invariants
 
@@ -673,3 +676,18 @@ sensors / restructure): **restructure by relocation**.
   the pre-relocation cache surface visible (honestly) until the released
   attention version is installed; the parity-100% claim belongs to the
   post-release install proof, not the source relocation.
+
+## Amendment (2026-07-23): Tier 4 statusline adapter — partial supersedure by ADR-0048
+
+[ADR-0048](0048-bootstrap-observability.md) lifts the §6 "Tier 4 stays
+deferred" posture for the statusline adapter specifically: statusline
+configuration becomes part of the machine-bootstrap Stage 5 ("operator
+observability + egress") as per-host rendered fragments — exactly the M1
+settings-fragment shape this ADR's recorded evidence anticipated — plus an
+optional credential-free Claude shim **rendered for operator installation,
+never auto-installed** (Codex needs no component: `[tui].status_line` is a
+native ordered item list, host truth in
+`docs/assurance/statusline-host-truth-2026-07-22.md`). The v1-rejection
+rationale in Alternatives ("statusLine is not plugin-bundlable") stands
+unchanged — ADR-0048 works within it rather than reversing it. Tier 3
+(host-generic widgets) remains deferred.
