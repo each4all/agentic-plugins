@@ -531,6 +531,16 @@ boundary between them:
      reusable doctor proof selection (`doctor.mjs:1906-1920`). This pin is
      **not** vacuous for v1 and its per-family predicates are part of the
      registry entry.
+     *(Amended 2026-07-22, retention-apply implementation review.)* The reusable
+     doctor-proof reader selects the FIRST reusable proof across the older runs,
+     falling back to latest, and "reusable" depends on live host state (installed
+     plugin/CLI versions matching the recorded evidence) the read-only planner
+     deliberately does not gather. Pinning only latest would let apply delete an
+     older run the reader currently selects. Because the planner cannot prove
+     which older run is reusable without probing the host, v1 pins EVERY doctor
+     run — doctor is retention-**observed** but not retention-**deletable** at
+     v1; `compat`/`settings` are the deletable families. A future slice that
+     gathers host state can narrow the doctor pin.
   4. **Cross-artifact references** — run ids embedded in other run
      artifacts that outlive them: concretely at v1, recorded `doctor.json`
      report snapshots (which embed other families' evidence ids,

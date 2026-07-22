@@ -83,11 +83,40 @@ function assertFamily(family) {
   }
 }
 
+// A ceiling override may only LOWER the hard default, never raise it.
+function clampCeiling(value, hardMax) {
+  if (!Number.isFinite(value) || value < 0) return hardMax;
+  return Math.min(Math.trunc(value), hardMax);
+}
+
+// The valid target states of a well-formed receipt. Any other state on an
+// existing receipt is "unknown" and blocks a new apply (fail-closed).
+const RECEIPT_TARGET_STATES = new Set(['planned', 'started', 'completed', 'failed']);
+
+// Fail-closed receipt gate: returns a block reason string when an existing
+// receipt must NOT be overwritten by a new apply, or null when it is a cleanly
+// closed, current-schema receipt with every target terminal.
+function receiptBlockReason(receipt) {
+  if (typeof receipt !== 'object' || receipt === null || Array.isArray(receipt)) return 'receipt-malformed';
+  if (receipt.schema_version !== RETENTION_RECEIPT_SCHEMA_VERSION) return 'receipt-schema-mismatch';
+  if (!Array.isArray(receipt.targets)) return 'receipt-malformed';
+  for (const t of receipt.targets) {
+    if (typeof t !== 'object' || t === null || !RECEIPT_TARGET_STATES.has(t.state)) return 'receipt-unknown-target-state';
+    if (t.state === 'planned' || t.state === 'started') return 'open-receipt';
+  }
+  if (receipt.status !== 'closed') return 'open-receipt';
+  return null;
+}
+
 // ── Containment + no-follow validation (RE-RUN at deletion time) ──
 //
 // A deletion target must be a run-id directory DIRECTLY under runs/<family>/,
-// named by the family's validated run-id shape, and reachable component-wise
-// without traversing a symlink. Returns { ok, reason?, runDir? }. Pure fs read.
+// named by the family's validated run-id shape, and reachable COMPONENT-WISE
+// without traversing a symlink at ANY level — repoRoot/.agentic-plugins, /runs,
+// /<family>, and /<runId> are each lstat'd, and a symlink anywhere on that chain
+// is refused (Codex review CRITICAL: path.resolve is lexical, so lstating only
+// the family root and run dir let a symlink at `.agentic-plugins/runs` redirect
+// the recursive removal outside the tree). Returns { ok, reason?, runDir? }.
 export async function validateDeletionTarget({ repoRoot, family, runId }) {
   const registry = RETENTION_FAMILY_REGISTRY[family];
   if (!registry || !registry.runIdRe.test(runId)) {
@@ -95,23 +124,28 @@ export async function validateDeletionTarget({ repoRoot, family, runId }) {
   }
   const familyRoot = runsFamilyRoot(repoRoot, family);
   const runDir = path.join(familyRoot, runId);
-  // Component-wise containment: the resolved run dir must be an immediate child
-  // of the resolved family root — no `..`, no absolute escape.
+  // Component-wise containment: the run dir must be an immediate child of the
+  // family root — no `..`, no absolute escape (lexical guard, first line).
   const rel = path.relative(path.resolve(familyRoot), path.resolve(runDir));
   if (rel !== runId || rel.startsWith('..') || path.isAbsolute(rel)) {
     return { ok: false, reason: 'containment-escape' };
   }
-  // No-follow at the target AND at the family root: an lstat that reveals a
-  // symlink anywhere on the final component is refused (a symlink swapped in
-  // after planning must not redirect the recursive removal).
-  let familyStat;
-  try {
-    familyStat = await fsp.lstat(familyRoot);
-  } catch (err) {
-    return { ok: false, reason: `family-root-unreadable:${err?.code ?? 'error'}` };
-  }
-  if (familyStat.isSymbolicLink() || !familyStat.isDirectory()) {
-    return { ok: false, reason: 'family-root-not-dir' };
+  // Every ANCESTOR component from repoRoot down must be a real directory, not a
+  // symlink — this is the no-follow guarantee lexical resolution cannot give.
+  const ancestors = [
+    path.join(repoRoot, '.agentic-plugins'),
+    path.join(repoRoot, '.agentic-plugins', 'runs'),
+    familyRoot,
+  ];
+  for (const ancestor of ancestors) {
+    let st;
+    try {
+      st = await fsp.lstat(ancestor);
+    } catch (err) {
+      return { ok: false, reason: `ancestor-unreadable:${err?.code ?? 'error'}` };
+    }
+    if (st.isSymbolicLink()) return { ok: false, reason: 'ancestor-symlink' };
+    if (!st.isDirectory()) return { ok: false, reason: 'ancestor-not-dir' };
   }
   let runStat;
   try {
@@ -122,6 +156,61 @@ export async function validateDeletionTarget({ repoRoot, family, runId }) {
   if (runStat.isSymbolicLink()) return { ok: false, reason: 'symlink-refused' };
   if (!runStat.isDirectory()) return { ok: false, reason: 'not-a-directory' };
   return { ok: true, runDir, mtimeMs: runStat.mtimeMs };
+}
+
+async function lstatNoThrow(targetPath) {
+  try {
+    return await fsp.lstat(targetPath);
+  } catch {
+    return null;
+  }
+}
+
+const SETTINGS_NONTERMINAL_STATUSES = new Set(['planned', 'in-progress']);
+
+// Fast per-target pin re-check immediately before deletion (Codex review
+// CRITICAL): a writer that repoints latest.json to a candidate, or flips a
+// settings run non-terminal / attested, AFTER the plan recompute must not lose
+// that run. Reads only the FAST, per-target pin sources (the family latest.json
+// and, for settings, the run's own execution artifact) — slow git-tracked
+// citations rely on the recompute + plan-hash binding. Fail-closed: any read/
+// parse anomaly is treated as "pinned" (concede) rather than proceed to delete.
+async function isNowFastPinned({ repoRoot, family, runId }) {
+  // latest pointer (all families)
+  const latestPath = path.join(runsFamilyRoot(repoRoot, family), 'latest.json');
+  const latest = await lstatNoThrow(latestPath);
+  if (latest) {
+    if (latest.isSymbolicLink() || !latest.isFile()) return true; // anomalous ⇒ concede
+    try {
+      const json = JSON.parse(await fsp.readFile(latestPath, 'utf8'));
+      if (json?.run_id === runId) return true;
+    } catch {
+      return true; // unreadable/malformed latest ⇒ concede
+    }
+  }
+  // settings live pins (non-terminal or attested) for the target run itself
+  if (family === 'settings') {
+    const artifactPath = path.join(runsFamilyRoot(repoRoot, family), runId, 'settings.json');
+    const st = await lstatNoThrow(artifactPath);
+    if (st) {
+      if (st.isSymbolicLink() || !st.isFile()) return true;
+      try {
+        const json = JSON.parse(await fsp.readFile(artifactPath, 'utf8'));
+        const status = typeof json?.status === 'string' ? json.status : null;
+        const statusNonTerminal = status !== null && SETTINGS_NONTERMINAL_STATUSES.has(status);
+        const confirmedTerminal = status !== null && !statusNonTerminal && json?.terminal !== false;
+        const review = json?.codex_hook_review;
+        const attested = review && review.attested === true && review.status === 'attested';
+        if (!confirmedTerminal || attested) return true;
+      } catch {
+        return true; // can't confirm terminal ⇒ concede
+      }
+    } else {
+      // A settings run whose artifact vanished mid-apply is uncertain ⇒ concede.
+      return true;
+    }
+  }
+  return false;
 }
 
 // Newest mtime across a run dir (last-instant recency re-check). Bounded by the
@@ -165,7 +254,7 @@ async function readJsonIfExists(targetPath) {
 // ── Family lock (real O_EXCL mutex, stale takeover by age — modeled on
 // context.mjs acquireSlotLock) ──
 
-async function acquireFamilyLock({ repoRoot, family, nowMs }) {
+async function acquireFamilyLock({ repoRoot, family }) {
   const lockPath = familyLockPath(repoRoot, family);
   await fsp.mkdir(path.dirname(lockPath), { recursive: true });
   const token = `${process.pid}:${randomBytes(8).toString('hex')}`;
@@ -183,15 +272,48 @@ async function acquireFamilyLock({ repoRoot, family, nowMs }) {
         return { acquired: false, reason: 'lock-unreadable' };
       }
       if (st.isSymbolicLink() || !st.isFile()) return { acquired: false, reason: 'lock-not-regular' };
-      const farFuture = st.mtimeMs - nowMs > FUTURE_SKEW_TOLERANCE_MS;
-      const age = farFuture ? Number.POSITIVE_INFINITY : Math.max(0, nowMs - st.mtimeMs);
+      // Staleness is judged against REAL wall-clock time, NEVER the caller's
+      // injected logical `now` (Codex review CRITICAL): the injected clock is for
+      // the plan/age logic; comparing it to the filesystem mtime made a live
+      // peer's lock look "far future ⇒ stale" whenever the logical clock ran
+      // behind real time, so two processes both took over and both deleted.
+      const realNowMs = Date.now();
+      const farFuture = st.mtimeMs - realNowMs > FUTURE_SKEW_TOLERANCE_MS;
+      const age = farFuture ? Number.POSITIVE_INFINITY : Math.max(0, realNowMs - st.mtimeMs);
       if (age <= LOCK_STALE_AGE_MS) return { acquired: false, reason: 'lock-held' };
-      // Stale takeover as a REAL mutex: claim by atomic rename-away; exactly one
-      // contender wins, losers see ENOENT and retry into a clean create.
+      // Stale takeover as a REAL mutex: CAPTURE the stale lock by atomic rename to
+      // a unique name; exactly one contender wins the rename and removes the
+      // captured file, every loser sees ENOENT and retries into a clean create.
+      // A fresh lock a peer created after our staleness read is NOT destroyed:
+      // the rename moves whatever is at lockPath, and if a peer already re-created
+      // it fresh, our rename captures the STALE one it replaced or fails — either
+      // way we then retry the exclusive create and lose to the live holder.
       const claim = `${lockPath}.${randomBytes(8).toString('hex')}.stale`;
       try {
         await fsp.rename(lockPath, claim);
-        await fsp.rm(claim, { force: true });
+        // Re-verify the captured lock is STILL stale before removing it — a live
+        // peer's fresh lock captured by an ABA rename must be restored, not
+        // deleted (mirrors the ADR-0047 §6 capture-verified removal).
+        let claimStat = null;
+        try {
+          claimStat = await fsp.lstat(claim);
+        } catch {
+          claimStat = null;
+        }
+        const stillStale = claimStat
+          && !(claimStat.mtimeMs - Date.now() > FUTURE_SKEW_TOLERANCE_MS)
+          && Date.now() - claimStat.mtimeMs > LOCK_STALE_AGE_MS;
+        if (stillStale) {
+          await fsp.rm(claim, { force: true });
+        } else if (claimStat) {
+          // ABA: captured a fresh lock — restore it and concede.
+          try {
+            await fsp.rename(claim, lockPath);
+          } catch {
+            await fsp.rm(claim, { force: true }).catch(() => {});
+          }
+          return { acquired: false, reason: 'lock-held' };
+        }
       } catch {
         // lost the takeover race — retry
       }
@@ -244,37 +366,53 @@ export async function applyRetention({
   }
   assertFamily(family);
   const nowMs = now.getTime();
-  const maxDeletions = Number.isFinite(ceilings.maxDeletions) && ceilings.maxDeletions >= 0 ? ceilings.maxDeletions : APPLY_MAX_DELETIONS;
-  const maxBytes = Number.isFinite(ceilings.maxBytes) && ceilings.maxBytes >= 0 ? ceilings.maxBytes : APPLY_MAX_BYTES;
-  const maxElapsedMs = Number.isFinite(ceilings.maxElapsedMs) && ceilings.maxElapsedMs >= 0 ? ceilings.maxElapsedMs : APPLY_MAX_ELAPSED_MS;
+  // `execute` is a STRICT boolean gate (Codex review CRITICAL): any truthy
+  // non-true value (a string, 1, {}) must NOT enter deletion mode.
+  const doExecute = execute === true;
+  // Deletion REQUIRES the operator's reviewed plan hash in the LIB itself — the
+  // CLI guard does not protect direct callers of the exported executor (Codex
+  // review CRITICAL). A bare execute with no reviewed hash would delete against
+  // an unreviewed plan.
+  if (doExecute && (typeof expectedPlanHash !== 'string' || expectedPlanHash.length === 0)) {
+    throw new TypeError('execute:true requires expectedPlanHash (the operator-reviewed plan hash)');
+  }
+  // Ceilings can only be LOWERED from the hard defaults, never raised (Codex
+  // review MAJOR): a caller must not be able to widen a deletion budget past the
+  // ADR-0035 §3 finite-bounded-execution constants.
+  const maxDeletions = clampCeiling(ceilings.maxDeletions, APPLY_MAX_DELETIONS);
+  const maxBytes = clampCeiling(ceilings.maxBytes, APPLY_MAX_BYTES);
+  const maxElapsedMs = clampCeiling(ceilings.maxElapsedMs, APPLY_MAX_ELAPSED_MS);
   const elapsedClock = typeof ceilings.elapsedClock === 'function' ? ceilings.elapsedClock : Date.now;
   const rmImpl = typeof ceilings.rmImpl === 'function' ? ceilings.rmImpl : defaultRecursiveRemove;
+  // A REAL deletion always runs the full tracked-citation rescan — an injected
+  // gitTrackedFiles (a test seam) must never weaken the pin scan a live deletion
+  // depends on (Codex review MAJOR). Injection is honored only in dry-run.
+  const effectiveGitTracked = doExecute ? null : gitTrackedFiles;
 
   // Acquire the family lock BEFORE recomputing the plan — the recompute and the
   // deletion must be one critical section against concurrent applies.
-  const lock = await acquireFamilyLock({ repoRoot, family, nowMs });
+  const lock = await acquireFamilyLock({ repoRoot, family });
   if (!lock.acquired) {
     return { status: 'blocked', reason: `family-lock:${lock.reason}`, family };
   }
   try {
-    // An OPEN receipt blocks new applies until it is resolved.
+    // Any EXISTING receipt is fail-closed (Codex review MAJOR): the ONLY state
+    // that permits a new apply is a cleanly-closed, current-schema receipt with
+    // every target terminal. Anything else — unreadable, malformed, missing/
+    // wrong schema, open, or carrying an unknown target state — BLOCKS, so an
+    // uncertain half-applied prior run can never be overwritten and re-deleted.
     const existing = await readJsonIfExists(familyReceiptPath(repoRoot, family));
-    if (existing.ok && receiptIsOpen(existing.json)) {
-      return { status: 'blocked', reason: 'open-receipt', family, receipt: existing.json };
-    }
     if (existing.ok === false && existing.code && existing.code !== 'ENOENT') {
-      // An unreadable receipt is potentially open — refuse rather than risk a
-      // double-delete of a half-applied plan.
       return { status: 'blocked', reason: `receipt-unreadable:${existing.code}`, family };
     }
-    // A receipt from a NEWER schema means a downgrade met a newer open receipt —
-    // refuse deletion-capable operation instead of misreading it.
-    if (existing.ok && existing.json?.schema_version && existing.json.schema_version !== RETENTION_RECEIPT_SCHEMA_VERSION) {
-      return { status: 'blocked', reason: 'receipt-schema-mismatch', family, receipt_schema: existing.json.schema_version };
+    if (existing.ok) {
+      const block = receiptBlockReason(existing.json);
+      if (block) return { status: 'blocked', reason: block, family, receipt_schema: existing.json?.schema_version ?? null };
     }
 
-    // Recompute the plan under the lock (full pin re-scan).
-    const plan = await planRetention({ repoRoot, now, caps, gitTrackedFiles });
+    // Recompute the plan under the lock (full pin re-scan; a real deletion never
+    // honors an injected gitTrackedFiles).
+    const plan = await planRetention({ repoRoot, now, caps, gitTrackedFiles: effectiveGitTracked });
     const recomputedHash = plan.plan_hash;
     if (!plan.scan_complete) {
       return { status: 'refused', reason: 'scan-incomplete', family, plan_hash: recomputedHash, scan_incomplete_reasons: plan.scan_incomplete_reasons };
@@ -285,10 +423,12 @@ export async function applyRetention({
     // ceiling deterministically (the plan already measured them under the lock).
     const runBytes = new Map((fam?.runs ?? []).map((r) => [r.run_id, r.bytes]));
 
-    // Plan-hash binding: if the operator supplied the reviewed hash, it MUST
-    // match the recomputed hash — a mismatch means the plan drifted (new
-    // citations/runs/pins/caps) and is a refusal with re-present.
-    if (expectedPlanHash !== null && expectedPlanHash !== recomputedHash) {
+    // Plan-hash binding: the reviewed hash (when supplied — always, for execute)
+    // MUST match the recomputed hash. A mismatch means the plan drifted (new
+    // citations/runs/pins/caps) and is a refusal with re-present. Normalize both
+    // to the `sha256:` token form so a bare-hex reviewed hash still compares.
+    const normalizedExpected = expectedPlanHash !== null ? computeExpectedHashHex(expectedPlanHash) : null;
+    if (normalizedExpected !== null && normalizedExpected !== recomputedHash) {
       return {
         status: 'refused',
         reason: 'plan-hash-mismatch',
@@ -300,7 +440,7 @@ export async function applyRetention({
     }
 
     // Dry-run (default): report what WOULD be deleted, delete nothing.
-    if (!execute) {
+    if (!doExecute) {
       return {
         status: 'dry-run',
         family,
@@ -332,20 +472,26 @@ export async function applyRetention({
     for (const target of receipt.targets) {
       if (elapsedClock() - started >= maxElapsedMs) break;
       const runId = target.run_id;
+      const concede = async (reason) => {
+        target.state = 'completed';
+        target.outcome = `conceded:${reason}`;
+        outcome.conceded.push({ run_id: runId, reason });
+        await writeJsonAtomic(familyReceiptPath(repoRoot, family), receipt);
+      };
       // RE-VALIDATE containment + no-follow at the destructive boundary (TOCTOU).
       const valid = await validateDeletionTarget({ repoRoot, family, runId });
-      if (!valid.ok) {
-        // vanished (a concurrent writer/other apply) or refused — concede.
-        target.state = 'completed';
-        target.outcome = `conceded:${valid.reason}`;
-        outcome.conceded.push({ run_id: runId, reason: valid.reason });
-        await writeJsonAtomic(familyReceiptPath(repoRoot, family), receipt);
-        continue;
-      }
-      // Injection seam (tests only): simulate a concurrent writer touching the
-      // run AFTER validation but BEFORE the age re-check, so the last-instant
-      // re-check can be exercised in isolation from the plan recompute.
+      if (!valid.ok) { await concede(valid.reason); continue; }
+      // Injection seam (tests only): simulate a concurrent writer acting AFTER
+      // validation but BEFORE the pin/age re-checks (repointing latest.json,
+      // touching a file). Placed before both re-checks so a test can exercise
+      // either the pin race or the recency race.
       if (typeof ceilings.afterValidate === 'function') await ceilings.afterValidate(valid.runDir);
+      // Per-target FRESH pin re-check (Codex review CRITICAL): a writer that
+      // pins a candidate AFTER the plan recompute (repointing latest.json, or a
+      // settings run going non-terminal / gaining an attestation) must not lose
+      // its run. The fast pin sources are re-read immediately before deletion;
+      // slow git-tracked citations rely on the recompute + plan-hash binding.
+      if (await isNowFastPinned({ repoRoot, family, runId })) { await concede('now-pinned'); continue; }
       // Last-instant age re-check inside the lock: a run touched within the age
       // margin is a live writer's — concede rather than delete its data.
       let recentMtime;
@@ -354,33 +500,50 @@ export async function applyRetention({
       } catch {
         recentMtime = nowMs; // unreadable ⇒ treat as recent ⇒ concede
       }
-      if (nowMs - recentMtime < APPLY_AGE_MARGIN_MS) {
-        target.state = 'completed';
-        target.outcome = 'conceded:too-recent';
-        outcome.conceded.push({ run_id: runId, reason: 'too-recent' });
-        await writeJsonAtomic(familyReceiptPath(repoRoot, family), receipt);
-        continue;
-      }
+      if (nowMs - recentMtime < APPLY_AGE_MARGIN_MS) { await concede('too-recent'); continue; }
       // Byte ceiling: stop before a deletion that would exceed the budget (a
       // single run larger than the whole budget on the FIRST deletion is still
       // allowed, so a big run is never permanently un-deletable — but it ends
-      // this invocation). Leftover targets stay `planned` and the receipt stays
-      // open for a resolve/next invocation.
+      // this invocation). maxBytes:0 admits nothing (the > comparison fires even
+      // on the first target). Leftover targets stay `planned`, receipt stays open.
       const thisBytes = runBytes.get(runId) ?? 0;
-      if (outcome.deleted.length > 0 && outcome.bytes + thisBytes > maxBytes) break;
+      if ((outcome.deleted.length > 0 || maxBytes === 0) && outcome.bytes + thisBytes > maxBytes) break;
       // Transition to 'started' BEFORE the unlink so a crash brands it started.
       target.state = 'started';
       await writeJsonAtomic(familyReceiptPath(repoRoot, family), receipt);
       try {
-        await rmImpl(valid.runDir);
-        target.state = 'completed';
-        target.outcome = 'deleted';
-        outcome.deleted.push(runId);
-        outcome.bytes += thisBytes;
+        // CAPTURE-by-rename before removal (Codex review CRITICAL TOCTOU, mirrors
+        // ADR-0047 §6): atomically rename the validated run dir to a nonce
+        // tombstone within the family root, re-lstat the CAPTURED dir (a fresh
+        // symlink an attacker swaps at runId after our capture cannot affect the
+        // nonce name), then recursively remove the tombstone.
+        const tombstone = `${valid.runDir}.gc-${randomBytes(8).toString('hex')}`;
+        await fsp.rename(valid.runDir, tombstone);
+        const captured = await lstatNoThrow(tombstone);
+        if (!captured || captured.isSymbolicLink() || !captured.isDirectory()) {
+          // Captured something that is not a real dir — do NOT recursively remove
+          // it; restore if possible and concede.
+          if (captured) { try { await fsp.rename(tombstone, valid.runDir); } catch { /* leave tombstone */ } }
+          target.state = 'completed';
+          target.outcome = 'conceded:capture-not-dir';
+          outcome.conceded.push({ run_id: runId, reason: 'capture-not-dir' });
+        } else {
+          await rmImpl(tombstone);
+          target.state = 'completed';
+          target.outcome = 'deleted';
+          outcome.deleted.push(runId);
+          outcome.bytes += thisBytes;
+        }
       } catch (err) {
-        target.state = 'failed';
-        target.outcome = `error:${err?.code ?? err?.message ?? 'unknown'}`;
-        outcome.failed.push({ run_id: runId, reason: target.outcome });
+        if (err?.code === 'ENOENT') {
+          target.state = 'completed';
+          target.outcome = 'conceded:vanished';
+          outcome.conceded.push({ run_id: runId, reason: 'vanished' });
+        } else {
+          target.state = 'failed';
+          target.outcome = `error:${err?.code ?? err?.message ?? 'unknown'}`;
+          outcome.failed.push({ run_id: runId, reason: target.outcome });
+        }
       }
       await writeJsonAtomic(familyReceiptPath(repoRoot, family), receipt);
     }
@@ -417,36 +580,54 @@ function defaultRecursiveRemove(runDir) {
 
 // Resolve an open receipt: re-inventory its 'started' (state-unknown) targets —
 // a run dir still present is left for the next plan (its deletion did not
-// complete); an absent one is marked completed. Closes the receipt. Read-only
-// except the receipt rewrite; never deletes.
+// complete); an absent one is marked completed. Closes the receipt. Never
+// deletes. Acquires the SAME family lock apply takes (Codex review MAJOR) so it
+// cannot race an in-flight apply and rewrite the receipt out from under it; an
+// unreadable/malformed receipt is reported honestly, never silently closed.
 export async function resolveOpenReceipt({ repoRoot, family, now = new Date() }) {
   assertFamily(family);
-  const receiptPath = familyReceiptPath(repoRoot, family);
-  const existing = await readJsonIfExists(receiptPath);
-  if (!existing.ok) return { status: 'no-receipt', family };
-  const receipt = existing.json;
-  if (receipt.schema_version !== RETENTION_RECEIPT_SCHEMA_VERSION) {
-    return { status: 'schema-mismatch', family, receipt_schema: receipt.schema_version };
-  }
-  if (!receiptIsOpen(receipt)) return { status: 'already-closed', family };
-  for (const target of receipt.targets) {
-    if (target.state === 'planned') {
-      target.state = 'completed';
-      target.outcome = 'not-started';
-      continue;
+  const lock = await acquireFamilyLock({ repoRoot, family });
+  if (!lock.acquired) return { status: 'blocked', reason: `family-lock:${lock.reason}`, family };
+  try {
+    const receiptPath = familyReceiptPath(repoRoot, family);
+    const existing = await readJsonIfExists(receiptPath);
+    if (!existing.ok) {
+      // ENOENT is genuinely "no receipt"; any other read error is reported as
+      // unreadable rather than pretended-absent.
+      return { status: existing.code === 'ENOENT' ? 'no-receipt' : 'unreadable', family, code: existing.code ?? null };
     }
-    if (target.state === 'started') {
-      const valid = await validateDeletionTarget({ repoRoot, family, runId: target.run_id });
-      // A 'started' target whose run dir is gone completed; one still present is
-      // recorded as state-unknown and left for the next plan to re-evaluate.
-      target.state = 'completed';
-      target.outcome = valid.ok ? 'state-unknown-run-present' : 'deleted-or-vanished';
+    const receipt = existing.json;
+    if (typeof receipt !== 'object' || receipt === null || !Array.isArray(receipt.targets)) {
+      return { status: 'malformed', family };
     }
+    if (receipt.schema_version !== RETENTION_RECEIPT_SCHEMA_VERSION) {
+      return { status: 'schema-mismatch', family, receipt_schema: receipt.schema_version ?? null };
+    }
+    if (!receiptIsOpen(receipt)) return { status: 'already-closed', family };
+    for (const target of receipt.targets) {
+      if (target.state === 'planned') {
+        target.state = 'completed';
+        target.outcome = 'not-started';
+        continue;
+      }
+      if (target.state === 'started') {
+        // A 'started' target whose run dir is GONE completed; one still present
+        // is state-unknown and left for the next plan. Distinguish honestly: a
+        // symlink/unreadable-but-present entry is NOT "deleted-or-vanished".
+        const lst = await lstatNoThrow(path.join(runsFamilyRoot(repoRoot, family), target.run_id));
+        target.state = 'completed';
+        if (lst === null) target.outcome = 'deleted-or-vanished';
+        else if (lst.isDirectory() && !lst.isSymbolicLink()) target.outcome = 'state-unknown-run-present';
+        else target.outcome = 'state-unknown-nonconforming';
+      }
+    }
+    receipt.status = 'closed';
+    receipt.resolved_at = now.toISOString();
+    await writeJsonAtomic(receiptPath, receipt);
+    return { status: 'resolved', family, targets: receipt.targets };
+  } finally {
+    await releaseFamilyLock({ lockPath: lock.lockPath, token: lock.token });
   }
-  receipt.status = 'closed';
-  receipt.resolved_at = now.toISOString();
-  await writeJsonAtomic(receiptPath, receipt);
-  return { status: 'resolved', family, targets: receipt.targets };
 }
 
 export function computeExpectedHashHex(planHash) {

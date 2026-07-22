@@ -288,19 +288,29 @@ function harvestRunIdTokens(text, pinned, exclude = null) {
   }
 }
 
+export const JSON_HARVEST_MAX_DEPTH = 64;
+
 // Harvest run-id tokens from PARSED JSON string values (Codex review MAJOR): a
 // raw-text regex misses a JSON unicode escape (`"compat-…"` parses to a
 // real run-id but never matches the literal-token regex). Walking the parsed
 // value scans the DECODED strings, catching escaped references. Non-string
 // leaves are ignored; the walk is depth-bounded against a pathological blob.
-function harvestRunIdTokensFromJson(value, pinned, exclude, depth = 0) {
-  if (depth > 64) return;
+// Hitting the depth cap sets `state.truncated` so the caller can FAIL CLOSED
+// (Codex review CRITICAL: a silent depth-stop dropped a pin below a deeply
+// nested citation while scan_complete stayed true, and apply then deleted the
+// cited run) — an un-fully-scanned source is treated as potentially citing
+// everything.
+function harvestRunIdTokensFromJson(value, pinned, exclude, state, depth = 0) {
+  if (depth > JSON_HARVEST_MAX_DEPTH) {
+    if (state) state.truncated = true;
+    return;
+  }
   if (typeof value === 'string') {
     harvestRunIdTokens(value, pinned, exclude);
   } else if (Array.isArray(value)) {
-    for (const item of value) harvestRunIdTokensFromJson(item, pinned, exclude, depth + 1);
+    for (const item of value) harvestRunIdTokensFromJson(item, pinned, exclude, state, depth + 1);
   } else if (value && typeof value === 'object') {
-    for (const item of Object.values(value)) harvestRunIdTokensFromJson(item, pinned, exclude, depth + 1);
+    for (const item of Object.values(value)) harvestRunIdTokensFromJson(item, pinned, exclude, state, depth + 1);
   }
 }
 
@@ -441,21 +451,30 @@ export async function resolveLivePins({ repoRoot }) {
     if (newestAttested !== null) pinned.get('settings').add(newestAttested);
   }
 
-  // doctor live pin — the reader's latest-fallback floor (see block comment).
-  // A malformed/unreadable/dangling doctor latest is already fail-closed by
-  // resolveLatestPins; here we only mirror the pin, never double-count reasons.
-  const doctorLatestPath = path.join(familyRoot(repoRoot, 'doctor'), 'latest.json');
-  const doctorRead = await readBoundedRegularFile(doctorLatestPath, CROSS_ARTIFACT_MAX_FILE_BYTES);
-  if (doctorRead.ok) {
-    const text = decodeText(doctorRead.buffer);
-    try {
-      const json = text === null ? null : JSON.parse(text);
-      const runId = json?.run_id;
-      if (typeof runId === 'string' && RETENTION_FAMILY_REGISTRY.doctor.runIdRe.test(runId)) {
-        pinned.get('doctor').add(runId);
+  // doctor live pin — pin EVERY validated doctor run (Codex review MAJOR). The
+  // recorded-doctor-proof reader selects the FIRST *reusable* proof across the
+  // older runs, falling back to latest; "reusable" depends on live host state
+  // (installed plugin/CLI versions matching the recorded evidence) that the
+  // planner deliberately does not gather. Pinning only latest would let apply
+  // delete an older run the reader currently selects. Since ANY doctor run could
+  // be the reader's reusable pick and the planner cannot prove which, v1 treats
+  // doctor as retention-OBSERVED but not retention-DELETABLE (all runs pinned);
+  // a future slice that gathers host state can narrow this. compat/settings are
+  // the deletable families at v1.
+  const doctorRoot = familyRoot(repoRoot, 'doctor');
+  let doctorEntries = null;
+  try {
+    doctorEntries = await fsp.readdir(doctorRoot, { withFileTypes: true });
+  } catch (err) {
+    if (String(err?.code ?? '') !== 'ENOENT') {
+      incomplete.push({ source: 'live-doctor', family: 'doctor', reason: `doctor runs unreadable (${err?.code ?? 'error'})` });
+    }
+  }
+  if (Array.isArray(doctorEntries)) {
+    for (const entry of doctorEntries) {
+      if (entry.isDirectory() && RETENTION_FAMILY_REGISTRY.doctor.runIdRe.test(entry.name)) {
+        pinned.get('doctor').add(entry.name);
       }
-    } catch {
-      // resolveLatestPins already recorded the malformed-latest reason.
     }
   }
 
@@ -535,7 +554,13 @@ export async function scanCrossArtifactReferences({ repoRoot }) {
           incomplete.push({ source: 'cross-artifact', family: source.family, reason: 'artifact malformed (invalid JSON)' });
           continue;
         }
-        harvestRunIdTokensFromJson(json, pinned, exclude);
+        const harvestState = { truncated: false };
+        harvestRunIdTokensFromJson(json, pinned, exclude, harvestState);
+        if (harvestState.truncated) {
+          // A too-deeply-nested artifact could cite anything below the cap —
+          // fail-closed rather than silently drop those pins.
+          incomplete.push({ source: 'cross-artifact', family: source.family, reason: `artifact nesting exceeds scan depth ${JSON_HARVEST_MAX_DEPTH}` });
+        }
       }
     }
   }
@@ -735,12 +760,16 @@ function classifyFamily({ inv, pins, runCap, maxBytes, minAgeMs, scanComplete, n
   // pinned floor, not the raw total (Codex review MAJOR — the prior code deleted
   // unpinned runs even when pins alone were over cap).
   const pinnedBytes = runs.reduce((acc, r) => acc + (pinnedRunIds.has(r.run_id) ? r.bytes : 0), 0);
-  // pins EXCEED the cap (strictly >) ⇒ deleting unpinned runs can never reach
-  // the cap ⇒ nothing deletable. pins EQUAL the cap is still deletable: dropping
-  // the unpinned runs lands exactly AT the cap (the pinned set). (Codex review
-  // MAJOR — an earlier `>=` wrongly suppressed the pins==cap case too.)
-  const excessCount = pinnedRunIds.size > runCap ? 0 : Math.max(0, runs.length - runCap);
-  const bytesDeletable = pinnedBytes <= maxBytes; // else no unpinned deletion can get under
+  // ADR-0047: "when pins alone exceed A cap, nothing is deletable." Read
+  // HOLISTICALLY (Codex review MAJOR): if the pins ALONE exceed EITHER the count
+  // cap OR the byte cap, the family is already over that cap on pins that cannot
+  // be deleted — so NOTHING is deletable, not even for pressure on the OTHER
+  // dimension (the prior code still deleted for byte pressure when pins exceeded
+  // only the count cap). pins EQUAL to a cap stay deletable: dropping the
+  // unpinned runs lands exactly AT that cap (the pinned set).
+  const pinsExceedEitherCap = pinnedRunIds.size > runCap || pinnedBytes > maxBytes;
+  const excessCount = pinsExceedEitherCap ? 0 : Math.max(0, runs.length - runCap);
+  const bytesDeletable = !pinsExceedEitherCap; // pins fit both caps ⇒ byte pressure may delete unpinned
 
   // Unpinned, non-unreadable runs, oldest-first, are the deletion-candidate pool.
   // An unreadable run (walk failed) is never a candidate — its size/recency are
