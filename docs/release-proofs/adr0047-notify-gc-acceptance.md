@@ -226,7 +226,9 @@ Apply (dry-run → `--execute --expected-plan-hash …63119f47…4131a`):
 
 No cited local evidence was touched; only unpinned, over-cap, age-cleared compat
 runs were removed. `notify_kinds` was restored to its prior `approval` value
-after the exercise.
+immediately after the exercise, then set to the steady-state
+`approval,response-needed` per owner decision (interim `turn-complete` excluded to
+keep noise minimal — see `~/.agentic-plugins/config.toml`).
 
 ## Verdict
 
@@ -241,5 +243,6 @@ receipt closed with all targets completed, cited evidence and `latest.json`
 intact, and the plan-hash drift guard verified).** What remains genuinely
 owner-only is the routine post-bump freshness upkeep and the ongoing rollback
 lever (§4 steps 3 and 5), neither of which sends notifications or deletes
-evidence. Cited local run evidence is intact; `notify_kinds` restored to
-`approval`.
+evidence. Cited local run evidence is intact; `notify_kinds` was restored to
+`approval` immediately after the exercise, then set to the steady-state
+`approval,response-needed` per owner decision.
