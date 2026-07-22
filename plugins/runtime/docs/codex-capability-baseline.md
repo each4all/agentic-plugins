@@ -1,6 +1,6 @@
 # Codex Capability Baseline
 
-Observed on 2026-07-20 with Codex CLI `0.144.6` plus official OpenAI
+Observed on 2026-07-22 with Codex CLI `0.145.0` plus official OpenAI
 developer docs. This file is a runtime-owned host-truth checkpoint, not a
 replacement for the upstream docs.
 
@@ -29,15 +29,18 @@ Official OpenAI developer docs:
 functional. A coordinated URL migration across both baseline docs and their
 test tokens is deliberately deferred to a follow-up.)
 
-Local CLI evidence (re-observed 2026-07-20 on `0.144.6`): the
-0.144.2–0.144.6 patch train is fix/chore-only per the GitHub release
-notes — a Guardian auto-review prompting revert, two no-user-facing
-patches, expanded dangerous-command detection, and refreshed GPT-5.6
-model metadata; every listed surface was re-run live, with verb sets
-and flag stages unchanged except the additive `multi_agent_mode`
-`removed` inventory row.
+Local CLI evidence (re-observed 2026-07-22 on `0.145.0`): the
+`0.144.6`→`0.145.0` bump is a minor release — multi-agent V2 stabilized,
+`/import` expanded to migrate Cursor/Claude Code settings/plugins/sessions,
+experimental Amazon Bedrock login with a GPT-5.6 Sol default, audio inputs
+and realtime V3, and a GPT-5.4→GPT-5.6 Terra/Luna migration, plus a Windows
+"correctly quoted hook commands" fix — but the plugin and hook surfaces are
+unchanged: every listed surface was re-run live with verb sets unchanged,
+and the only `codex features list` stage changes are `multi_agent_v2`
+under-development→stable (opt-in, `enabled=false`) and `enable_fanout`
+under-development→removed, neither touching the plugin/hook contract.
 
-- `codex --version` -> `codex-cli 0.144.6`
+- `codex --version` -> `codex-cli 0.145.0`
 - `codex --help` (0.144.1 top-level surface: `exec`, `review`, `login`/`logout`,
   `mcp`, `plugin`, `mcp-server`, `app-server`, `remote-control`, `app`,
   `completion`, `update`, `doctor`, `sandbox`, `debug`, `apply`, `resume`,
