@@ -333,7 +333,10 @@ same state, **not** a plugin-shipped writer: consistent with ADR-0040's
 `statusLine`-deferral (runtime ships no statusline component; the operator's own
 statusline script surfaces the `🔔`). So "dashboard/statusline integration" means
 the plugin populates the notify-state (mirror + dashboard); the statusline merely
-consumes it at the user layer.
+consumes it at the user layer. *(Amended by
+[ADR-0048](0048-bootstrap-observability.md) §2, 2026-07-23: "no statusline
+component" is narrowed to "no **automatically installed** statusline
+component" — see the Amendment at the end of this file.)*
 
 ### 7. Dedupe + failure semantics (claim finalization + failure throttle)
 
@@ -510,3 +513,14 @@ structurally mirroring `--notification-plan` (§6 / ADR-0040 §4).
 - **Host-pin without full-request pin.** *Rejected*: `fetch` follows redirects,
   so host-pinning alone does not bound egress; full URL + `redirect:"error"` +
   shape validation is required.
+
+## Amendment (2026-07-23): §6 statusline wording — narrowed by ADR-0048 §2
+
+§6's "runtime ships no statusline component; the operator's own statusline
+script surfaces the `🔔`" is amended to: **runtime ships no automatically
+installed statusline component; runtime MAY render a credential-free Claude
+statusline shim as an artifact for explicit operator installation** (Codex
+remains fragment-only over its native `[tui].status_line` ordered list). The
+user-layer read stays optional and the notify-state remains the plugin home;
+nothing in this amendment changes §2's hard conditions — statusline inline
+commands and shims MUST NOT read the credential variable (ADR-0048 §4).

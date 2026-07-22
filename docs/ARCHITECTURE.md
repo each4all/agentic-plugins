@@ -216,7 +216,7 @@ The split per [`adr/0001-hexagonal-architecture.md`](adr/0001-hexagonal-architec
 | Subagent format | ADAPTER | markdown+YAML (Claude) vs TOML (Codex) |
 | Subagent invocation model | ADAPTER | Auto-delegate (Claude) vs explicit (Codex) |
 | Continuity mechanism | ADAPTER | PreCompact (Claude) vs Stop-based (Codex) |
-| Statusline / monitors | ADAPTER (Claude only) | Codex has no equivalent |
+| Statusline | ADAPTER | Different native models — shell-command `statusLine` (Claude) vs closed-vocabulary `[tui].status_line` item list (Codex); ADR-0048, host truth in [`docs/assurance/statusline-host-truth-2026-07-22.md`](assurance/statusline-host-truth-2026-07-22.md) |
 | Slash command surface | ADAPTER | `/plugin:skill` (Claude) vs `$skill` mention (Codex) |
 | Companion bridge | COMPANION | Two scripts, one contract |
 
@@ -229,7 +229,7 @@ final note (the "honest scope" rule):
 
 - Host-specific runtime semantics (auto-delegation, context lifecycle events) are NOT unified into a fake common API
 - Each adapter implements its host's native pattern; core specifies *intent*, adapter specifies *execution*
-- Where parity is impossible (e.g., statusline in Codex), the limit is documented, not papered over
+- Where parity is impossible (e.g., arbitrary computed statusline segments on Codex, whose `[tui].status_line` is a closed item vocabulary), the limit is documented, not papered over
 
 This avoids the Electron-style "feels off in both" failure mode.
 

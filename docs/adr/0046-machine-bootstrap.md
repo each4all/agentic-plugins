@@ -317,6 +317,10 @@ argument §12 makes about a launcher that wrote activation.
 - `notify_*` values: channel, quiet hours + timezone, dedupe TTL, urgent bypass,
   kinds
 - egress channel, recipient (chat-id), headline opt-in
+- the adopted statusline item **preset id** (a scalar; a nested/custom item
+  shape would be a major profile-schema bump — added by
+  [ADR-0048](0048-bootstrap-observability.md) §2.1, 2026-07-23, which also
+  renames Stage 5 to "operator observability + egress")
 - the credential's **environment-variable name** and `required: true` — never its
   value
 - Claude user-global `allow` / `deny` / `ask` / `defaultMode`, sanitized
