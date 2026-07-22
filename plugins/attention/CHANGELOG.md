@@ -2,6 +2,18 @@
 
 All notable changes to the `attention` plugin are documented here.
 
+## [0.9.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.8.0...plugin-attention-v0.9.0) (2026-07-22)
+
+
+### Features
+
+* **plugin/attention:** ADR-0047 §2/§3/§9 bounded Stop finality classifier + §4 headline producers ([365fb96](https://github.com/each4all/agentic-plugins/commit/365fb9648755b7605d4f30d75b5ce58266bbd326))
+
+
+### Bug Fixes
+
+* **plugin/attention:** fold codex Review findings — TOCTOU-free bounded reads, scan-completeness hardening ([c6465d8](https://github.com/each4all/agentic-plugins/commit/c6465d8eb4a0fa849ea605684b7e06a15aa9c089))
+
 ## [0.8.0](https://github.com/each4all/agentic-plugins/compare/plugin-attention-v0.7.1...plugin-attention-v0.8.0) (2026-07-21)
 
 

@@ -20,6 +20,22 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.85.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.84.0...plugin-runtime-v0.85.0) (2026-07-22)
+
+
+### Features
+
+* **plugin/runtime:** ADR-0047 §6 bounded expired-claim sweep + withReclaimLock exclusivity repair ([1dc3bc4](https://github.com/each4all/agentic-plugins/commit/1dc3bc4b6810f3f2cf437f1fedaa8de6bc6385a1))
+* **plugin/runtime:** ADR-0047 §7 citation-aware retention planner (read-only) + doctor/dashboard adoption ([123e9a0](https://github.com/each4all/agentic-plugins/commit/123e9a090a07ba1260d6655daa39baa836eb6956))
+* **plugin/runtime:** ADR-0047 §7 retention-apply — M1 deleting executor + runtime:retention CLI ([1a3c5c6](https://github.com/each4all/agentic-plugins/commit/1a3c5c68b5e6c09a5af6af86f8d9b04546befc95))
+
+
+### Bug Fixes
+
+* **plugin/runtime:** fold codex Review findings — retention fail-closed hardening, pins-exceed-cap, self-pin, plan-hash determinism ([e9d5a1c](https://github.com/each4all/agentic-plugins/commit/e9d5a1cddee2f8c317f317782945ae7e1fce93ce))
+* **plugin/runtime:** fold codex Review findings — retention-apply data-loss blockers (containment, TOCTOU, lock, plan-hash, fail-closed scan) ([0bdbdd5](https://github.com/each4all/agentic-plugins/commit/0bdbdd5dfbd969603ee25df47ffd881d77181537))
+* **plugin/runtime:** fold codex Review findings — sweep-then-act concession, capture-verified lock removal, bounded preprocessing ([949aa65](https://github.com/each4all/agentic-plugins/commit/949aa658b899354f2b3932d8e9a871e55e84d778))
+
 ## [0.84.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.83.1...plugin-runtime-v0.84.0) (2026-07-21)
 
 
