@@ -1,7 +1,7 @@
 # Host Parity Baseline
 
-Observed on 2026-07-21 with Claude Code `2.1.216`, Codex CLI
-`0.144.6`, official OpenAI Codex developer docs, and official Claude Code docs.
+Observed on 2026-07-22 with Claude Code `2.1.217`, Codex CLI
+`0.145.0`, official OpenAI Codex developer docs, and official Claude Code docs.
 This file is a runtime-owned host-truth checkpoint for Claude-vs-Codex
 differences. It is not a promise that either host will keep this behavior.
 
@@ -38,13 +38,22 @@ surface was re-run live; verb sets are unchanged on both hosts, so the
 earlier version-tagged observations stand with the re-check noted.
 2026-07-21: `claude --version` and `claude plugin --help` re-checked live
 on the additive/fix-only `2.1.216` patch — verb set unchanged; all other
-listed surfaces stand from the 2026-07-20 full re-run, Codex unchanged):
+listed surfaces stand from the 2026-07-20 full re-run, Codex unchanged.
+2026-07-22: dual drift Claude `2.1.216`→`2.1.217` / Codex
+`0.144.6`→`0.145.0` — `claude --version`, `claude plugin --help`, `codex
+--version`, `codex plugin --help`, and `codex features list` re-checked
+live; both plugin verb sets are unchanged and the `codex features list`
+hook story is unchanged (`plugin_hooks` `removed`, generic `hooks`
+`stable`), the only stage changes being additive/internal (`multi_agent_v2`
+under-development→stable and `enable_fanout` under-development→removed,
+opt-in flags with no plugin/hook surface impact); all other listed surfaces
+stand from the 2026-07-20 full re-run):
 
-- `claude --version` -> `2.1.216 (Claude Code)`
+- `claude --version` -> `2.1.217 (Claude Code)`
 - `claude --help` (the global `--safe-mode` flag / `CLAUDE_CODE_SAFE_MODE`
   added in 2.1.169 — starts a session with CLAUDE.md, plugins, skills, hooks,
   and MCP servers disabled for troubleshooting — is still present on 2.1.215)
-- `claude plugin --help` (re-checked on 2.1.216, verb set unchanged from
+- `claude plugin --help` (re-checked on 2.1.217, verb set unchanged from
   the 2.1.215 full re-run: `details`, `disable`,
   `enable`, `eval`, `init`/`new`, `install`, `list`, `marketplace`,
   `prune`/`autoremove`, `tag`, `uninstall`/`remove`, `update`, `validate` —
@@ -57,7 +66,7 @@ listed surfaces stand from the 2026-07-20 full re-run, Codex unchanged):
   `add-from-claude-desktop`, `add-json`, `get`, `list`, `login`, `logout`,
   `remove`, `reset-project-choices`, `serve` — verb set unchanged from the
   2.1.206 observations; `login`/`logout` cover MCP OAuth flows)
-- `codex --version` -> `codex-cli 0.144.6`
+- `codex --version` -> `codex-cli 0.145.0`
 - `codex --help` (re-checked on 0.144.6: top-level surface `exec`, `review`,
   `login`/`logout`, `mcp`, `plugin`, `mcp-server`, `app-server`,
   `remote-control`, `app`, `completion`, `update`, `doctor`, `sandbox`,
@@ -65,7 +74,7 @@ listed surfaces stand from the 2026-07-20 full re-run, Codex unchanged):
   `cloud`, `exec-server`, `features` — unchanged from 0.144.1; `delete` is
   additive since 0.139.0; the `doctor`/`update`/`login`/`logout`/`archive`
   additions date to 0.137.0)
-- `codex plugin --help` (re-checked on 0.144.6: `add`, `list`, `marketplace`,
+- `codex plugin --help` (re-checked on 0.145.0: `add`, `list`, `marketplace`,
   `remove` — command set unchanged from 0.137.0, whose per-plugin
   `add`/`list`/`remove` went beyond the prior marketplace-only surface;
   0.138.0 added `--json` to `add`/`remove`, and `list` supports `--json` plus
@@ -82,13 +91,13 @@ listed surfaces stand from the 2026-07-20 full re-run, Codex unchanged):
   `upgrade`, `remove` — unchanged from 0.137.0; `marketplace list --json`
   includes the marketplace source for source-backed marketplaces as of
   0.139.0, not every entry)
-- `codex features list` (re-checked on 0.144.6: `plugin_hooks` still
+- `codex features list` (re-checked on 0.145.0: `plugin_hooks` still
   reported `removed`, generic `hooks` stable/true,
   `plugins`/`plugin_sharing`/`multi_agent`/`remote_plugin` stable/true,
-  `enable_fanout` and `multi_agent_v2` under development,
-  `collaboration_modes` removed — one additive row relative to the 0.144.1
-  observation: `multi_agent_mode` now listed as `removed`, a flag-inventory
-  change with no plugin/hook surface impact)
+  `collaboration_modes` and `multi_agent_mode` `removed` — the 0.145.0 minor
+  bump stabilized `multi_agent_v2` (under-development→stable, opt-in
+  enabled=false) and retired `enable_fanout` (under-development→removed),
+  both flag-inventory/stage changes with no plugin/hook surface impact)
 
 ## Parity Matrix
 
@@ -333,3 +342,4 @@ line, not this table.
 | 2026-07-14 | `2.1.208` | `0.144.1` | Re-observed during the attention 0.5.0 four-persona sensor cascade's baseline-freshness follow-up (compat run `compat-20260714T033123Z-85e463`, content-backed ingest of the Claude Code `CHANGELOG.md` 2.1.208 entry via explicit `--fetch-release-notes-url`). Claude `2.1.207`→`2.1.208` is additive/fix-only with no plugin-CLI or hook-contract surface change: adds an opt-in screen reader mode (`--ax-screen-reader` / `CLAUDE_AX_SCREEN_READER` / `axScreenReader`), a `vimInsertModeRemaps` setting, `CLAUDE_CODE_PROCESS_WRAPPER` (self-spawns honor a corporate launcher wrapper), and mouse-click support for fullscreen multi-select menus; fixes fast-mode restore after model switches, lost replies to background agents, and background-session attach after an updater binary swap. `claude plugin --help` and `claude mcp --help` re-checked on `2.1.208`: verb sets unchanged from the `2.1.206` observations. Codex `0.144.1` unchanged. The attention `0.5.0` install proof `doctor-20260714T021309Z-0cd852` (parity `ready` `100%` 8/8, overall `pass`) was measured on exactly this host pair — its honest `host_parity_baseline` `stale` caveat is what this refresh closes. Baseline refresh only; no adoption work required. |
 | 2026-07-20 | `2.1.215` | `0.144.6` | Re-observed during the attention 0.7.0 post-release freshness recovery (compat run `compat-20260720T104815Z-9323ec`, content-backed ingest of the Claude Code `CHANGELOG.md` and the Codex GitHub releases atom feed, with `gh release view` closing the 0.144.2–0.144.5 gap the feed's alpha-heavy window dropped). Both drifts are additive/fix-only with no plugin-CLI or hook-contract surface break. Claude `2.1.208`→`2.1.215` (`2.1.213` unpublished): the hook-relevant entries are fixes — `2.1.210` fixes a hook-callback timeout misreported as user rejection, `2.1.211` floors a PreToolUse `ask` under auto mode, `2.1.212` fixes a `continue:false` hook halt dropped mid-stream and hook infrastructure errors misreported as user rejections — and `2.1.212` turns `/fork` into a copied background session (the `"fork"` SessionStart source noted by the probed matrix arrived in `2.1.214`), adds session-wide WebSearch/subagent caps, and deprecates the Task tool `mode` parameter; `2.1.214` is an extensive permission-fix release adding the EndConversation tool; `2.1.215` stops auto-invoking `/verify`/`/code-review`. The full Local CLI evidence block was re-run live on this pair: `claude plugin`/`claude mcp`/`claude agents` and all `codex plugin`/`codex plugin marketplace` verb sets unchanged. The SessionStart matrix verdict was separately re-validated live on `2.1.215` (PASS — §Claude `SessionStart` Matrix re-validation trail) and the attention `0.7.0` SessionStart entry sensor shipped against it. Codex `0.144.1`→`0.144.6` is fix/chore-only (`0.144.2` reverts a Guardian auto-review prompting regression, `0.144.3`/`0.144.4` are version-only/no-user-facing, `0.144.5` expands dangerous-command detection with clearer rejection reasons, `0.144.6` refreshes bundled GPT-5.6 model metadata/context windows); `plugin_hooks` stays `removed`, generic `hooks` stays stable, and one flag-inventory row is additive — `multi_agent_mode` now listed `removed`, no plugin/hook surface impact. Baseline refresh only; no adoption work required. |
 | 2026-07-21 | `2.1.216` | `0.144.6` | Re-observed during the ADR-0047 Release A (`plugin-runtime` `0.84.0`) post-release freshness recovery (compat run `compat-20260721T105600Z-71cea8`, content-backed ingest of the Claude Code `CHANGELOG.md` via explicit `--fetch-release-notes-url`). Claude `2.1.215`→`2.1.216` is additive/fix-only with no plugin-CLI or hook-contract surface change: adds a `sandbox.filesystem.disabled` setting (skip filesystem isolation while keeping network egress control); fixes quadratic message-normalization slowdowns in long sessions, auto-mode "HTTP 401" denials after mid-session OAuth rotation, AskUserQuestion free-text wording, web-session idle re-asks, @-mention attachment after file-modifying hooks, worktree-isolated subagents escaping via `git -C`/`GIT_DIR`, stale daemon lockfiles, and assorted TUI/resume issues. `claude plugin --help` re-checked on `2.1.216`: verb set unchanged from the `2.1.206`/`2.1.215` observations. Codex `0.144.6` unchanged. This run was also the first live exercise of the ADR-0047 §5 standing notification watch shipped in `0.84.0`: the `claude-notification-agent-types` row correctly signalled on the changelog's recorded 2.1.198 `agent_needs_input`/`agent_completed` entry (a known, already-recorded gap — the row stays open by design) and the plan carried the required review step. Baseline refresh only; no adoption work required. |
+| 2026-07-22 | `2.1.217` | `0.145.0` | Re-observed during the ADR-0047 Release B (`plugin-runtime` `0.85.0` / `plugin-attention` `0.9.0`) post-release freshness recovery (compat run `compat-20260722T011840Z-a3fb14`, content-backed ingest of the Claude Code `CHANGELOG.md` and the Codex GitHub releases atom feed via explicit `--fetch-release-notes-url`, both host gaps covered). Both drifts carry no plugin-CLI or hook-contract surface change. Claude `2.1.216`→`2.1.217` is additive/fix-only: the notable entries are host subagent-orchestration knobs — a cap on concurrently-running subagents (default 20, `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`), subagents no longer spawning nested subagents by default (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`), and `--max-budget-usd` now halting background subagents — which do not touch the companion-based peer invocation runtime/engineer/orchestrator use (a separate `codex`/`claude` process, not a host subagent); no `Notification` hook type changed (the ADR-0040 §3 attention sensor still matches `permission_prompt`/`idle_prompt`), the SessionStart/Stop/SubagentStop reinjection contract is intact, and `claude plugin --help` re-checked live with the verb set unchanged. Codex `0.144.6`→`0.145.0` is a minor bump with no plugin-CLI or hook-contract break: `codex plugin`/`codex plugin marketplace` verb sets unchanged, `codex features list` keeps `plugin_hooks` `removed` and generic `hooks` `stable`, and the two stage changes are flag-inventory/internal — `multi_agent_v2` under-development→stable (the changelog's opt-in multi-agent V2 stabilization, `enabled=false`) and `enable_fanout` under-development→removed. The remaining 0.145.0 surface (paginated thread history, `/import` migration of Cursor/Claude Code settings/plugins/sessions, experimental Amazon Bedrock login + GPT-5.6 Sol default, audio inputs + realtime V3, GPT-5.4→GPT-5.6 Terra/Luna migration, and a Windows "correctly quoted hook commands" fix) is host-native feature work that does not change the companion/hook/plugin contract runtime depends on. Baseline refresh only; no adoption work required. |
