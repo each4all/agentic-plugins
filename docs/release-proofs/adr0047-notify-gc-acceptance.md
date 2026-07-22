@@ -39,14 +39,26 @@ Export presence verified on `main` (not just a version string):
 - `retention-planner.mjs` → `planRetention` (function).
 - `retention-apply.mjs` → `applyRetention`, `validateDeletionTarget` (functions).
 
-## 2. Release B publication — the owner-gated release step
+## 2. Release B publication — DONE (step 1)
 
-The accumulated §6/§7 commits are bundled in the **open** release-please PR
-**#616** (`chore: release main`). `main` currently carries `plugin-runtime`
-**0.84.0** and `plugin-attention` **0.8.0**; the installed caches match 0.84.0 /
-0.8.0, i.e. **Release B is on `main` but not yet published/installed**. Merging
-#616 bumps the versions, tags the release, and syncs the catalogs (the standard
-release-please flow). *This merge is an owner decision — it publishes versions.*
+*(Updated 2026-07-22.)* The accumulated §6/§7 commits (including retention-apply
+`0bdbdd5`) were published via release-please PR **#616** (`chore: release main`,
+merge `c2bc0f99`) — **owner-authorized and performed**:
+
+| Package | Version | Release B code shipped | Tag / release |
+| --- | --- | --- | --- |
+| `plugin-runtime` | 0.84.0 → **0.85.0** | §6 `sweepExpiredClaims`; §7 `planRetention` / `applyRetention` / `runtime:retention` CLI | `plugin-runtime-v0.85.0` (Latest) |
+| `plugin-attention` | 0.8.0 → **0.9.0** | §1/§2 `response-needed` classifier + headline producers | `plugin-attention-v0.9.0` |
+
+Verified the tags carry the code, not just a version bump:
+`git show plugin-runtime-v0.85.0:plugins/runtime/scripts/lib/retention-apply.mjs`
+resolves, and `…/notify-schema.mjs` contains `sweepExpiredClaims`. The Claude
+marketplace catalog synced to 0.85.0 / 0.9.0 (`validate:versions` green); the
+Codex catalog is versionless by design.
+
+The remaining acceptance work — **install on both host caches, post-release
+freshness, real-matrix exercise, rollback evidence** (§4 below) — stays
+owner-gated (machine mutation + real notifications); it is not performed here.
 
 ## 3. Autonomous safe-validation evidence (performed here)
 
