@@ -230,19 +230,66 @@ immediately after the exercise, then set to the steady-state
 `approval,response-needed` per owner decision (interim `turn-complete` excluded to
 keep noise minimal — see `~/.agentic-plugins/config.toml`).
 
+### 5.5 Rollback levers — recorded (Release B disables without data migration)
+
+Release B adds two runtime surfaces, both **additive and inert-by-default**, so
+disabling B is a package downgrade/uninstall to the pre-B runtime — **no data
+migration, no persistent schema change**:
+
+- **§6 expired-claim sweep** (`sweepExpiredClaims` + the `withReclaimLock`
+  locking repair) is a bounded, best-effort pass that runs *after* the
+  notification activation + kind gates and only removes already-expired `.claim`
+  TTL markers the next emit would reclaim anyway. Reverting to the pre-B runtime
+  package restores the sweep-free path — nothing to migrate.
+- **§7 retention** ships deletion behind two explicit gates verified in §3:
+  `apply` **defaults to dry-run** (deletes nothing, writes no receipt — §3.2),
+  and `--execute` **refuses without `--expected-plan-hash`** (§3.3). The deleting
+  executor is inert unless the operator explicitly runs it against a reviewed
+  plan hash; a downgrade/uninstall simply leaves the `runtime:retention` CLI
+  un-invoked.
+
+**ADR §8 order-reversed rollback.** Rollback is the §8 enable sequence reversed
+**with the dual-kind window re-opened first**: widen `notify_kinds` back to
+include `turn-complete` (so the mixed-producer window loses no signal) →
+downgrade/disable attention (stop producing `response-needed` on Claude) →
+re-render the Codex shuttle **from the downgraded runtime package** (re-render
+renders the installed template, so the downgrade must precede it) → drop the
+`response-needed` token → downgrade runtime last.
+
+**Two §8 hard scope notes, both satisfied here:**
+
+- Retention **deletions are irreversible and outside rollback** — rollback
+  restores software + config, never deleted runs; the **write-ahead receipt** is
+  the durable record. §5.4's receipt is `closed` with all 16 targets `completed`,
+  so the deletion is fully accounted for.
+- A deletion-capable downgrade is **blocked while an open retention receipt
+  exists** (§7). §5.4's receipt is `closed` (closed_at `03:17:45Z`), so no
+  downgrade is currently gate-blocked.
+
+**Dual-kind window state.** The rollout window (both `turn-complete` +
+`response-needed`) has **closed per §8 step 5**: `turn-complete` was dropped only
+after §5.1–§5.3 confirmed both producers (attention + the re-rendered Codex
+shuttle) emit `response-needed`. Steady-state `notify_kinds` =
+`approval,response-needed`. A future rollback re-opens the window by re-adding
+`turn-complete` as its first ordered step above.
+
 ## Verdict
 
-**Release B is implementation-complete, adversarially reviewed, safe-validated,
-AND owner-exercised on the real machine.** §1–§3 established implementation plus
-safe validation; §4 enumerated the owner-gated sequence; **§5 records that the
-owner authorized and this session performed the real notify matrix (real Telegram
-delivery of response-needed / turn-complete / approval, the kinds filter acting
-pre-dedupe, and the Codex shuttle's turn-complete→response-needed migration) and
-the real GC apply (16 uncited compat runs deleted under the reviewed plan hash,
-receipt closed with all targets completed, cited evidence and `latest.json`
-intact, and the plan-hash drift guard verified).** What remains genuinely
-owner-only is the routine post-bump freshness upkeep and the ongoing rollback
-lever (§4 steps 3 and 5), neither of which sends notifications or deletes
-evidence. Cited local run evidence is intact; `notify_kinds` was restored to
-`approval` immediately after the exercise, then set to the steady-state
-`approval,response-needed` per owner decision.
+**owner-accepted.** Release B is implementation-complete, adversarially reviewed,
+safe-validated, owner-exercised on the real machine, and — with the rollback
+levers now recorded (§5.5) — **accepted by the owner**. §1–§3 established
+implementation plus safe validation; §4 enumerated the owner-gated sequence;
+**§5.1–§5.4 record the owner-authorized real exercise** (real Telegram delivery
+of response-needed / turn-complete / approval, the kinds filter acting
+pre-dedupe, the Codex shuttle's turn-complete→response-needed migration, and the
+real GC apply of 16 uncited compat runs under the reviewed plan hash with receipt
+closed, cited evidence + `latest.json` intact, and the plan-hash drift guard
+verified); **§5.5 records the rollback levers** (§6/§7 additive + gated ⇒
+downgrade/uninstall with no data migration, the ADR §8 order-reversed rollback
+with the dual-kind window re-opened first, and the irreversible-deletion +
+open-receipt scope notes, both satisfied). Every element of the `acceptance`
+subtask's definition of done — release/install, the real matrix + safe GC path,
+rollback evidence, post-release freshness, cited-evidence preservation — is now
+on record. What remains is only routine post-bump freshness upkeep, which neither
+sends notifications nor deletes evidence. Cited local run evidence is intact;
+steady-state `notify_kinds` = `approval,response-needed` per owner decision.
