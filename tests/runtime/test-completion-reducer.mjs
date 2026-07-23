@@ -864,15 +864,16 @@ describe('runtime completion reducer — egress-provider-ack aggregate (ADR-0048
   const FP = 'f'.repeat(64);
   const ATTEMPT = 'a'.repeat(64);
   // `mirror: null` omits the sibling seat entirely (the legacy-record shape);
-  // true/false write it. The default is the fully-verified shape.
-  function ackProof(current, { result = 'acked', fingerprint = FP, mirror = true } = {}) {
+  // true/false write it. The default is the fully-verified shape: ack +
+  // mirror + a linkable artifact hash (the three §8 evidence legs).
+  function ackProof(current, { result = 'acked', fingerprint = FP, mirror = true, artifactHash = 'b'.repeat(64) } = {}) {
     return {
       kind: 'egress-provider-ack',
       status: 'passed',
       provider_ack: { result, attempt_hash: ATTEMPT, activation_fingerprint: fingerprint, ran_at: AT },
       ...(mirror === null ? {} : { mirror_correlated: mirror }),
       artifact_pointer: null,
-      artifact_hash: null,
+      artifact_hash: artifactHash,
       bound_versions: structuredClone(current),
       ran_at: AT,
     };
@@ -899,6 +900,12 @@ describe('runtime completion reducer — egress-provider-ack aggregate (ADR-0048
     const r = recomputeProofStatus(ackProof(current, { mirror: null }), { current, currentActivationFingerprint: FP });
     strictEqual(r.status, 'failed');
     match(r.reasons.join(' '), /not verifiably mirrored/);
+  });
+
+  it('an acked+mirrored record with NO artifact link is FAILED — the at-rest aggregate enforces all three §8 legs (Refine-verify round 3)', () => {
+    const r = recomputeProofStatus(ackProof(current, { artifactHash: null }), { current, currentActivationFingerprint: FP });
+    strictEqual(r.status, 'failed');
+    match(r.reasons.join(' '), /does not link its doctor artifact/);
   });
 
   it('a removed activation stales the proof — never not-applicable (peer E5)', () => {

@@ -326,6 +326,35 @@ describe('statusline end-to-end — plan renders fragments, desired seats, the n
       `exactly one [tui] source, and it is the preview when the combined fragment cannot render (got: ${carriers.join(', ') || 'none'})`);
   });
 
+  it('a satisfied→pending re-transition under VERSION DRIFT re-renders and converges to one carrier (§7 clears the freeze)', async () => {
+    // In this bare-runner harness the host versions are unobservable, so §7
+    // invalidation fires on every resume and clears pending/blocked steps'
+    // frozen fragment fields — the notify artifact re-renders in its
+    // stripped shape once the combined fragment exists, converging to ONE
+    // carrier. The no-drift twin (frozen preview + warning) lives in
+    // test-bootstrap-cli.mjs, where a hosted runner keeps versions stable.
+    const { home, cwd } = await makeHome();
+    const codexConfig = join(home, '.codex', 'config.toml');
+    await writeFile(codexConfig, `[tui]\nstatus_line = [${NORMATIVE_AGENTIC_6.map((id) => `"${id}"`).join(', ')}]\n`);
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
+    const runId = plan.report.run_id;
+    strictEqual(plan.report.steps.find((s) => s.id === 'statusline.codex.configured').status, 'satisfied');
+    const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments');
+    const notifyBefore = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
+    ok(notifyBefore.fragments.tui_notifications_toml, 'the preview is the carrier while the statusline step is satisfied');
+
+    // The observation disappears (operator reverted their config).
+    await writeFile(codexConfig, '');
+    await boot({ argv: ['resume', '--run-id', runId, '--format', 'json'], home, cwd });
+
+    const carriers = [];
+    for (const name of (await readdir(fragmentsDir)).filter((n) => n.endsWith('.fragment')).sort()) {
+      if (/\[tui\]/.test(await readFile(join(fragmentsDir, name), 'utf8'))) carriers.push(name);
+    }
+    deepStrictEqual(carriers, ['statusline-codex.fragment'],
+      'under drift the re-render converges: the combined fragment is the one carrier and the stripped notify artifact carries none');
+  });
+
   it('a canonical home satisfies both steps on plan, and profile export carries the preset (owner rule: applied fragments ARE the declaration)', async () => {
     const { home, cwd } = await makeHome({ canonical: true });
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });

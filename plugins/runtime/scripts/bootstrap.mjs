@@ -40,6 +40,7 @@ import {
   BOOTSTRAP_RUN_SCHEMA_VERSION,
   BOOTSTRAP_TERMINAL_RUN_STATUSES,
   abandonBootstrapRun,
+  bootstrapFragmentsDir,
   createBootstrapRun,
   readBootstrapProofRecords,
   resolveMachineArtifactHome,
@@ -1020,54 +1021,18 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
   // that step's judge. The local-policy step (notify.configured) never carried
   // a fragment of its own — attaching this one there was the pre-split
   // imprecision the split repairs.
+  // Stage 5a — the ONE decision-aware Codex [tui] fragment (ADR-0048
+  // §1/§2/§2.1), persisted BEFORE the notification plan so the strip
+  // decision below keys on whether the combined fragment ACTUALLY exists in
+  // this run (Refine-verify peer, round 3 — a status predicate had to mirror
+  // persist()'s skip conditions and drifted; the pointer after this block is
+  // the existence fact itself). Review peer BLOCKER context: a
+  // notifications-only block beside a combined block handed the operator two
+  // competing headers, and an unconditioned combined block would re-impose a
+  // key whose step the operator DECLINED — each planned key rides iff its
+  // step is not declined/not-applicable; unrelated existing [tui] keys are
+  // the operator's and the guidance says to keep them.
   try {
-    const gathered = await gatherCodexNotificationInputs({ homeDir, env });
-    const { section } = buildCodexNotificationPlanSection({ gathered, now: new Date(now), runId: makeNotificationRunId(now) });
-    // The [tui] preview is STRIPPED from this artifact exactly when the
-    // Stage-5 statusline-codex fragment below will actually carry the [tui]
-    // table (integration pass over the notify-axis + statusline leaves): the
-    // combined fragment is the ONE decision-aware [tui] table (Review peer
-    // BLOCKER), and persisting the builder's notifications-only preview
-    // beside it would hand the operator two [tui] blocks with competing
-    // guidance. But the combined fragment is persisted under the statusline
-    // step — a plan where that step is satisfied/declined/not-applicable
-    // renders NO combined fragment (persist() skips dead steps), and an
-    // unconditional strip would then leave the run with ZERO [tui] sources
-    // while this artifact's note pointed at a fragment that does not exist
-    // (Refine-verify peer, round 2). So: strip iff the combined fragment
-    // will carry; otherwise the builder's preview stays the one source.
-    const slStepForTui = byId.get(stepIds.statuslineConfigured('codex'));
-    const combinedWillCarryTui = Boolean(slStepForTui)
-      && !['satisfied', 'declined', 'not-applicable'].includes(slStepForTui.status);
-    const notifySection = combinedWillCarryTui
-      ? {
-        ...section,
-        fragments: { ...section.fragments, tui_notifications_toml: null },
-        // NB: this note deliberately spells the table dotted (`tui.notifications`)
-        // — a literal `[tui]` header may appear in exactly ONE artifact per run
-        // (the combined statusline-codex fragment), and the sweep test pins that.
-        tui_note: 'The tui.notifications key rides in the statusline-codex combined fragment (the ONE tui table for this run) — merge it from there, not from this artifact.',
-      }
-      : section;
-    await persist('notification-plan', notifySection, stepIds.notifyCodexConfigured(),
-      'Merge the rendered notify fragment into $CODEX_HOME/config.toml (see the fragment body), then resume.',
-      '$CODEX_HOME/config.toml',
-      { desired: Array.isArray(section.expected_notify_argv) ? JSON.stringify(section.expected_notify_argv) : null });
-  } catch (err) {
-    warnings.push(`notification plan could not be built: ${err?.message ?? String(err)}`);
-  }
-
-  // Stage 5 — statusline, both hosts (ADR-0048 §1/§2/§2.1 via the one policy
-  // in lib/statusline-plan.mjs).
-  try {
-    const shim = renderAgenticStatuslineShim();
-    const inlineGate = evaluateInlineSufficiency();
-    // Codex: ONE decision-aware [tui] fragment (Review peer BLOCKER — a
-    // notifications-only block beside a combined block handed the operator
-    // two competing headers, and an unconditioned combined block would
-    // re-impose a key whose step the operator DECLINED). Each planned key
-    // rides iff its step is not declined/not-applicable; unrelated existing
-    // [tui] keys are the operator's and the guidance says to keep them.
     const notifyCodexStep = byId.get(stepIds.notifyCodexConfigured());
     const slCodexStep = byId.get(stepIds.statuslineConfigured('codex'));
     const includeKey = (step) => step && step.status !== 'declined' && step.status !== 'not-applicable';
@@ -1082,20 +1047,83 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
         requested: true,
         host: 'codex',
         fragment_toml: codexTuiFragment,
-        note: 'The ONE decision-aware [tui] table: each planned key (status_line, notifications) rides iff its step is not declined. The notification-plan artifact carries the notify= wiring only (its [tui] preview is stripped) — merge the [tui] table from THIS block. status_line uses the closed upstream item vocabulary (host-truth §1); the agentic-6 order is ADR-0048 §2.1.',
+        note: 'The ONE decision-aware [tui] table: each planned key (status_line, notifications) rides iff its step is not declined. The notification-plan artifact carries the notify= wiring only (its [tui] preview is stripped when this fragment exists) — merge the [tui] table from THIS block. status_line uses the closed upstream item vocabulary (host-truth §1); the agentic-6 order is ADR-0048 §2.1.',
       }, stepIds.statuslineConfigured('codex'),
       tuiGuidance,
       '$CODEX_HOME/config.toml',
       { desired: JSON.stringify(expectedCodexStatusLineItems()) });
       // The notify step keeps its OWN fragment pointer (the notify= wiring
-      // artifact — its [tui] preview is stripped at persist above), so this
-      // combined fragment is the single [tui] source for the run. A previous
-      // pointer-sharing branch here was dead code: persist() had already set
-      // the notify step's pointer, so its `!fragment_pointer` guard could
-      // never fire — the strip above is the working realization of the
-      // "no two competing [tui] headers" intent.
+      // artifact — its [tui] preview is stripped at its persist below when
+      // this fragment exists), so this combined fragment is the single [tui]
+      // source for the run whenever it renders.
     }
+  } catch (err) {
+    warnings.push(`codex [tui] fragment could not be built: ${err?.message ?? String(err)}`);
+  }
 
+  try {
+    const gathered = await gatherCodexNotificationInputs({ homeDir, env });
+    const { section } = buildCodexNotificationPlanSection({ gathered, now: new Date(now), runId: makeNotificationRunId(now) });
+    // The [tui] preview is STRIPPED from this artifact exactly when the
+    // combined statusline-codex fragment ACTUALLY exists in this run: the
+    // combined fragment is the ONE decision-aware [tui] table (Review peer
+    // BLOCKER), and persisting the builder's notifications-only preview
+    // beside it would hand the operator two [tui] blocks with competing
+    // guidance. The Stage-5a block ABOVE persisted (or kept, or failed to
+    // persist) the combined fragment before this point, so the statusline
+    // step's fragment_pointer is the exact existence fact — it covers a
+    // fresh render, a frozen fragment from an earlier resume, AND a failed
+    // write (pointer absent → the preview stays the one source, and the
+    // routing note can never dangle at a nonexistent fragment) — rather
+    // than a status predicate that must mirror persist()'s two skip
+    // conditions (Refine-verify peer, rounds 2 + 3).
+    const slStepForTui = byId.get(stepIds.statuslineConfigured('codex'));
+    const combinedCarriesTui = Boolean(slStepForTui?.fragment_pointer);
+    // Captured BEFORE the persist below: a pre-existing pointer means the
+    // notify artifact is FROZEN (persist() keeps first renders) and this
+    // strip cannot reach the on-disk bytes.
+    const notifyPointerFrozen = Boolean(byId.get(stepIds.notifyCodexConfigured())?.fragment_pointer);
+    const notifySection = combinedCarriesTui
+      ? {
+        ...section,
+        fragments: { ...section.fragments, tui_notifications_toml: null },
+        // NB: this note deliberately spells the table dotted (`tui.notifications`)
+        // — a literal `[tui]` header may appear in exactly ONE artifact per run
+        // (the combined statusline-codex fragment), and the sweep test pins that.
+        tui_note: 'The tui.notifications key rides in the statusline-codex combined fragment (the ONE tui table for this run) — merge it from there, not from this artifact.',
+      }
+      : section;
+    await persist('notification-plan', notifySection, stepIds.notifyCodexConfigured(),
+      'Merge the rendered notify fragment into $CODEX_HOME/config.toml (see the fragment body), then resume.',
+      '$CODEX_HOME/config.toml',
+      { desired: Array.isArray(section.expected_notify_argv) ? JSON.stringify(section.expected_notify_argv) : null });
+    // Frozen two-carrier honesty (Refine-verify peer, round 3): when the
+    // combined fragment carries [tui] but the notify artifact was frozen by
+    // an EARLIER plan state that kept its preview (e.g. the statusline step
+    // re-transitioned satisfied→pending across resumes), the on-disk
+    // artifact still shows two [tui] blocks. The freeze is deliberate
+    // (G7 — no silent rewrite under the operator mid-apply; see the
+    // fragment-freeze follow-up), so runtime NAMES the supersession instead
+    // of hiding it.
+    if (combinedCarriesTui && notifyPointerFrozen) {
+      try {
+        const frozenText = await readFile(join(bootstrapFragmentsDir(homeDir, runId), 'notification-plan.fragment'), 'utf8');
+        if (/\[tui\]/.test(frozenText)) {
+          warnings.push('the frozen notification-plan artifact still carries a [tui] preview from an earlier plan state, while the combined statusline-codex fragment is now the [tui] source — merge ONLY the combined [tui] table; the frozen preview is superseded (fragment freeze keeps first renders; see the fragment-freeze follow-up).');
+        }
+      } catch { /* frozen artifact unreadable — nothing to compare, nothing to warn */ }
+    }
+  } catch (err) {
+    warnings.push(`notification plan could not be built: ${err?.message ?? String(err)}`);
+  }
+
+  // Stage 5 — statusline, Claude side + the unconditional shim artifact
+  // (ADR-0048 §1/§2/§2.1 via the one policy in lib/statusline-plan.mjs).
+  // The Codex [tui] fragment moved to Stage 5a ABOVE the notification plan
+  // so the preview-strip decision can key on its actual existence.
+  try {
+    const shim = renderAgenticStatuslineShim();
+    const inlineGate = evaluateInlineSufficiency();
     const claudeExpected = expectedClaudeStatuslineCommand({ homeDir });
     const claudeExisting = readersForFragments?.statuslineClaude ?? { readable: true, present: false };
     const claudeClassified = classifyExistingClaudeStatusline({ existing: claudeExisting, expectedCommand: claudeExpected });

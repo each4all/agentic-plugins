@@ -400,7 +400,9 @@ never runs a proof to make itself pass. `resume` is the only verb that
 produces Stage-8 evidence: on an explicit operator `execute` answer it invokes
 `runtime:doctor --record` with the relevant `--execute-*` flag and copies the
 proof's metadata only into the run — per-direction results for the peer-proof
-kinds, the sanitized `provider_ack` row for the egress provider-ack kind, plus
+kinds, the sanitized `provider_ack` row plus the independent
+`mirror_correlated` verdict for the egress provider-ack kind (the recomputed
+aggregate requires ack AND mirror AND artifact link), plus
 pointers, hashes, and bound versions in every case. `attest` is the one
 post-terminal append (ADR-0048 §3): it records the owner's phone-receipt
 attestation onto a terminal run's recorded egress-provider-ack without

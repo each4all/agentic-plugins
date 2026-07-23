@@ -9,7 +9,7 @@
 
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
@@ -605,11 +605,12 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
         status: 'passed',
         provider_ack: { result: 'acked', attempt_hash: attempt, activation_fingerprint: fingerprint, ran_at: new Date(NOW).toISOString() },
         // The fully-verified shape: the reducer's recomputed aggregate
-        // requires the mirror seat alongside the ack (a seed without it
-        // reduces failed, and attest would rightly refuse the testimony).
+        // requires the mirror seat AND a linkable artifact hash alongside
+        // the ack (a seed missing either reduces failed, and attest would
+        // rightly refuse the testimony).
         mirror_correlated: true,
         artifact_pointer: null,
-        artifact_hash: null,
+        artifact_hash: 'b'.repeat(64),
         bound_versions: { runtime: RUNTIME_VERSION, claude: '2.1.0', codex: '0.140.0', plugins: { claude: perHost('claude'), codex: perHost('codex') } },
         ran_at: new Date(NOW).toISOString(),
       },
@@ -654,6 +655,63 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
     const verify = await run(['verify', '--run-id', runId]);
     ok(/delivery-attested/.test(verify.rendered), 'the derived label decorates the completion line');
     ok(/receipt attestation: attested/.test(verify.rendered), 'the receipt line is rendered');
+
+    // 6. At-rest evidence downgrade (Refine-verify round 3): if the persisted
+    //    ack record loses its mirror leg AFTER terminalization, the recomputed
+    //    aggregate goes failed and a FRESH attest refuses the testimony — the
+    //    gate consumes the recomputation, never the stored status. (The
+    //    receipt from step 4 already exists; delete it so the refusal below
+    //    is the ack gate, not receipt idempotency.)
+    const ackPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json');
+    const ackRecord = JSON.parse(await readFile(ackPath, 'utf8'));
+    ackRecord.mirror_correlated = false;
+    await writeFile(ackPath, `${JSON.stringify(ackRecord, null, 2)}\n`);
+    await rm(receiptPath);
+    const refused = await run(['attest', '--run-id', runId, '--format', 'json']);
+    strictEqual(refused.exitCode, EXIT.INVALID, JSON.stringify(refused.report));
+    ok((refused.report.diagnostics ?? []).some((d) => /pass/i.test(d) || /ack/i.test(d)),
+      `the refusal names the non-passing ack: ${JSON.stringify(refused.report.diagnostics)}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR-0048 §2.1 — frozen [tui] preview vs a re-rendered combined fragment
+// ---------------------------------------------------------------------------
+
+describe('bootstrap [tui] one-source invariant — frozen re-transition is NAMED (Refine-verify round 3)', () => {
+  it('a satisfied→pending statusline re-transition WITHOUT version drift keeps the frozen preview and warns, naming the combined fragment as the source', async () => {
+    // Hosted runner: versions are observed and stable across plan → resume,
+    // so §7 invalidation never fires and the notify artifact stays FROZEN
+    // with the preview it rendered while the statusline step was satisfied.
+    // When the statusline observation then disappears, resume re-renders the
+    // combined fragment beside the frozen preview — two [tui] carriers. The
+    // reconciliation is the fragment-freeze follow-up; the run must NAME the
+    // supersession instead of hiding it.
+    const { home, cwd } = await makeHome();
+    const codexConfig = join(home, '.codex', 'config.toml');
+    await writeFile(codexConfig, '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    strictEqual(plan.report.steps.find((s) => s.id === 'statusline.codex.configured').status, 'satisfied');
+    const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments');
+    const notifyBefore = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
+    ok(notifyBefore.fragments.tui_notifications_toml, 'the preview is the carrier while the statusline step is satisfied');
+
+    // The observation disappears (operator reverted their config) — same
+    // versions, so the freeze holds.
+    await writeFile(codexConfig, '# empty\n');
+    const resume = await run(['resume', '--run-id', runId, '--format', 'json']);
+
+    const carriers = [];
+    for (const name of (await readdir(fragmentsDir)).filter((n) => n.endsWith('.fragment')).sort()) {
+      if (/\[tui\]/.test(await readFile(join(fragmentsDir, name), 'utf8'))) carriers.push(name);
+    }
+    deepStrictEqual(carriers, ['notification-plan.fragment', 'statusline-codex.fragment'],
+      'the frozen preview and the re-rendered combined fragment coexist — the honest state the warning exists for');
+    ok((resume.report.warnings ?? []).some((w) => /frozen notification-plan artifact still carries/.test(w) && /combined statusline-codex fragment/.test(w)),
+      `the two-carrier state is NAMED with the superseding source: ${JSON.stringify(resume.report.warnings)}`);
   });
 });
 

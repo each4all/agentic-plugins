@@ -874,10 +874,13 @@ Four shapes are load-bearing and agree with §8 / §8.1:
   "unknown" and let a `sandbox_limited` read masquerade as authenticated.
 - **The RECORDED proof's `directions` is a per-direction result map**, not a list of
   direction names (§8.1). A proof's `status` is the **aggregate recomputed from the
-  kind's evidence member** — `directions`, or `provider_ack` for
-  `egress-provider-ack` (1.2, ADR-0048 §3) — never trusted from storage: a smoke
-  that passed `claude->codex` and failed `codex->claude` is `failed`, and a schema
-  that could only say `directions: [...]` could not express it. Two shapes exist
+  kind's evidence facts** — `directions` for the directional kinds; for
+  `egress-provider-ack` (1.2, ADR-0048 §3) the full three-leg set:
+  `provider_ack` **and** the sibling `mirror_correlated` seat **and** a
+  linkable `artifact_hash` — never trusted from storage: a smoke
+  that passed `claude->codex` and failed `codex->claude` is `failed`, a schema
+  that could only say `directions: [...]` could not express it, and an
+  acked-but-unmirrored or unlinkable egress record recomputes `failed`. Two shapes exist
   and must not be conflated (the 1.1-era text conflated them, and re-judgement
   read the wrong one — the false-demotion repair): the **recorded** proof lives in
   `proof/<kind>.json` and keeps its evidence member; the **reduced**

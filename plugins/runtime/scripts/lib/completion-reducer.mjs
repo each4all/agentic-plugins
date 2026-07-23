@@ -175,6 +175,15 @@ export function recomputeProofStatus(proof, { current, applicable = true, requir
     if (proof.mirror_correlated !== true) {
       return { status: 'failed', reasons: ['the acked attempt was not verifiably mirrored (mirror row missing, ambiguous, or recorded before the mirror seat existed) — unverifiable evidence never re-evaluates to passed'] };
     }
+    // Linkability is the third evidence leg (§8 acked-consistency: passed
+    // requires acked AND mirrored AND a linkable artifact hash). The import
+    // matrix enforces it at the doctor boundary, but the aggregate is
+    // recomputed from the AT-REST record — a directly written or hand-edited
+    // record without its doctor-artifact link must not recompute to passed
+    // (Refine-verify peer, round 3).
+    if (proof.artifact_hash === null || proof.artifact_hash === undefined) {
+      return { status: 'failed', reasons: ['the acked attempt does not link its doctor artifact (artifact_hash missing) — evidence that cannot be checked against its recorded doctor report never re-evaluates to passed'] };
+    }
     const freshness = boundVersionsFresh(proof.bound_versions, current, { requiredPlugins });
     if (!freshness.fresh) return { status: 'stale', reasons: freshness.reasons };
     if (currentActivationFingerprint === null) {
