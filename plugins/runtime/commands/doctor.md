@@ -1,6 +1,6 @@
 ---
 description: Read-only runtime readiness diagnosis for Claude/Codex hosts, plugins, companions, model/effort, permissions, artifacts, workflow ledgers, ADR-0044 session-capture readiness, and ADR-0045 entry-brief hook-chain readiness
-argument-hint: "[--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--artifact-inventory] [--record]"
+argument-hint: "[--format text|json] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--egress-ack-proof] [--execute-egress-ack-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--artifact-inventory] [--record]"
 ---
 
 # Runtime - Doctor
@@ -34,6 +34,8 @@ Notes:
 - `--permission-proof` is an explicit opt-in permission preflight. By itself it does not execute peers.
 - `--execute-permission-proof` must be paired with `--permission-proof`. It invokes each companion under host-native permission defaults and reports only sanitized metadata: status, exit codes, peer host/model, timing, stdout byte count, stdout SHA-256, and permission-failure class. Runtime does not pass sandbox, approval, permission-mode, or host-native policy relaxation flags.
 - `--permission-proof-timeout-ms <n>` bounds each companion process when the permission executor flag is used.
+- `--egress-ack-proof` is an explicit opt-in flag (ADR-0048 §3). By itself it adds a plan-only egress activation preflight (channel + recipient + credential presence via the activation checker) with blockers and limits; no network request is performed.
+- `--execute-egress-ack-proof` must be paired with `--egress-ack-proof`, and the real send additionally requires `AGENTIC_EGRESS_REAL_SMOKE=1` in the environment — triple consent to reach the network. The executor sends one closed-vocabulary synthetic notification through the pinned `notify.mjs` emitter (doctor never opens the network itself) against an ephemeral temp repo, correlates the mirror row, and records only sanitized metadata: provider-ack classification, a closed-enum outcome reason, and mirror correlation — never the token, recipient, message body, or raw provider response. A crashed attempt leaves a pending write-ahead intent record; the next execute refuses to auto-resend (the phone may already have the message) until the operator removes the named intent file after checking. There is deliberately no timeout flag for this executor. Provider dispatch ack and the owner's phone-receipt attestation are recorded separately (`bootstrap.mjs attest`).
 - `--deep-peer-smoke` is an explicit opt-in flag. By itself it adds a plan-only preflight section with per-direction readiness, model, and effort inputs.
 - `--execute-deep-peer-smoke` must be paired with `--deep-peer-smoke`. It executes the smoke through the existing companion contract and reports only sanitized metadata: status, exit codes, peer host/model, timing, stdout byte count, and stdout SHA-256. Raw peer stdout is not printed.
 - `--deep-peer-smoke-timeout-ms <n>` bounds each companion process when the executor flag is used.

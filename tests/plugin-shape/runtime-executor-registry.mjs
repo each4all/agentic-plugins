@@ -759,3 +759,13 @@ export const CREDENTIAL_KEY_REFERENCING_FILES = {
 // The runtime scripts the guard scans. Anything matching plugins/runtime/scripts
 // recursively; listed explicitly so a deleted/renamed executor is visible.
 export const RUNTIME_SCRIPT_GLOB_ROOT = 'plugins/runtime/scripts';
+
+// ADR-0048 §4 — the operator-home receiver/shim template directory (statusline
+// shim + Codex notify receivers). The credential guard scans it alongside
+// scripts/ with a `receivers/`-qualified name: receivers install into the
+// operator's ~/.agentic-plugins home and MUST stay credential-free ("statusline
+// inline commands and shims MUST NOT read the credential variable"), so no
+// receiver may ever appear in either credential tier above — a receiver
+// referencing the key or reading the value fails closed with no allowlist row
+// to hide behind.
+export const RUNTIME_RECEIVER_GLOB_ROOT = 'plugins/runtime/receivers';

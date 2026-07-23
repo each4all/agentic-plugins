@@ -1043,10 +1043,15 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
   `settings.json` (`CLAUDE_CONFIG_DIR` honored; ONE shared snapshot projected
   for both the permission and statusline consumers) carries
   `statusLine: { type: "command", command: <canonical> }` where the canonical
-  command is `node "<home>/.agentic-plugins/bin/agentic-statusline.mjs"` —
-  forward-slash, double-quoted, shell-resolved `node` (the Claude statusLine
+  command is `node '<home>/.agentic-plugins/bin/agentic-statusline.mjs'` —
+  forward-slash, SINGLE-quoted, shell-resolved `node` (the Claude statusLine
   runs through Git Bash/PowerShell, unlike Codex's shell-less notify spawn —
-  the documented asymmetry with `expectedCodexNotifyArgv`). **The step means
+  the documented asymmetry with `expectedCodexNotifyArgv`). Single quotes are
+  the canonical form because double quotes interpolate in BOTH Git Bash and
+  PowerShell — a home path containing `$(...)` would execute substitution and
+  change the shim argv; a path that itself contains a single quote has no
+  cross-shell-literal representation and is refused fail-closed
+  (`expectedClaudeStatuslineCommand`). **The step means
   "canonical configuration OBSERVED", never "the statusline runs"**: workspace
   trust, `disableAllHooks`, `CLAUDE_CODE_SAFE_MODE`, and script failure still
   gate execution (host-truth §3) and no probe may relax them. A pre-existing

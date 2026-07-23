@@ -1,6 +1,6 @@
 ---
 description: Machine-scoped, artifact-only bootstrap lifecycle — probe both hosts, plan a bundle install, render Stage 1-8 fragments and presented commands, resume with re-probe + proof recording, verify recorded evidence, and export/seed portable machine profiles
-argument-hint: "plan [--bundle <id>] [--plugins <csv>] [--profile-file <path>] [--answers <path>] [--format text|json] | status [--run-id <id> | --latest | --latest-open] [--format text|json] | resume [--run-id <id> | --latest-open] [--answers <path>] [--format text|json] | verify [--run-id <id> | --latest] [--format text|json] | abandon (--run-id <id> | --latest-open) [--reason <text>] | profile export [--name <id>] [--from-run <id>] [--overwrite] | profile seed --profile-file <path> [--run-id <id> | --latest-open]"
+argument-hint: "plan [--bundle <id>] [--plugins <csv>] [--profile-file <path>] [--answers <path>] [--format text|json] | status [--run-id <id> | --latest | --latest-open] [--format text|json] | resume [--run-id <id> | --latest-open] [--answers <path>] [--format text|json] | verify [--run-id <id> | --latest] [--format text|json] | attest [--run-id <id> | --latest] [--format text|json] | abandon (--run-id <id> | --latest-open) [--reason <text>] | profile export [--name <id>] [--from-run <id>] [--overwrite] | profile seed --profile-file <path> [--run-id <id> | --latest-open]"
 ---
 
 # Runtime - Bootstrap
@@ -39,10 +39,13 @@ profile-seeded-default → ask → render → apply-command → re-probe + confi
    contract makes declinable (notification, statusline — per host, egress, permission fragments,
    optional plugins, proofs) plus the bundle choice itself. Record the
    operator's decisions into a JSON answers file — an array of
-   `{ "step_id": "...", "answer": "decline" | "accept" | "execute" }` — and
-   pass it via `--answers` on `plan` or `resume`. **Answers reach the script
-   only through that file** (prose-to-flag translation is unauditable);
-   `--answers` is accepted on no other verb.
+   `{ "step_id": "...", "answer": "decline" | "accept" | "execute" | "attest-receipt" }` —
+   and pass it via `--answers` on `plan` or `resume`. **Answers reach the
+   script only through that file** (prose-to-flag translation is unauditable);
+   `--answers` is accepted on no other verb. `attest-receipt` (ADR-0048 §3) is
+   the owner's phone-receipt testimony: it targets the egress provider-ack
+   proof step only and is accepted under `resume` or `attest`, never `plan`
+   (no provider ack can exist yet, so there is nothing to testify about).
 4. **Render.** The script renders host-config fragments into the run's
    `fragments/` directory and presents apply commands (including the
    plugin-management command carrying the plan hash). Surface them verbatim.
@@ -62,10 +65,16 @@ Notes:
 - `status` and `verify` are read-only: they re-probe and re-judge in memory
   and write nothing. `verify` judges recorded proof evidence (absent / stale /
   passed / failed) — it never runs a proof to make itself pass.
+- `attest` is the one post-terminal append (ADR-0048 §3): it records the
+  owner's phone-receipt attestation for an already-recorded
+  egress-provider-ack on a terminal run. It never re-runs a proof and never
+  re-opens the run.
 - A missing host CLI or missing marketplace registration surfaces the exact
   Stage 0 commands; Stage 0 is manual and host-native (ADR-0006).
 - Exit codes: `0` complete; `10` configured-not-verified; `20` incomplete;
-  `30` no-active-run; `40` invalid input; `1` unexpected error.
+  `30` no-active-run; `40` invalid input; `50` legacy-historical (terminal
+  run under an older schema minor — stored record shown verbatim, nothing
+  re-probed or re-certified); `1` unexpected error.
 - A second `plan` while a run is open is rejected — continue it with
   `resume --latest-open` or close it with `abandon`.
 - Artifacts live under the machine-global `~/.agentic-plugins/` home only.

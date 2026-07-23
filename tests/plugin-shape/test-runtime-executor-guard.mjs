@@ -1275,17 +1275,34 @@ describe('ADR-0048 §4 guard — egress credential named-reader allowlist', () =
   const KEY_REFERENCE_RE = /TELEGRAM_BOT_TOKEN|EGRESS_CREDENTIAL_ENV_VAR|EGRESS_ENV_KEYS\s*\.\s*credential\b|EGRESS_ENV_KEYS\s*\[\s*['"`]credential['"`]\s*\]/;
   const VALUE_READ_RE = /(?:\benv|\bprocess\s*\.\s*env)\s*(?:\.\s*TELEGRAM_BOT_TOKEN\b|\[\s*(?:['"`]TELEGRAM_BOT_TOKEN['"`]|EGRESS_ENV_KEYS\s*\.\s*credential\b|EGRESS_CREDENTIAL_ENV_VAR\b)\s*\])/;
 
+  // ADR-0048 §4 also binds the operator-home receiver/shim templates
+  // (statusline shim + Codex notify receivers): they install outside the
+  // executor surface and MUST stay credential-free. Scanned with a
+  // `receivers/`-qualified name so a violating receiver can never collide
+  // into a scripts/ allowlist entry — there is no receiver tier, so any hit
+  // fails the exact-set assertions below.
+  const RUNTIME_RECEIVERS = resolve(REPO_ROOT, registry.RUNTIME_RECEIVER_GLOB_ROOT);
+
   async function scanCredentialSurfaces() {
     const scripts = await listRuntimeScripts();
+    const receivers = (await listRuntimeScripts(RUNTIME_RECEIVERS))
+      .map((s) => ({ ...s, fileName: `receivers/${s.rel}` }));
+    const scanned = [...scripts, ...receivers];
     const keyReferencers = [];
     const valueReaders = [];
-    for (const s of scripts) {
+    for (const s of scanned) {
       const src = stripComments(await readFile(s.path, 'utf-8'));
       if (KEY_REFERENCE_RE.test(src)) keyReferencers.push(s.fileName);
       if (VALUE_READ_RE.test(src)) valueReaders.push(s.fileName);
     }
-    return { keyReferencers: keyReferencers.sort(), valueReaders: valueReaders.sort() };
+    return { keyReferencers: keyReferencers.sort(), valueReaders: valueReaders.sort(), scannedNames: scanned.map((s) => s.fileName) };
   }
+
+  it('the receiver/shim template home is actually inside the credential scan (non-vacuous coverage)', async () => {
+    const { scannedNames } = await scanCredentialSurfaces();
+    ok(scannedNames.includes('receivers/agentic-statusline.mjs'),
+      'the statusline shim template is not reached by the credential scan — the §4 "shims MUST NOT read the credential" clause has no enforcement (ADR-0048 §4)');
+  });
 
   it('credential KEY references appear in exactly the registered files', async () => {
     const { keyReferencers } = await scanCredentialSurfaces();
