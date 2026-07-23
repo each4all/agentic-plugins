@@ -388,12 +388,14 @@ export async function runDoctor({
     read_only: true,
     // Precise effect claims (Plan-verify peer): `read_only` keeps its
     // host-state meaning (no host trust/auth/config/permission mutation —
-    // still true), while the egress ack executor performs ONE pinned network
-    // request through the E1 emitter. Consumers that need the network fact
-    // read it here instead of over-reading read_only.
+    // still true), while the egress ack executor MAY perform ONE pinned
+    // network request through the E1 emitter. The fact is taken from the
+    // section — a blocked execute, or an attempt suppressed before dispatch
+    // (kinds-filter, quiet-hours, body-cap), sent nothing, and claiming
+    // otherwise here would overstate the run's blast radius.
     effects: {
       host_config_mutated: false,
-      network_request_performed: executeEgressAckProof === true,
+      network_request_performed: egressAckProofSection.network_request_performed === true,
     },
     sandbox_permission_probe: sandboxPermissionProbeSection,
     permission_proof: permissionProofSection,
@@ -3383,7 +3385,7 @@ function egressIntentDir(repoRoot) {
 
 async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDir, env, now, emitImpl }) {
   if (!requested) {
-    return { requested: false, executed: false, mode: 'not_requested', status: 'not_requested', provider_ack: null, outcome_reason: null, mirror_correlated: false, blockers: [], limits: [] };
+    return { requested: false, executed: false, mode: 'not_requested', status: 'not_requested', provider_ack: null, outcome_reason: null, mirror_correlated: false, network_request_performed: false, blockers: [], limits: [] };
   }
 
   const limits = [
@@ -3414,12 +3416,13 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
       provider_ack: null,
       outcome_reason: null,
       mirror_correlated: false,
+      network_request_performed: false,
       blockers,
       limits,
     };
   }
   if (blockers.length > 0) {
-    return { requested: true, executed: false, mode: 'explicit_egress_executor', status: 'blocked', provider_ack: null, outcome_reason: null, mirror_correlated: false, blockers, limits };
+    return { requested: true, executed: false, mode: 'explicit_egress_executor', status: 'blocked', provider_ack: null, outcome_reason: null, mirror_correlated: false, network_request_performed: false, blockers, limits };
   }
 
   // Ambiguous-attempt gate: a pending intent from a crashed earlier attempt
@@ -3444,6 +3447,7 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
         provider_ack: null,
         outcome_reason: null,
         mirror_correlated: false,
+        network_request_performed: false,
         blockers: [`a previous egress attempt is unresolved (${pending.join(', ')} under ${pointer(repoRoot, intentDir)}) \u2014 the phone may already have that message; check it, then delete the intent file(s) to consent to a fresh send. Automatic resend of an ambiguous attempt is prohibited.`],
         limits,
       };
@@ -3511,12 +3515,27 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
     const acked = dispatched && mirrorCorrelated;
     // Closed-enum reason projection — never the raw emitter reason string
     // (full-report sanitization: the artifact records enums and hashes only).
+    // runEmit's egress-path reasons carry an `egress-` prefix
+    // (`egress-missing-token`, `egress-throttled`); its pipeline-suppression
+    // reasons do not (`kinds-filter`, `dedupe-duplicate`, `channel-none`).
+    // Strip the prefix before matching so both families project onto the enum
+    // instead of collapsing to emit-error.
     const rawReason = String(emitResult?.reason ?? '');
-    const projected = EGRESS_ACK_OUTCOME_REASONS.find((candidate) => rawReason === candidate || rawReason.startsWith(`${candidate}`))
+    const strippedReason = rawReason.startsWith('egress-') ? rawReason.slice('egress-'.length) : rawReason;
+    const projected = EGRESS_ACK_OUTCOME_REASONS.find((candidate) => strippedReason === candidate || strippedReason.startsWith(`${candidate}`))
       ?? (dispatched ? 'mirror-missing' : 'emit-error');
     const outcomeReason = acked ? 'dispatched' : dispatched ? mirrorReason : projected;
 
     await writeJson(intentPath, { status: acked ? 'acked' : 'failed', subject, attempt_hash: attemptHash, ran_at: ranAt, outcome_reason: outcomeReason });
+
+    // The provider request was actually ISSUED when the emitter reports
+    // dispatched (mirror questions notwithstanding — a dispatched return with
+    // a lost mirror still sent the message) or failed at/after the wire
+    // (provider-error/rejected, timeout, redirect-error). Everything else —
+    // activation/config failures, pipeline suppressions, body-cap — stopped
+    // before any network I/O, and the effects claim must say so.
+    const networkPerformed = dispatched
+      || ['provider-error', 'provider-rejected', 'timeout', 'redirect-error'].includes(outcomeReason);
 
     section = {
       requested: true,
@@ -3534,6 +3553,7 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
       },
       outcome_reason: outcomeReason,
       mirror_correlated: mirrorCorrelated,
+      network_request_performed: networkPerformed,
       // Phone correlation: the operator matches this token against the
       // message\u2019s topic line; the raw event id stays in ephemeral/local
       // state only, never in durable artifacts.
@@ -4583,6 +4603,12 @@ function summarizeOverall(report) {
   if (report.permission_proof.executed && !['passed', 'operator_action_required'].includes(report.permission_proof.status)) {
     hardFailures.push(`permission proof ${report.permission_proof.status}`);
   }
+  // Egress ack proof: an EXECUTED attempt that did not ack is a hard failure —
+  // a real network send happened and the evidence says it did not land as
+  // dispatched+mirrored (the failed provider_ack is still recorded evidence).
+  if (report.egress_ack_proof.executed && report.egress_ack_proof.status !== 'passed') {
+    hardFailures.push(`egress ack proof ${report.egress_ack_proof.status} (${report.egress_ack_proof.outcome_reason ?? 'no-outcome'})`);
+  }
   if (report.workflow_continuation_proof.executed && !['passed', 'operator_action_required'].includes(report.workflow_continuation_proof.status)) {
     hardFailures.push(`workflow continuation proof ${report.workflow_continuation_proof.status}`);
   }
@@ -4689,6 +4715,15 @@ function summarizeOverall(report) {
   }
   if (report.permission_proof.executed && report.permission_proof.status === 'operator_action_required') {
     warnings.push('permission proof requires operator action outside runtime:doctor');
+  }
+  // A blocked egress executor is a warning, not a hard failure: no network
+  // request happened. The blockers themselves say what the operator must do
+  // (set AGENTIC_EGRESS_REAL_SMOKE=1, resolve a pending intent, fix
+  // activation) — plan-only `ready` stays silent.
+  if (report.egress_ack_proof.requested && !report.egress_ack_proof.executed && report.egress_ack_proof.status === 'blocked') {
+    warnings.push(report.egress_ack_proof.mode === 'explicit_egress_executor'
+      ? 'egress ack proof execute was requested but blocked before any send (see egress_ack_proof.blockers)'
+      : 'egress ack proof preflight is blocked (see egress_ack_proof.blockers)');
   }
   if (report.workflow_continuation_proof.executed && report.workflow_continuation_proof.status === 'operator_action_required') {
     warnings.push('workflow continuation proof requires operator action outside runtime:doctor');
@@ -4876,6 +4911,20 @@ export function formatText(report) {
       lines.push(`  next: ${direction.next_step}`);
     }
     for (const limit of report.permission_proof.limits) lines.push(`- limit: ${limit}`);
+    lines.push('');
+  }
+  if (report.egress_ack_proof.requested) {
+    lines.push('Egress Ack Proof');
+    lines.push(`- mode: ${report.egress_ack_proof.mode}; requested=${report.egress_ack_proof.requested}; executed=${report.egress_ack_proof.executed}; status=${report.egress_ack_proof.status}; outcome=${report.egress_ack_proof.outcome_reason ?? '<none>'}; mirror-correlated=${report.egress_ack_proof.mirror_correlated}`);
+    if (report.egress_ack_proof.provider_ack) {
+      const ack = report.egress_ack_proof.provider_ack;
+      lines.push(`- provider-ack: result=${ack.result}; attempt-hash=${ack.attempt_hash}; activation-fingerprint=${ack.activation_fingerprint}; ran-at=${ack.ran_at}`);
+    }
+    if (report.egress_ack_proof.subject_suffix) {
+      lines.push(`- correlation-token: ${report.egress_ack_proof.subject_suffix} (match this against the topic line of the phone message; the raw event id never leaves local state)`);
+    }
+    for (const blocker of report.egress_ack_proof.blockers) lines.push(`  blocker: ${blocker}`);
+    for (const limit of report.egress_ack_proof.limits) lines.push(`- limit: ${limit}`);
     lines.push('');
   }
   if (report.deep_peer_smoke.requested) {
@@ -5242,14 +5291,21 @@ async function writeDoctorArtifact({ repoRoot, now, runId, report }) {
   };
   const artifactPath = join(runDir, 'doctor.json');
   const latestPath = join(root, 'latest.json');
-  await writeJson(artifactPath, artifact);
-  await writeJson(latestPath, {
+  // ADR-0048 §3 — the artifact bytes are EVIDENCE another artifact links by
+  // hash (bootstrap proof records import artifact_sha256 as artifact_hash), so
+  // the write must be atomic (temp+rename; a torn doctor.json would break the
+  // hash link) and the sha256 must be over the EXACT bytes on disk — computed
+  // from the serialized buffer that is written, never a re-serialization.
+  const artifactBytes = `${JSON.stringify(artifact, null, 2)}\n`;
+  const artifactSha256 = createHash('sha256').update(artifactBytes).digest('hex');
+  await writeFileAtomic(artifactPath, artifactBytes);
+  await writeFileAtomic(latestPath, `${JSON.stringify({
     schema_version: DOCTOR_LATEST_SCHEMA_VERSION,
     runtime_version: RUNTIME_VERSION,
     run_id: id,
     artifact_pointer: pointer(repoRoot, artifactPath),
     updated_at: now.toISOString(),
-  });
+  }, null, 2)}\n`);
   return {
     written: true,
     requested: true,
@@ -5257,8 +5313,25 @@ async function writeDoctorArtifact({ repoRoot, now, runId, report }) {
     run_id: id,
     run_pointer: pointer(repoRoot, runDir),
     artifact_pointer: pointer(repoRoot, artifactPath),
+    artifact_sha256: artifactSha256,
     latest_pointer: pointer(repoRoot, latestPath),
   };
+}
+
+// Atomic same-directory temp+rename write. The temp name is random-suffixed so
+// concurrent doctor runs cannot collide on it; rename within one directory is
+// atomic on POSIX, so readers observe either the old bytes or the new — never
+// a torn file whose sha256 matches nothing.
+async function writeFileAtomic(path, data) {
+  await mkdir(dirname(path), { recursive: true });
+  const tempPath = join(dirname(path), `.${basename(path)}.${randomBytes(4).toString('hex')}.tmp`);
+  await writeFile(tempPath, data);
+  try {
+    await rename(tempPath, path);
+  } catch (err) {
+    await rm(tempPath, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 function makeDoctorRunId(now) {
@@ -5319,7 +5392,7 @@ function sameStringSet(left, right) {
 }
 
 function usage() {
-  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--permission-diagnosis] [--permission-diagnosis-max-files <n>] [--permission-diagnosis-max-file-bytes <n>] [--record] [--run-id <doctor-run-id>]\n`;
+  return `Usage: doctor.mjs [--repo-root <path>] [--format text|json] [--host auto|claude|codex] [--model <id>] [--effort <level>] [--sandbox-permission-probe] [--permission-proof] [--execute-permission-proof] [--permission-proof-timeout-ms <n>] [--egress-ack-proof] [--execute-egress-ack-proof] [--deep-peer-smoke] [--execute-deep-peer-smoke] [--deep-peer-smoke-timeout-ms <n>] [--workflow-continuation-proof] [--execute-workflow-continuation-proof] [--workflow-continuation-proof-timeout-ms <n>] [--artifact-inventory] [--artifact-retention-cap <n>] [--artifact-max-bytes <n>] [--permission-diagnosis] [--permission-diagnosis-max-files <n>] [--permission-diagnosis-max-file-bytes <n>] [--record] [--run-id <doctor-run-id>]\n`;
 }
 
 export function parseArgs(argv) {
@@ -5336,6 +5409,8 @@ export function parseArgs(argv) {
     permissionProof: false,
     executePermissionProof: false,
     permissionProofTimeoutMs: DEFAULT_PERMISSION_PROOF_TIMEOUT_MS,
+    egressAckProof: false,
+    executeEgressAckProof: false,
     workflowContinuationProof: false,
     executeWorkflowContinuationProof: false,
     workflowContinuationProofTimeoutMs: DEFAULT_WORKFLOW_CONTINUATION_PROOF_TIMEOUT_MS,
@@ -5378,6 +5453,15 @@ export function parseArgs(argv) {
       opts.executePermissionProof = true;
     } else if (arg === '--permission-proof-timeout-ms') {
       opts.permissionProofTimeoutMs = parsePositiveIntArg(requireValue(argv, ++i, arg), arg);
+    } else if (arg === '--egress-ack-proof') {
+      opts.egressAckProof = true;
+    } else if (arg === '--execute-egress-ack-proof') {
+      opts.executeEgressAckProof = true;
+      // Deliberately NO --egress-ack-proof-timeout-ms (Plan-verify peer): the
+      // send is already time-bounded inside the pinned emitter
+      // (AbortSignal.timeout on the one node:https request); a second outer
+      // timeout could abandon a request whose body reached the wire — exactly
+      // the ambiguous attempt the intent WAL exists to prevent.
     } else if (arg === '--workflow-continuation-proof') {
       opts.workflowContinuationProof = true;
     } else if (arg === '--execute-workflow-continuation-proof') {
@@ -5412,6 +5496,9 @@ export function parseArgs(argv) {
   }
   if (opts.executePermissionProof && !opts.permissionProof) {
     throw new Error('--execute-permission-proof requires --permission-proof');
+  }
+  if (opts.executeEgressAckProof && !opts.egressAckProof) {
+    throw new Error('--execute-egress-ack-proof requires --egress-ack-proof');
   }
   if (opts.executeWorkflowContinuationProof && !opts.workflowContinuationProof) {
     throw new Error('--execute-workflow-continuation-proof requires --workflow-continuation-proof');

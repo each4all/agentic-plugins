@@ -1727,12 +1727,18 @@ const PROOF_EXECUTE_FLAGS = Object.freeze({
   'deep-peer-smoke': ['--deep-peer-smoke', '--execute-deep-peer-smoke'],
   'workflow-continuation': ['--workflow-continuation-proof', '--execute-workflow-continuation-proof'],
   permission: ['--permission-proof', '--execute-permission-proof'],
+  // ADR-0048 §3 — the one real-network executor. The flag pair is only two of
+  // the three consents: doctor additionally refuses the send unless
+  // AGENTIC_EGRESS_REAL_SMOKE=1 is present in the (deliberately UNSCRUBBED,
+  // §4 documented exception) environment this subprocess inherits.
+  'egress-provider-ack': ['--egress-ack-proof', '--execute-egress-ack-proof'],
 });
 
 const DOCTOR_SECTION_BY_KIND = Object.freeze({
   'deep-peer-smoke': 'deep_peer_smoke',
   'workflow-continuation': 'workflow_continuation_proof',
   permission: 'permission_proof',
+  'egress-provider-ack': 'egress_ack_proof',
 });
 
 function mapDoctorDirectionStatus(direction) {
@@ -1769,15 +1775,64 @@ async function executeProofViaDoctor(ctx, { kind, probe, selection }) {
   const section = report?.[DOCTOR_SECTION_BY_KIND[kind]];
   const ranAt = new Date(ctx.now).toISOString();
   const bound = currentBoundVersions({ probe, selection: { plugins: selection.desired }, runtimeVersion: RUNTIME_VERSION });
+  // ALL kinds link the doctor artifact by its exact-byte hash (ADR-0048 §3):
+  // doctor --record returns artifact_sha256 computed from the bytes it renamed
+  // into place, so the proof record's artifact_hash is verifiable against the
+  // pointer instead of the null the pre-executor shape stored.
+  const artifactHash = typeof report?.doctor_artifact?.artifact_sha256 === 'string'
+    && /^[0-9a-f]{64}$/.test(report.doctor_artifact.artifact_sha256)
+    ? report.doctor_artifact.artifact_sha256
+    : null;
+  let evidence;
+  if (kind === 'egress-provider-ack') {
+    // Acked-consistency matrix (Plan-verify peer): before the metadata is
+    // imported, the section must be INTERNALLY consistent —
+    //   - an unexecuted section imports nothing (the blockers are the
+    //     diagnostic; the kind stays absent and retryable);
+    //   - every EXECUTED attempt must carry provider_ack (a failed attempt is
+    //     evidence too; executed-without-ack is a doctor contract breach);
+    //   - `passed` requires result=acked AND mirror_correlated AND a linkable
+    //     artifact hash — a pass missing any leg is a claim the evidence does
+    //     not back;
+    //   - result=acked under a non-passed status is the inverse contradiction.
+    // Any mismatch refuses the import (fail-closed) rather than persisting a
+    // record the reducer would have to argue with.
+    if (!section?.executed) {
+      const blockers = (section?.blockers ?? []).join('; ');
+      return { ok: false, diagnostic: `runtime:doctor did not execute the egress ack proof (status=${section?.status ?? 'missing'})${blockers ? `: ${blockers}` : ''}`, record: null, doctorReport: report };
+    }
+    if (!section.provider_ack || typeof section.provider_ack !== 'object') {
+      return { ok: false, diagnostic: 'the executed egress ack proof carries no provider_ack — an executed attempt without its evidence member cannot be imported', record: null, doctorReport: report };
+    }
+    if (section.status === 'passed' && (section.provider_ack.result !== 'acked' || section.mirror_correlated !== true || artifactHash === null)) {
+      return { ok: false, diagnostic: `the egress ack proof is internally inconsistent: status=passed but result=${section.provider_ack.result}, mirror_correlated=${section.mirror_correlated}, artifact_hash=${artifactHash === null ? 'missing' : 'present'}`, record: null, doctorReport: report };
+    }
+    if (section.provider_ack.result === 'acked' && section.status !== 'passed') {
+      return { ok: false, diagnostic: `the egress ack proof is internally inconsistent: result=acked but status=${section.status}`, record: null, doctorReport: report };
+    }
+    evidence = {
+      status: section.status === 'passed' ? 'passed' : 'failed',
+      provider_ack: {
+        result: section.provider_ack.result,
+        attempt_hash: section.provider_ack.attempt_hash,
+        activation_fingerprint: section.provider_ack.activation_fingerprint,
+        ran_at: section.provider_ack.ran_at,
+      },
+    };
+  } else {
+    evidence = {
+      status: 'passed', // provenance only — the reducer recomputes from directions
+      directions: {
+        'claude->codex': { status: mapDoctorDirectionStatus(section?.directions?.claude_to_codex), ran_at: ranAt },
+        'codex->claude': { status: mapDoctorDirectionStatus(section?.directions?.codex_to_claude), ran_at: ranAt },
+      },
+    };
+  }
   const imported = importProofMetadata({
     kind,
-    status: 'passed', // provenance only — the reducer recomputes from directions
-    directions: {
-      'claude->codex': { status: mapDoctorDirectionStatus(section?.directions?.claude_to_codex), ran_at: ranAt },
-      'codex->claude': { status: mapDoctorDirectionStatus(section?.directions?.codex_to_claude), ran_at: ranAt },
-    },
+    ...evidence,
     artifact_pointer: report?.doctor_artifact?.artifact_pointer ?? null,
-    artifact_hash: null,
+    artifact_hash: artifactHash,
     bound_versions: bound,
     ran_at: ranAt,
   });
@@ -1887,15 +1942,22 @@ async function runResume(ctx, opts) {
   let executedAnything = false;
   for (const kind of executeKinds) {
     if (!PROOF_EXECUTE_FLAGS[kind]) {
-      // The egress-provider-ack executor (12-gate, real network) ships with the
-      // egress-proof-executor slice; until it lands, an execute answer records
-      // the opt-in (the step is now expected) but nothing can run.
+      // Every current proof kind has a doctor executor (egress-provider-ack
+      // joined with the egress-proof-executor slice), so this guard is now a
+      // fail-closed backstop for a FUTURE kind whose executor has not landed:
+      // the execute answer records the opt-in (the step is expected) but
+      // nothing can run.
       warnings.push(`proof kind ${kind} has no doctor executor wired in this runtime; the step stays unexecuted (the opt-in is recorded)`);
       continue;
     }
     const result = await executeProofViaDoctor(ctx, { kind, probe, selection });
     if (!result.ok) {
       warnings.push(result.diagnostic);
+      // A refused import may still carry a complete doctor report (the egress
+      // blocked path records one) — reuse it for the hook attestation below
+      // WITHOUT setting executedAnything: a blocked executor sent nothing, so
+      // the pre-execution probe/readers still describe the machine.
+      if (result.doctorReport) doctorReport = result.doctorReport;
       continue;
     }
     doctorReport = result.doctorReport ?? doctorReport;
@@ -1949,6 +2011,12 @@ async function runResume(ctx, opts) {
   // post-execution machine, so a CLI/plugin that moved mid-proof re-judges the
   // evidence stale instead of complete.
   const finalProbe = executedAnything ? (await probeNow(ctx)).probe : probe;
+  // The READERS re-read is the same rule for the ACTIVATION half (Plan-verify
+  // peer): the egress ack's freshness equality compares its recorded
+  // activation_fingerprint against the CURRENT activation — judged from the
+  // pre-execution readers, a just-recorded ack could be marked stale (or a
+  // stale one current) when the operator changed channel/recipient mid-proof.
+  const finalReaders = executedAnything ? await readUserGlobalReaders(ctx) : reprobe.readers;
 
   // Reduce from the authoritative bytes: everything the executors persisted is
   // read back — validated, hashed — and ONLY that evidence reaches the reducer.
@@ -1969,7 +2037,7 @@ async function runResume(ctx, opts) {
     hookAttestation,
     probe: finalProbe,
     runtimeVersion: RUNTIME_VERSION,
-    currentActivationFingerprint: currentActivationFingerprintOf(reprobe.readers),
+    currentActivationFingerprint: currentActivationFingerprintOf(finalReaders),
     receiptEvidence: finalReceiptRow ? { record: finalReceiptRow.record, providerAckSha256: finalAckRow?.sha256 ?? null } : null,
   });
 

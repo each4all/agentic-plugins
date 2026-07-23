@@ -1206,3 +1206,136 @@ describe('ADR-0035 §4 guard — registry drift', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// (c) ADR-0048 §3 — delegated egress emitter (doctor → runEmit) pin
+// ---------------------------------------------------------------------------
+
+describe('ADR-0048 §3 guard — delegated egress emitter (runEmit) pin', () => {
+  // The egress-ack-proof executor reaches the network with NO network import:
+  // doctor.mjs calls notify.mjs' runEmit in-process, and notify.mjs owns the
+  // pinned api.telegram.org request (PINNED_HTTPS_USERS). The import-anchored
+  // gates cannot see that reach, so the delegation is pinned as data
+  // (DELEGATED_EGRESS_EMITTERS) and enforced here in both directions.
+  async function runEmitImporters() {
+    const scripts = await listRuntimeScripts();
+    const importers = new Map();
+    for (const s of scripts) {
+      const src = stripComments(await readFile(s.path, 'utf-8'));
+      const { staticImports, dynamic } = findImports(src);
+      const staticHit = staticImports.find((imp) => imp.names.some((n) => n.imported === 'runEmit'));
+      // A dynamic `import('./notify.mjs')` grants access to EVERY notify export
+      // including runEmit, so it counts as an importer for the fail-closed set
+      // (over-approximation is the safe direction for a tripwire).
+      const dynamicHit = dynamic.find((d) => d.module && /(^|\/)notify\.mjs$/.test(d.module));
+      if (staticHit || dynamicHit) importers.set(s.fileName, staticHit?.module ?? dynamicHit.module);
+    }
+    return importers;
+  }
+
+  it('the set of runtime scripts importing runEmit equals DELEGATED_EGRESS_EMITTERS exactly', async () => {
+    const importers = await runEmitImporters();
+    deepStrictEqual(
+      [...importers.keys()].sort(),
+      Object.keys(registry.DELEGATED_EGRESS_EMITTERS).sort(),
+      'a runtime script gained or lost in-process access to the E1 emitter without a DELEGATED_EGRESS_EMITTERS registry decision (fail-closed both ways: a new importer needs review; a dead entry would pre-authorize a re-added import)',
+    );
+  });
+
+  it('each registered delegation matches the real import (registry never looser than code)', async () => {
+    const importers = await runEmitImporters();
+    for (const [file, spec] of Object.entries(registry.DELEGATED_EGRESS_EMITTERS)) {
+      const module = importers.get(file);
+      ok(module, `${file} is registered as a delegated egress emitter but does not import ${spec.binding}`);
+      ok(/(^|\/)notify\.mjs$/.test(module), `${file} imports ${spec.binding} from '${module}', not the registered notify.mjs`);
+    }
+  });
+
+  it('the pin is non-vacuous: a synthetic new importer is detected by the same matcher', () => {
+    // Control case for the matcher itself (a dead regex would leave both
+    // assertions above green on an empty set): the exact import shape a new
+    // executor would use MUST register as a hit.
+    const synthetic = stripComments(`import { runEmit } from './notify.mjs';\nawait runEmit({ eventText });\n`);
+    const { staticImports } = findImports(synthetic);
+    ok(staticImports.some((imp) => imp.names.some((n) => n.imported === 'runEmit')),
+      'the runEmit import matcher failed to see a plain named import — the delegation pin is vacuous');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (c) ADR-0048 §4 — named credential-reader allowlist (static)
+// ---------------------------------------------------------------------------
+
+describe('ADR-0048 §4 guard — egress credential named-reader allowlist', () => {
+  // The credential VALUE may be read out of an environment object by exactly
+  // the two §4 names (activation checker + pinned emitter). Everything else
+  // may at most reference the KEY (constant definition, scrub deletes,
+  // fingerprint name input, placeholder rendering) — and even that set is
+  // pinned, so a new file touching the key fails closed into review.
+  const KEY_REFERENCE_RE = /TELEGRAM_BOT_TOKEN|EGRESS_CREDENTIAL_ENV_VAR|EGRESS_ENV_KEYS\s*\.\s*credential\b|EGRESS_ENV_KEYS\s*\[\s*['"`]credential['"`]\s*\]/;
+  const VALUE_READ_RE = /(?:\benv|\bprocess\s*\.\s*env)\s*(?:\.\s*TELEGRAM_BOT_TOKEN\b|\[\s*(?:['"`]TELEGRAM_BOT_TOKEN['"`]|EGRESS_ENV_KEYS\s*\.\s*credential\b|EGRESS_CREDENTIAL_ENV_VAR\b)\s*\])/;
+
+  async function scanCredentialSurfaces() {
+    const scripts = await listRuntimeScripts();
+    const keyReferencers = [];
+    const valueReaders = [];
+    for (const s of scripts) {
+      const src = stripComments(await readFile(s.path, 'utf-8'));
+      if (KEY_REFERENCE_RE.test(src)) keyReferencers.push(s.fileName);
+      if (VALUE_READ_RE.test(src)) valueReaders.push(s.fileName);
+    }
+    return { keyReferencers: keyReferencers.sort(), valueReaders: valueReaders.sort() };
+  }
+
+  it('credential KEY references appear in exactly the registered files', async () => {
+    const { keyReferencers } = await scanCredentialSurfaces();
+    deepStrictEqual(
+      keyReferencers,
+      Object.keys(registry.CREDENTIAL_KEY_REFERENCING_FILES).sort(),
+      'a runtime script started or stopped referencing the egress credential key without a CREDENTIAL_KEY_REFERENCING_FILES registry decision (ADR-0048 §4)',
+    );
+  });
+
+  it('credential VALUE reads appear in exactly the two §4 named readers', async () => {
+    const { valueReaders } = await scanCredentialSurfaces();
+    deepStrictEqual(
+      valueReaders,
+      Object.keys(registry.CREDENTIAL_VALUE_READERS).sort(),
+      'a runtime script outside the §4 names (activation checker, pinned emitter) reads the egress credential value — or a named reader stopped reading it (registry never looser than code)',
+    );
+  });
+
+  it('the value-reader set is a subset of the key-referencing set (tiers are nested, not parallel)', () => {
+    const keys = new Set(Object.keys(registry.CREDENTIAL_KEY_REFERENCING_FILES));
+    for (const reader of Object.keys(registry.CREDENTIAL_VALUE_READERS)) {
+      ok(keys.has(reader), `${reader} reads the credential value but is missing from CREDENTIAL_KEY_REFERENCING_FILES`);
+    }
+  });
+
+  it('the gates are non-vacuous: synthetic reads in every spelling are detected', () => {
+    // Control cases (a dead regex keeps the exact-set assertions green on an
+    // empty scan): each spelling a new reader would plausibly use MUST match.
+    const spellings = [
+      `const t = process.env.TELEGRAM_BOT_TOKEN;`,
+      `const t = env['TELEGRAM_BOT_TOKEN'];`,
+      `const t = env[EGRESS_ENV_KEYS.credential];`,
+      `const t = ctx.env[EGRESS_CREDENTIAL_ENV_VAR];`,
+      `const t = env.TELEGRAM_BOT_TOKEN ?? '';`,
+    ];
+    for (const code of spellings) {
+      ok(VALUE_READ_RE.test(stripComments(code)), `value-read matcher missed: ${code}`);
+      ok(KEY_REFERENCE_RE.test(stripComments(code)), `key-reference matcher missed: ${code}`);
+    }
+    // And the name-only shapes must NOT read as value reads (they are the
+    // key-referencer tier — a matcher that flags them would force every
+    // scrub/render site into the reader tier and dissolve the distinction).
+    const nameOnly = [
+      `delete out[EGRESS_CREDENTIAL_ENV_VAR];`,
+      `deriveActivationFingerprint({ credentialEnvVar: EGRESS_CREDENTIAL_ENV_VAR });`,
+      "`export ${EGRESS_ENV_KEYS.credential}=\"<your token>\"`",
+    ];
+    for (const code of nameOnly) {
+      ok(!VALUE_READ_RE.test(stripComments(code)), `name-only shape wrongly matched as a value read: ${code}`);
+    }
+  });
+});

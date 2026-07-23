@@ -1307,6 +1307,47 @@ workspace remains the `mkdtemp` temp repo, and each executed direction reports
 installed nowhere resolves to `null` and the direction is `blocked` with recovery
 guidance, never a silent source-tree assumption.
 
+**The egress-provider-ack executor (ADR-0048 §3 — the one real-network proof).**
+The same `resume` → `runtime:doctor --record` delegation carries the egress kind
+through the flag pair `--egress-ack-proof --execute-egress-ack-proof`, with four
+decisions that differ from the directional kinds and are normative here:
+
+- **Single-delivery evidence, not directions.** The recorded proof carries
+  `provider_ack` (result / `attempt_hash` / `activation_fingerprint` / `ran_at`)
+  and **no** `directions` member — there is one provider request, not a peer
+  matrix. Import is fail-closed on the acked-consistency matrix: an executed
+  section must carry `provider_ack` (a failed attempt is evidence too), `passed`
+  requires result=`acked` **and** a correlated mirror **and** a linkable
+  artifact hash, and result=`acked` under a non-passed status is refused. With
+  this slice every kind — directional included — links the doctor artifact by
+  its exact-byte `artifact_sha256` (doctor's write is temp+rename atomic), so
+  `artifact_hash` is never null on a freshly recorded proof.
+- **`AGENTIC_EGRESS_REAL_SMOKE=1` is the production third consent.** The flag
+  pair alone never reaches the network: doctor refuses the send unless the
+  operator's shell exports the same switch that gates the live acceptance
+  suite (K/K2/K3). One opt-in governs every real send, and bootstrap's own
+  process still performs no network I/O — the § 1 qualifier is unchanged.
+- **Temp-repo proof scope.** The delegated emit runs against an **ephemeral**
+  `mkdtemp` repo, so the proof exercises the user-global + shipped-default
+  notify policy; the consumer repo's repo-layer notify config is deliberately
+  not consulted, and the consumer repo's operational notify state (mirror log,
+  dedupe claims, throttle) is never touched. What IS proven: the pinned
+  provider request round-trips from this machine's activation. What is NOT: the
+  consumer repo's own notify layering.
+- **The mirror is correlation, not provider evidence — and the intent WAL is
+  the ambiguity boundary.** The provider ack is the HTTP 2xx + `{ok:true}`
+  classification; the temp-repo mirror row is how the executor proves the
+  dispatched return refers to **this** synthetic attempt (exactly one
+  well-formed `dispatched` row for the unique event id). A dispatched return
+  with a missing/ambiguous mirror fails closed as unverifiable — the message
+  may be on the phone, but it is not *proven*. Because Telegram has no
+  idempotency key, a write-ahead intent record brackets the send: a crash
+  between intent and resolution leaves a `pending` intent, and the next execute
+  **refuses to auto-resend** until the operator checks the phone and deletes
+  the named intent file. The operator correlates the phone message by the
+  12-hex token in its enumerated `topic` field; the raw event id never enters
+  durable artifacts.
+
 ### 8.3 One-host operators — a documented limitation, stated exactly
 
 The reducer requires **both** hosts, because the framework's value is the cross-host
