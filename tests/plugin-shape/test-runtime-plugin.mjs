@@ -455,7 +455,7 @@ describe('plugins/runtime settings surface', () => {
   it('documents the Claude-vs-Codex host parity baseline with source-backed non-parity boundaries', async () => {
     const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
     for (const token of [
-      'Claude Code `2.1.217`',
+      'Claude Code `2.1.218`',
       'Codex CLI\n`0.145.0`',
       'https://developers.openai.com/codex/subagents',
       'https://developers.openai.com/codex/hooks',
@@ -809,12 +809,26 @@ describe('plugins/runtime repo documentation freshness', () => {
     const scorecardRuntimeTags = [...scorecard.matchAll(/`plugin-runtime-v([^`]+)`/g)].map((match) => match[1]);
     ok(scorecardRuntimeVersions.length > 0, 'omcc cutover scorecard includes runtime proof versions');
     ok(scorecardRuntimeTags.length > 0, 'omcc cutover scorecard includes runtime release tags');
+    // Authoritative current-state statements ("as of `plugin-runtime` vX")
+    // must all name the current manifest version. Superseded records use the
+    // record/re-recorded phrasing instead, so this pattern only matches
+    // current-state prose — the defect class a stale "As of v0.84.0" overview
+    // survived two releases on, because the existence checks above are
+    // satisfied by ANY current token elsewhere in the file.
+    // Normalize blockquote hard-wraps ("As of\n> `plugin-runtime` ...") so the
+    // line-wrapped DEVELOPMENT.md overview site is matched too, not only the
+    // contiguous statements.
+    const asOfCorpus = `${architecture}\n${development}`.replace(/\n> /g, ' ');
+    const asOfVersions = [...asOfCorpus.matchAll(/[Aa]s of `plugin-runtime` v(\d+\.\d+\.\d+)/g)].map((match) => match[1]);
+    ok(asOfVersions.length > 0, 'authoritative "as of plugin-runtime v" statements exist in the stage docs');
     if (RELEASE_PLEASE_PR) {
       ok(scorecardRuntimeVersions.every((version) => compareSemver(version, manifest.version) <= 0), 'release-please PR may have scorecard proof versions lag until installed-state proof is recorded');
       ok(scorecardRuntimeTags.every((version) => compareSemver(version, manifest.version) <= 0), 'release-please PR may have scorecard release tags lag until installed-state proof is recorded');
+      ok(asOfVersions.every((version) => compareSemver(version, manifest.version) <= 0), 'release-please PR may have "as of" statements lag until installed-state proof is recorded');
     } else {
       deepStrictEqual([...new Set(scorecardRuntimeVersions)], [manifest.version], 'omcc cutover scorecard runtime proof versions match the current manifest');
       deepStrictEqual([...new Set(scorecardRuntimeTags)], [manifest.version], 'omcc cutover scorecard runtime release tags match the current manifest');
+      deepStrictEqual([...new Set(asOfVersions)], [manifest.version], 'every authoritative "as of plugin-runtime v" statement matches the current manifest');
     }
 
     for (const token of [
