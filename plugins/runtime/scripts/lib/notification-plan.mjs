@@ -54,7 +54,7 @@ import { fileURLToPath } from 'node:url';
 
 import { RUNTIME_VERSION } from '../version.mjs';
 import { readTextIfExists } from './state-readers.mjs';
-import { tomlBasicString } from './toml.mjs';
+import { renderCodexTuiTableToml, tomlBasicString } from './toml.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -227,13 +227,16 @@ function captureTomlArray(lines, startIndex, firstRemainder) {
       if (ch === ']') {
         depth -= 1;
         if (sawOpen && depth === 0) {
-          return { raw: raw.trim(), nextIndex: lineIndex + 1, closed: true };
+          // The remainder of the closing physical line rides back so the
+          // caller can refuse trailing non-comment junk (`= ["a"] garbage`)
+          // instead of silently accepting a line no TOML parser would.
+          return { raw: raw.trim(), nextIndex: lineIndex + 1, closed: true, trailing: text.slice(i + 1) };
         }
       }
     }
     lineIndex += 1;
     if (!sawOpen || lineIndex >= lines.length) {
-      return { raw: raw.trim(), nextIndex: lineIndex, closed: !sawOpen };
+      return { raw: raw.trim(), nextIndex: lineIndex, closed: !sawOpen, trailing: '' };
     }
     raw += '\n';
     text = lines[lineIndex];
@@ -249,15 +252,36 @@ export function parseCodexNotifyConfigToml(text) {
   const lines = String(text ?? '').replace(/\r\n/g, '\n').split('\n');
   let inTopLevel = true;
   let inTui = false;
-  let notifyRaw = null;
-  let tuiRaw = null;
+  let tuiHeaderSeen = false;
+  let tuiRedefined = false;
+  // Per-key capture state: raw text + the strictness facts an EXACT probe
+  // needs (Plan-verify peer BLOCKER — the earlier scan discarded them):
+  // unclosed arrays, duplicate keys (invalid TOML, previously last-wins),
+  // a redefined [tui] table, and trailing non-comment junk all resolve to
+  // values:null (unparseable), never to a confidently wrong argv/item list.
+  const states = { notify: null, tuiNotifications: null, tuiStatusLine: null };
+  const record = (key, captured) => {
+    if (states[key] !== null) {
+      states[key] = { ...states[key], duplicate: true };
+      return;
+    }
+    states[key] = {
+      raw: captured.raw,
+      closed: captured.closed === true,
+      trailingOk: /^\s*(#.*)?$/.test(captured.trailing ?? ''),
+      duplicate: false,
+    };
+  };
   let i = 0;
   while (i < lines.length) {
     const raw = lines[i];
     const stripped = raw.replace(/#.*/, '').trim();
     if (stripped.startsWith('[')) {
       inTopLevel = false;
-      inTui = /^\[tui\]$/.test(stripped);
+      const isTui = /^\[tui\]$/.test(stripped);
+      if (isTui && tuiHeaderSeen) tuiRedefined = true;
+      if (isTui) tuiHeaderSeen = true;
+      inTui = isTui;
       i += 1;
       continue;
     }
@@ -265,36 +289,55 @@ export function parseCodexNotifyConfigToml(text) {
       const m = raw.match(/^\s*notify\s*=\s*(.*)$/);
       if (m) {
         const captured = captureTomlArray(lines, i, m[1]);
-        notifyRaw = captured.raw;
+        record('notify', captured);
         i = captured.nextIndex;
         continue;
       }
-      // Dotted top-level form of the [tui] table key (valid TOML the
-      // section-only scan would miss — Plan-verify peer MINOR).
-      const dotted = raw.match(/^\s*tui\s*\.\s*notifications\s*=\s*(.*)$/);
-      if (dotted) {
-        const captured = captureTomlArray(lines, i, dotted[1]);
-        tuiRaw = captured.raw;
+      // Dotted top-level forms of the [tui] table keys (valid TOML a
+      // section-only scan would miss — Plan-verify peer findings).
+      const dottedNotif = raw.match(/^\s*tui\s*\.\s*notifications\s*=\s*(.*)$/);
+      if (dottedNotif) {
+        const captured = captureTomlArray(lines, i, dottedNotif[1]);
+        record('tuiNotifications', captured);
+        i = captured.nextIndex;
+        continue;
+      }
+      const dottedStatus = raw.match(/^\s*tui\s*\.\s*status_line\s*=\s*(.*)$/);
+      if (dottedStatus) {
+        const captured = captureTomlArray(lines, i, dottedStatus[1]);
+        record('tuiStatusLine', captured);
         i = captured.nextIndex;
         continue;
       }
     } else if (inTui) {
-      const m = raw.match(/^\s*notifications\s*=\s*(.*)$/);
-      if (m) {
-        const captured = captureTomlArray(lines, i, m[1]);
-        tuiRaw = captured.raw;
+      const mN = raw.match(/^\s*notifications\s*=\s*(.*)$/);
+      if (mN) {
+        const captured = captureTomlArray(lines, i, mN[1]);
+        record('tuiNotifications', captured);
+        i = captured.nextIndex;
+        continue;
+      }
+      const mS = raw.match(/^\s*status_line\s*=\s*(.*)$/);
+      if (mS) {
+        const captured = captureTomlArray(lines, i, mS[1]);
+        record('tuiStatusLine', captured);
         i = captured.nextIndex;
         continue;
       }
     }
     i += 1;
   }
-  const notifyValues = notifyRaw !== null && notifyRaw.startsWith('[')
-    ? extractStringElements(notifyRaw)
-    : null;
+  const resolve = (state, { tuiKey = false } = {}) => {
+    if (state === null) return { present: false, raw: null, values: null };
+    const clean = !state.duplicate && state.closed && state.trailingOk && !(tuiKey && tuiRedefined);
+    const values = clean && state.raw.startsWith('[') ? extractStringElements(state.raw) : null;
+    return { present: true, raw: state.raw, values };
+  };
+  const tuiNotifications = resolve(states.tuiNotifications, { tuiKey: true });
   return {
-    notify: { present: notifyRaw !== null, raw: notifyRaw, values: notifyValues },
-    tuiNotifications: { present: tuiRaw !== null, raw: tuiRaw },
+    notify: resolve(states.notify),
+    tuiNotifications,
+    tuiStatusLine: resolve(states.tuiStatusLine, { tuiKey: true }),
   };
 }
 
@@ -344,8 +387,10 @@ export function renderCodexNotifyFragmentToml({ receiverPath, platform = process
 }
 
 export function renderCodexTuiNotificationsFragmentToml() {
-  const values = TUI_NOTIFICATIONS_VALUES.map((item) => tomlBasicString(item)).join(', ');
-  return `[tui]\nnotifications = [${values}]\n`;
+  // Delegates to the ONE [tui] composer (lib/toml.mjs) so this fragment and
+  // the statusline plan's status_line fragment can never hand the operator
+  // two competing [tui] headers for one table (ADR-0048 statusline slice).
+  return renderCodexTuiTableToml({ notifications: [...TUI_NOTIFICATIONS_VALUES] });
 }
 
 // ---------------------------------------------------------------------------
@@ -364,7 +409,7 @@ function readReceiverTemplate(templateBasename) {
 // occurrences mean template drift (or an earlier substitution injected the
 // token), and rendering a half-substituted receiver would be worse than
 // failing the plan.
-function substituteOnce(template, placeholder, replacement, label) {
+export function substituteOnce(template, placeholder, replacement, label) {
   const first = template.indexOf(placeholder);
   if (first === -1 || template.indexOf(placeholder, first + placeholder.length) !== -1) {
     throw new Error(`receiver template drift: expected exactly one ${label} placeholder`);

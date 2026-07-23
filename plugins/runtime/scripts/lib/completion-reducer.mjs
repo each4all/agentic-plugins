@@ -349,7 +349,11 @@ export function invalidateStaleSteps({ steps, probe, current, selection = null, 
     // re-asking them because Codex shipped a patch would be noise, not rigour.
     if (step.status !== 'satisfied' && step.status !== 'manual-follow-up') return step;
     invalidated.push(step.id);
-    return { ...step, status: 'pending', observed: null, observed_at: null, fragment_pointer: null, apply_command: null, invalidated: { at, reason: 'version-drift' } };
+    // `desired` is the PLAN-bound expectation (ADR-0048 mode binding) — a
+    // version drift invalidates the plan it was bound to, so it clears with
+    // the fragment fields: the next resume re-renders and re-freezes a fresh
+    // expectation rather than judging against a stale one (statusline peer G7).
+    return { ...step, status: 'pending', observed: null, observed_at: null, fragment_pointer: null, apply_command: null, desired: null, invalidated: { at, reason: 'version-drift' } };
   });
   return { steps: next, invalidated, reasons: drift.reasons };
 }

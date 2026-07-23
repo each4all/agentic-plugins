@@ -66,6 +66,11 @@ export const stepIds = Object.freeze({
   // pinned as `egress-provider-ack` (never "dispatch"/"delivery"): it proves
   // exactly that the pinned provider request returned HTTP 2xx + {ok:true}.
   proofEgressProviderAck: () => 'proof.egress-provider-ack',
+  // ADR-0048 §1 — per-host statusline configuration steps. The Claude step's
+  // meaning is pinned to "canonical configuration OBSERVED" — never
+  // "statusline runs" (workspace trust / disableAllHooks / safe mode gate
+  // execution and no probe may relax them).
+  statuslineConfigured: (host) => `statusline.${host}.configured`,
 });
 
 // §6.2 — not declinable, EVER: host CLI presence and authentication; marketplace
@@ -167,6 +172,11 @@ export function deriveExpectedSteps({ pluginSet, selection, permissionFragmentAp
   // on the Codex CLI being present, the permission.<host>.applied precedent
   // for a host-targeted config step.
   steps.push({ id: stepIds.notifyCodexConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent('codex')] });
+  // ADR-0048 §1 — the two per-host, DECLINABLE statusline steps (a single
+  // combined step could false-pass after only one host is configured).
+  for (const host of PLUGIN_SET_HOSTS) {
+    steps.push({ id: stepIds.statuslineConfigured(host), stage: 5, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent(host)] });
+  }
   steps.push({ id: stepIds.egressConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [] });
   for (const host of PLUGIN_SET_HOSTS) {
     steps.push({ id: stepIds.permissionApplied(host), stage: 6, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent(host)] });
