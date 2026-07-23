@@ -27,6 +27,7 @@
 //   * a step's stage/applicability/declinable/blocked_by come from the registry, never
 //     from the manifest's copy of them.
 
+import { DIRECTIONAL_PROOF_KINDS, PROOF_KINDS, evidenceKindIssues } from './evidence-contract.mjs';
 import { RESOLVED_STEP_STATUSES, CONFIG_STAGES, PROOF_STAGES, deriveExpectedSteps, expectedStepIds, stepIds } from './step-registry.mjs';
 
 export const COMPLETION_STATES = Object.freeze(['complete', 'configured-not-verified', 'incomplete']);
@@ -150,9 +151,32 @@ export function requiredBoundPlugins({ pluginSet, selection }) {
  * claude->codex and failed codex->claude is `failed` (test #22) — the cross-host
  * bridge is not half-working, it is not working.
  */
-export function recomputeProofStatus(proof, { current, applicable = true, requiredPlugins = null }) {
+export function recomputeProofStatus(proof, { current, applicable = true, requiredPlugins = null, currentActivationFingerprint = null }) {
   if (!applicable) return { status: 'not-applicable', reasons: [] };
   if (!isPlainObject(proof)) return { status: 'absent', reasons: ['no proof record'] };
+
+  // egress-provider-ack (ADR-0048 §3) — single-delivery evidence: the aggregate
+  // comes from `provider_ack.result`, and freshness additionally binds the
+  // SANITIZED activation identity by EQUALITY. An activation that was removed
+  // or changed (channel/recipient swap) stales the proof — it never vanishes
+  // into `not-applicable`, because removal is a staleness fact about recorded
+  // evidence, not a retraction of it.
+  if (proof.kind === 'egress-provider-ack') {
+    const ack = proof.provider_ack;
+    if (!isPlainObject(ack)) return { status: 'absent', reasons: ['no provider_ack evidence recorded'] };
+    if (ack.result !== 'acked') {
+      return { status: 'failed', reasons: ['the provider request did not return an acknowledged response'] };
+    }
+    const freshness = boundVersionsFresh(proof.bound_versions, current, { requiredPlugins });
+    if (!freshness.fresh) return { status: 'stale', reasons: freshness.reasons };
+    if (currentActivationFingerprint === null) {
+      return { status: 'stale', reasons: ['no egress activation is currently configured — the acked attempt was recorded against an activation this machine no longer carries'] };
+    }
+    if (ack.activation_fingerprint !== currentActivationFingerprint) {
+      return { status: 'stale', reasons: ['the egress activation changed since this proof was recorded (channel/recipient/credential identity drift) — re-execute against the current activation'] };
+    }
+    return { status: 'passed', reasons: [] };
+  }
 
   const results = DIRECTIONS.map((d) => ({ direction: d, status: proof.directions?.[d]?.status ?? 'absent' }));
   const failed = results.filter((r) => r.status !== 'passed');
@@ -249,6 +273,47 @@ export function recomputeHookAttestation(record, { current, expectedPlugins, pro
   return reasons.length > 0 ? { status: 'stale', reasons } : { status: 'attested', reasons: [] };
 }
 
+/**
+ * The owner receipt-attestation verdict (ADR-0048 §3 / D0.1) — human testimony,
+ * re-judged on the same recompute-never-trust terms as every other claim. The
+ * verb domain is `attested`, never `passed`: a machine cannot promote a
+ * phone-receipt claim to proof, only check whether the claim still stands.
+ *
+ *   * `attested` requires the LINKED egress-provider-ack proof to still re-judge
+ *     `passed` at current bound versions AND both links to hold by equality:
+ *     the attempt hash (which synthetic attempt the owner saw) and the stored
+ *     provider-proof file hash (that the record they testified about is the
+ *     one still on disk).
+ *   * Any drift — ack stale/failed, replaced provider proof, mismatched
+ *     attempt — is `stale`, with the reason named. Testimony never silently
+ *     disappears into `not-applicable` on drift: recorded testimony about a
+ *     removed activation is STALE testimony, not retracted testimony.
+ *   * `not-applicable` is reserved for a run that never opted into the egress
+ *     proof at all.
+ */
+export function recomputeReceiptAttestation({ record, providerAckSha256 = null, providerAckAttemptHash = null, ackStatus, applicable = true }) {
+  const empty = { attested_at: null, attempt_hash: null, provider_proof_artifact_hash: null };
+  if (!applicable) return { status: 'not-applicable', reasons: [], ...empty };
+  if (!isPlainObject(record)) return { status: 'absent', reasons: [], ...empty };
+
+  const carried = {
+    attested_at: matchOr(record.attested_at, TIMESTAMP_RE),
+    attempt_hash: matchOr(record.attempt_hash, SHA256_RE),
+    provider_proof_artifact_hash: matchOr(record.provider_proof_artifact_hash, SHA256_RE),
+  };
+  const reasons = [];
+  if (ackStatus !== 'passed') {
+    reasons.push(`the linked egress-provider-ack proof re-judges ${ackStatus ?? 'absent'} — testimony about an attempt whose machine evidence no longer stands is stale`);
+  }
+  if (carried.provider_proof_artifact_hash === null || providerAckSha256 === null || carried.provider_proof_artifact_hash !== providerAckSha256) {
+    reasons.push('the provider-proof file the receipt links to is not the one on disk (replaced or missing) — the testimony names evidence that no longer exists');
+  }
+  if (carried.attempt_hash === null || providerAckAttemptHash === null || carried.attempt_hash !== providerAckAttemptHash) {
+    reasons.push('the receipt names a different synthetic attempt than the recorded provider proof — testimony about another attempt does not cover this one');
+  }
+  return reasons.length > 0 ? { status: 'stale', reasons, ...carried } : { status: 'attested', reasons: [], ...carried };
+}
+
 // ---------------------------------------------------------------------------
 // Invalidation (§7)
 // ---------------------------------------------------------------------------
@@ -309,7 +374,7 @@ function probeInstalledPlugins(probe, selection) {
 // doctor artifact that grows a new field cannot carry it here by default — the §8.2
 // rule is "metadata only", and "everything except the fields we thought to exclude"
 // is not that rule.
-const PROOF_METADATA_KEYS = Object.freeze(['kind', 'status', 'directions', 'artifact_pointer', 'artifact_hash', 'bound_versions', 'ran_at']);
+const PROOF_METADATA_KEYS = Object.freeze(['kind', 'status', 'directions', 'provider_ack', 'artifact_pointer', 'artifact_hash', 'bound_versions', 'ran_at']);
 const DIRECTION_KEYS = Object.freeze(['status', 'ran_at']);
 
 /**
@@ -333,7 +398,12 @@ const SHA256_RE = /^[0-9a-f]{64}$/;
 const POINTER_RE = /^[~.][A-Za-z0-9/._-]{0,511}$/;
 const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
 const DIRECTION_STATUSES = Object.freeze(['passed', 'failed', 'blocked', 'absent']);
-const PROOF_KINDS = Object.freeze(['deep-peer-smoke', 'workflow-continuation', 'permission']);
+const PROVIDER_ACK_RESULTS = Object.freeze(['acked', 'failed']);
+// The proof-kind vocabulary is OWNED by lib/evidence-contract.mjs (ADR-0048 §3)
+// — one table for importer, writer, reader, and reducer, so the kinds cannot
+// drift between them. Re-exported here because §8.2 consumers historically
+// import it from the reducer.
+export { PROOF_KINDS, DIRECTIONAL_PROOF_KINDS };
 
 // Every scalar is RECONSTRUCTED against its own grammar, not merely copied. A top-level
 // allowlist stops a raw-output key at the door and then waves through whatever is nested
@@ -360,22 +430,12 @@ function importVersionMap(map) {
 export function importProofMetadata(doctorProof) {
   if (!isPlainObject(doctorProof)) return { ok: false, errors: ['proof record is not an object'], record: null };
 
-  const directions = {};
-  for (const direction of DIRECTIONS) {
-    const source = doctorProof.directions?.[direction];
-    // Every direction is written explicitly: a direction that did not run says
-    // `absent` rather than being missing, so an empty map can never read as a pass.
-    directions[direction] = isPlainObject(source)
-      ? { status: enumOr(source.status, DIRECTION_STATUSES, 'absent'), ran_at: matchOr(source.ran_at, TIMESTAMP_RE) }
-      : { status: 'absent', ran_at: null };
-  }
-
+  const kind = enumOr(doctorProof.kind, PROOF_KINDS);
   const bound = doctorProof.bound_versions;
   const record = {
-    kind: enumOr(doctorProof.kind, PROOF_KINDS),
+    kind,
     // Carried for provenance only — the reducer recomputes it and never reads this back.
     status: enumOr(doctorProof.status, PROOF_STATUSES, 'absent'),
-    directions,
     artifact_pointer: matchOr(doctorProof.artifact_pointer, POINTER_RE),
     artifact_hash: matchOr(doctorProof.artifact_hash, SHA256_RE),
     bound_versions: {
@@ -387,13 +447,47 @@ export function importProofMetadata(doctorProof) {
     ran_at: matchOr(doctorProof.ran_at, TIMESTAMP_RE),
   };
 
+  // Kind-discriminated evidence member (ADR-0048 §3): the importer reconstructs
+  // EXACTLY the member the kind carries — a directional record gets its
+  // per-direction map, an egress-provider-ack record gets its provider_ack —
+  // and NEVER both. The source carrying the other kind's member is reported as
+  // dropped, and evidenceKindIssues re-checks the reconstruction below so the
+  // importer can never emit a record the writer/reader boundaries would refuse.
+  if (kind === 'egress-provider-ack') {
+    const ack = doctorProof.provider_ack;
+    record.provider_ack = {
+      result: enumOr(ack?.result, PROVIDER_ACK_RESULTS, 'failed'),
+      attempt_hash: matchOr(ack?.attempt_hash, SHA256_RE),
+      activation_fingerprint: matchOr(ack?.activation_fingerprint, SHA256_RE),
+      ran_at: matchOr(ack?.ran_at, TIMESTAMP_RE),
+    };
+    if (record.provider_ack.attempt_hash === null || record.provider_ack.activation_fingerprint === null) {
+      return { ok: false, errors: ['provider_ack must carry a non-null attempt_hash and activation_fingerprint (sha256)'], record: null };
+    }
+  } else {
+    const directions = {};
+    for (const direction of DIRECTIONS) {
+      const source = doctorProof.directions?.[direction];
+      // Every direction is written explicitly: a direction that did not run says
+      // `absent` rather than being missing, so an empty map can never read as a pass.
+      directions[direction] = isPlainObject(source)
+        ? { status: enumOr(source.status, DIRECTION_STATUSES, 'absent'), ran_at: matchOr(source.ran_at, TIMESTAMP_RE) }
+        : { status: 'absent', ran_at: null };
+    }
+    record.directions = directions;
+  }
+
+  const kindIssues = kind === null ? ['kind (not a known proof kind)'] : evidenceKindIssues(kind, record);
+  if (kindIssues.length > 0) return { ok: false, errors: kindIssues, record: null };
+
   const dropped = [
     ...Object.keys(doctorProof).filter((k) => !PROOF_METADATA_KEYS.includes(k)),
     // Anything that WAS on the list but failed its grammar is dropped too, and said so
     // — silently nulling a field the caller believed it passed is how a proof ends up
     // bound to nothing.
     ...(doctorProof.artifact_pointer !== undefined && record.artifact_pointer === null ? ['artifact_pointer (not a pointer)'] : []),
-    ...(doctorProof.kind !== undefined && record.kind === null ? ['kind (not a known proof kind)'] : []),
+    ...(kind === 'egress-provider-ack' && doctorProof.directions !== undefined ? ['directions (forbidden for egress-provider-ack)'] : []),
+    ...(kind !== null && kind !== 'egress-provider-ack' && doctorProof.provider_ack !== undefined ? ['provider_ack (forbidden for directional kinds)'] : []),
   ].sort();
   return { ok: true, errors: [], record, dropped };
 }
@@ -533,14 +627,28 @@ export function reduceCompletion({
   hookAttestation = null,
   probe = null,
   runtimeVersion,
+  // ADR-0048 §3 — the CURRENT sanitized activation identity (null when no
+  // egress activation is configured). Only the egress-provider-ack aggregate
+  // consumes it; a pure reducer cannot derive it, so the caller supplies it
+  // (bootstrap derives it from the E1 activation checker's sanitized fields).
+  currentActivationFingerprint = null,
+  // ADR-0048 §3 / D0.1 — the recorded owner receipt testimony, read back from
+  // proof/egress-receipt-attestation.json: { record, providerAckSha256 } where
+  // providerAckSha256 is the stored egress-provider-ack FILE's own sha256 (the
+  // write-time hash re-derived at read-back). Null when no testimony exists.
+  receiptEvidence = null,
 }) {
   const stateById = new Map(steps.filter((s) => typeof s?.id === 'string').map((s) => [s.id, s]));
   const fragmentApplied = {};
   for (const host of ['claude', 'codex']) {
     fragmentApplied[host] = stateById.get(stepIds.permissionApplied(host))?.fragment_applied === true;
   }
+  // The egress-proof opt-in derives from the run's own steps[] the same
+  // manifest-legitimate way fragment_applied does (D0.2): once the step was
+  // recorded expected, it stays expected here.
+  const egressProofRequested = stateById.has(stepIds.proofEgressProviderAck());
 
-  const expected = deriveExpectedSteps({ pluginSet, selection, permissionFragmentApplied: fragmentApplied });
+  const expected = deriveExpectedSteps({ pluginSet, selection, permissionFragmentApplied: fragmentApplied, egressProofRequested });
   const owed = expectedStepIds(expected);
   const current = currentBoundVersions({ probe, selection, runtimeVersion });
   const requiredPlugins = requiredBoundPlugins({ pluginSet, selection });
@@ -572,13 +680,41 @@ export function reduceCompletion({
     .sort();
 
   // PROOFS — every applicable Stage-8 step, evaluated from evidence.
-  const proofByKind = new Map(proofs.filter((p) => isPlainObject(p)).map((p) => [p.kind, p]));
+  //
+  // Duplicate evidence is REJECTED, never chosen between (ADR-0048 §3): the
+  // pre-1.2 `new Map(...)` collapse silently let the LAST record of a
+  // duplicated kind win — a forged second record could shadow a real failure.
+  // The read boundary (readBootstrapProofRecords) already refuses duplicates
+  // all-or-nothing; this is the defense-in-depth for direct library callers.
+  // Neither record of a duplicated kind is trusted, and the run can never
+  // reduce past `incomplete` while duplicate evidence exists — independently
+  // of whether the duplicated proof is required (a duplicated non-required
+  // proof is still an evidence-integrity violation, not a pass).
+  const plainProofs = proofs.filter((p) => isPlainObject(p));
+  const kindCounts = new Map();
+  for (const p of plainProofs) kindCounts.set(p.kind, (kindCounts.get(p.kind) ?? 0) + 1);
+  const duplicatedKinds = [...kindCounts.entries()].filter(([, count]) => count > 1).map(([kind]) => kind).sort();
+  const proofByKind = new Map(plainProofs.filter((p) => !duplicatedKinds.includes(p.kind)).map((p) => [p.kind, p]));
   const proofSteps = expected.filter((s) => PROOF_STAGES.includes(s.stage));
   const evaluatedProofs = proofSteps.map((step) => {
     const kind = step.id.replace(/^proof\./, '');
     const declined = stateById.get(step.id)?.status === 'declined';
+    if (duplicatedKinds.includes(kind)) {
+      return {
+        kind,
+        step_id: step.id,
+        declined,
+        status: 'failed',
+        reasons: [`${kindCounts.get(kind)} evidence records claim kind "${kind}" — duplicate evidence is rejected, not chosen between (ADR-0048 §3)`],
+        required: step.applicable,
+        artifact_pointer: null,
+        artifact_hash: null,
+        bound_versions: null,
+        ran_at: null,
+      };
+    }
     const record = proofByKind.get(kind) ?? null;
-    const verdict = recomputeProofStatus(record, { current, applicable: step.applicable, requiredPlugins });
+    const verdict = recomputeProofStatus(record, { current, applicable: step.applicable, requiredPlugins, currentActivationFingerprint });
     return {
       kind,
       step_id: step.id,
@@ -601,11 +737,33 @@ export function reduceCompletion({
   const requiredProofs = evaluatedProofs.filter((p) => p.required);
   const everyProofPassed = requiredProofs.every((p) => p.status === 'passed' && !p.declined);
 
-  const state = !configResolved
+  // Duplicate evidence caps at `incomplete` regardless of the formula above —
+  // the integrity of the evidence set failed, so no terminal claim stands
+  // (§8 amendment, ADR-0048 §3).
+  const state = duplicatedKinds.length > 0
     ? 'incomplete'
-    : everyProofPassed
-      ? 'complete'
-      : 'configured-not-verified';
+    : !configResolved
+      ? 'incomplete'
+      : everyProofPassed
+        ? 'complete'
+        : 'configured-not-verified';
+
+  // ADR-0048 §3 / D0.1 — the receipt verdict rides completion ONLY when the
+  // run has anything to say about it (testimony recorded, or the egress proof
+  // opted in). A run outside that world keeps the exact 1.1 completion shape —
+  // the member is schema-optional precisely so absence stays representable.
+  const egressStep = proofSteps.find((s) => s.id === stepIds.proofEgressProviderAck());
+  const egressEval = evaluatedProofs.find((p) => p.kind === 'egress-provider-ack');
+  const egressAckRecord = proofByKind.get('egress-provider-ack') ?? null;
+  const receiptVerdict = (receiptEvidence?.record || egressStep?.applicable === true)
+    ? recomputeReceiptAttestation({
+        record: receiptEvidence?.record ?? null,
+        providerAckSha256: receiptEvidence?.providerAckSha256 ?? null,
+        providerAckAttemptHash: egressAckRecord?.provider_ack?.attempt_hash ?? null,
+        ackStatus: egressEval?.status ?? 'absent',
+        applicable: egressStep?.applicable === true || Boolean(receiptEvidence?.record),
+      })
+    : null;
 
   return {
     state,
@@ -621,5 +779,6 @@ export function reduceCompletion({
       artifact_hash: hookAttestation?.artifact_hash ?? null,
       attested_at: hookAttestation?.attested_at ?? null,
     },
+    ...(receiptVerdict ? { egress_receipt_attestation: receiptVerdict } : {}),
   };
 }

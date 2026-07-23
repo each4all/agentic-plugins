@@ -420,3 +420,68 @@ describe('runtime machine profile — loader isolation (#7, §4.3 guard 3)', () 
     ok(!/process\.env/.test(src), 'the engine reads no environment — its inputs are injected');
   });
 });
+
+// ---------------------------------------------------------------------------
+// ADR-0048 §2.1/§4 — profile 1.1: statusline_preset forward-compat + the
+// write-gate credential constant (D0.4)
+// ---------------------------------------------------------------------------
+
+describe('machine profile 1.1 — statusline_preset forward-compat (ADR-0048 §2.1)', () => {
+  it('a 1.0 document (no statusline_preset) still validates under the 1.1 reader', async () => {
+    const validate = await makeValidator('agentic-machine-profile');
+    const profile = build();
+    profile.schema = 'agentic-machine-profile-1.0';
+    delete profile.statusline_preset;
+    const verdict = validate(profile);
+    deepStrictEqual(verdict.errors, [], 'a pre-1.1 export is not invalidated by the additive minor');
+    ok(verdict.ok);
+  });
+
+  it('a 1.1 statusline_preset under a 1.0-ERA reader is a SCALAR warning + ignored, never an error (§4.6)', async () => {
+    // The real forward-compat scenario is an OLD RUNTIME (whose packaged schema
+    // has no statusline_preset) reading a NEW document — reconstructed here by
+    // stripping the key from a clone of the 1.1 schema and validating the 1.1
+    // document against it as a 1.0 reader.
+    const { validateAgainstSchema, loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
+    const oldSchema = structuredClone(await loadSchema('agentic-machine-profile'));
+    oldSchema.$id = 'agentic-machine-profile-1.0';
+    delete oldSchema.properties.statusline_preset;
+
+    const profile = build();
+    profile.statusline_preset = 'agentic-6';
+    const verdict = validateAgainstSchema(profile, oldSchema, { readerVersion: 'agentic-machine-profile-1.0' });
+    deepStrictEqual(verdict.errors, [], `the newer-minor scalar is forgiven: ${JSON.stringify(verdict.errors)}`);
+    ok(verdict.warnings.some((w) => /statusline_preset/.test(w)), `the ignore is WARNED, not silent: ${JSON.stringify(verdict.warnings)}`);
+  });
+
+  it('canonical serialization puts statusline_preset LAST, so 1.0- and 1.1-reader canonical hashes agree', async () => {
+    const { canonicalize, loadSchema } = await import('../../plugins/runtime/scripts/lib/schema-validate.mjs');
+    const schema = await loadSchema('agentic-machine-profile');
+    const profile = build();
+    profile.statusline_preset = 'agentic-6';
+    const canonical = canonicalize(profile, schema);
+    const keys = Object.keys(canonical);
+    strictEqual(keys.at(-1), 'statusline_preset', `the trailing-scalar rule holds: ${keys.join(',')}`);
+  });
+});
+
+describe('machine profile — write-gate credential constant (ADR-0048 §4 / D0.4)', () => {
+  it('a present credential_env_var that is not TELEGRAM_BOT_TOKEN is refused at the write gate — the schema stays additive', async () => {
+    const validate = await makeValidator('agentic-machine-profile');
+    const profile = build();
+    profile.egress.credential_env_var = 'MY_OTHER_TOKEN';
+    // The SCHEMA accepts it (additive-minor preservation)…
+    strictEqual(validate(profile).ok, true, 'the schema shape is deliberately unchanged (D0.4)');
+    // …and the write gate refuses it.
+    const semantic = assertProfileWritable(profile, { original: profile });
+    strictEqual(semantic.ok, false);
+    ok(semantic.errors.some((e) => /TELEGRAM_BOT_TOKEN/.test(e) && /write-gate constant/.test(e)), JSON.stringify(semantic.errors));
+  });
+
+  it('a null credential_env_var stays legal (a legacy/no-egress document)', () => {
+    const profile = build();
+    profile.egress.credential_env_var = null;
+    const semantic = assertProfileWritable(profile, { original: profile });
+    ok(!semantic.errors.some((e) => /write-gate constant/.test(e)), JSON.stringify(semantic.errors));
+  });
+});

@@ -32,8 +32,12 @@ import { redactSecrets, sanitizeValue } from './permission-sanitize.mjs';
 import { CONFIG_KEY_FAMILIES } from './runtime-config.mjs';
 import { canonicalize } from './schema-validate.mjs';
 
-export const MACHINE_PROFILE_SCHEMA_VERSION = 'agentic-machine-profile-1.0';
+export const MACHINE_PROFILE_SCHEMA_VERSION = 'agentic-machine-profile-1.1';
 export const EGRESS_CREDENTIAL_ENV_VAR = 'TELEGRAM_BOT_TOKEN';
+// ADR-0048 §2.1 — the owner-adopted six-item statusline set, carried in the
+// profile as a SCALAR preset id (1.1-additive). The id names a policy; the
+// canonical ordered item definition belongs to the statusline adapter.
+export const STATUSLINE_PRESET_AGENTIC_6 = 'agentic-6';
 
 // §4.5.3 / ADR-0038 — the postures that are STORED but never PRESENTED as a default.
 // The stored enum carries them because §4.5.3 shows a source machine's value as a
@@ -151,6 +155,13 @@ export function buildMachineProfile({ readers, probe, selection, runtimeVersion,
         provenance: 'user-global',
       },
     },
+    // 1.1 (ADR-0048 §2.1) — serialized LAST (schema order = canonical order):
+    // a trailing scalar keeps 1.0- and 1.1-reader canonical hashes aligned.
+    // The export carries the DECLARED preset from the reader bundle when the
+    // statusline adapter has recorded one; until that slice lands, null is the
+    // honest value — a preset is a declaration, never an observation inferred
+    // from host config.
+    statusline_preset: readers.statuslinePreset ?? null,
   };
 }
 
@@ -271,6 +282,15 @@ export function assertProfileWritable(profile, { original, homeDir = null } = {}
   const expectedRequired = egress.declined === false && (egress.channel?.value ?? null) !== null;
   if (egress.credential_required !== expectedRequired) {
     errors.push(`egress.credential_required is ${egress.credential_required} but declined=${egress.declined} and channel=${JSON.stringify(egress.channel?.value ?? null)} imply ${expectedRequired} (§4.1)`);
+  }
+
+  // ADR-0048 §4 / D0.4 — the credential env var NAME is a write-gate CONSTANT.
+  // The schema shape stays additive (a JSON const would invalidate legal 1.0
+  // documents carrying null/other names — §4.6), so the pinning lives here, on
+  // every write/seed path: a present name that is not the named E1 variable is
+  // an arbitrary-credential channel this contract refuses to record.
+  if (egress.credential_env_var !== null && egress.credential_env_var !== undefined && egress.credential_env_var !== EGRESS_CREDENTIAL_ENV_VAR) {
+    errors.push(`egress.credential_env_var is ${JSON.stringify(egress.credential_env_var)}; the only credential env var this contract records is ${EGRESS_CREDENTIAL_ENV_VAR} (ADR-0048 §4 — a write-gate constant, kept out of the schema so legal 1.0 documents stay readable)`);
   }
   if (egress.declined === true && (egress.channel?.value ?? null) !== null) {
     errors.push('a declined egress must carry channel: null (§4.1)');
@@ -413,6 +433,12 @@ export function seedProposals({ profile, targetDefaults = {}, validate }) {
 
   for (const [key, entry] of Object.entries(profile.model_effort ?? {})) propose(`model_effort.${key}`, entry.value, entry);
   for (const [key, entry] of Object.entries(profile.notify ?? {})) propose(`notify.${key}`, entry.value, entry);
+
+  // 1.1 (ADR-0048 §2.1) — the statusline preset is a bare scalar (no
+  // scope/provenance envelope by design), presented like every other value:
+  // a confirmation-required default, never something applied (Codex review
+  // MINOR — §4.5's "present every remaining value" covers it).
+  propose('statusline_preset', profile.statusline_preset, { scope: 'machine', provenance: 'user-global' });
 
   // The chat-id pre-fills; the token never does (§4.5) — and the token is not in the
   // profile to begin with, so this is the whole of it.

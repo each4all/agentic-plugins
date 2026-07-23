@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "runtime-bootstrap-run-1.1",
+  "$id": "runtime-bootstrap-run-1.2",
   "title": "Bootstrap run manifest",
-  "description": "machine-bootstrap-contract.md §5. The durable record of one machine-bootstrap run. It records CHOICES and HISTORY, never TRUTH (§7): every plan/status/resume/verify re-probes, and a recorded step is invalidated when the versions it was observed against change. Key order here IS the canonical serialization order.",
+  "description": "machine-bootstrap-contract.md §5. The durable record of one machine-bootstrap run. It records CHOICES and HISTORY, never TRUTH (§7): every plan/status/resume/verify re-probes, and a recorded step is invalidated when the versions it was observed against change. Key order here IS the canonical serialization order. 1.2 (ADR-0048 §3) adds the egress evidence vocabulary: the `egress-provider-ack` proof kind with its `provider_ack` member, and the owner receipt attestation verdict on `completion`. The kind-discriminated directions↔provider_ack exclusivity is deliberately NOT expressed here — the validator has no oneOf by design (§4.1); lib/evidence-contract.mjs enforces it fail-closed at every importer/writer/reader boundary.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "run_id", "started_at", "updated_at", "status", "selection", "steps", "boundary"],
@@ -130,6 +130,11 @@
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
     },
     "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "nonNullSha256": {
+      "description": "1.2 (ADR-0048 §3) — evidence that CLAIMS something (an acked provider request, a receipt link) may not carry a null hash; the nullable `sha256` def would let an `acked` proof or a receipt attestation link to nothing.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "pluginName": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
     "pluginNameArray": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/pluginName" } },
     "stepId": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z0-9_-]+)+$", "maxLength": 128 },
@@ -293,17 +298,18 @@
       "patternProperties": { "^[a-z][a-z0-9-]{0,63}$": { "$ref": "#/$defs/semver" } }
     },
     "proof": {
+      "description": "1.2 (ADR-0048 §3) — `directions` left `required` and `provider_ack` joined as a sibling optional member because the validator has no oneOf: which member is REQUIRED and which is FORBIDDEN is decided by `kind` (directional kinds: directions required / provider_ack forbidden; `egress-provider-ack`: provider_ack required / directions forbidden) and enforced fail-closed in lib/evidence-contract.mjs at every importer/writer/reader boundary. A 1.1 directional document therefore stays valid here.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "status", "directions", "artifact_pointer", "artifact_hash", "bound_versions", "ran_at"],
+      "required": ["kind", "status", "artifact_pointer", "artifact_hash", "bound_versions", "ran_at"],
       "properties": {
-        "kind": { "enum": ["deep-peer-smoke", "workflow-continuation", "permission"] },
+        "kind": { "enum": ["deep-peer-smoke", "workflow-continuation", "permission", "egress-provider-ack"] },
         "status": {
-          "description": "§5 — the AGGREGATE, recomputed from `directions` on every read and NEVER trusted from storage. A smoke that passed claude->codex and failed codex->claude is `failed` (test #22); a stored `passed` would be a claim the evidence contradicts.",
+          "description": "§5 — the AGGREGATE, recomputed from the kind's evidence member (`directions`, or `provider_ack` for egress-provider-ack) on every read and NEVER trusted from storage. A smoke that passed claude->codex and failed codex->claude is `failed` (test #22); a stored `passed` would be a claim the evidence contradicts.",
           "enum": ["passed", "failed", "stale", "not-applicable", "absent"]
         },
         "directions": {
-          "description": "§8.1 — a per-direction RESULT MAP, not a list of direction names. A schema that could only say `directions: [...]` could not express a one-way failure at all. BOTH keys are required: an empty map would let a `passed` aggregate be stored with no evidence behind it at all, which is precisely the forgery the per-direction shape exists to prevent. A direction that did not run says so with `absent`.",
+          "description": "§8.1 — a per-direction RESULT MAP, not a list of direction names. A schema that could only say `directions: [...]` could not express a one-way failure at all. BOTH keys are required: an empty map would let a `passed` aggregate be stored with no evidence behind it at all, which is precisely the forgery the per-direction shape exists to prevent. A direction that did not run says so with `absent`. REQUIRED for directional kinds, FORBIDDEN for egress-provider-ack — enforced in code (see the def description).",
           "type": "object",
           "additionalProperties": false,
           "required": ["claude->codex", "codex->claude"],
@@ -312,10 +318,35 @@
             "codex->claude": { "$ref": "#/$defs/directionResult" }
           }
         },
+        "provider_ack": { "$ref": "#/$defs/providerAck" },
         "artifact_pointer": { "type": ["string", "null"], "maxLength": 512 },
         "artifact_hash": { "$ref": "#/$defs/sha256" },
         "bound_versions": { "$ref": "#/$defs/boundVersions" },
         "ran_at": { "$ref": "#/$defs/nullableTimestamp" }
+      }
+    },
+    "providerAck": {
+      "description": "1.2 (ADR-0048 §3) — the single-delivery evidence member for `egress-provider-ack`. It proves exactly that the pinned provider request returned HTTP 2xx + {ok:true} — deliberately NOT named dispatch or delivery. `attempt_hash` is the synthetic-attempt identity the receipt attestation later links to; `activation_fingerprint` is the domain-separated SHA-256 over the SANITIZED activation identity (channel + recipient shape + credential env var NAME — never values; lib/evidence-contract.mjs owns the derivation), compared by EQUALITY against the current activation on every read. Nothing token-, recipient-, URL-, body-, raw-response-, or message_id-shaped may appear — additionalProperties seals it. `result: acked` with a null ran_at is rejected in code (a claim with no time is not evidence).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "attempt_hash", "activation_fingerprint", "ran_at"],
+      "properties": {
+        "result": { "enum": ["acked", "failed"] },
+        "attempt_hash": { "$ref": "#/$defs/nonNullSha256" },
+        "activation_fingerprint": { "$ref": "#/$defs/nonNullSha256" },
+        "ran_at": { "$ref": "#/$defs/nullableTimestamp" }
+      }
+    },
+    "egressReceiptAttestation": {
+      "description": "1.2 (ADR-0048 §3) — the RECORDED owner claim that the egress message appeared on their phone. Verb domain is `attested`, never `passed`: this is human testimony, not machine proof. `attempt_hash` MUST equal the linked provider proof's synthetic attempt hash and `provider_proof_artifact_hash` MUST equal the stored provider-proof JSON's own sha256 (the writeBootstrapProof return hash, re-verified byte-for-byte at read-back) — a receipt that cannot name which attempt it saw is not testimony. No free-text note, no device identifier — additionalProperties seals the shape.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface", "attested_at", "attempt_hash", "provider_proof_artifact_hash"],
+      "properties": {
+        "surface": { "const": "owner-phone" },
+        "attested_at": { "$ref": "#/$defs/timestamp" },
+        "attempt_hash": { "$ref": "#/$defs/nonNullSha256" },
+        "provider_proof_artifact_hash": { "$ref": "#/$defs/nonNullSha256" }
       }
     },
     "hookAttestation": {
@@ -346,7 +377,7 @@
       }
     },
     "completion": {
-      "description": "§8 — the reduced completion verdict reduceCompletion writes. Extracted to a $def so the reducer's output can be validated against exactly this shape (the seam that caught the reasons/directions mismatch before wiring).",
+      "description": "§8 — the reduced completion verdict reduceCompletion writes. Extracted to a $def so the reducer's output can be validated against exactly this shape (the seam that caught the reasons/directions mismatch before wiring). 1.2: `egress_receipt_attestation` is deliberately OPTIONAL (absent from `required`) — adding it to required would invalidate every 1.1 document under this reader, violating §4.6's additive-minor rule. Serialized last (key order is canonical).",
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["state", "unsatisfied", "missing_steps", "proofs", "hook_attestation"],
@@ -360,7 +391,8 @@
           "items": { "$ref": "#/$defs/stepId" }
         },
         "proofs": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/evaluatedProof" } },
-        "hook_attestation": { "$ref": "#/$defs/hookAttestationVerdict" }
+        "hook_attestation": { "$ref": "#/$defs/hookAttestationVerdict" },
+        "egress_receipt_attestation": { "$ref": "#/$defs/egressReceiptAttestationVerdict" }
       }
     },
     "evaluatedProof": {
@@ -369,7 +401,7 @@
       "additionalProperties": false,
       "required": ["kind", "step_id", "declined", "status", "reasons", "required", "artifact_pointer", "artifact_hash", "bound_versions", "ran_at"],
       "properties": {
-        "kind": { "enum": ["deep-peer-smoke", "workflow-continuation", "permission"] },
+        "kind": { "enum": ["deep-peer-smoke", "workflow-continuation", "permission", "egress-provider-ack"] },
         "step_id": { "$ref": "#/$defs/stepId" },
         "declined": { "type": "boolean" },
         "status": { "enum": ["passed", "failed", "stale", "not-applicable", "absent"] },
@@ -426,6 +458,19 @@
         "artifact_pointer": { "type": ["string", "null"], "maxLength": 512 },
         "artifact_hash": { "$ref": "#/$defs/sha256" },
         "attested_at": { "$ref": "#/$defs/nullableTimestamp" }
+      }
+    },
+    "egressReceiptAttestationVerdict": {
+      "description": "1.2 (ADR-0048 §3) — the REDUCED receipt verdict reduceCompletion writes into `completion.egress_receipt_attestation`: the recomputed currency `status` plus its reasons, over the recorded `egressReceiptAttestation` claim. `attested` requires the linked egress-provider-ack proof to still re-judge `passed` at the current bound versions AND the attempt hashes to match by equality; a rotated credential, changed recipient/channel (activation fingerprint drift), or replaced provider proof stales the verdict — it never disappears into `not-applicable` (removal is a staleness fact about recorded testimony, not a retraction of it). The label `delivery-attested` is DERIVED at presentation from provider-ack `passed` + this verdict `attested`; the generic completion `state` is never redefined by receipt (ADR-0048 §3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reasons", "attested_at", "attempt_hash", "provider_proof_artifact_hash"],
+      "properties": {
+        "status": { "enum": ["attested", "stale", "absent", "not-applicable"] },
+        "reasons": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 512 } },
+        "attested_at": { "$ref": "#/$defs/nullableTimestamp" },
+        "attempt_hash": { "$ref": "#/$defs/sha256" },
+        "provider_proof_artifact_hash": { "$ref": "#/$defs/sha256" }
       }
     }
   }

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "agentic-machine-profile-1.0",
+  "$id": "agentic-machine-profile-1.1",
   "title": "Portable machine profile",
-  "description": "machine-bootstrap-contract.md §4. A secrets-free, enumerated snapshot of one machine's choices, written by `profile export` and consumed by `profile seed`. The profile is an UNTRUSTED source of interview defaults: it is never configuration to apply, and never an input to any activation or config loader (§4 invariant). Key order here IS the canonical serialization order (§4.1); validated by lib/schema-validate.mjs, whose closed keyword subset means every constraint below is enforced or the schema is rejected.",
+  "description": "machine-bootstrap-contract.md §4. A secrets-free, enumerated snapshot of one machine's choices, written by `profile export` and consumed by `profile seed`. The profile is an UNTRUSTED source of interview defaults: it is never configuration to apply, and never an input to any activation or config loader (§4 invariant). Key order here IS the canonical serialization order (§4.1); validated by lib/schema-validate.mjs, whose closed keyword subset means every constraint below is enforced or the schema is rejected. 1.1 (ADR-0048 §2.1) adds the OPTIONAL `statusline_preset` SCALAR — deliberately a bare string, not a field object: §4.6 lets a 1.0 reader ignore an unknown scalar with a warning, while an unknown OBJECT key would refuse the whole document (a nested/custom item shape is exactly the major-bump case §2.1 names).",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "exported_at", "boundary", "source", "selection", "model_effort", "notify", "egress", "permissions"],
@@ -211,6 +211,11 @@
           }
         }
       }
+    },
+    "statusline_preset": {
+      "description": "1.1 (ADR-0048 §2.1) — the adopted statusline item set, carried as a SCALAR preset id (the six-item owner set is `agentic-6`). Appended LAST and kept a bare string: canonicalization serializes unknown keys after known ones, so a trailing scalar keeps a 1.0 reader's canonical hash aligned with a 1.1 reader's over the same document, and §4.6 lets the 1.0 reader ignore it with a warning. The preset id names a policy; the canonical item-policy definition itself lives with the statusline adapter, never inline here. Optional (absent from required) — a profile exported before the statusline stage carries null or nothing.",
+      "type": ["string", "null"],
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
     }
   },
   "$defs": {

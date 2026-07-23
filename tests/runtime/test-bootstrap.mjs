@@ -680,7 +680,7 @@ describe('runtime bootstrap artifacts — abandonment (#29)', () => {
     const validate = await makeValidator('runtime-bootstrap-run');
     const verdict = validate(tombstone);
     strictEqual(verdict.ok, true, `the replacement record conforms to the run schema: ${verdict.errors.join('; ')}`);
-    strictEqual(tombstone.schema, 'runtime-bootstrap-run-1.1');
+    strictEqual(tombstone.schema, 'runtime-bootstrap-run-1.2');
     const next = await createBootstrapRun({ homeDir, repoRoot: null, now: NOW, manifest: baseManifest() });
     strictEqual(next.created, true);
     await rm(homeDir, { recursive: true, force: true });
@@ -717,7 +717,11 @@ describe('runtime bootstrap artifacts — abandonment (#29)', () => {
   it('a caller-supplied run id can never overwrite a retained run', async () => {
     const homeDir = await tempHome();
     const runId = makeBootstrapRunId(NOW);
-    await seedRun(homeDir, runId, { status: 'complete', evidence: 'precious' });
+    // `limits` is the schema-valid marker slot: the seeded manifest must stay
+    // schema-valid, because a schema-INVALID one is (correctly) not proven
+    // terminal any more and would trip the open-run refusal before the
+    // id-collision guard this test exists to exercise.
+    await seedRun(homeDir, runId, { status: 'complete', limits: ['precious'] });
 
     const collide = await createBootstrapRun({
       homeDir,
@@ -731,7 +735,7 @@ describe('runtime bootstrap artifacts — abandonment (#29)', () => {
 
     const survivor = JSON.parse(await readFile(bootstrapRunManifestFile(homeDir, runId), 'utf8'));
     strictEqual(survivor.status, 'complete', 'the retained run is intact');
-    strictEqual(survivor.evidence, 'precious', 'and its body was never rewritten');
+    deepStrictEqual(survivor.limits, ['precious'], 'and its body was never rewritten');
     await rm(homeDir, { recursive: true, force: true });
   });
 
@@ -887,18 +891,89 @@ describe('runtime bootstrap artifacts — fragment + proof writers', () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
-  it('a proof write persists the injected record and refuses an invalid one', async () => {
+  // ADR-0048 §3 — validation is MANDATORY and internal now: there is no
+  // injectable `validate` to forget, so an incomplete record is refused by the
+  // writer itself, and only a kind the evidence contract knows can become a
+  // proof file at all.
+  it('a proof write validates internally — a full record lands, an invalid or unknown-kind one is refused', async () => {
     const homeDir = await tempHome();
     const created = await createBootstrapRun({ homeDir, repoRoot: null, now: NOW, manifest: baseManifest() });
-    const record = { kind: 'deep-peer-smoke', status: 'passed', directions: { 'claude->codex': { status: 'passed' } } };
+    const record = {
+      kind: 'deep-peer-smoke',
+      status: 'passed',
+      directions: {
+        'claude->codex': { status: 'passed', ran_at: NOW.toISOString() },
+        'codex->claude': { status: 'passed', ran_at: NOW.toISOString() },
+      },
+      artifact_pointer: null,
+      artifact_hash: null,
+      bound_versions: { runtime: '0.85.0', claude: null, codex: null, plugins: { claude: {}, codex: {} } },
+      ran_at: NOW.toISOString(),
+    };
 
-    const good = await writeBootstrapProof({ homeDir, repoRoot: null, runId: created.run_id, kind: 'deep-peer-smoke', record, validate: () => ({ ok: true }) });
-    strictEqual(good.ok, true);
+    const good = await writeBootstrapProof({ homeDir, repoRoot: null, runId: created.run_id, kind: 'deep-peer-smoke', record });
+    strictEqual(good.ok, true, `a schema-valid record persists: ${good.diagnostics.join('; ')}`);
     match(good.proof.pointer, /\/proof\/deep-peer-smoke\.json$/);
 
-    const bad = await writeBootstrapProof({ homeDir, repoRoot: null, runId: created.run_id, kind: 'permission', record: {}, validate: () => ({ ok: false, errors: ['missing directions'] }) });
+    // The old escape hatch — an empty record — is refused with no validator injected.
+    const bad = await writeBootstrapProof({ homeDir, repoRoot: null, runId: created.run_id, kind: 'permission', record: {} });
     strictEqual(bad.ok, false);
     strictEqual(bad.reason, 'invalid-proof');
+
+    // A kind outside the evidence contract never becomes a file, however valid its body.
+    const alien = await writeBootstrapProof({ homeDir, repoRoot: null, runId: created.run_id, kind: 'novel-proof', record });
+    strictEqual(alien.ok, false);
+    strictEqual(alien.reason, 'unknown-evidence-kind');
+
+    // The kind discriminator is enforced at the writer too: a directional record
+    // filed under a different directional kind contradicts its embedded kind.
+    const mismatch = await writeBootstrapProof({ homeDir, repoRoot: null, runId: created.run_id, kind: 'workflow-continuation', record });
+    strictEqual(mismatch.ok, false);
+    strictEqual(mismatch.reason, 'invalid-proof');
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  // ADR-0048 §3 / D0.1 — evidence lands only in an OPEN run; the single
+  // exception is the owner receipt attestation into a reducer-terminal run.
+  it('the proof writer refuses a terminal run, except the receipt attestation into a completed one', async () => {
+    const homeDir = await tempHome();
+    const runId = makeBootstrapRunId(NOW);
+    // The post-terminal receipt door additionally requires a CURRENT-schema,
+    // schema-valid manifest (Codex review MAJOR) — the fixture declares 1.2.
+    await seedRun(homeDir, runId, { status: 'complete', schema: 'runtime-bootstrap-run-1.2' });
+
+    const record = {
+      kind: 'deep-peer-smoke',
+      status: 'passed',
+      directions: {
+        'claude->codex': { status: 'passed', ran_at: NOW.toISOString() },
+        'codex->claude': { status: 'passed', ran_at: NOW.toISOString() },
+      },
+      artifact_pointer: null,
+      artifact_hash: null,
+      bound_versions: { runtime: '0.85.0', claude: null, codex: null, plugins: { claude: {}, codex: {} } },
+      ran_at: NOW.toISOString(),
+    };
+    const refused = await writeBootstrapProof({ homeDir, repoRoot: null, runId, kind: 'deep-peer-smoke', record });
+    strictEqual(refused.ok, false);
+    strictEqual(refused.reason, 'run-not-open');
+
+    const receipt = {
+      surface: 'owner-phone',
+      attested_at: NOW.toISOString(),
+      attempt_hash: 'a'.repeat(64),
+      provider_proof_artifact_hash: 'c'.repeat(64),
+    };
+    const attested = await writeBootstrapProof({ homeDir, repoRoot: null, runId, kind: 'egress-receipt-attestation', record: receipt });
+    strictEqual(attested.ok, true, `the D0.1 receipt append is the one allowed post-terminal write: ${attested.diagnostics.join('; ')}`);
+
+    // Never into an abandoned run — an abandoned run is an escape hatch, not a
+    // completed bootstrap anyone can testify about.
+    const abandonedId = makeBootstrapRunId(new Date(NOW.getTime() + 1000));
+    await seedRun(homeDir, abandonedId, { status: 'abandoned' });
+    const refusedReceipt = await writeBootstrapProof({ homeDir, repoRoot: null, runId: abandonedId, kind: 'egress-receipt-attestation', record: receipt });
+    strictEqual(refusedReceipt.ok, false);
+    strictEqual(refusedReceipt.reason, 'run-not-open');
     await rm(homeDir, { recursive: true, force: true });
   });
 });
