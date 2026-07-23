@@ -275,8 +275,9 @@ describe('judgeSteps notify.codex.configured — MODE BINDING via the persisted 
     strictEqual(step.desired, JSON.stringify(EXPECTED[1]), 'desired is carried forward for the next resume');
   });
 
-  it('an unparseable desired never widens the match set — both canonical forms stay acceptable', () => {
+  it('an unparseable desired FAILS CLOSED to manual-follow-up (statusline peer G7 — the broad-set fallback silently widened the match)', () => {
     const step = judgeWithDesired({ argv: [...EXPECTED[0]], desired: '{not json' });
-    strictEqual(step.status, 'satisfied');
+    strictEqual(step.status, 'manual-follow-up');
+    match(step.recovery, /could not be trusted/);
   });
 });

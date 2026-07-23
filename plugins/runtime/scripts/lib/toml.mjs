@@ -34,3 +34,27 @@ export function tomlBasicString(value) {
   }
   return `"${out}"`;
 }
+
+// ---------------------------------------------------------------------------
+// The ONE Codex `[tui]` table composer (ADR-0048 statusline slice)
+// ---------------------------------------------------------------------------
+
+// Render a SINGLE `[tui]` table carrying whichever of the two runtime-planned
+// keys are present. This composer exists because two planners each emitting
+// their own `[tui]` header (notifications — the notification plan;
+// status_line — the statusline plan) handed the operator two headers for one
+// table: merged naively that is a TOML table redefinition (invalid), and
+// merged carelessly one key clobbers the other. Every fragment that touches
+// `[tui]` renders through here, so what the operator merges is always one
+// well-formed table containing exactly the planned keys.
+export function renderCodexTuiTableToml({ notifications = null, statusLine = null } = {}) {
+  const lines = ['[tui]'];
+  if (Array.isArray(notifications)) {
+    lines.push(`notifications = [${notifications.map((item) => tomlBasicString(item)).join(', ')}]`);
+  }
+  if (Array.isArray(statusLine)) {
+    lines.push(`status_line = [${statusLine.map((item) => tomlBasicString(item)).join(', ')}]`);
+  }
+  if (lines.length === 1) throw new Error('renderCodexTuiTableToml requires at least one of notifications/statusLine');
+  return `${lines.join('\n')}\n`;
+}

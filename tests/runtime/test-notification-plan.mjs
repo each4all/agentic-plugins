@@ -112,11 +112,12 @@ describe('notification plan: notify read-check parser', () => {
     strictEqual(parseCodexNotifyConfigToml("notify = ['''python3''']\n").notify.values, null);
   });
 
-  it('honors notify only at the top level (before the first section) and takes the last assignment', () => {
+  it('honors notify only at the top level; a DUPLICATE key is invalid TOML and fails closed (peer finding — last-wins was wrong)', () => {
     const sectioned = parseCodexNotifyConfigToml('[tools]\nnotify = ["hidden"]\n');
     strictEqual(sectioned.notify.present, false, 'notify inside a section is not the top-level key');
     const duplicated = parseCodexNotifyConfigToml('notify = ["first"]\nnotify = ["second"]\n');
-    deepStrictEqual(duplicated.notify.values, ['second'], 'last top-level assignment wins');
+    strictEqual(duplicated.notify.present, true);
+    strictEqual(duplicated.notify.values, null, 'duplicate top-level keys are invalid TOML — no argv is trusted from them');
   });
 
   it('reads [tui] notifications (array and boolean shapes)', () => {

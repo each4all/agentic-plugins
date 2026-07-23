@@ -43,13 +43,16 @@ async function makeHome({ satisfied = false } = {}) {
   await mkdir(join(home, '.codex'), { recursive: true });
   await mkdir(join(home, '.agentic-plugins'), { recursive: true });
   await writeFile(join(home, '.claude', 'settings.json'), satisfied
-    ? `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits', allow: ['Read'] } }, null, 2)}\n`
+    // statusLine included: the statusline.claude.configured judge is an EXACT
+    // probe — satisfied means the settings command EQUALS this home's
+    // canonical shim invocation.
+    ? `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits', allow: ['Read'] }, statusLine: { type: 'command', command: `node '${join(home, '.agentic-plugins', 'bin', 'agentic-statusline.mjs').replace(/\\/g, '/')}'` } }, null, 2)}\n`
     : '{}\n');
   await writeFile(join(home, '.codex', 'config.toml'), satisfied
-    // notify wiring included: the notify.codex.configured judge is an EXACT
-    // probe (notify-axis slice) — satisfied means the merged argv EQUALS the
-    // canonical shuttle wiring this home's rendered fragment would carry.
-    ? `approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nnotify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]\n`
+    // notify wiring + the canonical agentic-6 status_line included: both
+    // Codex-side exact probes must observe their canonical configuration in a
+    // "satisfied" fixture (notify-axis + statusline slices).
+    ? `approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nnotify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]\n[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n`
     : '# empty\n');
   await writeFile(join(home, '.agentic-plugins', 'config.local.toml'), '# local sentinel\n');
   if (satisfied) {

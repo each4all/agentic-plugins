@@ -953,6 +953,8 @@ exists to prevent. The registry is therefore enumerated here, not left to S8:
 | `config.model_effort` | 4 | always | no |
 | `notify.configured` | 5 | always | **yes** |
 | `notify.codex.configured` | 5 | always | **yes** |
+| `statusline.claude.configured` | 5 | always | **yes** |
+| `statusline.codex.configured` | 5 | always | **yes** |
 | `egress.configured` | 5 | always | **yes** |
 | `permission.claude.applied` | 6 | always | **yes** |
 | `permission.codex.applied` | 6 | always | **yes** |
@@ -996,6 +998,7 @@ be attempted at all, never a mere stage ordering:
 | `config.model_effort` | — (agentic-plugins' own config; no host needed) |
 | `notify.configured`, `egress.configured` | — (same) |
 | `notify.codex.configured` | `host.codex.present` (a Codex-side config needs the Codex CLI — the permission-step precedent) |
+| `statusline.<h>.configured` | `host.<h>.present` (same precedent — a host-targeted config step) |
 | `permission.<h>.applied` | `host.<h>.present` |
 | `hooks.codex.attested` | every selected Codex-hook-bearing plugin's `.codex.installed` **and** `.codex.enabled` |
 | `proof.deep-peer-smoke` | both hosts' `.authenticated`, plus `companions` `.installed` on both and `.enabled` on Codex |
@@ -1018,6 +1021,70 @@ post-probe observes the attestation — for every bundle carrying a persona (`en
 (`runtime`+`companions`+`attention`, none Codex-hook-bearing). The step keys off
 `hook_bearing.codex`; the Claude hook values drive no step, because Claude trusts plugin
 hooks by install and exposes no `/hooks` review flow.
+
+### 6.1.1 The statusline steps (ADR-0048 §1/§2/§2.1)
+
+Both steps are EXACT canonical-configuration probes over the ONE policy
+definition (`lib/statusline-plan.mjs`, the owner-adopted `agentic-6` ordered
+set — `model-with-reasoning · git-branch · pull-request-number · context-used ·
+five-hour-limit · weekly-limit`); every renderer and probe derives from that
+table, and the policy↔shim agreement test pins the shim's renderer map to it.
+
+- **`statusline.codex.configured`** — satisfied iff `[tui].status_line` in
+  `$CODEX_HOME/config.toml` EQUALS the canonical item order element-wise.
+  ABSENT means Codex renders its two-item default: `pending`, named. A present
+  non-canonical list is the operator's own selection: `manual-follow-up`,
+  never overwritten. The rendered fragment is ONE `[tui]` table carrying BOTH
+  runtime-planned keys (`status_line` + `notifications`, via the shared
+  composer in `lib/toml.mjs`) — this block and the notification plan's `[tui]`
+  block are the SAME table; merging either once is the whole merge, and two
+  competing `[tui]` headers can never be handed out.
+- **`statusline.claude.configured`** — satisfied iff the USER-layer
+  `settings.json` (`CLAUDE_CONFIG_DIR` honored; ONE shared snapshot projected
+  for both the permission and statusline consumers) carries
+  `statusLine: { type: "command", command: <canonical> }` where the canonical
+  command is `node "<home>/.agentic-plugins/bin/agentic-statusline.mjs"` —
+  forward-slash, double-quoted, shell-resolved `node` (the Claude statusLine
+  runs through Git Bash/PowerShell, unlike Codex's shell-less notify spawn —
+  the documented asymmetry with `expectedCodexNotifyArgv`). **The step means
+  "canonical configuration OBSERVED", never "the statusline runs"**: workspace
+  trust, `disableAllHooks`, `CLAUDE_CODE_SAFE_MODE`, and script failure still
+  gate execution (host-truth §3) and no probe may relax them. A pre-existing
+  statusLine is classified as an OBSERVATION (`absent | canonical |
+  foreign-command | foreign-shape | unreadable`) with OFFERED resolutions
+  (`replace | manual-merge | decline`) — the resolution is the operator's,
+  recorded through the ordinary answers machinery; nothing is auto-chained,
+  the raw foreign command is never persisted or echoed, and "manual merge"
+  means keeping compatible fields (padding, refreshInterval) around ONE
+  canonical command.
+- **The inline sufficiency gate (§2) is executable**: five per-condition
+  verdicts; the agentic-6 policy FAILS it (cross-shell identity and
+  one-command reviewability), so the SHIM is the documented outcome. The shim
+  is render-only (the operator installs it at `~/.agentic-plugins/bin/`),
+  read-only, bounded, credential-free, network-free, non-polling, and
+  order-preserving under missing data. **Owner-approved §2.1 deviation
+  (2026-07-23)**: an ordinary Claude session's stdin carries no git branch
+  (`worktree.branch` is worktree-session-only), so the shim runs ONE bounded
+  read-only `git branch --show-current` — fixed argv, no shell, cwd validated
+  from the session JSON, 1.5s timeout, capped output, scrubbed child
+  environment — which stays inside the §2 shim contract (it forbids
+  network/credentials/polling, not a read-only VCS query).
+- **Shim delivery is NON-GATING**: the step proves settings-level
+  configuration; the shim's canonical sha256 and full body are persisted in
+  the fragment AND as an unconditional `statusline-shim` artifact on every
+  plan/resume (a satisfied step skips fragment persistence, so the refresh
+  material rides separately) — back up the old shim, install, verify the
+  hash, and revert by restoring the backup. Hash equality is deliberately NOT
+  a condition of the configured step.
+- **`statusline_preset` export rule (owner-approved 2026-07-23)**: `profile
+  export` writes `agentic-6` iff BOTH hosts' statusline configuration is
+  observed canonical — the operator applying the rendered fragments IS the
+  declaration; one host, declined, or foreign wiring exports `null`.
+- **Desired-seat discipline (applies to every fragment-bearing exact probe)**:
+  the plan's expectation freezes into `steps[].desired` on FIRST render and is
+  never silently re-bound; §7 version invalidation clears it with the
+  fragment fields; an unreadable persisted expectation judges
+  `manual-follow-up` (fail-closed), never a silently widened match.
 
 ### 6.2 The declinable set is narrow
 

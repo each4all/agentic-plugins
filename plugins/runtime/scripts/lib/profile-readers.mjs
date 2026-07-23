@@ -67,18 +67,59 @@ export async function readUserGlobalNotify({ homeDir }) {
   return { family: 'notify', keys, source };
 }
 
-// Claude permission — `~/.claude/settings.json` ONLY. The settings union reader
-// unions repo ∪ repo-local ∪ user (losing provenance) and resolves defaultMode
-// repo-local>repo>user; this reads exclusively the user layer, so allow/deny/ask
-// carry a single, honest user-global provenance.
-export async function readUserGlobalClaudePermission({ homeDir }) {
-  const read = await readTextIfExists(join(homeDir, '.claude', 'settings.json'));
+// The ONE user-global Claude settings snapshot (ADR-0048 statusline slice,
+// Plan-verify peer G9): settings.json is parsed ONCE and projected per
+// consumer (permission, statusLine), so two judges can never disagree about
+// the same bytes. Honors CLAUDE_CONFIG_DIR — the documented relocation of
+// ~/.claude — which the earlier per-consumer read silently ignored. This
+// reads the USER layer only (§4.4): managed/CLI/project layers outrank it at
+// runtime, but a portable profile and a machine-scoped probe both target the
+// user layer deliberately.
+export function resolveClaudeConfigDir(env = {}, homeDir) {
+  return env.CLAUDE_CONFIG_DIR ? resolve(env.CLAUDE_CONFIG_DIR) : join(homeDir, '.claude');
+}
+
+export async function readUserGlobalClaudeSettings({ homeDir, env = {} }) {
+  const read = await readTextIfExists(join(resolveClaudeConfigDir(env, homeDir), 'settings.json'));
   let status = textSourceStatus(read);
   let json = null;
   if (read.ok) {
     try { json = JSON.parse(read.text); }
     catch { status = 'malformed'; }
   }
+  return { json: json && typeof json === 'object' ? json : null, source: { scope: 'user', status } };
+}
+
+/**
+ * The statusLine projection of the shared snapshot. The raw foreign command is
+ * surfaced to the CALLER for exact comparison but must never be persisted or
+ * echoed into artifacts/observations (it may carry secrets or private paths —
+ * peer G9); consumers summarize shape, compare, and drop it.
+ */
+export function projectClaudeStatusline(snapshot) {
+  const status = snapshot?.source?.status;
+  if (status !== 'readable' && status !== 'missing') {
+    return { readable: false, present: false, type: null, command: null };
+  }
+  const entry = snapshot?.json?.statusLine;
+  if (entry === undefined || entry === null) return { readable: true, present: false, type: null, command: null };
+  if (typeof entry !== 'object' || Array.isArray(entry)) return { readable: true, present: true, type: null, command: null };
+  return {
+    readable: true,
+    present: true,
+    type: typeof entry.type === 'string' ? entry.type : null,
+    command: typeof entry.command === 'string' ? entry.command : null,
+  };
+}
+
+// Claude permission — the permission projection of the SAME snapshot. The
+// settings union reader unions repo ∪ repo-local ∪ user (losing provenance)
+// and resolves defaultMode repo-local>repo>user; this projects exclusively
+// the user layer, so allow/deny/ask carry a single, honest user-global
+// provenance.
+export function projectClaudePermission(snapshot) {
+  const status = snapshot.source.status;
+  const json = snapshot.json;
   const perms = json && typeof json === 'object' ? json.permissions : null;
   const pick = (bucket) => (perms && Array.isArray(perms[bucket])
     ? perms[bucket].filter((item) => typeof item === 'string')
@@ -92,6 +133,13 @@ export async function readUserGlobalClaudePermission({ homeDir }) {
     provenance: USER_GLOBAL,
     source: { scope: 'user', status },
   };
+}
+
+// Back-compat wrapper: one read + the permission projection (bootstrap's
+// reader assembly projects BOTH consumers from a single snapshot instead —
+// Review peer M11).
+export async function readUserGlobalClaudePermission({ homeDir, env = {} }) {
+  return projectClaudePermission(await readUserGlobalClaudeSettings({ homeDir, env }));
 }
 
 // Codex permission — `~/.codex/config.toml` ($CODEX_HOME honored) ONLY, and NEVER

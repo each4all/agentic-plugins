@@ -347,9 +347,25 @@ export function invalidateStaleSteps({ steps, probe, current, selection = null, 
     // is its own failure). A pending/blocked step has nothing to invalidate, and a
     // `declined` is an operator CHOICE recorded in choices[], not an observation:
     // re-asking them because Codex shipped a patch would be noise, not rigour.
-    if (step.status !== 'satisfied' && step.status !== 'manual-follow-up') return step;
+    if (step.status !== 'satisfied' && step.status !== 'manual-follow-up') {
+      // A pending/blocked step can still CARRY version-bound render state (a
+      // fragment + desired frozen before the drift — Review peer MAJOR): the
+      // stale fields must clear so the freeze rule re-renders against the new
+      // versions. No status change and no invalidated stamp — nothing
+      // observed was reset; only the render material aged out. Declines are
+      // operator choices and keep nothing version-bound to clear beyond the
+      // same fields.
+      if (step.fragment_pointer || step.apply_command || step.desired != null) {
+        return { ...step, fragment_pointer: null, apply_command: null, desired: null };
+      }
+      return step;
+    }
     invalidated.push(step.id);
-    return { ...step, status: 'pending', observed: null, observed_at: null, fragment_pointer: null, apply_command: null, invalidated: { at, reason: 'version-drift' } };
+    // `desired` is the PLAN-bound expectation (ADR-0048 mode binding) — a
+    // version drift invalidates the plan it was bound to, so it clears with
+    // the fragment fields: the next resume re-renders and re-freezes a fresh
+    // expectation rather than judging against a stale one (statusline peer G7).
+    return { ...step, status: 'pending', observed: null, observed_at: null, fragment_pointer: null, apply_command: null, desired: null, invalidated: { at, reason: 'version-drift' } };
   });
   return { steps: next, invalidated, reasons: drift.reasons };
 }

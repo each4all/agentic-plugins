@@ -61,6 +61,17 @@ import {
   validatePluginSet,
 } from './lib/plugin-set.mjs';
 import { PROOF_KINDS, deriveActivationFingerprint } from './lib/evidence-contract.mjs';
+import {
+  STATUSLINE_PRESET_AGENTIC_6,
+  classifyExistingClaudeStatusline,
+  evaluateInlineSufficiency,
+  expectedClaudeStatuslineCommand,
+  expectedCodexStatusLineItems,
+  renderAgenticStatuslineShim,
+  renderClaudeStatuslineFragmentJson,
+  renderCodexStatusLineFragmentToml,
+  statuslineShimInstallPath,
+} from './lib/statusline-plan.mjs';
 import { deriveExpectedSteps, stepIds, validateStepGraph } from './lib/step-registry.mjs';
 import {
   currentBoundVersions,
@@ -72,7 +83,10 @@ import {
 } from './lib/completion-reducer.mjs';
 import { EGRESS_CREDENTIAL_ENV_VAR, buildMachineProfile, profileHash, profileWriteGate, seedProposals } from './lib/machine-profile.mjs';
 import {
-  readUserGlobalClaudePermission,
+  projectClaudePermission,
+  projectClaudeStatusline,
+  readUserGlobalClaudeSettings,
+  resolveClaudeConfigDir,
   readUserGlobalCodexPermission,
   readUserGlobalEgress,
   readUserGlobalModelEffort,
@@ -86,7 +100,8 @@ import {
 // key NAME as a placeholder procedure), never for an env read here.
 import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
 import { loadSchema, makeValidator } from './lib/schema-validate.mjs';
-import { expectedCodexNotifyArgv, gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId, parseCodexNotifyConfigToml } from './lib/notification-plan.mjs';
+import { TUI_NOTIFICATIONS_VALUES, expectedCodexNotifyArgv, gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId, parseCodexNotifyConfigToml } from './lib/notification-plan.mjs';
+import { renderCodexTuiTableToml } from './lib/toml.mjs';
 import { gatherEgressLauncherInputs, buildEgressLauncherPlanSection, egressFragmentApplyGuidance, makeEgressLauncherRunId } from './lib/egress-launcher-plan.mjs';
 import { gatherPermissionPlanInputs, buildPermissionPlanSection } from './lib/permission-plan.mjs';
 import { makePermissionRunId } from './lib/permission-artifacts.mjs';
@@ -400,6 +415,30 @@ function raiseStage0(presentation, host, reason) {
  * contributes exactly two things: recorded declines (kept only where the
  * registry says declinable) and recorded fragment_applied flags.
  */
+/**
+ * Resolve the match-candidate set for a desired-bound exact probe: a persisted
+ * `desired` (JSON string array) NARROWS the candidates to exactly the plan's
+ * expectation; an unreadable desired returns null (fail-closed — the caller
+ * reports manual-follow-up rather than silently widening the match — peer G7);
+ * no desired keeps the broad canonical set.
+ */
+function boundExpected(previous, broadCandidates) {
+  if (typeof previous?.desired !== 'string') return broadCandidates;
+  try {
+    const bound = JSON.parse(previous.desired);
+    if (!Array.isArray(bound) || !bound.every((item) => typeof item === 'string')) return null;
+    // The manifest is operator-editable (Review peer MAJOR): a desired that is
+    // not one of the CANONICAL candidates would otherwise smuggle an arbitrary
+    // expectation in and have the judge report it as canonical. The seat may
+    // only NARROW the canonical set, never replace it.
+    const canonical = broadCandidates.some((candidate) => Array.isArray(candidate)
+      && candidate.length === bound.length && candidate.every((item, i) => item === bound[i]));
+    return canonical ? [bound] : null;
+  } catch {
+    return null;
+  }
+}
+
 export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById = new Map(), now }) {
   const observedAt = new Date(now).toISOString();
   const judged = new Map();
@@ -509,17 +548,14 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       }
       // MODE BINDING (Refine-verify peer): once this run rendered a fragment,
       // the step's `desired` carries exactly the argv that fragment asks the
-      // operator to merge — and ONLY that argv satisfies. Without it, a
-      // wrapper-chain plan wrongly merged as the direct shuttle certified
-      // `satisfied` while the third-party notifier the chain existed to
-      // preserve silently vanished. Before any fragment exists (a fresh
-      // probe), either canonical form is acceptable.
-      let candidates = wiring.expected ?? [];
-      if (typeof previous?.desired === 'string') {
-        try {
-          const bound = JSON.parse(previous.desired);
-          if (Array.isArray(bound) && bound.every((item) => typeof item === 'string')) candidates = [bound];
-        } catch { /* an unparseable desired never widens the match set */ }
+      // operator to merge — and ONLY that argv satisfies (the wrapper-chain
+      // plan wrongly merged as the direct shuttle was the reproduced defect).
+      // Before any fragment exists, either canonical form is acceptable. An
+      // UNREADABLE desired fails closed to manual-follow-up (statusline peer
+      // G7 — the broad-set fallback silently widened the match).
+      const candidates = boundExpected(previous, wiring.expected ?? []);
+      if (candidates === null) {
+        return { status: 'manual-follow-up', observed: 'the recorded plan expectation is unreadable', recovery: 'The persisted desired expectation for this step could not be trusted — decline the step, or abandon and re-plan (a version drift also clears it via §7 invalidation).' };
       }
       const matches = candidates.some((expected) => Array.isArray(expected)
         && expected.length === wiring.argv.length
@@ -532,6 +568,63 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
         };
       }
       return { status: 'satisfied', observed: `notify argv matches the canonical receiver wiring (argv[${wiring.argv.length}])` };
+    }
+    if (id === stepIds.statuslineConfigured('codex')) {
+      // ADR-0048 §1 — EXACT probe over the closed [tui].status_line item
+      // vocabulary: satisfied means the configured array EQUALS the canonical
+      // agentic-6 order element-wise. An ABSENT key means Codex renders its
+      // two-item default — that is pending (canonical set not configured),
+      // named as such. A present non-canonical non-empty list is the
+      // operator's own selection: manual-follow-up, never overwritten.
+      const sl = readers?.statuslineCodex ?? null;
+      if (!sl || sl.readable === false) return { status: 'unknown', observed: 'the Codex config could not be read' };
+      if (!sl.present) return { status: 'pending', observed: 'no status_line configured — Codex renders its default two items' };
+      if (!Array.isArray(sl.items)) {
+        return { status: 'pending', observed: 'status_line is present but not a parseable item array' };
+      }
+      if (sl.items.length === 0) {
+        // An EMPTY list is a present operator selection (a deliberately
+        // disabled statusline), not unfinished configuration (contract
+        // §6.1.1: every present non-canonical list is the operator's).
+        return { status: 'manual-follow-up', observed: 'status_line = [] — the statusline is deliberately emptied', recovery: 'An empty status_line is a deliberate selection. Merge the rendered [tui] fragment to adopt the canonical agentic-6 set, or decline this step to keep the statusline disabled.' };
+      }
+      const slCandidates = boundExpected(previous, [sl.expectedItems]);
+      if (slCandidates === null) {
+        return { status: 'manual-follow-up', observed: 'the recorded plan expectation is unreadable', recovery: 'The persisted desired expectation for this step could not be trusted — decline the step, or abandon and re-plan (a version drift also clears it via §7 invalidation).' };
+      }
+      const slMatches = slCandidates.some((candidate) => Array.isArray(candidate) && candidate.length === sl.items.length && candidate.every((item, idx) => item === sl.items[idx]));
+      if (!slMatches) {
+        return {
+          status: 'manual-follow-up',
+          observed: `status_line[${sl.items.length}] does not match the canonical agentic-6 order`,
+          recovery: 'A different status_line item selection is configured in $CODEX_HOME/config.toml. Merge the rendered [tui] fragment to adopt the canonical agentic-6 set, or decline this step if the current selection is intentional.',
+        };
+      }
+      return { status: 'satisfied', observed: 'canonical agentic-6 status_line observed' };
+    }
+    if (id === stepIds.statuslineConfigured('claude')) {
+      // ADR-0048 §1 — "canonical configuration OBSERVED", never "runs":
+      // workspace trust, disableAllHooks, and CLAUDE_CODE_SAFE_MODE still gate
+      // execution (host-truth §3), and this probe must not overclaim past the
+      // settings byte it can actually see. The shim install is deliberately
+      // NOT hash-probed here (settings-level semantics; the canonical hash is
+      // surfaced in the fragment for the operator's own verify).
+      const sl = readers?.statuslineClaude ?? null;
+      if (!sl || sl.readable === false) return { status: 'unknown', observed: 'the Claude settings could not be read' };
+      const cmdCandidates = boundExpected(previous, [[sl.expectedCommand]]);
+      if (cmdCandidates === null) {
+        return { status: 'manual-follow-up', observed: 'the recorded plan expectation is unreadable or non-canonical', recovery: 'The persisted desired expectation for this step could not be trusted — decline the step, or abandon and re-plan (a version drift also clears it via §7 invalidation).' };
+      }
+      const classified = classifyExistingClaudeStatusline({ existing: sl, expectedCommand: cmdCandidates[0][0] });
+      if (classified.observation === 'canonical') {
+        return { status: 'satisfied', observed: 'canonical statusLine command observed (execution still gated by workspace trust / disableAllHooks / safe mode)' };
+      }
+      if (classified.observation === 'absent') return { status: 'pending' };
+      return {
+        status: 'manual-follow-up',
+        observed: `existing statusLine is ${classified.observation}`,
+        recovery: `${classified.note} Runtime never auto-chains a statusline (ADR-0048 §2).`,
+      };
     }
     if (id === stepIds.egressConfigured()) {
       // ADR-0048 §4 / ADR-0041 §2c — "configured" means ACTIVATABLE: channel +
@@ -886,11 +979,19 @@ function presentPluginManagement({ candidates, planHash }) {
 // Fragment composition (plan/resume only — the M1 verbs; R0 verbs re-present
 // recorded pointers without rendering). Every fragment carries the §10.3
 // backup/verify/manual-revert guidance next to its apply command.
-async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings }) {
+async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings, readersForFragments = null }) {
   const byId = new Map(steps.map((s) => [s.id, s]));
   const persist = async (name, body, stepId, applyCommand, target, { desired = null } = {}) => {
     const step = byId.get(stepId);
     if (!step || step.status === 'satisfied' || step.status === 'declined' || step.status === 'not-applicable') return;
+    // FREEZE-AFTER-FIRST-RENDER (statusline peer G7): once a fragment and its
+    // desired expectation exist, every later resume keeps them — re-rendering
+    // could silently REBIND the expectation (a changed execPath, a changed
+    // mode) under the operator mid-apply. Changing the plan is an explicit
+    // act: version drift clears both fields (§7 invalidation), and a fresh
+    // render then re-freezes. A failed earlier write (no pointer yet) still
+    // retries here.
+    if (step.fragment_pointer && (desired === null || step.desired != null)) return;
     const write = await writeBootstrapFragment({ homeDir, repoRoot: cwd, runId, name, content: `${JSON.stringify(body, null, 2)}\n` });
     if (!write?.ok) {
       warnings.push(`fragment ${name} could not be persisted: ${(write?.diagnostics ?? ['unknown write failure']).join('; ')}`);
@@ -928,6 +1029,85 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
       { desired: Array.isArray(section.expected_notify_argv) ? JSON.stringify(section.expected_notify_argv) : null });
   } catch (err) {
     warnings.push(`notification plan could not be built: ${err?.message ?? String(err)}`);
+  }
+
+  // Stage 5 — statusline, both hosts (ADR-0048 §1/§2/§2.1 via the one policy
+  // in lib/statusline-plan.mjs).
+  try {
+    const shim = renderAgenticStatuslineShim();
+    const inlineGate = evaluateInlineSufficiency();
+    // Codex: ONE decision-aware [tui] fragment (Review peer BLOCKER — a
+    // notifications-only block beside a combined block handed the operator
+    // two competing headers, and an unconditioned combined block would
+    // re-impose a key whose step the operator DECLINED). Each planned key
+    // rides iff its step is not declined/not-applicable; unrelated existing
+    // [tui] keys are the operator's and the guidance says to keep them.
+    const notifyCodexStep = byId.get(stepIds.notifyCodexConfigured());
+    const slCodexStep = byId.get(stepIds.statuslineConfigured('codex'));
+    const includeKey = (step) => step && step.status !== 'declined' && step.status !== 'not-applicable';
+    const tuiKeys = {
+      notifications: includeKey(notifyCodexStep) ? [...TUI_NOTIFICATIONS_VALUES] : null,
+      statusLine: includeKey(slCodexStep) ? expectedCodexStatusLineItems() : null,
+    };
+    if (tuiKeys.notifications || tuiKeys.statusLine) {
+      const codexTuiFragment = renderCodexTuiTableToml(tuiKeys);
+      const tuiGuidance = 'Merge the rendered [tui] table into $CODEX_HOME/config.toml as THE one [tui] table — update exactly these planned keys, keep any unrelated existing [tui] keys of your own — then resume.';
+      await persist('statusline-codex', {
+        requested: true,
+        host: 'codex',
+        fragment_toml: codexTuiFragment,
+        note: 'The ONE decision-aware [tui] table: each planned key (status_line, notifications) rides iff its step is not declined. This supersedes the notification plan section\'s [tui] preview — merge THIS block. status_line uses the closed upstream item vocabulary (host-truth §1); the agentic-6 order is ADR-0048 §2.1.',
+      }, stepIds.statuslineConfigured('codex'),
+      tuiGuidance,
+      '$CODEX_HOME/config.toml',
+      { desired: JSON.stringify(expectedCodexStatusLineItems()) });
+      // The notifications key lives in the SAME fragment — point the notify
+      // step at it too (shared pointer, own desired), so neither step ever
+      // hands out a second competing [tui] header.
+      if (includeKey(notifyCodexStep) && slCodexStep && byId.get(stepIds.statuslineConfigured('codex'))?.fragment_pointer && !notifyCodexStep.fragment_pointer) {
+        notifyCodexStep.fragment_pointer = byId.get(stepIds.statuslineConfigured('codex')).fragment_pointer;
+      }
+    }
+
+    const claudeExpected = expectedClaudeStatuslineCommand({ homeDir });
+    const claudeExisting = readersForFragments?.statuslineClaude ?? { readable: true, present: false };
+    const claudeClassified = classifyExistingClaudeStatusline({ existing: claudeExisting, expectedCommand: claudeExpected });
+    // The settings TARGET is the same file the probe reads (Review peer MAJOR:
+    // CLAUDE_CONFIG_DIR relocates ~/.claude — apply guidance must not point at
+    // a file resume never probes).
+    const claudeSettingsTarget = `${resolveClaudeConfigDir(env, homeDir).replace(/\\/g, '/')}/settings.json`;
+    // Unreadable settings withhold the REPLACEMENT fragment (Review peer
+    // MINOR): rendering an apply command over a file nobody could read
+    // invites overwriting an unseen foreign command. The non-gating shim
+    // artifact below still delivers.
+    if (claudeExisting.readable !== false) await persist('statusline-claude', {
+      requested: true,
+      host: 'claude',
+      fragment_json: renderClaudeStatuslineFragmentJson({ homeDir }),
+      shim: {
+        install_path: statuslineShimInstallPath({ homeDir }),
+        sha256: shim.sha256,
+        body: shim.body,
+      },
+      inline_sufficiency: inlineGate,
+      existing: { observation: claudeClassified.observation, offered_resolutions: claudeClassified.offered_resolutions, note: claudeClassified.note },
+      configured_is_not_active: 'A statusLine entry proves configuration only: workspace trust, disableAllHooks, and CLAUDE_CODE_SAFE_MODE still gate execution (host-truth §3).',
+    }, stepIds.statuslineConfigured('claude'),
+    `Install the shim at ${statuslineShimInstallPath({ homeDir })} (verify sha256 ${shim.sha256.slice(0, 12)}…), merge the statusLine fragment into ${claudeSettingsTarget}, then resume.`,
+    claudeSettingsTarget,
+    { desired: JSON.stringify([claudeExpected]) });
+
+    // NON-GATING shim delivery (peer G10): a canonical command can be
+    // satisfied while the shim on disk is missing or stale — persist() skips
+    // satisfied steps, so the CURRENT shim body + hash are written
+    // unconditionally as their own artifact. Never step-gating: the step is
+    // "configuration observed", and this file is the operator's refresh
+    // material (back up the old shim, install, run a self-test echo, or
+    // revert by restoring the backup).
+    const shimWrite = await writeBootstrapFragment({ homeDir, repoRoot: cwd, runId, name: 'statusline-shim', content: shim.body });
+    if (!shimWrite?.ok) warnings.push(`statusline shim artifact could not be persisted: ${(shimWrite?.diagnostics ?? ['unknown write failure']).join('; ')}`);
+  } catch (err) {
+    warnings.push(`statusline plans could not be built: ${err?.message ?? String(err)}`);
   }
 
   // Stage 5 — egress launcher (ADR-0041 §12 state-aware runbook via the pure builder).
@@ -1090,12 +1270,16 @@ async function probeNow(ctx) {
 }
 
 async function readUserGlobalReaders(ctx) {
-  const [modelEffort, notify, claudePermission, codexPermission] = await Promise.all([
+  // ONE Claude settings read for BOTH projections (Review peer MAJOR: two
+  // reads could observe an atomic replacement in between and report mutually
+  // inconsistent permission/statusline facts under one probe timestamp).
+  const claudeSettingsSnapshot = await readUserGlobalClaudeSettings({ homeDir: ctx.homeDir, env: ctx.env });
+  const [modelEffort, notify, codexPermission] = await Promise.all([
     readUserGlobalModelEffort({ homeDir: ctx.homeDir }),
     readUserGlobalNotify({ homeDir: ctx.homeDir }),
-    readUserGlobalClaudePermission({ homeDir: ctx.homeDir }),
     readUserGlobalCodexPermission({ homeDir: ctx.homeDir, env: ctx.env }),
   ]);
+  const claudePermission = projectClaudePermission(claudeSettingsSnapshot);
   const egress = readUserGlobalEgress({ repoRoot: ctx.cwd, homeDir: ctx.homeDir, env: ctx.env });
   // Step judgement needs ACTIVATION semantics (the named E1 checker) alongside
   // the credential-independent export shape above: `egress` feeds the §4.4
@@ -1116,6 +1300,21 @@ async function readUserGlobalReaders(ctx) {
   //               from the TOML scanner — never a guess).
   const codexNotifyGathered = await gatherCodexNotificationInputs({ homeDir: ctx.homeDir, env: ctx.env });
   const codexNotifyRead = codexNotifyGathered.read;
+  // ADR-0048 statusline slice — both statusline probes, gathered here because
+  // judgeSteps is synchronous. Claude projects the ONE shared settings
+  // snapshot (peer G9: permission and statusline judge the same bytes);
+  // Codex reuses the SAME config read the notify gather already performed.
+  const statuslineClaude = {
+    ...projectClaudeStatusline(claudeSettingsSnapshot),
+    expectedCommand: expectedClaudeStatuslineCommand({ homeDir: ctx.homeDir }),
+  };
+  const statuslineCodexParsed = codexNotifyRead.ok ? parseCodexNotifyConfigToml(codexNotifyRead.text) : null;
+  const statuslineCodex = {
+    readable: codexNotifyRead.ok || codexNotifyRead.reason === 'ENOENT' || codexNotifyRead.reason === 'ENOTDIR',
+    present: statuslineCodexParsed?.tuiStatusLine?.present === true,
+    items: statuslineCodexParsed?.tuiStatusLine?.values ?? null,
+    expectedItems: expectedCodexStatusLineItems(),
+  };
   // The EXACT canonical argvs this machine's rendered fragment would carry
   // (notify-axis slice): direct mode points at the shuttle, wrapper-chain mode
   // at the chain script — a merged config matching EITHER is the canonical
@@ -1134,7 +1333,7 @@ async function readUserGlobalReaders(ctx) {
   } else {
     codexNotify = { readable: false, present: false, argv: null, expected: codexNotifyExpected };
   }
-  return { modelEffort, notify, claudePermission, codexPermission, egress, egressActivation, codexNotify };
+  return { modelEffort, notify, claudePermission, codexPermission, egress, egressActivation, codexNotify, statuslineClaude, statuslineCodex };
 }
 
 // ADR-0048 §4 — CONTROL-PLANE child environments are scrubbed at the point of
@@ -1328,7 +1527,7 @@ async function runPlan(ctx, opts) {
 
   // Fragments are rendered AFTER the run exists (they live inside it); the
   // manifest is then updated with the pointers under the family lock.
-  await composeFragments({ homeDir: ctx.homeDir, cwd: ctx.cwd, env: ctx.env, runId: created.run_id, now: ctx.now, steps, warnings });
+  await composeFragments({ homeDir: ctx.homeDir, cwd: ctx.cwd, env: ctx.env, runId: created.run_id, now: ctx.now, steps, warnings, readersForFragments: readers });
   const updated = await updateBootstrapRun({
     homeDir: ctx.homeDir,
     repoRoot: ctx.cwd,
@@ -1796,7 +1995,7 @@ async function runResume(ctx, opts) {
   // and a registry-new step within the same schema gets its fragment too.
   // persist's skip rules (satisfied/declined/not-applicable) already prevent
   // re-rendering what the operator has resolved.
-  await composeFragments({ homeDir: ctx.homeDir, cwd: ctx.cwd, env: ctx.env, runId: picked.run.run_id, now: ctx.now, steps, warnings });
+  await composeFragments({ homeDir: ctx.homeDir, cwd: ctx.cwd, env: ctx.env, runId: picked.run.run_id, now: ctx.now, steps, warnings, readersForFragments: reprobe.readers });
 
   // The migration row derives from the LOCKED read inside mutate (Codex review
   // MAJOR): deciding it from the pre-lock snapshot let two concurrent resumes
@@ -1821,6 +2020,14 @@ async function runResume(ctx, opts) {
         ...(m.schema !== RUN_SCHEMA_VERSION
           ? [{ step_id: null, from: m.schema, to: RUN_SCHEMA_VERSION, reason: 'schema migrated additively on resume (ADR-0048 §1): registry-new steps injected, fragments re-rendered', at: migrationRowAt }]
           : []),
+        // SAME-MINOR registry growth (statusline peer B5): a runtime upgrade
+        // can widen the expected-step set without a schema bump — §7 treats
+        // that like any other invalidation (expectations re-open honestly),
+        // and each injected step gets its own history row so the run's
+        // account explains where the new obligation came from.
+        ...steps
+          .filter((step) => !(Array.isArray(m.steps) && m.steps.some((prev) => prev?.id === step.id)))
+          .map((step) => ({ step_id: step.id, from: null, to: step.status, reason: 'step injected by a newer runtime registry (ADR-0048 §7 — expectations widen with the runtime)', at: migrationRowAt })),
         ...history,
       ],
       completion,
@@ -1997,12 +2204,14 @@ async function runProfileExport(ctx, opts) {
 
   let selection;
   let probe;
+  let fromRunManifest = null;
   if (opts.from_run) {
     const picked = await selectRun({ homeDir: ctx.homeDir, opts: { run_id: opts.from_run }, defaultSelector: 'run-id', validateRun });
     if (picked.error) {
       return { exitCode: picked.exitCode, report: { verb: 'profile export', status: 'no-such-run', diagnostics: [picked.error] } };
     }
     selection = picked.manifest.selection;
+    fromRunManifest = picked.manifest;
     ({ probe } = await probeNow(ctx));
   } else {
     // §3 — with no run, the profile exports the LIVE probe: bundle `custom`,
@@ -2021,6 +2230,24 @@ async function runProfileExport(ctx, opts) {
   // §4.4 — user-global-only readers; repository-effective values are never
   // exported and never relabelled.
   const readers = await readUserGlobalReaders(ctx);
+  // ADR-0048 §2.1 / statusline peer G6 (owner-approved 2026-07-23): the
+  // profile carries the preset when BOTH hosts' statusline configuration is
+  // observed CANONICAL — the operator applying the rendered agentic-6
+  // fragments IS the declaration; anything less (one host, declined, foreign)
+  // exports null. Observation-of-an-applied-fragment is not inference from
+  // arbitrary host config: only the exact canonical forms count.
+  const slC = readers.statuslineClaude;
+  const slX = readers.statuslineCodex;
+  const claudeCanonical = slC?.readable === true && slC.present === true && slC.type === 'command' && slC.command === slC.expectedCommand;
+  const codexCanonical = slX?.readable === true && Array.isArray(slX.items)
+    && slX.items.length === slX.expectedItems.length && slX.expectedItems.every((item, i) => item === slX.items[i]);
+  // --from-run honours that run's DECLINES (Review peer MAJOR / §6.1.1
+  // declined→null): a run whose operator declined the statusline steps must
+  // not later export the preset off live config.
+  const statuslineDeclined = fromRunManifest
+    ? (fromRunManifest.steps ?? []).some((step) => (step?.id === 'statusline.claude.configured' || step?.id === 'statusline.codex.configured') && step?.status === 'declined')
+    : false;
+  readers.statuslinePreset = claudeCanonical && codexCanonical && !statuslineDeclined ? STATUSLINE_PRESET_AGENTIC_6 : null;
   const profile = buildMachineProfile({
     readers,
     probe,

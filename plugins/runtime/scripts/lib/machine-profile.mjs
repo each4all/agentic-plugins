@@ -157,10 +157,11 @@ export function buildMachineProfile({ readers, probe, selection, runtimeVersion,
     },
     // 1.1 (ADR-0048 §2.1) — serialized LAST (schema order = canonical order):
     // a trailing scalar keeps 1.0- and 1.1-reader canonical hashes aligned.
-    // The export carries the DECLARED preset from the reader bundle when the
-    // statusline adapter has recorded one; until that slice lands, null is the
-    // honest value — a preset is a declaration, never an observation inferred
-    // from host config.
+    // The reader bundle supplies the preset when BOTH hosts' statusline
+    // configuration is observed CANONICAL (owner decision 2026-07-23: the
+    // operator applying the rendered agentic-6 fragments IS the declaration);
+    // one host, declined, or foreign wiring exports null — never an inference
+    // from arbitrary host config.
     statusline_preset: readers.statuslinePreset ?? null,
   };
 }
