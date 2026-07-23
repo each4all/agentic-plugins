@@ -491,7 +491,11 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       return {
         status: 'pending',
         observed: `inactive (${reason})`,
-        recovery: `Egress activates only when channel + recipient + credential are all present (ADR-0041 §2c; a channel or token alone is inert). Follow the rendered egress-launcher-plan fragment and export ${EGRESS_ENV_KEYS.credential} yourself in your local shell — bootstrap renders placeholder commands only and never asks for or handles the value (ADR-0048 §4).${envOnlyHint}`,
+        // The runbook pointer must stay valid on EVERY lifecycle path: resume
+        // renders no fragments, so name the always-available settings planner
+        // first and this run's fragment only as the when-present alternative
+        // (Codex review).
+        recovery: `Egress activates only when channel + recipient + credential are all present (ADR-0041 §2c; a channel or token alone is inert). Follow the per-machine egress runbook — \`runtime:settings --egress-launcher-plan\` renders it any time (this run's egress fragment, when present, carries the same runbook) — and export ${EGRESS_ENV_KEYS.credential} yourself in your local shell: bootstrap renders placeholder commands only and never asks for or handles the value (ADR-0048 §4).${envOnlyHint}`,
       };
     }
     m = id.match(/^permission\.([a-z]+)\.applied$/);
@@ -794,7 +798,11 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     }
     step.fragment_pointer = write.fragment.pointer;
     step.apply_command = applyCommand;
-    step.recovery = guidance103(target);
+    // COMPOSE with any observation-time recovery instead of replacing it —
+    // judgeSteps' egress recovery carries the activation procedure (which
+    // env keys, placeholder-only, uid-less note) that must survive fragment
+    // persistence alongside the §10.3 backup/verify guidance (Codex review).
+    step.recovery = step.recovery ? `${step.recovery} ${guidance103(target)}` : guidance103(target);
   };
 
   // Stage 5 — notification (Codex notify= + tui fragments via the pure builder).

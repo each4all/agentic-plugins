@@ -40,12 +40,13 @@ import {
   makeEgressLauncherRunId,
   renderConfigLocalTomlBlock,
   renderEnvLayoutBlock,
+  renderEnvLayoutBlockPowerShell,
   renderTokenEnvLine,
   writeEgressLauncherPlanArtifact,
 } from '../../plugins/runtime/scripts/lib/egress-launcher-plan.mjs';
 import { CONFIG_KEYS } from '../../plugins/runtime/scripts/lib/runtime-config.mjs';
 import { EGRESS_LOCAL_KEYS, EGRESS_HEADLINE_LOCAL_KEY, redactEgressCredentialFromEnv } from '../../plugins/runtime/scripts/lib/egress-config.mjs';
-import { runSettings } from '../../plugins/runtime/scripts/settings.mjs';
+import { formatEgressLauncherPlanLines, runSettings } from '../../plugins/runtime/scripts/settings.mjs';
 
 const FAKE_TOKEN = '1234567890:AAFakeFakeFakeFakeFakeFakeFakeFakeFa'; // telegram-token SHAPE
 const CHAT_ID = '8468724389';
@@ -209,10 +210,14 @@ describe('egress-launcher-plan — layout renderers (never a real token)', () =>
     match(block, new RegExp(`egress_chat_id = "${CHAT_ID}"`));
     ok(!block.includes(FAKE_TOKEN));
     ok(!block.includes('TELEGRAM_BOT_TOKEN'));
-    // ADR-0048 §4 — no token FILE standardization: the rendered file never
-    // offers a token-named key slot an operator could fill in (activation +
-    // recipient only; the credential is env-only forever).
-    doesNotMatch(block, /^\s*[a-z_.-]*token[a-z_.-]*\s*=/im);
+    // ADR-0048 §4 — no token FILE standardization: the rendered file offers
+    // EXACTLY the activation/recipient/headline key slots and nothing else
+    // (an exact allowed-set assertion, not a token-substring regex — Codex
+    // review: `telegram_token2` / quoted keys slip past a substring check).
+    const keySlots = [...block.matchAll(/^\s*#?\s*"?([A-Za-z0-9_.-]+)"?\s*=/gm)].map((m) => m[1]);
+    const allowedKeys = new Set([EGRESS_LOCAL_KEYS.channel, EGRESS_LOCAL_KEYS.recipient, EGRESS_HEADLINE_LOCAL_KEY]);
+    ok(keySlots.length >= 3, 'the renderer emits the expected key slots');
+    for (const key of keySlots) ok(allowedKeys.has(key), `unexpected key slot in rendered config.local.toml: ${key}`);
     match(block, /# egress_headline = true/); // commented when off
   });
 
@@ -286,10 +291,45 @@ describe('egress-launcher-plan — verified-local unsupported machines (env-only
     strictEqual(step.recommended_layout.kind, 'env-all');
     match(step.recommended_layout.env_block, /export AGENTIC_NOTIFY_EGRESS_CHANNEL="telegram"/);
     match(step.recommended_layout.why_env_only, /never honored|ownership/i);
+    // Windows-native shells cannot run POSIX `export` lines — the uid-less
+    // recommendation carries a PowerShell variant alongside (Codex review).
+    match(step.recommended_layout.env_block_powershell, /\$env:AGENTIC_NOTIFY_EGRESS_CHANNEL = "telegram"/);
+    match(step.recommended_layout.env_block_powershell, /\$env:TELEGRAM_BOT_TOKEN = "<your Telegram bot token>"/);
     ok(!('alternative_layout' in step), 'no config-local-toml runbook is offered where the reader would ignore it');
     ok(!JSON.stringify(step).includes('config.local.toml'), 'the unreachable file path does not appear in the step at all');
     match(step.detail, /env-only/i);
     strictEqual(section.activation_state.local_layer_supported, false);
+    // Section-level consistency (Codex review): the limits vocabulary must not
+    // keep recommending the file this machine can never honor.
+    const limitsText = section.limits.join('\n');
+    match(limitsText, /never honored/i);
+    doesNotMatch(limitsText, /recommended layout keeps channel \+ chat-id in that file/);
+  });
+
+  it('renderEnvLayoutBlockPowerShell mirrors the POSIX env layout with placeholder-only credential', () => {
+    const block = renderEnvLayoutBlockPowerShell({ chatId: CHAT_ID, headlineOn: false });
+    match(block, /\$env:AGENTIC_NOTIFY_EGRESS_CHANNEL = "telegram"/);
+    match(block, new RegExp(`\\$env:TELEGRAM_CHAT_ID = "${CHAT_ID}"`));
+    match(block, /\$env:TELEGRAM_BOT_TOKEN = "<your Telegram bot token>"/);
+    ok(!block.includes(FAKE_TOKEN));
+    match(block, /# \$env:AGENTIC_NOTIFY_EGRESS_HEADLINE/); // commented when off
+  });
+
+  it('formatEgressLauncherPlanLines renders the env-only recommendation (both shell variants) on uid-less machines', () => {
+    const section = build(activation({ localReason: 'ownership-unverifiable', localLayerSupported: false }));
+    const text = formatEgressLauncherPlanLines(section).join('\n');
+    match(text, /export AGENTIC_NOTIFY_EGRESS_CHANNEL="telegram"/);
+    match(text, /\$env:AGENTIC_NOTIFY_EGRESS_CHANNEL = "telegram"/);
+    match(text, /never honored/i);
+    doesNotMatch(text, /you create ~\/\.agentic-plugins\/config\.local\.toml/);
+  });
+
+  it('formatEgressLauncherPlanLines keeps the config-local-toml + env-alternative rendering on supported machines', () => {
+    const section = build(activation());
+    const text = formatEgressLauncherPlanLines(section).join('\n');
+    match(text, /recommended layout — you create/);
+    match(text, /alternative layout — env-all:/);
+    match(text, /export TELEGRAM_BOT_TOKEN="<your Telegram bot token>"/);
   });
 
   it('localLayerSupported=true keeps the config-local-toml recommendation + env alternative (regression shape)', () => {
@@ -344,7 +384,7 @@ describe('egress-launcher-plan — artifact contract + boundary invariant', () =
       repo_root_pointer: '.',
       host: 'claude',
       mode: 'already-active',
-      activation_state: { active: true },
+      activation_state: { active: true, local_layer_supported: true },
       prototype: { match_count: 0 },
       steps: [],
       limits: ['x'],
@@ -376,6 +416,13 @@ describe('egress-launcher-plan — artifact contract + boundary invariant', () =
     const a1 = validArtifact(); a1.sneaky = 1; ok(!isValidEgressLauncherPlanArtifact(a1));
     const a2 = validArtifact(); a2.host = 'auto'; ok(!isValidEgressLauncherPlanArtifact(a2));
     const a3 = validArtifact(); a3.mode = 'bogus'; ok(!isValidEgressLauncherPlanArtifact(a3));
+  });
+
+  it('requires activation_state.local_layer_supported to be a boolean (Codex review: untyped additive field)', () => {
+    const missing = validArtifact(); delete missing.activation_state.local_layer_supported;
+    ok(!isValidEgressLauncherPlanArtifact(missing), 'a missing capability flag must not validate');
+    const stringy = validArtifact(); stringy.activation_state.local_layer_supported = 'yes';
+    ok(!isValidEgressLauncherPlanArtifact(stringy), 'a string capability flag must not validate');
   });
 
   it('writeEgressLauncherPlanArtifact rejects a malformed artifact', async () => {

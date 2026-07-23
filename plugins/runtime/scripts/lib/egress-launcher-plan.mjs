@@ -243,6 +243,25 @@ export function renderTokenEnvLine() {
   return `export ${EGRESS_ENV_KEYS.credential}="<your Telegram bot token>"   # §2c: token is env-ONLY, never stored in a file by runtime`;
 }
 
+// PowerShell twin of renderEnvLayoutBlock for machines whose native shells
+// cannot run POSIX `export` lines (the uid-less/Windows env-only path renders
+// BOTH variants — Git Bash/WSL users take the POSIX block, PowerShell users
+// this one). Placeholder-only credential, exactly like the POSIX twin.
+export function renderEnvLayoutBlockPowerShell({ chatId, headlineOn = false } = {}) {
+  const chat = looksLikeChatId(chatId) ? chatId : '<YOUR_TELEGRAM_CHAT_ID>';
+  const lines = [
+    '# PowerShell profile ($PROFILE) — env-only layout for Windows-native shells:',
+    `$env:${EGRESS_ENV_KEYS.credential} = "<your Telegram bot token>"   # §2c: token is env-ONLY, never stored in a file by runtime`,
+    `$env:${EGRESS_ENV_KEYS.channel} = "telegram"`,
+    `$env:${EGRESS_ENV_KEYS.recipient} = "${chat}"`,
+  ];
+  lines.push(headlineOn
+    ? `$env:${EGRESS_HEADLINE_ENV_KEY} = "true"            # opt-in status token (currently ON)`
+    : `# $env:${EGRESS_HEADLINE_ENV_KEY} = "true"          # optional, default OFF`);
+  lines.push('');
+  return lines.join('\n');
+}
+
 // ALTERNATIVE layout: everything (channel + chat-id + token) via env in your
 // shell profile. No config.local.toml. Shown alongside the recommended layout so
 // the operator can choose (ADR-0041 §2c honors both env and verified-local for
@@ -298,7 +317,7 @@ function buildSteps({ mode, activation, prototype, headlineOn }) {
     detail: needsActivation
       ? (localLayerSupported
         ? 'Create the verified-ignored-local file and export the credential. Channel + chat-id persist in the file; the token is env-only (§2c).'
-        : 'Export channel + chat-id + token in your shell profile (env-only). The verified-local file is never honored on this machine — POSIX uid ownership cannot be proven, so its fail-closed reader ignores it (§2c).')
+        : 'Export channel + chat-id + token in your shell environment (env-only; Git Bash/WSL: shell profile, Windows-native shells: the PowerShell $PROFILE variant below). The verified-local file is never honored on this machine — POSIX uid ownership cannot be proven, so its fail-closed reader ignores it (§2c).')
       : `Egress is already active here (source: ${activation.source ?? 'n/a'}) — no activation needed.`,
     recommended_layout: localLayerSupported
       ? {
@@ -309,6 +328,9 @@ function buildSteps({ mode, activation, prototype, headlineOn }) {
       }
       : {
         ...envAllLayout,
+        // Windows-native shells cannot run POSIX `export` lines — carry both
+        // variants so the sole supported layout is actually applicable.
+        env_block_powershell: renderEnvLayoutBlockPowerShell({ chatId, headlineOn }),
         why_env_only: 'The verified-local file is never honored on this machine (POSIX uid ownership unverifiable — e.g. Windows); its fail-closed reader ignores it, so env-only is the only supported layout here.',
       },
     ...(localLayerSupported ? { alternative_layout: envAllLayout } : {}),
@@ -377,7 +399,7 @@ export function egressFragmentApplyGuidance(activation) {
     }
     : {
       apply_command: 'Follow the rendered per-machine activation runbook (env-only layout — the verified-local file is never honored on this machine); the credential is never written by tooling.',
-      target: 'your shell profile (~/.zshrc, ~/.bashrc, …) — env-only',
+      target: 'your shell profile (~/.zshrc, ~/.bashrc for Git Bash/WSL; the PowerShell $PROFILE for Windows-native shells) — env-only',
     };
 }
 
@@ -483,6 +505,10 @@ export function isValidEgressLauncherPlanArtifact(artifact) {
   if (!VALID_HOSTS.has(artifact.host)) return false;
   if (!EGRESS_LAUNCHER_PLAN_MODES.includes(artifact.mode)) return false;
   if (!artifact.activation_state || typeof artifact.activation_state !== 'object') return false;
+  // The capability flag steers which layout consumers render — an untyped or
+  // absent value would let a malformed artifact masquerade as either machine
+  // shape (Codex review: additive fields still need a type gate).
+  if (typeof artifact.activation_state.local_layer_supported !== 'boolean') return false;
   if (!artifact.prototype || typeof artifact.prototype !== 'object') return false;
   if (!Array.isArray(artifact.steps)) return false;
   if (!Array.isArray(artifact.limits) || !artifact.limits.every((l) => typeof l === 'string')) return false;
@@ -544,11 +570,16 @@ export async function writeEgressLauncherPlanArtifact({ repoRoot, artifact }) {
 // The plan builder (settings section shape)
 // ---------------------------------------------------------------------------
 
-function egressLauncherLimits() {
+function egressLauncherLimits({ localLayerSupported = true } = {}) {
   return [
     'runtime:settings --egress-launcher-plan is a dry-run PLANNER: it reads the current egress activation state and the personal ~/.claude prototype hooks READ-ONLY, and records an activation runbook in an agentic-plugins-owned artifact. It NEVER writes host config, ~/.agentic-plugins/config.local.toml, the credential, or ~/.claude/settings.json — applying the plan is an explicit USER action (ADR-0041 §2c/§12).',
     'The credential is NEVER read: only whether TELEGRAM_BOT_TOKEN is present (credentialPresent) is surfaced. The token value is never captured, logged, echoed, or written to the artifact (§2b), and a scrubSecrets pass fail-closes the write if any secret-shaped value ever reached it (§5).',
-    'Egress activation + recipient come ONLY from env or the fail-closed-verified ~/.agentic-plugins/config.local.toml (§2c); the recommended layout keeps channel + chat-id in that file and the token in env. The egress_* keys are deliberately OUTSIDE runtime-config CONFIG_KEYS, so --apply can never write them and this planner never adds them.',
+    // Capability-aware (Codex review: a uid-less artifact must not stay
+    // internally contradictory by still recommending the file its own
+    // activation_state says can never be honored).
+    localLayerSupported
+      ? 'Egress activation + recipient come ONLY from env or the fail-closed-verified ~/.agentic-plugins/config.local.toml (§2c); the recommended layout keeps channel + chat-id in that file and the token in env. The egress_* keys are deliberately OUTSIDE runtime-config CONFIG_KEYS, so --apply can never write them and this planner never adds them.'
+      : 'Egress activation + recipient come ONLY from env on this machine (§2c): the verified-local ~/.agentic-plugins/config.local.toml is never honored where POSIX uid ownership cannot be proven, so the env-only layout is the sole supported activation path here. The egress_* keys are deliberately OUTSIDE runtime-config CONFIG_KEYS, so --apply can never write them and this planner never adds them.',
     'Prototype detection is Claude-scoped (the personal ~/.claude/telegram-notify.mjs hook) and matches by EXACT path, not basename — an unrelated same-named script is not flagged. A missing/unreadable settings.json simply omits the retire step (fail-closed).',
     'Per-machine: each machine activates independently (§8). Run the planner on every machine; the same chat-id + a per-machine token fan all machines into one chat.',
   ];
@@ -617,7 +648,7 @@ export function buildEgressLauncherPlanSection({ gathered, host = 'claude', now 
     activation_state: activationState,
     prototype,
     steps,
-    limits: egressLauncherLimits(),
+    limits: egressLauncherLimits({ localLayerSupported: activationState.local_layer_supported }),
     boundary: {
       writes_host_config: false,
       writes_activation: false,
@@ -640,7 +671,7 @@ export function buildEgressLauncherPlanSection({ gathered, host = 'claude', now 
       // Persist-result pointer; the orchestrator overwrites this in place (preserving
       // key position) after it writes artifactBody to the caller-chosen target.
       artifact: { written: true },
-      limits: egressLauncherLimits(),
+      limits: egressLauncherLimits({ localLayerSupported: activationState.local_layer_supported }),
     },
     artifactBody,
   };

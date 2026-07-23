@@ -352,6 +352,20 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
   });
 
+  it('fragment persistence COMPOSES the actionable egress recovery with the §10.3 guidance instead of replacing it (Codex review)', async () => {
+    const { home, cwd } = await makeHome();
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd, runner: bareRunner(), subprocess: spySubprocess().runner });
+    const manifest = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json'), 'utf8'));
+    const egress = manifest.steps.find((step) => step.id === 'egress.configured');
+    strictEqual(egress.status, 'pending');
+    ok(egress.fragment_pointer, 'the egress launcher fragment was persisted for the pending step');
+    // Both halves must survive: the activation procedure (channel+recipient+
+    // credential, placeholder-only) AND the fragment backup/verify guidance.
+    ok(/ADR-0041 §2c/.test(egress.recovery), 'the actionable activation recovery survives fragment persistence');
+    ok(/TELEGRAM_BOT_TOKEN/.test(egress.recovery), 'the credential env-key procedure survives fragment persistence');
+    ok(/Backup /.test(egress.recovery), 'the §10.3 fragment guidance is appended');
+  });
+
   it('the persisted run manifest validates against the packaged §5 schema', async () => {
     const { home, cwd } = await makeHome();
     const spy = spySubprocess();

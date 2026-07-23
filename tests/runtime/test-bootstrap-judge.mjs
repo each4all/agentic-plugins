@@ -125,6 +125,11 @@ describe('judgeSteps egress.configured — activation semantics (channel-only fa
     match(entry.recovery, /yourself|own shell|local shell/i);
   });
 
+  it('recovery stays valid without a rendered fragment — it names the always-available settings runbook (Codex review: resume renders no fragments)', () => {
+    const entry = judgeEgress({ egressActivation: inactiveDescriptor('missing-credential') });
+    match(entry.recovery, /runtime:settings --egress-launcher-plan/);
+  });
+
   it('localLayerSupported=false (e.g. Windows) appends the env-only hint to recovery', () => {
     const entry = judgeEgress({
       egressActivation: inactiveDescriptor('missing-credential', {
