@@ -9,7 +9,7 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +17,11 @@ import { RUNTIME_VERSION } from './version.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { learnFromSources } from './lib/permission-usage-learner.mjs';
 import { getPromptCause } from './lib/permission-advisor-core.mjs';
+import { runEmit } from './notify.mjs';
+import { buildEventId, deriveRepoIdent } from './lib/notify-schema.mjs';
+import { loadEgressActivation } from './lib/egress-config.mjs';
+import { EGRESS_ATTEMPT_HASH_DOMAIN, deriveActivationFingerprint } from './lib/evidence-contract.mjs';
+import { EGRESS_CREDENTIAL_ENV_VAR } from './lib/machine-profile.mjs';
 import { makePermissionAdvisoryArtifact, makePermissionRunId } from './lib/permission-artifacts.mjs';
 import {
   PERMISSION_DIAGNOSIS_MAX_SCAN,
@@ -113,6 +118,11 @@ export async function runDoctor({
   permissionProof = false,
   executePermissionProof = false,
   permissionProofTimeoutMs = DEFAULT_PERMISSION_PROOF_TIMEOUT_MS,
+  egressAckProof = false,
+  executeEgressAckProof = false,
+  // Test seam ONLY: production always uses the real in-process runEmit (no
+  // fetch double — real transport is the point, acceptance-(K) precedent).
+  egressEmitImpl = null,
   workflowContinuationProof = false,
   executeWorkflowContinuationProof = false,
   workflowContinuationProofTimeoutMs = DEFAULT_WORKFLOW_CONTINUATION_PROOF_TIMEOUT_MS,
@@ -127,6 +137,9 @@ export async function runDoctor({
 } = {}) {
   if (executeDeepPeerSmoke && !deepPeerSmoke) {
     throw new Error('--execute-deep-peer-smoke requires --deep-peer-smoke');
+  }
+  if (executeEgressAckProof && !egressAckProof) {
+    throw new Error('--execute-egress-ack-proof requires --egress-ack-proof');
   }
   if (executePermissionProof && !permissionProof) {
     throw new Error('--execute-permission-proof requires --permission-proof');
@@ -307,6 +320,15 @@ export async function runDoctor({
     runner,
     timeoutMs: permissionProofTimeoutMs,
   });
+  const egressAckProofSection = await buildEgressAckProofSection({
+    requested: egressAckProof,
+    execute: executeEgressAckProof,
+    repoRoot: resolvedRepoRoot,
+    homeDir: resolvedHomeDir,
+    env,
+    now,
+    emitImpl: egressEmitImpl,
+  });
   const deepPeerSmokeSection = await buildDeepPeerSmokeSection({
     requested: deepPeerSmoke,
     execute: executeDeepPeerSmoke,
@@ -364,8 +386,18 @@ export async function runDoctor({
     repo_root: resolvedRepoRoot,
     host,
     read_only: true,
+    // Precise effect claims (Plan-verify peer): `read_only` keeps its
+    // host-state meaning (no host trust/auth/config/permission mutation —
+    // still true), while the egress ack executor performs ONE pinned network
+    // request through the E1 emitter. Consumers that need the network fact
+    // read it here instead of over-reading read_only.
+    effects: {
+      host_config_mutated: false,
+      network_request_performed: executeEgressAckProof === true,
+    },
     sandbox_permission_probe: sandboxPermissionProbeSection,
     permission_proof: permissionProofSection,
+    egress_ack_proof: egressAckProofSection,
     deep_peer_smoke: deepPeerSmokeSection,
     workflow_continuation_proof: workflowContinuationProofSection,
     clis: {
@@ -3312,6 +3344,207 @@ function classifyOperatorActionText(text) {
     return 'sandbox_blocked';
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Egress provider-ack proof (ADR-0048 §3, macro egress-proof-executor slice)
+// ---------------------------------------------------------------------------
+//
+// The ONE explicitly-executed networked proof: doctor delegates a single
+// synthetic notification to the E1 emitter (in-process runEmit — the pinned
+// api.telegram.org call site stays inside notify.mjs, per the executor
+// guard), against an EPHEMERAL temp repo (operational notify state — mirror
+// log, dedupe claims, throttle — untouched; the consumer repo's notify
+// config is DELIBERATELY not consulted: the proof exercises user-global +
+// default policy, documented in the contract).
+//
+// TRIPLE consent to reach the network: the --egress-ack-proof plan flag, the
+// --execute-egress-ack-proof execute flag, AND AGENTIC_EGRESS_REAL_SMOKE=1 in
+// the environment (the production realization of the subtask's REAL_SMOKE
+// gate — the same switch that gates the live acceptance suite governs every
+// real send).
+//
+// AMBIGUOUS-ATTEMPT rule (Plan-verify peer BLOCKER): an intent record is
+// written BEFORE the send and resolved after. A crash between them leaves a
+// pending intent; the next execute REFUSES to auto-resend (the phone may
+// already have the message) until the operator removes the named intent file
+// after checking their phone. Telegram has no idempotency key — this is the
+// honest recovery.
+const EGRESS_ACK_OUTCOME_REASONS = Object.freeze([
+  'dispatched', 'kinds-filter', 'quiet-hours', 'dedupe-duplicate', 'throttled',
+  'missing-token', 'missing-recipient', 'invalid-local-activation', 'provider-error',
+  'provider-rejected', 'timeout', 'redirect-error', 'body-cap', 'channel-none',
+  'emit-error', 'mirror-missing', 'mirror-ambiguous',
+]);
+
+function egressIntentDir(repoRoot) {
+  return join(repoRoot, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+}
+
+async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDir, env, now, emitImpl }) {
+  if (!requested) {
+    return { requested: false, executed: false, mode: 'not_requested', status: 'not_requested', provider_ack: null, outcome_reason: null, mirror_correlated: false, blockers: [], limits: [] };
+  }
+
+  const limits = [
+    'The proof exercises user-global + default notify policy against an ephemeral temp repo; the consumer repo\u2019s repo-layer notify config is deliberately not consulted.',
+    'The mirror row is not provider evidence \u2014 the provider ack is the HTTP 2xx + ok:true classification \u2014 but a missing/ambiguous mirror makes the attempt unverifiable and the proof fails closed.',
+    'Credential rotation is invisible to the activation fingerprint by design (contract \u00a78.1); a rotated token surfaces as this executor\u2019s next real attempt failing.',
+  ];
+
+  // Activation preflight — the SAME env object is later handed to the emitter,
+  // so what this preflight observed is what the send uses (TOCTOU closed by
+  // sharing the snapshot, not by trusting time).
+  const activation = loadEgressActivation({ repoRoot, homeDir, env });
+  const blockers = [];
+  if (!activation.active) {
+    blockers.push(`egress activation is not active (${activation.reason}) \u2014 channel+recipient+credential must all resolve (token alone and channel alone are both inert; unknown-egress-channel and credential-collision also land here)`);
+  }
+  const consent = env?.AGENTIC_EGRESS_REAL_SMOKE === '1';
+  if (execute && !consent) {
+    blockers.push('AGENTIC_EGRESS_REAL_SMOKE=1 is not set \u2014 the real-network send needs this third consent alongside the two flags (export it in the shell that runs the executor)');
+  }
+
+  if (!execute) {
+    return {
+      requested: true,
+      executed: false,
+      mode: 'plan_only_preflight',
+      status: blockers.length > 0 ? 'blocked' : 'ready',
+      provider_ack: null,
+      outcome_reason: null,
+      mirror_correlated: false,
+      blockers,
+      limits,
+    };
+  }
+  if (blockers.length > 0) {
+    return { requested: true, executed: false, mode: 'explicit_egress_executor', status: 'blocked', provider_ack: null, outcome_reason: null, mirror_correlated: false, blockers, limits };
+  }
+
+  // Ambiguous-attempt gate: a pending intent from a crashed earlier attempt
+  // refuses a new send.
+  const intentDir = egressIntentDir(repoRoot);
+  try {
+    const entries = await readdir(intentDir);
+    const pending = [];
+    for (const name of entries) {
+      if (!name.endsWith('.json')) continue;
+      try {
+        const intent = JSON.parse(await readFile(join(intentDir, name), 'utf8'));
+        if (intent?.status === 'pending') pending.push(name);
+      } catch { pending.push(name); }
+    }
+    if (pending.length > 0) {
+      return {
+        requested: true,
+        executed: false,
+        mode: 'explicit_egress_executor',
+        status: 'blocked',
+        provider_ack: null,
+        outcome_reason: null,
+        mirror_correlated: false,
+        blockers: [`a previous egress attempt is unresolved (${pending.join(', ')} under ${pointer(repoRoot, intentDir)}) \u2014 the phone may already have that message; check it, then delete the intent file(s) to consent to a fresh send. Automatic resend of an ambiguous attempt is prohibited.`],
+        limits,
+      };
+    }
+  } catch { /* no intent dir yet — nothing pending */ }
+
+  // Synthetic event: closed-vocab kind response-needed (urgency NORMAL by
+  // contract — approval is the only urgent-by-contract kind, and a proof that
+  // bypassed quiet hours would prove the wrong thing), unique subject →
+  // unique event_id (structurally bypasses dedupe and inherits a fresh
+  // throttle key), 12-hex correlation token carried in the ENUMERATED topic
+  // field so the operator can match the phone message (event_id/title/body
+  // never reach the provider payload).
+  const suffix = randomBytes(6).toString('hex');
+  const tempRepo = await mkdtemp(join(tmpdir(), 'agentic-egress-proof-'));
+  let section;
+  try {
+    const repoIdent = deriveRepoIdent(tempRepo);
+    const subject = `egress-proof-${suffix}`;
+    const eventId = buildEventId({ repoIdent, kind: 'response-needed', subject });
+    const ranAt = now.toISOString();
+    const attemptHash = createHash('sha256').update([EGRESS_ATTEMPT_HASH_DOMAIN, eventId, ranAt].join('\u0000')).digest('hex');
+    const activationFingerprint = deriveActivationFingerprint({ channel: activation.channel, recipient: activation.recipient, credentialEnvVar: EGRESS_CREDENTIAL_ENV_VAR });
+    const event = {
+      event_id: eventId,
+      source: 'runtime:doctor',
+      title: 'agentic-plugins egress proof (synthetic)',
+      kind: 'response-needed',
+      urgency: 'normal',
+      topic: subject,
+    };
+
+    // WRITE-AHEAD intent, then send, then resolve.
+    await mkdir(intentDir, { recursive: true });
+    const intentPath = join(intentDir, `${suffix}.json`);
+    await writeJson(intentPath, { status: 'pending', subject, attempt_hash: attemptHash, ran_at: ranAt });
+
+    const emit = emitImpl ?? runEmit;
+    let emitResult;
+    try {
+      emitResult = await emit({ eventText: JSON.stringify(event), repoRoot: tempRepo, homeDir, env });
+    } catch (err) {
+      emitResult = { status: 'failed', stage: 'egress', reason: `emit-error:${err?.code ?? 'exception'}` };
+    }
+
+    // Correlated mirror: EXACTLY one well-formed dispatched row for this
+    // event id in the temp repo\u2019s log. The mirror is best-effort inside the
+    // emitter, so its absence after a dispatched return is fail-closed \u2014 the
+    // attempt is unverifiable, not passed.
+    let mirrorCorrelated = false;
+    let mirrorReason = 'mirror-missing';
+    try {
+      const logText = await readFile(join(tempRepo, '.agentic-plugins', 'state', 'runtime', 'notify', 'log.ndjson'), 'utf8');
+      const rows = logText.split('\n').filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return null; } });
+      const matches = rows.filter((row) => row && row.event_id === eventId && row.egress_channel === 'telegram' && row.egress_phase === 'outcome');
+      if (matches.length === 1 && matches[0].egress_status === 'dispatched' && matches[0].egress_outcome === 'dispatched') {
+        mirrorCorrelated = true;
+        mirrorReason = 'dispatched';
+      } else if (matches.length > 1) {
+        mirrorReason = 'mirror-ambiguous';
+      }
+    } catch { /* mirror-missing */ }
+
+    const dispatched = emitResult?.status === 'dispatched';
+    const acked = dispatched && mirrorCorrelated;
+    // Closed-enum reason projection — never the raw emitter reason string
+    // (full-report sanitization: the artifact records enums and hashes only).
+    const rawReason = String(emitResult?.reason ?? '');
+    const projected = EGRESS_ACK_OUTCOME_REASONS.find((candidate) => rawReason === candidate || rawReason.startsWith(`${candidate}`))
+      ?? (dispatched ? 'mirror-missing' : 'emit-error');
+    const outcomeReason = acked ? 'dispatched' : dispatched ? mirrorReason : projected;
+
+    await writeJson(intentPath, { status: acked ? 'acked' : 'failed', subject, attempt_hash: attemptHash, ran_at: ranAt, outcome_reason: outcomeReason });
+
+    section = {
+      requested: true,
+      executed: true,
+      mode: 'explicit_egress_executor',
+      status: acked ? 'passed' : 'failed',
+      // Every COMPLETED attempt carries provider_ack (a failed attempt is
+      // evidence too — omitting it would degrade an executed failure to
+      // \u201cabsent\u201d at the reducer).
+      provider_ack: {
+        result: acked ? 'acked' : 'failed',
+        attempt_hash: attemptHash,
+        activation_fingerprint: activationFingerprint,
+        ran_at: ranAt,
+      },
+      outcome_reason: outcomeReason,
+      mirror_correlated: mirrorCorrelated,
+      // Phone correlation: the operator matches this token against the
+      // message\u2019s topic line; the raw event id stays in ephemeral/local
+      // state only, never in durable artifacts.
+      subject_suffix: suffix,
+      blockers: [],
+      limits,
+    };
+  } finally {
+    await rm(tempRepo, { recursive: true, force: true }).catch(() => {});
+  }
+  return section;
 }
 
 async function buildDeepPeerSmokeSection({
