@@ -706,18 +706,27 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       applied_by: appliedByFor(step),
       observed: observed.observed ?? null,
       observed_at: observedAt,
-      // A DECLINED step carries no presentation state (Refine-verify round
-      // 5): its historical fragment/apply/desired are withdrawn at decline
+      // A DECLINED step carries no presentation state (Refine-verify rounds
+      // 5-6): its historical fragment/apply/desired are withdrawn at decline
       // time, and a legacy run that recorded them pre-withdrawal drops them
-      // here on re-judgement — a refused key is never offered again.
-      fragment_pointer: status === 'declined' ? null : (previous?.fragment_pointer ?? null),
-      apply_command: status === 'declined' ? null : (observed.apply_command ?? previous?.apply_command ?? null),
-      desired: status === 'declined' ? null : (previous?.desired ?? null),
+      // here on re-judgement — keyed on the resulting status AND the
+      // recorded provenance, because an observation may legitimately flip a
+      // legacy declined step to satisfied (§6.2) while its refused render
+      // state must still never resurrect.
+      fragment_pointer: (status === 'declined' || previous?.status === 'declined') ? null : (previous?.fragment_pointer ?? null),
+      apply_command: (status === 'declined' || previous?.status === 'declined') ? null : (observed.apply_command ?? previous?.apply_command ?? null),
+      desired: (status === 'declined' || previous?.status === 'declined') ? null : (previous?.desired ?? null),
       fragment_applied: previous?.fragment_applied === true,
       recovery: observed.recovery ?? null,
     };
     // §5 — fragment_applied marks that THIS run rendered a fragment and a later
     // post-probe observed the operator applying it (never a pre-existing match).
+    // A DECLINED provenance never reaches this promotion: the pre-judgement
+    // strip removed its pointer (and fragment_applied) before `previous` got
+    // here, so a satisfying observation over a decline reads as the
+    // pre-existing/manual match it is (Refine-verify round 6; pinned by the
+    // legacy-resurrection tests — an extra status condition here would be a
+    // structurally unreachable branch).
     if (previous && previous.fragment_pointer && previous.status !== 'satisfied' && status === 'satisfied') {
       entry.fragment_applied = true;
     }
@@ -1148,26 +1157,23 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     } else if (!combinedCarriesTui && notifyPointerFrozen) {
       // The strip is a DERIVED state, valid only while the combined fragment
       // is the presented source. If that authority lapsed (the statusline
-      // step was declined, or its pointer cleared) and the frozen notify
-      // artifact is still stripped, the run would present NO [tui] source at
-      // all (Refine-verify round 5). Restore the preview by a
-      // purpose-limited rewrite: identical body except the preview field and
-      // the dropped routing note — the notify= wiring and the frozen
-      // `desired` expectation are untouched, so this is not the expectation
-      // rebind the G7 freeze exists to prevent.
+      // step was declined, or its pointer cleared) while the frozen notify
+      // artifact is still stripped, the run presents NO [tui] source
+      // (Refine-verify round 5). Runtime NAMES that state instead of
+      // rewriting the frozen artifact — a round-5 restore-rewrite attempt
+      // opened a fragment-vs-manifest commit-ordering hole (round-6 High: a
+      // restored file could land while the manifest update carrying the
+      // authority withdrawal failed, yielding two physical sources under a
+      // live combined pointer), and there is no manifest CAS transaction to
+      // close it. Abandon + re-plan is the honest recovery; the underlying
+      // reconciliation is the fragment-freeze follow-up.
       try {
-        const frozenPath = join(bootstrapFragmentsDir(homeDir, runId), 'notification-plan.fragment');
-        const frozen = JSON.parse(await readFile(frozenPath, 'utf8'));
-        if (frozen?.fragments && frozen.fragments.tui_notifications_toml == null && section.fragments?.tui_notifications_toml) {
-          const restored = { ...frozen, fragments: { ...frozen.fragments, tui_notifications_toml: section.fragments.tui_notifications_toml } };
-          delete restored.tui_note;
-          const write = await writeBootstrapFragment({ homeDir, repoRoot: cwd, runId, name: 'notification-plan', content: `${JSON.stringify(restored, null, 2)}\n` });
-          if (!write?.ok) {
-            warnings.push(`the stripped notification [tui] preview could not be restored after the combined fragment lost authority — the run currently presents no [tui] source: ${(write?.diagnostics ?? ['unknown write failure']).join('; ')}`);
-          }
+        const frozen = JSON.parse(await readFile(join(bootstrapFragmentsDir(homeDir, runId), 'notification-plan.fragment'), 'utf8'));
+        if (frozen?.fragments && frozen.fragments.tui_notifications_toml == null) {
+          warnings.push('the combined statusline-codex fragment is no longer the presented [tui] source, and the frozen notification-plan artifact was stripped while it was — this run currently presents NO [tui] source (fragment freeze keeps first renders). Re-plan (abandon + plan) to regain one; see the fragment-freeze follow-up.');
         }
       } catch {
-        warnings.push('the frozen notification-plan artifact could not be parsed while no combined [tui] fragment is presented — the run may present no [tui] source; re-plan to regain one (fail-closed).');
+        warnings.push('the frozen notification-plan artifact could not be parsed while no combined [tui] fragment is presented — the run may present no [tui] source; re-plan (abandon + plan) to regain one (fail-closed).');
       }
     }
   } catch (err) {
@@ -1720,6 +1726,17 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   const priorForJudge = new Map(invalidation.steps.map((s) => {
     if (s.id === stepIds.notifyConfigured() && (s.fragment_pointer || s.apply_command)) {
       const { fragment_pointer, apply_command, fragment_applied, ...rest } = s;
+      return [s.id, rest];
+    }
+    // A DECLINED provenance carries no render state into judgement either
+    // (Refine-verify round 6): a legacy declined step's frozen `desired`
+    // would otherwise mode-bind the exact probe and demote a legitimate
+    // satisfying observation to manual-follow-up — the refused plan's
+    // expectation blocking the operator's own manual configuration is one
+    // more resurrection shape. The entry assembly drops the same fields
+    // post-judgement (belt-and-braces).
+    if (s.status === 'declined' && (s.fragment_pointer || s.apply_command || s.desired != null)) {
+      const { fragment_pointer, apply_command, desired, fragment_applied, ...rest } = s;
       return [s.id, rest];
     }
     return [s.id, s];

@@ -784,13 +784,16 @@ describe('bootstrap [tui] one-source invariant — frozen re-transition is NAMED
       `a stripped preview with prose-level [tui] must not trigger the supersession warning: ${JSON.stringify(resume.report.warnings)}`);
   });
 
-  it('declining the statusline step on an all-pending run RESTORES the stripped preview and withdraws the declined hand-off (round-5 High)', async () => {
+  it('declining the statusline step on an all-pending run NAMES the no-source state and withdraws the declined hand-off (rounds 5-6)', async () => {
     // All-pending plan: the combined fragment renders and the notify
     // artifact persists STRIPPED. The operator then declines statusline:
-    // decline withdraws the step's presentation fields, the combined
-    // fragment loses authority, and the strip — a derived state — must be
-    // reversed so the run still presents a [tui] source. The declined
-    // step's historical fragment/apply must not render anywhere.
+    // decline withdraws the step's presentation fields (pointer + apply +
+    // desired), the combined fragment loses authority, and the run now
+    // presents NO [tui] source. Runtime must NAME that state with a
+    // re-plan warning — never rewrite the frozen artifact (a round-5
+    // restore attempt opened a fragment-vs-manifest commit-ordering hole;
+    // round-6 High). The declined step's historical hand-off must not
+    // render anywhere.
     const { home, cwd } = await makeHome();
     const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
 
@@ -799,6 +802,7 @@ describe('bootstrap [tui] one-source invariant — frozen re-transition is NAMED
     const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments');
     const stripped = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
     strictEqual(stripped.fragments.tui_notifications_toml, null, 'all-pending plan strips the preview (combined is the source)');
+    const strippedBytes = await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8');
 
     const answersPath = join(home, 'decline-sl-allpending.json');
     await writeFile(answersPath, JSON.stringify([{ step_id: 'statusline.codex.configured', answer: 'decline' }]));
@@ -808,11 +812,12 @@ describe('bootstrap [tui] one-source invariant — frozen re-transition is NAMED
     strictEqual(slStep.status, 'declined');
     strictEqual(slStep.fragment_pointer ?? null, null, 'decline withdraws the presentation pointer — a refused key is history');
     strictEqual(slStep.apply_command ?? null, null, 'decline withdraws the apply command');
+    strictEqual(slStep.desired ?? null, null, 'decline withdraws the frozen plan expectation');
 
-    const restored = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
-    ok(restored.fragments.tui_notifications_toml,
-      'the derived strip is reversed once the combined fragment loses authority — the run must present a [tui] source');
-    ok(restored.tui_note == null, 'the routing note is dropped with the restore');
+    strictEqual(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'), strippedBytes,
+      'the frozen artifact is NEVER rewritten (no fragment-vs-manifest commit-ordering hole)');
+    ok((resume.report.warnings ?? []).some((w) => /presents NO \[tui\] source/.test(w) && /Re-plan/.test(w)),
+      `the no-source state is NAMED with the re-plan recovery: ${JSON.stringify(resume.report.warnings)}`);
 
     const rendered = (await run(['status', '--run-id', runId])).rendered;
     const renderedLines = rendered.split('\n');
@@ -820,6 +825,66 @@ describe('bootstrap [tui] one-source invariant — frozen re-transition is NAMED
     ok(declinedIdx >= 0, 'the declined step still renders its status line');
     ok(!/^\s+(apply:|fragment:)/.test(renderedLines[declinedIdx + 1] ?? ''),
       `the declined step's historical hand-off must not render beneath it: next line = ${JSON.stringify(renderedLines[declinedIdx + 1])}`);
+  });
+
+  it('a LEGACY declined step later observed satisfied never resurrects its refused render state (round-6 Medium)', async () => {
+    // Seed a run whose statusline step was declined by an OLDER runtime that
+    // did not withdraw the fields, then make the observation satisfy it: the
+    // observation legitimately wins (§6.2), but the refused pointer must not
+    // ride along and fragment_applied must not promote off a refused render.
+    const { home, cwd } = await makeHome();
+    await writeFile(join(home, '.codex', 'config.toml'), '# empty\n');
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+
+    // Rewrite the manifest into the legacy shape: declined WITH fields.
+    const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json');
+    const manifest = JSON.parse(await readFile(runPath, 'utf8'));
+    const slStep = manifest.steps.find((s) => s.id === 'statusline.codex.configured');
+    slStep.status = 'declined';
+    slStep.fragment_pointer = '~/.agentic-plugins/runs/bootstrap/' + runId + '/fragments/statusline-codex.fragment';
+    slStep.apply_command = 'Merge the rendered [tui] table (historical refused render)';
+    slStep.desired = JSON.stringify(['model-with-reasoning']);
+    await writeFile(runPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    // The observation now satisfies the step (operator configured it by hand).
+    await writeFile(join(home, '.codex', 'config.toml'), '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
+    const resume = await run(['resume', '--run-id', runId, '--format', 'json']);
+    const judged = resume.report.steps.find((s) => s.id === 'statusline.codex.configured');
+    strictEqual(judged.status, 'satisfied', 'the live observation wins over the recorded decline (§6.2)');
+    strictEqual(judged.fragment_pointer ?? null, null, 'the refused pointer never resurrects');
+    strictEqual(judged.apply_command ?? null, null, 'the refused apply command never resurrects');
+    ok(judged.fragment_applied !== true,
+      'a refused render is never promoted to fragment_applied — a satisfying observation over a decline is a manual/pre-existing match');
+  });
+
+  it('a LEGACY declined step with a pointer but NO frozen desired also never promotes fragment_applied (round-6 Medium, desired-free variant)', async () => {
+    // Without a frozen `desired` the exact probe accepts any canonical form,
+    // so the observation satisfies immediately — the only thing standing
+    // between the refused pointer and a fragment_applied promotion is the
+    // pre-judgement declined strip. This variant pins that path directly.
+    const { home, cwd } = await makeHome();
+    await writeFile(join(home, '.codex', 'config.toml'), '# empty\n');
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+
+    const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json');
+    const manifest = JSON.parse(await readFile(runPath, 'utf8'));
+    const slStep = manifest.steps.find((s) => s.id === 'statusline.codex.configured');
+    slStep.status = 'declined';
+    slStep.fragment_pointer = '~/.agentic-plugins/runs/bootstrap/' + runId + '/fragments/statusline-codex.fragment';
+    slStep.apply_command = 'Merge the rendered [tui] table (historical refused render)';
+    slStep.desired = null;
+    await writeFile(runPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    await writeFile(join(home, '.codex', 'config.toml'), '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
+    const resume = await run(['resume', '--run-id', runId, '--format', 'json']);
+    const judged = resume.report.steps.find((s) => s.id === 'statusline.codex.configured');
+    strictEqual(judged.status, 'satisfied');
+    strictEqual(judged.fragment_pointer ?? null, null, 'the refused pointer never resurrects (desired-free variant)');
+    ok(judged.fragment_applied !== true, 'the refused render never promotes fragment_applied (desired-free variant)');
   });
 
   it('a frozen artifact that fails to PARSE keeps the supersession call conservative, never silent (round-5 Medium)', async () => {

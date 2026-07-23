@@ -1050,13 +1050,19 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
   covers a statusline step that never rendered a fragment, a DECLINED step
   whose historical fragment still exists but is no longer authoritative (a
   refused key must never be routed to), and a failed combined write.
-  Physical files can transiently disagree with the presented source in two
+  Physical files can transiently disagree with the presented source in
   NAMED, non-silent states: a frozen notify artifact whose preview predates
   a statusline re-transition is superseded by the combined fragment and
-  flagged with an explicit warning, and a §7-cleared combined file can
+  flagged with an explicit warning; a §7-cleared combined file can
   linger unpresented until its re-render lands (its write failure is
-  itself warned). The underlying freeze-vs-decision reconciliation is the
-  fragment-freeze follow-up.
+  itself warned); and a run whose preview was stripped while the combined
+  fragment held authority can reach a NO-SOURCE state when that authority
+  is later withdrawn (declined) — the frozen stripped artifact is NEVER
+  rewritten (a restore write would race the manifest's authority
+  withdrawal with no CAS transaction to order them), so runtime names the
+  state with an explicit abandon-and-re-plan warning instead. The
+  underlying freeze-vs-decision reconciliation is the fragment-freeze
+  follow-up.
 - **`statusline.claude.configured`** — satisfied iff the USER-layer
   `settings.json` (`CLAUDE_CONFIG_DIR` honored; ONE shared snapshot projected
   for both the permission and statusline consumers) carries
