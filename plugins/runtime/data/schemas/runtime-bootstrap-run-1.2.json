@@ -305,7 +305,7 @@
       "properties": {
         "kind": { "enum": ["deep-peer-smoke", "workflow-continuation", "permission", "egress-provider-ack"] },
         "status": {
-          "description": "§5 — the AGGREGATE, recomputed from the kind's evidence facts on every read and NEVER trusted from storage: `directions` for the directional kinds; for egress-provider-ack the full three-leg set — `provider_ack` AND the sibling `mirror_correlated` seat AND a linkable `artifact_hash` (acked-but-unmirrored or unlinkable evidence recomputes failed, never passed). A smoke that passed claude->codex and failed codex->claude is `failed` (test #22); a stored `passed` would be a claim the evidence contradicts.",
+          "description": "§5 — the AGGREGATE, recomputed from the kind's evidence facts on every read and NEVER trusted from storage: `directions` for the directional kinds; for egress-provider-ack the full three-leg set — `provider_ack` AND the sibling `mirror_correlated` seat AND a present, well-formed `artifact_hash` (the recompute checks presence/shape; byte-verification against the doctor artifact is the import boundary's job — acked-but-unmirrored or hash-less evidence recomputes failed, never passed). A smoke that passed claude->codex and failed codex->claude is `failed` (test #22); a stored `passed` would be a claim the evidence contradicts.",
           "enum": ["passed", "failed", "stale", "not-applicable", "absent"]
         },
         "directions": {

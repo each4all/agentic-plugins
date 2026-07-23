@@ -1065,20 +1065,29 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     const gathered = await gatherCodexNotificationInputs({ homeDir, env });
     const { section } = buildCodexNotificationPlanSection({ gathered, now: new Date(now), runId: makeNotificationRunId(now) });
     // The [tui] preview is STRIPPED from this artifact exactly when the
-    // combined statusline-codex fragment ACTUALLY exists in this run: the
-    // combined fragment is the ONE decision-aware [tui] table (Review peer
-    // BLOCKER), and persisting the builder's notifications-only preview
-    // beside it would hand the operator two [tui] blocks with competing
-    // guidance. The Stage-5a block ABOVE persisted (or kept, or failed to
-    // persist) the combined fragment before this point, so the statusline
-    // step's fragment_pointer is the exact existence fact — it covers a
-    // fresh render, a frozen fragment from an earlier resume, AND a failed
-    // write (pointer absent → the preview stays the one source, and the
-    // routing note can never dangle at a nonexistent fragment) — rather
-    // than a status predicate that must mirror persist()'s two skip
-    // conditions (Refine-verify peer, rounds 2 + 3).
+    // combined statusline-codex fragment is the run's PRESENTED [tui]
+    // source: the combined fragment is the ONE decision-aware [tui] table
+    // (Review peer BLOCKER), and persisting the builder's notifications-only
+    // preview beside it would hand the operator two [tui] blocks with
+    // competing guidance. Two facts compose the predicate (Refine-verify
+    // peer, rounds 2-4):
+    //   - fragment_pointer — the Stage-5a block ABOVE persisted (or kept)
+    //     the combined fragment: covers a fresh render, a frozen fragment
+    //     from an earlier resume, and a failed write (pointer absent → the
+    //     preview stays the presented source and the routing note cannot
+    //     dangle). NB the pointer is a PRESENTATION fact, not a
+    //     physical-file fact — after §7 clears it, a previous file can
+    //     linger unpresented until the re-render lands.
+    //   - step-alive — a DECLINED/not-applicable statusline step keeps its
+    //     historical pointer (persist() skips dead steps without clearing
+    //     fields), but its frozen fragment still carries the declined
+    //     status_line key: routing the operator there would make a refused
+    //     key authoritative (round-4 High). A dead step's combined fragment
+    //     is history, never the presented source.
     const slStepForTui = byId.get(stepIds.statuslineConfigured('codex'));
-    const combinedCarriesTui = Boolean(slStepForTui?.fragment_pointer);
+    const slStepAliveForTui = Boolean(slStepForTui)
+      && slStepForTui.status !== 'declined' && slStepForTui.status !== 'not-applicable';
+    const combinedCarriesTui = slStepAliveForTui && Boolean(slStepForTui.fragment_pointer);
     // Captured BEFORE the persist below: a pre-existing pointer means the
     // notify artifact is FROZEN (persist() keeps first renders) and this
     // strip cannot reach the on-disk bytes.
@@ -1107,11 +1116,15 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     // of hiding it.
     if (combinedCarriesTui && notifyPointerFrozen) {
       try {
-        const frozenText = await readFile(join(bootstrapFragmentsDir(homeDir, runId), 'notification-plan.fragment'), 'utf8');
-        if (/\[tui\]/.test(frozenText)) {
+        // Parse and inspect the PREVIEW FIELD itself — a whole-text regex
+        // false-positives on the builder's `tui_warning` prose, which
+        // legitimately contains the literal `[tui]` while the preview is
+        // stripped (Refine-verify peer, round 4).
+        const frozen = JSON.parse(await readFile(join(bootstrapFragmentsDir(homeDir, runId), 'notification-plan.fragment'), 'utf8'));
+        if (frozen?.fragments?.tui_notifications_toml) {
           warnings.push('the frozen notification-plan artifact still carries a [tui] preview from an earlier plan state, while the combined statusline-codex fragment is now the [tui] source — merge ONLY the combined [tui] table; the frozen preview is superseded (fragment freeze keeps first renders; see the fragment-freeze follow-up).');
         }
-      } catch { /* frozen artifact unreadable — nothing to compare, nothing to warn */ }
+      } catch { /* frozen artifact unreadable/unparseable — nothing to compare, nothing to warn */ }
     }
   } catch (err) {
     warnings.push(`notification plan could not be built: ${err?.message ?? String(err)}`);

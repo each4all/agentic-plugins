@@ -877,10 +877,12 @@ Four shapes are load-bearing and agree with §8 / §8.1:
   kind's evidence facts** — `directions` for the directional kinds; for
   `egress-provider-ack` (1.2, ADR-0048 §3) the full three-leg set:
   `provider_ack` **and** the sibling `mirror_correlated` seat **and** a
-  linkable `artifact_hash` — never trusted from storage: a smoke
+  present, well-formed `artifact_hash` (the recompute checks
+  presence/shape; byte-verification against the doctor artifact is the
+  import boundary's job) — never trusted from storage: a smoke
   that passed `claude->codex` and failed `codex->claude` is `failed`, a schema
   that could only say `directions: [...]` could not express it, and an
-  acked-but-unmirrored or unlinkable egress record recomputes `failed`. Two shapes exist
+  acked-but-unmirrored or hash-less egress record recomputes `failed`. Two shapes exist
   and must not be conflated (the 1.1-era text conflated them, and re-judgement
   read the wrong one — the false-demotion repair): the **recorded** proof lives in
   `proof/<kind>.json` and keeps its evidence member; the **reduced**
@@ -1039,14 +1041,22 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
   non-canonical list is the operator's own selection: `manual-follow-up`,
   never overwritten. The rendered fragment is ONE `[tui]` table carrying BOTH
   runtime-planned keys (`status_line` + `notifications`, via the shared
-  composer in `lib/toml.mjs`), and a run hands out exactly ONE `[tui]`
-  source: when this statusline step can carry a fragment, the combined
-  fragment is that source and the notification-plan artifact is stripped to
-  the `notify =` wiring only (with an in-artifact note routing the operator
-  here); when this step cannot carry one (satisfied / declined /
-  not-applicable — `persist()` skips dead steps), no combined fragment
-  renders and the notification plan's `[tui]` preview stays the one source.
-  Two competing `[tui]` headers are never handed out in either shape.
+  composer in `lib/toml.mjs`), and a run PRESENTS exactly ONE `[tui]`
+  source: when the combined fragment is the presented source (its step
+  carries a `fragment_pointer` AND is not declined/not-applicable), the
+  notification-plan artifact is stripped to the `notify =` wiring only
+  (with an in-artifact note routing the operator here); otherwise the
+  notification plan's `[tui]` preview stays the presented source — that
+  covers a statusline step that never rendered a fragment, a DECLINED step
+  whose historical fragment still exists but is no longer authoritative (a
+  refused key must never be routed to), and a failed combined write.
+  Physical files can transiently disagree with the presented source in two
+  NAMED, non-silent states: a frozen notify artifact whose preview predates
+  a statusline re-transition is superseded by the combined fragment and
+  flagged with an explicit warning, and a §7-cleared combined file can
+  linger unpresented until its re-render lands (its write failure is
+  itself warned). The underlying freeze-vs-decision reconciliation is the
+  fragment-freeze follow-up.
 - **`statusline.claude.configured`** — satisfied iff the USER-layer
   `settings.json` (`CLAUDE_CONFIG_DIR` honored; ONE shared snapshot projected
   for both the permission and statusline consumers) carries

@@ -671,6 +671,15 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
     strictEqual(refused.exitCode, EXIT.INVALID, JSON.stringify(refused.report));
     ok((refused.report.diagnostics ?? []).some((d) => /pass/i.test(d) || /ack/i.test(d)),
       `the refusal names the non-passing ack: ${JSON.stringify(refused.report.diagnostics)}`);
+
+    // 7. Same downgrade through the ARTIFACT-HASH leg (Refine-verify round
+    //    4): restore the mirror but drop the doctor-artifact hash — the
+    //    three-leg recompute fails on linkage and a fresh attest refuses.
+    ackRecord.mirror_correlated = true;
+    ackRecord.artifact_hash = null;
+    await writeFile(ackPath, `${JSON.stringify(ackRecord, null, 2)}\n`);
+    const refusedNoHash = await run(['attest', '--run-id', runId, '--format', 'json']);
+    strictEqual(refusedNoHash.exitCode, EXIT.INVALID, JSON.stringify(refusedNoHash.report));
   });
 });
 
@@ -712,6 +721,67 @@ describe('bootstrap [tui] one-source invariant — frozen re-transition is NAMED
       'the frozen preview and the re-rendered combined fragment coexist — the honest state the warning exists for');
     ok((resume.report.warnings ?? []).some((w) => /frozen notification-plan artifact still carries/.test(w) && /combined statusline-codex fragment/.test(w)),
       `the two-carrier state is NAMED with the superseding source: ${JSON.stringify(resume.report.warnings)}`);
+  });
+
+  it('a DECLINED statusline step never makes its historical combined fragment authoritative — the fresh preview stays the presented source (round-4 High)', async () => {
+    // Plan with notify satisfied + statusline pending: the combined fragment
+    // renders carrying BOTH keys and the (satisfied) notify step persists no
+    // artifact. Then notify regresses to pending while the operator DECLINES
+    // statusline: the declined step keeps its historical pointer, but that
+    // frozen fragment still carries the refused status_line key — routing
+    // the operator there would make a refused key authoritative. The strip
+    // predicate must treat a dead step's pointer as history: the fresh
+    // notification preview is the presented [tui] source, un-stripped and
+    // un-noted.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const codexConfig = join(home, '.codex', 'config.toml');
+    const notifyOnly = `approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nnotify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]\n`;
+    await writeFile(codexConfig, notifyOnly);
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    strictEqual(plan.report.steps.find((s) => s.id === 'notify.codex.configured').status, 'satisfied');
+    ok(plan.report.steps.find((s) => s.id === 'statusline.codex.configured').fragment_pointer,
+      'the combined fragment rendered while the statusline step was alive');
+    const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments');
+
+    // notify regresses (wiring removed) + the operator declines statusline.
+    await writeFile(codexConfig, '# empty\n');
+    const answersPath = join(home, 'decline-sl.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'statusline.codex.configured', answer: 'decline' }]));
+    const resume = await run(['resume', '--run-id', runId, '--answers', answersPath, '--format', 'json']);
+    strictEqual(resume.report.steps.find((s) => s.id === 'statusline.codex.configured').status, 'declined');
+
+    const notifyArtifact = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
+    ok(notifyArtifact.fragments.tui_notifications_toml,
+      'the fresh preview is the presented source — a declined step\'s historical fragment must not swallow it');
+    ok(notifyArtifact.tui_note == null,
+      'no routing note may point at a declined (historical) combined fragment');
+    ok(!(resume.report.warnings ?? []).some((w) => /frozen notification-plan artifact/.test(w)),
+      `no supersession warning — the preview IS the source here: ${JSON.stringify(resume.report.warnings)}`);
+  });
+
+  it('the frozen-supersession warning inspects the preview FIELD, not the serialized text — a [tui] literal in tui_warning is not a preview (round-4 false-positive)', async () => {
+    const { home, cwd } = await makeHome();
+    const codexConfig = join(home, '.codex', 'config.toml');
+    await writeFile(codexConfig, '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    const notifyPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments', 'notification-plan.fragment');
+    // Simulate a frozen artifact whose preview is ALREADY stripped but whose
+    // builder-level prose legitimately contains the [tui] literal.
+    const artifact = JSON.parse(await readFile(notifyPath, 'utf8'));
+    artifact.fragments.tui_notifications_toml = null;
+    artifact.tui_warning = 'existing [tui] notifications were observed in the host config';
+    await writeFile(notifyPath, `${JSON.stringify(artifact, null, 2)}\n`);
+
+    await writeFile(codexConfig, '# empty\n');
+    const resume = await run(['resume', '--run-id', runId, '--format', 'json']);
+    ok(!(resume.report.warnings ?? []).some((w) => /frozen notification-plan artifact still carries/.test(w)),
+      `a stripped preview with prose-level [tui] must not trigger the supersession warning: ${JSON.stringify(resume.report.warnings)}`);
   });
 });
 
