@@ -46,10 +46,10 @@ async function makeHome({ satisfied = false } = {}) {
     ? `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits', allow: ['Read'] } }, null, 2)}\n`
     : '{}\n');
   await writeFile(join(home, '.codex', 'config.toml'), satisfied
-    // notify wiring included: the ADR-0048 §1 split's notify.codex.configured
-    // judge requires a parseable NON-EMPTY argv, so a "satisfied" fixture
-    // carries one.
-    ? 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nnotify = ["node", "/tmp/receiver.mjs"]\n'
+    // notify wiring included: the notify.codex.configured judge is an EXACT
+    // probe (notify-axis slice) — satisfied means the merged argv EQUALS the
+    // canonical shuttle wiring this home's rendered fragment would carry.
+    ? `approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nnotify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]\n`
     : '# empty\n');
   await writeFile(join(home, '.agentic-plugins', 'config.local.toml'), '# local sentinel\n');
   if (satisfied) {

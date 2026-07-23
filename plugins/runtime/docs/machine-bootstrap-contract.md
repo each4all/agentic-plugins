@@ -964,13 +964,22 @@ exists to prevent. The registry is therefore enumerated here, not left to S8:
 
 `notify.configured` keeps meaning exactly the LOCAL runtime notification policy
 (`~/.agentic-plugins/config.toml` notify family); `notify.codex.configured`
-observes the Codex-side wiring — `notify =` in `$CODEX_HOME/config.toml` must be
-present AND a parseable, **non-empty** argv (`notify = []` runs nothing, and a
-present-but-unparseable value is a config the host will not run — both judge
-`pending`; an unreadable config judges `unknown`). The rendered Codex notify
-fragment attaches to the Codex step, whose judge re-observes it (ADR-0048 §1
-split — the pre-split judge only ever read the local config, so the merge was
-presented but never re-observed).
+observes the Codex-side wiring as an **EXACT probe** (notify-axis slice):
+`satisfied` means the merged `notify =` argv in `$CODEX_HOME/config.toml`
+EQUALS the canonical argv this machine's rendered fragment carries — the
+shuttle, or the chain script in wrapper-chain mode — element-wise
+(`expectedCodexNotifyArgv` is the one source both the fragment renderer and
+this probe consume, so they cannot drift; the argv is per-OS: POSIX
+`/usr/bin/env node <receiver>`, win32 the render machine's own node executable
+path). A present, parseable, non-empty argv that is NOT the canonical wiring
+judges `manual-follow-up` — some other notifier is wired, and runtime never
+auto-chains an existing notifier, so reconciling it (re-render the plan for its
+wrapper-chaining offer, or decline the step) is an operator decision.
+`notify = []` runs nothing and a present-but-unparseable value is a config the
+host will not run — both judge `pending`; an unreadable config judges
+`unknown`. The rendered Codex notify fragment attaches to the Codex step,
+whose judge re-observes it (ADR-0048 §1 split — the pre-split judge only ever
+read the local config, so the merge was presented but never re-observed).
 
 **`blocked_by` edges** (the column §5's `steps[].blocked_by` serializes; enumerated here
 because §5 referenced them and this table did not define them — S8a2 C4). Each step is

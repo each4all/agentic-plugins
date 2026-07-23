@@ -24,9 +24,11 @@
 // re-discovery opportunity). The plan therefore renders a thin SHUTTLE script
 // that re-resolves the current runtime root per the ADR-0039 §5 discovery
 // ladder (env override → Claude cache SemVer-max → Codex fixed cache) and
-// delegates to `notify.mjs emit`; the fragment invokes the shuttle via
-// `/usr/bin/env node` (an explicit Node-on-PATH requirement, consistent with
-// doctor's bare-`node` hook portability diagnostics).
+// delegates to `notify.mjs emit`; the fragment invokes the shuttle via the
+// per-OS canonical argv (expectedCodexNotifyArgv): `/usr/bin/env node` on
+// POSIX (an explicit Node-on-PATH requirement, consistent with doctor's
+// bare-`node` hook portability diagnostics) and the render machine's own
+// node executable path on win32, where `/usr/bin/env` does not exist.
 //
 // Receiver input contract (source-verified at codex-cli 0.142.5,
 // legacy_notify.rs): the payload arrives as the LAST argv argument, kebab-case
@@ -290,10 +292,37 @@ export function parseCodexNotifyConfigToml(text) {
 // module's public surface.
 export { tomlBasicString };
 
-// The notify= fragment: /usr/bin/env node <receiver> — never a version-pinned
-// cache path; Codex appends the payload JSON as one extra argv item.
-export function renderCodexNotifyFragmentToml({ receiverPath }) {
-  const argv = ['/usr/bin/env', 'node', String(receiverPath)];
+// The CANONICAL notify= argv for one render machine — the single source the
+// fragment renderer AND the notify.codex.configured exact probe consume, so
+// "what we tell the operator to merge" and "what the judge later expects to
+// observe" cannot drift (ADR-0048 §2's single-policy-definition rule, applied
+// to notify).
+//
+// Per-OS shape (macro notify-axis slice):
+//   - POSIX keeps `/usr/bin/env node <receiver>` — Node-on-PATH via env,
+//     consistent with doctor's bare-`node` portability diagnostics, and the
+//     form already merged on live machines (an exact probe must keep
+//     matching them).
+//   - win32 has no `/usr/bin/env`, and a bare `node` inherits exactly the
+//     PATH fragility doctor warns about — so the render-machine's OWN
+//     `process.execPath` is interpolated instead. A fragment is a
+//     machine-local artifact rendered ON the machine it configures, so an
+//     absolute path is honest there; on typical Windows installs it is the
+//     version-free `C:\\Program Files\\nodejs\\node.exe`. (A version-managed
+//     Windows Node — nvm-windows — can still pin a per-version path; the plan
+//     section's limits line names that residual.)
+export function expectedCodexNotifyArgv({ receiverPath, platform = process.platform, execPath = process.execPath }) {
+  return platform === 'win32'
+    ? [String(execPath), String(receiverPath)]
+    : ['/usr/bin/env', 'node', String(receiverPath)];
+}
+
+// The notify= fragment — never a version-pinned plugin cache path; Codex
+// appends the payload JSON as one extra argv item. Renders exactly
+// expectedCodexNotifyArgv (see above) so the exact probe and the fragment
+// agree by construction.
+export function renderCodexNotifyFragmentToml({ receiverPath, platform = process.platform, execPath = process.execPath }) {
+  const argv = expectedCodexNotifyArgv({ receiverPath, platform, execPath });
   return `notify = [${argv.map((item) => tomlBasicString(item)).join(', ')}]\n`;
 }
 
@@ -519,13 +548,15 @@ export async function writeNotificationPlanArtifact({ repoRoot, artifact }) {
 // The plan builder (settings section shape)
 // ---------------------------------------------------------------------------
 
-function notificationPlanLimits({ chained }) {
+function notificationPlanLimits({ chained, platform = process.platform }) {
   const limits = [
     'runtime:settings notification plan is a dry-run (M1): it renders the ~/.codex/config.toml fragments and receiver scripts and records them in an agentic-plugins-owned artifact, but NEVER writes host config or installs the scripts — installing the receiver at the stable home location and merging the fragments are explicit user actions.',
     `The notify= fragment targets the USER-layer config.toml only: the project-local .codex/config.toml layer denylists the notify key (silently stripped) and [profiles.*] tables reject it.`,
     'notify= fires only on agent-turn-complete (the payload enum has exactly one variant at the pinned Codex version) — it cannot deliver approval-time attention; the tui.notifications fragment covers approval-requested within its limits.',
     'tui.notifications limits: TUI-only (not codex exec), default-unfocused delivery condition, OSC 9/BEL delivery is terminal-emulator-dependent, no external program, no payload. It is also a full-replace key: merging replaces any custom notifications value.',
-    'The fragment invokes the receiver via /usr/bin/env node — Node must be on PATH for the process Codex runs the notifier from (the same portability constraint doctor diagnoses for bare-node hook commands).',
+    platform === 'win32'
+      ? 'The fragment invokes the receiver via this machine\'s own node executable path (Windows has no /usr/bin/env, and a bare `node` inherits the PATH fragility doctor diagnoses for bare-node hook commands). On a version-managed Node install (nvm-windows), that path can be per-version — re-render and re-merge the fragment after switching Node versions.'
+      : 'The fragment invokes the receiver via /usr/bin/env node — Node must be on PATH for the process Codex runs the notifier from (the same portability constraint doctor diagnoses for bare-node hook commands).',
     'The receiver shuttle re-resolves the runtime plugin root on every invocation (env override, Codex fixed cache first via $CODEX_HOME, then Claude cache SemVer-max) so the fragment never points into a version-pinned plugin cache path.',
   ];
   if (chained) {
@@ -542,7 +573,7 @@ const RECEIVER_CONTRACT = Object.freeze({
   variants: Object.freeze(['agent-turn-complete']),
   tolerated_fields: Object.freeze(['client']),
   nullable_fields: Object.freeze(['last-assistant-message']),
-  node_requirement: '/usr/bin/env node (Node on PATH)',
+  node_requirement: 'POSIX: /usr/bin/env node (Node on PATH); win32: the render machine\'s node executable path (no /usr/bin/env there)',
 });
 
 // Build the Codex notification plan section (+ record the plan artifact).
@@ -589,7 +620,7 @@ export async function gatherCodexNotificationInputs({ homeDir, env = {} }) {
 // randomBytes. Returns { section, artifactBody }; artifactBody is null on the blocked
 // path (nothing to persist) and the caller owns the persist target (repo-relative for
 // settings, machine-global for bootstrap).
-export function buildCodexNotificationPlanSection({ gathered, now = new Date(), runId, runtimeVersion = RUNTIME_VERSION }) {
+export function buildCodexNotificationPlanSection({ gathered, now = new Date(), runId, runtimeVersion = RUNTIME_VERSION, platform = process.platform, execPath = process.execPath }) {
   const { read, codexHomeSource, templates, installPaths } = gathered;
   const shuttleInstallPath = installPaths.shuttle;
   const chainInstallPath = installPaths.chain;
@@ -612,7 +643,7 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
         scripts: null,
         receiver_contract: RECEIVER_CONTRACT,
         artifact: { written: false, reason: 'read-check blocked' },
-        limits: notificationPlanLimits({ chained: false }),
+        limits: notificationPlanLimits({ chained: false, platform }),
       },
       artifactBody: null,
     };
@@ -670,13 +701,13 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
   // fragment must reproduce it, never downgrade to the direct shuttle.
   const chainInUse = mode === 'wrapper-chain' || (mode === 'already-configured' && referencesChain);
   const receiverPath = chainInUse ? chainInstallPath : shuttleInstallPath;
-  const notifyFragment = renderCodexNotifyFragmentToml({ receiverPath });
+  const notifyFragment = renderCodexNotifyFragmentToml({ receiverPath, platform, execPath });
   const tuiFragment = renderCodexTuiNotificationsFragmentToml();
   const tuiWarning = parsed.tuiNotifications.present
     ? `existing [tui] notifications value found (${parsed.tuiNotifications.raw}); notifications is also a full-replace key — merging the fragment replaces it.`
     : null;
 
-  const limits = notificationPlanLimits({ chained: mode === 'wrapper-chain' });
+  const limits = notificationPlanLimits({ chained: mode === 'wrapper-chain', platform });
   const createdAt = now.toISOString();
   const readCheck = {
     performed: true,

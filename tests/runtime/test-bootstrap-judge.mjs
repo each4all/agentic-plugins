@@ -159,3 +159,87 @@ describe('judgeSteps egress.configured — activation semantics (channel-only fa
     strictEqual(entry.status, 'satisfied');
   });
 });
+
+// ---------------------------------------------------------------------------
+// notify.codex.configured — the EXACT wiring probe (notify-axis slice,
+// ADR-0048 §1). Satisfied means the merged `notify =` argv EQUALS the
+// canonical argv the rendered fragment carries (shuttle, or the chain script
+// in wrapper-chain mode) — presence alone was the vnext base observation and
+// is deliberately no longer enough.
+// ---------------------------------------------------------------------------
+
+import { expectedCodexNotifyArgv } from '../../plugins/runtime/scripts/lib/notification-plan.mjs';
+
+const SHUTTLE = '/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs';
+const CHAIN = '/home/op/.agentic-plugins/bin/codex-notify-chain.mjs';
+
+function judgeCodexNotify(codexNotify) {
+  const steps = judgeSteps({
+    expected: [{ id: stepIds.notifyCodexConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent('codex')] }],
+    probe: { hosts: { claude: { plugins: {} }, codex: { plugins: {} } } },
+    raw: {},
+    pluginSet: { plugins: {} },
+    readers: { codexNotify },
+    hookVerdict: null,
+    previousById: new Map(),
+    now: NOW,
+  });
+  strictEqual(steps.length, 1);
+  return steps[0];
+}
+
+const EXPECTED = [
+  expectedCodexNotifyArgv({ receiverPath: SHUTTLE, platform: 'linux' }),
+  expectedCodexNotifyArgv({ receiverPath: CHAIN, platform: 'linux' }),
+];
+
+describe('judgeSteps notify.codex.configured — exact canonical-wiring probe (ADR-0048 §1)', () => {
+  it('the canonical shuttle argv satisfies — and the observation says it matched, not merely existed', () => {
+    const step = judgeCodexNotify({ readable: true, present: true, argv: [...EXPECTED[0]], expected: EXPECTED });
+    strictEqual(step.status, 'satisfied');
+    match(step.observed, /matches the canonical receiver wiring/);
+  });
+
+  it('the chain argv is equally canonical — wrapper-chain mode is not a downgrade', () => {
+    const step = judgeCodexNotify({ readable: true, present: true, argv: [...EXPECTED[1]], expected: EXPECTED });
+    strictEqual(step.status, 'satisfied');
+  });
+
+  it('a present non-canonical notifier is manual-follow-up, never satisfied and never silently pending', () => {
+    const step = judgeCodexNotify({ readable: true, present: true, argv: ['/usr/bin/env', 'node', '/opt/other-notifier.mjs'], expected: EXPECTED });
+    strictEqual(step.status, 'manual-follow-up');
+    match(step.recovery, /never auto-chains/);
+  });
+
+  it('a same-length argv differing in ONE element does not match — equality is element-wise', () => {
+    const drifted = [...EXPECTED[0]];
+    drifted[drifted.length - 1] = '/home/op/.agentic-plugins/bin/renamed.mjs';
+    const step = judgeCodexNotify({ readable: true, present: true, argv: drifted, expected: EXPECTED });
+    strictEqual(step.status, 'manual-follow-up');
+  });
+
+  it('empty argv and unparseable values stay pending; a missing key stays pending; an unreadable config is unknown', () => {
+    strictEqual(judgeCodexNotify({ readable: true, present: true, argv: [], expected: EXPECTED }).status, 'pending');
+    strictEqual(judgeCodexNotify({ readable: true, present: true, argv: null, expected: EXPECTED }).status, 'pending');
+    strictEqual(judgeCodexNotify({ readable: true, present: false, argv: null, expected: EXPECTED }).status, 'pending');
+    strictEqual(judgeCodexNotify({ readable: false, present: false, argv: null, expected: EXPECTED }).status, 'unknown');
+  });
+});
+
+describe('expectedCodexNotifyArgv — the per-OS canonical argv single source', () => {
+  it('POSIX keeps /usr/bin/env node <receiver> — the form already merged on live machines', () => {
+    for (const platform of ['linux', 'darwin']) {
+      const argv = expectedCodexNotifyArgv({ receiverPath: SHUTTLE, platform, execPath: '/ignored/node' });
+      strictEqual(argv[0], '/usr/bin/env');
+      strictEqual(argv[1], 'node');
+      strictEqual(argv[2], SHUTTLE);
+    }
+  });
+
+  it('win32 interpolates the render machine\'s own node executable — /usr/bin/env does not exist there', () => {
+    const argv = expectedCodexNotifyArgv({ receiverPath: 'C:\\Users\\op\\.agentic-plugins\\bin\\codex-notify-shuttle.mjs', platform: 'win32', execPath: 'C:\\Program Files\\nodejs\\node.exe' });
+    strictEqual(argv.length, 2);
+    strictEqual(argv[0], 'C:\\Program Files\\nodejs\\node.exe');
+    strictEqual(argv[1], 'C:\\Users\\op\\.agentic-plugins\\bin\\codex-notify-shuttle.mjs');
+  });
+});
