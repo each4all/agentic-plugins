@@ -179,6 +179,10 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
     for (const argv of [
       ['status', '--answers', '/dev/null'],
       ['verify', '--answers', '/dev/null'],
+      // attest records receipt testimony WITHOUT an answers file (the
+      // attest-receipt ANSWER is resume-only; the attest VERB is the
+      // post-terminal door) — so it is a non-interview verb here too.
+      ['attest', '--answers', '/dev/null'],
       ['abandon', '--latest-open', '--answers', '/dev/null'],
       ['profile', 'export', '--answers', '/dev/null'],
       ['profile', 'seed', '--profile-file', '/dev/null', '--answers', '/dev/null'],
@@ -905,6 +909,49 @@ describe('bootstrap egress-provider-ack executor — consistency matrix + reader
     let proofExists = true;
     try { await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json')); } catch { proofExists = false; }
     strictEqual(proofExists, false, 'an inconsistent section must never persist as evidence');
+  });
+
+  it('a dispatched-but-unmirrored section (result=acked, status=failed) imports as a FAILED proof with the provider fact intact', async () => {
+    // provider_ack records the PROVIDER FACT only (schema providerAck $def):
+    // dispatched + lost mirror is a legitimate failed proof whose ack leg is
+    // true. The matrix must import it — refusing it as "inverse
+    // contradiction" would only be correct when the mirror ALSO correlated.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runner = async (scriptPath, args) => {
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        if (args.includes('--execute-egress-ack-proof')) {
+          return okOut(JSON.stringify({
+            egress_ack_proof: {
+              requested: true, executed: true, mode: 'explicit_egress_executor',
+              status: 'failed',
+              provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: 'c'.repeat(64), ran_at: '2026-07-18T04:00:00.000Z' },
+              outcome_reason: 'mirror-missing', mirror_correlated: false, network_request_performed: true,
+              subject_suffix: 'abcdef012345', blockers: [], limits: [],
+            },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: 'b'.repeat(64) },
+          }));
+        }
+        return okOut(JSON.stringify({}));
+      }
+      return missing();
+    };
+    const env = { ...EGRESS_ENV_NO_RECIPIENT, TELEGRAM_CHAT_ID: '424242424242' };
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: runner, env });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    const answersPath = join(home, 'execute-egress-unmirrored.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+
+    ok(!resume.report.warnings.some((w) => /internally inconsistent/.test(w)),
+      `a legitimate failed-with-ack section must not be refused: ${JSON.stringify(resume.report.warnings)}`);
+    const proof = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json'), 'utf8'));
+    strictEqual(proof.status, 'failed', 'the proof stays failed — the mirror gate is not relaxed');
+    strictEqual(proof.provider_ack.result, 'acked', 'the provider fact survives the import untouched');
+    const ack = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+    ok(ack && ack.status !== 'passed', 'the reducer never promotes an unmirrored attempt to passed');
   });
 
   it('the final reduce re-reads the READERS: an activation changed DURING the proof is judged post-execution, not from the stale snapshot', async () => {

@@ -1023,7 +1023,23 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
   try {
     const gathered = await gatherCodexNotificationInputs({ homeDir, env });
     const { section } = buildCodexNotificationPlanSection({ gathered, now: new Date(now), runId: makeNotificationRunId(now) });
-    await persist('notification-plan', section, stepIds.notifyCodexConfigured(),
+    // The [tui] preview is STRIPPED from this artifact (integration pass over
+    // the notify-axis + statusline leaves): the Stage-5 statusline-codex
+    // fragment below is the ONE decision-aware [tui] table (Review peer
+    // BLOCKER), and persisting the builder's notifications-only preview
+    // beside it would hand the operator two [tui] blocks with competing
+    // guidance — the exact defect the combined fragment exists to prevent.
+    // The builder keeps its preview for non-bootstrap surfaces; THIS artifact
+    // carries the notify= wiring only, which is also all its step judges.
+    const notifySection = {
+      ...section,
+      fragments: { ...section.fragments, tui_notifications_toml: null },
+      // NB: this note deliberately spells the table dotted (`tui.notifications`)
+      // — a literal `[tui]` header may appear in exactly ONE artifact per run
+      // (the combined statusline-codex fragment), and the sweep test pins that.
+      tui_note: 'The tui.notifications key rides in the statusline-codex combined fragment (the ONE tui table for this run) — merge it from there, not from this artifact.',
+    };
+    await persist('notification-plan', notifySection, stepIds.notifyCodexConfigured(),
       'Merge the rendered notify fragment into $CODEX_HOME/config.toml (see the fragment body), then resume.',
       '$CODEX_HOME/config.toml',
       { desired: Array.isArray(section.expected_notify_argv) ? JSON.stringify(section.expected_notify_argv) : null });
@@ -1056,17 +1072,18 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
         requested: true,
         host: 'codex',
         fragment_toml: codexTuiFragment,
-        note: 'The ONE decision-aware [tui] table: each planned key (status_line, notifications) rides iff its step is not declined. This supersedes the notification plan section\'s [tui] preview — merge THIS block. status_line uses the closed upstream item vocabulary (host-truth §1); the agentic-6 order is ADR-0048 §2.1.',
+        note: 'The ONE decision-aware [tui] table: each planned key (status_line, notifications) rides iff its step is not declined. The notification-plan artifact carries the notify= wiring only (its [tui] preview is stripped) — merge the [tui] table from THIS block. status_line uses the closed upstream item vocabulary (host-truth §1); the agentic-6 order is ADR-0048 §2.1.',
       }, stepIds.statuslineConfigured('codex'),
       tuiGuidance,
       '$CODEX_HOME/config.toml',
       { desired: JSON.stringify(expectedCodexStatusLineItems()) });
-      // The notifications key lives in the SAME fragment — point the notify
-      // step at it too (shared pointer, own desired), so neither step ever
-      // hands out a second competing [tui] header.
-      if (includeKey(notifyCodexStep) && slCodexStep && byId.get(stepIds.statuslineConfigured('codex'))?.fragment_pointer && !notifyCodexStep.fragment_pointer) {
-        notifyCodexStep.fragment_pointer = byId.get(stepIds.statuslineConfigured('codex')).fragment_pointer;
-      }
+      // The notify step keeps its OWN fragment pointer (the notify= wiring
+      // artifact — its [tui] preview is stripped at persist above), so this
+      // combined fragment is the single [tui] source for the run. A previous
+      // pointer-sharing branch here was dead code: persist() had already set
+      // the notify step's pointer, so its `!fragment_pointer` guard could
+      // never fire — the strip above is the working realization of the
+      // "no two competing [tui] headers" intent.
     }
 
     const claudeExpected = expectedClaudeStatuslineCommand({ homeDir });
@@ -1794,7 +1811,11 @@ async function executeProofViaDoctor(ctx, { kind, probe, selection }) {
     //   - `passed` requires result=acked AND mirror_correlated AND a linkable
     //     artifact hash — a pass missing any leg is a claim the evidence does
     //     not back;
-    //   - result=acked under a non-passed status is the inverse contradiction.
+    //   - result=acked AND mirror_correlated under a non-passed status is the
+    //     inverse contradiction. result=acked WITHOUT the mirror is a
+    //     legitimate failed proof (the provider fact stands; the attempt is
+    //     unverifiable) — provider_ack records the provider fact only, per
+    //     the schema's providerAck $def.
     // Any mismatch refuses the import (fail-closed) rather than persisting a
     // record the reducer would have to argue with.
     if (!section?.executed) {
@@ -1807,8 +1828,8 @@ async function executeProofViaDoctor(ctx, { kind, probe, selection }) {
     if (section.status === 'passed' && (section.provider_ack.result !== 'acked' || section.mirror_correlated !== true || artifactHash === null)) {
       return { ok: false, diagnostic: `the egress ack proof is internally inconsistent: status=passed but result=${section.provider_ack.result}, mirror_correlated=${section.mirror_correlated}, artifact_hash=${artifactHash === null ? 'missing' : 'present'}`, record: null, doctorReport: report };
     }
-    if (section.provider_ack.result === 'acked' && section.status !== 'passed') {
-      return { ok: false, diagnostic: `the egress ack proof is internally inconsistent: result=acked but status=${section.status}`, record: null, doctorReport: report };
+    if (section.provider_ack.result === 'acked' && section.mirror_correlated === true && section.status !== 'passed') {
+      return { ok: false, diagnostic: `the egress ack proof is internally inconsistent: result=acked with a correlated mirror but status=${section.status}`, record: null, doctorReport: report };
     }
     evidence = {
       status: section.status === 'passed' ? 'passed' : 'failed',

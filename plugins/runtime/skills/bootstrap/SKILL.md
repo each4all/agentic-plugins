@@ -44,8 +44,10 @@ node "<runtime-plugin-root>/scripts/bootstrap.mjs" profile seed   --profile-file
      and pass it via `--answers` on `plan` or `resume` — the only two verbs
      that accept it. Prose never reaches the script directly.
      `attest-receipt` (ADR-0048 §3) is the owner's phone-receipt testimony:
-     it targets the egress provider-ack proof step only and is accepted
-     under `resume` or `attest`, never `plan`.
+     it targets the egress provider-ack proof step only, and as an ANSWER it
+     is accepted under `resume` only, never `plan`. The standalone `attest`
+     verb records the same testimony post-terminally without an answers
+     file.
    - **Render / apply-command**: surface the rendered fragments and presented
      commands verbatim, including the plugin-management command carrying the
      plan hash and each fragment's backup/verify/manual-revert guidance. The
@@ -64,9 +66,15 @@ node "<runtime-plugin-root>/scripts/bootstrap.mjs" profile seed   --profile-file
 
 - Machine-scoped: never reasons about the invoking repository's source tree;
   consumer-repo invocations emit no source-tree remediation.
-- Artifact-only: writes land only under `~/.agentic-plugins/` (runs +
-  profiles). Host config, credentials, `config.local.toml`, and network are
-  never touched.
+- Artifact-only: bootstrap's own writes land only under `~/.agentic-plugins/`
+  (runs + profiles), and bootstrap itself never opens the network. Host
+  config, credentials, and `config.local.toml` are never written. The one
+  delegated exception is an explicit operator `execute` answer on the egress
+  proof step: resume then drives `runtime:doctor --record`, whose executor
+  performs the real-network send (behind the `AGENTIC_EGRESS_REAL_SMOKE=1`
+  third consent) and records its doctor artifact under the repo's
+  `.agentic-plugins/runs/doctor/` — delegated effects are named, never
+  silent.
 - No second executor: plugin management is presented to
   `runtime:settings --execute-plugin-management`; proofs run only through
   `runtime:doctor --record` under `resume`, and only on an explicit operator

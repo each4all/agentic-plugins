@@ -44,8 +44,10 @@ profile-seeded-default → ask → render → apply-command → re-probe + confi
    script only through that file** (prose-to-flag translation is unauditable);
    `--answers` is accepted on no other verb. `attest-receipt` (ADR-0048 §3) is
    the owner's phone-receipt testimony: it targets the egress provider-ack
-   proof step only and is accepted under `resume` or `attest`, never `plan`
-   (no provider ack can exist yet, so there is nothing to testify about).
+   proof step only, and as an ANSWER it is accepted under `resume` only,
+   never `plan` (no provider ack can exist yet, so there is nothing to
+   testify about). The standalone `attest` verb records the same testimony
+   post-terminally without an answers file.
 4. **Render.** The script renders host-config fragments into the run's
    `fragments/` directory and presents apply commands (including the
    plugin-management command carrying the plan hash). Surface them verbatim.
@@ -77,5 +79,11 @@ Notes:
   re-probed or re-certified); `1` unexpected error.
 - A second `plan` while a run is open is rejected — continue it with
   `resume --latest-open` or close it with `abandon`.
-- Artifacts live under the machine-global `~/.agentic-plugins/` home only.
-  Host config, credentials, and `config.local.toml` are never written.
+- Bootstrap's own artifacts live under the machine-global
+  `~/.agentic-plugins/` home only; host config, credentials, and
+  `config.local.toml` are never written, and bootstrap itself never opens
+  the network. The delegated `runtime:doctor --record` proof invoked on an
+  explicit `execute` answer records its doctor artifact under the repo's
+  `.agentic-plugins/runs/doctor/`, and the egress proof's executor performs
+  a real-network send behind the `AGENTIC_EGRESS_REAL_SMOKE=1` third
+  consent — delegated effects are named, never silent.

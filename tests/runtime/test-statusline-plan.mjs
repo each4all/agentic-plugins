@@ -8,7 +8,7 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual, throws } from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -267,6 +267,35 @@ describe('statusline end-to-end — plan renders fragments, desired seats, the n
     // Non-gating shim artifact (peer G10): present regardless of step status.
     const shimBody = await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'fragments', 'statusline-shim.fragment'), 'utf8');
     ok(shimBody.includes('agentic-statusline.mjs — Claude Code statusLine shim'));
+  });
+
+  it('the combined fragment is the ONE [tui] source across ALL run artifacts — the notification-plan artifact carries no [tui] preview (integration pass)', async () => {
+    // Both Codex steps pending → both keys ride the combined fragment. The
+    // notification-plan artifact must carry the notify= wiring ONLY: its
+    // builder-level [tui] preview is stripped at persist so the run never
+    // hands the operator two [tui] blocks with competing guidance.
+    const { home, cwd } = await makeHome();
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });
+    const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'fragments');
+
+    const notifyArtifact = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
+    strictEqual(notifyArtifact.fragments.tui_notifications_toml, null,
+      'the notification-plan artifact must not carry its own [tui] preview beside the combined fragment');
+    match(notifyArtifact.tui_note, /statusline-codex combined fragment/,
+      'the strip is explained in-artifact so an operator reading only this file is routed to the one [tui] source');
+    ok(notifyArtifact.fragments.notify_toml && !notifyArtifact.fragments.notify_toml.includes('[tui]'),
+      'the notify= fragment stays and stays [tui]-free');
+
+    // Sweep EVERY fragment artifact: exactly one carries a [tui] header, and
+    // it is the combined statusline-codex fragment.
+    const names = (await readdir(fragmentsDir)).filter((n) => n.endsWith('.fragment')).sort();
+    const carriers = [];
+    for (const name of names) {
+      const text = await readFile(join(fragmentsDir, name), 'utf8');
+      if (/\[tui\]/.test(text)) carriers.push(name);
+    }
+    deepStrictEqual(carriers, ['statusline-codex.fragment'],
+      `the [tui] header may appear in exactly one artifact (got: ${carriers.join(', ') || 'none'} out of ${names.join(', ')})`);
   });
 
   it('a canonical home satisfies both steps on plan, and profile export carries the preset (owner rule: applied fragments ARE the declaration)', async () => {
