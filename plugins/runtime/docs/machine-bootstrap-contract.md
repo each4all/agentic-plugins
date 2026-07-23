@@ -581,7 +581,7 @@ carries an egress channel.
 
 ```jsonc
 {
-  "schema": "agentic-machine-profile-1.0",
+  "schema": "agentic-machine-profile-1.1",
   "exported_at": "<iso-8601-utc>",
   "boundary": {
     "writes_host_config": false,
@@ -771,7 +771,7 @@ any unknown key at all. Downgrade is never attempted.
 
 ```jsonc
 {
-  "schema": "runtime-bootstrap-run-1.1",
+  "schema": "runtime-bootstrap-run-1.2",
   "run_id": "<run-id>",
   "started_at": "<iso-8601-utc>",
   "updated_at": "<iso-8601-utc>",
@@ -1068,6 +1068,14 @@ is where the minor moves:
   newer runtime recorded (§4.6: downgrade is never attempted). R0 verbs may
   still read it under the §4.1 scalar tolerance.
 
+**History-cap boundary (schema `history` maxItems 256).** A valid legacy run
+sitting exactly at the cap cannot take the migration history row: the update
+fails schema validation and is refused fail-closed rather than trimming rows —
+`history` is the replay record, and silently dropping its oldest entries to make
+room would forge the very account it exists to keep. The escape is the ordinary
+one: `abandon` the run and start a fresh `plan`. (A run with 256 history rows is
+a pathological artifact, not an operating state.)
+
 **Two reducer traps, both load-bearing** — they are why this is a command and not a
 settings flag:
 
@@ -1319,6 +1327,18 @@ security, pointer, inventory, and retention.
 
 - Directories `0700`, files `0600`, where the platform supports it.
 - **Atomic** temp-file + rename for every write.
+- **Concurrency limit, stated honestly (ADR-0048 realization decision, owner-
+  approved 2026-07-23).** The manifest writers serialize under the family lock,
+  and resume's transactional order (persist → re-read authoritative bytes →
+  reduce → manifest update) closes the single-session crash windows — but there
+  is NO cross-process CAS over the evidence set: two resumes racing the same
+  open run can interleave an evidence write between one another's read-back and
+  manifest update, and each will persist a reduction over the bytes it saw.
+  Full run-scoped locking/CAS is deliberately out of this slice's scope (it
+  becomes materially riskier only once the egress executor gives a proof a
+  network side effect — the trigger for a dedicated slice); until then, one
+  resume at a time per machine is the operating assumption, and `abandon` +
+  fresh `plan` is the recovery when concurrent resumes were run anyway.
 - **Symlink refusal** and **canonical containment**: resolve the real path and
   assert it is under `~/.agentic-plugins/`. This is why `profile export --out` does
   not exist, and why `--name` is validated against a strict charset (no `/`, no
@@ -1551,7 +1571,7 @@ nobody mistakes "the contract did not say" for "the contract left it open".
 
 | Item | Constrained by |
 |---|---|
-| Exact JSON Schema files for `agentic-machine-profile-1.0`, `runtime-bootstrap-run-1.1` (1.0 + optional probe `hook_state`, S8a5), `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order. Ship as data (§11.1); S8a2 C4. |
+| Exact JSON Schema files for `agentic-machine-profile-1.1` (1.0 + trailing `statusline_preset` scalar, ADR-0048 §2.1), `runtime-bootstrap-run-1.2` (1.1 + the egress evidence vocabulary, ADR-0048 §3), `runtime-plugin-set-1.0` | §4, §5, §1.4 — including the closed-schema rule, the caps, and the canonical key order. Ship as data (§11.1); S8a2 C4. |
 | ~~Exact permission-mode enums per host~~ | **Resolved (S8a2 C0).** The **stored** enum carries whatever each host accepts, unsafe values included, because §4.5.3 shows a source machine's value as a labelled note — it must have a field to live in. Safety grading is a **present/seed-side** rule, not a second schema field: never *present* Claude `bypassPermissions`, Codex `approval_policy = "never"`, or `sandbox_mode = "danger-full-access"` as a default. Presentable Claude `defaultMode`: `default` / `acceptEdits` / `plan`. Presentable Codex `approval_policy`: `untrusted` / `on-request` / `on-failure`; `sandbox_mode`: `read-only` / `workspace-write`. |
 | The complete `minimum_version` floor table | §1.4 — two are known (`companions` 0.3.0, `engineer` 0.7.0); S8a2 C1 verifies the rest against the plugins' own changelogs. Compare **prerelease-aware** with SemVer §11 identifier ranking (numeric identifiers as JS numbers, lossy only above 2^53; beyond the shared `semverCompare`, whose prerelease tie-break ranks a release above its own prereleases but never identifiers against each other); an unknown installed version with a non-null floor stays **unresolved**, never "installed". |
 | ~~The write-ahead journal's exact transition table and the settings-artifact schema minor~~ | **Resolved (S8a1)** — §1.5 "Concrete shape" specifies the fields; artifact schema is `runtime-settings-execution-artifact-1.3` (S8a4 added the `codex_hook_review` canonical `bound_versions`/`attested_plugins`), statuses `planned → in-progress → completed/failed/refused` |

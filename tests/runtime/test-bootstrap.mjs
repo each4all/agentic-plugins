@@ -938,7 +938,9 @@ describe('runtime bootstrap artifacts — fragment + proof writers', () => {
   it('the proof writer refuses a terminal run, except the receipt attestation into a completed one', async () => {
     const homeDir = await tempHome();
     const runId = makeBootstrapRunId(NOW);
-    await seedRun(homeDir, runId, { status: 'complete' });
+    // The post-terminal receipt door additionally requires a CURRENT-schema,
+    // schema-valid manifest (Codex review MAJOR) — the fixture declares 1.2.
+    await seedRun(homeDir, runId, { status: 'complete', schema: 'runtime-bootstrap-run-1.2' });
 
     const record = {
       kind: 'deep-peer-smoke',

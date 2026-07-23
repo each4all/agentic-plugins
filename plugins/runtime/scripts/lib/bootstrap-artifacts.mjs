@@ -102,6 +102,10 @@ function runManifestValidator() {
 // ---------------------------------------------------------------------------
 
 export const BOOTSTRAP_ARTIFACT_FAMILY = 'bootstrap';
+// The run-schema version this storage layer stamps (tombstones) and gates on
+// (the post-terminal receipt window). bootstrap.mjs imports THIS — one lockstep
+// site, not two.
+export const BOOTSTRAP_RUN_SCHEMA_VERSION = 'runtime-bootstrap-run-1.2';
 export const BOOTSTRAP_LATEST_SCHEMA_VERSION = 'runtime-bootstrap-latest-1.0';
 
 // bootstrap-YYYYMMDDTHHMMSSZ-<6hex> — the same run-id shape as every other family
@@ -1251,7 +1255,7 @@ export async function abandonBootstrapRun({ homeDir, repoRoot, runId, reason = '
           history: [...(Array.isArray(previous.history) ? previous.history : []), { step_id: null, from: previous.status ?? 'open', to: 'abandoned', reason, at }],
         }
       : {
-          schema: 'runtime-bootstrap-run-1.2',
+          schema: BOOTSTRAP_RUN_SCHEMA_VERSION,
           run_id: runId,
           started_at: at,
           updated_at: at,
@@ -1420,7 +1424,7 @@ async function requireExistingRun({ homeDir, runId }) {
   // so the proof writer can apply its open-run gate. Membership-checked, not
   // trusted further — reduction-grade validation is the read boundary's job.
   const status = read.status === 'ok' && BOOTSTRAP_RUN_STATUSES.includes(read.value?.status) ? read.value.status : null;
-  return { ok: true, reason: 'ok', status, diagnostic: null };
+  return { ok: true, reason: 'ok', status, manifest: read.status === 'ok' ? read.value : null, diagnostic: null };
 }
 
 // Persist a rendered host-config fragment and return the METADATA the run manifest
@@ -1438,6 +1442,12 @@ export async function writeBootstrapFragment({ homeDir, repoRoot, runId, name, c
   if (!exists.ok) return { ok: false, reason: exists.reason, diagnostics: [exists.diagnostic], fragment: null };
 
   const text = typeof content === 'string' ? content : `${JSON.stringify(content, null, 2)}\n`;
+  // Fragments render host-config EDITS, never credentials — the same
+  // scrub-before-write fail-close every bootstrap artifact writer carries
+  // (Codex review MAJOR: this writer had none).
+  if (scrubSecrets(text) !== text) {
+    return { ok: false, reason: 'secret-shaped-content', diagnostics: [`Fragment ${name} contains secret-shaped content; refusing to persist it.`], fragment: null };
+  }
   const path = join(bootstrapFragmentsDir(homeDir, runId), `${name}.fragment`);
   const write = await writeFileAtomic({ root: home.root, path, text });
   if (!write.ok) return { ok: false, reason: write.reason, diagnostics: [write.diagnostic], fragment: null };
@@ -1495,18 +1505,44 @@ export async function writeBootstrapProof({ homeDir, repoRoot, runId, kind, reco
         proof: null,
       };
     }
+    // The post-terminal window is the NARROWEST door in this writer, so it
+    // carries the strictest gate (Codex review MAJOR): the terminal manifest
+    // must be schema-valid AND current-schema — a status string alone let a
+    // receipt land inside a schema-invalid or legacy record whose verdict
+    // machinery cannot even read it.
+    const manifestVerdict = exists.manifest ? (await runManifestValidator())(exists.manifest) : { ok: false, errors: ['manifest unreadable'] };
+    if (!manifestVerdict.ok || exists.manifest?.schema !== BOOTSTRAP_RUN_SCHEMA_VERSION) {
+      return {
+        ok: false,
+        reason: 'run-not-attestable',
+        diagnostics: [`Run ${runId} is terminal but ${manifestVerdict.ok ? `carries schema ${exists.manifest?.schema}, not ${BOOTSTRAP_RUN_SCHEMA_VERSION} — receipt testimony is current-schema vocabulary` : `its manifest is schema-invalid (${manifestVerdict.errors.slice(0, 3).join('; ')})`}; refusing the receipt append.`],
+        proof: null,
+      };
+    }
   }
 
-  const verdict = await validateEvidenceRecord({ kind, record });
-  if (!verdict.ok) return { ok: false, reason: 'invalid-proof', diagnostics: verdict.errors, proof: null };
-
-  const text = `${JSON.stringify(record, null, 2)}\n`;
+  // SERIALIZE ONCE, SCRUB FIRST, VALIDATE THE PARSED BYTES, WRITE THE SAME
+  // BYTES (Codex review MAJOR). The earlier shape validated the live object,
+  // scrubbed one serialization, then re-serialized for the write — a stateful
+  // toJSON could show the scrub safe content and hand the write something
+  // else, and a validation error raised BEFORE the scrub could echo a
+  // secret-shaped value through its diagnostics. Exactly one text exists now:
+  // it is scrubbed, parsed, validated, hashed, and written.
+  let text;
+  try {
+    text = `${JSON.stringify(record, null, 2)}\n`;
+  } catch (err) {
+    return { ok: false, reason: 'unserializable', diagnostics: [`The proof record is not serializable as JSON (${err?.message ?? String(err)}).`], proof: null };
+  }
   if (scrubSecrets(text) !== text) {
     return { ok: false, reason: 'secret-shaped-content', diagnostics: ['The serialized proof record contains secret-shaped content (token/bearer/credential-URL pattern); refusing to persist it. Evidence carries hashes and enum results, never credentials.'], proof: null };
   }
+  const parsed = JSON.parse(text);
+  const verdict = await validateEvidenceRecord({ kind, record: parsed });
+  if (!verdict.ok) return { ok: false, reason: 'invalid-proof', diagnostics: verdict.errors, proof: null };
 
   const path = join(bootstrapProofDir(homeDir, runId), `${kind}.json`);
-  const write = await writeJsonAtomic({ root: home.root, path, value: record });
+  const write = await writeFileAtomic({ root: home.root, path, text });
   if (!write.ok) return { ok: false, reason: write.reason, diagnostics: [write.diagnostic], proof: null };
 
   return {

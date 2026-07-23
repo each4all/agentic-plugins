@@ -434,6 +434,12 @@ export function seedProposals({ profile, targetDefaults = {}, validate }) {
   for (const [key, entry] of Object.entries(profile.model_effort ?? {})) propose(`model_effort.${key}`, entry.value, entry);
   for (const [key, entry] of Object.entries(profile.notify ?? {})) propose(`notify.${key}`, entry.value, entry);
 
+  // 1.1 (ADR-0048 §2.1) — the statusline preset is a bare scalar (no
+  // scope/provenance envelope by design), presented like every other value:
+  // a confirmation-required default, never something applied (Codex review
+  // MINOR — §4.5's "present every remaining value" covers it).
+  propose('statusline_preset', profile.statusline_preset, { scope: 'machine', provenance: 'user-global' });
+
   // The chat-id pre-fills; the token never does (§4.5) — and the token is not in the
   // profile to begin with, so this is the whole of it.
   const egress = profile.egress ?? {};

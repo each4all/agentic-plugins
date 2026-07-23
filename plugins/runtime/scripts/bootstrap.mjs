@@ -37,6 +37,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_VERSION } from './version.mjs';
 import {
+  BOOTSTRAP_RUN_SCHEMA_VERSION,
   BOOTSTRAP_TERMINAL_RUN_STATUSES,
   abandonBootstrapRun,
   createBootstrapRun,
@@ -93,7 +94,7 @@ import { makePermissionRunId } from './lib/permission-artifacts.mjs';
 export { RUNTIME_VERSION };
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const RUN_SCHEMA_VERSION = 'runtime-bootstrap-run-1.2';
+const RUN_SCHEMA_VERSION = BOOTSTRAP_RUN_SCHEMA_VERSION;
 
 // §3.1 — the exit-code contract. These are the ONLY codes this command exits
 // with; a verb maps its completion state through EXIT_BY_STATE below.
@@ -692,9 +693,15 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
   const choices = [];
   const history = [];
   const effective = new Map();
-  // Duplicate answers apply in file order — the LAST one wins the step state,
-  // while choices[] records every one (the run is replayable from its own
-  // manifest, so nothing is silently dropped).
+  // TWO PASSES (Codex review MAJOR — a one-pass shape let an EARLIER decline
+  // mutate step state permanently even when a LATER answer superseded it:
+  // `[decline, execute]` executed the proof while the reducer still saw the
+  // step declined and could close configured-not-verified over it).
+  //
+  // Pass 1 validates every row and records every choice (the audit log keeps
+  // ALL of them — the run is replayable from its own manifest), collapsing to
+  // one EFFECTIVE action per step, last-wins in file order. Pass 2 applies
+  // state transitions from the effective map ONLY.
   for (const { step_id: stepId, answer } of answers) {
     const step = byId.get(stepId);
     if (!step) {
@@ -711,17 +718,20 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
         throw new UsageError(`answer 'attest-receipt' is not accepted under plan — no provider ack can exist yet, so there is nothing to testify about; use resume or attest`);
       }
     }
-    if (answer === 'decline') {
-      if (!step.declinable) {
-        throw new UsageError(`step ${stepId} is not declinable (§6.2 — host presence/auth, marketplace registration, runtime, companions, and hard-edge targets are never declinable)`);
-      }
-      if (step.status !== 'satisfied') {
-        history.push({ step_id: stepId, from: step.status, to: 'declined', reason: 'operator declined via answers file', at });
-        step.status = 'declined';
-      }
+    if (answer === 'decline' && !step.declinable) {
+      throw new UsageError(`step ${stepId} is not declinable (§6.2 — host presence/auth, marketplace registration, runtime, companions, and hard-edge targets are never declinable)`);
     }
     choices.push({ step_id: stepId, answer, at });
     effective.set(stepId, answer);
+  }
+
+  for (const [stepId, answer] of effective) {
+    if (answer !== 'decline') continue;
+    const step = byId.get(stepId);
+    if (step.status !== 'satisfied') {
+      history.push({ step_id: stepId, from: step.status, to: 'declined', reason: 'operator declined via answers file', at });
+      step.status = 'declined';
+    }
   }
 
   // §6.2 — declining a plugin creates a new effective custom selection and
@@ -950,7 +960,28 @@ async function selectRun({ homeDir, opts, defaultSelector, validateRun }) {
   if (!verdict.ok) {
     return { error: `Run ${run.run_id} has a schema-invalid manifest (${verdict.errors.slice(0, 3).join('; ')}); close it with \`abandon ${run.run_id}\` and start a new plan.`, exitCode: EXIT.UNEXPECTED };
   }
-  return { run, manifest };
+  // The embedded run_id must NAME the selected directory (Codex review
+  // BLOCKER): a valid manifest for run B sitting inside directory A would
+  // otherwise route every downstream read — proof/ read-back included — to
+  // B's evidence while claiming to report on A.
+  if (manifest.run_id !== run.run_id) {
+    return { error: `Run directory ${run.run_id} contains a manifest naming ${manifest.run_id} — the record and its home disagree, so neither can be trusted. Close it with \`abandon ${run.run_id}\`.`, exitCode: EXIT.UNEXPECTED };
+  }
+  // Duplicate step ids are schema-valid (an array cannot forbid them) but
+  // collapse inconsistently downstream (first-wins .find vs last-wins Map —
+  // Codex review MAJOR): refuse them at the selection boundary.
+  const stepIdCounts = new Map();
+  for (const s of manifest.steps ?? []) {
+    if (typeof s?.id === 'string') stepIdCounts.set(s.id, (stepIdCounts.get(s.id) ?? 0) + 1);
+  }
+  const duplicatedStepIds = [...stepIdCounts.entries()].filter(([, n]) => n > 1).map(([id]) => id).sort();
+  if (duplicatedStepIds.length > 0) {
+    return { error: `Run ${run.run_id} records duplicate step id(s) ${duplicatedStepIds.join(', ')} — duplicate rows collapse ambiguously and are refused. Close it with \`abandon ${run.run_id}\`.`, exitCode: EXIT.UNEXPECTED };
+  }
+  // §4.1 validator warnings SURFACE (Codex review MAJOR): a future-minor
+  // document's ignored scalars must be visible to the operator, not silently
+  // dropped at the one boundary every verb reads through.
+  return { run, manifest, warnings: verdict.warnings ?? [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,7 +1044,8 @@ async function loadContext(ctx) {
 async function probeNow(ctx) {
   const raw = await probeMachineHostState({
     homeDir: ctx.homeDir,
-    env: ctx.env,
+    // Scrubbed: the host-CLI probes are control-plane children (ADR-0048 §4).
+    env: scrubbedControlPlaneEnv(ctx.env),
     runner: ctx.runner,
     // NEUTRAL cwd — never the caller's repository (§1.1).
     cwd: tmpdir(),
@@ -1058,6 +1090,19 @@ async function readUserGlobalReaders(ctx) {
     codexNotify = { readable: false, present: false, argv: null };
   }
   return { modelEffort, notify, claudePermission, codexPermission, egress, egressActivation, codexNotify };
+}
+
+// ADR-0048 §4 — CONTROL-PLANE child environments are scrubbed at the point of
+// spawn: the host probes, the settings dry-run, and the read-only doctor fetch
+// have no business holding the egress credential. The ONE exception is the
+// explicitly-executed proof path (executeProofViaDoctor), whose attention
+// hooks must egress — §4 names that inheritance a documented exception, not a
+// loophole. In-process readers (the E1 activation checker, the user-global
+// config reads) keep the raw env: they are the named readers, not children.
+function scrubbedControlPlaneEnv(env) {
+  const out = { ...(env ?? {}) };
+  delete out[EGRESS_CREDENTIAL_ENV_VAR];
+  return out;
 }
 
 // ADR-0048 §3 / D0.3 — the CURRENT sanitized activation identity for the
@@ -1117,10 +1162,15 @@ function resolveSelection({ opts, pluginSet, seededSelection = null }) {
   return { selection: { bundle, desired, excluded }, softWarnings };
 }
 
-function hookVerdictFor({ manifest, pluginSet, selection, probe }) {
+// `recordedAttestation` is the READ-BACK proof/hook-attestation.json record —
+// never the manifest's reduced completion cache (Codex review MAJOR: judging
+// the step from the cache stranded a run whose attestation file landed but
+// whose manifest persist failed — every later resume saw the recorded proof,
+// skipped refreshing it, and kept the step pending off the stale cache).
+function hookVerdictFor({ recordedAttestation, pluginSet, selection, probe }) {
   const codexHookPlugins = selection.desired.filter((n) => pluginSet.plugins[n]?.hook_bearing?.codex === true).sort();
   const applicable = codexHookPlugins.length > 0;
-  return recomputeHookAttestation(manifest?.completion?.hook_attestation ?? null, {
+  return recomputeHookAttestation(recordedAttestation ?? null, {
     current: currentBoundVersions({ probe, selection: { plugins: selection.desired }, runtimeVersion: RUNTIME_VERSION }),
     expectedPlugins: codexHookPlugins,
     probe,
@@ -1202,7 +1252,7 @@ async function runPlan(ctx, opts) {
   const graph = validateStepGraph(expected);
   if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
 
-  const hookVerdict = hookVerdictFor({ manifest: null, pluginSet, selection, probe });
+  const hookVerdict = hookVerdictFor({ recordedAttestation: null, pluginSet, selection, probe });
   const steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, now: ctx.now });
 
   const { choices, history } = applyAnswers({ steps, answers, now: ctx.now, selection, pluginSet, verb: 'plan' });
@@ -1211,7 +1261,7 @@ async function runPlan(ctx, opts) {
   const stage0 = buildStage0(probe, raw);
   const candidates = buildPluginActionCandidates({ selection, pluginSet, probe });
   const planHash = candidates.length > 0
-    ? await fetchSettingsPlanHash({ subprocessRunner: ctx.subprocessRunner, cwd: ctx.cwd, env: ctx.env })
+    ? await fetchSettingsPlanHash({ subprocessRunner: ctx.subprocessRunner, cwd: ctx.cwd, env: scrubbedControlPlaneEnv(ctx.env) })
     : { hash: null, status: 'not-needed', reason: 'no plugin-management actions are needed' };
 
   const completion = reduceCompletion({ pluginSet, selection: { plugins: selection.desired }, steps, proofs: [], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION, currentActivationFingerprint: currentActivationFingerprintOf(readers) });
@@ -1291,7 +1341,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
     ])),
     egressProofRequested: egressOptIn,
   });
-  const hookVerdict = hookVerdictFor({ manifest, pluginSet, selection, probe });
+  const hookVerdict = hookVerdictFor({ recordedAttestation: recordedHookAttestation, pluginSet, selection, probe });
 
   // §7 — recorded step state is invalidated (reset to pending, stamped) when
   // runtime / either host CLI / any selected plugin version moved since the
@@ -1304,7 +1354,20 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
     selection: { plugins: selection.desired },
     at: new Date(ctx.now).toISOString(),
   });
-  const priorForJudge = new Map(invalidation.steps.map((s) => [s.id, s]));
+  // A pre-split run carried the Codex notification fragment on
+  // notify.configured (the local-policy step); post-split it belongs to
+  // notify.codex.configured, and carrying the stale pointer forward would keep
+  // presenting the Codex merge command on the wrong step — and could mark that
+  // unrelated fragment applied when the LOCAL policy satisfies (Codex review
+  // MINOR). Strip the legacy metadata; composeFragments re-renders it onto the
+  // right step on this same resume.
+  const priorForJudge = new Map(invalidation.steps.map((s) => {
+    if (s.id === stepIds.notifyConfigured() && (s.fragment_pointer || s.apply_command)) {
+      const { fragment_pointer, apply_command, fragment_applied, ...rest } = s;
+      return [s.id, rest];
+    }
+    return [s.id, s];
+  }));
 
   const steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, now: ctx.now });
   const receiptRow = proofRead.records.find((r) => r.kind === 'egress-receipt-attestation') ?? null;
@@ -1377,6 +1440,7 @@ async function runStatus(ctx, opts) {
     completion,
     steps,
     probe,
+    warnings: picked.warnings ?? [],
     diagnostics: [],
   };
   return { exitCode: EXIT_BY_STATE[completion.state] ?? EXIT.UNEXPECTED, report };
@@ -1409,6 +1473,7 @@ async function runVerify(ctx, opts) {
     hook_attestation: completion.hook_attestation,
     steps,
     probe,
+    warnings: picked.warnings ?? [],
     diagnostics: [],
   };
   return { exitCode: EXIT_BY_STATE[completion.state] ?? EXIT.UNEXPECTED, report };
@@ -1428,6 +1493,10 @@ const DOCTOR_SECTION_BY_KIND = Object.freeze({
 
 function mapDoctorDirectionStatus(direction) {
   if (!direction || direction.execution === 'not_executed') return 'absent';
+  // `passed` requires POSITIVE execution evidence (Codex review BLOCKER): a
+  // direction whose `execution` is missing or unknown must not read as a pass
+  // just because a status string says so — absent-of-evidence is not evidence.
+  if (direction.execution !== 'executed') return 'blocked';
   if (direction.status === 'passed') return 'passed';
   if (direction.status === 'failed') return 'failed';
   return 'blocked';
@@ -1488,6 +1557,18 @@ async function recordReceiptAttestation(ctx, { runId, proofRecords, ackEvaluated
   if (ackEvaluated?.status !== 'passed') {
     return { ok: false, diagnostic: `the recorded egress-provider-ack re-judges ${ackEvaluated?.status ?? 'absent'} — only a currently-passing ack can be attested (${(ackEvaluated?.reasons ?? []).join('; ') || 'no reasons'})`, proof: null };
   }
+  // Idempotent on identical testimony (Codex review MAJOR): a repeated attest
+  // for the SAME attempt over the SAME stored ack bytes re-reports the existing
+  // record instead of rewriting it (a fresh attested_at over unchanged links
+  // adds no information and destroys the original timestamp). A DIFFERENT
+  // attempt/hash writes through: the earlier testimony was about superseded
+  // evidence, and the newest claim about the current ack is the standing one.
+  const existingReceipt = (proofRecords ?? []).find((r) => r.kind === 'egress-receipt-attestation') ?? null;
+  if (existingReceipt
+    && existingReceipt.record.attempt_hash === ackRow.record.provider_ack.attempt_hash
+    && existingReceipt.record.provider_proof_artifact_hash === ackRow.sha256) {
+    return { ok: true, diagnostic: null, proof: { kind: 'egress-receipt-attestation', pointer: existingReceipt.pointer, sha256: existingReceipt.sha256, bytes: existingReceipt.bytes }, idempotent: true };
+  }
   const record = {
     surface: 'owner-phone',
     attested_at: new Date(ctx.now).toISOString(),
@@ -1496,7 +1577,7 @@ async function recordReceiptAttestation(ctx, { runId, proofRecords, ackEvaluated
   };
   const persisted = await writeBootstrapProof({ homeDir: ctx.homeDir, repoRoot: ctx.cwd, runId, kind: 'egress-receipt-attestation', record });
   if (!persisted.ok) return { ok: false, diagnostic: (persisted.diagnostics ?? ['unknown write failure']).join('; '), proof: null };
-  return { ok: true, diagnostic: null, proof: persisted.proof };
+  return { ok: true, diagnostic: null, proof: persisted.proof, idempotent: false };
 }
 
 async function runResume(ctx, opts) {
@@ -1537,7 +1618,7 @@ async function runResume(ctx, opts) {
     return { exitCode: EXIT.UNEXPECTED, report: { verb: 'resume', status: 'evidence-unreadable', diagnostics: reprobe.proofReadFailure } };
   }
   const { probe, steps, selection } = reprobe;
-  const warnings = [];
+  const warnings = [...(picked.warnings ?? [])];
 
   const { choices, history, effective } = applyAnswers({ steps, answers, now: ctx.now, selection, pluginSet, verb: 'resume' });
 
@@ -1559,6 +1640,7 @@ async function runResume(ctx, opts) {
     .filter(([stepId, answer]) => answer === 'execute' && stepId.startsWith('proof.'))
     .map(([stepId]) => stepId.replace(/^proof\./, ''));
   let doctorReport = null;
+  let executedAnything = false;
   for (const kind of executeKinds) {
     if (!PROOF_EXECUTE_FLAGS[kind]) {
       // The egress-provider-ack executor (12-gate, real network) ships with the
@@ -1573,6 +1655,7 @@ async function runResume(ctx, opts) {
       continue;
     }
     doctorReport = result.doctorReport ?? doctorReport;
+    executedAnything = true;
     const persisted = await writeBootstrapProof({ homeDir: ctx.homeDir, repoRoot: ctx.cwd, runId: picked.run.run_id, kind, record: result.record });
     if (!persisted?.ok) warnings.push(`proof metadata for ${kind} could not be persisted (the run reduces without it; re-run resume to retry): ${(persisted?.diagnostics ?? ['unknown write failure']).join('; ')}`);
   }
@@ -1587,8 +1670,9 @@ async function runResume(ctx, opts) {
   if (codexHookPlugins.length > 0 && !reprobe.recordedHookAttestation) {
     if (!doctorReport) {
       const doctorPath = join(SCRIPT_DIR, 'doctor.mjs');
-      const result = await ctx.subprocessRunner(doctorPath, ['--repo-root', ctx.cwd, '--format', 'json'], { cwd: ctx.cwd, env: ctx.env, timeoutMs: 120_000 });
+      const result = await ctx.subprocessRunner(doctorPath, ['--repo-root', ctx.cwd, '--format', 'json'], { cwd: ctx.cwd, env: scrubbedControlPlaneEnv(ctx.env), timeoutMs: 120_000 });
       if (result?.ok) {
+        executedAnything = true;
         try { doctorReport = JSON.parse(result.stdout); } catch { warnings.push('doctor output for the hook attestation was not valid JSON'); }
       }
     }
@@ -1614,6 +1698,14 @@ async function runResume(ctx, opts) {
     if (!attest.ok) warnings.push(`attest-receipt was not recorded: ${attest.diagnostic}`);
   }
 
+  // A proof executor can run for minutes; judging its freshness against the
+  // PRE-execution probe would compare a snapshot against itself and could mark
+  // drifted evidence current (Codex review MAJOR). When anything executed,
+  // re-probe: the final reduction — and the persisted probe — reflect the
+  // post-execution machine, so a CLI/plugin that moved mid-proof re-judges the
+  // evidence stale instead of complete.
+  const finalProbe = executedAnything ? (await probeNow(ctx)).probe : probe;
+
   // Reduce from the authoritative bytes: everything the executors persisted is
   // read back — validated, hashed — and ONLY that evidence reaches the reducer.
   const finalRead = await readBootstrapProofRecords({ homeDir: ctx.homeDir, runId: picked.run.run_id });
@@ -1631,7 +1723,7 @@ async function runResume(ctx, opts) {
     steps,
     proofs,
     hookAttestation,
-    probe,
+    probe: finalProbe,
     runtimeVersion: RUNTIME_VERSION,
     currentActivationFingerprint: currentActivationFingerprintOf(reprobe.readers),
     receiptEvidence: finalReceiptRow ? { record: finalReceiptRow.record, providerAckSha256: finalAckRow?.sha256 ?? null } : null,
@@ -1661,9 +1753,11 @@ async function runResume(ctx, opts) {
   // re-rendering what the operator has resolved.
   await composeFragments({ homeDir: ctx.homeDir, cwd: ctx.cwd, env: ctx.env, runId: picked.run.run_id, now: ctx.now, steps, warnings });
 
-  const migrationHistory = migratingFromSchema
-    ? [{ step_id: null, from: migratingFromSchema, to: RUN_SCHEMA_VERSION, reason: 'schema migrated additively on resume (ADR-0048 §1): registry-new steps injected, fragments re-rendered', at: new Date(ctx.now).toISOString() }]
-    : [];
+  // The migration row derives from the LOCKED read inside mutate (Codex review
+  // MAJOR): deciding it from the pre-lock snapshot let two concurrent resumes
+  // of one legacy run each append their own 1.1→1.2 row. `m.schema` under the
+  // lock is the authority — already-stamped means no row.
+  const migrationRowAt = new Date(ctx.now).toISOString();
   const updated = await updateBootstrapRun({
     homeDir: ctx.homeDir,
     repoRoot: ctx.cwd,
@@ -1674,10 +1768,16 @@ async function runResume(ctx, opts) {
       ...m,
       schema: RUN_SCHEMA_VERSION,
       status: nextStatus,
-      probe,
+      probe: finalProbe,
       steps,
       choices: [...(Array.isArray(m.choices) ? m.choices : []), ...choices],
-      history: [...(Array.isArray(m.history) ? m.history : []), ...migrationHistory, ...history],
+      history: [
+        ...(Array.isArray(m.history) ? m.history : []),
+        ...(m.schema !== RUN_SCHEMA_VERSION
+          ? [{ step_id: null, from: m.schema, to: RUN_SCHEMA_VERSION, reason: 'schema migrated additively on resume (ADR-0048 §1): registry-new steps injected, fragments re-rendered', at: migrationRowAt }]
+          : []),
+        ...history,
+      ],
       completion,
     }),
   });
@@ -1720,6 +1820,13 @@ async function runAttest(ctx, opts) {
   }
   if (picked.manifest.status === 'abandoned') {
     return { exitCode: EXIT.INVALID, report: { verb: 'attest', status: 'refused', diagnostics: [`Run ${picked.run.run_id} is abandoned — an abandoned run is an escape hatch, not a completed bootstrap anyone can testify about.`] } };
+  }
+  // Open runs testify through `resume --answers` (attest-receipt), whose
+  // choices[] rows are the audit trail; the attest verb exists ONLY for the
+  // post-terminal window where resume refuses the run (D0.1). Accepting open
+  // runs here would open an unaudited side door (Codex review MAJOR).
+  if (picked.manifest.status === 'open') {
+    return { exitCode: EXIT.INVALID, report: { verb: 'attest', status: 'refused', diagnostics: [`Run ${picked.run.run_id} is open — testify through \`resume --answers\` (an attest-receipt answer), which audit-logs the choice in the manifest; attest is the post-terminal door only (D0.1).`] } };
   }
   // Receipt testimony is a 1.2-vocabulary artifact: a legacy-schema run has no
   // receipt verdict seat and is presented as immutable history, so testimony
@@ -1921,6 +2028,13 @@ async function runProfileSeed(ctx, opts) {
   if (picked.error || picked.manifest.status !== 'open') {
     // §3 — seed targets the newest OPEN run; with no open run it exits 30.
     return { exitCode: EXIT.NO_ACTIVE_RUN, report: { verb: 'profile seed', status: 'no-active-run', diagnostics: ['profile seed requires an open run (§3); start one with `runtime:bootstrap plan`.'] } };
+  }
+  // Every run MUTATOR refuses a future minor, not only resume (Codex review
+  // MAJOR — seed slipped past the gate and updated a document this runtime
+  // only half-understands). Recovery verbs (abandon) stay exempt.
+  const seedDocSchema = parseRunSchemaMinor(picked.manifest.schema);
+  if (seedDocSchema && seedDocSchema.minor > READER_RUN_SCHEMA.minor) {
+    return { exitCode: EXIT.INVALID, report: { verb: 'profile seed', status: 'refused', diagnostics: [`Run ${picked.run.run_id} carries schema ${picked.manifest.schema}, newer than this runtime's ${RUN_SCHEMA_VERSION} — seeding would persist a document this runtime only partially understands. Upgrade the runtime plugin (§4.6).`] } };
   }
 
   // §4.5 — validate exactly, safety-grade before presenting, present every

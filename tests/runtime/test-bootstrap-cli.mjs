@@ -503,7 +503,7 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
     TELEGRAM_BOT_TOKEN: 'test-secret-token-value',
   });
 
-  it('refuses testimony with no recorded provider ack, and refuses an abandoned run outright', async () => {
+  it('refuses an open run (resume is the audited door), a terminal run with no ack, and an abandoned run outright', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const spy = spySubprocess();
     const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spy.runner, env: { ...EGRESS_ENV } });
@@ -511,7 +511,26 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
     const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
     const runId = plan.report.run_id;
 
-    const noAck = await run(['attest', '--run-id', runId]);
+    // Open → the audited resume --answers path is the only door (D0.1).
+    const onOpen = await run(['attest', '--run-id', runId]);
+    strictEqual(onOpen.exitCode, EXIT.INVALID);
+    ok(/resume --answers/.test(onOpen.report.diagnostics.join(' ')), 'the refusal routes to the audited path');
+
+    // Terminal (current-schema) with no recorded ack → the missing-evidence refusal.
+    const bareId = 'bootstrap-20260718T040000Z-0bb001';
+    const dir = join(home, '.agentic-plugins', 'runs', 'bootstrap', bareId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'run.json'), `${JSON.stringify({
+      schema: 'runtime-bootstrap-run-1.2',
+      run_id: bareId,
+      started_at: '2026-07-18T04:00:00Z',
+      updated_at: '2026-07-18T04:00:00Z',
+      status: 'configured-not-verified',
+      selection: { bundle: 'base', desired: ['runtime', 'companions'], excluded: [] },
+      steps: [],
+      boundary: { writes_host_config: false, writes_credential: false, writes_config_local_toml: false, performs_network_request: false },
+    }, null, 2)}\n`);
+    const noAck = await run(['attest', '--run-id', bareId]);
     strictEqual(noAck.exitCode, EXIT.INVALID);
     ok(/pre-existing acked attempt/.test(noAck.report.diagnostics.join(' ')), 'the refusal names the missing ack');
 
@@ -585,11 +604,40 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
     });
     strictEqual(seeded.ok, true, `ack seed persists: ${seeded.diagnostics.join('; ')}`);
 
-    // 3. Attest: the testimony lands, the verdict is attested, the label derives.
+    // 3. Execute the smoke through the doctor stub so the run TERMINALIZES as
+    //    complete (attest is the post-terminal door only — an open run routes
+    //    through resume --answers).
+    const exec = join(home, 'execute-smoke.json');
+    await writeFile(exec, JSON.stringify([{ step_id: 'proof.deep-peer-smoke', answer: 'execute' }]));
+    const doctorStub = async (scriptPath, args) => {
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        if (args.includes('--execute-deep-peer-smoke')) {
+          return okOut(JSON.stringify({
+            deep_peer_smoke: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/artifact.json' },
+          }));
+        }
+        return okOut(JSON.stringify({}));
+      }
+      return missing();
+    };
+    const resume = await boot({ argv: ['resume', '--run-id', runId, '--answers', exec, '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: doctorStub, env });
+    strictEqual(resume.report.run_status, 'complete', `the run terminalizes complete over the executed smoke + recorded ack: ${JSON.stringify(resume.report.completion.proofs?.filter((p) => p.required).map((p) => [p.kind, p.status, p.reasons]))} unsat=${JSON.stringify(resume.report.completion.unsatisfied)} warn=${JSON.stringify(resume.report.warnings)}`);
+
+    // 4. Attest the terminal run: testimony lands, verdict attested, label derives.
     const attest = await run(['attest', '--run-id', runId, '--format', 'json']);
     strictEqual(attest.exitCode, EXIT.OK, JSON.stringify(attest.report.diagnostics ?? attest.report));
     strictEqual(attest.report.receipt.status, 'attested', JSON.stringify(attest.report.receipt));
     strictEqual(attest.report.receipt.attempt_hash, attempt);
+
+    // 5. A REPEATED attest over the same attempt/bytes is idempotent — the
+    //    original testimony (its attested_at included) survives verbatim.
+    const receiptPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-receipt-attestation.json');
+    const firstBytes = await readFile(receiptPath, 'utf8');
+    const again = await boot({ argv: ['attest', '--run-id', runId, '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spy.runner, env, now: NOW + 60_000 });
+    strictEqual(again.exitCode, EXIT.OK);
+    strictEqual(await readFile(receiptPath, 'utf8'), firstBytes, 'identical testimony is never rewritten');
 
     const verify = await run(['verify', '--run-id', runId]);
     ok(/delivery-attested/.test(verify.rendered), 'the derived label decorates the completion line');
