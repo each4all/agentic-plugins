@@ -319,6 +319,10 @@
           }
         },
         "provider_ack": { "$ref": "#/$defs/providerAck" },
+        "mirror_correlated": {
+          "description": "1.2 (ADR-0048 §3) — the INDEPENDENT verification fact for `egress-provider-ack`: exactly one well-formed dispatched mirror row correlated to the synthetic attempt. Deliberately a sibling of `provider_ack`, never inside it — the providerAck $def records the provider fact alone, and the reducer's recomputed aggregate requires BOTH (acked AND mirror) so a dispatched-but-unverifiable attempt can never re-evaluate to passed. Absent (legacy records) reduces as not-verified, fail-closed. Meaningful only for `egress-provider-ack`; forbidden on directional kinds in lib/evidence-contract.mjs.",
+          "type": "boolean"
+        },
         "artifact_pointer": { "type": ["string", "null"], "maxLength": 512 },
         "artifact_hash": { "$ref": "#/$defs/sha256" },
         "bound_versions": { "$ref": "#/$defs/boundVersions" },

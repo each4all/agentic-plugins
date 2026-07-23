@@ -298,6 +298,34 @@ describe('statusline end-to-end — plan renders fragments, desired seats, the n
       `the [tui] header may appear in exactly one artifact (got: ${carriers.join(', ') || 'none'} out of ${names.join(', ')})`);
   });
 
+  it('when the statusline step cannot carry the combined fragment (declined), the notification preview stays the ONE [tui] source', async () => {
+    // The combined fragment is persisted under the statusline step; a
+    // declined step renders no fragment (persist() skips dead steps). An
+    // unconditional strip would then leave ZERO [tui] sources and a routing
+    // note pointing at a fragment that does not exist (Refine-verify peer,
+    // round 2) — so the strip is conditional on the combined carrier.
+    const { home, cwd } = await makeHome();
+    const answersPath = join(home, 'decline-statusline.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'statusline.codex.configured', answer: 'decline' }]));
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--answers', answersPath, '--format', 'json'], home, cwd });
+    const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'fragments');
+
+    const notifyArtifact = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
+    ok(notifyArtifact.fragments.tui_notifications_toml && notifyArtifact.fragments.tui_notifications_toml.includes('[tui]'),
+      'with no combined carrier, the builder preview must remain the tui source');
+    ok(notifyArtifact.tui_note == null,
+      'no routing note may point at a combined fragment that does not exist');
+
+    const names = (await readdir(fragmentsDir)).filter((n) => n.endsWith('.fragment')).sort();
+    const carriers = [];
+    for (const name of names) {
+      const text = await readFile(join(fragmentsDir, name), 'utf8');
+      if (/\[tui\]/.test(text)) carriers.push(name);
+    }
+    deepStrictEqual(carriers, ['notification-plan.fragment'],
+      `exactly one [tui] source, and it is the preview when the combined fragment cannot render (got: ${carriers.join(', ') || 'none'})`);
+  });
+
   it('a canonical home satisfies both steps on plan, and profile export carries the preset (owner rule: applied fragments ARE the declaration)', async () => {
     const { home, cwd } = await makeHome({ canonical: true });
     const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd });

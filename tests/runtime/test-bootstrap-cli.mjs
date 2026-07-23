@@ -604,6 +604,10 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
         kind: 'egress-provider-ack',
         status: 'passed',
         provider_ack: { result: 'acked', attempt_hash: attempt, activation_fingerprint: fingerprint, ran_at: new Date(NOW).toISOString() },
+        // The fully-verified shape: the reducer's recomputed aggregate
+        // requires the mirror seat alongside the ack (a seed without it
+        // reduces failed, and attest would rightly refuse the testimony).
+        mirror_correlated: true,
         artifact_pointer: null,
         artifact_hash: null,
         bound_versions: { runtime: RUNTIME_VERSION, claude: '2.1.0', codex: '0.140.0', plugins: { claude: perHost('claude'), codex: perHost('codex') } },
@@ -916,7 +920,16 @@ describe('bootstrap egress-provider-ack executor — consistency matrix + reader
     // dispatched + lost mirror is a legitimate failed proof whose ack leg is
     // true. The matrix must import it — refusing it as "inverse
     // contradiction" would only be correct when the mirror ALSO correlated.
+    // The stubbed fingerprint matches the LIVE activation and bound_versions
+    // import fresh, so the only non-passing leg left for the reducer is the
+    // mirror itself — a mismatched fingerprint would hide the mirror defect
+    // behind staleness (Refine-verify peer, round 2).
     const { home, cwd } = await makeHome({ satisfied: true });
+    const LIVE_FINGERPRINT = deriveActivationFingerprint({
+      channel: 'telegram',
+      recipient: '424242424242',
+      credentialEnvVar: 'TELEGRAM_BOT_TOKEN',
+    });
     const runner = async (scriptPath, args) => {
       if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
       if (scriptPath.endsWith('doctor.mjs')) {
@@ -925,7 +938,7 @@ describe('bootstrap egress-provider-ack executor — consistency matrix + reader
             egress_ack_proof: {
               requested: true, executed: true, mode: 'explicit_egress_executor',
               status: 'failed',
-              provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: 'c'.repeat(64), ran_at: '2026-07-18T04:00:00.000Z' },
+              provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: LIVE_FINGERPRINT, ran_at: '2026-07-18T04:00:00.000Z' },
               outcome_reason: 'mirror-missing', mirror_correlated: false, network_request_performed: true,
               subject_suffix: 'abcdef012345', blockers: [], limits: [],
             },
@@ -950,8 +963,11 @@ describe('bootstrap egress-provider-ack executor — consistency matrix + reader
     const proof = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json'), 'utf8'));
     strictEqual(proof.status, 'failed', 'the proof stays failed — the mirror gate is not relaxed');
     strictEqual(proof.provider_ack.result, 'acked', 'the provider fact survives the import untouched');
+    strictEqual(proof.mirror_correlated, false, 'the mirror verdict is durable evidence in the persisted record');
     const ack = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
-    ok(ack && ack.status !== 'passed', 'the reducer never promotes an unmirrored attempt to passed');
+    strictEqual(ack?.status, 'failed',
+      `the recomputed aggregate is failed on the mirror leg — not stale, not passed (got ${ack?.status}: ${JSON.stringify(ack?.reasons)})`);
+    ok((ack?.reasons ?? []).some((r) => /mirror/.test(r)), `the failure names the mirror: ${JSON.stringify(ack?.reasons)}`);
   });
 
   it('the final reduce re-reads the READERS: an activation changed DURING the proof is judged post-execution, not from the stale snapshot', async () => {

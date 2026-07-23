@@ -1036,9 +1036,14 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
   non-canonical list is the operator's own selection: `manual-follow-up`,
   never overwritten. The rendered fragment is ONE `[tui]` table carrying BOTH
   runtime-planned keys (`status_line` + `notifications`, via the shared
-  composer in `lib/toml.mjs`) — this block and the notification plan's `[tui]`
-  block are the SAME table; merging either once is the whole merge, and two
-  competing `[tui]` headers can never be handed out.
+  composer in `lib/toml.mjs`), and a run hands out exactly ONE `[tui]`
+  source: when this statusline step can carry a fragment, the combined
+  fragment is that source and the notification-plan artifact is stripped to
+  the `notify =` wiring only (with an in-artifact note routing the operator
+  here); when this step cannot carry one (satisfied / declined /
+  not-applicable — `persist()` skips dead steps), no combined fragment
+  renders and the notification plan's `[tui]` preview stays the one source.
+  Two competing `[tui]` headers are never handed out in either shape.
 - **`statusline.claude.configured`** — satisfied iff the USER-layer
   `settings.json` (`CLAUDE_CONFIG_DIR` honored; ONE shared snapshot projected
   for both the permission and statusline consumers) carries
@@ -1319,11 +1324,19 @@ decisions that differ from the directional kinds and are normative here:
 
 - **Single-delivery evidence, not directions.** The recorded proof carries
   `provider_ack` (result / `attempt_hash` / `activation_fingerprint` / `ran_at`)
-  and **no** `directions` member — there is one provider request, not a peer
-  matrix. Import is fail-closed on the acked-consistency matrix: an executed
-  section must carry `provider_ack` (a failed attempt is evidence too), `passed`
-  requires result=`acked` **and** a correlated mirror **and** a linkable
-  artifact hash, and result=`acked` under a non-passed status is refused. With
+  plus the sibling `mirror_correlated` seat, and **no** `directions` member —
+  there is one provider request, not a peer matrix. `provider_ack.result` is
+  the PROVIDER FACT alone (HTTP 2xx + `{ok:true}`); `mirror_correlated` is the
+  independent verification fact, recorded as a sibling precisely so the
+  reducer's recomputed aggregate can require BOTH (acked **and** mirrored —
+  an acked-but-unmirrored attempt is a legitimate *failed* proof whose
+  provider fact stands, and it can never re-evaluate to passed; a legacy
+  record without the seat reduces the same way, fail-closed). Import is
+  fail-closed on the acked-consistency matrix: an executed section must carry
+  `provider_ack` (a failed attempt is evidence too), `passed` requires
+  result=`acked` **and** a correlated mirror **and** a linkable artifact
+  hash, and result=`acked` **with** a correlated mirror under a non-passed
+  status is refused as the inverse contradiction. With
   this slice every kind — directional included — links the doctor artifact by
   its exact-byte `artifact_sha256` (doctor's write is temp+rename atomic), so
   `artifact_hash` is never null on a freshly recorded proof.

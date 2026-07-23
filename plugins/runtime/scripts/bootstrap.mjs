@@ -1023,22 +1023,32 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
   try {
     const gathered = await gatherCodexNotificationInputs({ homeDir, env });
     const { section } = buildCodexNotificationPlanSection({ gathered, now: new Date(now), runId: makeNotificationRunId(now) });
-    // The [tui] preview is STRIPPED from this artifact (integration pass over
-    // the notify-axis + statusline leaves): the Stage-5 statusline-codex
-    // fragment below is the ONE decision-aware [tui] table (Review peer
+    // The [tui] preview is STRIPPED from this artifact exactly when the
+    // Stage-5 statusline-codex fragment below will actually carry the [tui]
+    // table (integration pass over the notify-axis + statusline leaves): the
+    // combined fragment is the ONE decision-aware [tui] table (Review peer
     // BLOCKER), and persisting the builder's notifications-only preview
     // beside it would hand the operator two [tui] blocks with competing
-    // guidance — the exact defect the combined fragment exists to prevent.
-    // The builder keeps its preview for non-bootstrap surfaces; THIS artifact
-    // carries the notify= wiring only, which is also all its step judges.
-    const notifySection = {
-      ...section,
-      fragments: { ...section.fragments, tui_notifications_toml: null },
-      // NB: this note deliberately spells the table dotted (`tui.notifications`)
-      // — a literal `[tui]` header may appear in exactly ONE artifact per run
-      // (the combined statusline-codex fragment), and the sweep test pins that.
-      tui_note: 'The tui.notifications key rides in the statusline-codex combined fragment (the ONE tui table for this run) — merge it from there, not from this artifact.',
-    };
+    // guidance. But the combined fragment is persisted under the statusline
+    // step — a plan where that step is satisfied/declined/not-applicable
+    // renders NO combined fragment (persist() skips dead steps), and an
+    // unconditional strip would then leave the run with ZERO [tui] sources
+    // while this artifact's note pointed at a fragment that does not exist
+    // (Refine-verify peer, round 2). So: strip iff the combined fragment
+    // will carry; otherwise the builder's preview stays the one source.
+    const slStepForTui = byId.get(stepIds.statuslineConfigured('codex'));
+    const combinedWillCarryTui = Boolean(slStepForTui)
+      && !['satisfied', 'declined', 'not-applicable'].includes(slStepForTui.status);
+    const notifySection = combinedWillCarryTui
+      ? {
+        ...section,
+        fragments: { ...section.fragments, tui_notifications_toml: null },
+        // NB: this note deliberately spells the table dotted (`tui.notifications`)
+        // — a literal `[tui]` header may appear in exactly ONE artifact per run
+        // (the combined statusline-codex fragment), and the sweep test pins that.
+        tui_note: 'The tui.notifications key rides in the statusline-codex combined fragment (the ONE tui table for this run) — merge it from there, not from this artifact.',
+      }
+      : section;
     await persist('notification-plan', notifySection, stepIds.notifyCodexConfigured(),
       'Merge the rendered notify fragment into $CODEX_HOME/config.toml (see the fragment body), then resume.',
       '$CODEX_HOME/config.toml',
@@ -1839,6 +1849,12 @@ async function executeProofViaDoctor(ctx, { kind, probe, selection }) {
         activation_fingerprint: section.provider_ack.activation_fingerprint,
         ran_at: section.provider_ack.ran_at,
       },
+      // The independent mirror verdict is DURABLE evidence (schema 1.2
+      // sibling seat): the reducer recomputes the aggregate from the
+      // evidence members, never from stored status, so dropping the mirror
+      // here would let an acked-but-unverifiable attempt re-evaluate to
+      // passed on the next read (Refine-verify peer, round 2).
+      mirror_correlated: section.mirror_correlated === true,
     };
   } else {
     evidence = {

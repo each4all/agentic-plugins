@@ -123,6 +123,19 @@ export function evidenceKindIssues(kind, record) {
       issues.push('provider_ack.result is "acked" but ran_at is null — an acked request with no time is a claim, not evidence');
     }
   }
+  // `mirror_correlated` is the egress kind's independent verification fact
+  // (schema 1.2 sibling seat). Directional kinds must not carry it — a
+  // direction matrix with a mirror flag is two evidence shapes in one record.
+  // Presence with a non-boolean value is a malformed claim on any kind.
+  // ABSENCE on egress is allowed (legacy records) and reduces fail-closed as
+  // not-verified in the completion reducer, never as passed.
+  if (record.mirror_correlated !== undefined) {
+    if (kind !== 'egress-provider-ack') {
+      issues.push(`kind "${kind}" forbids the \`mirror_correlated\` member — the mirror fact belongs to the egress single-delivery evidence shape only`);
+    } else if (typeof record.mirror_correlated !== 'boolean') {
+      issues.push('mirror_correlated must be a boolean when present — a non-boolean mirror claim is not evidence');
+    }
+  }
   return issues;
 }
 

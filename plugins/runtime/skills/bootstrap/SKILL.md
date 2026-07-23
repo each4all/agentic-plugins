@@ -68,13 +68,12 @@ node "<runtime-plugin-root>/scripts/bootstrap.mjs" profile seed   --profile-file
   consumer-repo invocations emit no source-tree remediation.
 - Artifact-only: bootstrap's own writes land only under `~/.agentic-plugins/`
   (runs + profiles), and bootstrap itself never opens the network. Host
-  config, credentials, and `config.local.toml` are never written. The one
-  delegated exception is an explicit operator `execute` answer on the egress
-  proof step: resume then drives `runtime:doctor --record`, whose executor
-  performs the real-network send (behind the `AGENTIC_EGRESS_REAL_SMOKE=1`
-  third consent) and records its doctor artifact under the repo's
-  `.agentic-plugins/runs/doctor/` — delegated effects are named, never
-  silent.
+  config, credentials, and `config.local.toml` are never written. Delegated
+  effects are named, never silent: EVERY proof driven by an explicit
+  operator `execute` answer runs through `runtime:doctor --record`, which
+  records its doctor artifact under the repo's `.agentic-plugins/runs/doctor/`;
+  the egress proof's executor additionally performs the one real-network
+  send, behind the `AGENTIC_EGRESS_REAL_SMOKE=1` third consent.
 - No second executor: plugin management is presented to
   `runtime:settings --execute-plugin-management`; proofs run only through
   `runtime:doctor --record` under `resume`, and only on an explicit operator
