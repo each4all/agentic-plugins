@@ -273,8 +273,41 @@ export function parseCodexNotifyConfigToml(text) {
     };
   };
   let i = 0;
+  // Multi-line-string state (Review peer BLOCKER): a line INSIDE a custom
+  // triple-quoted value under [tui] can look exactly like `status_line = [...]`
+  // and the line scanner certified it as the real key. Track open
+  // basic/literal multi-line strings and skip every line inside one. The
+  // tracking is conservative: an odd delimiter count toggles, and anything it
+  // cannot follow leaves keys uncaptured (fail-closed: unparseable → null,
+  // never a confidently wrong value).
+  let openTriple = null; // '"""' | "'''" | null
+  const toggleTriples = (line) => {
+    let idx = 0;
+    for (;;) {
+      if (openTriple) {
+        const close = line.indexOf(openTriple, idx);
+        if (close === -1) return true; // still inside — whole line consumed
+        idx = close + 3;
+        openTriple = null;
+        continue;
+      }
+      const b = line.indexOf('"""', idx);
+      const l = line.indexOf("'''", idx);
+      const next = b === -1 ? l : l === -1 ? b : Math.min(b, l);
+      if (next === -1) return false;
+      openTriple = line.slice(next, next + 3);
+      idx = next + 3;
+    }
+  };
   while (i < lines.length) {
     const raw = lines[i];
+    if (openTriple) {
+      toggleTriples(raw);
+      i += 1;
+      continue;
+    }
+    const consumedByTriple = toggleTriples(raw);
+    if (consumedByTriple) { i += 1; continue; }
     const stripped = raw.replace(/#.*/, '').trim();
     if (stripped.startsWith('[')) {
       inTopLevel = false;
@@ -286,7 +319,7 @@ export function parseCodexNotifyConfigToml(text) {
       continue;
     }
     if (inTopLevel) {
-      const m = raw.match(/^\s*notify\s*=\s*(.*)$/);
+      const m = raw.match(/^\s*(?:"notify"|notify)\s*=\s*(.*)$/);
       if (m) {
         const captured = captureTomlArray(lines, i, m[1]);
         record('notify', captured);
@@ -310,14 +343,14 @@ export function parseCodexNotifyConfigToml(text) {
         continue;
       }
     } else if (inTui) {
-      const mN = raw.match(/^\s*notifications\s*=\s*(.*)$/);
+      const mN = raw.match(/^\s*(?:"notifications"|notifications)\s*=\s*(.*)$/);
       if (mN) {
         const captured = captureTomlArray(lines, i, mN[1]);
         record('tuiNotifications', captured);
         i = captured.nextIndex;
         continue;
       }
-      const mS = raw.match(/^\s*status_line\s*=\s*(.*)$/);
+      const mS = raw.match(/^\s*(?:"status_line"|status_line)\s*=\s*(.*)$/);
       if (mS) {
         const captured = captureTomlArray(lines, i, mS[1]);
         record('tuiStatusLine', captured);

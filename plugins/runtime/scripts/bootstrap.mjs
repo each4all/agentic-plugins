@@ -83,9 +83,10 @@ import {
 } from './lib/completion-reducer.mjs';
 import { EGRESS_CREDENTIAL_ENV_VAR, buildMachineProfile, profileHash, profileWriteGate, seedProposals } from './lib/machine-profile.mjs';
 import {
+  projectClaudePermission,
   projectClaudeStatusline,
-  readUserGlobalClaudePermission,
   readUserGlobalClaudeSettings,
+  resolveClaudeConfigDir,
   readUserGlobalCodexPermission,
   readUserGlobalEgress,
   readUserGlobalModelEffort,
@@ -425,8 +426,14 @@ function boundExpected(previous, broadCandidates) {
   if (typeof previous?.desired !== 'string') return broadCandidates;
   try {
     const bound = JSON.parse(previous.desired);
-    if (Array.isArray(bound) && bound.every((item) => typeof item === 'string')) return [bound];
-    return null;
+    if (!Array.isArray(bound) || !bound.every((item) => typeof item === 'string')) return null;
+    // The manifest is operator-editable (Review peer MAJOR): a desired that is
+    // not one of the CANONICAL candidates would otherwise smuggle an arbitrary
+    // expectation in and have the judge report it as canonical. The seat may
+    // only NARROW the canonical set, never replace it.
+    const canonical = broadCandidates.some((candidate) => Array.isArray(candidate)
+      && candidate.length === bound.length && candidate.every((item, i) => item === bound[i]));
+    return canonical ? [bound] : null;
   } catch {
     return null;
   }
@@ -548,7 +555,7 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       // G7 — the broad-set fallback silently widened the match).
       const candidates = boundExpected(previous, wiring.expected ?? []);
       if (candidates === null) {
-        return { status: 'manual-follow-up', observed: 'the recorded plan expectation is unreadable', recovery: 'The persisted desired expectation for this step could not be parsed — re-run plan/resume to re-render the notify fragment, or decline the step.' };
+        return { status: 'manual-follow-up', observed: 'the recorded plan expectation is unreadable', recovery: 'The persisted desired expectation for this step could not be trusted — decline the step, or abandon and re-plan (a version drift also clears it via §7 invalidation).' };
       }
       const matches = candidates.some((expected) => Array.isArray(expected)
         && expected.length === wiring.argv.length
@@ -572,12 +579,18 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       const sl = readers?.statuslineCodex ?? null;
       if (!sl || sl.readable === false) return { status: 'unknown', observed: 'the Codex config could not be read' };
       if (!sl.present) return { status: 'pending', observed: 'no status_line configured — Codex renders its default two items' };
-      if (!Array.isArray(sl.items) || sl.items.length === 0) {
-        return { status: 'pending', observed: sl.items ? 'status_line = [] configures nothing' : 'status_line is present but not a parseable item array' };
+      if (!Array.isArray(sl.items)) {
+        return { status: 'pending', observed: 'status_line is present but not a parseable item array' };
+      }
+      if (sl.items.length === 0) {
+        // An EMPTY list is a present operator selection (a deliberately
+        // disabled statusline), not unfinished configuration (contract
+        // §6.1.1: every present non-canonical list is the operator's).
+        return { status: 'manual-follow-up', observed: 'status_line = [] — the statusline is deliberately emptied', recovery: 'An empty status_line is a deliberate selection. Merge the rendered [tui] fragment to adopt the canonical agentic-6 set, or decline this step to keep the statusline disabled.' };
       }
       const slCandidates = boundExpected(previous, [sl.expectedItems]);
       if (slCandidates === null) {
-        return { status: 'manual-follow-up', observed: 'the recorded plan expectation is unreadable', recovery: 'The persisted desired expectation for this step could not be parsed — re-run plan/resume to re-render the statusline fragment, or decline the step.' };
+        return { status: 'manual-follow-up', observed: 'the recorded plan expectation is unreadable', recovery: 'The persisted desired expectation for this step could not be trusted — decline the step, or abandon and re-plan (a version drift also clears it via §7 invalidation).' };
       }
       const slMatches = slCandidates.some((candidate) => Array.isArray(candidate) && candidate.length === sl.items.length && candidate.every((item, idx) => item === sl.items[idx]));
       if (!slMatches) {
@@ -598,7 +611,11 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       // surfaced in the fragment for the operator's own verify).
       const sl = readers?.statuslineClaude ?? null;
       if (!sl || sl.readable === false) return { status: 'unknown', observed: 'the Claude settings could not be read' };
-      const classified = classifyExistingClaudeStatusline({ existing: sl, expectedCommand: sl.expectedCommand });
+      const cmdCandidates = boundExpected(previous, [[sl.expectedCommand]]);
+      if (cmdCandidates === null) {
+        return { status: 'manual-follow-up', observed: 'the recorded plan expectation is unreadable or non-canonical', recovery: 'The persisted desired expectation for this step could not be trusted — decline the step, or abandon and re-plan (a version drift also clears it via §7 invalidation).' };
+      }
+      const classified = classifyExistingClaudeStatusline({ existing: sl, expectedCommand: cmdCandidates[0][0] });
       if (classified.observation === 'canonical') {
         return { status: 'satisfied', observed: 'canonical statusLine command observed (execution still gated by workspace trust / disableAllHooks / safe mode)' };
       }
@@ -1019,25 +1036,51 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
   try {
     const shim = renderAgenticStatuslineShim();
     const inlineGate = evaluateInlineSufficiency();
-    // Codex: the [tui] fragment renders BOTH planned keys (status_line +
-    // notifications) as ONE table — the composer rule that keeps the operator
-    // from ever holding two competing [tui] headers (peer B3). The
-    // notification plan's own fragment carries the same table; the guidance
-    // names them as the same one table.
-    const codexTuiFragment = renderCodexTuiTableToml({ notifications: [...TUI_NOTIFICATIONS_VALUES], statusLine: expectedCodexStatusLineItems() });
-    await persist('statusline-codex', {
-      requested: true,
-      host: 'codex',
-      fragment_toml: codexTuiFragment,
-      note: 'One [tui] table for BOTH runtime-planned keys (status_line + notifications) — this block and the notification plan\'s [tui] block are the SAME table; merge it once. status_line uses the closed upstream item vocabulary (host-truth §1); the agentic-6 order is ADR-0048 §2.1.',
-    }, stepIds.statuslineConfigured('codex'),
-    'Merge the rendered [tui] table (status_line + notifications) into $CODEX_HOME/config.toml — one [tui] table only — then resume.',
-    '$CODEX_HOME/config.toml',
-    { desired: JSON.stringify(expectedCodexStatusLineItems()) });
+    // Codex: ONE decision-aware [tui] fragment (Review peer BLOCKER — a
+    // notifications-only block beside a combined block handed the operator
+    // two competing headers, and an unconditioned combined block would
+    // re-impose a key whose step the operator DECLINED). Each planned key
+    // rides iff its step is not declined/not-applicable; unrelated existing
+    // [tui] keys are the operator's and the guidance says to keep them.
+    const notifyCodexStep = byId.get(stepIds.notifyCodexConfigured());
+    const slCodexStep = byId.get(stepIds.statuslineConfigured('codex'));
+    const includeKey = (step) => step && step.status !== 'declined' && step.status !== 'not-applicable';
+    const tuiKeys = {
+      notifications: includeKey(notifyCodexStep) ? [...TUI_NOTIFICATIONS_VALUES] : null,
+      statusLine: includeKey(slCodexStep) ? expectedCodexStatusLineItems() : null,
+    };
+    if (tuiKeys.notifications || tuiKeys.statusLine) {
+      const codexTuiFragment = renderCodexTuiTableToml(tuiKeys);
+      const tuiGuidance = 'Merge the rendered [tui] table into $CODEX_HOME/config.toml as THE one [tui] table — update exactly these planned keys, keep any unrelated existing [tui] keys of your own — then resume.';
+      await persist('statusline-codex', {
+        requested: true,
+        host: 'codex',
+        fragment_toml: codexTuiFragment,
+        note: 'The ONE decision-aware [tui] table: each planned key (status_line, notifications) rides iff its step is not declined. This supersedes the notification plan section\'s [tui] preview — merge THIS block. status_line uses the closed upstream item vocabulary (host-truth §1); the agentic-6 order is ADR-0048 §2.1.',
+      }, stepIds.statuslineConfigured('codex'),
+      tuiGuidance,
+      '$CODEX_HOME/config.toml',
+      { desired: JSON.stringify(expectedCodexStatusLineItems()) });
+      // The notifications key lives in the SAME fragment — point the notify
+      // step at it too (shared pointer, own desired), so neither step ever
+      // hands out a second competing [tui] header.
+      if (includeKey(notifyCodexStep) && slCodexStep && byId.get(stepIds.statuslineConfigured('codex'))?.fragment_pointer && !notifyCodexStep.fragment_pointer) {
+        notifyCodexStep.fragment_pointer = byId.get(stepIds.statuslineConfigured('codex')).fragment_pointer;
+      }
+    }
 
     const claudeExpected = expectedClaudeStatuslineCommand({ homeDir });
-    const claudeClassified = classifyExistingClaudeStatusline({ existing: readersForFragments?.statuslineClaude ?? { readable: true, present: false }, expectedCommand: claudeExpected });
-    await persist('statusline-claude', {
+    const claudeExisting = readersForFragments?.statuslineClaude ?? { readable: true, present: false };
+    const claudeClassified = classifyExistingClaudeStatusline({ existing: claudeExisting, expectedCommand: claudeExpected });
+    // The settings TARGET is the same file the probe reads (Review peer MAJOR:
+    // CLAUDE_CONFIG_DIR relocates ~/.claude — apply guidance must not point at
+    // a file resume never probes).
+    const claudeSettingsTarget = `${resolveClaudeConfigDir(env, homeDir).replace(/\\/g, '/')}/settings.json`;
+    // Unreadable settings withhold the REPLACEMENT fragment (Review peer
+    // MINOR): rendering an apply command over a file nobody could read
+    // invites overwriting an unseen foreign command. The non-gating shim
+    // artifact below still delivers.
+    if (claudeExisting.readable !== false) await persist('statusline-claude', {
       requested: true,
       host: 'claude',
       fragment_json: renderClaudeStatuslineFragmentJson({ homeDir }),
@@ -1050,8 +1093,8 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
       existing: { observation: claudeClassified.observation, offered_resolutions: claudeClassified.offered_resolutions, note: claudeClassified.note },
       configured_is_not_active: 'A statusLine entry proves configuration only: workspace trust, disableAllHooks, and CLAUDE_CODE_SAFE_MODE still gate execution (host-truth §3).',
     }, stepIds.statuslineConfigured('claude'),
-    `Install the shim at ${statuslineShimInstallPath({ homeDir })} (verify sha256 ${shim.sha256.slice(0, 12)}…), merge the statusLine fragment into ~/.claude/settings.json, then resume.`,
-    '~/.claude/settings.json',
+    `Install the shim at ${statuslineShimInstallPath({ homeDir })} (verify sha256 ${shim.sha256.slice(0, 12)}…), merge the statusLine fragment into ${claudeSettingsTarget}, then resume.`,
+    claudeSettingsTarget,
     { desired: JSON.stringify([claudeExpected]) });
 
     // NON-GATING shim delivery (peer G10): a canonical command can be
@@ -1227,12 +1270,16 @@ async function probeNow(ctx) {
 }
 
 async function readUserGlobalReaders(ctx) {
-  const [modelEffort, notify, claudePermission, codexPermission] = await Promise.all([
+  // ONE Claude settings read for BOTH projections (Review peer MAJOR: two
+  // reads could observe an atomic replacement in between and report mutually
+  // inconsistent permission/statusline facts under one probe timestamp).
+  const claudeSettingsSnapshot = await readUserGlobalClaudeSettings({ homeDir: ctx.homeDir, env: ctx.env });
+  const [modelEffort, notify, codexPermission] = await Promise.all([
     readUserGlobalModelEffort({ homeDir: ctx.homeDir }),
     readUserGlobalNotify({ homeDir: ctx.homeDir }),
-    readUserGlobalClaudePermission({ homeDir: ctx.homeDir, env: ctx.env }),
     readUserGlobalCodexPermission({ homeDir: ctx.homeDir, env: ctx.env }),
   ]);
+  const claudePermission = projectClaudePermission(claudeSettingsSnapshot);
   const egress = readUserGlobalEgress({ repoRoot: ctx.cwd, homeDir: ctx.homeDir, env: ctx.env });
   // Step judgement needs ACTIVATION semantics (the named E1 checker) alongside
   // the credential-independent export shape above: `egress` feeds the §4.4
@@ -1257,7 +1304,6 @@ async function readUserGlobalReaders(ctx) {
   // judgeSteps is synchronous. Claude projects the ONE shared settings
   // snapshot (peer G9: permission and statusline judge the same bytes);
   // Codex reuses the SAME config read the notify gather already performed.
-  const claudeSettingsSnapshot = await readUserGlobalClaudeSettings({ homeDir: ctx.homeDir, env: ctx.env });
   const statuslineClaude = {
     ...projectClaudeStatusline(claudeSettingsSnapshot),
     expectedCommand: expectedClaudeStatuslineCommand({ homeDir: ctx.homeDir }),
@@ -2158,12 +2204,14 @@ async function runProfileExport(ctx, opts) {
 
   let selection;
   let probe;
+  let fromRunManifest = null;
   if (opts.from_run) {
     const picked = await selectRun({ homeDir: ctx.homeDir, opts: { run_id: opts.from_run }, defaultSelector: 'run-id', validateRun });
     if (picked.error) {
       return { exitCode: picked.exitCode, report: { verb: 'profile export', status: 'no-such-run', diagnostics: [picked.error] } };
     }
     selection = picked.manifest.selection;
+    fromRunManifest = picked.manifest;
     ({ probe } = await probeNow(ctx));
   } else {
     // §3 — with no run, the profile exports the LIVE probe: bundle `custom`,
@@ -2193,7 +2241,13 @@ async function runProfileExport(ctx, opts) {
   const claudeCanonical = slC?.readable === true && slC.present === true && slC.type === 'command' && slC.command === slC.expectedCommand;
   const codexCanonical = slX?.readable === true && Array.isArray(slX.items)
     && slX.items.length === slX.expectedItems.length && slX.expectedItems.every((item, i) => item === slX.items[i]);
-  readers.statuslinePreset = claudeCanonical && codexCanonical ? STATUSLINE_PRESET_AGENTIC_6 : null;
+  // --from-run honours that run's DECLINES (Review peer MAJOR / §6.1.1
+  // declined→null): a run whose operator declined the statusline steps must
+  // not later export the preset off live config.
+  const statuslineDeclined = fromRunManifest
+    ? (fromRunManifest.steps ?? []).some((step) => (step?.id === 'statusline.claude.configured' || step?.id === 'statusline.codex.configured') && step?.status === 'declined')
+    : false;
+  readers.statuslinePreset = claudeCanonical && codexCanonical && !statuslineDeclined ? STATUSLINE_PRESET_AGENTIC_6 : null;
   const profile = buildMachineProfile({
     readers,
     probe,

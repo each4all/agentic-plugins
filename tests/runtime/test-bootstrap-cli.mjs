@@ -46,7 +46,7 @@ async function makeHome({ satisfied = false } = {}) {
     // statusLine included: the statusline.claude.configured judge is an EXACT
     // probe — satisfied means the settings command EQUALS this home's
     // canonical shim invocation.
-    ? `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits', allow: ['Read'] }, statusLine: { type: 'command', command: `node "${join(home, '.agentic-plugins', 'bin', 'agentic-statusline.mjs').replace(/\\/g, '/')}"` } }, null, 2)}\n`
+    ? `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits', allow: ['Read'] }, statusLine: { type: 'command', command: `node '${join(home, '.agentic-plugins', 'bin', 'agentic-statusline.mjs').replace(/\\/g, '/')}'` } }, null, 2)}\n`
     : '{}\n');
   await writeFile(join(home, '.codex', 'config.toml'), satisfied
     // notify wiring + the canonical agentic-6 status_line included: both

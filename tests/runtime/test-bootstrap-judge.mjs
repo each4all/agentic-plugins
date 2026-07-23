@@ -278,6 +278,6 @@ describe('judgeSteps notify.codex.configured — MODE BINDING via the persisted 
   it('an unparseable desired FAILS CLOSED to manual-follow-up (statusline peer G7 — the broad-set fallback silently widened the match)', () => {
     const step = judgeWithDesired({ argv: [...EXPECTED[0]], desired: '{not json' });
     strictEqual(step.status, 'manual-follow-up');
-    match(step.recovery, /could not be parsed/);
+    match(step.recovery, /could not be trusted/);
   });
 });

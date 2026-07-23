@@ -117,8 +117,7 @@ export function projectClaudeStatusline(snapshot) {
 // and resolves defaultMode repo-local>repo>user; this projects exclusively
 // the user layer, so allow/deny/ask carry a single, honest user-global
 // provenance.
-export async function readUserGlobalClaudePermission({ homeDir, env = {} }) {
-  const snapshot = await readUserGlobalClaudeSettings({ homeDir, env });
+export function projectClaudePermission(snapshot) {
   const status = snapshot.source.status;
   const json = snapshot.json;
   const perms = json && typeof json === 'object' ? json.permissions : null;
@@ -134,6 +133,13 @@ export async function readUserGlobalClaudePermission({ homeDir, env = {} }) {
     provenance: USER_GLOBAL,
     source: { scope: 'user', status },
   };
+}
+
+// Back-compat wrapper: one read + the permission projection (bootstrap's
+// reader assembly projects BOTH consumers from a single snapshot instead —
+// Review peer M11).
+export async function readUserGlobalClaudePermission({ homeDir, env = {} }) {
+  return projectClaudePermission(await readUserGlobalClaudeSettings({ homeDir, env }));
 }
 
 // Codex permission — `~/.codex/config.toml` ($CODEX_HOME honored) ONLY, and NEVER

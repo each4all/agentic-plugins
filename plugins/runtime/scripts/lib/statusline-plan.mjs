@@ -34,8 +34,9 @@
 // host-truth §2), unlike Codex's shell-less notify spawn — so `node` resolves
 // via PATH on both shells and no per-OS execPath split is needed here (the
 // documented asymmetry with expectedCodexNotifyArgv). The path is always
-// forward-slash (Git Bash eats unquoted backslashes) and double-quoted
-// (space-safe; double quotes group in both Git Bash and PowerShell).
+// forward-slash (Git Bash eats unquoted backslashes) and SINGLE-quoted —
+// literal in both Git Bash and PowerShell; double quotes interpolate in both
+// (Review peer BLOCKER: `$(...)`/backticks in a home path would execute).
 //
 // Deliberately NOT here: file I/O (bootstrap gathers/persists), step
 // judgement (bootstrap's judgeSteps), and the shim's per-item projections
@@ -161,9 +162,19 @@ export function statuslineShimInstallPath({ homeDir }) {
 /**
  * The canonical Claude `statusLine.command` for this machine — the exact
  * probe's and the settings fragment's shared value.
+ *
+ * SINGLE-quoted (Review peer BLOCKER): double quotes interpolate in BOTH
+ * Git Bash and PowerShell, so a home like `C:\Users\$(whoami)` would execute
+ * substitution and change the shim argv. Single quotes are literal in both
+ * shells. A path that itself contains a single quote cannot be represented
+ * cross-shell-identically and is refused fail-closed.
  */
 export function expectedClaudeStatuslineCommand({ homeDir }) {
-  return `node "${statuslineShimInstallPath({ homeDir })}"`;
+  const path = statuslineShimInstallPath({ homeDir });
+  if (path.includes("'")) {
+    throw new Error('the shim install path contains a single quote, which has no cross-shell-literal representation (Git Bash vs PowerShell) — relocate the home or configure the statusline manually');
+  }
+  return `node '${path}'`;
 }
 
 /** The settings.json fragment (rendered text the operator merges). */

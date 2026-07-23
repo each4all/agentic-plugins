@@ -44,10 +44,28 @@ const GIT_TIMEOUT_MS = 1500;
 const SEGMENT_MAX_CHARS = 64;
 
 function readStdinBounded() {
+  // STREAMING cap (Review peer MAJOR): read-to-EOF-then-check buffers an
+  // unbounded pipe before the bound applies. Read at most MAX+1 bytes and
+  // stop — an over-cap or erroring stream returns null immediately.
   try {
-    const text = fs.readFileSync(0, 'utf8');
-    if (Buffer.byteLength(text, 'utf8') > STDIN_MAX_BYTES) return null;
-    return text;
+    const chunks = [];
+    let total = 0;
+    const buf = Buffer.alloc(65536);
+    for (;;) {
+      let n;
+      try {
+        n = fs.readSync(0, buf, 0, buf.length, null);
+      } catch (err) {
+        if (err && err.code === 'EAGAIN') continue;
+        if (err && err.code === 'EOF') break;
+        return null;
+      }
+      if (n === 0) break;
+      total += n;
+      if (total > STDIN_MAX_BYTES) return null;
+      chunks.push(Buffer.from(buf.subarray(0, n)));
+    }
+    return Buffer.concat(chunks).toString('utf8');
   } catch {
     return null;
   }
@@ -59,7 +77,10 @@ function readStdinBounded() {
 function sanitizeSegment(value) {
   const text = String(value)
     .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    // C0 + DEL + C1 (Review peer MAJOR: U+009B CSI reached the terminal) and
+    // bidi overrides/isolates (U+202A-E, U+2066-9, LRM/RLM) — a statusline
+    // segment must not be able to reorder or restyle the line around it.
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return text.length > SEGMENT_MAX_CHARS ? `${text.slice(0, SEGMENT_MAX_CHARS - 1)}…` : text;
@@ -72,10 +93,19 @@ function finitePercent(value) {
 }
 
 function gitBranchFallback(data) {
-  const cwd = typeof data?.workspace?.current_dir === 'string' ? data.workspace.current_dir
+  const raw = typeof data?.workspace?.current_dir === 'string' ? data.workspace.current_dir
     : typeof data?.cwd === 'string' ? data.cwd
       : null;
-  if (!cwd) return null;
+  if (!raw) return null;
+  // cwd hardening (Review peer MAJOR): absolute local paths only — UNC and
+  // //-prefixed paths can initiate network filesystem access on Windows, and
+  // a relative path would resolve against whatever cwd the host launched the
+  // shim from. realpath pins symlinked homes to their local target.
+  if (raw.startsWith('\\\\') || raw.startsWith('//')) return null;
+  if (!(raw.startsWith('/') || /^[A-Za-z]:[\\/]/.test(raw))) return null;
+  let cwd;
+  try { cwd = fs.realpathSync(raw); } catch { return null; }
+  if (cwd.startsWith('\\\\') || cwd.startsWith('//')) return null;
   let stat;
   try { stat = fs.statSync(cwd); } catch { return null; }
   if (!stat.isDirectory()) return null;
@@ -85,6 +115,11 @@ function gitBranchFallback(data) {
   if (process.env.PATH) env.PATH = process.env.PATH;
   if (process.env.HOME) env.HOME = process.env.HOME;
   if (process.env.SYSTEMROOT) env.SYSTEMROOT = process.env.SYSTEMROOT;
+  env.GIT_OPTIONAL_LOCKS = '0';
+  // The query inherits git's own semantics for exotic repositories (a .git
+  // file pointing elsewhere follows git's rules) — the shim itself opens no
+  // network connection; the contract states the boundary in those terms.
+  env.GIT_TERMINAL_PROMPT = '0';
   try {
     const result = spawnSync('git', ['branch', '--show-current'], {
       cwd,
