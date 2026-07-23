@@ -874,10 +874,15 @@ Four shapes are load-bearing and agree with §8 / §8.1:
   "unknown" and let a `sandbox_limited` read masquerade as authenticated.
 - **The RECORDED proof's `directions` is a per-direction result map**, not a list of
   direction names (§8.1). A proof's `status` is the **aggregate recomputed from the
-  kind's evidence member** — `directions`, or `provider_ack` for
-  `egress-provider-ack` (1.2, ADR-0048 §3) — never trusted from storage: a smoke
-  that passed `claude->codex` and failed `codex->claude` is `failed`, and a schema
-  that could only say `directions: [...]` could not express it. Two shapes exist
+  kind's evidence facts** — `directions` for the directional kinds; for
+  `egress-provider-ack` (1.2, ADR-0048 §3) the full three-leg set:
+  `provider_ack` **and** the sibling `mirror_correlated` seat **and** a
+  present, well-formed `artifact_hash` (the recompute checks
+  presence/shape; byte-verification against the doctor artifact is the
+  import boundary's job) — never trusted from storage: a smoke
+  that passed `claude->codex` and failed `codex->claude` is `failed`, a schema
+  that could only say `directions: [...]` could not express it, and an
+  acked-but-unmirrored or hash-less egress record recomputes `failed`. Two shapes exist
   and must not be conflated (the 1.1-era text conflated them, and re-judgement
   read the wrong one — the false-demotion repair): the **recorded** proof lives in
   `proof/<kind>.json` and keeps its evidence member; the **reduced**
@@ -1036,17 +1041,41 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
   non-canonical list is the operator's own selection: `manual-follow-up`,
   never overwritten. The rendered fragment is ONE `[tui]` table carrying BOTH
   runtime-planned keys (`status_line` + `notifications`, via the shared
-  composer in `lib/toml.mjs`) — this block and the notification plan's `[tui]`
-  block are the SAME table; merging either once is the whole merge, and two
-  competing `[tui]` headers can never be handed out.
+  composer in `lib/toml.mjs`), and a run PRESENTS exactly ONE `[tui]`
+  source: when the combined fragment is the presented source (its step
+  carries a `fragment_pointer` AND is not declined/not-applicable), the
+  notification-plan artifact is stripped to the `notify =` wiring only
+  (with an in-artifact note routing the operator here); otherwise the
+  notification plan's `[tui]` preview stays the presented source — that
+  covers a statusline step that never rendered a fragment, a DECLINED step
+  whose historical fragment still exists but is no longer authoritative (a
+  refused key must never be routed to), and a failed combined write.
+  Physical files can transiently disagree with the presented source in
+  NAMED, non-silent states: a frozen notify artifact whose preview predates
+  a statusline re-transition is superseded by the combined fragment and
+  flagged with an explicit warning; a §7-cleared combined file can
+  linger unpresented until its re-render lands (its write failure is
+  itself warned); and a run whose preview was stripped while the combined
+  fragment held authority can reach a NO-SOURCE state when that authority
+  is later withdrawn (declined) — the frozen stripped artifact is NEVER
+  rewritten (a restore write would race the manifest's authority
+  withdrawal with no CAS transaction to order them), so runtime names the
+  state with an explicit abandon-and-re-plan warning instead. The
+  underlying freeze-vs-decision reconciliation is the fragment-freeze
+  follow-up.
 - **`statusline.claude.configured`** — satisfied iff the USER-layer
   `settings.json` (`CLAUDE_CONFIG_DIR` honored; ONE shared snapshot projected
   for both the permission and statusline consumers) carries
   `statusLine: { type: "command", command: <canonical> }` where the canonical
-  command is `node "<home>/.agentic-plugins/bin/agentic-statusline.mjs"` —
-  forward-slash, double-quoted, shell-resolved `node` (the Claude statusLine
+  command is `node '<home>/.agentic-plugins/bin/agentic-statusline.mjs'` —
+  forward-slash, SINGLE-quoted, shell-resolved `node` (the Claude statusLine
   runs through Git Bash/PowerShell, unlike Codex's shell-less notify spawn —
-  the documented asymmetry with `expectedCodexNotifyArgv`). **The step means
+  the documented asymmetry with `expectedCodexNotifyArgv`). Single quotes are
+  the canonical form because double quotes interpolate in BOTH Git Bash and
+  PowerShell — a home path containing `$(...)` would execute substitution and
+  change the shim argv; a path that itself contains a single quote has no
+  cross-shell-literal representation and is refused fail-closed
+  (`expectedClaudeStatuslineCommand`). **The step means
   "canonical configuration OBSERVED", never "the statusline runs"**: workspace
   trust, `disableAllHooks`, `CLAUDE_CODE_SAFE_MODE`, and script failure still
   gate execution (host-truth §3) and no probe may relax them. A pre-existing
@@ -1314,11 +1343,19 @@ decisions that differ from the directional kinds and are normative here:
 
 - **Single-delivery evidence, not directions.** The recorded proof carries
   `provider_ack` (result / `attempt_hash` / `activation_fingerprint` / `ran_at`)
-  and **no** `directions` member — there is one provider request, not a peer
-  matrix. Import is fail-closed on the acked-consistency matrix: an executed
-  section must carry `provider_ack` (a failed attempt is evidence too), `passed`
-  requires result=`acked` **and** a correlated mirror **and** a linkable
-  artifact hash, and result=`acked` under a non-passed status is refused. With
+  plus the sibling `mirror_correlated` seat, and **no** `directions` member —
+  there is one provider request, not a peer matrix. `provider_ack.result` is
+  the PROVIDER FACT alone (HTTP 2xx + `{ok:true}`); `mirror_correlated` is the
+  independent verification fact, recorded as a sibling precisely so the
+  reducer's recomputed aggregate can require BOTH (acked **and** mirrored —
+  an acked-but-unmirrored attempt is a legitimate *failed* proof whose
+  provider fact stands, and it can never re-evaluate to passed; a legacy
+  record without the seat reduces the same way, fail-closed). Import is
+  fail-closed on the acked-consistency matrix: an executed section must carry
+  `provider_ack` (a failed attempt is evidence too), `passed` requires
+  result=`acked` **and** a correlated mirror **and** a linkable artifact
+  hash, and result=`acked` **with** a correlated mirror under a non-passed
+  status is refused as the inverse contradiction. With
   this slice every kind — directional included — links the doctor artifact by
   its exact-byte `artifact_sha256` (doctor's write is temp+rename atomic), so
   `artifact_hash` is never null on a freshly recorded proof.

@@ -40,6 +40,7 @@ import {
   BOOTSTRAP_RUN_SCHEMA_VERSION,
   BOOTSTRAP_TERMINAL_RUN_STATUSES,
   abandonBootstrapRun,
+  bootstrapFragmentsDir,
   createBootstrapRun,
   readBootstrapProofRecords,
   resolveMachineArtifactHome,
@@ -705,14 +706,27 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       applied_by: appliedByFor(step),
       observed: observed.observed ?? null,
       observed_at: observedAt,
-      fragment_pointer: previous?.fragment_pointer ?? null,
-      apply_command: observed.apply_command ?? previous?.apply_command ?? null,
-      desired: previous?.desired ?? null,
+      // A DECLINED step carries no presentation state (Refine-verify rounds
+      // 5-6): its historical fragment/apply/desired are withdrawn at decline
+      // time, and a legacy run that recorded them pre-withdrawal drops them
+      // here on re-judgement — keyed on the resulting status AND the
+      // recorded provenance, because an observation may legitimately flip a
+      // legacy declined step to satisfied (§6.2) while its refused render
+      // state must still never resurrect.
+      fragment_pointer: (status === 'declined' || previous?.status === 'declined') ? null : (previous?.fragment_pointer ?? null),
+      apply_command: (status === 'declined' || previous?.status === 'declined') ? null : (observed.apply_command ?? previous?.apply_command ?? null),
+      desired: (status === 'declined' || previous?.status === 'declined') ? null : (previous?.desired ?? null),
       fragment_applied: previous?.fragment_applied === true,
       recovery: observed.recovery ?? null,
     };
     // §5 — fragment_applied marks that THIS run rendered a fragment and a later
     // post-probe observed the operator applying it (never a pre-existing match).
+    // A DECLINED provenance never reaches this promotion: the pre-judgement
+    // strip removed its pointer (and fragment_applied) before `previous` got
+    // here, so a satisfying observation over a decline reads as the
+    // pre-existing/manual match it is (Refine-verify round 6; pinned by the
+    // legacy-resurrection tests — an extra status condition here would be a
+    // structurally unreachable branch).
     if (previous && previous.fragment_pointer && previous.status !== 'satisfied' && status === 'satisfied') {
       entry.fragment_applied = true;
     }
@@ -853,6 +867,16 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
     if (step.status !== 'satisfied') {
       history.push({ step_id: stepId, from: step.status, to: 'declined', reason: 'operator declined via answers file', at });
       step.status = 'declined';
+      // A DECLINED step's rendered hand-off is HISTORY, not presentation
+      // (Refine-verify round 5): the operator refused the key, so the frozen
+      // fragment / apply command / plan expectation must stop being offered
+      // — the same field clearing §7 performs on version drift, here on the
+      // operator's own decision (their decline is not the mid-apply state
+      // the G7 freeze protects). The physical file stays (freeze keeps first
+      // renders); only the presentation pointer is withdrawn.
+      step.fragment_pointer = null;
+      step.apply_command = null;
+      step.desired = null;
     }
   }
 
@@ -1020,28 +1044,18 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
   // that step's judge. The local-policy step (notify.configured) never carried
   // a fragment of its own — attaching this one there was the pre-split
   // imprecision the split repairs.
+  // Stage 5a — the ONE decision-aware Codex [tui] fragment (ADR-0048
+  // §1/§2/§2.1), persisted BEFORE the notification plan so the strip
+  // decision below keys on whether the combined fragment ACTUALLY exists in
+  // this run (Refine-verify peer, round 3 — a status predicate had to mirror
+  // persist()'s skip conditions and drifted; the pointer after this block is
+  // the existence fact itself). Review peer BLOCKER context: a
+  // notifications-only block beside a combined block handed the operator two
+  // competing headers, and an unconditioned combined block would re-impose a
+  // key whose step the operator DECLINED — each planned key rides iff its
+  // step is not declined/not-applicable; unrelated existing [tui] keys are
+  // the operator's and the guidance says to keep them.
   try {
-    const gathered = await gatherCodexNotificationInputs({ homeDir, env });
-    const { section } = buildCodexNotificationPlanSection({ gathered, now: new Date(now), runId: makeNotificationRunId(now) });
-    await persist('notification-plan', section, stepIds.notifyCodexConfigured(),
-      'Merge the rendered notify fragment into $CODEX_HOME/config.toml (see the fragment body), then resume.',
-      '$CODEX_HOME/config.toml',
-      { desired: Array.isArray(section.expected_notify_argv) ? JSON.stringify(section.expected_notify_argv) : null });
-  } catch (err) {
-    warnings.push(`notification plan could not be built: ${err?.message ?? String(err)}`);
-  }
-
-  // Stage 5 — statusline, both hosts (ADR-0048 §1/§2/§2.1 via the one policy
-  // in lib/statusline-plan.mjs).
-  try {
-    const shim = renderAgenticStatuslineShim();
-    const inlineGate = evaluateInlineSufficiency();
-    // Codex: ONE decision-aware [tui] fragment (Review peer BLOCKER — a
-    // notifications-only block beside a combined block handed the operator
-    // two competing headers, and an unconditioned combined block would
-    // re-impose a key whose step the operator DECLINED). Each planned key
-    // rides iff its step is not declined/not-applicable; unrelated existing
-    // [tui] keys are the operator's and the guidance says to keep them.
     const notifyCodexStep = byId.get(stepIds.notifyCodexConfigured());
     const slCodexStep = byId.get(stepIds.statuslineConfigured('codex'));
     const includeKey = (step) => step && step.status !== 'declined' && step.status !== 'not-applicable';
@@ -1056,19 +1070,123 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
         requested: true,
         host: 'codex',
         fragment_toml: codexTuiFragment,
-        note: 'The ONE decision-aware [tui] table: each planned key (status_line, notifications) rides iff its step is not declined. This supersedes the notification plan section\'s [tui] preview — merge THIS block. status_line uses the closed upstream item vocabulary (host-truth §1); the agentic-6 order is ADR-0048 §2.1.',
+        note: 'The ONE decision-aware [tui] table: each planned key (status_line, notifications) rides iff its step is not declined. The notification-plan artifact carries the notify= wiring only (its [tui] preview is stripped when this fragment exists) — merge the [tui] table from THIS block. status_line uses the closed upstream item vocabulary (host-truth §1); the agentic-6 order is ADR-0048 §2.1.',
       }, stepIds.statuslineConfigured('codex'),
       tuiGuidance,
       '$CODEX_HOME/config.toml',
       { desired: JSON.stringify(expectedCodexStatusLineItems()) });
-      // The notifications key lives in the SAME fragment — point the notify
-      // step at it too (shared pointer, own desired), so neither step ever
-      // hands out a second competing [tui] header.
-      if (includeKey(notifyCodexStep) && slCodexStep && byId.get(stepIds.statuslineConfigured('codex'))?.fragment_pointer && !notifyCodexStep.fragment_pointer) {
-        notifyCodexStep.fragment_pointer = byId.get(stepIds.statuslineConfigured('codex')).fragment_pointer;
+      // The notify step keeps its OWN fragment pointer (the notify= wiring
+      // artifact — its [tui] preview is stripped at its persist below when
+      // this fragment exists), so this combined fragment is the single [tui]
+      // source for the run whenever it renders.
+    }
+  } catch (err) {
+    warnings.push(`codex [tui] fragment could not be built: ${err?.message ?? String(err)}`);
+  }
+
+  try {
+    const gathered = await gatherCodexNotificationInputs({ homeDir, env });
+    const { section } = buildCodexNotificationPlanSection({ gathered, now: new Date(now), runId: makeNotificationRunId(now) });
+    // The [tui] preview is STRIPPED from this artifact exactly when the
+    // combined statusline-codex fragment is the run's PRESENTED [tui]
+    // source: the combined fragment is the ONE decision-aware [tui] table
+    // (Review peer BLOCKER), and persisting the builder's notifications-only
+    // preview beside it would hand the operator two [tui] blocks with
+    // competing guidance. Two facts compose the predicate (Refine-verify
+    // peer, rounds 2-4):
+    //   - fragment_pointer — the Stage-5a block ABOVE persisted (or kept)
+    //     the combined fragment: covers a fresh render, a frozen fragment
+    //     from an earlier resume, and a failed write (pointer absent → the
+    //     preview stays the presented source and the routing note cannot
+    //     dangle). NB the pointer is a PRESENTATION fact, not a
+    //     physical-file fact — after §7 clears it, a previous file can
+    //     linger unpresented until the re-render lands.
+    //   - step-alive — a DECLINED/not-applicable statusline step keeps its
+    //     historical pointer (persist() skips dead steps without clearing
+    //     fields), but its frozen fragment still carries the declined
+    //     status_line key: routing the operator there would make a refused
+    //     key authoritative (round-4 High). A dead step's combined fragment
+    //     is history, never the presented source.
+    const slStepForTui = byId.get(stepIds.statuslineConfigured('codex'));
+    const slStepAliveForTui = Boolean(slStepForTui)
+      && slStepForTui.status !== 'declined' && slStepForTui.status !== 'not-applicable';
+    const combinedCarriesTui = slStepAliveForTui && Boolean(slStepForTui.fragment_pointer);
+    // Captured BEFORE the persist below: a pre-existing pointer means the
+    // notify artifact is FROZEN (persist() keeps first renders) and this
+    // strip cannot reach the on-disk bytes.
+    const notifyPointerFrozen = Boolean(byId.get(stepIds.notifyCodexConfigured())?.fragment_pointer);
+    const notifySection = combinedCarriesTui
+      ? {
+        ...section,
+        fragments: { ...section.fragments, tui_notifications_toml: null },
+        // NB: this note deliberately spells the table dotted (`tui.notifications`)
+        // — a literal `[tui]` header may appear in exactly ONE artifact per run
+        // (the combined statusline-codex fragment), and the sweep test pins that.
+        tui_note: 'The tui.notifications key rides in the statusline-codex combined fragment (the ONE tui table for this run) — merge it from there, not from this artifact.',
+      }
+      : section;
+    await persist('notification-plan', notifySection, stepIds.notifyCodexConfigured(),
+      'Merge the rendered notify fragment into $CODEX_HOME/config.toml (see the fragment body), then resume.',
+      '$CODEX_HOME/config.toml',
+      { desired: Array.isArray(section.expected_notify_argv) ? JSON.stringify(section.expected_notify_argv) : null });
+    // Frozen two-carrier honesty (Refine-verify peer, round 3): when the
+    // combined fragment carries [tui] but the notify artifact was frozen by
+    // an EARLIER plan state that kept its preview (e.g. the statusline step
+    // re-transitioned satisfied→pending across resumes), the on-disk
+    // artifact still shows two [tui] blocks. The freeze is deliberate
+    // (G7 — no silent rewrite under the operator mid-apply; see the
+    // fragment-freeze follow-up), so runtime NAMES the supersession instead
+    // of hiding it.
+    if (combinedCarriesTui && notifyPointerFrozen) {
+      try {
+        // Parse and inspect the PREVIEW FIELD itself — a whole-text regex
+        // false-positives on the builder's `tui_warning` prose, which
+        // legitimately contains the literal `[tui]` while the preview is
+        // stripped (Refine-verify peer, round 4).
+        const frozen = JSON.parse(await readFile(join(bootstrapFragmentsDir(homeDir, runId), 'notification-plan.fragment'), 'utf8'));
+        if (frozen?.fragments?.tui_notifications_toml) {
+          warnings.push('the frozen notification-plan artifact still carries a [tui] preview from an earlier plan state, while the combined statusline-codex fragment is now the [tui] source — merge ONLY the combined [tui] table; the frozen preview is superseded (fragment freeze keeps first renders; see the fragment-freeze follow-up).');
+        }
+      } catch {
+        // A frozen artifact that cannot be read/parsed might still carry the
+        // preview — parse failure must not SILENCE the supersession call
+        // (contract: named, non-silent; Refine-verify round 5). Warn
+        // conservatively instead of guessing.
+        warnings.push('the frozen notification-plan artifact could not be parsed while the combined statusline-codex fragment is the presented [tui] source — treat the combined [tui] table as the ONE source and inspect the artifact by hand (conservative supersession warning).');
+      }
+    } else if (!combinedCarriesTui && notifyPointerFrozen) {
+      // The strip is a DERIVED state, valid only while the combined fragment
+      // is the presented source. If that authority lapsed (the statusline
+      // step was declined, or its pointer cleared) while the frozen notify
+      // artifact is still stripped, the run presents NO [tui] source
+      // (Refine-verify round 5). Runtime NAMES that state instead of
+      // rewriting the frozen artifact — a round-5 restore-rewrite attempt
+      // opened a fragment-vs-manifest commit-ordering hole (round-6 High: a
+      // restored file could land while the manifest update carrying the
+      // authority withdrawal failed, yielding two physical sources under a
+      // live combined pointer), and there is no manifest CAS transaction to
+      // close it. Abandon + re-plan is the honest recovery; the underlying
+      // reconciliation is the fragment-freeze follow-up.
+      try {
+        const frozen = JSON.parse(await readFile(join(bootstrapFragmentsDir(homeDir, runId), 'notification-plan.fragment'), 'utf8'));
+        if (frozen?.fragments && frozen.fragments.tui_notifications_toml == null) {
+          warnings.push('the combined statusline-codex fragment is no longer the presented [tui] source, and the frozen notification-plan artifact was stripped while it was — this run currently presents NO [tui] source (fragment freeze keeps first renders). Re-plan (abandon + plan) to regain one; see the fragment-freeze follow-up.');
+        }
+      } catch {
+        warnings.push('the frozen notification-plan artifact could not be parsed while no combined [tui] fragment is presented — the run may present no [tui] source; re-plan (abandon + plan) to regain one (fail-closed).');
       }
     }
+  } catch (err) {
+    warnings.push(`notification plan could not be built: ${err?.message ?? String(err)}`);
+  }
 
+  // Stage 5 — statusline, Claude side + the unconditional shim artifact
+  // (ADR-0048 §1/§2/§2.1 via the one policy in lib/statusline-plan.mjs).
+  // The Codex [tui] fragment moved to Stage 5a ABOVE the notification plan
+  // so the preview-strip decision can key on its actual existence.
+  try {
+    const shim = renderAgenticStatuslineShim();
+    const inlineGate = evaluateInlineSufficiency();
     const claudeExpected = expectedClaudeStatuslineCommand({ homeDir });
     const claudeExisting = readersForFragments?.statuslineClaude ?? { readable: true, present: false };
     const claudeClassified = classifyExistingClaudeStatusline({ existing: claudeExisting, expectedCommand: claudeExpected });
@@ -1610,6 +1728,17 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
       const { fragment_pointer, apply_command, fragment_applied, ...rest } = s;
       return [s.id, rest];
     }
+    // A DECLINED provenance carries no render state into judgement either
+    // (Refine-verify round 6): a legacy declined step's frozen `desired`
+    // would otherwise mode-bind the exact probe and demote a legitimate
+    // satisfying observation to manual-follow-up — the refused plan's
+    // expectation blocking the operator's own manual configuration is one
+    // more resurrection shape. The entry assembly drops the same fields
+    // post-judgement (belt-and-braces).
+    if (s.status === 'declined' && (s.fragment_pointer || s.apply_command || s.desired != null)) {
+      const { fragment_pointer, apply_command, desired, fragment_applied, ...rest } = s;
+      return [s.id, rest];
+    }
     return [s.id, s];
   }));
 
@@ -1794,7 +1923,11 @@ async function executeProofViaDoctor(ctx, { kind, probe, selection }) {
     //   - `passed` requires result=acked AND mirror_correlated AND a linkable
     //     artifact hash — a pass missing any leg is a claim the evidence does
     //     not back;
-    //   - result=acked under a non-passed status is the inverse contradiction.
+    //   - result=acked AND mirror_correlated under a non-passed status is the
+    //     inverse contradiction. result=acked WITHOUT the mirror is a
+    //     legitimate failed proof (the provider fact stands; the attempt is
+    //     unverifiable) — provider_ack records the provider fact only, per
+    //     the schema's providerAck $def.
     // Any mismatch refuses the import (fail-closed) rather than persisting a
     // record the reducer would have to argue with.
     if (!section?.executed) {
@@ -1807,8 +1940,8 @@ async function executeProofViaDoctor(ctx, { kind, probe, selection }) {
     if (section.status === 'passed' && (section.provider_ack.result !== 'acked' || section.mirror_correlated !== true || artifactHash === null)) {
       return { ok: false, diagnostic: `the egress ack proof is internally inconsistent: status=passed but result=${section.provider_ack.result}, mirror_correlated=${section.mirror_correlated}, artifact_hash=${artifactHash === null ? 'missing' : 'present'}`, record: null, doctorReport: report };
     }
-    if (section.provider_ack.result === 'acked' && section.status !== 'passed') {
-      return { ok: false, diagnostic: `the egress ack proof is internally inconsistent: result=acked but status=${section.status}`, record: null, doctorReport: report };
+    if (section.provider_ack.result === 'acked' && section.mirror_correlated === true && section.status !== 'passed') {
+      return { ok: false, diagnostic: `the egress ack proof is internally inconsistent: result=acked with a correlated mirror but status=${section.status}`, record: null, doctorReport: report };
     }
     evidence = {
       status: section.status === 'passed' ? 'passed' : 'failed',
@@ -1818,6 +1951,12 @@ async function executeProofViaDoctor(ctx, { kind, probe, selection }) {
         activation_fingerprint: section.provider_ack.activation_fingerprint,
         ran_at: section.provider_ack.ran_at,
       },
+      // The independent mirror verdict is DURABLE evidence (schema 1.2
+      // sibling seat): the reducer recomputes the aggregate from the
+      // evidence members, never from stored status, so dropping the mirror
+      // here would let an acked-but-unverifiable attempt re-evaluate to
+      // passed on the next read (Refine-verify peer, round 2).
+      mirror_correlated: section.mirror_correlated === true,
     };
   } else {
     evidence = {
@@ -2455,8 +2594,10 @@ function renderText(report) {
   for (const step of report.steps ?? []) {
     if (['satisfied', 'not-applicable'].includes(step.status)) continue;
     lines.push(`- [stage ${step.stage}] ${step.id}: ${step.status}${step.observed ? ` (observed: ${step.observed})` : ''}`);
-    if (step.apply_command) lines.push(`    apply: ${step.apply_command}`);
-    if (step.fragment_pointer) lines.push(`    fragment: ${step.fragment_pointer}`);
+    // Belt-and-braces with the decline-time field withdrawal: a refused
+    // key's historical hand-off is never rendered (Refine-verify round 5).
+    if (step.apply_command && step.status !== 'declined') lines.push(`    apply: ${step.apply_command}`);
+    if (step.fragment_pointer && step.status !== 'declined') lines.push(`    fragment: ${step.fragment_pointer}`);
     if (step.recovery) lines.push(`    ${step.recovery}`);
   }
   for (const warning of report.warnings ?? []) lines.push(`! ${warning}`);

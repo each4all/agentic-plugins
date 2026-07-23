@@ -4280,8 +4280,11 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     strictEqual(section.status, 'failed');
     strictEqual(section.outcome_reason, 'mirror-missing');
     strictEqual(section.mirror_correlated, false);
-    // A failed attempt is EVIDENCE: provider_ack rides every completed attempt.
-    strictEqual(section.provider_ack.result, 'failed');
+    // provider_ack records the PROVIDER FACT only (schema providerAck $def):
+    // the dispatched return means the provider acknowledged the request even
+    // though the lost mirror fails the PROOF — folding the mirror into
+    // `result` would overwrite an independent true fact.
+    strictEqual(section.provider_ack.result, 'acked');
     // The message may well be on the phone: dispatched ⇒ network happened.
     strictEqual(section.network_request_performed, true);
     ok(report.overall.hard_failures.some((f) => /egress ack proof failed \(mirror-missing\)/.test(f)), JSON.stringify(report.overall.hard_failures));

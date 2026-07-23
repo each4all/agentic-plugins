@@ -9,7 +9,7 @@
 
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
@@ -179,6 +179,10 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
     for (const argv of [
       ['status', '--answers', '/dev/null'],
       ['verify', '--answers', '/dev/null'],
+      // attest records receipt testimony WITHOUT an answers file (the
+      // attest-receipt ANSWER is resume-only; the attest VERB is the
+      // post-terminal door) — so it is a non-interview verb here too.
+      ['attest', '--answers', '/dev/null'],
       ['abandon', '--latest-open', '--answers', '/dev/null'],
       ['profile', 'export', '--answers', '/dev/null'],
       ['profile', 'seed', '--profile-file', '/dev/null', '--answers', '/dev/null'],
@@ -600,8 +604,13 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
         kind: 'egress-provider-ack',
         status: 'passed',
         provider_ack: { result: 'acked', attempt_hash: attempt, activation_fingerprint: fingerprint, ran_at: new Date(NOW).toISOString() },
+        // The fully-verified shape: the reducer's recomputed aggregate
+        // requires the mirror seat AND a linkable artifact hash alongside
+        // the ack (a seed missing either reduces failed, and attest would
+        // rightly refuse the testimony).
+        mirror_correlated: true,
         artifact_pointer: null,
-        artifact_hash: null,
+        artifact_hash: 'b'.repeat(64),
         bound_versions: { runtime: RUNTIME_VERSION, claude: '2.1.0', codex: '0.140.0', plugins: { claude: perHost('claude'), codex: perHost('codex') } },
         ran_at: new Date(NOW).toISOString(),
       },
@@ -646,6 +655,255 @@ describe('runtime bootstrap CLI — attest (ADR-0048 §3 / D0.1)', () => {
     const verify = await run(['verify', '--run-id', runId]);
     ok(/delivery-attested/.test(verify.rendered), 'the derived label decorates the completion line');
     ok(/receipt attestation: attested/.test(verify.rendered), 'the receipt line is rendered');
+
+    // 6. At-rest evidence downgrade (Refine-verify round 3): if the persisted
+    //    ack record loses its mirror leg AFTER terminalization, the recomputed
+    //    aggregate goes failed and a FRESH attest refuses the testimony — the
+    //    gate consumes the recomputation, never the stored status. (The
+    //    receipt from step 4 already exists; delete it so the refusal below
+    //    is the ack gate, not receipt idempotency.)
+    const ackPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json');
+    const ackRecord = JSON.parse(await readFile(ackPath, 'utf8'));
+    ackRecord.mirror_correlated = false;
+    await writeFile(ackPath, `${JSON.stringify(ackRecord, null, 2)}\n`);
+    await rm(receiptPath);
+    const refused = await run(['attest', '--run-id', runId, '--format', 'json']);
+    strictEqual(refused.exitCode, EXIT.INVALID, JSON.stringify(refused.report));
+    ok((refused.report.diagnostics ?? []).some((d) => /pass/i.test(d) || /ack/i.test(d)),
+      `the refusal names the non-passing ack: ${JSON.stringify(refused.report.diagnostics)}`);
+
+    // 7. Same downgrade through the ARTIFACT-HASH leg (Refine-verify round
+    //    4): restore the mirror but drop the doctor-artifact hash — the
+    //    three-leg recompute fails on linkage and a fresh attest refuses.
+    ackRecord.mirror_correlated = true;
+    ackRecord.artifact_hash = null;
+    await writeFile(ackPath, `${JSON.stringify(ackRecord, null, 2)}\n`);
+    const refusedNoHash = await run(['attest', '--run-id', runId, '--format', 'json']);
+    strictEqual(refusedNoHash.exitCode, EXIT.INVALID, JSON.stringify(refusedNoHash.report));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR-0048 §2.1 — frozen [tui] preview vs a re-rendered combined fragment
+// ---------------------------------------------------------------------------
+
+describe('bootstrap [tui] one-source invariant — frozen re-transition is NAMED (Refine-verify round 3)', () => {
+  it('a satisfied→pending statusline re-transition WITHOUT version drift keeps the frozen preview and warns, naming the combined fragment as the source', async () => {
+    // Hosted runner: versions are observed and stable across plan → resume,
+    // so §7 invalidation never fires and the notify artifact stays FROZEN
+    // with the preview it rendered while the statusline step was satisfied.
+    // When the statusline observation then disappears, resume re-renders the
+    // combined fragment beside the frozen preview — two [tui] carriers. The
+    // reconciliation is the fragment-freeze follow-up; the run must NAME the
+    // supersession instead of hiding it.
+    const { home, cwd } = await makeHome();
+    const codexConfig = join(home, '.codex', 'config.toml');
+    await writeFile(codexConfig, '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    strictEqual(plan.report.steps.find((s) => s.id === 'statusline.codex.configured').status, 'satisfied');
+    const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments');
+    const notifyBefore = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
+    ok(notifyBefore.fragments.tui_notifications_toml, 'the preview is the carrier while the statusline step is satisfied');
+
+    // The observation disappears (operator reverted their config) — same
+    // versions, so the freeze holds.
+    await writeFile(codexConfig, '# empty\n');
+    const resume = await run(['resume', '--run-id', runId, '--format', 'json']);
+
+    const carriers = [];
+    for (const name of (await readdir(fragmentsDir)).filter((n) => n.endsWith('.fragment')).sort()) {
+      if (/\[tui\]/.test(await readFile(join(fragmentsDir, name), 'utf8'))) carriers.push(name);
+    }
+    deepStrictEqual(carriers, ['notification-plan.fragment', 'statusline-codex.fragment'],
+      'the frozen preview and the re-rendered combined fragment coexist — the honest state the warning exists for');
+    ok((resume.report.warnings ?? []).some((w) => /frozen notification-plan artifact still carries/.test(w) && /combined statusline-codex fragment/.test(w)),
+      `the two-carrier state is NAMED with the superseding source: ${JSON.stringify(resume.report.warnings)}`);
+  });
+
+  it('a DECLINED statusline step never makes its historical combined fragment authoritative — the fresh preview stays the presented source (round-4 High)', async () => {
+    // Plan with notify satisfied + statusline pending: the combined fragment
+    // renders carrying BOTH keys and the (satisfied) notify step persists no
+    // artifact. Then notify regresses to pending while the operator DECLINES
+    // statusline: the declined step keeps its historical pointer, but that
+    // frozen fragment still carries the refused status_line key — routing
+    // the operator there would make a refused key authoritative. The strip
+    // predicate must treat a dead step's pointer as history: the fresh
+    // notification preview is the presented [tui] source, un-stripped and
+    // un-noted.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const codexConfig = join(home, '.codex', 'config.toml');
+    const notifyOnly = `approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nnotify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]\n`;
+    await writeFile(codexConfig, notifyOnly);
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    strictEqual(plan.report.steps.find((s) => s.id === 'notify.codex.configured').status, 'satisfied');
+    ok(plan.report.steps.find((s) => s.id === 'statusline.codex.configured').fragment_pointer,
+      'the combined fragment rendered while the statusline step was alive');
+    const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments');
+
+    // notify regresses (wiring removed) + the operator declines statusline.
+    await writeFile(codexConfig, '# empty\n');
+    const answersPath = join(home, 'decline-sl.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'statusline.codex.configured', answer: 'decline' }]));
+    const resume = await run(['resume', '--run-id', runId, '--answers', answersPath, '--format', 'json']);
+    strictEqual(resume.report.steps.find((s) => s.id === 'statusline.codex.configured').status, 'declined');
+
+    const notifyArtifact = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
+    ok(notifyArtifact.fragments.tui_notifications_toml,
+      'the fresh preview is the presented source — a declined step\'s historical fragment must not swallow it');
+    ok(notifyArtifact.tui_note == null,
+      'no routing note may point at a declined (historical) combined fragment');
+    ok(!(resume.report.warnings ?? []).some((w) => /frozen notification-plan artifact/.test(w)),
+      `no supersession warning — the preview IS the source here: ${JSON.stringify(resume.report.warnings)}`);
+  });
+
+  it('the frozen-supersession warning inspects the preview FIELD, not the serialized text — a [tui] literal in tui_warning is not a preview (round-4 false-positive)', async () => {
+    const { home, cwd } = await makeHome();
+    const codexConfig = join(home, '.codex', 'config.toml');
+    await writeFile(codexConfig, '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    const notifyPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments', 'notification-plan.fragment');
+    // Simulate a frozen artifact whose preview is ALREADY stripped but whose
+    // builder-level prose legitimately contains the [tui] literal.
+    const artifact = JSON.parse(await readFile(notifyPath, 'utf8'));
+    artifact.fragments.tui_notifications_toml = null;
+    artifact.tui_warning = 'existing [tui] notifications were observed in the host config';
+    await writeFile(notifyPath, `${JSON.stringify(artifact, null, 2)}\n`);
+
+    await writeFile(codexConfig, '# empty\n');
+    const resume = await run(['resume', '--run-id', runId, '--format', 'json']);
+    ok(!(resume.report.warnings ?? []).some((w) => /frozen notification-plan artifact still carries/.test(w)),
+      `a stripped preview with prose-level [tui] must not trigger the supersession warning: ${JSON.stringify(resume.report.warnings)}`);
+  });
+
+  it('declining the statusline step on an all-pending run NAMES the no-source state and withdraws the declined hand-off (rounds 5-6)', async () => {
+    // All-pending plan: the combined fragment renders and the notify
+    // artifact persists STRIPPED. The operator then declines statusline:
+    // decline withdraws the step's presentation fields (pointer + apply +
+    // desired), the combined fragment loses authority, and the run now
+    // presents NO [tui] source. Runtime must NAME that state with a
+    // re-plan warning — never rewrite the frozen artifact (a round-5
+    // restore attempt opened a fragment-vs-manifest commit-ordering hole;
+    // round-6 High). The declined step's historical hand-off must not
+    // render anywhere.
+    const { home, cwd } = await makeHome();
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments');
+    const stripped = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
+    strictEqual(stripped.fragments.tui_notifications_toml, null, 'all-pending plan strips the preview (combined is the source)');
+    const strippedBytes = await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8');
+
+    const answersPath = join(home, 'decline-sl-allpending.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'statusline.codex.configured', answer: 'decline' }]));
+    const resume = await run(['resume', '--run-id', runId, '--answers', answersPath, '--format', 'json']);
+
+    const slStep = resume.report.steps.find((s) => s.id === 'statusline.codex.configured');
+    strictEqual(slStep.status, 'declined');
+    strictEqual(slStep.fragment_pointer ?? null, null, 'decline withdraws the presentation pointer — a refused key is history');
+    strictEqual(slStep.apply_command ?? null, null, 'decline withdraws the apply command');
+    strictEqual(slStep.desired ?? null, null, 'decline withdraws the frozen plan expectation');
+
+    strictEqual(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'), strippedBytes,
+      'the frozen artifact is NEVER rewritten (no fragment-vs-manifest commit-ordering hole)');
+    ok((resume.report.warnings ?? []).some((w) => /presents NO \[tui\] source/.test(w) && /Re-plan/.test(w)),
+      `the no-source state is NAMED with the re-plan recovery: ${JSON.stringify(resume.report.warnings)}`);
+
+    const rendered = (await run(['status', '--run-id', runId])).rendered;
+    const renderedLines = rendered.split('\n');
+    const declinedIdx = renderedLines.findIndex((l) => /statusline\.codex\.configured: declined/.test(l));
+    ok(declinedIdx >= 0, 'the declined step still renders its status line');
+    ok(!/^\s+(apply:|fragment:)/.test(renderedLines[declinedIdx + 1] ?? ''),
+      `the declined step's historical hand-off must not render beneath it: next line = ${JSON.stringify(renderedLines[declinedIdx + 1])}`);
+  });
+
+  it('a LEGACY declined step later observed satisfied never resurrects its refused render state (round-6 Medium)', async () => {
+    // Seed a run whose statusline step was declined by an OLDER runtime that
+    // did not withdraw the fields, then make the observation satisfy it: the
+    // observation legitimately wins (§6.2), but the refused pointer must not
+    // ride along and fragment_applied must not promote off a refused render.
+    const { home, cwd } = await makeHome();
+    await writeFile(join(home, '.codex', 'config.toml'), '# empty\n');
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+
+    // Rewrite the manifest into the legacy shape: declined WITH fields.
+    const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json');
+    const manifest = JSON.parse(await readFile(runPath, 'utf8'));
+    const slStep = manifest.steps.find((s) => s.id === 'statusline.codex.configured');
+    slStep.status = 'declined';
+    slStep.fragment_pointer = '~/.agentic-plugins/runs/bootstrap/' + runId + '/fragments/statusline-codex.fragment';
+    slStep.apply_command = 'Merge the rendered [tui] table (historical refused render)';
+    slStep.desired = JSON.stringify(['model-with-reasoning']);
+    await writeFile(runPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    // The observation now satisfies the step (operator configured it by hand).
+    await writeFile(join(home, '.codex', 'config.toml'), '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
+    const resume = await run(['resume', '--run-id', runId, '--format', 'json']);
+    const judged = resume.report.steps.find((s) => s.id === 'statusline.codex.configured');
+    strictEqual(judged.status, 'satisfied', 'the live observation wins over the recorded decline (§6.2)');
+    strictEqual(judged.fragment_pointer ?? null, null, 'the refused pointer never resurrects');
+    strictEqual(judged.apply_command ?? null, null, 'the refused apply command never resurrects');
+    ok(judged.fragment_applied !== true,
+      'a refused render is never promoted to fragment_applied — a satisfying observation over a decline is a manual/pre-existing match');
+  });
+
+  it('a LEGACY declined step with a pointer but NO frozen desired also never promotes fragment_applied (round-6 Medium, desired-free variant)', async () => {
+    // Without a frozen `desired` the exact probe accepts any canonical form,
+    // so the observation satisfies immediately — the only thing standing
+    // between the refused pointer and a fragment_applied promotion is the
+    // pre-judgement declined strip. This variant pins that path directly.
+    const { home, cwd } = await makeHome();
+    await writeFile(join(home, '.codex', 'config.toml'), '# empty\n');
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+
+    const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json');
+    const manifest = JSON.parse(await readFile(runPath, 'utf8'));
+    const slStep = manifest.steps.find((s) => s.id === 'statusline.codex.configured');
+    slStep.status = 'declined';
+    slStep.fragment_pointer = '~/.agentic-plugins/runs/bootstrap/' + runId + '/fragments/statusline-codex.fragment';
+    slStep.apply_command = 'Merge the rendered [tui] table (historical refused render)';
+    slStep.desired = null;
+    await writeFile(runPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    await writeFile(join(home, '.codex', 'config.toml'), '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
+    const resume = await run(['resume', '--run-id', runId, '--format', 'json']);
+    const judged = resume.report.steps.find((s) => s.id === 'statusline.codex.configured');
+    strictEqual(judged.status, 'satisfied');
+    strictEqual(judged.fragment_pointer ?? null, null, 'the refused pointer never resurrects (desired-free variant)');
+    ok(judged.fragment_applied !== true, 'the refused render never promotes fragment_applied (desired-free variant)');
+  });
+
+  it('a frozen artifact that fails to PARSE keeps the supersession call conservative, never silent (round-5 Medium)', async () => {
+    const { home, cwd } = await makeHome();
+    const codexConfig = join(home, '.codex', 'config.toml');
+    await writeFile(codexConfig, '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    const notifyPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments', 'notification-plan.fragment');
+    // Truncate the frozen artifact mid-preview: unparseable, preview fate unknown.
+    const original = await readFile(notifyPath, 'utf8');
+    await writeFile(notifyPath, original.slice(0, Math.floor(original.length / 2)));
+
+    await writeFile(codexConfig, '# empty\n');
+    const resume = await run(['resume', '--run-id', runId, '--format', 'json']);
+    ok((resume.report.warnings ?? []).some((w) => /could not be parsed/.test(w) && /combined statusline-codex fragment is the presented/.test(w)),
+      `parse failure must warn conservatively, not silence the supersession: ${JSON.stringify(resume.report.warnings)}`);
   });
 });
 
@@ -905,6 +1163,61 @@ describe('bootstrap egress-provider-ack executor — consistency matrix + reader
     let proofExists = true;
     try { await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json')); } catch { proofExists = false; }
     strictEqual(proofExists, false, 'an inconsistent section must never persist as evidence');
+  });
+
+  it('a dispatched-but-unmirrored section (result=acked, status=failed) imports as a FAILED proof with the provider fact intact', async () => {
+    // provider_ack records the PROVIDER FACT only (schema providerAck $def):
+    // dispatched + lost mirror is a legitimate failed proof whose ack leg is
+    // true. The matrix must import it — refusing it as "inverse
+    // contradiction" would only be correct when the mirror ALSO correlated.
+    // The stubbed fingerprint matches the LIVE activation and bound_versions
+    // import fresh, so the only non-passing leg left for the reducer is the
+    // mirror itself — a mismatched fingerprint would hide the mirror defect
+    // behind staleness (Refine-verify peer, round 2).
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const LIVE_FINGERPRINT = deriveActivationFingerprint({
+      channel: 'telegram',
+      recipient: '424242424242',
+      credentialEnvVar: 'TELEGRAM_BOT_TOKEN',
+    });
+    const runner = async (scriptPath, args) => {
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        if (args.includes('--execute-egress-ack-proof')) {
+          return okOut(JSON.stringify({
+            egress_ack_proof: {
+              requested: true, executed: true, mode: 'explicit_egress_executor',
+              status: 'failed',
+              provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: LIVE_FINGERPRINT, ran_at: '2026-07-18T04:00:00.000Z' },
+              outcome_reason: 'mirror-missing', mirror_correlated: false, network_request_performed: true,
+              subject_suffix: 'abcdef012345', blockers: [], limits: [],
+            },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: 'b'.repeat(64) },
+          }));
+        }
+        return okOut(JSON.stringify({}));
+      }
+      return missing();
+    };
+    const env = { ...EGRESS_ENV_NO_RECIPIENT, TELEGRAM_CHAT_ID: '424242424242' };
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: runner, env });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    const answersPath = join(home, 'execute-egress-unmirrored.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+
+    ok(!resume.report.warnings.some((w) => /internally inconsistent/.test(w)),
+      `a legitimate failed-with-ack section must not be refused: ${JSON.stringify(resume.report.warnings)}`);
+    const proof = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json'), 'utf8'));
+    strictEqual(proof.status, 'failed', 'the proof stays failed — the mirror gate is not relaxed');
+    strictEqual(proof.provider_ack.result, 'acked', 'the provider fact survives the import untouched');
+    strictEqual(proof.mirror_correlated, false, 'the mirror verdict is durable evidence in the persisted record');
+    const ack = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(ack?.status, 'failed',
+      `the recomputed aggregate is failed on the mirror leg — not stale, not passed (got ${ack?.status}: ${JSON.stringify(ack?.reasons)})`);
+    ok((ack?.reasons ?? []).some((r) => /mirror/.test(r)), `the failure names the mirror: ${JSON.stringify(ack?.reasons)}`);
   });
 
   it('the final reduce re-reads the READERS: an activation changed DURING the proof is judged post-execution, not from the stale snapshot', async () => {

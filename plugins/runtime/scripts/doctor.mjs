@@ -3545,8 +3545,15 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
       // Every COMPLETED attempt carries provider_ack (a failed attempt is
       // evidence too — omitting it would degrade an executed failure to
       // \u201cabsent\u201d at the reducer).
+      // `provider_ack.result` records the PROVIDER FACT only — the schema's
+      // providerAck $def pins it as "proves exactly that the pinned provider
+      // request returned HTTP 2xx + {ok:true}", and the limits above say the
+      // mirror is not provider evidence. A dispatched return with a lost
+      // mirror is therefore result=acked inside a FAILED proof (status +
+      // outcome_reason carry the mirror fail-close); folding the mirror into
+      // `result` would overwrite an independent true fact.
       provider_ack: {
-        result: acked ? 'acked' : 'failed',
+        result: dispatched ? 'acked' : 'failed',
         attempt_hash: attemptHash,
         activation_fingerprint: activationFingerprint,
         ran_at: ranAt,

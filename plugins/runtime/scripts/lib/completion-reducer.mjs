@@ -167,6 +167,25 @@ export function recomputeProofStatus(proof, { current, applicable = true, requir
     if (ack.result !== 'acked') {
       return { status: 'failed', reasons: ['the provider request did not return an acknowledged response'] };
     }
+    // The recomputed aggregate requires BOTH evidence facts: the provider ack
+    // AND the independently recorded mirror correlation (schema 1.2 sibling
+    // seat). An acked-but-unmirrored attempt is unverifiable — the message
+    // may or may not exist — and unverifiable is failed, never passed. A
+    // record without the seat (legacy) reduces the same way, fail-closed.
+    if (proof.mirror_correlated !== true) {
+      return { status: 'failed', reasons: ['the acked attempt was not verifiably mirrored (mirror row missing, ambiguous, or recorded before the mirror seat existed) — unverifiable evidence never re-evaluates to passed'] };
+    }
+    // The artifact link is the third evidence leg (§8 acked-consistency:
+    // passed requires acked AND mirrored AND an artifact hash). This
+    // recompute checks PRESENCE/SHAPE only — byte-verification of the hash
+    // against the actual doctor artifact is the import boundary's job (the
+    // matrix imports doctor's exact-byte artifact_sha256); a pure reducer
+    // has no filesystem to re-verify against. A directly written or
+    // hand-edited record without any doctor-artifact hash still must not
+    // recompute to passed (Refine-verify peer, rounds 3-4).
+    if (typeof proof.artifact_hash !== 'string' || !SHA256_RE.test(proof.artifact_hash)) {
+      return { status: 'failed', reasons: ['the acked attempt does not carry a well-formed doctor-artifact hash (sha256) — evidence that cannot be checked against its recorded doctor report never re-evaluates to passed'] };
+    }
     const freshness = boundVersionsFresh(proof.bound_versions, current, { requiredPlugins });
     if (!freshness.fresh) return { status: 'stale', reasons: freshness.reasons };
     if (currentActivationFingerprint === null) {
@@ -390,7 +409,7 @@ function probeInstalledPlugins(probe, selection) {
 // doctor artifact that grows a new field cannot carry it here by default — the §8.2
 // rule is "metadata only", and "everything except the fields we thought to exclude"
 // is not that rule.
-const PROOF_METADATA_KEYS = Object.freeze(['kind', 'status', 'directions', 'provider_ack', 'artifact_pointer', 'artifact_hash', 'bound_versions', 'ran_at']);
+const PROOF_METADATA_KEYS = Object.freeze(['kind', 'status', 'directions', 'provider_ack', 'mirror_correlated', 'artifact_pointer', 'artifact_hash', 'bound_versions', 'ran_at']);
 const DIRECTION_KEYS = Object.freeze(['status', 'ran_at']);
 
 /**
@@ -480,6 +499,13 @@ export function importProofMetadata(doctorProof) {
     if (record.provider_ack.attempt_hash === null || record.provider_ack.activation_fingerprint === null) {
       return { ok: false, errors: ['provider_ack must carry a non-null attempt_hash and activation_fingerprint (sha256)'], record: null };
     }
+    // The independent mirror verdict is a SIBLING seat (schema 1.2): strict
+    // boolean-or-absent. A non-boolean claim is dropped (reported below) and
+    // the record reduces fail-closed as not-verified — never coerced into
+    // evidence the reducer would then trust.
+    if (typeof doctorProof.mirror_correlated === 'boolean') {
+      record.mirror_correlated = doctorProof.mirror_correlated;
+    }
   } else {
     const directions = {};
     for (const direction of DIRECTIONS) {
@@ -504,6 +530,8 @@ export function importProofMetadata(doctorProof) {
     ...(doctorProof.artifact_pointer !== undefined && record.artifact_pointer === null ? ['artifact_pointer (not a pointer)'] : []),
     ...(kind === 'egress-provider-ack' && doctorProof.directions !== undefined ? ['directions (forbidden for egress-provider-ack)'] : []),
     ...(kind !== null && kind !== 'egress-provider-ack' && doctorProof.provider_ack !== undefined ? ['provider_ack (forbidden for directional kinds)'] : []),
+    ...(kind !== null && kind !== 'egress-provider-ack' && doctorProof.mirror_correlated !== undefined ? ['mirror_correlated (forbidden for directional kinds)'] : []),
+    ...(kind === 'egress-provider-ack' && doctorProof.mirror_correlated !== undefined && typeof doctorProof.mirror_correlated !== 'boolean' ? ['mirror_correlated (not a boolean)'] : []),
   ].sort();
   return { ok: true, errors: [], record, dropped };
 }

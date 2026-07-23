@@ -863,13 +863,17 @@ describe('runtime completion reducer — importHookAttestation (§8.2, S8a4-4)',
 describe('runtime completion reducer — egress-provider-ack aggregate (ADR-0048 §3)', () => {
   const FP = 'f'.repeat(64);
   const ATTEMPT = 'a'.repeat(64);
-  function ackProof(current, { result = 'acked', fingerprint = FP } = {}) {
+  // `mirror: null` omits the sibling seat entirely (the legacy-record shape);
+  // true/false write it. The default is the fully-verified shape: ack +
+  // mirror + a linkable artifact hash (the three §8 evidence legs).
+  function ackProof(current, { result = 'acked', fingerprint = FP, mirror = true, artifactHash = 'b'.repeat(64) } = {}) {
     return {
       kind: 'egress-provider-ack',
       status: 'passed',
       provider_ack: { result, attempt_hash: ATTEMPT, activation_fingerprint: fingerprint, ran_at: AT },
+      ...(mirror === null ? {} : { mirror_correlated: mirror }),
       artifact_pointer: null,
-      artifact_hash: null,
+      artifact_hash: artifactHash,
       bound_versions: structuredClone(current),
       ran_at: AT,
     };
@@ -884,6 +888,30 @@ describe('runtime completion reducer — egress-provider-ack aggregate (ADR-0048
   it('a failed ack result is failed — the stored status is never consulted', () => {
     const r = recomputeProofStatus(ackProof(current, { result: 'failed' }), { current, currentActivationFingerprint: FP });
     strictEqual(r.status, 'failed');
+  });
+
+  it('an acked-but-unmirrored proof is FAILED, not passed — the mirror seat is a required recompute input (Refine-verify round 2)', () => {
+    const r = recomputeProofStatus(ackProof(current, { mirror: false }), { current, currentActivationFingerprint: FP });
+    strictEqual(r.status, 'failed');
+    match(r.reasons.join(' '), /not verifiably mirrored/);
+  });
+
+  it('a record WITHOUT the mirror seat (legacy shape) reduces fail-closed as not-verified — absence never reads as passed', () => {
+    const r = recomputeProofStatus(ackProof(current, { mirror: null }), { current, currentActivationFingerprint: FP });
+    strictEqual(r.status, 'failed');
+    match(r.reasons.join(' '), /not verifiably mirrored/);
+  });
+
+  it('an acked+mirrored record with NO artifact link is FAILED — the at-rest aggregate enforces all three §8 legs (Refine-verify round 3)', () => {
+    const r = recomputeProofStatus(ackProof(current, { artifactHash: null }), { current, currentActivationFingerprint: FP });
+    strictEqual(r.status, 'failed');
+    match(r.reasons.join(' '), /well-formed doctor-artifact hash/);
+  });
+
+  it('a MALFORMED artifact hash is FAILED — "well-formed" means the sha256 shape, not mere presence (Refine-verify round 5)', () => {
+    const r = recomputeProofStatus(ackProof(current, { artifactHash: 'not-a-sha256' }), { current, currentActivationFingerprint: FP });
+    strictEqual(r.status, 'failed');
+    match(r.reasons.join(' '), /well-formed doctor-artifact hash/);
   });
 
   it('a removed activation stales the proof — never not-applicable (peer E5)', () => {
@@ -916,6 +944,32 @@ describe('runtime completion reducer — egress-provider-ack aggregate (ADR-0048
     ok(smuggled.ok);
     ok(!('provider_ack' in smuggled.record), 'a directional record cannot carry provider_ack through the importer');
     ok(smuggled.dropped.some((d) => d.startsWith('provider_ack')), 'and the drop is reported');
+  });
+
+  it('the mirror seat imports as strict boolean-or-absent, and directional kinds refuse it', () => {
+    const base = {
+      kind: 'egress-provider-ack', status: 'failed',
+      provider_ack: { result: 'acked', attempt_hash: ATTEMPT, activation_fingerprint: FP, ran_at: AT },
+      artifact_pointer: null, artifact_hash: null, bound_versions: current, ran_at: AT,
+    };
+    const mirrored = importProofMetadata({ ...base, mirror_correlated: true });
+    ok(mirrored.ok, JSON.stringify(mirrored.errors));
+    strictEqual(mirrored.record.mirror_correlated, true, 'a boolean seat survives the import');
+
+    const nonBool = importProofMetadata({ ...base, mirror_correlated: 'yes' });
+    ok(nonBool.ok, JSON.stringify(nonBool.errors));
+    ok(!('mirror_correlated' in nonBool.record), 'a non-boolean claim is never coerced into evidence');
+    ok(nonBool.dropped.some((d) => d.startsWith('mirror_correlated')), 'and the drop is reported');
+
+    const onDirectional = importProofMetadata({
+      kind: 'deep-peer-smoke', status: 'passed',
+      directions: { 'claude->codex': { status: 'passed', ran_at: AT }, 'codex->claude': { status: 'passed', ran_at: AT } },
+      mirror_correlated: true,
+      artifact_pointer: null, artifact_hash: null, bound_versions: current, ran_at: AT,
+    });
+    ok(onDirectional.ok, JSON.stringify(onDirectional.errors));
+    ok(!('mirror_correlated' in onDirectional.record), 'the mirror fact belongs to the egress shape only');
+    ok(onDirectional.dropped.some((d) => d.startsWith('mirror_correlated')), 'and the drop is reported');
   });
 });
 
