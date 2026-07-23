@@ -410,7 +410,7 @@ registration, which can be removed after install and MUST still be probed (§1.2
 | 2 | marketplace registered, both hosts | operator (Claude) / H2 (Codex) |
 | 3 | selected bundle installed + enabled | H2 via `settings --execute-plugin-management`, **presented** |
 | 4 | model / effort defaults | `settings --apply --target user` (agentic-plugins-owned) |
-| 5 | notification + egress | operator applies the rendered fragments |
+| 5 | operator observability + egress (ADR-0048 §1 — renamed from "notification + egress"; no stage inserted, nothing renumbered) | operator applies the rendered fragments |
 | 6 | permission posture, **both hosts** — Claude `~/.claude/settings.json` **and** Codex `approval_policy` / `sandbox_mode` (ADR-0038 requires first-class plans for both) | operator applies the rendered fragments |
 | 7 | Codex `/hooks` review + trust | operator (interactive TUI), then attestation |
 | 8 | execution proof (§8) | `runtime:doctor --execute-*` |
@@ -426,6 +426,7 @@ runtime:bootstrap status   [--run-id <id> | --latest | --latest-open] [--format 
 runtime:bootstrap resume   [--run-id <id> | --latest-open] [--answers <path>]
                            [--format text|json]
 runtime:bootstrap verify   [--run-id <id> | --latest] [--format text|json]
+runtime:bootstrap attest   [--run-id <id> | --latest] [--format text|json]
 runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
 runtime:bootstrap profile export [--name <id>] [--from-run <id>] [--overwrite]
 runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest-open]
@@ -460,6 +461,23 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   likes without re-running a single peer smoke.
 - With **no run**, `status` and `verify` report `no-active-run` and exit `30`; they
   never synthesize one.
+- **`attest` is the post-terminal receipt door (ADR-0048 §3 / D0.1).** A
+  successful final proof send terminalizes the run, after which `resume` refuses
+  it — so the owner's after-the-fact phone-receipt testimony needs a verb of its
+  own. `attest` requires a recorded `egress-provider-ack` that still re-judges
+  `passed`, assembles the receipt record (surface `owner-phone`, the ack's
+  synthetic `attempt_hash`, the stored ack file's own sha256 as
+  `provider_proof_artifact_hash`, and a time — no free text, no device
+  identifier), and persists it through the proof writer's one
+  `postTerminalWritable` exception. It never touches the manifest — steps,
+  proofs, status, and the stored completion are inviolate — and it refuses an
+  `abandoned` run (an escape hatch is not a completed bootstrap anyone can
+  testify about) and any run whose schema is not the current one (receipt is
+  1.2 vocabulary; an open legacy run migrates via `resume` first). Submitting
+  `execute` and `attest-receipt` against the ack step in ONE answers file
+  resolves to one effective action (last-wins), so executing and testifying in
+  the same resume is structurally impossible — testimony is always about a
+  PRE-EXISTING acked attempt.
 - `abandon` closes an open run (`status: abandoned`) so a new `plan` can start. A
   crashed or unwanted run MUST be recoverable without hand-editing the artifact
   home — otherwise one interrupted run blocks the machine forever. `abandon` never
@@ -496,16 +514,21 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   An answer whose `step_id` is not an expected step of the run is rejected (exit
   `40`) rather than recorded, so a stale answers file cannot smuggle a step into a
   manifest the registry never derived (§6.1). The answer vocabulary is exactly
-  three values (S8b errata — the file's *shape* was specified but its *values*
-  were not, and an implementation had to invent them): **`decline`** marks a
-  declinable step declined (a non-declinable target is exit `40`, and a plugin
-  decline re-runs the §9.1 closure over the retained set); **`accept`** records
-  the operator's go-ahead without changing step state (steps are promoted only
-  by post-probes, §6); **`execute`** — meaningful on `proof.*` steps under
-  `resume` only — is the explicit approval that lets `resume` run that proof
-  through `runtime:doctor --record`. Duplicate answers for one step apply in
-  file order (the last wins the step state) and every one is recorded in
-  `choices[]`, keeping the run replayable from its own manifest.
+  four values (S8b errata fixed the shape-without-values gap; ADR-0048 §3 added
+  the fourth): **`decline`** marks a declinable step declined (a non-declinable
+  target is exit `40`, and a plugin decline re-runs the §9.1 closure over the
+  retained set); **`accept`** records the operator's go-ahead without changing
+  step state (steps are promoted only by post-probes, §6); **`execute`** —
+  meaningful on `proof.*` steps under `resume` only — is the explicit approval
+  that lets `resume` run that proof through `runtime:doctor --record`;
+  **`attest-receipt`** — valid against `proof.egress-provider-ack` only, and
+  never under `plan` (no ack can exist yet, so there is nothing to testify
+  about) — records the owner's phone-receipt testimony intent, audit-logged in
+  `choices[]` like every other answer. Duplicate answers for one step apply in
+  file order and every one is recorded in `choices[]`, keeping the run
+  replayable from its own manifest — and consumers read the per-step
+  **EFFECTIVE** action (the last one), never the raw rows: the raw-filter
+  shape executed an `execute` a later row had declined (ADR-0048 §3 repair).
 - **Run terminalization is asymmetric** (S8b errata — closing on the reduction
   alone made Stage 8 unreachable): `resume` closes a run as `complete` when the
   reducer says so, and as `configured-not-verified` **only when every required
@@ -525,6 +548,7 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
 | 20 | `incomplete` (steps remain) |
 | 30 | `no-active-run` (for `status` / `resume` / `verify`) |
 | 40 | invalid input (bad bundle, broken closure, schema rejection, path violation) |
+| 50 | `legacy-historical` — a TERMINAL run under an older schema minor: the stored record was shown verbatim and **nothing was re-probed or re-certified** (ADR-0048 §1). Exit 0 would claim a current completion nobody re-proved, which is exactly the overclaim this code exists to prevent |
 | 1 | unexpected error |
 
 ---
@@ -705,6 +729,31 @@ On `profile seed`, runtime MUST:
 The chat-id pre-fills; the token never does — generalizing the egress launcher's
 existing behavior from one value to the whole profile.
 
+#### Profile 1.1 (ADR-0048 §2.1 / §4 realization)
+
+- **`statusline_preset`** — the adopted statusline item set, carried as an
+  OPTIONAL trailing **scalar** preset id (the owner-adopted six-item set is
+  `agentic-6`). A bare string on purpose, twice over: §4.6 lets a 1.0 reader
+  ignore an unknown *scalar* with a warning (an object would refuse the whole
+  document — the nested/custom shape is exactly §2.1's named major-bump case),
+  and canonicalization serializes unknown keys after known ones, so appending it
+  LAST keeps a 1.0 reader's canonical hash aligned with a 1.1 reader's over the
+  same document. The id names a policy; the canonical ordered item definition
+  belongs to the statusline adapter, never inline here. It is a DECLARATION the
+  export carries, never an observation inferred from host config. Validator
+  warnings from the ignored-scalar path SURFACE in the consuming verb's
+  report — an invisible warning is a forward-compat rule nobody exercises.
+- **`credential_env_var` is a WRITE-GATE constant, not a schema `const`
+  (ADR-0048 §4, realization decision D0.4).** The ADR asks for a schema
+  constant; a JSON `const` in a minor would invalidate legal 1.0 documents
+  carrying `null` or another name — a direct §4.6 additive violation — so the
+  schema shape stays `["string","null"]` and the pinning lives in
+  `assertProfileWritable` on every write/seed path: a present name other than
+  `TELEGRAM_BOT_TOKEN` is refused at the gate. The ADR's goal (no arbitrary
+  credential env var can enter the recorded contract) is enforced at the write
+  boundary; the difference from the ADR's literal wording is deliberate and
+  owner-approved (2026-07-23).
+
 ### 4.6 Schema migration
 
 `schema` carries **major.minor**. An **unknown major** is rejected with a diagnostic
@@ -823,10 +872,25 @@ Four shapes are load-bearing and agree with §8 / §8.1:
   / `unknown` / `sandbox_limited` — because the machine probe (`probeMachineHostState`,
   §1.1) genuinely distinguishes them; a boolean would collapse "not authenticated" into
   "unknown" and let a `sandbox_limited` read masquerade as authenticated.
-- **`proofs[].directions` is a per-direction result map**, not a list of direction
-  names (§8.1). `proofs[].status` is the **aggregate recomputed from `directions`**, never
-  trusted from storage: a smoke that passed `claude->codex` and failed `codex->claude` is
-  `failed`, and a schema that could only say `directions: [...]` could not express it.
+- **The RECORDED proof's `directions` is a per-direction result map**, not a list of
+  direction names (§8.1). A proof's `status` is the **aggregate recomputed from the
+  kind's evidence member** — `directions`, or `provider_ack` for
+  `egress-provider-ack` (1.2, ADR-0048 §3) — never trusted from storage: a smoke
+  that passed `claude->codex` and failed `codex->claude` is `failed`, and a schema
+  that could only say `directions: [...]` could not express it. Two shapes exist
+  and must not be conflated (the 1.1-era text conflated them, and re-judgement
+  read the wrong one — the false-demotion repair): the **recorded** proof lives in
+  `proof/<kind>.json` and keeps its evidence member; the **reduced**
+  `completion.proofs[]` entry collapses that evidence into `status` + `reasons`
+  and carries no `directions` at all. Re-judgement (status/verify/resume) reads
+  the RECORDED files back — validated, byte-rehashed — and the manifest's
+  completion is a cached reduction over them, never the re-judgement source.
+  The 1.2 kind discriminator is enforced in code (lib/evidence-contract.mjs, one
+  table for importer/writer/reader/reducer): directional kinds require
+  `directions` and forbid `provider_ack`; `egress-provider-ack` the reverse;
+  unknown kind, both members, neither member, filename/embedded-kind mismatch,
+  and duplicate kinds are refused fail-closed — the schema deliberately leaves
+  both members optional because the §4.1 validator has no `oneOf`.
 - **`bound_versions.plugins` is per-host** (`{ claude: {…}, codex: {…} }`) and binds
   **every** selected plugin version, not only runtime + the two CLIs (§8.1). Freshness
   compares exact key **sets and values**; a missing or null required version never counts
@@ -888,6 +952,7 @@ exists to prevent. The registry is therefore enumerated here, not left to S8:
 | `plugin.<name>.codex.enabled` | 3 | per plugin in the selection targeting Codex | follows `.installed` |
 | `config.model_effort` | 4 | always | no |
 | `notify.configured` | 5 | always | **yes** |
+| `notify.codex.configured` | 5 | always | **yes** |
 | `egress.configured` | 5 | always | **yes** |
 | `permission.claude.applied` | 6 | always | **yes** |
 | `permission.codex.applied` | 6 | always | **yes** |
@@ -895,6 +960,17 @@ exists to prevent. The registry is therefore enumerated here, not left to S8:
 | `proof.deep-peer-smoke` | 8 | always | **yes** (declining caps at `configured-not-verified`) |
 | `proof.workflow-continuation` | 8 | iff `engineer` ∈ selection | **yes** (same cap) |
 | `proof.permission` | 8 | iff a `permission.*.applied` step carries `fragment_applied: true` | **yes** (same cap) |
+| `proof.egress-provider-ack` | 8 | iff the operator opted in (any recorded answer against the step, or the step already in `steps[]`) — ADR-0048 §3/D0.2 | **yes** (same cap) |
+
+`notify.configured` keeps meaning exactly the LOCAL runtime notification policy
+(`~/.agentic-plugins/config.toml` notify family); `notify.codex.configured`
+observes the Codex-side wiring — `notify =` in `$CODEX_HOME/config.toml` must be
+present AND a parseable, **non-empty** argv (`notify = []` runs nothing, and a
+present-but-unparseable value is a config the host will not run — both judge
+`pending`; an unreadable config judges `unknown`). The rendered Codex notify
+fragment attaches to the Codex step, whose judge re-observes it (ADR-0048 §1
+split — the pre-split judge only ever read the local config, so the merge was
+presented but never re-observed).
 
 **`blocked_by` edges** (the column §5's `steps[].blocked_by` serializes; enumerated here
 because §5 referenced them and this table did not define them — S8a2 C4). Each step is
@@ -910,11 +986,13 @@ be attempted at all, never a mere stage ordering:
 | `plugin.<name>.codex.enabled` | `plugin.<name>.codex.installed` |
 | `config.model_effort` | — (agentic-plugins' own config; no host needed) |
 | `notify.configured`, `egress.configured` | — (same) |
+| `notify.codex.configured` | `host.codex.present` (a Codex-side config needs the Codex CLI — the permission-step precedent) |
 | `permission.<h>.applied` | `host.<h>.present` |
 | `hooks.codex.attested` | every selected Codex-hook-bearing plugin's `.codex.installed` **and** `.codex.enabled` |
 | `proof.deep-peer-smoke` | both hosts' `.authenticated`, plus `companions` `.installed` on both and `.enabled` on Codex |
 | `proof.workflow-continuation` | `engineer`'s `.installed` on both hosts and `.enabled` on Codex |
 | `proof.permission` | every applicable `permission.<h>.applied` |
+| `proof.egress-provider-ack` | `egress.configured` (an ack over an unconfigured egress channel is unreachable by construction) |
 
 An empty `blocked_by` is written **explicitly** (`[]`), never omitted: an absent edge list
 and "this step has no predecessors" must not be the same byte. The graph is acyclic, and
@@ -972,6 +1050,24 @@ with a reason — when any of these changed since `probe.probed_at`:
 A step "satisfied" against Codex `0.136` says nothing about `0.140`; hook trust in
 particular is version-bound (ADR-0030).
 
+**Schema-minor migration (1.2, ADR-0048 §1).** `resume` is the one M1 verb, so it
+is where the minor moves:
+
+- an OPEN run under an **older** minor migrates **additively** on resume: the
+  registry-new steps join `steps[]` through the ordinary reprobe (expected
+  derives from the current registry; prior state carries per step id), the new
+  fragments render, and the persist stamps the current schema string with a
+  history row naming the migration — never a silent rewrite;
+- a TERMINAL run under an older minor is **immutable historical evidence**:
+  `status`/`verify` present the stored completion verbatim with
+  `historical`/`not_recertified` markers and exit `50` (§3.1), re-probe nothing,
+  re-read no proof file, and re-certify nothing against the current registry —
+  the operator starts a fresh `plan` for current evidence;
+- a run under a **newer** minor refuses `resume` outright: this runtime would
+  persist a document it only half-understands, silently shedding additions a
+  newer runtime recorded (§4.6: downgrade is never attempted). R0 verbs may
+  still read it under the §4.1 scalar tolerance.
+
 **Two reducer traps, both load-bearing** — they are why this is a command and not a
 settings flag:
 
@@ -1023,6 +1119,28 @@ incomplete
 > requires. A declined proof caps at `configured-not-verified` (§6.2); it never grants
 > `complete`.
 
+**Invalid evidence caps at `incomplete` (1.2 amendment, ADR-0048 §3).** Duplicate
+records claiming one kind are REJECTED, never chosen between: the read boundary
+(`readBootstrapProofRecords`) refuses the whole read all-or-nothing, and the
+reducer — defense-in-depth for direct library callers — reduces the duplicated
+kind to `failed` with the duplication named AND caps `state` at `incomplete`
+regardless of whether the duplicated proof was required. A duplicated
+non-required proof is still an evidence-integrity violation, not a pass.
+
+**The receipt attestation verdict (1.2, ADR-0048 §3 / D0.1).** The reducer
+carries `completion.egress_receipt_attestation` — the recomputed verdict over the
+recorded owner testimony — ONLY when the run has anything to say about it
+(testimony recorded, or the egress proof opted in); every other run keeps the
+exact 1.1 completion shape. `attested` requires the linked `egress-provider-ack`
+to still re-judge `passed` at current bound versions, the receipt's
+`provider_proof_artifact_hash` to equal the stored ack file's own sha256
+(byte-rehashed at read-back), and the `attempt_hash` to match by equality. Any
+drift — ack stale/failed, replaced file, different attempt — is `stale` with the
+reason named; testimony never silently vanishes into `not-applicable` on drift
+(removal is a staleness fact about recorded testimony, not a retraction of it).
+Presentation derives the **`delivery-attested`** label from ack `passed` +
+verdict `attested`; the generic completion `state` is never redefined by receipt.
+
 ### 8.1 Which proofs are required
 
 | Proof | Required when | Why |
@@ -1030,6 +1148,20 @@ incomplete
 | `deep-peer-smoke` | **always** | It is the only proof that the cross-host companion bridge actually works. It is always *applicable* because `companions` is mandatory in every selection (§6.2) — that rule exists precisely to keep this proof reachable. |
 | `workflow-continuation` | **iff `engineer` ∈ selection** | It exercises engineer machinery. Requiring it with no engineer installed would be unreachable. |
 | `permission` | **iff a permission fragment was applied** in stage 6 | It proves companion invocation under the newly applied host permission defaults. |
+| `egress-provider-ack` | **iff the operator opted in** (§6.1 — any recorded answer against the step, or the step already in `steps[]`) | ADR-0048 §3: it proves exactly that the pinned provider request returned HTTP 2xx + `{ok:true}` — deliberately not named "dispatch" or "delivery". Requiring it unrequested would make every non-egress machine unable to complete. |
+
+The `egress-provider-ack` freshness additionally binds the **sanitized activation
+fingerprint** by EQUALITY — a domain-separated sha256 over channel + recipient +
+the credential env var NAME (lib/evidence-contract.mjs owns the derivation;
+nothing credential-value-derived may enter a persisted fingerprint). A removed or
+changed activation stales the proof; it never becomes `not-applicable`.
+**Documented limit**: credential ROTATION is invisible to this fingerprint by
+design (folding the value in would persist a value-derived hash, which §4/ADR-0048
+forbids) — a rotated token surfaces as the executor's next real attempt failing,
+not as staleness. The "contract version" the proof binds is realized as the run
+schema id (`runtime-bootstrap-run-1.2`) plus the runtime semver already in
+`bound_versions` — the contract document ships inside the runtime package, so the
+runtime version pins it; no separate field exists.
 
 A proof is `stale` — and does **not** satisfy `complete` — when its `bound_versions`
 do not match the current probe. **`bound_versions` binds the plugin versions too**,
@@ -1222,6 +1354,16 @@ the remaining actions (which the §1.5 write-ahead record makes possible). For
 operator-applied fragments, bootstrap renders backup/verify/manual-revert guidance
 alongside the apply command.
 
+**Schema migration is patch-forward too (1.2, ADR-0048 §1).** Once a run has been
+resumed under a newer runtime — its schema stamped to the newer minor, new
+structural evidence recorded — an older runtime will refuse to resume it (§7
+future-minor rule) and there is no downgrade path: the older reader cannot even
+represent what the newer one recorded, and stripping it would be silent evidence
+destruction. The recovery is the same as every other stuck run: `abandon` it and
+start a fresh `plan` under whichever runtime the machine is staying on. This
+section governs host edits and artifacts; it never promised schema downgrade,
+and now says so.
+
 ---
 
 ## 11. Test obligations (S8)
@@ -1245,6 +1387,38 @@ prose tables in §9 and §6 agree with `plugin-set.json` and the step registry. 
 tokens (§11.3) remain as a floor, not as the enforcement.
 
 ### 11.2 `tests/runtime/test-bootstrap.mjs`
+
+**1.2 additions (ADR-0048, realized by the bootstrap-contract-vnext slice).** The
+following obligations join the pins below, spread across
+`test-bootstrap.mjs` / `test-bootstrap-cli.mjs` / `test-completion-reducer.mjs` /
+`test-machine-profile.mjs` / `test-step-registry.mjs`:
+
+- **False-demotion regression**: a passed proof stays `passed` across repeated
+  verify/resume — re-judgement reads the RECORDED proof/ files back, never the
+  reduced completion cache (mutation-verified: restoring the cache read turns
+  the test red).
+- **Writer gates**: proof validation is mandatory and internal (no injectable
+  validator to forget); unknown evidence kind, kind-discriminator violations,
+  terminal-run writes (except the D0.1 receipt into a completed run — and never
+  into an abandoned one) are each refused.
+- **Read boundaries**: a schema-invalid manifest cannot prove itself terminal
+  (scan), cannot be selected for reduction (selectRun), cannot be updated
+  (previous-invalid), and CAN still be abandoned into a valid tombstone.
+- **Duplicate evidence**: rejected at the read boundary all-or-nothing, and the
+  reducer caps at `incomplete` independent of requiredness.
+- **Receipt lifecycle**: attest refuses no-ack / abandoned / legacy-schema; a
+  recorded receipt re-judges attested/stale on ack drift, file replacement, and
+  attempt mismatch; `delivery-attested` renders without redefining `complete`.
+- **Migration**: an open 1.1 run resumes into a 1.2 stamp + history row +
+  injected registry-new steps + rendered fragments; a terminal 1.1 run answers
+  exit 50 with `historical`/`not_recertified` and stays byte-identical; a
+  future-minor run refuses resume.
+- **Answers**: effective-action last-wins (execute-then-decline does not
+  execute); `attest-receipt` is refused under plan and against any other step.
+- **Profile 1.1**: every legal 1.0 document validates; a 1.1 `statusline_preset`
+  under a 1.0-era reader warns-and-ignores (and the warning SURFACES); the
+  canonical hash keeps the trailing-scalar alignment; the write gate refuses a
+  non-`TELEGRAM_BOT_TOKEN` name while the schema stays additive (D0.4).
 
 1. **Seam** — bootstrap never calls `inspectCatalogs` / `inspectSourcePluginState`.
    Assert at the **seam** (injected-call spy, or a poisoned catalog whose content

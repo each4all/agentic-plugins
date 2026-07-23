@@ -81,8 +81,21 @@ import { randomBytes, createHash } from 'node:crypto';
 import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
+import { scrubSecrets } from './egress-channel.mjs';
+import { EVIDENCE_FAMILIES, EVIDENCE_KINDS, validateEvidenceRecord } from './evidence-contract.mjs';
 import { isUnder } from './path-containment.mjs';
+import { makeValidator } from './schema-validate.mjs';
 import { machineGlobalRoot, machinePointer, MACHINE_BOOTSTRAP_RETENTION_CAP } from './state-readers.mjs';
+
+// The run-manifest validator, loaded once per process (ADR-0048 §3: every
+// manifest read boundary validates before selection/reduction). Lazy because
+// most module consumers never touch a manifest; a singleton because the scan
+// re-reads every run under the retention cap on every verb.
+let runManifestValidatorPromise = null;
+function runManifestValidator() {
+  runManifestValidatorPromise ??= makeValidator('runtime-bootstrap-run');
+  return runManifestValidatorPromise;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -100,6 +113,10 @@ export const BOOTSTRAP_RUN_ID_RE = /^bootstrap-\d{8}T\d{6}Z-[0-9a-f]{6}$/;
 // complete / configured-not-verified are the reducer's to assign (§8, C5).
 export const BOOTSTRAP_RUN_STATUSES = Object.freeze(['open', 'complete', 'configured-not-verified', 'abandoned']);
 export const BOOTSTRAP_TERMINAL_RUN_STATUSES = Object.freeze(['complete', 'configured-not-verified', 'abandoned']);
+// The terminal statuses the D0.1 receipt attestation may still append into —
+// the reducer-assigned completions, NEVER `abandoned`: an abandoned run is an
+// escape hatch, not a completed bootstrap anyone can testify about.
+export const BOOTSTRAP_COMPLETION_RUN_STATUSES = Object.freeze(['complete', 'configured-not-verified']);
 
 // Profile --name charset (contract §10.2). No '/', no '\', no '..', no leading
 // '.', no NUL — enforced as an ALLOWLIST, because an allowlist cannot be
@@ -875,6 +892,15 @@ export async function scanBootstrapRuns({ homeDir }) {
     const manifest = read.status === 'ok' && read.value && typeof read.value === 'object' ? read.value : null;
     const rawStatus = manifest && typeof manifest.status === 'string' ? manifest.status : null;
     const status = rawStatus && BOOTSTRAP_RUN_STATUSES.includes(rawStatus) ? rawStatus : null;
+    // ADR-0048 §3 — the scan is the EARLIEST manifest trust boundary: runPlan's
+    // open-run check consumes `terminal` before selectRun ever runs, so a
+    // schema-invalid body claiming `{status:"complete"}` used to prove a run
+    // terminal and let a second plan proceed. `terminal` therefore requires a
+    // schema-VALID manifest, not merely a recognized status string; an invalid
+    // one stays not-proven-terminal, blocks new plans, and is named for the
+    // operator to `abandon` (which replaces an invalid record with a valid
+    // tombstone).
+    const schemaValid = manifest ? (await runManifestValidator())(manifest).ok : null;
     runs.push({
       run_id: entry.name,
       status,
@@ -884,7 +910,8 @@ export async function scanBootstrapRuns({ homeDir }) {
       // version does not understand.
       raw_status: rawStatus,
       manifest_status: read.status,
-      terminal: status !== null && BOOTSTRAP_TERMINAL_RUN_STATUSES.includes(status),
+      schema_valid: schemaValid,
+      terminal: status !== null && schemaValid === true && BOOTSTRAP_TERMINAL_RUN_STATUSES.includes(status),
       started_at: typeof manifest?.started_at === 'string' ? manifest.started_at : null,
       updated_at: typeof manifest?.updated_at === 'string' ? manifest.updated_at : null,
       created_ms: bootstrapRunIdTimestampMs(entry.name),
@@ -1200,11 +1227,22 @@ export async function abandonBootstrapRun({ homeDir, repoRoot, runId, reason = '
     // whose body is corrupt is the one most likely to be blocking the machine. The
     // record is REPLACED rather than merged (there is nothing trustworthy to merge),
     // and it says so.
-    const previous = read.status === 'ok' && read.value && typeof read.value === 'object' ? read.value : null;
+    //
+    // A PARSEABLE-but-schema-INVALID manifest is the same case wearing JSON (ADR-0048
+    // §3 read-boundary finding): it can never prove itself terminal (scan refuses to,
+    // above), so honoring its `status: "complete"` here with `already-terminal` would
+    // leave a permanently blocking run its own recovery command refuses to touch.
+    // Only a schema-valid record is trusted for the already-terminal refusal or the
+    // merge; an invalid one is replaced by the fresh tombstone, and the history row
+    // says why.
+    const parsed = read.status === 'ok' && read.value && typeof read.value === 'object' ? read.value : null;
+    const parsedValid = parsed ? (await runManifestValidator())(parsed).ok : false;
+    const previous = parsedValid ? parsed : null;
     if (previous && BOOTSTRAP_TERMINAL_RUN_STATUSES.includes(previous.status)) {
       return { abandoned: false, reason: 'already-terminal', run_id: runId, status: previous.status, diagnostics: [`Run ${runId} is already ${previous.status}; leaving it as recorded.`] };
     }
 
+    const replacedWhy = parsed && !parsedValid ? 'schema-invalid' : read.status;
     const value = previous
       ? {
           ...previous,
@@ -1213,7 +1251,7 @@ export async function abandonBootstrapRun({ homeDir, repoRoot, runId, reason = '
           history: [...(Array.isArray(previous.history) ? previous.history : []), { step_id: null, from: previous.status ?? 'open', to: 'abandoned', reason, at }],
         }
       : {
-          schema: 'runtime-bootstrap-run-1.1',
+          schema: 'runtime-bootstrap-run-1.2',
           run_id: runId,
           started_at: at,
           updated_at: at,
@@ -1225,7 +1263,7 @@ export async function abandonBootstrapRun({ homeDir, repoRoot, runId, reason = '
           // honest selection for a run whose real selection is unrecoverable, and the
           // boundary is the §5 all-false invariant this writer honors anyway.
           selection: { bundle: 'custom', desired: [], excluded: [] },
-          history: [{ step_id: null, from: 'unknown', to: 'abandoned', reason: `${reason} (manifest was ${read.status}; the previous record could not be read and was replaced)`, at }],
+          history: [{ step_id: null, from: 'unknown', to: 'abandoned', reason: `${reason} (manifest was ${replacedWhy}; the previous record could not be trusted and was replaced)`, at }],
           steps: [],
           boundary: { writes_host_config: false, writes_credential: false, writes_config_local_toml: false, performs_network_request: false },
         };
@@ -1313,6 +1351,19 @@ export async function updateBootstrapRun({ homeDir, repoRoot, runId, mutate, val
     if (BOOTSTRAP_TERMINAL_RUN_STATUSES.includes(previous.status)) {
       return { updated: false, reason: 'already-terminal', run_id: runId, status: previous.status, manifest: null, diagnostics: [`Run ${runId} is already ${previous.status}; a terminal run is never rewritten.`] };
     }
+    // ADR-0048 §3 — the locked read is a trust boundary too: when the caller
+    // supplied a validator, the PREVIOUS record must pass it before mutate sees
+    // it. Post-mutation validation alone lets a mutate that spreads `...previous`
+    // launder an invalid field forward whenever the mutation happens to shadow
+    // the invalid part with a valid one — the write would then bless a record
+    // nobody ever validated whole. An invalid previous is an abandon case, not
+    // an update case.
+    if (validate) {
+      const previousVerdict = validate(previous);
+      if (!previousVerdict?.ok) {
+        return { updated: false, reason: 'previous-invalid', run_id: runId, manifest: null, diagnostics: [`Run ${runId} has a schema-invalid manifest; it cannot be updated. Close it with \`abandon ${runId}\` and start a new plan.`, ...(previousVerdict?.errors ?? []).slice(0, 5)] };
+      }
+    }
 
     const next = mutate(structuredClone(previous));
     if (!next || typeof next !== 'object') {
@@ -1361,10 +1412,15 @@ async function requireExistingRun({ homeDir, runId }) {
     return {
       ok: false,
       reason: 'run-missing',
+      status: null,
       diagnostic: `No run ${runId} under ${machinePointer(homeDir, bootstrapFamilyRoot(homeDir))}; create the run before writing into it. Runtime does not conjure a run directory from a write.`,
     };
   }
-  return { ok: true, reason: 'ok', diagnostic: null };
+  // Surface the manifest's recognized status (or null for unreadable/unrecognized)
+  // so the proof writer can apply its open-run gate. Membership-checked, not
+  // trusted further — reduction-grade validation is the read boundary's job.
+  const status = read.status === 'ok' && BOOTSTRAP_RUN_STATUSES.includes(read.value?.status) ? read.value.status : null;
+  return { ok: true, reason: 'ok', status, diagnostic: null };
 }
 
 // Persist a rendered host-config fragment and return the METADATA the run manifest
@@ -1397,31 +1453,174 @@ export async function writeBootstrapFragment({ homeDir, repoRoot, runId, name, c
 // Persist proof METADATA (contract §8.2) — hashes, byte counts, bound versions,
 // direction results. Never raw peer output or prompt text: that is the doctor-proof
 // rule this home inherits, and the reason a proof is evidence you can publish.
-// `record` shape and its validation are the §5/§8.1 schema's (C4), injected.
-export async function writeBootstrapProof({ homeDir, repoRoot, runId, kind, record, validate = null }) {
+//
+// Validation is MANDATORY and internal (ADR-0048 §3): the pre-1.2 shape took an
+// optional injected `validate` that both production callers omitted, so proof
+// evidence landed on disk unvalidated. The kind→$def binding now lives in
+// lib/evidence-contract.mjs and there is no parameter to forget — a record that
+// fails its family's structural def OR its kind-discriminated shape is refused.
+//
+// Three more gates, in refusal order:
+//   - unknown-evidence-kind — the kind must be in EVIDENCE_FAMILIES; the old
+//     path-charset check let any well-formed name become a proof file;
+//   - run-not-open — evidence lands only in an OPEN run. Terminal evidence is
+//     immutable history (§7); the single exception is the D0.1 receipt
+//     attestation (postTerminalWritable) into a complete/configured-not-verified
+//     run — never into an abandoned one;
+//   - secret-shaped-content — the serialized record must survive scrubSecrets
+//     unchanged (ADR-0048 §4 scrub-before-write; same fail-closed pattern as
+//     the egress launcher plan). A proof that trips it is refused, not
+//     laundered: a scrubbed-then-written record would hash differently than
+//     what the caller believes it recorded.
+export async function writeBootstrapProof({ homeDir, repoRoot, runId, kind, record }) {
   validateBootstrapRunId(runId);
   validateProfileName(kind);
+  const family = EVIDENCE_FAMILIES[kind];
+  if (!family) {
+    return { ok: false, reason: 'unknown-evidence-kind', diagnostics: [`"${kind}" is not an evidence kind this contract knows (${EVIDENCE_KINDS.join(', ')}); refusing to write an unclassifiable proof file.`], proof: null };
+  }
   const home = await resolveMachineArtifactHome({ homeDir, repoRoot });
   if (!home.ok) return { ok: false, reason: home.reason, diagnostics: [home.diagnostic], proof: null };
 
   const exists = await requireExistingRun({ homeDir, runId });
   if (!exists.ok) return { ok: false, reason: exists.reason, diagnostics: [exists.diagnostic], proof: null };
-  if (validate) {
-    const verdict = validate(record);
-    if (!verdict?.ok) return { ok: false, reason: 'invalid-proof', diagnostics: verdict?.errors ?? ['The proof record failed validation; refusing to write it.'], proof: null };
+  const runStatus = exists.status;
+  if (runStatus !== 'open') {
+    const terminalButAttestable = family.postTerminalWritable && BOOTSTRAP_COMPLETION_RUN_STATUSES.includes(runStatus);
+    if (!terminalButAttestable) {
+      return {
+        ok: false,
+        reason: 'run-not-open',
+        diagnostics: [`Run ${runId} is ${runStatus ?? 'in an unknown state'} — evidence writes land only in an open run (terminal evidence is immutable history, §7${family.postTerminalWritable ? '' : `; only the receipt attestation may append to a completed run, and "${kind}" is not it`}).`],
+        proof: null,
+      };
+    }
+  }
+
+  const verdict = await validateEvidenceRecord({ kind, record });
+  if (!verdict.ok) return { ok: false, reason: 'invalid-proof', diagnostics: verdict.errors, proof: null };
+
+  const text = `${JSON.stringify(record, null, 2)}\n`;
+  if (scrubSecrets(text) !== text) {
+    return { ok: false, reason: 'secret-shaped-content', diagnostics: ['The serialized proof record contains secret-shaped content (token/bearer/credential-URL pattern); refusing to persist it. Evidence carries hashes and enum results, never credentials.'], proof: null };
   }
 
   const path = join(bootstrapProofDir(homeDir, runId), `${kind}.json`);
   const write = await writeJsonAtomic({ root: home.root, path, value: record });
   if (!write.ok) return { ok: false, reason: write.reason, diagnostics: [write.diagnostic], proof: null };
 
-  const text = `${JSON.stringify(record, null, 2)}\n`;
   return {
     ok: true,
     reason: 'ok',
     diagnostics: [],
     proof: { kind, pointer: machinePointer(homeDir, path), sha256: sha256(text), bytes: Buffer.byteLength(text, 'utf8') },
   };
+}
+
+// A recorded evidence file may not exceed this. Proof records are hashes, enums
+// and version maps — a proof/ file anywhere near this bound is not a proof
+// record, it is something else wearing the filename (the same 128 KiB bound the
+// CLI applies to operator-supplied answer/profile files).
+export const PROOF_FILE_MAX_BYTES = 128 * 1024;
+
+/**
+ * Read the run's RECORDED evidence back from proof/ (ADR-0048 §3).
+ *
+ * This is the read half the 1.1 lifecycle never had: proof files were
+ * write-only, so re-judgement consumed the manifest's REDUCED
+ * `completion.proofs` — a shape that has no `directions` — and a once-passed
+ * proof demoted to `absent` on the very next resume/verify. The recorded
+ * files are the authoritative evidence; the manifest's completion is a cached
+ * reduction over them.
+ *
+ * Fail-closed and all-or-nothing: every entry must be a regular file named
+ * `<known-kind>.json`, within the size bound, parseable, and valid under the
+ * kind's structural def + discriminator (filename↔embedded-kind equality
+ * included). ONE bad file fails the whole read — partial acceptance would
+ * silently hide tampered or corrupt evidence behind the valid remainder.
+ * Errors name the file and the rule, never the content. A missing proof/
+ * directory is simply "no evidence yet" (ok, empty).
+ *
+ * Each returned row carries the file's own sha256 (over the exact stored
+ * bytes) — the hash writeBootstrapProof returned at write time, re-derived —
+ * so a receipt attestation's `provider_proof_artifact_hash` link can be
+ * verified byte-for-byte, and any consumer can detect a swapped record.
+ */
+export async function readBootstrapProofRecords({ homeDir, runId }) {
+  validateBootstrapRunId(runId);
+  const dir = bootstrapProofDir(homeDir, runId);
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return { ok: true, errors: [], records: [] };
+    return { ok: false, errors: [`proof directory unreadable (${err?.code ?? String(err)})`], records: null };
+  }
+
+  const errors = [];
+  const records = [];
+  const seen = new Set();
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const name = entry.name;
+    if (!entry.isFile()) {
+      errors.push(`${name}: not a regular file (symlinks and directories are not evidence)`);
+      continue;
+    }
+    if (!name.endsWith('.json')) {
+      errors.push(`${name}: not a .json evidence file`);
+      continue;
+    }
+    const kind = name.slice(0, -'.json'.length);
+    if (!EVIDENCE_KINDS.includes(kind)) {
+      errors.push(`${name}: unknown evidence kind "${kind}"`);
+      continue;
+    }
+    /* c8 ignore next 4 — one filename per kind by construction; kept as a tripwire */
+    if (seen.has(kind)) {
+      errors.push(`${name}: duplicate evidence kind "${kind}"`);
+      continue;
+    }
+    seen.add(kind);
+    const path = join(dir, name);
+    let stat;
+    try {
+      stat = await lstatOrNull(path);
+    } catch (err) {
+      errors.push(`${name}: could not stat (${err?.code ?? String(err)})`);
+      continue;
+    }
+    if (!stat?.isFile()) {
+      errors.push(`${name}: not a regular file at read time`);
+      continue;
+    }
+    if (stat.size > PROOF_FILE_MAX_BYTES) {
+      errors.push(`${name}: ${stat.size} bytes exceeds the ${PROOF_FILE_MAX_BYTES}-byte evidence bound`);
+      continue;
+    }
+    let text;
+    try {
+      text = await readFile(path, 'utf8');
+    } catch (err) {
+      errors.push(`${name}: unreadable (${err?.code ?? String(err)})`);
+      continue;
+    }
+    let record;
+    try {
+      record = JSON.parse(text);
+    } catch {
+      errors.push(`${name}: not valid JSON`);
+      continue;
+    }
+    const verdict = await validateEvidenceRecord({ kind, record });
+    if (!verdict.ok) {
+      errors.push(`${name}: ${verdict.errors.join('; ')}`);
+      continue;
+    }
+    records.push({ kind, record, sha256: sha256(text), bytes: Buffer.byteLength(text, 'utf8'), pointer: machinePointer(homeDir, path) });
+  }
+
+  if (errors.length > 0) return { ok: false, errors, records: null };
+  return { ok: true, errors: [], records };
 }
 
 // ---------------------------------------------------------------------------

@@ -50,12 +50,22 @@ export const stepIds = Object.freeze({
   pluginEnabled: (name) => `plugin.${name}.codex.enabled`,
   configModelEffort: () => 'config.model_effort',
   notifyConfigured: () => 'notify.configured',
+  // ADR-0048 §1 (notify split): `notify.configured` keeps meaning exactly the
+  // LOCAL runtime notification policy (~/.agentic-plugins/config.toml notify
+  // family); this one observes the CODEX-side wiring (`notify =` in
+  // $CODEX_HOME/config.toml) separately. One id per host-shaped fact, like
+  // permission.<host>.applied.
+  notifyCodexConfigured: () => 'notify.codex.configured',
   egressConfigured: () => 'egress.configured',
   permissionApplied: (host) => `permission.${host}.applied`,
   hooksAttested: () => 'hooks.codex.attested',
   proofDeepPeerSmoke: () => 'proof.deep-peer-smoke',
   proofWorkflowContinuation: () => 'proof.workflow-continuation',
   proofPermission: () => 'proof.permission',
+  // ADR-0048 §3 — the OPT-IN egress delivery evidence step. The kind string is
+  // pinned as `egress-provider-ack` (never "dispatch"/"delivery"): it proves
+  // exactly that the pinned provider request returned HTTP 2xx + {ok:true}.
+  proofEgressProviderAck: () => 'proof.egress-provider-ack',
 });
 
 // §6.2 — not declinable, EVER: host CLI presence and authentication; marketplace
@@ -85,12 +95,22 @@ export const NEVER_DECLINABLE_PLUGINS = Object.freeze(['runtime', 'companions'])
  *                    already matched does not trip a proof it never needed. (§6.1's
  *                    table said "is satisfied" — a looser restatement that would demand
  *                    a proof for a config this run never changed; corrected in C4.)
+ * @param egressProofRequested
+ *                    ADR-0048 §3 / D0.2 — the OPT-IN signal for the
+ *                    `proof.egress-provider-ack` step, read the same
+ *                    manifest-legitimate way as permissionFragmentApplied: the
+ *                    operator asked for the egress delivery evidence (an
+ *                    `execute`/`decline` choice recorded against the step, or
+ *                    the step already present in the run's steps[]). Default
+ *                    false: a machine that never opted in never owes the
+ *                    proof, and §8.1's "required iff opted in" falls out of
+ *                    applicability.
  *
  * Returns steps in canonical order (stage, then id), each with an EXPLICIT blocked_by
  * array — `[]` is written, never omitted, so "no predecessors" and "edges missing from
  * the file" are not the same bytes.
  */
-export function deriveExpectedSteps({ pluginSet, selection, permissionFragmentApplied = {} }) {
+export function deriveExpectedSteps({ pluginSet, selection, permissionFragmentApplied = {}, egressProofRequested = false }) {
   const plugins = [...new Set(selection.plugins ?? [])].sort();
   // DERIVED from the plugin-set's hard edges, transitively — never taken from the
   // caller (§6.2, and the registry-authority rule in this file's header).
@@ -141,6 +161,12 @@ export function deriveExpectedSteps({ pluginSet, selection, permissionFragmentAp
   // Stage 4–6 — agentic-plugins' own config, then the operator-applied fragments.
   steps.push({ id: stepIds.configModelEffort(), stage: 4, applicable: true, declinable: false, blocked_by: [] });
   steps.push({ id: stepIds.notifyConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [] });
+  // ADR-0048 §1 — the Codex-side notify wiring, split from the local policy
+  // step above (the pre-split judge only ever read ~/.agentic-plugins/config.toml,
+  // so the Codex `notify =` merge was presented but never re-observed). Edged
+  // on the Codex CLI being present, the permission.<host>.applied precedent
+  // for a host-targeted config step.
+  steps.push({ id: stepIds.notifyCodexConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent('codex')] });
   steps.push({ id: stepIds.egressConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [] });
   for (const host of PLUGIN_SET_HOSTS) {
     steps.push({ id: stepIds.permissionApplied(host), stage: 6, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent(host)] });
@@ -196,6 +222,19 @@ export function deriveExpectedSteps({ pluginSet, selection, permissionFragmentAp
     applicable: PLUGIN_SET_HOSTS.some((h) => permissionFragmentApplied[h] === true),
     declinable: true,
     blocked_by: PLUGIN_SET_HOSTS.map((h) => stepIds.permissionApplied(h)),
+  });
+
+  // ADR-0048 §3 — OPT-IN delivery evidence (D0.2): applicable only once the
+  // operator asked for it; a machine that never opted in reduces it
+  // not-applicable, which is §8.1's "required iff opted in". Edged on the
+  // egress activation step — an ack proof over an unconfigured egress channel
+  // is unreachable by construction.
+  steps.push({
+    id: stepIds.proofEgressProviderAck(),
+    stage: 8,
+    applicable: egressProofRequested === true,
+    declinable: true,
+    blocked_by: [stepIds.egressConfigured()],
   });
 
   return steps.sort((a, b) => a.stage - b.stage || a.id.localeCompare(b.id));

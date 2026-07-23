@@ -23,6 +23,7 @@ import {
   importProofMetadata,
   importHookAttestation,
   recomputeProofStatus,
+  recomputeReceiptAttestation,
   reduceCompletion,
 } from '../../plugins/runtime/scripts/lib/completion-reducer.mjs';
 import { makeDefValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
@@ -580,9 +581,20 @@ describe('runtime completion reducer — §8.2 proof importer (metadata only)', 
   });
 
   it('a field that failed its grammar is REPORTED as dropped, not silently nulled', () => {
-    const { dropped } = importProofMetadata({ kind: 'not-a-kind', artifact_pointer: 'prose', directions: {} });
+    const { ok: imported, dropped } = importProofMetadata({ kind: 'permission', artifact_pointer: 'prose', directions: {} });
+    strictEqual(imported, true);
     ok(dropped.some((d) => d.startsWith('artifact_pointer')), 'the caller learns their pointer did not land');
-    ok(dropped.some((d) => d.startsWith('kind')));
+  });
+
+  // ADR-0048 §3 — an unknown kind is refused OUTRIGHT, not carried as a null:
+  // the importer is a discriminator boundary now, and a record whose kind the
+  // evidence contract does not know can never continue toward a writer that
+  // would refuse it anyway.
+  it('an unknown kind fails the import — it is never carried as a null-kind record', () => {
+    const refused = importProofMetadata({ kind: 'not-a-kind', directions: {} });
+    strictEqual(refused.ok, false);
+    strictEqual(refused.record, null);
+    ok(refused.errors.some((e) => e.includes('kind')));
   });
 
   it('an unknown future field is dropped by DEFAULT — the allowlist is the point', () => {
@@ -840,5 +852,155 @@ describe('runtime completion reducer — importHookAttestation (§8.2, S8a4-4)',
     ok(r.ok, JSON.stringify(r.errors));
     const verdict = validate(r.record);
     ok(verdict.ok, `imported record must match the recorded hookAttestation def; errors: ${JSON.stringify(verdict.errors)}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR-0048 §3 — egress evidence: kind-discriminated aggregate, duplicate
+// rejection, and the owner receipt verdict (D0.1)
+// ---------------------------------------------------------------------------
+
+describe('runtime completion reducer — egress-provider-ack aggregate (ADR-0048 §3)', () => {
+  const FP = 'f'.repeat(64);
+  const ATTEMPT = 'a'.repeat(64);
+  function ackProof(current, { result = 'acked', fingerprint = FP } = {}) {
+    return {
+      kind: 'egress-provider-ack',
+      status: 'passed',
+      provider_ack: { result, attempt_hash: ATTEMPT, activation_fingerprint: fingerprint, ran_at: AT },
+      artifact_pointer: null,
+      artifact_hash: null,
+      bound_versions: structuredClone(current),
+      ran_at: AT,
+    };
+  }
+  const current = { runtime: RUNTIME_VERSION, claude: '2.1.208', codex: '0.144.1', plugins: { claude: {}, codex: {} } };
+
+  it('an acked, fresh, fingerprint-matching proof is passed', () => {
+    const r = recomputeProofStatus(ackProof(current), { current, currentActivationFingerprint: FP });
+    strictEqual(r.status, 'passed');
+  });
+
+  it('a failed ack result is failed — the stored status is never consulted', () => {
+    const r = recomputeProofStatus(ackProof(current, { result: 'failed' }), { current, currentActivationFingerprint: FP });
+    strictEqual(r.status, 'failed');
+  });
+
+  it('a removed activation stales the proof — never not-applicable (peer E5)', () => {
+    const r = recomputeProofStatus(ackProof(current), { current, currentActivationFingerprint: null });
+    strictEqual(r.status, 'stale');
+    match(r.reasons.join(' '), /no longer carries/);
+  });
+
+  it('a changed activation identity stales by EQUALITY, not presence', () => {
+    const r = recomputeProofStatus(ackProof(current), { current, currentActivationFingerprint: 'e'.repeat(64) });
+    strictEqual(r.status, 'stale');
+    match(r.reasons.join(' '), /identity drift/);
+  });
+
+  it('the importer reconstructs provider_ack and refuses the other kind\'s member', () => {
+    const good = importProofMetadata({
+      kind: 'egress-provider-ack', status: 'passed',
+      provider_ack: { result: 'acked', attempt_hash: ATTEMPT, activation_fingerprint: FP, ran_at: AT },
+      artifact_pointer: null, artifact_hash: null, bound_versions: current, ran_at: AT,
+    });
+    ok(good.ok, JSON.stringify(good.errors));
+    ok(!('directions' in good.record), 'an egress record carries no directions member');
+
+    const smuggled = importProofMetadata({
+      kind: 'deep-peer-smoke', status: 'passed',
+      directions: { 'claude->codex': { status: 'passed', ran_at: AT }, 'codex->claude': { status: 'passed', ran_at: AT } },
+      provider_ack: { result: 'acked', attempt_hash: ATTEMPT, activation_fingerprint: FP, ran_at: AT },
+      artifact_pointer: null, artifact_hash: null, bound_versions: current, ran_at: AT,
+    });
+    ok(smuggled.ok);
+    ok(!('provider_ack' in smuggled.record), 'a directional record cannot carry provider_ack through the importer');
+    ok(smuggled.dropped.some((d) => d.startsWith('provider_ack')), 'and the drop is reported');
+  });
+});
+
+describe('runtime completion reducer — duplicate evidence is rejected (ADR-0048 §3)', () => {
+  it('two records of one kind reduce that proof to failed and cap the run at incomplete — required or not', async () => {
+    const pluginSet = await loadPluginSet();
+    const plugins = resolveBundle(pluginSet, 'base');
+    const probe = probeFor(plugins);
+    const current = currentBoundVersions({ probe, selection: { plugins }, runtimeVersion: RUNTIME_VERSION });
+    const expected = deriveExpectedSteps({ pluginSet, selection: { plugins } });
+    const steps = expected.filter((s) => s.applicable).map((s) => ({ id: s.id, status: 'satisfied' }));
+    const smoke = () => passingProof('deep-peer-smoke', current);
+
+    const control = reduceCompletion({ pluginSet, selection: { plugins }, steps, proofs: [smoke()], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION });
+    strictEqual(control.state, 'complete', `control must be complete: ${JSON.stringify({ unsat: control.unsatisfied, missing: control.missing_steps, proofs: control.proofs.filter((p) => p.required).map((p) => [p.kind, p.status, p.reasons]) })}`);
+
+    const duplicated = reduceCompletion({ pluginSet, selection: { plugins }, steps, proofs: [smoke(), smoke()], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION });
+    strictEqual(duplicated.state, 'incomplete', 'duplicate evidence never reduces past incomplete');
+    const evaluated = duplicated.proofs.find((p) => p.kind === 'deep-peer-smoke');
+    strictEqual(evaluated.status, 'failed');
+    match(evaluated.reasons.join(' '), /duplicate evidence is rejected/);
+  });
+});
+
+describe('runtime completion reducer — receipt attestation verdict (ADR-0048 §3 / D0.1)', () => {
+  const ACK_SHA = '1'.repeat(64);
+  const ATTEMPT = 'a'.repeat(64);
+  const receipt = (over = {}) => ({
+    surface: 'owner-phone',
+    attested_at: AT,
+    attempt_hash: ATTEMPT,
+    provider_proof_artifact_hash: ACK_SHA,
+    ...over,
+  });
+  const args = (over = {}) => ({
+    record: receipt(),
+    providerAckSha256: ACK_SHA,
+    providerAckAttemptHash: ATTEMPT,
+    ackStatus: 'passed',
+    applicable: true,
+    ...over,
+  });
+
+  it('attested requires: ack currently passing + file-hash link + attempt equality', () => {
+    strictEqual(recomputeReceiptAttestation(args()).status, 'attested');
+  });
+
+  it('an ack that no longer passes stales the testimony — it never stays attested past its evidence', () => {
+    for (const ackStatus of ['failed', 'stale', 'absent']) {
+      const v = recomputeReceiptAttestation(args({ ackStatus }));
+      strictEqual(v.status, 'stale', `ackStatus=${ackStatus}`);
+      match(v.reasons.join(' '), /no longer stands/);
+    }
+  });
+
+  it('a replaced provider-proof file stales by hash inequality', () => {
+    const v = recomputeReceiptAttestation(args({ providerAckSha256: '2'.repeat(64) }));
+    strictEqual(v.status, 'stale');
+    match(v.reasons.join(' '), /not the one on disk/);
+  });
+
+  it('a receipt naming a different attempt does not cover this one', () => {
+    const v = recomputeReceiptAttestation(args({ providerAckAttemptHash: 'b'.repeat(64) }));
+    strictEqual(v.status, 'stale');
+    match(v.reasons.join(' '), /different synthetic attempt/);
+  });
+
+  it('no testimony is absent; a run that never opted in is not-applicable', () => {
+    strictEqual(recomputeReceiptAttestation(args({ record: null })).status, 'absent');
+    strictEqual(recomputeReceiptAttestation(args({ record: null, applicable: false })).status, 'not-applicable');
+  });
+
+  it('reduceCompletion carries the verdict as the OPTIONAL completion member — absent for a run outside the egress world', async () => {
+    const pluginSet = await loadPluginSet();
+    const plugins = resolveBundle(pluginSet, 'base');
+    const probe = probeFor(plugins);
+    const expected = deriveExpectedSteps({ pluginSet, selection: { plugins } });
+    const steps = expected.filter((s) => s.applicable).map((s) => ({ id: s.id, status: 'satisfied' }));
+    const without = reduceCompletion({ pluginSet, selection: { plugins }, steps, proofs: [], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION });
+    ok(!('egress_receipt_attestation' in without), 'a run that never opted in keeps the exact 1.1 completion shape');
+
+    const withReceipt = reduceCompletion({
+      pluginSet, selection: { plugins }, steps, proofs: [], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION,
+      receiptEvidence: { record: receipt(), providerAckSha256: ACK_SHA },
+    });
+    strictEqual(withReceipt.egress_receipt_attestation.status, 'stale', 'testimony with no passing ack behind it is stale, not silently dropped');
   });
 });

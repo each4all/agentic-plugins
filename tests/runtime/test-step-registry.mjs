@@ -302,13 +302,14 @@ describe('runtime step registry — the §6.1 prose table agrees with the code (
     // bundles that make it true and false. "always" that is really conditional, or a
     // condition naming the wrong plugin, fails here.
     const cases = [
-      { bundle: 'base', fragmentApplied: {} },
-      { bundle: 'engineering', fragmentApplied: {} },
-      { bundle: 'full', fragmentApplied: { claude: true } },
+      { bundle: 'base', fragmentApplied: {}, egressProofRequested: false },
+      { bundle: 'engineering', fragmentApplied: {}, egressProofRequested: false },
+      // The full bundle exercises BOTH manifest-legitimate opt-in seams true.
+      { bundle: 'full', fragmentApplied: { claude: true }, egressProofRequested: true },
     ];
-    for (const { bundle, fragmentApplied } of cases) {
+    for (const { bundle, fragmentApplied, egressProofRequested } of cases) {
       const plugins = resolveBundle(pluginSet, bundle);
-      const steps = deriveExpectedSteps({ pluginSet, selection: { plugins }, permissionFragmentApplied: fragmentApplied });
+      const steps = deriveExpectedSteps({ pluginSet, selection: { plugins }, permissionFragmentApplied: fragmentApplied, egressProofRequested });
       const by = new Map(steps.map((s) => [s.id, s]));
       for (const row of rows) {
         const step = by.get(row.id);
@@ -319,6 +320,7 @@ describe('runtime step registry — the §6.1 prose table agrees with the code (
         else if (/iff any selected plugin has `hook_bearing.codex`/.test(prose)) expected = plugins.some((n) => pluginSet.plugins[n].hook_bearing.codex);
         else if (/iff `engineer` ∈ selection/.test(prose)) expected = plugins.includes('engineer');
         else if (/iff a `permission\.\*\.applied` step carries `fragment_applied: true`/.test(prose)) expected = Object.values(fragmentApplied).some(Boolean);
+        else if (/iff the operator opted in/.test(prose)) expected = egressProofRequested === true;
         else throw new Error(`unrecognized applicability prose for ${row.id}: "${prose}" — teach this test the phrasing rather than letting it pass unchecked`);
         strictEqual(step.applicable, expected, `${bundle}/${row.id}: table says "${prose}", registry says applicable=${step.applicable}`);
       }

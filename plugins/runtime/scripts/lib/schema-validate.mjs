@@ -432,12 +432,20 @@ export function canonicalJson(document, schema) {
 // ---------------------------------------------------------------------------
 
 export const PACKAGED_SCHEMA_FILES = Object.freeze({
-  'agentic-machine-profile': 'agentic-machine-profile-1.0.json',
+  // 1.1 (ADR-0048 §2.1): adds the OPTIONAL trailing `statusline_preset` scalar.
+  // A 1.0 document still validates against this reader; a 1.1 document read by a
+  // 1.0-versioned reader gets a scalar warning and the key ignored (§4.6).
+  'agentic-machine-profile': 'agentic-machine-profile-1.1.json',
   // 1.1 (S8a5): adds the OPTIONAL probe hosts.codex.hook_state per-handler disabled
   // evidence. A 1.0 document (no hook_state) still validates against this reader —
   // the key is not required — while a 1.1 document read by a 1.0-only runtime would
   // be refused (unknown structural key), which is why the minor bumps at all.
-  'runtime-bootstrap-run': 'runtime-bootstrap-run-1.1.json',
+  // 1.2 (ADR-0048 §3): adds the egress evidence vocabulary — `egress-provider-ack`
+  // proof kind + `provider_ack` member (both OPTIONAL at the schema level; the
+  // kind-discriminated exclusivity lives in lib/evidence-contract.mjs because the
+  // validator has no oneOf) and the OPTIONAL completion.egress_receipt_attestation
+  // verdict. Every valid 1.1 document still validates against this reader.
+  'runtime-bootstrap-run': 'runtime-bootstrap-run-1.2.json',
   'runtime-plugin-set': 'runtime-plugin-set-1.0.json',
   // ADR-0044 session-capture families (session-capture-contract.md §3). Load-bearing
   // from S2 on: the packaged schemas ARE the validation source for the slot/entry/note
