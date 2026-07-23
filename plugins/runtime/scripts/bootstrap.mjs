@@ -86,7 +86,7 @@ import {
 // key NAME as a placeholder procedure), never for an env read here.
 import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
 import { loadSchema, makeValidator } from './lib/schema-validate.mjs';
-import { gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId, parseCodexNotifyConfigToml } from './lib/notification-plan.mjs';
+import { expectedCodexNotifyArgv, gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId, parseCodexNotifyConfigToml } from './lib/notification-plan.mjs';
 import { gatherEgressLauncherInputs, buildEgressLauncherPlanSection, egressFragmentApplyGuidance, makeEgressLauncherRunId } from './lib/egress-launcher-plan.mjs';
 import { gatherPermissionPlanInputs, buildPermissionPlanSection } from './lib/permission-plan.mjs';
 import { makePermissionRunId } from './lib/permission-artifacts.mjs';
@@ -407,7 +407,7 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
     Object.entries(pluginSet.plugins).map(([name, entry]) => [name, entry.minimum_version ?? null]),
   );
 
-  const observeStatus = (step) => {
+  const observeStatus = (step, previous) => {
     if (!step.applicable) return { status: 'not-applicable' };
     const id = step.id;
     const hostOf = (suffix) => id.split('.')[1];
@@ -489,21 +489,49 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
         : { status: 'pending' };
     }
     if (id === stepIds.notifyCodexConfigured()) {
-      // ADR-0048 §1 (notify split, base observation) — the CODEX-side wiring:
-      // `notify =` in $CODEX_HOME/config.toml must be present AND a parseable,
-      // non-empty argv. "Present" alone is not wiring: `notify = []` notifies
-      // nothing, and a present-but-unparseable value is a config the host will
-      // not run — both stay pending, named. An unreadable config is `unknown`
-      // (§6: unknown is never satisfied). The exact rendered-fragment-merged
-      // probe is the notify-axis slice's sharpening; this judge observes
-      // wiring, not fragment identity.
+      // ADR-0048 §1 (notify split) — the CODEX-side wiring, judged as an EXACT
+      // probe (notify-axis slice): satisfied means the merged `notify =` argv
+      // EQUALS the canonical argv this machine's rendered fragment carries
+      // (shuttle, or the chain script in wrapper-chain mode) — the same
+      // "canonical configuration observed" semantics ADR-0048 §1 pins for the
+      // statusline steps. A present, parseable, non-empty argv that is NOT the
+      // canonical wiring is `manual-follow-up`: some other notifier is wired,
+      // and §2's no-auto-chaining rule makes reconciling it an operator
+      // decision, not a silent pass or a silent pending. `notify = []` runs
+      // nothing and an unparseable value is a config the host will not run —
+      // both stay pending, named. An unreadable config is `unknown` (§6:
+      // unknown is never satisfied).
       const wiring = readers?.codexNotify ?? null;
       if (!wiring || wiring.readable === false) return { status: 'unknown', observed: 'the Codex config could not be read' };
       if (!wiring.present) return { status: 'pending' };
       if (!Array.isArray(wiring.argv) || wiring.argv.length === 0) {
         return { status: 'pending', observed: wiring.argv ? 'notify = [] runs nothing' : 'notify is present but not a parseable argv array' };
       }
-      return { status: 'satisfied', observed: `notify argv[${wiring.argv.length}]` };
+      // MODE BINDING (Refine-verify peer): once this run rendered a fragment,
+      // the step's `desired` carries exactly the argv that fragment asks the
+      // operator to merge — and ONLY that argv satisfies. Without it, a
+      // wrapper-chain plan wrongly merged as the direct shuttle certified
+      // `satisfied` while the third-party notifier the chain existed to
+      // preserve silently vanished. Before any fragment exists (a fresh
+      // probe), either canonical form is acceptable.
+      let candidates = wiring.expected ?? [];
+      if (typeof previous?.desired === 'string') {
+        try {
+          const bound = JSON.parse(previous.desired);
+          if (Array.isArray(bound) && bound.every((item) => typeof item === 'string')) candidates = [bound];
+        } catch { /* an unparseable desired never widens the match set */ }
+      }
+      const matches = candidates.some((expected) => Array.isArray(expected)
+        && expected.length === wiring.argv.length
+        && expected.every((item, i) => item === wiring.argv[i]));
+      if (!matches) {
+        return {
+          status: 'manual-follow-up',
+          observed: `notify argv[${wiring.argv.length}] does not match the canonical receiver wiring`,
+          recovery: 'A different notifier is wired in $CODEX_HOME/config.toml. Runtime never auto-chains an existing notifier (ADR-0048 §2 precedent): re-render the notification plan (its read-check offers wrapper-chaining that PRESERVES the existing notifier), review the chain script, and merge that fragment — or decline this step if the current wiring is intentional.',
+        };
+      }
+      return { status: 'satisfied', observed: `notify argv matches the canonical receiver wiring (argv[${wiring.argv.length}])` };
     }
     if (id === stepIds.egressConfigured()) {
       // ADR-0048 §4 / ADR-0041 §2c — "configured" means ACTIVATABLE: channel +
@@ -569,7 +597,7 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
   };
 
   const steps = expected.map((step) => {
-    const observed = observeStatus(step);
+    const observed = observeStatus(step, previousById.get(step.id));
     const previous = previousById.get(step.id);
     let status = observed.status;
     // A recorded decline survives a re-probe ONLY where the registry says the
@@ -586,6 +614,7 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       observed_at: observedAt,
       fragment_pointer: previous?.fragment_pointer ?? null,
       apply_command: observed.apply_command ?? previous?.apply_command ?? null,
+      desired: previous?.desired ?? null,
       fragment_applied: previous?.fragment_applied === true,
       recovery: observed.recovery ?? null,
     };
@@ -859,7 +888,7 @@ function presentPluginManagement({ candidates, planHash }) {
 // backup/verify/manual-revert guidance next to its apply command.
 async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings }) {
   const byId = new Map(steps.map((s) => [s.id, s]));
-  const persist = async (name, body, stepId, applyCommand, target) => {
+  const persist = async (name, body, stepId, applyCommand, target, { desired = null } = {}) => {
     const step = byId.get(stepId);
     if (!step || step.status === 'satisfied' || step.status === 'declined' || step.status === 'not-applicable') return;
     const write = await writeBootstrapFragment({ homeDir, repoRoot: cwd, runId, name, content: `${JSON.stringify(body, null, 2)}\n` });
@@ -869,6 +898,11 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     }
     step.fragment_pointer = write.fragment.pointer;
     step.apply_command = applyCommand;
+    // The plan-bound expectation (mode binding, Refine-verify peer): when THIS
+    // run rendered a fragment, the step's `desired` records exactly what that
+    // fragment asks the operator to merge — the exact probe then judges
+    // against the PLAN'S expectation, not against every canonical form.
+    if (desired !== null) step.desired = desired;
     // COMPOSE with any observation-time recovery instead of replacing it —
     // judgeSteps' egress recovery carries the activation procedure (which
     // env keys, placeholder-only, uid-less note) that must survive fragment
@@ -890,7 +924,8 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     const { section } = buildCodexNotificationPlanSection({ gathered, now: new Date(now), runId: makeNotificationRunId(now) });
     await persist('notification-plan', section, stepIds.notifyCodexConfigured(),
       'Merge the rendered notify fragment into $CODEX_HOME/config.toml (see the fragment body), then resume.',
-      '$CODEX_HOME/config.toml');
+      '$CODEX_HOME/config.toml',
+      { desired: Array.isArray(section.expected_notify_argv) ? JSON.stringify(section.expected_notify_argv) : null });
   } catch (err) {
     warnings.push(`notification plan could not be built: ${err?.message ?? String(err)}`);
   }
@@ -1079,15 +1114,25 @@ async function readUserGlobalReaders(ctx) {
   //   argv      — the parsed string elements, or null when the value is
   //               present but not a parseable string array (fail-safe null
   //               from the TOML scanner — never a guess).
-  const codexNotifyRead = (await gatherCodexNotificationInputs({ homeDir: ctx.homeDir, env: ctx.env })).read;
+  const codexNotifyGathered = await gatherCodexNotificationInputs({ homeDir: ctx.homeDir, env: ctx.env });
+  const codexNotifyRead = codexNotifyGathered.read;
+  // The EXACT canonical argvs this machine's rendered fragment would carry
+  // (notify-axis slice): direct mode points at the shuttle, wrapper-chain mode
+  // at the chain script — a merged config matching EITHER is the canonical
+  // wiring, observed. expectedCodexNotifyArgv is the same single source the
+  // fragment renderer consumes, so probe and fragment cannot drift.
+  const codexNotifyExpected = [
+    expectedCodexNotifyArgv({ receiverPath: codexNotifyGathered.installPaths.shuttle }),
+    expectedCodexNotifyArgv({ receiverPath: codexNotifyGathered.installPaths.chain }),
+  ];
   let codexNotify;
   if (codexNotifyRead.ok) {
     const parsed = parseCodexNotifyConfigToml(codexNotifyRead.text);
-    codexNotify = { readable: true, present: parsed.notify.present, argv: parsed.notify.values ?? null };
+    codexNotify = { readable: true, present: parsed.notify.present, argv: parsed.notify.values ?? null, expected: codexNotifyExpected };
   } else if (codexNotifyRead.reason === 'ENOENT' || codexNotifyRead.reason === 'ENOTDIR') {
-    codexNotify = { readable: true, present: false, argv: null };
+    codexNotify = { readable: true, present: false, argv: null, expected: codexNotifyExpected };
   } else {
-    codexNotify = { readable: false, present: false, argv: null };
+    codexNotify = { readable: false, present: false, argv: null, expected: codexNotifyExpected };
   }
   return { modelEffort, notify, claudePermission, codexPermission, egress, egressActivation, codexNotify };
 }

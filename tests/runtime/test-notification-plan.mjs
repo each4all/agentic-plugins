@@ -26,6 +26,8 @@ import {
   NOTIFICATION_PLAN_LATEST_SCHEMA_VERSION,
   NOTIFICATION_PLAN_SCHEMA_VERSION,
   SHUTTLE_BASENAME,
+  buildCodexNotificationPlanSection,
+  expectedCodexNotifyArgv,
   isValidNotificationRunId,
   makeNotificationRunId,
   parseCodexNotifyConfigToml,
@@ -864,3 +866,90 @@ async function writeJson(path, value) {
 async function readJson(path) {
   return JSON.parse(await readFile(path, 'utf8'));
 }
+
+// ---------------------------------------------------------------------------
+// notify-axis slice — the per-OS canonical argv is ONE source for renderer
+// and probe (ADR-0048 §2's single-policy-definition rule applied to notify)
+// ---------------------------------------------------------------------------
+
+describe('notification plan — per-OS canonical notify argv (notify-axis)', () => {
+  it('the fragment renders EXACTLY expectedCodexNotifyArgv on both OS families', () => {
+    const receiverPath = '/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs';
+    const posix = renderCodexNotifyFragmentToml({ receiverPath, platform: 'linux', execPath: '/ignored' });
+    strictEqual(posix, 'notify = ["/usr/bin/env", "node", "/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs"]\n');
+
+    const win = renderCodexNotifyFragmentToml({
+      receiverPath: 'C:\\Users\\op\\.agentic-plugins\\bin\\codex-notify-shuttle.mjs',
+      platform: 'win32',
+      execPath: 'C:\\Program Files\\nodejs\\node.exe',
+    });
+    // TOML basic strings escape the backslashes; no /usr/bin/env anywhere.
+    strictEqual(win, 'notify = ["C:\\\\Program Files\\\\nodejs\\\\node.exe", "C:\\\\Users\\\\op\\\\.agentic-plugins\\\\bin\\\\codex-notify-shuttle.mjs"]\n');
+    ok(!win.includes('/usr/bin/env'));
+
+    // Same single source: rendering then parsing the fragment yields the
+    // exact argv the probe expects — the drift this rule exists to prevent.
+    const parsedBack = parseCodexNotifyConfigToml(posix).notify.values;
+    deepStrictEqual(parsedBack, expectedCodexNotifyArgv({ receiverPath, platform: 'linux' }));
+  });
+
+  it('the win32 build carries the nvm-windows residual in its limits; POSIX keeps the env-node line', () => {
+    const gathered = {
+      read: { ok: false, reason: 'ENOENT', path: '/home/op/.codex/config.toml' },
+      codexHomeSource: 'default ~/.codex',
+      templates: {
+        shuttle: "const MIN = '__AGENTIC_MIN_RUNTIME_VERSION__';\n",
+        chain: 'const S = "__AGENTIC_SHUTTLE_PATH__";\nconst P = ["__AGENTIC_PRIOR_NOTIFY__"];\n',
+      },
+      installPaths: { shuttle: '/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs', chain: '/home/op/.agentic-plugins/bin/codex-notify-chain.mjs' },
+    };
+    const posix = buildCodexNotificationPlanSection({ gathered, now: new Date('2026-07-23T00:00:00Z'), runId: 'notification-20260723T000000Z-aaaaaa', platform: 'linux', execPath: '/ignored' });
+    ok(posix.section.limits.some((l) => l.includes('/usr/bin/env node')), JSON.stringify(posix.section.limits));
+
+    const win = buildCodexNotificationPlanSection({ gathered, now: new Date('2026-07-23T00:00:00Z'), runId: 'notification-20260723T000000Z-bbbbbb', platform: 'win32', execPath: 'C:\\Program Files\\nodejs\\node.exe' });
+    ok(win.section.limits.some((l) => l.includes('nvm-windows')), JSON.stringify(win.section.limits));
+    ok(win.section.fragments.notify_toml.includes('node.exe'), 'the win32 fragment carries the machine node path');
+  });
+});
+
+describe('notification plan — mode recognition is full-argv equality (Refine-verify peer HIGH)', () => {
+  const gatheredWith = (notifyLine) => ({
+    read: { ok: true, path: '/home/op/.codex/config.toml', text: `${notifyLine}\n` },
+    codexHomeSource: 'default ~/.codex',
+    templates: {
+      shuttle: "const MIN = '__AGENTIC_MIN_RUNTIME_VERSION__';\n",
+      chain: 'const S = "__AGENTIC_SHUTTLE_PATH__";\nconst P = ["__AGENTIC_PRIOR_NOTIFY__"];\n',
+    },
+    installPaths: { shuttle: '/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs', chain: '/home/op/.agentic-plugins/bin/codex-notify-chain.mjs' },
+  });
+  const build = (notifyLine) => buildCodexNotificationPlanSection({
+    gathered: gatheredWith(notifyLine),
+    now: new Date('2026-07-23T00:00:00Z'),
+    runId: 'notification-20260723T000000Z-cccccc',
+    platform: 'linux',
+    execPath: '/ignored',
+  }).section;
+
+  it('a foreign wrapper that merely CONTAINS our shuttle path is wrapper-chain (preserved), never already-configured', () => {
+    const section = build('notify = ["custom-wrapper", "--forward-to", "/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs", "--keep"]');
+    strictEqual(section.recommended.mode, 'wrapper-chain', 'membership is not identity — the wrapper is a prior notifier to preserve');
+    ok(section.fragments.notify_toml.includes('codex-notify-chain.mjs'), 'the fragment points at the chain');
+  });
+
+  it('the exact canonical shuttle argv is already-configured; a hand-drifted variant is wrapper-chain', () => {
+    strictEqual(build('notify = ["/usr/bin/env", "node", "/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs"]').recommended.mode, 'already-configured');
+    strictEqual(build('notify = ["node", "/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs"]').recommended.mode, 'wrapper-chain');
+  });
+
+  it('a comma-less string array is unparseable — manual-merge, never a parsed argv (§6.1)', () => {
+    const section = build('notify = ["/usr/bin/env" "node" "/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs"]');
+    strictEqual(section.recommended.mode, 'manual-merge');
+  });
+
+  it('the section exposes expected_notify_argv — the value the bootstrap step persists as its desired', () => {
+    const direct = build('# empty');
+    deepStrictEqual(direct.expected_notify_argv, ['/usr/bin/env', 'node', '/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs']);
+    const chain = build('notify = ["python3", "/opt/third-party.py"]');
+    deepStrictEqual(chain.expected_notify_argv, ['/usr/bin/env', 'node', '/home/op/.agentic-plugins/bin/codex-notify-chain.mjs']);
+  });
+});

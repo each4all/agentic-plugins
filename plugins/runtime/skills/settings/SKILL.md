@@ -134,7 +134,7 @@ Settings reports and plans:
   read-checks any existing `notify` value first — the key is a single-key
   full replace — and an existing notifier produces a wrapper-chaining plan
   (chain script preserves the prior notifier) instead of a clobber. The
-  fragment invokes a rendered receiver shuttle via `/usr/bin/env node`; the
+  fragment invokes a rendered receiver shuttle via the per-OS canonical argv (`/usr/bin/env node` on POSIX; the machine's own node executable path on Windows); the
   shuttle re-resolves the runtime root per the discovery ladder on every
   invocation (never a version-pinned plugin cache path) and delegates to
   `notify.mjs emit`. Fragments and receiver scripts are rendered + recorded

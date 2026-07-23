@@ -24,9 +24,12 @@
 // re-discovery opportunity). The plan therefore renders a thin SHUTTLE script
 // that re-resolves the current runtime root per the ADR-0039 §5 discovery
 // ladder (env override → Claude cache SemVer-max → Codex fixed cache) and
-// delegates to `notify.mjs emit`; the fragment invokes the shuttle via
-// `/usr/bin/env node` (an explicit Node-on-PATH requirement, consistent with
-// doctor's bare-`node` hook portability diagnostics).
+// delegates to `notify.mjs emit`; the fragment invokes the shuttle via the
+// per-OS canonical argv (expectedCodexNotifyArgv): `/usr/bin/env node` on
+// POSIX (an explicit Node-on-PATH requirement; doctor's hook analyzer flags
+// commands that START with a bare `node` — this env-prefixed form is the
+// shape it deliberately does not warn about) and the render machine's own
+// node executable path on win32, where `/usr/bin/env` does not exist.
 //
 // Receiver input contract (source-verified at codex-cli 0.142.5,
 // legacy_notify.rs): the payload arrives as the LAST argv argument, kebab-case
@@ -108,9 +111,21 @@ function extractStringElements(arrayText) {
   const inner = arrayText.trim().replace(/^\[/, '').replace(/\]$/, '');
   const values = [];
   let i = 0;
+  // Separator discipline (Refine-verify peer MEDIUM): after a closed string,
+  // the ONLY tokens allowed before the next string are whitespace/comments and
+  // exactly one comma. `["a" "b"]` is not TOML — treating whitespace as a
+  // separator parsed it into two elements and let a malformed config judge
+  // `satisfied` against §6.1's "unparseable → pending" rule.
+  let expectSeparator = false;
   while (i < inner.length) {
     const ch = inner[i];
-    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === ',' ) { i += 1; continue; }
+    if (ch === ' ' || ch === '\t' || ch === '\n') { i += 1; continue; }
+    if (ch === ',') {
+      if (!expectSeparator) return null; // leading/double comma — not a flat string array
+      expectSeparator = false;
+      i += 1;
+      continue;
+    }
     if (ch === '#') {
       // Comment inside a multi-line array — skip to end of line.
       const nl = inner.indexOf('\n', i);
@@ -119,6 +134,7 @@ function extractStringElements(arrayText) {
       continue;
     }
     if (ch === '"') {
+      if (expectSeparator) return null; // two strings with no comma between
       // Triple-quoted multi-line basic string — not supported; fail safe.
       if (inner.startsWith('"""', i)) return null;
       let out = '';
@@ -160,14 +176,17 @@ function extractStringElements(arrayText) {
       }
       if (!closed) return null;
       values.push(out);
+      expectSeparator = true;
       continue;
     }
     if (ch === "'") {
+      if (expectSeparator) return null; // two strings with no comma between
       // Triple-quoted multi-line literal string — not supported; fail safe.
       if (inner.startsWith("'''", i)) return null;
       const end = inner.indexOf("'", i + 1);
       if (end === -1) return null;
       values.push(inner.slice(i + 1, end));
+      expectSeparator = true;
       i = end + 1;
       continue;
     }
@@ -290,10 +309,37 @@ export function parseCodexNotifyConfigToml(text) {
 // module's public surface.
 export { tomlBasicString };
 
-// The notify= fragment: /usr/bin/env node <receiver> — never a version-pinned
-// cache path; Codex appends the payload JSON as one extra argv item.
-export function renderCodexNotifyFragmentToml({ receiverPath }) {
-  const argv = ['/usr/bin/env', 'node', String(receiverPath)];
+// The CANONICAL notify= argv for one render machine — the single source the
+// fragment renderer AND the notify.codex.configured exact probe consume, so
+// "what we tell the operator to merge" and "what the judge later expects to
+// observe" cannot drift (ADR-0048 §2's single-policy-definition rule, applied
+// to notify).
+//
+// Per-OS shape (macro notify-axis slice):
+//   - POSIX keeps `/usr/bin/env node <receiver>` — Node-on-PATH via env,
+//     consistent with doctor's bare-`node` portability diagnostics, and the
+//     form already merged on live machines (an exact probe must keep
+//     matching them).
+//   - win32 has no `/usr/bin/env`, and a bare `node` inherits exactly the
+//     PATH fragility doctor warns about — so the render-machine's OWN
+//     `process.execPath` is interpolated instead. A fragment is a
+//     machine-local artifact rendered ON the machine it configures, so an
+//     absolute path is honest there; on typical Windows installs it is the
+//     version-free `C:\\Program Files\\nodejs\\node.exe`. (A version-managed
+//     Windows Node — nvm-windows — can still pin a per-version path; the plan
+//     section's limits line names that residual.)
+export function expectedCodexNotifyArgv({ receiverPath, platform = process.platform, execPath = process.execPath }) {
+  return platform === 'win32'
+    ? [String(execPath), String(receiverPath)]
+    : ['/usr/bin/env', 'node', String(receiverPath)];
+}
+
+// The notify= fragment — never a version-pinned plugin cache path; Codex
+// appends the payload JSON as one extra argv item. Renders exactly
+// expectedCodexNotifyArgv (see above) so the exact probe and the fragment
+// agree by construction.
+export function renderCodexNotifyFragmentToml({ receiverPath, platform = process.platform, execPath = process.execPath }) {
+  const argv = expectedCodexNotifyArgv({ receiverPath, platform, execPath });
   return `notify = [${argv.map((item) => tomlBasicString(item)).join(', ')}]\n`;
 }
 
@@ -519,13 +565,15 @@ export async function writeNotificationPlanArtifact({ repoRoot, artifact }) {
 // The plan builder (settings section shape)
 // ---------------------------------------------------------------------------
 
-function notificationPlanLimits({ chained }) {
+function notificationPlanLimits({ chained, platform = process.platform }) {
   const limits = [
     'runtime:settings notification plan is a dry-run (M1): it renders the ~/.codex/config.toml fragments and receiver scripts and records them in an agentic-plugins-owned artifact, but NEVER writes host config or installs the scripts — installing the receiver at the stable home location and merging the fragments are explicit user actions.',
     `The notify= fragment targets the USER-layer config.toml only: the project-local .codex/config.toml layer denylists the notify key (silently stripped) and [profiles.*] tables reject it.`,
     'notify= fires only on agent-turn-complete (the payload enum has exactly one variant at the pinned Codex version) — it cannot deliver approval-time attention; the tui.notifications fragment covers approval-requested within its limits.',
     'tui.notifications limits: TUI-only (not codex exec), default-unfocused delivery condition, OSC 9/BEL delivery is terminal-emulator-dependent, no external program, no payload. It is also a full-replace key: merging replaces any custom notifications value.',
-    'The fragment invokes the receiver via /usr/bin/env node — Node must be on PATH for the process Codex runs the notifier from (the same portability constraint doctor diagnoses for bare-node hook commands).',
+    platform === 'win32'
+      ? 'The fragment invokes the receiver via this machine\'s own node executable path (Windows has no /usr/bin/env, and a bare `node` inherits the PATH fragility doctor diagnoses for bare-node hook commands). On a version-managed Node install (nvm-windows), that path can be per-version — re-render and re-merge the fragment after switching Node versions.'
+      : 'The fragment invokes the receiver via /usr/bin/env node — Node must be on PATH for the process Codex runs the notifier from (the same portability constraint doctor diagnoses for bare-node hook commands).',
     'The receiver shuttle re-resolves the runtime plugin root on every invocation (env override, Codex fixed cache first via $CODEX_HOME, then Claude cache SemVer-max) so the fragment never points into a version-pinned plugin cache path.',
   ];
   if (chained) {
@@ -542,7 +590,7 @@ const RECEIVER_CONTRACT = Object.freeze({
   variants: Object.freeze(['agent-turn-complete']),
   tolerated_fields: Object.freeze(['client']),
   nullable_fields: Object.freeze(['last-assistant-message']),
-  node_requirement: '/usr/bin/env node (Node on PATH)',
+  node_requirement: 'POSIX: /usr/bin/env node (Node on PATH); win32: the render machine\'s node executable path (no /usr/bin/env there)',
 });
 
 // Build the Codex notification plan section (+ record the plan artifact).
@@ -589,7 +637,7 @@ export async function gatherCodexNotificationInputs({ homeDir, env = {} }) {
 // randomBytes. Returns { section, artifactBody }; artifactBody is null on the blocked
 // path (nothing to persist) and the caller owns the persist target (repo-relative for
 // settings, machine-global for bootstrap).
-export function buildCodexNotificationPlanSection({ gathered, now = new Date(), runId, runtimeVersion = RUNTIME_VERSION }) {
+export function buildCodexNotificationPlanSection({ gathered, now = new Date(), runId, runtimeVersion = RUNTIME_VERSION, platform = process.platform, execPath = process.execPath }) {
   const { read, codexHomeSource, templates, installPaths } = gathered;
   const shuttleInstallPath = installPaths.shuttle;
   const chainInstallPath = installPaths.chain;
@@ -608,11 +656,12 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
         host_config: { read_only: true, codex_home_source: codexHomeSource, sources: [{ scope: 'user', status: 'unreadable' }] },
         read_check: { performed: false },
         recommended: null,
+        expected_notify_argv: null,
         fragments: null,
         scripts: null,
         receiver_contract: RECEIVER_CONTRACT,
         artifact: { written: false, reason: 'read-check blocked' },
-        limits: notificationPlanLimits({ chained: false }),
+        limits: notificationPlanLimits({ chained: false, platform }),
       },
       artifactBody: null,
     };
@@ -633,10 +682,17 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
   // re-rendered shuttle is the whole migration. Presenting the direct
   // fragment there (and calling it idempotent) would clobber the chain and
   // silently drop the prior notifier the chain exists to preserve.
-  const referencesShuttle = Array.isArray(priorValues)
-    && priorValues.some((item) => item === shuttleInstallPath);
-  const referencesChain = Array.isArray(priorValues)
-    && priorValues.some((item) => item === chainInstallPath);
+  // FULL canonical-argv equality ONLY (Refine-verify peer HIGH): the earlier
+  // element-membership test classified `["custom-wrapper", "--forward-to",
+  // <shuttle>, "--keep"]` as already-configured and re-rendered the DIRECT
+  // fragment — clobbering the wrapper that referenced us. A config is "ours"
+  // exactly when its argv IS the canonical argv this machine's fragment
+  // renders (shuttle or chain form); anything else — our path embedded in a
+  // foreign wrapper, a hand-drifted variant, a stale win32 execPath — takes
+  // the ordinary non-empty branch, whose wrapper-chain PRESERVES it.
+  const argvEquals = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, i) => item === b[i]);
+  const referencesShuttle = argvEquals(priorValues, expectedCodexNotifyArgv({ receiverPath: shuttleInstallPath, platform, execPath }));
+  const referencesChain = argvEquals(priorValues, expectedCodexNotifyArgv({ receiverPath: chainInstallPath, platform, execPath }));
   const referencesOurReceiver = referencesShuttle || referencesChain;
 
   let mode;
@@ -670,13 +726,14 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
   // fragment must reproduce it, never downgrade to the direct shuttle.
   const chainInUse = mode === 'wrapper-chain' || (mode === 'already-configured' && referencesChain);
   const receiverPath = chainInUse ? chainInstallPath : shuttleInstallPath;
-  const notifyFragment = renderCodexNotifyFragmentToml({ receiverPath });
+  const expectedNotifyArgv = expectedCodexNotifyArgv({ receiverPath, platform, execPath });
+  const notifyFragment = renderCodexNotifyFragmentToml({ receiverPath, platform, execPath });
   const tuiFragment = renderCodexTuiNotificationsFragmentToml();
   const tuiWarning = parsed.tuiNotifications.present
     ? `existing [tui] notifications value found (${parsed.tuiNotifications.raw}); notifications is also a full-replace key — merging the fragment replaces it.`
     : null;
 
-  const limits = notificationPlanLimits({ chained: mode === 'wrapper-chain' });
+  const limits = notificationPlanLimits({ chained: mode === 'wrapper-chain', platform });
   const createdAt = now.toISOString();
   const readCheck = {
     performed: true,
@@ -701,6 +758,12 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
     notify_toml: notifyFragment,
     tui_notifications_toml: tuiFragment,
   };
+  // The ONE argv this plan's fragment carries — persisted into the step's
+  // `desired` seat so the exact probe binds to THIS plan's mode (shuttle vs
+  // chain), not to whichever canonical form the operator happened to merge
+  // (Refine-verify peer: a wrapper-chain plan wrongly merged as the direct
+  // shuttle certified `satisfied` while the third-party notifier vanished).
+  const expected_notify_argv = expectedNotifyArgv;
   const scripts = {
     shuttle: { install_path: shuttleInstallPath, content: shuttleScript },
     chain: chainScript === null ? null : { install_path: chainInstallPath, content: chainScript },
@@ -740,6 +803,7 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
       warning,
       tui_warning: tuiWarning,
       recommended,
+      expected_notify_argv,
       fragments,
       scripts,
       receiver_contract: RECEIVER_CONTRACT,
@@ -762,10 +826,15 @@ export async function buildCodexNotificationPlan({
   env = {},
   now = new Date(),
   runtimeVersion = RUNTIME_VERSION,
+  // Forwarded to the pure builder (Refine-verify peer: without these the
+  // injectable per-OS seam stopped at the builder and a deterministic win32
+  // end-to-end could not reach this wrapper).
+  platform = process.platform,
+  execPath = process.execPath,
 } = {}) {
   const gathered = await gatherCodexNotificationInputs({ homeDir, env });
   const runId = makeNotificationRunId(now);
-  const { section, artifactBody } = buildCodexNotificationPlanSection({ gathered, now, runId, runtimeVersion });
+  const { section, artifactBody } = buildCodexNotificationPlanSection({ gathered, now, runId, runtimeVersion, platform, execPath });
   if (!artifactBody) return section;
   const pointers = await writeNotificationPlanArtifact({ repoRoot, artifact: artifactBody });
   section.artifact = { written: true, ...pointers };
