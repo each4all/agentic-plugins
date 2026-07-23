@@ -905,7 +905,13 @@ describe('runtime completion reducer — egress-provider-ack aggregate (ADR-0048
   it('an acked+mirrored record with NO artifact link is FAILED — the at-rest aggregate enforces all three §8 legs (Refine-verify round 3)', () => {
     const r = recomputeProofStatus(ackProof(current, { artifactHash: null }), { current, currentActivationFingerprint: FP });
     strictEqual(r.status, 'failed');
-    match(r.reasons.join(' '), /does not link its doctor artifact/);
+    match(r.reasons.join(' '), /well-formed doctor-artifact hash/);
+  });
+
+  it('a MALFORMED artifact hash is FAILED — "well-formed" means the sha256 shape, not mere presence (Refine-verify round 5)', () => {
+    const r = recomputeProofStatus(ackProof(current, { artifactHash: 'not-a-sha256' }), { current, currentActivationFingerprint: FP });
+    strictEqual(r.status, 'failed');
+    match(r.reasons.join(' '), /well-formed doctor-artifact hash/);
   });
 
   it('a removed activation stales the proof — never not-applicable (peer E5)', () => {

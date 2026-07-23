@@ -783,6 +783,63 @@ describe('bootstrap [tui] one-source invariant — frozen re-transition is NAMED
     ok(!(resume.report.warnings ?? []).some((w) => /frozen notification-plan artifact still carries/.test(w)),
       `a stripped preview with prose-level [tui] must not trigger the supersession warning: ${JSON.stringify(resume.report.warnings)}`);
   });
+
+  it('declining the statusline step on an all-pending run RESTORES the stripped preview and withdraws the declined hand-off (round-5 High)', async () => {
+    // All-pending plan: the combined fragment renders and the notify
+    // artifact persists STRIPPED. The operator then declines statusline:
+    // decline withdraws the step's presentation fields, the combined
+    // fragment loses authority, and the strip — a derived state — must be
+    // reversed so the run still presents a [tui] source. The declined
+    // step's historical fragment/apply must not render anywhere.
+    const { home, cwd } = await makeHome();
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    const fragmentsDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments');
+    const stripped = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
+    strictEqual(stripped.fragments.tui_notifications_toml, null, 'all-pending plan strips the preview (combined is the source)');
+
+    const answersPath = join(home, 'decline-sl-allpending.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'statusline.codex.configured', answer: 'decline' }]));
+    const resume = await run(['resume', '--run-id', runId, '--answers', answersPath, '--format', 'json']);
+
+    const slStep = resume.report.steps.find((s) => s.id === 'statusline.codex.configured');
+    strictEqual(slStep.status, 'declined');
+    strictEqual(slStep.fragment_pointer ?? null, null, 'decline withdraws the presentation pointer — a refused key is history');
+    strictEqual(slStep.apply_command ?? null, null, 'decline withdraws the apply command');
+
+    const restored = JSON.parse(await readFile(join(fragmentsDir, 'notification-plan.fragment'), 'utf8'));
+    ok(restored.fragments.tui_notifications_toml,
+      'the derived strip is reversed once the combined fragment loses authority — the run must present a [tui] source');
+    ok(restored.tui_note == null, 'the routing note is dropped with the restore');
+
+    const rendered = (await run(['status', '--run-id', runId])).rendered;
+    const renderedLines = rendered.split('\n');
+    const declinedIdx = renderedLines.findIndex((l) => /statusline\.codex\.configured: declined/.test(l));
+    ok(declinedIdx >= 0, 'the declined step still renders its status line');
+    ok(!/^\s+(apply:|fragment:)/.test(renderedLines[declinedIdx + 1] ?? ''),
+      `the declined step's historical hand-off must not render beneath it: next line = ${JSON.stringify(renderedLines[declinedIdx + 1])}`);
+  });
+
+  it('a frozen artifact that fails to PARSE keeps the supersession call conservative, never silent (round-5 Medium)', async () => {
+    const { home, cwd } = await makeHome();
+    const codexConfig = join(home, '.codex', 'config.toml');
+    await writeFile(codexConfig, '[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n');
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    const notifyPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'fragments', 'notification-plan.fragment');
+    // Truncate the frozen artifact mid-preview: unparseable, preview fate unknown.
+    const original = await readFile(notifyPath, 'utf8');
+    await writeFile(notifyPath, original.slice(0, Math.floor(original.length / 2)));
+
+    await writeFile(codexConfig, '# empty\n');
+    const resume = await run(['resume', '--run-id', runId, '--format', 'json']);
+    ok((resume.report.warnings ?? []).some((w) => /could not be parsed/.test(w) && /combined statusline-codex fragment is the presented/.test(w)),
+      `parse failure must warn conservatively, not silence the supersession: ${JSON.stringify(resume.report.warnings)}`);
+  });
 });
 
 // ---------------------------------------------------------------------------

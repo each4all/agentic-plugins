@@ -706,9 +706,13 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       applied_by: appliedByFor(step),
       observed: observed.observed ?? null,
       observed_at: observedAt,
-      fragment_pointer: previous?.fragment_pointer ?? null,
-      apply_command: observed.apply_command ?? previous?.apply_command ?? null,
-      desired: previous?.desired ?? null,
+      // A DECLINED step carries no presentation state (Refine-verify round
+      // 5): its historical fragment/apply/desired are withdrawn at decline
+      // time, and a legacy run that recorded them pre-withdrawal drops them
+      // here on re-judgement — a refused key is never offered again.
+      fragment_pointer: status === 'declined' ? null : (previous?.fragment_pointer ?? null),
+      apply_command: status === 'declined' ? null : (observed.apply_command ?? previous?.apply_command ?? null),
+      desired: status === 'declined' ? null : (previous?.desired ?? null),
       fragment_applied: previous?.fragment_applied === true,
       recovery: observed.recovery ?? null,
     };
@@ -854,6 +858,16 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
     if (step.status !== 'satisfied') {
       history.push({ step_id: stepId, from: step.status, to: 'declined', reason: 'operator declined via answers file', at });
       step.status = 'declined';
+      // A DECLINED step's rendered hand-off is HISTORY, not presentation
+      // (Refine-verify round 5): the operator refused the key, so the frozen
+      // fragment / apply command / plan expectation must stop being offered
+      // — the same field clearing §7 performs on version drift, here on the
+      // operator's own decision (their decline is not the mid-apply state
+      // the G7 freeze protects). The physical file stays (freeze keeps first
+      // renders); only the presentation pointer is withdrawn.
+      step.fragment_pointer = null;
+      step.apply_command = null;
+      step.desired = null;
     }
   }
 
@@ -1124,7 +1138,37 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
         if (frozen?.fragments?.tui_notifications_toml) {
           warnings.push('the frozen notification-plan artifact still carries a [tui] preview from an earlier plan state, while the combined statusline-codex fragment is now the [tui] source — merge ONLY the combined [tui] table; the frozen preview is superseded (fragment freeze keeps first renders; see the fragment-freeze follow-up).');
         }
-      } catch { /* frozen artifact unreadable/unparseable — nothing to compare, nothing to warn */ }
+      } catch {
+        // A frozen artifact that cannot be read/parsed might still carry the
+        // preview — parse failure must not SILENCE the supersession call
+        // (contract: named, non-silent; Refine-verify round 5). Warn
+        // conservatively instead of guessing.
+        warnings.push('the frozen notification-plan artifact could not be parsed while the combined statusline-codex fragment is the presented [tui] source — treat the combined [tui] table as the ONE source and inspect the artifact by hand (conservative supersession warning).');
+      }
+    } else if (!combinedCarriesTui && notifyPointerFrozen) {
+      // The strip is a DERIVED state, valid only while the combined fragment
+      // is the presented source. If that authority lapsed (the statusline
+      // step was declined, or its pointer cleared) and the frozen notify
+      // artifact is still stripped, the run would present NO [tui] source at
+      // all (Refine-verify round 5). Restore the preview by a
+      // purpose-limited rewrite: identical body except the preview field and
+      // the dropped routing note — the notify= wiring and the frozen
+      // `desired` expectation are untouched, so this is not the expectation
+      // rebind the G7 freeze exists to prevent.
+      try {
+        const frozenPath = join(bootstrapFragmentsDir(homeDir, runId), 'notification-plan.fragment');
+        const frozen = JSON.parse(await readFile(frozenPath, 'utf8'));
+        if (frozen?.fragments && frozen.fragments.tui_notifications_toml == null && section.fragments?.tui_notifications_toml) {
+          const restored = { ...frozen, fragments: { ...frozen.fragments, tui_notifications_toml: section.fragments.tui_notifications_toml } };
+          delete restored.tui_note;
+          const write = await writeBootstrapFragment({ homeDir, repoRoot: cwd, runId, name: 'notification-plan', content: `${JSON.stringify(restored, null, 2)}\n` });
+          if (!write?.ok) {
+            warnings.push(`the stripped notification [tui] preview could not be restored after the combined fragment lost authority — the run currently presents no [tui] source: ${(write?.diagnostics ?? ['unknown write failure']).join('; ')}`);
+          }
+        }
+      } catch {
+        warnings.push('the frozen notification-plan artifact could not be parsed while no combined [tui] fragment is presented — the run may present no [tui] source; re-plan to regain one (fail-closed).');
+      }
     }
   } catch (err) {
     warnings.push(`notification plan could not be built: ${err?.message ?? String(err)}`);
@@ -2533,8 +2577,10 @@ function renderText(report) {
   for (const step of report.steps ?? []) {
     if (['satisfied', 'not-applicable'].includes(step.status)) continue;
     lines.push(`- [stage ${step.stage}] ${step.id}: ${step.status}${step.observed ? ` (observed: ${step.observed})` : ''}`);
-    if (step.apply_command) lines.push(`    apply: ${step.apply_command}`);
-    if (step.fragment_pointer) lines.push(`    fragment: ${step.fragment_pointer}`);
+    // Belt-and-braces with the decline-time field withdrawal: a refused
+    // key's historical hand-off is never rendered (Refine-verify round 5).
+    if (step.apply_command && step.status !== 'declined') lines.push(`    apply: ${step.apply_command}`);
+    if (step.fragment_pointer && step.status !== 'declined') lines.push(`    fragment: ${step.fragment_pointer}`);
     if (step.recovery) lines.push(`    ${step.recovery}`);
   }
   for (const warning of report.warnings ?? []) lines.push(`! ${warning}`);

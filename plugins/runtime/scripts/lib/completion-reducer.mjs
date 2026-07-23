@@ -183,8 +183,8 @@ export function recomputeProofStatus(proof, { current, applicable = true, requir
     // has no filesystem to re-verify against. A directly written or
     // hand-edited record without any doctor-artifact hash still must not
     // recompute to passed (Refine-verify peer, rounds 3-4).
-    if (proof.artifact_hash === null || proof.artifact_hash === undefined) {
-      return { status: 'failed', reasons: ['the acked attempt does not link its doctor artifact (artifact_hash missing) — evidence that cannot be checked against its recorded doctor report never re-evaluates to passed'] };
+    if (typeof proof.artifact_hash !== 'string' || !SHA256_RE.test(proof.artifact_hash)) {
+      return { status: 'failed', reasons: ['the acked attempt does not carry a well-formed doctor-artifact hash (sha256) — evidence that cannot be checked against its recorded doctor report never re-evaluates to passed'] };
     }
     const freshness = boundVersionsFresh(proof.bound_versions, current, { requiredPlugins });
     if (!freshness.fresh) return { status: 'stale', reasons: freshness.reasons };
