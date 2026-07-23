@@ -23,6 +23,7 @@ import {
   runBootstrap,
 } from '../../plugins/runtime/scripts/bootstrap.mjs';
 import { makeValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
+import { deriveActivationFingerprint } from '../../plugins/runtime/scripts/lib/evidence-contract.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..');
 const PLUGIN_ROOT = join(REPO_ROOT, 'plugins', 'runtime');
@@ -726,3 +727,235 @@ describe('runtime bootstrap CLI — schema-minor migration (ADR-0048 §1)', () =
 function renderOf(result) {
   return result.rendered ?? '';
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0048 §3 — egress-provider-ack via the doctor executor, end to end
+// ---------------------------------------------------------------------------
+
+describe('bootstrap egress-provider-ack executor E2E (ADR-0048 §3)', () => {
+  const EGRESS_ENV = {
+    AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
+    TELEGRAM_CHAT_ID: '424242424242',
+    TELEGRAM_BOT_TOKEN: '999999:e2e-sentinel-token',
+  };
+  // The fingerprint the CURRENT readers derive from EGRESS_ENV — the stubbed
+  // doctor report must echo it, or the reducer honestly re-judges the recorded
+  // ack stale (recorded against an activation this machine no longer carries).
+  const CURRENT_FINGERPRINT = deriveActivationFingerprint({
+    channel: 'telegram',
+    recipient: '424242424242',
+    credentialEnvVar: 'TELEGRAM_BOT_TOKEN',
+  });
+  const ATTEMPT_HASH = 'a'.repeat(64);
+  const ARTIFACT_SHA = 'b'.repeat(64);
+
+  function egressDoctorStub({ blocked = false } = {}) {
+    const calls = [];
+    const runner = async (scriptPath, args) => {
+      calls.push({ scriptPath, args: [...args] });
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        if (args.includes('--execute-egress-ack-proof')) {
+          if (blocked) {
+            return okOut(JSON.stringify({
+              egress_ack_proof: {
+                requested: true, executed: false, mode: 'explicit_egress_executor', status: 'blocked',
+                provider_ack: null, outcome_reason: null, mirror_correlated: false, network_request_performed: false,
+                blockers: ['AGENTIC_EGRESS_REAL_SMOKE=1 is not set — the real-network send needs this third consent alongside the two flags (export it in the shell that runs the executor)'],
+                limits: [],
+              },
+              doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: ARTIFACT_SHA },
+            }));
+          }
+          return okOut(JSON.stringify({
+            egress_ack_proof: {
+              requested: true, executed: true, mode: 'explicit_egress_executor', status: 'passed',
+              provider_ack: { result: 'acked', attempt_hash: ATTEMPT_HASH, activation_fingerprint: CURRENT_FINGERPRINT, ran_at: '2026-07-18T04:00:00.000Z' },
+              outcome_reason: 'dispatched', mirror_correlated: true, network_request_performed: true,
+              subject_suffix: 'abcdef012345', blockers: [], limits: [],
+            },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: ARTIFACT_SHA },
+          }));
+        }
+        // Hook-attestation fetch path: no codex_hook_review → resume warns and moves on.
+        return okOut(JSON.stringify({}));
+      }
+      return missing();
+    };
+    return { calls, runner };
+  }
+
+  it('resume executes the opted-in egress proof through doctor, persists provider_ack evidence with the artifact hash, then attest-receipt completes delivery attestation', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = egressDoctorStub();
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: stub.runner, env: EGRESS_ENV });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+
+    // Stage 8 — the operator's explicit `execute` answer against the opt-in step.
+    const answersPath = join(home, 'execute-egress.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+
+    // The doctor invocation used the registered flag pair (both consents) + --record.
+    const doctorCall = stub.calls.find((c) => c.scriptPath.endsWith('doctor.mjs') && c.args.includes('--execute-egress-ack-proof'));
+    ok(doctorCall, 'resume must delegate to runtime:doctor for the egress proof');
+    ok(doctorCall.args.includes('--egress-ack-proof'), 'the plan flag rides with the execute flag');
+    ok(doctorCall.args.includes('--record'), 'the §8.2 delegation is a --record invocation');
+
+    // The recorded proof: provider_ack (single-delivery evidence, NO directions)
+    // + the doctor artifact linked by its exact-byte hash — for THIS kind and,
+    // per the same slice, every kind (artifact_hash import for ALL kinds).
+    const proofPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json');
+    const recorded = JSON.parse(await readFile(proofPath, 'utf8'));
+    strictEqual(recorded.kind, 'egress-provider-ack');
+    strictEqual(recorded.provider_ack.result, 'acked');
+    strictEqual(recorded.provider_ack.attempt_hash, ATTEMPT_HASH);
+    strictEqual(recorded.artifact_hash, ARTIFACT_SHA, 'the doctor artifact_sha256 is imported as artifact_hash');
+    strictEqual(recorded.directions, undefined, 'egress evidence is single-delivery — no directions member');
+
+    const ackAfterResume = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(ackAfterResume?.status, 'passed', `the executed ack reduces to passed: ${JSON.stringify(ackAfterResume?.reasons)}`);
+    strictEqual(resume.report.completion.egress_receipt_attestation?.status === 'attested', false, 'no receipt testimony yet');
+
+    // D0.1 — the owner's after-the-fact phone-receipt testimony on a later resume.
+    const attestPath = join(home, 'attest-egress.json');
+    await writeFile(attestPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'attest-receipt' }]));
+    const attest = await run(['resume', '--latest-open', '--answers', attestPath]);
+
+    const receiptPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-receipt-attestation.json');
+    const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+    strictEqual(receipt.surface, 'owner-phone');
+    strictEqual(receipt.attempt_hash, ATTEMPT_HASH, 'the testimony names the acked synthetic attempt');
+    const ackBytes = await readFile(proofPath);
+    strictEqual(receipt.provider_proof_artifact_hash, createHash('sha256').update(ackBytes).digest('hex'), 'the testimony links the stored ack bytes by hash');
+
+    const verdict = attest.report.completion.egress_receipt_attestation;
+    strictEqual(verdict?.status, 'attested', `delivery is attested: ${JSON.stringify(verdict)}`);
+    const ackFinal = attest.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(ackFinal?.status, 'passed', 'the machine proof still stands beside the human testimony');
+  });
+
+  it('a blocked doctor executor surfaces its blockers as a resume warning, records nothing, and stays retryable', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = egressDoctorStub({ blocked: true });
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: stub.runner, env: EGRESS_ENV });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    const answersPath = join(home, 'execute-egress.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+
+    ok(resume.report.warnings.some((w) => /AGENTIC_EGRESS_REAL_SMOKE=1/.test(w)), `the third-consent blocker reaches the operator: ${JSON.stringify(resume.report.warnings)}`);
+    let proofExists = true;
+    try { await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json')); } catch { proofExists = false; }
+    strictEqual(proofExists, false, 'a blocked executor persists no proof record (the kind stays absent and retryable)');
+    const ack = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+    ok(ack?.status !== 'passed', 'nothing reduces to passed off a blocked executor');
+  });
+});
+
+// The two remaining executor-slice behaviors, each pinned by a test that its
+// mutation demonstrably fails (mutation-verified guards, not decoration):
+// the acked-consistency refusal and the post-execution READERS re-read.
+describe('bootstrap egress-provider-ack executor — consistency matrix + readers re-read (ADR-0048 §3)', () => {
+  const EGRESS_ENV_NO_RECIPIENT = {
+    AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
+    TELEGRAM_BOT_TOKEN: '999999:e2e-sentinel-token',
+  };
+
+  it('an internally inconsistent doctor section (passed without a correlated mirror) is refused, not persisted', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const calls = [];
+    const runner = async (scriptPath, args) => {
+      calls.push({ scriptPath, args: [...args] });
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        if (args.includes('--execute-egress-ack-proof')) {
+          return okOut(JSON.stringify({
+            egress_ack_proof: {
+              requested: true, executed: true, mode: 'explicit_egress_executor',
+              // The forged shape the matrix exists to refuse: a pass whose own
+              // evidence legs contradict it.
+              status: 'passed',
+              provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: 'c'.repeat(64), ran_at: '2026-07-18T04:00:00.000Z' },
+              outcome_reason: 'dispatched', mirror_correlated: false, network_request_performed: true,
+              subject_suffix: 'abcdef012345', blockers: [], limits: [],
+            },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: 'b'.repeat(64) },
+          }));
+        }
+        return okOut(JSON.stringify({}));
+      }
+      return missing();
+    };
+    const env = { ...EGRESS_ENV_NO_RECIPIENT, TELEGRAM_CHAT_ID: '424242424242' };
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: runner, env });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    const answersPath = join(home, 'execute-egress.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+
+    ok(resume.report.warnings.some((w) => /internally inconsistent/.test(w) && /mirror_correlated=false/.test(w)),
+      `the refusal names the contradiction: ${JSON.stringify(resume.report.warnings)}`);
+    let proofExists = true;
+    try { await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'egress-provider-ack.json')); } catch { proofExists = false; }
+    strictEqual(proofExists, false, 'an inconsistent section must never persist as evidence');
+  });
+
+  it('the final reduce re-reads the READERS: an activation changed DURING the proof is judged post-execution, not from the stale snapshot', async () => {
+    // Recipient comes from the verified-ignored-local layer (owner-owned 0600
+    // file under HOME), so the subprocess stub can change it MID-RESUME — the
+    // exact window the post-execution re-read exists for. The stubbed ack is
+    // fingerprinted against the NEW recipient: only a reducer that re-reads
+    // the readers after execution judges it fresh (the pre-execution snapshot
+    // still carries the old recipient and would demote the ack to stale).
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const localPath = join(home, '.agentic-plugins', 'config.local.toml');
+    await writeFile(localPath, 'egress_chat_id = "111111111111"\n', { mode: 0o600 });
+    const NEW_FINGERPRINT = deriveActivationFingerprint({
+      channel: 'telegram',
+      recipient: '222222222222',
+      credentialEnvVar: 'TELEGRAM_BOT_TOKEN',
+    });
+    const runner = async (scriptPath, args) => {
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        if (args.includes('--execute-egress-ack-proof')) {
+          // The operator rotates the recipient while the executor runs.
+          await writeFile(localPath, 'egress_chat_id = "222222222222"\n', { mode: 0o600 });
+          return okOut(JSON.stringify({
+            egress_ack_proof: {
+              requested: true, executed: true, mode: 'explicit_egress_executor', status: 'passed',
+              provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: NEW_FINGERPRINT, ran_at: '2026-07-18T04:00:00.000Z' },
+              outcome_reason: 'dispatched', mirror_correlated: true, network_request_performed: true,
+              subject_suffix: 'abcdef012345', blockers: [], limits: [],
+            },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: 'b'.repeat(64) },
+          }));
+        }
+        return okOut(JSON.stringify({}));
+      }
+      return missing();
+    };
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: runner, env: EGRESS_ENV_NO_RECIPIENT });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    // Precondition, not decoration: the local layer really is the recipient
+    // source here (otherwise the mid-resume rotation would be a no-op and the
+    // test would pass vacuously with or without the re-read).
+    const egressStep = plan.report.steps.find((s) => s.id === 'egress.configured');
+    strictEqual(egressStep?.status, 'satisfied', `the verified-local recipient activates egress in this fixture: ${JSON.stringify(egressStep)}`);
+
+    const answersPath = join(home, 'execute-egress.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+    const ack = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(ack?.status, 'passed',
+      `the ack recorded against the rotated activation judges fresh off the POST-execution readers (got ${ack?.status}: ${JSON.stringify(ack?.reasons)})`);
+  });
+});

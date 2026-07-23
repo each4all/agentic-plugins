@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strictEqual, ok, rejects, deepStrictEqual } from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, symlink, readFile, rm, utimes } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, symlink, readdir, readFile, rm, utimes } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -4100,3 +4100,273 @@ async function writeWorkflow(path, branch) {
 async function writeJson(path, value) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
 }
+
+// ---------------------------------------------------------------------------
+// Egress ack proof executor (ADR-0048 §3 — the one real-network proof)
+// ---------------------------------------------------------------------------
+
+describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
+  // Activation triple for the preflight (loadEgressActivation reads THIS env
+  // snapshot — the same object later handed to the emitter). The token value
+  // is a sentinel the sanitization assertions grep for.
+  const SENTINEL_TOKEN = '999999:egress-proof-sentinel-token-value';
+  const SENTINEL_CHAT = '424242424242';
+  function activationEnv(extra = {}) {
+    return {
+      PATH: process.env.PATH,
+      AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
+      TELEGRAM_CHAT_ID: SENTINEL_CHAT,
+      TELEGRAM_BOT_TOKEN: SENTINEL_TOKEN,
+      ...extra,
+    };
+  }
+  const bareRunner = async () => ({ ok: false, exit_code: null, error_code: 'ENOENT', stdout: '', stderr: '', error_message: null });
+
+  async function freshDirs() {
+    const root = await mkdtemp(join(tmpdir(), 'doctor-egress-proof-'));
+    const repo = join(root, 'repo');
+    const home = join(root, 'home');
+    await mkdir(repo, { recursive: true });
+    await mkdir(home, { recursive: true });
+    return { root, repo, home };
+  }
+
+  // An emitImpl double that behaves like a DELIVERED runEmit: returns
+  // dispatched AND writes the one well-formed mirror row into the temp repo's
+  // notify log (the correlation the section fail-closes on).
+  function deliveredEmit(calls = []) {
+    return async ({ eventText, repoRoot, homeDir, env }) => {
+      const event = JSON.parse(eventText);
+      calls.push({ event, repoRoot, homeDir, env });
+      const dir = join(repoRoot, '.agentic-plugins', 'state', 'runtime', 'notify');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'log.ndjson'), `${JSON.stringify({
+        ts: new Date().toISOString(),
+        event_id: event.event_id,
+        kind: event.kind,
+        urgency: event.urgency,
+        egress_channel: 'telegram',
+        egress_status: 'dispatched',
+        egress_outcome: 'dispatched',
+        egress_phase: 'outcome',
+      })}\n`);
+      return { status: 'dispatched', stage: 'egress', reason: 'egress-dispatched', channel: 'telegram' };
+    };
+  }
+
+  async function runEgressDoctor({ repo, home, env, emitImpl, execute = true, requested = true, record = false }) {
+    return runDoctor({
+      repoRoot: repo,
+      homeDir: home,
+      format: 'json',
+      runner: bareRunner,
+      env,
+      egressAckProof: requested,
+      executeEgressAckProof: execute,
+      egressEmitImpl: emitImpl,
+      recordArtifact: record,
+    });
+  }
+
+  it('parseArgs wires the flag pair, enforces the double guard, and refuses a timeout flag (peer decision)', () => {
+    const opts = parseArgs(['--egress-ack-proof', '--execute-egress-ack-proof']);
+    strictEqual(opts.egressAckProof, true);
+    strictEqual(opts.executeEgressAckProof, true);
+    // Execute without plan is refused at parse time (same rule runDoctor re-checks).
+    let threw = null;
+    try { parseArgs(['--execute-egress-ack-proof']); } catch (err) { threw = err; }
+    ok(/--execute-egress-ack-proof requires --egress-ack-proof/.test(threw?.message ?? ''), `double guard: ${threw?.message}`);
+    // Deliberately NO outer timeout flag: the send is bounded inside the
+    // pinned emitter, and an outer abort could abandon a request whose body
+    // reached the wire — the exact ambiguity the intent WAL prevents.
+    threw = null;
+    try { parseArgs(['--egress-ack-proof', '--egress-ack-proof-timeout-ms', '5000']); } catch (err) { threw = err; }
+    ok(/Unknown argument: --egress-ack-proof-timeout-ms/.test(threw?.message ?? ''), `timeout flag must not exist: ${threw?.message}`);
+  });
+
+  it('runDoctor re-enforces the execute-requires-plan double guard', async () => {
+    const { repo, home } = await freshDirs();
+    await rejects(
+      () => runDoctor({ repoRoot: repo, homeDir: home, runner: bareRunner, env: activationEnv(), executeEgressAckProof: true }),
+      /--execute-egress-ack-proof requires --egress-ack-proof/,
+    );
+  });
+
+  it('plan-only preflight: ready under full activation, blocked (with the activation named) without it', async () => {
+    const { repo, home } = await freshDirs();
+    const ready = await runEgressDoctor({ repo, home, env: activationEnv(), execute: false });
+    strictEqual(ready.egress_ack_proof.mode, 'plan_only_preflight');
+    strictEqual(ready.egress_ack_proof.status, 'ready');
+    strictEqual(ready.egress_ack_proof.executed, false);
+    strictEqual(ready.egress_ack_proof.network_request_performed, false);
+    strictEqual(ready.effects.network_request_performed, false);
+
+    const { repo: repo2, home: home2 } = await freshDirs();
+    const blocked = await runEgressDoctor({ repo: repo2, home: home2, env: { PATH: process.env.PATH }, execute: false });
+    strictEqual(blocked.egress_ack_proof.status, 'blocked');
+    ok(blocked.egress_ack_proof.blockers.some((b) => /egress activation is not active/.test(b)), JSON.stringify(blocked.egress_ack_proof.blockers));
+  });
+
+  it('the third consent gates the send: execute without AGENTIC_EGRESS_REAL_SMOKE=1 is blocked and the emitter is never called', async () => {
+    const { repo, home } = await freshDirs();
+    const calls = [];
+    const report = await runEgressDoctor({ repo, home, env: activationEnv(), emitImpl: deliveredEmit(calls) });
+    strictEqual(report.egress_ack_proof.status, 'blocked');
+    strictEqual(report.egress_ack_proof.executed, false);
+    ok(report.egress_ack_proof.blockers.some((b) => /AGENTIC_EGRESS_REAL_SMOKE=1/.test(b)), JSON.stringify(report.egress_ack_proof.blockers));
+    strictEqual(calls.length, 0, 'no emit without the third consent');
+    strictEqual(report.effects.network_request_performed, false);
+    // Blocked-under-execute is a warning, never a hard failure (nothing was sent).
+    ok(!report.overall.hard_failures.some((f) => /egress ack proof/.test(f)), JSON.stringify(report.overall.hard_failures));
+    ok(report.overall.warnings.some((w) => /egress ack proof execute was requested but blocked/.test(w)), JSON.stringify(report.overall.warnings));
+  });
+
+  it('a delivered attempt passes: acked provider_ack, correlated mirror, TOCTOU-shared env, sanitized report, acked intent', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const calls = [];
+    const report = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
+    const section = report.egress_ack_proof;
+    strictEqual(section.status, 'passed', JSON.stringify(section));
+    strictEqual(section.executed, true);
+    strictEqual(section.mirror_correlated, true);
+    strictEqual(section.outcome_reason, 'dispatched');
+    strictEqual(section.provider_ack.result, 'acked');
+    ok(/^[0-9a-f]{64}$/.test(section.provider_ack.attempt_hash), 'attempt_hash is a full sha256');
+    ok(/^[0-9a-f]{64}$/.test(section.provider_ack.activation_fingerprint), 'activation_fingerprint is a full sha256');
+    ok(section.provider_ack.ran_at, 'an acked attempt carries its time');
+    ok(/^[0-9a-f]{12}$/.test(section.subject_suffix), 'the phone-correlation token is 12 hex chars');
+    strictEqual(section.network_request_performed, true);
+    strictEqual(report.effects.network_request_performed, true);
+    strictEqual(report.effects.host_config_mutated, false);
+    strictEqual(report.read_only, true, 'read_only keeps its host-state meaning');
+    ok(!report.overall.hard_failures.some((f) => /egress ack proof/.test(f)), 'a passed proof registers no hard failure');
+
+    // TOCTOU closed by sharing: the emitter received the SAME env snapshot the
+    // preflight judged, against an ephemeral temp repo that is not the consumer repo.
+    strictEqual(calls.length, 1);
+    strictEqual(calls[0].env, env, 'the emitter must receive the preflight env object itself');
+    ok(calls[0].repoRoot !== repo, 'the emit runs against an ephemeral temp repo, never the consumer repo');
+    strictEqual(calls[0].event.kind, 'response-needed');
+    strictEqual(calls[0].event.urgency, 'normal');
+    ok(calls[0].event.topic.endsWith(section.subject_suffix), 'the correlation token rides the ENUMERATED topic field');
+
+    // Full-report sanitization: no token, no recipient, no raw event id.
+    const text = JSON.stringify(report);
+    ok(!text.includes(SENTINEL_TOKEN), 'the credential value must never appear in the report');
+    ok(!text.includes(SENTINEL_CHAT), 'the recipient must never appear in the report');
+    ok(!text.includes(calls[0].event.event_id), 'the raw event id stays in ephemeral/local state');
+
+    // Intent WAL resolved to acked (same attempt hash the ack carries).
+    const intentDir = join(repo, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    const intents = (await readdir(intentDir)).filter((n) => n.endsWith('.json'));
+    strictEqual(intents.length, 1);
+    const intent = JSON.parse(await readFile(join(intentDir, intents[0]), 'utf8'));
+    strictEqual(intent.status, 'acked');
+    strictEqual(intent.attempt_hash, section.provider_ack.attempt_hash);
+
+    // The temp repo is torn down (its path was captured before teardown).
+    ok(!existsSync(calls[0].repoRoot), 'the ephemeral temp repo is removed after the attempt');
+  });
+
+  it('a dispatched return with NO mirror row fails closed (unverifiable ≠ passed) and registers a hard failure', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const report = await runEgressDoctor({
+      repo, home, env,
+      emitImpl: async () => ({ status: 'dispatched', stage: 'egress', reason: 'egress-dispatched', channel: 'telegram' }),
+    });
+    const section = report.egress_ack_proof;
+    strictEqual(section.status, 'failed');
+    strictEqual(section.outcome_reason, 'mirror-missing');
+    strictEqual(section.mirror_correlated, false);
+    // A failed attempt is EVIDENCE: provider_ack rides every completed attempt.
+    strictEqual(section.provider_ack.result, 'failed');
+    // The message may well be on the phone: dispatched ⇒ network happened.
+    strictEqual(section.network_request_performed, true);
+    ok(report.overall.hard_failures.some((f) => /egress ack proof failed \(mirror-missing\)/.test(f)), JSON.stringify(report.overall.hard_failures));
+    // …and the intent stays FAILED (not acked), naming the unverifiable outcome.
+    const intentDir = join(repo, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    const intents = (await readdir(intentDir)).filter((n) => n.endsWith('.json'));
+    const intent = JSON.parse(await readFile(join(intentDir, intents[0]), 'utf8'));
+    strictEqual(intent.status, 'failed');
+  });
+
+  it('emitter failure reasons project onto the closed enum with the egress- prefix stripped', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const report = await runEgressDoctor({
+      repo, home, env,
+      emitImpl: async () => ({ status: 'failed', stage: 'egress', reason: 'egress-missing-token', channel: 'telegram' }),
+    });
+    strictEqual(report.egress_ack_proof.status, 'failed');
+    strictEqual(report.egress_ack_proof.outcome_reason, 'missing-token', 'egress- prefixed reasons must project onto the enum, not collapse to emit-error');
+    strictEqual(report.egress_ack_proof.provider_ack.result, 'failed');
+    strictEqual(report.egress_ack_proof.network_request_performed, false, 'missing-token stops before any network I/O');
+    strictEqual(report.effects.network_request_performed, false);
+  });
+
+  it('a pending intent from a crashed attempt refuses the auto-resend until the operator resolves it', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const intentDir = join(repo, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    await mkdir(intentDir, { recursive: true });
+    await writeFile(join(intentDir, 'deadbeef0001.json'), JSON.stringify({ status: 'pending', subject: 'egress-proof-deadbeef0001' }));
+    const calls = [];
+    const report = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
+    strictEqual(report.egress_ack_proof.status, 'blocked');
+    strictEqual(calls.length, 0, 'an ambiguous prior attempt must never auto-resend');
+    ok(report.egress_ack_proof.blockers.some((b) => /deadbeef0001\.json/.test(b) && /phone may already have that message/.test(b)), JSON.stringify(report.egress_ack_proof.blockers));
+    strictEqual(report.effects.network_request_performed, false);
+  });
+
+  it('kinds-filtered trace: the REAL emitter suppresses before dispatch and the executor records the honest failure', async () => {
+    // No emitImpl — the real runEmit runs against the ephemeral temp repo.
+    // The user-global notify config filters response-needed out, so the
+    // pipeline stops at stage 2 (kinds-filter) BEFORE any network I/O: this
+    // exercises the true doctor→runEmit delegation end to end while staying
+    // hermetic (the send is structurally unreachable).
+    const { repo, home } = await freshDirs();
+    await mkdir(join(home, '.agentic-plugins'), { recursive: true });
+    await writeFile(join(home, '.agentic-plugins', 'config.toml'), 'notify_kinds = "approval"\n');
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const report = await runEgressDoctor({ repo, home, env });
+    const section = report.egress_ack_proof;
+    strictEqual(section.executed, true);
+    strictEqual(section.status, 'failed');
+    strictEqual(section.outcome_reason, 'kinds-filter');
+    strictEqual(section.provider_ack.result, 'failed');
+    strictEqual(section.network_request_performed, false, 'a kinds-filtered emit performs no network I/O');
+    strictEqual(report.effects.network_request_performed, false);
+    ok(report.overall.hard_failures.some((f) => /egress ack proof failed \(kinds-filter\)/.test(f)), JSON.stringify(report.overall.hard_failures));
+  });
+
+  it('--record writes an atomic artifact whose artifact_sha256 matches the exact bytes on disk and embeds the section', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const report = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(), record: true });
+    const artifact = report.doctor_artifact;
+    strictEqual(artifact.written, true);
+    ok(/^[0-9a-f]{64}$/.test(artifact.artifact_sha256), 'artifact_sha256 is returned');
+    const artifactPath = join(repo, artifact.artifact_pointer);
+    const bytes = await readFile(artifactPath);
+    strictEqual(createHash('sha256').update(bytes).digest('hex'), artifact.artifact_sha256, 'the hash is over the EXACT bytes on disk');
+    const stored = JSON.parse(bytes.toString('utf8'));
+    strictEqual(stored.report.egress_ack_proof.status, 'passed', 'the recorded snapshot carries the executed section');
+    ok(!bytes.toString('utf8').includes(SENTINEL_TOKEN), 'the artifact is sanitized');
+    // No stray temp file left behind by the atomic write.
+    const runDirEntries = await readdir(join(repo, '.agentic-plugins', 'runs', 'doctor', artifact.run_id));
+    deepStrictEqual(runDirEntries.filter((n) => n.endsWith('.tmp')), []);
+  });
+
+  it('formatText renders the Egress Ack Proof section with the correlation token and enum outcome only', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const report = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit() });
+    const text = formatText(report);
+    ok(text.includes('Egress Ack Proof'), 'section header');
+    ok(text.includes('status=passed'), 'status line');
+    ok(text.includes(`correlation-token: ${report.egress_ack_proof.subject_suffix}`), 'phone-correlation token rendered');
+    ok(!text.includes(SENTINEL_TOKEN) && !text.includes(SENTINEL_CHAT), 'text output is sanitized');
+  });
+});

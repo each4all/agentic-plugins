@@ -90,6 +90,9 @@ import { fileURLToPath } from 'node:url';
 // (A pinned-request capture, D provider-outcome scenarios). No persona/attention
 // PLUGIN is imported anywhere in this file (the (G) scan enforces that on them).
 import { runEmit } from '../../plugins/runtime/scripts/notify.mjs';
+// K3 only: the ADR-0048 §3 egress-ack-proof executor, driven over the REAL
+// delegated runEmit (no emitImpl double) under the same (K) opt-in gate.
+import { runDoctor } from '../../plugins/runtime/scripts/doctor.mjs';
 
 import { runNode, scrubAmbientEgressEnv } from './_helpers.mjs';
 
@@ -1564,6 +1567,54 @@ describe('ADR-0041 acceptance (K) -- opt-in real-network smoke (skipped unless A
     strictEqual(result.status, 'dispatched', 'the real transport delivered the headline-bearing message');
     strictEqual(egressRows(root)[0].headline, 'complete', 'the delivered attempt mirrored the headline');
     ok(!dumpNotifyState(root).includes(token), 'the real token never lands in persisted state');
+  });
+
+  // NOTE (ADR-0048 §3): with AGENTIC_EGRESS_REAL_SMOKE=1 this suite now sends
+  // THREE live messages to the owner's phone — K (plain), K2 (headline), and
+  // K3 below (the doctor egress-ack-proof executor's synthetic
+  // response-needed event, identifiable by its `egress-proof-<12hex>` topic
+  // line). K3 is the executor's production path end to end: the SAME env
+  // gate that guards this suite is the executor's third consent, so the one
+  // opt-in governs every real send.
+  it('K3 -- the doctor egress-ack-proof executor delivers through the REAL delegated runEmit and acks', { skip: !REAL }, async () => {
+    const token = process.env.AGENTIC_EGRESS_REAL_SMOKE_TOKEN;
+    const chatId = process.env.AGENTIC_EGRESS_REAL_SMOKE_CHAT_ID;
+    ok(token && chatId, 'AGENTIC_EGRESS_REAL_SMOKE=1 requires AGENTIC_EGRESS_REAL_SMOKE_TOKEN + AGENTIC_EGRESS_REAL_SMOKE_CHAT_ID');
+    const root = markerRepo('K3-doctor');
+    const home = fixtureHome();
+    // NO egressEmitImpl -> doctor delegates to the REAL runEmit (in-process),
+    // whose node:https transport opens a real socket against an EPHEMERAL temp
+    // repo; `root` here receives only the intent WAL.
+    const report = await runDoctor({
+      repoRoot: root,
+      homeDir: home,
+      format: 'json',
+      runner: async () => ({ ok: false, exit_code: null, error_code: 'ENOENT', stdout: '', stderr: '', error_message: null }),
+      env: {
+        PATH: process.env.PATH,
+        AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram',
+        TELEGRAM_CHAT_ID: chatId,
+        TELEGRAM_BOT_TOKEN: token,
+        AGENTIC_EGRESS_REAL_SMOKE: '1',
+      },
+      egressAckProof: true,
+      executeEgressAckProof: true,
+    });
+    const section = report.egress_ack_proof;
+    strictEqual(section.status, 'passed', `the live attempt acks end to end: ${JSON.stringify({ status: section.status, outcome: section.outcome_reason, blockers: section.blockers })}`);
+    strictEqual(section.provider_ack.result, 'acked');
+    strictEqual(section.mirror_correlated, true, 'the temp-repo mirror row correlates the live attempt');
+    ok(/^[0-9a-f]{12}$/.test(section.subject_suffix), 'the phone message is identifiable by its 12-hex topic token');
+    strictEqual(report.effects.network_request_performed, true);
+    // Even on the live path, nothing credential- or recipient-shaped persists:
+    // not in the report, not in the intent WAL left under `root`.
+    const reportText = JSON.stringify(report);
+    ok(!reportText.includes(token) && !reportText.includes(chatId), 'the live credential/recipient never enter the report');
+    const intentDir = join(root, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    for (const name of readdirSync(intentDir)) {
+      const intent = readFileSync(join(intentDir, name), 'utf8');
+      ok(!intent.includes(token) && !intent.includes(chatId), `intent ${name} stays sanitized`);
+    }
   });
 });
 

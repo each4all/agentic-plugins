@@ -589,9 +589,9 @@ export const FS_MUTATION_USERS = {
   // doctor run artifacts + ephemeral temp-repo probes (mkdtemp under the OS
   // tmpdir, recursively removed — the pinned recursive-removal site below).
   'doctor.mjs': {
-    primitives: ['mkdir', 'mkdtemp', 'rm', 'writeFile'],
+    primitives: ['mkdir', 'mkdtemp', 'rename', 'rm', 'writeFile'],
     stateRoots: ['.agentic-plugins/runs/doctor', 'os-tmpdir'],
-    justification: 'doctor run artifacts + self-created mkdtemp temp-repo teardown',
+    justification: 'doctor run artifacts (temp+rename atomic writeDoctorArtifact — the artifact bytes are hash-linked evidence, ADR-0048 §3) + self-created mkdtemp temp-repo teardown (workflow-continuation AND egress-ack-proof temp repos)',
   },
   // ADR-0045 S7a entry-brief read layer: `open` is imported ONLY for
   // read-only TOCTOU-safe handle reads (O_RDONLY|O_NOFOLLOW|O_NONBLOCK +
@@ -674,7 +674,14 @@ export const FS_MUTATION_USERS = {
 // every legitimate site removes something the same file provably created.
 export const ALLOWED_RECURSIVE_REMOVALS = {
   'doctor.mjs': [
-    { callee: 'rm', target: 'tempRepo', justification: 'teardown of the self-created mkdtemp temp repo used for workflow-continuation proofs' },
+    // The same pinned `rm(tempRepo, ...)` shape covers BOTH executor temp
+    // repos: the workflow-continuation proof workspace and the egress-ack
+    // proof's ephemeral notify-state repo (ADR-0048 §3 — the egress proof
+    // exercises user-global+default policy against a scratch repo so the
+    // consumer repo's operational notify state — mirror log, dedupe claims,
+    // throttle — is never touched and its teardown removes only what this
+    // file's own mkdtemp created seconds earlier).
+    { callee: 'rm', target: 'tempRepo', justification: 'teardown of the self-created mkdtemp temp repos used for workflow-continuation and egress-ack proofs' },
   ],
   'notify.mjs': [
     { callee: 'rmSync', target: 'lockDir', justification: 'own dedupe reclaim-lock dir removal (ADR-0040 §1 bounded retention deletion)' },
@@ -686,6 +693,67 @@ export const ALLOWED_RECURSIVE_REMOVALS = {
   'retention-apply.mjs': [
     { callee: 'rmSync', target: 'runDir', justification: 'ADR-0047 §7 the ONE enumerated deletion: recursive removal of an unpinned/over-cap/age-cleared run directory under runs/<family>, gated by dry-run default + plan-hash binding + scan_complete + family lock + write-ahead receipt + containment/no-follow re-validated at the destructive boundary (validateDeletionTarget). Containment and no-follow are proven by the behavioral/mutation tests, not this static scan (ADR-0047 §7 enforcement-honesty)' },
   ],
+};
+
+// ---------------------------------------------------------------------------
+// Delegated egress emitters (ADR-0048 §3) — network reach WITHOUT a network
+// import, pinned as data
+// ---------------------------------------------------------------------------
+
+// The egress-ack-proof executor gives doctor.mjs a path to the network that no
+// import-anchored gate above can see: it imports `runEmit` from notify.mjs and
+// calls it in-process, and notify.mjs (a PINNED_HTTPS_USERS entry) owns the
+// one pinned api.telegram.org request. That delegation is deliberate — the
+// pinned call site must stay inside notify.mjs, never be duplicated into
+// doctor — but an UNREGISTERED runEmit import elsewhere would be a silent new
+// network reach. This table pins the delegation the same way every other
+// capability is pinned: the guard asserts the set of runtime scripts importing
+// `runEmit` equals EXACTLY these keys (fail-closed on a new importer), and
+// that each registered file really does import it (registry never looser than
+// code — a dead entry would pre-authorize a re-added import).
+export const DELEGATED_EGRESS_EMITTERS = {
+  'doctor.mjs': {
+    module: './notify.mjs',
+    binding: 'runEmit',
+    justification: 'ADR-0048 §3 egress-ack-proof executor: doctor reaches the network ONLY by delegating one in-process runEmit against an ephemeral temp repo; the pinned api.telegram.org call site stays inside notify.mjs (PINNED_HTTPS_USERS) and doctor imports no network capability of its own for it',
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Named credential readers (ADR-0048 §4) — the egress credential key allowlist
+// ---------------------------------------------------------------------------
+
+// ADR-0048 §4: "Only the named E1 activation checker may inspect the value for
+// presence/collision, and only the pinned E1 emitter may consume it." This is
+// the static named-reader allowlist that section mandates, in two tiers:
+//
+//   - VALUE READERS — files whose source may read the credential VALUE out of
+//     an environment object (`env[EGRESS_ENV_KEYS.credential]` and spelling
+//     variants). Exactly the two §4 names.
+//   - KEY REFERENCERS — files that may mention the credential KEY at all
+//     (the constant's definition, scrub-at-spawn deletes, fingerprint NAME
+//     input, placeholder-command rendering). Referencing the key without
+//     reading the value is how §4's "never asks for or handles the value"
+//     stays auditable: a NEW file mentioning the key fails closed and gets
+//     reviewed into one tier or rejected.
+//
+// Like every table here this is a tripwire, not a sandbox: an allowlisted
+// key-referencer could still alias the key into a computed read the regex
+// cannot see — the value-reader gate binds the files a reviewer must hold to
+// the §4 reading, and the behavioral credential-leak scans (acceptance (H))
+// stay the sound check.
+export const CREDENTIAL_VALUE_READERS = {
+  'egress-config.mjs': { justification: 'the named E1 activation checker — reads the value for presence/collision only (ADR-0041 §2c; ADR-0048 §4 first name)' },
+  'notify.mjs': { justification: 'the pinned E1 emitter — consumes the value to validate and issue the one provider request (ADR-0048 §4 second name)' },
+};
+
+export const CREDENTIAL_KEY_REFERENCING_FILES = {
+  'bootstrap.mjs': { justification: 'scrub-at-spawn (deletes the key from control-plane child envs), the fingerprint env-var NAME input, and recovery-text rendering of the export command — never a value read' },
+  'doctor.mjs': { justification: 'activation-fingerprint env-var NAME input for the egress ack proof (deriveActivationFingerprint) — never a value read; the send is delegated to notify.mjs runEmit' },
+  'egress-config.mjs': { justification: 'defines EGRESS_ENV_KEYS and performs the §4 activation-checker value read' },
+  'egress-launcher-plan.mjs': { justification: 'renders operator-facing placeholder export commands with the key NAME; the plan states the value is never read' },
+  'machine-profile.mjs': { justification: 'defines EGRESS_CREDENTIAL_ENV_VAR as the ADR-0048 §4 schema constant and enforces it in the profile write-gate' },
+  'notify.mjs': { justification: 'performs the §4 pinned-emitter value read via EGRESS_ENV_KEYS.credential' },
 };
 
 // The runtime scripts the guard scans. Anything matching plugins/runtime/scripts
