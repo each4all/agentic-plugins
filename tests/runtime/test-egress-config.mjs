@@ -516,3 +516,54 @@ describe('egress-config loadEgressExportConfig', () => {
     assert.equal(e.provenance.channel, 'verified-local');
   });
 });
+
+// ---------------------------------------------------------------------------
+// localLayerSupported — verified-local MACHINE CAPABILITY signal
+// (egress-portability subtask: on a machine with no POSIX uid — e.g. Windows —
+// the ownership gate fail-closes EVERY read, so consumers must know to render
+// and recommend the env-only layout instead of a file the loader ignores. The
+// fail-closed gate itself is deliberately unchanged: env-only over an ACL
+// probe, which would breach the zero-dep boundary for no defensive gain.)
+// ---------------------------------------------------------------------------
+
+describe('egress-config localLayerSupported (verified-local machine capability)', () => {
+  it('getuid: null (ownership unverifiable — e.g. Windows) ⇒ localLayerSupported=false: a well-formed file is ignored, but env-only still fully activates', () => {
+    const home = tmpDir('egress-home-');
+    const repo = makeRepoRoot();
+    // A well-formed local file exists — on a no-uid machine it must be IGNORED…
+    writeHomeLocal(home, 'egress_channel = "telegram"\negress_chat_id = "555"\n');
+    const inert = loadEgressActivation({ repoRoot: repo, homeDir: home, env: {}, getuid: null });
+    assert.equal(inert.localLayerSupported, false);
+    assert.equal(inert.active, false);
+    assert.equal(inert.localReason, 'ownership-unverifiable');
+    // …while the env-only layout remains a complete activation path there.
+    const act = loadEgressActivation({
+      repoRoot: repo,
+      homeDir: home,
+      env: {
+        [EGRESS_ENV_KEYS.channel]: 'telegram',
+        [EGRESS_ENV_KEYS.recipient]: '555',
+        [EGRESS_ENV_KEYS.credential]: 'x-test-token-x',
+      },
+      getuid: null,
+    });
+    assert.equal(act.active, true);
+    assert.equal(act.localLayerSupported, false);
+    assert.equal(act.source, 'env');
+  });
+
+  it('an injected getuid function ⇒ localLayerSupported=true — a capability, not file state (true even when the file is absent)', () => {
+    const home = tmpDir('egress-home-');
+    const repo = makeRepoRoot();
+    const act = loadEgressActivation({ repoRoot: repo, homeDir: home, env: {}, getuid: () => 1234 });
+    assert.equal(act.localLayerSupported, true);
+    assert.equal(act.localReason, 'absent');
+  });
+
+  it('default seam matches the real platform (process.getuid presence) on both loaders', () => {
+    const home = tmpDir('egress-home-');
+    const repo = makeRepoRoot();
+    const act = loadEgressActivation({ repoRoot: repo, homeDir: home, env: {} });
+    assert.equal(act.localLayerSupported, HAS_GETUID);
+  });
+});

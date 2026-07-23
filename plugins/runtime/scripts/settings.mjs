@@ -2176,6 +2176,51 @@ function collectCompanionSettingWarnings(companionSettings) {
   return warnings;
 }
 
+// Text rendering for the egress-launcher-plan section. Exported as its own
+// seam because the layout rendering is KIND-DISPATCHED: a uid-less machine's
+// recommended layout is `env-all` (with POSIX + PowerShell variants and a
+// why-note) while a POSIX machine's is `config-local-toml+env-token` with an
+// env alternative — a formatter branching only on `config_local_toml` silently
+// dropped every env command for uid-less machines (Codex review MAJOR).
+export function formatEgressLauncherPlanLines(el) {
+  const lines = [];
+  const as = el.activation_state || {};
+  const proto = el.prototype || {};
+  lines.push('');
+  lines.push('Egress Launcher Plan (dry-run — ADR-0041 §12; artifact-only, runtime writes no host/activation state)');
+  lines.push(`- mode: ${el.mode}`);
+  lines.push(`- activation: active=${as.active} reason=${as.reason} channel=${as.channel ?? 'none'} source=${as.source ?? 'n/a'} credential-present=${as.credential_present} headline-opt-in=${as.headline_opt_in}`);
+  lines.push(`- prototype (~/.claude personal hook): settings-present=${proto.settings_present} match-count=${proto.match_count} script-present=${proto.script_file_present}`);
+  for (const step of el.steps || []) {
+    if (!step.applicable) continue;
+    lines.push(`- step [${step.id}]: ${step.title}`);
+    if (step.detail) lines.push(`    ${step.detail}`);
+    const rec = step.recommended_layout;
+    if (rec?.kind === 'env-all') {
+      // uid-less machines: env-only is the sole supported layout.
+      if (rec.why_env_only) lines.push(`    ${rec.why_env_only}`);
+      lines.push('    recommended layout — env-only (your shell profile; runtime never writes it):');
+      for (const l of rec.env_block.trimEnd().split('\n')) lines.push(`      ${l}`);
+      if (rec.env_block_powershell) {
+        lines.push('    PowerShell variant (Windows-native shells):');
+        for (const l of rec.env_block_powershell.trimEnd().split('\n')) lines.push(`      ${l}`);
+      }
+    } else if (rec?.config_local_toml) {
+      lines.push('    recommended layout — you create ~/.agentic-plugins/config.local.toml (runtime never writes it):');
+      for (const l of rec.config_local_toml.trimEnd().split('\n')) lines.push(`      ${l}`);
+      lines.push(`    token (env-only): ${rec.token_env_line}`);
+      if (step.alternative_layout?.env_block) {
+        lines.push('    alternative layout — env-all:');
+        for (const l of step.alternative_layout.env_block.trimEnd().split('\n')) lines.push(`      ${l}`);
+      }
+    }
+    for (const h of step.hooks_to_remove ?? []) lines.push(`    remove hook [${h.event}]: ${h.command_pointer}`);
+  }
+  if (el.artifact?.written) lines.push(`- artifact: ${el.artifact.report_pointer} (latest: ${el.artifact.latest_pointer})`);
+  for (const limit of el.limits ?? []) lines.push(`- limit: ${limit}`);
+  return lines;
+}
+
 export function formatText(report) {
   // settings-report-contract.md §4 — full-mode text stays byte-identical
   // (scoped to runs without plan flags); a narrowed report renders the scope
@@ -2496,29 +2541,7 @@ export function formatText(report) {
     for (const limit of np.limits ?? []) lines.push(`- limit: ${limit}`);
   }
   if (report.egress_launcher_plan?.requested) {
-    const el = report.egress_launcher_plan;
-    const as = el.activation_state || {};
-    const proto = el.prototype || {};
-    lines.push('');
-    lines.push('Egress Launcher Plan (dry-run — ADR-0041 §12; artifact-only, runtime writes no host/activation state)');
-    lines.push(`- mode: ${el.mode}`);
-    lines.push(`- activation: active=${as.active} reason=${as.reason} channel=${as.channel ?? 'none'} source=${as.source ?? 'n/a'} credential-present=${as.credential_present} headline-opt-in=${as.headline_opt_in}`);
-    lines.push(`- prototype (~/.claude personal hook): settings-present=${proto.settings_present} match-count=${proto.match_count} script-present=${proto.script_file_present}`);
-    for (const step of el.steps || []) {
-      if (!step.applicable) continue;
-      lines.push(`- step [${step.id}]: ${step.title}`);
-      if (step.detail) lines.push(`    ${step.detail}`);
-      if (step.recommended_layout?.config_local_toml) {
-        lines.push('    recommended layout — you create ~/.agentic-plugins/config.local.toml (runtime never writes it):');
-        for (const l of step.recommended_layout.config_local_toml.trimEnd().split('\n')) lines.push(`      ${l}`);
-        lines.push(`    token (env-only): ${step.recommended_layout.token_env_line}`);
-        lines.push('    alternative layout — env-all:');
-        for (const l of step.alternative_layout.env_block.trimEnd().split('\n')) lines.push(`      ${l}`);
-      }
-      for (const h of step.hooks_to_remove ?? []) lines.push(`    remove hook [${h.event}]: ${h.command_pointer}`);
-    }
-    if (el.artifact?.written) lines.push(`- artifact: ${el.artifact.report_pointer} (latest: ${el.artifact.latest_pointer})`);
-    for (const limit of el.limits ?? []) lines.push(`- limit: ${limit}`);
+    for (const line of formatEgressLauncherPlanLines(report.egress_launcher_plan)) lines.push(line);
   }
   lines.push('');
   lines.push('Limits');

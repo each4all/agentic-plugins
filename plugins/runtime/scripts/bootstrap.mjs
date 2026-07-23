@@ -75,9 +75,16 @@ import {
   readUserGlobalModelEffort,
   readUserGlobalNotify,
 } from './lib/profile-readers.mjs';
+// The named E1 activation checker (ADR-0048 §4): egress.configured is judged
+// from ACTIVATION semantics — channel + recipient + credential PRESENCE — not
+// the credential-independent §4.4 export shape. Only loadEgressActivation may
+// inspect the credential (for presence/collision, in-process); the value never
+// reaches this module. EGRESS_ENV_KEYS is imported for the recovery TEXT (the
+// key NAME as a placeholder procedure), never for an env read here.
+import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
 import { loadSchema, makeValidator } from './lib/schema-validate.mjs';
 import { gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId } from './lib/notification-plan.mjs';
-import { gatherEgressLauncherInputs, buildEgressLauncherPlanSection, makeEgressLauncherRunId } from './lib/egress-launcher-plan.mjs';
+import { gatherEgressLauncherInputs, buildEgressLauncherPlanSection, egressFragmentApplyGuidance, makeEgressLauncherRunId } from './lib/egress-launcher-plan.mjs';
 import { gatherPermissionPlanInputs, buildPermissionPlanSection } from './lib/permission-plan.mjs';
 import { makePermissionRunId } from './lib/permission-artifacts.mjs';
 
@@ -460,10 +467,36 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
         : { status: 'pending' };
     }
     if (id === stepIds.egressConfigured()) {
-      const channel = readers?.egress?.channel ?? null;
-      return channel != null
-        ? { status: 'satisfied', observed: `channel=${channel}` }
-        : { status: 'pending' };
+      // ADR-0048 §4 / ADR-0041 §2c — "configured" means ACTIVATABLE: channel +
+      // recipient + credential presence must all resolve via the named E1
+      // checker (token-alone and channel-alone are both inert). Judging this
+      // step from the credential-independent export reader's channel was the
+      // channel-only false-pass: a channel with no recipient/credential
+      // egresses nothing yet reported satisfied.
+      const act = readers?.egressActivation ?? null;
+      if (act?.active === true) {
+        // Presence-only observation: the recipient value and the credential
+        // stay out of run artifacts (§5 sanitize discipline; the surfaced
+        // channel is enum-safe by the loader's contract).
+        return { status: 'satisfied', observed: `channel=${act.channel} recipient=set credential=present` };
+      }
+      const reason = act?.reason ?? 'missing-activation';
+      // On a machine where POSIX uid ownership cannot be proven (e.g.
+      // Windows), the verified-local file is never honored — the fail-closed
+      // reader ignores it by design (egress-portability decision: env-only
+      // over an ACL probe there; the gate itself is unchanged).
+      const envOnlyHint = act && act.localLayerSupported === false
+        ? ' Note: the verified-local file (~/.agentic-plugins/config.local.toml) is never honored on this machine (POSIX uid ownership unverifiable — e.g. Windows); use the env-only layout.'
+        : '';
+      return {
+        status: 'pending',
+        observed: `inactive (${reason})`,
+        // The runbook pointer must stay valid on EVERY lifecycle path: resume
+        // renders no fragments, so name the always-available settings planner
+        // first and this run's fragment only as the when-present alternative
+        // (Codex review).
+        recovery: `Egress activates only when channel + recipient + credential are all present (ADR-0041 §2c; a channel or token alone is inert). Follow the per-machine egress runbook — \`runtime:settings --egress-launcher-plan\` renders it any time (this run's egress fragment, when present, carries the same runbook) — and export ${EGRESS_ENV_KEYS.credential} yourself in your local shell: bootstrap renders placeholder commands only and never asks for or handles the value (ADR-0048 §4).${envOnlyHint}`,
+      };
     }
     m = id.match(/^permission\.([a-z]+)\.applied$/);
     if (m) {
@@ -765,7 +798,11 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     }
     step.fragment_pointer = write.fragment.pointer;
     step.apply_command = applyCommand;
-    step.recovery = guidance103(target);
+    // COMPOSE with any observation-time recovery instead of replacing it —
+    // judgeSteps' egress recovery carries the activation procedure (which
+    // env keys, placeholder-only, uid-less note) that must survive fragment
+    // persistence alongside the §10.3 backup/verify guidance (Codex review).
+    step.recovery = step.recovery ? `${step.recovery} ${guidance103(target)}` : guidance103(target);
   };
 
   // Stage 5 — notification (Codex notify= + tui fragments via the pure builder).
@@ -785,9 +822,12 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
   try {
     const gathered = await gatherEgressLauncherInputs({ repoRoot: cwd, homeDir, env });
     const { section } = buildEgressLauncherPlanSection({ gathered, host: 'claude', now: new Date(now), runId: makeEgressLauncherRunId(now) });
+    // Apply command + §10.3 backup target must name the layout THIS machine
+    // can honor (env-only where the verified-local reader fail-closes — e.g.
+    // Windows); the helper owns the branch so runbook and guidance can't drift.
+    const guidance = egressFragmentApplyGuidance(gathered.activation);
     await persist('egress-launcher-plan', section, stepIds.egressConfigured(),
-      'Follow the rendered per-machine activation runbook (config.local.toml block + launcher env); the credential is never written by tooling.',
-      '~/.agentic-plugins/config.local.toml');
+      guidance.apply_command, guidance.target);
   } catch (err) {
     warnings.push(`egress launcher plan could not be built: ${err?.message ?? String(err)}`);
   }
@@ -914,7 +954,13 @@ async function readUserGlobalReaders(ctx) {
     readUserGlobalCodexPermission({ homeDir: ctx.homeDir, env: ctx.env }),
   ]);
   const egress = readUserGlobalEgress({ repoRoot: ctx.cwd, homeDir: ctx.homeDir, env: ctx.env });
-  return { modelEffort, notify, claudePermission, codexPermission, egress };
+  // Step judgement needs ACTIVATION semantics (the named E1 checker) alongside
+  // the credential-independent export shape above: `egress` feeds the §4.4
+  // machine profile (channel/recipient survive a missing per-machine token),
+  // while `egressActivation` feeds egress.configured (channel alone must NOT
+  // satisfy — the false-pass this split repairs). Two readers, two questions.
+  const egressActivation = loadEgressActivation({ repoRoot: ctx.cwd, homeDir: ctx.homeDir, env: ctx.env });
+  return { modelEffort, notify, claudePermission, codexPermission, egress, egressActivation };
 }
 
 function resolveSelection({ opts, pluginSet, seededSelection = null }) {
