@@ -20,6 +20,21 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.86.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.85.0...plugin-runtime-v0.86.0) (2026-07-23)
+
+
+### Features
+
+* **plugin/runtime:** egress-ack-proof doctor executor — the one real-network Stage-8 proof (ADR-0048 §3, macro 7/9) ([#634](https://github.com/each4all/agentic-plugins/issues/634)) ([ac5803a](https://github.com/each4all/agentic-plugins/commit/ac5803a9906d68317f51c1166835e8e3ddf0a673))
+* **plugin/runtime:** run schema 1.2 + evidence-contract vnext (ADR-0048 common base) ([#631](https://github.com/each4all/agentic-plugins/issues/631)) ([f9e7d07](https://github.com/each4all/agentic-plugins/commit/f9e7d0777ae61d212646f25d881029ce4bc7d14f))
+* **plugin/runtime:** statusline adapter — agentic-6 policy, per-host exact probes, render-only shim (ADR-0048, macro 6/9) ([#633](https://github.com/each4all/agentic-plugins/issues/633)) ([84b2c86](https://github.com/each4all/agentic-plugins/commit/84b2c86fdece6703288218eeb9719f4fb68d3b80))
+
+
+### Bug Fixes
+
+* **plugin/runtime:** ADR-0048 integration — leaves aligned to code canon, three-leg egress evidence, one presented [tui] source (macro 8/9) ([#635](https://github.com/each4all/agentic-plugins/issues/635)) ([73127e3](https://github.com/each4all/agentic-plugins/commit/73127e3dd84deb7e3aed579d05a81f84b885a7d5))
+* **plugin/runtime:** judge egress.configured by activation semantics + env-only egress runbook on uid-less machines ([#629](https://github.com/each4all/agentic-plugins/issues/629)) ([3615dcc](https://github.com/each4all/agentic-plugins/commit/3615dcce612bb99d6688b6fe157747593b156df1))
+
 ## [0.85.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.84.0...plugin-runtime-v0.85.0) (2026-07-22)
 
 
