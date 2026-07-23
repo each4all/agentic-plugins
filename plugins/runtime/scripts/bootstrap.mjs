@@ -407,7 +407,7 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
     Object.entries(pluginSet.plugins).map(([name, entry]) => [name, entry.minimum_version ?? null]),
   );
 
-  const observeStatus = (step) => {
+  const observeStatus = (step, previous) => {
     if (!step.applicable) return { status: 'not-applicable' };
     const id = step.id;
     const hostOf = (suffix) => id.split('.')[1];
@@ -507,7 +507,21 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       if (!Array.isArray(wiring.argv) || wiring.argv.length === 0) {
         return { status: 'pending', observed: wiring.argv ? 'notify = [] runs nothing' : 'notify is present but not a parseable argv array' };
       }
-      const matches = (wiring.expected ?? []).some((expected) => Array.isArray(expected)
+      // MODE BINDING (Refine-verify peer): once this run rendered a fragment,
+      // the step's `desired` carries exactly the argv that fragment asks the
+      // operator to merge — and ONLY that argv satisfies. Without it, a
+      // wrapper-chain plan wrongly merged as the direct shuttle certified
+      // `satisfied` while the third-party notifier the chain existed to
+      // preserve silently vanished. Before any fragment exists (a fresh
+      // probe), either canonical form is acceptable.
+      let candidates = wiring.expected ?? [];
+      if (typeof previous?.desired === 'string') {
+        try {
+          const bound = JSON.parse(previous.desired);
+          if (Array.isArray(bound) && bound.every((item) => typeof item === 'string')) candidates = [bound];
+        } catch { /* an unparseable desired never widens the match set */ }
+      }
+      const matches = candidates.some((expected) => Array.isArray(expected)
         && expected.length === wiring.argv.length
         && expected.every((item, i) => item === wiring.argv[i]));
       if (!matches) {
@@ -583,7 +597,7 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
   };
 
   const steps = expected.map((step) => {
-    const observed = observeStatus(step);
+    const observed = observeStatus(step, previousById.get(step.id));
     const previous = previousById.get(step.id);
     let status = observed.status;
     // A recorded decline survives a re-probe ONLY where the registry says the
@@ -600,6 +614,7 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       observed_at: observedAt,
       fragment_pointer: previous?.fragment_pointer ?? null,
       apply_command: observed.apply_command ?? previous?.apply_command ?? null,
+      desired: previous?.desired ?? null,
       fragment_applied: previous?.fragment_applied === true,
       recovery: observed.recovery ?? null,
     };
@@ -873,7 +888,7 @@ function presentPluginManagement({ candidates, planHash }) {
 // backup/verify/manual-revert guidance next to its apply command.
 async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings }) {
   const byId = new Map(steps.map((s) => [s.id, s]));
-  const persist = async (name, body, stepId, applyCommand, target) => {
+  const persist = async (name, body, stepId, applyCommand, target, { desired = null } = {}) => {
     const step = byId.get(stepId);
     if (!step || step.status === 'satisfied' || step.status === 'declined' || step.status === 'not-applicable') return;
     const write = await writeBootstrapFragment({ homeDir, repoRoot: cwd, runId, name, content: `${JSON.stringify(body, null, 2)}\n` });
@@ -883,6 +898,11 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     }
     step.fragment_pointer = write.fragment.pointer;
     step.apply_command = applyCommand;
+    // The plan-bound expectation (mode binding, Refine-verify peer): when THIS
+    // run rendered a fragment, the step's `desired` records exactly what that
+    // fragment asks the operator to merge — the exact probe then judges
+    // against the PLAN'S expectation, not against every canonical form.
+    if (desired !== null) step.desired = desired;
     // COMPOSE with any observation-time recovery instead of replacing it —
     // judgeSteps' egress recovery carries the activation procedure (which
     // env keys, placeholder-only, uid-less note) that must survive fragment
@@ -904,7 +924,8 @@ async function composeFragments({ homeDir, cwd, env, runId, now, steps, warnings
     const { section } = buildCodexNotificationPlanSection({ gathered, now: new Date(now), runId: makeNotificationRunId(now) });
     await persist('notification-plan', section, stepIds.notifyCodexConfigured(),
       'Merge the rendered notify fragment into $CODEX_HOME/config.toml (see the fragment body), then resume.',
-      '$CODEX_HOME/config.toml');
+      '$CODEX_HOME/config.toml',
+      { desired: Array.isArray(section.expected_notify_argv) ? JSON.stringify(section.expected_notify_argv) : null });
   } catch (err) {
     warnings.push(`notification plan could not be built: ${err?.message ?? String(err)}`);
   }

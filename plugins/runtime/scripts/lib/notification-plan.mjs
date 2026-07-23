@@ -26,8 +26,9 @@
 // ladder (env override → Claude cache SemVer-max → Codex fixed cache) and
 // delegates to `notify.mjs emit`; the fragment invokes the shuttle via the
 // per-OS canonical argv (expectedCodexNotifyArgv): `/usr/bin/env node` on
-// POSIX (an explicit Node-on-PATH requirement, consistent with doctor's
-// bare-`node` hook portability diagnostics) and the render machine's own
+// POSIX (an explicit Node-on-PATH requirement; doctor's hook analyzer flags
+// commands that START with a bare `node` — this env-prefixed form is the
+// shape it deliberately does not warn about) and the render machine's own
 // node executable path on win32, where `/usr/bin/env` does not exist.
 //
 // Receiver input contract (source-verified at codex-cli 0.142.5,
@@ -110,9 +111,21 @@ function extractStringElements(arrayText) {
   const inner = arrayText.trim().replace(/^\[/, '').replace(/\]$/, '');
   const values = [];
   let i = 0;
+  // Separator discipline (Refine-verify peer MEDIUM): after a closed string,
+  // the ONLY tokens allowed before the next string are whitespace/comments and
+  // exactly one comma. `["a" "b"]` is not TOML — treating whitespace as a
+  // separator parsed it into two elements and let a malformed config judge
+  // `satisfied` against §6.1's "unparseable → pending" rule.
+  let expectSeparator = false;
   while (i < inner.length) {
     const ch = inner[i];
-    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === ',' ) { i += 1; continue; }
+    if (ch === ' ' || ch === '\t' || ch === '\n') { i += 1; continue; }
+    if (ch === ',') {
+      if (!expectSeparator) return null; // leading/double comma — not a flat string array
+      expectSeparator = false;
+      i += 1;
+      continue;
+    }
     if (ch === '#') {
       // Comment inside a multi-line array — skip to end of line.
       const nl = inner.indexOf('\n', i);
@@ -121,6 +134,7 @@ function extractStringElements(arrayText) {
       continue;
     }
     if (ch === '"') {
+      if (expectSeparator) return null; // two strings with no comma between
       // Triple-quoted multi-line basic string — not supported; fail safe.
       if (inner.startsWith('"""', i)) return null;
       let out = '';
@@ -162,14 +176,17 @@ function extractStringElements(arrayText) {
       }
       if (!closed) return null;
       values.push(out);
+      expectSeparator = true;
       continue;
     }
     if (ch === "'") {
+      if (expectSeparator) return null; // two strings with no comma between
       // Triple-quoted multi-line literal string — not supported; fail safe.
       if (inner.startsWith("'''", i)) return null;
       const end = inner.indexOf("'", i + 1);
       if (end === -1) return null;
       values.push(inner.slice(i + 1, end));
+      expectSeparator = true;
       i = end + 1;
       continue;
     }
@@ -639,6 +656,7 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
         host_config: { read_only: true, codex_home_source: codexHomeSource, sources: [{ scope: 'user', status: 'unreadable' }] },
         read_check: { performed: false },
         recommended: null,
+        expected_notify_argv: null,
         fragments: null,
         scripts: null,
         receiver_contract: RECEIVER_CONTRACT,
@@ -664,10 +682,17 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
   // re-rendered shuttle is the whole migration. Presenting the direct
   // fragment there (and calling it idempotent) would clobber the chain and
   // silently drop the prior notifier the chain exists to preserve.
-  const referencesShuttle = Array.isArray(priorValues)
-    && priorValues.some((item) => item === shuttleInstallPath);
-  const referencesChain = Array.isArray(priorValues)
-    && priorValues.some((item) => item === chainInstallPath);
+  // FULL canonical-argv equality ONLY (Refine-verify peer HIGH): the earlier
+  // element-membership test classified `["custom-wrapper", "--forward-to",
+  // <shuttle>, "--keep"]` as already-configured and re-rendered the DIRECT
+  // fragment — clobbering the wrapper that referenced us. A config is "ours"
+  // exactly when its argv IS the canonical argv this machine's fragment
+  // renders (shuttle or chain form); anything else — our path embedded in a
+  // foreign wrapper, a hand-drifted variant, a stale win32 execPath — takes
+  // the ordinary non-empty branch, whose wrapper-chain PRESERVES it.
+  const argvEquals = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, i) => item === b[i]);
+  const referencesShuttle = argvEquals(priorValues, expectedCodexNotifyArgv({ receiverPath: shuttleInstallPath, platform, execPath }));
+  const referencesChain = argvEquals(priorValues, expectedCodexNotifyArgv({ receiverPath: chainInstallPath, platform, execPath }));
   const referencesOurReceiver = referencesShuttle || referencesChain;
 
   let mode;
@@ -701,6 +726,7 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
   // fragment must reproduce it, never downgrade to the direct shuttle.
   const chainInUse = mode === 'wrapper-chain' || (mode === 'already-configured' && referencesChain);
   const receiverPath = chainInUse ? chainInstallPath : shuttleInstallPath;
+  const expectedNotifyArgv = expectedCodexNotifyArgv({ receiverPath, platform, execPath });
   const notifyFragment = renderCodexNotifyFragmentToml({ receiverPath, platform, execPath });
   const tuiFragment = renderCodexTuiNotificationsFragmentToml();
   const tuiWarning = parsed.tuiNotifications.present
@@ -732,6 +758,12 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
     notify_toml: notifyFragment,
     tui_notifications_toml: tuiFragment,
   };
+  // The ONE argv this plan's fragment carries — persisted into the step's
+  // `desired` seat so the exact probe binds to THIS plan's mode (shuttle vs
+  // chain), not to whichever canonical form the operator happened to merge
+  // (Refine-verify peer: a wrapper-chain plan wrongly merged as the direct
+  // shuttle certified `satisfied` while the third-party notifier vanished).
+  const expected_notify_argv = expectedNotifyArgv;
   const scripts = {
     shuttle: { install_path: shuttleInstallPath, content: shuttleScript },
     chain: chainScript === null ? null : { install_path: chainInstallPath, content: chainScript },
@@ -771,6 +803,7 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
       warning,
       tui_warning: tuiWarning,
       recommended,
+      expected_notify_argv,
       fragments,
       scripts,
       receiver_contract: RECEIVER_CONTRACT,
@@ -793,10 +826,15 @@ export async function buildCodexNotificationPlan({
   env = {},
   now = new Date(),
   runtimeVersion = RUNTIME_VERSION,
+  // Forwarded to the pure builder (Refine-verify peer: without these the
+  // injectable per-OS seam stopped at the builder and a deterministic win32
+  // end-to-end could not reach this wrapper).
+  platform = process.platform,
+  execPath = process.execPath,
 } = {}) {
   const gathered = await gatherCodexNotificationInputs({ homeDir, env });
   const runId = makeNotificationRunId(now);
-  const { section, artifactBody } = buildCodexNotificationPlanSection({ gathered, now, runId, runtimeVersion });
+  const { section, artifactBody } = buildCodexNotificationPlanSection({ gathered, now, runId, runtimeVersion, platform, execPath });
   if (!artifactBody) return section;
   const pointers = await writeNotificationPlanArtifact({ repoRoot, artifact: artifactBody });
   section.artifact = { written: true, ...pointers };

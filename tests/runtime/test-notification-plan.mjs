@@ -911,3 +911,45 @@ describe('notification plan — per-OS canonical notify argv (notify-axis)', () 
     ok(win.section.fragments.notify_toml.includes('node.exe'), 'the win32 fragment carries the machine node path');
   });
 });
+
+describe('notification plan — mode recognition is full-argv equality (Refine-verify peer HIGH)', () => {
+  const gatheredWith = (notifyLine) => ({
+    read: { ok: true, path: '/home/op/.codex/config.toml', text: `${notifyLine}\n` },
+    codexHomeSource: 'default ~/.codex',
+    templates: {
+      shuttle: "const MIN = '__AGENTIC_MIN_RUNTIME_VERSION__';\n",
+      chain: 'const S = "__AGENTIC_SHUTTLE_PATH__";\nconst P = ["__AGENTIC_PRIOR_NOTIFY__"];\n',
+    },
+    installPaths: { shuttle: '/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs', chain: '/home/op/.agentic-plugins/bin/codex-notify-chain.mjs' },
+  });
+  const build = (notifyLine) => buildCodexNotificationPlanSection({
+    gathered: gatheredWith(notifyLine),
+    now: new Date('2026-07-23T00:00:00Z'),
+    runId: 'notification-20260723T000000Z-cccccc',
+    platform: 'linux',
+    execPath: '/ignored',
+  }).section;
+
+  it('a foreign wrapper that merely CONTAINS our shuttle path is wrapper-chain (preserved), never already-configured', () => {
+    const section = build('notify = ["custom-wrapper", "--forward-to", "/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs", "--keep"]');
+    strictEqual(section.recommended.mode, 'wrapper-chain', 'membership is not identity — the wrapper is a prior notifier to preserve');
+    ok(section.fragments.notify_toml.includes('codex-notify-chain.mjs'), 'the fragment points at the chain');
+  });
+
+  it('the exact canonical shuttle argv is already-configured; a hand-drifted variant is wrapper-chain', () => {
+    strictEqual(build('notify = ["/usr/bin/env", "node", "/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs"]').recommended.mode, 'already-configured');
+    strictEqual(build('notify = ["node", "/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs"]').recommended.mode, 'wrapper-chain');
+  });
+
+  it('a comma-less string array is unparseable — manual-merge, never a parsed argv (§6.1)', () => {
+    const section = build('notify = ["/usr/bin/env" "node" "/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs"]');
+    strictEqual(section.recommended.mode, 'manual-merge');
+  });
+
+  it('the section exposes expected_notify_argv — the value the bootstrap step persists as its desired', () => {
+    const direct = build('# empty');
+    deepStrictEqual(direct.expected_notify_argv, ['/usr/bin/env', 'node', '/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs']);
+    const chain = build('notify = ["python3", "/opt/third-party.py"]');
+    deepStrictEqual(chain.expected_notify_argv, ['/usr/bin/env', 'node', '/home/op/.agentic-plugins/bin/codex-notify-chain.mjs']);
+  });
+});

@@ -243,3 +243,40 @@ describe('expectedCodexNotifyArgv — the per-OS canonical argv single source', 
     strictEqual(argv[1], 'C:\\Users\\op\\.agentic-plugins\\bin\\codex-notify-shuttle.mjs');
   });
 });
+
+describe('judgeSteps notify.codex.configured — MODE BINDING via the persisted desired argv (Refine-verify peer)', () => {
+  // The peer reproduced: a wrapper-chain plan whose operator wrongly merged
+  // the DIRECT shuttle fragment certified `satisfied` — the third-party
+  // notifier the chain existed to preserve silently vanished, positively
+  // certified. Once a fragment is rendered, the step's `desired` binds the
+  // probe to THAT plan's argv; the other canonical form no longer satisfies.
+  function judgeWithDesired({ argv, desired }) {
+    const steps = judgeSteps({
+      expected: [{ id: stepIds.notifyCodexConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent('codex')] }],
+      probe: { hosts: { claude: { plugins: {} }, codex: { plugins: {} } } },
+      raw: {},
+      pluginSet: { plugins: {} },
+      readers: { codexNotify: { readable: true, present: true, argv, expected: EXPECTED } },
+      hookVerdict: null,
+      previousById: new Map([[stepIds.notifyCodexConfigured(), { id: stepIds.notifyCodexConfigured(), status: 'pending', desired }]]),
+      now: NOW,
+    });
+    return steps[0];
+  }
+
+  it('a wrapper-chain plan merged as the direct shuttle is manual-follow-up — the exact peer reproduction', () => {
+    const step = judgeWithDesired({ argv: [...EXPECTED[0]], desired: JSON.stringify(EXPECTED[1]) });
+    strictEqual(step.status, 'manual-follow-up', 'the plan asked for the chain; merging the shuttle dropped the preserved notifier');
+  });
+
+  it('the plan-bound argv itself still satisfies, and the desired seat survives the judged entry', () => {
+    const step = judgeWithDesired({ argv: [...EXPECTED[1]], desired: JSON.stringify(EXPECTED[1]) });
+    strictEqual(step.status, 'satisfied');
+    strictEqual(step.desired, JSON.stringify(EXPECTED[1]), 'desired is carried forward for the next resume');
+  });
+
+  it('an unparseable desired never widens the match set — both canonical forms stay acceptable', () => {
+    const step = judgeWithDesired({ argv: [...EXPECTED[0]], desired: '{not json' });
+    strictEqual(step.status, 'satisfied');
+  });
+});
