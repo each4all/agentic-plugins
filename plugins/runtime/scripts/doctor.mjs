@@ -33,6 +33,7 @@ import {
   inspectConsensusRuns,
   inspectRuntimeArtifactInventory,
   inspectWorkflowNamespace,
+  machinePointer,
   pointer,
   readJsonIfExists,
   readTextIfExists,
@@ -3372,15 +3373,53 @@ function classifyOperatorActionText(text) {
 // already have the message) until the operator removes the named intent file
 // after checking their phone. Telegram has no idempotency key — this is the
 // honest recovery.
-const EGRESS_ACK_OUTCOME_REASONS = Object.freeze([
+export const EGRESS_ACK_OUTCOME_REASONS = Object.freeze([
   'dispatched', 'kinds-filter', 'quiet-hours', 'dedupe-duplicate', 'throttled',
   'missing-token', 'missing-recipient', 'invalid-local-activation', 'provider-error',
   'provider-rejected', 'timeout', 'redirect-error', 'body-cap', 'channel-none',
   'emit-error', 'mirror-missing', 'mirror-ambiguous',
 ]);
 
-function egressIntentDir(repoRoot) {
-  return join(repoRoot, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+// The pre-wire outcome reasons: the attempt provably stopped before any network
+// I/O (pipeline suppression, activation/config failure, or body-cap). Nothing
+// reached the phone; a terminal intent carrying one of these is safe to clear.
+const EGRESS_NO_WIRE_REASONS = Object.freeze([
+  'kinds-filter', 'quiet-hours', 'dedupe-duplicate', 'throttled',
+  'missing-token', 'missing-recipient', 'invalid-local-activation',
+  'body-cap', 'channel-none',
+]);
+
+// The outcome reasons that mean the pinned request reached the wire even when
+// the emitter returned a non-dispatched status (a failure AT/AFTER the socket),
+// plus the dispatched-mirror variants (which only arise when dispatched=true).
+const EGRESS_WIRE_REASONS = Object.freeze([
+  'dispatched', 'provider-error', 'provider-rejected', 'timeout',
+  'redirect-error', 'mirror-missing', 'mirror-ambiguous',
+]);
+
+// Classify whether an egress attempt touched the network. THREE states so the
+// re-send gate can fence the ambiguous case without the effects claim
+// overstating it - the gate-block key and the honesty claim are DIFFERENT
+// predicates:
+//   - 'no-wire'  provably pre-wire (whitelisted above); safe to clear.
+//   - 'wire'     the request was issued. effects.network_request_performed is
+//                exactly this.
+//   - 'unknown'  emit-error (a runEmit no-throw-contract breach that could be
+//                post-wire) OR ANY UNRECOGNIZED reason. Defaulting to unknown is
+//                deliberate fail-closed (Codex review MAJOR): a new or drifted
+//                outcome reason must fence a resend, never silently permit one.
+//                test-doctor.mjs pins the full-enum partition so drift is caught.
+export function classifyWireDisposition(dispatched, outcomeReason) {
+  if (dispatched || EGRESS_WIRE_REASONS.includes(outcomeReason)) return 'wire';
+  if (EGRESS_NO_WIRE_REASONS.includes(outcomeReason)) return 'no-wire';
+  return 'unknown';
+}
+
+// Machine-global (NOT repo-scoped) so a bootstrap run resumed from a different
+// repo checkout still sees a prior attempt's fence (gap ②). The doctor --record
+// artifact stays repo-scoped; only this side-effect WAL is machine-global.
+function egressIntentDir(homeDir) {
+  return join(homeDir, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
 }
 
 async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDir, env, now, emitImpl }) {
@@ -3425,34 +3464,80 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
     return { requested: true, executed: false, mode: 'explicit_egress_executor', status: 'blocked', provider_ack: null, outcome_reason: null, mirror_correlated: false, network_request_performed: false, blockers, limits };
   }
 
-  // Ambiguous-attempt gate: a pending intent from a crashed earlier attempt
-  // refuses a new send.
-  const intentDir = egressIntentDir(repoRoot);
+  // Re-send fence (gap 1 + gap 2): before a new send, refuse if THIS activation
+  // has an unresolved prior attempt. "Unresolved" = crashed before resolve
+  // (pending) OR an attempt that touched / may have touched the wire
+  // (wire_disposition is not 'no-wire'); the phone may already carry that
+  // message, and only an explicit operator `rm` consents to a fresh send. Scope
+  // is the machine-global WAL keyed by activation_fingerprint (recipients can
+  // differ between shells, so "one phone per machine" is false); an unparseable
+  // OR fingerprint-less record cannot be scoped and blocks globally, fail-closed.
+  const intentDir = egressIntentDir(homeDir);
+  const activationFingerprint = deriveActivationFingerprint({ channel: activation.channel, recipient: activation.recipient, credentialEnvVar: EGRESS_CREDENTIAL_ENV_VAR });
+  const blockedSection = (blockerList) => ({
+    requested: true, executed: false, mode: 'explicit_egress_executor', status: 'blocked',
+    provider_ack: null, outcome_reason: null, mirror_correlated: false, network_request_performed: false,
+    blockers: blockerList, limits,
+  });
+  let intentEntries = null;
   try {
-    const entries = await readdir(intentDir);
-    const pending = [];
-    for (const name of entries) {
+    intentEntries = await readdir(intentDir);
+  } catch (err) {
+    // ENOENT (no WAL yet) is the ONLY clear-to-proceed error; any other readdir
+    // failure (EACCES, ENOTDIR, I/O) leaves the fence unscannable, so fail closed.
+    if (err?.code !== 'ENOENT') {
+      return blockedSection([`the egress intent WAL at ${machinePointer(homeDir, intentDir)} is unscannable (${err?.code ?? 'error'}); refusing a send that cannot be fenced against a prior attempt. Resolve the directory, then retry.`]);
+    }
+  }
+  if (intentEntries) {
+    const unresolved = [];
+    for (const name of intentEntries) {
       if (!name.endsWith('.json')) continue;
+      let intent = null;
       try {
-        const intent = JSON.parse(await readFile(join(intentDir, name), 'utf8'));
-        if (intent?.status === 'pending') pending.push(name);
-      } catch { pending.push(name); }
+        intent = JSON.parse(await readFile(join(intentDir, name), 'utf8'));
+      } catch {
+        unresolved.push(`${name}: unparseable (fail-closed)`);
+        continue;
+      }
+      const fp = intent?.activation_fingerprint;
+      const validFp = typeof fp === 'string' && /^[0-9a-f]{64}$/.test(fp);
+      // Only a VALID 64-hex fingerprint for a DIFFERENT activation is genuinely
+      // out of scope; an absent OR malformed fingerprint is unscopable and stays
+      // in-scope, fail-closed (Codex review MINOR).
+      if (validFp && fp !== activationFingerprint) continue;
+      if (intent?.status === 'pending') {
+        unresolved.push(`${name}: pending (crashed before resolve${validFp ? '' : ', unscopable fingerprint'})`);
+      } else if (intent?.wire_disposition !== 'no-wire') {
+        unresolved.push(`${name}: ${intent?.wire_disposition === 'unknown' ? 'wire disposition unknown (emit invariant breach)' : `network request performed (${intent?.outcome_reason ?? 'unknown'})`}`);
+      }
     }
-    if (pending.length > 0) {
-      return {
-        requested: true,
-        executed: false,
-        mode: 'explicit_egress_executor',
-        status: 'blocked',
-        provider_ack: null,
-        outcome_reason: null,
-        mirror_correlated: false,
-        network_request_performed: false,
-        blockers: [`a previous egress attempt is unresolved (${pending.join(', ')} under ${pointer(repoRoot, intentDir)}) \u2014 the phone may already have that message; check it, then delete the intent file(s) to consent to a fresh send. Automatic resend of an ambiguous attempt is prohibited.`],
-        limits,
-      };
+    if (unresolved.length > 0) {
+      return blockedSection([`a previous egress attempt for this activation is unresolved and may already be on the phone (${unresolved.join('; ')}) under ${machinePointer(homeDir, intentDir)}; check the phone, then delete the intent file(s) to consent to a fresh send. Automatic resend is prohibited.`]);
     }
-  } catch { /* no intent dir yet — nothing pending */ }
+  }
+
+  // Upgrade compatibility (Codex review CRITICAL): the WAL moved from the
+  // repo-scoped path to the machine-global home. A pre-upgrade intent under the
+  // OLD repo path is invisible to the home scan above, so a crashed pending or a
+  // dispatched-mirror-lost 'failed' recorded by the prior version could permit a
+  // resend. Scan the legacy dir too and refuse until it is cleared; the old
+  // format carries no wire_disposition to classify, so every legacy record is
+  // treated fail-closed.
+  const legacyIntentDir = join(repoRoot, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+  if (resolve(legacyIntentDir) !== resolve(intentDir)) {
+    let legacyNames = [];
+    try {
+      legacyNames = (await readdir(legacyIntentDir)).filter((n) => n.endsWith('.json'));
+    } catch (err) {
+      if (err?.code !== 'ENOENT') {
+        return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} is unscannable (${err?.code ?? 'error'}); refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
+      }
+    }
+    if (legacyNames.length > 0) {
+      return blockedSection([`legacy egress intents predating the machine-global WAL move are present at ${pointer(repoRoot, legacyIntentDir)} (${legacyNames.join(', ')}); a prior proof may already be on the phone. Check it, then delete that directory (the WAL now lives at ${machinePointer(homeDir, intentDir)}) to consent to a fresh send. This scan only sees the CURRENT checkout: if the old version also ran the proof from other checkouts, clear their egress-intents dirs too (follow-ups.md L35 records the machine-scoped discovery follow-up).`]);
+    }
+  }
 
   // Synthetic event: closed-vocab kind response-needed (urgency NORMAL by
   // contract — approval is the only urgent-by-contract kind, and a proof that
@@ -3470,7 +3555,8 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
     const eventId = buildEventId({ repoIdent, kind: 'response-needed', subject });
     const ranAt = now.toISOString();
     const attemptHash = createHash('sha256').update([EGRESS_ATTEMPT_HASH_DOMAIN, eventId, ranAt].join('\u0000')).digest('hex');
-    const activationFingerprint = deriveActivationFingerprint({ channel: activation.channel, recipient: activation.recipient, credentialEnvVar: EGRESS_CREDENTIAL_ENV_VAR });
+    // activationFingerprint is computed once at the re-send gate above and reused
+    // here for the WAL writes + provider_ack (the gate scopes the fence by it).
     const event = {
       event_id: eventId,
       source: 'runtime:doctor',
@@ -3480,10 +3566,12 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
       topic: subject,
     };
 
-    // WRITE-AHEAD intent, then send, then resolve.
+    // WRITE-AHEAD intent, then send, then resolve. The pending record carries the
+    // activation_fingerprint so a crash-before-resolve is scopable by the gate
+    // (an unscopable pending blocks globally instead).
     await mkdir(intentDir, { recursive: true });
     const intentPath = join(intentDir, `${suffix}.json`);
-    await writeJson(intentPath, { status: 'pending', subject, attempt_hash: attemptHash, ran_at: ranAt });
+    await writeJson(intentPath, { status: 'pending', subject, attempt_hash: attemptHash, ran_at: ranAt, activation_fingerprint: activationFingerprint });
 
     const emit = emitImpl ?? runEmit;
     let emitResult;
@@ -3526,16 +3614,29 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
       ?? (dispatched ? 'mirror-missing' : 'emit-error');
     const outcomeReason = acked ? 'dispatched' : dispatched ? mirrorReason : projected;
 
-    await writeJson(intentPath, { status: acked ? 'acked' : 'failed', subject, attempt_hash: attemptHash, ran_at: ranAt, outcome_reason: outcomeReason });
+    // Wire disposition is the SINGLE source that separates the effects honesty
+    // claim (network_request_performed = provably 'wire') from the re-send gate
+    // block key ('wire' OR 'unknown' both fence a resend). Computed BEFORE the
+    // terminal write so the WAL records it (gap 1: the gate blocks on the
+    // disposition, not only on a crash-pending), scoped by activation_fingerprint
+    // (gap 2). A dispatched return (mirror questions notwithstanding, a lost
+    // mirror still sent the message) or a failure at/after the wire
+    // (provider-error/rejected, timeout, redirect-error) is 'wire'; an emit-error
+    // is 'unknown' (runEmit no-throw breach, could be post-wire); everything else
+    // stopped before any network I/O.
+    const wireDisposition = classifyWireDisposition(dispatched, outcomeReason);
+    const networkPerformed = wireDisposition === 'wire';
 
-    // The provider request was actually ISSUED when the emitter reports
-    // dispatched (mirror questions notwithstanding — a dispatched return with
-    // a lost mirror still sent the message) or failed at/after the wire
-    // (provider-error/rejected, timeout, redirect-error). Everything else —
-    // activation/config failures, pipeline suppressions, body-cap — stopped
-    // before any network I/O, and the effects claim must say so.
-    const networkPerformed = dispatched
-      || ['provider-error', 'provider-rejected', 'timeout', 'redirect-error'].includes(outcomeReason);
+    await writeJson(intentPath, {
+      status: acked ? 'acked' : 'failed',
+      subject,
+      attempt_hash: attemptHash,
+      ran_at: ranAt,
+      outcome_reason: outcomeReason,
+      wire_disposition: wireDisposition,
+      network_request_performed: networkPerformed,
+      activation_fingerprint: activationFingerprint,
+    });
 
     section = {
       requested: true,

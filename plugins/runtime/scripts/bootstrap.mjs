@@ -2102,7 +2102,17 @@ async function runResume(ctx, opts) {
     doctorReport = result.doctorReport ?? doctorReport;
     executedAnything = true;
     const persisted = await writeBootstrapProof({ homeDir: ctx.homeDir, repoRoot: ctx.cwd, runId: picked.run.run_id, kind, record: result.record });
-    if (!persisted?.ok) warnings.push(`proof metadata for ${kind} could not be persisted (the run reduces without it; re-run resume to retry): ${(persisted?.diagnostics ?? ['unknown write failure']).join('; ')}`);
+    if (!persisted?.ok) {
+      // Egress is the ONE side-effecting proof: when its send already completed
+      // and only the metadata write failed, the machine-global WAL now fences an
+      // automatic re-send, so a bare resume would be BLOCKED. Advise reconcile-
+      // then-clear rather than a blind retry — otherwise the proof-persist failure
+      // recovery compounds into a duplicate send (follow-ups.md L35 gap 1).
+      const retryAdvice = kind === 'egress-provider-ack'
+        ? 'the egress send may already have reached the phone; reconcile the phone and delete the recorded egress intent (the WAL fences an automatic re-send) before resuming'
+        : 're-run resume to retry';
+      warnings.push(`proof metadata for ${kind} could not be persisted (the run reduces without it; ${retryAdvice}): ${(persisted?.diagnostics ?? ['unknown write failure']).join('; ')}`);
+    }
   }
 
   // The Codex /hooks attestation rides the same verb the same way (§8.2): a

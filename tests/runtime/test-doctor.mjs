@@ -5,10 +5,10 @@ import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { evaluateCodexHookStateGate, formatText, parseArgs, projectCodexHookStateForProbe, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES, resolveInstalledEngineerRoot } from '../../plugins/runtime/scripts/doctor.mjs';
+import { evaluateCodexHookStateGate, formatText, parseArgs, projectCodexHookStateForProbe, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES, resolveInstalledEngineerRoot, classifyWireDisposition, EGRESS_ACK_OUTCOME_REASONS } from '../../plugins/runtime/scripts/doctor.mjs';
 import { recomputeHookAttestation } from '../../plugins/runtime/scripts/lib/completion-reducer.mjs';
 import { makeDefValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 
@@ -4258,12 +4258,15 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     ok(!text.includes(calls[0].event.event_id), 'the raw event id stays in ephemeral/local state');
 
     // Intent WAL resolved to acked (same attempt hash the ack carries).
-    const intentDir = join(repo, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
     const intents = (await readdir(intentDir)).filter((n) => n.endsWith('.json'));
     strictEqual(intents.length, 1);
     const intent = JSON.parse(await readFile(join(intentDir, intents[0]), 'utf8'));
     strictEqual(intent.status, 'acked');
     strictEqual(intent.attempt_hash, section.provider_ack.attempt_hash);
+    strictEqual(intent.wire_disposition, 'wire', 'a delivered attempt touched the wire');
+    strictEqual(intent.network_request_performed, true);
+    ok(/^[0-9a-f]{64}$/.test(intent.activation_fingerprint), 'the terminal intent is fingerprint-scoped for the re-send gate');
 
     // The temp repo is torn down (its path was captured before teardown).
     ok(!existsSync(calls[0].repoRoot), 'the ephemeral temp repo is removed after the attempt');
@@ -4289,10 +4292,14 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     strictEqual(section.network_request_performed, true);
     ok(report.overall.hard_failures.some((f) => /egress ack proof failed \(mirror-missing\)/.test(f)), JSON.stringify(report.overall.hard_failures));
     // …and the intent stays FAILED (not acked), naming the unverifiable outcome.
-    const intentDir = join(repo, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
     const intents = (await readdir(intentDir)).filter((n) => n.endsWith('.json'));
     const intent = JSON.parse(await readFile(join(intentDir, intents[0]), 'utf8'));
     strictEqual(intent.status, 'failed');
+    // A dispatched-but-mirror-lost attempt touched the wire, so the WAL records
+    // 'wire' and the re-send gate fences a second execute (gap 1 round-3).
+    strictEqual(intent.wire_disposition, 'wire');
+    strictEqual(intent.network_request_performed, true);
   });
 
   it('emitter failure reasons project onto the closed enum with the egress- prefix stripped', async () => {
@@ -4312,15 +4319,200 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
   it('a pending intent from a crashed attempt refuses the auto-resend until the operator resolves it', async () => {
     const { repo, home } = await freshDirs();
     const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
-    const intentDir = join(repo, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
     await mkdir(intentDir, { recursive: true });
+    // No activation_fingerprint on this legacy-shaped pending record: it is
+    // unscopable, so it blocks GLOBALLY (fail-closed), not only for a matching
+    // activation.
     await writeFile(join(intentDir, 'deadbeef0001.json'), JSON.stringify({ status: 'pending', subject: 'egress-proof-deadbeef0001' }));
     const calls = [];
     const report = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
     strictEqual(report.egress_ack_proof.status, 'blocked');
     strictEqual(calls.length, 0, 'an ambiguous prior attempt must never auto-resend');
-    ok(report.egress_ack_proof.blockers.some((b) => /deadbeef0001\.json/.test(b) && /phone may already have that message/.test(b)), JSON.stringify(report.egress_ack_proof.blockers));
+    ok(report.egress_ack_proof.blockers.some((b) => /deadbeef0001\.json/.test(b) && /may already be on the phone/.test(b)), JSON.stringify(report.egress_ack_proof.blockers));
     strictEqual(report.effects.network_request_performed, false);
+  });
+
+  // --- follow-ups.md L35 WAL redesign regressions (gaps 1 + 2) ----------------
+
+  it('R1 gap-1 round-3: a wire-touching (dispatched, mirror-lost) attempt fences a SECOND execute instead of re-sending', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    // Attempt 1: dispatched, no mirror row => wire, status failed, intent 'wire'.
+    const r1 = await runEgressDoctor({ repo, home, env, emitImpl: async () => ({ status: 'dispatched', stage: 'egress', reason: 'egress-dispatched', channel: 'telegram' }) });
+    strictEqual(r1.egress_ack_proof.status, 'failed');
+    strictEqual(r1.egress_ack_proof.network_request_performed, true);
+    // Attempt 2: same home + activation. Even a would-deliver emit MUST be blocked;
+    // the OLD pending-only gate re-sent here (the round-3 duplicate).
+    const calls2 = [];
+    const r2 = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls2) });
+    strictEqual(r2.egress_ack_proof.status, 'blocked');
+    strictEqual(calls2.length, 0, 'the wire-touching prior attempt must fence the auto-resend');
+    ok(r2.egress_ack_proof.blockers.some((b) => /network request performed/.test(b)), JSON.stringify(r2.egress_ack_proof.blockers));
+    strictEqual(r2.effects.network_request_performed, false);
+  });
+
+  it('R2 gap-2: the machine-global WAL fences a resume from a DIFFERENT repo checkout on the same machine', async () => {
+    const { root, repo: repo1, home } = await freshDirs();
+    const repo2 = join(root, 'repo2');
+    await mkdir(repo2, { recursive: true });
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const r1 = await runEgressDoctor({ repo: repo1, home, env, emitImpl: async () => ({ status: 'dispatched', stage: 'egress', reason: 'egress-dispatched', channel: 'telegram' }) });
+    strictEqual(r1.egress_ack_proof.network_request_performed, true);
+    // A second execute from repo2 (a repo-scoped WAL would have missed it) is blocked.
+    const calls2 = [];
+    const r2 = await runEgressDoctor({ repo: repo2, home, env, emitImpl: deliveredEmit(calls2) });
+    strictEqual(r2.egress_ack_proof.status, 'blocked', 'a machine-global WAL sees the prior repo checkout attempt');
+    strictEqual(calls2.length, 0);
+  });
+
+  it('R3 gap-2 scoping: an intent for a DIFFERENT recipient does not over-block a send to another phone', async () => {
+    const { repo, home } = await freshDirs();
+    const envA = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const r1 = await runEgressDoctor({ repo, home, env: envA, emitImpl: async () => ({ status: 'dispatched', stage: 'egress', reason: 'egress-dispatched', channel: 'telegram' }) });
+    strictEqual(r1.egress_ack_proof.network_request_performed, true);
+    // A different recipient => a different activation_fingerprint => a different
+    // phone; the fence is scoped, not machine-wide, so this send proceeds.
+    const callsB = [];
+    const envB = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1', TELEGRAM_CHAT_ID: '535353535353' });
+    const rB = await runEgressDoctor({ repo, home, env: envB, emitImpl: deliveredEmit(callsB) });
+    strictEqual(rB.egress_ack_proof.status, 'passed', 'a different recipient is not fenced by the first phone attempt');
+    strictEqual(callsB.length, 1);
+  });
+
+  it('R4 fork-C: an emit-error (runEmit no-throw breach) is wire-unknown - precise in effects but fail-closed at the gate', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const r1 = await runEgressDoctor({ repo, home, env, emitImpl: async () => { throw new Error('boom'); } });
+    strictEqual(r1.egress_ack_proof.status, 'failed');
+    strictEqual(r1.egress_ack_proof.outcome_reason, 'emit-error');
+    // Effects claim stays PRECISE: no PROVEN wire (emit-error is not wire).
+    strictEqual(r1.egress_ack_proof.network_request_performed, false);
+    strictEqual(r1.effects.network_request_performed, false);
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    const iname = (await readdir(intentDir)).filter((n) => n.endsWith('.json'))[0];
+    const intent = JSON.parse(await readFile(join(intentDir, iname), 'utf8'));
+    strictEqual(intent.wire_disposition, 'unknown', 'an unexpected throw could be post-wire');
+    strictEqual(intent.network_request_performed, false);
+    // ...but the gate fences it (unknown is not no-wire), so a resend is refused.
+    const calls2 = [];
+    const r2 = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls2) });
+    strictEqual(r2.egress_ack_proof.status, 'blocked');
+    strictEqual(calls2.length, 0);
+    ok(r2.egress_ack_proof.blockers.some((b) => /unknown/.test(b)), JSON.stringify(r2.egress_ack_proof.blockers));
+  });
+
+  it('R5 no-wire clears: an attempt that stopped before the wire never fences a fresh send (strict is not over-strict)', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    // A pre-wire failure outcome (no network I/O) => wire_disposition 'no-wire'.
+    const r1 = await runEgressDoctor({ repo, home, env, emitImpl: async () => ({ status: 'failed', stage: 'egress', reason: 'egress-missing-token', channel: 'telegram' }) });
+    strictEqual(r1.egress_ack_proof.network_request_performed, false);
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    const iname = (await readdir(intentDir)).filter((n) => n.endsWith('.json'))[0];
+    const intent = JSON.parse(await readFile(join(intentDir, iname), 'utf8'));
+    strictEqual(intent.wire_disposition, 'no-wire');
+    // A subsequent execute proceeds: nothing reached the phone to fence.
+    const calls2 = [];
+    const r2 = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls2) });
+    strictEqual(r2.egress_ack_proof.status, 'passed', 'a no-wire attempt does not fence a fresh send');
+    strictEqual(calls2.length, 1);
+  });
+
+  it('R6 fail-closed: an unscannable intent WAL (non-ENOENT readdir error) blocks instead of failing open', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    // Plant a FILE where the intent directory should be => readdir throws ENOTDIR.
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    await mkdir(dirname(intentDir), { recursive: true });
+    await writeFile(intentDir, 'not a directory');
+    const calls = [];
+    const report = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
+    strictEqual(report.egress_ack_proof.status, 'blocked');
+    strictEqual(calls.length, 0, 'an unscannable fence must fail closed, never send');
+    ok(report.egress_ack_proof.blockers.some((b) => /unscannable/.test(b)), JSON.stringify(report.egress_ack_proof.blockers));
+    strictEqual(report.effects.network_request_performed, false);
+  });
+
+  it('R7 policy: the blocker renders the WAL home-relative and never leaks the absolute home layout', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    await runEgressDoctor({ repo, home, env, emitImpl: async () => ({ status: 'dispatched', stage: 'egress', reason: 'egress-dispatched', channel: 'telegram' }) });
+    const blocked = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit([]) });
+    strictEqual(blocked.egress_ack_proof.status, 'blocked');
+    const blocker = blocked.egress_ack_proof.blockers[0];
+    ok(blocker.includes('~/.agentic-plugins/runs/doctor/egress-intents'), `home-relative pointer expected: ${blocker}`);
+    ok(!blocker.includes(home), 'the absolute home path must never leak into the blocker');
+  });
+
+  // --- Codex-review folds (fail-closed classifier + fingerprint scope + upgrade compat) ---
+
+  it('classifyWireDisposition partitions the ENTIRE outcome enum and fails CLOSED on drift (Codex review MAJOR)', () => {
+    const WIRE = new Set(['dispatched', 'provider-error', 'provider-rejected', 'timeout', 'redirect-error', 'mirror-missing', 'mirror-ambiguous']);
+    const NO_WIRE = new Set(['kinds-filter', 'quiet-hours', 'dedupe-duplicate', 'throttled', 'missing-token', 'missing-recipient', 'invalid-local-activation', 'body-cap', 'channel-none']);
+    const UNKNOWN = new Set(['emit-error']);
+    // The test partition must cover the whole enum; a new enum reason with no bin
+    // here shows up as '<unpartitioned>' below and forces the maintainer to bin it.
+    strictEqual(WIRE.size + NO_WIRE.size + UNKNOWN.size, EGRESS_ACK_OUTCOME_REASONS.length, 'the test partition must cover the whole outcome enum');
+    for (const reason of EGRESS_ACK_OUTCOME_REASONS) {
+      const expected = WIRE.has(reason) ? 'wire' : NO_WIRE.has(reason) ? 'no-wire' : UNKNOWN.has(reason) ? 'unknown' : '<unpartitioned>';
+      strictEqual(classifyWireDisposition(false, reason), expected, `reason ${reason} misbinned`);
+    }
+    // dispatched=true is always wire regardless of reason (the shortcut).
+    strictEqual(classifyWireDisposition(true, 'kinds-filter'), 'wire');
+    // An UNRECOGNIZED / drifted / empty reason fails CLOSED to unknown, never no-wire.
+    strictEqual(classifyWireDisposition(false, 'some-new-reason-2027'), 'unknown', 'drift must fence, not fail open');
+    strictEqual(classifyWireDisposition(false, ''), 'unknown');
+    strictEqual(classifyWireDisposition(false, undefined), 'unknown');
+  });
+
+  it('the fence scopes by a VALID fingerprint: matching pending blocks, valid-different clears, malformed blocks (Codex review MINOR)', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    // Discover THIS activation's fingerprint by running one wire attempt.
+    await runEgressDoctor({ repo, home, env, emitImpl: async () => ({ status: 'dispatched', stage: 'egress', reason: 'egress-dispatched', channel: 'telegram' }) });
+    const first = (await readdir(intentDir)).find((n) => n.endsWith('.json'));
+    const fp = JSON.parse(await readFile(join(intentDir, first), 'utf8')).activation_fingerprint;
+    ok(/^[0-9a-f]{64}$/.test(fp), 'the recorded fingerprint is 64-hex');
+
+    // (a) matching-fingerprint pending -> blocks.
+    await rm(intentDir, { recursive: true, force: true });
+    await mkdir(intentDir, { recursive: true });
+    await writeFile(join(intentDir, 'aa.json'), JSON.stringify({ status: 'pending', activation_fingerprint: fp }));
+    let r = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit([]) });
+    strictEqual(r.egress_ack_proof.status, 'blocked', 'a matching-fingerprint pending fences');
+
+    // (b) VALID but different fingerprint pending -> out of scope, send proceeds.
+    await rm(intentDir, { recursive: true, force: true });
+    await mkdir(intentDir, { recursive: true });
+    await writeFile(join(intentDir, 'bb.json'), JSON.stringify({ status: 'pending', activation_fingerprint: 'f'.repeat(64) }));
+    const callsB = [];
+    r = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(callsB) });
+    strictEqual(r.egress_ack_proof.status, 'passed', 'a valid-different-fingerprint pending is out of scope');
+    strictEqual(callsB.length, 1);
+
+    // (c) MALFORMED fingerprint pending -> unscopable -> blocks (fail-closed).
+    await rm(intentDir, { recursive: true, force: true });
+    await mkdir(intentDir, { recursive: true });
+    await writeFile(join(intentDir, 'cc.json'), JSON.stringify({ status: 'pending', activation_fingerprint: 'not-a-hash' }));
+    r = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit([]) });
+    strictEqual(r.egress_ack_proof.status, 'blocked', 'a malformed fingerprint is unscopable and fails closed');
+    ok(r.egress_ack_proof.blockers.some((b) => /unscopable fingerprint/.test(b)), JSON.stringify(r.egress_ack_proof.blockers));
+  });
+
+  it('R8 upgrade compat: a legacy repo-scoped intent fences the send until the old dir is cleared (Codex review CRITICAL)', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    // A pre-upgrade intent under the OLD repo-scoped path (old format: no wire_disposition).
+    const legacyDir = join(repo, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    await mkdir(legacyDir, { recursive: true });
+    await writeFile(join(legacyDir, 'cafe1234.json'), JSON.stringify({ status: 'failed', subject: 'egress-proof-cafe1234' }));
+    const calls = [];
+    const report = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
+    strictEqual(report.egress_ack_proof.status, 'blocked', 'a legacy repo-scoped intent must fence the send');
+    strictEqual(calls.length, 0, 'the pre-upgrade attempt is never silently re-sent');
+    ok(report.egress_ack_proof.blockers.some((b) => /legacy egress intents/.test(b) && /cafe1234\.json/.test(b)), JSON.stringify(report.egress_ack_proof.blockers));
   });
 
   it('kinds-filtered trace: the REAL emitter suppresses before dispatch and the executor records the honest failure', async () => {

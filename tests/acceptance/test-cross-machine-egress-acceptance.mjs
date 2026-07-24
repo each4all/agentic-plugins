@@ -1584,7 +1584,8 @@ describe('ADR-0041 acceptance (K) -- opt-in real-network smoke (skipped unless A
     const home = fixtureHome();
     // NO egressEmitImpl -> doctor delegates to the REAL runEmit (in-process),
     // whose node:https transport opens a real socket against an EPHEMERAL temp
-    // repo; `root` here receives only the intent WAL.
+    // repo; the machine-global intent WAL now lands under `home`, not `root`
+    // (follow-ups.md L35 gap 2).
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,
@@ -1607,10 +1608,10 @@ describe('ADR-0041 acceptance (K) -- opt-in real-network smoke (skipped unless A
     ok(/^[0-9a-f]{12}$/.test(section.subject_suffix), 'the phone message is identifiable by its 12-hex topic token');
     strictEqual(report.effects.network_request_performed, true);
     // Even on the live path, nothing credential- or recipient-shaped persists:
-    // not in the report, not in the intent WAL left under `root`.
+    // not in the report, not in the machine-global intent WAL under `home`.
     const reportText = JSON.stringify(report);
     ok(!reportText.includes(token) && !reportText.includes(chatId), 'the live credential/recipient never enter the report');
-    const intentDir = join(root, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
     for (const name of readdirSync(intentDir)) {
       const intent = readFileSync(join(intentDir, name), 'utf8');
       ok(!intent.includes(token) && !intent.includes(chatId), `intent ${name} stays sanitized`);
