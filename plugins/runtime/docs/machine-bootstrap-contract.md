@@ -1044,7 +1044,7 @@ left to S8:
 | `proof.deep-peer-smoke` | 8 | always | **yes** (declining caps at `configured-not-verified`) |
 | `proof.workflow-continuation` | 8 | iff `engineer` ∈ selection | **yes** (same cap) |
 | `proof.permission` | 8 | iff a `permission.*.applied` step carries `fragment_applied: true` | **yes** (same cap) |
-| `proof.egress-provider-ack` | 8 | iff the operator opted in (any recorded answer against the step, or the step already in `steps[]`) — ADR-0048 §3/D0.2 | **yes** (same cap) |
+| `proof.egress-provider-ack` | 8 | iff the operator opted in — an answer against the step in `choices[]`, a `declined` status on its row, or a recorded `egress-provider-ack` proof (ADR-0048 §3/D0.2) | **yes** (same cap) |
 
 `notify.configured` keeps meaning exactly the LOCAL runtime notification policy
 (`~/.agentic-plugins/config.toml` notify family); `notify.codex.configured`
@@ -1369,7 +1369,45 @@ verdict `attested`; the generic completion `state` is never redefined by receipt
 | `deep-peer-smoke` | **always** | It is the only proof that the cross-host companion bridge actually works. It is always *applicable* because `companions` is mandatory in every selection (§6.2) — that rule exists precisely to keep this proof reachable. |
 | `workflow-continuation` | **iff `engineer` ∈ selection** | It exercises engineer machinery. Requiring it with no engineer installed would be unreachable. |
 | `permission` | **iff a permission fragment was applied** in stage 6 | It proves companion invocation under the newly applied host permission defaults. |
-| `egress-provider-ack` | **iff the operator opted in** (§6.1 — any recorded answer against the step, or the step already in `steps[]`) | ADR-0048 §3: it proves exactly that the pinned provider request returned HTTP 2xx + `{ok:true}` — deliberately not named "dispatch" or "delivery". Requiring it unrequested would make every non-egress machine unable to complete. |
+| `egress-provider-ack` | **iff the operator opted in** (§6.1 — an answer in `choices[]`, a `declined` row status, or a recorded ack proof) | ADR-0048 §3: it proves exactly that the pinned provider request returned HTTP 2xx + `{ok:true}` — deliberately not named "dispatch" or "delivery". Requiring it unrequested would make every non-egress machine unable to complete. |
+
+**The opt-in must carry provenance.** Both readers — the reducer and the re-probe
+— derive it through ONE shared predicate (`egressProofOptedIn`), which accepts
+exactly three facts, any one of which is enough:
+
+1. an `execute`/`decline`/`attest-receipt` answer against the step in `choices[]`
+   — the operator's own ledger, appended to and never rewritten;
+2. a `declined` status on the step's row — the judge never *generates* that
+   status, it only restores one `applyAnswers` wrote from an answer, so it traces
+   back to a person. A decline is an answer against the step (and caps the run at
+   `configured-not-verified` per §6.2), not the absence of one;
+3. a **recorded** `egress-provider-ack` proof. The proof file is written before the
+   manifest update that records the choice, so a failure in between would
+   otherwise leave a machine holding a failed ack on disk that its own run calls
+   not-applicable — and `recomputeProofStatus` returns `not-applicable` without
+   ever inspecting the record. Evidence of a real send must never become
+   ignorable.
+
+Two things are deliberately **not** accepted, and both were shipped defects:
+
+- **The row's mere PRESENCE.** §6.1 enumerates `proof.egress-provider-ack` on
+  every run — a not-applicable step is enumerated so it can be REPORTED — and the
+  judge persists that enumeration as a `not-applicable` row, so a presence test is
+  true on every machine that has ever run `plan`. That made the proof required
+  everywhere and delivered exactly the outcome the row above says must not happen:
+  no evidence can exist for an ack over an unconfigured egress channel, so
+  `complete` was unreachable on every machine that never opted in.
+- **The row's generic status.** `pending` is what the judge writes for every
+  `proof.*` step and `blocked` is what its demotion pass rewrites that to, so
+  "any status but `not-applicable`" reads machine output as consent. It would also
+  make the first defect OUTLIVE its fix: a run planned under the broken code and
+  then resumed by it holds a `pending`/`blocked` egress row with no answer behind
+  it, §7 invalidation preserves both statuses, and a same-schema run never enters
+  the minor-migration path. With generic status excluded such a run heals — the
+  next judgement re-derives the step as `not-applicable`.
+
+Applicability derived from the very row the derivation produces is circular. It
+has to come from a fact about the operator, or about evidence on disk.
 
 The `egress-provider-ack` freshness additionally binds the **sanitized activation
 fingerprint** by EQUALITY — a domain-separated sha256 over channel + recipient +

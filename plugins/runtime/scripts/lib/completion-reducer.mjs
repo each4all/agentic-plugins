@@ -334,6 +334,65 @@ export function recomputeReceiptAttestation({ record, providerAckSha256 = null, 
 }
 
 // ---------------------------------------------------------------------------
+// Opt-in signals read from the run's own steps[] (§6.1, ADR-0048 §3/D0.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether the operator opted into the egress delivery proof (§6.1, ADR-0048
+ * §3/D0.2) — the ONE implementation of this predicate, shared by the reducer and
+ * by bootstrap's re-probe so the two can never drift apart.
+ *
+ * WHAT THIS MUST NEVER BE. Not the step row's mere EXISTENCE:
+ * `deriveExpectedSteps` enumerates `proof.egress-provider-ack` on every run — a
+ * not-applicable step is still enumerated so it can be REPORTED — and
+ * `judgeSteps` persists that enumeration, so a presence test is true on every
+ * machine that has ever run `plan`. That made the proof required everywhere and
+ * put `complete` out of reach for every machine that never opted in, which is
+ * exactly the outcome §8.1 forbids: "Requiring it unrequested would make every
+ * non-egress machine unable to complete."
+ *
+ * Nor the row's generic status. `pending` and `blocked` are written by the JUDGE,
+ * not by the operator (`observeStatus` emits `pending` for every `proof.*` step;
+ * the demotion pass rewrites it to `blocked`), so "any status but
+ * `not-applicable`" reads a machine-generated value as consent. That would also
+ * make the defect above OUTLIVE this fix: a run planned under the broken code and
+ * then resumed by it holds a `pending`/`blocked` egress row with no answer behind
+ * it, and version invalidation preserves both statuses. Such a run must be able
+ * to heal — with the row status excluded it does, because the next judgement
+ * re-derives the step as `not-applicable`.
+ *
+ * WHAT IT IS: the three facts that carry real provenance, any one of which is
+ * enough.
+ *
+ *   1. `declined` on the row. The judge never GENERATES that status — it only
+ *      restores one `applyAnswers` wrote from an operator answer — so it traces
+ *      back to a person. A decline is an answer against the step (and caps the
+ *      run at `configured-not-verified` per §6.2), not the absence of one.
+ *   2. An answer in `choices[]`. The operator's own ledger, appended to and never
+ *      rewritten, and the normal carrier of every opt-in.
+ *   3. A RECORDED `egress-provider-ack` proof. Evidence that a real send was
+ *      attempted must never become ignorable: the proof file is written before
+ *      the manifest update that records the choice, so a failure in between would
+ *      otherwise leave a machine holding a failed ack on disk that its own run
+ *      calls not-applicable — and `recomputeProofStatus` returns
+ *      `not-applicable` without ever inspecting the record. That is a false pass
+ *      over real evidence, the one direction this contract cannot tolerate.
+ *
+ * Every input is a fact about the operator or about evidence on disk — never a
+ * value this derivation itself produced. Reading is bounded at the manifest
+ * boundary (rows, choices and proofs are all operator-editable data): a missing
+ * or malformed entry is simply not an opt-in, so the predicate cannot manufacture
+ * a requirement out of garbage.
+ */
+export function egressProofOptedIn({ steps = [], choices = [], proofs = [] } = {}) {
+  const id = stepIds.proofEgressProviderAck();
+  const row = (steps ?? []).find((s) => isPlainObject(s) && s.id === id);
+  if (row?.status === 'declined') return true;
+  if ((choices ?? []).some((c) => isPlainObject(c) && c.step_id === id)) return true;
+  return (proofs ?? []).some((p) => isPlainObject(p) && p.kind === 'egress-provider-ack');
+}
+
+// ---------------------------------------------------------------------------
 // Invalidation (§7)
 // ---------------------------------------------------------------------------
 
@@ -667,6 +726,12 @@ export function reduceCompletion({
   pluginSet,
   selection,
   steps = [],
+  // ADR-0048 §3 / D0.2 — the operator's own answer ledger. Passed in because the
+  // egress-proof opt-in is a fact about the OPERATOR, and `steps[]` alone cannot
+  // express one: the judge writes every row, so no status on it distinguishes
+  // consent from machinery (see egressProofOptedIn). This is a manifest member
+  // like `steps` and `proofs`, so the reducer stays a pure function of the run.
+  choices = [],
   proofs = [],
   hookAttestation = null,
   probe = null,
@@ -687,10 +752,11 @@ export function reduceCompletion({
   for (const host of ['claude', 'codex']) {
     fragmentApplied[host] = stateById.get(stepIds.permissionApplied(host))?.fragment_applied === true;
   }
-  // The egress-proof opt-in derives from the run's own steps[] the same
-  // manifest-legitimate way fragment_applied does (D0.2): once the step was
-  // recorded expected, it stays expected here.
-  const egressProofRequested = stateById.has(stepIds.proofEgressProviderAck());
+  // The egress-proof opt-in (D0.2) — from a recorded operator answer or recorded
+  // delivery evidence, never from the derived row this reduction itself produces.
+  // egressProofOptedIn documents each leg and, more importantly, what is
+  // deliberately NOT a leg.
+  const egressProofRequested = egressProofOptedIn({ steps, choices, proofs });
 
   const expected = deriveExpectedSteps({ pluginSet, selection, permissionFragmentApplied: fragmentApplied, egressProofRequested });
   const owed = expectedStepIds(expected);

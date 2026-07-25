@@ -13,10 +13,11 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { loadPluginSet, resolveBundle } from '../../plugins/runtime/scripts/lib/plugin-set.mjs';
-import { deriveExpectedSteps, expectedStepIds, stepIds } from '../../plugins/runtime/scripts/lib/step-registry.mjs';
+import { PROOF_STAGES, deriveExpectedSteps, expectedStepIds, stepIds } from '../../plugins/runtime/scripts/lib/step-registry.mjs';
 import {
   boundVersionsFresh,
   currentBoundVersions,
+  egressProofOptedIn,
   invalidateStaleSteps,
   recomputeHookAttestation,
   requiredBoundPlugins,
@@ -83,6 +84,40 @@ async function completeMachine({ bundle = 'base' } = {}) {
   const proofs = [passingProof('deep-peer-smoke', current)];
   if (expected.find((s) => s.id === 'proof.workflow-continuation')?.applicable) proofs.push(passingProof('workflow-continuation', current));
   return { pluginSet, selection, probe, current, steps, proofs, expected };
+}
+
+// The steps[] a run ACTUALLY carries. `completeMachine` above builds the CONFIG
+// rows only, but the run file always holds Stage-8 rows too: the registry
+// enumerates every proof step even when it does not apply (§6.1 — a
+// not-applicable step is enumerated so it can be REPORTED), and `judgeSteps`
+// persists that enumeration — an applicable proof row lands `pending` (its
+// verdict lives in completion.proofs, never in the row), a non-applicable one
+// lands `not-applicable`.
+//
+// A fixture without those rows cannot see a defect that lives in READING them,
+// which is exactly how the egress opt-in regression below survived 82 green
+// reducer tests: the reducer derived the opt-in from the row's mere existence,
+// and no fixture ever supplied the row.
+//
+// The `pending` branch assumes `m`'s CONFIG rows are resolved — true for every
+// `completeMachine`-derived caller, where each applicable stage-1-7 step is
+// `satisfied`. On a partially-satisfied machine the real judge would demote an
+// applicable proof to `blocked` behind its unresolved predecessor, so reusing this
+// helper on such an `m` would manufacture a row the judge cannot produce.
+function withJudgedProofRows(m, { egressStatus = null } = {}) {
+  const proofRows = m.expected
+    .filter((s) => PROOF_STAGES.includes(s.stage))
+    .map((s) => ({
+      id: s.id,
+      stage: s.stage,
+      status: s.id === stepIds.proofEgressProviderAck() && egressStatus !== null
+        ? egressStatus
+        : (s.applicable ? 'pending' : 'not-applicable'),
+      declinable: s.declinable,
+      blocked_by: s.blocked_by,
+      fragment_applied: false,
+    }));
+  return { ...m, steps: [...m.steps, ...proofRows] };
 }
 
 const reduce = (m, over = {}) => reduceCompletion({
@@ -970,6 +1005,127 @@ describe('runtime completion reducer — egress-provider-ack aggregate (ADR-0048
     ok(onDirectional.ok, JSON.stringify(onDirectional.errors));
     ok(!('mirror_correlated' in onDirectional.record), 'the mirror fact belongs to the egress shape only');
     ok(onDirectional.dropped.some((d) => d.startsWith('mirror_correlated')), 'and the drop is reported');
+  });
+});
+
+describe('runtime completion reducer — the egress proof opt-in needs PROVENANCE (ADR-0048 §3/D0.2)', () => {
+  // Two defects live here, and the fix has to close both without reopening the
+  // other.
+  //
+  // (a) Row EXISTENCE is not an opt-in. `deriveExpectedSteps` pushes
+  //     `proof.egress-provider-ack` on every run (applicable:false when nobody
+  //     asked) and `judgeSteps` persists that row, so a presence test was true on
+  //     every machine: the proof came back `required` with no evidence able to
+  //     exist for it, and `complete` was unreachable — the exact outcome §8.1
+  //     names as the reason this proof is opt-in.
+  // (b) Row STATUS is not an opt-in either. `pending` is what the judge writes for
+  //     every `proof.*` step and `blocked` is what the demotion pass rewrites it
+  //     to, so accepting "any status but not-applicable" reads machine output as
+  //     consent — and would make (a) OUTLIVE the fix, because a run planned and
+  //     resumed under the broken code holds exactly that row with no answer
+  //     behind it.
+  //
+  // What remains: a recorded decline, the operator's `choices[]` ledger, and
+  // recorded delivery evidence.
+  const EGRESS = stepIds.proofEgressProviderAck();
+  const ackRecord = (current) => ({
+    kind: 'egress-provider-ack',
+    status: 'passed',
+    provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: 'f'.repeat(64), ran_at: AT },
+    mirror_correlated: true,
+    artifact_pointer: null,
+    artifact_hash: 'b'.repeat(64),
+    bound_versions: structuredClone(current),
+    ran_at: AT,
+  });
+
+  it('CONTROL — a machine that never opted in reaches complete with the not-applicable row present', async () => {
+    const m = withJudgedProofRows(await completeMachine());
+    // The fixture is only meaningful if it carries the row the defect read.
+    const row = m.steps.find((s) => s.id === EGRESS);
+    ok(row, 'fixture sanity: the run carries the enumerated egress row');
+    strictEqual(row.status, 'not-applicable', 'fixture sanity: nobody opted in');
+
+    const result = reduce(m);
+    const egress = result.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(egress.required, false, 'an un-opted-in egress proof is never owed');
+    strictEqual(result.state, 'complete', `expected complete, got ${result.state}: proofs=${JSON.stringify(result.proofs.map((p) => [p.kind, p.status, p.required]))}`);
+    // §5 — the receipt verdict rides completion only when the run has something to
+    // say about it; a machine outside the egress world keeps the exact 1.1 shape.
+    ok(!('egress_receipt_attestation' in result), 'no testimony verdict is invented for a non-egress machine');
+  });
+
+  it('a JUDGE-WRITTEN pending/blocked row is NOT an opt-in — a run poisoned by the old presence test heals instead of staying stuck', async () => {
+    for (const machineStatus of ['pending', 'blocked']) {
+      const m = withJudgedProofRows(await completeMachine(), { egressStatus: machineStatus });
+      const result = reduce(m);
+      const egress = result.proofs.find((p) => p.kind === 'egress-provider-ack');
+      strictEqual(egress.required, false, `a '${machineStatus}' row with no answer behind it does not owe the proof`);
+      strictEqual(result.state, 'complete', `a run carrying a machine-written '${machineStatus}' egress row must still be able to complete`);
+    }
+  });
+
+  it('the CHOICES ledger is an opt-in — the operator answered, so the proof is owed and absent evidence blocks complete', async () => {
+    const m = withJudgedProofRows(await completeMachine(), { egressStatus: 'pending' });
+    const result = reduce(m, { choices: [{ step_id: EGRESS, answer: 'execute', at: AT }] });
+    const egress = result.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(egress.required, true, 'the recorded answer is the opt-in');
+    strictEqual(egress.status, 'absent');
+    strictEqual(result.state, 'configured-not-verified', 'CONFIG is done; the opted-in proof is not');
+  });
+
+  it('a DECLINE on the row is an opt-in — the judge never writes that status, only restores an operator answer', async () => {
+    const m = withJudgedProofRows(await completeMachine(), { egressStatus: 'declined' });
+    const result = reduce(m);
+    const egress = result.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(egress.required, true, 'a decline is an answer against the step, not an absence of one');
+    strictEqual(result.state, 'configured-not-verified', 'a declined proof never grants complete (§6.2)');
+  });
+
+  it('RECORDED EVIDENCE forces applicability — a proof on disk can never be reduced away, whatever the row says', async () => {
+    // The window this closes: the proof file is written BEFORE the manifest update
+    // that records the choice, so a failure in between leaves evidence on disk
+    // with an unchanged `not-applicable` row and no choice. recomputeProofStatus
+    // returns not-applicable without ever inspecting the record, so a FAILED ack
+    // would be silently reduced away — a false pass over real evidence.
+    const m = withJudgedProofRows(await completeMachine());
+    const failed = { ...ackRecord(m.current), provider_ack: { ...ackRecord(m.current).provider_ack, result: 'failed' } };
+    const result = reduce(m, {
+      proofs: [...m.proofs, failed],
+      currentActivationFingerprint: 'f'.repeat(64),
+    });
+    const egress = result.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(egress.required, true, 'evidence on disk makes the run accountable for it');
+    strictEqual(egress.status, 'failed', 'and the record is JUDGED, not skipped as not-applicable');
+    strictEqual(result.state, 'configured-not-verified', 'a machine holding a failed ack never reads complete');
+  });
+
+  it('the opt-in predicate is the ONE implementation both readers share, and names exactly three provenances', () => {
+    strictEqual(egressProofOptedIn(), false, 'no run data at all is no opt-in');
+    strictEqual(egressProofOptedIn({}), false, 'an empty run is no opt-in');
+    strictEqual(egressProofOptedIn({ steps: [{ id: EGRESS, status: 'not-applicable' }] }), false,
+      'the enumerated-but-unrequested row is no opt-in');
+
+    // (b) — the statuses the JUDGE produces carry no consent.
+    for (const status of ['pending', 'blocked', 'satisfied', 'manual-follow-up', 'unknown']) {
+      strictEqual(egressProofOptedIn({ steps: [{ id: EGRESS, status }] }), false,
+        `'${status}' is judge output, not an operator answer`);
+    }
+    // The three that do.
+    strictEqual(egressProofOptedIn({ steps: [{ id: EGRESS, status: 'declined' }] }), true, 'a decline is an answer');
+    strictEqual(egressProofOptedIn({ choices: [{ step_id: EGRESS, answer: 'execute' }] }), true, 'the answer ledger');
+    strictEqual(egressProofOptedIn({ proofs: [{ kind: 'egress-provider-ack' }] }), true, 'recorded evidence');
+
+    // Manifest-boundary robustness: rows, choices and proofs are all
+    // operator-editable, so malformed entries must not manufacture a requirement.
+    strictEqual(egressProofOptedIn({ steps: [null, 'x', { id: EGRESS }] }), false, 'a row with no status is not an opt-in');
+    strictEqual(egressProofOptedIn({ choices: [null, 'x'] }), false, 'malformed ledger entries are not answers');
+    strictEqual(egressProofOptedIn({ steps: [{ id: 'proof.deep-peer-smoke', status: 'declined' }] }), false,
+      'another proof row is not this opt-in');
+    strictEqual(egressProofOptedIn({ choices: [{ step_id: 'proof.permission', answer: 'decline' }] }), false,
+      'another step\'s answer is not this opt-in');
+    strictEqual(egressProofOptedIn({ proofs: [{ kind: 'deep-peer-smoke' }] }), false,
+      'another kind of evidence is not this opt-in');
   });
 });
 

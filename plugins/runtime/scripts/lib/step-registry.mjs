@@ -102,14 +102,31 @@ export const NEVER_DECLINABLE_PLUGINS = Object.freeze(['runtime', 'companions'])
  *                    a proof for a config this run never changed; corrected in C4.)
  * @param egressProofRequested
  *                    ADR-0048 §3 / D0.2 — the OPT-IN signal for the
- *                    `proof.egress-provider-ack` step, read the same
- *                    manifest-legitimate way as permissionFragmentApplied: the
- *                    operator asked for the egress delivery evidence (an
- *                    `execute`/`decline` choice recorded against the step, or
- *                    the step already present in the run's steps[]). Default
- *                    false: a machine that never opted in never owes the
- *                    proof, and §8.1's "required iff opted in" falls out of
- *                    applicability.
+ *                    `proof.egress-provider-ack` step. Callers derive it through
+ *                    `egressProofOptedIn` (lib/completion-reducer.mjs), which
+ *                    accepts exactly three provenances: an `execute`/`decline`
+ *                    answer in the run's `choices[]` ledger, a `declined` status
+ *                    on the step's row (a status the judge only ever restores
+ *                    from an operator answer), or a RECORDED
+ *                    `egress-provider-ack` proof. Default false: a machine that
+ *                    never opted in never owes the proof, and §8.1's "required
+ *                    iff opted in" falls out of applicability.
+ *
+ *                    Note what this must NEVER be derived from. Not the mere
+ *                    PRESENCE of the step in steps[]: this function enumerates
+ *                    the step on every run (below) so it can be reported, and
+ *                    judgeSteps persists that enumeration, so a presence test is
+ *                    true on every machine — which made the proof required
+ *                    everywhere and put `complete` out of reach for every machine
+ *                    that never opted in. Nor the row's generic status: `pending`
+ *                    is what judgeSteps writes for every `proof.*` step and
+ *                    `blocked` is what its demotion pass rewrites that to, so
+ *                    treating "any status but not-applicable" as consent reads
+ *                    machine output as an operator answer — and lets the defect
+ *                    above outlive its fix on any run the broken code resumed.
+ *                    Applicability derived from the row this derivation itself
+ *                    produces is circular; it has to come from a fact about the
+ *                    operator, or about evidence on disk.
  *
  * Returns steps in canonical order (stage, then id), each with an EXPLICIT blocked_by
  * array — `[]` is written, never omitted, so "no predecessors" and "edges missing from
