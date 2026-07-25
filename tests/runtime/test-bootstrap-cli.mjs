@@ -20,6 +20,7 @@ import {
   EXIT,
   STAGE0_COMMANDS,
   parseBootstrapArgs,
+  renderText,
   runBootstrap,
 } from '../../plugins/runtime/scripts/bootstrap.mjs';
 import { makeValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
@@ -1500,5 +1501,395 @@ describe('bootstrap egress-provider-ack executor — consistency matrix + reader
     const ack = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
     strictEqual(ack?.status, 'passed',
       `the ack recorded against the rotated activation judges fresh off the POST-execution readers (got ${ack?.status}: ${JSON.stringify(ack?.reasons)})`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stage-8 presentation — control disposition vs evidence verdict
+//
+// The defect this pins: `renderText` printed a Stage-8 proof TWICE — once from
+// `completion.proofs[]` (the reducer's evidence verdict) and once from the
+// generic unresolved-step loop (the control row, which proof judgement leaves
+// at `pending`/`blocked`). The two rows looked like peers and disagreed, and a
+// live-fire operator read a passed egress send as a failure. The two axes are
+// genuinely independent — `passed + declined` and `stale + blocked` are both
+// reachable — so the fix is ONE joined row per proof, sourced from the reducer,
+// with control state kept only as labelled context.
+// ---------------------------------------------------------------------------
+
+describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
+  // A bare-host plan is the cheapest fixture carrying every shape at once:
+  // `deep-peer-smoke` control judges `blocked` (its authenticated-host
+  // predecessors are unreachable) while its evidence is `absent`; and a decline
+  // against `proof.workflow-continuation` — which `base` makes NOT applicable,
+  // the bundle carrying no `engineer` — produces the non-required-but-declined
+  // row the reducer reports with `required: false`.
+  async function barePlanWithDecline() {
+    const { home, cwd } = await makeHome();
+    const answers = join(home, 'decline-wc.json');
+    await writeFile(answers, JSON.stringify([{ step_id: 'proof.workflow-continuation', answer: 'decline' }]));
+    const result = await boot({
+      argv: ['plan', '--bundle', 'base', '--answers', answers],
+      home,
+      cwd,
+      runner: bareRunner(),
+      subprocess: spySubprocess().runner,
+    });
+    return { home, cwd, result, text: renderOf(result) };
+  }
+
+  it('renders each presented proof exactly once, from the reducer, and never from the generic step loop', async () => {
+    const { result, text } = await barePlanWithDecline();
+    const lines = text.split('\n');
+
+    // The generic unresolved-step presentation is CONFIG-only.
+    deepStrictEqual(
+      lines.filter((line) => /^- \[stage 8\]/.test(line)),
+      [],
+      'no Stage-8 row may come from the generic step loop',
+    );
+
+    const proofLines = lines.filter((line) => /^ {2}- \[stage 8\] /.test(line));
+    const presented = (result.report.completion.proofs ?? []).filter((p) => p.required || p.declined);
+    ok(presented.length > 0, 'the fixture must present at least one proof or it proves nothing');
+    strictEqual(proofLines.length, presented.length, `one row per presented proof, got ${JSON.stringify(proofLines)}`);
+    for (const proof of presented) {
+      const own = proofLines.filter((line) => line.includes(`${proof.step_id}: `));
+      strictEqual(own.length, 1, `${proof.step_id} renders exactly once`);
+      ok(own[0].includes(`: ${proof.status}`), `${proof.step_id} must render the evidence verdict '${proof.status}', got: ${own[0]}`);
+    }
+  });
+
+  it('the evidence verdict is what the row states, even while the control status disagrees', async () => {
+    const { result, text } = await barePlanWithDecline();
+    const control = result.report.steps.find((s) => s.id === 'proof.deep-peer-smoke');
+    const evidence = result.report.completion.proofs.find((p) => p.kind === 'deep-peer-smoke');
+    // Guard the fixture itself: the assertion below is vacuous unless the two
+    // axes actually hold different values here.
+    strictEqual(control?.status, 'blocked', 'fixture precondition: the control row is blocked');
+    strictEqual(evidence?.status, 'absent', 'fixture precondition: the evidence is absent');
+
+    ok(/^ {2}- \[stage 8\] proof\.deep-peer-smoke: absent$/m.test(text), `the row states the evidence verdict:\n${text}`);
+    ok(!/proof\.deep-peer-smoke: blocked/.test(text), 'a control status is never presented as the proof status');
+  });
+
+  it('blocked execution survives as labelled control context rather than as the verdict', async () => {
+    const { text } = await barePlanWithDecline();
+    ok(
+      /^ {6}execution: Blocked by host\.claude\.authenticated; resolve the predecessor first\.$/m.test(text),
+      `the joined row keeps the blocker as execution context:\n${text}`,
+    );
+  });
+
+  it('an operator decline stays visible even on a proof the selection does not require', async () => {
+    const { result, text } = await barePlanWithDecline();
+    const wc = result.report.completion.proofs.find((p) => p.kind === 'workflow-continuation');
+    strictEqual(wc?.required, false, 'fixture precondition: base makes workflow-continuation non-applicable');
+    strictEqual(wc?.declined, true, 'fixture precondition: the operator declined it');
+    ok(
+      /^ {2}- \[stage 8\] proof\.workflow-continuation: not-applicable \(declined\)$/m.test(text),
+      `a required-only filter would drop this operator choice:\n${text}`,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Render-boundary hardening. `completion.proofs[].reasons` is schema-bounded
+  // by LENGTH only (maxLength 512) — newlines and control characters are
+  // schema-VALID — and its inputs are not all grammar-clamped: the Codex
+  // plugin-list version is copied through as any string
+  // (lib/machine-probe.mjs), and a historical report replays a stored
+  // (operator-editable) completion verbatim. So a reason can forge an output
+  // row unless the renderer single-lines it.
+  // -------------------------------------------------------------------------
+
+  const evaluatedProof = (over = {}) => ({
+    kind: 'deep-peer-smoke',
+    step_id: 'proof.deep-peer-smoke',
+    declined: false,
+    status: 'stale',
+    reasons: [],
+    required: true,
+    artifact_pointer: null,
+    artifact_hash: null,
+    bound_versions: null,
+    ran_at: null,
+    ...over,
+  });
+  const completionOf = (proofs) => ({
+    state: 'configured-not-verified',
+    unsatisfied: [],
+    missing_steps: [],
+    proofs,
+    hook_attestation: { status: 'not-applicable', reasons: [], attested_plugins: [], bound_versions: null, artifact_pointer: null, artifact_hash: null, attested_at: null },
+  });
+
+  it('a reason carrying newlines or control characters cannot fabricate a rendered row', () => {
+    const forged = 'codex runtime 1.0.0 → 1.0.1\n- [stage 8] proof.forged: passed\r\u001b[31mnot a row';
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ reasons: [forged] })]),
+      steps: [],
+    });
+    // The forged text stays QUOTED inside the evidence line — that is honest,
+    // and is why the invariant counts ROWS (a line that begins as a Stage-8
+    // row), not occurrences of the substring.
+    const stage8Rows = text.split('\n').filter((line) => /^ *- \[stage 8\] /.test(line));
+    strictEqual(stage8Rows.length, 1, `exactly one Stage-8 row may exist, got ${JSON.stringify(stage8Rows)}`);
+    ok(!/^\s*- \[stage 8\] proof\.forged/m.test(text), 'the injected row must not become a line of its own');
+    // Every C0 control and DEL is gone (the trailing newline is the renderer's own).
+    ok(!/[\u0000-\u0008\u000b-\u001f\u007f]/.test(text), 'no control character survives into the render');
+    ok(/proof\.deep-peer-smoke: stale/.test(text), 'the genuine row still renders');
+  });
+
+  it('an unbounded reason aggregate is truncated rather than printed whole', () => {
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ reasons: Array.from({ length: 64 }, (_, i) => `${'x'.repeat(500)}-${i}`) })]),
+      steps: [],
+    });
+    const evidenceLine = text.split('\n').find((line) => /^ {6}evidence: /.test(line));
+    ok(evidenceLine, 'the reasons render on an evidence line');
+    ok(evidenceLine.length < 600, `the aggregate is bounded, got ${evidenceLine.length} chars`);
+  });
+
+  // The two crossed states the CLI fixtures cannot reach cheaply, and the exact
+  // pair a single-status design could not express. Both are genuinely
+  // reachable: evidence is recorded once and keeps standing on its own
+  // `bound_versions`, while the control axis moves underneath it — an operator
+  // declines the proof afterwards, or a predecessor breaks (an expired host
+  // auth) and re-execution becomes unreachable.
+  const controlRow = (over = {}) => ({
+    id: 'proof.deep-peer-smoke',
+    stage: 8,
+    status: 'pending',
+    declinable: true,
+    blocked_by: [],
+    observed: null,
+    recovery: null,
+    ...over,
+  });
+
+  it('passed evidence under a DECLINED control renders the verdict and the decline together', () => {
+    const text = renderText({
+      verb: 'verify',
+      completion: completionOf([evaluatedProof({ status: 'passed', declined: true, reasons: [] })]),
+      steps: [controlRow({ status: 'declined' })],
+    });
+    ok(/^ {2}- \[stage 8\] proof\.deep-peer-smoke: passed \(declined\)$/m.test(text), `both axes render:\n${text}`);
+    ok(!/execution:/.test(text), 'a decline is not an execution blocker and must not be labelled as one');
+  });
+
+  it('the decline marker comes from the evidence record, not from the control row', () => {
+    // Sourcing `(declined)` from steps[] would look identical on every fixture
+    // where the two agree. Here they disagree: the reducer recorded the decline
+    // on the proof while the control row reads `pending`.
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ status: 'absent', declined: true, reasons: [] })]),
+      steps: [controlRow({ status: 'pending' })],
+    });
+    ok(/^ {2}- \[stage 8\] proof\.deep-peer-smoke: absent \(declined\)$/m.test(text), `the decline rides the evidence record:\n${text}`);
+  });
+
+  it('stale evidence under a blocked control renders both — the pair the contract names', () => {
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ status: 'stale', reasons: ['runtime 0.86.0 → 0.86.1'] })]),
+      steps: [controlRow({ status: 'blocked', recovery: 'Blocked by egress.configured; resolve the predecessor first.' })],
+    });
+    ok(/^ {2}- \[stage 8\] proof\.deep-peer-smoke: stale$/m.test(text), `verdict:\n${text}`);
+    ok(/^ {6}evidence: runtime 0\.86\.0 → 0\.86\.1$/m.test(text), 'the drift reason renders');
+    ok(/^ {6}execution: Blocked by egress\.configured/m.test(text), 'and the unreachable re-execution is still named');
+  });
+
+  it('passed evidence under a BLOCKED control keeps the verdict and names the blocker', () => {
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ status: 'passed', reasons: [] })]),
+      steps: [controlRow({ status: 'blocked', recovery: 'Blocked by host.codex.authenticated; resolve the predecessor first.' })],
+    });
+    ok(/^ {2}- \[stage 8\] proof\.deep-peer-smoke: passed$/m.test(text), `recorded evidence stands on its own:\n${text}`);
+    ok(/^ {6}execution: Blocked by host\.codex\.authenticated; resolve the predecessor first\.$/m.test(text), 'the unreachable re-execution is still named');
+  });
+
+  it('truncation never emits half a surrogate pair', () => {
+    // 398 filler + an astral pair puts the high surrogate exactly on the cut
+    // boundary (RENDER_LINE_MAX 400 → slice(0, 399) ends at index 398).
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ reasons: [`${'x'.repeat(398)}😀${'y'.repeat(200)}`] })]),
+      steps: [],
+    });
+    ok(/…$/m.test(text.split('\n').find((line) => /^ {6}evidence: /.test(line)) ?? ''), 'the line is truncated');
+    ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(text), 'no lone high surrogate survives the cut');
+    ok(!/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text), 'no lone low surrogate either');
+  });
+
+  it('CONFIG free text is sanitized on the same terms — the mirror of the Stage-8 fix', () => {
+    // A CONFIG step's `observed` / `recovery` interpolate the probe's plugin
+    // version, which lib/machine-probe.mjs carries through as whatever string
+    // the host printed (`typeof raw.version === 'string' ? raw.version : null`).
+    // Hardening only the Stage-8 rows would have left the identical forgery
+    // open one loop below.
+    const text = renderText({
+      verb: 'status',
+      steps: [{
+        id: 'plugin.runtime.codex.installed',
+        stage: 3,
+        status: 'pending',
+        declinable: true,
+        blocked_by: [],
+        observed: 'bogus\n- [stage 8] proof.forged: passed',
+        // U+009B is CSI: not a C0 control, so the shared singleLine helper
+        // alone would let it through to the terminal.
+        recovery: "runtime@bogus\u009b31m is below the 0.86.0 floor\n    apply: rm -rf /",
+        apply_command: null,
+        fragment_pointer: null,
+      }],
+    });
+    ok(!/^\s*- \[stage 8\]/m.test(text), 'a CONFIG field must not forge a Stage-8 row');
+    ok(!/^\s*apply: rm -rf/m.test(text), 'a CONFIG field must not forge an apply line');
+    ok(!/[\u0080-\u009f\u2028\u2029]/.test(text), 'C1 controls and line separators are neutralized');
+    ok(/plugin\.runtime\.codex\.installed: pending/.test(text), 'the genuine row still renders');
+    // Without these, deleting the fields outright (rather than sanitizing them)
+    // would survive as a mutant: absence and neutralization look identical if
+    // only the forgery is asserted.
+    ok(/\(observed: bogus - \[stage 8\] proof\.forged: passed\)/.test(text), 'the observed value still renders, neutralized rather than dropped');
+    ok(/runtime@bogus 31m is below the 0\.86\.0 floor/.test(text), 'the recovery text still renders, neutralized rather than dropped');
+  });
+
+  it('sanitizing never damages a payload the operator must copy verbatim', () => {
+    // The first attempt at this boundary reused lib/permission-sanitize's
+    // singleLine + redactSecrets and broke three real values: the 64-hex
+    // plugin-management plan hash (eaten by the generic 32+-hex rule, and the
+    // settings executor requires exactly 64), a path component that looks like
+    // an email, and a path with two consecutive spaces (squeezed). Structural
+    // neutralization is the requirement here; redaction is the wrong tool.
+    const planHash = 'a'.repeat(64);
+    const text = renderText({
+      verb: 'plan',
+      plugin_management: {
+        actions: [{ host: 'codex', command: 'codex plugin add runtime@agentic-plugins', note: null }],
+        presented_command: `runtime:settings --execute-plugin-management --expected-plan-hash ${planHash}`,
+      },
+      steps: [{
+        id: 'statusline.claude.configured',
+        stage: 5,
+        status: 'pending',
+        declinable: true,
+        blocked_by: [],
+        observed: null,
+        recovery: null,
+        // Leading/trailing spaces are legal in a POSIX path and must survive:
+        // trimming a copy-critical value is the same class of damage as
+        // redacting one.
+        apply_command: ' /tmp/alice@example.com/Claude  Data/settings.json ',
+        fragment_pointer: `~/.agentic-plugins/runs/bootstrap/x/fragments/f-${'b'.repeat(40)}.fragment`,
+      }],
+    });
+    ok(text.includes(planHash), 'the plan hash survives intact — a redacted one is unusable');
+    ok(text.includes('apply:  /tmp/alice@example.com/Claude  Data/settings.json '),
+      'an email-shaped component, a double space, AND the boundary spaces all survive');
+    ok(text.includes('b'.repeat(40)), 'a long hex path component is not mistaken for a secret');
+  });
+
+  it('BiDi controls cannot visually reorder rendered evidence', () => {
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ reasons: [`safe\u202ereversed\u202c and\u2066isolated\u2069 then\u2028separated\u2029too`] })]),
+      steps: [],
+    });
+    ok(!/[\u061c\u200e-\u200f\u2028-\u202e\u2066-\u2069]/.test(text), 'overrides, isolates, and marks are neutralized');
+    ok(/proof\.deep-peer-smoke: stale/.test(text), 'the genuine row still renders');
+  });
+
+  it('a proof whose step_id disagrees with its kind is labelled by KIND and joins nothing', () => {
+    // The schema validates `kind` and `step_id` independently, and a historical
+    // terminal run is replayed without re-reduction — so a hand-edited record
+    // could otherwise make deep-peer evidence read as the egress proof.
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ kind: 'deep-peer-smoke', step_id: 'proof.egress-provider-ack', status: 'passed', reasons: [] })]),
+      steps: [
+        controlRow({ id: 'proof.egress-provider-ack', status: 'blocked', recovery: 'Blocked by egress.configured; resolve the predecessor first.' }),
+        // The CANONICAL row is present and blocked too, so dropping the join
+        // guard would attach THIS context to a record that named another step —
+        // without it the mutant survives on a null lookup.
+        controlRow({ id: 'proof.deep-peer-smoke', status: 'blocked', recovery: 'Blocked by host.claude.authenticated; resolve the predecessor first.' }),
+      ],
+    });
+    ok(/^ {2}- \[stage 8\] proof\.deep-peer-smoke: passed$/m.test(text), `the row is labelled from the kind:\n${text}`);
+    ok(!/proof\.egress-provider-ack/.test(text), 'the disagreeing step_id never labels the row');
+    ok(!/execution:/.test(text), 'and it joins NO control context — not the named row, not the canonical one');
+  });
+
+  it('receipt-attestation reason text cannot fabricate a row either', () => {
+    const text = renderText({
+      verb: 'verify',
+      completion: {
+        ...completionOf([]),
+        egress_receipt_attestation: {
+          status: 'stale',
+          reasons: ['the linked proof re-judges stale\n  - [stage 8] proof.forged: passed'],
+          attested_at: null,
+          attempt_hash: null,
+          provider_proof_artifact_hash: null,
+        },
+      },
+      steps: [],
+    });
+    ok(!/^\s*- \[stage 8\]/m.test(text), 'the receipt line is sanitized on the same terms');
+    // The newline became a space; the two spaces that followed it are PRESERVED
+    // (this boundary neutralizes structure, it does not squeeze whitespace —
+    // squeezing corrupts operator-facing paths).
+    ok(/receipt attestation: stale \(the linked proof re-judges stale {3}- \[stage 8\] proof\.forged: passed\)/.test(text),
+      'the reason still renders inline, neutralized rather than dropped');
+  });
+
+  it('a duplicated proof kind renders ONE row naming the conflict, never two to choose between', () => {
+    // The reducer rejects duplicate evidence rather than picking a record (§8),
+    // but a historical completion is replayed verbatim and `proofs[]` is not
+    // unique-by-kind in the schema — so the renderer must not print two
+    // identical-looking rows with different verdicts.
+    const text = renderText({
+      verb: 'status',
+      historical: true,
+      legacy_schema: 'runtime-bootstrap-run-1.1',
+      completion: completionOf([
+        evaluatedProof({ status: 'passed', reasons: [] }),
+        evaluatedProof({ status: 'failed', reasons: ['forged sibling'] }),
+      ]),
+    });
+    const rows = text.split('\n').filter((line) => /^ {2}- \[stage 8\] /.test(line));
+    strictEqual(rows.length, 1, `exactly one row for the duplicated kind, got ${JSON.stringify(rows)}`);
+    ok(/2 conflicting evidence records/.test(rows[0]), `the conflict is named: ${rows[0]}`);
+    ok(!/: passed/.test(text) && !/: failed/.test(text), 'neither verdict is presented as the answer');
+  });
+
+  it('an argument-parse failure cannot forge a row through the usage path', async () => {
+    const { home, cwd } = await makeHome();
+    const result = await boot({
+      argv: ['status', '--format', 'json\n- [stage 8] proof.forged: passed'],
+      home,
+      cwd,
+      runner: bareRunner(),
+      subprocess: spySubprocess().runner,
+    });
+    strictEqual(result.exitCode, EXIT.INVALID);
+    ok(!/^\s*- \[stage 8\]/m.test(result.rendered), `the offending argv must not become a row:\n${result.rendered}`);
+    // The JSON field keeps the raw value — a JSON string escapes control
+    // characters, and a machine consumer needs what it actually received.
+    ok(result.report.error.includes('\n'), 'the structured error keeps the raw argument');
+  });
+
+  it('a report without steps (historical / attest) degrades to evidence-only without throwing', () => {
+    const text = renderText({
+      verb: 'status',
+      historical: true,
+      legacy_schema: 'runtime-bootstrap-run-1.1',
+      completion: completionOf([evaluatedProof({ status: 'passed', reasons: [] })]),
+    });
+    ok(/^ {2}- \[stage 8\] proof\.deep-peer-smoke: passed$/m.test(text), `evidence renders with no steps to join:\n${text}`);
+    ok(!/execution:/.test(text), 'no control context is invented when there are no steps');
   });
 });

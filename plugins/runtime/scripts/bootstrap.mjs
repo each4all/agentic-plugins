@@ -73,7 +73,7 @@ import {
   renderCodexStatusLineFragmentToml,
   statuslineShimInstallPath,
 } from './lib/statusline-plan.mjs';
-import { deriveExpectedSteps, stepIds, validateStepGraph } from './lib/step-registry.mjs';
+import { PROOF_STAGES, deriveExpectedSteps, stepIds, validateStepGraph } from './lib/step-registry.mjs';
 import {
   currentBoundVersions,
   egressProofOptedIn,
@@ -2576,7 +2576,58 @@ async function runProfileSeed(ctx, opts) {
 // Rendering
 // ---------------------------------------------------------------------------
 
-function renderText(report) {
+// Free text reaching a rendered line is single-lined, redacted, and bounded.
+// `completion.proofs[].reasons` is schema-bounded by LENGTH ONLY (maxLength
+// 512) — a newline or an ESC is schema-valid — and its inputs are not all
+// grammar-clamped: a Codex plugin-list version is carried through as whatever
+// string the host printed (lib/machine-probe.mjs), and a historical report
+// replays a STORED, operator-editable completion verbatim. Interpolating that
+// raw would let a reason fabricate a line that looks like this renderer's own
+// output. Same rule the completion-output contract applies to free text.
+// The render boundary neutralizes every character that could END A LINE, move a
+// terminal cursor, or REORDER the display — and nothing else. Row forgery is the
+// threat: `completion.proofs[].reasons` is schema-bounded by LENGTH only (a
+// newline or an ESC is schema-valid), a CONFIG step's `observed` / `recovery`
+// interpolate the probe's plugin version, which lib/machine-probe.mjs carries
+// through as whatever string the host printed, and a historical report replays a
+// stored, operator-editable completion verbatim.
+//
+// Deliberately NOT lib/permission-sanitize's `singleLine` + `redactSecrets`
+// (both were tried at this boundary and withdrawn):
+//   * `singleLine` squeezes runs of whitespace, and an operator-facing path may
+//     legitimately contain two spaces;
+//   * redaction provably destroys real payloads at this boundary — the
+//     plugin-management handoff carries a 64-hex plan hash that the generic
+//     32+-hex rule eats whole, a path component can look like an email, and a
+//     SemVer build identifier can be long hex. Nothing rendered here is a
+//     credential channel: it is runtime-authored text or the operator's own
+//     file, and §5's sanitize discipline already keeps secrets out of artifacts.
+const RENDER_UNSAFE_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e-\u200f\u2028-\u202e\u206a-\u206f\u2066-\u2069\ufff9-\ufffb]/g;
+function renderSafe(value) {
+  // NO trim: `apply_command` and `fragment_pointer` are copy-critical, and a
+  // POSIX path may legitimately begin or end with a space. Trimming is applied
+  // by renderLine only, whose inputs are prose.
+  return String(value ?? '').replace(RENDER_UNSAFE_RE, ' ');
+}
+
+// The bounded variant, for text whose LENGTH is not controlled by us:
+// `completion.proofs[].reasons` is up to 64 entries of 512 chars, so the joined
+// aggregate can reach 32 KiB on one line. Operator-facing guidance (a CONFIG
+// step's recovery, an apply command) is judge-authored and finite, so it is
+// neutralized but NOT truncated — cutting a runbook mid-sentence would trade one
+// dishonesty for another.
+const RENDER_LINE_MAX = 400;
+function renderLine(value) {
+  const clean = renderSafe(value).trim();
+  if (clean.length <= RENDER_LINE_MAX) return clean;
+  const cut = clean.slice(0, RENDER_LINE_MAX - 1);
+  // A UTF-16 slice can land BETWEEN a surrogate pair, emitting a lone high
+  // surrogate that renders as U+FFFD — sanitizing text into mojibake is its own
+  // small dishonesty. Drop the orphan rather than half a character.
+  return `${/[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut}…`;
+}
+
+export function renderText(report) {
   const lines = [];
   lines.push(`runtime:bootstrap ${report.verb}`);
   if (report.run_id) lines.push(`- run: ${report.run_id}${report.run_status ? ` (${report.run_status})` : ''}`);
@@ -2593,37 +2644,92 @@ function renderText(report) {
     const ackPassed = (report.completion.proofs ?? []).some((p) => p.kind === 'egress-provider-ack' && p.status === 'passed');
     const deliveryAttested = ackPassed && report.completion.egress_receipt_attestation?.status === 'attested';
     lines.push(`- completion: ${report.completion.state}${deliveryAttested ? ' (delivery-attested)' : ''}${report.completion.unsatisfied.length ? `; unsatisfied=${report.completion.unsatisfied.join(',')}` : ''}${report.completion.missing_steps.length ? `; missing=${report.completion.missing_steps.join(',')}` : ''}`);
+    // Stage 8 renders ONCE, here, from the reducer — the sole evidence
+    // authority (§8). `steps[]` carries the orthogonal CONTROL axis (is
+    // execution reachable; did the operator choose), and the two genuinely
+    // disagree: a proof can be `passed` AND `declined`, or `stale` AND
+    // `blocked`. Printing both as peer rows is what let a live-fire operator
+    // read a passed egress send as a failure — the control row says `pending`
+    // whatever the evidence says, because proof judgement never sees evidence.
+    const stepById = new Map((report.steps ?? [])
+      .filter((step) => typeof step?.id === 'string')
+      .map((step) => [step.id, step]));
+    // Exactly one row per proof KIND. The reducer already rejects duplicate
+    // evidence rather than choosing between records (§8), but a HISTORICAL
+    // completion is replayed verbatim without re-reduction, and the schema does
+    // not make `proofs[]` unique by kind — so a stored duplicate would print two
+    // identical-looking rows here and invite the operator to believe whichever
+    // they read first. Report the conflict instead of silently picking one.
+    const kindCounts = new Map();
     for (const proof of report.completion.proofs ?? []) {
-      if (proof.required) lines.push(`  - proof ${proof.kind}: ${proof.status}${proof.declined ? ' (declined)' : ''}`);
+      kindCounts.set(proof.kind, (kindCounts.get(proof.kind) ?? 0) + 1);
+    }
+    const renderedKinds = new Set();
+    for (const proof of report.completion.proofs ?? []) {
+      // Required proofs always show. A NON-required one shows only when the
+      // operator declined it: `applyAnswers` accepts a decline against a proof
+      // this selection does not apply, and that choice used to reach the
+      // operator through the generic loop. Filtering on `required` alone would
+      // silently drop a recorded decision.
+      if (!proof.required && !proof.declined) continue;
+      // The row is labelled from the KIND, not from the record's own
+      // `step_id`. The schema validates the two independently and a historical
+      // terminal run is replayed without re-reduction, so a hand-edited record
+      // could otherwise label deep-peer evidence as the egress proof. The kind
+      // is what the evidence is ABOUT; a step_id that disagrees with it is not
+      // trusted to join either (fail closed to evidence-only).
+      const canonicalId = `proof.${proof.kind}`;
+      if (renderedKinds.has(canonicalId)) continue;
+      renderedKinds.add(canonicalId);
+      if ((kindCounts.get(proof.kind) ?? 0) > 1) {
+        lines.push(`  - [stage 8] ${canonicalId}: ${kindCounts.get(proof.kind)} conflicting evidence records — none shown; duplicate evidence is rejected, not chosen between (§8)`);
+        continue;
+      }
+      lines.push(`  - [stage 8] ${canonicalId}: ${proof.status}${proof.declined ? ' (declined)' : ''}`);
+      if (proof.reasons?.length) lines.push(`      evidence: ${renderLine(proof.reasons.join('; '))}`);
+      const control = proof.step_id === canonicalId ? stepById.get(canonicalId) : null;
+      // `blocked` is the one control state the evidence row cannot already
+      // convey and the operator can act on. `declined` rides the row above,
+      // and `pending` is exactly the string that caused the original misread.
+      if (control?.status === 'blocked' && control.recovery) {
+        lines.push(`      execution: ${renderLine(control.recovery)}`);
+      }
     }
     if (report.completion.egress_receipt_attestation) {
       const receipt = report.completion.egress_receipt_attestation;
-      lines.push(`  - receipt attestation: ${receipt.status}${receipt.reasons.length ? ` (${receipt.reasons[0]})` : ''}`);
+      lines.push(`  - receipt attestation: ${receipt.status}${receipt.reasons.length ? ` (${renderLine(receipt.reasons[0])})` : ''}`);
     }
   }
   if (report.stage0 && Object.keys(report.stage0).length > 0) {
     lines.push('- Stage 0 (manual, host-native — §2):');
     for (const [host, entry] of Object.entries(report.stage0)) {
-      lines.push(`  - ${host}: ${entry.reason}`);
-      for (const command of entry.commands) lines.push(`      ${command}`);
+      lines.push(`  - ${host}: ${renderSafe(entry.reason)}`);
+      for (const command of entry.commands) lines.push(`      ${renderSafe(command)}`);
     }
   }
   if (report.plugin_management) {
     lines.push(`- plugin management (presented, never executed here — §1.6):`);
-    for (const action of report.plugin_management.actions) lines.push(`  - ${action.host}: ${action.command}${action.note ? ` (${action.note})` : ''}`);
-    lines.push(`  - run: ${report.plugin_management.presented_command}`);
+    for (const action of report.plugin_management.actions) lines.push(`  - ${action.host}: ${renderSafe(action.command)}${action.note ? ` (${renderSafe(action.note)})` : ''}`);
+    lines.push(`  - run: ${renderSafe(report.plugin_management.presented_command)}`);
   }
   for (const step of report.steps ?? []) {
     if (['satisfied', 'not-applicable'].includes(step.status)) continue;
-    lines.push(`- [stage ${step.stage}] ${step.id}: ${step.status}${step.observed ? ` (observed: ${step.observed})` : ''}`);
+    // Stage 8 was presented once above, joined to its evidence verdict (§8).
+    // This loop is the CONFIG (Stage 1-7) unresolved-step presentation.
+    if (PROOF_STAGES.includes(step.stage)) continue;
+    // Every free-text field is sanitized, not only the Stage-8 ones: a CONFIG
+    // step's `observed` and `recovery` interpolate the probe's plugin version,
+    // which lib/machine-probe.mjs carries through as whatever string the host
+    // printed. An unsanitized one forges a row exactly as a proof reason would.
+    lines.push(`- [stage ${step.stage}] ${step.id}: ${step.status}${step.observed ? ` (observed: ${renderSafe(step.observed)})` : ''}`);
     // Belt-and-braces with the decline-time field withdrawal: a refused
     // key's historical hand-off is never rendered (Refine-verify round 5).
-    if (step.apply_command && step.status !== 'declined') lines.push(`    apply: ${step.apply_command}`);
-    if (step.fragment_pointer && step.status !== 'declined') lines.push(`    fragment: ${step.fragment_pointer}`);
-    if (step.recovery) lines.push(`    ${step.recovery}`);
+    if (step.apply_command && step.status !== 'declined') lines.push(`    apply: ${renderSafe(step.apply_command)}`);
+    if (step.fragment_pointer && step.status !== 'declined') lines.push(`    fragment: ${renderSafe(step.fragment_pointer)}`);
+    if (step.recovery) lines.push(`    ${renderSafe(step.recovery)}`);
   }
-  for (const warning of report.warnings ?? []) lines.push(`! ${warning}`);
-  for (const diagnostic of report.diagnostics ?? []) lines.push(`  ${diagnostic}`);
+  for (const warning of report.warnings ?? []) lines.push(`! ${renderSafe(warning)}`);
+  for (const diagnostic of report.diagnostics ?? []) lines.push(`  ${renderSafe(diagnostic)}`);
   return `${lines.join('\n')}\n`;
 }
 
@@ -2676,7 +2782,12 @@ export async function runBootstrap({
     opts = parseBootstrapArgs(argv ?? []);
   } catch (err) {
     if (err instanceof UsageError) {
-      return { exitCode: err.exitCode, report: { error: err.message }, rendered: `✗ ${err.message}\n${usage()}` };
+      // The message interpolates the OFFENDING ARGUMENT, so it is neutralized
+      // on the same terms as every other rendered line (§3): an argv value
+      // carrying a newline could otherwise forge a row above the usage block.
+      // The JSON `error` keeps the raw text — a JSON string escapes control
+      // characters, so there is no row to forge there.
+      return { exitCode: err.exitCode, report: { error: err.message }, rendered: `✗ ${renderSafe(err.message)}\n${usage()}` };
     }
     throw err;
   }
@@ -2688,7 +2799,7 @@ export async function runBootstrap({
   // resolved once here so every verb shares the verdict.
   const home = await resolveMachineArtifactHome({ homeDir, repoRoot: cwd });
   if (!home.ok) {
-    return { exitCode: EXIT.INVALID, report: { error: home.diagnostic }, rendered: `✗ ${home.diagnostic}\n` };
+    return { exitCode: EXIT.INVALID, report: { error: home.diagnostic }, rendered: `✗ ${renderSafe(home.diagnostic)}\n` };
   }
 
   const ctx = { env, homeDir, cwd, hostname, now, runner, subprocessRunner, pluginRoot };
@@ -2700,7 +2811,7 @@ export async function runBootstrap({
     return { exitCode, report, rendered };
   } catch (err) {
     if (err instanceof UsageError) {
-      return { exitCode: err.exitCode, report: { error: err.message }, rendered: `✗ ${err.message}\n` };
+      return { exitCode: err.exitCode, report: { error: err.message }, rendered: `✗ ${renderSafe(err.message)}\n` };
     }
     throw err;
   }

@@ -486,6 +486,53 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   means: given the same probe result and the same run, the JSON is byte-identical
   except for the fields explicitly marked volatile (`run_id`, `started_at`,
   `updated_at`, `probed_at`). The interview is never required to reach a plan.
+- **Stage-8 presentation is single-sourced.** The text rendering prints each
+  presented proof **exactly once**, from `completion.proofs[]` — the evidence
+  authority (§8) — and never a second time from the generic unresolved-step
+  presentation, which is CONFIG-only. *Presented* means `required`, plus any
+  proof the operator explicitly `declined` (a decline is a recorded decision and
+  must not vanish because the selection stopped requiring the proof). Control
+  state joins the row only where it says something the verdict cannot and the
+  operator can act on — an unreachable execution path — as a labelled
+  `execution:` line. A JSON consumer reads the same division: `completion.proofs[]`
+  is the evidence verdict, `steps[]` is control/interview state, and neither
+  restates the other's STATUS (§5). `completion.proofs[].declined` is the one
+  field deliberately copied across the boundary — the reducer reads the control
+  row's decline so the verdict can carry it.
+
+  **Every free-text field reaching a rendered line is structurally neutralized
+  first** — proof `reasons`, step `observed` / `recovery` / `apply_command` /
+  `fragment_pointer`, warnings, diagnostics, Stage-0 text, and the
+  plugin-management command. Neutralized means: every character that could end a
+  line, move a terminal cursor, or reorder the display (C0, DEL, C1 — U+009B is
+  CSI — the Unicode line/paragraph separators, and the BiDi marks, overrides and
+  isolates) becomes a space. It does NOT mean redacted or whitespace-squeezed:
+  the rendered text is runtime-authored or the operator's own file, §5's
+  sanitize discipline already keeps secrets out of artifacts, and both
+  transforms provably destroy real payloads — the plugin-management handoff
+  carries a **64-hex plan hash** the executor matches exactly, an operator path
+  may contain an email-shaped component or two consecutive spaces, and a SemVer
+  build identifier may be long hex. Three lines are additionally
+  **length-bounded** — the Stage-8 evidence line, the Stage-8 `execution:` line,
+  and the receipt-attestation reason — because `reasons` is schema-bounded by
+  LENGTH only (64 entries × 512 chars). The CONFIG rows are NOT bounded:
+  operator guidance there is judge-authored, finite, and rendered whole, since
+  cutting a runbook mid-sentence trades one dishonesty for another. The bounded
+  `execution:` line is the one place a judge-authored recovery is capped, and it
+  is capped because it shares a row with attacker-length evidence.
+
+  The guarantee covers the **error and usage paths** too: an argument-parse
+  failure interpolates the offending argument, so its rendered form is
+  neutralized the same way. The JSON `error` field keeps the raw text — a JSON
+  string escapes control characters, so there is no row to forge there, and a
+  machine consumer needs the value it actually received.
+
+  **Exactly one row per proof KIND.** The reducer already rejects duplicate
+  evidence rather than choosing between records (§8), but a historical
+  completion is replayed verbatim without re-reduction and `proofs[]` is not
+  unique-by-kind in the schema. A duplicated kind therefore renders ONE row
+  naming the conflict and showing no verdict — never two rows the operator must
+  choose between.
 - `profile export` exports the **live probe** unless `--from-run` names a run. With
   no run, `selection.bundle` is `custom` and `selection.desired` is **the observed
   installed set** — which is, empirically, exactly what this machine chose;
@@ -825,12 +872,12 @@ any unknown key at all. Downgrade is never attempted.
     "unsatisfied": ["<step-id>"],
     "missing_steps": ["<step-id>"],
     "proofs": [
-      { "kind": "deep-peer-smoke|workflow-continuation|permission",
+      { "kind": "deep-peer-smoke|workflow-continuation|permission|egress-provider-ack",
+        "step_id": "<proof.*>",
         "status": "passed|failed|stale|not-applicable|absent",
-        "directions": {
-          "claude->codex": { "status": "passed|failed|blocked|absent", "ran_at": "<iso-8601-utc|null>" },
-          "codex->claude": { "status": "passed|failed|blocked|absent", "ran_at": "<iso-8601-utc|null>" }
-        },
+        "reasons": ["<why this verdict, recomputed>"],
+        "required": true,
+        "declined": false,
         "artifact_pointer": "<path|null>",
         "artifact_hash": "<sha256|null>",
         "bound_versions": {
@@ -841,6 +888,7 @@ any unknown key at all. Downgrade is never attempted.
     ],
     "hook_attestation": {
       "status": "attested|stale|absent|not-applicable",
+      "reasons": ["<why this verdict, recomputed>"],
       "attested_plugins": ["<name>"],
       "bound_versions": { "codex": "<semver|null>", "plugins": { "codex": { "<name>": "<semver>" } } },
       "artifact_pointer": "<path|null>",
@@ -866,7 +914,7 @@ wrong one.
 `seeded_from` records a **profile id and hash**, never a filesystem path (a path
 can itself reveal operator layout).
 
-Four shapes are load-bearing and agree with §8 / §8.1:
+Five shapes are load-bearing and agree with §8 / §8.1:
 
 - **`probe.hosts.<h>.auth` is an enum**, not a boolean — `available` / `unauthenticated`
   / `unknown` / `sandbox_limited` — because the machine probe (`probeMachineHostState`,
@@ -896,6 +944,19 @@ Four shapes are load-bearing and agree with §8 / §8.1:
   unknown kind, both members, neither member, filename/embedded-kind mismatch,
   and duplicate kinds are refused fail-closed — the schema deliberately leaves
   both members optional because the §4.1 validator has no `oneOf`.
+- **A Stage-8 `steps[]` row is CONTROL state, never evidence.** THREE things
+  describe one proof and none substitutes for another: the `steps[]` row records
+  execution **disposition** (`pending` / `blocked` / `declined` /
+  `not-applicable` — is execution reachable, did the operator choose), the
+  recorded `proof/<kind>.json` holds the **evidence**, and `completion.proofs[]`
+  holds the recomputed **verdict**. Proof judgement never sees evidence, so the
+  control row reads `pending` however the evidence reads. The two axes genuinely
+  disagree — `passed` + `declined` and `stale` + `blocked` are both reachable —
+  so one field could not carry both, and presenting them as peer rows misreads
+  as a contradiction. It did: on the 0.86.0 live-fire run the reducer judged the
+  egress ack `passed` while the step row rendered `pending`, and the operator
+  read a successful real-network send as a failure. §8 pins the presentation
+  rule that closes it.
 - **`bound_versions.plugins` is per-host** (`{ claude: {…}, codex: {…} }`) and binds
   **every** selected plugin version, not only runtime + the two CLIs (§8.1). Freshness
   compares exact key **sets and values**; a missing or null required version never counts
@@ -936,13 +997,29 @@ Four shapes are load-bearing and agree with §8 / §8.1:
 the operator said they applied it, because a previous run recorded it, or because a
 fragment was rendered. **Only a post-probe promotes a step.**
 
+**A Stage-8 row describes execution disposition, not evidence.** Its status
+answers *is execution reachable, and did the operator choose* — `pending` /
+`blocked` / `declined` / `not-applicable` — and never *what does the recorded
+evidence say*. Recorded proof evidence NEVER promotes a control row to
+`satisfied`: proof judgement does not read evidence at all, and §8 evaluates
+Stage 8 from `completion.proofs[]` instead. The table's "counts toward
+completion" column is therefore a CONFIG statement; a Stage-8 row reaches the
+reducer only as the decline flag and the opt-in signal (§8), and the recomputed
+verdict decides the rest. The two axes are independent by construction, so
+`passed` + `declined` and `stale` + `blocked` are both ordinary states — not
+contradictions to be resolved into one value.
+
 ### 6.1 The expected-step registry — omission must not pass
 
 The reducer walks an **exact expected-step set** derived from the selection, not
-merely the `steps[]` array present in the manifest. A step that is *absent* is
-counted in `missing_steps[]` and **blocks completion**. Without this, a manifest that
-simply omits a required step passes the reducer — the exact false-pass this command
-exists to prevent. The registry is therefore enumerated here, not left to S8:
+merely the `steps[]` array present in the manifest. An absent **applicable CONFIG**
+step (Stage 1–7) is counted in `missing_steps[]` and **blocks completion**. Without
+this, a manifest that simply omits a required step passes the reducer — the exact
+false-pass this command exists to prevent. The CONFIG restriction is not an
+oversight: counting an omitted PROOF step here would force `incomplete` and make
+`configured-not-verified` unreachable again (§8's errata), and an absent proof is
+already handled by the proof clause. The registry is therefore enumerated here, not
+left to S8:
 
 | step id | stage | applicability | declinable |
 |---|---|---|---|
@@ -1010,6 +1087,13 @@ be attempted at all, never a mere stage ordering:
 | `proof.workflow-continuation` | `engineer`'s `.installed` on both hosts and `.enabled` on Codex |
 | `proof.permission` | every applicable `permission.<h>.applied` |
 | `proof.egress-provider-ack` | `egress.configured` (an ack over an unconfigured egress channel is unreachable by construction) |
+
+A **Stage-8 entry is an execution anchor**, not an evidence record: it exists so an
+answer (`execute` / `decline` / `attest-receipt`) has something to target and so the
+executor knows whether running is reachable. Its `blocked_by` edges therefore govern
+EXECUTION reachability only and say nothing about evidence already recorded — a proof
+whose predecessors have since broken is `blocked` for re-execution while its recorded
+verdict stands on its own (§8, §5's three-shapes bullet).
 
 An empty `blocked_by` is written **explicitly** (`[]`), never omitted: an absent edge list
 and "this step has no predecessors" must not be the same byte. The graph is acyclic, and
@@ -1155,6 +1239,16 @@ with a reason — when any of these changed since `probe.probed_at`:
 A step "satisfied" against Codex `0.136` says nothing about `0.140`; hook trust in
 particular is version-bound (ADR-0030).
 
+**Step invalidation is not proof staleness, and neither substitutes for the
+other.** This clause resets version-bound *observations* on the CONTROL axis
+(`satisfied` / `manual-follow-up` rows, plus any render state a pending row
+froze). A proof's freshness is recomputed independently, from the proof's OWN
+`bound_versions` — and, for `egress-provider-ack`, from the activation
+fingerprint too (§8.1), which can drift with no version change at all. The
+converse also holds: a later resume may refresh `probe` while a recorded proof
+stays stale. So a Stage-8 control row is never the place a proof's staleness is
+recorded, and this reset never makes a stale proof current.
+
 **Schema-minor migration (1.2, ADR-0048 §1).** `resume` is the one M1 verb, so it
 is where the minor moves:
 
@@ -1214,7 +1308,7 @@ configured-not-verified
 incomplete
           ⟺  otherwise
              (a CONFIG step is pending / blocked / manual-follow-up / unknown,
-              or a required step is missing)
+              or a required CONFIG step is missing)
 ```
 
 `missing_steps` counts an omitted **CONFIG** step (§6.1); a machine missing a host has a
@@ -1231,6 +1325,20 @@ incomplete
 > "I installed it" and "it works" different terminal states, as §Decision-10 (ADR-0046)
 > requires. A declined proof caps at `configured-not-verified` (§6.2); it never grants
 > `complete`.
+
+**`completion.proofs[]` is the sole proof verdict — and the sole source for
+presenting one.** The reducer recomputes it from the recorded evidence on every
+read, so nothing else may state what a proof currently says: not the stored
+`proofs[].status` (§5), not a Stage-8 `steps[]` row (which carries the
+orthogonal control axis, §6), and not a second rendered row. `verify`'s
+top-level `proofs` is an exact alias of `completion.proofs` — a projection for
+convenience, never a second authority. The generic unresolved-step presentation
+covers CONFIG (Stage 1–7) only; Stage 8 is presented once, joined, per §3. This
+is the presentation half of the same partition the errata below establishes for
+the formula: CONFIG and PROOF are evaluated separately, so they must be
+*reported* separately too. Rendering both axes as peer rows is what produced the
+0.86.0 live-fire misread — the reducer said `passed`, the control row said
+`pending`, and the operator believed the row that was not the authority.
 
 **Invalid evidence caps at `incomplete` (1.2 amendment, ADR-0048 §3).** Duplicate
 records claiming one kind are REJECTED, never chosen between: the read boundary
@@ -1627,6 +1735,34 @@ following obligations join the pins below, spread across
   future-minor run refuses resume.
 - **Answers**: effective-action last-wins (execute-then-decline does not
   execute); `attest-receipt` is refused under plan and against any other step.
+- **Stage-8 presentation** (§3, §8): the render carries exactly ONE row per
+  presented proof, sourced from `completion.proofs[]`, and no Stage-8 row from
+  the generic step loop. Pinned across the verdict × control matrix — the row
+  states the verdict while the control status disagrees (`absent` + `blocked`);
+  a decline stays visible even when the selection stops requiring the proof
+  (non-required + `declined`); a `blocked` control joins as a labelled
+  `execution:` line; and a report with no `steps` (historical / attest) degrades
+  to evidence-only rather than throwing. Reason text is structurally
+  neutralized and bounded at the render boundary, so a `reasons` entry carrying a newline or
+  a control character cannot fabricate a row (`reasons` is schema-bounded by
+  LENGTH only, and its inputs — a Codex plugin-list version, a stored historical
+  completion — are not all grammar-clamped; note that neutralization is NOT
+  redaction, which was tried at this boundary and withdrawn for eating the
+  64-hex plan hash). The **CONFIG** rows are pinned the
+  same way, because they interpolate the same unclamped probe version one loop
+  below — neutralized but NOT truncated — and so are the receipt-attestation
+  reason, the C1 range (U+009B is CSI, which a C0-only helper misses), and the
+  BiDi overrides/isolates. The inverse is pinned too: a 64-hex plan hash, an
+  email-shaped path component, a double space, and a long-hex path component all
+  survive verbatim, because a redacting or whitespace-squeezing sanitizer at
+  this boundary breaks the operator's copy-paste. A record whose `step_id`
+  disagrees with its `kind` is labelled from the KIND and joins no control
+  context — the schema validates the two independently and a historical run is
+  replayed without re-reduction, so the disagreement is not resolved in the
+  edited record's favour. Every rendering rule stated here is mutation-verified:
+  reverting any one piece — the loop skip, the verdict source, the filter, the
+  execution join, either sanitizer, the length bound, the surrogate guard, the
+  kind labelling, or the join guard — turns a named assertion red.
 - **Profile 1.1**: every legal 1.0 document validates; a 1.1 `statusline_preset`
   under a 1.0-era reader warns-and-ignores (and the warning SURFACES); the
   canonical hash keeps the trailing-scalar alignment; the write gate refuses a
