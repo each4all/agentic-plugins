@@ -363,6 +363,236 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
   });
 
+  // ADR-0048 §3/D0.2 — the egress proof is OPT-IN, and "opted in" must not be
+  // satisfied by the plan that enumerated the step. The registry pushes
+  // `proof.egress-provider-ack` on every run so it can be reported, `judgeSteps`
+  // persists that row as `not-applicable`, and both readers used to test only
+  // that the row EXISTED — so every machine owed a proof it never asked for and
+  // could never reach `complete`. `status`/`verify`/`resume` all re-derive the
+  // opt-in through reprobeAgainstRun with no answers file, so they are the sites
+  // that regress: assert across the whole loop, not just at plan.
+  it('a run planned with NO answers never owes the egress proof — across plan, status, resume and verify', async () => {
+    const { home, cwd } = await makeHome();
+    const spy = spySubprocess();
+    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
+    const egressOf = (report) => report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    // Fixture sanity: the row IS enumerated. Without this the assertions below
+    // would hold for the wrong reason — a run that simply lacked the step.
+    const row = plan.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
+    ok(row, 'the step is enumerated even unrequested (§6.1 — reported, not owed)');
+    strictEqual(row.status, 'not-applicable');
+
+    for (const [label, argv] of [
+      ['plan', null],
+      ['status', ['status', '--format', 'json']],
+      ['resume', ['resume', '--latest-open', '--format', 'json']],
+      ['verify', ['verify', '--latest', '--format', 'json']],
+    ]) {
+      const report = argv === null ? plan.report : (await run(argv)).report;
+      const egress = egressOf(report);
+      strictEqual(egress.required, false, `${label} must not owe an unrequested egress proof`);
+      strictEqual(egress.status, 'not-applicable', `${label} judges it not-applicable, never absent`);
+    }
+    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
+  });
+
+  it('an opt-in answer DOES make it owed — the same loop, the other direction', async () => {
+    const { home, cwd } = await makeHome();
+    const spy = spySubprocess();
+    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
+    const optIn = join(home, 'egress-opt-in.json');
+    await writeFile(optIn, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+
+    const plan = await run(['plan', '--bundle', 'base', '--answers', optIn, '--format', 'json']);
+    const planned = plan.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(planned.required, true, 'the recorded answer is the opt-in');
+
+    // The opt-in must SURVIVE a verb that passes no answers file — it persists on
+    // the run's own step row and in choices[], not in the invocation.
+    const status = await run(['status', '--format', 'json']);
+    const later = status.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(later.required, true, 'status re-derives the opt-in from the run, not from argv');
+    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
+  });
+
+  // The `choices[]` leg IN ISOLATION. `judgeSteps` rewrites the egress row on
+  // every re-judgement, so the row cannot be the ledger's backstop: on a run whose
+  // row was written by the judge, only the recorded answer distinguishes an opt-in
+  // from the enumeration. Forcing the row to `not-applicable` while keeping the
+  // choice is the one edit that isolates this leg — and it is also the shape a
+  // run poisoned by the old presence test would have if it HAD answered.
+  it('the choices ledger alone keeps the proof owed — a hand-cleared step row does not release it', async () => {
+    const { home, cwd } = await makeHome();
+    const spy = spySubprocess();
+    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
+    const optIn = join(home, 'egress-opt-in.json');
+    await writeFile(optIn, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+
+    const plan = await run(['plan', '--bundle', 'base', '--answers', optIn, '--format', 'json']);
+    const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
+    const manifest = JSON.parse(await readFile(runPath, 'utf8'));
+    ok(manifest.choices.some((c) => c.step_id === 'proof.egress-provider-ack'), 'the answer ledger recorded it');
+    // `blocked`, not `pending`: this fixture never configures egress, so the
+    // demotion pass blocks the proof behind `egress.configured`.
+    strictEqual(
+      manifest.steps.find((s) => s.id === 'proof.egress-provider-ack').status,
+      'blocked',
+      'ground truth for this fixture — the judge blocks the opted-in proof behind egress.configured',
+    );
+
+    await writeFile(runPath, JSON.stringify({
+      ...manifest,
+      steps: manifest.steps.map((s) => (s.id === 'proof.egress-provider-ack' ? { ...s, status: 'not-applicable' } : s)),
+    }, null, 2));
+
+    const status = await run(['status', '--format', 'json']);
+    const egress = status.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(egress.required, true, 'the recorded answer still owes the proof');
+    strictEqual(egress.status, 'absent', 'and it is absent, not not-applicable — the run still owes evidence');
+
+    // The persisted ROW must agree with that verdict. The reducer derives the
+    // requirement independently, so a re-probe that failed to carry the opt-in into
+    // its expected set would leave the manifest self-contradicting: a row reading
+    // `not-applicable` beside a completion saying the proof is owed.
+    await run(['resume', '--latest-open', '--format', 'json']);
+    const rejudged = JSON.parse(await readFile(runPath, 'utf8'));
+    const rejudgedRow = rejudged.steps.find((s) => s.id === 'proof.egress-provider-ack');
+    ok(rejudgedRow.status !== 'not-applicable',
+      `the re-probe carries the opt-in into the row too (got ${rejudgedRow.status})`);
+    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
+  });
+
+  // The opt-in arriving at RESUME time rather than plan time. At that invocation
+  // the run's stored ledger does NOT yet hold the answer — it is appended by the
+  // same update that persists the judged rows — so a reduction over the stored
+  // ledger alone would report the proof the operator just authorized as
+  // not-applicable, and a machine could terminalize without ever owing it.
+  it('an opt-in answered at resume time is owed in the SAME invocation', async () => {
+    const { home, cwd } = await makeHome();
+    const spy = spySubprocess();
+    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const planned = plan.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(planned.required, false, 'nothing owed before the answer');
+
+    const optIn = join(home, 'egress-opt-in.json');
+    await writeFile(optIn, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+    const resume = await run(['resume', '--latest-open', '--answers', optIn, '--format', 'json']);
+    const owed = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(owed.required, true, 'the answer counts in the invocation that made it, not only the next one');
+
+    // And it persists, so the following read-only verb agrees.
+    const status = await run(['status', '--format', 'json']);
+    strictEqual(status.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack').required, true);
+    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
+  });
+
+  // The poisoning case the row-status leg would have created. A run planned under
+  // the broken presence test and then resumed by it holds a judge-written
+  // `pending`/`blocked` egress row with NO answer behind it; version invalidation
+  // preserves both statuses and a same-schema run never enters the migration path.
+  // Had the fix accepted generic row status as consent, that run would owe an
+  // impossible proof forever — the original defect, surviving its own fix.
+  it('a run POISONED by the old presence test heals — a judge-written row with no answer stops owing the proof', async () => {
+    const { home, cwd } = await makeHome();
+    const spy = spySubprocess();
+    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'run.json');
+    const manifest = JSON.parse(await readFile(runPath, 'utf8'));
+    ok(!manifest.choices.some((c) => c.step_id === 'proof.egress-provider-ack'), 'nobody answered');
+
+    // Exactly what an old-code resume persisted: the row promoted, ledger untouched.
+    for (const poisoned of ['pending', 'blocked']) {
+      await writeFile(runPath, JSON.stringify({
+        ...manifest,
+        steps: manifest.steps.map((s) => (s.id === 'proof.egress-provider-ack' ? { ...s, status: poisoned } : s)),
+      }, null, 2));
+
+      const status = await run(['status', '--format', 'json']);
+      const egress = status.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+      strictEqual(egress.required, false, `a '${poisoned}' row with no answer must not owe the proof`);
+      strictEqual(egress.status, 'not-applicable');
+    }
+
+    // And the heal is persisted, not just reported: resume re-judges the row back
+    // to not-applicable, so the poison does not linger in the file.
+    await run(['resume', '--latest-open', '--format', 'json']);
+    const healed = JSON.parse(await readFile(runPath, 'utf8'));
+    strictEqual(
+      healed.steps.find((s) => s.id === 'proof.egress-provider-ack').status,
+      'not-applicable',
+      'the next judgement rewrites the poisoned row',
+    );
+    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
+  });
+
+  // The proof file is written BEFORE the manifest update that records the choice
+  // and the promoted row, so a failure in between (a validation refusal, a full
+  // disk, a kill) leaves real delivery evidence on disk beside a manifest that
+  // still says nobody opted in. Without the evidence leg, `recomputeProofStatus`
+  // short-circuits to `not-applicable` and never inspects the record: a FAILED ack
+  // would be reduced away and the run could read `complete`. Simulated here by
+  // writing the proof and then reverting the manifest to its pre-answer bytes —
+  // the exact state that window produces.
+  it('a recorded ack survives a manifest that never recorded the choice — evidence is judged, not reduced away', async () => {
+    const { home, cwd } = await makeHome();
+    const spy = spySubprocess();
+    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const runId = plan.report.run_id;
+    const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json');
+    const preAnswer = await readFile(runPath, 'utf8');
+
+    const { writeBootstrapProof } = await import('../../plugins/runtime/scripts/lib/bootstrap-artifacts.mjs');
+    const persisted = await writeBootstrapProof({
+      homeDir: home,
+      repoRoot: null,
+      runId,
+      kind: 'egress-provider-ack',
+      record: {
+        kind: 'egress-provider-ack',
+        status: 'failed',
+        provider_ack: { result: 'failed', attempt_hash: 'a'.repeat(64), activation_fingerprint: 'f'.repeat(64), ran_at: new Date(NOW).toISOString() },
+        mirror_correlated: false,
+        artifact_pointer: null,
+        artifact_hash: 'b'.repeat(64),
+        // Any well-formed binding: the point is that the record gets JUDGED at all.
+        // On this bare fixture it re-judges failed/stale either way — what must never
+        // happen is the not-applicable short-circuit that skips the record entirely.
+        bound_versions: { runtime: '0.0.1', claude: '0.0.1', codex: '0.0.1', plugins: { claude: {}, codex: {} } },
+        ran_at: new Date(NOW).toISOString(),
+      },
+    });
+    ok(persisted?.ok, `proof write failed: ${JSON.stringify(persisted)}`);
+    // The manifest update that would have recorded choice + row never landed.
+    await writeFile(runPath, preAnswer);
+    const reverted = JSON.parse(preAnswer);
+    ok(!reverted.choices.some((c) => c.step_id === 'proof.egress-provider-ack'), 'no choice was recorded');
+    strictEqual(reverted.steps.find((s) => s.id === 'proof.egress-provider-ack').status, 'not-applicable');
+
+    const status = await run(['status', '--format', 'json']);
+    const egress = status.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
+    strictEqual(egress.required, true, 'evidence on disk makes the run accountable for it');
+    ok(egress.status !== 'not-applicable', `the record is judged, not skipped (got ${egress.status})`);
+    ok(status.report.completion.state !== 'complete', 'a machine holding a failed ack never reads complete');
+
+    // Row/completion agreement, as for the other two provenances: the re-probe
+    // must carry recorded evidence into its expected set too, or the manifest is
+    // left claiming not-applicable about a proof the completion says is owed.
+    await run(['resume', '--latest-open', '--format', 'json']);
+    const rejudged = JSON.parse(await readFile(runPath, 'utf8'));
+    const rejudgedRow = rejudged.steps.find((s) => s.id === 'proof.egress-provider-ack');
+    ok(rejudgedRow.status !== 'not-applicable',
+      `the re-probe carries recorded evidence into the row too (got ${rejudgedRow.status})`);
+    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
+  });
+
   // ADR-0048 §3 read-back — the false-demotion regression. Before 1.2 the
   // proof/ files were write-only: re-judgement consumed the manifest's REDUCED
   // completion.proofs (a shape with no `directions`), so recomputeProofStatus

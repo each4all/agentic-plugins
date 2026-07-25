@@ -76,6 +76,7 @@ import {
 import { deriveExpectedSteps, stepIds, validateStepGraph } from './lib/step-registry.mjs';
 import {
   currentBoundVersions,
+  egressProofOptedIn,
   importHookAttestation,
   importProofMetadata,
   invalidateStaleSteps,
@@ -1626,7 +1627,7 @@ async function runPlan(ctx, opts) {
     ? await fetchSettingsPlanHash({ subprocessRunner: ctx.subprocessRunner, cwd: ctx.cwd, env: scrubbedControlPlaneEnv(ctx.env) })
     : { hash: null, status: 'not-needed', reason: 'no plugin-management actions are needed' };
 
-  const completion = reduceCompletion({ pluginSet, selection: { plugins: selection.desired }, steps, proofs: [], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION, currentActivationFingerprint: currentActivationFingerprintOf(readers) });
+  const completion = reduceCompletion({ pluginSet, selection: { plugins: selection.desired }, steps, choices, proofs: [], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION, currentActivationFingerprint: currentActivationFingerprintOf(readers) });
   const manifest = buildManifestShape({ selection, probe, steps, choices, history, completion, planHash: planHash.hash, seededFrom });
 
   const created = await createBootstrapRun({
@@ -1688,12 +1689,16 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   const { raw, probe } = await probeNow(ctx);
   const readers = await readUserGlobalReaders(ctx);
   const selection = manifest.selection;
-  // The egress proof opt-in (D0.2) persists once made: the step already in the
-  // run's steps[], or any recorded choice against it, keeps it expected across
-  // every later verb — the caller ORs in this verb's fresh answers.
+  // The egress proof opt-in (D0.2) persists once made: a recorded decline, an
+  // answer in the run's ledger, or recorded delivery evidence keeps it expected
+  // across every later verb — the caller ORs in this verb's fresh answers. The
+  // run-side legs go through the reducer's shared predicate rather than id
+  // matches written out again here: a bare `some(s => s.id === …)` was true on
+  // every run ever planned (the registry enumerates the step even when it does
+  // not apply), which is the same defect the reducer carried, in a second copy.
+  // One predicate, so the two readers cannot drift.
   const egressOptIn = egressProofRequested
-    || (manifest.steps ?? []).some((s) => s.id === stepIds.proofEgressProviderAck())
-    || (manifest.choices ?? []).some((c) => c.step_id === stepIds.proofEgressProviderAck());
+    || egressProofOptedIn({ steps: manifest.steps, choices: manifest.choices, proofs: recordedProofs });
   const expected = deriveExpectedSteps({
     pluginSet,
     selection: { plugins: selection.desired },
@@ -1749,6 +1754,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
     pluginSet,
     selection: { plugins: selection.desired },
     steps,
+    choices: manifest.choices,
     proofs: recordedProofs,
     hookAttestation: recordedHookAttestation,
     probe,
@@ -2182,6 +2188,11 @@ async function runResume(ctx, opts) {
     pluginSet,
     selection: { plugins: selection.desired },
     steps,
+    // The SAME union the persist below writes (`[...m.choices, ...choices]`):
+    // reducing over the pre-answer ledger would judge this resume's own opt-in
+    // absent, so an `execute` answer would report the proof it just authorized as
+    // not-applicable.
+    choices: [...(Array.isArray(picked.manifest.choices) ? picked.manifest.choices : []), ...choices],
     proofs,
     hookAttestation,
     probe: finalProbe,
@@ -2331,6 +2342,7 @@ async function runAttest(ctx, opts) {
     pluginSet,
     selection: { plugins: reprobe.selection.desired },
     steps: reprobe.steps,
+    choices: picked.manifest.choices,
     proofs: finalRead.records.filter((r) => PROOF_KINDS.includes(r.kind)).map((r) => r.record),
     hookAttestation: finalRead.records.find((r) => r.kind === 'hook-attestation')?.record ?? null,
     probe: reprobe.probe,
