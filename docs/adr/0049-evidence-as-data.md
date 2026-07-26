@@ -306,3 +306,131 @@ Not part of the decision, but required when it is implemented:
   `scripts/sync-doc-versions.mjs` and `scripts/check-doc-evidence.mjs`
   comments should be corrected to six while the surrounding code is
   touched.
+
+## Amendments
+
+### 2026-07-27 — four provenance and timing corrections found after acceptance
+
+**Trigger**: the Plan-verify review of the backlog macro that schedules
+this ADR's implementation read the Accepted text against the repo and
+found three defects; a fourth surfaced from applying the first one's
+lens to the neighbouring table rows. All four clarify or cascade — the
+Decision's six items stay operatively accurate — so this is an
+Amendment, not a supersedure (README §Amendments vs Supersedes).
+
+**1. `proofs[].command` is not `observed`. Reclassified
+`operator-attested`.**
+
+The Context provenance table lists `command` among the `proofs[]`
+sub-fields and sources the whole row from
+`.agentic-plugins/runs/doctor/<id>/`. The doctor artifact does not hold
+it. `plugins/runtime/scripts/doctor.mjs:5386-5399` builds the record as
+a literal with exactly eight keys — `schema_version`, `runtime_version`,
+`run_id`, `status`, `created_at`, `repo_root_pointer`, `report`,
+`limits` — and nothing beneath `report` records the invocation. The
+`*_command` keys that do appear are feature-surface probes
+(`feature_surface.plugin_command: true`,
+`plugin_command_status: {status, exit_code, error_code}`), which report
+whether a host subcommand exists, not what was run.
+
+The field is not dropped: both prose sites cite a proof invocation
+(`runtime:doctor --permission-proof --execute-permission-proof
+--deep-peer-smoke …`), so the store must be able to carry it. What was
+wrong is the class. The command is a statement by the operator about
+what they ran — the same kind of fact as `install_method` — so it is
+**operator-attested**, and by Decision 4 it is therefore never gated.
+The verifiable part of a proof stays the run id and the artifact content
+hash; the command rides alongside as an attestation and must not be
+presented as observed.
+
+The alternative — change runtime to persist a sanitized normalized
+command so the field becomes genuinely `observed` — is recorded and
+**not adopted**. The artifact is deliberately sanitized output (its own
+`limits[0]`: raw peer stdout/stderr and prompt text are not stored), so
+persisting an invocation needs a scrubbing policy, and the read/report
+secret boundary is an open question in the backlog rather than a settled
+one this ADR may assume. It would also make a documentation-store schema
+wait on a runtime release. If that runtime change is made later, moving
+`command` from `operator-attested` to `observed` is strictly widening —
+a field that was never gated becomes gateable — so no record authored
+under this Amendment is invalidated by it.
+
+**2. `derived` against the manifest means the manifest as it stood at
+the cited tag.**
+
+Decision 4 names "git and the manifest" as the sources for `derived`
+fields, then enumerates only tag, squash, PR-number, and sha checks. The
+implied manifest check is never stated, and its subject is `version` —
+the one `package_releases[]` field the Context table sources from
+`.release-please-manifest.json`. State the check, and state its
+semantics: the comparison reads the manifest **at the cited tag**
+(`git show <tag>:.release-please-manifest.json`), never the working
+tree.
+
+The working-tree reading is not merely imprecise, it is
+self-invalidating. Measured here: the manifest at
+`plugin-runtime-v0.83.0` reads `0.83.0` and at `plugin-runtime-v0.86.0`
+reads `0.86.0`, while the working tree reads `0.86.2`. A validator
+comparing against the working tree passes only the newest record and
+turns every older one invalid at the next release — the store would fail
+its own gate as a function of time.
+
+**3. The schema slice authors no live record; the first one comes from
+the release loop after it.**
+
+Decision 1 starts the store "with the next runtime release loop". Read
+against the implementation order that is unsatisfiable by the slice that
+creates it: schema and validator must land before anything can be
+authored against them, so the schema slice ships test fixtures only. The
+first live record is authored by **the first runtime release loop that
+follows the schema landing**.
+
+This cascades into Consequences, because it moves a date that section
+depends on. The withdrawal trigger — "two consecutive release loops in
+which the store is authored but the follow-up ADR has not been opened" —
+starts counting at that first live record, not at this ADR's acceptance
+and not at the schema landing. A release loop that closes before the
+schema exists is not a loop "in which the store is authored" and does
+not count against the trigger.
+
+**4. Membership of `feature_commits[]` / `hardening_commits[]` is
+authored; only each entry's fields are `derived`.**
+
+Item 1 is an instance of a general fault in the Context table: a row
+carries one provenance label while a part of it belongs to another
+class. The two commit-array rows have the same fault, labelled `derived`
+wholesale. Each *entry's* fields genuinely are derived — a PR number and
+a sha resolve and check for reachability. Which entries the array
+*contains* is not, and neither is the split between the two arrays.
+
+Measured on the loop this ADR already treats as one record
+(0.86.0/0.86.1/0.86.2). Fifteen commits touch `plugins/runtime` in
+`plugin-runtime-v0.85.0..plugin-runtime-v0.86.2`; the prose cites nine
+as loop members and excludes six — three release commits and three
+doc-recovery PRs — by category judgment, not by any rule a validator
+could read. The stated source cannot supply the membership either:
+`cd27d2d` (#632) is cited as one of the loop's feature PRs but is a
+`refactor(...)` commit that release-please does not route, so it appears
+in **no** changelog, while the row sources `feature_commits[]` from
+"git + `plugins/runtime/CHANGELOG.md`". And the partition does not
+follow the changelog's own headings: `3615dcc` (#629) is a `fix(...)`
+commit that the prose places on the feature side of the narrative.
+
+Consequence for the validator, which is why this is recorded rather than
+left implicit: per-entry checks are in scope everywhere, and **array
+completeness is explicitly not gated**. No source can back "you missed a
+commit", and a check that guesses re-creates the unbounded
+reconstruction-from-unstructured-input failure this ADR's Context
+records for the prose parsers — the exact failure the decision exists to
+stop.
+
+**Unchanged**: Decision 1 (forward-only, keyed by evidence loop, closed
+schema under `docs/assurance/evidence/`), Decision 2 (every field
+declares its provenance — items 1 and 4 correct one classification and
+add granularity beneath two rows; neither reverses the rule), Decision 3
+(typed, plural relations), Decision 4's principle and its
+`observed`-not-verified-in-CI asymmetry, Decision 5 (no rendering, no
+generated regions, the prose stays hand-written), and Decision 6
+(renderer and historical migration deferred behind two preconditions).
+The headline cost in Consequences — on landing, the store adds a sixth
+copy — is unchanged; item 3 fixes only when the withdrawal clock starts.
