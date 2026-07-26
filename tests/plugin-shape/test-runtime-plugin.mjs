@@ -778,37 +778,42 @@ describe('plugins/runtime session-capture foundation (ADR-0044 S2)', () => {
 });
 
 describe('plugins/runtime repo documentation freshness', () => {
-  it('keeps root and stage docs aligned with the shipped runtime version and surfaces', async () => {
-    const manifest = await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json'));
-    const readme = await readFile(resolve(REPO_ROOT, 'README.md'), 'utf-8');
-    const architecture = await readFile(resolve(REPO_ROOT, 'docs/ARCHITECTURE.md'), 'utf-8');
-    const development = await readFile(resolve(REPO_ROOT, 'docs/DEVELOPMENT.md'), 'utf-8');
-    const scorecard = await readFile(resolve(REPO_ROOT, 'docs/assurance/omcc-cutover-scorecard.md'), 'utf-8');
+  // The freshness assertions are split by WHAT MAKES THEM TRUE, because
+  // the two halves have different remedies and bundling them made every
+  // release produce one indistinguishable red:
+  //
+  //   derivable      — true the moment release-please cuts the version.
+  //                    Remedy: `npm run sync:docs`.
+  //   proof-coupled  — true only once a doctor proof has been re-recorded
+  //                    under the new install. Remedy: actually re-record.
+  //                    No script may write these; see
+  //                    scripts/sync-doc-versions.mjs.
+  const loadDocs = async () => ({
+    manifest: await readJSON(resolve(PLUGIN_ROOT, '.codex-plugin/plugin.json')),
+    readme: await readFile(resolve(REPO_ROOT, 'README.md'), 'utf-8'),
+    architecture: await readFile(resolve(REPO_ROOT, 'docs/ARCHITECTURE.md'), 'utf-8'),
+    development: await readFile(resolve(REPO_ROOT, 'docs/DEVELOPMENT.md'), 'utf-8'),
+    scorecard: await readFile(resolve(REPO_ROOT, 'docs/assurance/omcc-cutover-scorecard.md'), 'utf-8'),
+  });
+
+  const SYNC_REMEDY = 'run `npm run sync:docs` (these tokens are derived from .release-please-manifest.json)';
+  const PROOF_REMEDY = 'the installed-state proof has not been re-recorded for the shipped version — install the release on both hosts, then run runtime:doctor with the three --execute-* proofs and --record. No script may write this token';
+
+  it('keeps the derivable runtime-version tokens aligned with the manifest', async () => {
+    const { manifest, architecture, development, scorecard } = await loadDocs();
     const currentRuntimeToken = `plugin-runtime\` v${manifest.version}`;
-    const developmentLatestRuntimeProofToken = `Latest installed proof: \`plugin-runtime\` \`${manifest.version}\``;
-    const scorecardRuntimeToken = `\`plugin-runtime\` \`${manifest.version}\``;
-    const runtimeReleaseTag = `plugin-runtime-v${manifest.version}`;
 
     if (RELEASE_PLEASE_PR) {
       ok(/plugin-runtime` v\d+\.\d+\.\d+/.test(architecture), 'ARCHITECTURE.md documents a runtime version');
       ok(/plugin-runtime` v\d+\.\d+\.\d+/.test(development), 'DEVELOPMENT.md documents a runtime version');
-      ok(/Latest installed proof: `plugin-runtime` `\d+\.\d+\.\d+`/.test(development), 'DEVELOPMENT.md ADR-0012 tracking documents installed runtime proof version');
-      ok(/`plugin-runtime` `\d+\.\d+\.\d+`/.test(scorecard), 'omcc cutover scorecard documents installed runtime proof version');
-      ok(/`plugin-runtime-v\d+\.\d+\.\d+`/.test(scorecard), 'omcc cutover scorecard documents a runtime release tag');
     } else {
-      ok(architecture.includes(currentRuntimeToken), 'ARCHITECTURE.md documents the current runtime version');
-      ok(development.includes(currentRuntimeToken), 'DEVELOPMENT.md documents the current runtime version');
-      ok(development.includes(developmentLatestRuntimeProofToken), 'DEVELOPMENT.md ADR-0012 tracking documents the current installed runtime proof version');
-      ok(scorecard.includes(scorecardRuntimeToken), 'omcc cutover scorecard documents the current installed runtime proof version');
-      ok(scorecard.includes(runtimeReleaseTag), 'omcc cutover scorecard documents the current runtime release tag');
+      ok(architecture.includes(currentRuntimeToken), `ARCHITECTURE.md documents the current runtime version — ${SYNC_REMEDY}`);
+      ok(development.includes(currentRuntimeToken), `DEVELOPMENT.md documents the current runtime version — ${SYNC_REMEDY}`);
     }
-    ok(!scorecard.includes('latest dogfood evidence'), 'omcc cutover scorecard must leave latest dogfood state to runtime cutover artifacts');
+
     ok(!architecture.includes('plugin-runtime` v0.12.0'), 'ARCHITECTURE.md must not describe runtime as v0.12.0');
     ok(!development.includes('plugin-runtime` v0.12.0'), 'DEVELOPMENT.md must not describe runtime as v0.12.0');
-    const scorecardRuntimeVersions = [...scorecard.matchAll(/`plugin-runtime` `([^`]+)`/g)].map((match) => match[1]);
-    const scorecardRuntimeTags = [...scorecard.matchAll(/`plugin-runtime-v([^`]+)`/g)].map((match) => match[1]);
-    ok(scorecardRuntimeVersions.length > 0, 'omcc cutover scorecard includes runtime proof versions');
-    ok(scorecardRuntimeTags.length > 0, 'omcc cutover scorecard includes runtime release tags');
+
     // Authoritative current-state statements ("as of `plugin-runtime` vX")
     // must all name the current manifest version. Superseded records use the
     // record/re-recorded phrasing instead, so this pattern only matches
@@ -821,16 +826,60 @@ describe('plugins/runtime repo documentation freshness', () => {
     const asOfCorpus = `${architecture}\n${development}`.replace(/\n> /g, ' ');
     const asOfVersions = [...asOfCorpus.matchAll(/[Aa]s of `plugin-runtime` v(\d+\.\d+\.\d+)/g)].map((match) => match[1]);
     ok(asOfVersions.length > 0, 'authoritative "as of plugin-runtime v" statements exist in the stage docs');
+
     if (RELEASE_PLEASE_PR) {
-      ok(scorecardRuntimeVersions.every((version) => compareSemver(version, manifest.version) <= 0), 'release-please PR may have scorecard proof versions lag until installed-state proof is recorded');
-      ok(scorecardRuntimeTags.every((version) => compareSemver(version, manifest.version) <= 0), 'release-please PR may have scorecard release tags lag until installed-state proof is recorded');
       ok(asOfVersions.every((version) => compareSemver(version, manifest.version) <= 0), 'release-please PR may have "as of" statements lag until installed-state proof is recorded');
     } else {
-      deepStrictEqual([...new Set(scorecardRuntimeVersions)], [manifest.version], 'omcc cutover scorecard runtime proof versions match the current manifest');
-      deepStrictEqual([...new Set(scorecardRuntimeTags)], [manifest.version], 'omcc cutover scorecard runtime release tags match the current manifest');
-      deepStrictEqual([...new Set(asOfVersions)], [manifest.version], 'every authoritative "as of plugin-runtime v" statement matches the current manifest');
+      deepStrictEqual([...new Set(asOfVersions)], [manifest.version], `every authoritative "as of plugin-runtime v" statement matches the current manifest — ${SYNC_REMEDY}`);
+    }
+  });
+
+  it('keeps the installed-state evidence record aligned with the shipped runtime version', async () => {
+    // The release TAG lives here, not with the derivable tokens. It looks
+    // derivable, but it never appears alone: it is one member of a
+    // release triple whose PR number, squash sha, and marketplace sync
+    // sha are not derivable from the manifest, so bumping it alone
+    // manufactures a mis-paired triple. It is written by hand with the
+    // rest of the evidence record and gated against git by
+    // tests/scripts/test-doc-evidence-consistency.mjs (R1).
+    const { manifest, development, scorecard } = await loadDocs();
+    const developmentLatestRuntimeProofToken = `Latest installed proof: \`plugin-runtime\` \`${manifest.version}\``;
+    const scorecardRuntimeToken = `\`plugin-runtime\` \`${manifest.version}\``;
+    const runtimeReleaseTag = `plugin-runtime-v${manifest.version}`;
+
+    if (RELEASE_PLEASE_PR) {
+      ok(/Latest installed proof: `plugin-runtime` `\d+\.\d+\.\d+`/.test(development), 'DEVELOPMENT.md ADR-0012 tracking documents installed runtime proof version');
+      ok(/`plugin-runtime` `\d+\.\d+\.\d+`/.test(scorecard), 'omcc cutover scorecard documents installed runtime proof version');
+      ok(/`plugin-runtime-v\d+\.\d+\.\d+`/.test(scorecard), 'omcc cutover scorecard documents a runtime release tag');
+    } else {
+      ok(development.includes(developmentLatestRuntimeProofToken), `DEVELOPMENT.md ADR-0012 tracking documents the current installed runtime proof version — ${PROOF_REMEDY}`);
+      ok(scorecard.includes(scorecardRuntimeToken), `omcc cutover scorecard documents the current installed runtime proof version — ${PROOF_REMEDY}`);
+      ok(scorecard.includes(runtimeReleaseTag), `omcc cutover scorecard documents the current runtime release tag — ${PROOF_REMEDY}`);
     }
 
+    const scorecardRuntimeTags = [...scorecard.matchAll(/`plugin-runtime-v([^`]+)`/g)].map((match) => match[1]);
+    ok(scorecardRuntimeTags.length > 0, 'omcc cutover scorecard includes runtime release tags');
+
+    ok(!scorecard.includes('latest dogfood evidence'), 'omcc cutover scorecard must leave latest dogfood state to runtime cutover artifacts');
+
+    const scorecardRuntimeVersions = [...scorecard.matchAll(/`plugin-runtime` `([^`]+)`/g)].map((match) => match[1]);
+    ok(scorecardRuntimeVersions.length > 0, 'omcc cutover scorecard includes runtime proof versions');
+
+    if (RELEASE_PLEASE_PR) {
+      // "<= target" alone let a two-releases-old record pass on a release
+      // PR (round-5 cross-host review finding). The lag may span at most
+      // one release, so every distinct lagging value must be identical.
+      const lagging = [...new Set([...scorecardRuntimeVersions, ...scorecardRuntimeTags])].filter((v) => v !== manifest.version);
+      ok(lagging.every((version) => compareSemver(version, manifest.version) <= 0), 'release-please PR may lag, never lead');
+      ok(lagging.length <= 1, `release-please PR may lag by one release, got ${lagging.join(', ')}`);
+    } else {
+      deepStrictEqual([...new Set(scorecardRuntimeVersions)], [manifest.version], `omcc cutover scorecard runtime proof versions match the current manifest — ${PROOF_REMEDY}`);
+      deepStrictEqual([...new Set(scorecardRuntimeTags)], [manifest.version], `omcc cutover scorecard runtime release tags match the current manifest — ${PROOF_REMEDY}`);
+    }
+  });
+
+  it('keeps the README describing the shipped runtime surfaces', async () => {
+    const { readme } = await loadDocs();
     for (const token of [
       'runtime:doctor',
       'runtime:settings',

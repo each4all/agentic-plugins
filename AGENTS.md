@@ -214,6 +214,52 @@ release-please GitHub Action runs that sync as a follow-up step
 automatically, and `validate:versions` fails CI if catalog entries
 drift from the manifest.
 
+The stage docs (`docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`,
+`docs/assurance/omcc-cutover-scorecard.md`) restate the shipped runtime
+version, and they follow the same pattern for the same reason. The
+tokens split into two classes, and the split is load-bearing:
+
+- **Derivable** — the `as of \`plugin-runtime\` vX` statements. True the
+  moment release-please cuts the version, so `scripts/sync-doc-versions.mjs`
+  owns them and the release-please Action runs it (`--shipped-only`)
+  alongside the catalog sync. Run `npm run sync:docs` locally rather than
+  hand-editing. The scorecard's `plugin-runtime-vX` release tags are
+  **deliberately not** in this class: a tag never appears alone, only as
+  one member of a release triple whose PR number, squash sha, and
+  marketplace sync sha are not derivable from the manifest, so bumping it
+  alone manufactures exactly the mis-paired triple this tooling exists to
+  prevent. Tags stay human-written and are gated against git by R1.
+- **Proof-coupled** — `Latest installed proof` and the scorecard's
+  installed-state versions. True only once a `runtime:doctor` proof has
+  been re-recorded against the new install, so **no script writes
+  them**; the sync refuses unless `.agentic-plugins/runs/doctor/latest.json`
+  already reports the manifest version. Main stays red on that
+  assertion until the proof exists — that red is the honest signal, not
+  a defect to automate away.
+
+The doc-freshness gate is split along the same line so a token lag and
+a missing proof report different remedies. `npm run validate:doc-evidence`
+(gated by `tests/scripts/test-doc-evidence-consistency.mjs`) additionally
+checks what the freshness gate structurally cannot see: that the
+`(release PR, squash, tag)` triples cited in prose match real tags and
+release commits, that a record presented as current cites the newest
+proof run id whose citation phrase states a matching date, and that every
+cited commit sha — backticked or bare — resolves and is reachable from
+the integration branch. Checking which changelog version a sha *belongs*
+to was attempted and removed: deciding that requires reading the
+sentence, not matching a pattern, and three attempts across three review
+rounds each failed in a different direction (host versions claiming
+runtime commits, host versions colliding with runtime versions, and a
+marker requirement strict enough to attribute nothing at all). The checks
+that remain compare identifiers, which is why they hold up; the date
+binding likewise uses a closed set of exact citation phrases rather than
+proximity, because measurement showed agreeing and disagreeing id/date
+distances interleave and no threshold separates them.
+Those checks need full git history plus tags and fail closed when it is
+absent, which is why `full-tests.yml` checks out with `fetch-depth: 0`.
+Cited proof run ids and dates are **never** rewritten by any script; see
+the header of `scripts/sync-doc-versions.mjs` for why.
+
 Release-please changelog hygiene depends on merge shape. For a
 single-package PR, prefer a squash merge whose final message is the one
 intended changelog entry. When preserving multiple release-routed
