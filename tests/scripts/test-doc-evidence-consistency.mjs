@@ -277,7 +277,10 @@ describe('doc evidence — R4 commit shas', () => {
     const r = checkCommitShas(REPO_ROOT, { docs: realDocs() });
     strictEqual(r.ran, true);
     strictEqual(r.findings.length, 0, r.findings.map((f) => `${f.file}: ${f.detail}`).join('\n'));
-    ok(r.checked > 100, `expected the real sha corpus, checked ${r.checked}`);
+    // Backticked AND bare citations. Twelve shas appear only in the bare
+    // "#641 af620df" form, and widening the scan to reach them
+    // immediately surfaced a second dangling citation (round-5).
+    ok(r.checked > 200, `expected the widened sha corpus, checked ${r.checked}`);
   });
 
   it('catches a sha that does not resolve in this repository', () => {
@@ -287,20 +290,7 @@ describe('doc evidence — R4 commit shas', () => {
     ok(r.findings.some((f) => /does not resolve/.test(f.detail)), JSON.stringify(r.findings));
   });
 
-  it('catches a sha attributed to the wrong release', () => {
-    // af620df is a 0.86.2 fix per the runtime changelog.
-    const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'then the `plugin-runtime` v0.86.1 egress hardening pair #641 `af620df` landed'),
-    });
-    ok(r.findings.some((f) => f.check === 'commit-sha-attribution' && /places .* in 0\.86\.2.*attributes it to 0\.86\.1/.test(f.detail)), JSON.stringify(r.findings));
-  });
 
-  it('CONTROL: the same sha attributed to its real release produces no finding', () => {
-    const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'then the `plugin-runtime` v0.86.2 egress hardening pair #641 `af620df` landed'),
-    });
-    strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
-  });
 
   it('judges reachability from the integration branch, not the PR checkout', () => {
     // On a pull_request run the checkout is GitHub's synthetic merge ref,
@@ -353,68 +343,10 @@ describe('doc evidence — R4 commit shas', () => {
     strictEqual(r.findings.length, 0);
   });
 
-  it('does not let a HOST version claim a runtime commit', () => {
-    // Any whitespace-prefixed semver used to qualify as an attribution,
-    // so "Codex 0.145.0 ... `af620df`" reported the runtime commit as
-    // misattributed to a Codex version (round-2 cross-host review
-    // finding). Candidates are now filtered to versions the runtime
-    // changelog actually released.
-    const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'observed on Codex CLI 0.145.0 alongside `af620df`'),
-    });
-    strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
-  });
 
-  it('recognises the installed-state `plugin-runtime` `X` form', () => {
-    // The repository's own installed-state phrasing was unrecognised, so
-    // a wrong sha beside it produced no finding (round-3 cross-host
-    // review finding).
-    const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'installed `plugin-runtime` `0.86.1` carries `af620df`'),
-    });
-    ok(r.findings.some((f) => f.check === 'commit-sha-attribution'), JSON.stringify(r.findings));
-  });
 
-  it('does not let a host version that collides with a runtime version claim a commit', () => {
-    // Filtering to released runtime versions was not enough: Codex 0.86.1
-    // would be a valid runtime version too (round-3 cross-host review
-    // finding).
-    const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'observed on Codex CLI 0.86.1 alongside `af620df`'),
-    });
-    strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
-  });
 
-  it('recognises the canonical `plugin-runtime` vX prose form', () => {
-    const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'as of `plugin-runtime` v0.86.1 the pair `af620df` landed'),
-    });
-    ok(r.findings.some((f) => f.check === 'commit-sha-attribution'), JSON.stringify(r.findings));
-  });
 
-  it('recognises a `plugin-runtime-vX` literal as the attributed version', () => {
-    // The most common way these documents name a version was not matched
-    // at all, because the pattern required whitespace or "(" ahead of the
-    // digits (cross-host review finding). af620df is a 0.86.2 fix.
-    const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'tag plugin-runtime-v0.86.1 shipped the pair `af620df`'),
-    });
-    ok(r.findings.some((f) => f.check === 'commit-sha-attribution'), `expected the tag literal to attribute, got ${r.unattributed} unattributed`);
-  });
 
-  it('treats a semicolon as a clause break, not only a period', () => {
-    const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'the `plugin-runtime` v0.86.1 loop closed; an unrelated note cites `af620df` in passing'),
-    });
-    strictEqual(r.findings.length, 0, `must not attribute across the semicolon: ${JSON.stringify(r.findings)}`);
-    strictEqual(r.unattributed, 1);
-  });
 
-  it('leaves a sha unattributed rather than guessing across a sentence boundary', () => {
-    const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'The `plugin-runtime` v0.86.1 loop closed. A later note cites `af620df` without naming a release.'),
-    });
-    strictEqual(r.findings.length, 0, 'no guess is made');
-    strictEqual(r.unattributed, 1, 'and the ambiguity is counted, not hidden');
-  });
 });

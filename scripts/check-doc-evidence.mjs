@@ -52,6 +52,11 @@ const RUNTIME_CHANGELOG = 'plugins/runtime/CHANGELOG.md';
 const DOCTOR_ID = String.raw`doctor-(\d{4})(\d{2})(\d{2})T\d{6}Z-[0-9a-f]+`;
 const ANY_DOCTOR_ID = String.raw`doctor-\d{8}T\d{6}Z-[0-9a-f]+`;
 const DATE = String.raw`(\d{4}-\d{2}-\d{2})Z?`;
+// Either `abc1234` or a bare abc1234 delimited by punctuation/space. The
+// 7-40 bound keeps 64-hex plan hashes out; the bare alternative is
+// anchored on a preceding "#NNN " or whitespace so prose words cannot
+// match.
+const CITED_SHA = /`([0-9a-f]{7,40})`|(?:^|[\s(])([0-9a-f]{7,40})(?=[\s,.;)]|$)/g;
 // [pattern, dateComesFirst]. Closed set, exact-matched: these are the
 // constructions the stage docs actually use to bind a date to a proof
 // run id. Anything else mentioning a date near an id is prose, not a
@@ -61,6 +66,13 @@ const DATE_CITATION_PHRASES = [
   [new RegExp(String.raw`per the ${DATE} \`?(${ANY_DOCTOR_ID})\`?`, 'g'), true],
   [new RegExp(String.raw`install on ${DATE} \(\`?(${ANY_DOCTOR_ID})\`?`, 'g'), true],
   [new RegExp(String.raw`\`?(${ANY_DOCTOR_ID})\`? \(${DATE}`, 'g'), false],
+  // Three further checked-in constructions the first closed set missed
+  // (round-5 cross-host review finding). The set is closed by
+  // construction, so it grows only when a real document form is found —
+  // which is the point: exact matching converges, a window does not.
+  [new RegExp(String.raw`(?:re-?)?recorded on ${DATE} \(\`?(${ANY_DOCTOR_ID})\`?`, 'g'), true],
+  [new RegExp(String.raw`install \(${DATE}, \`?(${ANY_DOCTOR_ID})\`?`, 'g'), true],
+  [new RegExp(String.raw`\`?(${ANY_DOCTOR_ID})\`? \(recorded ${DATE}`, 'g'), false],
 ];
 
 function git(repoRoot, args, input) {
@@ -151,6 +163,14 @@ export function checkReleaseTriples(repoRoot, { docs = null } = {}) {
     const [tag, objectSha, derefSha, subject, derefSubject] = line.split('\0');
     tagCommit.set(tag, derefSha || objectSha);
     tagSubject.set(tag, (derefSubject || subject || '').trim());
+  }
+  // Release commits for the intervening check must span EVERY package,
+  // not just runtime: an attention-only release sits between runtime
+  // v0.80.0 and the sync commit the docs would otherwise be allowed to
+  // cite, so a runtime-only set could not see it (round-5 cross-host
+  // review finding).
+  for (const line of git(repoRoot, ['for-each-ref', '--format=%(objectname:short=7)%00%(*objectname:short=7)', 'refs/tags/']).split('\n').filter(Boolean)) {
+    const [objectSha, derefSha] = line.split('\0');
     releaseCommits.add((derefSha || objectSha).slice(0, 7));
   }
 
@@ -333,7 +353,21 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
         // sync script's citation window, measured from the same corpus.
         const window = flat.slice(a.index, a.index + 1200);
         const idMatch = window.match(new RegExp(DOCTOR_ID));
-        if (!idMatch) continue;
+        if (!idMatch) {
+          // Deleting the current record's citation outright used to pass:
+          // the anchor found no id and the loop continued silently, while
+          // the aggregate counts stayed above their floors because the
+          // other document still had one (round-5 cross-host review
+          // finding). A current-state anchor with no proof run id near it
+          // is a missing citation.
+          findings.push({
+            check: 'proof-citation-missing',
+            file,
+            runId: null,
+            detail: `a current-state record anchored on ${anchor.source.includes('Latest') ? '"Latest installed proof"' : `\`plugin-runtime\` \`${target}\``} cites no proof run id within 1200 characters`,
+          });
+          continue;
+        }
         const [runId, y, mo, d] = idMatch;
         // Both anchors front the same record in DEVELOPMENT.md, and the
         // scorecard repeats its current version token four times over one
@@ -397,26 +431,40 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
 }
 
 /**
- * R4 — cited commit shas resolve, and version-attributed shas belong to
- * that version's changelog section.
+ * R4 — every cited commit sha resolves and is reachable from the
+ * integration branch.
  *
- * The existence half is unconditional. The attribution half deliberately
- * only fires when the prose puts a version literal and a sha in the same
- * clause ("the 0.86.2 Stage-8 proof-rendering pair #641 af620df"); a sha
- * that cannot be confidently attributed is counted as unattributed
- * rather than guessed at, because guessing which version a sha belongs to
- * from free prose is the same unsafe region-detection that ruled out
- * rewriting run ids.
+ * ATTRIBUTION WAS REMOVED, and the reason is worth keeping. Checking that
+ * a sha belongs to the changelog version the prose places it under was
+ * attempted three times across three review rounds and failed each time,
+ * in a different direction:
+ *
+ *   - bare semver plus a sentence-boundary rule attributed a runtime
+ *     commit to a HOST version ("Codex 0.145.0 ... `af620df`");
+ *   - filtering candidates to released runtime versions did not help,
+ *     because a host version can collide with one ("Codex CLI 0.86.1");
+ *   - requiring an explicit runtime marker removed the ambiguity but also
+ *     removed the check: on the real corpus it attributed 0 of 97
+ *     changelog-backed shas, because these documents attribute with bare
+ *     semver ("the 0.86.2 Stage-8 proof-rendering pair #641 af620df");
+ *   - and with a marker present, picking the nearest one still guessed
+ *     wrong on realistic prose, where an environment marker ("verified on
+ *     installed plugin-runtime 0.86.2") sits closer than the subject.
+ *
+ * The generalisation: deciding WHICH version a sha belongs to requires
+ * reading the sentence, not matching a pattern. Resolution and
+ * reachability, by contrast, are identifier comparisons — they have been
+ * stable under adversarial review and have caught two real dangling
+ * citations. Those stay; the guess does not.
  */
 export function checkCommitShas(repoRoot, { docs = null } = {}) {
   const availability = gitHistoryAvailable(repoRoot);
   if (!availability.ok) {
-    return { ran: false, reason: availability.reason, findings: [], checked: 0, unattributed: 0, reachabilityBase: null };
+    return { ran: false, reason: availability.reason, findings: [], checked: 0, reachabilityBase: null };
   }
 
   const findings = [];
   let checked = 0;
-  let unattributed = 0;
 
   // sha -> version, from the runtime changelog's per-version sections.
   const changelog = readFileSync(resolve(repoRoot, RUNTIME_CHANGELOG), 'utf8');
@@ -444,8 +492,14 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
   // be reported as unresolvable, which is intended — in these documents
   // such a token is either a typo or something that should not have been
   // written as a bare backticked sha.
+  // Backticked AND bare. The scorecard writes feature commits as
+  // "#641 af620df" without backticks — twelve shas appear ONLY in that
+  // form — so a backtick-only scan never checked them at all, while
+  // AGENTS.md promised every cited sha resolves (round-5 cross-host
+  // review finding). Resolution is identifier matching, so widening it
+  // strictly strengthens the gate.
   const allShas = [...new Set(
-    documents.flatMap(({ text }) => [...flatten(text).matchAll(/`([0-9a-f]{7,40})`/g)].map((m) => m[1])),
+    documents.flatMap(({ text }) => [...flatten(text).matchAll(CITED_SHA)].map((m) => m[1] ?? m[2])),
   )];
   // Reachability, not mere object existence. `cat-file` answers "is this
   // object in MY object store", which is machine-dependent and gave a
@@ -496,18 +550,24 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
   // Fail closed: an unparseable or empty changelog silently disabled
   // attribution entirely while still reporting ran:true and zero
   // findings (round-4 cross-host review finding).
-  if (releasedVersions.size === 0 || shaVersion.size === 0) {
+  // The CURRENT version's section specifically must be present. Requiring
+  // only "some" sections let a single malformed `## 0.86.2` header drop
+  // that release's commits while older sections kept the guard satisfied,
+  // so a wrong attribution of one of those commits passed (round-5
+  // cross-host review finding).
+  const manifestVersion = JSON.parse(readFileSync(resolve(repoRoot, '.release-please-manifest.json'), 'utf8'))['plugins/runtime'];
+  if (releasedVersions.size === 0 || shaVersion.size === 0 || !releasedVersions.has(manifestVersion)) {
     return {
       ran: false,
-      reason: `${RUNTIME_CHANGELOG} yielded no version sections or no commit links; attribution cannot run`,
-      findings: [], checked: 0, unattributed: 0, reachabilityBase,
+      reason: `${RUNTIME_CHANGELOG} is unusable: ${releasedVersions.size} version section(s), ${shaVersion.size} commit link(s), current version ${manifestVersion} ${releasedVersions.has(manifestVersion) ? 'present' : 'MISSING'}`,
+      findings: [], checked: 0, reachabilityBase,
     };
   }
 
   for (const { file, text } of documents) {
     const flat = flatten(text);
-    for (const m of flat.matchAll(/`([0-9a-f]{7,40})`/g)) {
-      const sha = m[1];
+    for (const m of flat.matchAll(CITED_SHA)) {
+      const sha = m[1] ?? m[2];
       checked += 1;
       const type = objectType.get(sha);
       if (type !== 'commit') {
@@ -536,70 +596,9 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
         continue;
       }
 
-      const changelogVersion = shaVersion.get(sha.slice(0, 7));
-      if (!changelogVersion) continue;
-      // Attribution: the nearest version literal within the same clause
-      // ahead of the sha. Bounded tightly and stopping at a sentence end
-      // so an unrelated version earlier in the paragraph cannot claim it.
-      // Attribution looks BOTH ways and takes the nearest version
-      // literal. A preceding-only search silently left
-      // "`af620df` shipped in 0.86.1" unattributed (cross-host review
-      // finding), and `plugin-runtime-v0.86.1` — the most common way
-      // these documents name a version — was not recognised as a version
-      // at all because the pattern required whitespace or "(" ahead of
-      // the digits.
-      //
-      // Nearest, not leftmost: "the 0.85.0 loop and ADR-0048 §3 pair
-      // `af620df`" has no intervening period, so a leftmost match would
-      // attribute the sha to 0.85.0.
-      // `plugin-runtime` v0.86.1 is the canonical prose form and was not
-      // matched at all; conversely any whitespace-prefixed semver
-      // qualified, so "Codex 0.145.0 ... `af620df`" falsely attributed a
-      // runtime commit to a HOST version (round-2 cross-host review
-      // finding). Candidates are therefore filtered to versions the
-      // runtime changelog actually knows about.
-      // Three accepted forms: bare, `plugin-runtime-vX`, `plugin-runtime` vX,
-      // and the installed-state form `plugin-runtime` `X` — the last was
-      // unrecognised, so "installed `plugin-runtime` `0.86.1` carries
-      // `af620df`" produced no finding (round-3 cross-host review).
-      // An EXPLICIT runtime marker is required. Bare semver is
-      // irreducibly ambiguous in these documents — host versions sit
-      // beside runtime ones constantly, and a host version that collides
-      // with a released runtime version ("Codex CLI 0.86.1") defeated any
-      // prefix denylist, while an unfiltered host version could also win
-      // the nearest-match and suppress a real runtime mismatch (round-4
-      // cross-host review finding). Dropping bare semver removes the
-      // ambiguity class outright rather than enumerating host phrasings.
-      const VERSION_LITERAL = /(?:plugin-runtime-v|plugin-runtime` v|plugin-runtime` `|plugin-runtime v)(\d+\.\d+\.\d+)\b/g;
-      // Clause separators, not just ".". "0.86.1 closed; an unrelated
-      // note cites `af620df`" was being attributed across the semicolon.
-      const CLAUSE_BREAK = /[.;—]\s|\s—\s/;
-      // Attribution reads BACKWARD only. A forward window was tried, to
-      // catch shapes like "`af620df` shipped in 0.86.1" that the
-      // cross-host review raised — and measured worse on the real
-      // documents: zero true positives and two false ones, because these
-      // docs overwhelmingly write "<version> <description> `<sha>`, then
-      // the <next version> ..." where the version AFTER a sha opens the
-      // next item. It misattributed `3615dcc` (0.86.0, described only as
-      // "the pre-macro activation-semantics fix" and correctly carrying
-      // no version of its own) to 0.86.1, and `b984dc8` (0.86.1) to
-      // 0.86.2. Staying unattributed is the honest outcome for a sha the
-      // prose does not actually place.
-      const before = flat.slice(Math.max(0, m.index - 160), m.index);
-      const back = [...before.matchAll(VERSION_LITERAL)].at(-1) ?? null;
-      const attributed = back && !CLAUSE_BREAK.test(before.slice(back.index + back[0].length)) ? back : null;
-      if (!attributed) { unattributed += 1; continue; }
-      if (attributed[1] !== changelogVersion) {
-        findings.push({
-          check: 'commit-sha-attribution',
-          file,
-          sha,
-          detail: `the changelog places ${sha} in ${changelogVersion}, but the prose attributes it to ${attributed[1]}`,
-        });
-      }
     }
   }
-  return { ran: true, reason: null, findings, checked, unattributed, reachabilityBase };
+  return { ran: true, reason: null, findings, checked, reachabilityBase };
 }
 
 export function runAllChecks(repoRoot, options = {}) {
@@ -629,7 +628,6 @@ if (invokedAsCLI) {
         r.dateChecked !== undefined ? `${r.dateChecked} id/date pair(s) incl. superseded` : null,
         r.unpairedTags ? `${r.unpairedTags} tag mention(s) not paired with a release PR` : null,
         r.reachabilityBase && r.reachabilityBase !== 'origin/main' ? `reachability base ${r.reachabilityBase} (weaker than origin/main)` : null,
-        r.unattributed ? `${r.unattributed} sha(s) unattributed` : null,
       ].filter(Boolean).join('; ');
       console.log(`${name}: ${r.checked} claim(s) checked, ${r.findings.length} finding(s)${extra ? ` — ${extra}` : ''}`);
       for (const f of r.findings) console.log(`  ✗ ${f.file}: ${f.detail}`);

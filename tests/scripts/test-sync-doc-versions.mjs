@@ -425,7 +425,14 @@ describe('sync-doc-versions against the real repository', () => {
 
   it('reports the checked-in docs as already in sync', async () => {
     const r = syncDocVersionsToManifest(REPO_ROOT, { checkOnly: true });
-    if (RELEASE_PLEASE_PR) {
+    // The release-please PR flag is repo-wide, but the allowance must be
+    // runtime-specific: a designer-only release PR would otherwise excuse
+    // stale runtime docs (round-5 cross-host review finding). A release
+    // PR that is actually cutting runtime has no tag for the new version
+    // yet; if the tag already exists, this PR is not bumping runtime and
+    // the docs must already be current.
+    const runtimeTagExists = execFileSync('git', ['-C', REPO_ROOT, 'tag', '--list', `plugin-runtime-v${r.targetVersion}`], { encoding: 'utf8' }).trim().length > 0;
+    if (RELEASE_PLEASE_PR && !runtimeTagExists) {
       // The lag must be the IMMEDIATE prior release, not merely "some
       // older version": uniform 0.84.0 docs against a 0.87.0 manifest
       // satisfied a one-distinct-value rule while laundering two

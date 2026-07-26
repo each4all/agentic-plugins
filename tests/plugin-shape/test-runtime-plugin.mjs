@@ -866,8 +866,12 @@ describe('plugins/runtime repo documentation freshness', () => {
     ok(scorecardRuntimeVersions.length > 0, 'omcc cutover scorecard includes runtime proof versions');
 
     if (RELEASE_PLEASE_PR) {
-      ok(scorecardRuntimeVersions.every((version) => compareSemver(version, manifest.version) <= 0), 'release-please PR may have scorecard proof versions lag until installed-state proof is recorded');
-      ok(scorecardRuntimeTags.every((version) => compareSemver(version, manifest.version) <= 0), 'release-please PR may have scorecard release tags lag until installed-state proof is recorded');
+      // "<= target" alone let a two-releases-old record pass on a release
+      // PR (round-5 cross-host review finding). The lag may span at most
+      // one release, so every distinct lagging value must be identical.
+      const lagging = [...new Set([...scorecardRuntimeVersions, ...scorecardRuntimeTags])].filter((v) => v !== manifest.version);
+      ok(lagging.every((version) => compareSemver(version, manifest.version) <= 0), 'release-please PR may lag, never lead');
+      ok(lagging.length <= 1, `release-please PR may lag by one release, got ${lagging.join(', ')}`);
     } else {
       deepStrictEqual([...new Set(scorecardRuntimeVersions)], [manifest.version], `omcc cutover scorecard runtime proof versions match the current manifest — ${PROOF_REMEDY}`);
       deepStrictEqual([...new Set(scorecardRuntimeTags)], [manifest.version], `omcc cutover scorecard runtime release tags match the current manifest — ${PROOF_REMEDY}`);
