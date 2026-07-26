@@ -109,12 +109,20 @@ function flatten(text) {
 export function checkReleaseTriples(repoRoot, { docs = null } = {}) {
   const availability = gitHistoryAvailable(repoRoot);
   if (!availability.ok) {
-    return { ran: false, reason: availability.reason, findings: [], checked: 0, unverifiablePrNumbers: 0 };
+    return { ran: false, reason: availability.reason, findings: [], checked: 0, unverifiablePrNumbers: 0, unpairedTags: 0, checkedTags: [] };
   }
 
   const findings = [];
   let checked = 0;
   let unverifiablePrNumbers = 0;
+  // Tag mentions this extractor declined to pair with a release PR. A
+  // wrong triple written tag-before-PR, or with the PR more than the
+  // window away, silently drops out of `checked`; an aggregate
+  // "checked > 20" assertion cannot see that (cross-host review
+  // finding). Surfacing the count lets a caller notice coverage loss,
+  // and the tests pin specific tags by name rather than a total.
+  let unpairedTags = 0;
+  const checkedTags = new Set();
   // One `for-each-ref` for the whole tag map. Resolving each tag with a
   // separate rev-parse + log cost two subprocesses per tag and made this
   // check dominate the suite's wall clock.
@@ -151,17 +159,21 @@ export function checkReleaseTriples(repoRoot, { docs = null } = {}) {
       // squash `558f78a`, tag plugin-runtime-v0.79.0)", and a
       // leftmost-first search paired the tag with the FEATURE PR's squash
       // and reported a mismatch against correct prose.
-      const prMatches = [...before.matchAll(/release PR \[?#(\d+)\]?/g)];
-      if (prMatches.length === 0) continue;
+      // Case-insensitive: the scorecard writes both "release PR #642" and
+      // sentence-initial "Release PR #544", and a case-sensitive pattern
+      // silently dropped the latter's triple from coverage.
+      const prMatches = [...before.matchAll(/release PR \[?#(\d+)\]?/gi)];
+      if (prMatches.length === 0) { unpairedTags += 1; continue; }
       const pr = prMatches.at(-1);
       // Only the span between that PR mention and this tag may supply the
       // squash, so a neighbouring release's sha can never be borrowed.
       const between = before.slice(pr.index);
       // If another runtime tag intervenes, this tag is not the one that
       // PR mention belongs to — skip rather than pair them up.
-      if (/plugin-runtime-v\d+\.\d+\.\d+/.test(between)) continue;
+      if (/plugin-runtime-v\d+\.\d+\.\d+/.test(between)) { unpairedTags += 1; continue; }
       const squash = [...between.matchAll(/(?:squash|merge)\s+`?([0-9a-f]{7,40})`?/g)].at(-1) ?? null;
       checked += 1;
+      checkedTags.add(tag);
 
       const actualCommit = tagCommit.get(tag);
       if (!actualCommit) {
@@ -192,7 +204,7 @@ export function checkReleaseTriples(repoRoot, { docs = null } = {}) {
       }
     }
   }
-  return { ran: true, reason: null, findings, checked, unverifiablePrNumbers };
+  return { ran: true, reason: null, findings, checked, unverifiablePrNumbers, unpairedTags, checkedTags: [...checkedTags] };
 }
 
 /**
@@ -211,6 +223,7 @@ export function checkReleaseTriples(repoRoot, { docs = null } = {}) {
 export function checkProofCitations(repoRoot, { docs = null } = {}) {
   const findings = [];
   let checked = 0;
+  let dateChecked = 0;
 
   const manifest = JSON.parse(readFileSync(resolve(repoRoot, '.release-please-manifest.json'), 'utf8'));
   const target = manifest['plugins/runtime'];
@@ -265,24 +278,42 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
           });
         }
 
-        // The stated date must agree with the one the id encodes. A
-        // recovery that moves one and not the other lands here.
-        const embedded = `${y}-${mo}-${d}`;
-        const idAt = window.indexOf(runId);
-        const nearby = window.slice(Math.max(0, idAt - 80), idAt + runId.length + 80);
-        const dates = [...nearby.matchAll(/(\d{4}-\d{2}-\d{2})Z/g)].map((x) => x[1]);
-        if (dates.length > 0 && !dates.includes(embedded)) {
-          findings.push({
-            check: 'proof-citation-date',
-            file,
-            runId,
-            detail: `the cited run id encodes ${embedded} but the date(s) stated beside it are ${dates.join(', ')}`,
-          });
-        }
+        void y; void mo; void d;
+      }
+    }
+
+    // Date agreement is checked for EVERY cited run id, not only the
+    // current one. Restricting it to ids reachable from a current anchor
+    // left the packed superseded history — 25 ids in one DEVELOPMENT.md
+    // line, 20 in the scorecard R3 row — completely ungated, which is the
+    // opposite of this module's stated motivation (cross-host review
+    // finding). A superseded record whose date and id disagree is still a
+    // corrupted record, and nothing else in the repo would notice.
+    for (const m of allIds) {
+      const [runId, y, mo, d] = m;
+      const embedded = `${y}-${mo}-${d}`;
+      // NEAREST date, not "any date within the window". Collecting every
+      // date in +-80 characters and asking `includes()` let an
+      // explicitly wrong date pass whenever a correct one happened to sit
+      // elsewhere in the same window (cross-host review finding).
+      const from = Math.max(0, m.index - 80);
+      const nearby = flat.slice(from, m.index + runId.length + 80);
+      const dates = [...nearby.matchAll(/(\d{4}-\d{2}-\d{2})Z/g)]
+        .map((x) => ({ value: x[1], distance: Math.abs((from + x.index) - m.index) }))
+        .sort((a, b) => a.distance - b.distance);
+      if (dates.length === 0) continue;
+      dateChecked += 1;
+      if (dates[0].value !== embedded) {
+        findings.push({
+          check: 'proof-citation-date',
+          file,
+          runId,
+          detail: `the cited run id encodes ${embedded} but the date stated next to it is ${dates[0].value}`,
+        });
       }
     }
   }
-  return { ran: true, reason: null, findings, checked };
+  return { ran: true, reason: null, findings, checked, dateChecked };
 }
 
 /**
@@ -402,15 +433,36 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
       // Attribution: the nearest version literal within the same clause
       // ahead of the sha. Bounded tightly and stopping at a sentence end
       // so an unrelated version earlier in the paragraph cannot claim it.
+      // Attribution looks BOTH ways and takes the nearest version
+      // literal. A preceding-only search silently left
+      // "`af620df` shipped in 0.86.1" unattributed (cross-host review
+      // finding), and `plugin-runtime-v0.86.1` — the most common way
+      // these documents name a version — was not recognised as a version
+      // at all because the pattern required whitespace or "(" ahead of
+      // the digits.
+      //
+      // Nearest, not leftmost: "the 0.85.0 loop and ADR-0048 §3 pair
+      // `af620df`" has no intervening period, so a leftmost match would
+      // attribute the sha to 0.85.0.
+      const VERSION_LITERAL = /(?:^|[\s(]|plugin-runtime-v)(\d+\.\d+\.\d+)\b/g;
+      // Clause separators, not just ".". "0.86.1 closed; an unrelated
+      // note cites `af620df`" was being attributed across the semicolon.
+      const CLAUSE_BREAK = /[.;—]\s|\s—\s/;
+      // Attribution reads BACKWARD only. A forward window was tried, to
+      // catch shapes like "`af620df` shipped in 0.86.1" that the
+      // cross-host review raised — and measured worse on the real
+      // documents: zero true positives and two false ones, because these
+      // docs overwhelmingly write "<version> <description> `<sha>`, then
+      // the <next version> ..." where the version AFTER a sha opens the
+      // next item. It misattributed `3615dcc` (0.86.0, described only as
+      // "the pre-macro activation-semantics fix" and correctly carrying
+      // no version of its own) to 0.86.1, and `b984dc8` (0.86.1) to
+      // 0.86.2. Staying unattributed is the honest outcome for a sha the
+      // prose does not actually place.
       const before = flat.slice(Math.max(0, m.index - 160), m.index);
-      // Nearest, not leftmost — the same trap R1 fell into. A sentence
-      // like "the 0.85.0 loop and ADR-0048 §3 pair `af620df`" has no
-      // intervening period between the earlier version and the sha, so a
-      // leftmost match would attribute the sha to 0.85.0.
-      const attributed = [...before.matchAll(/(?:^|[\s(])(\d+\.\d+\.\d+)\b/g)].at(-1) ?? null;
+      const back = [...before.matchAll(VERSION_LITERAL)].at(-1) ?? null;
+      const attributed = back && !CLAUSE_BREAK.test(before.slice(back.index + back[0].length)) ? back : null;
       if (!attributed) { unattributed += 1; continue; }
-      // Anything past a sentence boundary is a different claim.
-      if (before.slice(attributed.index + attributed[0].length).includes('. ')) { unattributed += 1; continue; }
       if (attributed[1] !== changelogVersion) {
         findings.push({
           check: 'commit-sha-attribution',
@@ -448,6 +500,8 @@ if (invokedAsCLI) {
       }
       const extra = [
         r.unverifiablePrNumbers ? `${r.unverifiablePrNumbers} PR number(s) not offline-verifiable (pre-squash-merge releases)` : null,
+        r.dateChecked !== undefined ? `${r.dateChecked} id/date pair(s) incl. superseded` : null,
+        r.unpairedTags ? `${r.unpairedTags} tag mention(s) not paired with a release PR` : null,
         r.unattributed ? `${r.unattributed} sha(s) unattributed` : null,
       ].filter(Boolean).join('; ');
       console.log(`${name}: ${r.checked} claim(s) checked, ${r.findings.length} finding(s)${extra ? ` — ${extra}` : ''}`);

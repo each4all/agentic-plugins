@@ -34,6 +34,9 @@ jobs:
         with:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
+          # check-doc-evidence.mjs resolves release tags and commits, and
+          # fails closed rather than skipping when they are missing.
+          fetch-depth: 0
 
       - name: Setup Node
         if: ${{ steps.release.outputs.releases_created == 'true' }}
@@ -58,6 +61,16 @@ jobs:
       - name: Sync stage doc runtime-version tokens
         if: ${{ steps.release.outputs.releases_created == 'true' }}
         run: node scripts/sync-doc-versions.mjs --shipped-only
+
+      # A push authenticated with GITHUB_TOKEN does not trigger workflows,
+      # so nothing would ever gate the commit this job is about to make.
+      # Run the evidence checker here, before the push, or the sync could
+      # land a broken release triple / dangling citation that no CI run
+      # will ever look at (cross-host review finding). Needs full history
+      # and tags, hence the deepened checkout below.
+      - name: Verify stage doc evidence before pushing
+        if: ${{ steps.release.outputs.releases_created == 'true' }}
+        run: node scripts/check-doc-evidence.mjs
 
       - name: Commit + push catalog and doc sync (if any drift)
         if: ${{ steps.release.outputs.releases_created == 'true' }}

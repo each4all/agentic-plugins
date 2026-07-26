@@ -104,13 +104,20 @@ export const RULES = [
     pattern: new RegExp(String.raw`([Aa]s of(?:\n> | )\`plugin-runtime\` v)(${SEMVER})()`, 'g'),
     description: 'authoritative "as of `plugin-runtime` v" shipped-surface statement',
   },
-  {
-    id: 'scorecard-release-tag',
-    file: 'docs/assurance/omcc-cutover-scorecard.md',
-    tokenClass: 'shipped-version',
-    pattern: new RegExp(String.raw`(\`plugin-runtime-v)(${SEMVER})(\`)`, 'g'),
-    description: 'current release tag (superseded tags are de-backticked by convention)',
-  },
+  // DELIBERATELY ABSENT: the scorecard's `plugin-runtime-vX` release
+  // tags. They look derivable — the tag exists the moment release-please
+  // cuts it — but a tag never appears alone in these documents. It is one
+  // member of a release triple ("release PR #642 `chore: release main`
+  // squash `9e2af7d`, tag `plugin-runtime-v0.86.2`, marketplace sync
+  // `668c325`"), and the PR number, squash sha, and sync sha are NOT
+  // derivable from the manifest. Bumping the tag alone therefore
+  // MANUFACTURES the exact mis-paired triple this whole slice exists to
+  // prevent — reproduced during the cross-host review of this change,
+  // which turned `#642 / 9e2af7d / v0.86.2` into `#642 / 9e2af7d /
+  // v0.87.0`. The tags stay human-written alongside the rest of the
+  // evidence record and are gated by
+  // tests/scripts/test-doc-evidence-consistency.mjs (R1), which checks
+  // the whole triple against git rather than the tag in isolation.
   {
     id: 'scorecard-installed-proof-version',
     file: 'docs/assurance/omcc-cutover-scorecard.md',
@@ -220,6 +227,20 @@ export function syncDocVersionsToManifest(repoRoot, { checkOnly = false, shipped
     let next = original;
 
     for (const rule of rules) {
+      // `shippedOnly` is for callers that structurally cannot have a
+      // recorded proof — the release-please Action runs from a fresh
+      // checkout, and the artifact tree is gitignored. There, a
+      // proof-coupled refusal is the expected state rather than a
+      // problem to report, and exiting non-zero on it would make the
+      // release workflow red every single time.
+      //
+      // The skip happens BEFORE the anchor and homogeneity checks: those
+      // describe the health of a rule this run is not going to apply, and
+      // running them first meant that renaming, say, the "Latest
+      // installed proof:" phrase would fail the release job on a rule
+      // that was being skipped anyway (cross-host review finding).
+      if (rule.tokenClass === 'proof-coupled' && shippedOnly) continue;
+
       const matches = [...original.matchAll(rule.pattern)];
 
       if (matches.length === 0) {
@@ -248,14 +269,6 @@ export function syncDocVersionsToManifest(repoRoot, { checkOnly = false, shipped
         continue;
       }
 
-      // `shippedOnly` is for callers that structurally cannot have a
-      // recorded proof — the release-please Action runs from a fresh
-      // checkout, and the artifact tree is gitignored. There, a
-      // proof-coupled refusal is the expected state rather than a
-      // problem to report, and silently exiting non-zero on it would
-      // make the release workflow red every single time.
-      if (rule.tokenClass === 'proof-coupled' && shippedOnly) continue;
-
       if (rule.tokenClass === 'proof-coupled' && !proofIsFresh) {
         const stale = proofPointer.present
           ? `recorded proof is for ${proofPointer.runtimeVersion ?? 'an unknown version'} (${proofPointer.runId ?? 'no run id'}), manifest is ${targetVersion}`
@@ -276,6 +289,30 @@ export function syncDocVersionsToManifest(repoRoot, { checkOnly = false, shipped
 
       const outdated = values.filter((v) => v !== targetVersion);
       if (outdated.length === 0) continue;
+
+      // A fresh proof EXISTING is not the same as the document CITING it.
+      // Bumping the version token alone would leave "`plugin-runtime`
+      // `0.87.0` ... re-recorded on 2026-07-25Z as `doctor-…-61e7d6`" —
+      // the new version beside the previous run's id and date, which is
+      // precisely the fabricated-evidence shape the proof-coupled class
+      // exists to prevent. R2 cannot catch it either, because it compares
+      // the cited id against the ids present in the document and the
+      // stale one is the newest one there (cross-host review finding).
+      //
+      // Since the run id and date cannot be safely rewritten (see the
+      // file header), the ordering is inverted instead: the operator
+      // updates the citation, and only then does the sync propagate the
+      // version across all five sites.
+      if (rule.tokenClass === 'proof-coupled' && proofPointer.runId && !original.includes(proofPointer.runId)) {
+        refusals.push({
+          rule: rule.id,
+          file,
+          tokenClass: rule.tokenClass,
+          reason: 'proof-citation-not-updated',
+          detail: `a proof for ${targetVersion} is recorded (${proofPointer.runId}) but ${file} does not cite it yet. Update the run id and date in the current-state record first, then re-run; this script will not bump the version beside a stale citation.`,
+        });
+        continue;
+      }
 
       next = next.replace(rule.pattern, (whole, prefix, version, suffix) =>
         (version === targetVersion ? whole : `${prefix}${targetVersion}${suffix}`));

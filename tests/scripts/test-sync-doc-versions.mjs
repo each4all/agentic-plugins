@@ -19,7 +19,16 @@ const ARCH = 'docs/ARCHITECTURE.md';
 const DEV = 'docs/DEVELOPMENT.md';
 const SCORECARD = 'docs/assurance/omcc-cutover-scorecard.md';
 
-function makeRepo({ manifestVersion = '0.87.0', docVersion = '0.86.2', proofVersion = '0.86.2', proof = true, docs = {} } = {}) {
+// `proofRunId` defaults to a DIFFERENT id from the one the fixture prose
+// cites. The first version of this helper used one id for both, which
+// made the proof-coupled sync look correct while it was in fact bumping
+// a version token beside a stale citation (cross-host review finding).
+// Tests that want the "operator already updated the citation" state pass
+// proofRunId: DOC_RUN_ID explicitly.
+const DOC_RUN_ID = 'doctor-20260726T014023Z-1b377b';
+const FRESH_RUN_ID = 'doctor-20260801T101112Z-abcdef';
+
+function makeRepo({ manifestVersion = '0.87.0', docVersion = '0.86.2', proofVersion = '0.86.2', proofRunId = FRESH_RUN_ID, proof = true, docs = {} } = {}) {
   const root = mkdtempSync(resolve(tmpdir(), 'sync-doc-versions-'));
   const write = (rel, body) => {
     mkdirSync(dirname(resolve(root, rel)), { recursive: true });
@@ -62,7 +71,10 @@ function makeRepo({ manifestVersion = '0.87.0', docVersion = '0.86.2', proofVers
     '',
     `Zero writes planned against the installed \`plugin-runtime\` \`${docVersion}\` state.`,
     '',
-    `Execution evidence is native to \`plugin-runtime\` \`${docVersion}\`: three proofs passed.`,
+    // Mirrors the real scorecard: the proof version token and the cited
+    // run id sit in the same record, which is what the citation binding
+    // is written against.
+    `Execution evidence is native to \`plugin-runtime\` \`${docVersion}\`: three proofs passed, recorded as \`${DOC_RUN_ID}\`.`,
     '',
     `Release PR #642 squash \`9e2af7d\`, tag \`plugin-runtime-v${docVersion}\`, sync \`668c325\`.`,
     '',
@@ -74,7 +86,7 @@ function makeRepo({ manifestVersion = '0.87.0', docVersion = '0.86.2', proofVers
     write('.agentic-plugins/runs/doctor/latest.json', JSON.stringify({
       schema_version: 'runtime-doctor-latest-1.0',
       runtime_version: proofVersion,
-      run_id: 'doctor-20260726T014023Z-1b377b',
+      run_id: proofRunId,
     }, null, 2));
   }
 
@@ -82,13 +94,14 @@ function makeRepo({ manifestVersion = '0.87.0', docVersion = '0.86.2', proofVers
 }
 
 describe('sync-doc-versions rule table', () => {
-  it('scopes release-tag syncing to the scorecard only', () => {
-    // The real docs/DEVELOPMENT.md carries ten backticked historical
-    // `plugin-runtime-vX` tags; only the scorecard de-backticks
-    // superseded tags. A tag rule pointed at DEVELOPMENT.md would rewrite
-    // history, so the rule table must never grow one.
-    const tagRuleFiles = RULES.filter((r) => r.id.includes('release-tag')).map((r) => r.file);
-    deepStrictEqual(tagRuleFiles, ['docs/assurance/omcc-cutover-scorecard.md']);
+  it('never syncs a release tag — a tag is one member of a triple, not a standalone claim', () => {
+    // Bumping `plugin-runtime-vX` alone leaves it beside the previous
+    // release's PR number, squash sha, and marketplace sync sha, which
+    // MANUFACTURES the mis-paired triple this slice exists to prevent
+    // (reproduced during the cross-host review: `#642 / 9e2af7d /
+    // v0.86.2` became `#642 / 9e2af7d / v0.87.0`). Tags stay
+    // human-written and are gated by R1 against git.
+    deepStrictEqual(RULES.filter((r) => /plugin-runtime-v/.test(r.pattern.source)), []);
   });
 
   it('classifies every rule as exactly one of the two token classes', () => {
@@ -123,7 +136,7 @@ describe('sync-doc-versions token classes', () => {
       const r = syncDocVersionsToManifest(repo.root, { checkOnly: false });
       strictEqual(r.targetVersion, '0.87.0');
 
-      deepStrictEqual(r.diffs.map((d) => d.rule).sort(), ['architecture-as-of', 'development-as-of', 'scorecard-release-tag']);
+      deepStrictEqual(r.diffs.map((d) => d.rule).sort(), ['architecture-as-of', 'development-as-of']);
       deepStrictEqual(
         r.refusals.map((x) => `${x.rule}:${x.reason}`).sort(),
         ['development-latest-installed-proof:proof-not-recorded', 'scorecard-installed-proof-version:proof-not-recorded'],
@@ -132,7 +145,7 @@ describe('sync-doc-versions token classes', () => {
       ok(repo.read(ARCH).includes('`plugin-runtime` v0.87.0'), 'architecture as-of moved');
       ok(repo.read(DEV).includes('> `plugin-runtime` v0.87.0'), 'hard-wrapped blockquote as-of moved');
       ok(repo.read(DEV).includes('As of `plugin-runtime` v0.87.0,'), 'inline as-of moved');
-      ok(repo.read(SCORECARD).includes('`plugin-runtime-v0.87.0`'), 'scorecard release tag moved');
+      ok(repo.read(SCORECARD).includes('`plugin-runtime-v0.86.2`'), 'the release tag is NOT touched — it belongs to a triple');
 
       // The refused class must be untouched, not partially written.
       ok(repo.read(DEV).includes('Latest installed proof: `plugin-runtime` `0.86.2`'), 'proof-coupled token held back');
@@ -141,8 +154,9 @@ describe('sync-doc-versions token classes', () => {
   });
 
   it('syncs proof-coupled tokens once a proof has been recorded for the manifest version', () => {
-    // Control for the refusal above: identical fixture, fresh proof.
-    const repo = makeRepo({ manifestVersion: '0.87.0', docVersion: '0.86.2', proofVersion: '0.87.0' });
+    // Control for the refusal above: identical fixture, fresh proof, and
+    // the operator has already moved the citation to that run.
+    const repo = makeRepo({ manifestVersion: '0.87.0', docVersion: '0.86.2', proofVersion: '0.87.0', proofRunId: DOC_RUN_ID });
     try {
       const r = syncDocVersionsToManifest(repo.root, { checkOnly: false });
       deepStrictEqual(r.refusals, []);
@@ -152,18 +166,50 @@ describe('sync-doc-versions token classes', () => {
     } finally { repo.cleanup(); }
   });
 
+  it('refuses to bump a proof version beside a citation of a different run', () => {
+    // The hole the cross-host review found: a fresh proof EXISTING is not
+    // the same as the document CITING it. Without this binding the docs
+    // become "`plugin-runtime` `0.87.0` ... recorded as
+    // `doctor-…-1b377b`" — the new version beside the previous run — and
+    // R2 cannot see it either, because the stale id is still the newest
+    // id present in the document.
+    const repo = makeRepo({ manifestVersion: '0.87.0', docVersion: '0.86.2', proofVersion: '0.87.0', proofRunId: FRESH_RUN_ID });
+    try {
+      const r = syncDocVersionsToManifest(repo.root, { checkOnly: false });
+      const refused = r.refusals.filter((x) => x.reason === 'proof-citation-not-updated');
+      strictEqual(refused.length, 2, JSON.stringify(r.refusals));
+      ok(repo.read(DEV).includes('Latest installed proof: `plugin-runtime` `0.86.2`'), 'the version is not bumped past the citation');
+      ok(repo.read(DEV).includes(DOC_RUN_ID), 'and the stale citation is left for the operator to move');
+      // Shipped-version rules are unaffected — the refusal is scoped.
+      ok(repo.read(ARCH).includes('`plugin-runtime` v0.87.0'), 'shipped-version class still syncs');
+    } finally { repo.cleanup(); }
+  });
+
+  it('CONTROL: the same fixture syncs once the citation names the recorded run', () => {
+    const repo = makeRepo({ manifestVersion: '0.87.0', docVersion: '0.86.2', proofVersion: '0.87.0', proofRunId: DOC_RUN_ID });
+    try {
+      const r = syncDocVersionsToManifest(repo.root, { checkOnly: false });
+      strictEqual(r.refusals.length, 0, JSON.stringify(r.refusals));
+      ok(repo.read(DEV).includes('Latest installed proof: `plugin-runtime` `0.87.0`'), 'now it syncs');
+    } finally { repo.cleanup(); }
+  });
+
   it('refuses proof-coupled tokens when no doctor artifact is readable at all', () => {
     const repo = makeRepo({ manifestVersion: '0.87.0', docVersion: '0.86.2', proof: false });
     try {
       const r = syncDocVersionsToManifest(repo.root, { checkOnly: false });
       strictEqual(r.proofPointer.present, false);
+      // `.every` alone is vacuously true on an empty array — a complete
+      // loss of the refusal path would have stayed green (cross-host
+      // review finding). Assert the count first.
+      strictEqual(r.refusals.length, 2, JSON.stringify(r.refusals));
       ok(r.refusals.every((x) => x.reason === 'proof-not-recorded'), 'absent artifact refuses rather than throwing');
       ok(r.diffs.length > 0, 'shipped-version class still syncs without any local artifacts (the CI case)');
     } finally { repo.cleanup(); }
   });
 
   it('leaves superseded records in the same documents untouched', () => {
-    const repo = makeRepo({ manifestVersion: '0.87.0', docVersion: '0.86.2', proofVersion: '0.87.0' });
+    const repo = makeRepo({ manifestVersion: '0.87.0', docVersion: '0.86.2', proofVersion: '0.87.0', proofRunId: DOC_RUN_ID });
     try {
       syncDocVersionsToManifest(repo.root, { checkOnly: false });
       const dev = repo.read(DEV);
@@ -198,26 +244,28 @@ describe('sync-doc-versions safety preconditions', () => {
     // versions and must refuse.
     const repo = makeRepo({
       manifestVersion: '0.87.0',
+      proofVersion: '0.87.0',
+      proofRunId: DOC_RUN_ID,
       docs: {
         [SCORECARD]: [
           '# Scorecard',
           '',
           'Zero writes planned against the installed `plugin-runtime` `0.86.2` state.',
-          '',
-          'Release PR #642 squash `9e2af7d`, tag `plugin-runtime-v0.86.2`, sync `668c325`.',
-          'Earlier: tag `plugin-runtime-v0.85.0` and tag `plugin-runtime-v0.84.0`.',
+          // De-backticking broken: two superseded proof versions now fall
+          // inside the rule's match set.
+          'Earlier records: `plugin-runtime` `0.85.0` and `plugin-runtime` `0.84.0`.',
           '',
         ].join('\n'),
       },
     });
     try {
       const r = syncDocVersionsToManifest(repo.root, { checkOnly: false });
-      const refusal = r.refusals.find((x) => x.rule === 'scorecard-release-tag');
-      ok(refusal, 'heterogeneous tag set is refused');
+      const refusal = r.refusals.find((x) => x.rule === 'scorecard-installed-proof-version');
+      ok(refusal, `heterogeneous proof-version set is refused: ${JSON.stringify(r.refusals)}`);
       strictEqual(refusal.reason, 'heterogeneous-match-set');
       const after = repo.read(SCORECARD);
-      ok(after.includes('`plugin-runtime-v0.85.0`') && after.includes('`plugin-runtime-v0.84.0`'), 'superseded tags survive the refusal');
-      ok(after.includes('`plugin-runtime-v0.86.2`'), 'and the current tag is not half-written either');
+      ok(after.includes('`plugin-runtime` `0.85.0`') && after.includes('`plugin-runtime` `0.84.0`'), 'superseded records survive the refusal');
+      ok(after.includes('`plugin-runtime` `0.86.2`'), 'and the current token is not half-written either');
     } finally { repo.cleanup(); }
   });
 
@@ -226,29 +274,29 @@ describe('sync-doc-versions safety preconditions', () => {
     // rule simply never matched the fixture at all.
     const repo = makeRepo({
       manifestVersion: '0.87.0',
+      proofVersion: '0.87.0',
+      proofRunId: DOC_RUN_ID,
       docs: {
         [SCORECARD]: [
           '# Scorecard',
           '',
-          'Zero writes planned against the installed `plugin-runtime` `0.86.2` state.',
-          '',
-          'Release PR #642 squash `9e2af7d`, tag `plugin-runtime-v0.86.2`, sync `668c325`.',
-          'Earlier: tag plugin-runtime-v0.85.0 and tag plugin-runtime-v0.84.0 (de-backticked).',
+          `Zero writes planned against the installed \`plugin-runtime\` \`0.86.2\` state, recorded as \`${DOC_RUN_ID}\`.`,
+          'Earlier records: plugin-runtime 0.85.0 and plugin-runtime 0.84.0 (de-backticked).',
           '',
         ].join('\n'),
       },
     });
     try {
       const r = syncDocVersionsToManifest(repo.root, { checkOnly: false });
-      ok(!r.refusals.some((x) => x.rule === 'scorecard-release-tag'), 'no refusal when the convention holds');
-      ok(repo.read(SCORECARD).includes('`plugin-runtime-v0.87.0`'), 'the tag rule does fire on this fixture');
+      ok(!r.refusals.some((x) => x.reason === 'heterogeneous-match-set'), `no heterogeneity refusal when the convention holds: ${JSON.stringify(r.refusals)}`);
+      ok(repo.read(SCORECARD).includes('`plugin-runtime` `0.87.0`'), 'the proof-version rule does fire on this fixture');
     } finally { repo.cleanup(); }
   });
 });
 
 describe('sync-doc-versions modes', () => {
   it('checkOnly reports diffs without writing', () => {
-    const repo = makeRepo({ manifestVersion: '0.87.0', docVersion: '0.86.2', proofVersion: '0.87.0' });
+    const repo = makeRepo({ manifestVersion: '0.87.0', docVersion: '0.86.2', proofVersion: '0.87.0', proofRunId: DOC_RUN_ID });
     try {
       const before = repo.read(ARCH);
       const r = syncDocVersionsToManifest(repo.root, { checkOnly: true });
@@ -259,7 +307,7 @@ describe('sync-doc-versions modes', () => {
   });
 
   it('is idempotent — a second run reports no diffs', () => {
-    const repo = makeRepo({ manifestVersion: '0.87.0', docVersion: '0.86.2', proofVersion: '0.87.0' });
+    const repo = makeRepo({ manifestVersion: '0.87.0', docVersion: '0.86.2', proofVersion: '0.87.0', proofRunId: DOC_RUN_ID });
     try {
       syncDocVersionsToManifest(repo.root, { checkOnly: false });
       const second = syncDocVersionsToManifest(repo.root, { checkOnly: false });
@@ -279,7 +327,7 @@ describe('sync-doc-versions modes', () => {
     try {
       const r = syncDocVersionsToManifest(repo.root, { checkOnly: false, shippedOnly: true });
       deepStrictEqual(r.refusals, [], 'no refusal is raised for the skipped class');
-      deepStrictEqual(r.diffs.map((d) => d.tokenClass), ['shipped-version', 'shipped-version', 'shipped-version']);
+      deepStrictEqual(r.diffs.map((d) => d.tokenClass), ['shipped-version', 'shipped-version']);
       ok(repo.read(ARCH).includes('`plugin-runtime` v0.87.0'), 'shipped-version class still syncs');
       ok(repo.read(DEV).includes('Latest installed proof: `plugin-runtime` `0.86.2`'), 'proof-coupled token is untouched');
     } finally { repo.cleanup(); }
@@ -314,10 +362,37 @@ describe('sync-doc-versions modes', () => {
 });
 
 describe('sync-doc-versions against the real repository', () => {
+  // A release-please PR is the one legitimate intermediate state where
+  // the manifest is ahead of the docs on purpose: the post-release sync
+  // has not run yet. Asserting zero drift unconditionally would have
+  // failed full-tests on every runtime release PR, blocking the very
+  // release that produces the sync (cross-host review finding). The
+  // relaxed branch still asserts the drift is only ever backwards.
+  const RELEASE_PLEASE_PR = process.env.AGENTIC_RELEASE_PLEASE_PR === '1';
+
   it('reports the checked-in docs as already in sync', async () => {
     const REPO_ROOT = resolve(import.meta.dirname, '../..');
     const r = syncDocVersionsToManifest(REPO_ROOT, { checkOnly: true });
+    if (RELEASE_PLEASE_PR) {
+      for (const d of r.diffs) {
+        ok(compareSemverParts(d.from, d.to) < 0, `release-please PR may lag, but never lead: ${d.rule} ${d.from} -> ${d.to}`);
+      }
+      for (const x of r.refusals) {
+        ok(x.reason === 'proof-not-recorded' || x.reason === 'proof-citation-not-updated',
+          `release-please PR may only refuse for a missing proof, got ${x.reason} on ${x.rule}`);
+      }
+      return;
+    }
     deepStrictEqual(r.diffs, [], 'no stage-doc version drift on this checkout');
     deepStrictEqual(r.refusals, [], 'no rule refused — every anchor still matches the real documents');
   });
 });
+
+function compareSemverParts(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i += 1) {
+    if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
+  }
+  return 0;
+}

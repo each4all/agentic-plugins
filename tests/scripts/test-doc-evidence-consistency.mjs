@@ -118,6 +118,23 @@ describe('doc evidence — R1 release triples', () => {
     strictEqual(r.unverifiablePrNumbers, 1);
   });
 
+  it('names the tags it actually paired, so a silently dropped claim is visible', () => {
+    // An aggregate "checked > 20" cannot notice one claim falling out of
+    // the extractor's window (cross-host review finding). Pin the recent
+    // releases by name, and surface the count of tag mentions the
+    // extractor declined to pair so coverage loss is reportable rather
+    // than invisible.
+    const r = checkReleaseTriples(REPO_ROOT, { docs: realDocs() });
+    // Tags that genuinely carry a release triple in the current docs.
+    // 0.86.0/0.86.1 are deliberately absent: their records were absorbed
+    // in place by the later recovery PRs, which is the repo's editorial
+    // pattern for same-loop patch releases.
+    for (const tag of ['plugin-runtime-v0.86.2', 'plugin-runtime-v0.85.0', 'plugin-runtime-v0.82.0', 'plugin-runtime-v0.78.1']) {
+      ok(r.checkedTags.includes(tag), `${tag} must be paired with its release PR, got: ${r.checkedTags.join(', ')}`);
+    }
+    ok(typeof r.unpairedTags === 'number', 'unpaired tag mentions are counted, not hidden');
+  });
+
   it('catches a tag that does not exist at all', () => {
     const r = checkReleaseTriples(REPO_ROOT, {
       docs: docsWith('planted.md', 'release PR #642 squash `9e2af7d`, tag `plugin-runtime-v9.99.9`.'),
@@ -157,6 +174,30 @@ describe('doc evidence — R2 proof citations', () => {
     });
     strictEqual(r.checked, 1, 'the anchor fired on this fixture');
     strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
+  });
+
+  it('checks id/date agreement on SUPERSEDED records too, not only the current one', () => {
+    // Restricting the date check to ids reachable from a current anchor
+    // left the packed history ungated — 25 ids in one DEVELOPMENT.md line
+    // and 20 in the scorecard R3 row — which is the opposite of this
+    // module's stated motivation (cross-host review finding).
+    const r = checkProofCitations(REPO_ROOT, {
+      docs: docsWith('planted.md', [
+        'Installed `plugin-runtime` `0.86.2` carries the proof recorded on 2026-07-26Z as `doctor-20260726T014023Z-1b377b`.',
+        'This supersedes the record re-recorded on 2026-07-23Z as doctor-20260722T012908Z-472538.',
+      ].join(' ')),
+    });
+    ok(r.findings.some((f) => f.check === 'proof-citation-date' && f.runId.startsWith('doctor-20260722')), JSON.stringify(r.findings));
+  });
+
+  it('compares the NEAREST date, not any date in the window', () => {
+    // `dates.includes(embedded)` let an explicitly wrong date pass
+    // whenever a correct one happened to sit elsewhere within +-80
+    // characters (cross-host review finding).
+    const r = checkProofCitations(REPO_ROOT, {
+      docs: docsWith('planted.md', 'the 2026-07-26Z loop closed; the proof recorded on 2026-07-25Z as `doctor-20260726T014023Z-1b377b` passed.'),
+    });
+    ok(r.findings.some((f) => f.check === 'proof-citation-date' && /stated next to it is 2026-07-25/.test(f.detail)), JSON.stringify(r.findings));
   });
 
   it('does not mistake a superseded record for the current one', () => {
@@ -243,6 +284,24 @@ describe('doc evidence — R4 commit shas', () => {
     });
     strictEqual(r.checked, 0, 'no 64-hex token is treated as a cited sha');
     strictEqual(r.findings.length, 0);
+  });
+
+  it('recognises a `plugin-runtime-vX` literal as the attributed version', () => {
+    // The most common way these documents name a version was not matched
+    // at all, because the pattern required whitespace or "(" ahead of the
+    // digits (cross-host review finding). af620df is a 0.86.2 fix.
+    const r = checkCommitShas(REPO_ROOT, {
+      docs: docsWith('planted.md', 'tag plugin-runtime-v0.86.1 shipped the pair `af620df`'),
+    });
+    ok(r.findings.some((f) => f.check === 'commit-sha-attribution'), `expected the tag literal to attribute, got ${r.unattributed} unattributed`);
+  });
+
+  it('treats a semicolon as a clause break, not only a period', () => {
+    const r = checkCommitShas(REPO_ROOT, {
+      docs: docsWith('planted.md', 'the 0.86.1 loop closed; an unrelated note cites `af620df` in passing'),
+    });
+    strictEqual(r.findings.length, 0, `must not attribute across the semicolon: ${JSON.stringify(r.findings)}`);
+    strictEqual(r.unattributed, 1);
   });
 
   it('leaves a sha unattributed rather than guessing across a sentence boundary', () => {
