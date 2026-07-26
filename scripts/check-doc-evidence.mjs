@@ -192,16 +192,29 @@ export function checkReleaseTriples(repoRoot, { docs = null } = {}) {
       // the claim is checkable — and was not checked at all: swapping the
       // current sync sha for the previous release's produced zero
       // findings (round-2 cross-host review finding).
-      const syncSha = [...flat.slice(m.index, m.index + 200).matchAll(/(?:marketplace )?sync(?: commit)? `?([0-9a-f]{7,40})`?/g)][0] ?? null;
+      // Bounded by the next release record so a neighbouring release's
+      // sync sha cannot be borrowed (round-3 cross-host review finding).
+      const afterTag = flat.slice(m.index, m.index + 200);
+      const nextRecord = afterTag.slice(1).search(/release PR \[?#\d+/i);
+      const syncScope = nextRecord === -1 ? afterTag : afterTag.slice(0, nextRecord + 1);
+      const syncSha = [...syncScope.matchAll(/(?:marketplace )?sync(?: commit)? `?([0-9a-f]{7,40})`?/g)][0] ?? null;
       if (syncSha) {
+        // DESCENDANCY plus identity, not immediate parentage. Requiring
+        // `sync^ == release` is neither necessary — main can advance
+        // between the release and the catalog push, putting an unrelated
+        // commit in between — nor sufficient: that unrelated commit would
+        // itself satisfy the parent test and pass while being the wrong
+        // sha (round-3 cross-host review finding). Checking ancestry and
+        // the commit's own subject pins it correctly in both directions.
         try {
-          const parent = git(repoRoot, ['rev-parse', '--short=7', `${syncSha[1]}^`]).trim();
-          if (!actualCommit.startsWith(parent.slice(0, 7)) && !parent.startsWith(actualCommit.slice(0, 7))) {
+          git(repoRoot, ['merge-base', '--is-ancestor', actualCommit, syncSha[1]]);
+          const subject = git(repoRoot, ['log', '-1', '--format=%s', syncSha[1]]).trim();
+          if (!/sync (catalog|stage doc)/i.test(subject)) {
             findings.push({
               check: 'release-triple',
               file,
               tag,
-              detail: `${tag} is commit ${actualCommit}, but the marketplace sync ${syncSha[1]} paired with it has parent ${parent}`,
+              detail: `${syncSha[1]} is cited as ${tag}'s marketplace sync, but its subject is "${subject}"`,
             });
           }
         } catch {
@@ -209,7 +222,7 @@ export function checkReleaseTriples(repoRoot, { docs = null } = {}) {
             check: 'release-triple',
             file,
             tag,
-            detail: `marketplace sync ${syncSha[1]} paired with ${tag} does not resolve in this repository`,
+            detail: `marketplace sync ${syncSha[1]} paired with ${tag} does not resolve, or is not a descendant of ${actualCommit}`,
           });
         }
       }
@@ -249,6 +262,7 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
   const findings = [];
   let checked = 0;
   let dateChecked = 0;
+  const dateSkipped = [];
 
   const manifest = JSON.parse(readFileSync(resolve(repoRoot, '.release-please-manifest.json'), 'utf8'));
   const target = manifest['plugins/runtime'];
@@ -321,12 +335,31 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
       // date in +-80 characters and asking `includes()` let an
       // explicitly wrong date pass whenever a correct one happened to sit
       // elsewhere in the same window (cross-host review finding).
-      const from = Math.max(0, m.index - 80);
-      const nearby = flat.slice(from, m.index + runId.length + 80);
-      const dates = [...nearby.matchAll(/(\d{4}-\d{2}-\d{2})Z/g)]
+      // +-64, measured. Across the real corpus a date that AGREES with
+      // its id sits 13-56 characters away, while the one disagreeing date
+      // is an unrelated "2026-07-10 baseline refresh" 75 characters from a
+      // 2026-07-09 proof id. A wider window reaches prose that is not a
+      // citation at all and reports a false mismatch; a narrower one drops
+      // legitimate pairs.
+      const DATE_PROXIMITY = 64;
+      const from = Math.max(0, m.index - DATE_PROXIMITY);
+      const nearby = flat.slice(from, m.index + runId.length + DATE_PROXIMITY);
+      // The trailing `Z` is optional. Requiring it meant that dropping
+      // one character from a cited date removed that id from the scan
+      // entirely and silently — the mutation the round-3 review used, and
+      // one no count-floor could catch, since the documents legitimately
+      // carry many ids with no adjacent date at all (47 of 94).
+      const dates = [...nearby.matchAll(/(\d{4}-\d{2}-\d{2})Z?/g)]
         .map((x) => ({ value: x[1], distance: Math.abs((from + x.index) - m.index) }))
         .sort((a, b) => a.distance - b.distance);
-      if (dates.length === 0) continue;
+      if (dates.length === 0) {
+        // Not silently skipped: stripping the trailing `Z` from a cited
+        // date dropped that id out of the scan entirely, and a loose
+        // ">= 45" floor could not see it (round-3 cross-host review
+        // finding). Report the id so the caller can assert zero.
+        dateSkipped.push({ file, runId });
+        continue;
+      }
       dateChecked += 1;
       if (dates[0].value !== embedded) {
         findings.push({
@@ -338,7 +371,7 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
       }
     }
   }
-  return { ran: true, reason: null, findings, checked, dateChecked };
+  return { ran: true, reason: null, findings, checked, dateChecked, dateSkipped };
 }
 
 /**
@@ -492,7 +525,14 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
       // runtime commit to a HOST version (round-2 cross-host review
       // finding). Candidates are therefore filtered to versions the
       // runtime changelog actually knows about.
-      const VERSION_LITERAL = /(?:^|[\s(]|plugin-runtime-v|plugin-runtime` v)(\d+\.\d+\.\d+)\b/g;
+      // Three accepted forms: bare, `plugin-runtime-vX`, `plugin-runtime` vX,
+      // and the installed-state form `plugin-runtime` `X` — the last was
+      // unrecognised, so "installed `plugin-runtime` `0.86.1` carries
+      // `af620df`" produced no finding (round-3 cross-host review).
+      const VERSION_LITERAL = /(?:^|[\s(]|plugin-runtime-v|plugin-runtime` v|plugin-runtime` `)(\d+\.\d+\.\d+)\b/g;
+      // A HOST version that coincides with a released runtime version
+      // (e.g. "Codex 0.86.1") would otherwise pass the changelog filter.
+      const HOST_PREFIX = /(?:Codex|codex-cli|Claude Code|claude)\s*$/;
       // Clause separators, not just ".". "0.86.1 closed; an unrelated
       // note cites `af620df`" was being attributed across the semicolon.
       const CLAUSE_BREAK = /[.;—]\s|\s—\s/;
@@ -508,7 +548,10 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
       // 0.86.2. Staying unattributed is the honest outcome for a sha the
       // prose does not actually place.
       const before = flat.slice(Math.max(0, m.index - 160), m.index);
-      const back = [...before.matchAll(VERSION_LITERAL)].filter((v) => releasedVersions.has(v[1])).at(-1) ?? null;
+      const back = [...before.matchAll(VERSION_LITERAL)]
+        .filter((v) => releasedVersions.has(v[1]))
+        .filter((v) => !HOST_PREFIX.test(before.slice(Math.max(0, v.index - 20), v.index + 1)))
+        .at(-1) ?? null;
       const attributed = back && !CLAUSE_BREAK.test(before.slice(back.index + back[0].length)) ? back : null;
       if (!attributed) { unattributed += 1; continue; }
       if (attributed[1] !== changelogVersion) {
@@ -550,6 +593,8 @@ if (invokedAsCLI) {
         r.unverifiablePrNumbers ? `${r.unverifiablePrNumbers} PR number(s) not offline-verifiable (pre-squash-merge releases)` : null,
         r.dateChecked !== undefined ? `${r.dateChecked} id/date pair(s) incl. superseded` : null,
         r.unpairedTags ? `${r.unpairedTags} tag mention(s) not paired with a release PR` : null,
+        r.reachabilityBase && r.reachabilityBase !== 'origin/main' ? `reachability base ${r.reachabilityBase} (weaker than origin/main)` : null,
+        r.dateSkipped && r.dateSkipped.length ? `${r.dateSkipped.length} id(s) with no adjacent date` : null,
         r.unattributed ? `${r.unattributed} sha(s) unattributed` : null,
       ].filter(Boolean).join('; ');
       console.log(`${name}: ${r.checked} claim(s) checked, ${r.findings.length} finding(s)${extra ? ` — ${extra}` : ''}`);

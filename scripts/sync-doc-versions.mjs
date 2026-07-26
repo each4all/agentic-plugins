@@ -74,6 +74,11 @@ const DOCTOR_LATEST_PATH = '.agentic-plugins/runs/doctor/latest.json';
 
 const SEMVER = String.raw`\d+\.\d+\.\d+`;
 const PROOF_CITATION_WINDOW = 1200;
+// A run id must look like a run id. `length > 0` accepted `" "`, and a
+// single space then satisfied the citation lookup trivially — every
+// document `includes(" ")` — so a malformed pointer authorised both
+// proof rewrites (round-3 cross-host review finding).
+const DOCTOR_RUN_ID = /^doctor-\d{8}T\d{6}Z-[0-9a-f]+$/;
 
 // Each rule is (file, anchored pattern, class). The anchors are narrow on
 // purpose: a bare token pattern would also match superseded records. The
@@ -172,14 +177,18 @@ export function readDoctorProofPointer(repoRoot) {
 /**
  * Homogeneity precondition.
  *
- * A rule may fire only when its match set is "one lagging value plus, at
- * most, the target value" — i.e. distinct values other than `target`
- * number at most one. A rule whose anchor has stopped being selective
- * (because the docs were restructured, or because a pattern was widened)
- * shows up as a match set spanning several historical versions, and this
- * is where it gets refused instead of rewriting evidence. The allowance
- * for `target` itself is what lets the script repair a half-applied edit
- * rather than deadlocking on it.
+ * A rule may fire only when every match already carries the SAME version.
+ * A rule whose anchor has stopped being selective — because the docs were
+ * restructured, or a pattern was widened — shows up as a match set
+ * spanning several versions, and this is where it gets refused instead of
+ * rewriting evidence.
+ *
+ * There is deliberately no allowance for "the target plus one other
+ * value". It reads like a repairable half-applied edit, but it is
+ * indistinguishable from a superseded record someone left backticked, and
+ * the rewrite then promotes that historical record to the current
+ * version. Refusing costs a manual reconcile; the alternative costs
+ * evidence.
  */
 export function checkHomogeneity(values, target) {
   const distinct = [...new Set(values)];
@@ -228,7 +237,7 @@ export function syncDocVersionsToManifest(repoRoot, { checkOnly = false, shipped
   const proofIsFresh = proofPointer.present
     && proofPointer.runtimeVersion === targetVersion
     && typeof proofPointer.runId === 'string'
-    && proofPointer.runId.length > 0;
+    && DOCTOR_RUN_ID.test(proofPointer.runId);
 
   const diffs = [];
   const refusals = [];
@@ -331,15 +340,23 @@ export function syncDocVersionsToManifest(repoRoot, { checkOnly = false, shipped
       // the real documents place the cited run id 162, 224, 279, 955, and
       // 281 characters after their proof-version tokens, so 1200 clears
       // the worst case with margin while still being local.
-      const citesRecordedRun = matches.some((m) =>
-        original.slice(m.index, m.index + PROOF_CITATION_WINDOW).includes(proofPointer.runId));
-      if (rule.tokenClass === 'proof-coupled' && !citesRecordedRun) {
+      // EVERY match must cite it, not merely one. `some()` let a single
+      // fresh citation authorise a blanket replace of all matches, so a
+      // scorecard where one of four claims still pointed at the previous
+      // run had all four versions bumped (round-3 cross-host review
+      // finding). Replacing only the authorised subset is not an option
+      // either — that would leave a mixed set the homogeneity check
+      // refuses on the next run — so the rule refuses as a whole.
+      const uncited = rule.tokenClass === 'proof-coupled'
+        ? matches.filter((m) => !original.slice(m.index, m.index + PROOF_CITATION_WINDOW).includes(proofPointer.runId))
+        : [];
+      if (uncited.length > 0) {
         refusals.push({
           rule: rule.id,
           file,
           tokenClass: rule.tokenClass,
           reason: 'proof-citation-not-updated',
-          detail: `a proof for ${targetVersion} is recorded (${proofPointer.runId}) but ${file} does not cite it yet. Update the run id and date in the current-state record first, then re-run; this script will not bump the version beside a stale citation.`,
+          detail: `a proof for ${targetVersion} is recorded (${proofPointer.runId}) but ${uncited.length} of ${matches.length} ${rule.description} occurrence(s) in ${file} do not cite it within ${PROOF_CITATION_WINDOW} characters. Update the run id and date in every current-state record first, then re-run; this script will not bump a version beside a stale citation.`,
         });
         continue;
       }

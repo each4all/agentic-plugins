@@ -221,6 +221,28 @@ describe('doc evidence — R2 proof citations', () => {
     ok(r.findings.some((f) => f.check === 'proof-citation-date' && /stated next to it is 2026-07-25/.test(f.detail)), JSON.stringify(r.findings));
   });
 
+  it('still catches an id/date mismatch when the date has no trailing Z', () => {
+    // Requiring the `Z` meant dropping one character removed the id from
+    // the scan entirely and silently; no count floor could see it,
+    // because the documents legitimately carry many ids with no adjacent
+    // date at all (round-3 cross-host review finding).
+    const r = checkProofCitations(REPO_ROOT, {
+      docs: docsWith('planted.md', 'recorded on 2026-07-25 as `doctor-20260726T014023Z-1b377b`.'),
+    });
+    ok(r.findings.some((f) => f.check === 'proof-citation-date'), JSON.stringify(r.findings));
+  });
+
+  it('does not reach past a citation to borrow an unrelated nearby date', () => {
+    // The real scorecard writes "the 2026-07-10 baseline refresh later
+    // closed), the prior 0.77.1-native proof (`doctor-20260709…`)" — the
+    // date belongs to a baseline refresh, not the proof. Measured: dates
+    // that agree sit 13-56 characters out, this one sits 75.
+    const r = checkProofCitations(REPO_ROOT, {
+      docs: docsWith('planted.md', 'the `baseline` `stale` caveat that the 2026-07-10 baseline refresh later closed), the prior 0.77.1-native proof (`doctor-20260709T141930Z-515ebf`, parity `ready`).'),
+    });
+    strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
+  });
+
   it('does not mistake a superseded record for the current one', () => {
     // The scorecard R3 row repeats "re-recorded under the <version>
     // install on <date> (<id>" five times, once current and four times
@@ -326,6 +348,26 @@ describe('doc evidence — R4 commit shas', () => {
     // changelog actually released.
     const r = checkCommitShas(REPO_ROOT, {
       docs: docsWith('planted.md', 'observed on Codex 0.145.0 alongside `af620df`'),
+    });
+    strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
+  });
+
+  it('recognises the installed-state `plugin-runtime` `X` form', () => {
+    // The repository's own installed-state phrasing was unrecognised, so
+    // a wrong sha beside it produced no finding (round-3 cross-host
+    // review finding).
+    const r = checkCommitShas(REPO_ROOT, {
+      docs: docsWith('planted.md', 'installed `plugin-runtime` `0.86.1` carries `af620df`'),
+    });
+    ok(r.findings.some((f) => f.check === 'commit-sha-attribution'), JSON.stringify(r.findings));
+  });
+
+  it('does not let a host version that collides with a runtime version claim a commit', () => {
+    // Filtering to released runtime versions was not enough: Codex 0.86.1
+    // would be a valid runtime version too (round-3 cross-host review
+    // finding).
+    const r = checkCommitShas(REPO_ROOT, {
+      docs: docsWith('planted.md', 'observed on Codex 0.86.1 alongside `af620df`'),
     });
     strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
   });

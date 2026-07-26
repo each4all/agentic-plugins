@@ -244,7 +244,11 @@ checks what the freshness gate structurally cannot see: that the
 `(release PR, squash, tag)` triples cited in prose match real tags and
 release commits, that a record presented as current cites the newest
 proof run id with a matching date, and that every cited commit sha
-resolves and is attributed to the changelog version that contains it.
+resolves in the integration branch's history. Attribution to a changelog
+version is checked only where the prose actually places a sha next to a
+released runtime version; a sha the prose does not place is reported as
+unattributed rather than guessed at, and most cited shas are in that
+category.
 Those checks need full git history plus tags and fail closed when it is
 absent, which is why `full-tests.yml` checks out with `fetch-depth: 0`.
 Cited proof run ids and dates are **never** rewritten by any script; see

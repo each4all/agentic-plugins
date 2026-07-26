@@ -197,6 +197,53 @@ describe('sync-doc-versions token classes', () => {
     } finally { repo.cleanup(); }
   });
 
+  it('rejects a malformed run id instead of treating it as freshness evidence', () => {
+    // `run_id: " "` passed a length check, and the citation lookup then
+    // succeeded trivially because every document contains a space
+    // (round-3 cross-host review finding).
+    const repo = makeRepo({ manifestVersion: '0.87.0', proofVersion: '0.87.0', proofRunId: ' ' });
+    try {
+      const r = syncDocVersionsToManifest(repo.root, { checkOnly: false });
+      strictEqual(r.diffs.filter((d) => d.tokenClass === 'proof-coupled').length, 0, 'nothing proof-coupled is written');
+      ok(r.refusals.every((x) => x.reason === 'proof-not-recorded'), JSON.stringify(r.refusals));
+      strictEqual(r.refusals.length, 2);
+    } finally { repo.cleanup(); }
+  });
+
+  it('requires EVERY matched proof token to cite the recorded run, not just one', () => {
+    // `matches.some()` let one fresh citation authorise a blanket replace,
+    // so a scorecard where one of several claims still pointed at the
+    // previous run had them all bumped (round-3 cross-host review
+    // finding).
+    const repo = makeRepo({
+      manifestVersion: '0.87.0',
+      proofVersion: '0.87.0',
+      proofRunId: DOC_RUN_ID,
+      docs: {
+        [SCORECARD]: [
+          '# Scorecard',
+          '',
+          `Claim one, against \`plugin-runtime\` \`0.86.2\`, recorded as \`${DOC_RUN_ID}\`.`,
+          '',
+          // Padding puts the second claim's own citation beyond the
+          // window, so only the first claim is authorised.
+          'filler '.repeat(220),
+          '',
+          'Claim two, against `plugin-runtime` `0.86.2`, recorded earlier as `doctor-20260601T000000Z-aaaaaa`.',
+          '',
+        ].join('\n'),
+      },
+    });
+    try {
+      const r = syncDocVersionsToManifest(repo.root, { checkOnly: false });
+      const refusal = r.refusals.find((x) => x.rule === 'scorecard-installed-proof-version');
+      ok(refusal, JSON.stringify(r.refusals));
+      strictEqual(refusal.reason, 'proof-citation-not-updated');
+      ok(/1 of 2/.test(refusal.detail), refusal.detail);
+      ok(repo.read(SCORECARD).includes('`plugin-runtime` `0.86.2`'), 'neither claim was bumped');
+    } finally { repo.cleanup(); }
+  });
+
   it('refuses proof-coupled tokens when no doctor artifact is readable at all', () => {
     const repo = makeRepo({ manifestVersion: '0.87.0', docVersion: '0.86.2', proof: false });
     try {
@@ -373,15 +420,28 @@ describe('sync-doc-versions against the real repository', () => {
   // relaxed branch still asserts the drift is only ever backwards.
   const RELEASE_PLEASE_PR = process.env.AGENTIC_RELEASE_PLEASE_PR === '1';
 
+  const REPO_ROOT = resolve(import.meta.dirname, '../..');
+
   it('reports the checked-in docs as already in sync', async () => {
-    const REPO_ROOT = resolve(import.meta.dirname, '../..');
     const r = syncDocVersionsToManifest(REPO_ROOT, { checkOnly: true });
     if (RELEASE_PLEASE_PR) {
-      // A single coherent lag, not accumulated drift: allowing any older
-      // version let a later unrelated release PR launder a pre-existing
-      // stale state (round-2 cross-host review finding).
+      // The lag must be the IMMEDIATE prior release, not merely "some
+      // older version": uniform 0.84.0 docs against a 0.87.0 manifest
+      // satisfied a one-distinct-value rule while laundering two
+      // releases' worth of accumulated drift (round-3 cross-host review
+      // finding). release-please has already written the new section into
+      // the changelog by this point, so the section below it is the
+      // previous release.
       const laggingVersions = [...new Set(r.diffs.map((d) => d.from))];
       ok(laggingVersions.length <= 1, `release-please PR may lag by one version, got ${laggingVersions.join(', ')}`);
+      if (laggingVersions.length === 1) {
+        const changelog = readFileSync(resolve(REPO_ROOT, 'plugins/runtime/CHANGELOG.md'), 'utf8');
+        const released = [...changelog.matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map((m) => m[1]);
+        const at = released.indexOf(r.targetVersion);
+        const previous = at === -1 ? null : released[at + 1];
+        strictEqual(laggingVersions[0], previous,
+          `release-please PR may lag by exactly one release: manifest ${r.targetVersion}, previous ${previous}, docs ${laggingVersions[0]}`);
+      }
       for (const d of r.diffs) {
         ok(compareSemverParts(d.from, d.to) < 0, `release-please PR may lag, but never lead: ${d.rule} ${d.from} -> ${d.to}`);
       }
