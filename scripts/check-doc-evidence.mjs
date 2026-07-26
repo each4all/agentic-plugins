@@ -188,6 +188,31 @@ export function checkReleaseTriples(repoRoot, { docs = null } = {}) {
           detail: `${tag} is commit ${actualCommit}, but the docs pair it with squash/merge ${squash[1]}`,
         });
       }
+      // The marketplace sync commit is the child of the release commit, so
+      // the claim is checkable — and was not checked at all: swapping the
+      // current sync sha for the previous release's produced zero
+      // findings (round-2 cross-host review finding).
+      const syncSha = [...flat.slice(m.index, m.index + 200).matchAll(/(?:marketplace )?sync(?: commit)? `?([0-9a-f]{7,40})`?/g)][0] ?? null;
+      if (syncSha) {
+        try {
+          const parent = git(repoRoot, ['rev-parse', '--short=7', `${syncSha[1]}^`]).trim();
+          if (!actualCommit.startsWith(parent.slice(0, 7)) && !parent.startsWith(actualCommit.slice(0, 7))) {
+            findings.push({
+              check: 'release-triple',
+              file,
+              tag,
+              detail: `${tag} is commit ${actualCommit}, but the marketplace sync ${syncSha[1]} paired with it has parent ${parent}`,
+            });
+          }
+        } catch {
+          findings.push({
+            check: 'release-triple',
+            file,
+            tag,
+            detail: `marketplace sync ${syncSha[1]} paired with ${tag} does not resolve in this repository`,
+          });
+        }
+      }
       if (pr) {
         const subject = tagSubject.get(tag) ?? '';
         const actualPr = subject.match(/\(#(\d+)\)\s*$/);
@@ -331,7 +356,7 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
 export function checkCommitShas(repoRoot, { docs = null } = {}) {
   const availability = gitHistoryAvailable(repoRoot);
   if (!availability.ok) {
-    return { ran: false, reason: availability.reason, findings: [], checked: 0, unattributed: 0 };
+    return { ran: false, reason: availability.reason, findings: [], checked: 0, unattributed: 0, reachabilityBase: null };
   }
 
   const findings = [];
@@ -341,10 +366,11 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
   // sha -> version, from the runtime changelog's per-version sections.
   const changelog = readFileSync(resolve(repoRoot, RUNTIME_CHANGELOG), 'utf8');
   const shaVersion = new Map();
+  const releasedVersions = new Set();
   let currentSection = null;
   for (const line of changelog.split('\n')) {
     const header = line.match(/^## \[(\d+\.\d+\.\d+)\]/);
-    if (header) { currentSection = header[1]; continue; }
+    if (header) { currentSection = header[1]; releasedVersions.add(header[1]); continue; }
     if (!currentSection) continue;
     for (const m of line.matchAll(/\/commit\/([0-9a-f]{7,40})/g)) {
       shaVersion.set(m[1].slice(0, 7), currentSection);
@@ -373,8 +399,24 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
   // on no remote branch, so CI's fresh clone could not resolve it. The
   // deterministic question is whether the sha is in this branch's
   // history, which is identical on every machine.
+  // The base is the INTEGRATION branch, not HEAD. On a pull_request run
+  // GitHub checks out the synthetic `refs/pull/N/merge` ref, whose
+  // history contains the PR's own branch commits — so a document citing
+  // a sha from its own branch passed CI and then dangled the moment the
+  // branch was squash-merged, which is precisely the defect this check
+  // exists to catch (round-2 cross-host review finding). Falling back to
+  // HEAD keeps the check usable in clones without a remote, and the base
+  // actually used is reported so a caller can tell which guarantee it got.
+  let reachabilityBase = 'HEAD';
+  for (const candidate of ['origin/main', 'main']) {
+    try {
+      git(repoRoot, ['rev-parse', '--verify', '--quiet', `${candidate}^{commit}`]);
+      reachabilityBase = candidate;
+      break;
+    } catch { /* not present in this clone; try the next */ }
+  }
   const ancestorByPrefix = new Map();
-  for (const full of git(repoRoot, ['rev-list', 'HEAD']).split('\n').filter(Boolean)) {
+  for (const full of git(repoRoot, ['rev-list', reachabilityBase]).split('\n').filter(Boolean)) {
     const prefix = full.slice(0, 7);
     if (!ancestorByPrefix.has(prefix)) ancestorByPrefix.set(prefix, full);
   }
@@ -423,7 +465,7 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
           check: 'commit-sha',
           file,
           sha,
-          detail: 'resolves in this clone but is not in the branch history — a fresh clone or CI cannot resolve it (pre-squash branch commit?)',
+          detail: `resolves in this clone but is not reachable from ${reachabilityBase} — a fresh clone or CI cannot resolve it (pre-squash branch commit?)`,
         });
         continue;
       }
@@ -444,7 +486,13 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
       // Nearest, not leftmost: "the 0.85.0 loop and ADR-0048 §3 pair
       // `af620df`" has no intervening period, so a leftmost match would
       // attribute the sha to 0.85.0.
-      const VERSION_LITERAL = /(?:^|[\s(]|plugin-runtime-v)(\d+\.\d+\.\d+)\b/g;
+      // `plugin-runtime` v0.86.1 is the canonical prose form and was not
+      // matched at all; conversely any whitespace-prefixed semver
+      // qualified, so "Codex 0.145.0 ... `af620df`" falsely attributed a
+      // runtime commit to a HOST version (round-2 cross-host review
+      // finding). Candidates are therefore filtered to versions the
+      // runtime changelog actually knows about.
+      const VERSION_LITERAL = /(?:^|[\s(]|plugin-runtime-v|plugin-runtime` v)(\d+\.\d+\.\d+)\b/g;
       // Clause separators, not just ".". "0.86.1 closed; an unrelated
       // note cites `af620df`" was being attributed across the semicolon.
       const CLAUSE_BREAK = /[.;—]\s|\s—\s/;
@@ -460,7 +508,7 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
       // 0.86.2. Staying unattributed is the honest outcome for a sha the
       // prose does not actually place.
       const before = flat.slice(Math.max(0, m.index - 160), m.index);
-      const back = [...before.matchAll(VERSION_LITERAL)].at(-1) ?? null;
+      const back = [...before.matchAll(VERSION_LITERAL)].filter((v) => releasedVersions.has(v[1])).at(-1) ?? null;
       const attributed = back && !CLAUSE_BREAK.test(before.slice(back.index + back[0].length)) ? back : null;
       if (!attributed) { unattributed += 1; continue; }
       if (attributed[1] !== changelogVersion) {
@@ -473,7 +521,7 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
       }
     }
   }
-  return { ran: true, reason: null, findings, checked, unattributed };
+  return { ran: true, reason: null, findings, checked, unattributed, reachabilityBase };
 }
 
 export function runAllChecks(repoRoot, options = {}) {

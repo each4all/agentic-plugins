@@ -20,9 +20,10 @@
 // TWO TOKEN CLASSES — the distinction is load-bearing:
 //
 //   shipped-version — true the moment release-please cuts the version
-//     ("as of `plugin-runtime` vX it ships ...", the scorecard release
-//     tags). Always synced, including from CI, because the claim is about
-//     released code and nothing else must happen for it to be true.
+//     (the "as of `plugin-runtime` vX it ships ..." statements). Always
+//     synced, including from CI, because the claim is about released code
+//     and nothing else must happen for it to be true. NOTE: the scorecard
+//     release tags are NOT in this class — see the rule table.
 //
 //   proof-coupled — true only once a `runtime:doctor` proof has actually
 //     been re-recorded under the new install ("Latest installed proof",
@@ -72,6 +73,7 @@ const MANIFEST_KEY = 'plugins/runtime';
 const DOCTOR_LATEST_PATH = '.agentic-plugins/runs/doctor/latest.json';
 
 const SEMVER = String.raw`\d+\.\d+\.\d+`;
+const PROOF_CITATION_WINDOW = 1200;
 
 // Each rule is (file, anchored pattern, class). The anchors are narrow on
 // purpose: a bare token pattern would also match superseded records. The
@@ -81,8 +83,8 @@ const SEMVER = String.raw`\d+\.\d+\.\d+`;
 // 0.77.1), because the de-backticking convention that keeps superseded
 // tokens out of the freshness gate applies to the scorecard, which the
 // gate reads, and not to DEVELOPMENT.md, which it does not. A repo-wide
-// tag rule would have rewritten all ten. Hence: tags are synced in the
-// scorecard only.
+// tag rule would have rewritten all ten. Tags are not synced anywhere —
+// see the DELIBERATELY ABSENT note below for why not even the scorecard's.
 //
 // `capture` splits into [prefix, version, suffix] so replacement never
 // has to reconstruct surrounding punctuation.
@@ -180,8 +182,19 @@ export function readDoctorProofPointer(repoRoot) {
  * rather than deadlocking on it.
  */
 export function checkHomogeneity(values, target) {
-  const distinctOther = [...new Set(values.filter((v) => v !== target))];
-  return { ok: distinctOther.length <= 1, distinctOther };
+  const distinct = [...new Set(values)];
+  const distinctOther = distinct.filter((v) => v !== target);
+  // STRICT: every match must already carry the same version. The earlier
+  // "one lagging value plus the target" allowance existed so the script
+  // could repair a half-applied edit, but it cannot tell a half-applied
+  // edit from a superseded record that was accidentally left backticked:
+  // a scorecard holding current `0.87.0` beside one stale `0.86.2` looked
+  // identical to a half-edit, and the rewrite then promoted the
+  // historical record to `0.87.0` (round-2 cross-host review finding).
+  // Since this script now owns these tokens end-to-end, a mixed set means
+  // something is wrong rather than half-done, and refusing costs only a
+  // manual reconcile.
+  return { ok: distinct.length === 1, distinctOther, distinct };
 }
 
 /**
@@ -207,7 +220,15 @@ export function syncDocVersionsToManifest(repoRoot, { checkOnly = false, shipped
   }
 
   const proofPointer = readDoctorProofPointer(repoRoot);
-  const proofIsFresh = proofPointer.present && proofPointer.runtimeVersion === targetVersion;
+  // A pointer whose run_id is missing or empty is NOT usable freshness
+  // evidence: the citation binding below is keyed on that id, and a
+  // truthy-guard on a null id silently skipped the binding entirely,
+  // letting both proof tokens be rewritten beside stale citations
+  // (round-2 cross-host review finding).
+  const proofIsFresh = proofPointer.present
+    && proofPointer.runtimeVersion === targetVersion
+    && typeof proofPointer.runId === 'string'
+    && proofPointer.runId.length > 0;
 
   const diffs = [];
   const refusals = [];
@@ -264,7 +285,7 @@ export function syncDocVersionsToManifest(repoRoot, { checkOnly = false, shipped
           file,
           tokenClass: rule.tokenClass,
           reason: 'heterogeneous-match-set',
-          detail: `matched ${matches.length} token(s) spanning versions ${distinctOther.join(', ')} — the anchor is no longer selective; refusing rather than rewriting possibly-superseded records`,
+          detail: `matched ${matches.length} token(s) carrying more than one version (${[...new Set(values)].join(', ')}) — refusing rather than rewriting a record that may be superseded; reconcile them by hand first`,
         });
         continue;
       }
@@ -303,7 +324,16 @@ export function syncDocVersionsToManifest(repoRoot, { checkOnly = false, shipped
       // file header), the ordering is inverted instead: the operator
       // updates the citation, and only then does the sync propagate the
       // version across all five sites.
-      if (rule.tokenClass === 'proof-coupled' && proofPointer.runId && !original.includes(proofPointer.runId)) {
+      // Scoped to the neighbourhood of a matched token rather than the
+      // whole file: a file-wide `includes` let an unrelated appendix
+      // mention authorise every proof token in a 40 KB document (round-2
+      // cross-host review finding). The window is measured, not guessed —
+      // the real documents place the cited run id 162, 224, 279, 955, and
+      // 281 characters after their proof-version tokens, so 1200 clears
+      // the worst case with margin while still being local.
+      const citesRecordedRun = matches.some((m) =>
+        original.slice(m.index, m.index + PROOF_CITATION_WINDOW).includes(proofPointer.runId));
+      if (rule.tokenClass === 'proof-coupled' && !citesRecordedRun) {
         refusals.push({
           rule: rule.id,
           file,

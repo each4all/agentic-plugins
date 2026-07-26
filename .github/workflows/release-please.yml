@@ -48,31 +48,13 @@ jobs:
         if: ${{ steps.release.outputs.releases_created == 'true' }}
         run: node scripts/sync-marketplace-versions.mjs
 
-      # Same rationale as the catalog above: the stage docs restate the
-      # shipped runtime version in places release-please's extra-files
-      # cannot own, and hand-bumping them has produced mis-paired release
-      # triples (#640). --shipped-only is required here, not optional: it
-      # writes ONLY the claims that release-please just made true. The
-      # proof-coupled claims ("Latest installed proof", the scorecard's
-      # installed-state versions) need a re-recorded runtime:doctor run
-      # and are deliberately left stale for a human — main stays red on
-      # the installed-state assertion until that proof exists, which is
-      # the honest signal.
-      - name: Sync stage doc runtime-version tokens
-        if: ${{ steps.release.outputs.releases_created == 'true' }}
-        run: node scripts/sync-doc-versions.mjs --shipped-only
-
-      # A push authenticated with GITHUB_TOKEN does not trigger workflows,
-      # so nothing would ever gate the commit this job is about to make.
-      # Run the evidence checker here, before the push, or the sync could
-      # land a broken release triple / dangling citation that no CI run
-      # will ever look at (cross-host review finding). Needs full history
-      # and tags, hence the deepened checkout below.
-      - name: Verify stage doc evidence before pushing
-        if: ${{ steps.release.outputs.releases_created == 'true' }}
-        run: node scripts/check-doc-evidence.mjs
-
-      - name: Commit + push catalog and doc sync (if any drift)
+      # The catalog push is kept INDEPENDENT of the stage-doc steps below.
+      # Folding both into one commit meant a stage-doc problem — including
+      # a pre-existing one this release did not cause — would also strand
+      # the catalog sync, and because release-please only reports
+      # `releases_created` once, a re-run repairs neither (round-2
+      # cross-host review finding). Two commits, two failure domains.
+      - name: Commit + push marketplace sync (if any drift)
         if: ${{ steps.release.outputs.releases_created == 'true' }}
         env:
           GIT_AUTHOR_NAME: github-actions[bot]
@@ -80,14 +62,52 @@ jobs:
           GIT_COMMITTER_NAME: github-actions[bot]
           GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
         run: |
-          # Every path here is outside release-please's tracked package
-          # prefixes (ADR-0016), so a single commit cannot mis-route a
-          # version bump onto a plugin.
-          SYNC_PATHS=".claude-plugin/marketplace.json docs/ARCHITECTURE.md docs/DEVELOPMENT.md docs/assurance/omcc-cutover-scorecard.md"
-          if [ -n "$(git status --porcelain -- $SYNC_PATHS)" ]; then
-            git add -- $SYNC_PATHS
-            git commit -m "chore: sync catalog and stage-doc versions to release-please-manifest"
+          if [ -n "$(git status --porcelain .claude-plugin/marketplace.json)" ]; then
+            git add .claude-plugin/marketplace.json
+            git commit -m "chore(marketplace): sync catalog versions to release-please-manifest"
             git push
           else
-            echo "No catalog or stage-doc drift; nothing to commit."
+            echo "No marketplace catalog drift; nothing to commit."
+          fi
+
+      # Same rationale as the catalog: the stage docs restate the shipped
+      # runtime version in places release-please's extra-files cannot own,
+      # and hand-bumping them has produced mis-paired release triples
+      # (#640). --shipped-only is required here, not optional: it writes
+      # ONLY the "as of `plugin-runtime` vX" statements, which release-please
+      # just made true. The proof-coupled claims ("Latest installed proof",
+      # the scorecard's installed-state versions) and the release TAG need a
+      # re-recorded runtime:doctor run and a human-written evidence record,
+      # so they are deliberately left for the post-release recovery PR.
+      - name: Sync stage doc runtime-version tokens
+        if: ${{ steps.release.outputs.releases_created == 'true' }}
+        run: node scripts/sync-doc-versions.mjs --shipped-only
+
+      # A push authenticated with GITHUB_TOKEN does not trigger workflows,
+      # so nothing would otherwise gate the commit this job is about to
+      # make. This checks EVIDENCE CONSISTENCY only — release triples,
+      # proof citations, cited shas. It deliberately does not assert doc
+      # freshness: main is expected to be red on the installed-state
+      # assertion until a human re-records the proof, and that redness is
+      # the intended signal, surfaced on the release merge commit's own CI
+      # run rather than here.
+      - name: Verify stage doc evidence consistency before pushing
+        if: ${{ steps.release.outputs.releases_created == 'true' }}
+        run: node scripts/check-doc-evidence.mjs
+
+      - name: Commit + push stage doc sync (if any drift)
+        if: ${{ steps.release.outputs.releases_created == 'true' }}
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          DOC_PATHS="docs/ARCHITECTURE.md docs/DEVELOPMENT.md docs/assurance/omcc-cutover-scorecard.md"
+          if [ -n "$(git status --porcelain -- $DOC_PATHS)" ]; then
+            git add -- $DOC_PATHS
+            git commit -m "chore(docs): sync stage doc runtime versions to release-please-manifest"
+            git push
+          else
+            echo "No stage-doc drift; nothing to commit."
           fi

@@ -118,14 +118,17 @@ describe('checkHomogeneity', () => {
     strictEqual(checkHomogeneity(['0.86.2', '0.86.2'], '0.87.0').ok, true);
   });
 
-  it('accepts a half-applied edit so the script can repair it', () => {
-    strictEqual(checkHomogeneity(['0.87.0', '0.86.2'], '0.87.0').ok, true);
-  });
-
   it('rejects a match set spanning several superseded versions', () => {
     const r = checkHomogeneity(['0.87.0', '0.83.0', '0.79.0'], '0.87.0');
     strictEqual(r.ok, false);
     deepStrictEqual(r.distinctOther.sort(), ['0.79.0', '0.83.0']);
+  });
+
+  it('rejects the target beside ONE superseded value — a half-edit is indistinguishable from a stray record', () => {
+    // The earlier allowance for [target, previous] let a single
+    // accidentally-backticked historical record be promoted to the
+    // current version (round-2 cross-host review finding).
+    strictEqual(checkHomogeneity(['0.87.0', '0.86.2'], '0.87.0').ok, false);
   });
 });
 
@@ -374,6 +377,11 @@ describe('sync-doc-versions against the real repository', () => {
     const REPO_ROOT = resolve(import.meta.dirname, '../..');
     const r = syncDocVersionsToManifest(REPO_ROOT, { checkOnly: true });
     if (RELEASE_PLEASE_PR) {
+      // A single coherent lag, not accumulated drift: allowing any older
+      // version let a later unrelated release PR launder a pre-existing
+      // stale state (round-2 cross-host review finding).
+      const laggingVersions = [...new Set(r.diffs.map((d) => d.from))];
+      ok(laggingVersions.length <= 1, `release-please PR may lag by one version, got ${laggingVersions.join(', ')}`);
       for (const d of r.diffs) {
         ok(compareSemverParts(d.from, d.to) < 0, `release-please PR may lag, but never lead: ${d.rule} ${d.from} -> ${d.to}`);
       }

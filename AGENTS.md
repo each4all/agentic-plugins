@@ -219,11 +219,16 @@ The stage docs (`docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`,
 version, and they follow the same pattern for the same reason. The
 tokens split into two classes, and the split is load-bearing:
 
-- **Derivable** — the `as of \`plugin-runtime\` vX` statements and the
-  scorecard release tags. True the moment release-please cuts the
-  version, so `scripts/sync-doc-versions.mjs` owns them and the
-  release-please Action runs it (`--shipped-only`) alongside the catalog
-  sync. Run `npm run sync:docs` locally rather than hand-editing.
+- **Derivable** — the `as of \`plugin-runtime\` vX` statements. True the
+  moment release-please cuts the version, so `scripts/sync-doc-versions.mjs`
+  owns them and the release-please Action runs it (`--shipped-only`)
+  alongside the catalog sync. Run `npm run sync:docs` locally rather than
+  hand-editing. The scorecard's `plugin-runtime-vX` release tags are
+  **deliberately not** in this class: a tag never appears alone, only as
+  one member of a release triple whose PR number, squash sha, and
+  marketplace sync sha are not derivable from the manifest, so bumping it
+  alone manufactures exactly the mis-paired triple this tooling exists to
+  prevent. Tags stay human-written and are gated against git by R1.
 - **Proof-coupled** — `Latest installed proof` and the scorecard's
   installed-state versions. True only once a `runtime:doctor` proof has
   been re-recorded against the new install, so **no script writes

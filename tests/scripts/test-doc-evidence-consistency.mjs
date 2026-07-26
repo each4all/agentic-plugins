@@ -135,6 +135,22 @@ describe('doc evidence — R1 release triples', () => {
     ok(typeof r.unpairedTags === 'number', 'unpaired tag mentions are counted, not hidden');
   });
 
+  it('relates the marketplace sync sha to the release commit', () => {
+    // The sync sha was carried in the prose but never checked against
+    // anything, so swapping it for the previous release's produced zero
+    // findings (round-2 cross-host review finding). It is the child of
+    // the release commit, so the relation is verifiable.
+    const bad = checkReleaseTriples(REPO_ROOT, {
+      docs: docsWith('planted.md', 'release PR #642 squash `9e2af7d`, tag `plugin-runtime-v0.86.2`, marketplace sync `0eb8807`.'),
+    });
+    ok(bad.findings.some((f) => /marketplace sync 0eb8807/.test(f.detail)), JSON.stringify(bad.findings));
+
+    const good = checkReleaseTriples(REPO_ROOT, {
+      docs: docsWith('planted.md', 'release PR #642 squash `9e2af7d`, tag `plugin-runtime-v0.86.2`, marketplace sync `668c325`.'),
+    });
+    strictEqual(good.findings.length, 0, JSON.stringify(good.findings));
+  });
+
   it('catches a tag that does not exist at all', () => {
     const r = checkReleaseTriples(REPO_ROOT, {
       docs: docsWith('planted.md', 'release PR #642 squash `9e2af7d`, tag `plugin-runtime-v9.99.9`.'),
@@ -149,6 +165,11 @@ describe('doc evidence — R2 proof citations', () => {
     strictEqual(r.ran, true);
     strictEqual(r.findings.length, 0, r.findings.map((f) => `${f.file}: ${f.detail}`).join('\n'));
     ok(r.checked > 0, 'the current-record anchor still matches the real documents');
+    // Pin the id/date coverage floor. Without it, a doc edit that strips
+    // the `Z` from the dates beside superseded ids would silently drop
+    // them from the check and stay green (round-2 cross-host review
+    // finding); the count fell from 47 to 46 in that experiment.
+    ok(r.dateChecked >= 45, `expected the superseded history to stay covered, dateChecked=${r.dateChecked}`);
   });
 
   it('catches a current record left citing the previous run id', () => {
@@ -246,6 +267,17 @@ describe('doc evidence — R4 commit shas', () => {
     strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
   });
 
+  it('judges reachability from the integration branch, not the PR checkout', () => {
+    // On a pull_request run the checkout is GitHub's synthetic merge ref,
+    // whose history CONTAINS the PR's own branch commits — so a document
+    // citing its own branch sha would pass CI and dangle the moment the
+    // branch was squash-merged, which is exactly what this check exists
+    // to prevent (round-2 cross-host review finding).
+    const r = checkCommitShas(REPO_ROOT);
+    ok(['origin/main', 'main'].includes(r.reachabilityBase),
+      `expected an integration-branch base, got ${r.reachabilityBase}`);
+  });
+
   it('catches a sha that resolves in this clone but is not in the branch history', () => {
     // The defect this check was rewritten for. `36b7ab1` was a
     // pre-squash branch commit from Stage 2 Deliverable D; it survives in
@@ -260,7 +292,7 @@ describe('doc evidence — R4 commit shas', () => {
     });
     strictEqual(r.checked, 1);
     strictEqual(r.findings.length, 1, JSON.stringify(r.findings));
-    ok(/not in the branch history|does not resolve/.test(r.findings[0].detail), r.findings[0].detail);
+    ok(/not reachable from|does not resolve/.test(r.findings[0].detail), r.findings[0].detail);
   });
 
   it('CONTROL: the squash commit that carries that work is accepted', () => {
@@ -284,6 +316,25 @@ describe('doc evidence — R4 commit shas', () => {
     });
     strictEqual(r.checked, 0, 'no 64-hex token is treated as a cited sha');
     strictEqual(r.findings.length, 0);
+  });
+
+  it('does not let a HOST version claim a runtime commit', () => {
+    // Any whitespace-prefixed semver used to qualify as an attribution,
+    // so "Codex 0.145.0 ... `af620df`" reported the runtime commit as
+    // misattributed to a Codex version (round-2 cross-host review
+    // finding). Candidates are now filtered to versions the runtime
+    // changelog actually released.
+    const r = checkCommitShas(REPO_ROOT, {
+      docs: docsWith('planted.md', 'observed on Codex 0.145.0 alongside `af620df`'),
+    });
+    strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
+  });
+
+  it('recognises the canonical `plugin-runtime` vX prose form', () => {
+    const r = checkCommitShas(REPO_ROOT, {
+      docs: docsWith('planted.md', 'as of `plugin-runtime` v0.86.1 the pair `af620df` landed'),
+    });
+    ok(r.findings.some((f) => f.check === 'commit-sha-attribution'), JSON.stringify(r.findings));
   });
 
   it('recognises a `plugin-runtime-vX` literal as the attributed version', () => {
