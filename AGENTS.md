@@ -269,6 +269,34 @@ commit that embeds a conventional PR title can be parsed alongside the
 original branch commit, producing duplicate changelog entries for the
 same change.
 
+**The squash message comes from the PR, not from the branch commits.**
+The repository is configured `squash_merge_commit_title=PR_TITLE` and
+`squash_merge_commit_message=PR_BODY`. GitHub's default for the latter
+is `COMMIT_MESSAGES`, which concatenates every branch commit as a
+`* <subject>` bullet plus its full body — two failure modes at once.
+It re-emits each branch commit's conventional headline into the body,
+which is the duplicate-changelog hazard described above; and on any
+branch with a propose → review → revise trajectory it preserves the
+**superseded** commit bodies as assertions in the permanent record. That
+happened on `85fee0a` (ADR-0049): the review had disproved the first
+commit's rationale, and the squash carried it onto `main` anyway. See
+the correction on [#646](https://github.com/each4all/agentic-plugins/pull/646).
+
+Two consequences for authors:
+
+- The PR body **is** the commit body. Write it as the record you want,
+  and update it after a review changes the decision — do not leave a
+  stale description standing.
+- Do not put a literal `BREAKING CHANGE:` line, or a bare conventional
+  headline at the start of a line, into a PR body unless you mean
+  release-please to route it. Prose that merely mentions a breaking
+  change is fine; a footer-shaped line is not.
+
+When merging from the CLI, pass both parts explicitly rather than
+relying on the setting — `gh pr merge <n> --squash --subject "<title>"
+--body-file <path>` — so the message is correct even if the repository
+setting drifts.
+
 ### Cross-package commit splitting
 
 release-please routes a commit's footer (`feat`, `fix`,
