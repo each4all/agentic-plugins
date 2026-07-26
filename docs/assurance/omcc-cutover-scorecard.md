@@ -541,7 +541,7 @@ its honest inventory-lag note became fix #543.
 The preceding 0.77.1 loop was the ADR-0042 **designer persona acceptance** — feat
 PR #528 taught doctor/settings to recognize designer in the plugin inventory,
 alongside PR #529 (ADR-0042 `Accepted`, `plugin-designer-v0.2.0`), release PR #521,
-release tag plugin-runtime-v0.77.1, marketplace sync commit `7dce7fe`. The
+release tag plugin-runtime-v0.77.0, marketplace sync commit `7dce7fe`. The
 0.77.0-native proof `doctor-20260709T131625Z-33c54d` read `partial` `91%` on the
 hook-state defect above; fix PR #530 and release PR #531 cut the 0.77.1 tag
 (marketplace sync commit `73b2a75`), restoring `ready` `100%`.

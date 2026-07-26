@@ -45,7 +45,21 @@ jobs:
         if: ${{ steps.release.outputs.releases_created == 'true' }}
         run: node scripts/sync-marketplace-versions.mjs
 
-      - name: Commit + push marketplace sync (if any drift)
+      # Same rationale as the catalog above: the stage docs restate the
+      # shipped runtime version in places release-please's extra-files
+      # cannot own, and hand-bumping them has produced mis-paired release
+      # triples (#640). --shipped-only is required here, not optional: it
+      # writes ONLY the claims that release-please just made true. The
+      # proof-coupled claims ("Latest installed proof", the scorecard's
+      # installed-state versions) need a re-recorded runtime:doctor run
+      # and are deliberately left stale for a human — main stays red on
+      # the installed-state assertion until that proof exists, which is
+      # the honest signal.
+      - name: Sync stage doc runtime-version tokens
+        if: ${{ steps.release.outputs.releases_created == 'true' }}
+        run: node scripts/sync-doc-versions.mjs --shipped-only
+
+      - name: Commit + push catalog and doc sync (if any drift)
         if: ${{ steps.release.outputs.releases_created == 'true' }}
         env:
           GIT_AUTHOR_NAME: github-actions[bot]
@@ -53,10 +67,14 @@ jobs:
           GIT_COMMITTER_NAME: github-actions[bot]
           GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
         run: |
-          if [ -n "$(git status --porcelain .claude-plugin/marketplace.json)" ]; then
-            git add .claude-plugin/marketplace.json
-            git commit -m "chore(marketplace): sync catalog versions to release-please-manifest"
+          # Every path here is outside release-please's tracked package
+          # prefixes (ADR-0016), so a single commit cannot mis-route a
+          # version bump onto a plugin.
+          SYNC_PATHS=".claude-plugin/marketplace.json docs/ARCHITECTURE.md docs/DEVELOPMENT.md docs/assurance/omcc-cutover-scorecard.md"
+          if [ -n "$(git status --porcelain -- $SYNC_PATHS)" ]; then
+            git add -- $SYNC_PATHS
+            git commit -m "chore: sync catalog and stage-doc versions to release-please-manifest"
             git push
           else
-            echo "No marketplace catalog drift; nothing to commit."
+            echo "No catalog or stage-doc drift; nothing to commit."
           fi
