@@ -205,6 +205,33 @@ describe('doc evidence — R4 commit shas', () => {
     strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
   });
 
+  it('catches a sha that resolves in this clone but is not in the branch history', () => {
+    // The defect this check was rewritten for. `36b7ab1` was a
+    // pre-squash branch commit from Stage 2 Deliverable D; it survives in
+    // a long-lived clone but is on no branch, so CI's fresh checkout
+    // could not resolve it — the first implementation asked "is this
+    // object in my store", which is machine-dependent and gave a false
+    // green locally while CI went red. The predicate is now reachability
+    // from HEAD, which is identical on every machine: this test therefore
+    // fails the same way in both places.
+    const r = checkCommitShas(REPO_ROOT, {
+      docs: docsWith('planted.md', 'drove the Phase 6 resolve commit `36b7ab1`.'),
+    });
+    strictEqual(r.checked, 1);
+    strictEqual(r.findings.length, 1, JSON.stringify(r.findings));
+    ok(/not in the branch history|does not resolve/.test(r.findings[0].detail), r.findings[0].detail);
+  });
+
+  it('CONTROL: the squash commit that carries that work is accepted', () => {
+    // Proves the check above fails for the stated reason and not because
+    // the extractor missed the fixture shape.
+    const r = checkCommitShas(REPO_ROOT, {
+      docs: docsWith('planted.md', 'the work landed on main as `af12326`.'),
+    });
+    strictEqual(r.checked, 1);
+    strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
+  });
+
   it('does not mistake a 64-hex plan/attempt hash for a commit sha', () => {
     // The scorecard cites eleven 64-hex hashes in backticks, hard-wrapped
     // across lines. The 7-40 length bound is the only thing keeping them

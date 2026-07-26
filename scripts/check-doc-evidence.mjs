@@ -335,6 +335,19 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
   const allShas = [...new Set(
     documents.flatMap(({ text }) => [...flatten(text).matchAll(/`([0-9a-f]{7,40})`/g)].map((m) => m[1])),
   )];
+  // Reachability, not mere object existence. `cat-file` answers "is this
+  // object in MY object store", which is machine-dependent and gave a
+  // false green locally: docs/DEVELOPMENT.md cited `36b7ab1`, a
+  // pre-squash branch commit that survives in a long-lived clone but is
+  // on no remote branch, so CI's fresh clone could not resolve it. The
+  // deterministic question is whether the sha is in this branch's
+  // history, which is identical on every machine.
+  const ancestorByPrefix = new Map();
+  for (const full of git(repoRoot, ['rev-list', 'HEAD']).split('\n').filter(Boolean)) {
+    const prefix = full.slice(0, 7);
+    if (!ancestorByPrefix.has(prefix)) ancestorByPrefix.set(prefix, full);
+  }
+
   const objectType = new Map();
   if (allShas.length > 0) {
     const batch = git(repoRoot, ['cat-file', '--batch-check'], `${allShas.join('\n')}\n`);
@@ -366,6 +379,20 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
           detail: type === 'missing' || type === undefined
             ? 'does not resolve to any object in this repository'
             : `resolves to a ${type}, not a commit`,
+        });
+        continue;
+      }
+      // Present in this clone but not in the branch's history: a
+      // pre-squash branch commit whose branch was deleted, or an object
+      // pulled in from a fork. Nobody else can resolve it, so citing it
+      // by backticked sha is a dangling reference even though it looks
+      // fine on the machine that wrote it.
+      if (!ancestorByPrefix.has(sha.slice(0, 7))) {
+        findings.push({
+          check: 'commit-sha',
+          file,
+          sha,
+          detail: 'resolves in this clone but is not in the branch history — a fresh clone or CI cannot resolve it (pre-squash branch commit?)',
         });
         continue;
       }

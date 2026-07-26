@@ -382,7 +382,10 @@ the next subsection.
   discovery (Claude cache 0.1.1 path) succeeded; the JSON envelope
   returned `status: success` with `exit_code: 0` and a 9482-byte
   stdout; the resulting 16-finding review (CRITICAL 2 + MAJOR 10 +
-  MINOR 2 + SUGGESTION 2) drove the Phase 6 resolve commit `36b7ab1`.
+  MINOR 2 + SUGGESTION 2) drove the Phase 6 resolve commit 36b7ab1 —
+  backticks omitted because that is a pre-squash branch commit and is
+  reachable from no branch here; the work landed on main as `af12326`
+  ([PR #30](https://github.com/each4all/agentic-plugins/pull/30)).
   This is the canonical Claude-direction round-trip evidence on
   engineer's own code path — distinct from the Stage 1
   `plugins/research` round-trip because engineer's own
