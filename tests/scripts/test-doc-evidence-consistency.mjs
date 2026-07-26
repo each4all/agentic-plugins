@@ -169,7 +169,10 @@ describe('doc evidence — R2 proof citations', () => {
     // the `Z` from the dates beside superseded ids would silently drop
     // them from the check and stay green (round-2 cross-host review
     // finding); the count fell from 47 to 46 in that experiment.
-    ok(r.dateChecked >= 45, `expected the superseded history to stay covered, dateChecked=${r.dateChecked}`);
+    // Phrase-bound pairs, not proximity pairs. Every construction the
+    // docs use to bind a date to a run id is exact-matched, so the count
+    // is a real coverage figure rather than a window artefact.
+    ok(r.dateChecked >= 30, `expected the superseded history to stay covered, dateChecked=${r.dateChecked}`);
   });
 
   it('catches a current record left citing the previous run id', () => {
@@ -211,14 +214,24 @@ describe('doc evidence — R2 proof citations', () => {
     ok(r.findings.some((f) => f.check === 'proof-citation-date' && f.runId.startsWith('doctor-20260722')), JSON.stringify(r.findings));
   });
 
-  it('compares the NEAREST date, not any date in the window', () => {
-    // `dates.includes(embedded)` let an explicitly wrong date pass
-    // whenever a correct one happened to sit elsewhere within +-80
-    // characters (cross-host review finding).
-    const r = checkProofCitations(REPO_ROOT, {
+  it('binds dates by citation phrase, so proximity cannot create or hide a finding', () => {
+    // Proximity was abandoned on measurement: taking each id's nearest
+    // date anywhere in the document, agreeing pairs sit at 13-56, 86,
+    // 127, ... 707 characters and disagreeing ones at 75, 162, ... 927 —
+    // they interleave from 75 onward, so NO threshold separates them
+    // (round-4 cross-host review finding). An earlier +-64 bound came
+    // from a biased sample measured inside an +-80 window.
+    const inPhrase = checkProofCitations(REPO_ROOT, {
       docs: docsWith('planted.md', 'the 2026-07-26Z loop closed; the proof recorded on 2026-07-25Z as `doctor-20260726T014023Z-1b377b` passed.'),
     });
-    ok(r.findings.some((f) => f.check === 'proof-citation-date' && /stated next to it is 2026-07-25/.test(f.detail)), JSON.stringify(r.findings));
+    ok(inPhrase.findings.some((f) => f.check === 'proof-citation-date'), JSON.stringify(inPhrase.findings));
+
+    // Real prose from the scorecard: the date belongs to a baseline
+    // refresh 75 characters away, not to the proof.
+    const outOfPhrase = checkProofCitations(REPO_ROOT, {
+      docs: docsWith('planted.md', 'the `baseline` `stale` caveat that the 2026-07-10 baseline refresh later closed), the prior 0.77.1-native proof (`doctor-20260709T141930Z-515ebf`, parity `ready`).'),
+    });
+    strictEqual(outOfPhrase.findings.length, 0, JSON.stringify(outOfPhrase.findings));
   });
 
   it('still catches an id/date mismatch when the date has no trailing Z', () => {
@@ -277,14 +290,14 @@ describe('doc evidence — R4 commit shas', () => {
   it('catches a sha attributed to the wrong release', () => {
     // af620df is a 0.86.2 fix per the runtime changelog.
     const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'then the 0.86.1 egress hardening pair #641 `af620df` landed'),
+      docs: docsWith('planted.md', 'then the `plugin-runtime` v0.86.1 egress hardening pair #641 `af620df` landed'),
     });
     ok(r.findings.some((f) => f.check === 'commit-sha-attribution' && /places .* in 0\.86\.2.*attributes it to 0\.86\.1/.test(f.detail)), JSON.stringify(r.findings));
   });
 
   it('CONTROL: the same sha attributed to its real release produces no finding', () => {
     const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'then the 0.86.2 egress hardening pair #641 `af620df` landed'),
+      docs: docsWith('planted.md', 'then the `plugin-runtime` v0.86.2 egress hardening pair #641 `af620df` landed'),
     });
     strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
   });
@@ -347,7 +360,7 @@ describe('doc evidence — R4 commit shas', () => {
     // finding). Candidates are now filtered to versions the runtime
     // changelog actually released.
     const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'observed on Codex 0.145.0 alongside `af620df`'),
+      docs: docsWith('planted.md', 'observed on Codex CLI 0.145.0 alongside `af620df`'),
     });
     strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
   });
@@ -367,7 +380,7 @@ describe('doc evidence — R4 commit shas', () => {
     // would be a valid runtime version too (round-3 cross-host review
     // finding).
     const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'observed on Codex 0.86.1 alongside `af620df`'),
+      docs: docsWith('planted.md', 'observed on Codex CLI 0.86.1 alongside `af620df`'),
     });
     strictEqual(r.findings.length, 0, JSON.stringify(r.findings));
   });
@@ -391,7 +404,7 @@ describe('doc evidence — R4 commit shas', () => {
 
   it('treats a semicolon as a clause break, not only a period', () => {
     const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'the 0.86.1 loop closed; an unrelated note cites `af620df` in passing'),
+      docs: docsWith('planted.md', 'the `plugin-runtime` v0.86.1 loop closed; an unrelated note cites `af620df` in passing'),
     });
     strictEqual(r.findings.length, 0, `must not attribute across the semicolon: ${JSON.stringify(r.findings)}`);
     strictEqual(r.unattributed, 1);
@@ -399,7 +412,7 @@ describe('doc evidence — R4 commit shas', () => {
 
   it('leaves a sha unattributed rather than guessing across a sentence boundary', () => {
     const r = checkCommitShas(REPO_ROOT, {
-      docs: docsWith('planted.md', 'The 0.86.1 loop closed. A later note cites `af620df` without naming a release.'),
+      docs: docsWith('planted.md', 'The `plugin-runtime` v0.86.1 loop closed. A later note cites `af620df` without naming a release.'),
     });
     strictEqual(r.findings.length, 0, 'no guess is made');
     strictEqual(r.unattributed, 1, 'and the ambiguity is counted, not hidden');

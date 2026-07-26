@@ -50,6 +50,18 @@ export const EVIDENCE_DOCS = [
 
 const RUNTIME_CHANGELOG = 'plugins/runtime/CHANGELOG.md';
 const DOCTOR_ID = String.raw`doctor-(\d{4})(\d{2})(\d{2})T\d{6}Z-[0-9a-f]+`;
+const ANY_DOCTOR_ID = String.raw`doctor-\d{8}T\d{6}Z-[0-9a-f]+`;
+const DATE = String.raw`(\d{4}-\d{2}-\d{2})Z?`;
+// [pattern, dateComesFirst]. Closed set, exact-matched: these are the
+// constructions the stage docs actually use to bind a date to a proof
+// run id. Anything else mentioning a date near an id is prose, not a
+// claim about that id's date.
+const DATE_CITATION_PHRASES = [
+  [new RegExp(String.raw`(?:re-?)?recorded on ${DATE} as \`?(${ANY_DOCTOR_ID})\`?`, 'g'), true],
+  [new RegExp(String.raw`per the ${DATE} \`?(${ANY_DOCTOR_ID})\`?`, 'g'), true],
+  [new RegExp(String.raw`install on ${DATE} \(\`?(${ANY_DOCTOR_ID})\`?`, 'g'), true],
+  [new RegExp(String.raw`\`?(${ANY_DOCTOR_ID})\`? \(${DATE}`, 'g'), false],
+];
 
 function git(repoRoot, args, input) {
   return execFileSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8', ...(input === undefined ? {} : { input }) });
@@ -133,11 +145,13 @@ export function checkReleaseTriples(repoRoot, { docs = null } = {}) {
   // case, so prefer the starred value only when present.
   const tagCommit = new Map();
   const tagSubject = new Map();
+  const releaseCommits = new Set();
   const refFormat = '%(refname:short)%00%(objectname:short=7)%00%(*objectname:short=7)%00%(contents:subject)%00%(*contents:subject)';
   for (const line of git(repoRoot, ['for-each-ref', `--format=${refFormat}`, 'refs/tags/plugin-runtime-v*']).split('\n').filter(Boolean)) {
     const [tag, objectSha, derefSha, subject, derefSubject] = line.split('\0');
     tagCommit.set(tag, derefSha || objectSha);
     tagSubject.set(tag, (derefSubject || subject || '').trim());
+    releaseCommits.add((derefSha || objectSha).slice(0, 7));
   }
 
   for (const { file, text } of readDocs(repoRoot, docs)) {
@@ -208,8 +222,25 @@ export function checkReleaseTriples(repoRoot, { docs = null } = {}) {
         // the commit's own subject pins it correctly in both directions.
         try {
           git(repoRoot, ['merge-base', '--is-ancestor', actualCommit, syncSha[1]]);
+          // Descendancy alone let ANY later sync commit pass — v0.86.2's
+          // sync satisfied a v0.84.0 claim (round-4 cross-host review
+          // finding). The sync belonging to a release is the one with no
+          // other release commit between them.
+          const between = git(repoRoot, ['rev-list', `${actualCommit}..${syncSha[1]}`]).split('\n').filter(Boolean);
+          const intervening = between.filter((c) => releaseCommits.has(c.slice(0, 7)));
+          if (intervening.length > 0) {
+            findings.push({
+              check: 'release-triple',
+              file,
+              tag,
+              detail: `${syncSha[1]} is cited as ${tag}'s marketplace sync, but ${intervening.length} later release commit(s) sit between them`,
+            });
+            continue;
+          }
           const subject = git(repoRoot, ['log', '-1', '--format=%s', syncSha[1]]).trim();
-          if (!/sync (catalog|stage doc)/i.test(subject)) {
+          // Catalog syncs only. Accepting "sync stage doc" would let the
+          // workflow's own documentation commit masquerade as one.
+          if (!/sync catalog versions/i.test(subject)) {
             findings.push({
               check: 'release-triple',
               file,
@@ -262,7 +293,6 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
   const findings = [];
   let checked = 0;
   let dateChecked = 0;
-  const dateSkipped = [];
 
   const manifest = JSON.parse(readFileSync(resolve(repoRoot, '.release-please-manifest.json'), 'utf8'));
   const target = manifest['plugins/runtime'];
@@ -296,7 +326,12 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
     for (const anchor of CURRENT_ANCHORS) {
       for (const a of flat.matchAll(anchor)) {
         // The id the record cites is the first one after its anchor.
-        const window = flat.slice(a.index, a.index + 600);
+        // 1200, not 600: the scorecard's "The latest `plugin-runtime`
+        // `X` release/install proof loop" record reaches its run id 955
+        // characters later, so a 600-char window skipped that record
+        // entirely (round-4 cross-host review finding). Same bound as the
+        // sync script's citation window, measured from the same corpus.
+        const window = flat.slice(a.index, a.index + 1200);
         const idMatch = window.match(new RegExp(DOCTOR_ID));
         if (!idMatch) continue;
         const [runId, y, mo, d] = idMatch;
@@ -321,57 +356,44 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
       }
     }
 
-    // Date agreement is checked for EVERY cited run id, not only the
-    // current one. Restricting it to ids reachable from a current anchor
-    // left the packed superseded history — 25 ids in one DEVELOPMENT.md
-    // line, 20 in the scorecard R3 row — completely ungated, which is the
-    // opposite of this module's stated motivation (cross-host review
-    // finding). A superseded record whose date and id disagree is still a
-    // corrupted record, and nothing else in the repo would notice.
-    for (const m of allIds) {
-      const [runId, y, mo, d] = m;
-      const embedded = `${y}-${mo}-${d}`;
-      // NEAREST date, not "any date within the window". Collecting every
-      // date in +-80 characters and asking `includes()` let an
-      // explicitly wrong date pass whenever a correct one happened to sit
-      // elsewhere in the same window (cross-host review finding).
-      // +-64, measured. Across the real corpus a date that AGREES with
-      // its id sits 13-56 characters away, while the one disagreeing date
-      // is an unrelated "2026-07-10 baseline refresh" 75 characters from a
-      // 2026-07-09 proof id. A wider window reaches prose that is not a
-      // citation at all and reports a false mismatch; a narrower one drops
-      // legitimate pairs.
-      const DATE_PROXIMITY = 64;
-      const from = Math.max(0, m.index - DATE_PROXIMITY);
-      const nearby = flat.slice(from, m.index + runId.length + DATE_PROXIMITY);
-      // The trailing `Z` is optional. Requiring it meant that dropping
-      // one character from a cited date removed that id from the scan
-      // entirely and silently — the mutation the round-3 review used, and
-      // one no count-floor could catch, since the documents legitimately
-      // carry many ids with no adjacent date at all (47 of 94).
-      const dates = [...nearby.matchAll(/(\d{4}-\d{2}-\d{2})Z?/g)]
-        .map((x) => ({ value: x[1], distance: Math.abs((from + x.index) - m.index) }))
-        .sort((a, b) => a.distance - b.distance);
-      if (dates.length === 0) {
-        // Not silently skipped: stripping the trailing `Z` from a cited
-        // date dropped that id out of the scan entirely, and a loose
-        // ">= 45" floor could not see it (round-3 cross-host review
-        // finding). Report the id so the caller can assert zero.
-        dateSkipped.push({ file, runId });
-        continue;
-      }
-      dateChecked += 1;
-      if (dates[0].value !== embedded) {
-        findings.push({
-          check: 'proof-citation-date',
-          file,
-          runId,
-          detail: `the cited run id encodes ${embedded} but the date stated next to it is ${dates[0].value}`,
-        });
+    // Date agreement is bound by CITATION PHRASE, not proximity.
+    //
+    // Proximity cannot work here, and that is measured rather than
+    // assumed: taking each id's nearest date anywhere in the document,
+    // the pairs that AGREE sit at 13-56, 86, 127, 184, 192, 228, 330,
+    // 448, 585, 707 characters, and the pairs that DISAGREE sit at 75,
+    // 162, 195, 229, 248, 292, 407, 520, 927. They interleave from 75
+    // onward, so no threshold separates them — every bound either drops a
+    // legitimate pair or admits an unrelated date such as the
+    // "2026-07-10 baseline refresh" that sits 75 characters from a
+    // 2026-07-09 proof id. An earlier +-64 bound was derived from a
+    // biased sample: distances were measured INSIDE an +-80 window, so
+    // legitimate pairs beyond 80 were never observed (round-4 cross-host
+    // review finding).
+    //
+    // The constructions that actually bind a date to an id are a closed
+    // set, and exact-matching them binds 35 pairs across the real corpus
+    // with zero mismatches and no distance term at all.
+    for (const [pattern, dateFirst] of DATE_CITATION_PHRASES) {
+      for (const m of flat.matchAll(pattern)) {
+        const statedDate = dateFirst ? m[1] : m[2];
+        const runId = dateFirst ? m[2] : m[1];
+        const encoded = runId.match(/doctor-(\d{4})(\d{2})(\d{2})/);
+        if (!encoded) continue;
+        dateChecked += 1;
+        const embedded = `${encoded[1]}-${encoded[2]}-${encoded[3]}`;
+        if (embedded !== statedDate) {
+          findings.push({
+            check: 'proof-citation-date',
+            file,
+            runId,
+            detail: `the cited run id encodes ${embedded} but the citation states ${statedDate}`,
+          });
+        }
       }
     }
   }
-  return { ran: true, reason: null, findings, checked, dateChecked, dateSkipped };
+  return { ran: true, reason: null, findings, checked, dateChecked };
 }
 
 /**
@@ -471,6 +493,17 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
     });
   }
 
+  // Fail closed: an unparseable or empty changelog silently disabled
+  // attribution entirely while still reporting ran:true and zero
+  // findings (round-4 cross-host review finding).
+  if (releasedVersions.size === 0 || shaVersion.size === 0) {
+    return {
+      ran: false,
+      reason: `${RUNTIME_CHANGELOG} yielded no version sections or no commit links; attribution cannot run`,
+      findings: [], checked: 0, unattributed: 0, reachabilityBase,
+    };
+  }
+
   for (const { file, text } of documents) {
     const flat = flatten(text);
     for (const m of flat.matchAll(/`([0-9a-f]{7,40})`/g)) {
@@ -529,10 +562,15 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
       // and the installed-state form `plugin-runtime` `X` — the last was
       // unrecognised, so "installed `plugin-runtime` `0.86.1` carries
       // `af620df`" produced no finding (round-3 cross-host review).
-      const VERSION_LITERAL = /(?:^|[\s(]|plugin-runtime-v|plugin-runtime` v|plugin-runtime` `)(\d+\.\d+\.\d+)\b/g;
-      // A HOST version that coincides with a released runtime version
-      // (e.g. "Codex 0.86.1") would otherwise pass the changelog filter.
-      const HOST_PREFIX = /(?:Codex|codex-cli|Claude Code|claude)\s*$/;
+      // An EXPLICIT runtime marker is required. Bare semver is
+      // irreducibly ambiguous in these documents — host versions sit
+      // beside runtime ones constantly, and a host version that collides
+      // with a released runtime version ("Codex CLI 0.86.1") defeated any
+      // prefix denylist, while an unfiltered host version could also win
+      // the nearest-match and suppress a real runtime mismatch (round-4
+      // cross-host review finding). Dropping bare semver removes the
+      // ambiguity class outright rather than enumerating host phrasings.
+      const VERSION_LITERAL = /(?:plugin-runtime-v|plugin-runtime` v|plugin-runtime` `|plugin-runtime v)(\d+\.\d+\.\d+)\b/g;
       // Clause separators, not just ".". "0.86.1 closed; an unrelated
       // note cites `af620df`" was being attributed across the semicolon.
       const CLAUSE_BREAK = /[.;—]\s|\s—\s/;
@@ -548,10 +586,7 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
       // 0.86.2. Staying unattributed is the honest outcome for a sha the
       // prose does not actually place.
       const before = flat.slice(Math.max(0, m.index - 160), m.index);
-      const back = [...before.matchAll(VERSION_LITERAL)]
-        .filter((v) => releasedVersions.has(v[1]))
-        .filter((v) => !HOST_PREFIX.test(before.slice(Math.max(0, v.index - 20), v.index + 1)))
-        .at(-1) ?? null;
+      const back = [...before.matchAll(VERSION_LITERAL)].at(-1) ?? null;
       const attributed = back && !CLAUSE_BREAK.test(before.slice(back.index + back[0].length)) ? back : null;
       if (!attributed) { unattributed += 1; continue; }
       if (attributed[1] !== changelogVersion) {
@@ -594,7 +629,6 @@ if (invokedAsCLI) {
         r.dateChecked !== undefined ? `${r.dateChecked} id/date pair(s) incl. superseded` : null,
         r.unpairedTags ? `${r.unpairedTags} tag mention(s) not paired with a release PR` : null,
         r.reachabilityBase && r.reachabilityBase !== 'origin/main' ? `reachability base ${r.reachabilityBase} (weaker than origin/main)` : null,
-        r.dateSkipped && r.dateSkipped.length ? `${r.dateSkipped.length} id(s) with no adjacent date` : null,
         r.unattributed ? `${r.unattributed} sha(s) unattributed` : null,
       ].filter(Boolean).join('; ');
       console.log(`${name}: ${r.checked} claim(s) checked, ${r.findings.length} finding(s)${extra ? ` — ${extra}` : ''}`);

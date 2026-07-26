@@ -294,6 +294,7 @@ export function syncDocVersionsToManifest(repoRoot, { checkOnly = false, shipped
           file,
           tokenClass: rule.tokenClass,
           reason: 'heterogeneous-match-set',
+          observedVersions: [...new Set(values)],
           detail: `matched ${matches.length} token(s) carrying more than one version (${[...new Set(values)].join(', ')}) — refusing rather than rewriting a record that may be superseded; reconcile them by hand first`,
         });
         continue;
@@ -311,6 +312,7 @@ export function syncDocVersionsToManifest(repoRoot, { checkOnly = false, shipped
             file,
             tokenClass: rule.tokenClass,
             reason: 'proof-not-recorded',
+            observedVersions: [...new Set(values)],
             detail: `${stale}. Re-record with: runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof --record`,
           });
         }
@@ -347,8 +349,21 @@ export function syncDocVersionsToManifest(repoRoot, { checkOnly = false, shipped
       // finding). Replacing only the authorised subset is not an option
       // either — that would leave a mixed set the homogeneity check
       // refuses on the next run — so the rule refuses as a whole.
+      // Each match's window ENDS at the next match, so one updated
+      // citation cannot authorise its neighbours. With a fixed 1200-char
+      // window the scorecard's four claims overlapped: leaving the first
+      // citation stale and updating the second authorised all four
+      // replacements (round-4 cross-host review finding).
+      //
+      // The comparison is on an exact id, not a substring: `includes`
+      // accepted a pointer ending `-abcdef` against a document citing the
+      // distinct id `-abcdef0`.
+      const citedIn = (start, stop) => {
+        const scope = original.slice(start, Math.min(stop, start + PROOF_CITATION_WINDOW));
+        return [...scope.matchAll(/doctor-\d{8}T\d{6}Z-[0-9a-f]+/g)].some((c) => c[0] === proofPointer.runId);
+      };
       const uncited = rule.tokenClass === 'proof-coupled'
-        ? matches.filter((m) => !original.slice(m.index, m.index + PROOF_CITATION_WINDOW).includes(proofPointer.runId))
+        ? matches.filter((m, i) => !citedIn(m.index, matches[i + 1]?.index ?? original.length))
         : [];
       if (uncited.length > 0) {
         refusals.push({
@@ -356,6 +371,7 @@ export function syncDocVersionsToManifest(repoRoot, { checkOnly = false, shipped
           file,
           tokenClass: rule.tokenClass,
           reason: 'proof-citation-not-updated',
+          observedVersions: [...new Set(values)],
           detail: `a proof for ${targetVersion} is recorded (${proofPointer.runId}) but ${uncited.length} of ${matches.length} ${rule.description} occurrence(s) in ${file} do not cite it within ${PROOF_CITATION_WINDOW} characters. Update the run id and date in every current-state record first, then re-run; this script will not bump a version beside a stale citation.`,
         });
         continue;

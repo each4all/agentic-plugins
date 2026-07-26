@@ -10,6 +10,7 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve, dirname } from 'node:path';
 
@@ -69,7 +70,7 @@ function makeRepo({ manifestVersion = '0.87.0', docVersion = '0.86.2', proofVers
   write(SCORECARD, docs[SCORECARD] ?? [
     '# Scorecard',
     '',
-    `Zero writes planned against the installed \`plugin-runtime\` \`${docVersion}\` state.`,
+    `Zero writes planned against the installed \`plugin-runtime\` \`${docVersion}\` state, per the \`${DOC_RUN_ID}\` read.`,
     '',
     // Mirrors the real scorecard: the proof version token and the cited
     // run id sit in the same record, which is what the citation binding
@@ -432,13 +433,27 @@ describe('sync-doc-versions against the real repository', () => {
       // finding). release-please has already written the new section into
       // the changelog by this point, so the section below it is the
       // previous release.
-      const laggingVersions = [...new Set(r.diffs.map((d) => d.from))];
+      // Versions hidden behind a refusal count too. Deriving the lag from
+      // `diffs` alone let proof-coupled tokens sit at an even older
+      // version while the shipped statements lagged by exactly one
+      // (round-4 cross-host review finding).
+      const laggingVersions = [...new Set([
+        ...r.diffs.map((d) => d.from),
+        ...r.refusals.flatMap((x) => x.observedVersions ?? []),
+      ])].filter((v) => v !== r.targetVersion);
       ok(laggingVersions.length <= 1, `release-please PR may lag by one version, got ${laggingVersions.join(', ')}`);
       if (laggingVersions.length === 1) {
-        const changelog = readFileSync(resolve(REPO_ROOT, 'plugins/runtime/CHANGELOG.md'), 'utf8');
-        const released = [...changelog.matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map((m) => m[1]);
-        const at = released.indexOf(r.targetVersion);
-        const previous = at === -1 ? null : released[at + 1];
+        // Previous release comes from GIT TAGS, not the changelog. A
+        // missing or malformed changelog header made the check fail open,
+        // accepting a two-release gap as "the immediate prior" (round-4
+        // cross-host review finding); tags cannot have that gap because
+        // release-please creates one per release.
+        const tags = execFileSync('git', ['-C', REPO_ROOT, 'tag', '--list', 'plugin-runtime-v*'], { encoding: 'utf8' })
+          .split('\n').filter(Boolean)
+          .map((t) => t.replace('plugin-runtime-v', ''))
+          .filter((v) => compareSemverParts(v, r.targetVersion) < 0)
+          .sort(compareSemverParts);
+        const previous = tags.at(-1) ?? null;
         strictEqual(laggingVersions[0], previous,
           `release-please PR may lag by exactly one release: manifest ${r.targetVersion}, previous ${previous}, docs ${laggingVersions[0]}`);
       }
