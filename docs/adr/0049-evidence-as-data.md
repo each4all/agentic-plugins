@@ -1,8 +1,8 @@
-# ADR-0049: Evidence as data — record release/proof facts once, render the prose
+# ADR-0049: Evidence as data — a validated record store for release/proof facts, forward-only
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -10,47 +10,18 @@ The stage docs (`docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`,
 `docs/assurance/omcc-cutover-scorecard.md`) restate the shipped
 `plugin-runtime` version and the installed-state proof that backs it.
 Keeping those statements true has required a manual recovery PR after
-every release — 0.86.0 → [#636](https://github.com/each4all/agentic-plugins/pull/636),
+every recent release — 0.86.0 → [#636](https://github.com/each4all/agentic-plugins/pull/636),
 0.86.1 → [#640](https://github.com/each4all/agentic-plugins/pull/640),
 0.86.2 → [#643](https://github.com/each4all/agentic-plugins/pull/643) —
 and the hand-editing is error-producing, not merely tedious.
 
-### What one evidence record actually is
+### What five adversarial review rounds measured
 
-A single release/proof record carries thirteen facts:
-
-| field | source |
-|---|---|
-| runtime version | `.release-please-manifest.json` |
-| proof command | fixed string |
-| proof run id, proof date | `.agentic-plugins/runs/doctor/<id>/` |
-| Claude / Codex CLI versions | doctor artifact |
-| installed state per host | doctor artifact |
-| doctor readings (`overall`, experience parity, `entry_brief`, `session_capture`, `host_parity_baseline`) | doctor artifact |
-| feature PRs + shas | git + `plugins/runtime/CHANGELOG.md` |
-| hardening PRs + shas | git + changelog |
-| release triple (PR, squash, tag, marketplace sync) | git tags and commits |
-| install method | operator statement |
-| loop narrative | **human** |
-| supersession relation | **human judgment** |
-
-Twelve of the thirteen are already held, exactly, by git, the manifest,
-or a doctor artifact. One — the narrative — is genuinely authored.
-
-That record is then **hand-copied into five prose sites** (four in the
-scorecard, one in `DEVELOPMENT.md`), each phrased differently, and the
-copies accumulate: seventeen tagged releases and twenty-four cited proof
-run ids are in the documents today.
-
-### Why the current tooling cannot close this
-
-[ADR-0016](0016-cross-package-commit-splitting.md)-style discipline and
-the [#644](https://github.com/each4all/agentic-plugins/pull/644) tooling
-(`scripts/sync-doc-versions.mjs` deriving the version tokens,
-`scripts/check-doc-evidence.mjs` gating the relations) both operate by
-**recovering those twelve fields out of prose**. That recovery was taken
-through five rounds of adversarial cross-host review during #644. The
-outcome separates cleanly:
+[#644](https://github.com/each4all/agentic-plugins/pull/644) took the
+prose-recovery tooling (`scripts/sync-doc-versions.mjs` deriving the
+version tokens, `scripts/check-doc-evidence.mjs` gating the relations)
+through five rounds of cross-host review. The outcome separates cleanly,
+and the split is not a matter of taste:
 
 - **Identifier comparisons converged.** Release triples verified against
   real tags and release commits, sha resolution and reachability, version
@@ -59,12 +30,16 @@ outcome separates cleanly:
   `#521`/`v0.77.1` triple, and two dangling citations of a squash-deleted
   branch commit.
 - **Prose parsing did not converge.** Every round produced new defects in
-  the checks that must decide *what a sentence means*. Concretely:
-  - Date-to-run-id binding by proximity is undecidable here. Measured
-    across the corpus, id/date pairs that AGREE sit at distances
-    13–56, 86, 127, 184, 192, 228, 330, 448, 585, 707; pairs that
-    DISAGREE sit at 75, 162, 195, 229, 248, 292, 407, 520, 927. They
-    interleave from 75 onward, so no threshold separates them.
+  the checks that must decide *what a sentence means*:
+  - Date-to-run-id binding by proximity is undecidable on this corpus.
+    Agreeing and disagreeing id/date distances interleave, so no
+    threshold separates them. (The specific distance list recorded during
+    #644 is a snapshot of the corpus as it stood then; the corpus has
+    grown since and the distances have moved. The conclusion is
+    unchanged — a re-measurement during this ADR's review still found
+    agreeing and disagreeing distances interleaved, reaching past 2900 —
+    but the numbers should be read as a historical measurement, not a
+    current inventory.)
   - Attributing a sha to a changelog version failed three times in three
     directions: bare semver attributed a runtime commit to a host version
     (`Codex 0.145.0 … af620df`); filtering to released runtime versions
@@ -74,108 +49,217 @@ outcome separates cleanly:
     because the documents attribute with bare semver. The check was
     removed in #644 rather than tuned a fourth time.
 
-The generalisation: the twelve machine-known fields were never
-unavailable. They were **discarded at authoring time** by being written
-as prose, and every gate since has been an attempt to reconstruct them.
-Reconstruction from unstructured text has an unbounded adversarial
-surface; the fields themselves do not.
+The generalisation: the machine-known fields were never unavailable. They
+are **discarded at authoring time** by being written as prose, and every
+gate since has been an attempt to reconstruct them. Reconstruction from
+unstructured text has an unbounded adversarial surface; the fields
+themselves do not.
+
+### What one evidence record actually is
+
+A single release/proof record carries facts of four distinct provenance
+classes. The distinction matters because it determines what any gate can
+honestly assert:
+
+| field | source | provenance |
+|---|---|---|
+| `record_id` | authored, stable | authored |
+| `evidence_loop` — what the loop was | authored | authored |
+| `package_releases[]` — package, version, tag, release PR, squash, marketplace sync | git tags/commits + `.release-please-manifest.json` | **derived** |
+| `feature_commits[]` — PR + sha | git + `plugins/runtime/CHANGELOG.md` | **derived** |
+| `hardening_commits[]` — PR + sha | git + changelog | **derived** |
+| `proofs[]` — run id, date, command, host CLI versions, installed state per host, doctor readings | `.agentic-plugins/runs/doctor/<id>/` | **observed** |
+| `install_method` | operator statement | **operator-attested** |
+| `narrative` | — | authored |
+| `relations[]` — typed links to other records | editorial judgment | authored |
+
+Three field groups are derivable from repo state, one is observed from a
+doctor artifact, one is an operator attestation, and four are authored.
+An earlier draft of this ADR claimed "thirteen facts, twelve of them
+machine-held, one authored"; that count was wrong in both directions and
+is corrected here.
+
+### Three constraints the corpus imposes
+
+Measured against the documents as they stand, not assumed:
+
+1. **The record unit is the evidence loop, not the release.** The two
+   documents cite 17 distinct `plugin-runtime` tags but 27 distinct
+   doctor run ids. A single release can carry several records (2026-07-20
+   alone carries four: the 0.83.0 install proof, an attention-0.7.0
+   freshness record, a post-attestation restoration, and 0.83.1), and one
+   loop can span several releases (0.86.0/0.86.1/0.86.2 are one ADR-0048
+   loop, recorded once). Keying a store by release does not fit the data.
+
+2. **The supersession relation is per-site, not per-record.** The four
+   evidence-bearing regions carry *different* chains: `0.83.0` is a chain
+   link in the scorecard R3 row and `DEVELOPMENT.md` but absent from the
+   scorecard continuity paragraph; `0.81.0` and `0.80.1` are links in the
+   continuity paragraph and R3 but not in `DEVELOPMENT.md`; `0.77.2` and
+   `0.77.1` survive only in the continuity paragraph. The R4 row is
+   deliberately headed one loop behind the others (`0.86.0`
+   `doctor-20260723T124714Z-a2e2e0`) because it argues an
+   attestation-currency discipline rather than reporting latest state.
+   An earlier draft claimed `0.83.0`/`0.83.1`/`0.84.0`/`0.86.0`/`0.86.1`
+   were all "absorbed in place, following no rule"; in fact only `0.86.0`
+   and `0.86.1` are absorbed everywhere, and the rule the others follow is
+   the one `scripts/sync-doc-versions.mjs` names — evidence-loop
+   boundaries, which is exactly why the 0.86.x releases collapse into one
+   record. A scalar `supersedes` pointer cannot represent this.
+
+3. **The prose sites are not addressable regions.** The evidence sites
+   are: the scorecard continuity paragraph (a single 227-line paragraph
+   that opens with `runtime:settings` dry-run narrative), the scorecard
+   attention-classification narrative, the scorecard R3 and R4
+   requirement rows, and the `DEVELOPMENT.md` ADR-0012 condition-2 matrix
+   row. The last three are **single physical markdown lines** (15 105,
+   6 487 and 39 165 bytes). `plugins/runtime/scripts/cutover-audit.mjs`
+   parses the requirement rows and the condition matrix line-by-line, and
+   `tests/plugin-shape/test-runtime-plugin.mjs` pins every requirement row
+   as a single line with exactly five cells — a pin added *because* R3
+   once spanned 40+ physical lines and silently dropped out of the live
+   cutover audit. Any block-marker convention re-creates that incident,
+   and an unescaped `|` in rendered narrative shifts the columns.
+
+### What the doctor artifacts can and cannot back
+
+`.gitignore` ignores `.agentic-plugins/runs/`, and
+`plugins/runtime/scripts/retention.mjs` (ADR-0047 §7) deletes over-cap
+runs. Every one of the 27 currently cited runs exists on the maintainer
+checkout, but that is a property of one machine, not of the repo. A fresh
+clone and CI have git history and tags but no run artifacts. Any claim
+that a gate validates proof readings "against the doctor artifact" is
+therefore true locally and false in CI, and must be stated that way.
 
 ## Decision
 
-Record the evidence once, as data. Render the prose from it. Gate the
-data, not the prose.
+Record the evidence as data **going forward**, validate what the repo can
+actually validate, and leave the prose alone for now.
 
-**1. A single evidence store.** Release/proof records move to
-`docs/assurance/evidence/` as one JSON file per runtime release, closed
-schema, `additionalProperties: false`, in the style of the runtime
-plugin's packaged `data/schemas/`. Fields are exactly the thirteen above.
-The human-authored ones are explicit and labelled:
+**1. A forward-only evidence store.** Starting with the next runtime
+release loop, each evidence loop gets one JSON file under
+`docs/assurance/evidence/`, closed schema, `additionalProperties: false`,
+in the style of the runtime plugin's packaged `data/schemas/`. The key is
+the **evidence loop**, identified by a stable `record_id` — not the
+release. A record carries `package_releases[]` and `proofs[]` as arrays
+precisely because a loop may span several releases and several proof
+observations.
 
-- `narrative` — free text; what the release was. Never gated.
-- `supersedes` — the editorial judgment that is currently implicit in
-  whether a recovery PR replaces the head record or prepends a chain
-  link. Today that decision leaves no trace: `0.85.0`/`0.82.0`/`0.81.0`
-  survive as chain links while `0.83.0`/`0.83.1`/`0.84.0`/`0.86.0`/
-  `0.86.1` were absorbed in place, a split that follows no rule. As a
-  field it becomes a recorded decision.
+**2. Every field declares its provenance.** The schema tags each field
+`derived`, `observed`, `operator-attested`, or `authored`, per the table
+above. This is not decoration: it is what tells a gate whether it may
+assert the field, and it is the field-level answer to the honest-scope
+principle in AGENTS.md §5.
 
-**2. Rendered regions.** The five prose sites become generated regions,
-delimited by explicit markers, produced by a renderer from the store.
-Everything outside the markers stays hand-written.
+**3. Relations are typed and plural.** `relations[]` holds entries of the
+form `{type, record_id}` with `type` drawn from a closed set —
+`follows`, `supersedes`, `amends`, `restores`, `absorbs`. This records
+the editorial judgment that is today invisible, without pretending it is
+derivable. Because nothing renders from the store (item 5), a wrong
+relation costs a wrong note and nothing more; the judgment itself still
+belongs to the author.
 
-**3. Data-level gates replace prose-level gates.** Each machine-known
-field is validated against its own source — tag against
-`git for-each-ref`, squash against the tagged commit, proof readings
-against the doctor artifact, version against the manifest. No regular
-expression reads a sentence. The rendered output is additionally
-verified by re-rendering and failing on any diff, so an edit inside a
-generated region cannot survive.
+**4. Gates validate only what their source can back.**
+- `derived` fields are validated against git and the manifest — tag
+  against `git for-each-ref`, squash against the tagged commit, PR number
+  against the release commit subject, shas against resolution and
+  reachability. These run everywhere, including CI.
+- `observed` fields record the source run id and a content hash of the
+  doctor artifact. They are verified locally when the artifact is
+  present, and are **explicitly not verified in CI**. The store presents
+  them as an operator attestation carrying a verifiable pointer, which is
+  what the repo can honestly support.
+- `operator-attested` and `authored` fields are never gated.
 
-**4. Migration is proved, not asserted.** The initial store is generated
-by the identifier extractors already shipped in
-`scripts/check-doc-evidence.mjs`, which resolve 40 release-triple claims
-and 236 cited shas on the current documents, plus git and the doctor
-artifacts. The migration is accepted only when re-rendering reproduces
-the current prose's **facts** — the acceptance criterion is a field-level
-diff of extracted-then-rendered against extracted-from-current, empty.
-Hand-transcription of the twenty-four historical records is explicitly
-forbidden, because it is the exact failure mode this ADR exists to
-remove.
-
-**5. Scope is the recurring record only.** Release/proof records and
-their supersession chain. The scorecard's requirement rows, ADR-0012
-condition matrix, and narrative sections are out of scope and stay
+**5. No rendering, and no generated regions.** The five prose sites stay
+hand-written. No markers are introduced into the scorecard or
+`DEVELOPMENT.md`, and no consumer of those documents changes. The
+existing gates all stay: `checkReleaseTriples`, sha
+resolution/reachability, and `checkProofCitations` — the last of which
+remains necessary precisely because the prose it inspects is still
 hand-written.
 
-**6. The prose-parsing gates retire on migration.** `checkProofCitations`
-(citation-phrase date binding) is transitional: sound within its closed
-grammar but covering 39 of 94 cited ids. It is removed once the records
-it inspects are rendered from data. The identifier gates
-(`checkReleaseTriples`, sha resolution/reachability) are retained — they
-validate the store's git-derived fields and remain useful for the
-hand-written regions.
+**6. The historical migration and the renderer are deferred, not
+rejected.** Moving the 27 historical records into the store and rendering
+the prose from it is the eventual goal, and it needs its own ADR. Two
+preconditions must be met before that ADR can honestly be written:
+
+- **A typed exporter spike.** The current extractors cannot seed a store:
+  `checkReleaseTriples` returns `{findings, checked, checkedTags}` and
+  `checkCommitShas` returns `{findings, checked}` — counts and findings,
+  not records, with no association between a sha and a record. An
+  exporter that emits records with source locations is new work, and a
+  migration acceptance criterion of "extract → render → extract, empty
+  diff" is circular until an independent coverage manifest pins the
+  expected record ids, proof ids, tags, and field identities: if
+  extractor and renderer omit the same field, the diff is empty and the
+  field is gone.
+- **A resolution for the single-line table constraint**, satisfying
+  `cutover-audit.mjs` and the five-cell row pin, or a design that moves
+  the evidence out of those rows into a standalone section that the rows
+  link to.
 
 ## Consequences
 
-**Positive.** The recurring post-release recovery collapses to: re-record
-the doctor proof, add one record to the store, write the narrative
-sentence. The five hand-copies become one authored record. The defect
-class that motivated all of this — a token moved while the tokens beside
-it did not — becomes unrepresentable, because there is one instance of
-each fact. The unbounded prose-parsing surface disappears, replaced by a
-field set whose size is known. The `supersedes` judgment stops being an
-invisible editorial act.
+**Positive.** The next release's record is authored once, in a validated
+shape, with its derived fields checked against git at authoring time
+rather than reconstructed from prose afterwards. The record unit finally
+matches the data — evidence loops, with plural releases and plural
+proofs. The `supersedes` judgment becomes a recorded, typed decision
+instead of an invisible editorial act, and it is recorded in the one
+place where getting it wrong is cheap. The provenance classes make the
+CI/local asymmetry explicit rather than implied. None of the existing
+gates, consumers, or documents are disturbed.
 
-**Negative.** These documents read differently. The scorecard is an
-assurance artifact humans read, and today's records are dense and
-discursive; a template plus a `narrative` field will be more uniform, and
-some rhetorical nuance is lost. Generated regions inside hand-edited
-markdown are a known hazard — people edit inside the markers — mitigated
-but not eliminated by the re-render diff gate. The migration is
-substantial and touches the repo's primary assurance document. And the
-semantic claims in `narrative` remain unverifiable by any gate; this ADR
-contains them, it does not check them.
+**Negative — and this is the headline cost.** On the day it lands, this
+**adds** a copy. The five hand-written prose sites remain, and the store
+is a sixth record of the same facts. The duplication the ADR's own
+Context identifies as the root cause is not reduced; it is increased by
+one, and the store's value is entirely contingent on the deferred
+follow-up landing. If that follow-up never lands, this decision is net
+negative and the store should be withdrawn rather than maintained —
+**withdrawal trigger: two consecutive release loops in which the store is
+authored but the follow-up ADR has not been opened.** The recurring
+post-release recovery PR is not eliminated by this decision.
 
-**Neutral.** Authoring shifts from writing prose to filling a record plus
-a sentence. Reviewers gain a field-level diff instead of a prose diff,
-which is easier to verify and harder to skim.
+Secondary costs: schema and validator work; a per-release authoring step
+that must not be skipped or the store silently rots; and the store's
+`observed` fields carry, in CI, exactly the trust level today's prose
+carries — a copy — differing only in that it names its source and hash.
+
+**Neutral.** Authoring gains a step and loses nothing. The store is
+git-tracked, which also keeps cited runs pinned by
+`retention-planner.mjs`'s tracked-file citation scan; that is a
+requirement, not an accident, and the implementation must carry a
+regression test for it.
 
 ## Alternatives Considered
 
+**Render the prose from the store now (the original form of this ADR).**
+Rejected on the three constraints in Context, each measured rather than
+assumed: three of the five sites are single-line table cells with a
+shipped test pinning that shape and a recorded incident from violating
+it; the supersession relation is per-site, so one store field cannot
+drive four projections; and the migration's stated seed mechanism does
+not exist and its acceptance criterion is circular. The generated content
+would have been roughly 73% of the scorecard and 36% of `DEVELOPMENT.md`
+by volume — a rewrite of the repo's primary assurance document, not the
+"more uniform" phrasing the original draft used. Deferred to a follow-up
+ADR behind the two preconditions in Decision §6, not abandoned.
+
 **Keep improving the prose parsers.** Rejected on five rounds of
-evidence. The date-proximity measurement above is not a tuning problem —
-agreeing and disagreeing distances interleave, so no threshold exists.
-Attribution failed three times in three different directions and, in its
-last sound form, checked nothing. Each round's fixes were correct and
-each round found more, because the input space is unstructured natural
-language.
+evidence. Agreeing and disagreeing date distances interleave, so no
+threshold exists. Attribution failed three times in three different
+directions and, in its last sound form, checked nothing. Each round's
+fixes were correct and each round found more, because the input space is
+unstructured natural language.
 
 **Demote the prose checks to advisory and stop.** This was the
-alternative recommendation when #644 landed. It stops the treadmill but
-leaves the root cause: one record, five hand-copies, twelve
-machine-known fields discarded at authoring time. The next release still
-needs the manual recovery, and the copies still drift — silently, since
-the checks no longer gate.
+alternative recommendation when #644 landed. It is narrower than it
+sounds: #644 already removed the unsound attribution check and kept the
+identifier gates, so "demote" now means demoting checks that converged.
+Rejected for that reason — gate severity and authoring/storage design are
+separate questions, and the converged checks earn their severity.
 
 **Make release-please own the documents via `extra-files`.** Rejected for
 the same reason the marketplace catalog is not an `extra-files` target
@@ -187,15 +271,38 @@ itself.
 **Generate the whole scorecard.** Rejected as over-reach. The requirement
 rows and condition matrices are argued positions, not records; rendering
 them would force a schema onto reasoning that legitimately varies.
-Scoping to the recurring record keeps the boundary where the repetition
-actually is.
 
-**Rewrite run ids and dates in place with a sync script.** Considered
-and rejected during #644, and the reasoning still holds: cited run ids
-sit among syntactically identical superseded records (25 ids on one
-`DEVELOPMENT.md` line, 20 in the scorecard R3 row, the phrase
+**Deduplicate the prose instead — one canonical record, four pointer
+references.** This removes the five-copies root cause with no schema, no
+renderer, and no markers. It is genuinely attractive and was not in the
+original draft's alternatives. Not adopted **now** because the four sites
+are not redundant copies of one record: each selects a different subset of
+the chain for a different argument (R4 deliberately trails a loop behind
+to argue attestation currency). Collapsing them to pointers is a
+content decision about the assurance document, separable from this
+storage decision, and belongs with the follow-up ADR where the per-site
+projections are designed. Recorded here so it is evaluated there.
+
+**Rewrite run ids and dates in place with a sync script.** Considered and
+rejected during #644, and the reasoning still holds: cited run ids sit
+among syntactically identical superseded records (25 id occurrences on one
+`DEVELOPMENT.md` line, 20 in the scorecard R3 row, and the phrase
 "re-recorded under the `<version>` install on `<date>` (`<id>`" appearing
-five times — once current, four superseded), the only distinguishing
-field is the version being changed, and whether a release replaces the
-head or prepends a link is not derivable. This ADR resolves that by
-removing the need to locate anything in prose at all.
+six times in R3 alone — once current, five superseded), the only
+distinguishing field is the version being changed, and whether a release
+replaces the head record or prepends a link is an editorial judgment. This
+ADR does not resolve that; it stops adding to the problem.
+
+## Implementation notes
+
+Not part of the decision, but required when it is implemented:
+
+- `AGENTS.md` §Release process gains the store-authoring step. Its
+  existing statements stay true under this ADR — `checkProofCitations` is
+  retained and no script rewrites cited run ids or dates.
+- The `retention-planner.mjs` tracked-file pin needs a regression test
+  covering JSON records.
+- The stale "appears five times" counts in
+  `scripts/sync-doc-versions.mjs` and `scripts/check-doc-evidence.mjs`
+  comments should be corrected to six while the surrounding code is
+  touched.
