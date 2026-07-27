@@ -7,7 +7,7 @@
 // tests/runtime/test-bootstrap.mjs; this file exercises the §3 grammar, the
 // R0/M1 boundary, the no-executor rule, and the CLI lifecycle end to end.
 
-import { deepStrictEqual, ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -616,7 +616,9 @@ describe('runtime bootstrap CLI — lifecycle', () => {
             doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/artifact.json' },
           }));
         }
-        // The hook-attestation fetch path: no codex_hook_review → resume warns and moves on.
+        // Not the hook-attestation path: this fixture plans `base`, whose
+        // selection has no Codex hook-bearing plugin, so §8.2 never runs. The
+        // import itself is covered in the §8.2 block at the end of this file.
         return okOut(JSON.stringify({}));
       }
       return missing();
@@ -1266,7 +1268,7 @@ describe('bootstrap egress-provider-ack executor E2E (ADR-0048 §3)', () => {
             doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: ARTIFACT_SHA },
           }));
         }
-        // Hook-attestation fetch path: no codex_hook_review → resume warns and moves on.
+        // Not the hook-attestation path either — `base` again (see above).
         return okOut(JSON.stringify({}));
       }
       return missing();
@@ -1891,5 +1893,211 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
     });
     ok(/^ {2}- \[stage 8\] proof\.deep-peer-smoke: passed$/m.test(text), `evidence renders with no steps to join:\n${text}`);
     ok(!/execution:/.test(text), 'no control context is invented when there are no steps');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §8.2 — the Codex /hooks attestation import (#645)
+// ---------------------------------------------------------------------------
+//
+// Before this fix, resume read the attestation from `doctorReport.codex_hook_review`
+// — a top-level key doctor emits on NO report. The read was always `undefined`, so
+// importHookAttestation never ran, `proof/hook-attestation.json` was never written,
+// and the non-declinable `hooks.codex.attested` step could never be satisfied on any
+// hook-bearing bundle. Nothing warned.
+//
+// Every fixture below shapes its doctor stub like doctor's REAL `--format json`
+// stdout: the report itself (doctor.mjs writes `JSON.stringify(report)`), whose
+// `settings_runs.codex_hook_review` is the currency wrapper published by
+// buildCodexHookReviewCurrency. That shape is what makes the two resume shapes —
+// with and without an executing proof — agree, since both parse doctor's stdout.
+describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)', () => {
+  // The `engineering` bundle's Codex hook-bearing set, sorted as the importer sorts.
+  const HOOK_PLUGINS = ['engineer', 'orchestrator'];
+  const SETTINGS_ARTIFACT_SHA = 'b'.repeat(64);
+
+  // `hostedRunner` reports every plugin at 9.9.9 and Codex CLI at 0.140.0; the
+  // attestation binds exactly those, so the record is current on this machine.
+  const attestationLatest = (overrides = {}) => ({
+    run_id: 'settings-20260718T030000Z-aa11bb',
+    mode: 'attest-codex-hook-review',
+    requested: true,
+    attested: true,
+    status: 'attested',
+    host: 'codex',
+    attested_at: '2026-07-18T03:00:00Z',
+    bundled_plugins: [...HOOK_PLUGINS],
+    attested_plugins: [...HOOK_PLUGINS],
+    plugin_versions: { engineer: '9.9.9', orchestrator: '9.9.9' },
+    bound_versions: { codex: '0.140.0', plugins: { codex: { engineer: '9.9.9', orchestrator: '9.9.9' } } },
+    artifact_pointer: '~/.agentic-plugins/runs/settings/settings-20260718T030000Z-aa11bb/settings.json',
+    artifact_hash: SETTINGS_ARTIFACT_SHA,
+    ...overrides,
+  });
+
+  // The doctor report as it reaches bootstrap: `settings_runs.codex_hook_review`,
+  // never a top-level key. `extra` merges the proof section for the executing shape.
+  const doctorReportWith = (review, extra = {}) => JSON.stringify({
+    schema_version: 'runtime-doctor-1.0',
+    settings_runs: { status: 'ok', count: 1, malformed: 0, codex_hook_review: review },
+    ...extra,
+  });
+
+  const currentReview = () => ({ status: 'attested', current: true, currency_reason: null, latest: attestationLatest() });
+
+  // A stub that answers settings.mjs, and answers doctor.mjs with `review` —
+  // optionally also serving the deep-peer-smoke executor so the SAME stdout
+  // carries both the proof section and the attestation (the executing shape).
+  function hookDoctorStub({ review, serveSmoke = false }) {
+    const calls = [];
+    const runner = async (scriptPath, args) => {
+      calls.push({ scriptPath, args: [...args] });
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        if (serveSmoke && args.includes('--execute-deep-peer-smoke')) {
+          return okOut(doctorReportWith(review, {
+            deep_peer_smoke: {
+              directions: {
+                claude_to_codex: { execution: 'executed', status: 'passed' },
+                codex_to_claude: { execution: 'executed', status: 'passed' },
+              },
+            },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json' },
+          }));
+        }
+        return okOut(doctorReportWith(review));
+      }
+      return missing();
+    };
+    return { calls, runner };
+  }
+
+  const doctorCalls = (stub) => stub.calls.filter((c) => c.scriptPath.endsWith('doctor.mjs'));
+  const proofPath = (home, runId) => join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'hook-attestation.json');
+
+  async function planEngineering(home, cwd, stub) {
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: stub.runner });
+    const plan = await run(['plan', '--bundle', 'engineering', '--format', 'json']);
+    return { run, runId: plan.report.run_id };
+  }
+
+  it('a current attestation imports on a resume that executes nothing — the path regression #645 pins', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview() });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    // `hook-attestation` is an embeddedKind:false family, so the file IS the
+    // record — there is no envelope to unwrap.
+    const recorded = JSON.parse(await readFile(proofPath(home, runId), 'utf8'));
+    strictEqual(recorded.status, 'attested');
+    deepStrictEqual(recorded.attested_plugins, HOOK_PLUGINS, 'the import projects down to exactly the selection');
+    strictEqual(recorded.bound_versions.codex, '0.140.0');
+    deepStrictEqual(recorded.bound_versions.plugins.codex, { engineer: '9.9.9', orchestrator: '9.9.9' });
+    strictEqual(recorded.artifact_hash, SETTINGS_ARTIFACT_SHA);
+    ok(!(resume.report.warnings ?? []).some((w) => /attestation/i.test(w)), `a clean import warns about nothing: ${JSON.stringify(resume.report.warnings)}`);
+  });
+
+  it('a resume that DOES execute a proof imports from the same stdout — no second doctor subprocess', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview(), serveSmoke: true });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    const answersPath = join(home, 'execute-smoke.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+      { step_id: 'egress.configured', answer: 'decline' },
+    ]));
+    await run(['resume', '--latest-open', '--answers', answersPath]);
+
+    // The reported second defect on #645 claimed a `--record` report cannot carry
+    // `settings_runs`, so this shape would need its own doctor run. It cannot: the
+    // recorded ARTIFACT is an envelope (`{run_id, status, report, …}`) whose report
+    // is nested, but bootstrap parses doctor's STDOUT, which is the report itself.
+    // One doctor call — the executor's — must therefore satisfy both.
+    const calls = doctorCalls(stub);
+    strictEqual(calls.length, 1, `exactly one doctor invocation serves both the proof and the attestation: ${JSON.stringify(calls.map((c) => c.args))}`);
+    ok(calls[0].args.includes('--execute-deep-peer-smoke'), 'and it is the executor call, not an extra read-only fetch');
+
+    const recorded = JSON.parse(await readFile(proofPath(home, runId), 'utf8'));
+    deepStrictEqual(recorded.attested_plugins, HOOK_PLUGINS, 'the executing shape imports the same attestation');
+  });
+
+  it('a stale attestation is refused and the currency reason is named — never persisted as attested', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({
+      review: { status: 'stale', current: false, currency_reason: 'codex_cli_version_changed', latest: attestationLatest({ bound_versions: { codex: '0.130.0', plugins: { codex: { engineer: '9.9.9', orchestrator: '9.9.9' } } } }) },
+    });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    // The gate is load-bearing: importHookAttestation hard-codes `status: 'attested'`
+    // into the record it builds, so importing a claim doctor already judged stale
+    // would write `attested` into the audited proof store for a false claim.
+    await rejects(() => readFile(proofPath(home, runId), 'utf8'), 'a stale attestation writes no proof record');
+    const warning = (resume.report.warnings ?? []).find((w) => /no longer current/.test(w));
+    ok(warning, `the refusal is loud: ${JSON.stringify(resume.report.warnings)}`);
+    ok(/codex_cli_version_changed/.test(warning), 'the machine reason is named so the operator knows what drifted');
+    ok(/--attest-codex-hook-review/.test(warning), 'and the recovery names the command that re-records it');
+  });
+
+  it('a never-recorded attestation warns with the record-it recovery instead of failing silently', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: { status: 'missing', current: false, currency_reason: 'missing', latest: null } });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    await rejects(() => readFile(proofPath(home, runId), 'utf8'), 'nothing is fabricated when nothing was attested');
+    const warning = (resume.report.warnings ?? []).find((w) => /no Codex \/hooks attestation has been recorded/.test(w));
+    ok(warning, `the absence is stated, not silent: ${JSON.stringify(resume.report.warnings)}`);
+    ok(/\/hooks/.test(warning) && /--attest-codex-hook-review/.test(warning), 'the two-step recovery is spelled out');
+  });
+
+  it('a doctor report missing the settings_runs section warns rather than silently skipping', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // The pre-fix world's report shape: no section at either path.
+    const calls = [];
+    const runner = async (scriptPath, args) => {
+      calls.push({ scriptPath, args: [...args] });
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) return okOut(JSON.stringify({ schema_version: 'runtime-doctor-1.0' }));
+      return missing();
+    };
+    const { run, runId } = await planEngineering(home, cwd, { runner, calls });
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    await rejects(() => readFile(proofPath(home, runId), 'utf8'));
+    ok((resume.report.warnings ?? []).some((w) => /no settings_runs\.codex_hook_review section/.test(w)), `a shape regression is named, not papered over: ${JSON.stringify(resume.report.warnings)}`);
+    // Naming it beats spawning a second doctor to paper over it.
+    strictEqual(calls.filter((c) => c.scriptPath.endsWith('doctor.mjs')).length, 1, 'the absence does not trigger a retry storm');
+  });
+
+  it('a doctor subprocess that cannot run is reported — the failure was silent before', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const calls = [];
+    const runner = async (scriptPath, args) => {
+      calls.push({ scriptPath, args: [...args] });
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      return missing();
+    };
+    const { run } = await planEngineering(home, cwd, { runner, calls });
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    ok((resume.report.warnings ?? []).some((w) => /runtime:doctor could not be run for the Codex \/hooks attestation/.test(w)), `a failed fetch is stated: ${JSON.stringify(resume.report.warnings)}`);
+  });
+
+  it('the base bundle carries no Codex hook-bearing plugin, so the import is not attempted at all', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview() });
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: stub.runner });
+    await run(['plan', '--bundle', 'base', '--format', 'json']);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    strictEqual(doctorCalls(stub).length, 0, 'no attestation fetch on a selection with nothing to attest');
+    ok(!(resume.report.warnings ?? []).some((w) => /attestation/i.test(w)), 'and nothing to warn about');
   });
 });

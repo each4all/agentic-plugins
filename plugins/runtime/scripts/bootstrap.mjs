@@ -2122,11 +2122,28 @@ async function runResume(ctx, opts) {
   }
 
   // The Codex /hooks attestation rides the same verb the same way (§8.2): a
-  // doctor report fetched for a proof already carries codex_hook_review; when
-  // none was fetched but the attestation step is still open, a read-only doctor
-  // run would be R0-adjacent — resume is M1, so fetching one is in-contract.
-  // `recordedHookAttestation` is the read-back evidence — an already-persisted
-  // claim short-circuits the fetch exactly as the old completion-cache did.
+  // doctor report fetched for a proof already carries the attestation section;
+  // when none was fetched but the attestation step is still open, a read-only
+  // doctor run would be R0-adjacent — resume is M1, so fetching one is
+  // in-contract. `recordedHookAttestation` is the read-back evidence — an
+  // already-persisted claim short-circuits the fetch exactly as the old
+  // completion-cache did.
+  //
+  // The attestation lives at `settings_runs.codex_hook_review` — the currency
+  // WRAPPER `{status, current, currency_reason, latest}` that doctor's
+  // buildCodexHookReviewCurrency publishes — and never at the report's top
+  // level. Reading the top-level key (#645) resolved `undefined` on every
+  // report doctor can emit, so the import never ran, no hook-attestation record
+  // was written, and the non-declinable `hooks.codex.attested` step could never
+  // be satisfied on any hook-bearing bundle. `.latest` is the newest ATTESTING
+  // run (doctor picks it explicitly), not `settings_runs.latest`, which is
+  // whatever the newest settings run happened to be — frequently one that never
+  // requested a review.
+  //
+  // Every non-importing branch below WARNS. The defect's real cost was silence:
+  // the operator saw a pending non-declinable step whose recovery text told them
+  // to do the thing they had already done, with no warning naming why it did not
+  // take.
   const codexHookPlugins = selection.desired.filter((n) => pluginSet.plugins[n]?.hook_bearing?.codex === true).sort();
   if (codexHookPlugins.length > 0 && !reprobe.recordedHookAttestation) {
     if (!doctorReport) {
@@ -2135,10 +2152,37 @@ async function runResume(ctx, opts) {
       if (result?.ok) {
         executedAnything = true;
         try { doctorReport = JSON.parse(result.stdout); } catch { warnings.push('doctor output for the hook attestation was not valid JSON'); }
+      } else {
+        warnings.push(`runtime:doctor could not be run for the Codex /hooks attestation (${result?.error_code ?? result?.exit_code ?? 'unknown failure'}); the attestation step stays open`);
       }
     }
-    if (doctorReport?.codex_hook_review) {
-      const imported = importHookAttestation(doctorReport.codex_hook_review, { expectedPlugins: codexHookPlugins });
+    const review = doctorReport ? (doctorReport.settings_runs?.codex_hook_review ?? null) : null;
+    if (doctorReport && !review) {
+      // Not a recoverable state to re-fetch through: doctor publishes this
+      // section unconditionally, so its absence means the report shape changed
+      // (or a pruned report reached this seam). Spawning a SECOND doctor here
+      // would mask that regression behind a silent extra subprocess; naming it
+      // keeps the contract break visible.
+      warnings.push('the doctor report carries no settings_runs.codex_hook_review section, so the Codex /hooks attestation could not be read; the attestation step stays open');
+    } else if (review && review.current !== true) {
+      // Gate on the ONE currency verdict doctor already computed rather than a
+      // third opinion — doctor states that verdict must agree with the reducer's
+      // recomputeHookAttestation. This gate is load-bearing, not cosmetic:
+      // importHookAttestation hard-codes `status: 'attested'` into the record it
+      // builds, so importing a stale claim would persist `attested` into the
+      // audited proof store for a claim the machine has ALREADY judged false.
+      // The reducer would re-judge it stale at reduce time anyway — so the only
+      // thing a non-current import buys is a false record at rest.
+      const reason = review.currency_reason ?? review.status ?? 'unknown';
+      warnings.push(reason === 'missing'
+        ? 'no Codex /hooks attestation has been recorded on this machine, so nothing could be imported; review the bundled hooks with /hooks in an active Codex session, then run runtime:settings --attest-codex-hook-review and resume again'
+        : `the recorded Codex /hooks attestation is no longer current (${reason}), so it was not imported; re-review the bundled hooks with /hooks in an active Codex session, then run runtime:settings --attest-codex-hook-review and resume again`);
+    } else if (review && (typeof review.latest !== 'object' || review.latest === null || Array.isArray(review.latest))) {
+      // `current: true` with no readable `latest` is structurally impossible
+      // upstream — fail closed and say so rather than importing a non-object.
+      warnings.push('the doctor report marks the Codex /hooks attestation current but carries no readable attestation record; the attestation step stays open');
+    } else if (review) {
+      const imported = importHookAttestation(review.latest, { expectedPlugins: codexHookPlugins });
       if (imported.ok) {
         const persisted = await writeBootstrapProof({ homeDir: ctx.homeDir, repoRoot: ctx.cwd, runId: picked.run.run_id, kind: 'hook-attestation', record: imported.record });
         if (!persisted?.ok) warnings.push(`hook attestation metadata could not be persisted (the run reduces without it; re-run resume to retry): ${(persisted?.diagnostics ?? ['unknown write failure']).join('; ')}`);
