@@ -2088,7 +2088,35 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     // cap is the field the re-judge could have dropped.
     const proof = resume.report.completion.proofs.find((p) => p.kind === 'deep-peer-smoke');
     strictEqual(proof?.declined, true, `the reducer still reads the decline off the step row: ${JSON.stringify(proof)}`);
-    ok(resume.report.completion.state !== 'complete', `a declined proof caps the run: got ${resume.report.completion.state}`);
+    // Deliberately NOT asserting completion.state !== 'complete' here: this run
+    // is incomplete for unrelated reasons too (no deep-peer evidence recorded,
+    // workflow-continuation still open), so that assertion would pass whether or
+    // not the decline survived. `proof.declined` is the field this repair is
+    // about, and it is the one asserted.
+  });
+
+  it('the re-judge converges a dependent the answered decline unblocked, and preserves fragment_applied', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview() });
+    const { run } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    // The graph pass runs again over the ANSWERED rows, so a dependent the first
+    // pass demoted behind a then-pending predecessor converges once that
+    // predecessor is declined (declines count as resolved). This is earlier
+    // convergence, not a new verdict — both blocked and pending are unresolved to
+    // the reducer — but the re-judge is not a hook-row-only operation and the
+    // code must not claim otherwise.
+    const dependent = resume.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
+    ok(dependent && dependent.status !== 'blocked', `the declined predecessor no longer blocks it: ${JSON.stringify(dependent)}`);
+    ok(resume.report.completion.state !== 'complete', 'and an unresolved dependent still cannot complete the run');
+
+    // applyAnswers never writes fragment_applied, and judgeSteps copies it, so a
+    // historically applied fragment keeps its historical meaning across the re-judge.
+    for (const step of resume.report.steps) {
+      strictEqual(typeof step.fragment_applied, 'boolean', `${step.id} keeps a well-formed fragment_applied across the re-judge`);
+    }
   });
 
   it("doctor's machine-wide not-current verdict does NOT block a selection-scoped import", async () => {
@@ -2182,6 +2210,23 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
       const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
       ok((resume.report.warnings ?? []).some((w) => /parsed but is not a report object/.test(w)), `"every branch warns" must hold for ${payload}: ${JSON.stringify(resume.report.warnings)}`);
       await rejects(() => readFile(proofPath(home, runId), 'utf8'), `${payload} fabricates no evidence`);
+    }
+  });
+
+  it('a malformed attestation section is diagnosed as a shape mismatch, not as "nothing recorded"', async () => {
+    // "Nothing was attested yet" sends the operator to /hooks; a present-but-not-
+    // an-object section means this runtime and its doctor disagree about the
+    // report shape, which /hooks cannot fix. Collapsing the two misdirects.
+    for (const [label, review] of [['section', []], ['latest', { status: 'attested', current: true, latest: [] }]]) {
+      const { home, cwd } = await makeHome({ satisfied: true });
+      const stub = hookDoctorStub({ review });
+      const { run, runId } = await planEngineering(home, cwd, stub);
+
+      const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+      const warnings = resume.report.warnings ?? [];
+      ok(warnings.some((w) => /is not an object/.test(w) && /repair or upgrade the runtime plugin/.test(w)), `malformed ${label} reads as a shape mismatch: ${JSON.stringify(warnings)}`);
+      ok(!warnings.some((w) => /no Codex \/hooks attestation has been recorded/.test(w)), `malformed ${label} must not be reported as "nothing recorded": ${JSON.stringify(warnings)}`);
+      await rejects(() => readFile(proofPath(home, runId), 'utf8'), 'and nothing is fabricated');
     }
   });
 

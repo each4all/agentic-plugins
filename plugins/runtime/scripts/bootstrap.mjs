@@ -2211,16 +2211,27 @@ async function runResume(ctx, opts) {
         warnings.push(`runtime:doctor could not be run for the Codex /hooks attestation (${result?.error_code ?? result?.exit_code ?? 'unknown failure'}); the attestation step stays open`);
       }
     }
-    const review = doctorReport ? (doctorReport.settings_runs?.codex_hook_review ?? null) : null;
-    if (doctorReport && !review) {
+    // A MALFORMED section and an ABSENT one are different diagnoses and must not
+    // collapse into one message: "nothing was attested yet" sends the operator to
+    // /hooks, while a section (or a `latest`) that is present but not an object
+    // means this runtime and its doctor disagree about the report shape, which
+    // /hooks cannot fix (peer, round 3 — a truthy non-object review was reported
+    // as "nothing recorded").
+    const reviewRaw = doctorReport ? (doctorReport.settings_runs?.codex_hook_review ?? null) : null;
+    const review = isPlainReportObject(reviewRaw) ? reviewRaw : null;
+    const shapeAdvice = 'this runtime and its doctor disagree about the report shape — repair or upgrade the runtime plugin install (a second doctor run would return the same shape)';
+    if (doctorReport && reviewRaw === null) {
       // Not a state a re-fetch can repair: doctor publishes this section
       // unconditionally, and both calls invoke the same sibling binary, so a
       // second identical subprocess would produce the same shape. Spawning one
       // would only hide a contract regression behind a silent extra run.
-      warnings.push('the doctor report carries no settings_runs.codex_hook_review section, so the Codex /hooks attestation could not be read; this runtime and its doctor disagree about the report shape — repair or upgrade the runtime plugin install (a second doctor run would return the same shape)');
-    } else if (review && !isPlainReportObject(review.latest)) {
-      // status `missing` / a null `latest`: no operator attestation exists yet.
+      warnings.push(`the doctor report carries no settings_runs.codex_hook_review section, so the Codex /hooks attestation could not be read; ${shapeAdvice}`);
+    } else if (doctorReport && review === null) {
+      warnings.push(`the doctor report's settings_runs.codex_hook_review is not an object, so the Codex /hooks attestation could not be read; ${shapeAdvice}`);
+    } else if (review && (review.latest === null || review.latest === undefined)) {
       warnings.push('no Codex /hooks attestation has been recorded on this machine, so nothing could be imported; review the bundled hooks with /hooks in an active Codex session, then run runtime:settings --attest-codex-hook-review and resume again');
+    } else if (review && !isPlainReportObject(review.latest)) {
+      warnings.push(`the doctor report's recorded Codex /hooks attestation is not an object, so it could not be imported; ${shapeAdvice}`);
     } else if (review) {
       const imported = importHookAttestation(review.latest, { expectedPlugins: codexHookPlugins });
       if (imported.ok) {
@@ -2279,6 +2290,14 @@ async function runResume(ctx, opts) {
   // `previous` for a declinable step whose fresh observation is not satisfied.
   // Only the hook verdict is new; it is computed against `finalProbe` — the same
   // probe the reduction uses — so step and completion cannot disagree about it.
+  //
+  // The hook row is not necessarily the ONLY row that moves, and claiming so
+  // would be wrong (peer, round 3): the graph pass runs again over the ANSWERED
+  // rows, so a dependent the first pass demoted to `blocked` behind a
+  // now-declined predecessor correctly converges to `pending` here — declines
+  // count as resolved. That is earlier convergence to the same answer, not a new
+  // verdict: both `blocked` and `pending` are unresolved to the reducer, so no
+  // run completes on it.
   // (The broader "resume reports a probe it did not reduce against" mismatch for
   // non-hook steps is a separate, pre-existing defect and is deliberately not
   // touched here.)
