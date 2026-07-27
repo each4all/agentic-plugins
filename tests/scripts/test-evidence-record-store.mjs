@@ -19,7 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { checkSchemaShape, loadSchema, validateInstance } from '../../scripts/lib/evidence-schema.mjs';
-import { checkProof, checkStore, historyAvailable, SCHEMA_PATH } from '../../scripts/lib/evidence-store.mjs';
+import { checkProof, checkStore, historyAvailable, loadRecords, RECORDS_DIR, SCHEMA_PATH } from '../../scripts/lib/evidence-store.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -658,4 +658,94 @@ test('an empty store passes', () => {
   assert.equal(result.ran, true);
   assert.deepEqual(result.findings, []);
   assert.equal(result.records, 0);
+});
+
+// Everything above injects records, which leaves the code that FINDS them on
+// disk unexercised. That is the dangerous shape: a broken loader reports zero
+// records, the gate goes green, and the failure lands precisely when the store
+// first carries something real. The module's own comments warn that a check
+// which silently no-ops reads as coverage; these cases stop that being true of
+// the loader itself.
+test('the on-disk loader', async (t) => {
+  const withStore = (files) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-load-'));
+    if (files) {
+      const dir = path.join(tmp, RECORDS_DIR);
+      fs.mkdirSync(dir, { recursive: true });
+      for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), body);
+    }
+    return tmp;
+  };
+
+  await t.test('a missing records directory is an empty store, not an error', () => {
+    const tmp = withStore(null);
+    try {
+      assert.deepEqual(loadRecords(tmp), { records: [], parseFindings: [] });
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  await t.test('records are read, keyed by filename stem, in sorted order', () => {
+    const tmp = withStore({
+      'b-loop.json': JSON.stringify({ record_id: 'b-loop' }),
+      'a-loop.json': JSON.stringify({ record_id: 'a-loop' }),
+    });
+    try {
+      const { records, parseFindings } = loadRecords(tmp);
+      assert.deepEqual(parseFindings, []);
+      assert.deepEqual(records.map((r) => r.stem), ['a-loop', 'b-loop']);
+      assert.deepEqual(records.map((r) => r.file), [`${RECORDS_DIR}/a-loop.json`, `${RECORDS_DIR}/b-loop.json`]);
+      assert.equal(records[0].data.record_id, 'a-loop');
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  await t.test('unparseable JSON is a finding, not a crash and not a skip', () => {
+    const tmp = withStore({ 'broken.json': '{ not json' });
+    try {
+      const { records, parseFindings } = loadRecords(tmp);
+      assert.deepEqual(records, []);
+      assert.ok(parseFindings.some((f) => /unparseable JSON/.test(f.detail)), JSON.stringify(parseFindings));
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  await t.test('a stray non-JSON file is reported rather than ignored', () => {
+    const tmp = withStore({ 'notes.md': '# scratch' });
+    try {
+      const { records, parseFindings } = loadRecords(tmp);
+      assert.deepEqual(records, []);
+      assert.ok(parseFindings.some((f) => /non-JSON file/.test(f.detail)), JSON.stringify(parseFindings));
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+});
+
+test('the real store path is wired — a record dropped on disk is actually validated', () => {
+  // The end-to-end pin. Without it, `checkStore(REPO_ROOT)` returning
+  // "0 records, 0 findings" today is indistinguishable from a loader that
+  // finds nothing ever. Writing a real record into the real store and running
+  // the real entry point proves loader, schema, structure, git, and artifact
+  // checks are all connected.
+  const dir = path.resolve(REPO_ROOT, RECORDS_DIR);
+  const existed = fs.existsSync(dir);
+  const file = path.join(dir, 'loop-wiring-probe.json');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const record = validRecord();
+    record.record_id = 'loop-wiring-probe';
+    fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+
+    const ok = checkStore(REPO_ROOT);
+    assert.equal(ok.records, 1, 'the loader must see the record');
+    assert.deepEqual(ok.findings, [], details(ok.findings));
+    assert.equal(ok.proofStatus.unverified, 1);
+
+    // And a defect in that same on-disk record must be caught through the same
+    // path — otherwise the assertion above only proves the loader can read.
+    record.package_releases[0].squash = PR_IN_SUBJECT;
+    fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
+    const bad = checkStore(REPO_ROOT);
+    assert.ok(bad.findings.some((x) => /is commit .*, not/.test(x.detail)), details(bad.findings));
+  } finally {
+    fs.rmSync(file, { force: true });
+    if (!existed) fs.rmSync(dir, { recursive: true, force: true });
+  }
+  assert.deepEqual(checkStore(REPO_ROOT).findings, [], 'the probe record must be gone');
 });
