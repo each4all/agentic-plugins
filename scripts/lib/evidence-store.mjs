@@ -23,7 +23,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
 import { checkSchemaShape, loadSchema, provenanceOf, validateInstance } from './evidence-schema.mjs';
@@ -103,10 +103,25 @@ export function reachabilityBase(repoRoot) {
 /** Records live at `<RECORDS_DIR>/<record_id>.json`. A missing directory is an empty store, not an error. */
 export function loadRecords(repoRoot) {
   const dir = resolve(repoRoot, RECORDS_DIR);
-  if (!existsSync(dir)) return { records: [], parseFindings: [] };
   const records = [];
   const parseFindings = [];
-  for (const file of readdirSync(dir).sort()) {
+  let entries;
+  try {
+    entries = readdirSync(dir).sort();
+  } catch (err) {
+    // ENOENT is an empty store, which is the normal state until the first
+    // release loop after the schema. Anything else is a real fault and must be
+    // a FINDING rather than an exception: an uncaught throw here aborted
+    // `validate:doc-evidence` before the three prose gates could report, so an
+    // unreadable store directory suppressed checks that have nothing to do
+    // with it (cross-host review finding).
+    if (err.code === 'ENOENT') return { records: [], parseFindings: [] };
+    return {
+      records: [],
+      parseFindings: [{ check: 'store', file: RECORDS_DIR, detail: `records directory is unreadable (${err.code}): ${err.message}` }],
+    };
+  }
+  for (const file of entries) {
     if (!file.endsWith('.json')) {
       parseFindings.push({ check: 'store', file: `${RECORDS_DIR}/${file}`, detail: 'non-JSON file in the records directory' });
       continue;

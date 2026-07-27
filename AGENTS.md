@@ -282,10 +282,12 @@ Two authoring rules are easy to get wrong:
   the same position.
 - **Record what is derivable as derived.** A PR number goes in `pr` /
   `release_pr` when the commit subject carries `(#N)` and in the
-  `*_attested` sibling only when it does not. Using the attested field
-  for a derivable number, setting both, or omitting both are all
-  rejected — attestation is for facts no source can back, not a way past
-  a check.
+  `*_attested` sibling only when it does not. When the subject *does*
+  carry the number, using the attested field, setting both, and omitting
+  both are all rejected — attestation is for facts no source can back,
+  not a way past a check. When the subject carries no number, both
+  fields may be left unset: a commit that genuinely has no PR is not an
+  omission.
 
 Release-please changelog hygiene depends on merge shape. For a
 single-package PR, prefer a squash merge whose final message is the one
