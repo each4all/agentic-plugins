@@ -2024,23 +2024,110 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     deepStrictEqual(recorded.attested_plugins, HOOK_PLUGINS, 'the executing shape imports the same attestation');
   });
 
-  it('a stale attestation is refused and the currency reason is named — never persisted as attested', async () => {
+  it('the imported claim satisfies the hook step in the SAME resume, not the next one', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview() });
+    const { run } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    // reprobeAgainstRun reads proof/ and judges in ONE pass, and the import runs
+    // after it — so without a re-judge the resume that finally imports the claim
+    // pairs an `attested` verdict with a `pending` step, and only a SECOND resume
+    // satisfies it. That is the same "do the thing you already did" loop #645 is
+    // about, one step further on.
+    const step = resume.report.steps.find((s) => s.id === 'hooks.codex.attested');
+    strictEqual(step?.status, 'satisfied', `the importing resume satisfies its own step: ${JSON.stringify(step)}`);
+    strictEqual(resume.report.completion.hook_attestation.status, 'attested', 'and the completion agrees with the step');
+  });
+
+  it("doctor's machine-wide not-current verdict does NOT block a selection-scoped import", async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // Doctor judges the whole machine: it compares against every bundled plugin
+    // and blocks on any disabled handler anywhere, so an unselected `designer`
+    // with a disabled handler makes the machine-wide verdict not-current. The
+    // reducer explicitly does NOT stale an engineering claim for a plugin outside
+    // the selection (tests/runtime/test-completion-reducer.mjs § "a disabled
+    // handler for an UNSELECTED plugin does not stale the claim"). Gating the
+    // import on doctor's verdict would strand a step the reducer says is
+    // satisfiable — the peer-reproduced counterexample this test pins.
     const stub = hookDoctorStub({
-      review: { status: 'stale', current: false, currency_reason: 'codex_cli_version_changed', latest: attestationLatest({ bound_versions: { codex: '0.130.0', plugins: { codex: { engineer: '9.9.9', orchestrator: '9.9.9' } } } }) },
+      review: { status: 'stale', current: false, currency_reason: 'disabled_hook_state', latest: attestationLatest() },
     });
     const { run, runId } = await planEngineering(home, cwd, stub);
 
     const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
 
-    // The gate is load-bearing: importHookAttestation hard-codes `status: 'attested'`
-    // into the record it builds, so importing a claim doctor already judged stale
-    // would write `attested` into the audited proof store for a false claim.
-    await rejects(() => readFile(proofPath(home, runId), 'utf8'), 'a stale attestation writes no proof record');
-    const warning = (resume.report.warnings ?? []).find((w) => /no longer current/.test(w));
-    ok(warning, `the refusal is loud: ${JSON.stringify(resume.report.warnings)}`);
-    ok(/codex_cli_version_changed/.test(warning), 'the machine reason is named so the operator knows what drifted');
-    ok(/--attest-codex-hook-review/.test(warning), 'and the recovery names the command that re-records it');
+    const recorded = JSON.parse(await readFile(proofPath(home, runId), 'utf8'));
+    deepStrictEqual(recorded.attested_plugins, HOOK_PLUGINS, 'the claim covers the selection, so it imports');
+    strictEqual(resume.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'satisfied');
+  });
+
+  it('an imported claim that does not hold for the selection leaves the step open and names the selection-scoped reasons', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // Bound to a Codex the machine no longer runs (fixture reports 0.140.0). The
+    // importer accepts it — it only projects to the selection — and the reducer
+    // is the authority that judges currency.
+    const stub = hookDoctorStub({
+      review: { status: 'attested', current: true, currency_reason: null, latest: attestationLatest({ bound_versions: { codex: '0.130.0', plugins: { codex: { engineer: '9.9.9', orchestrator: '9.9.9' } } } }) },
+    });
+    const { run } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    strictEqual(resume.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'pending', 'a claim that does not stand does not satisfy the step');
+    const warning = (resume.report.warnings ?? []).find((w) => /does not hold for this selection/.test(w));
+    ok(warning, `the operator is told why, not left guessing: ${JSON.stringify(resume.report.warnings)}`);
+    ok(/0\.130\.0/.test(warning) && /0\.140\.0/.test(warning), `the reason names both versions: ${warning}`);
+  });
+
+  it('a stale stored record is REPLACED by a newer attestation — presence alone must not short-circuit forever', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // The old guard short-circuited on `!recordedHookAttestation`, so once any
+    // record existed no later attestation could ever replace it: re-attesting
+    // after a Codex upgrade recorded a fresh claim bootstrap never read, and the
+    // non-declinable step's own "re-attest, then resume" recovery looped forever.
+    // Unreachable while the path bug kept the store empty; reachable the moment
+    // it was fixed.
+    const box = { codex: '0.140.0', review: currentReview() };
+    const runner = async (name, args) => {
+      const key = `${name} ${args.join(' ')}`;
+      if (key === 'codex --version') return okOut(`codex-cli ${box.codex}`);
+      return hostedRunner()(name, args);
+    };
+    const subprocess = async (scriptPath) => {
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) return okOut(doctorReportWith(box.review));
+      return missing();
+    };
+    const run = (argv) => boot({ argv, home, cwd, runner, subprocess });
+    const plan = await run(['plan', '--bundle', 'engineering', '--format', 'json']);
+    const runId = plan.report.run_id;
+    const decline = await writeEgressDecline(home);
+
+    await run(['resume', '--latest-open', '--answers', decline]);
+    strictEqual(JSON.parse(await readFile(proofPath(home, runId), 'utf8')).bound_versions.codex, '0.140.0');
+
+    // Codex moves; the operator re-reviews /hooks and re-attests against the new one.
+    box.codex = '0.141.0';
+    box.review = { status: 'attested', current: true, currency_reason: null, latest: attestationLatest({ bound_versions: { codex: '0.141.0', plugins: { codex: { engineer: '9.9.9', orchestrator: '9.9.9' } } } }) };
+
+    const second = await run(['resume', '--latest-open', '--answers', decline]);
+    strictEqual(JSON.parse(await readFile(proofPath(home, runId), 'utf8')).bound_versions.codex, '0.141.0', 'the stale record is replaced, not kept forever');
+    strictEqual(second.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'satisfied');
+  });
+
+  it('doctor output that parses to a non-object is reported instead of slipping through every truthiness check', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runner = async (scriptPath) => {
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) return okOut('null');  // valid JSON, not a report
+      return missing();
+    };
+    const { run } = await planEngineering(home, cwd, { runner, calls: [] });
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    ok((resume.report.warnings ?? []).some((w) => /parsed but is not a report object/.test(w)), `"every branch warns" must hold for valid-but-falsy JSON too: ${JSON.stringify(resume.report.warnings)}`);
   });
 
   it('a never-recorded attestation warns with the record-it recovery instead of failing silently', async () => {
