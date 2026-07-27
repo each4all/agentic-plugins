@@ -2098,25 +2098,38 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
   it('the re-judge converges a dependent the answered decline unblocked, and preserves fragment_applied', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const stub = hookDoctorStub({ review: currentReview() });
-    const { run } = await planEngineering(home, cwd, stub);
+    const { run, runId } = await planEngineering(home, cwd, stub);
 
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    // The dependent must be APPLICABLE for this to prove anything:
+    // proof.egress-provider-ack is opt-in, so without an answer naming it the row
+    // is `not-applicable` and `status !== 'blocked'` passes for the wrong reason.
+    // `accept` opts in without executing anything (only `execute` runs a proof).
+    // Then declining its predecessor is what converges it: the first judge pass
+    // demoted it behind a then-pending `egress.configured`, and the re-judge sees
+    // that predecessor `declined` — which counts as resolved.
+    const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json');
+    const seeded = JSON.parse(await readFile(runPath, 'utf8'));
+    // Nothing in this fixture applies a permission fragment, so seed one: the
+    // property under test is that applyAnswers never writes fragment_applied and
+    // judgeSteps carries it across, which an all-false run cannot demonstrate.
+    seeded.steps.find((s) => s.id === 'permission.claude.applied').fragment_applied = true;
+    await writeFile(runPath, `${JSON.stringify(seeded, null, 2)}\n`);
 
-    // The graph pass runs again over the ANSWERED rows, so a dependent the first
-    // pass demoted behind a then-pending predecessor converges once that
-    // predecessor is declined (declines count as resolved). This is earlier
-    // convergence, not a new verdict — both blocked and pending are unresolved to
-    // the reducer — but the re-judge is not a hook-row-only operation and the
-    // code must not claim otherwise.
+    const answersPath = join(home, 'accept-ack-decline-egress.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'proof.egress-provider-ack', answer: 'accept' },
+      { step_id: 'egress.configured', answer: 'decline' },
+    ]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+
+    strictEqual(resume.report.steps.find((s) => s.id === 'egress.configured')?.status, 'declined');
     const dependent = resume.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
-    ok(dependent && dependent.status !== 'blocked', `the declined predecessor no longer blocks it: ${JSON.stringify(dependent)}`);
-    ok(resume.report.completion.state !== 'complete', 'and an unresolved dependent still cannot complete the run');
+    // Measured: `blocked` when the re-judge is disabled, `pending` with it.
+    strictEqual(dependent?.status, 'pending', `the declined predecessor converges it (was 'blocked' before the re-judge): ${JSON.stringify(dependent)}`);
+    ok(resume.report.completion.state !== 'complete', 'earlier convergence is not completion — both blocked and pending are unresolved');
 
-    // applyAnswers never writes fragment_applied, and judgeSteps copies it, so a
-    // historically applied fragment keeps its historical meaning across the re-judge.
-    for (const step of resume.report.steps) {
-      strictEqual(typeof step.fragment_applied, 'boolean', `${step.id} keeps a well-formed fragment_applied across the re-judge`);
-    }
+    strictEqual(resume.report.steps.find((s) => s.id === 'permission.claude.applied')?.fragment_applied, true,
+      'an applied fragment keeps its historical meaning across the re-judge');
   });
 
   it("doctor's machine-wide not-current verdict does NOT block a selection-scoped import", async () => {
@@ -2217,14 +2230,21 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     // "Nothing was attested yet" sends the operator to /hooks; a present-but-not-
     // an-object section means this runtime and its doctor disagree about the
     // report shape, which /hooks cannot fix. Collapsing the two misdirects.
-    for (const [label, review] of [['section', []], ['latest', { status: 'attested', current: true, latest: [] }]]) {
+    // An OMITTED `latest` belongs here too, not in the "nothing recorded" branch:
+    // doctor always emits the key and uses an explicit null for absence, so a
+    // missing key is a broken report, and /hooks cannot repair a broken report.
+    for (const [label, review] of [
+      ['section', []],
+      ['latest', { status: 'attested', current: true, latest: [] }],
+      ['omitted latest', { status: 'attested', current: true, currency_reason: null }],
+    ]) {
       const { home, cwd } = await makeHome({ satisfied: true });
       const stub = hookDoctorStub({ review });
       const { run, runId } = await planEngineering(home, cwd, stub);
 
       const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
       const warnings = resume.report.warnings ?? [];
-      ok(warnings.some((w) => /is not an object/.test(w) && /repair or upgrade the runtime plugin/.test(w)), `malformed ${label} reads as a shape mismatch: ${JSON.stringify(warnings)}`);
+      ok(warnings.some((w) => /(is not an object|is missing)/.test(w) && /repair or upgrade the runtime plugin/.test(w)), `malformed ${label} reads as a shape mismatch: ${JSON.stringify(warnings)}`);
       ok(!warnings.some((w) => /no Codex \/hooks attestation has been recorded/.test(w)), `malformed ${label} must not be reported as "nothing recorded": ${JSON.stringify(warnings)}`);
       await rejects(() => readFile(proofPath(home, runId), 'utf8'), 'and nothing is fabricated');
     }

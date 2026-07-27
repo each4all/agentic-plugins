@@ -2228,10 +2228,16 @@ async function runResume(ctx, opts) {
       warnings.push(`the doctor report carries no settings_runs.codex_hook_review section, so the Codex /hooks attestation could not be read; ${shapeAdvice}`);
     } else if (doctorReport && review === null) {
       warnings.push(`the doctor report's settings_runs.codex_hook_review is not an object, so the Codex /hooks attestation could not be read; ${shapeAdvice}`);
-    } else if (review && (review.latest === null || review.latest === undefined)) {
+    } else if (review && review.latest === null) {
+      // An EXPLICIT null is doctor's own encoding of "no attesting settings run
+      // exists" — the one shape here that really is an empty machine rather than
+      // a broken report, and the only one whose recovery is /hooks.
       warnings.push('no Codex /hooks attestation has been recorded on this machine, so nothing could be imported; review the bundled hooks with /hooks in an active Codex session, then run runtime:settings --attest-codex-hook-review and resume again');
     } else if (review && !isPlainReportObject(review.latest)) {
-      warnings.push(`the doctor report's recorded Codex /hooks attestation is not an object, so it could not be imported; ${shapeAdvice}`);
+      // Anything else — an OMITTED `latest` key included — is a shape mismatch.
+      // Doctor always emits the key, so its absence is not an empty machine, and
+      // sending the operator to /hooks for it would be a recovery that cannot work.
+      warnings.push(`the doctor report's recorded Codex /hooks attestation is ${review.latest === undefined ? 'missing' : 'not an object'}, so it could not be imported; ${shapeAdvice}`);
     } else if (review) {
       const imported = importHookAttestation(review.latest, { expectedPlugins: codexHookPlugins });
       if (imported.ok) {
