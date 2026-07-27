@@ -3,6 +3,7 @@
 // actionable-vs-pinned overage, minimum-age guard, and the canonical plan hash.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -104,6 +105,61 @@ describe('retention-planner pin 1 — tracked-doc citations', () => {
     assert.equal(res.scanComplete, true);
     assert.ok(res.pinned.get('doctor').has(DOCTOR_A));
     assert.ok(res.pinned.get('compat').has(COMPAT_A));
+  });
+
+  // ADR-0049 §Neutral requires this as a regression, not an incidental
+  // property: the evidence store is git-tracked precisely so a record's run-id
+  // citations keep the doctor artifacts they point at pinned through
+  // retention. The scan reads every tracked text file with no extension
+  // filter, so a JSON record already pins — this pins THAT, so a future
+  // "only scan .md" narrowing cannot silently unpin every stored record's
+  // evidence and leave the store citing runs retention has deleted.
+  it('pins a run-id cited from a JSON evidence record, not only from markdown', async () => {
+    const repo = tmpRepo();
+    const dir = path.join(repo, 'docs', 'assurance', 'evidence', 'records');
+    fs.mkdirSync(dir, { recursive: true });
+    const record = {
+      schema: 'evidence-record-1.0',
+      record_id: 'loop-example',
+      proofs: [{ run_id: DOCTOR_A, artifact_sha256: `sha256:${'0'.repeat(64)}` }],
+    };
+    const rel = 'docs/assurance/evidence/records/loop-example.json';
+    fs.writeFileSync(path.join(repo, rel), `${JSON.stringify(record, null, 2)}\n`);
+    const res = await scanTrackedDocCitations({ repoRoot: repo, gitTrackedFiles: [rel] });
+    assert.equal(res.scanComplete, true);
+    assert.equal(res.files_skipped_binary, 0, 'a JSON record is text, not binary');
+    assert.ok(res.pinned.get('doctor').has(DOCTOR_A), 'the record must pin the doctor run it cites');
+  });
+
+  it('pins a JSON-cited run-id through REAL git enumeration, not just injected file lists', async () => {
+    // The case above injects gitTrackedFiles, so it pins JSON *harvesting*
+    // after discovery and says nothing about discovery itself. A cross-host
+    // review proved the gap by narrowing the production provider to
+    // `git ls-files -- '*.md'`: 92/92 still passed. This case omits
+    // gitTrackedFiles entirely so defaultGitTrackedFiles runs for real, which
+    // is the layer a future extension filter would most plausibly be added to.
+    const repo = tmpRepo();
+    const env = {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
+      GIT_COMMITTER_NAME: 'fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
+    };
+    const g = (...args) => execFileSync('git', ['-C', repo, ...args], { env, stdio: 'ignore' });
+    g('init', '--quiet');
+    const dir = path.join(repo, 'docs', 'assurance', 'evidence', 'records');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'loop-example.json'), `${JSON.stringify({ proofs: [{ run_id: DOCTOR_A }] }, null, 2)}\n`);
+    // A markdown decoy citing a DIFFERENT run: if discovery ever narrows to
+    // .md, this one keeps being pinned while the JSON one silently stops, so
+    // the assertions can tell "discovery broke" from "nothing was scanned".
+    fs.writeFileSync(path.join(repo, 'notes.md'), `see ${DOCTOR_B}`);
+    g('add', '-A');
+    g('commit', '--quiet', '-m', 'fixture');
+
+    const res = await scanTrackedDocCitations({ repoRoot: repo });
+    assert.equal(res.scanComplete, true);
+    assert.ok(res.pinned.get('doctor').has(DOCTOR_B), 'control: the markdown citation must pin');
+    assert.ok(res.pinned.get('doctor').has(DOCTOR_A), 'the JSON record must pin through real enumeration too');
   });
 
   it('records a NUL-byte binary file as skipped (isolates the NUL check) and does NOT flip scan_complete', async () => {

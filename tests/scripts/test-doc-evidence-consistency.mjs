@@ -15,7 +15,7 @@
 // instead of silently reporting coverage it does not have.
 
 import { describe, it } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -26,6 +26,7 @@ import {
   checkProofCitations,
   checkCommitShas,
   gitHistoryAvailable,
+  runAllChecks,
 } from '../../scripts/check-doc-evidence.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../..');
@@ -343,10 +344,42 @@ describe('doc evidence — R4 commit shas', () => {
     strictEqual(r.findings.length, 0);
   });
 
+  // The composite is what `npm run validate:doc-evidence` and the release
+  // workflow actually run, and until now nothing asserted its shape: dropping
+  // the ADR-0049 store from it, or reducing the exit decision to the three
+  // prose keys, left every test green (cross-host review finding).
+  describe('runAllChecks — the composite gate', () => {
+    it('carries the three prose checks AND the evidence store', () => {
+      const results = runAllChecks(REPO_ROOT);
+      deepStrictEqual(
+        Object.keys(results).sort(),
+        ['commitShas', 'evidenceStore', 'proofCitations', 'releaseTriples'],
+        'a check silently dropped from the composite is a gate that stopped running',
+      );
+      for (const [name, r] of Object.entries(results)) {
+        ok(typeof r.ran === 'boolean', `${name} must report whether it ran`);
+        ok(Array.isArray(r.findings), `${name} must report findings`);
+        ok(typeof r.checked === 'number', `${name} must report a checked count the CLI can render`);
+      }
+    });
 
+    it('is clean on the real repository', () => {
+      const results = runAllChecks(REPO_ROOT);
+      for (const [name, r] of Object.entries(results)) {
+        ok(r.ran, `${name} could not run: ${r.reason}`);
+        deepStrictEqual(r.findings, [], `${name} has findings`);
+      }
+    });
 
-
-
-
-
+    it('adding the store did not change what the prose checks report', () => {
+      // The store is an ADDITIONAL check, not a replacement — ADR-0049
+      // Decision 5 keeps the prose hand-written and keeps its gates. If the
+      // composite ever diverged from the standalone functions, one of the two
+      // is not the gate anyone thinks it is.
+      const results = runAllChecks(REPO_ROOT);
+      deepStrictEqual(results.releaseTriples, checkReleaseTriples(REPO_ROOT));
+      deepStrictEqual(results.proofCitations, checkProofCitations(REPO_ROOT));
+      deepStrictEqual(results.commitShas, checkCommitShas(REPO_ROOT));
+    });
+  });
 });

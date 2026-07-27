@@ -707,6 +707,27 @@ test('the on-disk loader', async (t) => {
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   });
 
+  await t.test('an unreadable records directory is a finding, neither a throw nor an empty store', (sub) => {
+    // Both failure modes are real and both were reached. The original code let
+    // readdirSync throw, which aborted `validate:doc-evidence` before the three
+    // prose gates could report — so an unreadable store suppressed checks that
+    // have nothing to do with it. Swallowing every errno instead is the
+    // opposite error: an unreadable store would read as an empty one, which is
+    // the normal state, so the gate would go green over an unreadable store.
+    if (process.getuid?.() === 0) return sub.skip('root traverses regardless of mode');
+    const tmp = withStore({ 'a-loop.json': '{}' });
+    const dir = path.join(tmp, RECORDS_DIR);
+    fs.chmodSync(dir, 0o000);
+    try {
+      const { records, parseFindings } = loadRecords(tmp);
+      assert.deepEqual(records, []);
+      assert.ok(parseFindings.some((f) => /unreadable \(EACCES\)/.test(f.detail)), JSON.stringify(parseFindings));
+    } finally {
+      fs.chmodSync(dir, 0o755);
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   await t.test('a stray non-JSON file is reported rather than ignored', () => {
     const tmp = withStore({ 'notes.md': '# scratch' });
     try {

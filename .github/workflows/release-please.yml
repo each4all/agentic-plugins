@@ -95,7 +95,8 @@ jobs:
       # A push authenticated with GITHUB_TOKEN does not trigger workflows,
       # so nothing would otherwise gate the commit this job is about to
       # make. This checks EVIDENCE CONSISTENCY only — release triples,
-      # proof citations, cited shas. It deliberately does not assert doc
+      # proof citations, cited shas, and the ADR-0049 record store. It
+      # deliberately does not assert doc
       # freshness: main is expected to be red on the installed-state
       # assertion until a human re-records the proof, and that redness is
       # the intended signal, surfaced on the release merge commit's own CI
