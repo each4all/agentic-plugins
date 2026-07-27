@@ -137,6 +137,33 @@ test('meta-check bites on each way a schema can lose its provenance guarantee', 
     assert.ok(f.some((x) => /unsupported schema keyword/.test(x.detail)), details(f));
   });
 
+  await t.test('a supported keyword with a malformed operand is an error too', () => {
+    // An allowlist alone accepts `maxLength: "twelve"` and then enforces
+    // nothing — a constraint that reads as a constraint and is not one. A
+    // cross-host review demonstrated exactly that mutation surviving the suite.
+    for (const [key, bad] of [['maxLength', 'twelve'], ['minItems', -1], ['enum', []], ['required', [7]], ['pattern', '[unterminated']]) {
+      const s = deep(SCHEMA);
+      s.properties.narrative[key] = bad;
+      const f = checkSchemaShape(s);
+      assert.ok(f.some((x) => x.detail.startsWith(`\`${key}\``)), `${key}: ${details(f)}`);
+    }
+    // And the operand check bites at validation time too: a bad maxLength must
+    // not silently permit an over-long value.
+    const s = deep(SCHEMA);
+    s.properties.narrative.maxLength = 'twelve';
+    assert.notDeepEqual(checkSchemaShape(s), []);
+  });
+
+  await t.test('membership sees through a $ref', () => {
+    // Moving the array behind a definition must not evade the rule — the
+    // property still is an array and still is a membership question.
+    const s = deep(SCHEMA);
+    s.$defs.commitList = { type: 'array', maxItems: 4, items: { $ref: '#/$defs/commitEntry' } };
+    s.properties.feature_commits = { 'x-provenance': 'derived', $ref: '#/$defs/commitList' };
+    const f = checkSchemaShape(s);
+    assert.ok(f.some((x) => x.path === '$.feature_commits' && /membership must be/.test(x.detail)), details(f));
+  });
+
   await t.test('an object with properties must be closed', () => {
     const s = deep(SCHEMA);
     delete s.properties.evidence_loop.additionalProperties;
@@ -172,6 +199,16 @@ test('instance validation enforces the closed shape', async (t) => {
     assert.deepEqual(validateInstance(validRecord(), SCHEMA), []);
   });
 
+  await t.test('closure is enforced without an explicit properties map', () => {
+    // Nesting the check under `properties` made a bare
+    // `additionalProperties: false` a no-op, so a node that closed an object
+    // without enumerating it accepted anything at all.
+    const bare = { type: 'object', additionalProperties: false };
+    assert.deepEqual(validateInstance({}, bare), []);
+    const f = validateInstance({ smuggled: 1 }, bare);
+    assert.ok(f.some((x) => /not allowed \(schema is closed\)/.test(x.detail)), details(f));
+  });
+
   const cases = [
     ['an unknown top-level property', (r) => { r.extra = 1; }, /not allowed/],
     ['a missing required property', (r) => { delete r.narrative; }, /required property is missing/],
@@ -205,7 +242,9 @@ test('derived fields are checked against real git', async (t) => {
 
   const cases = [
     ['a squash that is not the tagged commit', (r) => { r.package_releases[0].squash = PR_IN_SUBJECT; }, /is commit .*, not/],
-    ['a tag that does not exist', (r) => { r.package_releases[0].tag = 'plugin-runtime-v99.0.0'; r.package_releases[0].version = '99.0.0'; }, /does not exist in git/],
+    ['a tag that does not exist', (r) => { r.package_releases[0].tag = 'plugin-runtime-v99.0.0'; r.package_releases[0].version = '99.0.0'; }, /no tag `refs\/tags\/plugin-runtime-v99\.0\.0` exists/],
+    ['omitting a PR number the subject does carry', (r) => { delete r.package_releases[0].release_pr; }, /omission is not a third option/],
+    ['a null marketplace sync when the window holds one', (r) => { r.package_releases[0].marketplace_sync = null; }, /claims .* had no marketplace sync, but/],
     ['a version the manifest did not hold at that tag', (r) => { r.package_releases[0].version = '0.86.1'; }, /manifest at .* reports/],
     ['a release_pr the commit subject contradicts', (r) => { r.package_releases[0].release_pr = 999; }, /subject says #642, record says #999/],
     ['attesting a PR number the subject does carry', (r) => { delete r.package_releases[0].release_pr; r.package_releases[0].release_pr_attested = 642; }, /attestation must not step around/],
@@ -273,6 +312,68 @@ test('derived fields are checked against real git', async (t) => {
     assert.ok(f.some((x) => /resolves but is not reachable/.test(x.detail)), details(f));
   });
 
+  await t.test('a marketplace sync must also be reachable, not merely parented to the release', () => {
+    // Ancestry plus subject is not enough: a locally minted commit parented to
+    // the release satisfies both while existing on no remote branch
+    // (cross-host review finding). Minting one is what makes the branch
+    // reachable on a fresh clone too.
+    const tree = git('rev-parse', 'HEAD^{tree}');
+    const fake = execFileSync('git', [
+      '-C', REPO_ROOT, 'commit-tree', tree, '-p', RELEASE_COMMIT,
+      '-m', 'chore(marketplace): sync catalog versions to release-please-manifest',
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
+        GIT_COMMITTER_NAME: 'fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
+      },
+    }).trim();
+    assert.match(git('log', '-1', '--format=%s', fake), /sync catalog versions/);
+    assert.equal(git('rev-list', '--count', `${RELEASE_COMMIT}..${fake}`), '1', 'must be a descendant of the release');
+    const r = validRecord();
+    r.package_releases[0].marketplace_sync = fake;
+    const f = run(r).findings;
+    assert.ok(f.some((x) => /is not reachable from/.test(x.detail)), details(f));
+  });
+
+  await t.test('a branch cannot masquerade as a deleted tag', () => {
+    // `rev-parse <name>^{commit}` resolves branches too, so before the
+    // namespace fix a branch standing in for a deleted tag passed every check.
+    const name = 'plugin-runtime-v99.0.0';
+    execFileSync('git', ['-C', REPO_ROOT, 'branch', '-f', name, RELEASE_COMMIT]);
+    try {
+      assert.equal(git('rev-parse', `${name}^{commit}`), RELEASE_COMMIT, 'the branch must resolve by bare name');
+      const r = validRecord();
+      r.package_releases[0] = { package: 'plugins/runtime', version: '99.0.0', tag: name, release_pr_attested: 1, squash: RELEASE_COMMIT, marketplace_sync: null };
+      const f = run(r).findings;
+      assert.ok(f.some((x) => /no tag `refs\/tags\/plugin-runtime-v99\.0\.0` exists/.test(x.detail)), details(f));
+    } finally {
+      execFileSync('git', ['-C', REPO_ROOT, 'branch', '-D', name]);
+    }
+  });
+
+  await t.test('fail-closed when the tag-time release config or manifest cannot answer', () => {
+    // `companions-v0.1.0` predates the runtime package entirely: its release
+    // config lists only `companions` and `plugins/companions`, and its
+    // manifest has no `plugins/runtime` key. Real history, so these
+    // fail-closed branches are exercised rather than assumed — a cross-host
+    // review measured 0 of 202 current tags reaching them.
+    const early = 'companions-v0.1.0';
+    const r = validRecord();
+    r.package_releases[0] = {
+      package: 'plugins/runtime',
+      version: '0.86.2',
+      tag: early,
+      release_pr_attested: 1,
+      squash: git('rev-parse', `refs/tags/${early}^{commit}`),
+      marketplace_sync: null,
+    };
+    const f = run(r).findings;
+    assert.ok(f.some((x) => /is not a release-please package at tag/.test(x.detail)), details(f));
+    assert.ok(f.some((x) => /has no manifest entry at tag/.test(x.detail)), details(f));
+  });
+
   await t.test('the package/tag binding rejects another package\'s tag on the same commit', () => {
     // The whole reason a tag-time manifest read is not sufficient: these two
     // tags are one commit, so the manifest at either reports runtime 0.83.0.
@@ -332,23 +433,38 @@ test('structural rules', async (t) => {
     assert.ok(f.some((x) => /is not a record in this store/.test(x.detail)), details(f));
   });
 
-  await t.test('two records claiming the same release, and duplicate ids', () => {
+  await t.test('two records MAY cite the same release — the ADR says so explicitly', () => {
+    // Context constraint 1: "a single release can carry several records
+    // (2026-07-20 alone carries four)". An earlier draft enforced one owning
+    // record per tag, which contradicted the decision it implemented.
     const a = validRecord();
-    const b = validRecord();
+    const b = deep(a);
     b.record_id = 'loop-fixture-two';
-    const store = [
-      { file: 'records/loop-fixture.json', stem: 'loop-fixture', data: a },
-      { file: 'records/loop-fixture-two.json', stem: 'loop-fixture-two', data: b },
-    ];
-    const f = checkStore(REPO_ROOT, { records: store }).findings;
-    assert.ok(f.some((x) => /is already claimed by/.test(x.detail)), details(f));
+    const result = checkStore(REPO_ROOT, {
+      records: [
+        { file: 'records/loop-fixture.json', stem: 'loop-fixture', data: a },
+        { file: 'records/loop-fixture-two.json', stem: 'loop-fixture-two', data: b },
+      ],
+    });
+    assert.deepEqual(result.findings, [], details(result.findings));
+  });
 
-    const dup = [
-      { file: 'records/loop-fixture.json', stem: 'loop-fixture', data: a },
-      { file: 'records/copy.json', stem: 'copy', data: deep(a) },
-    ];
-    const g = checkStore(REPO_ROOT, { records: dup }).findings;
+  await t.test('duplicate record ids across files', () => {
+    const a = validRecord();
+    const g = checkStore(REPO_ROOT, {
+      records: [
+        { file: 'records/loop-fixture.json', stem: 'loop-fixture', data: a },
+        { file: 'records/copy.json', stem: 'copy', data: deep(a) },
+      ],
+    }).findings;
     assert.ok(g.some((x) => /is already used by/.test(x.detail)), details(g));
+  });
+
+  await t.test('a duplicate release tag WITHIN one record', () => {
+    const r = validRecord();
+    r.package_releases.push(deep(r.package_releases[0]));
+    const f = run(r).findings;
+    assert.ok(f.some((x) => /duplicate release tag/.test(x.detail)), details(f));
   });
 
   await t.test('a resolvable relation between two records passes', () => {
@@ -357,8 +473,11 @@ test('structural rules', async (t) => {
     b.record_id = 'loop-fixture-two';
     b.package_releases[0].tag = 'plugin-runtime-v0.86.1';
     b.package_releases[0].version = '0.86.1';
-    b.package_releases[0].squash = git('rev-parse', 'plugin-runtime-v0.86.1^{commit}');
-    b.package_releases[0].marketplace_sync = null;
+    b.package_releases[0].squash = git('rev-parse', 'refs/tags/plugin-runtime-v0.86.1^{commit}');
+    // 0.86.1's real catalog sync. The first draft of this fixture said `null`,
+    // and the null-claim check correctly rejected it — omitting a sync that
+    // exists is a false claim, not an absence.
+    b.package_releases[0].marketplace_sync = git('rev-parse', '0eb8807^{commit}');
     // Derived, not attested: this release's commit subject carries `(#638)`.
     // The first draft of this fixture attested it and the checker rejected it,
     // which is the attestation-must-not-dodge-a-check rule doing its job.
@@ -389,47 +508,149 @@ test('observed fields: absent is unverified, corrupt is a failure', async (t) =>
     assert.deepEqual(r.findings, []);
   });
 
+  // Shaped like a real doctor artifact, because the observed fields are now
+  // compared against it rather than covered by the hash alone.
+  const artifactBody = (over = {}) => Buffer.from(`${JSON.stringify({
+    schema_version: 'runtime-doctor-artifact-1.0',
+    runtime_version: '0.86.2',
+    run_id: proof.run_id,
+    status: 'recorded',
+    created_at: '2000-01-01T00:00:00.000Z',
+    ...over,
+  }, null, 2)}\n`);
+  const write = (bytes) => { fs.mkdirSync(runDir, { recursive: true }); fs.writeFileSync(path.join(runDir, 'doctor.json'), bytes); };
+  const hashed = (bytes) => ({ ...proof, artifact_sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}` });
+
   await t.test('artifact present and matching → verified', () => {
-    fs.mkdirSync(runDir, { recursive: true });
-    const bytes = Buffer.from('{"schema_version":"runtime-doctor-artifact-1.0"}\n');
-    fs.writeFileSync(path.join(runDir, 'doctor.json'), bytes);
-    const matching = { ...proof, artifact_sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}` };
-    const r = checkProof(tmp, matching, '$');
+    const bytes = artifactBody();
+    write(bytes);
+    const r = checkProof(tmp, hashed(bytes), '$');
     assert.equal(r.status, 'verified', details(r.findings));
     assert.deepEqual(r.findings, []);
+  });
+
+  await t.test('a correct hash does not excuse a wrong transcription', () => {
+    // The hash pins the bytes, not the copy. Each of these artifacts hashes
+    // correctly and still contradicts the record.
+    for (const [field, over, recordPatch] of [
+      ['runtime_version', { runtime_version: '9.9.9' }, {}],
+      ['run_id', { run_id: 'doctor-20000101T000000Z-999999' }, {}],
+      ['date', { created_at: '2011-11-11T00:00:00.000Z' }, {}],
+    ]) {
+      const bytes = artifactBody(over);
+      write(bytes);
+      const r = checkProof(tmp, { ...hashed(bytes), ...recordPatch }, '$');
+      assert.equal(r.status, 'failed', `${field}: ${details(r.findings)}`);
+      assert.ok(r.findings.some((x) => x.path === `$.${field}`), `${field}: ${details(r.findings)}`);
+    }
   });
 
   await t.test('artifact present but mismatched → failed, NOT unverified', () => {
     // The degradation this asserts against is the dangerous one: treating a
     // mismatch as "absent" would let corruption read as the ordinary CI case.
-    const r = checkProof(tmp, proof, '$');
+    write(artifactBody());
+    const r = checkProof(tmp, proof, '$'); // proof carries the all-zero placeholder hash
     assert.equal(r.status, 'failed');
     assert.ok(r.findings.some((x) => /hashes to/.test(x.detail)), details(r.findings));
   });
 
   await t.test('hashing is over exact bytes — a trailing newline changes the verdict', () => {
-    const bytes = Buffer.from('{"a":1}');
-    fs.writeFileSync(path.join(runDir, 'doctor.json'), bytes);
+    const bytes = artifactBody();
+    write(bytes);
     const exact = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-    const withNewline = `sha256:${createHash('sha256').update(Buffer.from('{"a":1}\n')).digest('hex')}`;
+    const withNewline = `sha256:${createHash('sha256').update(Buffer.concat([bytes, Buffer.from('\n')])).digest('hex')}`;
     assert.notEqual(exact, withNewline);
     assert.equal(checkProof(tmp, { ...proof, artifact_sha256: exact }, '$').status, 'verified');
     assert.equal(checkProof(tmp, { ...proof, artifact_sha256: withNewline }, '$').status, 'failed');
   });
+
+  await t.test('a run directory with no doctor.json is absence, not corruption', () => {
+    const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-bare-'));
+    t.after(() => fs.rmSync(bare, { recursive: true, force: true }));
+    fs.mkdirSync(path.join(bare, '.agentic-plugins', 'runs', 'doctor', proof.run_id), { recursive: true });
+    assert.equal(checkProof(bare, proof, '$').status, 'unverified');
+  });
+
+  await t.test('an unreadable artifact fails instead of degrading to unverified', (sub) => {
+    // existsSync answers false for a real file under a non-traversable parent,
+    // so a permissions fault used to report as the ordinary absent-in-CI case.
+    if (process.getuid?.() === 0) return sub.skip('root traverses regardless of mode');
+    const locked = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-locked-'));
+    const dir = path.join(locked, '.agentic-plugins', 'runs', 'doctor', proof.run_id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'doctor.json'), artifactBody());
+    fs.chmodSync(dir, 0o000);
+    try {
+      const r = checkProof(locked, proof, '$');
+      assert.equal(r.status, 'failed', details(r.findings));
+      assert.ok(r.findings.some((x) => /present but unreadable \(EACCES\)/.test(x.detail)), details(r.findings));
+    } finally {
+      fs.chmodSync(dir, 0o755);
+      fs.rmSync(locked, { recursive: true, force: true });
+    }
+  });
 });
 
-test('an environment that cannot support the checks fails closed', () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-nogit-'));
-  try {
-    const availability = historyAvailable(tmp);
-    assert.equal(availability.ok, false);
-    assert.match(availability.reason, /shallow|tags|not usable/);
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-  // And the real checkout does support them, so the assertion above is not
-  // passing because the helper always says no.
-  assert.equal(historyAvailable(REPO_ROOT).ok, true);
+test('the provenance declaration drives the gate', async (t) => {
+  await t.test('control — the shipped schema satisfies the contract', () => {
+    assert.deepEqual(checkStore(REPO_ROOT, { records: [] }).findings, []);
+  });
+
+  await t.test('relabelling command as observed is rejected — it has no extractor', () => {
+    // The minimal defect a cross-host review found surviving the whole suite:
+    // the label was decoration, so flipping it changed nothing.
+    const schemaFile = path.resolve(REPO_ROOT, SCHEMA_PATH);
+    const original = fs.readFileSync(schemaFile);
+    try {
+      const mutated = JSON.parse(original.toString('utf8'));
+      mutated.$defs.proof.properties.command['x-provenance'] = 'observed';
+      fs.writeFileSync(schemaFile, JSON.stringify(mutated, null, 2));
+      const f = checkStore(REPO_ROOT, { records: [] }).findings;
+      assert.ok(
+        f.some((x) => x.check === 'provenance' && /command/.test(x.path) && /neither extract/.test(x.detail)),
+        details(f),
+      );
+    } finally {
+      fs.writeFileSync(schemaFile, original);
+    }
+    assert.deepEqual(checkStore(REPO_ROOT, { records: [] }).findings, [], 'schema must be restored');
+  });
+});
+
+test('an environment that cannot support the checks fails closed', async (t) => {
+  // Control: the real checkout DOES support them, so the negatives below are
+  // not passing because the helper always says no.
+  await t.test('control — this checkout is usable', () => {
+    assert.equal(historyAvailable(REPO_ROOT).ok, true);
+  });
+
+  await t.test('not a git repository', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-nogit-'));
+    try {
+      const availability = historyAvailable(tmp);
+      assert.equal(availability.ok, false);
+      assert.match(availability.reason, /not usable/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  await t.test('an actual shallow clone', () => {
+    // A non-git directory does NOT reach the `is-shallow-repository` branch —
+    // it errors out one step earlier — so the branch that CI actually hits was
+    // uncovered until this case cloned for real (cross-host review finding).
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-shallow-'));
+    const clone = path.join(tmp, 'shallow');
+    try {
+      execFileSync('git', ['clone', '--quiet', '--depth', '1', '--no-tags', `file://${REPO_ROOT}`, clone], { stdio: 'ignore' });
+      assert.equal(execFileSync('git', ['-C', clone, 'rev-parse', '--is-shallow-repository'], { encoding: 'utf8' }).trim(), 'true');
+      const availability = historyAvailable(clone);
+      assert.equal(availability.ok, false);
+      assert.match(availability.reason, /shallow clone.*fetch-depth: 0/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 test('an empty store passes', () => {
