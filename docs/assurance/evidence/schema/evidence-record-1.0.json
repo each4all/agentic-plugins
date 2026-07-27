@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence-record-1.0",
+  "title": "Evidence loop record",
+  "description": "ADR-0049 Decision 1-4, as amended 2026-07-27. One record per EVIDENCE LOOP — not per release: a loop may span several releases (0.86.0/0.86.1/0.86.2 are one loop) and a single release may carry several loops. Every property declares exactly one provenance class in `x-provenance`, drawn from the ADR's closed set, and that declaration is what tells a gate whether it may assert the field. On an ARRAY property the class describes MEMBERSHIP, which is always `authored`: the loop boundary is an editorial judgment the ADR asserts rather than derives, so nothing in git or an artifact can decide which loop owns an entry (Amendment item 4). Entry fields carry their own classes independently.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "record_id",
+    "evidence_loop",
+    "package_releases",
+    "feature_commits",
+    "hardening_commits",
+    "proofs",
+    "install_method",
+    "narrative",
+    "relations"
+  ],
+  "properties": {
+    "schema": {
+      "x-provenance": "authored",
+      "description": "Schema identity. Pinned so a future 1.1 cannot be validated by the 1.0 checker by accident.",
+      "type": "string",
+      "const": "evidence-record-1.0"
+    },
+    "record_id": {
+      "x-provenance": "authored",
+      "description": "Stable key for this loop. MUST equal the record's filename stem — records live at docs/assurance/evidence/records/<record_id>.json.",
+      "$ref": "#/$defs/recordId"
+    },
+    "evidence_loop": {
+      "x-provenance": "authored",
+      "description": "What the loop was. Authored because the boundary is an editorial judgment; see Amendment item 4.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "summary"],
+      "properties": {
+        "label": {
+          "x-provenance": "authored",
+          "type": "string",
+          "maxLength": 120
+        },
+        "summary": {
+          "x-provenance": "authored",
+          "type": "string",
+          "maxLength": 1200
+        }
+      }
+    },
+    "package_releases": {
+      "x-provenance": "authored",
+      "description": "MEMBERSHIP is authored — which releases belong to this loop. Each entry's fields are derived and gated. At least one release: a loop with no release has no derived anchor to validate against.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/packageRelease" }
+    },
+    "feature_commits": {
+      "x-provenance": "authored",
+      "description": "MEMBERSHIP is authored. May be empty — an empty array is a statement, not an omission; completeness is deliberately not gated by category (Amendment item 4).",
+      "type": "array",
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/commitEntry" }
+    },
+    "hardening_commits": {
+      "x-provenance": "authored",
+      "description": "MEMBERSHIP is authored. The feature/hardening split follows no derivable rule — the changelog's headings are Features and Bug Fixes, and the prose places `fix(...)` commits on either side.",
+      "type": "array",
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/commitEntry" }
+    },
+    "proofs": {
+      "x-provenance": "authored",
+      "description": "MEMBERSHIP is authored — which doctor runs this loop presents as its proof. Entry fields are observed except `command`, which is operator-attested (Amendment item 1).",
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/proof" }
+    },
+    "install_method": {
+      "x-provenance": "operator-attested",
+      "description": "How the hosts were updated for the proof. An operator statement; never gated.",
+      "type": "string",
+      "maxLength": 400
+    },
+    "narrative": {
+      "x-provenance": "authored",
+      "type": "string",
+      "maxLength": 4000
+    },
+    "relations": {
+      "x-provenance": "authored",
+      "description": "Typed links to OTHER records in this store. Records that predate the store are not valid targets until the migration ADR (Decision 6) lands — a typed relation pointing at prose would be exactly the unbackable link this store exists to avoid.",
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/relation" }
+    }
+  },
+  "$defs": {
+    "recordId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "maxLength": 80
+    },
+    "fullSha": {
+      "description": "Full 40-hex only. An abbreviated sha is ambiguous across a growing history, and the store is meant to outlive the checkout that authored it.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "packageRelease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package", "version", "tag", "squash"],
+      "properties": {
+        "package": {
+          "x-provenance": "derived",
+          "description": "release-please package path. Bound to `tag` through the release configuration AS IT STOOD AT THE TAG — tags are per-package but commits are not, so a tag-time manifest read alone admits another package's tag on the same commit (Amendment item 2).",
+          "type": "string",
+          "enum": [
+            "companions",
+            "plugins/attention",
+            "plugins/companions",
+            "plugins/designer",
+            "plugins/engineer",
+            "plugins/founder",
+            "plugins/image",
+            "plugins/orchestrator",
+            "plugins/runtime"
+          ]
+        },
+        "version": {
+          "x-provenance": "derived",
+          "description": "Checked against .release-please-manifest.json AS IT STOOD AT THE CITED TAG, never the working tree — a working-tree comparison fails every entry whose version is not the current one, so the store would fail its own gate as a function of time (Amendment item 2).",
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "tag": {
+          "x-provenance": "derived",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*-v\\d+\\.\\d+\\.\\d+$"
+        },
+        "release_pr": {
+          "x-provenance": "derived",
+          "description": "Set ONLY when the tagged commit's subject carries `(#N)`. Older merge-commit releases do not, and those use `release_pr_attested` instead. Setting this when the subject does carry a DIFFERENT number is a failure.",
+          "type": ["integer", "null"]
+        },
+        "release_pr_attested": {
+          "x-provenance": "operator-attested",
+          "description": "The PR number for a release whose commit subject does not carry one. Never gated — but it is a failure to use this when the subject DOES carry the number, so attestation cannot be used to step around a check that would have run.",
+          "type": ["integer", "null"]
+        },
+        "squash": {
+          "x-provenance": "derived",
+          "description": "The commit the tag points at.",
+          "$ref": "#/$defs/fullSha"
+        },
+        "marketplace_sync": {
+          "x-provenance": "derived",
+          "description": "The catalog-sync commit that followed this release. Checked by relation, not bare resolution: descendant of the release commit, no intervening release commit, and its own subject must be a catalog sync. Null when the release had no catalog sync.",
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "commitEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha"],
+      "properties": {
+        "sha": {
+          "x-provenance": "derived",
+          "description": "Must resolve AND be reachable from the integration branch. Object existence alone is machine-dependent and goes green on a checkout that still holds a squash-deleted branch commit.",
+          "$ref": "#/$defs/fullSha"
+        },
+        "pr": {
+          "x-provenance": "derived",
+          "description": "Set ONLY when the commit subject carries `(#N)`. Squash merges do; commits landed without one do not, and their PR association exists only in prose — those use `pr_attested`.",
+          "type": ["integer", "null"]
+        },
+        "pr_attested": {
+          "x-provenance": "operator-attested",
+          "description": "PR number for a commit whose subject does not carry one. Never gated, and a failure to use when the subject DOES carry it.",
+          "type": ["integer", "null"]
+        },
+        "note": {
+          "x-provenance": "authored",
+          "type": ["string", "null"],
+          "maxLength": 300
+        }
+      }
+    },
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "date", "command", "artifact_sha256", "runtime_version", "installed"],
+      "properties": {
+        "run_id": {
+          "x-provenance": "observed",
+          "type": "string",
+          "pattern": "^doctor-\\d{8}T\\d{6}Z-[0-9a-f]{6}$"
+        },
+        "date": {
+          "x-provenance": "observed",
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "command": {
+          "x-provenance": "operator-attested",
+          "description": "The normalized proof recipe the operator attests to, NOT literal argv. The doctor artifact does not persist an invocation, and the recipe as written omits the `--record` that causes an artifact to exist at all and the `--repo-root` the wrapper supplies (Amendment item 1). Never gated.",
+          "type": "string",
+          "maxLength": 600
+        },
+        "artifact_sha256": {
+          "x-provenance": "observed",
+          "description": "sha256 over the EXACT bytes of the doctor artifact on disk. Verified locally when the artifact is present; reported unverified when it is absent (`.agentic-plugins/runs/` is gitignored and retention-pruned, so CI has no artifacts). A present-but-unreadable or mismatched artifact FAILS — it does not degrade to unverified.",
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "runtime_version": {
+          "x-provenance": "observed",
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "installed": {
+          "x-provenance": "observed",
+          "description": "Installed state per host at proof time; null for a host the proof did not cover.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "claude": { "x-provenance": "observed", "type": ["string", "null"], "maxLength": 200 },
+            "codex": { "x-provenance": "observed", "type": ["string", "null"], "maxLength": 200 }
+          }
+        },
+        "readings": {
+          "x-provenance": "observed",
+          "description": "Bounded key/value doctor readings. A list rather than a free-form map so the shape stays closed and the keys stay visible in review.",
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "value"],
+            "properties": {
+              "key": { "x-provenance": "observed", "type": "string", "maxLength": 80, "pattern": "^[a-z0-9][a-z0-9_.-]*$" },
+              "value": { "x-provenance": "observed", "type": "string", "maxLength": 300 }
+            }
+          }
+        }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "record_id"],
+      "properties": {
+        "type": {
+          "x-provenance": "authored",
+          "type": "string",
+          "enum": ["follows", "supersedes", "amends", "restores", "absorbs"]
+        },
+        "record_id": {
+          "x-provenance": "authored",
+          "$ref": "#/$defs/recordId"
+        },
+        "note": {
+          "x-provenance": "authored",
+          "type": ["string", "null"],
+          "maxLength": 300
+        }
+      }
+    }
+  }
+}
