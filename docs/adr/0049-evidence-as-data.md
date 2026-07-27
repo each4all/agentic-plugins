@@ -4,6 +4,13 @@
 
 Accepted
 
+> Amended 2026-07-27 — see [Amendments](#amendments). `proofs[].command`
+> is reclassified `operator-attested`; the `derived` manifest check is
+> pinned to the cited tag and bound to the package; membership of every
+> per-loop array is authored while entry fields keep the row's class;
+> and the first live record is dated to the first release loop that
+> follows the schema, authored after that loop's release completes.
+
 ## Context
 
 The stage docs (`docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`,
@@ -79,6 +86,11 @@ An earlier draft of this ADR claimed "thirteen facts, twelve of them
 machine-held, one authored"; that count was wrong in both directions and
 is corrected here.
 
+The table's granularity is one class per row, and that is too coarse in
+two places — see Amendment 2026-07-27 items 1 and 4: `proofs[].command`
+is `operator-attested`, not observed, and membership of every per-loop
+array is authored even where the entries' own fields are derived.
+
 ### Three constraints the corpus imposes
 
 Measured against the documents as they stand, not assumed:
@@ -137,7 +149,9 @@ Record the evidence as data **going forward**, validate what the repo can
 actually validate, and leave the prose alone for now.
 
 **1. A forward-only evidence store.** Starting with the next runtime
-release loop, each evidence loop gets one JSON file under
+release loop (made precise by Amendment 2026-07-27 item 3: the first
+loop that follows the schema, authored after that loop's release
+completes), each evidence loop gets one JSON file under
 `docs/assurance/evidence/`, closed schema, `additionalProperties: false`,
 in the style of the runtime plugin's packaged `data/schemas/`. The key is
 the **evidence loop**, identified by a stable `record_id` — not the
@@ -147,7 +161,8 @@ observations.
 
 **2. Every field declares its provenance.** The schema tags each field
 `derived`, `observed`, `operator-attested`, or `authored`, per the table
-above. This is not decoration: it is what tells a gate whether it may
+above as corrected by Amendment 2026-07-27 items 1 and 4 — the tag is
+per field and per collection, not per table row. This is not decoration: it is what tells a gate whether it may
 assert the field, and it is the field-level answer to the honest-scope
 principle in AGENTS.md §5.
 
@@ -163,7 +178,9 @@ belongs to the author.
 - `derived` fields are validated against git and the manifest — tag
   against `git for-each-ref`, squash against the tagged commit, PR number
   against the release commit subject, shas against resolution and
-  reachability. These run everywhere, including CI.
+  reachability. These run everywhere, including CI. The enumeration is
+  incomplete as written; Amendment 2026-07-27 item 2 adds the tag-time
+  package/version binding and the marketplace-sync relation checks.
 - `observed` fields record the source run id and a content hash of the
   doctor artifact. They are verified locally when the artifact is
   present, and are **explicitly not verified in CI**. The store presents
@@ -201,9 +218,11 @@ preconditions must be met before that ADR can honestly be written:
 
 ## Consequences
 
-**Positive.** The next release's record is authored once, in a validated
-shape, with its derived fields checked against git at authoring time
-rather than reconstructed from prose afterwards. The record unit finally
+**Positive.** The next release's record (Amendment 2026-07-27 item 3:
+the first loop after the schema, authored once its release completes) is
+authored once, in a validated shape, with its derived fields checked
+against git at authoring time rather than reconstructed from prose
+afterwards. The record unit finally
 matches the data — evidence loops, with plural releases and plural
 proofs. The `supersedes` judgment becomes a recorded, typed decision
 instead of an invisible editorial act, and it is recorded in the one
@@ -306,3 +325,220 @@ Not part of the decision, but required when it is implemented:
   `scripts/sync-doc-versions.mjs` and `scripts/check-doc-evidence.mjs`
   comments should be corrected to six while the surrounding code is
   touched.
+
+## Amendments
+
+### 2026-07-27 — four provenance and timing corrections found after acceptance
+
+**Trigger**: the Plan-verify review of the backlog macro that schedules
+this ADR's implementation read the Accepted text against the repo and
+found three defects; a fourth surfaced from applying the first one's
+lens to the neighbouring table rows. A cross-host review of the
+resulting draft then sharpened three of the four — it caught that a
+future `observed` flip would invalidate records rather than widen
+freely, that a tag-time manifest read still admits the wrong package's
+tag, and that a commit's PR number is not always derivable — and argued
+for supersedure over amendment, which is answered under **Form** below.
+
+**1. `proofs[].command` is not `observed`. Reclassified
+`operator-attested`.**
+
+The Context provenance table lists `command` among the `proofs[]`
+sub-fields and sources the whole row from
+`.agentic-plugins/runs/doctor/<id>/`. The doctor artifact does not hold
+it. `plugins/runtime/scripts/doctor.mjs:5386-5399` builds the record as
+a literal with exactly eight keys — `schema_version`, `runtime_version`,
+`run_id`, `status`, `created_at`, `repo_root_pointer`, `report`,
+`limits` — and nothing beneath `report` records the invocation. The
+`*_command` keys that do appear are feature-surface probes
+(`feature_surface.plugin_command: true`,
+`plugin_command_status: {status, exit_code, error_code}`), which report
+whether a host subcommand exists, not what was run.
+
+The field is not dropped: both prose sites cite a proof invocation
+(`docs/DEVELOPMENT.md`, `omcc-cutover-scorecard.md` R3 —
+`runtime:doctor --permission-proof --execute-permission-proof
+--deep-peer-smoke …`), so the store must be able to carry it. What was
+wrong is the class. It is **operator-attested**, the same class as
+`install_method`, and by Decision 4 it is therefore never gated. The
+verifiable part of a proof stays the run id and the artifact content
+hash; the command rides alongside as an attestation.
+
+Define it as an attested **normalized recipe**, not "the command that
+was run". The cited recipe is not the invocation that produced the
+artifact: `--record` is what writes an artifact at all
+(`plugins/runtime/commands/doctor.md`), and the wrapper supplies
+`--repo-root`; neither appears in the prose. A record claiming to hold
+literal argv would be false on its face, and a validator that later
+compared the two would fail every historical record.
+
+The alternative — change runtime to persist a sanitized normalized
+command so the field becomes genuinely `observed` — is recorded and
+**not adopted**. The artifact is deliberately sanitized output (its own
+`limits[0]`: raw peer stdout/stderr and prompt text are not stored), so
+persisting an invocation needs a scrubbing policy, and the read/report
+secret boundary is an open question in the backlog rather than a settled
+one this ADR may assume. It would also make a documentation-store schema
+wait on a runtime release.
+
+If that runtime change is made later, the flip is **not** a free
+widening, and an earlier draft of this Amendment was wrong to say so. A
+record authored today cites a doctor artifact that will never contain an
+invocation; reclassifying the existing field to `observed` would demand
+local verification against a value the artifact never stored, which
+Decision 4's own rule turns into a failure rather than an
+unverified. The flip therefore requires either a distinct new field for
+the persisted invocation, or an explicit grandfather rule keying the
+class to the runtime version that produced the cited proof. Whichever is
+chosen, it belongs to the ADR that makes the runtime change.
+
+**2. `derived` against the manifest means the manifest as it stood at
+the cited tag.**
+
+Decision 4 names "git and the manifest" as the sources for `derived`
+fields, then enumerates only tag, squash, PR-number, and sha checks. The
+implied manifest check is never stated, and its subject is `version` —
+the one `package_releases[]` field the Context table sources from
+`.release-please-manifest.json`. State the check, and state its
+semantics: the comparison reads the manifest **at the cited tag**
+(`git show <tag>:.release-please-manifest.json`), never the working
+tree.
+
+The working-tree reading is not merely imprecise, it is
+self-invalidating. Measured here: the manifest at
+`plugin-runtime-v0.83.0` reads `0.83.0` and at `plugin-runtime-v0.86.0`
+reads `0.86.0`, while the working tree reads `0.86.2`. Because one
+record carries several releases, a working-tree comparison passes only
+the entries whose version happens to equal the current manifest and
+fails the rest — including entries inside the newest record — so the
+store would fail its own gate as a function of time.
+
+Reading the manifest at the tag is necessary and not sufficient: the
+check must bind **package, version, and tag together**. Tags are
+per-package but commits are not. `plugin-runtime-v0.83.0` and
+`plugin-attention-v0.6.0` are the same commit `e249ac7c`, so the
+manifest read at either tag reports runtime `0.83.0`; a record naming
+the attention tag for a runtime release passes a bare tag-time version
+comparison. The binding needs the tag-time release configuration that
+maps package to tag prefix, and it must fail closed on a missing tag,
+file, or key rather than skipping.
+
+The same enumeration understates marketplace sync. Its sha needs the
+relation checks the repo already applies in
+`scripts/check-doc-evidence.mjs` — descendant of the release commit,
+expected sync subject, no intervening release — not bare resolution and
+reachability.
+
+**3. The schema slice authors no live record; the first one comes from
+the release loop after it.**
+
+Decision 1 starts the store "with the next runtime release loop". Read
+against the implementation order that is unsatisfiable by the slice that
+creates it: schema and validator must land before anything can be
+authored against them, so the schema slice ships test fixtures only. The
+first live record belongs to **the first runtime release loop that
+follows the schema landing**.
+
+A second timing constraint follows from what a record contains, and it
+is the one most likely to be missed. A record cannot be authored inside
+the implementation PR of the loop it describes. Its release tag, squash,
+marketplace-sync sha, proof run id and artifact hash come into existence
+only after that PR merges, release-please cuts the release, the catalog
+sync lands, the hosts are updated, and a doctor run is recorded against
+the new install. Authoring is therefore a **post-release step of the
+loop**, in the same position the recovery PR occupies today — which is
+also why this decision does not remove that PR.
+
+The withdrawal trigger in Consequences needs no reinterpretation: it
+already counts only loops "in which the store is authored", so
+acceptance and the schema landing never counted. What this item adds is
+which loop is the first that can be counted.
+
+**4. Membership of every per-loop array is authored, and even entry
+fields split by class.**
+
+Item 1 is an instance of a general fault in the Context table: a row
+carries one provenance label while a part of it belongs to another
+class. The arrays have the same fault, and its root is Decision 1
+itself. The record's key is the **evidence loop**, and the loop boundary
+is an editorial judgment this ADR asserts rather than derives — Context
+constraint 1 collapses 0.86.0/0.86.1/0.86.2 into one loop on exactly
+such grounds. What the loop contains inherits that: membership of
+`package_releases[]`, `feature_commits[]`, `hardening_commits[]` and
+`proofs[]` is **authored**. Nothing in git or an artifact can decide
+which loop owns an entry.
+
+The two commit-array rows are where the wholesale `derived` label bites
+hardest, because their declared source cannot supply the membership.
+Measured on that same loop: fifteen commits touch `plugins/runtime` in
+`plugin-runtime-v0.85.0..plugin-runtime-v0.86.2`, and the prose carries
+nine as feature/hardening members. Of the six it does not, three are
+doc-recovery PRs and three are release commits — and one of those,
+`9e2af7d`, the record does carry, as `package_releases[].squash` for the
+loop's release triple. The same commit is in one array and out of
+another on role, which is a judgment no source states. The declared
+source falls short in the other direction too: `cd27d2d` (#632) is
+carried as one of the loop's feature PRs but is a `refactor(...)`
+commit, and no `refactor` entry appears anywhere in
+`plugins/runtime/CHANGELOG.md`, while the row sources
+`feature_commits[]` from "git + `plugins/runtime/CHANGELOG.md`". Nor
+does the feature/hardening split follow the changelog's headings:
+`3615dcc` (#629) and `73127e3` (#635) are both `fix(...)` commits the
+prose places on the feature side of the narrative.
+
+Entry fields do not carry one class either. A sha is derived — it
+resolves and checks for reachability. A PR number is derived only when
+the declared source carries it: `b984dc8` names `#637` in both its
+commit subject and its changelog entry, while `af620df` and `c549ed2`
+name no PR in either, and their association with `#641` and `#639`
+lives only in prose. The repo already knows this class exists —
+`validate:doc-evidence` reports one PR number as not offline-verifiable
+— so the schema must let a PR be attested rather than force every entry
+to claim a derivation nothing can back.
+
+Consequence for the validator, which is why this is recorded rather than
+left implicit: per-entry checks are in scope everywhere, and **array
+completeness is not gated by category**. No source states which commits
+a loop should contain, and a check that infers it re-creates the
+unbounded reconstruction-from-unstructured-input failure this ADR's
+Context records for the prose parsers. What is available, and is left
+open to the schema slice rather than foreclosed here, is accounting
+rather than inference: git can bound the candidate range, so an explicit
+disposition of every commit in it — included, or excluded with an
+authored reason — could be gated for exhaustiveness without pretending
+the category itself is derived.
+
+**Unchanged**: Decision 1 (forward-only, keyed by evidence loop, closed
+schema under `docs/assurance/evidence/`), Decision 2 (every field
+declares its provenance — items 1 and 4 correct one classification and
+push the granularity below the table row; neither reverses the rule),
+Decision 3 (typed, plural relations), Decision 4's principle and its
+`observed`-not-verified-in-CI asymmetry, Decision 5 (no rendering, no
+generated regions, the prose stays hand-written), and Decision 6
+(renderer and historical migration deferred behind two preconditions).
+The headline cost in Consequences — on landing, the store adds a sixth
+copy, and the recurring recovery PR is not eliminated — is unchanged,
+and item 3 reinforces it: authoring happens after the release, in the
+position that PR already occupies.
+
+**Form — Amendment, over a recorded dissent.** The cross-host review of
+this Amendment argued for partial supersedure instead, on the grounds
+that Decision 2 imports "the table above" and items 1 and 4 correct
+entries in that table, while item 3 makes Decision 1's timing anchor
+precise. The dissent is recorded rather than adopted, for three
+reasons. The README's discriminator turns on whether "a reader landing
+on the old ADR must be pointed at the new one for the operative
+decision" — here the correction is in the same document, and the repo's
+established remedy for a reader landing on superseded prose is the
+in-place pointer, used by ADR-0010's header banner and by ADR-0008's
+inline "see Amendment 2026-05-04"; both are now applied above. The
+precedent is stronger than the parity: ADR-0010's 2026-07-09 amendment
+corrected values inside its own **Decision** §1 — dropping `image`,
+`print`, `brand` and `motion` from the L4 row — and remained an
+Amendment, whereas items 1 and 4 correct a **Context** table that a
+Decision points at. And splitting a decision accepted one day earlier
+across two documents would consume the ADR number that Decision 6
+reserves for the renderer/migration follow-up, which is the ADR a reader
+actually needs pointing at. If the follow-up disagrees, it supersedes
+from a position of knowing the schema — this Amendment does not
+foreclose that.
