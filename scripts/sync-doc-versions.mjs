@@ -38,8 +38,11 @@
 // records that are syntactically identical (docs/DEVELOPMENT.md line 459
 // packs 25 doctor run ids into one physical line; the scorecard R3 row
 // packs 20, and the phrase "re-recorded under the <version> install on
-// <date> (<id>" appears five times there — once current, four times
-// superseded). The only field separating them is the version number,
+// <date> (<id>" appears six times there — once current, five times
+// superseded — and seven times across the document. The count grows with
+// every release, which is itself the argument: the ambiguity this comment
+// describes gets worse, never better. The only field separating them is
+// the version number,
 // which is the very field a sync would be changing, so the anchor is
 // circular. Worse, whether a new release should REPLACE the head record
 // or be PREPENDED as a new chain link is an editorial judgment about

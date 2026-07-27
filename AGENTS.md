@@ -260,6 +260,33 @@ absent, which is why `full-tests.yml` checks out with `fetch-depth: 0`.
 Cited proof run ids and dates are **never** rewritten by any script; see
 the header of `scripts/sync-doc-versions.mjs` for why.
 
+**Each evidence loop also gets a record** under
+`docs/assurance/evidence/records/`, per
+[ADR-0049](docs/adr/0049-evidence-as-data.md) as amended 2026-07-27. The
+record is keyed by the loop, not the release — a loop may span several
+releases, and a release may appear in several loops — and every field
+declares its provenance so a gate knows whether it may assert the field.
+`npm run validate:evidence-store` checks it, and
+`npm run validate:doc-evidence` runs that check alongside the three prose
+gates, which are unchanged: the store is a sixth copy of these facts on
+the day it lands, and the ADR states that cost plainly rather than
+claiming the prose is now generated.
+
+Two authoring rules are easy to get wrong:
+
+- **The record is written after the release, not in its PR.** Its tag,
+  squash, marketplace-sync sha, proof run id and artifact hash come into
+  existence only once the PR merges, release-please cuts the release, the
+  catalog sync lands, the hosts are updated, and a doctor run is
+  recorded. Authoring belongs with the recovery PR described above, in
+  the same position.
+- **Record what is derivable as derived.** A PR number goes in `pr` /
+  `release_pr` when the commit subject carries `(#N)` and in the
+  `*_attested` sibling only when it does not. Using the attested field
+  for a derivable number, setting both, or omitting both are all
+  rejected — attestation is for facts no source can back, not a way past
+  a check.
+
 Release-please changelog hygiene depends on merge shape. For a
 single-package PR, prefer a squash merge whose final message is the one
 intended changelog entry. When preserving multiple release-routed

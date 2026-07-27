@@ -42,6 +42,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { checkStore } from './lib/evidence-store.mjs';
+
 export const EVIDENCE_DOCS = [
   'docs/ARCHITECTURE.md',
   'docs/DEVELOPMENT.md',
@@ -319,11 +321,15 @@ export function checkProofCitations(repoRoot, { docs = null } = {}) {
 
   // Identifying WHICH record is current cannot be done positionally, and
   // must not be guessed: the scorecard R3 row repeats the phrase
-  // "re-recorded under the <version> install on <date> (<id>" five times
-  // — once for the current record and four times for superseded ones —
-  // and the only distinguishing field is the version. A first-attempt
-  // implementation of this check matched all of them and reported five
-  // false "stale citation" findings against correct prose.
+  // "re-recorded under the <version> install on <date> (<id>" six times
+  // — once for the current record and five times for superseded ones,
+  // seven across the whole document — and the only distinguishing field
+  // is the version. A first-attempt implementation of this check matched
+  // all of them and reported a false "stale citation" finding for every
+  // one against correct prose. The count is stated without a number in
+  // that sentence deliberately: it rises with each release, and a fixed
+  // number in a historical claim goes stale the way these two comments
+  // just did.
   //
   // The reliable anchor is the repo's own de-backticking convention:
   // superseded version tokens have their backticks removed so they fall
@@ -601,11 +607,27 @@ export function checkCommitShas(repoRoot, { docs = null } = {}) {
   return { ran: true, reason: null, findings, checked, reachabilityBase };
 }
 
+/**
+ * The three prose checks plus the ADR-0049 record store.
+ *
+ * The store is validated ALONGSIDE the prose gates, not instead of them. The
+ * ADR is explicit that the prose stays hand-written (Decision 5) and that
+ * `checkProofCitations` remains necessary precisely because of that, so the
+ * three functions above are untouched by this addition — the store is a fourth
+ * result key with its own findings, and its `checked` count is records rather
+ * than prose claims.
+ *
+ * Cheap when the store is empty, which it is until the first release loop
+ * after the schema: `checkStore` returns before any git work when there are no
+ * records.
+ */
 export function runAllChecks(repoRoot, options = {}) {
+  const store = checkStore(repoRoot);
   return {
     releaseTriples: checkReleaseTriples(repoRoot, options),
     proofCitations: checkProofCitations(repoRoot, options),
     commitShas: checkCommitShas(repoRoot, options),
+    evidenceStore: { ...store, checked: store.records },
   };
 }
 
@@ -628,9 +650,17 @@ if (invokedAsCLI) {
         r.dateChecked !== undefined ? `${r.dateChecked} id/date pair(s) incl. superseded` : null,
         r.unpairedTags ? `${r.unpairedTags} tag mention(s) not paired with a release PR` : null,
         r.reachabilityBase && r.reachabilityBase !== 'origin/main' ? `reachability base ${r.reachabilityBase} (weaker than origin/main)` : null,
+        // The store reports how much of itself was actually verified. An
+        // observed field whose doctor artifact is gone is `unverified`, and
+        // saying so is the point — a silent green would claim more assurance
+        // than CI can give (ADR-0049 Decision 4).
+        r.proofStatus && (r.proofStatus.verified + r.proofStatus.unverified + r.proofStatus.failed) > 0
+          ? `proofs ${r.proofStatus.verified} verified / ${r.proofStatus.unverified} unverified (artifact absent) / ${r.proofStatus.failed} failed`
+          : null,
       ].filter(Boolean).join('; ');
-      console.log(`${name}: ${r.checked} claim(s) checked, ${r.findings.length} finding(s)${extra ? ` — ${extra}` : ''}`);
-      for (const f of r.findings) console.log(`  ✗ ${f.file}: ${f.detail}`);
+      const unit = name === 'evidenceStore' ? 'record(s) checked' : 'claim(s) checked';
+      console.log(`${name}: ${r.checked} ${unit}, ${r.findings.length} finding(s)${extra ? ` — ${extra}` : ''}`);
+      for (const f of r.findings) console.log(`  ✗ ${f.path ?? f.file}: ${f.detail}`);
     }
   }
 
