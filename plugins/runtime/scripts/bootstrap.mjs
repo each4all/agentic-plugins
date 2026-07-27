@@ -1530,6 +1530,32 @@ function resolveSelection({ opts, pluginSet, seededSelection = null }) {
 // the step from the cache stranded a run whose attestation file landed but
 // whose manifest persist failed — every later resume saw the recorded proof,
 // skipped refreshing it, and kept the step pending off the stale cache).
+/**
+ * The previous-state map judgeSteps judges against. ONE implementation, because
+ * both callers must normalize identically: reprobeAgainstRun's first pass, and
+ * resume's post-import re-judge. A second hand-rolled copy is how the two drift.
+ */
+function priorJudgeMapOf(stepList) {
+  return new Map((stepList ?? []).map((s) => {
+    if (s.id === stepIds.notifyConfigured() && (s.fragment_pointer || s.apply_command)) {
+      const { fragment_pointer, apply_command, fragment_applied, ...rest } = s;
+      return [s.id, rest];
+    }
+    // A DECLINED provenance carries no render state into judgement either
+    // (Refine-verify round 6): a legacy declined step's frozen `desired`
+    // would otherwise mode-bind the exact probe and demote a legitimate
+    // satisfying observation to manual-follow-up — the refused plan's
+    // expectation blocking the operator's own manual configuration is one
+    // more resurrection shape. The entry assembly drops the same fields
+    // post-judgement (belt-and-braces).
+    if (s.status === 'declined' && (s.fragment_pointer || s.apply_command || s.desired != null)) {
+      const { fragment_pointer, apply_command, desired, fragment_applied, ...rest } = s;
+      return [s.id, rest];
+    }
+    return [s.id, s];
+  }));
+}
+
 // A parsed JSON value is only usable as a report/record when it is a plain
 // object: `null`, `false`, `0`, `""` and arrays all survive JSON.parse and would
 // otherwise slip through truthiness checks unremarked.
@@ -1735,24 +1761,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // unrelated fragment applied when the LOCAL policy satisfies (Codex review
   // MINOR). Strip the legacy metadata; composeFragments re-renders it onto the
   // right step on this same resume.
-  const priorForJudge = new Map(invalidation.steps.map((s) => {
-    if (s.id === stepIds.notifyConfigured() && (s.fragment_pointer || s.apply_command)) {
-      const { fragment_pointer, apply_command, fragment_applied, ...rest } = s;
-      return [s.id, rest];
-    }
-    // A DECLINED provenance carries no render state into judgement either
-    // (Refine-verify round 6): a legacy declined step's frozen `desired`
-    // would otherwise mode-bind the exact probe and demote a legitimate
-    // satisfying observation to manual-follow-up — the refused plan's
-    // expectation blocking the operator's own manual configuration is one
-    // more resurrection shape. The entry assembly drops the same fields
-    // post-judgement (belt-and-braces).
-    if (s.status === 'declined' && (s.fragment_pointer || s.apply_command || s.desired != null)) {
-      const { fragment_pointer, apply_command, desired, fragment_applied, ...rest } = s;
-      return [s.id, rest];
-    }
-    return [s.id, s];
-  }));
+  const priorForJudge = priorJudgeMapOf(invalidation.steps);
 
   const steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, now: ctx.now });
   const receiptRow = proofRead.records.find((r) => r.kind === 'egress-receipt-attestation') ?? null;
@@ -1769,11 +1778,12 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
     currentActivationFingerprint: currentActivationFingerprintOf(readers),
     receiptEvidence: receiptRow ? { record: receiptRow.record, providerAckSha256: ackRow?.sha256 ?? null } : null,
   });
-  // `expected` + `priorForJudge` ride out so a caller that changes a judgement
-  // INPUT after this pass (resume importing a hook attestation) can re-run
-  // judgeSteps with identical inputs plus the new verdict, instead of leaving
-  // the step judged against evidence the same verb has since superseded.
-  return { raw, probe, readers, steps, completion, selection, invalidation, proofRecords: proofRead.records, recordedHookAttestation, expected, priorForJudge };
+  // `expected` rides out so a caller that changes a judgement INPUT after this
+  // pass (resume importing a hook attestation) can re-run judgeSteps instead of
+  // leaving the step judged against evidence the same verb has since superseded.
+  // The previous-state map is deliberately NOT exported: that caller must build
+  // it from ITS OWN current steps, since applyAnswers has mutated them since.
+  return { raw, probe, readers, steps, completion, selection, invalidation, proofRecords: proofRead.records, recordedHookAttestation, expected };
 }
 
 /**
@@ -2255,10 +2265,20 @@ async function runResume(ctx, opts) {
   // The operator's symptom was that the resume which finally imported the claim
   // still showed the step pending, and only a SECOND resume satisfied it: the
   // same "do the thing you already did" loop #645 is about, one step further on.
-  // Re-judge with the IDENTICAL inputs the first pass used, changing only the
-  // hook verdict, so every other step re-judges to exactly the value it already
-  // had. The verdict is computed against `finalProbe` — the same probe the
-  // reduction uses — so the step and the completion cannot disagree.
+  // Re-judge against THIS RESUME'S CURRENT steps, not the pre-answer snapshot.
+  // applyAnswers mutates step rows in place — a decline sets `declined` and
+  // withdraws the fragment pointer, apply command and desired state — and it has
+  // already run by the time the import happens. Re-judging from the pre-answer
+  // map (the first cut of this fix) silently discarded those mutations: the
+  // operator's decline stayed in `choices` and `history` while the step itself
+  // reverted to `pending` with its refused hand-off restored, and because the
+  // reducer reads `declined` off the step row rather than the choice ledger, a
+  // declined proof could even lose its completion cap. Feeding the post-answer
+  // rows through the same normalization is exactly how declines already survive
+  // from one resume to the next: judgeSteps re-asserts `declined` from
+  // `previous` for a declinable step whose fresh observation is not satisfied.
+  // Only the hook verdict is new; it is computed against `finalProbe` — the same
+  // probe the reduction uses — so step and completion cannot disagree about it.
   // (The broader "resume reports a probe it did not reduce against" mismatch for
   // non-hook steps is a separate, pre-existing defect and is deliberately not
   // touched here.)
@@ -2271,7 +2291,7 @@ async function runResume(ctx, opts) {
       pluginSet,
       readers: reprobe.readers,
       hookVerdict: refreshedVerdict,
-      previousById: reprobe.priorForJudge,
+      previousById: priorJudgeMapOf(steps),
       now: ctx.now,
     });
     // An imported claim that does not stand for THIS selection leaves the step

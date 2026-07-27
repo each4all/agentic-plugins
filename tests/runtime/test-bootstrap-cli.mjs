@@ -2041,6 +2041,56 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     strictEqual(resume.report.completion.hook_attestation.status, 'attested', 'and the completion agrees with the step');
   });
 
+  it('the re-judge preserves THIS resume\'s declines instead of resurrecting them', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview() });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    // applyAnswers mutates step rows in place, and it runs BEFORE the import.
+    // Re-judging from the pre-answer snapshot reverted the decline to `pending`
+    // and restored the hand-off the operator had just refused, while `choices`
+    // and `history` still recorded the decline — state contradicting itself.
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    strictEqual(resume.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'satisfied', 'the import still lands');
+    const egress = resume.report.steps.find((s) => s.id === 'egress.configured');
+    strictEqual(egress?.status, 'declined', `the decline survives the re-judge: ${JSON.stringify(egress)}`);
+    strictEqual(egress.fragment_pointer, null, 'a refused hand-off is not re-offered');
+    strictEqual(egress.apply_command, null);
+    strictEqual(egress.desired, null);
+
+    // The persisted manifest must agree with the report — choices, history and
+    // the step row are three views of one decision.
+    const manifest = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json'), 'utf8'));
+    strictEqual(manifest.steps.find((s) => s.id === 'egress.configured')?.status, 'declined');
+    ok(manifest.choices.some((c) => c.step_id === 'egress.configured' && c.answer === 'decline'), 'the choice ledger records it');
+    ok(manifest.history.some((h) => h.step_id === 'egress.configured' && h.to === 'declined'), 'and history agrees with the row');
+  });
+
+  it('a proof declined in the importing resume keeps its completion cap', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview() });
+    const { run } = await planEngineering(home, cwd, stub);
+
+    // The reducer derives `declined` from the STEP row, not the choice ledger,
+    // so a proof decline lost by a re-judge would silently uncap the run and let
+    // it reach `complete` on evidence the operator refused to produce.
+    const answersPath = join(home, 'decline-proof.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'proof.deep-peer-smoke', answer: 'decline' },
+    ]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+
+    strictEqual(resume.report.steps.find((s) => s.id === 'proof.deep-peer-smoke')?.status, 'declined', 'the proof decline survives the re-judge');
+    // A proof row carries the cap (`declined`) separately from the evidence
+    // verdict (`status`, `absent` because a declined proof produces none). The
+    // cap is the field the re-judge could have dropped.
+    const proof = resume.report.completion.proofs.find((p) => p.kind === 'deep-peer-smoke');
+    strictEqual(proof?.declined, true, `the reducer still reads the decline off the step row: ${JSON.stringify(proof)}`);
+    ok(resume.report.completion.state !== 'complete', `a declined proof caps the run: got ${resume.report.completion.state}`);
+  });
+
   it("doctor's machine-wide not-current verdict does NOT block a selection-scoped import", async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     // Doctor judges the whole machine: it compares against every bundled plugin
@@ -2118,16 +2168,21 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
   });
 
   it('doctor output that parses to a non-object is reported instead of slipping through every truthiness check', async () => {
-    const { home, cwd } = await makeHome({ satisfied: true });
-    const runner = async (scriptPath) => {
-      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
-      if (scriptPath.endsWith('doctor.mjs')) return okOut('null');  // valid JSON, not a report
-      return missing();
-    };
-    const { run } = await planEngineering(home, cwd, { runner, calls: [] });
+    // Each of these is valid JSON that is not a report. Before the guard, every
+    // one slipped past the truthiness checks without a word.
+    for (const payload of ['null', 'false', '0', '""', '[]']) {
+      const { home, cwd } = await makeHome({ satisfied: true });
+      const runner = async (scriptPath) => {
+        if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+        if (scriptPath.endsWith('doctor.mjs')) return okOut(payload);
+        return missing();
+      };
+      const { run, runId } = await planEngineering(home, cwd, { runner, calls: [] });
 
-    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
-    ok((resume.report.warnings ?? []).some((w) => /parsed but is not a report object/.test(w)), `"every branch warns" must hold for valid-but-falsy JSON too: ${JSON.stringify(resume.report.warnings)}`);
+      const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+      ok((resume.report.warnings ?? []).some((w) => /parsed but is not a report object/.test(w)), `"every branch warns" must hold for ${payload}: ${JSON.stringify(resume.report.warnings)}`);
+      await rejects(() => readFile(proofPath(home, runId), 'utf8'), `${payload} fabricates no evidence`);
+    }
   });
 
   it('a never-recorded attestation warns with the record-it recovery instead of failing silently', async () => {
@@ -2158,7 +2213,9 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
 
     await rejects(() => readFile(proofPath(home, runId), 'utf8'));
-    ok((resume.report.warnings ?? []).some((w) => /no settings_runs\.codex_hook_review section/.test(w)), `a shape regression is named, not papered over: ${JSON.stringify(resume.report.warnings)}`);
+    const warning = (resume.report.warnings ?? []).find((w) => /no settings_runs\.codex_hook_review section/.test(w));
+    ok(warning, `a shape regression is named, not papered over: ${JSON.stringify(resume.report.warnings)}`);
+    ok(/repair or upgrade the runtime plugin/.test(warning), `and the recovery is the one that can actually work: ${warning}`);
     // Naming it beats spawning a second doctor to paper over it.
     strictEqual(calls.filter((c) => c.scriptPath.endsWith('doctor.mjs')).length, 1, 'the absence does not trigger a retry storm');
   });
