@@ -100,6 +100,20 @@ export function reachabilityBase(repoRoot) {
   return 'HEAD';
 }
 
+/**
+ * Record stems present at the integration base — the floor the working tree may
+ * not fall below. Returns null when the base cannot be read at all, which is a
+ * fail-closed condition rather than "no floor": an unreadable base and an empty
+ * base look identical from here, and only one of them is safe.
+ */
+export function baseRecordStems(repoRoot, base) {
+  const out = gitOrNull(repoRoot, ['ls-tree', '-r', '--name-only', base, '--', `${RECORDS_DIR}/`]);
+  if (out === null) return null;
+  return new Set(
+    out.split('\n').filter((line) => line.endsWith('.json')).map((line) => basename(line, '.json')),
+  );
+}
+
 /** Records live at `<RECORDS_DIR>/<record_id>.json`. A missing directory is an empty store, not an error. */
 export function loadRecords(repoRoot) {
   const dir = resolve(repoRoot, RECORDS_DIR);
@@ -534,7 +548,8 @@ function checkStructure(records) {
  * `ran: false` means the environment could not support the checks (shallow
  * clone). That is reported as a failure by the CLI, not a pass.
  */
-export function checkStore(repoRoot, { records: injected = null } = {}) {
+export function checkStore(repoRoot, opts = {}) {
+  const injected = opts.records ?? null;
   const schema = loadSchema(resolve(repoRoot, SCHEMA_PATH));
   const findings = [...checkSchemaShape(schema), ...checkProvenanceContract(schema)];
 
@@ -545,6 +560,42 @@ export function checkStore(repoRoot, { records: injected = null } = {}) {
     findings.push(...validateInstance(data, schema, { path: file }).map((f) => ({ ...f, file })));
   }
   findings.push(...checkStructure(loaded.records));
+
+  // FORWARD-ONLY FLOOR. Everything below this point is per-record, so with no
+  // records there is nothing to check and the early return reports green — which
+  // is correct for the pre-first-record state and wrong for every state after
+  // it. Once a record exists, an emptied store, a record deleted by hand, and a
+  // sparse loss in a bad merge all reduce to that same green. The floor is the
+  // record set on the integration branch: the store is append-only by
+  // construction (ADR-0049 forward-only), so anything present there and absent
+  // here is a loss, whatever the working tree's count happens to be. Deriving it
+  // from git rather than a committed count means it maintains itself and cannot
+  // drift. Injected records are a unit-test seam with no working tree behind
+  // them, so they carry no floor unless one is supplied.
+  // `floor` is read by PRESENCE, not by truthiness: `null` is the meaningful
+  // value baseRecordStems returns for an unreadable base, so `?? default` would
+  // quietly convert the fail-closed case into "no floor" — the exact collapse
+  // this check exists to prevent.
+  const floorStems = Object.hasOwn(opts, 'floor')
+    ? opts.floor
+    : (injected ? new Set() : baseRecordStems(repoRoot, reachabilityBase(repoRoot)));
+  if (floorStems === null) {
+    findings.push({
+      check: 'store',
+      file: RECORDS_DIR,
+      detail: `the integration base could not be read, so the forward-only floor could not be established; an unreadable base is indistinguishable from an empty one, and only one of those is safe (fetch the integration branch before running this check)`,
+    });
+  } else {
+    const present = new Set(loaded.records.map((r) => r.stem));
+    for (const stem of [...floorStems].sort()) {
+      if (present.has(stem)) continue;
+      findings.push({
+        check: 'store',
+        file: `${RECORDS_DIR}/${stem}.json`,
+        detail: 'record exists on the integration branch but is absent from the working tree — the evidence store is forward-only, so records are never removed',
+      });
+    }
+  }
 
   const proofStatus = { verified: 0, unverified: 0, failed: 0 };
   if (loaded.records.length === 0) {
