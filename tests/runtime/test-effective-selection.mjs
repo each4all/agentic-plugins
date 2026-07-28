@@ -68,16 +68,34 @@ describe('runtime effective selection — which declines narrow it (§6.2)', () 
     deepStrictEqual(eff.byHost.claude, ['companions', 'image', 'runtime']);
   });
 
-  it('an `.enabled` decline alone never drops the PLUGIN — only `.installed` refusals do', async () => {
+  it('a Claude `.enabled` row is not a refusal — Claude has no enable state to refuse', async () => {
     const pluginSet = await loadSet();
     const eff = effectiveSelection({
       pluginSet,
       selection: selectionOf(['runtime', 'companions', 'image']),
-      // Both host rows refused at the ENABLE grain (Claude has no such step; this is
-      // a deliberately impossible pair, to prove the rule is keyed on `.installed`).
+      // Both host rows refused at the ENABLE grain. Only Codex has that grain, so the
+      // Claude row refuses nothing and the plugin is not refused everywhere.
       steps: [declined('plugin.image.codex.enabled'), { id: 'plugin.image.claude.enabled', status: 'declined' }],
     });
     ok(eff.plugins.includes('image'));
+    deepStrictEqual(eff.byHost.claude, ['companions', 'image', 'runtime']);
+    deepStrictEqual(eff.byHost.codex, ['companions', 'runtime']);
+  });
+
+  it('MIXED grains still refuse the whole plugin when no host is left valid', async () => {
+    const pluginSet = await loadSet();
+    const eff = effectiveSelection({
+      pluginSet,
+      selection: selectionOf(['runtime', 'companions', 'image']),
+      // Absent on Claude and refused there; present-but-switched-off on Codex. The
+      // plugin runs nowhere — counting only `.installed` kept it in `desired` while
+      // it was in neither per-host set, so binding and hooks called it gone while the
+      // proof registry called it present.
+      steps: [declined('plugin.image.claude.installed'), declined('plugin.image.codex.enabled')],
+    });
+    deepStrictEqual(eff.plugins, ['companions', 'runtime']);
+    deepStrictEqual(eff.dropped, ['image']);
+    ok(!eff.byHost.claude.includes('image') && !eff.byHost.codex.includes('image'));
   });
 
   it('only the exact step grammar counts — a lookalike id is not a decline', async () => {
@@ -132,6 +150,35 @@ describe('runtime effective selection — what it refuses to narrow (§6.2)', ()
     deepStrictEqual(eff.dropped, []);
     strictEqual(eff.refusedButRetained.length, 1);
     ok(/mandatory in every selection/.test(eff.refusedButRetained[0].reason));
+  });
+
+  it('a protected plugin is not narrowed ONE HOST AT A TIME either', async () => {
+    const pluginSet = await loadSet();
+    const eff = effectiveSelection({
+      pluginSet,
+      selection: selectionOf(['runtime', 'companions', 'image']),
+      // A single hand-written row. It cannot remove `companions` from the selection —
+      // and it must not remove it from Claude version binding either, or
+      // `proof.deep-peer-smoke` claims the bridge works while the plugin that carries
+      // it binds no version on one side.
+      steps: [declined('plugin.companions.claude.installed')],
+    });
+    deepStrictEqual(eff.byHost.claude, ['companions', 'image', 'runtime'], 'the host grain is governed by the same rule');
+    deepStrictEqual(eff.dropped, []);
+    strictEqual(eff.refusedButRetained.length, 1);
+    deepStrictEqual(eff.refusedButRetained[0].hosts, ['claude'], 'the report names the host it refused to narrow');
+    ok(/mandatory in every selection/.test(eff.refusedButRetained[0].reason));
+  });
+
+  it('a hard-required plugin is host-protected on the same terms', async () => {
+    const pluginSet = await loadSet();
+    const eff = effectiveSelection({
+      pluginSet,
+      selection: selectionOf(['runtime', 'companions', 'engineer', 'orchestrator']),
+      steps: [declined('plugin.engineer.codex.installed')],
+    });
+    ok(eff.byHost.codex.includes('engineer'), 'orchestrator still hard-requires it');
+    deepStrictEqual(eff.refusedButRetained[0].hosts, ['codex']);
   });
 
   it('a plugin a RETAINED plugin hard-requires is retained and reported', async () => {

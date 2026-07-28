@@ -30,15 +30,25 @@
 //
 // WHAT IT REFUSES TO DO. It never narrows past declinability: a decline recorded
 // against a mandatory plugin, or against one reached by a hard edge from a retained
-// plugin, is NOT honoured here. A run file is operator-editable, so a hand-written
-// `declined` on `companions` would otherwise delete `proof.deep-peer-smoke` from the
-// expected set — a false pass bought by editing the file the reducer is judging.
+// plugin, is NOT honoured here — at EITHER grain. A run file is operator-editable, so
+// a hand-written `declined` on `companions` would otherwise delete
+// `proof.deep-peer-smoke` from the expected set, and a per-host one would drop
+// mandatory `companions` from that host's version binding: a false pass bought by
+// editing the file the reducer is judging, through the front door or the side one.
+//
 // Declinability is recomputed to a FIXPOINT rather than once, because removing a
 // plugin can free its hard-edge targets: `orchestrator` declined makes `engineer`
 // declinable, and a single pass would honour the first decline and silently drop the
-// second. The fixpoint is order-independent (removals only ever shrink the closure),
-// so a batch of declines reduces to exactly what the same declines applied one
-// resume at a time would produce.
+// second. The fixpoint is order-independent — removals only ever shrink the closure,
+// so the same declined rows reduce alike whatever order they appear in.
+//
+// That is a property of THIS derivation and not an end-to-end claim about the CLI
+// (Refine-verify peer, High): the answers gate judges each answer against the
+// declinability the registry derived BEFORE the file was applied, so one answers file
+// declining `orchestrator` and `engineer` together is refused on the `engineer` row.
+// Chained declines take one resume each. What the fixpoint is for is a manifest that
+// ALREADY carries both — a legacy run, or two resumes' worth of rows — which would
+// otherwise honour one refusal and silently discard the other.
 
 import { MANDATORY_PLUGINS, PLUGIN_SET_HOSTS, hardRequiredClosure } from './plugin-set.mjs';
 
@@ -84,9 +94,9 @@ export function declinedPluginRows(steps) {
  * @param steps      the manifest's steps[] — read for `declined` status only.
  *
  * Returns:
- *   plugins   — plugin-level retained set (sorted). A plugin drops out only when
- *               EVERY host it targets was declined; a partial decline keeps the
- *               plugin and narrows `byHost` instead, because the selection vocabulary
+ *   plugins   — plugin-level retained set (sorted). A plugin drops out when every
+ *               host it targets was refused; a partial refusal keeps the plugin and
+ *               narrows `byHost` instead, because the selection vocabulary
  *               (`desired: string[]`) cannot express "on Codex but not Claude" and
  *               dropping the whole plugin would refuse more than the operator did.
  *   byHost    — per-host retained sets. This is what version binding and the
@@ -101,26 +111,44 @@ export function effectiveSelection({ pluginSet, selection, steps = [] }) {
   const rows = declinedPluginRows(steps);
 
   const hostsFor = (name) => (pluginSet?.plugins?.[name]?.hosts ?? []).filter((h) => PLUGIN_SET_HOSTS.includes(h));
-  // A plugin is fully refused when every host it targets carries an `.installed`
-  // decline. A plugin the plugin-set gives no hosts at all is never "fully declined"
-  // by vacuous truth — an empty host list would otherwise make `every` true and drop
-  // a plugin nobody refused.
-  const fullyDeclined = (name) => {
-    const hosts = hostsFor(name);
-    if (hosts.length === 0) return false;
-    const declinedHosts = rows.get(name)?.installed ?? new Set();
-    return hosts.every((h) => declinedHosts.has(h));
+
+  // Is this plugin refused ON THIS HOST — before any declinability rule is applied?
+  // Two shapes count, and they are not the same fact: an `.installed` refusal says
+  // the plugin will not be there, a Codex `.enabled` refusal says it will be there
+  // and switched off. Both mean it runs nothing on that host, so both must stop it
+  // binding versions and bearing hooks there.
+  const rawHostRefusal = (name, host) => {
+    const row = rows.get(name);
+    if (!row) return false;
+    if (row.installed.has(host)) return true;
+    // Claude has no enable/disable state to refuse (test #31), so only Codex has a
+    // second grain.
+    return host === 'codex' && row.enabled.has('codex');
   };
 
-  const refusedButRetained = [];
+  // A plugin is fully refused when EVERY host it targets is refused — by either
+  // grain (Refine-verify peer, Medium): a Claude `.installed` refusal plus a Codex
+  // `.enabled` one leaves the plugin valid nowhere, and counting only `.installed`
+  // kept it in `plugins` while it was absent from both `byHost` lists — binding and
+  // hooks treating it as gone while the proof registry treated it as present.
+  //
+  // A plugin the plugin-set gives no hosts at all is never "fully refused" by
+  // vacuous truth — an empty host list would otherwise make `every` true and drop a
+  // plugin nobody refused.
+  const fullyRefused = (name) => {
+    const hosts = hostsFor(name);
+    if (hosts.length === 0) return false;
+    return hosts.every((host) => rawHostRefusal(name, host));
+  };
+
   let plugins = planned;
-  // FIXPOINT (see the header): each round drops the fully-declined plugins that are
+  // FIXPOINT (see the header): each round drops the fully-refused plugins that are
   // declinable AGAINST THE CURRENT retained set, then recomputes the closure. Bounded
   // by the selection size — every round removes at least one plugin or stops.
   for (let round = 0; round <= planned.length; round += 1) {
     const hardRequired = hardRequiredClosure(pluginSet, plugins);
     const removable = plugins.filter((name) => {
-      if (!fullyDeclined(name)) return false;
+      if (!fullyRefused(name)) return false;
       if (MANDATORY_PLUGINS.includes(name)) return false;
       if (hardRequired.has(name)) return false;
       return true;
@@ -129,17 +157,30 @@ export function effectiveSelection({ pluginSet, selection, steps = [] }) {
     plugins = plugins.filter((name) => !removable.includes(name));
   }
 
-  // Report the declines the fixpoint could not honour, with the rule that blocked
-  // each one. Computed against the FINAL retained set so the reason names the state
-  // the operator would have to change.
+  // Protection is a property of the PLUGIN, and it governs the host grain too
+  // (Refine-verify peer, High). Honouring a host-scoped refusal against a protected
+  // plugin while refusing the whole-plugin one is the same false pass through a
+  // smaller door: a hand-written `plugin.companions.claude.installed: declined` would
+  // otherwise drop mandatory `companions` from Claude version binding — the decline
+  // that "cannot narrow the selection" narrowing it one host at a time.
   const finalHardRequired = hardRequiredClosure(pluginSet, plugins);
+  const isProtected = (name) => MANDATORY_PLUGINS.includes(name) || finalHardRequired.has(name);
+
+  // Report every refusal this derivation will not honour — whole-plugin or
+  // host-scoped — with the rule that blocked it, computed against the FINAL retained
+  // set so the reason names the state the operator would have to change.
+  const refusedButRetained = [];
   for (const name of plugins) {
-    if (!fullyDeclined(name)) continue;
+    if (!isProtected(name)) continue;
+    const refusedHosts = hostsFor(name).filter((host) => rawHostRefusal(name, host));
+    if (refusedHosts.length === 0) continue;
+    const scope = refusedHosts.length === hostsFor(name).length ? '' : ` on ${refusedHosts.join(', ')}`;
     refusedButRetained.push({
       plugin: name,
+      hosts: refusedHosts,
       reason: MANDATORY_PLUGINS.includes(name)
-        ? `${name} is mandatory in every selection (§6.2), so its decline cannot narrow the selection`
-        : `${name} is reached by a hard edge from a retained plugin (§6.2/§9.1), so its decline cannot narrow the selection`,
+        ? `${name} is mandatory in every selection (§6.2), so its decline${scope} cannot narrow the selection`
+        : `${name} is reached by a hard edge from a retained plugin (§6.2/§9.1), so its decline${scope} cannot narrow the selection`,
     });
   }
   const dropped = planned.filter((name) => !plugins.includes(name));
@@ -148,15 +189,7 @@ export function effectiveSelection({ pluginSet, selection, steps = [] }) {
   for (const host of PLUGIN_SET_HOSTS) {
     byHost[host] = plugins
       .filter((name) => hostsFor(name).includes(host))
-      .filter((name) => {
-        const row = rows.get(name);
-        if (!row) return true;
-        if (row.installed.has(host)) return false;
-        // Codex enablement is the second host-scoped refusal; Claude has no
-        // enable/disable state to refuse (test #31).
-        if (host === 'codex' && row.enabled.has('codex')) return false;
-        return true;
-      })
+      .filter((name) => isProtected(name) || !rawHostRefusal(name, host))
       .sort();
   }
 

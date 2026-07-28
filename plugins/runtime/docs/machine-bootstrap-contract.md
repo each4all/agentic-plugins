@@ -1249,14 +1249,49 @@ The rules, stated so a reader can check an implementation against them:
   on the spot and healed by the next `resume`.
 - **A HOST-scoped decline narrows the host, not the plugin.** `desired` is a flat name
   list and cannot express "on Codex but not Claude", so a plugin refused on one host
-  stays selected and its refused host stops binding versions, stops receiving install
-  actions, and stops counting toward the Codex-hook-bearing set. The declined ROW is
-  the only record of such a refusal, which is why a partial decline keeps its Stage-3
-  row while a whole-plugin decline does not.
+  stays selected and its refused host stops binding versions, stops being presented as
+  an install candidate, and stops counting toward the Codex-hook-bearing set. The
+  declined ROW is the only record of such a refusal, which is why a partial decline
+  keeps its Stage-3 row while a whole-plugin decline does not. **Two limits follow, and
+  both are vocabulary, not defects to fix later**: a host-scoped refusal is never
+  written into the selection seat (so `status`/`verify` say exactly that rather than
+  promising a resume that would repair it), and it does not survive `profile export` —
+  the profile records a flat `desired` too, so seeding it re-creates the obligation on
+  the refused host. A refusal that must survive a profile round trip has to be a
+  whole-plugin decline, or a narrower `--plugins` list at plan time.
+  - The install-candidate exclusion is **presentation**: the plugin-management plan
+    the operator is then handed is machine-wide by construction (§1.6), so it may act
+    on plugins outside this run's candidates. Bootstrap stops recommending the
+    refused host's install; it does not — and cannot — fence the executor.
+- **A plugin refused on every host it targets leaves the selection, at either grain.**
+  An `.installed` refusal says the plugin will not be there; a Codex `.enabled` refusal
+  says it will be there and switched off. Both mean it runs nothing on that host, so a
+  Claude `.installed` decline plus a Codex `.enabled` one is a whole-plugin refusal —
+  counting only `.installed` would leave it in `desired` while it was absent from both
+  per-host sets, with binding and hooks treating it as gone and the proof registry
+  treating it as present.
+- **Declinability governs the host grain too.** A refusal against a mandatory plugin,
+  or one still reached by a hard edge from a retained plugin, is not honoured on a
+  single host any more than it is on all of them. Honouring the narrow one would be
+  the same false pass through a smaller door: a hand-written
+  `plugin.companions.claude.installed: declined` would drop mandatory `companions`
+  from Claude version binding while `proof.deep-peer-smoke` still claimed to prove the
+  bridge works.
 - **Declinability is recomputed to a fixpoint**, because removing a plugin can free its
   hard-edge targets. A single pass would honour one decline and silently drop a second
   that the first had just made legal. The fixpoint is order-independent: removals only
-  ever shrink the closure.
+  ever shrink the closure. It is a property of the derivation, **not** a promise that
+  one answers file may chain declines — the answers gate judges each answer against the
+  declinability derived *before* the file was applied, so `orchestrator` and `engineer`
+  declined together is refused on the second row. Chained declines take one resume
+  each; the fixpoint is what makes a manifest that already carries both reduce
+  correctly.
+- **The hard-edge closure is plugin-wide, not per host.** `orchestrator` declined on
+  Codex alone therefore does *not* make `engineer` declinable on Codex, even though no
+  retained Codex plugin requires it there. That is a **conservative** gap — it leaves
+  an obligation standing rather than dropping one — and it is pre-existing: §9.1 states
+  the closure per host, `hardRequiredClosure` has always computed it flat. Making it
+  host-aware is tracked as a follow-up, not assumed here.
 - **A decline that cannot narrow is refused, never recorded as a no-op** — a mandatory
   plugin, or one still reached by a hard edge from a retained plugin. The answers gate
   and the narrowing read ONE derivation, so a validator and the thing it validates

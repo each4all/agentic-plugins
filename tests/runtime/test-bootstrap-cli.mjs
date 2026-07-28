@@ -2465,6 +2465,16 @@ describe('runtime bootstrap CLI — §6.2 the effective selection', () => {
     // be dropped from the expectation the way a whole-plugin decline is.
     const manifest = JSON.parse(await readFile(runPath(home, plan.report.run_id), 'utf8'));
     strictEqual(manifest.steps.find((s) => s.id === 'plugin.image.claude.installed')?.status, 'declined');
+    ok(manifest.selection.desired.includes('image'), 'and the selection seat is not rewritten for it');
+
+    // R0 must not promise a repair that cannot happen: no resume can write a
+    // host-scoped refusal into a flat `desired`, so the warning says where it lives
+    // instead of telling the operator to resume forever.
+    const status = await run(['status', '--run-id', plan.report.run_id]);
+    deepStrictEqual(status.report.effective_selection.by_host.claude.includes('image'), false);
+    const warning = status.report.warnings.find((w) => /effective selection/.test(w));
+    ok(/image:claude/.test(warning), `the warning names the refused host row: ${warning}`);
+    ok(/no resume moves it/.test(warning), `and does not promise a resume would record it: ${warning}`);
   });
 
   it('a declined Codex hook plugin leaves the attestation expectation instead of making it unsatisfiable', async () => {
@@ -2569,6 +2579,36 @@ describe('runtime bootstrap CLI — §6.2 the effective selection', () => {
     strictEqual(after.report.effective_selection, undefined, 'once healed, there is no divergence left to report');
   });
 
+  it('a legacy narrowing does not resurrect itself to block the NEXT decline it enabled', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runner = hostedRunner({ installed: ['runtime', 'companions', 'attention'] });
+    const run = (argv) => boot({ argv, home, cwd, runner, subprocess: smokeDoctorStub });
+    const plan = await run(['plan', '--bundle', 'engineering', '--format', 'json']);
+    const runId = plan.report.run_id;
+
+    // A run recorded before the narrowing existed: `orchestrator` declined on the
+    // rows, the selection untouched.
+    const manifest = JSON.parse(await readFile(runPath(home, runId), 'utf8'));
+    for (const step of manifest.steps) {
+      if (step.id.startsWith('plugin.orchestrator.')) step.status = 'declined';
+    }
+    await writeFile(runPath(home, runId), `${JSON.stringify(manifest, null, 2)}\n`);
+
+    // The reprobe drops `orchestrator`, which is what makes `engineer` declinable —
+    // and drops its rows from `steps[]` with it. A gate re-deriving the retained set
+    // from the STORED selection sees no orchestrator decline, resurrects the plugin,
+    // and refuses the engineer decline on the strength of a hard edge from a plugin
+    // the operator already removed.
+    const resume = await run(['resume', '--latest-open', '--answers', await answersFile(home, 'chain.json', [
+      { step_id: 'plugin.engineer.claude.installed', answer: 'decline' },
+      { step_id: 'plugin.engineer.codex.installed', answer: 'decline' },
+      { step_id: 'plugin.engineer.codex.enabled', answer: 'decline' },
+    ])]);
+
+    strictEqual(resume.exitCode !== EXIT.INVALID, true, `the decline the narrowing enabled is accepted: ${JSON.stringify(resume.report.diagnostics)}`);
+    deepStrictEqual(resume.report.selection.desired, ['attention', 'companions', 'runtime']);
+  });
+
   it('a hand-written decline on a MANDATORY plugin narrows nothing — two independent refusals', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const run = (argv) => boot({ argv, home, cwd, runner: withoutImage(), subprocess: smokeDoctorStub });
@@ -2599,6 +2639,27 @@ describe('runtime bootstrap CLI — §6.2 the effective selection', () => {
     const healed = JSON.parse(await readFile(runPath(home, runId), 'utf8'));
     ok(healed.steps.filter((s) => s.id.startsWith('plugin.companions.')).every((s) => s.status !== 'declined'),
       'the forged status does not survive a re-judge');
+  });
+
+  it('a hand-written decline on ONE host of a mandatory plugin does not narrow that host', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const run = (argv) => boot({ argv, home, cwd, runner: withoutImage(), subprocess: smokeDoctorStub });
+    const plan = await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,image', '--format', 'json']);
+    const runId = plan.report.run_id;
+
+    // The narrow door: a single forged row. It cannot remove `companions` from the
+    // selection, and it must not remove it from Claude version binding either —
+    // otherwise `proof.deep-peer-smoke` reports current while the plugin that carries
+    // the bridge binds no version on one side of it.
+    const manifest = JSON.parse(await readFile(runPath(home, runId), 'utf8'));
+    manifest.steps.find((s) => s.id === 'plugin.companions.claude.installed').status = 'declined';
+    await writeFile(runPath(home, runId), `${JSON.stringify(manifest, null, 2)}\n`);
+
+    const status = await run(['status', '--run-id', runId]);
+    strictEqual(status.report.effective_selection, undefined, 'a refusal that is not honoured is not a divergence');
+    const resume = await run(['resume', '--latest-open', '--answers', await answersFile(home, 'forged-host.json', EXECUTE_SMOKE)]);
+    const recorded = JSON.parse(await readFile(smokeProofPath(home, runId), 'utf8'));
+    strictEqual(recorded.bound_versions.plugins.claude.companions, '9.9.9', 'the mandatory plugin still binds on the refused host');
   });
 
   it('a SATISFIED plugin step is not narrowed away — an observation is not retractable', async () => {

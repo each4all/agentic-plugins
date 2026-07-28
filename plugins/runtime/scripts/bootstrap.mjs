@@ -1912,10 +1912,21 @@ function effectiveSelectionDivergence({ pluginSet, selection, effective }) {
     }
   }
   if (droppedPlugins.length === 0 && droppedHostRows.length === 0) return null;
-  const refused = [...droppedPlugins, ...droppedHostRows].join(', ');
+  // The two kinds of refusal have DIFFERENT remedies, and collapsing them promised a
+  // repair that cannot happen (Refine-verify peer, High/Medium): a whole-plugin
+  // decline is written into the selection by the next resume, while a host-scoped one
+  // has no seat to be written into — `desired` is a flat name list — so telling the
+  // operator to resume would repeat forever against a state that is already correct.
+  const parts = [];
+  if (droppedPlugins.length > 0) {
+    parts.push(`${droppedPlugins.join(', ')} declined outright, which the stored selection does not yet record — \`runtime:bootstrap resume\` writes the narrowing through; status and verify are read-only (§3) and cannot`);
+  }
+  if (droppedHostRows.length > 0) {
+    parts.push(`${droppedHostRows.join(', ')} declined on that host only, which the selection seat cannot express (\`desired\` is a flat name list) — the refusal lives in the declined step row, and no resume moves it`);
+  }
   return {
     effective_selection: { plugins: effective.plugins, by_host: effective.byHost },
-    warning: `this run is judged against the effective selection (§6.2) — the operator declined ${refused}, which the stored selection does not yet record. \`runtime:bootstrap resume\` persists the narrowing; status and verify are read-only (§3) and cannot.`,
+    warning: `this run is judged against the effective selection (§6.2): ${parts.join('; ')}.`,
   };
 }
 
@@ -2204,7 +2215,21 @@ async function runResume(ctx, opts) {
   // `answeredEffective` is the per-step last-wins ANSWER map — a different thing from
   // the effective SELECTION above, and named apart so the two can never be confused
   // at a call site.
-  const { choices, history, effective: answeredEffective } = applyAnswers({ steps, answers, now: ctx.now, selection, pluginSet, verb: 'resume' });
+  //
+  // The gate is handed the RETAINED selection, not the stored one (Refine-verify peer,
+  // High). A plugin the reprobe already dropped has no rows left in `steps[]`, so a
+  // gate reading `selection.desired` resurrects it — and with it the hard edge it
+  // carried. A run whose `orchestrator` was declined earlier would refuse a new
+  // `engineer` decline on the grounds that the very plugin the operator already
+  // removed still requires it.
+  const { choices, history, effective: answeredEffective } = applyAnswers({
+    steps,
+    answers,
+    now: ctx.now,
+    selection: { ...selection, desired: effective.plugins },
+    pluginSet,
+    verb: 'resume',
+  });
 
   // §6.2 — a plugin decline (this resume's, or one a legacy run recorded before the
   // narrowing existed) creates the effective `custom` selection. Re-derive and
@@ -2221,6 +2246,17 @@ async function runResume(ctx, opts) {
     selection = narrowed.selection;
   }
   for (const refused of narrowed.refusedButRetained) warnings.push(refused.reason);
+  // The hook verdict AFTER the narrowing. The §8.2 import gate below reads its status,
+  // and reading the PRE-decline one would compute the gate from a different selection
+  // than the import's own expected set (Refine-verify peer, Medium).
+  //
+  // Honest scope: the two agree in every state reachable today, so this is coherence
+  // rather than a behaviour change. An attestation only reads `attested` while every
+  // selected hook plugin is installed, and an installed plugin's step is `satisfied`,
+  // which the answers grammar refuses to decline — so "attested, then narrowed to
+  // stale in the same resume" has no route. Computing the gate from the selection the
+  // import will actually use removes the question rather than resting on that.
+  let hookVerdictNow = hookVerdictFor({ recordedAttestation: reprobe.recordedHookAttestation, pluginSet, effective, probe });
   if (!sameEffectiveSelection(effective, narrowedEffective)) {
     effective = narrowedEffective;
     expected = deriveExpectedSteps({
@@ -2234,13 +2270,14 @@ async function runResume(ctx, opts) {
     });
     const graph = validateStepGraph(expected);
     if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
+    hookVerdictNow = hookVerdictFor({ recordedAttestation: reprobe.recordedHookAttestation, pluginSet, effective, probe });
     steps = judgeSteps({
       expected,
       probe,
       raw: reprobe.raw,
       pluginSet,
       readers: reprobe.readers,
-      hookVerdict: hookVerdictFor({ recordedAttestation: reprobe.recordedHookAttestation, pluginSet, effective, probe }),
+      hookVerdict: hookVerdictNow,
       previousById: priorJudgeMapOf(steps),
       now: ctx.now,
     });
@@ -2347,7 +2384,7 @@ async function runResume(ctx, opts) {
   // unreachable while the path bug kept the store empty, and reachable the
   // moment it was fixed. The gate is now the verdict, not the presence.
   const codexHookPlugins = codexHookBearingPlugins(pluginSet, effective.byHost.codex);
-  const storedHookStatus = reprobe.completion?.hook_attestation?.status ?? 'absent';
+  const storedHookStatus = hookVerdictNow.status;
   let importedHookAttestation = null;
   if (codexHookPlugins.length > 0 && storedHookStatus !== 'attested') {
     if (!doctorReport) {
