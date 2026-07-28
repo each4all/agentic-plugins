@@ -19,7 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { checkSchemaShape, loadSchema, validateInstance } from '../../scripts/lib/evidence-schema.mjs';
-import { checkProof, checkStore, historyAvailable, loadRecords, RECORDS_DIR, SCHEMA_PATH } from '../../scripts/lib/evidence-store.mjs';
+import { baseRecordStems, checkProof, checkStore, historyAvailable, loadRecords, RECORDS_DIR, SCHEMA_PATH } from '../../scripts/lib/evidence-store.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -747,6 +747,8 @@ test('the real store path is wired — a record dropped on disk is actually vali
   const dir = path.resolve(REPO_ROOT, RECORDS_DIR);
   const existed = fs.existsSync(dir);
   const file = path.join(dir, 'loop-wiring-probe.json');
+  const baseline = checkStore(REPO_ROOT);
+  assert.deepEqual(baseline.findings, [], `the shipped store must be clean before this probe: ${details(baseline.findings)}`);
   try {
     fs.mkdirSync(dir, { recursive: true });
     const record = validRecord();
@@ -754,9 +756,13 @@ test('the real store path is wired — a record dropped on disk is actually vali
     fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`);
 
     const ok = checkStore(REPO_ROOT);
-    assert.equal(ok.records, 1, 'the loader must see the record');
+    // A DELTA, not an absolute: the store is no longer empty (the first live
+    // record landed with the 0.86.3 loop), so pinning `records === 1` would
+    // measure how many records the repository happens to ship rather than
+    // whether the loader saw the one this test wrote.
+    assert.equal(ok.records, baseline.records + 1, 'the loader must see the record this test wrote');
     assert.deepEqual(ok.findings, [], details(ok.findings));
-    assert.equal(ok.proofStatus.unverified, 1);
+    assert.equal(ok.proofStatus.unverified, baseline.proofStatus.unverified + 1);
 
     // And a defect in that same on-disk record must be caught through the same
     // path — otherwise the assertion above only proves the loader can read.
@@ -769,4 +775,68 @@ test('the real store path is wired — a record dropped on disk is actually vali
     if (!existed) fs.rmSync(dir, { recursive: true, force: true });
   }
   assert.deepEqual(checkStore(REPO_ROOT).findings, [], 'the probe record must be gone');
+});
+
+test('the store is forward-only — a record that exists on the integration branch may not vanish', async (t) => {
+  // Everything else in checkStore is per-record, so an empty store returns green
+  // before any git-backed check. That is right until the first record exists and
+  // wrong forever after: deleting the whole store, removing one record by hand,
+  // and losing one in a bad merge all reduce to the same green. The floor is the
+  // record set on the integration branch.
+  await t.test('control — a working tree holding the floor reports nothing', () => {
+    const f = checkStore(REPO_ROOT, {
+      records: [],
+      floor: new Set(),
+    }).findings;
+    assert.deepEqual(f, [], details(f));
+  });
+
+  await t.test('a record present at the base and absent from the working tree is a finding', () => {
+    const f = checkStore(REPO_ROOT, { records: [], floor: new Set(['some-earlier-loop']) }).findings;
+    assert.ok(
+      f.some((x) => x.check === 'store'
+        && x.file === `${RECORDS_DIR}/some-earlier-loop.json`
+        && /forward-only/.test(x.detail)),
+      details(f),
+    );
+  });
+
+  await t.test('a sparse loss is caught per record, not only a wholesale delete', () => {
+    // One of two survives; the gate must name the missing one and stay silent
+    // about the survivor. A wholesale-delete-only check would report neither.
+    const kept = validRecord();
+    kept.record_id = 'kept';
+    const f = checkStore(REPO_ROOT, {
+      records: asStore(kept, 'kept'),
+      floor: new Set(['kept', 'dropped']),
+    }).findings.filter((x) => /forward-only/.test(x.detail));
+    assert.equal(f.length, 1, details(f));
+    assert.equal(f[0].file, `${RECORDS_DIR}/dropped.json`);
+  });
+
+  await t.test('an unreadable integration base fails closed rather than reading as no floor', () => {
+    // An unreadable base and an empty one are indistinguishable from here, and
+    // only one of them is safe.
+    const f = checkStore(REPO_ROOT, { records: [], floor: null }).findings;
+    assert.ok(
+      f.some((x) => x.check === 'store' && /forward-only floor could not be established/.test(x.detail)),
+      details(f),
+    );
+  });
+
+  await t.test('baseRecordStems reads real record stems from a ref, and null when the ref is unreadable', () => {
+    const stems = baseRecordStems(REPO_ROOT, 'HEAD');
+    assert.ok(stems instanceof Set, 'a readable ref yields a set');
+    // HEAD carries whatever the working branch committed; the shipped store's
+    // own records must be a subset of what the checker can enumerate on disk.
+    for (const { stem } of loadRecords(REPO_ROOT).records) {
+      assert.ok(typeof stem === 'string' && stem.length > 0);
+    }
+    assert.equal(baseRecordStems(REPO_ROOT, 'refs/heads/definitely-not-a-ref-xyz'), null, 'an unreadable ref is null, not an empty floor');
+  });
+
+  await t.test('the shipped store satisfies its own floor', () => {
+    const f = checkStore(REPO_ROOT).findings;
+    assert.deepEqual(f, [], details(f));
+  });
 });

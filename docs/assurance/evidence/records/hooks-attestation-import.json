@@ -1,0 +1,57 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "hooks-attestation-import",
+  "evidence_loop": {
+    "label": "#645 Codex /hooks attestation import",
+    "summary": "runtime:bootstrap resume read the Codex /hooks operator attestation from a top-level doctorReport.codex_hook_review key that runtime:doctor emits on no report, so the import never ran and the non-declinable hooks.codex.attested step could never be satisfied on any hook-bearing bundle, with nothing warning. The loop reads the settings_runs.codex_hook_review currency wrapper doctor actually publishes, judges the claim by the run's own selection instead of doctor's machine-wide verdict, refreshes a stale stored record rather than short-circuiting on its presence, and re-judges the step inside the importing resume."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.86.3",
+      "tag": "plugin-runtime-v0.86.3",
+      "release_pr": 653,
+      "squash": "9abddc65e611922090d531400c0e176da9c56398",
+      "marketplace_sync": "5bb88c1a572eb3365b197a22496898830e8b187c"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "b55ce5363442e8e337ae50f7d8e094113cc4e957",
+      "pr_attested": 652,
+      "note": "Squash of five review rounds. The PR number is attested rather than derived because the squash subject was passed explicitly with `gh pr merge --subject`, which suppresses the `(#N)` GitHub appends under the repository's PR_TITLE setting; every other release commit in this store carries it."
+    }
+  ],
+  "hardening_commits": [],
+  "proofs": [
+    {
+      "run_id": "doctor-20260728T013239Z-2a6995",
+      "date": "2026-07-28",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:7cac21f6af28f75dabaf17e1c86081c6a916f9ab0b1e6e90bccb884ac1caec79",
+      "runtime_version": "0.86.3",
+      "installed": {
+        "claude": "0.86.3",
+        "codex": "0.86.3"
+      },
+      "host_cli": {
+        "claude": "2.1.220 (Claude Code)",
+        "codex": "codex-cli 0.145.0"
+      },
+      "readings": [
+        { "key": "overall", "value": "pass; zero hard failures, zero warnings" },
+        { "key": "permission_proof", "value": "passed; executed in both directions" },
+        { "key": "deep_peer_smoke", "value": "passed; executed in both directions" },
+        { "key": "workflow_continuation_proof", "value": "passed; executed" },
+        { "key": "experience_parity", "value": "ready 100% 8/8, zero manual follow-ups" },
+        { "key": "entry_brief", "value": "ready" },
+        { "key": "session_capture", "value": "ready" },
+        { "key": "host_parity_baseline", "value": "current; 2026-07-25 baseline 2.1.220 / 0.145.0 unchanged, no compat cycle required" },
+        { "key": "codex_hook_review", "value": "attested and current; settings-20260722T021211Z-364c8f, unaffected because runtime declares no hooks" }
+      ]
+    }
+  ],
+  "install_method": "Claude host-native `claude plugin marketplace update agentic-plugins` followed by `claude plugin update runtime@agentic-plugins`; the Codex cache was already at 0.86.3 without an explicit command, because its marketplace source is the git remote. No `runtime:settings --execute-plugin-management` executor artifact was produced by this loop, so the installed state rests on the doctor read alone.",
+  "narrative": "First live record in this store, authored in the post-release position ADR-0049 requires: the tag, squash, marketplace-sync sha, proof run id and artifact hash all came into existence only after PR #652 merged, release-please cut #653, the catalog sync landed, both hosts were updated, and the proof was re-recorded.\n\nThe loop is one deliverable, but it took five cross-host review rounds and the first three each found a real defect. The first cut gated the import on doctor's `current` verdict; that is wrong, because doctor judges the whole machine while bootstrap judges a selection, so the gate stranded a step the reducer calls satisfiable. Fixing the read path also made two pre-existing defects reachable for the first time: a stored record could never be refreshed once written, and the resume that imported the claim left its own step pending — meaning the path fix alone did not deliver the issue's stated expectation. A later round then introduced and removed a regression of its own, in which re-judging from the pre-answer snapshot discarded operator declines recorded earlier in the same resume.\n\nTwo paths that can also leave `hooks.codex.attested` permanently unsatisfiable were found and deliberately not fixed here: two Codex-version parsers disagree on SemVer build metadata, and an obsolete disabled hook row for a still-selected plugin lets settings attest while bootstrap stales. They share one root — bootstrap's probe serialization is a less faithful reader of the machine than settings' and doctor's — and are recorded together in plugins/runtime/docs/follow-ups.md. Neither affects this machine or the reporter's (both Codex 0.145.0, no build metadata).",
+  "relations": []
+}
