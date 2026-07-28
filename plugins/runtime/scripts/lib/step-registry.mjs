@@ -21,7 +21,8 @@
 // fragment was actually applied. Passing that context in keeps every rule pure and
 // testable, and keeps the "derive, never trust" boundary visible in the signature.
 
-import { PLUGIN_SET_HOSTS, hardRequiredClosure } from './plugin-set.mjs';
+import { hostPluginsOf } from './effective-selection.mjs';
+import { PLUGIN_SET_HOSTS, codexHookBearingPlugins, hardRequiredClosure } from './plugin-set.mjs';
 
 // §8 — the reducer partitions the expected steps by stage. CONFIG (1–7) and PROOF
 // (8) are separated because the two terminal states differ ONLY on PROOF: both
@@ -84,8 +85,14 @@ export const NEVER_DECLINABLE_PLUGINS = Object.freeze(['runtime', 'companions'])
  *
  * @param pluginSet   the VALIDATED plugin-set (lib/plugin-set.mjs) — the authority for
  *                    per-host membership, hook_bearing, AND the hard-edge closure.
- * @param selection   { plugins: string[] } — the resolved selection (bundle already
- *                    expanded and closed). Note there is deliberately no
+ * @param selection   { plugins: string[], byHost?: { claude: string[], codex: string[] } }
+ *                    — the EFFECTIVE selection (lib/effective-selection.mjs): the
+ *                    bundle expanded and closed, then narrowed by whatever the
+ *                    operator declined (§6.2). `byHost` carries the per-host retained
+ *                    sets, which is what the Codex-hook-bearing expectation is owed
+ *                    against; it is optional, and its absence falls back to `plugins`
+ *                    so a caller cannot silently derive an EMPTY host set by omitting
+ *                    it. Note there is deliberately no
  *                    `hardRequired` input: which plugins a hard edge protects is
  *                    DERIVED from the plugin-set here. Accepting it from the caller
  *                    was the same forgery this registry exists to prevent — a caller
@@ -156,7 +163,12 @@ export function deriveExpectedSteps({ pluginSet, selection, permissionFragmentAp
     steps.push({ id: stepIds.marketplaceRegistered(host), stage: 2, applicable: true, declinable: false, blocked_by: [stepIds.hostPresent(host)] });
   }
 
-  // Stage 3 — per plugin, per host it targets.
+  // Stage 3 — per plugin, per host it targets. Enumerated from the PLUGIN-level
+  // retained set, deliberately not the per-host one: a host-scoped decline
+  // (`plugin.image.claude.installed` refused while Codex is kept) has nowhere else to
+  // live. `selection.desired` is a flat name list, so a partial refusal is
+  // recoverable only from the declined ROW — dropping that row from the expectation
+  // would delete the evidence the next run derives the same narrowing from.
   for (const name of plugins) {
     for (const host of hostsFor(name)) {
       steps.push({
@@ -199,10 +211,16 @@ export function deriveExpectedSteps({ pluginSet, selection, permissionFragmentAp
     steps.push({ id: stepIds.permissionApplied(host), stage: 6, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent(host)] });
   }
 
-  // Stage 7 — Codex hook attestation. Applicable IFF a selected plugin is
+  // Stage 7 — Codex hook attestation. Applicable IFF a RETAINED plugin is
   // Codex-hook-bearing; keys off the CODEX value, because Claude trusts plugin hooks
   // by install and exposes no /hooks review flow (§6.1, as corrected in C0).
-  const codexHookPlugins = plugins.filter((name) => pluginSet.plugins[name]?.hook_bearing?.codex === true);
+  //
+  // Read from the per-host retained set, not from `plugins` (§6.2): this step is
+  // non-declinable, so a refused Codex hook plugin left in the expectation makes it
+  // permanently unsatisfiable — no attestation can cover a plugin the operator will
+  // not install or enable, and the run is `incomplete` on a step with no reachable
+  // resolution.
+  const codexHookPlugins = codexHookBearingPlugins(pluginSet, hostPluginsOf(selection, 'codex'));
   steps.push({
     id: stepIds.hooksAttested(),
     stage: 7,

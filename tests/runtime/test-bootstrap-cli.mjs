@@ -2310,3 +2310,309 @@ describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)
     ok(!(resume.report.warnings ?? []).some((w) => /attestation/i.test(w)), 'and nothing to warn about');
   });
 });
+
+// ---------------------------------------------------------------------------
+// §6.2 — the effective selection (declining a plugin narrows what is owed)
+// ---------------------------------------------------------------------------
+
+describe('runtime bootstrap CLI — §6.2 the effective selection', () => {
+  // A machine with these plugins on BOTH hosts and nothing else. The declined
+  // plugin must be genuinely absent: a decline against a step an observation
+  // already satisfied is not recorded (§6.2 — an observation is not retractable),
+  // so an "installed everywhere" fixture cannot exercise this path at all.
+  const withoutImage = () => hostedRunner({ installed: ALL_PLUGINS.filter((n) => n !== 'image') });
+
+  function splitHostRunner({ claude, codex }) {
+    const base = hostedRunner({ installed: [] });
+    return async (name, args) => {
+      const key = `${name} ${args.join(' ')}`;
+      if (key === 'claude plugin list') return okOut(claudePluginList(claude));
+      if (key === 'codex plugin list --json') return okOut(codexPluginList(codex));
+      return base(name, args);
+    };
+  }
+
+  // Serves settings.mjs, the deep-peer-smoke executor, and a bare doctor report.
+  const smokeDoctorStub = async (scriptPath, args) => {
+    if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+    if (scriptPath.endsWith('doctor.mjs')) {
+      if (args.includes('--execute-deep-peer-smoke')) {
+        return okOut(JSON.stringify({
+          deep_peer_smoke: {
+            directions: {
+              claude_to_codex: { execution: 'executed', status: 'passed' },
+              codex_to_claude: { execution: 'executed', status: 'passed' },
+            },
+          },
+          doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/artifact.json' },
+        }));
+      }
+      return okOut(JSON.stringify({}));
+    }
+    return missing();
+  };
+
+  const runPath = (home, runId) => join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json');
+  const smokeProofPath = (home, runId) => join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'deep-peer-smoke.json');
+
+  async function answersFile(home, name, rows) {
+    const path = join(home, name);
+    await writeFile(path, JSON.stringify(rows));
+    return path;
+  }
+
+  const DECLINE_IMAGE = [
+    { step_id: 'plugin.image.claude.installed', answer: 'decline' },
+    { step_id: 'plugin.image.codex.installed', answer: 'decline' },
+    { step_id: 'plugin.image.codex.enabled', answer: 'decline' },
+  ];
+  const EXECUTE_SMOKE = [
+    { step_id: 'egress.configured', answer: 'decline' },
+    { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+  ];
+
+  it('CONTROL — without the decline, the uninstalled plugin stales the proof forever, naming itself', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const run = (argv) => boot({ argv, home, cwd, runner: withoutImage(), subprocess: smokeDoctorStub });
+    await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,image', '--format', 'json']);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await answersFile(home, 'execute-only.json', EXECUTE_SMOKE)]);
+    const smoke = resume.report.completion.proofs.find((p) => p.kind === 'deep-peer-smoke');
+    // This is the defect's terminal signature, and it is the CONTROL for every
+    // assertion below: a selected-but-absent plugin cannot bind a version, so the
+    // proof that just ran re-judges stale the instant it is written.
+    strictEqual(smoke?.status, 'stale');
+    ok(smoke.reasons.some((r) => /image is in the selection but the proof binds no version for it/.test(r)),
+      `the reason names the plugin: ${JSON.stringify(smoke.reasons)}`);
+  });
+
+  it('declining a plugin narrows the selection to the effective custom one, and the proof goes green', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const run = (argv) => boot({ argv, home, cwd, runner: withoutImage(), subprocess: smokeDoctorStub });
+    const plan = await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,image', '--format', 'json']);
+    const runId = plan.report.run_id;
+    deepStrictEqual(plan.report.selection.desired, ['companions', 'image', 'runtime'], 'the plan still records what was asked for');
+
+    const resume = await run(['resume', '--latest-open', '--answers', await answersFile(home, 'decline-image.json', [...DECLINE_IMAGE, ...EXECUTE_SMOKE])]);
+
+    strictEqual(resume.report.selection.bundle, 'custom', '§6.2 — the decline creates a new effective CUSTOM selection');
+    deepStrictEqual(resume.report.selection.desired, ['companions', 'runtime']);
+    ok(resume.report.selection.excluded.includes('image'), 'the refused plugin joins excluded');
+
+    const smoke = resume.report.completion.proofs.find((p) => p.kind === 'deep-peer-smoke');
+    strictEqual(smoke?.status, 'passed', `the same proof that staled in the control now stands: ${JSON.stringify(smoke?.reasons)}`);
+
+    // The narrowing is PERSISTED — with the steps derived from it, in one mutate.
+    const manifest = JSON.parse(await readFile(runPath(home, runId), 'utf8'));
+    deepStrictEqual(manifest.selection.desired, ['companions', 'runtime'], 'the manifest carries the narrowed selection');
+    ok(!manifest.steps.some((s) => s.id.startsWith('plugin.image.')), 'the refused plugin owes no steps at all');
+    ok(manifest.history.some((h) => /selection narrowed to the effective custom selection/.test(h.reason ?? '')),
+      'the run accounts for WHY the plugin stopped being expected');
+    ok(manifest.choices.some((c) => c.step_id === 'plugin.image.claude.installed' && c.answer === 'decline'),
+      'and the answer itself survives in the append-only ledger');
+
+    // The recorded evidence binds exactly the retained set.
+    const recorded = JSON.parse(await readFile(smokeProofPath(home, runId), 'utf8'));
+    deepStrictEqual(Object.keys(recorded.bound_versions.plugins.claude).sort(), ['companions', 'runtime']);
+
+    // And the persisted document is still a 1.2 manifest — the narrowing needed no
+    // schema addition, which is what keeps an older runtime able to read this run
+    // (§4.1: an unknown non-scalar key is refused at EVERY minor).
+    strictEqual(manifest.schema, 'runtime-bootstrap-run-1.2');
+    const validate = await makeValidator('runtime-bootstrap-run', { pluginRoot: PLUGIN_ROOT });
+    deepStrictEqual(validate(manifest).errors, []);
+  });
+
+  it('the narrowing survives the next verb — status and verify do not re-widen it', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const run = (argv) => boot({ argv, home, cwd, runner: withoutImage(), subprocess: smokeDoctorStub });
+    const plan = await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,image', '--format', 'json']);
+    await run(['resume', '--latest-open', '--answers', await answersFile(home, 'decline-image.json', [...DECLINE_IMAGE, ...EXECUTE_SMOKE])]);
+
+    for (const verb of ['status', 'verify']) {
+      const report = (await run([verb, '--run-id', plan.report.run_id])).report;
+      deepStrictEqual(report.selection.desired, ['companions', 'runtime'], `${verb} reads the narrowed selection`);
+      strictEqual(report.effective_selection, undefined, `${verb} reports no divergence once the narrowing is recorded`);
+      strictEqual(report.completion.proofs.find((p) => p.kind === 'deep-peer-smoke')?.status, 'passed');
+    }
+  });
+
+  it('a HOST-scoped decline narrows that host only — the plugin stays in the selection', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runner = splitHostRunner({
+      claude: ALL_PLUGINS.filter((n) => n !== 'image'),
+      codex: ALL_PLUGINS,
+    });
+    const run = (argv) => boot({ argv, home, cwd, runner, subprocess: smokeDoctorStub });
+    const plan = await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,image', '--format', 'json']);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await answersFile(home, 'decline-claude-image.json', [
+      { step_id: 'plugin.image.claude.installed', answer: 'decline' },
+      ...EXECUTE_SMOKE,
+    ])]);
+
+    // `desired` is a flat name list, so dropping the plugin would refuse more than
+    // the operator did — Codex keeps it.
+    ok(resume.report.selection.desired.includes('image'), 'a partial refusal does not remove the plugin');
+    const smoke = resume.report.completion.proofs.find((p) => p.kind === 'deep-peer-smoke');
+    strictEqual(smoke?.status, 'passed', `the Claude-side refusal stops staling the proof: ${JSON.stringify(smoke?.reasons)}`);
+
+    const recorded = JSON.parse(await readFile(smokeProofPath(home, plan.report.run_id), 'utf8'));
+    ok(!('image' in recorded.bound_versions.plugins.claude), 'no Claude binding for the host that was refused');
+    strictEqual(recorded.bound_versions.plugins.codex.image, '9.9.9', 'the retained host still binds');
+
+    // The declined ROW is the only record of a host-scoped refusal, so it must not
+    // be dropped from the expectation the way a whole-plugin decline is.
+    const manifest = JSON.parse(await readFile(runPath(home, plan.report.run_id), 'utf8'));
+    strictEqual(manifest.steps.find((s) => s.id === 'plugin.image.claude.installed')?.status, 'declined');
+  });
+
+  it('a declined Codex hook plugin leaves the attestation expectation instead of making it unsatisfiable', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runner = hostedRunner({ installed: ALL_PLUGINS.filter((n) => n !== 'designer') });
+    const run = (argv) => boot({ argv, home, cwd, runner, subprocess: smokeDoctorStub });
+    const plan = await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,designer', '--format', 'json']);
+
+    // CONTROL — with `designer` selected, the non-declinable attestation step is
+    // owed and open.
+    const hookBefore = plan.report.steps.find((s) => s.id === 'hooks.codex.attested');
+    strictEqual(hookBefore.declinable, false);
+    ok(['pending', 'blocked'].includes(hookBefore.status), `owed while the hook plugin is selected: ${hookBefore.status}`);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await answersFile(home, 'decline-designer.json', [
+      { step_id: 'plugin.designer.claude.installed', answer: 'decline' },
+      { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
+      { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
+      ...EXECUTE_SMOKE,
+    ])]);
+
+    ok(!resume.report.selection.desired.includes('designer'));
+    strictEqual(resume.report.completion.hook_attestation.status, 'not-applicable',
+      'no retained plugin bears Codex hooks, so there is nothing to attest');
+    ok(!resume.report.completion.unsatisfied.includes('hooks.codex.attested'),
+      'and the step no longer blocks a run on evidence that can never exist');
+  });
+
+  it('a CODEX-ONLY decline of a hook plugin retires the attestation while the plugin stays selected', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // Installed on Claude, absent on Codex — so the Codex row can actually be
+    // declined (a satisfied observation is not retractable).
+    const runner = splitHostRunner({
+      claude: ALL_PLUGINS,
+      codex: ALL_PLUGINS.filter((n) => n !== 'designer'),
+    });
+    const run = (argv) => boot({ argv, home, cwd, runner, subprocess: smokeDoctorStub });
+    const plan = await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,designer', '--format', 'json']);
+    strictEqual(plan.report.steps.find((s) => s.id === 'hooks.codex.attested').applicable !== false, true);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await answersFile(home, 'decline-designer-codex.json', [
+      { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
+      ...EXECUTE_SMOKE,
+    ])]);
+
+    // The plugin is RETAINED — it still runs on Claude, and `desired` cannot say
+    // "Claude only". But Codex bears none of its hooks, so the non-declinable
+    // attestation step has nothing left to be about. Reading the plugin-level set
+    // here would keep demanding an attestation for a Codex install that will never
+    // happen.
+    ok(resume.report.selection.desired.includes('designer'), 'the plugin stays in the selection');
+    strictEqual(resume.report.completion.hook_attestation.status, 'not-applicable');
+    ok(!resume.report.completion.unsatisfied.includes('hooks.codex.attested'));
+  });
+
+  it('declining a plugin re-runs the hard closure — its edge target becomes declinable', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runner = hostedRunner({ installed: ['runtime', 'companions', 'attention'] });
+    const run = (argv) => boot({ argv, home, cwd, runner, subprocess: smokeDoctorStub });
+    const plan = await run(['plan', '--bundle', 'engineering', '--format', 'json']);
+
+    // CONTROL — `orchestrator` hard-requires `engineer`, so engineer is protected.
+    strictEqual(plan.report.steps.find((s) => s.id === 'plugin.engineer.claude.installed').declinable, false);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await answersFile(home, 'decline-orch.json', [
+      { step_id: 'plugin.orchestrator.claude.installed', answer: 'decline' },
+      { step_id: 'plugin.orchestrator.codex.installed', answer: 'decline' },
+      { step_id: 'plugin.orchestrator.codex.enabled', answer: 'decline' },
+    ])]);
+
+    ok(!resume.report.selection.desired.includes('orchestrator'));
+    strictEqual(resume.report.steps.find((s) => s.id === 'plugin.engineer.claude.installed').declinable, true,
+      'with the requiring plugin gone, its target is optional again — the closure is recomputed, not frozen at plan time');
+  });
+
+  it('a LEGACY run whose declines never narrowed is judged correctly by R0 and healed by resume', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const run = (argv) => boot({ argv, home, cwd, runner: withoutImage(), subprocess: smokeDoctorStub });
+    const plan = await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,image', '--format', 'json']);
+    const runId = plan.report.run_id;
+
+    // Rewind the manifest to what the pre-§6.2 runtime would have written: the
+    // declines recorded on the rows, the selection untouched.
+    const manifest = JSON.parse(await readFile(runPath(home, runId), 'utf8'));
+    for (const step of manifest.steps) {
+      if (step.id.startsWith('plugin.image.')) step.status = 'declined';
+    }
+    await writeFile(runPath(home, runId), `${JSON.stringify(manifest, null, 2)}\n`);
+
+    // R0 — status cannot persist a correction, but it must not report a completion
+    // computed against plugins the operator refused either. It says both things.
+    const status = await run(['status', '--run-id', runId]);
+    deepStrictEqual(status.report.selection.desired, ['companions', 'image', 'runtime'], 'the stored record is presented verbatim');
+    deepStrictEqual(status.report.effective_selection.plugins, ['companions', 'runtime'], 'and the retained set rides alongside it');
+    ok(status.report.warnings.some((w) => /effective selection \(§6\.2\)/.test(w)), 'with the divergence named');
+
+    // M1 — resume writes the narrowing through.
+    await run(['resume', '--latest-open', '--answers', await answersFile(home, 'legacy-smoke.json', EXECUTE_SMOKE)]);
+    const healed = JSON.parse(await readFile(runPath(home, runId), 'utf8'));
+    deepStrictEqual(healed.selection.desired, ['companions', 'runtime']);
+    const after = await run(['status', '--run-id', runId]);
+    strictEqual(after.report.effective_selection, undefined, 'once healed, there is no divergence left to report');
+  });
+
+  it('a hand-written decline on a MANDATORY plugin narrows nothing — two independent refusals', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const run = (argv) => boot({ argv, home, cwd, runner: withoutImage(), subprocess: smokeDoctorStub });
+    const plan = await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,image', '--format', 'json']);
+    const runId = plan.report.run_id;
+
+    // The answers grammar refuses a decline against `companions` outright, so a
+    // hand-edited manifest is the only way that status reaches the run at all. It
+    // must still not shrink the expectation: `proof.deep-peer-smoke` is applicable
+    // BECAUSE companions is mandatory (§6.2), so narrowing it away would delete the
+    // one proof that the cross-host bridge works — a false pass bought by editing
+    // the file the reducer is judging.
+    const manifest = JSON.parse(await readFile(runPath(home, runId), 'utf8'));
+    for (const step of manifest.steps) {
+      if (step.id.startsWith('plugin.companions.')) step.status = 'declined';
+    }
+    await writeFile(runPath(home, runId), `${JSON.stringify(manifest, null, 2)}\n`);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await answersFile(home, 'noop.json', EXECUTE_SMOKE)]);
+    ok(resume.report.selection.desired.includes('companions'), 'the mandatory plugin stays in the selection');
+    const smoke = resume.report.completion.proofs.find((p) => p.kind === 'deep-peer-smoke');
+    strictEqual(smoke?.required, true, 'and the proof it makes reachable is still owed');
+
+    // Two independent defenses, and the FIRST one is what actually fires here: the
+    // judge re-asserts a decline only where the registry says the step is declinable
+    // (§6.2), so a hand-written `declined` on a non-declinable row is normalized back
+    // to the observation before the narrowing ever sees it.
+    const healed = JSON.parse(await readFile(runPath(home, runId), 'utf8'));
+    ok(healed.steps.filter((s) => s.id.startsWith('plugin.companions.')).every((s) => s.status !== 'declined'),
+      'the forged status does not survive a re-judge');
+  });
+
+  it('a SATISFIED plugin step is not narrowed away — an observation is not retractable', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: smokeDoctorStub });
+    await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,image', '--format', 'json']);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await answersFile(home, 'decline-installed.json', [...DECLINE_IMAGE, ...EXECUTE_SMOKE])]);
+
+    // The plugin is installed on both hosts, so the judge never wrote `declined`
+    // (§6.2) and the selection is unchanged. The proof is green anyway — an
+    // installed plugin binds a version, which is the case that was never broken.
+    ok(resume.report.selection.desired.includes('image'), 'a decline does not un-observe an installed plugin');
+    strictEqual(resume.report.selection.bundle, 'custom');
+    strictEqual(resume.report.completion.proofs.find((p) => p.kind === 'deep-peer-smoke')?.status, 'passed');
+  });
+});

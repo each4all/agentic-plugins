@@ -717,6 +717,55 @@ describe('runtime completion reducer — freshness holds against unbound evidenc
     deepStrictEqual(required.codex, ['companions', 'runtime']);
   });
 
+  it('requiredBoundPlugins and currentBoundVersions read the SAME per-host retained set (§6.2)', async () => {
+    const pluginSet = await loadPluginSet();
+    // A host-scoped decline: `image` is retained, but refused on Claude.
+    const selection = {
+      plugins: ['companions', 'image', 'runtime'],
+      byHost: { claude: ['companions', 'runtime'], codex: ['companions', 'image', 'runtime'] },
+    };
+    const probe = {
+      hosts: {
+        claude: { cli_version: '2.1.208', plugins: { companions: { state: 'installed', version: '1.0.0' }, runtime: { state: 'installed', version: '1.0.0' }, image: { state: 'installed', version: '1.0.0' } } },
+        codex: { cli_version: '0.144.1', plugins: { companions: { state: 'installed', version: '1.0.0' }, runtime: { state: 'installed', version: '1.0.0' }, image: { state: 'installed', version: '1.0.0' } } },
+      },
+    };
+    const current = currentBoundVersions({ probe, selection, runtimeVersion: RUNTIME_VERSION });
+    const required = requiredBoundPlugins({ pluginSet, selection });
+    // The demand and the binding must agree host by host, even though `image` IS
+    // installed on Claude: one side counting it and the other not is how a proof
+    // becomes permanently unsatisfiable.
+    deepStrictEqual(Object.keys(current.plugins.claude).sort(), required.claude);
+    deepStrictEqual(Object.keys(current.plugins.codex).sort(), required.codex);
+    strictEqual(boundVersionsFresh(current, current, { requiredPlugins: required }).fresh, true);
+  });
+
+  it('invalidation compares the same per-host retained set the binding does (§6.2)', async () => {
+    const selection = {
+      plugins: ['companions', 'image', 'runtime'],
+      byHost: { claude: ['companions', 'runtime'], codex: ['companions', 'image', 'runtime'] },
+    };
+    const probe = {
+      runtime_version: RUNTIME_VERSION,
+      hosts: {
+        claude: { cli_version: '2.1.208', plugins: { companions: { state: 'installed', version: '1.0.0' }, runtime: { state: 'installed', version: '1.0.0' }, image: { state: 'installed', version: '1.0.0' } } },
+        codex: { cli_version: '0.144.1', plugins: { companions: { state: 'installed', version: '1.0.0' }, runtime: { state: 'installed', version: '1.0.0' }, image: { state: 'installed', version: '1.0.0' } } },
+      },
+    };
+    const current = currentBoundVersions({ probe, selection, runtimeVersion: RUNTIME_VERSION });
+    const result = invalidateStaleSteps({
+      steps: [{ id: 'permission.claude.applied', status: 'satisfied' }],
+      probe,
+      current,
+      selection,
+      at: AT,
+    });
+    // The probe is its OWN current state — nothing drifted. A filter that differs
+    // from `currentBoundVersions` would manufacture a permanent key-set mismatch out
+    // of the refused Claude row and reset every satisfied step on every run.
+    deepStrictEqual(result.invalidated, [], `no drift exists to invalidate: ${JSON.stringify(result.reasons)}`);
+  });
+
   it('an attestation binding NO version for an uninstalled hook plugin is stale, not attested', async () => {
     const m = await completeMachine({ bundle: 'engineering' });
     const probe = structuredClone(m.probe);

@@ -1222,6 +1222,57 @@ Declining a plugin creates a **new effective `custom` selection** and **re-runs 
 dependency closure** (§9.1). Declining `companions` while retaining `image` on Claude
 is therefore rejected twice over — once by the closure, once by the mandatory rule.
 
+#### 6.2.1 The effective selection is persisted, not recomputed per consumer
+
+"Creates a new effective selection" is a **write**, and the wording had been read as a
+validation step for long enough to matter: the retained set was computed inside the
+answers gate, used to reject illegal declines, and discarded. Every selection-derived
+expectation kept reading the planned `desired`, so a declined plugin was refused and
+demanded at once — `requiredBoundPlugins` demanded a bound version that
+`currentBoundVersions` could never supply for an uninstalled plugin, staling **every**
+proof forever with a reason naming a plugin the operator had refused; the
+non-declinable `hooks.codex.attested` stayed owed over a refused hook plugin; and the
+closure was computed over refused plugins, so declining `orchestrator` left `engineer`
+protected. There was no in-run recovery: `abandon` plus a re-plan was the only escape.
+
+The rules, stated so a reader can check an implementation against them:
+
+- **`plan` and `resume` persist the narrowing**, in the same atomic write as the steps
+  derived from it. The bundle becomes `custom` and `excluded` is recomputed. The
+  bundle rewrite is load-bearing rather than cosmetic: a named bundle is **re-expanded**
+  from the plugin-set when a selection is seeded into a new run, so a narrowed
+  `desired` left under `design` would be silently re-widened by an export/seed round
+  trip — the decline undone by the artifact meant to reproduce the machine.
+- **`status` and `verify` derive it in memory** and cannot write (§3, R0). They present
+  the stored selection verbatim, carry the retained set beside it, and warn that the
+  two diverge. A run recorded before this rule existed is therefore judged correctly
+  on the spot and healed by the next `resume`.
+- **A HOST-scoped decline narrows the host, not the plugin.** `desired` is a flat name
+  list and cannot express "on Codex but not Claude", so a plugin refused on one host
+  stays selected and its refused host stops binding versions, stops receiving install
+  actions, and stops counting toward the Codex-hook-bearing set. The declined ROW is
+  the only record of such a refusal, which is why a partial decline keeps its Stage-3
+  row while a whole-plugin decline does not.
+- **Declinability is recomputed to a fixpoint**, because removing a plugin can free its
+  hard-edge targets. A single pass would honour one decline and silently drop a second
+  that the first had just made legal. The fixpoint is order-independent: removals only
+  ever shrink the closure.
+- **A decline that cannot narrow is refused, never recorded as a no-op** — a mandatory
+  plugin, or one still reached by a hard edge from a retained plugin. The answers gate
+  and the narrowing read ONE derivation, so a validator and the thing it validates
+  cannot disagree.
+- **An observation is not retractable.** A decline against an already-`satisfied` step
+  is not written (§6.2's judge rule), so it does not narrow anything. Nothing is
+  refused that was already observed to be true.
+- **Narrowing is not reversible in-run.** Once a plugin leaves the selection its steps
+  leave the expectation, so there is no step left for a later `accept` to target; the
+  answer would be rejected as naming an unexpected step (§6.1). Re-planning is the
+  route back, and `choices[]` keeps the audit trail either way.
+- **No schema addition.** The narrowing is expressed in the existing
+  `{bundle, desired, excluded}` seat. A new member would have to be an array, and
+  §4.1 refuses an unknown **non-scalar** key at *every* minor — so an older runtime
+  could no longer even `status` the run.
+
 ---
 
 ## 7. Resume and invalidation
