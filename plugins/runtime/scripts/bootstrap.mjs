@@ -1530,6 +1530,39 @@ function resolveSelection({ opts, pluginSet, seededSelection = null }) {
 // the step from the cache stranded a run whose attestation file landed but
 // whose manifest persist failed — every later resume saw the recorded proof,
 // skipped refreshing it, and kept the step pending off the stale cache).
+/**
+ * The previous-state map judgeSteps judges against. ONE implementation, because
+ * both callers must normalize identically: reprobeAgainstRun's first pass, and
+ * resume's post-import re-judge. A second hand-rolled copy is how the two drift.
+ */
+function priorJudgeMapOf(stepList) {
+  return new Map((stepList ?? []).map((s) => {
+    if (s.id === stepIds.notifyConfigured() && (s.fragment_pointer || s.apply_command)) {
+      const { fragment_pointer, apply_command, fragment_applied, ...rest } = s;
+      return [s.id, rest];
+    }
+    // A DECLINED provenance carries no render state into judgement either
+    // (Refine-verify round 6): a legacy declined step's frozen `desired`
+    // would otherwise mode-bind the exact probe and demote a legitimate
+    // satisfying observation to manual-follow-up — the refused plan's
+    // expectation blocking the operator's own manual configuration is one
+    // more resurrection shape. The entry assembly drops the same fields
+    // post-judgement (belt-and-braces).
+    if (s.status === 'declined' && (s.fragment_pointer || s.apply_command || s.desired != null)) {
+      const { fragment_pointer, apply_command, desired, fragment_applied, ...rest } = s;
+      return [s.id, rest];
+    }
+    return [s.id, s];
+  }));
+}
+
+// A parsed JSON value is only usable as a report/record when it is a plain
+// object: `null`, `false`, `0`, `""` and arrays all survive JSON.parse and would
+// otherwise slip through truthiness checks unremarked.
+function isPlainReportObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function hookVerdictFor({ recordedAttestation, pluginSet, selection, probe }) {
   const codexHookPlugins = selection.desired.filter((n) => pluginSet.plugins[n]?.hook_bearing?.codex === true).sort();
   const applicable = codexHookPlugins.length > 0;
@@ -1728,24 +1761,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // unrelated fragment applied when the LOCAL policy satisfies (Codex review
   // MINOR). Strip the legacy metadata; composeFragments re-renders it onto the
   // right step on this same resume.
-  const priorForJudge = new Map(invalidation.steps.map((s) => {
-    if (s.id === stepIds.notifyConfigured() && (s.fragment_pointer || s.apply_command)) {
-      const { fragment_pointer, apply_command, fragment_applied, ...rest } = s;
-      return [s.id, rest];
-    }
-    // A DECLINED provenance carries no render state into judgement either
-    // (Refine-verify round 6): a legacy declined step's frozen `desired`
-    // would otherwise mode-bind the exact probe and demote a legitimate
-    // satisfying observation to manual-follow-up — the refused plan's
-    // expectation blocking the operator's own manual configuration is one
-    // more resurrection shape. The entry assembly drops the same fields
-    // post-judgement (belt-and-braces).
-    if (s.status === 'declined' && (s.fragment_pointer || s.apply_command || s.desired != null)) {
-      const { fragment_pointer, apply_command, desired, fragment_applied, ...rest } = s;
-      return [s.id, rest];
-    }
-    return [s.id, s];
-  }));
+  const priorForJudge = priorJudgeMapOf(invalidation.steps);
 
   const steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, now: ctx.now });
   const receiptRow = proofRead.records.find((r) => r.kind === 'egress-receipt-attestation') ?? null;
@@ -1762,7 +1778,12 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
     currentActivationFingerprint: currentActivationFingerprintOf(readers),
     receiptEvidence: receiptRow ? { record: receiptRow.record, providerAckSha256: ackRow?.sha256 ?? null } : null,
   });
-  return { raw, probe, readers, steps, completion, selection, invalidation, proofRecords: proofRead.records, recordedHookAttestation };
+  // `expected` rides out so a caller that changes a judgement INPUT after this
+  // pass (resume importing a hook attestation) can re-run judgeSteps instead of
+  // leaving the step judged against evidence the same verb has since superseded.
+  // The previous-state map is deliberately NOT exported: that caller must build
+  // it from ITS OWN current steps, since applyAnswers has mutated them since.
+  return { raw, probe, readers, steps, completion, selection, invalidation, proofRecords: proofRead.records, recordedHookAttestation, expected };
 }
 
 /**
@@ -2061,7 +2082,10 @@ async function runResume(ctx, opts) {
   if (reprobe.proofReadFailure) {
     return { exitCode: EXIT.UNEXPECTED, report: { verb: 'resume', status: 'evidence-unreadable', diagnostics: reprobe.proofReadFailure } };
   }
-  const { probe, steps, selection } = reprobe;
+  const { probe, selection } = reprobe;
+  // Rebindable: a hook-attestation import later in this verb supersedes the
+  // evidence these steps were judged against, and the same resume must reflect it.
+  let steps = reprobe.steps;
   const warnings = [...(picked.warnings ?? [])];
 
   const { choices, history, effective } = applyAnswers({ steps, answers, now: ctx.now, selection, pluginSet, verb: 'resume' });
@@ -2122,26 +2146,104 @@ async function runResume(ctx, opts) {
   }
 
   // The Codex /hooks attestation rides the same verb the same way (§8.2): a
-  // doctor report fetched for a proof already carries codex_hook_review; when
-  // none was fetched but the attestation step is still open, a read-only doctor
-  // run would be R0-adjacent — resume is M1, so fetching one is in-contract.
-  // `recordedHookAttestation` is the read-back evidence — an already-persisted
-  // claim short-circuits the fetch exactly as the old completion-cache did.
+  // doctor report fetched for a proof already carries the attestation section;
+  // when none was fetched but the attestation step is still open, a read-only
+  // doctor run would be R0-adjacent — resume is M1, so fetching one is
+  // in-contract. `recordedHookAttestation` is the read-back evidence — an
+  // already-persisted claim short-circuits the fetch exactly as the old
+  // completion-cache did.
+  //
+  // The attestation lives at `settings_runs.codex_hook_review` — the currency
+  // WRAPPER `{status, current, currency_reason, latest}` that doctor's
+  // buildCodexHookReviewCurrency publishes — and never at the report's top
+  // level. Reading the top-level key (#645) resolved `undefined` on every
+  // report doctor can emit, so the import never ran, no hook-attestation record
+  // was written, and the non-declinable `hooks.codex.attested` step could never
+  // be satisfied on any hook-bearing bundle. `.latest` is the newest ATTESTING
+  // run (doctor picks it explicitly), not `settings_runs.latest`, which is
+  // whatever the newest settings run happened to be — frequently one that never
+  // requested a review.
+  //
+  // Every non-importing branch below WARNS. The defect's real cost was silence:
+  // the operator saw a pending non-declinable step whose recovery text told them
+  // to do the thing they had already done, with no warning naming why it did not
+  // take.
+  //
+  // The IMPORT GATE is bootstrap's own selection-scoped verdict, never doctor's
+  // `current` (Refine-verify peer, High). Doctor judges the whole MACHINE: it
+  // compares against `codex_plugin_hooks.summary.bundled_plugins` and blocks on
+  // any disabled handler anywhere. Bootstrap judges a SELECTION: the importer
+  // projects machine-wide evidence down to the selected plugins, and
+  // recomputeHookAttestation skips disabled handlers for plugins outside it
+  // (there is an explicit test for that). So a machine with `designer` disabled
+  // reads not-current to doctor while an `engineering` selection of
+  // engineer+orchestrator is legitimately attested — gating on doctor's verdict
+  // would strand a step the reducer says is satisfiable. The version parsers
+  // diverge too (doctor keeps SemVer build metadata and may fall back to cache
+  // where bootstrap records `unknown`), so `current: true` would not even be a
+  // sufficient gate in the other direction.
+  //
+  // Re-attempting on a STALE stored record is the other half. The old guard
+  // short-circuited on mere presence, so once any record existed no later
+  // attestation could ever replace it: re-attesting after a Codex upgrade
+  // recorded a fresh claim that bootstrap never read, and the non-declinable
+  // step's own "re-attest, then resume" recovery looped forever. That was
+  // unreachable while the path bug kept the store empty, and reachable the
+  // moment it was fixed. The gate is now the verdict, not the presence.
   const codexHookPlugins = selection.desired.filter((n) => pluginSet.plugins[n]?.hook_bearing?.codex === true).sort();
-  if (codexHookPlugins.length > 0 && !reprobe.recordedHookAttestation) {
+  const storedHookStatus = reprobe.completion?.hook_attestation?.status ?? 'absent';
+  let importedHookAttestation = null;
+  if (codexHookPlugins.length > 0 && storedHookStatus !== 'attested') {
     if (!doctorReport) {
       const doctorPath = join(SCRIPT_DIR, 'doctor.mjs');
       const result = await ctx.subprocessRunner(doctorPath, ['--repo-root', ctx.cwd, '--format', 'json'], { cwd: ctx.cwd, env: scrubbedControlPlaneEnv(ctx.env), timeoutMs: 120_000 });
       if (result?.ok) {
         executedAnything = true;
-        try { doctorReport = JSON.parse(result.stdout); } catch { warnings.push('doctor output for the hook attestation was not valid JSON'); }
+        // A successful parse that is not an OBJECT is not a report: `null`,
+        // `false`, `0` and `""` all parse, and each would slip past every
+        // truthiness check below without a word (peer, Low).
+        try {
+          const parsed = JSON.parse(result.stdout);
+          if (isPlainReportObject(parsed)) doctorReport = parsed;
+          else warnings.push('doctor output for the hook attestation parsed but is not a report object; the attestation step stays open');
+        } catch { warnings.push('doctor output for the hook attestation was not valid JSON'); }
+      } else {
+        warnings.push(`runtime:doctor could not be run for the Codex /hooks attestation (${result?.error_code ?? result?.exit_code ?? 'unknown failure'}); the attestation step stays open`);
       }
     }
-    if (doctorReport?.codex_hook_review) {
-      const imported = importHookAttestation(doctorReport.codex_hook_review, { expectedPlugins: codexHookPlugins });
+    // A MALFORMED section and an ABSENT one are different diagnoses and must not
+    // collapse into one message: "nothing was attested yet" sends the operator to
+    // /hooks, while a section (or a `latest`) that is present but not an object
+    // means this runtime and its doctor disagree about the report shape, which
+    // /hooks cannot fix (peer, round 3 — a truthy non-object review was reported
+    // as "nothing recorded").
+    const reviewRaw = doctorReport ? (doctorReport.settings_runs?.codex_hook_review ?? null) : null;
+    const review = isPlainReportObject(reviewRaw) ? reviewRaw : null;
+    const shapeAdvice = 'this runtime and its doctor disagree about the report shape — repair or upgrade the runtime plugin install (a second doctor run would return the same shape)';
+    if (doctorReport && reviewRaw === null) {
+      // Not a state a re-fetch can repair: doctor publishes this section
+      // unconditionally, and both calls invoke the same sibling binary, so a
+      // second identical subprocess would produce the same shape. Spawning one
+      // would only hide a contract regression behind a silent extra run.
+      warnings.push(`the doctor report carries no settings_runs.codex_hook_review section, so the Codex /hooks attestation could not be read; ${shapeAdvice}`);
+    } else if (doctorReport && review === null) {
+      warnings.push(`the doctor report's settings_runs.codex_hook_review is not an object, so the Codex /hooks attestation could not be read; ${shapeAdvice}`);
+    } else if (review && review.latest === null) {
+      // An EXPLICIT null is doctor's own encoding of "no attesting settings run
+      // exists" — the one shape here that really is an empty machine rather than
+      // a broken report, and the only one whose recovery is /hooks.
+      warnings.push('no Codex /hooks attestation has been recorded on this machine, so nothing could be imported; review the bundled hooks with /hooks in an active Codex session, then run runtime:settings --attest-codex-hook-review and resume again');
+    } else if (review && !isPlainReportObject(review.latest)) {
+      // Anything else — an OMITTED `latest` key included — is a shape mismatch.
+      // Doctor always emits the key, so its absence is not an empty machine, and
+      // sending the operator to /hooks for it would be a recovery that cannot work.
+      warnings.push(`the doctor report's recorded Codex /hooks attestation is ${review.latest === undefined ? 'missing' : 'not an object'}, so it could not be imported; ${shapeAdvice}`);
+    } else if (review) {
+      const imported = importHookAttestation(review.latest, { expectedPlugins: codexHookPlugins });
       if (imported.ok) {
         const persisted = await writeBootstrapProof({ homeDir: ctx.homeDir, repoRoot: ctx.cwd, runId: picked.run.run_id, kind: 'hook-attestation', record: imported.record });
-        if (!persisted?.ok) warnings.push(`hook attestation metadata could not be persisted (the run reduces without it; re-run resume to retry): ${(persisted?.diagnostics ?? ['unknown write failure']).join('; ')}`);
+        if (persisted?.ok) importedHookAttestation = imported.record;
+        else warnings.push(`hook attestation metadata could not be persisted (the run reduces without it; re-run resume to retry): ${(persisted?.diagnostics ?? ['unknown write failure']).join('; ')}`);
       } else {
         warnings.push(`the recorded Codex /hooks attestation is not importable for this selection: ${imported.errors.join('; ')}`);
       }
@@ -2172,6 +2274,58 @@ async function runResume(ctx, opts) {
   // pre-execution readers, a just-recorded ack could be marked stale (or a
   // stale one current) when the operator changed channel/recipient mid-proof.
   const finalReaders = executedAnything ? await readUserGlobalReaders(ctx) : reprobe.readers;
+
+  // A hook attestation imported ABOVE was judged into `steps` before it existed
+  // (reprobeAgainstRun reads proof/ and judges in one pass, and the import comes
+  // after), so the reduction below would pair a fresh `attested` verdict with a
+  // still-`pending` step and report the run incomplete — completion needs both.
+  // The operator's symptom was that the resume which finally imported the claim
+  // still showed the step pending, and only a SECOND resume satisfied it: the
+  // same "do the thing you already did" loop #645 is about, one step further on.
+  // Re-judge against THIS RESUME'S CURRENT steps, not the pre-answer snapshot.
+  // applyAnswers mutates step rows in place — a decline sets `declined` and
+  // withdraws the fragment pointer, apply command and desired state — and it has
+  // already run by the time the import happens. Re-judging from the pre-answer
+  // map (the first cut of this fix) silently discarded those mutations: the
+  // operator's decline stayed in `choices` and `history` while the step itself
+  // reverted to `pending` with its refused hand-off restored, and because the
+  // reducer reads `declined` off the step row rather than the choice ledger, a
+  // declined proof could even lose its completion cap. Feeding the post-answer
+  // rows through the same normalization is exactly how declines already survive
+  // from one resume to the next: judgeSteps re-asserts `declined` from
+  // `previous` for a declinable step whose fresh observation is not satisfied.
+  // Only the hook verdict is new; it is computed against `finalProbe` — the same
+  // probe the reduction uses — so step and completion cannot disagree about it.
+  //
+  // The hook row is not necessarily the ONLY row that moves, and claiming so
+  // would be wrong (peer, round 3): the graph pass runs again over the ANSWERED
+  // rows, so a dependent the first pass demoted to `blocked` behind a
+  // now-declined predecessor correctly converges to `pending` here — declines
+  // count as resolved. That is earlier convergence to the same answer, not a new
+  // verdict: both `blocked` and `pending` are unresolved to the reducer, so no
+  // run completes on it.
+  // (The broader "resume reports a probe it did not reduce against" mismatch for
+  // non-hook steps is a separate, pre-existing defect and is deliberately not
+  // touched here.)
+  if (importedHookAttestation) {
+    const refreshedVerdict = hookVerdictFor({ recordedAttestation: importedHookAttestation, pluginSet, selection, probe: finalProbe });
+    steps = judgeSteps({
+      expected: reprobe.expected,
+      probe: reprobe.probe,
+      raw: reprobe.raw,
+      pluginSet,
+      readers: reprobe.readers,
+      hookVerdict: refreshedVerdict,
+      previousById: priorJudgeMapOf(steps),
+      now: ctx.now,
+    });
+    // An imported claim that does not stand for THIS selection leaves the step
+    // open on purpose — say why, with the selection-scoped reasons, rather than
+    // letting the operator re-attest into the same outcome.
+    if (refreshedVerdict.status !== 'attested') {
+      warnings.push(`the imported Codex /hooks attestation does not hold for this selection (${refreshedVerdict.status}): ${refreshedVerdict.reasons.join('; ')}`);
+    }
+  }
 
   // Reduce from the authoritative bytes: everything the executors persisted is
   // read back — validated, hashed — and ONLY that evidence reaches the reducer.

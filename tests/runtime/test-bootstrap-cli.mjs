@@ -7,7 +7,7 @@
 // tests/runtime/test-bootstrap.mjs; this file exercises the §3 grammar, the
 // R0/M1 boundary, the no-executor rule, and the CLI lifecycle end to end.
 
-import { deepStrictEqual, ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -616,7 +616,9 @@ describe('runtime bootstrap CLI — lifecycle', () => {
             doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/artifact.json' },
           }));
         }
-        // The hook-attestation fetch path: no codex_hook_review → resume warns and moves on.
+        // Not the hook-attestation path: this fixture plans `base`, whose
+        // selection has no Codex hook-bearing plugin, so §8.2 never runs. The
+        // import itself is covered in the §8.2 block at the end of this file.
         return okOut(JSON.stringify({}));
       }
       return missing();
@@ -1266,7 +1268,7 @@ describe('bootstrap egress-provider-ack executor E2E (ADR-0048 §3)', () => {
             doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: ARTIFACT_SHA },
           }));
         }
-        // Hook-attestation fetch path: no codex_hook_review → resume warns and moves on.
+        // Not the hook-attestation path either — `base` again (see above).
         return okOut(JSON.stringify({}));
       }
       return missing();
@@ -1891,5 +1893,420 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
     });
     ok(/^ {2}- \[stage 8\] proof\.deep-peer-smoke: passed$/m.test(text), `evidence renders with no steps to join:\n${text}`);
     ok(!/execution:/.test(text), 'no control context is invented when there are no steps');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §8.2 — the Codex /hooks attestation import (#645)
+// ---------------------------------------------------------------------------
+//
+// Before this fix, resume read the attestation from `doctorReport.codex_hook_review`
+// — a top-level key doctor emits on NO report. The read was always `undefined`, so
+// importHookAttestation never ran, `proof/hook-attestation.json` was never written,
+// and the non-declinable `hooks.codex.attested` step could never be satisfied on any
+// hook-bearing bundle. Nothing warned.
+//
+// Every fixture below shapes its doctor stub like doctor's REAL `--format json`
+// stdout: the report itself (doctor.mjs writes `JSON.stringify(report)`), whose
+// `settings_runs.codex_hook_review` is the currency wrapper published by
+// buildCodexHookReviewCurrency. That shape is what makes the two resume shapes —
+// with and without an executing proof — agree, since both parse doctor's stdout.
+describe('runtime bootstrap CLI — §8.2 Codex /hooks attestation import (#645)', () => {
+  // The `engineering` bundle's Codex hook-bearing set, sorted as the importer sorts.
+  const HOOK_PLUGINS = ['engineer', 'orchestrator'];
+  const SETTINGS_ARTIFACT_SHA = 'b'.repeat(64);
+
+  // `hostedRunner` reports every plugin at 9.9.9 and Codex CLI at 0.140.0; the
+  // attestation binds exactly those, so the record is current on this machine.
+  const attestationLatest = (overrides = {}) => ({
+    run_id: 'settings-20260718T030000Z-aa11bb',
+    mode: 'attest-codex-hook-review',
+    requested: true,
+    attested: true,
+    status: 'attested',
+    host: 'codex',
+    attested_at: '2026-07-18T03:00:00Z',
+    bundled_plugins: [...HOOK_PLUGINS],
+    attested_plugins: [...HOOK_PLUGINS],
+    plugin_versions: { engineer: '9.9.9', orchestrator: '9.9.9' },
+    bound_versions: { codex: '0.140.0', plugins: { codex: { engineer: '9.9.9', orchestrator: '9.9.9' } } },
+    artifact_pointer: '~/.agentic-plugins/runs/settings/settings-20260718T030000Z-aa11bb/settings.json',
+    artifact_hash: SETTINGS_ARTIFACT_SHA,
+    ...overrides,
+  });
+
+  // The doctor report as it reaches bootstrap: `settings_runs.codex_hook_review`,
+  // never a top-level key. `extra` merges the proof section for the executing shape.
+  const doctorReportWith = (review, extra = {}) => JSON.stringify({
+    schema_version: 'runtime-doctor-1.0',
+    settings_runs: { status: 'ok', count: 1, malformed: 0, codex_hook_review: review },
+    ...extra,
+  });
+
+  const currentReview = () => ({ status: 'attested', current: true, currency_reason: null, latest: attestationLatest() });
+
+  // A stub that answers settings.mjs, and answers doctor.mjs with `review` —
+  // optionally also serving the deep-peer-smoke executor so the SAME stdout
+  // carries both the proof section and the attestation (the executing shape).
+  function hookDoctorStub({ review, serveSmoke = false }) {
+    const calls = [];
+    const runner = async (scriptPath, args) => {
+      calls.push({ scriptPath, args: [...args] });
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        if (serveSmoke && args.includes('--execute-deep-peer-smoke')) {
+          return okOut(doctorReportWith(review, {
+            deep_peer_smoke: {
+              directions: {
+                claude_to_codex: { execution: 'executed', status: 'passed' },
+                codex_to_claude: { execution: 'executed', status: 'passed' },
+              },
+            },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json' },
+          }));
+        }
+        return okOut(doctorReportWith(review));
+      }
+      return missing();
+    };
+    return { calls, runner };
+  }
+
+  const doctorCalls = (stub) => stub.calls.filter((c) => c.scriptPath.endsWith('doctor.mjs'));
+  const proofPath = (home, runId) => join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'hook-attestation.json');
+
+  async function planEngineering(home, cwd, stub) {
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: stub.runner });
+    const plan = await run(['plan', '--bundle', 'engineering', '--format', 'json']);
+    return { run, runId: plan.report.run_id };
+  }
+
+  it('a current attestation imports on a resume that executes nothing — the path regression #645 pins', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview() });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    // `hook-attestation` is an embeddedKind:false family, so the file IS the
+    // record — there is no envelope to unwrap.
+    const recorded = JSON.parse(await readFile(proofPath(home, runId), 'utf8'));
+    strictEqual(recorded.status, 'attested');
+    deepStrictEqual(recorded.attested_plugins, HOOK_PLUGINS, 'the import projects down to exactly the selection');
+    strictEqual(recorded.bound_versions.codex, '0.140.0');
+    deepStrictEqual(recorded.bound_versions.plugins.codex, { engineer: '9.9.9', orchestrator: '9.9.9' });
+    strictEqual(recorded.artifact_hash, SETTINGS_ARTIFACT_SHA);
+    ok(!(resume.report.warnings ?? []).some((w) => /attestation/i.test(w)), `a clean import warns about nothing: ${JSON.stringify(resume.report.warnings)}`);
+  });
+
+  it('a resume that DOES execute a proof imports from the same stdout — no second doctor subprocess', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview(), serveSmoke: true });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    const answersPath = join(home, 'execute-smoke.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+      { step_id: 'egress.configured', answer: 'decline' },
+    ]));
+    await run(['resume', '--latest-open', '--answers', answersPath]);
+
+    // The reported second defect on #645 claimed a `--record` report cannot carry
+    // `settings_runs`, so this shape would need its own doctor run. It cannot: the
+    // recorded ARTIFACT is an envelope (`{run_id, status, report, …}`) whose report
+    // is nested, but bootstrap parses doctor's STDOUT, which is the report itself.
+    // One doctor call — the executor's — must therefore satisfy both.
+    const calls = doctorCalls(stub);
+    strictEqual(calls.length, 1, `exactly one doctor invocation serves both the proof and the attestation: ${JSON.stringify(calls.map((c) => c.args))}`);
+    ok(calls[0].args.includes('--execute-deep-peer-smoke'), 'and it is the executor call, not an extra read-only fetch');
+
+    const recorded = JSON.parse(await readFile(proofPath(home, runId), 'utf8'));
+    deepStrictEqual(recorded.attested_plugins, HOOK_PLUGINS, 'the executing shape imports the same attestation');
+  });
+
+  it('the imported claim satisfies the hook step in the SAME resume, not the next one', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview() });
+    const { run } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    // reprobeAgainstRun reads proof/ and judges in ONE pass, and the import runs
+    // after it — so without a re-judge the resume that finally imports the claim
+    // pairs an `attested` verdict with a `pending` step, and only a SECOND resume
+    // satisfies it. That is the same "do the thing you already did" loop #645 is
+    // about, one step further on.
+    const step = resume.report.steps.find((s) => s.id === 'hooks.codex.attested');
+    strictEqual(step?.status, 'satisfied', `the importing resume satisfies its own step: ${JSON.stringify(step)}`);
+    strictEqual(resume.report.completion.hook_attestation.status, 'attested', 'and the completion agrees with the step');
+  });
+
+  it('the re-judge preserves THIS resume\'s declines instead of resurrecting them', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview() });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    // applyAnswers mutates step rows in place, and it runs BEFORE the import.
+    // Re-judging from the pre-answer snapshot reverted the decline to `pending`
+    // and restored the hand-off the operator had just refused, while `choices`
+    // and `history` still recorded the decline — state contradicting itself.
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    strictEqual(resume.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'satisfied', 'the import still lands');
+    const egress = resume.report.steps.find((s) => s.id === 'egress.configured');
+    strictEqual(egress?.status, 'declined', `the decline survives the re-judge: ${JSON.stringify(egress)}`);
+    strictEqual(egress.fragment_pointer, null, 'a refused hand-off is not re-offered');
+    strictEqual(egress.apply_command, null);
+    strictEqual(egress.desired, null);
+
+    // The persisted manifest must agree with the report — choices, history and
+    // the step row are three views of one decision.
+    const manifest = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json'), 'utf8'));
+    strictEqual(manifest.steps.find((s) => s.id === 'egress.configured')?.status, 'declined');
+    ok(manifest.choices.some((c) => c.step_id === 'egress.configured' && c.answer === 'decline'), 'the choice ledger records it');
+    ok(manifest.history.some((h) => h.step_id === 'egress.configured' && h.to === 'declined'), 'and history agrees with the row');
+  });
+
+  it('a proof declined in the importing resume keeps its completion cap', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview() });
+    const { run } = await planEngineering(home, cwd, stub);
+
+    // The reducer derives `declined` from the STEP row, not the choice ledger,
+    // so a proof decline lost by a re-judge would silently uncap the run and let
+    // it reach `complete` on evidence the operator refused to produce.
+    const answersPath = join(home, 'decline-proof.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'proof.deep-peer-smoke', answer: 'decline' },
+    ]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+
+    strictEqual(resume.report.steps.find((s) => s.id === 'proof.deep-peer-smoke')?.status, 'declined', 'the proof decline survives the re-judge');
+    // A proof row carries the cap (`declined`) separately from the evidence
+    // verdict (`status`, `absent` because a declined proof produces none). The
+    // cap is the field the re-judge could have dropped.
+    const proof = resume.report.completion.proofs.find((p) => p.kind === 'deep-peer-smoke');
+    strictEqual(proof?.declined, true, `the reducer still reads the decline off the step row: ${JSON.stringify(proof)}`);
+    // Deliberately NOT asserting completion.state !== 'complete' here: this run
+    // is incomplete for unrelated reasons too (no deep-peer evidence recorded,
+    // workflow-continuation still open), so that assertion would pass whether or
+    // not the decline survived. `proof.declined` is the field this repair is
+    // about, and it is the one asserted.
+  });
+
+  it('the re-judge converges a dependent the answered decline unblocked, and preserves fragment_applied', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview() });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    // The dependent must be APPLICABLE for this to prove anything:
+    // proof.egress-provider-ack is opt-in, so without an answer naming it the row
+    // is `not-applicable` and `status !== 'blocked'` passes for the wrong reason.
+    // `accept` opts in without executing anything (only `execute` runs a proof).
+    // Then declining its predecessor is what converges it: the first judge pass
+    // demoted it behind a then-pending `egress.configured`, and the re-judge sees
+    // that predecessor `declined` — which counts as resolved.
+    const runPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json');
+    const seeded = JSON.parse(await readFile(runPath, 'utf8'));
+    // Nothing in this fixture applies a permission fragment, so seed one: the
+    // property under test is that applyAnswers never writes fragment_applied and
+    // judgeSteps carries it across, which an all-false run cannot demonstrate.
+    seeded.steps.find((s) => s.id === 'permission.claude.applied').fragment_applied = true;
+    await writeFile(runPath, `${JSON.stringify(seeded, null, 2)}\n`);
+
+    const answersPath = join(home, 'accept-ack-decline-egress.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'proof.egress-provider-ack', answer: 'accept' },
+      { step_id: 'egress.configured', answer: 'decline' },
+    ]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+
+    strictEqual(resume.report.steps.find((s) => s.id === 'egress.configured')?.status, 'declined');
+    const dependent = resume.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
+    // Measured: `blocked` when the re-judge is disabled, `pending` with it.
+    strictEqual(dependent?.status, 'pending', `the declined predecessor converges it (was 'blocked' before the re-judge): ${JSON.stringify(dependent)}`);
+    ok(resume.report.completion.state !== 'complete', 'earlier convergence is not completion — both blocked and pending are unresolved');
+
+    strictEqual(resume.report.steps.find((s) => s.id === 'permission.claude.applied')?.fragment_applied, true,
+      'an applied fragment keeps its historical meaning across the re-judge');
+  });
+
+  it("doctor's machine-wide not-current verdict does NOT block a selection-scoped import", async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // Doctor judges the whole machine: it compares against every bundled plugin
+    // and blocks on any disabled handler anywhere, so an unselected `designer`
+    // with a disabled handler makes the machine-wide verdict not-current. The
+    // reducer explicitly does NOT stale an engineering claim for a plugin outside
+    // the selection (tests/runtime/test-completion-reducer.mjs § "a disabled
+    // handler for an UNSELECTED plugin does not stale the claim"). Gating the
+    // import on doctor's verdict would strand a step the reducer says is
+    // satisfiable — the peer-reproduced counterexample this test pins.
+    const stub = hookDoctorStub({
+      review: { status: 'stale', current: false, currency_reason: 'disabled_hook_state', latest: attestationLatest() },
+    });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    const recorded = JSON.parse(await readFile(proofPath(home, runId), 'utf8'));
+    deepStrictEqual(recorded.attested_plugins, HOOK_PLUGINS, 'the claim covers the selection, so it imports');
+    strictEqual(resume.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'satisfied');
+  });
+
+  it('an imported claim that does not hold for the selection leaves the step open and names the selection-scoped reasons', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // Bound to a Codex the machine no longer runs (fixture reports 0.140.0). The
+    // importer accepts it — it only projects to the selection — and the reducer
+    // is the authority that judges currency.
+    const stub = hookDoctorStub({
+      review: { status: 'attested', current: true, currency_reason: null, latest: attestationLatest({ bound_versions: { codex: '0.130.0', plugins: { codex: { engineer: '9.9.9', orchestrator: '9.9.9' } } } }) },
+    });
+    const { run } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    strictEqual(resume.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'pending', 'a claim that does not stand does not satisfy the step');
+    const warning = (resume.report.warnings ?? []).find((w) => /does not hold for this selection/.test(w));
+    ok(warning, `the operator is told why, not left guessing: ${JSON.stringify(resume.report.warnings)}`);
+    ok(/0\.130\.0/.test(warning) && /0\.140\.0/.test(warning), `the reason names both versions: ${warning}`);
+  });
+
+  it('a stale stored record is REPLACED by a newer attestation — presence alone must not short-circuit forever', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // The old guard short-circuited on `!recordedHookAttestation`, so once any
+    // record existed no later attestation could ever replace it: re-attesting
+    // after a Codex upgrade recorded a fresh claim bootstrap never read, and the
+    // non-declinable step's own "re-attest, then resume" recovery looped forever.
+    // Unreachable while the path bug kept the store empty; reachable the moment
+    // it was fixed.
+    const box = { codex: '0.140.0', review: currentReview() };
+    const runner = async (name, args) => {
+      const key = `${name} ${args.join(' ')}`;
+      if (key === 'codex --version') return okOut(`codex-cli ${box.codex}`);
+      return hostedRunner()(name, args);
+    };
+    const subprocess = async (scriptPath) => {
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) return okOut(doctorReportWith(box.review));
+      return missing();
+    };
+    const run = (argv) => boot({ argv, home, cwd, runner, subprocess });
+    const plan = await run(['plan', '--bundle', 'engineering', '--format', 'json']);
+    const runId = plan.report.run_id;
+    const decline = await writeEgressDecline(home);
+
+    await run(['resume', '--latest-open', '--answers', decline]);
+    strictEqual(JSON.parse(await readFile(proofPath(home, runId), 'utf8')).bound_versions.codex, '0.140.0');
+
+    // Codex moves; the operator re-reviews /hooks and re-attests against the new one.
+    box.codex = '0.141.0';
+    box.review = { status: 'attested', current: true, currency_reason: null, latest: attestationLatest({ bound_versions: { codex: '0.141.0', plugins: { codex: { engineer: '9.9.9', orchestrator: '9.9.9' } } } }) };
+
+    const second = await run(['resume', '--latest-open', '--answers', decline]);
+    strictEqual(JSON.parse(await readFile(proofPath(home, runId), 'utf8')).bound_versions.codex, '0.141.0', 'the stale record is replaced, not kept forever');
+    strictEqual(second.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'satisfied');
+  });
+
+  it('doctor output that parses to a non-object is reported instead of slipping through every truthiness check', async () => {
+    // Each of these is valid JSON that is not a report. Before the guard, every
+    // one slipped past the truthiness checks without a word.
+    for (const payload of ['null', 'false', '0', '""', '[]']) {
+      const { home, cwd } = await makeHome({ satisfied: true });
+      const runner = async (scriptPath) => {
+        if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+        if (scriptPath.endsWith('doctor.mjs')) return okOut(payload);
+        return missing();
+      };
+      const { run, runId } = await planEngineering(home, cwd, { runner, calls: [] });
+
+      const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+      ok((resume.report.warnings ?? []).some((w) => /parsed but is not a report object/.test(w)), `"every branch warns" must hold for ${payload}: ${JSON.stringify(resume.report.warnings)}`);
+      await rejects(() => readFile(proofPath(home, runId), 'utf8'), `${payload} fabricates no evidence`);
+    }
+  });
+
+  it('a malformed attestation section is diagnosed as a shape mismatch, not as "nothing recorded"', async () => {
+    // "Nothing was attested yet" sends the operator to /hooks; a present-but-not-
+    // an-object section means this runtime and its doctor disagree about the
+    // report shape, which /hooks cannot fix. Collapsing the two misdirects.
+    // An OMITTED `latest` belongs here too, not in the "nothing recorded" branch:
+    // doctor always emits the key and uses an explicit null for absence, so a
+    // missing key is a broken report, and /hooks cannot repair a broken report.
+    for (const [label, review] of [
+      ['section', []],
+      ['latest', { status: 'attested', current: true, latest: [] }],
+      ['omitted latest', { status: 'attested', current: true, currency_reason: null }],
+    ]) {
+      const { home, cwd } = await makeHome({ satisfied: true });
+      const stub = hookDoctorStub({ review });
+      const { run, runId } = await planEngineering(home, cwd, stub);
+
+      const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+      const warnings = resume.report.warnings ?? [];
+      ok(warnings.some((w) => /(is not an object|is missing)/.test(w) && /repair or upgrade the runtime plugin/.test(w)), `malformed ${label} reads as a shape mismatch: ${JSON.stringify(warnings)}`);
+      ok(!warnings.some((w) => /no Codex \/hooks attestation has been recorded/.test(w)), `malformed ${label} must not be reported as "nothing recorded": ${JSON.stringify(warnings)}`);
+      await rejects(() => readFile(proofPath(home, runId), 'utf8'), 'and nothing is fabricated');
+    }
+  });
+
+  it('a never-recorded attestation warns with the record-it recovery instead of failing silently', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: { status: 'missing', current: false, currency_reason: 'missing', latest: null } });
+    const { run, runId } = await planEngineering(home, cwd, stub);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    await rejects(() => readFile(proofPath(home, runId), 'utf8'), 'nothing is fabricated when nothing was attested');
+    const warning = (resume.report.warnings ?? []).find((w) => /no Codex \/hooks attestation has been recorded/.test(w));
+    ok(warning, `the absence is stated, not silent: ${JSON.stringify(resume.report.warnings)}`);
+    ok(/\/hooks/.test(warning) && /--attest-codex-hook-review/.test(warning), 'the two-step recovery is spelled out');
+  });
+
+  it('a doctor report missing the settings_runs section warns rather than silently skipping', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // The pre-fix world's report shape: no section at either path.
+    const calls = [];
+    const runner = async (scriptPath, args) => {
+      calls.push({ scriptPath, args: [...args] });
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) return okOut(JSON.stringify({ schema_version: 'runtime-doctor-1.0' }));
+      return missing();
+    };
+    const { run, runId } = await planEngineering(home, cwd, { runner, calls });
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+
+    await rejects(() => readFile(proofPath(home, runId), 'utf8'));
+    const warning = (resume.report.warnings ?? []).find((w) => /no settings_runs\.codex_hook_review section/.test(w));
+    ok(warning, `a shape regression is named, not papered over: ${JSON.stringify(resume.report.warnings)}`);
+    ok(/repair or upgrade the runtime plugin/.test(warning), `and the recovery is the one that can actually work: ${warning}`);
+    // Naming it beats spawning a second doctor to paper over it.
+    strictEqual(calls.filter((c) => c.scriptPath.endsWith('doctor.mjs')).length, 1, 'the absence does not trigger a retry storm');
+  });
+
+  it('a doctor subprocess that cannot run is reported — the failure was silent before', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const calls = [];
+    const runner = async (scriptPath, args) => {
+      calls.push({ scriptPath, args: [...args] });
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      return missing();
+    };
+    const { run } = await planEngineering(home, cwd, { runner, calls });
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    ok((resume.report.warnings ?? []).some((w) => /runtime:doctor could not be run for the Codex \/hooks attestation/.test(w)), `a failed fetch is stated: ${JSON.stringify(resume.report.warnings)}`);
+  });
+
+  it('the base bundle carries no Codex hook-bearing plugin, so the import is not attempted at all', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const stub = hookDoctorStub({ review: currentReview() });
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: stub.runner });
+    await run(['plan', '--bundle', 'base', '--format', 'json']);
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    strictEqual(doctorCalls(stub).length, 0, 'no attestation fetch on a selection with nothing to attest');
+    ok(!(resume.report.warnings ?? []).some((w) => /attestation/i.test(w)), 'and nothing to warn about');
   });
 });
