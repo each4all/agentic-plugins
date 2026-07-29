@@ -105,6 +105,9 @@ import {
 // reaches this module. EGRESS_ENV_KEYS is imported for the recovery TEXT (the
 // key NAME as a placeholder procedure), never for an env read here.
 import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
+// §6.1 Stage 4 — the declarable model/effort postures. Imported (not restated)
+// so the judge, the settings validator and the contract cannot drift apart.
+import { MODEL_EFFORT_FALLBACK_POSTURES } from './lib/runtime-config.mjs';
 import { loadSchema, makeValidator } from './lib/schema-validate.mjs';
 import { TUI_NOTIFICATIONS_VALUES, expectedCodexNotifyArgv, gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId, parseCodexNotifyConfigToml } from './lib/notification-plan.mjs';
 import { renderCodexTuiTableToml } from './lib/toml.mjs';
@@ -521,11 +524,51 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
       return { status: 'unknown' };
     }
     if (id === stepIds.configModelEffort()) {
-      const keys = readers?.modelEffort?.keys ?? {};
-      const set = Object.values(keys).some((entry) => entry?.value != null);
-      return set
-        ? { status: 'satisfied', observed: Object.entries(keys).filter(([, v]) => v?.value != null).map(([k, v]) => `${k}=${v.value}`).join(' ') }
-        : { status: 'pending', apply_command: 'runtime:settings --apply --target user (model/effort defaults; agentic-plugins-owned config)' };
+      // §6.1 Stage 4 — the step asks whether this machine's model/effort POSTURE
+      // is recorded, and there are two ways to record one: an explicit
+      // coordinate, or the `host-native` fallback declaration.
+      //
+      // Key PRESENCE alone was the old test, and it made a machine that
+      // deliberately runs host-default model/effort — the recorded ADR-0024
+      // resolution position, and this repository's own dogfood machine —
+      // unable to ever reach `complete`. That contradicted the machine's own
+      // consuming code (`resolveOneSetting` calls no-key `host-native default`,
+      // settings renders it `<host-default>`) and the scorecard's R5 quality
+      // contract, which accepts "host-native OR runtime:settings configured".
+      const reader = readers?.modelEffort ?? null;
+      const keys = reader?.keys ?? {};
+      // An UNREADABLE config is not an absent one (§6: unknown is never
+      // satisfied). The reader has always distinguished them and the judge has
+      // always thrown that away — an EACCES config read as "nothing set" is a
+      // pending step whose recovery command would fail the same way.
+      if (reader && reader.source?.status !== 'readable' && reader.source?.status !== 'missing') {
+        return { status: 'unknown', recovery: `The user-global runtime config could not be read (${reader.source?.status ?? 'unreadable'}); model/effort posture is unobservable until it is. Fix the file's permissions, then re-run.` };
+      }
+      const posture = keys.model_effort_fallback?.value;
+      // A coordinate counts only when it carries a VALUE. `parseRuntimeConfigToml`
+      // deliberately preserves a known key with an empty value so the per-key
+      // validator can fail closed on it, which the old `!= null` test read as
+      // configured: `model = ""` satisfied the step while resolving to nothing.
+      const coordinates = Object.entries(keys)
+        .filter(([key]) => key !== 'model_effort_fallback')
+        .filter(([, v]) => typeof v?.value === 'string' && v.value.length > 0);
+      if (coordinates.length > 0) {
+        return { status: 'satisfied', observed: coordinates.map(([k, v]) => `${k}=${v.value}`).join(' ') };
+      }
+      if (typeof posture === 'string' && posture.length > 0) {
+        // An INVALID posture is not a posture. The value reaches the judge
+        // unvalidated (the validators run on the write path), so a typo would
+        // otherwise satisfy the step while `runtime:settings --apply` refuses it.
+        if (!MODEL_EFFORT_FALLBACK_POSTURES.includes(posture)) {
+          return { status: 'pending', observed: `model_effort_fallback=${posture}`, recovery: `model_effort_fallback must be one of ${MODEL_EFFORT_FALLBACK_POSTURES.join(', ')}; the recorded value declares no posture this runtime understands.` };
+        }
+        return { status: 'satisfied', observed: `model_effort_fallback=${posture} (no explicit coordinate; the host chooses)` };
+      }
+      return {
+        status: 'pending',
+        apply_command: 'runtime:settings --apply --target user (model/effort defaults; agentic-plugins-owned config)',
+        recovery: 'Either set an explicit model/effort coordinate, or declare the host-native posture with `runtime:settings --apply --target user --model-effort-fallback host-native` — leaving every coordinate unset is a legitimate choice (§6.1 Stage 4), but it has to be a recorded one.',
+      };
     }
     if (id === stepIds.notifyConfigured()) {
       const channel = readers?.notify?.keys?.notify_channel?.value ?? null;

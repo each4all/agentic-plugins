@@ -98,6 +98,30 @@ describe('runtime machine profile — build (§4.1)', () => {
     strictEqual(profile.permissions.claude.provenance, 'user-global');
     strictEqual(profile.permissions.codex.provenance, 'user-global');
   });
+
+  it('the Stage-4 POSTURE is not exported — a coordinate block carries coordinates (§6.1.1)', async () => {
+    const { CONFIG_KEY_FAMILIES } = await import('../../plugins/runtime/scripts/lib/runtime-config.mjs');
+    ok(CONFIG_KEY_FAMILIES.model_effort.includes('model_effort_fallback'), 'the reader DOES read it from the same family');
+
+    const withPosture = baseReaders();
+    withPosture.modelEffort.keys.model_effort_fallback = { value: 'host-native', provenance: 'user-global' };
+    const profile = build({ readers: withPosture });
+    const validate = await makeValidator('agentic-machine-profile');
+
+    // Two reasons, both measured elsewhere: every profile member is a
+    // `scalarField` OBJECT and §4.1 refuses an unknown object-valued key at every
+    // minor (so exporting it would make new profiles unreadable to an older
+    // runtime, breaking the seed path); and the posture is a per-machine choice a
+    // new machine's operator should be asked rather than handed.
+    ok(!('model_effort_fallback' in profile.model_effort), 'the posture stays out of the profile');
+    deepStrictEqual(
+      Object.keys(profile.model_effort).sort(),
+      CONFIG_KEY_FAMILIES.model_effort.filter((k) => k !== 'model_effort_fallback').sort(),
+      'every OTHER key of the family is still exported',
+    );
+    const verdict = validate(profile);
+    deepStrictEqual(verdict.errors, [], 'and the profile still validates against the closed §4.1 schema');
+  });
 });
 
 describe('runtime machine profile — the two axes stay apart (§4.0)', () => {

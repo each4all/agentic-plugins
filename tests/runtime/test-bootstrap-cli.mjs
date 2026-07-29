@@ -2677,3 +2677,105 @@ describe('runtime bootstrap CLI — §6.2 the effective selection', () => {
     strictEqual(resume.report.completion.proofs.find((p) => p.kind === 'deep-peer-smoke')?.status, 'passed');
   });
 });
+
+// ---------------------------------------------------------------------------
+// §6.1.1 — Stage 4 asks for a recorded model/effort POSTURE, not for a key
+// ---------------------------------------------------------------------------
+
+describe('runtime bootstrap CLI — §6.1.1 the model/effort posture', () => {
+  const configPath = (home) => join(home, '.agentic-plugins', 'config.toml');
+
+  // The notify key keeps the Stage-5 local-policy step satisfied so the run's
+  // other steps do not mask what Stage 4 is doing.
+  async function writeConfig(home, body) {
+    await writeFile(configPath(home), `notify_channel = "file-log"\n${body}`);
+  }
+
+  const stub = async (scriptPath) => {
+    if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+    if (scriptPath.endsWith('doctor.mjs')) return okOut(JSON.stringify({}));
+    return missing();
+  };
+
+  const stage4Of = (report) => report.steps.find((s) => s.id === 'config.model_effort');
+
+  async function planWith(body) {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    await writeConfig(home, body);
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: stub });
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    return { home, cwd, run, plan, step: stage4Of(plan.report) };
+  }
+
+  it('an explicit coordinate satisfies it — unchanged behaviour', async () => {
+    const { step } = await planWith('model = "gpt-5.2-codex"\neffort = "high"\n');
+    strictEqual(step.status, 'satisfied');
+    ok(/model=gpt-5\.2-codex/.test(step.observed), step.observed);
+  });
+
+  it('CONTROL — no coordinate and no posture stays pending, and NAMES the posture route', async () => {
+    const { step } = await planWith('');
+    strictEqual(step.status, 'pending');
+    ok(/model-effort-fallback host-native/.test(step.recovery), `the recovery offers the declaration: ${step.recovery}`);
+    // This is the state the dogfood machine was stuck in: pending forever on a
+    // step whose only documented remedy was to configure what it deliberately
+    // left unset.
+    strictEqual(step.declinable, false, 'and it is still not declinable — a decline is the wrong sentence');
+  });
+
+  it('a recorded host-native posture satisfies it with NO coordinate set', async () => {
+    const { step } = await planWith('model_effort_fallback = "host-native"\n');
+    strictEqual(step.status, 'satisfied');
+    ok(/model_effort_fallback=host-native/.test(step.observed), step.observed);
+    ok(/the host chooses/.test(step.observed), 'the observation says who decides, not just that a key exists');
+  });
+
+  it('an EMPTY coordinate is not a coordinate — the presence test counted it', async () => {
+    const { step } = await planWith('model = ""\n');
+    // The parser preserves a known key with an empty value on purpose (so the
+    // per-key validator can fail closed on it), and `!= null` read that as
+    // configured — a step satisfied by a value that resolves to nothing.
+    strictEqual(step.status, 'pending');
+  });
+
+  it('an INVALID posture is pending with the valid set named, never satisfied', async () => {
+    const { step } = await planWith('model_effort_fallback = "whatever-the-host-wants"\n');
+    strictEqual(step.status, 'pending');
+    ok(/must be one of host-native/.test(step.recovery), step.recovery);
+    ok(/whatever-the-host-wants/.test(step.observed ?? ''), 'the offending value is echoed so the operator can find it');
+  });
+
+  it('an explicit coordinate WINS over the posture — the posture is a fallback', async () => {
+    const { step } = await planWith('model = "gpt-5.2-codex"\nmodel_effort_fallback = "host-native"\n');
+    strictEqual(step.status, 'satisfied');
+    ok(/model=gpt-5\.2-codex/.test(step.observed), 'the coordinate is what is reported');
+    ok(!/model_effort_fallback/.test(step.observed), 'the posture does not claim credit for a coordinate that is set');
+  });
+
+  it('an UNREADABLE user config is unknown, never "nothing set"', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // A directory where the file belongs: the read fails with EISDIR, which is
+    // neither readable nor ENOENT-missing.
+    await rm(configPath(home), { force: true });
+    await mkdir(configPath(home), { recursive: true });
+    const plan = await boot({ argv: ['plan', '--bundle', 'base', '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: stub });
+    const step = stage4Of(plan.report);
+    strictEqual(step.status, 'unknown', `an unreadable config is not an absent one: ${JSON.stringify(step)}`);
+    ok(/could not be read/.test(step.recovery), step.recovery);
+  });
+
+  it('a run planned before the declaration is NOT credited — it heals on the operator adding it', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    await writeConfig(home, '');
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: stub });
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    strictEqual(stage4Of(plan.report).status, 'pending', 'the old absence is never read as intent');
+
+    // The operator declares the posture, then resumes. Nothing about the run
+    // changed — the machine did.
+    await writeConfig(home, 'model_effort_fallback = "host-native"\n');
+    const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
+    strictEqual(stage4Of(resume.report).status, 'satisfied');
+    ok(!resume.report.completion.unsatisfied.includes('config.model_effort'), 'and the step stops holding completion back');
+  });
+});

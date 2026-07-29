@@ -144,6 +144,28 @@ describe('peer execution context (filesystem-only seam)', () => {
       deepStrictEqual(modelEffort.directions.codex_to_claude.effort, { value: 'high', source: 'explicit command flags' });
     });
 
+    it('the Stage-4 POSTURE key never resolves as a model or effort (§6.1.1)', async () => {
+      const { repoRoot, homeDir } = await seedFixture();
+      await mkdir(join(homeDir, '.agentic-plugins'), { recursive: true });
+      await writeFile(join(homeDir, '.agentic-plugins', 'config.toml'), 'model_effort_fallback = "host-native"\n');
+
+      const { model_effort: modelEffort } = await resolvePeerExecutionContext({ repoRoot, homeDir });
+
+      // This is the reason the posture is a SEPARATE key rather than a sentinel
+      // value in `model`: the resolver reads a closed key list, so a declaration
+      // can never be handed to a companion as a model name. A sentinel would be
+      // passed verbatim — the peer review's grounds for rejecting that shape.
+      for (const direction of ['claude_to_codex', 'codex_to_claude']) {
+        deepStrictEqual(modelEffort.directions[direction], {
+          model: { value: null, source: 'host-native default' },
+          effort: { value: null, source: 'host-native default' },
+        }, `${direction} still resolves to the host, with no trace of the declaration`);
+      }
+      // The key IS visible as user config — it is read, just never resolved into
+      // a coordinate. Asserting its absence from `keys` would pin the wrong thing.
+      ok(modelEffort.user_config.keys.includes('model_effort_fallback'), 'the resolver sees the key');
+    });
+
     it('reports a missing companion cache as not_installed rather than throwing', async () => {
       const repoRoot = await mkdtemp(join(tmpdir(), 'peer-ctx-bare-'));
       const homeDir = await mkdtemp(join(tmpdir(), 'peer-ctx-bare-home-'));
