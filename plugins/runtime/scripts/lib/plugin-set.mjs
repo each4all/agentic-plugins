@@ -289,6 +289,27 @@ export function hardRequiredClosure(pluginSet, retainedNames) {
 }
 
 /**
+ * The Codex-hook-bearing members of a name list, sorted — the ONE implementation
+ * of a predicate that had been written out four independent times (the step
+ * registry's Stage-7 applicability, the reducer's attestation expectation, and
+ * bootstrap's hook verdict and resume-time import gate).
+ *
+ * Four copies of one rule is four chances for a fix to land in three places. The
+ * effective-selection work is exactly such a fix: every copy had to start reading
+ * the RETAINED set instead of the planned one, and a copy left behind would have
+ * kept demanding an attestation cover a plugin the operator refused — the same
+ * unsatisfiable non-declinable step, surviving its own repair.
+ *
+ * Keyed on the CODEX value only: Claude trusts plugin hooks by install and exposes
+ * no /hooks review flow (§6.1), so `hook_bearing.claude` is not this question.
+ */
+export function codexHookBearingPlugins(pluginSet, names) {
+  return [...new Set(names ?? [])]
+    .filter((name) => pluginSet?.plugins?.[name]?.hook_bearing?.codex === true)
+    .sort();
+}
+
+/**
  * Mechanical authority equality — the plugin-set's plugin names and canonical
  * marketplace MUST equal the probe's PLUGIN_NAMES + CANONICAL_MARKETPLACE, so a
  * third silent authority cannot drift (Codex Plan-verify finding). Returns

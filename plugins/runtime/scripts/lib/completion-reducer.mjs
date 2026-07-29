@@ -27,7 +27,9 @@
 //   * a step's stage/applicability/declinable/blocked_by come from the registry, never
 //     from the manifest's copy of them.
 
+import { hostPluginsOf } from './effective-selection.mjs';
 import { DIRECTIONAL_PROOF_KINDS, PROOF_KINDS, evidenceKindIssues } from './evidence-contract.mjs';
+import { codexHookBearingPlugins } from './plugin-set.mjs';
 import { RESOLVED_STEP_STATUSES, CONFIG_STAGES, PROOF_STAGES, deriveExpectedSteps, expectedStepIds, stepIds } from './step-registry.mjs';
 
 export const COMPLETION_STATES = Object.freeze(['complete', 'configured-not-verified', 'incomplete']);
@@ -44,16 +46,21 @@ function isPlainObject(value) {
 
 /**
  * The version set a proof recorded NOW would bind: runtime, both host CLIs, and every
- * SELECTED plugin's installed version per host (§8.1 — "binds the plugin versions too,
+ * RETAINED plugin's installed version per host (§8.1 — "binds the plugin versions too,
  * not only runtime and the two CLIs").
  *
  * Built from the probe, so freshness compares evidence against observation rather than
  * against another stored claim.
+ *
+ * Per-host RETAINED, not per-host selected (§6.2): a plugin the operator declined on
+ * one host must not bind a version there. Binding it anyway would let a plugin nobody
+ * agreed to run stale every proof each time it moved — the weaker half of the same
+ * defect the effective selection exists to close.
  */
 export function currentBoundVersions({ probe, selection, runtimeVersion }) {
   const plugins = { claude: {}, codex: {} };
   for (const host of ['claude', 'codex']) {
-    for (const name of [...new Set(selection.plugins ?? [])].sort()) {
+    for (const name of hostPluginsOf(selection, host)) {
       const observed = probe?.hosts?.[host]?.plugins?.[name];
       // Only an INSTALLED version binds. A missing/unknown plugin contributes no key,
       // which is what makes the key-set comparison below meaningful: a proof recorded
@@ -123,15 +130,21 @@ export function boundVersionsFresh(bound, current, { requiredPlugins = null } = 
 }
 
 /**
- * The per-host plugin names a proof's bound_versions must cover — the selection,
- * restricted to the hosts each plugin actually targets (§8.1). Derived from the
- * validated plugin-set, like everything else the registry owns.
+ * The per-host plugin names a proof's bound_versions must cover — the RETAINED
+ * selection, restricted to the hosts each plugin actually targets (§8.1). Derived
+ * from the validated plugin-set, like everything else the registry owns.
+ *
+ * This is the path the declined-plugin defect ran through: demanding a bound version for
+ * a plugin `currentBoundVersions` can never bind (because it is not installed, and it
+ * is not installed because the operator refused it) staled every proof forever, with a
+ * reason naming the refused plugin. Both sides read the same retained set now, so the
+ * demand and the binding cannot disagree about who is in the run.
  */
 export function requiredBoundPlugins({ pluginSet, selection }) {
   const required = { claude: [], codex: [] };
-  for (const name of [...new Set(selection.plugins ?? [])].sort()) {
-    for (const host of pluginSet.plugins?.[name]?.hosts ?? []) {
-      if (host in required) required[host].push(name);
+  for (const host of Object.keys(required)) {
+    for (const name of hostPluginsOf(selection, host)) {
+      if ((pluginSet.plugins?.[name]?.hosts ?? []).includes(host)) required[host].push(name);
     }
   }
   return required;
@@ -449,11 +462,15 @@ export function invalidateStaleSteps({ steps, probe, current, selection = null, 
 }
 
 function probeInstalledPlugins(probe, selection) {
-  const selected = selection ? new Set(selection.plugins ?? []) : null;
   const plugins = { claude: {}, codex: {} };
   for (const host of ['claude', 'codex']) {
+    // The SAME per-host retained filter `currentBoundVersions` applies — the two are
+    // compared key-set against key-set right below, so a filter that differs on one
+    // side manufactures permanent drift out of nothing: every run would reset every
+    // satisfied step over a plugin one side counts and the other does not.
+    const retained = selection ? new Set(hostPluginsOf(selection, host)) : null;
     for (const [name, info] of Object.entries(probe?.hosts?.[host]?.plugins ?? {})) {
-      if (selected && !selected.has(name)) continue;
+      if (retained && !retained.has(name)) continue;
       if (info?.state === 'installed' && typeof info.version === 'string') plugins[host][name] = info.version;
     }
   }
@@ -770,7 +787,7 @@ export function reduceCompletion({
   const configExpected = expected.filter((s) => s.applicable && CONFIG_STAGES.includes(s.stage));
   const missing_steps = configExpected.filter((s) => !stateById.has(s.id)).map((s) => s.id).sort();
 
-  const codexHookPluginsEarly = [...new Set(selection.plugins ?? [])].filter((n) => pluginSet.plugins?.[n]?.hook_bearing?.codex === true).sort();
+  const codexHookPluginsEarly = codexHookBearingPlugins(pluginSet, hostPluginsOf(selection, 'codex'));
   const hookStep = expected.find((s) => s.id === stepIds.hooksAttested());
   const hookVerdict = recomputeHookAttestation(hookAttestation, {
     current,

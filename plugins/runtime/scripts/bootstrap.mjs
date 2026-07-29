@@ -56,11 +56,15 @@ import { CANONICAL_MARKETPLACE, PLUGIN_NAMES, probeMachineHostState } from './li
 import {
   BUNDLE_NAMES,
   MANDATORY_PLUGINS,
+  codexHookBearingPlugins,
   hardClosureViolations,
   loadPluginSet,
   resolveBundle,
   validatePluginSet,
 } from './lib/plugin-set.mjs';
+// §6.2 — the retained set every selection-derived expectation is owed against.
+// `selection.desired` is the PLAN; this is what the operator did not refuse.
+import { effectiveSelection, hostPluginsOf, narrowSelectionByDeclines, narrowSelectionToEffective } from './lib/effective-selection.mjs';
 import { PROOF_KINDS, deriveActivationFingerprint } from './lib/evidence-contract.mjs';
 import {
   STATUSLINE_PRESET_AGENTIC_6,
@@ -881,28 +885,21 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
     }
   }
 
-  // §6.2 — declining a plugin creates a new effective custom selection and
-  // RE-RUNS the hard dependency closure. The registry already refuses declines
-  // on hard-edge targets, so this catches the inverse: declining a plugin that
-  // something retained still hard-requires (and the mandatory floor).
+  // §6.2 — declining a plugin creates a new effective custom selection and RE-RUNS
+  // the hard dependency closure. The narrowing itself is the caller's (it persists the
+  // result); what belongs HERE is the refusal: a decline the effective selection
+  // cannot honour must stop the verb rather than be recorded as an answer that
+  // quietly does nothing.
+  //
+  // Both sides read ONE derivation. The gate used to re-implement the retained set
+  // with its own regex and its own closure call, and the two disagreed on a
+  // host-scoped decline — the gate treating a single refused host row as a whole-
+  // plugin removal while the narrowing (correctly) kept the plugin for its other
+  // host. A validator and the thing it validates must not compute the answer twice.
   if (selection && pluginSet) {
-    const declinedPlugins = new Set(
-      steps
-        .filter((step) => step.status === 'declined')
-        .map((step) => step.id.match(/^plugin\.([a-z-]+)\./)?.[1])
-        .filter(Boolean),
-    );
-    if (declinedPlugins.size > 0) {
-      const retained = (selection.desired ?? []).filter((name) => !declinedPlugins.has(name));
-      const missingMandatory = MANDATORY_PLUGINS.filter((name) => !retained.includes(name));
-      if (missingMandatory.length > 0) {
-        throw new UsageError(`declining ${[...declinedPlugins].join(', ')} would drop ${missingMandatory.join(', ')} (§6.2 — mandatory in every selection)`);
-      }
-      const violations = hardClosureViolations(pluginSet, retained);
-      if (violations.length > 0) {
-        const detail = violations.map((v) => `${v.plugin} hard-requires ${v.requires} on ${v.host}`).join('; ');
-        throw new UsageError(`declining ${[...declinedPlugins].join(', ')} breaks the §9.1 hard dependency closure: ${detail}`);
-      }
+    const refusals = effectiveSelection({ pluginSet, selection, steps }).refusedButRetained;
+    if (refusals.length > 0) {
+      throw new UsageError(refusals.map((r) => r.reason).join('; '));
     }
   }
   return { choices, history, effective };
@@ -926,11 +923,15 @@ function buildStage0(probe, raw) {
   return presentation.stage0;
 }
 
-function buildPluginActionCandidates({ selection, pluginSet, probe }) {
+function buildPluginActionCandidates({ effective, pluginSet, probe }) {
   const actions = [];
-  for (const name of selection.desired) {
+  for (const name of effective.plugins) {
     const hosts = pluginSet.plugins[name]?.hosts ?? [];
     for (const host of hosts) {
+      // A host-scoped decline withdraws the ACTION as well as the expectation: an
+      // install command for a plugin the operator refused on this host is an
+      // instruction to undo their own answer.
+      if (!effective.byHost[host].includes(name)) continue;
       const state = probe.hosts[host]?.plugins?.[name]?.state;
       if (state === 'missing') {
         actions.push({ host, plugin: name, action: 'install', command: host === 'claude' ? `claude plugin install ${name}@agentic-plugins` : `codex plugin add ${name}@agentic-plugins` });
@@ -1563,15 +1564,46 @@ function isPlainReportObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function hookVerdictFor({ recordedAttestation, pluginSet, selection, probe }) {
-  const codexHookPlugins = selection.desired.filter((n) => pluginSet.plugins[n]?.hook_bearing?.codex === true).sort();
+// `effective` is the resolved effective selection (§6.2), never the raw manifest
+// selection: a Codex hook plugin the operator declined must leave the attested set,
+// or this non-declinable step asks for an attestation covering a plugin that will
+// never be installed — permanently unsatisfiable.
+function hookVerdictFor({ recordedAttestation, pluginSet, effective, probe }) {
+  const codexHookPlugins = codexHookBearingPlugins(pluginSet, effective.byHost.codex);
   const applicable = codexHookPlugins.length > 0;
   return recomputeHookAttestation(recordedAttestation ?? null, {
-    current: currentBoundVersions({ probe, selection: { plugins: selection.desired }, runtimeVersion: RUNTIME_VERSION }),
+    current: currentBoundVersions({ probe, selection: effective, runtimeVersion: RUNTIME_VERSION }),
     expectedPlugins: codexHookPlugins,
     probe,
     applicable,
   });
+}
+
+// Whether two effective selections are the same expectation. A decline changes what
+// the registry derives — Stage-3 membership, the Codex-hook-bearing set and its
+// `blocked_by` edges — so a verb that recorded one must re-derive and re-judge before
+// it reduces, or it reports a completion computed against the selection the operator
+// just narrowed. Compared structurally rather than by "did anything get declined",
+// because a HOST-scoped decline narrows `byHost` while leaving `plugins` untouched.
+function sameEffectiveSelection(a, b) {
+  if (a.plugins.join(',') !== b.plugins.join(',')) return false;
+  for (const host of ['claude', 'codex']) {
+    if ((a.byHost[host] ?? []).join(',') !== (b.byHost[host] ?? []).join(',')) return false;
+  }
+  return true;
+}
+
+// §6.2 — the history row a narrowing writes. The run's account has to explain why a
+// plugin stopped being expected; `choices[]` records the answer, this records the
+// consequence.
+function selectionNarrowedHistoryRow({ before, after, dropped, at }) {
+  return {
+    step_id: null,
+    from: `${before.bundle}:${[...before.desired].sort().join('+') || 'nothing'}`,
+    to: `${after.bundle}:${[...after.desired].sort().join('+') || 'nothing'}`,
+    reason: `selection narrowed to the effective custom selection by operator decline (§6.2): ${dropped.join(', ')}`,
+    at,
+  };
 }
 
 function buildManifestShape({ selection, probe, steps, choices, history, completion, planHash, seededFrom }) {
@@ -1634,7 +1666,9 @@ async function runPlan(ctx, opts) {
     seededWarnings.push(...seeded.warnings);
   }
 
-  const { selection, softWarnings } = resolveSelection({ opts, pluginSet, seededSelection });
+  // `selection` is rebindable: an answers file carrying a plugin decline narrows it to
+  // the §6.2 effective custom selection before anything is persisted.
+  let { selection, softWarnings } = resolveSelection({ opts, pluginSet, seededSelection });
   const { raw, probe } = await probeNow(ctx);
   const readers = await readUserGlobalReaders(ctx);
 
@@ -1644,23 +1678,53 @@ async function runPlan(ctx, opts) {
   const answers = opts.answers ? await readAnswersFile(opts.answers) : [];
   const egressProofRequested = answers.some((a) => a.step_id === stepIds.proofEgressProviderAck());
 
-  const expected = deriveExpectedSteps({ pluginSet, selection: { plugins: selection.desired }, egressProofRequested });
-  const graph = validateStepGraph(expected);
-  if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
+  const deriveAndJudge = (effectiveSel, previousSteps = null) => {
+    const derived = deriveExpectedSteps({ pluginSet, selection: effectiveSel, egressProofRequested });
+    const graph = validateStepGraph(derived);
+    if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
+    const verdict = hookVerdictFor({ recordedAttestation: null, pluginSet, effective: effectiveSel, probe });
+    return judgeSteps({
+      expected: derived,
+      probe,
+      raw,
+      pluginSet,
+      readers,
+      hookVerdict: verdict,
+      ...(previousSteps ? { previousById: priorJudgeMapOf(previousSteps) } : {}),
+      now: ctx.now,
+    });
+  };
 
-  const hookVerdict = hookVerdictFor({ recordedAttestation: null, pluginSet, selection, probe });
-  const steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, now: ctx.now });
+  let effective = effectiveSelection({ pluginSet, selection, steps: [] });
+  let steps = deriveAndJudge(effective);
 
   const { choices, history } = applyAnswers({ steps, answers, now: ctx.now, selection, pluginSet, verb: 'plan' });
 
   const warnings = [...softWarnings, ...seededWarnings];
+
+  // §6.2 — a plugin decline creates a new effective `custom` selection. The retained
+  // set is PERSISTED (below, through buildManifestShape) rather than recomputed by
+  // each consumer, and the expectation is re-derived here so this run never reduces
+  // against the selection the operator just narrowed.
+  const narrowed = narrowSelectionByDeclines({ pluginSet, selection, steps });
+  if (narrowed.changed) {
+    history.push(selectionNarrowedHistoryRow({ before: selection, after: narrowed.selection, dropped: narrowed.dropped, at: new Date(ctx.now).toISOString() }));
+    selection = narrowed.selection;
+  }
+  for (const refused of narrowed.refusedButRetained) warnings.push(refused.reason);
+  const narrowedEffective = effectiveSelection({ pluginSet, selection, steps });
+  if (!sameEffectiveSelection(effective, narrowedEffective)) {
+    effective = narrowedEffective;
+    steps = deriveAndJudge(effective, steps);
+  }
+
   const stage0 = buildStage0(probe, raw);
-  const candidates = buildPluginActionCandidates({ selection, pluginSet, probe });
+  const candidates = buildPluginActionCandidates({ effective, pluginSet, probe });
   const planHash = candidates.length > 0
     ? await fetchSettingsPlanHash({ subprocessRunner: ctx.subprocessRunner, cwd: ctx.cwd, env: scrubbedControlPlaneEnv(ctx.env) })
     : { hash: null, status: 'not-needed', reason: 'no plugin-management actions are needed' };
 
-  const completion = reduceCompletion({ pluginSet, selection: { plugins: selection.desired }, steps, choices, proofs: [], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION, currentActivationFingerprint: currentActivationFingerprintOf(readers) });
+  const completion = reduceCompletion({ pluginSet, selection: effective, steps, choices, proofs: [], hookAttestation: null, probe, runtimeVersion: RUNTIME_VERSION, currentActivationFingerprint: currentActivationFingerprintOf(readers) });
   const manifest = buildManifestShape({ selection, probe, steps, choices, history, completion, planHash: planHash.hash, seededFrom });
 
   const created = await createBootstrapRun({
@@ -1722,6 +1786,13 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   const { raw, probe } = await probeNow(ctx);
   const readers = await readUserGlobalReaders(ctx);
   const selection = manifest.selection;
+  // §6.2 — the EFFECTIVE selection, derived on every verb rather than read from the
+  // manifest alone. Two runs need that. A legacy run planned before the narrowing
+  // existed carries its declines only as `declined` step rows, and `status`/`verify`
+  // are R0 — they cannot persist a correction, but they must not report a completion
+  // computed against plugins the operator refused either. Deriving here means every
+  // verb agrees, and the next `resume` writes the narrowed selection through.
+  const effective = effectiveSelection({ pluginSet, selection, steps: manifest.steps ?? [] });
   // The egress proof opt-in (D0.2) persists once made: a recorded decline, an
   // answer in the run's ledger, or recorded delivery evidence keeps it expected
   // across every later verb — the caller ORs in this verb's fresh answers. The
@@ -1734,24 +1805,24 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
     || egressProofOptedIn({ steps: manifest.steps, choices: manifest.choices, proofs: recordedProofs });
   const expected = deriveExpectedSteps({
     pluginSet,
-    selection: { plugins: selection.desired },
+    selection: effective,
     permissionFragmentApplied: Object.fromEntries(['claude', 'codex'].map((h) => [
       h,
       (manifest.steps ?? []).find((s) => s.id === stepIds.permissionApplied(h))?.fragment_applied === true,
     ])),
     egressProofRequested: egressOptIn,
   });
-  const hookVerdict = hookVerdictFor({ recordedAttestation: recordedHookAttestation, pluginSet, selection, probe });
+  const hookVerdict = hookVerdictFor({ recordedAttestation: recordedHookAttestation, pluginSet, effective, probe });
 
   // §7 — recorded step state is invalidated (reset to pending, stamped) when
   // runtime / either host CLI / any selected plugin version moved since the
   // recorded probe. Computed here for every verb; PERSISTED only by resume.
-  const current = currentBoundVersions({ probe, selection: { plugins: selection.desired }, runtimeVersion: RUNTIME_VERSION });
+  const current = currentBoundVersions({ probe, selection: effective, runtimeVersion: RUNTIME_VERSION });
   const invalidation = invalidateStaleSteps({
     steps: manifest.steps ?? [],
     probe: manifest.probe ?? null,
     current,
-    selection: { plugins: selection.desired },
+    selection: effective,
     at: new Date(ctx.now).toISOString(),
   });
   // A pre-split run carried the Codex notification fragment on
@@ -1768,7 +1839,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   const ackRow = proofRead.records.find((r) => r.kind === 'egress-provider-ack') ?? null;
   const completion = reduceCompletion({
     pluginSet,
-    selection: { plugins: selection.desired },
+    selection: effective,
     steps,
     choices: manifest.choices,
     proofs: recordedProofs,
@@ -1783,7 +1854,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // leaving the step judged against evidence the same verb has since superseded.
   // The previous-state map is deliberately NOT exported: that caller must build
   // it from ITS OWN current steps, since applyAnswers has mutated them since.
-  return { raw, probe, readers, steps, completion, selection, invalidation, proofRecords: proofRead.records, recordedHookAttestation, expected };
+  return { raw, probe, readers, steps, completion, selection, effective, invalidation, proofRecords: proofRead.records, recordedHookAttestation, expected, egressOptIn };
 }
 
 /**
@@ -1818,6 +1889,47 @@ function legacyTerminalReport(verb, picked) {
   };
 }
 
+/**
+ * The R0 half of §6.2. `status` and `verify` re-judge against the EFFECTIVE selection
+ * but write nothing, so a run recorded before the narrowing existed reports a stored
+ * `selection` that its own completion was not computed against. Rather than silently
+ * present one and judge the other, the divergence is named: the stored selection stays
+ * verbatim (it is the record), the retained set rides alongside it, and the warning
+ * says which verb closes the gap. Returns null when the two agree — the ordinary case,
+ * which must stay byte-identical to the pre-§6.2 report.
+ */
+function effectiveSelectionDivergence({ pluginSet, selection, effective }) {
+  const planned = [...new Set(selection?.desired ?? [])].sort();
+  const droppedPlugins = planned.filter((name) => !effective.plugins.includes(name));
+  const droppedHostRows = [];
+  for (const host of ['claude', 'codex']) {
+    for (const name of effective.plugins) {
+      // Only a host the plugin actually TARGETS can be a refusal. Without this the
+      // per-host retained set would read every Claude-only plugin as declined on
+      // Codex — a warning about a decline nobody made.
+      if (!(pluginSet.plugins?.[name]?.hosts ?? []).includes(host)) continue;
+      if (!effective.byHost[host].includes(name)) droppedHostRows.push(`${name}:${host}`);
+    }
+  }
+  if (droppedPlugins.length === 0 && droppedHostRows.length === 0) return null;
+  // The two kinds of refusal have DIFFERENT remedies, and collapsing them promised a
+  // repair that cannot happen (Refine-verify peer, High/Medium): a whole-plugin
+  // decline is written into the selection by the next resume, while a host-scoped one
+  // has no seat to be written into — `desired` is a flat name list — so telling the
+  // operator to resume would repeat forever against a state that is already correct.
+  const parts = [];
+  if (droppedPlugins.length > 0) {
+    parts.push(`${droppedPlugins.join(', ')} declined outright, which the stored selection does not yet record — \`runtime:bootstrap resume\` writes the narrowing through; status and verify are read-only (§3) and cannot`);
+  }
+  if (droppedHostRows.length > 0) {
+    parts.push(`${droppedHostRows.join(', ')} declined on that host only, which the selection seat cannot express (\`desired\` is a flat name list) — the refusal lives in the declined step row, and no resume moves it`);
+  }
+  return {
+    effective_selection: { plugins: effective.plugins, by_host: effective.byHost },
+    warning: `this run is judged against the effective selection (§6.2): ${parts.join('; ')}.`,
+  };
+}
+
 async function runStatus(ctx, opts) {
   const { pluginSet, validateRun } = await loadContext(ctx);
   const picked = await selectRun({ homeDir: ctx.homeDir, opts, defaultSelector: 'latest', validateRun });
@@ -1832,15 +1944,17 @@ async function runStatus(ctx, opts) {
     return { exitCode: EXIT.UNEXPECTED, report: { verb: 'status', status: 'evidence-unreadable', diagnostics: reprobe.proofReadFailure } };
   }
   const { probe, steps, completion } = reprobe;
+  const divergence = effectiveSelectionDivergence({ pluginSet, selection: picked.manifest.selection, effective: reprobe.effective });
   const report = {
     verb: 'status',
     run_id: picked.run.run_id,
     run_status: picked.manifest.status,
     selection: picked.manifest.selection,
+    ...(divergence ? { effective_selection: divergence.effective_selection } : {}),
     completion,
     steps,
     probe,
-    warnings: picked.warnings ?? [],
+    warnings: [...(picked.warnings ?? []), ...(divergence ? [divergence.warning] : [])],
     diagnostics: [],
   };
   return { exitCode: EXIT_BY_STATE[completion.state] ?? EXIT.UNEXPECTED, report };
@@ -1863,17 +1977,19 @@ async function runVerify(ctx, opts) {
     return { exitCode: EXIT.UNEXPECTED, report: { verb: 'verify', status: 'evidence-unreadable', diagnostics: reprobe.proofReadFailure } };
   }
   const { probe, steps, completion } = reprobe;
+  const divergence = effectiveSelectionDivergence({ pluginSet, selection: picked.manifest.selection, effective: reprobe.effective });
   const report = {
     verb: 'verify',
     run_id: picked.run.run_id,
     run_status: picked.manifest.status,
     selection: picked.manifest.selection,
+    ...(divergence ? { effective_selection: divergence.effective_selection } : {}),
     completion,
     proofs: completion.proofs,
     hook_attestation: completion.hook_attestation,
     steps,
     probe,
-    warnings: picked.warnings ?? [],
+    warnings: [...(picked.warnings ?? []), ...(divergence ? [divergence.warning] : [])],
     diagnostics: [],
   };
   return { exitCode: EXIT_BY_STATE[completion.state] ?? EXIT.UNEXPECTED, report };
@@ -1915,7 +2031,7 @@ function mapDoctorDirectionStatus(direction) {
  * pointers, hashes, bound versions) into the run's proof/ directory. Raw peer
  * output is never copied and never printed.
  */
-async function executeProofViaDoctor(ctx, { kind, probe, selection }) {
+async function executeProofViaDoctor(ctx, { kind, probe, effective }) {
   const doctorPath = join(SCRIPT_DIR, 'doctor.mjs');
   const args = ['--repo-root', ctx.cwd, '--format', 'json', '--record', ...PROOF_EXECUTE_FLAGS[kind]];
   const result = await ctx.subprocessRunner(doctorPath, args, { cwd: ctx.cwd, env: ctx.env, timeoutMs: 600_000 });
@@ -1930,7 +2046,10 @@ async function executeProofViaDoctor(ctx, { kind, probe, selection }) {
   }
   const section = report?.[DOCTOR_SECTION_BY_KIND[kind]];
   const ranAt = new Date(ctx.now).toISOString();
-  const bound = currentBoundVersions({ probe, selection: { plugins: selection.desired }, runtimeVersion: RUNTIME_VERSION });
+  // The proof binds the RETAINED set (§6.2): a freshly executed proof must bind
+  // exactly what `requiredBoundPlugins` will demand of it, or it re-judges stale the
+  // moment it is written.
+  const bound = currentBoundVersions({ probe, selection: effective, runtimeVersion: RUNTIME_VERSION });
   // ALL kinds link the doctor artifact by its exact-byte hash (ADR-0048 §3):
   // doctor --record returns artifact_sha256 computed from the bytes it renamed
   // into place, so the proof record's artifact_hash is verifiable against the
@@ -2082,13 +2201,87 @@ async function runResume(ctx, opts) {
   if (reprobe.proofReadFailure) {
     return { exitCode: EXIT.UNEXPECTED, report: { verb: 'resume', status: 'evidence-unreadable', diagnostics: reprobe.proofReadFailure } };
   }
-  const { probe, selection } = reprobe;
+  const { probe } = reprobe;
   // Rebindable: a hook-attestation import later in this verb supersedes the
-  // evidence these steps were judged against, and the same resume must reflect it.
+  // evidence these steps were judged against, and the same resume must reflect it;
+  // a plugin decline in THIS resume's answers narrows the selection, which changes
+  // what the registry derives at all (§6.2).
   let steps = reprobe.steps;
+  let selection = reprobe.selection;
+  let effective = reprobe.effective;
+  let expected = reprobe.expected;
   const warnings = [...(picked.warnings ?? [])];
 
-  const { choices, history, effective } = applyAnswers({ steps, answers, now: ctx.now, selection, pluginSet, verb: 'resume' });
+  // `answeredEffective` is the per-step last-wins ANSWER map — a different thing from
+  // the effective SELECTION above, and named apart so the two can never be confused
+  // at a call site.
+  //
+  // The gate is handed the RETAINED selection, not the stored one (Refine-verify peer,
+  // High). A plugin the reprobe already dropped has no rows left in `steps[]`, so a
+  // gate reading `selection.desired` resurrects it — and with it the hard edge it
+  // carried. A run whose `orchestrator` was declined earlier would refuse a new
+  // `engineer` decline on the grounds that the very plugin the operator already
+  // removed still requires it.
+  const { choices, history, effective: answeredEffective } = applyAnswers({
+    steps,
+    answers,
+    now: ctx.now,
+    selection: { ...selection, desired: effective.plugins },
+    pluginSet,
+    verb: 'resume',
+  });
+
+  // §6.2 — a plugin decline (this resume's, or one a legacy run recorded before the
+  // narrowing existed) creates the effective `custom` selection. Re-derive and
+  // re-judge BEFORE any proof executes: the executor binds versions against the
+  // retained set, so running first would record a proof bound to the wrong selection.
+  // The retained set from THIS resume's answers, layered on the one the reprobe
+  // already resolved. The starting point is `effective.plugins`, not
+  // `selection.desired`: a plugin the reprobe already dropped has no rows left in
+  // `steps[]`, so re-deriving from the manifest's selection would resurrect it.
+  const narrowedEffective = effectiveSelection({ pluginSet, selection: { desired: effective.plugins }, steps });
+  const narrowed = narrowSelectionToEffective({ pluginSet, selection, effective: narrowedEffective });
+  if (narrowed.changed) {
+    history.push(selectionNarrowedHistoryRow({ before: selection, after: narrowed.selection, dropped: narrowed.dropped, at: new Date(ctx.now).toISOString() }));
+    selection = narrowed.selection;
+  }
+  for (const refused of narrowed.refusedButRetained) warnings.push(refused.reason);
+  // The hook verdict AFTER the narrowing. The §8.2 import gate below reads its status,
+  // and reading the PRE-decline one would compute the gate from a different selection
+  // than the import's own expected set (Refine-verify peer, Medium).
+  //
+  // Honest scope: the two agree in every state reachable today, so this is coherence
+  // rather than a behaviour change. An attestation only reads `attested` while every
+  // selected hook plugin is installed, and an installed plugin's step is `satisfied`,
+  // which the answers grammar refuses to decline — so "attested, then narrowed to
+  // stale in the same resume" has no route. Computing the gate from the selection the
+  // import will actually use removes the question rather than resting on that.
+  let hookVerdictNow = hookVerdictFor({ recordedAttestation: reprobe.recordedHookAttestation, pluginSet, effective, probe });
+  if (!sameEffectiveSelection(effective, narrowedEffective)) {
+    effective = narrowedEffective;
+    expected = deriveExpectedSteps({
+      pluginSet,
+      selection: effective,
+      permissionFragmentApplied: Object.fromEntries(['claude', 'codex'].map((h) => [
+        h,
+        steps.find((s) => s.id === stepIds.permissionApplied(h))?.fragment_applied === true,
+      ])),
+      egressProofRequested: reprobe.egressOptIn,
+    });
+    const graph = validateStepGraph(expected);
+    if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
+    hookVerdictNow = hookVerdictFor({ recordedAttestation: reprobe.recordedHookAttestation, pluginSet, effective, probe });
+    steps = judgeSteps({
+      expected,
+      probe,
+      raw: reprobe.raw,
+      pluginSet,
+      readers: reprobe.readers,
+      hookVerdict: hookVerdictNow,
+      previousById: priorJudgeMapOf(steps),
+      now: ctx.now,
+    });
+  }
 
   // Stage 8 — execute the proofs the operator explicitly approved (answer
   // `execute` on a proof step), through doctor's explicit executor flags.
@@ -2104,7 +2297,7 @@ async function runResume(ctx, opts) {
   // executed every `execute` row even when a later row declined the same step
   // — `execute` then `decline` still fired the proof the operator had just
   // withdrawn. applyAnswers' last-wins map is the single consumer surface.
-  const executeKinds = [...effective.entries()]
+  const executeKinds = [...answeredEffective.entries()]
     .filter(([stepId, answer]) => answer === 'execute' && stepId.startsWith('proof.'))
     .map(([stepId]) => stepId.replace(/^proof\./, ''));
   let doctorReport = null;
@@ -2119,7 +2312,7 @@ async function runResume(ctx, opts) {
       warnings.push(`proof kind ${kind} has no doctor executor wired in this runtime; the step stays unexecuted (the opt-in is recorded)`);
       continue;
     }
-    const result = await executeProofViaDoctor(ctx, { kind, probe, selection });
+    const result = await executeProofViaDoctor(ctx, { kind, probe, effective });
     if (!result.ok) {
       warnings.push(result.diagnostic);
       // A refused import may still carry a complete doctor report (the egress
@@ -2190,8 +2383,8 @@ async function runResume(ctx, opts) {
   // step's own "re-attest, then resume" recovery looped forever. That was
   // unreachable while the path bug kept the store empty, and reachable the
   // moment it was fixed. The gate is now the verdict, not the presence.
-  const codexHookPlugins = selection.desired.filter((n) => pluginSet.plugins[n]?.hook_bearing?.codex === true).sort();
-  const storedHookStatus = reprobe.completion?.hook_attestation?.status ?? 'absent';
+  const codexHookPlugins = codexHookBearingPlugins(pluginSet, effective.byHost.codex);
+  const storedHookStatus = hookVerdictNow.status;
   let importedHookAttestation = null;
   if (codexHookPlugins.length > 0 && storedHookStatus !== 'attested') {
     if (!doctorReport) {
@@ -2256,7 +2449,7 @@ async function runResume(ctx, opts) {
   // is structurally impossible, which is exactly the after-the-fact property
   // D0.1 demands (testimony needs a PRE-EXISTING passed ack; the terminal-run
   // path is the `attest` verb).
-  if (effective.get(stepIds.proofEgressProviderAck()) === 'attest-receipt') {
+  if (answeredEffective.get(stepIds.proofEgressProviderAck()) === 'attest-receipt') {
     const attest = await recordReceiptAttestation(ctx, { runId: picked.run.run_id, proofRecords: reprobe.proofRecords, ackEvaluated: reprobe.completion.proofs.find((p) => p.kind === 'egress-provider-ack') ?? null });
     if (!attest.ok) warnings.push(`attest-receipt was not recorded: ${attest.diagnostic}`);
   }
@@ -2308,9 +2501,11 @@ async function runResume(ctx, opts) {
   // non-hook steps is a separate, pre-existing defect and is deliberately not
   // touched here.)
   if (importedHookAttestation) {
-    const refreshedVerdict = hookVerdictFor({ recordedAttestation: importedHookAttestation, pluginSet, selection, probe: finalProbe });
+    const refreshedVerdict = hookVerdictFor({ recordedAttestation: importedHookAttestation, pluginSet, effective, probe: finalProbe });
     steps = judgeSteps({
-      expected: reprobe.expected,
+      // `expected` — not `reprobe.expected` — because a decline in THIS resume may
+      // already have re-derived it against the narrowed selection.
+      expected,
       probe: reprobe.probe,
       raw: reprobe.raw,
       pluginSet,
@@ -2340,7 +2535,7 @@ async function runResume(ctx, opts) {
 
   const completion = reduceCompletion({
     pluginSet,
-    selection: { plugins: selection.desired },
+    selection: effective,
     steps,
     // The SAME union the persist below writes (`[...m.choices, ...choices]`):
     // reducing over the pre-answer ledger would judge this resume's own opt-in
@@ -2395,6 +2590,12 @@ async function runResume(ctx, opts) {
       schema: RUN_SCHEMA_VERSION,
       status: nextStatus,
       probe: finalProbe,
+      // §6.2 — the narrowed selection is PERSISTED, in the same atomic mutate as the
+      // steps derived from it. Writing the steps without it would strand the run: the
+      // declined plugin's rows are gone from `steps[]` (they are no longer expected),
+      // so the next verb would re-derive the ORIGINAL selection from a manifest with
+      // no decline left to read, and the narrowing would silently revert.
+      selection,
       steps,
       choices: [...(Array.isArray(m.choices) ? m.choices : []), ...choices],
       history: [
@@ -2494,7 +2695,7 @@ async function runAttest(ctx, opts) {
   const ackRow = finalRead.records.find((r) => r.kind === 'egress-provider-ack') ?? null;
   const completion = reduceCompletion({
     pluginSet,
-    selection: { plugins: reprobe.selection.desired },
+    selection: reprobe.effective,
     steps: reprobe.steps,
     choices: picked.manifest.choices,
     proofs: finalRead.records.filter((r) => PROOF_KINDS.includes(r.kind)).map((r) => r.record),
@@ -2593,7 +2794,13 @@ async function runProfileExport(ctx, opts) {
     if (picked.error) {
       return { exitCode: picked.exitCode, report: { verb: 'profile export', status: 'no-such-run', diagnostics: [picked.error] } };
     }
-    selection = picked.manifest.selection;
+    // §6.2 — export the EFFECTIVE selection, for the same reason the statusline
+    // decline is honoured below: a profile is seed material, so exporting a plugin
+    // this run's operator declined would resurrect it on the next `plan
+    // --profile-file` — the decline undone by a round trip through the artifact
+    // meant to reproduce the machine. A run already narrowed by resume is unchanged
+    // by this; a legacy one is corrected on the way out.
+    selection = narrowSelectionByDeclines({ pluginSet, selection: picked.manifest.selection, steps: picked.manifest.steps ?? [] }).selection;
     fromRunManifest = picked.manifest;
     ({ probe } = await probeNow(ctx));
   } else {
