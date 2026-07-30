@@ -38,6 +38,19 @@ export const CONFIG_KEY_FAMILIES = Object.freeze({
     'claude_effort',
     'codex_model',
     'codex_effort',
+    // The machine's model/effort POSTURE, not a coordinate (§6.1 Stage 4). It
+    // declares that leaving a coordinate unset is deliberate — the last step of
+    // the documented resolution order is literally `host-native default`, and
+    // `resolveOneSetting` already returns `{value: null, source: 'host-native
+    // default'}` there, so "no key" is a RESOLVED posture in the consuming code
+    // and the only thing missing was a way to say it was chosen.
+    //
+    // It is POLICY METADATA and is never a model identifier: the peer resolver
+    // reads a closed key list (`[<peer>_model, model]` / `[<peer>_effort,
+    // effort]`), so this key cannot reach a companion as an argument. That is
+    // the whole reason it is a separate key rather than a sentinel VALUE in
+    // `model` — a sentinel would be handed to the companion verbatim.
+    'model_effort_fallback',
   ]),
   notify: Object.freeze([
     'notify_channel',
@@ -67,6 +80,14 @@ export const CONFIG_KEYS = Object.freeze(Object.values(CONFIG_KEY_FAMILIES).flat
 
 export const NOTIFY_CHANNELS = Object.freeze(['none', 'macos-osascript', 'file-log']);
 
+// The declarable model/effort postures. An enum rather than a boolean so a
+// future posture can join without a schema break (the notify_channel
+// precedent), and deliberately NOT named "default": `host-native` says which
+// authority chooses, which is the fact being recorded. It governs only the
+// coordinates nothing else set — explicit command flags, a workflow override,
+// repo config and user-global keys all still win for their own coordinate.
+export const MODEL_EFFORT_FALLBACK_POSTURES = Object.freeze(['host-native']);
+
 export const SESSION_CAPTURE_MODES = Object.freeze(['off', 'stop-hook']);
 
 export const ENTRY_BRIEF_MODES = Object.freeze(['off', 'startup']);
@@ -79,13 +100,21 @@ export const SESSION_KEY_DEFAULTS = Object.freeze({
   entry_brief_empty: 'silent',
 });
 
-// ADR-0045 §7 — the deliberate deviation from repo → user precedence: these
-// keys activate a session-shaping injected line, so a tracked repo value can
-// NEVER enable them (a cloned repository could otherwise flip the key against
-// the operator's global off). They are read from user-global config and env
-// only; a repo value is detected and reported as ignored, and the settings
-// plan/apply path refuses to write them repo-side.
-export const USER_SCOPE_ONLY_CONFIG_KEYS = Object.freeze(['entry_brief', 'entry_brief_empty']);
+// Keys the settings plan/apply path refuses to write repo-side. Two distinct
+// reasons live here, and both end at the same rule:
+//
+//   * ADR-0045 §7 — the deliberate deviation from repo → user precedence:
+//     `entry_brief*` activate a session-shaping injected line, so a tracked repo
+//     value can NEVER enable them (a cloned repository could otherwise flip the
+//     key against the operator's global off). They are read from user-global
+//     config and env only; a repo value is detected and reported as ignored.
+//   * §6.1 Stage 4 — `model_effort_fallback` declares a MACHINE posture, and the
+//     only reader that judges it (bootstrap's Stage-4 step) reads user-global
+//     config exclusively, while the peer resolver never reads it at all. A
+//     repo-side copy would therefore be a key nothing consults: dead
+//     configuration that looks live. Repo-local model/effort COORDINATES stay
+//     perfectly legitimate — it is the posture declaration that has one home.
+export const USER_SCOPE_ONLY_CONFIG_KEYS = Object.freeze(['entry_brief', 'entry_brief_empty', 'model_effort_fallback']);
 
 // Env overrides sit ABOVE user-global config for the user-scope-only keys —
 // env is per-machine operator state, never repo-trackable, so it keeps the
@@ -150,6 +179,11 @@ export const CONFIG_KEY_VALIDATORS = {
     const parsed = parseKindsFilter(value);
     if (!parsed.ok) {
       throw new Error(`${key} is invalid: ${parsed.errors.join('; ')}`);
+    }
+  },
+  model_effort_fallback: (value, key) => {
+    if (!MODEL_EFFORT_FALLBACK_POSTURES.includes(value)) {
+      throw new Error(`${key} must be one of ${MODEL_EFFORT_FALLBACK_POSTURES.join(', ')}`);
     }
   },
   session_capture: (value, key) => {

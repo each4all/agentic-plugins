@@ -1032,7 +1032,7 @@ left to S8:
 | `plugin.<name>.claude.installed` | 3 | per plugin in the selection targeting Claude | only if the plugin is optional (§6.2) |
 | `plugin.<name>.codex.installed` | 3 | per plugin in the selection targeting Codex | only if the plugin is optional (§6.2) |
 | `plugin.<name>.codex.enabled` | 3 | per plugin in the selection targeting Codex | follows `.installed` |
-| `config.model_effort` | 4 | always | no |
+| `config.model_effort` | 4 | always | no (see §6.1.1 — a recorded `host-native` posture satisfies it; a decline is not the vocabulary for that) |
 | `notify.configured` | 5 | always | **yes** |
 | `notify.codex.configured` | 5 | always | **yes** |
 | `statusline.claude.configured` | 5 | always | **yes** |
@@ -1045,6 +1045,58 @@ left to S8:
 | `proof.workflow-continuation` | 8 | iff `engineer` ∈ selection | **yes** (same cap) |
 | `proof.permission` | 8 | iff a `permission.*.applied` step carries `fragment_applied: true` | **yes** (same cap) |
 | `proof.egress-provider-ack` | 8 | iff the operator opted in — an answer against the step in `choices[]`, a `declined` status on its row, or a recorded `egress-provider-ack` proof (ADR-0048 §3/D0.2) | **yes** (same cap) |
+
+#### 6.1.1 Stage 4 asks for a recorded POSTURE, not for a key
+
+`config.model_effort` is satisfied by **either** of two recorded facts:
+
+1. an explicit coordinate in user-global `~/.agentic-plugins/config.toml` —
+   `model`, `effort`, or a `<peer>_`-prefixed pair — carrying a non-empty value; or
+2. `model_effort_fallback = "host-native"`, which declares that leaving the
+   coordinates unset is **deliberate**.
+
+Key presence alone was the original test, and it made a machine that runs
+host-default model/effort on purpose unable to ever reach `complete`. That
+contradicted three things this repository had already written down: the
+documented resolution order ends with `host-native default` and
+`resolveOneSetting` returns exactly that for an unset coordinate; `runtime:settings`
+already renders the same null as `<host-default>`; and the cutover scorecard's R5
+quality contract accepts "model/effort defaults stay host-native **or**
+`runtime:settings` configured". The step was asking for a key when the contract
+only ever asked for a decision.
+
+Four properties of the posture key are load-bearing:
+
+- **It is policy metadata, never a model identity.** The peer resolver reads a
+  closed key list (`[<peer>_model, model]` / `[<peer>_effort, effort]`), so the
+  posture cannot reach a companion as an argument. This is why it is a separate
+  key rather than a sentinel *value* in `model` — a sentinel would be handed to
+  the companion verbatim.
+- **It is a fallback, not a promise.** It governs only the coordinates nothing
+  else resolved. Explicit command flags, a workflow override, repo config and
+  user-global coordinates all still win for their own coordinate, so a declared
+  posture never means "every invocation uses host defaults".
+- **It is user-scope-only.** The Stage-4 judge reads user-global config
+  exclusively and the peer resolver never reads the posture at all, so a
+  repo-side copy would be configuration nothing consults. Repo-local model/effort
+  *coordinates* stay legitimate; it is the declaration that has one home.
+- **It is not exported to a machine profile.** Every profile member is a
+  `scalarField` object and §4.1 refuses an unknown object-valued key at *every*
+  minor, so carrying it would make new profiles unreadable to an older runtime —
+  breaking the seed path the artifact exists for. It is also the kind of choice a
+  new machine's operator should be asked rather than handed: a cheaper machine may
+  want explicit coordinates where this one wants the host's.
+
+Three judgement rules follow, and each closes a hole the presence test had:
+
+- an **unreadable** user config is `unknown`, never "nothing set" — §6's rule that
+  unknown is never satisfied applies to the config read as much as to a probe;
+- an **empty** value (`model = ""`) is not a coordinate. The parser deliberately
+  preserves a known key with an empty value so the per-key validator can fail
+  closed on it, and the presence test counted that as configured;
+- an **invalid** posture value is `pending` with the valid set named. The value
+  reaches the judge unvalidated — validators run on the write path — so a typo
+  would otherwise satisfy the step while `runtime:settings --apply` refuses it.
 
 `notify.configured` keeps meaning exactly the LOCAL runtime notification policy
 (`~/.agentic-plugins/config.toml` notify family); `notify.codex.configured`
@@ -1202,8 +1254,15 @@ table, and the policy↔shim agreement test pins the shim's renderer map to it.
 ### 6.2 The declinable set is narrow
 
 **Not declinable, ever**: host CLI presence and authentication; marketplace
-registration; `runtime`; **`companions`**; and any plugin reached by a hard edge from
-a retained plugin.
+registration; **the Stage-4 model/effort posture**; `runtime`; **`companions`**; and
+any plugin reached by a hard edge from a retained plugin.
+
+The posture step is named here because it was in neither list while §6.1's table and
+the registry both said `no` — a three-way disagreement between prose, table and code.
+It stays non-declinable on purpose: "I will not do this step" is the wrong sentence
+for a machine that *has* chosen, and a decline would record the absence of a decision
+where §6.1.1 requires the presence of one. The host-native posture is that decision,
+recorded positively (§6.1.1).
 
 **`companions` is mandatory in every selection, including `custom`.** It is not
 merely a member of `base` — a `custom` selection may not omit it. The reason is

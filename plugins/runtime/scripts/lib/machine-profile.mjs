@@ -72,9 +72,31 @@ export function hashHostname(hostname) {
  * correctness rule, not a preference: the repo-preferring resolvers would promote a
  * project's policy into another machine's global default.
  */
+// §4.1 — config keys read by the model/effort reader that the PROFILE does not
+// carry. `model_effort_fallback` is a posture declaration, not a coordinate, and
+// exporting it would cost more than it gives:
+//
+//   * every profile member is a `scalarField` OBJECT (`{value, scope,
+//     provenance}`), and §4.1 refuses an unknown key carrying an object at EVERY
+//     schema minor — so adding it would make every profile this runtime writes
+//     unreadable to an older one, breaking the seed path the artifact exists for
+//     (measured: `$.model_effort.model_effort_fallback: unknown key carrying
+//     object`). Exporting it as a bare scalar instead would put two shapes in one
+//     block, which the schema and the builder would both have to special-case.
+//   * the profile's model/effort block records what this machine's coordinates
+//     ARE. A posture is a decision about what they should be LEFT as, and it is
+//     legitimately per-machine: a slower or cheaper machine may want explicit
+//     coordinates where this one wants the host's. Seeding it would answer a
+//     question the new machine's operator should be asked.
+//
+// The posture stays observable through `runtime:settings` and judged by
+// bootstrap's Stage-4 step; it is not lost, only not propagated.
+const PROFILE_EXCLUDED_MODEL_EFFORT_KEYS = Object.freeze(['model_effort_fallback']);
+
 export function buildMachineProfile({ readers, probe, selection, runtimeVersion, hostname, now }) {
   const modelEffort = {};
   for (const key of CONFIG_KEY_FAMILIES.model_effort) {
+    if (PROFILE_EXCLUDED_MODEL_EFFORT_KEYS.includes(key)) continue;
     const entry = readers.modelEffort?.keys?.[key];
     modelEffort[key] = field(entry?.value, entry?.provenance);
   }
