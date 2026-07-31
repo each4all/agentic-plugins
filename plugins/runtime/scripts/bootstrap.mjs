@@ -851,6 +851,92 @@ async function readAnswersFile(path) {
 
 export const ANSWER_VALUES = Object.freeze(['decline', 'accept', 'execute', 'attest-receipt']);
 
+const PROOF_STEP_PREFIX = 'proof.';
+
+/**
+ * The Stage-8 proof kind a step id names, or null for every other step. The
+ * resume executor used to spell this inline as a `startsWith` FILTER, which is
+ * why "execute is for proofs" silently dropped the answers it did not match
+ * instead of refusing them.
+ */
+export function proofKindOf(stepId) {
+  return stepId.startsWith(PROOF_STEP_PREFIX) ? stepId.slice(PROOF_STEP_PREFIX.length) : null;
+}
+
+/**
+ * THE answer grammar (§3) — ONE predicate, asked at every boundary that acts on
+ * an answer. Returns a refusal string, or null when the answer is legal.
+ *
+ * It replaces three partial predicates that disagreed: `applyAnswers` validated
+ * declinability and nothing else; the resume executor re-implemented "execute is
+ * for proofs" as a filter that dropped the rest without a word; and NEITHER
+ * asked whether this run's selection applies the step at all. So an answer
+ * against a `not-applicable` row was accepted, recorded in `choices[]`, and then
+ * invisible — the §11.2 presentation filter (`required || declined`) does not
+ * show such a row, correctly, because there is nothing meaningful to show.
+ *
+ * Applicability is read from the JUDGED status, which is where `applicable:
+ * false` lands (§6). That is safe for the one step whose applicability an
+ * incoming answer PROMOTES: `proof.egress-provider-ack` derives applicable
+ * whenever the answers name it (§8.1), and that derivation runs before
+ * judgement, so the grammar never meets it as `not-applicable`. The ordering is
+ * load-bearing — a blanket refusal evaluated before the promotion would break
+ * the opt-in path outright — and is pinned by test.
+ */
+export function answerRefusal({ step, answer, verb, applicable }) {
+  // Applicability comes from the EXPECTATION, never from the judged status.
+  // `judgeSteps` writes `not-applicable` and then RESTORES a prior `declined`
+  // over it for any declinable step, so a proof declined in an earlier verb and
+  // since made non-applicable reads `declined` — which let both this refusal and
+  // the executor's skip miss it entirely, and doctor ran for a step the reducer
+  // simultaneously reported `required:false, status:not-applicable`
+  // (cross-host Refine-verify, High; reproduced before the fix). The registry's
+  // `applicable` flag is the only reading of this question that a status
+  // restoration cannot overwrite. It is passed in rather than persisted onto the
+  // step, because §4.1/`$defs.step` refuses an unknown key at every minor.
+  //
+  // ONLY for the answers that would leave no trace. A
+  // `decline` against a step this selection does not apply is DELIBERATE and
+  // visible: the reducer reports it `required: false, declined: true` and the
+  // §11.2 filter (`required || declined`) renders it `not-applicable
+  // (declined)` precisely so the refusal cannot vanish, and a declined row is
+  // one of the three provenances that opt the egress proof in (§8.1). The
+  // defect is the answers that leave `declined: false` — `accept` and
+  // `execute` — which no filter shows and no verb acts on. Refusing the whole
+  // status would delete a contract-visible path to close an invisible one.
+  if (applicable === false && (answer === 'accept' || answer === 'execute')) {
+    return `step ${step.id} is not applicable to this run's selection (§6.1) — refusing to record '${answer}' against it, because no verb would act on it and no report would show it (decline it instead if you mean to record a refusal)`;
+  }
+  if (answer === 'decline' && !step.declinable) {
+    return `step ${step.id} is not declinable (§6.2 — host presence/auth, marketplace registration, runtime, companions, and hard-edge targets are never declinable)`;
+  }
+  if (answer === 'execute') {
+    if (proofKindOf(step.id) === null) {
+      return `answer 'execute' targets proof.* steps only (§3) — ${step.id} has no executor behind it, so the approval would be stored and never acted on`;
+    }
+    // A plan-time `execute` is NOT deferred: `resume` builds its execute set
+    // from its OWN answers file, so a plan-time approval is recorded and then
+    // never consumed — measured, against an earlier draft of this very comment
+    // that claimed the opposite (cross-host Refine-verify, High). One step is
+    // genuinely different: any answer naming `proof.egress-provider-ack`
+    // promotes it to applicable and lands in `choices[]`, which IS the §8.1
+    // opt-in provenance the reducer reads, so a plan-time answer there does
+    // real work and the documented plan → resume egress path depends on it.
+    if (verb === 'plan' && step.id !== stepIds.proofEgressProviderAck()) {
+      return `answer 'execute' is not acted on under plan (§3) — only resume runs a proof executor and it reads its own answers file, so this approval would be stored and never consumed; give it on the resume that should run the proof (proof.egress-provider-ack is the one exception: a plan-time answer there records the §8.1 opt-in)`;
+    }
+  }
+  if (answer === 'attest-receipt') {
+    if (step.id !== stepIds.proofEgressProviderAck()) {
+      return `answer 'attest-receipt' targets ${stepIds.proofEgressProviderAck()} only — receipt testimony about any other step is not a thing this contract records`;
+    }
+    if (verb === 'plan') {
+      return `answer 'attest-receipt' is not accepted under plan — no provider ack can exist yet, so there is nothing to testify about; use resume or attest`;
+    }
+  }
+  return null;
+}
+
 /**
  * Apply an answers list to judged steps. An answer whose step_id is not an
  * expected step of the run is REJECTED (exit 40) rather than recorded — a stale
@@ -871,9 +957,13 @@ export const ANSWER_VALUES = Object.freeze(['decline', 'accept', 'execute', 'att
  * The evidence-side preconditions (a current passed ack, not same-run-executed)
  * belong to the attestation pipeline, not the answers grammar.
  */
-export function applyAnswers({ steps, answers, now, selection = null, pluginSet = null, verb = 'resume' }) {
+export function applyAnswers({ steps, answers, now, selection = null, pluginSet = null, verb = 'resume', expected = null }) {
   const at = new Date(now).toISOString();
   const byId = new Map(steps.map((s) => [s.id, s]));
+  // The expectation this verb derived, keyed for the applicability question.
+  // Absent (a caller that has none) leaves applicability UNJUDGED rather than
+  // assumed: refusing on a default would invent a rule from missing data.
+  const applicableById = new Map((expected ?? []).map((s) => [s.id, s.applicable !== false]));
   const choices = [];
   const history = [];
   const effective = new Map();
@@ -894,17 +984,8 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
     if (!ANSWER_VALUES.includes(answer)) {
       throw new UsageError(`answer '${answer}' for ${stepId} is not one of ${ANSWER_VALUES.join('|')}`);
     }
-    if (answer === 'attest-receipt') {
-      if (stepId !== stepIds.proofEgressProviderAck()) {
-        throw new UsageError(`answer 'attest-receipt' targets ${stepIds.proofEgressProviderAck()} only — receipt testimony about any other step is not a thing this contract records`);
-      }
-      if (verb === 'plan') {
-        throw new UsageError(`answer 'attest-receipt' is not accepted under plan — no provider ack can exist yet, so there is nothing to testify about; use resume or attest`);
-      }
-    }
-    if (answer === 'decline' && !step.declinable) {
-      throw new UsageError(`step ${stepId} is not declinable (§6.2 — host presence/auth, marketplace registration, runtime, companions, and hard-edge targets are never declinable)`);
-    }
+    const refusal = answerRefusal({ step, answer, verb, applicable: applicableById.get(stepId) });
+    if (refusal) throw new UsageError(refusal);
     choices.push({ step_id: stepId, answer, at });
     effective.set(stepId, answer);
   }
@@ -1723,6 +1804,7 @@ async function runPlan(ctx, opts) {
 
   const deriveAndJudge = (effectiveSel, previousSteps = null) => {
     const derived = deriveExpectedSteps({ pluginSet, selection: effectiveSel, egressProofRequested });
+    expectedNow = derived;
     const graph = validateStepGraph(derived);
     if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
     const verdict = hookVerdictFor({ recordedAttestation: null, pluginSet, effective: effectiveSel, probe });
@@ -1738,10 +1820,11 @@ async function runPlan(ctx, opts) {
     });
   };
 
+  let expectedNow = null;
   let effective = effectiveSelection({ pluginSet, selection, steps: [] });
   let steps = deriveAndJudge(effective);
 
-  const { choices, history } = applyAnswers({ steps, answers, now: ctx.now, selection, pluginSet, verb: 'plan' });
+  const { choices, history } = applyAnswers({ steps, answers, now: ctx.now, selection, pluginSet, verb: 'plan', expected: expectedNow });
 
   const warnings = [...softWarnings, ...seededWarnings];
 
@@ -1846,13 +1929,15 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // One predicate, so the two readers cannot drift.
   const egressOptIn = egressProofRequested
     || egressProofOptedIn({ steps: manifest.steps, choices: manifest.choices, proofs: recordedProofs });
-  const expected = deriveExpectedSteps({
+  const fragmentAppliedFrom = (rows) => Object.fromEntries(['claude', 'codex'].map((h) => [
+    h,
+    (rows ?? []).find((s) => s.id === stepIds.permissionApplied(h))?.fragment_applied === true,
+  ]));
+  const storedFragmentApplied = fragmentAppliedFrom(manifest.steps);
+  let expected = deriveExpectedSteps({
     pluginSet,
     selection: effective,
-    permissionFragmentApplied: Object.fromEntries(['claude', 'codex'].map((h) => [
-      h,
-      (manifest.steps ?? []).find((s) => s.id === stepIds.permissionApplied(h))?.fragment_applied === true,
-    ])),
+    permissionFragmentApplied: storedFragmentApplied,
     egressProofRequested: egressOptIn,
   });
   const hookVerdict = hookVerdictFor({ recordedAttestation: recordedHookAttestation, pluginSet, effective, probe });
@@ -1877,7 +1962,29 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // right step on this same resume.
   const priorForJudge = priorJudgeMapOf(invalidation.steps);
 
-  const steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, now: ctx.now });
+  let steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, now: ctx.now });
+
+  // SECOND PASS on the permission fragment, for the same reason the selection
+  // narrowing re-derives further down: a judgement INPUT changed during the
+  // judgement. `fragment_applied` is PROMOTED here — it marks a fragment this
+  // run rendered and a later probe observed the operator applying — while the
+  // expectation above could only read the value STORED before that observation.
+  // So on the very resume that first sees the application, `proof.permission`
+  // derived `applicable: false` over a run that had just earned it. That cost an
+  // extra cycle silently before; once applicability became a REFUSAL at the
+  // answer boundary it turned an ordinary flow — plan, apply the fragments,
+  // resume with `execute proof.permission` — into exit 40 (cross-host
+  // Refine-verify, High; reproduced). Re-derive from what was observed.
+  const judgedFragmentApplied = fragmentAppliedFrom(steps);
+  if (['claude', 'codex'].some((h) => judgedFragmentApplied[h] !== storedFragmentApplied[h])) {
+    expected = deriveExpectedSteps({
+      pluginSet,
+      selection: effective,
+      permissionFragmentApplied: judgedFragmentApplied,
+      egressProofRequested: egressOptIn,
+    });
+    steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, now: ctx.now });
+  }
   const receiptRow = proofRead.records.find((r) => r.kind === 'egress-receipt-attestation') ?? null;
   const ackRow = proofRead.records.find((r) => r.kind === 'egress-provider-ack') ?? null;
   const completion = reduceCompletion({
@@ -2272,6 +2379,7 @@ async function runResume(ctx, opts) {
     selection: { ...selection, desired: effective.plugins },
     pluginSet,
     verb: 'resume',
+    expected,
   });
 
   // §6.2 — a plugin decline (this resume's, or one a legacy run recorded before the
@@ -2340,9 +2448,37 @@ async function runResume(ctx, opts) {
   // executed every `execute` row even when a later row declined the same step
   // — `execute` then `decline` still fired the proof the operator had just
   // withdrawn. applyAnswers' last-wins map is the single consumer surface.
-  const executeKinds = [...answeredEffective.entries()]
-    .filter(([stepId, answer]) => answer === 'execute' && stepId.startsWith('proof.'))
-    .map(([stepId]) => stepId.replace(/^proof\./, ''));
+  //
+  // SECOND enforcement point for the same grammar, against the state that
+  // exists HERE. `applyAnswers` refused every answer illegal at answer time,
+  // but a legal pair can still leave an approval inert: declining a plugin
+  // narrows the selection (§6.2), and the re-derivation above drops or
+  // un-applies the proofs that plugin carried. The grammar cannot refuse that
+  // combination — both answers were legal when given — so the executor skips
+  // with a warning rather than running a proof this run no longer applies.
+  // Observed on the model/effort slice's cross-host review: a proof declined
+  // into non-applicability inside one resume still executed.
+  // Applicability from the POST-narrowing expectation, for the same reason the
+  // grammar reads it there: a restored `declined` overwrites the status this
+  // used to test, so a declined-then-executed proof slipped straight through.
+  const applicableNow = new Map(expected.map((s) => [s.id, s.applicable !== false]));
+  const executeKinds = [];
+  for (const [stepId, answer] of answeredEffective) {
+    if (answer !== 'execute') continue;
+    const kind = proofKindOf(stepId);
+    // Unreachable through the answers file — the grammar refuses a non-proof
+    // `execute` — but the executor states its own precondition rather than
+    // inheriting it, because that inheritance is exactly what went missing.
+    if (kind === null) continue;
+    // Absent from the expectation is treated the same as not applicable: a
+    // step this run does not enumerate is not one it may execute.
+    const applicable = applicableNow.get(stepId);
+    if (applicable !== true) {
+      warnings.push(`proof ${stepId} was approved for execution, but this resume's own answers narrowed the selection until the run no longer applies it (§6.2); the approval stays recorded in choices[] and nothing ran`);
+      continue;
+    }
+    executeKinds.push(kind);
+  }
   let doctorReport = null;
   let executedAnything = false;
   for (const kind of executeKinds) {

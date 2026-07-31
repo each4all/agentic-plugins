@@ -7,7 +7,7 @@
 // tests/runtime/test-bootstrap.mjs; this file exercises the §3 grammar, the
 // R0/M1 boundary, the no-executor rule, and the CLI lifecycle end to end.
 
-import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert';
+import { deepStrictEqual, notStrictEqual, ok, rejects, strictEqual } from 'node:assert';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -233,6 +233,170 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
     strictEqual(two.exitCode, EXIT.INVALID, 'a step outside the base selection is not an expected step');
     ok(/not an expected step/.test(two.report.error));
     void ANSWER_VALUES;
+  });
+
+  it('C1 — an accept/execute answer against a non-applicable step is refused, never absorbed', async () => {
+    const { home, cwd } = await makeHome();
+    await mkdir(join(home, 'answers'), { recursive: true });
+    // `base` carries no engineer, so proof.workflow-continuation derives
+    // applicable:false — the row exists in steps[] but this run does not apply
+    // it. Before the one-grammar fix the answer was recorded in choices[] and
+    // then shown by nothing: the §11.2 filter is `required || declined`, and
+    // neither answer sets `declined`.
+    for (const answer of ['accept', 'execute']) {
+      const file = join(home, 'answers', `${answer}-inert.json`);
+      await writeFile(file, JSON.stringify([{ step_id: 'proof.workflow-continuation', answer }]));
+      const res = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file], home, cwd, runner: bareRunner(), subprocess: spySubprocess().runner });
+      strictEqual(res.exitCode, EXIT.INVALID, `${answer} against a non-applicable step must be refused`);
+      ok(/is not applicable to this run's selection/.test(res.report.error), res.report.error);
+    }
+  });
+
+  it('C1 — a decline against that SAME non-applicable step stays legal, because it is visible', async () => {
+    // The counter-case, pinned so the applicability rule can never be widened
+    // back over it. A decline sets `declined: true`, which the §11.2 filter
+    // renders as `not-applicable (declined)`, and a declined row is one of the
+    // three provenances that opt the egress proof in (§8.1). The first cut of
+    // this fix refused the whole status and deleted that path; four existing
+    // presentation/opt-in cases caught it.
+    const { home, cwd } = await makeHome();
+    const file = join(home, 'decline-na.json');
+    await writeFile(file, JSON.stringify([{ step_id: 'proof.workflow-continuation', answer: 'decline' }]));
+    const res = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd, runner: bareRunner(), subprocess: spySubprocess().runner });
+    notStrictEqual(res.exitCode, EXIT.INVALID, 'a decline is a recorded decision, not an inert one');
+    const wc = res.report.completion.proofs.find((pr) => pr.kind === 'workflow-continuation');
+    strictEqual(wc.declined, true, 'the refusal is recorded');
+    strictEqual(wc.required, false, 'and it is still not owed');
+  });
+
+  it('C1 — execute is refused against a step no executor could ever reach', async () => {
+    const { home, cwd } = await makeHome();
+    const file = join(home, 'execute-config.json');
+    // A CONFIG step. The resume executor only ever looked at `proof.*`, and it
+    // expressed that as a silent filter, so this was accepted and dropped.
+    await writeFile(file, JSON.stringify([{ step_id: 'config.model_effort', answer: 'execute' }]));
+    const res = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file], home, cwd, runner: bareRunner(), subprocess: spySubprocess().runner });
+    strictEqual(res.exitCode, EXIT.INVALID);
+    ok(/targets proof\.\* steps only/.test(res.report.error), res.report.error);
+  });
+
+  it('C1 — a plan-time execute on the egress proof survives: the promotion runs BEFORE the grammar', async () => {
+    // The critical constraint, pinned explicitly. Any answer naming
+    // proof.egress-provider-ack promotes it to applicable (§8.1) and that
+    // derivation happens before judgement, so the grammar never meets the step
+    // as `not-applicable`. This also refutes the follow-up's premise that a
+    // plan-mode `execute` is inert: for THIS step it is the opt-in itself, and
+    // a verb restriction on `execute` would have deleted the plan → resume
+    // egress path.
+    const { home, cwd } = await makeHome();
+    const file = join(home, 'egress-opt-in.json');
+    await writeFile(file, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+    const res = await boot({ argv: ['plan', '--bundle', 'base', '--answers', file, '--format', 'json'], home, cwd, runner: bareRunner(), subprocess: spySubprocess().runner });
+    notStrictEqual(res.exitCode, EXIT.INVALID, 'the opt-in must not be refused as inert');
+    const row = res.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
+    notStrictEqual(row.status, 'not-applicable', 'the answer promoted it before the grammar saw it');
+    const egress = res.report.completion.proofs.find((pr) => pr.kind === 'egress-provider-ack');
+    strictEqual(egress.required, true, 'and the opt-in is what makes it owed');
+  });
+
+  it('C1 — the executor re-asks the grammar: a proof this resume declined into non-applicability does not run', async () => {
+    // The SECOND enforcement point, and the case the grammar structurally
+    // cannot refuse: both answers are legal when given. Declining engineer
+    // narrows the selection (§6.2), which removes the proof engineer carried —
+    // so the `execute` approved a proof the run no longer applies. Observed on
+    // the model/effort slice's cross-host review, where it still executed.
+    const { home, cwd } = await makeHome();
+    const spy = spySubprocess();
+    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
+    await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,engineer', '--format', 'json']);
+    const answers = join(home, 'decline-then-execute.json');
+    await writeFile(answers, JSON.stringify([
+      { step_id: 'plugin.engineer.claude.installed', answer: 'decline' },
+      { step_id: 'plugin.engineer.codex.installed', answer: 'decline' },
+      { step_id: 'proof.workflow-continuation', answer: 'execute' },
+    ]));
+    const resume = await run(['resume', '--latest-open', '--answers', answers, '--format', 'json']);
+    notStrictEqual(resume.exitCode, EXIT.INVALID, 'both answers are legal at answer time');
+    const warnings = resume.report.warnings ?? [];
+    ok(warnings.some((w) => /no longer applies it/.test(w)), `the skip must be stated, not silent: ${JSON.stringify(warnings)}`);
+    // Both halves are proven by the same mutant: deleting the skip replaces
+    // this absence with `runtime:doctor --record for workflow-continuation
+    // failed`, which is the executor actually reaching for the proof.
+    ok(
+      !warnings.some((w) => /--record for workflow-continuation/.test(w)),
+      `no executor may reach a proof the run no longer applies: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  it('C1 — a plan-time execute nothing will consume is refused, and the egress opt-in is the one exception', async () => {
+    // Measured, and it corrected this fix's own first draft: `resume` builds its
+    // execute set from its OWN answers file, so a plan-time `execute` on an
+    // ordinary proof is recorded and then never acted on (the bare resume left
+    // deep-peer-smoke `absent` with no warning and no doctor call). The egress
+    // ack is different in kind: any answer naming it promotes it and lands in
+    // choices[], which IS the §8.1 opt-in the reducer reads.
+    const { home, cwd } = await makeHome();
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const inert = join(home, 'plan-exec-inert.json');
+    await writeFile(inert, JSON.stringify([{ step_id: 'proof.deep-peer-smoke', answer: 'execute' }]));
+    const refused = await run(['plan', '--bundle', 'base', '--answers', inert]);
+    strictEqual(refused.exitCode, EXIT.INVALID);
+    ok(/not acted on under plan/.test(refused.report.error), refused.report.error);
+
+    const optIn = join(home, 'plan-exec-egress.json');
+    await writeFile(optIn, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+    const allowed = await run(['plan', '--bundle', 'base', '--answers', optIn, '--format', 'json']);
+    notStrictEqual(allowed.exitCode, EXIT.INVALID, 'the egress opt-in must survive');
+  });
+
+  it('C1 — a prior decline cannot smuggle an execute past applicability', async () => {
+    // judgeSteps writes `not-applicable` and then RESTORES a prior `declined`
+    // over it for any declinable step, so reading applicability off the STATUS
+    // missed this entirely: doctor ran for a step the reducer simultaneously
+    // reported required:false, status:not-applicable. Applicability now comes
+    // from the expectation, which no status restoration can overwrite.
+    const { home, cwd } = await makeHome();
+    const spy = spySubprocess();
+    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
+    const dec = join(home, 'decline-first.json');
+    await writeFile(dec, JSON.stringify([{ step_id: 'proof.workflow-continuation', answer: 'decline' }]));
+    await run(['plan', '--bundle', 'base', '--answers', dec, '--format', 'json']);
+    const exec = join(home, 'execute-after.json');
+    await writeFile(exec, JSON.stringify([{ step_id: 'proof.workflow-continuation', answer: 'execute' }]));
+    const res = await run(['resume', '--latest-open', '--answers', exec, '--format', 'json']);
+    strictEqual(res.exitCode, EXIT.INVALID, 'the restored decline must not make it executable');
+    ok(/is not applicable to this run's selection/.test(res.report.error), res.report.error);
+    ok(
+      !(res.report.warnings ?? []).some((w) => /--record for workflow-continuation/.test(w)),
+      'and no executor may have reached it',
+    );
+  });
+
+  it('C1 — the resume that first observes the applied fragment can execute proof.permission', async () => {
+    // `fragment_applied` is PROMOTED by the judgement, while the expectation was
+    // derived from the value stored BEFORE it — so proof.permission derived
+    // applicable:false on the very resume that earned it. That cost a silent
+    // extra cycle before, and became exit 40 once applicability was a refusal.
+    const { home, cwd } = await makeHome();
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    // Fixture precondition: the fragments are RENDERED and not yet applied, or
+    // the assertion below would hold for the wrong reason.
+    for (const host of ['claude', 'codex']) {
+      const row = plan.report.steps.find((s) => s.id === `permission.${host}.applied`);
+      strictEqual(row.status, 'pending', `${host} fragment is rendered, not applied`);
+      strictEqual(row.fragment_applied, false);
+    }
+    strictEqual(plan.report.steps.find((s) => s.id === 'proof.permission').status, 'not-applicable');
+
+    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits', allow: ['Read'] } }, null, 2)}\n`);
+    await writeFile(join(home, '.codex', 'config.toml'), 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n');
+    const exec = join(home, 'execute-permission.json');
+    await writeFile(exec, JSON.stringify([{ step_id: 'proof.permission', answer: 'execute' }]));
+    const res = await run(['resume', '--latest-open', '--answers', exec, '--format', 'json']);
+    notStrictEqual(res.exitCode, EXIT.INVALID, `the same resume that applies the fragment may prove it: ${res.report?.error}`);
+    strictEqual(res.report.steps.find((s) => s.id === 'proof.permission').status, 'pending',
+      'the re-derivation makes it applicable in THIS verb, not the next one');
   });
 });
 

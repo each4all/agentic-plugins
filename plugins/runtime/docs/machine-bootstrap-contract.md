@@ -565,9 +565,14 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   the fourth): **`decline`** marks a declinable step declined (a non-declinable
   target is exit `40`, and a plugin decline re-runs the §9.1 closure over the
   retained set); **`accept`** records the operator's go-ahead without changing
-  step state (steps are promoted only by post-probes, §6); **`execute`** —
-  meaningful on `proof.*` steps under `resume` only — is the explicit approval
-  that lets `resume` run that proof through `runtime:doctor --record`;
+  step state (steps are promoted only by post-probes, §6); **`execute`** — valid
+  against `proof.*` steps only, a non-proof target being exit `40` because no
+  executor could ever reach it — is the explicit approval that lets `resume` run
+  that proof through `runtime:doctor --record`. Under `plan` an `execute` is
+  exit `40` — `resume` builds its execute set from its OWN answers file, so a
+  plan-time approval would be recorded and never consumed — with exactly one
+  exception: `proof.egress-provider-ack`, where any answer promotes the step and
+  lands in `choices[]`, which IS the §8.1 opt-in the reducer reads;
   **`attest-receipt`** — valid against `proof.egress-provider-ack` only, and
   never under `plan` (no ack can exist yet, so there is nothing to testify
   about) — records the owner's phone-receipt testimony intent, audit-logged in
@@ -576,6 +581,33 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   replayable from its own manifest — and consumers read the per-step
   **EFFECTIVE** action (the last one), never the raw rows: the raw-filter
   shape executed an `execute` a later row had declined (ADR-0048 §3 repair).
+  **Applicability is part of the grammar, asymmetrically.** An `accept` or
+  `execute` against a step this run's selection does not apply is exit `40`: it
+  leaves `declined: false`, so the §11.2 presentation filter (`required ||
+  declined`) shows nothing and no verb acts on it — the operator's action would
+  be absorbed and then invisible. A **`decline`** against that same step stays
+  legal, because it is the one answer that IS surfaced (`not-applicable
+  (declined)`) and because a declined row is one of the three provenances that
+  opt the egress proof in (§8.1); refusing the whole status would delete a
+  contract-visible path in order to close an invisible one. The rule reads the DERIVED
+  expectation, never the judged status: the judge writes `not-applicable` and
+  then restores a prior `declined` over it for any declinable step, so a proof
+  declined earlier and since made non-applicable reads `declined` and would slip
+  past a status test — and did, with the executor running for a step the reducer
+  simultaneously reported `required: false, status: not-applicable`. Reading the
+  expectation is also what makes the egress promotion safe: any answer naming
+  `proof.egress-provider-ack` makes it applicable BEFORE the expectation is
+  derived. Because the rule now refuses rather than merely filters, that
+  expectation must reflect what THIS verb observed: `resume` re-derives it when
+  its own judgement promotes `permission.<host>.applied` to `fragment_applied`,
+  so the resume that first sees the operator's applied fragment can prove it
+  instead of owing an extra cycle.
+  The **same rule is asked twice**, because one boundary cannot cover both
+  moments. `resume`'s proof executor re-asks it against the post-narrowing
+  judgement: a decline earlier in the same answers file can narrow the selection
+  (§6.2) until a proof approved later in that same file no longer applies. Both
+  answers were legal when given, so this is not a refusal — the executor skips
+  the proof, warns, and leaves the choice recorded in `choices[]`.
 - **Run terminalization is asymmetric** (S8b errata — closing on the reduction
   alone made Stage 8 unreachable): `resume` closes a run as `complete` when the
   reducer says so, and as `configured-not-verified` **only when every required
