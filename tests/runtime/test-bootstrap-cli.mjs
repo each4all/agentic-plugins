@@ -327,6 +327,77 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
       `no executor may reach a proof the run no longer applies: ${JSON.stringify(warnings)}`,
     );
   });
+
+  it('C1 — a plan-time execute nothing will consume is refused, and the egress opt-in is the one exception', async () => {
+    // Measured, and it corrected this fix's own first draft: `resume` builds its
+    // execute set from its OWN answers file, so a plan-time `execute` on an
+    // ordinary proof is recorded and then never acted on (the bare resume left
+    // deep-peer-smoke `absent` with no warning and no doctor call). The egress
+    // ack is different in kind: any answer naming it promotes it and lands in
+    // choices[], which IS the §8.1 opt-in the reducer reads.
+    const { home, cwd } = await makeHome();
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const inert = join(home, 'plan-exec-inert.json');
+    await writeFile(inert, JSON.stringify([{ step_id: 'proof.deep-peer-smoke', answer: 'execute' }]));
+    const refused = await run(['plan', '--bundle', 'base', '--answers', inert]);
+    strictEqual(refused.exitCode, EXIT.INVALID);
+    ok(/not acted on under plan/.test(refused.report.error), refused.report.error);
+
+    const optIn = join(home, 'plan-exec-egress.json');
+    await writeFile(optIn, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+    const allowed = await run(['plan', '--bundle', 'base', '--answers', optIn, '--format', 'json']);
+    notStrictEqual(allowed.exitCode, EXIT.INVALID, 'the egress opt-in must survive');
+  });
+
+  it('C1 — a prior decline cannot smuggle an execute past applicability', async () => {
+    // judgeSteps writes `not-applicable` and then RESTORES a prior `declined`
+    // over it for any declinable step, so reading applicability off the STATUS
+    // missed this entirely: doctor ran for a step the reducer simultaneously
+    // reported required:false, status:not-applicable. Applicability now comes
+    // from the expectation, which no status restoration can overwrite.
+    const { home, cwd } = await makeHome();
+    const spy = spySubprocess();
+    const run = (argv) => boot({ argv, home, cwd, runner: bareRunner(), subprocess: spy.runner });
+    const dec = join(home, 'decline-first.json');
+    await writeFile(dec, JSON.stringify([{ step_id: 'proof.workflow-continuation', answer: 'decline' }]));
+    await run(['plan', '--bundle', 'base', '--answers', dec, '--format', 'json']);
+    const exec = join(home, 'execute-after.json');
+    await writeFile(exec, JSON.stringify([{ step_id: 'proof.workflow-continuation', answer: 'execute' }]));
+    const res = await run(['resume', '--latest-open', '--answers', exec, '--format', 'json']);
+    strictEqual(res.exitCode, EXIT.INVALID, 'the restored decline must not make it executable');
+    ok(/is not applicable to this run's selection/.test(res.report.error), res.report.error);
+    ok(
+      !(res.report.warnings ?? []).some((w) => /--record for workflow-continuation/.test(w)),
+      'and no executor may have reached it',
+    );
+  });
+
+  it('C1 — the resume that first observes the applied fragment can execute proof.permission', async () => {
+    // `fragment_applied` is PROMOTED by the judgement, while the expectation was
+    // derived from the value stored BEFORE it — so proof.permission derived
+    // applicable:false on the very resume that earned it. That cost a silent
+    // extra cycle before, and became exit 40 once applicability was a refusal.
+    const { home, cwd } = await makeHome();
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    // Fixture precondition: the fragments are RENDERED and not yet applied, or
+    // the assertion below would hold for the wrong reason.
+    for (const host of ['claude', 'codex']) {
+      const row = plan.report.steps.find((s) => s.id === `permission.${host}.applied`);
+      strictEqual(row.status, 'pending', `${host} fragment is rendered, not applied`);
+      strictEqual(row.fragment_applied, false);
+    }
+    strictEqual(plan.report.steps.find((s) => s.id === 'proof.permission').status, 'not-applicable');
+
+    await writeFile(join(home, '.claude', 'settings.json'), `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits', allow: ['Read'] } }, null, 2)}\n`);
+    await writeFile(join(home, '.codex', 'config.toml'), 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n');
+    const exec = join(home, 'execute-permission.json');
+    await writeFile(exec, JSON.stringify([{ step_id: 'proof.permission', answer: 'execute' }]));
+    const res = await run(['resume', '--latest-open', '--answers', exec, '--format', 'json']);
+    notStrictEqual(res.exitCode, EXIT.INVALID, `the same resume that applies the fragment may prove it: ${res.report?.error}`);
+    strictEqual(res.report.steps.find((s) => s.id === 'proof.permission').status, 'pending',
+      'the re-derivation makes it applicable in THIS verb, not the next one');
+  });
 });
 
 // ---------------------------------------------------------------------------

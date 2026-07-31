@@ -568,10 +568,11 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   step state (steps are promoted only by post-probes, §6); **`execute`** — valid
   against `proof.*` steps only, a non-proof target being exit `40` because no
   executor could ever reach it — is the explicit approval that lets `resume` run
-  that proof through `runtime:doctor --record`. `execute` carries no verb
-  restriction: recording one under `plan` is a **deferred** approval the next
-  `resume` acts on, and against `proof.egress-provider-ack` it is the opt-in
-  itself (§8.1);
+  that proof through `runtime:doctor --record`. Under `plan` an `execute` is
+  exit `40` — `resume` builds its execute set from its OWN answers file, so a
+  plan-time approval would be recorded and never consumed — with exactly one
+  exception: `proof.egress-provider-ack`, where any answer promotes the step and
+  lands in `choices[]`, which IS the §8.1 opt-in the reducer reads;
   **`attest-receipt`** — valid against `proof.egress-provider-ack` only, and
   never under `plan` (no ack can exist yet, so there is nothing to testify
   about) — records the owner's phone-receipt testimony intent, audit-logged in
@@ -588,11 +589,19 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   legal, because it is the one answer that IS surfaced (`not-applicable
   (declined)`) and because a declined row is one of the three provenances that
   opt the egress proof in (§8.1); refusing the whole status would delete a
-  contract-visible path in order to close an invisible one. The rule reads the
-  JUDGED status, which is safe for the one step whose applicability an incoming
-  answer promotes: any answer naming `proof.egress-provider-ack` makes it
-  applicable BEFORE judgement, so the grammar never meets it as
-  `not-applicable`.
+  contract-visible path in order to close an invisible one. The rule reads the DERIVED
+  expectation, never the judged status: the judge writes `not-applicable` and
+  then restores a prior `declined` over it for any declinable step, so a proof
+  declined earlier and since made non-applicable reads `declined` and would slip
+  past a status test — and did, with the executor running for a step the reducer
+  simultaneously reported `required: false, status: not-applicable`. Reading the
+  expectation is also what makes the egress promotion safe: any answer naming
+  `proof.egress-provider-ack` makes it applicable BEFORE the expectation is
+  derived. Because the rule now refuses rather than merely filters, that
+  expectation must reflect what THIS verb observed: `resume` re-derives it when
+  its own judgement promotes `permission.<host>.applied` to `fragment_applied`,
+  so the resume that first sees the operator's applied fragment can prove it
+  instead of owing an extra cycle.
   The **same rule is asked twice**, because one boundary cannot cover both
   moments. `resume`'s proof executor re-asks it against the post-narrowing
   judgement: a decline earlier in the same answers file can narrow the selection
