@@ -851,6 +851,78 @@ async function readAnswersFile(path) {
 
 export const ANSWER_VALUES = Object.freeze(['decline', 'accept', 'execute', 'attest-receipt']);
 
+const PROOF_STEP_PREFIX = 'proof.';
+
+/**
+ * The Stage-8 proof kind a step id names, or null for every other step. The
+ * resume executor used to spell this inline as a `startsWith` FILTER, which is
+ * why "execute is for proofs" silently dropped the answers it did not match
+ * instead of refusing them.
+ */
+export function proofKindOf(stepId) {
+  return stepId.startsWith(PROOF_STEP_PREFIX) ? stepId.slice(PROOF_STEP_PREFIX.length) : null;
+}
+
+/**
+ * THE answer grammar (§3) — ONE predicate, asked at every boundary that acts on
+ * an answer. Returns a refusal string, or null when the answer is legal.
+ *
+ * It replaces three partial predicates that disagreed: `applyAnswers` validated
+ * declinability and nothing else; the resume executor re-implemented "execute is
+ * for proofs" as a filter that dropped the rest without a word; and NEITHER
+ * asked whether this run's selection applies the step at all. So an answer
+ * against a `not-applicable` row was accepted, recorded in `choices[]`, and then
+ * invisible — the §11.2 presentation filter (`required || declined`) does not
+ * show such a row, correctly, because there is nothing meaningful to show.
+ *
+ * Applicability is read from the JUDGED status, which is where `applicable:
+ * false` lands (§6). That is safe for the one step whose applicability an
+ * incoming answer PROMOTES: `proof.egress-provider-ack` derives applicable
+ * whenever the answers name it (§8.1), and that derivation runs before
+ * judgement, so the grammar never meets it as `not-applicable`. The ordering is
+ * load-bearing — a blanket refusal evaluated before the promotion would break
+ * the opt-in path outright — and is pinned by test.
+ */
+export function answerRefusal({ step, answer, verb }) {
+  // Applicability, and ONLY for the answers that would leave no trace. A
+  // `decline` against a step this selection does not apply is DELIBERATE and
+  // visible: the reducer reports it `required: false, declined: true` and the
+  // §11.2 filter (`required || declined`) renders it `not-applicable
+  // (declined)` precisely so the refusal cannot vanish, and a declined row is
+  // one of the three provenances that opt the egress proof in (§8.1). The
+  // defect is the answers that leave `declined: false` — `accept` and
+  // `execute` — which no filter shows and no verb acts on. Refusing the whole
+  // status would delete a contract-visible path to close an invisible one.
+  if (step.status === 'not-applicable' && (answer === 'accept' || answer === 'execute')) {
+    return `step ${step.id} is not applicable to this run's selection (§6.1) — refusing to record '${answer}' against it, because no verb would act on it and no report would show it (decline it instead if you mean to record a refusal)`;
+  }
+  if (answer === 'decline' && !step.declinable) {
+    return `step ${step.id} is not declinable (§6.2 — host presence/auth, marketplace registration, runtime, companions, and hard-edge targets are never declinable)`;
+  }
+  if (answer === 'execute') {
+    if (proofKindOf(step.id) === null) {
+      return `answer 'execute' targets proof.* steps only (§3) — ${step.id} has no executor behind it, so the approval would be stored and never acted on`;
+    }
+    // NO verb restriction, and the follow-up's framing was wrong to ask for
+    // one. A plan-time `execute` against an APPLICABLE proof is a deferred
+    // approval the next resume acts on — and for `proof.egress-provider-ack`
+    // it is the opt-in ITSELF (§8.1: any answer naming the step promotes it,
+    // and `choices[]` is one of the three provenances). Refusing it would
+    // delete the documented plan → resume egress path, which is pinned by
+    // test. What is genuinely inert is the answer above: an `execute` no
+    // executor could ever reach.
+  }
+  if (answer === 'attest-receipt') {
+    if (step.id !== stepIds.proofEgressProviderAck()) {
+      return `answer 'attest-receipt' targets ${stepIds.proofEgressProviderAck()} only — receipt testimony about any other step is not a thing this contract records`;
+    }
+    if (verb === 'plan') {
+      return `answer 'attest-receipt' is not accepted under plan — no provider ack can exist yet, so there is nothing to testify about; use resume or attest`;
+    }
+  }
+  return null;
+}
+
 /**
  * Apply an answers list to judged steps. An answer whose step_id is not an
  * expected step of the run is REJECTED (exit 40) rather than recorded — a stale
@@ -894,17 +966,8 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
     if (!ANSWER_VALUES.includes(answer)) {
       throw new UsageError(`answer '${answer}' for ${stepId} is not one of ${ANSWER_VALUES.join('|')}`);
     }
-    if (answer === 'attest-receipt') {
-      if (stepId !== stepIds.proofEgressProviderAck()) {
-        throw new UsageError(`answer 'attest-receipt' targets ${stepIds.proofEgressProviderAck()} only — receipt testimony about any other step is not a thing this contract records`);
-      }
-      if (verb === 'plan') {
-        throw new UsageError(`answer 'attest-receipt' is not accepted under plan — no provider ack can exist yet, so there is nothing to testify about; use resume or attest`);
-      }
-    }
-    if (answer === 'decline' && !step.declinable) {
-      throw new UsageError(`step ${stepId} is not declinable (§6.2 — host presence/auth, marketplace registration, runtime, companions, and hard-edge targets are never declinable)`);
-    }
+    const refusal = answerRefusal({ step, answer, verb });
+    if (refusal) throw new UsageError(refusal);
     choices.push({ step_id: stepId, answer, at });
     effective.set(stepId, answer);
   }
@@ -2340,9 +2403,38 @@ async function runResume(ctx, opts) {
   // executed every `execute` row even when a later row declined the same step
   // — `execute` then `decline` still fired the proof the operator had just
   // withdrawn. applyAnswers' last-wins map is the single consumer surface.
-  const executeKinds = [...answeredEffective.entries()]
-    .filter(([stepId, answer]) => answer === 'execute' && stepId.startsWith('proof.'))
-    .map(([stepId]) => stepId.replace(/^proof\./, ''));
+  //
+  // SECOND enforcement point for the same grammar, against the state that
+  // exists HERE. `applyAnswers` refused every answer illegal at answer time,
+  // but a legal pair can still leave an approval inert: declining a plugin
+  // narrows the selection (§6.2), and the re-derivation above drops or
+  // un-applies the proofs that plugin carried. The grammar cannot refuse that
+  // combination — both answers were legal when given — so the executor skips
+  // with a warning rather than running a proof this run no longer applies.
+  // Observed on the model/effort slice's cross-host review: a proof declined
+  // into non-applicability inside one resume still executed.
+  const statusNow = new Map(steps.map((s) => [s.id, s.status]));
+  const executeKinds = [];
+  for (const [stepId, answer] of answeredEffective) {
+    if (answer !== 'execute') continue;
+    const kind = proofKindOf(stepId);
+    // Unreachable through the answers file — the grammar refuses a non-proof
+    // `execute` — but the executor states its own precondition rather than
+    // inheriting it, because that inheritance is exactly what went missing.
+    if (kind === null) continue;
+    // `undefined` is a fail-closed BACKSTOP, not a covered path: every proof
+    // step is enumerated unconditionally today (the registry pushes the row and
+    // carries the decision in `applicable`), so a narrowed-away proof reads
+    // `not-applicable` rather than vanishing. Mutation confirms it — dropping
+    // this disjunct kills no test. It stays for a future registry that stops
+    // enumerating a kind, where the alternative is executing an unknown step.
+    const status = statusNow.get(stepId);
+    if (status === undefined || status === 'not-applicable') {
+      warnings.push(`proof ${stepId} was approved for execution, but this resume's own answers narrowed the selection until the run no longer applies it (§6.2); the approval stays recorded in choices[] and nothing ran`);
+      continue;
+    }
+    executeKinds.push(kind);
+  }
   let doctorReport = null;
   let executedAnything = false;
   for (const kind of executeKinds) {
