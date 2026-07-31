@@ -1,0 +1,71 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "bootstrap-selection-and-posture",
+  "evidence_loop": {
+    "label": "bootstrap effective-selection + model/effort posture",
+    "summary": "Two runtime slices with one root: runtime:bootstrap judged a machine's stated intent by the wrong evidence, and in both cases the right evidence was already written down. A declined plugin did narrow the run's effective selection in the contract, but the implementation derived that selection only to validate the answer and then discarded it, so the plugin stayed simultaneously excluded and required and every dependent proof was permanently stale. And the Stage-4 model/effort step asked whether a coordinate key was set rather than whether a decision had been recorded, so a machine deliberately running host defaults — this repository's own dogfood machine — could never reach complete. The loop derives the effective selection once and persists it into the existing seat, and adds a typed user-global posture declaration, model_effort_fallback = \"host-native\"."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.87.0",
+      "tag": "plugin-runtime-v0.87.0",
+      "release_pr": 656,
+      "squash": "7fc7e633c4981ee9c1437bc2541f0ebbe78d80d9",
+      "marketplace_sync": "6d53cabca273336d528baea95c8aef495fce6237"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "3b759155aedf0eba2f8a644786356dc2aab30ce0",
+      "pr_attested": 655,
+      "note": "Narrows the effective selection when a plugin is declined. The PR number is attested rather than derived because the squash subject was passed explicitly with `gh pr merge --subject`, which suppresses the `(#N)` GitHub appends under the repository's PR_TITLE setting."
+    },
+    {
+      "sha": "167fd4a79d61a757550eef165fc8ac00654c3025",
+      "pr_attested": 657,
+      "note": "Lets a machine record host-native model/effort as its posture. Same attestation reason as the sibling commit; the PR number is higher than the release PR's because #656 was opened before this slice landed."
+    }
+  ],
+  "hardening_commits": [],
+  "proofs": [
+    {
+      "run_id": "doctor-20260731T051408Z-210043",
+      "date": "2026-07-31",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:b1181ed309c7b4bf987f469a6aa56e9113c1a56d425ec37d182b27f7dfc12bdd",
+      "runtime_version": "0.87.0",
+      "installed": {
+        "claude": "0.87.0",
+        "codex": "0.87.0"
+      },
+      "host_cli": {
+        "claude": "2.1.220 (Claude Code)",
+        "codex": "codex-cli 0.145.0"
+      },
+      "readings": [
+        { "key": "overall", "value": "pass; zero hard failures" },
+        { "key": "permission_proof", "value": "passed; executed in both directions" },
+        { "key": "deep_peer_smoke", "value": "passed; executed in both directions" },
+        { "key": "workflow_continuation_proof", "value": "passed; executed in both directions" },
+        { "key": "experience_parity", "value": "ready 100% 8/8, zero manual follow-ups, zero not-verified rows" },
+        { "key": "entry_brief", "value": "ready" },
+        { "key": "session_capture", "value": "ready" },
+        { "key": "host_parity_baseline", "value": "current; 2026-07-25 baseline 2.1.220 / 0.145.0 unchanged, no compat cycle required" },
+        { "key": "model_effort", "value": "<host-default> (host-native default) both directions, now a declared posture" },
+        { "key": "codex_hook_review", "value": "attested and current; settings-20260722T021211Z-364c8f, unaffected because runtime declares no hooks and no hook-bearing plugin version moved" },
+        { "key": "ledgers", "value": "engineer and orchestrator both canonical, zero stale handles" }
+      ]
+    }
+  ],
+  "install_method": "Claude host-native `claude plugin update`; Codex `codex plugin marketplace upgrade` followed by `codex plugin add`. Both hosts were updated at the end of the prior session and the installed state rests on the doctor read alone — no `runtime:settings --execute-plugin-management` executor artifact was produced, the newest remaining settings-20260714T021101Z-94f0f6.",
+  "narrative": "Authored in the post-release position ADR-0049 requires: the tag, squash, marketplace-sync sha, proof run id and artifact hash all came into existence only after #655 and #657 merged, release-please cut #656, the catalog sync landed, both hosts were updated, and the proof was re-recorded.\n\nThe proof is what closes the loop, and it is worth stating why a token edit could not. The same 0.87.0 install had already read experience parity 84% at the end of the prior session; both not-verified rows named the unexecuted proofs, not a defect. The three executors are what that score measures, so re-running them — not editing a number — is what moved it to ready 100% 8/8.\n\nThe posture the loop shipped was exercised immediately on its own machine: `runtime:settings --apply --target user --model-effort-fallback host-native` wrote the single user-global key, and the proof then read model/effort as `<host-default> (host-native default)` in both directions as a declared posture rather than an unexplained absence. The ADR-0048 §3 dogfood run bootstrap-20260723T124729Z-b5191c re-judges its Stage-4 step on its next verb; its own run document is not rewritten until a resume runs, and this record does not claim otherwise.\n\nTwo constraints shaped the B2 fix rather than decorating it. `schema-validate.mjs` rejects an unknown non-scalar key at every minor, so persisting the derived selection as a new array member would have made an older runtime unable to even `status` such a run; it goes into the existing `{bundle, desired, excluded}` seat instead, rewriting `bundle` to `custom` because a named bundle re-expands on export/seed and would otherwise resurrect the decline. A host-scoped decline has no seat vocabulary at all, so it survives only on the declined row and does not propagate to a machine profile — a limit stated in the contract rather than papered over. For the same class of reason the posture key is deliberately excluded from machine profiles: every profile member is a scalar field, and §4.1 refuses an unknown object-valued key at every minor.\n\nTwo methods produced disjoint findings, which is the reusable part. Mutation testing asked whether the new tests bite and found two vacuously green ones; cross-host peer review asked whether the new rule has holes and found four, every one of them the same shape — a new grain was introduced through a wide door without re-applying the rule at the narrow one. The overlap between the two sets was zero.\n\nB3's lesson is narrower and sharper: before treating a follow-up's open question as open, grep for whether the system has already answered it. The consuming resolver's terminal `host-native default`, the settings renderer's `<host-default>`, and the cutover scorecard's own R5 row had all three answered this one, and the Stage-4 step was the single component that disagreed. Two peer recommendations were declined on measurement rather than taste — a run-schema bump (the document's structure and vocabulary do not change) and profile export (refused by §4.1, measured, not assumed).\n\nOne defect class was deliberately left standing and is recorded in plugins/runtime/docs/follow-ups.md: `applyAnswers` reads declinability but not applicability, and the executor loop still runs an effective `proof.*` that a decline made non-applicable inside the same resume — observed again during this loop's own peer review. It is not a blanket fix, because incoming-egress promotes applicability dynamically before judgement, so rejecting everything non-applicable would break an intended path. A second peer finding rides the same file: §9.1 specifies host-scoped closure while `hardRequiredClosure` is flat, although `hardClosureViolations` is already host-aware — two primitives answering one question differently."
+  ,
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "hooks-attestation-import",
+      "note": "The immediately preceding release loop, and the one whose proof this record's proof supersedes in the stage docs."
+    }
+  ]
+}
