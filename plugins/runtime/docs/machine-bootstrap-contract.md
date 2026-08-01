@@ -1149,6 +1149,72 @@ host will not run — both judge `pending`; an unreadable config judges
 whose judge re-observes it (ADR-0048 §1 split — the pre-split judge only ever
 read the local config, so the merge was presented but never re-observed).
 
+#### 6.1.2 `notify.codex.configured` is a CONJUNCTION of two exact predicates
+
+Codex-side attention has two halves (ADR-0040 §4) and this one step owns both.
+`notify =` fires only on `agent-turn-complete`; `[tui] notifications` is the
+**only** channel that carries `approval-requested`. Judging the argv alone let a
+machine with canonical receiver wiring and `notifications = false` certify
+attention that was switched off, and reach `complete`.
+
+Ownership was never the open question — it was already written down twice. §6.1.1
+above states the rendered fragment is ONE `[tui]` table carrying BOTH
+**runtime-planned keys**, and the fragment builder already rides the
+`notifications` key on *this* step's decision (`each planned key rides iff its
+step is not declined`). The judge was the one component that did not observe it.
+
+**Precedence.** The notifications predicate is asked **only once the argv
+predicate has already yielded `satisfied`**. It may hold that verdict or lower
+it; it never raises one, and it never reclassifies the argv half's own outcomes —
+an explicit `notify = []`, an unparseable argv, and an absent key all stay
+`pending`, and an unreadable config stays `unknown`, exactly as stated above.
+
+| observed `[tui] notifications` | status | meaning |
+|---|---|---|
+| absent | `pending` | the canonical two-event configuration was not observed |
+| `false` | `manual-follow-up` | approval attention is explicitly disabled |
+| `true` | `manual-follow-up` | broader than the canonical two-event selection |
+| the canonical array, element-wise | `satisfied` | canonical approval attention observed |
+| any other array — reordered, subset, superset, or `[]` | `manual-follow-up` | a present full-replace selection is the operator's and is never overwritten; the reason reports whether `approval-requested` survives in it |
+| untrustworthy | `pending` | duplicate key, redefined `[tui]` table, or a value the scan cannot classify |
+
+Absent is `pending` rather than `satisfied` even though Codex's own default is
+on, for the same reason §6.1.1 requires a recorded posture: a default is not a
+decision, and the step is **declinable**, so an operator who deliberately wants
+no approval attention records that by declining — the decline *is* the
+declaration, and no new config key is needed to carry it.
+
+**The value is read through a typed classification, never from its raw text.**
+`parseCodexNotifyConfigToml` returns
+`form ∈ absent | true | false | array | invalid`, exhaustive and fail-closed to
+`invalid`. A boolean "the capture is clean" flag is **not** sufficient and was
+rejected on measurement: the structural facts alone report `["a" "b"]` and
+`true junk` as cleanly captured, while a dotted `tui.notifications = …` followed
+by an explicit `[tui]` header captures a **canonical-looking** raw out of a
+config Codex cannot load. Interpreting the raw would therefore have closed one
+false pass by opening another. The same `tuiRedefined` gate gives
+`statusline.codex.configured` the same protection — it had the identical hole.
+
+`invalid` also covers every construct that clouds the **table scope or the key
+identity**, because a line scanner cannot resolve them and a wrong answer here is
+a certified false pass. Each of these was measured certifying a canonical array
+out of a config Codex rejects: any *other* dotted `tui.<…>` assignment before an
+explicit `[tui]` header (the table is created by all of them, not only the two
+keys this scan reads); a `[tui.<key>]` sub-table claiming one of those key names;
+a deeper dotted path (`notifications.enabled = …`) defining the key as a table;
+and the same key spelled bare beside its quoted form. A whole-table inline
+assignment (`tui = { … }`) is `invalid` rather than `absent` for a different
+reason — reporting it absent is not merely imprecise, it produces a recovery that
+tells the operator to merge a `[tui]` block that would **break** a config Codex
+accepts today. Finally, a triple-quote delimiter inside a comment is not a
+delimiter: treating it as one let a commented section header be swallowed, so a
+value nested under `[tui.child]` was read as if it sat under `[tui]`.
+
+The persisted plan artifact carries the classification beside the raw
+(`read_check.tui_notifications_form`, `runtime-notification-plan-1.1`, validated
+on write) and the settings report renders it, because an un-classified raw is
+that same misleading surface one level down.
+
 **`blocked_by` edges** (the column §5's `steps[].blocked_by` serializes; enumerated here
 because §5 referenced them and this table did not define them — S8a2 C4). Each step is
 blocked by its *structural* predecessors only — the things without which the step cannot
@@ -1912,6 +1978,20 @@ following obligations join the pins below, spread across
   future-minor run refuses resume.
 - **Answers**: effective-action last-wins (execute-then-decline does not
   execute); `attest-receipt` is refused under plan and against any other step.
+- **The `notify.codex.configured` conjunction** (§6.1.2): the full `form` matrix
+  is pinned at the judge, and the reproduction is pinned at the CLI — a
+  `satisfied` fixture whose `notifications` value is **replaced** (never appended:
+  appending makes a duplicate key, which classifies `invalid`, so the test would
+  go green through the untrusted branch without ever exercising the boolean one)
+  by `false` judges `manual-follow-up` and enters `completion.unsatisfied`, with
+  the canonical fixture asserted first as the control. The **cross-product** is a
+  separate obligation, because every form row holds the argv half canonical and
+  so cannot prove precedence on its own: for each form, `notify = []`, an
+  unparseable argv, an absent key, a foreign notifier, and an unreadable config
+  each keep their own verdict. Parser-side, all fourteen observable shapes are
+  pinned — including `true junk` and `false junk`, which the structural facts
+  alone report as cleanly captured, and the dotted-then-`[tui]` redefinition for
+  **both** tui keys.
 - **Stage-8 presentation** (§3, §8): the render carries exactly ONE row per
   presented proof, sourced from `completion.proofs[]`, and no Stage-8 row from
   the generic step loop. Pinned across the verdict × control matrix — the row

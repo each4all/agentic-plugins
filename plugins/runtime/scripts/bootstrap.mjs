@@ -616,7 +616,72 @@ export function judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdi
           recovery: 'A different notifier is wired in $CODEX_HOME/config.toml. Runtime never auto-chains an existing notifier (ADR-0048 §2 precedent): re-render the notification plan (its read-check offers wrapper-chaining that PRESERVES the existing notifier), review the chain script, and merge that fragment — or decline this step if the current wiring is intentional.',
         };
       }
-      return { status: 'satisfied', observed: `notify argv matches the canonical receiver wiring (argv[${wiring.argv.length}])` };
+      // ADR-0040 §4b — SECOND exact predicate. The argv half is canonical, so
+      // agent-turn-complete reaches the receiver; approval-requested rides only
+      // `[tui] notifications`, and until this check existed a machine with
+      // `notifications = false` certified attention that was switched off.
+      //
+      // Precedence: this predicate is asked ONLY here, once the argv half has
+      // already yielded `satisfied`. It may hold that or lower it — it never
+      // raises, and it never reclassifies the argv half's own outcomes, so an
+      // explicit `notify = []` or an unparseable argv stays `pending` exactly as
+      // §6.1's notify rule states.
+      //
+      // Only `form` is interpreted. `raw` is unusable here: the scanner reports
+      // a structurally clean capture for `["a" "b"]` and `true junk` alike, and
+      // a redefined [tui] table can carry a canonical-LOOKING raw.
+      const notifArgv = `notify argv matches the canonical receiver wiring (argv[${wiring.argv.length}])`;
+      const tui = wiring.tuiNotifications ?? { form: 'absent', values: null };
+      // Where the operator actually finds the key: a run PRESENTS one [tui]
+      // table, and which artifact carries it is decided AFTER this judge runs
+      // (the combined statusline-codex fragment when it is the presented
+      // source, the notification plan's preview otherwise). The recovery names
+      // the table rather than a fragment, because the step's own apply_command
+      // points at the notify artifact — which is stripped of this key exactly
+      // when the combined fragment holds it.
+      const tuiRecovery = 'Merge the canonical `[tui] notifications` key from this run\'s [tui] fragment — the combined statusline-codex fragment when it is the presented source, the notification plan\'s preview otherwise (each artifact names which) — or decline this step if the current selection is intentional.';
+      if (tui.form === 'array') {
+        const canonical = [...TUI_NOTIFICATIONS_VALUES];
+        const tuiMatches = tui.values !== null
+          && tui.values.length === canonical.length
+          && canonical.every((item, i) => item === tui.values[i]);
+        if (tuiMatches) {
+          return { status: 'satisfied', observed: `${notifArgv}; canonical [tui] notifications observed` };
+        }
+        const carriesApproval = Array.isArray(tui.values) && tui.values.includes('approval-requested');
+        return {
+          status: 'manual-follow-up',
+          observed: `${notifArgv}, but [tui] notifications[${tui.values?.length ?? 0}] is a non-canonical selection (${carriesApproval ? 'it does carry approval-requested' : 'it does NOT carry approval-requested'})`,
+          recovery: tuiRecovery,
+        };
+      }
+      if (tui.form === 'false') {
+        return {
+          status: 'manual-follow-up',
+          observed: `${notifArgv}, but [tui] notifications = false — approval-requested attention is explicitly disabled`,
+          recovery: tuiRecovery,
+        };
+      }
+      if (tui.form === 'true') {
+        return {
+          status: 'manual-follow-up',
+          observed: `${notifArgv}, but [tui] notifications = true is broader than the canonical two-event selection`,
+          recovery: tuiRecovery,
+        };
+      }
+      if (tui.form === 'invalid') {
+        return {
+          status: 'pending',
+          observed: `${notifArgv}, but the [tui] notifications value cannot be trusted (duplicate key, redefined [tui] table, or a value this scanner cannot classify)`,
+          recovery: 'Normalize `[tui] notifications` to a single, well-formed assignment under exactly one [tui] table, then resume.',
+        };
+      }
+      // form === 'absent'
+      return {
+        status: 'pending',
+        observed: `${notifArgv}, but [tui] notifications is not configured`,
+        recovery: tuiRecovery,
+      };
     }
     if (id === stepIds.statuslineConfigured('codex')) {
       // ADR-0048 §1 — EXACT probe over the closed [tui].status_line item
@@ -1568,14 +1633,32 @@ async function readUserGlobalReaders(ctx) {
     expectedCodexNotifyArgv({ receiverPath: codexNotifyGathered.installPaths.shuttle }),
     expectedCodexNotifyArgv({ receiverPath: codexNotifyGathered.installPaths.chain }),
   ];
+  // ADR-0040 §4b — the SECOND half of this step's Codex-side attention wiring.
+  // `notify =` fires only on agent-turn-complete; `[tui] notifications` is the
+  // only channel that carries approval-requested. It is projected here, from
+  // the SAME parse the notify half uses, because the contract already calls it
+  // a runtime-planned key and the fragment builder already binds it to this
+  // step's decision — the judge was the last component that did not observe it.
+  // `form` (never `raw`) is what the judge may interpret.
+  const NO_TUI_NOTIFICATIONS = { present: false, form: 'absent', values: null };
   let codexNotify;
   if (codexNotifyRead.ok) {
     const parsed = parseCodexNotifyConfigToml(codexNotifyRead.text);
-    codexNotify = { readable: true, present: parsed.notify.present, argv: parsed.notify.values ?? null, expected: codexNotifyExpected };
+    codexNotify = {
+      readable: true,
+      present: parsed.notify.present,
+      argv: parsed.notify.values ?? null,
+      expected: codexNotifyExpected,
+      tuiNotifications: {
+        present: parsed.tuiNotifications.present,
+        form: parsed.tuiNotifications.form,
+        values: parsed.tuiNotifications.values ?? null,
+      },
+    };
   } else if (codexNotifyRead.reason === 'ENOENT' || codexNotifyRead.reason === 'ENOTDIR') {
-    codexNotify = { readable: true, present: false, argv: null, expected: codexNotifyExpected };
+    codexNotify = { readable: true, present: false, argv: null, expected: codexNotifyExpected, tuiNotifications: { ...NO_TUI_NOTIFICATIONS } };
   } else {
-    codexNotify = { readable: false, present: false, argv: null, expected: codexNotifyExpected };
+    codexNotify = { readable: false, present: false, argv: null, expected: codexNotifyExpected, tuiNotifications: { ...NO_TUI_NOTIFICATIONS } };
   }
   return { modelEffort, notify, claudePermission, codexPermission, egress, egressActivation, codexNotify, statuslineClaude, statuslineCodex };
 }

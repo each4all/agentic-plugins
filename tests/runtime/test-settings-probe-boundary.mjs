@@ -102,8 +102,8 @@ describe('runtime settings probe boundary (--skip-host-cli-probes)', () => {
     strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.value, 'fixture-model');
     strictEqual(report.companion_settings.directions.claude_to_codex.effective.model.source, 'repo config codex_model');
     strictEqual(report.config.resolution_order[0], 'explicit command flags');
-    strictEqual(report.schema_version, 'runtime-settings-1.23');
-    strictEqual(SETTINGS_SCHEMA_VERSION, 'runtime-settings-1.23');
+    strictEqual(report.schema_version, 'runtime-settings-1.24');
+    strictEqual(SETTINGS_SCHEMA_VERSION, 'runtime-settings-1.24');
   });
 
   it('emits the dual-mode discriminator with null (never empty) probe sections', async () => {
