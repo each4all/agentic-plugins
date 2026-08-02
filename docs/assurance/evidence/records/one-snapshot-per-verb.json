@@ -1,0 +1,79 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "one-snapshot-per-verb",
+  "evidence_loop": {
+    "label": "one machine snapshot per verb",
+    "summary": "A follow-up row recorded a small symptom: after a Stage-8 executor ran, runtime:bootstrap resume re-probed and reduced against the post-execution probe but returned the earlier one. Measuring the rest of the verb showed that was the smallest of four — the judged steps (persisted into the same manifest and returned), Stage 0, and fragment composition all still derived from the pre-execution snapshot, so a run stored a probe its own rows had never been judged against. The loop makes every verb gather ONE snapshot — probe, raw host facts and user-global readers together — and rebuild everything it judges, persists and reports from that gathering, including the expectation's own inputs. Three cross-host review rounds each found the repair had moved the problem rather than removed it; the reproduced consequences were a false terminal completion, a convergence that belonged in the shared re-judgement rather than in resume alone, a snapshot trigger that had to become the doctor spawn rather than evidence-imported, two user-global config files each opened twice, and the D0.1 receipt door the convergence closed until attest was made to judge the run as it was reduced."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.88.0",
+      "tag": "plugin-runtime-v0.88.0",
+      "release_pr": 660,
+      "squash": "6ea62086fe7c0b820582a7aeec365f30c11fa3ea",
+      "marketplace_sync": "8243de53edaf5f8663fede3894f468433bbc93b9"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "383dc140e94756eecc199a4f952104746fb8691b",
+      "pr": 663,
+      "note": "One machine snapshot per verb. Also converges the effective selection in the shared re-judgement and again after a Stage-8 executor, gates the snapshot on the doctor spawn rather than the import, and leaves attest judging the run as it was reduced."
+    },
+    {
+      "sha": "5c8cf79e697065bcadfdf4e5a070a4f2c9328763",
+      "pr": 662,
+      "note": "One disclosure invariant at the artifact to report boundary. Carries this release's BREAKING change: the report identifier moves to runtime-bootstrap-report-2.0 and an exit-50 legacy-historical report replaces its completion key with legacy_completion_summary."
+    },
+    {
+      "sha": "358a75ae860da3a5d32824a8307a844ff3fbec4f",
+      "pr": 661,
+      "note": "Judges tui.notifications as the second half of notify.codex.configured."
+    },
+    {
+      "sha": "67bbc54f70e65f5b968e3b5c07b424af3934ffaa",
+      "note": "One grammar for answer applicability, asked at both boundaries. Landed directly with no pull request, so neither pr nor pr_attested is set — a commit that genuinely has no PR is not an omission."
+    }
+  ],
+  "hardening_commits": [],
+  "proofs": [
+    {
+      "run_id": "doctor-20260802T132248Z-2b8a4c",
+      "date": "2026-08-02",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:f960206f203d92efdc5ea7ad271adba97ad7fa1874ebef0e50d307b08ef07415",
+      "runtime_version": "0.88.0",
+      "installed": {
+        "claude": "0.88.0",
+        "codex": "0.88.0"
+      },
+      "host_cli": {
+        "claude": "2.1.220 (Claude Code)",
+        "codex": "codex-cli 0.145.0"
+      },
+      "readings": [
+        { "key": "overall", "value": "pass; zero hard failures" },
+        { "key": "permission_proof", "value": "passed; executed" },
+        { "key": "deep_peer_smoke", "value": "passed; executed in both directions" },
+        { "key": "workflow_continuation_proof", "value": "passed; executed" },
+        { "key": "experience_parity", "value": "ready 100% 8/8; satisfied 8, partial 0, not_verified 0, blocked 0, manual follow-ups 0" },
+        { "key": "entry_brief", "value": "ready" },
+        { "key": "session_capture", "value": "ready" },
+        { "key": "host_parity_baseline", "value": "current against the 2026-07-25 2.1.220 / 0.145.0 baseline; neither host drifted this loop" },
+        { "key": "codex_hook_review", "value": "attested; settings-20260722T021211Z-364c8f stays current because runtime ships no hooks" },
+        { "key": "ledgers", "value": "clean" },
+        { "key": "egress_ack_proof", "value": "NOT re-executed this loop and stale against 0.88.0; §4 requires the owner's explicit triple consent for a real send and this release did not carry one" }
+      ]
+    }
+  ],
+  "install_method": "Claude host-native `claude plugin marketplace update` followed by `claude plugin update runtime@agentic-plugins`; Codex `codex plugin marketplace upgrade` followed by `codex plugin add runtime@agentic-plugins`. The installed state rests on the doctor read alone — no `runtime:settings --execute-plugin-management` executor artifact was produced, the newest remaining settings-20260714T021101Z-94f0f6.",
+  "narrative": "Authored in the post-release position ADR-0049 requires: the tag, squash, marketplace-sync sha, proof run id and artifact hash all came into existence only after #663 merged, release-please cut #660, the catalog sync landed, both hosts were updated, and the proof was re-recorded.\n\nWhat this loop is actually evidence of is a failure mode rather than a feature. Five separate sentences written during the slice — in contract prose and in code comments — asserted behaviour the code did not have, and every one was caught by running the path rather than re-reading it. The pattern repeated even as it was being named: the repair that collapsed two duplicate config reads left a third reader in the machine probe untouched, which is the same shape as the permission-fragment reader having existed in three hand-rolled copies at the start of the slice. The §7 contract text is therefore deliberately narrow now — it claims one read per file within the reader gathering, not across the verb, and says attest freezes the selection only rather than the run — and five reproduced gaps are recorded in follow-ups.md instead of being claimed as fixed.\n\nThe method the loop settled on is worth recording with it. When three candidate repairs for the false terminal completion were compared in prose, five predictions about them were made and measurement reversed all five; the comparison that decided the fix was three prototypes built in an isolated worktree and run against a reproduction plus a control scenario. Mutation verification followed the same rule: 22 mutants against the slice's tests, 21 killed, and the single survivor — splitting the shared config read back out — is recorded in code as a structurally untestable property rather than counted as coverage, because observing it needs a replacement landing between two reads and the file reader is not injectable.\n\nThe egress provider-ack proof is not part of this record's evidence. It stays stale against 0.88.0 by design: a real send needs the owner's explicit triple consent under §4, and this release did not carry one.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "bootstrap-selection-and-posture",
+      "note": "The immediately preceding release loop, and the one whose proof this record's proof supersedes in the stage docs."
+    }
+  ]
+}
