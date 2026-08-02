@@ -1606,6 +1606,109 @@ converse also holds: a later resume may refresh `probe` while a recorded proof
 stays stale. So a Stage-8 control row is never the place a proof's staleness is
 recorded, and this reset never makes a stale proof current.
 
+**One snapshot per verb.** A resume that spawns a `runtime:doctor` child re-probes
+afterwards — that child takes minutes, and judging its own freshness against the
+snapshot it started from would compare a machine against itself. The trigger is
+the **spawn**, not the child's outcome: a doctor run that ends in a crash,
+unparseable output or an internally inconsistent section imports nothing while
+having had exactly as long to let the machine move, so gating the re-probe on the
+import would make the failure path the one that reports stale facts. That second
+snapshot then becomes the verb's ONLY account of the machine: `probe`, the raw
+host facts behind it, and the user-global readers are gathered once, and
+everything the verb JUDGES and REPORTS is rebuilt from that one gathering — the
+judged `steps[]`, the completion reduction, the persisted manifest, the Stage-0
+presentation, and the returned report. A run MUST NOT store a `probe` its own
+`steps[]` were judged against a different snapshot of, or return one to a caller
+that disagrees with what it persisted.
+
+**One read per file WITHIN the reader snapshot, projected per consumer.** Two
+judges reading the same file separately can observe an atomic replacement between
+them and then agree about a file that no single version of satisfies. Inside the
+reader gathering, Claude's `settings.json` (permission + statusline),
+`~/.agentic-plugins/config.toml` (model/effort + notify) and
+`$CODEX_HOME/config.toml` (Codex permission + notify/statusline) are each read
+ONCE and projected.
+
+*Scoped to the gathering on purpose, because a broader claim would be false*: the
+machine PROBE reads `$CODEX_HOME/config.toml` again for Codex hook state, so that
+file is still sampled twice per verb across the two phases, and a replacement
+between them can pair hook facts from one version with permission/notify/
+statusline facts from another. Recorded as a follow-up; the claim above is
+deliberately the narrow one the code actually keeps.
+
+*Fragment composition is handed that same reader snapshot, but is not fully bound
+by it*: the fragment builders re-read notification, egress and permission config
+themselves. A config change between the snapshot and the render therefore still
+produces a fragment built from later bytes than the rows beside it. Named here
+rather than implied away; folding those reads into the snapshot is a follow-up.
+
+**The expectation's own inputs move with the snapshot**, so they are re-derived
+before the rebuild and the rows re-judged. Two of them:
+
+- `fragment_applied` — the permission fragment observed applied for the first
+  time promotes it, and §6.1 reads it to decide whether `proof.permission`
+  applies at all;
+- the **effective selection** — it is derived from `declined` step rows and
+  nothing else, and §6.2 lets a satisfying observation clear a decline. A
+  host-scoped refusal lives ONLY in that row (`selection.desired` is a flat name
+  list and cannot express it), so an operator who installs, during the proof, a
+  plugin they had refused on that host erases the evidence the exclusion rests
+  on. Left un-derived, the run binds versions, judges hooks and reduces against a
+  refusal its own rows no longer support, and closes `complete` over it.
+
+This is a **re-derivation, not a reversal**: only the per-host retained set can
+move here, and only wider. The retained PLUGIN set is fixed — the derivation is
+asked about the already-retained set, and a judgement only ever restores declines
+from prior state, never invents them — so `{bundle, desired, excluded}` is not
+rewritten and no narrowing history row is written. Narrowing stays irreversible
+in-run per the rules above. The operator is warned by name when it moves, and
+pointed at re-planning if the refusal was the intent.
+
+**Every verb that speaks about the machine as it is NOW converges it, not only
+`resume`.** The derivation reads the STORED rows and the judge then re-observes
+them, so the convergence belongs to the shared re-judgement — otherwise `status`
+and `verify` are the worse half: they cannot persist a correction and a terminal
+run cannot be resumed, so a completed run whose Codex-refused,
+Codex-hook-bearing plugin was afterwards installed would report both its rows
+`satisfied`, leave `hooks.codex.attested` `not-applicable`, and return
+`complete` at exit 0 for good. `resume` converges a SECOND time after its
+executor, because the machine can move again in between. The selection-scoped
+hook verdict is re-derived with the selection at every point it moves: a claim
+that covered the narrow set must not go on satisfying a non-declinable step it
+no longer covers.
+
+**`attest` is the one exception, deliberately — and only for the SELECTION.** Its
+subject is a send that already HAPPENED, and the gate it protects asks whether a
+recorded ack may be testified about, so the selection it judges against is the
+one the run was REDUCED with, not a re-derived one. Everything else about attest
+is current: the rows are freshly judged, the completion is recomputed, and its
+verdict can therefore read `incomplete` on a machine that has since drifted for
+reasons having nothing to do with the selection. It is a historical scope for one
+input, not a historical report. The drift this clause names for a proof is *bound versions*;
+refusing an owner's receipt because they installed an unrelated plugin after the
+run closed is a selection-drift refusal, and an unrecoverable one — `resume`
+refuses a terminal run, so the door would simply shut. The cost is that attest's
+recomputed verdict can differ from `status`'s for the same run, and that cost is
+**stated in attest's own output** on every affected run rather than left for the
+operator to discover: the warning names the lapsed refusal, says attest did not
+re-derive it, and says the verdict may differ. Two verbs disagreeing is
+acceptable when each says which question it answers; disagreeing silently is
+not.
+
+**Stated limit.** §7 version invalidation sits OUTSIDE both convergences: it runs
+once, early, against the selection as it stood before either. Two windows escape
+it, and the second was found only when the first was written too narrowly here.
+(i) A host CLI or plugin version that moves during a Stage-8 proof is re-judged
+from the final snapshot but is not `invalidated`-stamped. (ii) A plugin that the
+convergence *restores* to the selection was filtered out of the invalidation
+comparison entirely — that comparison is scoped per host — so a version
+transition it went through is never compared at all, and this needs no executor
+to happen. In both, the frozen fragment pointer and `desired` survive
+uncleared, and because the final probe becomes the stored baseline no later verb
+compares across the window either. Tracked as a follow-up together with the
+persistence-boundary question it shares with the fragment-freeze rule, rather
+than claimed here.
+
 **Schema-minor migration (1.2, ADR-0048 §1).** `resume` is the one M1 verb, so it
 is where the minor moves:
 

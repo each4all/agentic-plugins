@@ -27,6 +27,16 @@ import {
   runBootstrap,
 } from '../../plugins/runtime/scripts/bootstrap.mjs';
 import { makeValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
+import {
+  projectCodexPermission,
+  projectModelEffort,
+  projectNotify,
+  readUserGlobalCodexPermission,
+  readUserGlobalModelEffort,
+  readUserGlobalNotify,
+  readUserGlobalRuntimeConfig,
+} from '../../plugins/runtime/scripts/lib/profile-readers.mjs';
+import { gatherCodexNotificationInputs } from '../../plugins/runtime/scripts/lib/notification-plan.mjs';
 import { deriveActivationFingerprint } from '../../plugins/runtime/scripts/lib/evidence-contract.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..');
@@ -135,6 +145,29 @@ function hostedRunner({ installed = ALL_PLUGINS } = {}) {
     if (key === 'codex --version') return okOut('codex-cli 0.140.0');
     if (key === 'codex login status') return okOut('Logged in using ChatGPT');
     if (key === 'codex plugin list --json') return okOut(codexPluginList(installed));
+    if (key === 'codex plugin marketplace list --json') return okOut(MARKETPLACE_JSON);
+    if (name === 'codex') return okOut('usage');
+    return missing();
+  };
+}
+
+// A host runner whose answers can be rewritten between calls, so the machine
+// can move WHILE the executor runs. Every field is read on each call, not
+// captured once. Per-host plugin lists (`state.claude` / `state.codex`) fall
+// back to the shared `state.installed`, so a test only names the axis it moves.
+function mutableRunner(state) {
+  const on = (host) => state[host] ?? state.installed;
+  return async (name, args) => {
+    const key = `${name} ${args.join(' ')}`;
+    if (!state.hosts.includes(name)) return missing();
+    if (key === 'claude --version') return okOut('2.1.0 (Claude Code)');
+    if (key === 'claude auth status') return okOut(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }));
+    if (key === 'claude plugin list') return okOut(claudePluginList(on('claude')));
+    if (key === 'claude plugin marketplace list --json') return okOut(MARKETPLACE_JSON);
+    if (name === 'claude') return okOut('usage');
+    if (key === 'codex --version') return okOut('codex-cli 0.140.0');
+    if (key === 'codex login status') return okOut('Logged in using ChatGPT');
+    if (key === 'codex plugin list --json') return okOut(codexPluginList(on('codex')));
     if (key === 'codex plugin marketplace list --json') return okOut(MARKETPLACE_JSON);
     if (name === 'codex') return okOut('usage');
     return missing();
@@ -1761,6 +1794,660 @@ describe('bootstrap egress-provider-ack executor — consistency matrix + reader
     const ack = resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack');
     strictEqual(ack?.status, 'passed',
       `the ack recorded against the rotated activation judges fresh off the POST-execution readers (got ${ack?.status}: ${JSON.stringify(ack?.reasons)})`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resume's ONE final snapshot
+//
+// The defect these pin: resume re-probed after an executor and then reduced +
+// persisted against that fresh probe while the STEPS inside the same manifest,
+// Stage 0, and the returned report all still derived from the pre-execution
+// one. The run therefore stored a probe its own steps had never been judged
+// against, and handed the caller a third, older view of the machine.
+//
+// Every test here changes the machine DURING the executor — the only window in
+// which the two snapshots can differ — and then asserts the run speaks about
+// one machine. Each was mutation-verified: reverting the reconstruction fails
+// it, and the pre-execution control assertion proves the fixture is not
+// vacuously in the post-execution state to begin with.
+// ---------------------------------------------------------------------------
+describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => {
+  const SMOKE_SECTION = {
+    deep_peer_smoke: {
+      directions: {
+        claude_to_codex: { execution: 'executed', status: 'passed' },
+        codex_to_claude: { execution: 'executed', status: 'passed' },
+      },
+    },
+    doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json' },
+  };
+
+
+  // Executes deep-peer-smoke; `duringProof` is the machine moving underneath.
+  // `stdout` lets a test make the executor FAIL (invalid JSON) while still
+  // having spawned the child — the distinction the snapshot trigger turns on.
+  function smokeDoctorStub(duringProof, { stdout = JSON.stringify(SMOKE_SECTION) } = {}) {
+    return async (scriptPath, args) => {
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        if (args.includes('--execute-deep-peer-smoke')) {
+          await duringProof();
+          return okOut(stdout);
+        }
+        return okOut(JSON.stringify({}));
+      }
+      return missing();
+    };
+  }
+
+  async function writeSmokeAnswers(home) {
+    const path = join(home, 'execute-smoke-and-decline-egress.json');
+    await writeFile(path, JSON.stringify([
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+      { step_id: 'egress.configured', answer: 'decline' },
+    ]));
+    return path;
+  }
+
+  const manifestOf = async (home, runId) =>
+    JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json'), 'utf8'));
+
+  it('a plugin that disappears DURING the proof is re-judged: the manifest never stores a probe its own steps contradict', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = { installed: [...ALL_PLUGINS], hosts: ['claude', 'codex'] };
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json'], spySubprocess().runner);
+    const runId = plan.report.run_id;
+    // CONTROL: the fixture starts in the state the assertion must NOT trivially
+    // hold in — attention is installed and judged satisfied before the proof.
+    strictEqual(plan.report.steps.find((s) => s.id === 'plugin.attention.claude.installed')?.status, 'satisfied',
+      'precondition: attention is installed and satisfied at plan time');
+
+    // The operator uninstalls a selected plugin while the smoke proof runs.
+    const resume = await run(
+      ['resume', '--latest-open', '--answers', await writeSmokeAnswers(home)],
+      smokeDoctorStub(async () => { state.installed = ALL_PLUGINS.filter((p) => p !== 'attention'); }),
+    );
+
+    const manifest = await manifestOf(home, runId);
+    strictEqual(manifest.probe.hosts.claude.plugins.attention.state, 'missing',
+      'the persisted probe is the POST-execution one (this is the half that already worked)');
+    const persistedRow = manifest.steps.find((s) => s.id === 'plugin.attention.claude.installed');
+    strictEqual(persistedRow?.status, 'pending',
+      `the step PERSISTED beside that probe was judged from it, not from the pre-execution one (got ${persistedRow?.status}: ${JSON.stringify(persistedRow)})`);
+    const reportedRow = resume.report.steps.find((s) => s.id === 'plugin.attention.claude.installed');
+    strictEqual(reportedRow?.status, 'pending', 'and the caller is told the same thing the manifest records');
+  });
+
+  it('the returned report carries the probe it was judged and reduced against — and a Stage 0 built from the same raw facts', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = { installed: [...ALL_PLUGINS], hosts: ['claude', 'codex'] };
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json'], spySubprocess().runner);
+    const runId = plan.report.run_id;
+    // CONTROL: Stage 0 is quiet while both CLIs answer — so a raised codex row
+    // below can only come from the mid-proof disappearance.
+    deepStrictEqual(plan.report.stage0, {}, 'precondition: Stage 0 raises nothing on a fully hosted machine');
+
+    // The codex CLI goes away mid-proof: `raw.codex.status` is the ONLY source
+    // for the Stage-0 verdict, so a Stage 0 built from the stale `raw` stays
+    // silent about a host that is no longer there.
+    const resume = await run(
+      ['resume', '--latest-open', '--answers', await writeSmokeAnswers(home)],
+      smokeDoctorStub(async () => { state.hosts = ['claude']; }),
+    );
+
+    const manifest = await manifestOf(home, runId);
+    deepStrictEqual(resume.report.probe, manifest.probe,
+      'the reported probe IS the persisted one — the recorded symptom was these two disagreeing');
+    strictEqual(resume.report.stage0.codex?.needed, true,
+      `Stage 0 is built from the final raw facts, so the vanished host is surfaced (got ${JSON.stringify(resume.report.stage0)})`);
+    // `raw` is a judgement input in its own right — host presence reads it and
+    // nothing else — so the reconstruction has to carry the final RAW, not just
+    // re-serialize the final probe.
+    strictEqual(resume.report.steps.find((s) => s.id === 'host.codex.present')?.status, 'pending',
+      'the step that reads raw host status is judged from the final raw too');
+  });
+
+  it('applicability moves with the snapshot: a permission fragment applied DURING the proof makes proof.permission applicable in the same resume', async () => {
+    // The executor-induced applicability edge: `fragment_applied` is promoted
+    // the first time a rendered fragment is observed applied, and
+    // deriveExpectedSteps reads it to decide whether proof.permission exists at
+    // all. Observed for the first time in the FINAL snapshot, it must reach the
+    // expectation the reconstruction is built from — a reconstruction that
+    // reused the pre-execution expectation would rebuild the run around an
+    // applicability its own snapshot disproves.
+    const { home, cwd } = await makeHome();
+    const state = { installed: [...ALL_PLUGINS], hosts: ['claude', 'codex'] };
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json'], spySubprocess().runner);
+    const runId = plan.report.run_id;
+    // CONTROL, both halves: the fragment must be RENDERED (promotion requires a
+    // prior pointer) and the proof must start non-applicable, or the assertion
+    // below would hold with or without the reconstruction.
+    const plannedPermission = plan.report.steps.find((s) => s.id === 'permission.claude.applied');
+    strictEqual(plannedPermission?.status, 'pending', 'precondition: the permission step is unresolved at plan time');
+    ok(plannedPermission?.fragment_pointer, 'precondition: a permission fragment was rendered, so fragment_applied can be promoted later');
+    strictEqual(plan.report.steps.find((s) => s.id === 'proof.permission')?.status, 'not-applicable',
+      'precondition: with no fragment applied, the permission proof does not apply');
+
+    // The operator applies the Claude permission fragment while the smoke runs.
+    const resume = await run(
+      ['resume', '--latest-open', '--answers', await writeSmokeAnswers(home)],
+      smokeDoctorStub(async () => {
+        await writeFile(join(home, '.claude', 'settings.json'),
+          `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits', allow: ['Read'] } }, null, 2)}\n`);
+      }),
+    );
+
+    const permissionRow = resume.report.steps.find((s) => s.id === 'permission.claude.applied');
+    strictEqual(permissionRow?.status, 'satisfied',
+      `the mid-proof application is observed by the final readers (got ${permissionRow?.status})`);
+    strictEqual(permissionRow?.fragment_applied, true, 'and promoted, which is what the expectation reads');
+    const proofRow = resume.report.steps.find((s) => s.id === 'proof.permission');
+    ok(proofRow && proofRow.status !== 'not-applicable',
+      `the expectation is re-derived from the final snapshot, so the proof applies in THIS resume (got ${proofRow?.status})`);
+    const persisted = (await manifestOf(home, runId)).steps.find((s) => s.id === 'proof.permission');
+    ok(persisted && persisted.status !== 'not-applicable',
+      `and the run persists that applicability rather than making the operator resume twice (got ${persisted?.status})`);
+  });
+
+  // The SELECTION is an expectation input too, and the final judge can move it:
+  // §6.2 lets a satisfying observation clear a `declined` row, and a declined row
+  // is the only evidence effectiveSelection reads. The two tests below are a pair
+  // — the first pins the defect, the second pins the over-correction that the
+  // first fix attempt caused — and neither is meaningful without the other.
+  async function planDesignerCustom(home, cwd, state) {
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+    const plan = await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,designer', '--format', 'json'], spySubprocess().runner);
+    return { run, plan, runId: plan.report.run_id };
+  }
+
+  it('a HOST-SCOPED decline the machine contradicts mid-proof re-derives the selection — the run never closes as complete on an exclusion its own rows dropped', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // designer is present on Claude, absent on Codex — so the operator can refuse
+    // it on Codex alone, which is the shape the registry deliberately keeps as a
+    // step ROW (selection.desired is a flat name list and cannot express it).
+    const state = {
+      hosts: ['claude', 'codex'],
+      claude: [...ALL_PLUGINS],
+      codex: ALL_PLUGINS.filter((p) => p !== 'designer'),
+    };
+    const { run, plan, runId } = await planDesignerCustom(home, cwd, state);
+    strictEqual(plan.report.steps.find((s) => s.id === 'plugin.designer.codex.installed')?.status, 'pending',
+      'precondition: the Codex row is open, so declining it is a real refusal rather than a no-op');
+
+    const answersPath = join(home, 'decline-codex-designer.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
+      { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
+      { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+    ]));
+    // The operator changes their mind and installs it on Codex mid-proof.
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath],
+      smokeDoctorStub(async () => { state.codex = [...state.codex, 'designer']; }));
+
+    const manifest = await manifestOf(home, runId);
+    notStrictEqual(manifest.status, 'complete',
+      'a run whose own rows no longer support the exclusion it bound and reduced against must not terminalize');
+    ok((resume.report.warnings ?? []).some((w) => /designer/.test(w) && /codex/.test(w) && /re-derived/.test(w)),
+      `the operator is told which plugin and host moved: ${JSON.stringify(resume.report.warnings)}`);
+
+    // The load-bearing assertion: the verb's own account agrees with an
+    // INDEPENDENT re-read of the same run. Before the convergence, resume
+    // reported `complete` (exit 0) and the very next status reported
+    // `incomplete` (exit 20) — over a terminal run resume then refuses.
+    const status = await run(['status', '--format', 'json'], spySubprocess().runner);
+    strictEqual(resume.report.completion?.state, status.report.completion?.state,
+      `resume and an immediate status must describe one machine (resume=${resume.report.completion?.state}, status=${status.report.completion?.state})`);
+    strictEqual(resume.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status,
+      status.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status,
+      'including the steps the restored host-scoped selection brings back into the expectation');
+  });
+
+  it('a FULLY refused plugin installed mid-proof stays refused — narrowing is not reversible in-run (§7)', async () => {
+    // The over-correction guard. A convergence derived from the run's ORIGINAL
+    // desired reads the ABSENCE of the declined rows — absent because the
+    // narrowing already removed them from the expectation — as "nothing was
+    // refused", and resurrects every fully-declined plugin on every resume. The
+    // derivation must start from the RETAINED set, exactly as the pre-execution
+    // narrowing does, so a narrowing cannot erase its own evidence.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = { hosts: ['claude', 'codex'], installed: ALL_PLUGINS.filter((p) => p !== 'designer') };
+    const { run, plan, runId } = await planDesignerCustom(home, cwd, state);
+    strictEqual(plan.report.steps.find((s) => s.id === 'plugin.designer.claude.installed')?.status, 'pending',
+      'precondition: designer is absent on both hosts, so a decline on both fully refuses it');
+
+    const answersPath = join(home, 'decline-designer-everywhere.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'plugin.designer.claude.installed', answer: 'decline' },
+      { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
+      { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
+      { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+    ]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath],
+      smokeDoctorStub(async () => { state.installed = [...ALL_PLUGINS]; }));
+
+    const manifest = await manifestOf(home, runId);
+    ok(!manifest.selection.desired.includes('designer'),
+      `the operator's full refusal stands: ${JSON.stringify(manifest.selection.desired)}`);
+    strictEqual(manifest.steps.find((s) => s.id === 'plugin.designer.claude.installed'), undefined,
+      'a refused plugin has no rows in the expectation, and a mid-proof install does not put them back');
+    ok(!(resume.report.warnings ?? []).some((w) => /designer/.test(w)),
+      `and nothing is reported as re-derived: ${JSON.stringify(resume.report.warnings)}`);
+    strictEqual(manifest.status, 'complete', 'the run still completes on the narrowed selection it was reduced against');
+  });
+
+  it('a selection that widens mid-proof re-derives the HOOK VERDICT with it — an attestation scoped to the narrow set cannot satisfy the wider one', async () => {
+    // The verdict is selection-scoped (`codexHookBearingPlugins(…, effective.byHost.codex)`),
+    // so converging the selection without recomputing it leaves a claim that was
+    // true of the NARROW set standing over the wider one — and
+    // `hooks.codex.attested` is non-declinable, so that is a false pass on a step
+    // nothing else can clear.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = {
+      hosts: ['claude', 'codex'],
+      claude: [...ALL_PLUGINS],
+      codex: ALL_PLUGINS.filter((p) => p !== 'designer'),
+    };
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+    // engineer is hook-bearing on Codex and stays selected; designer is
+    // hook-bearing too and is the plugin the decline excludes.
+    const plan = await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,engineer,designer', '--format', 'json'], spySubprocess().runner);
+    const runId = plan.report.run_id;
+
+    // An attestation that covers EXACTLY the narrowed Codex hook set.
+    const attestationForEngineerOnly = {
+      run_id: 'settings-20260718T030000Z-aa11bb',
+      mode: 'attest-codex-hook-review',
+      requested: true,
+      attested: true,
+      status: 'attested',
+      host: 'codex',
+      attested_at: '2026-07-18T03:00:00Z',
+      bundled_plugins: ['engineer'],
+      attested_plugins: ['engineer'],
+      plugin_versions: { engineer: '9.9.9' },
+      bound_versions: { codex: '0.140.0', plugins: { codex: { engineer: '9.9.9' } } },
+      artifact_pointer: '~/.agentic-plugins/runs/settings/settings-20260718T030000Z-aa11bb/settings.json',
+      artifact_hash: 'b'.repeat(64),
+    };
+    const executorStdout = JSON.stringify({
+      schema_version: 'runtime-doctor-1.0',
+      settings_runs: {
+        status: 'ok',
+        count: 1,
+        malformed: 0,
+        codex_hook_review: { status: 'attested', current: true, currency_reason: null, latest: attestationForEngineerOnly },
+      },
+      ...SMOKE_SECTION,
+    });
+
+    const answersPath = join(home, 'decline-designer-codex-with-attestation.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
+      { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
+      { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+    ]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath],
+      smokeDoctorStub(async () => { state.codex = [...state.codex, 'designer']; }, { stdout: executorStdout }));
+
+    // CONTROL: the claim really did import, so the verdict this test is about is
+    // computed from a present record rather than from nothing.
+    const recorded = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'hook-attestation.json'), 'utf8'));
+    deepStrictEqual(recorded.attested_plugins, ['engineer'], 'precondition: the imported claim covers only the narrowed Codex hook set');
+
+    const hookRow = resume.report.steps.find((s) => s.id === 'hooks.codex.attested');
+    strictEqual(hookRow?.status, 'pending',
+      `designer is back in the Codex selection and the claim does not cover it, so the step stays open (got ${hookRow?.status})`);
+    const persisted = (await manifestOf(home, runId)).steps.find((s) => s.id === 'hooks.codex.attested');
+    strictEqual(persisted?.status, 'pending', 'and the run persists that, rather than a satisfied step nothing attested');
+  });
+
+  it('the READ-ONLY verbs converge the selection too — a completed run whose refused plugin appears later stops reading complete', async () => {
+    // The worse half of the same defect, and the reason §7 can say "every verb".
+    // status/verify derive `effective` from the STORED rows and then re-judge
+    // them, so a host-scoped decline a later observation clears leaves the rows
+    // saying `satisfied` beside a selection that still excludes the plugin. They
+    // write nothing and a terminal run cannot be resumed, so before the
+    // convergence this false pass repeated for good.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = {
+      hosts: ['claude', 'codex'],
+      claude: [...ALL_PLUGINS],
+      codex: ALL_PLUGINS.filter((p) => p !== 'designer'),
+    };
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+    // engineer stays selected and is Codex hook-bearing, so the closed run holds
+    // a REAL attestation — which is what makes the verdict, not just the
+    // selection, something the read-only verbs have to re-derive.
+    await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,engineer,designer', '--format', 'json'], spySubprocess().runner);
+
+    const attestationForEngineerOnly = {
+      run_id: 'settings-20260718T030000Z-aa11bb',
+      mode: 'attest-codex-hook-review',
+      requested: true,
+      attested: true,
+      status: 'attested',
+      host: 'codex',
+      attested_at: '2026-07-18T03:00:00Z',
+      bundled_plugins: ['engineer'],
+      attested_plugins: ['engineer'],
+      plugin_versions: { engineer: '9.9.9' },
+      bound_versions: { codex: '0.140.0', plugins: { codex: { engineer: '9.9.9' } } },
+      artifact_pointer: '~/.agentic-plugins/runs/settings/settings-20260718T030000Z-aa11bb/settings.json',
+      artifact_hash: 'b'.repeat(64),
+    };
+    const executorStdout = JSON.stringify({
+      schema_version: 'runtime-doctor-1.0',
+      settings_runs: {
+        status: 'ok',
+        count: 1,
+        malformed: 0,
+        codex_hook_review: { status: 'attested', current: true, currency_reason: null, latest: attestationForEngineerOnly },
+      },
+      ...SMOKE_SECTION,
+    });
+
+    const answersPath = join(home, 'decline-then-install-later.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
+      { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
+      { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+    ]));
+    // Nothing moves during the proof here — this is the OTHER window.
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath],
+      smokeDoctorStub(async () => {}, { stdout: executorStdout }));
+    // CONTROL: the run really did close on the narrowed selection with the
+    // attestation satisfied, so what the read-only verbs say below is about the
+    // later install and nothing else.
+    strictEqual(resume.report.steps.find((s) => s.id === 'plugin.designer.codex.installed')?.status, 'declined',
+      'precondition: the refusal stands while the machine agrees with it');
+    strictEqual(resume.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'satisfied',
+      'precondition: the claim covers the narrowed Codex hook set, so the step is genuinely satisfied');
+
+    // The operator installs it on Codex AFTER the run closed.
+    state.codex = [...state.codex, 'designer'];
+    for (const verb of ['status', 'verify']) {
+      const r0 = await run([verb, '--format', 'json'], spySubprocess().runner);
+      strictEqual(r0.report.steps.find((s) => s.id === 'plugin.designer.codex.installed')?.status, 'satisfied',
+        `${verb}: the observation clears the decline (§6.2) — this half always worked`);
+      // Both halves of the convergence are load-bearing here: without the
+      // re-derived selection designer never rejoins the Codex hook set, and
+      // without the re-derived VERDICT the claim that covered only the narrow
+      // set keeps satisfying a step it no longer covers.
+      strictEqual(r0.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'pending',
+        `${verb}: designer rejoins the Codex hook set and the recorded claim does not cover it`);
+      notStrictEqual(r0.report.completion?.state, 'complete',
+        `${verb}: so a hook-bearing plugin nobody attested cannot leave the run reading complete`);
+    }
+  });
+
+  it('the convergence is REPORTED by the read-only verbs, not applied silently', async () => {
+    // A refusal that stopped following from the run's own rows is an operator
+    // decision that has lapsed; without the warning the only visible effect is a
+    // completion that quietly stopped being complete.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = {
+      hosts: ['claude', 'codex'],
+      claude: [...ALL_PLUGINS],
+      codex: ALL_PLUGINS.filter((p) => p !== 'designer'),
+    };
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+    await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,designer', '--format', 'json'], spySubprocess().runner);
+    const answersPath = join(home, 'decline-designer-codex-quiet.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
+      { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
+      { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+    ]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath], smokeDoctorStub(async () => {}));
+    ok(!(resume.report.warnings ?? []).some((w) => /refused on codex/.test(w)),
+      `precondition: nothing has lapsed while the machine agrees with the refusal: ${JSON.stringify(resume.report.warnings)}`);
+
+    state.codex = [...state.codex, 'designer'];
+    for (const verb of ['status', 'verify']) {
+      const r0 = await run([verb, '--format', 'json'], spySubprocess().runner);
+      ok((r0.report.warnings ?? []).some((w) => /designer/.test(w) && /refused on codex/.test(w) && /re-plan/.test(w)),
+        `${verb} names the lapsed refusal and the route back: ${JSON.stringify(r0.report.warnings)}`);
+    }
+  });
+
+  it('the answered rows are re-judged even when NOTHING ran — resume and status agree about the dependency graph', async () => {
+    // The skip this replaces was justified by "identical inputs"; applyAnswers
+    // mutates rows in place, so they are not identical. Without the pass resume
+    // reports a proof `blocked` behind a predecessor the same report shows
+    // `declined`, and an immediate status reports it `pending`.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = { hosts: ['claude', 'codex'], installed: [...ALL_PLUGINS] };
+    const run = (argv) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess: spySubprocess().runner });
+    await run(['plan', '--bundle', 'base', '--format', 'json']);
+
+    const answersPath = join(home, 'accept-proof-decline-predecessor.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'proof.egress-provider-ack', answer: 'accept' },
+      { step_id: 'egress.configured', answer: 'decline' },
+    ]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+    // CONTROL: no child ran, so this is the no-snapshot-movement path — the one
+    // the old gate skipped.
+    strictEqual(resume.report.steps.find((s) => s.id === 'egress.configured')?.status, 'declined',
+      'precondition: the predecessor is resolved by this resume\'s own answer');
+
+    const status = await run(['status', '--format', 'json']);
+    const resumeRow = resume.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
+    const statusRow = status.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
+    strictEqual(resumeRow?.status, statusRow?.status,
+      `resume and status must agree about the row (resume=${resumeRow?.status}, status=${statusRow?.status})`);
+    ok(!/resolve the predecessor first/.test(resumeRow?.recovery ?? ''),
+      `and the recovery must not send the operator after a predecessor already declined: ${resumeRow?.recovery}`);
+  });
+
+  it('a doctor child that ran and then FAILED to produce importable evidence still triggers the final snapshot', async () => {
+    // The trigger is the SPAWN, not the import. A doctor invocation that returns
+    // unparseable output imports nothing while the machine had the whole run of
+    // that child to move; gating the re-probe on the import made the failure path
+    // the one that persisted and reported stale facts.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = { hosts: ['claude', 'codex'], installed: [...ALL_PLUGINS] };
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json'], spySubprocess().runner);
+    const runId = plan.report.run_id;
+    strictEqual(plan.report.steps.find((s) => s.id === 'plugin.attention.claude.installed')?.status, 'satisfied',
+      'precondition: attention is installed and satisfied at plan time');
+
+    const resume = await run(['resume', '--latest-open', '--answers', await writeSmokeAnswers(home)],
+      smokeDoctorStub(async () => { state.installed = ALL_PLUGINS.filter((p) => p !== 'attention'); },
+        { stdout: '{ this is not json' }));
+
+    ok((resume.report.warnings ?? []).some((w) => /not valid JSON/i.test(w)),
+      `precondition: the executor really did fail to import (got ${JSON.stringify(resume.report.warnings)})`);
+    let proofExists = true;
+    try { await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'proof', 'deep-peer-smoke.json')); } catch { proofExists = false; }
+    strictEqual(proofExists, false, 'precondition: nothing was imported, so the old import-gated flag would have stayed false');
+
+    const manifest = await manifestOf(home, runId);
+    strictEqual(manifest.probe.hosts.claude.plugins.attention.state, 'missing',
+      'the machine is re-probed after the child, however that child ended');
+    strictEqual(manifest.steps.find((s) => s.id === 'plugin.attention.claude.installed')?.status, 'pending',
+      'and the persisted rows are judged from that probe, not from the pre-execution one');
+  });
+
+  it('the READ-ONLY hook-attestation doctor is a child too — a machine that moves during it is re-probed', async () => {
+    // The second spawn site. Every other case here runs an EXECUTOR, so a
+    // mutation removing the flag at this site would evade all of them: the
+    // attestation fetch is read-only but still a subprocess with a two-minute
+    // ceiling, and the machine has exactly as long to move.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = { hosts: ['claude', 'codex'], installed: [...ALL_PLUGINS] };
+    // engineer is Codex hook-bearing, so `hooks.codex.attested` applies and the
+    // read-only doctor fetch runs; no answer executes anything.
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+    const plan = await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,engineer', '--format', 'json'], spySubprocess().runner);
+    const runId = plan.report.run_id;
+    strictEqual(plan.report.steps.find((s) => s.id === 'plugin.engineer.claude.installed')?.status, 'satisfied',
+      'precondition: engineer is installed and satisfied at plan time');
+    strictEqual(plan.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'pending',
+      'precondition: the attestation step is open, which is what makes the read-only fetch run');
+
+    const calls = [];
+    const readOnlyDoctorStub = async (scriptPath, args) => {
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        calls.push([...args]);
+        // The operator uninstalls a SELECTED plugin while the fetch runs.
+        // `engineer`, not `attention`: this run's selection is
+        // runtime,companions,engineer, and a plugin outside the selection has no
+        // step row to observe (the first draft asserted on one and failed).
+        state.installed = ALL_PLUGINS.filter((p) => p !== 'engineer');
+        return okOut(JSON.stringify({
+          schema_version: 'runtime-doctor-1.0',
+          settings_runs: { status: 'ok', count: 1, malformed: 0, codex_hook_review: { status: 'absent', current: false, currency_reason: null, latest: null } },
+        }));
+      }
+      return missing();
+    };
+    const answersPath = join(home, 'no-executor.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'egress.configured', answer: 'decline' }]));
+    await run(['resume', '--latest-open', '--answers', answersPath], readOnlyDoctorStub);
+
+    // CONTROL: the only child really was the read-only fetch.
+    strictEqual(calls.length, 1, `exactly one doctor call: ${JSON.stringify(calls)}`);
+    ok(!calls[0].some((a) => a.startsWith('--execute-')), `and it is not an executor: ${JSON.stringify(calls[0])}`);
+
+    const manifest = await manifestOf(home, runId);
+    strictEqual(manifest.probe.hosts.claude.plugins.engineer.state, 'missing',
+      'the re-probe happens for the read-only child as well');
+    strictEqual(manifest.steps.find((s) => s.id === 'plugin.engineer.claude.installed')?.status, 'pending',
+      'and the persisted rows are judged from it');
+  });
+});
+
+// The one verb that deliberately does NOT converge (§7, owner decision
+// 2026-08-02). Its subject is a send that already happened, so a selection that
+// lapsed after the run closed must not refuse testimony about it — and the
+// resulting divergence from `status` must be stated, not silent.
+describe('bootstrap attest — the receipt door judges the run as it was reduced', () => {
+  const EGRESS_ENV = { AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_BOT_TOKEN: '999999:sentinel' };
+  const RECIPIENT = '424242424242';
+
+  async function completedRunWithPassedAck() {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    await writeFile(join(home, '.agentic-plugins', 'config.local.toml'), `egress_chat_id = "${RECIPIENT}"\n`, { mode: 0o600 });
+    const state = {
+      hosts: ['claude', 'codex'],
+      claude: [...ALL_PLUGINS],
+      codex: ALL_PLUGINS.filter((p) => p !== 'designer'),
+    };
+    const fingerprint = deriveActivationFingerprint({ channel: 'telegram', recipient: RECIPIENT, credentialEnvVar: 'TELEGRAM_BOT_TOKEN' });
+    const subprocess = async (scriptPath, args) => {
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        if (args.includes('--execute-egress-ack-proof')) {
+          return okOut(JSON.stringify({
+            egress_ack_proof: {
+              requested: true, executed: true, mode: 'explicit_egress_executor', status: 'passed',
+              provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: fingerprint, ran_at: '2026-07-18T04:00:00.000Z' },
+              outcome_reason: 'dispatched', mirror_correlated: true, network_request_performed: true,
+              subject_suffix: 'abcdef012345', blockers: [], limits: [],
+            },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: 'b'.repeat(64) },
+          }));
+        }
+        if (args.includes('--execute-deep-peer-smoke')) {
+          return okOut(JSON.stringify({
+            deep_peer_smoke: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json' },
+          }));
+        }
+        return okOut(JSON.stringify({}));
+      }
+      return missing();
+    };
+    const run = (argv) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess, env: EGRESS_ENV });
+    await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,designer', '--format', 'json']);
+    const answersPath = join(home, 'close-with-ack.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
+      { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
+      { step_id: 'proof.egress-provider-ack', answer: 'execute' },
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+    ]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+    strictEqual(resume.report.run_status, 'complete', 'precondition: the run closed');
+    strictEqual(resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack')?.status, 'passed',
+      'precondition: with a passed ack, which is what testimony is about');
+    return { run, state, resume };
+  }
+
+  it('a refusal that lapses AFTER the run closed does not refuse the owner\'s receipt', async () => {
+    // Before the convergence reached attest this returned exit 40 ('re-judges
+    // stale'), and a terminal run cannot be resumed — so the owner who really
+    // received the receipt could never record it, because they installed an
+    // unrelated plugin afterwards.
+    const { run, state } = await completedRunWithPassedAck();
+    state.codex = [...state.codex, 'designer'];
+
+    const attest = await run(['attest', '--format', 'json']);
+    strictEqual(attest.exitCode, EXIT.OK, `the door stays open: ${JSON.stringify(attest.report.diagnostics)}`);
+    ok(attest.report.receipt_pointer, 'and the testimony is actually recorded');
+  });
+
+  it('and it SAYS that its verdict can differ from status, rather than diverging in silence', async () => {
+    const { run, state } = await completedRunWithPassedAck();
+    state.codex = [...state.codex, 'designer'];
+
+    const attest = await run(['attest', '--format', 'json']);
+    const warning = (attest.report.warnings ?? []).find((w) => /designer/.test(w));
+    ok(warning, `the lapsed refusal is named: ${JSON.stringify(attest.report.warnings)}`);
+    ok(/does NOT re-derive/.test(warning) && /differ from what `status` reports/.test(warning),
+      `and the divergence is stated, in wording that does not claim a re-derivation attest did not do: ${warning}`);
+
+    // The divergence is real — that is the accepted cost, and why it is stated.
+    const status = await run(['status', '--format', 'json']);
+    strictEqual(attest.report.completion.state, 'complete', 'attest judges the run as it was reduced');
+    notStrictEqual(status.report.completion.state, 'complete', 'status judges the machine as it is now');
+  });
+
+  it('a run whose selection never lapsed gets no such warning', async () => {
+    // Control: the warning must be about the lapse, not about running attest.
+    const { run } = await completedRunWithPassedAck();
+    const attest = await run(['attest', '--format', 'json']);
+    strictEqual(attest.exitCode, EXIT.OK);
+    deepStrictEqual(attest.report.warnings, [], 'nothing lapsed, nothing warned');
+  });
+});
+
+// The refactor that made the reader snapshot ONE read per file: these pin the
+// projections against the per-family readers they replaced, so a future edit
+// cannot quietly change what a family resolves to while collapsing the reads.
+describe('bootstrap user-global readers — one read per file (projection equivalence)', () => {
+  it('the runtime-config projections equal the per-family readers they replaced', async () => {
+    const { home } = await makeHome({ satisfied: true });
+    const snapshot = await readUserGlobalRuntimeConfig({ homeDir: home });
+    deepStrictEqual(projectModelEffort(snapshot), await readUserGlobalModelEffort({ homeDir: home }));
+    deepStrictEqual(projectNotify(snapshot), await readUserGlobalNotify({ homeDir: home }));
+    // Not vacuous: the fixture really carries both families.
+    strictEqual(projectModelEffort(snapshot).keys.model.value, 'gpt-5.2-codex');
+    strictEqual(projectNotify(snapshot).keys.notify_channel.value, 'file-log');
+  });
+
+  it('the Codex permission projection equals the reader it replaced, over the notify gather\'s bytes', async () => {
+    const { home } = await makeHome({ satisfied: true });
+    const gathered = await gatherCodexNotificationInputs({ homeDir: home, env: {} });
+    const projected = projectCodexPermission(gathered.read, { usingOverride: false });
+    deepStrictEqual(projected, await readUserGlobalCodexPermission({ homeDir: home, env: {} }));
+    strictEqual(projected.approval_policy, 'on-request', 'not vacuous: the fixture carries a permission policy');
   });
 });
 
