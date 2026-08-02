@@ -60,7 +60,11 @@ import { renderCodexTuiTableToml, tomlBasicString } from './toml.mjs';
 // Constants
 // ---------------------------------------------------------------------------
 
-export const NOTIFICATION_PLAN_SCHEMA_VERSION = 'runtime-notification-plan-1.0';
+// 1.1 — `read_check.tui_notifications_form` (ADR-0040 §4b). The `-latest-`
+// POINTER schema deliberately stays 1.0: its shape (run id, status, mode,
+// pointer) carries none of the changed fields, and the report and pointer
+// schemas are independently versioned.
+export const NOTIFICATION_PLAN_SCHEMA_VERSION = 'runtime-notification-plan-1.1';
 export const NOTIFICATION_PLAN_LATEST_SCHEMA_VERSION = 'runtime-notification-plan-latest-1.0';
 export const NOTIFICATION_PLAN_KIND = 'notification-plan';
 
@@ -88,6 +92,11 @@ export const CHAIN_BASENAME = 'codex-notify-chain.mjs';
 // The tui.notifications recommendation (ADR-0040 §4b): approval-requested has
 // delivery priority over agent-turn-complete in the Codex TUI coalescing.
 export const TUI_NOTIFICATIONS_VALUES = Object.freeze(['approval-requested', 'agent-turn-complete']);
+
+// The closed set of trust classifications `parseCodexNotifyConfigToml` assigns
+// to a [tui] notifications capture. Exhaustive by construction and fail-closed
+// to `invalid`; consumers interpret THIS, never the raw.
+export const TUI_NOTIFICATIONS_FORMS = Object.freeze(['absent', 'true', 'false', 'array', 'invalid']);
 
 // SemVer with optional prerelease AND optional build metadata — `1.2.3+build`
 // is a valid version whose metadata is ignored by precedence rules.
@@ -253,6 +262,14 @@ export function parseCodexNotifyConfigToml(text) {
   let inTopLevel = true;
   let inTui = false;
   let tuiHeaderSeen = false;
+  // A dotted top-level `tui.<key> = …` IMPLICITLY creates the [tui] table, and
+  // TOML 1.0 forbids redefining such a table with a later [tui] header. The
+  // scan recognized the dotted form but never recorded that it had created the
+  // table, so `tui.notifications = [canonical]` followed by `[tui]` resolved to
+  // a trusted canonical value out of a config Codex cannot load. The same hole
+  // applied to `tui.status_line`, whose EXACT probe already ships — one flag
+  // closes both, because `tuiRedefined` gates every [tui] key.
+  let tuiDottedSeen = false;
   let tuiRedefined = false;
   // Per-key capture state: raw text + the strictness facts an EXACT probe
   // needs (Plan-verify peer BLOCKER — the earlier scan discarded them):
@@ -260,6 +277,19 @@ export function parseCodexNotifyConfigToml(text) {
   // a redefined [tui] table, and trailing non-comment junk all resolve to
   // values:null (unparseable), never to a confidently wrong argv/item list.
   const states = { notify: null, tuiNotifications: null, tuiStatusLine: null };
+  // Keys whose IDENTITY or table scope this scan cannot pin down: the name was
+  // claimed as a sub-table, a deeper dotted path defined it as a table, or the
+  // whole [tui] table arrived as an inline assignment. Poisoned keys resolve
+  // `invalid` — never `absent`, which would read as "nothing configured" and
+  // send the operator a merge instruction that breaks a working config.
+  const poisoned = new Set();
+  // A TOML bare/quoted key token → the state name it addresses, or null.
+  const tuiStateKey = (token) => {
+    const name = String(token ?? '').trim().replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1');
+    if (name === 'notifications') return 'tuiNotifications';
+    if (name === 'status_line') return 'tuiStatusLine';
+    return null;
+  };
   const record = (key, captured) => {
     if (states[key] !== null) {
       states[key] = { ...states[key], duplicate: true };
@@ -281,6 +311,28 @@ export function parseCodexNotifyConfigToml(text) {
   // cannot follow leaves keys uncaptured (fail-closed: unparseable → null,
   // never a confidently wrong value).
   let openTriple = null; // '"""' | "'''" | null
+  // A `#` OUTSIDE a string starts a comment, and a triple delimiter inside that
+  // comment is not a delimiter (Review peer BLOCKER 2): `# """` followed by
+  // `[tui.child] # """` made the scanner swallow the real section transition
+  // and read a nested value as if it sat under [tui]. Comment detection has to
+  // respect single-quoted/double-quoted spans on the same line, or a `#` inside
+  // an ordinary string value would truncate a line it has no business ending.
+  const commentIndexOutsideStrings = (line, from) => {
+    let inStr = null;
+    let escaped = false;
+    for (let k = from; k < line.length; k += 1) {
+      const ch = line[k];
+      if (inStr) {
+        if (escaped) { escaped = false; continue; }
+        if (inStr === '"' && ch === '\\') { escaped = true; continue; }
+        if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'") { inStr = ch; continue; }
+      if (ch === '#') return k;
+    }
+    return -1;
+  };
   const toggleTriples = (line) => {
     let idx = 0;
     for (;;) {
@@ -295,6 +347,8 @@ export function parseCodexNotifyConfigToml(text) {
       const l = line.indexOf("'''", idx);
       const next = b === -1 ? l : l === -1 ? b : Math.min(b, l);
       if (next === -1) return false;
+      const comment = commentIndexOutsideStrings(line, idx);
+      if (comment !== -1 && comment < next) return false; // the delimiter is commented out
       openTriple = line.slice(next, next + 3);
       idx = next + 3;
     }
@@ -308,49 +362,88 @@ export function parseCodexNotifyConfigToml(text) {
     }
     const consumedByTriple = toggleTriples(raw);
     if (consumedByTriple) { i += 1; continue; }
-    const stripped = raw.replace(/#.*/, '').trim();
+    const commentAt = commentIndexOutsideStrings(raw, 0);
+    const stripped = (commentAt === -1 ? raw : raw.slice(0, commentAt)).trim();
     if (stripped.startsWith('[')) {
       inTopLevel = false;
       const isTui = /^\[tui\]$/.test(stripped);
-      if (isTui && tuiHeaderSeen) tuiRedefined = true;
+      // Two explicit [tui] headers, or an explicit header after the table was
+      // implicitly created by a dotted key — both are TOML redefinitions.
+      if (isTui && (tuiHeaderSeen || tuiDottedSeen)) tuiRedefined = true;
       if (isTui) tuiHeaderSeen = true;
+      // A `[tui.<key>]` header claims one of OUR key names as a sub-TABLE, so a
+      // later `<key> = …` under [tui] redefines it. `[tui.other]` is ordinary
+      // and must not poison anything (defining a super-table afterwards is
+      // legal TOML), which is why only a NAME COLLISION poisons.
+      const subTable = stripped.match(/^\[\s*tui\s*\.\s*(.+?)\s*\]$/);
+      if (subTable) {
+        const claimed = tuiStateKey(subTable[1].split('.')[0]);
+        if (claimed) poisoned.add(claimed);
+      }
       inTui = isTui;
       i += 1;
       continue;
     }
     if (inTopLevel) {
-      const m = raw.match(/^\s*(?:"notify"|notify)\s*=\s*(.*)$/);
+      const m = raw.match(/^\s*(?:"notify"|'notify'|notify)\s*=\s*(.*)$/);
       if (m) {
         const captured = captureTomlArray(lines, i, m[1]);
         record('notify', captured);
         i = captured.nextIndex;
         continue;
       }
-      // Dotted top-level forms of the [tui] table keys (valid TOML a
-      // section-only scan would miss — Plan-verify peer findings).
-      const dottedNotif = raw.match(/^\s*tui\s*\.\s*notifications\s*=\s*(.*)$/);
-      if (dottedNotif) {
-        const captured = captureTomlArray(lines, i, dottedNotif[1]);
-        record('tuiNotifications', captured);
-        i = captured.nextIndex;
+      // `tui = …` defines the whole table in one assignment — an inline table
+      // this line scanner cannot read. Refusing to interpret it is honest;
+      // reporting the keys ABSENT is not, because the recovery then tells the
+      // operator to merge a `[tui]` block that would redefine a closed inline
+      // table and break a config Codex accepts today.
+      if (/^\s*(?:"tui"|'tui'|tui)\s*=/.test(raw)) {
+        poisoned.add('tuiNotifications');
+        poisoned.add('tuiStatusLine');
+        tuiDottedSeen = true;
+        i += 1;
         continue;
       }
-      const dottedStatus = raw.match(/^\s*tui\s*\.\s*status_line\s*=\s*(.*)$/);
-      if (dottedStatus) {
-        const captured = captureTomlArray(lines, i, dottedStatus[1]);
-        record('tuiStatusLine', captured);
-        i = captured.nextIndex;
+      // Dotted top-level forms. ANY `tui.<…>` assignment implicitly creates the
+      // table — not just the two keys this scan reads — so the redefinition
+      // flag is set for all of them (the first fix covered only the two read
+      // keys, which left `tui.color = "blue"` + `[tui]` certifying).
+      const dotted = raw.match(/^\s*(?:"tui"|'tui'|tui)\s*\.\s*(.*)$/);
+      if (dotted) {
+        tuiDottedSeen = true;
+        const assign = dotted[1].match(/^(.+?)\s*=\s*(.*)$/);
+        const path = assign ? assign[1].split('.').map((seg) => seg.trim()) : [];
+        const stateKey = path.length > 0 ? tuiStateKey(path[0]) : null;
+        if (stateKey && path.length === 1) {
+          const captured = captureTomlArray(lines, i, assign[2]);
+          record(stateKey, captured);
+          i = captured.nextIndex;
+          continue;
+        }
+        // `tui.notifications.enabled = …` defines OUR key as a table.
+        if (stateKey) poisoned.add(stateKey);
+        i += 1;
         continue;
       }
     } else if (inTui) {
-      const mN = raw.match(/^\s*(?:"notifications"|notifications)\s*=\s*(.*)$/);
+      // A dotted key under [tui] whose head collides with one of ours defines
+      // that key as a table, so any sibling `<key> = …` is a redefinition.
+      const dottedInTui = raw.match(/^\s*(.+?)\s*=\s*.*$/);
+      if (dottedInTui && dottedInTui[1].includes('.')) {
+        const head = tuiStateKey(dottedInTui[1].split('.')[0]);
+        if (head) { poisoned.add(head); i += 1; continue; }
+      }
+      // Quoted key forms are the SAME key. Matching only the bare and
+      // double-quoted spellings let `'notifications' = false` slip past the
+      // duplicate check beside a canonical bare assignment.
+      const mN = raw.match(/^\s*(?:"notifications"|'notifications'|notifications)\s*=\s*(.*)$/);
       if (mN) {
         const captured = captureTomlArray(lines, i, mN[1]);
         record('tuiNotifications', captured);
         i = captured.nextIndex;
         continue;
       }
-      const mS = raw.match(/^\s*(?:"status_line"|status_line)\s*=\s*(.*)$/);
+      const mS = raw.match(/^\s*(?:"status_line"|'status_line'|status_line)\s*=\s*(.*)$/);
       if (mS) {
         const captured = captureTomlArray(lines, i, mS[1]);
         record('tuiStatusLine', captured);
@@ -360,17 +453,42 @@ export function parseCodexNotifyConfigToml(text) {
     }
     i += 1;
   }
-  const resolve = (state, { tuiKey = false } = {}) => {
-    if (state === null) return { present: false, raw: null, values: null };
-    const clean = !state.duplicate && state.closed && state.trailingOk && !(tuiKey && tuiRedefined);
-    const values = clean && state.raw.startsWith('[') ? extractStringElements(state.raw) : null;
-    return { present: true, raw: state.raw, values };
+  // `form` is the TYPED classification a judge needs; `values` keeps its exact
+  // prior meaning (a trusted flat string array, else null) so existing callers
+  // are unaffected. A boolean flag was tried first and does not work: the
+  // structural facts alone say `["a" "b"]` and `true junk` are "clean" — the
+  // capture closed with no trailing junk — while neither is a value any probe
+  // may trust. So the classification is exhaustive and FAILS CLOSED to
+  // `invalid` (the classifyWireDisposition precedent: an unrecognized shape is
+  // never silently benign), and `raw` must never be interpreted except through
+  // `form`.
+  //
+  //   absent  — the key was not observed at all
+  //   true    — exactly `true`  (all notification kinds enabled)
+  //   false   — exactly `false` (notifications switched off)
+  //   array   — a trusted flat string array; `values` carries it
+  //   invalid — everything else: duplicate key, redefined table, unclosed
+  //             array, trailing junk, a non-flat-string array, or any scalar
+  //             this zero-dependency scanner cannot classify
+  const resolve = (key, state, { tuiKey = false } = {}) => {
+    if (poisoned.has(key)) return { present: true, raw: state?.raw ?? null, values: null, form: 'invalid' };
+    if (state === null) return { present: false, raw: null, values: null, form: 'absent' };
+    const structural = !state.duplicate && state.closed && state.trailingOk && !(tuiKey && tuiRedefined);
+    if (!structural) return { present: true, raw: state.raw, values: null, form: 'invalid' };
+    if (state.raw.startsWith('[')) {
+      const values = extractStringElements(state.raw);
+      return values === null
+        ? { present: true, raw: state.raw, values: null, form: 'invalid' }
+        : { present: true, raw: state.raw, values, form: 'array' };
+    }
+    if (state.raw === 'true') return { present: true, raw: state.raw, values: null, form: 'true' };
+    if (state.raw === 'false') return { present: true, raw: state.raw, values: null, form: 'false' };
+    return { present: true, raw: state.raw, values: null, form: 'invalid' };
   };
-  const tuiNotifications = resolve(states.tuiNotifications, { tuiKey: true });
   return {
-    notify: resolve(states.notify),
-    tuiNotifications,
-    tuiStatusLine: resolve(states.tuiStatusLine, { tuiKey: true }),
+    notify: resolve('notify', states.notify),
+    tuiNotifications: resolve('tuiNotifications', states.tuiNotifications, { tuiKey: true }),
+    tuiStatusLine: resolve('tuiStatusLine', states.tuiStatusLine, { tuiKey: true }),
   };
 }
 
@@ -598,6 +716,10 @@ export function isValidNotificationPlanArtifact(artifact) {
   if (artifact.repo_root_pointer !== '.') return false;
   if (artifact.host !== 'codex') return false;
   if (!artifact.read_check || typeof artifact.read_check !== 'object') return false;
+  // Schema 1.1's defining field is validated, not merely declared: an artifact
+  // carrying a raw without its trust classification is the surface this version
+  // exists to remove, so writing one is refused.
+  if (!TUI_NOTIFICATIONS_FORMS.includes(artifact.read_check.tui_notifications_form)) return false;
   if (!artifact.recommended || typeof artifact.recommended !== 'object') return false;
   if (!NOTIFICATION_PLAN_MODES.includes(artifact.recommended.mode)) return false;
   if (!artifact.fragments || typeof artifact.fragments !== 'object') return false;
@@ -807,8 +929,15 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
   const expectedNotifyArgv = expectedCodexNotifyArgv({ receiverPath, platform, execPath });
   const notifyFragment = renderCodexNotifyFragmentToml({ receiverPath, platform, execPath });
   const tuiFragment = renderCodexTuiNotificationsFragmentToml();
+  // The raw is shown to the operator, but it may not be presented as an
+  // OBSERVED value unless the scan could classify it: a redefined [tui] table
+  // or a trailing-junk line captures a canonical-LOOKING raw out of a config
+  // Codex cannot load. This is the same defect the step judge refuses, one
+  // level down — the artifact and the warning had it too.
   const tuiWarning = parsed.tuiNotifications.present
-    ? `existing [tui] notifications value found (${parsed.tuiNotifications.raw}); notifications is also a full-replace key — merging the fragment replaces it.`
+    ? (parsed.tuiNotifications.form === 'invalid'
+      ? `an existing [tui] notifications assignment was found but could not be classified (${parsed.tuiNotifications.raw}) — a duplicate key, a redefined [tui] table, or a value this scan does not support. Normalize it to a single well-formed assignment under exactly one [tui] table before merging; notifications is a full-replace key.`
+      : `existing [tui] notifications value found (${parsed.tuiNotifications.raw}); notifications is also a full-replace key — merging the fragment replaces it.`)
     : null;
 
   const limits = notificationPlanLimits({ chained: mode === 'wrapper-chain', platform });
@@ -824,6 +953,9 @@ export function buildCodexNotificationPlanSection({ gathered, now = new Date(), 
     notify_raw: parsed.notify.raw,
     tui_notifications_present: parsed.tuiNotifications.present,
     tui_notifications_raw: parsed.tuiNotifications.raw,
+    // The trust classification the raw must be read through (schema 1.1). A raw
+    // without it is exactly the misleading surface this slice closes.
+    tui_notifications_form: parsed.tuiNotifications.form,
   };
   const recommended = {
     mode,

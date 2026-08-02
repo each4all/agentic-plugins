@@ -173,13 +173,19 @@ import { expectedCodexNotifyArgv } from '../../plugins/runtime/scripts/lib/notif
 const SHUTTLE = '/home/op/.agentic-plugins/bin/codex-notify-shuttle.mjs';
 const CHAIN = '/home/op/.agentic-plugins/bin/codex-notify-chain.mjs';
 
+// ADR-0040 §4b — the step now judges TWO halves. These harnesses exercise the
+// ARGV half, so they supply a canonical TUI observation by default; a caller
+// that passes its own `tuiNotifications` overrides it.
+const CANONICAL_TUI = Object.freeze({ present: true, form: 'array', values: ['approval-requested', 'agent-turn-complete'] });
+const canonicalTui = () => ({ present: true, form: 'array', values: [...CANONICAL_TUI.values] });
+
 function judgeCodexNotify(codexNotify) {
   const steps = judgeSteps({
     expected: [{ id: stepIds.notifyCodexConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent('codex')] }],
     probe: { hosts: { claude: { plugins: {} }, codex: { plugins: {} } } },
     raw: {},
     pluginSet: { plugins: {} },
-    readers: { codexNotify },
+    readers: { codexNotify: { tuiNotifications: canonicalTui(), ...codexNotify } },
     hookVerdict: null,
     previousById: new Map(),
     now: NOW,
@@ -256,7 +262,7 @@ describe('judgeSteps notify.codex.configured — MODE BINDING via the persisted 
       probe: { hosts: { claude: { plugins: {} }, codex: { plugins: {} } } },
       raw: {},
       pluginSet: { plugins: {} },
-      readers: { codexNotify: { readable: true, present: true, argv, expected: EXPECTED } },
+      readers: { codexNotify: { readable: true, present: true, argv, expected: EXPECTED, tuiNotifications: canonicalTui() } },
       hookVerdict: null,
       previousById: new Map([[stepIds.notifyCodexConfigured(), { id: stepIds.notifyCodexConfigured(), status: 'pending', desired }]]),
       now: NOW,
@@ -279,5 +285,129 @@ describe('judgeSteps notify.codex.configured — MODE BINDING via the persisted 
     const step = judgeWithDesired({ argv: [...EXPECTED[0]], desired: '{not json' });
     strictEqual(step.status, 'manual-follow-up');
     match(step.recovery, /could not be trusted/);
+  });
+});
+
+describe('judgeSteps notify.codex.configured — the [tui] notifications half (ADR-0040 §4b)', () => {
+  // The reproduced false pass: canonical notify argv + `notifications = false`
+  // certified Codex-side attention while approval-requested was switched off.
+  // `notify =` carries only agent-turn-complete, so the approval half has no
+  // other channel to be observed on.
+  const withTui = (tuiNotifications) => judgeCodexNotify({
+    readable: true, present: true, argv: [...EXPECTED[0]], expected: EXPECTED, tuiNotifications,
+  });
+  const arrayForm = (values) => ({ present: true, form: 'array', values });
+
+  it('canonical notifications satisfies, and the observation names BOTH halves', () => {
+    const step = withTui(canonicalTui());
+    strictEqual(step.status, 'satisfied');
+    match(step.observed, /matches the canonical receiver wiring/);
+    match(step.observed, /canonical \[tui\] notifications observed/);
+  });
+
+  it('notifications = false is manual-follow-up — the reproduced false pass, now named', () => {
+    const step = withTui({ present: true, form: 'false', values: null });
+    strictEqual(step.status, 'manual-follow-up');
+    match(step.observed, /explicitly disabled/);
+    match(step.recovery, /decline this step/);
+  });
+
+  it('notifications = true is manual-follow-up — broader than the canonical selection, and still the operator\'s', () => {
+    const step = withTui({ present: true, form: 'true', values: null });
+    strictEqual(step.status, 'manual-follow-up');
+    match(step.observed, /broader than the canonical/);
+  });
+
+  it('an absent key is pending — the canonical configuration was not observed', () => {
+    const step = withTui({ present: false, form: 'absent', values: null });
+    strictEqual(step.status, 'pending');
+    match(step.observed, /not configured/);
+  });
+
+  it('an untrustworthy value is pending, never read from raw', () => {
+    const step = withTui({ present: true, form: 'invalid', values: null });
+    strictEqual(step.status, 'pending');
+    match(step.observed, /cannot be trusted/);
+    match(step.recovery, /exactly one \[tui\] table/);
+  });
+
+  it('a non-canonical array is manual-follow-up and the reason REPORTS whether approval-requested survives', () => {
+    const keeps = withTui(arrayForm(['approval-requested']));
+    strictEqual(keeps.status, 'manual-follow-up');
+    match(keeps.observed, /does carry approval-requested/);
+
+    const drops = withTui(arrayForm(['agent-turn-complete']));
+    strictEqual(drops.status, 'manual-follow-up');
+    match(drops.observed, /does NOT carry approval-requested/);
+  });
+
+  it('an EMPTY array is a deliberate selection (manual-follow-up), and order is element-wise', () => {
+    strictEqual(withTui(arrayForm([])).status, 'manual-follow-up');
+    // Reordered — same members, different order. The canonical order is
+    // deliberate (approval-requested has delivery priority), so this does not
+    // match, exactly as the sibling status_line probe treats a reorder.
+    strictEqual(withTui(arrayForm(['agent-turn-complete', 'approval-requested'])).status, 'manual-follow-up');
+    // A superset is still not the canonical selection.
+    strictEqual(withTui(arrayForm(['approval-requested', 'agent-turn-complete', 'extra'])).status, 'manual-follow-up');
+  });
+
+  // CROSS-PRODUCT — the rows above all hold the argv half canonical, so on
+  // their own they cannot prove the precedence rule. The notifications
+  // predicate is asked ONLY after the argv half has already yielded satisfied:
+  // it may lower that, never raise it, and it must not reclassify the argv
+  // half's own outcomes (§6.1 keeps `notify = []` and an unparseable argv at
+  // pending, and an unreadable config at unknown).
+  it('the argv half keeps its OWN outcome AND its own reason, regardless of the notifications form', () => {
+    // Status alone is too weak an assertion here: a foreign notifier and
+    // `notifications = false` BOTH yield manual-follow-up, and several argv
+    // outcomes share `pending` with the tui ones. So each case pins the REASON
+    // too — otherwise reordering the two predicates would silently replace one
+    // half's operator guidance with the other's while this test stayed green.
+    for (const form of [
+      { present: true, form: 'false', values: null },
+      { present: true, form: 'true', values: null },
+      { present: true, form: 'invalid', values: null },
+      { present: false, form: 'absent', values: null },
+      arrayForm(['agent-turn-complete']),
+      canonicalTui(),
+    ]) {
+      const label = `tui form=${form.form}`;
+      const empty = judgeCodexNotify({ readable: true, present: true, argv: [], expected: EXPECTED, tuiNotifications: form });
+      strictEqual(empty.status, 'pending', `${label}: notify = [] runs nothing — still pending`);
+      match(empty.observed, /runs nothing/, `${label}: the argv half's own reason survives`);
+
+      const unparseable = judgeCodexNotify({ readable: true, present: true, argv: null, expected: EXPECTED, tuiNotifications: form });
+      strictEqual(unparseable.status, 'pending', `${label}: an unparseable argv stays pending`);
+      match(unparseable.observed, /not a parseable argv array/, `${label}`);
+
+      const missing = judgeCodexNotify({ readable: true, present: false, argv: null, expected: EXPECTED, tuiNotifications: form });
+      strictEqual(missing.status, 'pending', `${label}: a missing notify key stays pending`);
+      ok(missing.observed == null, `${label}: an absent notify key reports no observation of its own`);
+
+      const unreadable = judgeCodexNotify({ readable: false, present: false, argv: null, expected: EXPECTED, tuiNotifications: form });
+      strictEqual(unreadable.status, 'unknown', `${label}: unknown is never satisfied and never becomes a tui verdict`);
+      match(unreadable.observed, /could not be read/, `${label}`);
+
+      const foreign = judgeCodexNotify({ readable: true, present: true, argv: ['/usr/bin/env', 'node', '/opt/other.mjs'], expected: EXPECTED, tuiNotifications: form });
+      strictEqual(foreign.status, 'manual-follow-up', `${label}: a foreign notifier keeps ITS manual-follow-up`);
+      match(foreign.recovery, /never auto-chains/, `${label}: and ITS recovery, not the tui one`);
+      ok(!/notifications/.test(foreign.observed), `${label}: the tui half must not narrate over the argv finding`);
+    }
+  });
+
+  it('a prior decline survives every non-satisfying observation, and canonical-on-both promotes back to satisfied', () => {
+    const judgeWithPrevious = (tuiNotifications) => judgeSteps({
+      expected: [{ id: stepIds.notifyCodexConfigured(), stage: 5, applicable: true, declinable: true, blocked_by: [stepIds.hostPresent('codex')] }],
+      probe: { hosts: { claude: { plugins: {} }, codex: { plugins: {} } } },
+      raw: {},
+      pluginSet: { plugins: {} },
+      readers: { codexNotify: { readable: true, present: true, argv: [...EXPECTED[0]], expected: EXPECTED, tuiNotifications } },
+      hookVerdict: null,
+      previousById: new Map([[stepIds.notifyCodexConfigured(), { id: stepIds.notifyCodexConfigured(), status: 'declined' }]]),
+      now: NOW,
+    })[0];
+    strictEqual(judgeWithPrevious({ present: true, form: 'false', values: null }).status, 'declined');
+    strictEqual(judgeWithPrevious({ present: false, form: 'absent', values: null }).status, 'declined');
+    strictEqual(judgeWithPrevious(canonicalTui()).status, 'satisfied', 'an exact canonical observation still promotes over a prior decline');
   });
 });

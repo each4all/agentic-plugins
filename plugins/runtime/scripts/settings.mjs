@@ -87,7 +87,7 @@ import { parseCodexCliVersion, resolveCodexInstalledPluginVersion } from './lib/
 // half-enabled hook-chain states (session-capture-contract.md §18),
 // evaluated in BOTH report scopes (filesystem+env reads only), with
 // overall.entry_readiness_warnings.
-export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.23';
+export const SETTINGS_SCHEMA_VERSION = 'runtime-settings-1.24';
 
 // ADR-0038 settings-claude permission plan (M1): how many recent usage records to
 // read per host, and a per-file byte cap, when building the dry-run plan.
@@ -2524,7 +2524,11 @@ export function formatText(report) {
       lines.push(`- status: blocked; ${np.error}`);
     } else {
       lines.push(`- status: ${np.status}; mode=${np.recommended.mode}; codex-home=${np.host_config.codex_home_source}`);
-      lines.push(`- read-check: notify present=${np.read_check.notify_present}; parseable=${np.read_check.notify_parseable}; tui-notifications present=${np.read_check.tui_notifications_present}`);
+      // The tui-notifications FORM is reported beside its presence: a raw shown
+      // without its trust classification reads as an observed value even when
+      // the scan refused it (a redefined [tui] table captures a
+      // canonical-LOOKING raw), which is the surface schema 1.1 closes.
+      lines.push(`- read-check: notify present=${np.read_check.notify_present}; parseable=${np.read_check.notify_parseable}; tui-notifications present=${np.read_check.tui_notifications_present} (form=${np.read_check.tui_notifications_form})`);
       if (np.warning) lines.push(`- warning: ${np.warning}`);
       if (np.tui_warning) lines.push(`- warning: ${np.tui_warning}`);
       lines.push(`- receiver shuttle (user-installed, recorded in the artifact): ${np.recommended.shuttle_install_path}`);

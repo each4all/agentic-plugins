@@ -134,6 +134,11 @@ Settings reports and plans:
   read-checks any existing `notify` value first — the key is a single-key
   full replace — and an existing notifier produces a wrapper-chaining plan
   (chain script preserves the prior notifier) instead of a clobber. The
+  read-check also classifies any existing `[tui] notifications` value
+  (`absent | true | false | array | invalid`, fail-closed to `invalid`) and
+  reports that form beside the raw: an assignment under a duplicated `[tui]`
+  table or a trailing-junk line captures a canonical-LOOKING raw, so the raw
+  alone must never be read as an observed value. The
   fragment invokes a rendered receiver shuttle via the per-OS canonical argv (`/usr/bin/env node` on POSIX; the machine's own node executable path on Windows); the
   shuttle re-resolves the runtime root per the discovery ladder on every
   invocation (never a version-pinned plugin cache path) and delegates to

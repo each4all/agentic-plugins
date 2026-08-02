@@ -120,7 +120,7 @@ Line references below are anchors observed at decision time
   `!(apply || executePluginManagement || executePluginCleanup || attestCodexHookReview)`).
   Evidence collection never affects `dry_run`.
 
-## 3. Report schema contract (`runtime-settings-1.23`)
+## 3. Report schema contract (`runtime-settings-1.24`)
 
 `SETTINGS_SCHEMA_VERSION` bumped `runtime-settings-1.16` → `runtime-settings-1.17`
 for the discriminator below, then `runtime-settings-1.17` →
@@ -190,7 +190,19 @@ only, so it is evaluated in **both** report scopes), the
 the readiness **status** exactly like `session_readiness_warnings`).
 Same observed-current semantics and the same additive-section erratum
 scope (1.23 `entry_readiness` appends its own text block in both
-scopes). The execution artifact
+scopes).
+Then `runtime-settings-1.23` → `runtime-settings-1.24` (additive,
+ADR-0040 §4b) when the notification plan's read-check gained
+`notification_plan.read_check.tui_notifications_form` — the trust
+classification (`absent | true | false | array | invalid`, fail-closed)
+through which the captured `tui_notifications_raw` must be read. The raw
+alone is misleading: a duplicated `[tui]` table, a trailing-junk line, or
+a key whose identity the scan cannot pin down all capture
+canonical-looking text out of a config Codex will not load. The same
+field rides the `runtime-notification-plan-1.1` plan artifact, where it
+is validated on the write path; here it is observed-current and additive,
+with the text renderer appending `(form=…)` to the read-check line.
+The execution artifact
 carries the same hash plus the `planned_actions`/`journal[]` write-ahead fields, and
 the same additive `codex_hook_review` canonical fields,
 under its own `runtime-settings-execution-artifact-1.3` schema
@@ -300,7 +312,7 @@ distinguishable only by what it lacks:
    output byte-compatible (modulo nothing), JSON delta limited to the §3 keys.
 3. Renderer guards: `summarizeSettings` and `formatText` on a narrowed report
    (no throw, qualified output, explicit not-evaluated lines).
-4. Schema-version lockstep: the `runtime-settings-1.23` report constant and the
+4. Schema-version lockstep: the `runtime-settings-1.24` report constant and the
    `runtime-settings-execution-artifact-1.3` execution-artifact constant, and the
    exact-version assertions that pin each (`test-settings-probe-boundary.mjs` pins
    both constants; `test-notification-plan.mjs` and `test-settings.mjs` pin the

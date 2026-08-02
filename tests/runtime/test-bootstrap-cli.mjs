@@ -7,7 +7,7 @@
 // tests/runtime/test-bootstrap.mjs; this file exercises the §3 grammar, the
 // R0/M1 boundary, the no-executor rule, and the CLI lifecycle end to end.
 
-import { deepStrictEqual, notStrictEqual, ok, rejects, strictEqual } from 'node:assert';
+import { deepStrictEqual, match, notStrictEqual, ok, rejects, strictEqual } from 'node:assert';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -51,10 +51,14 @@ async function makeHome({ satisfied = false } = {}) {
     ? `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits', allow: ['Read'] }, statusLine: { type: 'command', command: `node '${join(home, '.agentic-plugins', 'bin', 'agentic-statusline.mjs').replace(/\\/g, '/')}'` } }, null, 2)}\n`
     : '{}\n');
   await writeFile(join(home, '.codex', 'config.toml'), satisfied
-    // notify wiring + the canonical agentic-6 status_line included: both
-    // Codex-side exact probes must observe their canonical configuration in a
-    // "satisfied" fixture (notify-axis + statusline slices).
-    ? `approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nnotify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]\n[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\n`
+    // notify wiring + the canonical agentic-6 status_line + the canonical
+    // notifications selection: all three Codex-side exact predicates must
+    // observe their canonical configuration in a "satisfied" fixture
+    // (notify-axis + statusline slices, and the ADR-0040 §4b approval half —
+    // `notify =` carries only agent-turn-complete, so without the
+    // notifications key the notify step is pending, not satisfied). ONE [tui]
+    // table, matching the ONE table the combined fragment renders.
+    ? `approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nnotify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]\n[tui]\nstatus_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]\nnotifications = ["approval-requested", "agent-turn-complete"]\n`
     : '# empty\n');
   await writeFile(join(home, '.agentic-plugins', 'config.local.toml'), '# local sentinel\n');
   if (satisfied) {
@@ -1132,8 +1136,15 @@ describe('bootstrap [tui] one-source invariant — frozen re-transition is NAMED
     // un-noted.
     const { home, cwd } = await makeHome({ satisfied: true });
     const codexConfig = join(home, '.codex', 'config.toml');
-    const notifyOnly = `approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nnotify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]\n`;
-    await writeFile(codexConfig, notifyOnly);
+    // The notify step fully configured (BOTH halves — argv + the ADR-0040 §4b
+    // notifications selection) while the statusline step is not: no
+    // `status_line` key. A satisfied notify step skips fragment persistence, so
+    // no notify artifact freezes on this plan run — which is the precondition
+    // this test needs. Configuring only the argv would leave the step pending,
+    // freeze a STRIPPED artifact here, and turn the scenario into the §6.1.1
+    // no-source case that the rounds-5-6 test below already covers.
+    const notifyConfigured = `approval_policy = "on-request"\nsandbox_mode = "workspace-write"\nnotify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]\n[tui]\nnotifications = ["approval-requested", "agent-turn-complete"]\n`;
+    await writeFile(codexConfig, notifyConfigured);
     const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
 
     const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
@@ -2941,5 +2952,84 @@ describe('runtime bootstrap CLI — §6.1.1 the model/effort posture', () => {
     const resume = await run(['resume', '--latest-open', '--answers', await writeEgressDecline(home)]);
     strictEqual(stage4Of(resume.report).status, 'satisfied');
     ok(!resume.report.completion.unsatisfied.includes('config.model_effort'), 'and the step stops holding completion back');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR-0040 §4b — the approval half of notify.codex.configured (follow-ups.md:38)
+// ---------------------------------------------------------------------------
+
+describe('bootstrap notify.codex.configured — the [tui] notifications half is judged', () => {
+  // The reproduced false pass: `notify =` fires only on agent-turn-complete, so
+  // a machine with canonical receiver wiring and `notifications = false` had
+  // approval attention switched off while every Stage-5 step judged satisfied.
+  const notifyStep = (report) => report.steps.find((s) => s.id === 'notify.codex.configured');
+  const planOn = async (home, cwd) => (await boot({
+    argv: ['plan', '--bundle', 'base', '--format', 'json'],
+    home, cwd, runner: satisfiedRunner(), subprocess: spySubprocess().runner,
+  })).report;
+
+  // Replace the fixture's notifications line — never append. Appending a second
+  // assignment makes a DUPLICATE key, which classifies `invalid`, so the test
+  // would go green through the untrusted-value branch without the boolean-false
+  // branch ever being exercised.
+  async function setNotifications(home, replacement) {
+    const path = join(home, '.codex', 'config.toml');
+    const text = await readFile(path, 'utf8');
+    const next = text.replace(/^notifications = .*$/m, replacement);
+    ok(next !== text, 'precondition: the satisfied fixture must carry a notifications line to replace');
+    await writeFile(path, next);
+    return next;
+  }
+
+  it('CONTROL — the canonical fixture satisfies the step and stops holding completion back', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const report = await planOn(home, cwd);
+    strictEqual(notifyStep(report).status, 'satisfied');
+    match(notifyStep(report).observed, /canonical \[tui\] notifications observed/);
+    ok(!report.completion.unsatisfied.includes('notify.codex.configured'),
+      'the canonical machine does not owe this step');
+  });
+
+  it('notifications = false is manual-follow-up and HOLDS completion — the reproduction', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    await setNotifications(home, 'notifications = false');
+    const report = await planOn(home, cwd);
+    strictEqual(notifyStep(report).status, 'manual-follow-up');
+    match(notifyStep(report).observed, /explicitly disabled/);
+    ok(report.completion.unsatisfied.includes('notify.codex.configured'),
+      'a manual-follow-up step does not resolve, so the run can no longer reach complete');
+  });
+
+  it('a REMOVED notifications key is pending — the canonical configuration was not observed', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    await setNotifications(home, '');
+    const report = await planOn(home, cwd);
+    strictEqual(notifyStep(report).status, 'pending');
+    match(notifyStep(report).observed, /not configured/);
+    ok(report.completion.unsatisfied.includes('notify.codex.configured'));
+  });
+
+  it('a canonical-LOOKING value under a redefined [tui] table is pending, never certified', async () => {
+    // The forgery the typed classification exists to refuse: a dotted
+    // assignment implicitly creates [tui], and the later explicit header
+    // redefines it — invalid TOML that Codex will not load, whose captured raw
+    // nonetheless reads exactly like the canonical selection.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const path = join(home, '.codex', 'config.toml');
+    await writeFile(path, [
+      'approval_policy = "on-request"',
+      `notify = ["/usr/bin/env", "node", "${join(home, '.agentic-plugins', 'bin', 'codex-notify-shuttle.mjs')}"]`,
+      'tui.notifications = ["approval-requested", "agent-turn-complete"]',
+      '[tui]',
+      'status_line = ["model-with-reasoning", "git-branch", "pull-request-number", "context-used", "five-hour-limit", "weekly-limit"]',
+      '',
+    ].join('\n'));
+    const report = await planOn(home, cwd);
+    strictEqual(notifyStep(report).status, 'pending');
+    match(notifyStep(report).observed, /cannot be trusted/);
+    // THE MIRROR: the same redefinition invalidates the sibling status_line
+    // capture, whose EXACT probe already shipped — one parser fix, both keys.
+    strictEqual(report.steps.find((s) => s.id === 'statusline.codex.configured').status, 'pending');
   });
 });
