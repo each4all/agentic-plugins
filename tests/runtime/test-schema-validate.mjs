@@ -445,3 +445,162 @@ describe('runtime schema validator — bootstrap-run 1.1 hook_state (S8a5)', () 
     match(badRowResult.errors.join(' '), /missing required key 'hook_index'/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// D1 — the disclosure invariant (machine-bootstrap-contract.md §3.2)
+// ---------------------------------------------------------------------------
+//
+// The rule these cases enforce: a value crosses the artifact → report boundary
+// IFF the packaged schema grammar-clamps it. A finding exists precisely BECAUSE
+// the observed value escaped its clamp, so the observed side is always a type
+// plus numeric metadata and never a value.
+//
+// Every case carries a CONTROL that must still appear, because "the secret is
+// absent" is trivially satisfiable by a finding that says nothing at all. The
+// expected constraint is read from the trusted schema and MUST survive — a
+// finding an operator cannot act on is not a fix, it is the sink sanitizer's
+// failure mode wearing different clothes.
+
+describe('runtime schema validator — the disclosure invariant (§3.2)', () => {
+  const SECRET = 'Bearer sk-SECRET-abc123';
+
+  it('const / enum / pattern / maxLength findings carry the EXPECTED constraint and never the observed value', () => {
+    const SCHEMA = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['schema'],
+      properties: {
+        schema: { type: 'string', pattern: '^agentic-machine-profile-1\\.[0-9]+$' },
+        flag: { const: false },
+        mode: { enum: ['fast', 'slow'] },
+        id: { type: 'string', pattern: '^[a-f0-9]{6}$' },
+        note: { type: 'string', maxLength: 4 },
+      },
+    };
+    const result = validateAgainstSchema(
+      { schema: READER, flag: SECRET, mode: SECRET, id: SECRET, note: SECRET },
+      SCHEMA,
+      { readerVersion: READER },
+    );
+    strictEqual(result.ok, false);
+    const joined = result.errors.join('\n');
+
+    ok(!joined.includes('SECRET'), `no finding may quote the observed value:\n${joined}`);
+    ok(!joined.includes('Bearer'), `not even a prefix of it:\n${joined}`);
+
+    // CONTROLS — the expected side is trusted schema content and must survive,
+    // or this test would pass against a validator that emitted empty strings.
+    match(joined, /must equal false/, 'the const the schema declares is still named');
+    match(joined, /must be one of "fast", "slow"/, 'the enum members are still named');
+    match(joined, /must match \^\[a-f0-9\]\{6\}\$/, 'the pattern source is still named');
+    match(joined, /string length 23 exceeds maxLength 4/, 'the observed LENGTH crosses where the content does not');
+    match(joined, /observed string \(length 23\)/, 'the observed type and length are reported');
+  });
+
+  it('the schema-version gate reports the expected shape, never the declared string', () => {
+    for (const declared of [SECRET, undefined, 42, `${SECRET}-9.9`]) {
+      const result = validateAgainstSchema({ schema: declared }, TOY, { readerVersion: READER });
+      strictEqual(result.ok, false);
+      const joined = result.errors.join('\n');
+      ok(!joined.includes('SECRET'), `the unparseable version is withheld (declared=${declared}):\n${joined}`);
+      match(joined, /expected <family>-<major>\.<minor>/, 'the expected SHAPE is still stated');
+    }
+    // A foreign family parses but must not be echoed either — `[a-z0-9-]+`
+    // accepts a lowercase credential as readily as a family name.
+    const foreign = validateAgainstSchema({ schema: 'sk-live-deadbeef-1.0' }, TOY, { readerVersion: READER });
+    strictEqual(foreign.ok, false);
+    ok(!foreign.errors.join('\n').includes('sk-live'), 'a foreign family is withheld');
+    match(foreign.errors.join('\n'), /does not match the expected 'agentic-machine-profile'/, 'the EXPECTED family is named');
+  });
+
+  it('the locator substitutes an ordinal for a document-supplied key, and keeps schema-DECLARED names', () => {
+    // Same minor → the unknown key is an error; newer minor → a warning. Both
+    // branches interpolated the key before, and both are checked.
+    const sameMinor = validateAgainstSchema({ schema: READER, name: 'ok', [SECRET]: 'x' }, TOY, { readerVersion: READER });
+    strictEqual(sameMinor.ok, false);
+    ok(!sameMinor.errors.join('\n').includes('SECRET'), 'the unknown-key ERROR names no document key');
+    match(sameMinor.errors.join('\n'), /\$\.member\[2\]/, 'it names the member ORDINAL instead');
+
+    const newerMinor = validateAgainstSchema({ schema: 'agentic-machine-profile-1.7', name: 'ok', [SECRET]: 'x' }, TOY, { readerVersion: READER });
+    strictEqual(newerMinor.ok, true, 'a newer minor still forgives an unknown scalar');
+    ok(!newerMinor.warnings.join('\n').includes('SECRET'), 'the unknown-key WARNING names no document key');
+    match(newerMinor.warnings.join('\n'), /\$\.member\[2\]/);
+    // The minor crosses as a NUMBER; the version STRING it was cut from does not.
+    match(newerMinor.warnings.join('\n'), /newer schema minor \(7\) than this runtime reads \(0\)/);
+
+    const structural = validateAgainstSchema({ schema: READER, name: 'ok', [SECRET]: { a: 1 } }, TOY, { readerVersion: READER });
+    strictEqual(structural.ok, false);
+    ok(!structural.errors.join('\n').includes('SECRET'), 'the unknown-STRUCTURAL-key error names no document key');
+
+    // CONTROL — a schema-DECLARED property name is not a document secret, and
+    // withholding it would make every ordinary finding unactionable.
+    const declared = validateAgainstSchema({ schema: READER, name: 'x'.repeat(20) }, TOY, { readerVersion: READER });
+    strictEqual(declared.ok, false);
+    match(declared.errors.join('\n'), /^\$\.name:/m, 'a declared property is still located by NAME');
+  });
+
+  it('a patternProperties key descends under the ordinal, not under its own spelling', () => {
+    const SCHEMA = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['schema'],
+      properties: { schema: { type: 'string', pattern: '^agentic-machine-profile-1\\.[0-9]+$' } },
+      patternProperties: { '^x': { type: 'number' } },
+    };
+    const result = validateAgainstSchema({ schema: READER, [`x${SECRET}`]: 'not-a-number' }, SCHEMA, { readerVersion: READER });
+    strictEqual(result.ok, false);
+    ok(!result.errors.join('\n').includes('SECRET'), 'matching a PATTERN does not make a key schema-declared');
+    match(result.errors.join('\n'), /\$\.member\[1\]: \[error\/type-mismatch\] expected number, got string/);
+  });
+
+  it('findings are bounded per artifact, the counts stay honest, and the verdict comes from the FULL count', () => {
+    const flood = { schema: 'agentic-machine-profile-1.7', name: 'ok' };
+    for (let i = 0; i < 4000; i += 1) flood[`k${i}-${SECRET}`] = `v${i}`;
+    const before = Buffer.byteLength(JSON.stringify(flood), 'utf8');
+    const forgiven = validateAgainstSchema(flood, TOY, { readerVersion: READER, maxBytes: null });
+
+    strictEqual(forgiven.warnings.length, 16, 'at most 16 warnings are DISPLAYED per artifact');
+    strictEqual(forgiven.warning_count, 4000, 'the total is carried, not lost');
+    strictEqual(forgiven.omitted, true, 'and the omission is stated');
+    strictEqual(forgiven.ok, true, 'a forgiven newer-minor scalar is still forgiven at scale');
+    const rendered = [...forgiven.errors, ...forgiven.warnings].join('').length;
+    ok(rendered < before / 10, `the ~10x amplification is gone (input ${before}B → ${rendered} chars)`);
+    ok(!forgiven.warnings.join('').includes('SECRET'), 'and none of the survivors quotes a key');
+
+    // The same flood on a SAME minor is 4,000 errors. The verdict must come
+    // from the full count, and the suppressed findings must not soften it.
+    const refused = validateAgainstSchema({ ...flood, schema: READER }, TOY, { readerVersion: READER, maxBytes: null });
+    strictEqual(refused.errors.length, 16);
+    strictEqual(refused.error_count, 4000);
+    strictEqual(refused.ok, false, 'a display cap never turns a refusal into a pass');
+  });
+
+  it('one finding is capped at 512 UTF-8 bytes, without splitting a surrogate pair', () => {
+    // The expected side is trusted schema content, so a very large enum is the
+    // one way a finding can grow without any document content in it at all.
+    const members = Array.from({ length: 400 }, (_, i) => `member-${i}-\u{1F600}`);
+    const SCHEMA = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['schema'],
+      properties: {
+        schema: { type: 'string', pattern: '^agentic-machine-profile-1\\.[0-9]+$' },
+        mode: { enum: members },
+      },
+    };
+    const result = validateAgainstSchema({ schema: READER, mode: 'nope' }, SCHEMA, { readerVersion: READER });
+    const [only] = result.errors;
+    ok(Buffer.byteLength(only, 'utf8') <= 512, `capped at 512 bytes, got ${Buffer.byteLength(only, 'utf8')}`);
+    ok(only.endsWith('…'), 'truncation is visible, not silent');
+    ok(!/[\uD800-\uDFFF]/.test(only.at(-2) ?? ''), 'no lone surrogate survives the cut');
+  });
+
+  it('a $defs fragment says it has no minor rather than interpolating a version it lacks', async () => {
+    const validateProof = await makeDefValidator('runtime-bootstrap-run', 'proof');
+    const result = validateProof({ kind: 'deep-peer-smoke', [SECRET]: 'x' });
+    strictEqual(result.ok, false);
+    const joined = result.errors.join('\n');
+    ok(!joined.includes('SECRET'), 'a fragment finding names no document key either');
+    match(joined, /no schema minor that could forgive it/, 'and says WHY, without inventing a version');
+  });
+});

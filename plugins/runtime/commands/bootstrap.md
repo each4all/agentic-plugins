@@ -75,8 +75,14 @@ Notes:
   Stage 0 commands; Stage 0 is manual and host-native (ADR-0006).
 - Exit codes: `0` complete; `10` configured-not-verified; `20` incomplete;
   `30` no-active-run; `40` invalid input; `50` legacy-historical (terminal
-  run under an older schema minor — stored record shown verbatim, nothing
+  run under an older schema minor — stored record summarized, nothing
   re-probed or re-certified); `1` unexpected error.
+- Reports disclose only what the packaged schema grammar-clamps (contract
+  §3.2). A historical run presents `legacy_completion_summary`, not the stored
+  `completion`: proof verdicts, step ids and hashes cross, while free text
+  (proof reasons, the stored artifact pointer) leaves as a count. Surface the
+  summary's `source.artifact_pointer` when the operator needs the full record —
+  reading the artifact is the escape hatch, and there is no flag for it.
 - A second `plan` while a run is open is rejected — continue it with
   `resume --latest-open` or close it with `abandon`.
 - Bootstrap's own artifacts live under the machine-global

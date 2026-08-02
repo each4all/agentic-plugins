@@ -17,8 +17,11 @@ import { fileURLToPath } from 'node:url';
 
 import {
   ANSWER_VALUES,
+  BOOTSTRAP_REPORT_SCHEMA_VERSION,
   EXIT,
+  REPORT_FINDINGS_MAX,
   STAGE0_COMMANDS,
+  boundReportFindings,
   parseBootstrapArgs,
   renderText,
   runBootstrap,
@@ -1355,14 +1358,40 @@ describe('runtime bootstrap CLI — schema-minor migration (ADR-0048 §1)', () =
     strictEqual(migrated.steps.find((s) => s.id === 'notify.codex.configured').status, 'satisfied');
   });
 
-  it('a TERMINAL legacy run is immutable history: exit 50, historical markers, stored completion verbatim, no re-certification', async () => {
+  // D1 (ratified 2026-08-02) — a legacy terminal run is still immutable history,
+  // but what `status`/`verify` PRESENT is a projection rather than a replay. The
+  // stored completion here carries a secret in each of the two maxLength-only
+  // fields the schema never constrains further (`reasons[]` and
+  // `artifact_pointer`), because those are precisely the fields an operator can
+  // edit and the old verbatim replay published to stdout.
+  const LEAK = 'Bearer sk-SECRET-legacy-abc123';
+  const storedTerminalManifest = (runId) => ({
+    ...legacyOpenManifest(runId),
+    status: 'complete',
+    completion: {
+      state: 'complete',
+      unsatisfied: [],
+      missing_steps: [],
+      proofs: [{
+        kind: 'deep-peer-smoke',
+        step_id: 'proof.deep-peer-smoke',
+        declined: false,
+        status: 'passed',
+        reasons: [`peer smoke output: ${LEAK}`],
+        required: true,
+        artifact_pointer: `~/.agentic-plugins/runs/doctor/${LEAK.replace(/[^A-Za-z0-9._-]/g, '-')}/x.json`,
+        artifact_hash: 'a'.repeat(64),
+        bound_versions: null,
+        ran_at: '2026-07-16T00:00:00Z',
+      }],
+      hook_attestation: { status: 'not-applicable', reasons: [`hook note: ${LEAK}`], attested_plugins: [], bound_versions: null, artifact_pointer: null, artifact_hash: null, attested_at: null },
+    },
+  });
+
+  it('a TERMINAL legacy run is immutable history: exit 50, historical markers, a content-free completion SUMMARY, no re-certification', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const runId = 'bootstrap-20260716T000000Z-0aa002';
-    const stored = {
-      ...legacyOpenManifest(runId),
-      status: 'complete',
-      completion: { state: 'complete', unsatisfied: [], missing_steps: [], proofs: [], hook_attestation: { status: 'not-applicable', reasons: [], attested_plugins: [], bound_versions: null, artifact_pointer: null, artifact_hash: null, attested_at: null } },
-    };
+    const stored = storedTerminalManifest(runId);
     await seedManifest(home, stored);
     const before = await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json'), 'utf8');
 
@@ -1371,12 +1400,61 @@ describe('runtime bootstrap CLI — schema-minor migration (ADR-0048 §1)', () =
       strictEqual(result.exitCode, EXIT.LEGACY_HISTORICAL, `${verb} exits 50, never a current-completion code`);
       strictEqual(result.report.historical, true);
       strictEqual(result.report.not_recertified, true);
-      deepStrictEqual(result.report.completion, stored.completion, `${verb} presents the stored completion verbatim`);
+
+      // The raw stored object is GONE from the report — not emptied, not
+      // filtered, absent. A consumer must not be able to read a disclosable
+      // summary as if it were the record.
+      ok(!('completion' in result.report), `${verb} emits no raw completion key`);
+
+      const summary = result.report.legacy_completion_summary;
+      strictEqual(summary.state, 'complete', 'the clamped state enum crosses');
+      strictEqual(summary.proofs.length, 1);
+      deepStrictEqual(summary.proofs[0], {
+        kind: 'deep-peer-smoke',
+        status: 'passed',
+        required: true,
+        declined: false,
+        step_id: 'proof.deep-peer-smoke',
+        artifact_hash: 'a'.repeat(64),
+        ran_at: '2026-07-16T00:00:00Z',
+        reason_count: 1,
+      }, 'grammar-clamped proof fields cross; the free reasons leave as a count');
+      strictEqual(summary.hook_attestation.reason_count, 1, 'the attestation reason is counted, never quoted');
+      strictEqual(summary.source.json_pointer, '/completion');
+      strictEqual(summary.source.artifact_pointer, `~/.agentic-plugins/runs/bootstrap/${runId}/run.json`,
+        'the pointer is runtime-derived from the run id, not the stored artifact_pointer string');
+
+      ok(!JSON.stringify(result.report).includes('SECRET'),
+        `${verb} --format json must not carry either free-text field: ${JSON.stringify(result.report).match(/.{0,80}SECRET.{0,80}/)?.[0]}`);
     }
+
     const text = await boot({ argv: ['status', '--run-id', runId], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
     ok(/HISTORICAL/.test(text.rendered), 'the text render carries the historical marker');
+    ok(!text.rendered.includes('SECRET'), 'the text render withholds the same fields the JSON does');
+    // The 64-hex artifact hash is grammar-clamped (`^[0-9a-f]{64}$`) and MUST
+    // survive. This is the anti-regression for the sink sanitizer that was
+    // withdrawn from this codebase for eating exactly such a hash.
+    ok(text.rendered.includes('proof.deep-peer-smoke: passed'), 'the clamped verdict still renders');
+    ok(/1 reason\(s\) withheld/.test(text.rendered), 'the withholding is stated, not silent');
+
     const after = await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json'), 'utf8');
     strictEqual(after, before, 'the terminal record is byte-identical — nothing re-certified or rewritten');
+  });
+
+  it('the historical summary is the SAME projection in both formats — text cannot carry a field json omits', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runId = 'bootstrap-20260716T000000Z-0aa004';
+    await seedManifest(home, storedTerminalManifest(runId));
+    const args = ['status', '--run-id', runId];
+    const json = await boot({ argv: [...args, '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const text = await boot({ argv: args, home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    // Both renderings are built from one object upstream of the format branch,
+    // so the field SET is identical by construction — assert the report objects
+    // themselves match rather than diffing two strings.
+    deepStrictEqual(text.report.legacy_completion_summary, json.report.legacy_completion_summary,
+      'one projection feeds both renderings');
+    strictEqual(text.report.legacy_completion_summary.proofs[0].reason_count,
+      json.report.legacy_completion_summary.proofs[0].reason_count);
   });
 
   it('a FUTURE-minor run refuses the M1 resume — this runtime must not persist a document it half-understands', async () => {
@@ -1772,11 +1850,15 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
   // -------------------------------------------------------------------------
   // Render-boundary hardening. `completion.proofs[].reasons` is schema-bounded
   // by LENGTH only (maxLength 512) — newlines and control characters are
-  // schema-VALID — and its inputs are not all grammar-clamped: the Codex
+  // schema-VALID — and its input is not grammar-clamped: the Codex
   // plugin-list version is copied through as any string
-  // (lib/machine-probe.mjs), and a historical report replays a stored
-  // (operator-editable) completion verbatim. So a reason can forge an output
-  // row unless the renderer single-lines it.
+  // (lib/machine-probe.mjs). So a reason can forge an output row unless the
+  // renderer single-lines it.
+  //
+  // The historical path is no longer part of this obligation: under the §3.2
+  // disclosure invariant it renders from a projection carrying no free text at
+  // all (see the schema-minor migration suite). These cases therefore exercise
+  // the CURRENT completion path, which still interpolates unclamped strings.
   // -------------------------------------------------------------------------
 
   const evaluatedProof = (over = {}) => ({
@@ -2025,9 +2107,10 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
 
   it('a duplicated proof kind renders ONE row naming the conflict, never two to choose between', () => {
     // The reducer rejects duplicate evidence rather than picking a record (§8),
-    // but a historical completion is replayed verbatim and `proofs[]` is not
-    // unique-by-kind in the schema — so the renderer must not print two
-    // identical-looking rows with different verdicts.
+    // but `proofs[]` is not unique-by-kind in the schema — so the renderer must
+    // not print two identical-looking rows with different verdicts. The
+    // historical path enforces the same rule inside projectLegacyCompletion, so
+    // it holds in `--format json` too and not only on this rendered line.
     const text = renderText({
       verb: 'status',
       historical: true,
@@ -3031,5 +3114,189 @@ describe('bootstrap notify.codex.configured — the [tui] notifications half is 
     // THE MIRROR: the same redefinition invalidates the sibling status_line
     // capture, whose EXACT probe already shipped — one parser fix, both keys.
     strictEqual(report.steps.find((s) => s.id === 'statusline.codex.configured').status, 'pending');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D1 — the report-level finding bound (machine-bootstrap-contract.md §3.2)
+// ---------------------------------------------------------------------------
+//
+// The per-artifact cap in lib/schema-validate.mjs bounds ONE validation. A
+// single report still aggregates findings from several sources, so the budget is
+// spent once more at the report boundary — and, critically, BEFORE the format
+// branch, so text and `--format json` cannot disagree about what a report says.
+
+describe('runtime bootstrap CLI — report finding bound (§3.2)', () => {
+  const many = (n, label) => Array.from({ length: n }, (_, i) => `${label} ${i}`);
+
+  it('leaves an under-cap report untouched — the bound adds no fields it does not need', () => {
+    const report = { verb: 'status', diagnostics: many(4, 'd'), warnings: many(4, 'w') };
+    const bounded = boundReportFindings(report);
+    strictEqual(bounded, report, 'the same object rides through when nothing was dropped');
+    ok(!('findings_omitted' in bounded), 'no decoration on the ordinary path');
+  });
+
+  it('spends the budget on diagnostics first, marks the overflow, and keeps the totals', () => {
+    const bounded = boundReportFindings({ verb: 'status', diagnostics: many(40, 'd'), warnings: many(10, 'w') });
+    strictEqual(bounded.diagnostics.length, REPORT_FINDINGS_MAX + 1, '32 findings plus one fixed marker');
+    strictEqual(bounded.warnings.length, 0, 'errors first — warnings yield the budget');
+    deepStrictEqual(bounded.finding_counts, { diagnostics: 40, warnings: 10 }, 'the totals are the authority');
+    strictEqual(bounded.findings_omitted, true);
+    match(bounded.diagnostics.at(-1), /Further findings were omitted/, 'truncation is stated, never silent');
+  });
+
+  it('marks the overflow on the warnings list when a report carries no diagnostics', () => {
+    // The failure this pins: a marker appended only to `diagnostics` leaves a
+    // warnings-only report silently truncated, which reads as "that was
+    // everything" — the exact dishonesty the bound exists to prevent.
+    const bounded = boundReportFindings({ verb: 'status', warnings: many(50, 'w') });
+    strictEqual(bounded.warnings.length, REPORT_FINDINGS_MAX + 1);
+    match(bounded.warnings.at(-1), /Further findings were omitted/);
+    strictEqual(bounded.findings_omitted, true);
+  });
+
+  it('the JSON report identifier bumped — the historical completion key was removed, not renamed', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const result = await boot({ argv: ['status', '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    strictEqual(JSON.parse(result.rendered).schema, BOOTSTRAP_REPORT_SCHEMA_VERSION);
+    strictEqual(BOOTSTRAP_REPORT_SCHEMA_VERSION, 'runtime-bootstrap-report-2.0');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D1 — the proof-directory scan is on the same boundary (§3.2)
+// ---------------------------------------------------------------------------
+//
+// A directory ENTRY NAME is not clamped by anything: whoever can write into the
+// proof directory chooses it. These cases run END TO END through `runBootstrap`
+// rather than against the reader in isolation, because that is the only way to
+// pin that the report-level bound is actually WIRED — a bound applied after the
+// format branch, or not at all, still passes every unit test of the bounding
+// function itself.
+
+describe('runtime bootstrap CLI — proof-directory entry names (§3.2)', () => {
+  const SECRET = 'Bearer sk-SECRET-abc123';
+
+  async function seedRunWithProofFiles(home, runId, files) {
+    const runDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId);
+    await mkdir(join(runDir, 'proof'), { recursive: true });
+    await writeFile(join(runDir, 'run.json'), `${JSON.stringify({
+      schema: 'runtime-bootstrap-run-1.2',
+      run_id: runId,
+      started_at: '2026-07-16T00:00:00Z',
+      updated_at: '2026-07-16T00:00:00Z',
+      status: 'open',
+      selection: { bundle: 'base', desired: ['runtime', 'companions', 'attention'], excluded: [] },
+      steps: [],
+      boundary: { writes_host_config: false, writes_credential: false, writes_config_local_toml: false, performs_network_request: false },
+    }, null, 2)}\n`);
+    for (const [name, body] of files) await writeFile(join(runDir, 'proof', name), body);
+    return runDir;
+  }
+
+  it('an unrecognized entry name is located by ordinal, never quoted back into the report', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runId = 'bootstrap-20260716T000000Z-0bb001';
+    await seedRunWithProofFiles(home, runId, [
+      [`${SECRET}.json`, '{}'],
+      [`${SECRET}.txt`, 'x'],
+    ]);
+    const result = await boot({ argv: ['status', '--run-id', runId, '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const serialized = JSON.stringify(result.report);
+    ok(!serialized.includes('SECRET'), `an entry name must not ride out in a diagnostic:\n${serialized}`);
+    // CONTROLS — the rule and the expected vocabulary must still be stated, or
+    // the operator cannot rename the file.
+    match(serialized, /entry\[\d\]/, 'the offending entry is still located');
+    match(serialized, /expected one of deep-peer-smoke/, 'the expected kinds are still named');
+  });
+
+  it('a RECOGNIZED evidence filename is still named — the rule withholds free content, not information', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runId = 'bootstrap-20260716T000000Z-0bb002';
+    // `permission.json` is a name this runtime defined, so it may be quoted.
+    await seedRunWithProofFiles(home, runId, [['permission.json', 'not json at all']]);
+    const result = await boot({ argv: ['status', '--run-id', runId, '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    match(JSON.stringify(result.report), /permission\.json: not valid JSON/, 'a closed-vocabulary filename is information, not disclosure');
+  });
+
+  it('a parse failure reports its POSITION, never the parser message that quotes the bytes', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runId = 'bootstrap-20260716T000000Z-0bb005';
+    const runDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId);
+    await mkdir(runDir, { recursive: true });
+    // A JSON.parse SyntaxError message embeds a snippet of the input and carries
+    // no `code`, so the old `err?.code ?? err?.message` fell through to the
+    // quoting message exactly when the document was the untrusted thing.
+    //
+    // The payload puts the marker in the FIRST BYTES on purpose: V8 truncates
+    // its quotation at ten characters, so a secret further in would be hidden
+    // by the truncation rather than by this fix — and the assertion below would
+    // pass against the unfixed code. (Measured: `Bearer sk-SECRET-…` quotes
+    // only `"Bearer sk-"...`.)
+    await writeFile(join(runDir, 'run.json'), 'SECRET-sk-live-abc123 not json');
+    const result = await boot({ argv: ['status', '--run-id', runId, '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const serialized = JSON.stringify(result.report);
+    ok(!serialized.includes('SECRET'), `the parser message must not ride out:\n${serialized}`);
+    match(serialized, /has an unreadable manifest \(not valid JSON/, 'the failure is still named');
+    match(serialized, /abandon bootstrap-20260716T000000Z-0bb005/, 'and the remedy still is');
+
+    // The same hazard on the operator-supplied --answers file, on a clean home
+    // so the broken manifest above cannot short-circuit the read.
+    const fresh = await makeHome({ satisfied: true });
+    const answers = join(fresh.cwd, 'answers.json');
+    await writeFile(answers, 'SECRET-sk-live-xyz789 not json');
+    const usage = await boot({ argv: ['plan', '--bundle', 'base', '--answers', answers], home: fresh.home, cwd: fresh.cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    ok(!JSON.stringify(usage.report).includes('SECRET'), 'nor out of the usage path');
+    match(JSON.stringify(usage.report), /--answers file is not valid JSON/);
+  });
+
+  it('a capped validator warning list SAYS it was capped — a bounded list must not read as the whole story', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runId = 'bootstrap-20260716T000000Z-0bb004';
+    const runDir = join(home, '.agentic-plugins', 'runs', 'bootstrap', runId);
+    await mkdir(runDir, { recursive: true });
+    // A future-minor manifest with 300 unknown scalars: the §4.1 rule forgives
+    // each one with a warning, the §3.2 bound displays 16, and the operator must
+    // be able to tell those 16 apart from "there were only 16". 300 rather than
+    // 4,000 because the 64 KiB artifact cap would refuse the larger document
+    // outright and this case would never reach the warning path at all.
+    const manifest = {
+      schema: 'runtime-bootstrap-run-1.9',
+      run_id: runId,
+      started_at: '2026-07-16T00:00:00Z',
+      updated_at: '2026-07-16T00:00:00Z',
+      status: 'open',
+      selection: { bundle: 'base', desired: ['runtime', 'companions', 'attention'], excluded: [] },
+      steps: [],
+      boundary: { writes_host_config: false, writes_credential: false, writes_config_local_toml: false, performs_network_request: false },
+    };
+    for (let i = 0; i < 300; i += 1) manifest[`future_${i}`] = `v${i}`;
+    await writeFile(join(runDir, 'run.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+
+    const result = await boot({ argv: ['status', '--run-id', runId, '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const stated = (result.report.warnings ?? []).find((w) => /display bound/.test(w));
+    ok(stated, `the omission must be stated: ${JSON.stringify(result.report.warnings)}`);
+    match(stated, /300 validation warning\(s\)/, 'with the total the validator kept');
+  });
+
+  it('a flood of unreadable entries is bounded IN THE EMITTED REPORT, in both formats', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const runId = 'bootstrap-20260716T000000Z-0bb003';
+    // 40 offending entries → 40 diagnostics → past the 32-finding report cap.
+    await seedRunWithProofFiles(home, runId, Array.from({ length: 40 }, (_, i) => [`junk-${i}.txt`, 'x']));
+
+    const json = await boot({ argv: ['status', '--run-id', runId, '--format', 'json'], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const emitted = JSON.parse(json.rendered);
+    strictEqual(emitted.diagnostics.length, REPORT_FINDINGS_MAX + 1,
+      'the bound is applied to what is EMITTED, not merely available as a helper');
+    match(emitted.diagnostics.at(-1), /Further findings were omitted/);
+    deepStrictEqual(emitted.finding_counts, { diagnostics: 40, warnings: 0 }, 'the total stays honest');
+    strictEqual(emitted.findings_omitted, true);
+
+    // The text rendering consumes the same bounded object, so it cannot show a
+    // finding the JSON dropped. Built upstream of the format branch.
+    const text = await boot({ argv: ['status', '--run-id', runId], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    strictEqual(text.report.diagnostics.length, REPORT_FINDINGS_MAX + 1);
+    deepStrictEqual(text.report.diagnostics, emitted.diagnostics, 'one projection feeds both renderings');
   });
 });

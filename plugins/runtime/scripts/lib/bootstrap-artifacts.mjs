@@ -480,7 +480,10 @@ async function writeJsonAtomic({ root, path, value }) {
   try {
     text = `${JSON.stringify(value, null, 2)}\n`;
   } catch (err) {
-    return { ok: false, reason: 'unserializable', path, diagnostic: `Refusing to write ${homeRel(root, path)}: the value is not serializable as JSON (${err?.message ?? String(err)}).` };
+    // D1 §3.2 — a JSON.stringify failure message QUOTES THE INPUT: a circular
+    // structure names the property that closes the cycle, which is a
+    // document-supplied key. The failure mode is named without it.
+    return { ok: false, reason: 'unserializable', path, diagnostic: `Refusing to write ${homeRel(root, path)}: the value is not serializable as JSON (the serializer's message is withheld because it names document-supplied keys).` };
   }
   return writeFileAtomic({ root, path, text });
 }
@@ -1532,7 +1535,7 @@ export async function writeBootstrapProof({ homeDir, repoRoot, runId, kind, reco
   try {
     text = `${JSON.stringify(record, null, 2)}\n`;
   } catch (err) {
-    return { ok: false, reason: 'unserializable', diagnostics: [`The proof record is not serializable as JSON (${err?.message ?? String(err)}).`], proof: null };
+    return { ok: false, reason: 'unserializable', diagnostics: ['The proof record is not serializable as JSON (the serializer\'s message is withheld because it names document-supplied keys — §3.2).'], proof: null };
   }
   if (scrubSecrets(text) !== text) {
     return { ok: false, reason: 'secret-shaped-content', diagnostics: ['The serialized proof record contains secret-shaped content (token/bearer/credential-URL pattern); refusing to persist it. Evidence carries hashes and enum results, never credentials.'], proof: null };
@@ -1574,7 +1577,11 @@ export const PROOF_FILE_MAX_BYTES = 128 * 1024;
  * kind's structural def + discriminator (filename↔embedded-kind equality
  * included). ONE bad file fails the whole read — partial acceptance would
  * silently hide tampered or corrupt evidence behind the valid remainder.
- * Errors name the file and the rule, never the content. A missing proof/
+ * Errors name the rule, and name the FILE only when its name is one this
+ * runtime defined (`<kind>.json` for a known evidence kind). An unrecognized
+ * entry name is free content that arrived from the filesystem, so it is located
+ * by ordinal instead (D1 §3.2) — quoting it back is how a file named after a
+ * credential publishes itself. A missing proof/
  * directory is simply "no evidence yet" (ok, empty).
  *
  * Each returned row carries the file's own sha256 (over the exact stored
@@ -1596,24 +1603,37 @@ export async function readBootstrapProofRecords({ homeDir, runId }) {
   const errors = [];
   const records = [];
   const seen = new Set();
+  let ordinal = -1;
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     const name = entry.name;
+    ordinal += 1;
+    // D1 §3.2 — a directory ENTRY NAME is not clamped by anything. The
+    // evidence kinds are a closed set, so `<kind>.json` is a name this runtime
+    // itself defined and may be quoted; every other name is free content that
+    // arrived from the filesystem, and quoting it published it. `Bearer
+    // sk-….json` in the proof directory used to render its own filename back
+    // out through these diagnostics. Unrecognized entries are located by
+    // ordinal and described by the rule they broke.
+    const recognized = name.endsWith('.json') && EVIDENCE_KINDS.includes(name.slice(0, -'.json'.length));
+    const label = recognized ? name : `entry[${ordinal}]`;
     if (!entry.isFile()) {
-      errors.push(`${name}: not a regular file (symlinks and directories are not evidence)`);
+      errors.push(`${label}: not a regular file (symlinks and directories are not evidence)`);
       continue;
     }
     if (!name.endsWith('.json')) {
-      errors.push(`${name}: not a .json evidence file`);
+      errors.push(`${label}: not a .json evidence file`);
       continue;
     }
     const kind = name.slice(0, -'.json'.length);
     if (!EVIDENCE_KINDS.includes(kind)) {
-      errors.push(`${name}: unknown evidence kind "${kind}"`);
+      // The offending stem is withheld; the EXPECTED vocabulary is named
+      // instead, which is what an operator needs to rename the file.
+      errors.push(`${label}: unknown evidence kind — expected one of ${EVIDENCE_KINDS.join(', ')}`);
       continue;
     }
     /* c8 ignore next 4 — one filename per kind by construction; kept as a tripwire */
     if (seen.has(kind)) {
-      errors.push(`${name}: duplicate evidence kind "${kind}"`);
+      errors.push(`${label}: duplicate evidence kind "${kind}"`);
       continue;
     }
     seen.add(kind);
@@ -1622,34 +1642,34 @@ export async function readBootstrapProofRecords({ homeDir, runId }) {
     try {
       stat = await lstatOrNull(path);
     } catch (err) {
-      errors.push(`${name}: could not stat (${err?.code ?? String(err)})`);
+      errors.push(`${label}: could not stat (${err?.code ?? String(err)})`);
       continue;
     }
     if (!stat?.isFile()) {
-      errors.push(`${name}: not a regular file at read time`);
+      errors.push(`${label}: not a regular file at read time`);
       continue;
     }
     if (stat.size > PROOF_FILE_MAX_BYTES) {
-      errors.push(`${name}: ${stat.size} bytes exceeds the ${PROOF_FILE_MAX_BYTES}-byte evidence bound`);
+      errors.push(`${label}: ${stat.size} bytes exceeds the ${PROOF_FILE_MAX_BYTES}-byte evidence bound`);
       continue;
     }
     let text;
     try {
       text = await readFile(path, 'utf8');
     } catch (err) {
-      errors.push(`${name}: unreadable (${err?.code ?? String(err)})`);
+      errors.push(`${label}: unreadable (${err?.code ?? String(err)})`);
       continue;
     }
     let record;
     try {
       record = JSON.parse(text);
     } catch {
-      errors.push(`${name}: not valid JSON`);
+      errors.push(`${label}: not valid JSON`);
       continue;
     }
     const verdict = await validateEvidenceRecord({ kind, record });
     if (!verdict.ok) {
-      errors.push(`${name}: ${verdict.errors.join('; ')}`);
+      errors.push(`${label}: ${verdict.errors.join('; ')}`);
       continue;
     }
     records.push({ kind, record, sha256: sha256(text), bytes: Buffer.byteLength(text, 'utf8'), pointer: machinePointer(homeDir, path) });

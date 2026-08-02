@@ -475,7 +475,16 @@ describe('machine profile 1.1 — statusline_preset forward-compat (ADR-0048 §2
     profile.statusline_preset = 'agentic-6';
     const verdict = validateAgainstSchema(profile, oldSchema, { readerVersion: 'agentic-machine-profile-1.0' });
     deepStrictEqual(verdict.errors, [], `the newer-minor scalar is forgiven: ${JSON.stringify(verdict.errors)}`);
-    ok(verdict.warnings.some((w) => /statusline_preset/.test(w)), `the ignore is WARNED, not silent: ${JSON.stringify(verdict.warnings)}`);
+    // D1 §3.2 — the ignore is still WARNED (silence was the defect this pins),
+    // but the key is located by ORDINAL rather than named: to THIS reader
+    // `statusline_preset` is a key the document supplied and the schema does not
+    // declare, which is the same category as any other unknown key. The minor
+    // relation still crosses, as numbers.
+    const warned = verdict.warnings.filter((w) => /unknown scalar key ignored/.test(w));
+    strictEqual(warned.length, 1, `the ignore is WARNED, not silent: ${JSON.stringify(verdict.warnings)}`);
+    match(warned[0], /\$\.member\[\d+\]/, 'located by ordinal');
+    match(warned[0], /newer schema minor \(1\) than this runtime reads \(0\)/, 'and the minor relation is stated');
+    ok(!warned[0].includes('statusline_preset'), 'an undeclared key is not named back at the reader');
   });
 
   it('canonical serialization puts statusline_preset LAST, so 1.0- and 1.1-reader canonical hashes agree', async () => {

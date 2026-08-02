@@ -59,8 +59,13 @@ node "<runtime-plugin-root>/scripts/bootstrap.mjs" profile seed   --profile-file
    different terminal states — "installed" and "proven" are not the same claim.
    Exit codes: 0 complete / 10 configured-not-verified / 20 incomplete /
    30 no-active-run / 40 invalid input / 50 legacy-historical (terminal run
-   under an older schema minor — stored record shown verbatim, nothing
+   under an older schema minor — stored record summarized, nothing
    re-certified) / 1 unexpected.
+5. A historical run reports `legacy_completion_summary`, never the stored
+   `completion`: verdicts, step ids and hashes cross the boundary, free text
+   (proof reasons, the stored artifact pointer) leaves as a count (contract
+   §3.2). Do not reconstruct the withheld text from elsewhere — point the
+   operator at `source.artifact_pointer` instead.
 
 ## Boundaries (surface these when relevant; never work around them)
 

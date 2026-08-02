@@ -508,6 +508,10 @@ const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const POINTER_RE = /^[~.][A-Za-z0-9/._-]{0,511}$/;
 const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+// Mirrors data/schemas/runtime-bootstrap-run-1.2.json `$defs.stepId`. A copy of a
+// schema pattern is a drift risk, so test-completion-reducer asserts this source
+// against the packaged schema's rather than trusting the two to stay aligned.
+const STEP_ID_RE = /^[a-z][a-z0-9]*(?:\.[a-z0-9_-]+)+$/;
 const DIRECTION_STATUSES = Object.freeze(['passed', 'failed', 'blocked', 'absent']);
 const PROVIDER_ACK_RESULTS = Object.freeze(['acked', 'failed']);
 // The proof-kind vocabulary is OWNED by lib/evidence-contract.mjs (ADR-0048 §3)
@@ -907,5 +911,109 @@ export function reduceCompletion({
       attested_at: hookAttestation?.attested_at ?? null,
     },
     ...(receiptVerdict ? { egress_receipt_attestation: receiptVerdict } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// D1 — the legacy completion projection (ratified 2026-08-02)
+// ---------------------------------------------------------------------------
+
+/**
+ * Project a STORED historical completion into the disclosable summary that
+ * `status`/`verify` present for a legacy terminal run (ADR-0048 §1).
+ *
+ * Why a projection and not a replay. A terminal run under an older schema minor
+ * is immutable historical evidence, so nothing about it is re-reduced — which
+ * means its completion is exactly the object an operator last wrote, carrying
+ * two maxLength-only strings the schema never constrains further: `reasons[]`
+ * and `artifact_pointer`. Replaying it verbatim published both to stdout, and
+ * from there to terminal capture, CI logs, clipboards and agent context. Under
+ * the D1 invariant a value crosses this boundary only if the packaged schema
+ * GRAMMAR-CLAMPS it, so the free strings leave as counts and the clamped fields
+ * come through intact.
+ *
+ * Why fields are RECONSTRUCTED rather than copied — the same rule
+ * `importProofMetadata` above already follows. The manifest was schema-validated
+ * at selection, so in practice every clamped field already matches its grammar;
+ * re-deriving anyway means this function's output is disclosable on its own
+ * terms, without a reader having to trace back through the selection path to
+ * find out whether it is. `{...completion}` with a few keys deleted is
+ * specifically the wrong shape: it forwards whatever else the stored object
+ * happens to carry, which is how a reasons-only fix leaves `artifact_pointer`
+ * standing in the same record.
+ *
+ * `artifactPointer` is the caller's RUNTIME-DERIVED, home-relative path to the
+ * run manifest — never the stored `artifact_pointer` string. It is a pointer to
+ * where the full record lives, so an operator who needs the withheld content
+ * reads the 0600 artifact directly. That escape hatch is deliberately a file
+ * read and not a flag: a `--verbatim` switch would be pasted into automation,
+ * and the boundary would be back where it started.
+ */
+export function projectLegacyCompletion(completion, { artifactPointer = null } = {}) {
+  if (!isPlainObject(completion)) return null;
+
+  // Exactly one row per proof KIND, matching how the renderer has always
+  // presented them. `proofs[]` is not unique-by-kind in the schema and a
+  // historical record is never re-reduced, so a duplicated kind is reported as
+  // the conflict it is rather than resolved in the edited record's favour.
+  const rows = Array.isArray(completion.proofs) ? completion.proofs.filter(isPlainObject) : [];
+  const kindCounts = new Map();
+  for (const row of rows) {
+    const kind = enumOr(row.kind, PROOF_KINDS);
+    if (kind !== null) kindCounts.set(kind, (kindCounts.get(kind) ?? 0) + 1);
+  }
+  const seen = new Set();
+  const proofs = [];
+  for (const row of rows) {
+    const kind = enumOr(row.kind, PROOF_KINDS);
+    // A row whose kind is not a kind is not evidence about anything nameable.
+    // It is counted as unreadable rather than shown under a guessed label.
+    if (kind === null || seen.has(kind)) continue;
+    seen.add(kind);
+    if ((kindCounts.get(kind) ?? 0) > 1) {
+      proofs.push({ kind, conflicting_records: kindCounts.get(kind) });
+      continue;
+    }
+    proofs.push({
+      kind,
+      status: enumOr(row.status, PROOF_STATUSES),
+      required: typeof row.required === 'boolean' ? row.required : null,
+      declined: typeof row.declined === 'boolean' ? row.declined : null,
+      step_id: matchOr(row.step_id, STEP_ID_RE),
+      artifact_hash: matchOr(row.artifact_hash, SHA256_RE),
+      ran_at: matchOr(row.ran_at, TIMESTAMP_RE),
+      // `reasons[]` is maxLength-only: free operator-editable content, so only
+      // its cardinality crosses.
+      reason_count: Array.isArray(row.reasons) ? row.reasons.length : 0,
+    });
+  }
+
+  return {
+    state: enumOr(completion.state, COMPLETION_STATES),
+    // stepId is grammar-clamped, but the ratified summary carries these as
+    // COUNTS: a historical run's remaining work is not actionable (nothing was
+    // re-judged), so the list would invite repair against a stale record.
+    unsatisfied_count: Array.isArray(completion.unsatisfied) ? completion.unsatisfied.length : 0,
+    missing_steps_count: Array.isArray(completion.missing_steps) ? completion.missing_steps.length : 0,
+    proofs,
+    unreadable_proof_records: rows.length - kindCounts.size - [...kindCounts.values()].reduce((n, c) => n + (c - 1), 0),
+    hook_attestation: attestationSummary(completion.hook_attestation),
+    egress_receipt_attestation: attestationSummary(completion.egress_receipt_attestation),
+    source: {
+      artifact_pointer: matchOr(artifactPointer, POINTER_RE),
+      json_pointer: '/completion',
+    },
+  };
+}
+
+const ATTESTATION_STATUSES = Object.freeze(['attested', 'stale', 'absent', 'not-applicable']);
+
+// Both attestation verdicts have the same disclosable shape: a clamped status
+// enum plus the cardinality of their free-text reasons.
+function attestationSummary(verdict) {
+  if (!isPlainObject(verdict)) return null;
+  return {
+    status: enumOr(verdict.status, ATTESTATION_STATUSES),
+    reason_count: Array.isArray(verdict.reasons) ? verdict.reasons.length : 0,
   };
 }
