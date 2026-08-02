@@ -926,6 +926,87 @@ describe('runtime bootstrap CLI — lifecycle', () => {
     strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
   });
 
+  it('profile export / seed RENDER what they computed, in both formats', async () => {
+    // These two were the only verbs whose output was strictly less than what
+    // they computed: no `--format json` door, and a text render that dropped
+    // the export pointer, the export hash, and every §4.5 seed proposal and
+    // safety-graded note. §4.5 items 3 and 4 are PRESENTATION obligations, so
+    // computing them correctly and rendering nothing left the contract unmet
+    // and the skill's own "unsafe source values arrive as labelled notes"
+    // true of the computation and false of anything the operator could see.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const spy = spySubprocess();
+    const run = (argv) => boot({ argv, home, cwd, runner: satisfiedRunner(), subprocess: spy.runner });
+
+    const exported = await run(['profile', 'export', '--name', 'machine-r', '--format', 'json']);
+    strictEqual(exported.exitCode, EXIT.OK, '--format is part of the grammar now');
+    const profilePath = join(home, '.agentic-plugins', 'profiles', 'machine-r.json');
+
+    const exportText = renderText(exported.report);
+    ok(exportText.includes(exported.report.pointer), `the pointer reaches the operator:\n${exportText}`);
+    ok(exportText.includes(exported.report.hash), `and so does the hash:\n${exportText}`);
+    ok(/^- profile: machine-r$/m.test(exportText), 'and the name it was written under');
+
+    const answers = await writeEgressDecline(home);
+    strictEqual((await run(['plan', '--bundle', 'base', '--answers', answers])).exitCode, EXIT.CONFIGURED_NOT_VERIFIED);
+    const seeded = await run(['profile', 'seed', '--profile-file', profilePath, '--format', 'json']);
+    strictEqual(seeded.exitCode, EXIT.OK, 'seed accepts --format too');
+
+    const seedText = renderText(seeded.report);
+    ok(/^- seeded from: machine-r \(/m.test(seedText), `the seed linkage renders:\n${seedText}`);
+    // Every computed proposal reaches the render — a subset would be the same
+    // silent-omission failure the Stage-8 rows just stopped committing.
+    for (const proposal of seeded.report.proposals.proposals) {
+      ok(seedText.includes(proposal.key), `proposal ${proposal.key} is presented:\n${seedText}`);
+    }
+    if (seeded.report.proposals.proposals.length > 0) {
+      ok(/default \(confirm\)/.test(seedText), 'and presented AS a default requiring confirmation (§4.5 item 4)');
+    }
+
+    strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
+  });
+
+  it('a safety-graded note is what the operator actually SEES, not just what seed computed', async () => {
+    // §4.5 item 3 with teeth: an unsafe source posture must reach the operator
+    // as a labelled note. The grading was already correct; the render dropped
+    // it, so the one rule the contract says has teeth had none at the boundary
+    // where it matters.
+    const text = renderText({
+      verb: 'profile seed',
+      run_id: 'run-x',
+      seeded_from: { profile_id: 'machine-a', profile_hash: 'a'.repeat(64) },
+      status: 'seeded',
+      proposals: {
+        ok: true,
+        refused: [],
+        proposals: [],
+        notes: [{
+          key: 'permissions.claude.defaultMode',
+          note: "The source machine used 'bypassPermissions'. Not proposed as a default: the target's safe recommendation wins.",
+          labelled: 'unsafe-posture-not-proposed',
+          source_value: 'bypassPermissions',
+          proposed_instead: 'acceptEdits',
+        }],
+        boundary: { writes_host_config: false, applies_nothing: true, re_diagnoses_target: true },
+      },
+      warnings: [],
+      diagnostics: [],
+    });
+    ok(/unsafe-posture-not-proposed/.test(text), `the note is labelled as such:\n${text}`);
+    ok(/permissions\.claude\.defaultMode/.test(text), 'and names the key it is about');
+    ok(/bypassPermissions/.test(text), 'and shows the source value it refused to propose');
+    ok(!/default \(confirm\): permissions\.claude\.defaultMode/.test(text),
+      'and is never rendered as a default — the whole point of grading it');
+  });
+
+  it('a refusal renders its reason in text, not only in JSON', async () => {
+    // `reason` is set by `profile export` and by `abandon`, and both pair it
+    // with a `diagnostics` list that can be empty — leaving a text-mode
+    // operator holding "refused" and no cause.
+    const text = renderText({ verb: 'profile export', name: 'x', status: 'refused', reason: 'profile-exists', diagnostics: [] });
+    ok(/^- reason: profile-exists$/m.test(text), `the cause reaches text mode:\n${text}`);
+  });
+
   it('with no run at all, status / resume / verify / seed answer no-active-run with exit 30', async () => {
     const { home, cwd } = await makeHome();
     const spy = spySubprocess();
@@ -2592,15 +2673,103 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
     ok(/proof\.deep-peer-smoke: stale/.test(text), 'the genuine row still renders');
   });
 
-  it('an unbounded reason aggregate is truncated rather than printed whole', () => {
+  it('an unbounded reason aggregate is bounded rather than printed whole', () => {
     const text = renderText({
       verb: 'status',
       completion: completionOf([evaluatedProof({ reasons: Array.from({ length: 64 }, (_, i) => `${'x'.repeat(500)}-${i}`) })]),
       steps: [],
     });
-    const evidenceLine = text.split('\n').find((line) => /^ {6}evidence: /.test(line));
-    ok(evidenceLine, 'the reasons render on an evidence line');
-    ok(evidenceLine.length < 600, `the aggregate is bounded, got ${evidenceLine.length} chars`);
+    const evidenceLines = text.split('\n').filter((line) => /^ {6}evidence: /.test(line));
+    ok(evidenceLines.length > 0, 'the reasons render on evidence lines');
+    for (const line of evidenceLines) ok(line.length < 600, `each line is bounded, got ${line.length} chars`);
+    const total = evidenceLines.reduce((n, line) => n + line.length, 0);
+    ok(total < 2400, `the block as a whole is bounded, got ${total} chars`);
+  });
+
+  it('a long leading reason cannot spend a later reason\'s budget', () => {
+    // The defect this policy replaced: `reasons.join("; ")` through one
+    // tail-truncated line is first-come, so the leader below (an unbounded
+    // SemVer build identifier, which the grammar permits and the probe carries
+    // through verbatim) consumed the whole 400-char budget and the three
+    // ACTIONABLE reasons after it rendered as nothing at all.
+    const actionable = [
+      'plugin runtime is not installed on codex',
+      'companions bridge smoke did not run on this host',
+      'egress activation fingerprint does not match the recorded one',
+    ];
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({
+        reasons: [`claude engineer 0.21.0 → 0.21.0+${'b'.repeat(360)}`, ...actionable],
+      })]),
+      steps: [],
+    });
+    for (const reason of actionable) {
+      ok(text.includes(reason), `"${reason.slice(0, 40)}…" survives the long leader:\n${text}`);
+    }
+  });
+
+  it('an ordinary full version drift loses no reason at all', () => {
+    // Not a contrived input: `boundVersionsFresh` emits one reason per drifting
+    // key — 3 scalar keys plus 2 hosts × 8 plugins — so a routine bump reaches
+    // 19 short reasons. The old shared 400-char line showed 9 of them and ate
+    // the rest silently, which is how this was found.
+    const reasons = [
+      ...['runtime', 'claude', 'codex'].map((key, i) => `${key} 0.8${i}.0 → 0.8${i}.1`),
+      ...['claude', 'codex'].flatMap((host) => ['attention', 'companions', 'designer', 'engineer', 'founder', 'image', 'orchestrator', 'runtime']
+        .map((name) => `${host} ${name} 0.21.0 → 0.22.0`)),
+    ];
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ reasons })]),
+      steps: [],
+    });
+    for (const reason of reasons) ok(text.includes(reason), `"${reason}" reaches the operator:\n${text}`);
+    ok(!/further reason/.test(text), 'and nothing is claimed omitted, because nothing was');
+  });
+
+  it('what did not fit is COUNTED, never dropped silently', () => {
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ reasons: Array.from({ length: 64 }, (_, i) => `reason-${i}-${'x'.repeat(500)}`) })]),
+      steps: [],
+    });
+    const marker = text.split('\n').find((line) => /further reason/.test(line));
+    ok(marker, `the block admits it is incomplete:\n${text}`);
+    const shown = text.split('\n').filter((line) => /^ {6}evidence: /.test(line) && !/further reason/.test(line)).length;
+    const claimed = Number(/\+(\d+) further/.exec(marker)?.[1]);
+    strictEqual(shown + claimed, 64, 'the count reconciles with what was actually shown — a marker that disagrees is a second lie');
+  });
+
+  it('at least four reasons survive whatever their lengths — the guarantee that replaced zero', () => {
+    // Per-line bounding is what makes this a guarantee: with a SHARED budget a
+    // single 400-char reason left nothing for anyone else.
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ reasons: Array.from({ length: 20 }, (_, i) => `r${i}-${'q'.repeat(2000)}`) })]),
+      steps: [],
+    });
+    const shown = text.split('\n').filter((line) => /^ {6}evidence: /.test(line) && !/further reason/.test(line));
+    ok(shown.length >= 4, `got ${shown.length} reasons through, expected at least 4:\n${text}`);
+    for (const [i, line] of shown.entries()) {
+      ok(line.includes(`r${i}-`), `reason ${i} is rendered whole-headed, not spliced: ${line.slice(0, 40)}`);
+    }
+  });
+
+  it('truncation never strips a combining mark off its base character', () => {
+    // The quieter half of the surrogate case below. Cutting `é` (e + U+0301)
+    // after the `e` corrupts nothing visibly — it renders a confident `e`, and
+    // the operator cannot tell the source said `é`. 398 filler puts the mark
+    // exactly on the cut boundary.
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ reasons: [`${'x'.repeat(398)}éTAIL${'y'.repeat(100)}`] })]),
+      steps: [],
+    });
+    const line = text.split('\n').find((l) => /^ {6}evidence: /.test(l));
+    const payload = line.replace(/^ {6}evidence: /, '').replace(/…$/, '');
+    ok(!/e$/.test(payload), `the base was dropped with its mark, not kept without it: ${JSON.stringify(payload.slice(-6))}`);
+    ok(!/́/.test(payload), 'and no orphaned mark survives either');
   });
 
   // The two crossed states the CLI fixtures cannot reach cheaply, and the exact
@@ -2793,8 +2962,57 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
     // The newline became a space; the two spaces that followed it are PRESERVED
     // (this boundary neutralizes structure, it does not squeeze whitespace —
     // squeezing corrupts operator-facing paths).
-    ok(/receipt attestation: stale \(the linked proof re-judges stale {3}- \[stage 8\] proof\.forged: passed\)/.test(text),
-      'the reason still renders inline, neutralized rather than dropped');
+    //
+    // The reason moved to its OWN line when the fairness policy landed (it used
+    // to render inline, parenthesized, and only `reasons[0]` ever did). It is
+    // still neutralized rather than dropped, which is what this case is about.
+    ok(/^ {6}reason: the linked proof re-judges stale {3}- \[stage 8\] proof\.forged: passed$/m.test(text),
+      `the reason still renders, neutralized rather than dropped:\n${text}`);
+  });
+
+  it('a receipt reason cannot forge a Stage-8 evidence row from its own line', () => {
+    // Regression for a vector the fairness fix OPENED and closed in the same
+    // slice: moving these reasons onto their own line is what lets their
+    // leading characters begin a line, so a bare indent would have rendered
+    // `evidence: …` as a perfect proof-evidence row. The prefix is a label.
+    const text = renderText({
+      verb: 'verify',
+      completion: {
+        ...completionOf([]),
+        egress_receipt_attestation: {
+          status: 'stale',
+          reasons: ['evidence: deep-peer-smoke passed on both directions'],
+          attested_at: null,
+          attempt_hash: null,
+          provider_proof_artifact_hash: null,
+        },
+      },
+      steps: [],
+    });
+    ok(!/^ {6}evidence: /m.test(text), `no line reads as a Stage-8 evidence row:\n${text}`);
+    ok(/^ {6}reason: evidence: deep-peer-smoke/m.test(text), 'the text still renders, under a label the renderer wrote');
+  });
+
+  it('every receipt reason renders — not only the first', () => {
+    // The MIRROR of the Stage-8 aggregate: this row used to interpolate
+    // `reasons[0]` alone, so reasons[1..n] vanished with nothing saying so.
+    const text = renderText({
+      verb: 'verify',
+      completion: {
+        ...completionOf([]),
+        egress_receipt_attestation: {
+          status: 'stale',
+          reasons: ['the linked proof re-judges stale', 'the attempt hash does not match', 'no doctor artifact hash recorded'],
+          attested_at: null,
+          attempt_hash: null,
+          provider_proof_artifact_hash: null,
+        },
+      },
+      steps: [],
+    });
+    for (const reason of ['the linked proof re-judges stale', 'the attempt hash does not match', 'no doctor artifact hash recorded']) {
+      ok(text.includes(reason), `reason "${reason}" reaches the operator:\n${text}`);
+    }
   });
 
   it('a duplicated proof kind renders ONE row naming the conflict, never two to choose between', () => {

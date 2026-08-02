@@ -428,8 +428,8 @@ runtime:bootstrap resume   [--run-id <id> | --latest-open] [--answers <path>]
 runtime:bootstrap verify   [--run-id <id> | --latest] [--format text|json]
 runtime:bootstrap attest   [--run-id <id> | --latest] [--format text|json]
 runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
-runtime:bootstrap profile export [--name <id>] [--from-run <id>] [--overwrite]
-runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest-open]
+runtime:bootstrap profile export [--name <id>] [--from-run <id>] [--overwrite] [--format text|json]
+runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest-open] [--format text|json]
 ```
 
 - **Run selection** follows the semantics [`footer-contract.md`](footer-contract.md)

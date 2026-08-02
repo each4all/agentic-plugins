@@ -196,8 +196,14 @@ const VERB_FLAGS = Object.freeze({
   // of its own). Not an interview verb — no --answers; the testimony IS the
   // action.
   attest: ['--run-id', '--latest', '--format'],
-  'profile export': ['--name', '--from-run', '--overwrite'],
-  'profile seed': ['--profile-file', '--run-id', '--latest-open'],
+  // `--format` reaches these two like every other reporting verb in §3. They
+  // were the only ones without it, which made them the only verbs whose output
+  // was strictly LESS than what they computed: `profile export` returns the
+  // pointer and hash of the file it just wrote, `profile seed` returns every
+  // §4.5 proposal and every safety-graded note, and with no JSON door and no
+  // text rendering, a caller had no way to read any of it.
+  'profile export': ['--name', '--from-run', '--overwrite', '--format'],
+  'profile seed': ['--profile-file', '--run-id', '--latest-open', '--format'],
 });
 
 const VALUE_FLAGS = new Set(['--bundle', '--plugins', '--profile-file', '--answers', '--format', '--run-id', '--reason', '--name', '--from-run']);
@@ -3605,14 +3611,97 @@ function renderSafe(value) {
 // neutralized but NOT truncated — cutting a runbook mid-sentence would trade one
 // dishonesty for another.
 const RENDER_LINE_MAX = 400;
+
+// The cut itself, on a GRAPHEME boundary. Two ways a UTF-16 slice lies about
+// the text it truncated, and both are reachable from a host-printed version
+// string:
+//   * it can land BETWEEN a surrogate pair, emitting a lone high surrogate that
+//     renders as U+FFFD — sanitizing text into mojibake is its own small
+//     dishonesty;
+//   * it can land between a base character and its COMBINING MARK, which does
+//     not corrupt anything visibly — it silently changes which character was
+//     there. Cutting `é` (e + U+0301) after the `e` renders a confident `e`,
+//     and the operator has no way to tell it was ever an `é`.
+// Back off over the marks rather than over the base: dropping a whole cluster
+// is honest, keeping a stripped base is not.
+//
+// The lookahead slices TWO code units so an astral combining mark (a surrogate
+// pair) is matched as the single code point it is; `\p{M}` under /u would
+// otherwise see a lone high surrogate and decline.
+const COMBINING_MARK_RE = /^\p{M}/u;
+function boundedCut(clean, budget) {
+  if (clean.length <= budget) return clean;
+  let cut = clean.slice(0, budget - 1);
+  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
+  // While the FIRST DROPPED character is a combining mark, the cut is inside a
+  // cluster — retreat one code point and look again.
+  while (cut.length > 0 && COMBINING_MARK_RE.test(clean.slice(cut.length, cut.length + 2))) {
+    const chars = [...cut];
+    chars.pop();
+    const shorter = chars.join('');
+    // A run of marks long enough to consume the whole budget would otherwise
+    // retreat to an empty line, which says less than a split cluster does.
+    if (shorter.length === 0) break;
+    cut = shorter;
+  }
+  return `${cut}…`;
+}
+
 function renderLine(value) {
-  const clean = renderSafe(value).trim();
-  if (clean.length <= RENDER_LINE_MAX) return clean;
-  const cut = clean.slice(0, RENDER_LINE_MAX - 1);
-  // A UTF-16 slice can land BETWEEN a surrogate pair, emitting a lone high
-  // surrogate that renders as U+FFFD — sanitizing text into mojibake is its own
-  // small dishonesty. Drop the orphan rather than half a character.
-  return `${/[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut}…`;
+  return boundedCut(renderSafe(value).trim(), RENDER_LINE_MAX);
+}
+
+// The Stage-8 evidence aggregate, rendered FAIRLY (§8's presentation rule).
+//
+// `reasons.join('; ')` through a single tail-truncated line was first-come: the
+// budget is shared, so one long reason spends all of it and every later reason
+// disappears — with no marker saying anything was dropped. Measured on the
+// ordinary case, not a contrived one: a full version drift emits 3 scalar keys
+// plus 2 hosts × 8 plugins = 19 short reasons (lib/completion-reducer.mjs
+// `boundVersionsFresh`), of which the old render showed 9 and silently ate 10.
+// A single reason carrying an unbounded SemVer build identifier showed 1 of 4.
+//
+// The policy, in three parts — the whole point is that none of them is a bigger
+// cap:
+//   1. ONE REASON PER LINE, each with its OWN bound. Fairness comes from not
+//      sharing the budget at all; a long reason can no longer spend a later
+//      one's. It also removes a real ambiguity — reasons interpolate
+//      host-printed strings, and a `; ` inside one used to look exactly like
+//      the separator between two.
+//   2. A TOTAL budget bounds the block, so the 64 × 512 the schema permits
+//      cannot flood the report. Because each line is bounded independently,
+//      at least ⌊TOTAL/PER_LINE⌋ = 4 reasons are visible WHATEVER their
+//      lengths. The old guarantee was zero.
+//   3. What did not fit is COUNTED OUT LOUD. Silent truncation reads as "that
+//      was everything", which is the failure the whole policy exists to avoid —
+//      the same rule `boundReportFindings` already applies one level up.
+//
+// Per-reason budgeting on one shared line was the other candidate and was
+// measured, not argued away: splitting 400 chars across 12 realistic reasons
+// leaves 29 each, so every reason is truncated past recognition AND the block
+// still fits, so no marker fires. It scored strictly worse than the defect it
+// was meant to fix.
+const RENDER_REASONS_TOTAL = 1600;
+function renderReasonLines(reasons, prefix) {
+  const cleaned = (Array.isArray(reasons) ? reasons : [])
+    .map((reason) => renderSafe(reason).trim())
+    .filter(Boolean);
+  if (cleaned.length === 0) return [];
+  const shown = [];
+  let spent = 0;
+  for (const reason of cleaned) {
+    const piece = boundedCut(reason, RENDER_LINE_MAX);
+    // The first reason is always shown, whatever it costs: a block that
+    // rendered only the marker would report a count and no evidence at all.
+    if (shown.length > 0 && spent + piece.length > RENDER_REASONS_TOTAL) break;
+    shown.push(`${prefix}${piece}`);
+    spent += piece.length;
+  }
+  const omitted = cleaned.length - shown.length;
+  if (omitted > 0) {
+    shown.push(`${prefix}(+${omitted} further reason${omitted === 1 ? '' : 's'} not shown; read the run artifact for the full set)`);
+  }
+  return shown;
 }
 
 // D1 §3.2 — a JSON.parse SyntaxError message embeds a snippet of the INPUT, and
@@ -3648,7 +3737,45 @@ export function renderText(report) {
     lines.push(`- HISTORICAL: legacy schema ${report.legacy_schema} — stored record summarized, free text withheld; nothing re-probed or re-certified (ADR-0048 §1)`);
   }
   if (report.status && !report.completion) lines.push(`- status: ${report.status}`);
+  // A refusal's machine-readable `reason` used to reach `--format json` only.
+  // `profile export` and `abandon` both set it, and both pair it with
+  // `diagnostics` that can be empty — leaving a text-mode operator with
+  // "refused" and no cause at all.
+  if (report.reason) lines.push(`- reason: ${renderSafe(report.reason)}`);
   if (report.selection) lines.push(`- selection: bundle=${report.selection.bundle}; desired=${report.selection.desired.join(',')}`);
+  // §3 — `profile export` computed a POINTER (where the profile landed, the one
+  // thing the operator needs to use it) and a hash, and rendered neither.
+  if (report.verb === 'profile export' && report.status === 'written') {
+    if (report.name) lines.push(`- profile: ${renderSafe(report.name)}`);
+    if (report.pointer) lines.push(`- pointer: ${renderSafe(report.pointer)}`);
+    if (report.hash) lines.push(`- hash: ${renderSafe(report.hash)}`);
+  }
+  // §4.5 items 3 and 4 are PRESENTATION obligations — "present every remaining
+  // value as a default requiring confirmation" and "the profile's value is shown
+  // as a labelled note". The script graded both correctly and then dropped the
+  // whole result on the floor, so the skill's own statement that unsafe source
+  // values "arrive as labelled notes" was true of the computation and false of
+  // anything the operator could see.
+  if (report.seeded_from) {
+    lines.push(`- seeded from: ${renderSafe(report.seeded_from.profile_id)} (${renderSafe(report.seeded_from.profile_hash)})`);
+  }
+  if (report.proposals) {
+    const { proposals = [], notes = [], refused = [] } = report.proposals;
+    for (const entry of refused) lines.push(`  ! refused: ${renderLine(entry)}`);
+    // Values arrive from another machine's file. The §4.5.1 validator has
+    // already refused unknown fields by the time anything is presented, so this
+    // is the same defense-in-depth the Stage-8 rows get, not a second gate.
+    for (const proposal of proposals) {
+      const value = Array.isArray(proposal.value) ? proposal.value.join(', ') : String(proposal.value ?? '');
+      lines.push(`  - default (confirm): ${renderSafe(proposal.key)} = ${renderLine(value)}${proposal.scope ? ` [scope ${renderSafe(proposal.scope)}]` : ''}`);
+    }
+    for (const note of notes) {
+      lines.push(`  ! ${renderSafe(note.labelled)}: ${renderSafe(note.key)} — ${renderLine(note.note)}`);
+    }
+    if (proposals.length === 0 && notes.length === 0 && refused.length === 0) {
+      lines.push('  - the profile proposed no defaults for this machine');
+    }
+  }
   if (report.completion) {
     // `delivery-attested` is a DERIVED presentation label (ADR-0048 §3):
     // provider ack currently passing + owner receipt currently attested. It
@@ -3700,7 +3827,7 @@ export function renderText(report) {
         continue;
       }
       lines.push(`  - [stage 8] ${canonicalId}: ${proof.status}${proof.declined ? ' (declined)' : ''}`);
-      if (proof.reasons?.length) lines.push(`      evidence: ${renderLine(proof.reasons.join('; '))}`);
+      lines.push(...renderReasonLines(proof.reasons, '      evidence: '));
       const control = proof.step_id === canonicalId ? stepById.get(canonicalId) : null;
       // `blocked` is the one control state the evidence row cannot already
       // convey and the operator can act on. `declined` rides the row above,
@@ -3711,7 +3838,22 @@ export function renderText(report) {
     }
     if (report.completion.egress_receipt_attestation) {
       const receipt = report.completion.egress_receipt_attestation;
-      lines.push(`  - receipt attestation: ${receipt.status}${receipt.reasons.length ? ` (${renderLine(receipt.reasons[0])})` : ''}`);
+      // The MIRROR of the Stage-8 aggregate, and the reason this row moved with
+      // it. It reached the operator through `reasons[0]` alone — a different
+      // mechanism from the truncated join above, the identical dishonesty: the
+      // row looks complete, and reasons[1..n] are gone with nothing saying so.
+      // Fixing only the site the follow-up named would have left the same
+      // failure shipped one line below it.
+      //
+      // The prefix is a LABEL, not an indent, and that is load-bearing. Giving
+      // these reasons their own line is what makes their leading characters
+      // start a line at all — under the old inline form they never could — so a
+      // bare `      ` prefix would let a reason reading `evidence: …` render as
+      // a perfect Stage-8 evidence row belonging to a proof. Verified by
+      // rendering exactly that string. Every line this renderer emits begins
+      // with a label the renderer wrote.
+      lines.push(`  - receipt attestation: ${receipt.status}`);
+      lines.push(...renderReasonLines(receipt.reasons, '      reason: '));
     }
   }
   // D1 — the historical path renders from the SAME projected object the JSON
@@ -3787,8 +3929,8 @@ function usage() {
   verify   [--run-id <id> | --latest] [--format text|json]
   attest   [--run-id <id> | --latest] [--format text|json]   (ADR-0048 §3 — record the owner phone-receipt attestation for a recorded egress-provider-ack; the one post-terminal append)
   abandon  (--run-id <id> | --latest-open) [--reason <text>]
-  profile export [--name <id>] [--from-run <id>] [--overwrite]
-  profile seed   --profile-file <path> [--run-id <id> | --latest-open]
+  profile export [--name <id>] [--from-run <id>] [--overwrite] [--format text|json]
+  profile seed   --profile-file <path> [--run-id <id> | --latest-open] [--format text|json]
 Exit codes (§3.1): 0 complete; 10 configured-not-verified; 20 incomplete; 30 no-active-run; 40 invalid input; 50 legacy-historical (terminal run under an older schema minor — stored record shown, nothing re-certified); 1 unexpected error.
 `;
 }
