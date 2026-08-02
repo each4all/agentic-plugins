@@ -2613,7 +2613,18 @@ async function runResume(ctx, opts) {
     executeKinds.push(kind);
   }
   let doctorReport = null;
-  let executedAnything = false;
+  // The final-snapshot trigger is "a doctor subprocess was SPAWNED", not "its
+  // evidence imported". The two used to be one flag, and the difference is the
+  // whole point: a doctor that ran for nine minutes and then returned malformed
+  // JSON, crashed, or produced an internally inconsistent section leaves nothing
+  // imported — while the machine had nine minutes to move. Gating the re-probe on
+  // the import made the failure path the one that reported stale facts, and (Codex
+  // Refine-verify, MAJOR; reproduced) closed a run as complete over a plugin
+  // removed mid-proof. A re-probe costs one probe and is never wrong; skipping one
+  // after a long child is. The blocked-executor case that argued for the old flag —
+  // doctor refusing fast, so nothing moved — is indistinguishable from the slow
+  // failure at this seam, so it takes the conservative branch too.
+  let doctorInvoked = false;
   for (const kind of executeKinds) {
     if (!PROOF_EXECUTE_FLAGS[kind]) {
       // Every current proof kind has a doctor executor (egress-provider-ack
@@ -2624,18 +2635,19 @@ async function runResume(ctx, opts) {
       warnings.push(`proof kind ${kind} has no doctor executor wired in this runtime; the step stays unexecuted (the opt-in is recorded)`);
       continue;
     }
+    // Set BEFORE the await, and outside the ok/not-ok branch: the flag records
+    // that a child was started, which is true the moment it is, and stays true
+    // however that child ends.
+    doctorInvoked = true;
     const result = await executeProofViaDoctor(ctx, { kind, probe, effective });
     if (!result.ok) {
       warnings.push(result.diagnostic);
       // A refused import may still carry a complete doctor report (the egress
-      // blocked path records one) — reuse it for the hook attestation below
-      // WITHOUT setting executedAnything: a blocked executor sent nothing, so
-      // the pre-execution probe/readers still describe the machine.
+      // blocked path records one) — reuse it for the hook attestation below.
       if (result.doctorReport) doctorReport = result.doctorReport;
       continue;
     }
     doctorReport = result.doctorReport ?? doctorReport;
-    executedAnything = true;
     const persisted = await writeBootstrapProof({ homeDir: ctx.homeDir, repoRoot: ctx.cwd, runId: picked.run.run_id, kind, record: result.record });
     if (!persisted?.ok) {
       // Egress is the ONE side-effecting proof: when its send already completed
@@ -2701,9 +2713,11 @@ async function runResume(ctx, opts) {
   if (codexHookPlugins.length > 0 && storedHookStatus !== 'attested') {
     if (!doctorReport) {
       const doctorPath = join(SCRIPT_DIR, 'doctor.mjs');
+      // Read-only, but a child with a two-minute ceiling all the same, so it
+      // triggers the final snapshot on the same "was one spawned" rule.
+      doctorInvoked = true;
       const result = await ctx.subprocessRunner(doctorPath, ['--repo-root', ctx.cwd, '--format', 'json'], { cwd: ctx.cwd, env: scrubbedControlPlaneEnv(ctx.env), timeoutMs: 120_000 });
       if (result?.ok) {
-        executedAnything = true;
         // A successful parse that is not an OBJECT is not a report: `null`,
         // `false`, `0` and `""` all parse, and each would slip past every
         // truthiness check below without a word (peer, Low).
@@ -2770,10 +2784,11 @@ async function runResume(ctx, opts) {
   //
   // A proof executor can run for minutes; judging its freshness against the
   // PRE-execution probe would compare a snapshot against itself and could mark
-  // drifted evidence current (Codex review MAJOR). When anything executed,
-  // re-probe: the final reduction — and the persisted probe — reflect the
-  // post-execution machine, so a CLI/plugin that moved mid-proof re-judges the
-  // evidence stale instead of complete.
+  // drifted evidence current (Codex review MAJOR). So whenever a doctor child was
+  // spawned at all — see `doctorInvoked` for why the trigger is the spawn and not
+  // the import — re-probe: the final reduction, the persisted probe and the judged
+  // rows all reflect the post-execution machine, so a CLI/plugin that moved
+  // mid-proof re-judges the evidence stale instead of complete.
   //
   // RAW rides along, not just the serialized probe. `judgeSteps` reads both —
   // host presence and marketplace registration come from `raw`, versions and
@@ -2789,10 +2804,10 @@ async function runResume(ctx, opts) {
   // ONE `probeNow`, not one per consumer: two probes taken seconds apart under a
   // single run_id would let this verb report two different machines and call
   // both "the state at completion".
-  const executedSnapshot = executedAnything ? await probeNow(ctx) : null;
+  const executedSnapshot = doctorInvoked ? await probeNow(ctx) : null;
   const finalProbe = executedSnapshot ? executedSnapshot.probe : probe;
   const finalRaw = executedSnapshot ? executedSnapshot.raw : reprobe.raw;
-  const finalReaders = executedAnything ? await readUserGlobalReaders(ctx) : reprobe.readers;
+  const finalReaders = doctorInvoked ? await readUserGlobalReaders(ctx) : reprobe.readers;
 
   // Reduce from the authoritative bytes: everything the executors persisted is
   // read back — validated, hashed — and ONLY that evidence reaches the reducer.
@@ -2863,39 +2878,86 @@ async function runResume(ctx, opts) {
   // both `blocked` and `pending` are unresolved to the reducer, so no run
   // completes on it.
   //
-  // Skipped entirely when nothing moved: with no execution and no import the
-  // final snapshot IS the reprobe's, and re-judging identical inputs would only
-  // give a second pass a chance to differ from the first.
-  if (executedAnything || importedHookAttestation) {
+  // Skipped entirely when nothing moved: with no doctor child spawned and no
+  // import, the final snapshot IS the reprobe's, and re-judging identical inputs
+  // would only give a second pass a chance to differ from the first.
+  if (doctorInvoked || importedHookAttestation) {
     const previousForFinalJudge = priorJudgeMapOf(steps);
-    const finalHookVerdict = hookVerdictFor({ recordedAttestation: hookAttestation, pluginSet, effective, probe: finalProbe });
+    let finalHookVerdict = hookVerdictFor({ recordedAttestation: hookAttestation, pluginSet, effective, probe: finalProbe });
     // `expected` — not `reprobe.expected` — because a decline in THIS resume may
-    // already have re-derived it against the narrowed selection.
-    const judgeFinal = (expectation) => judgeSteps({
+    // already have re-derived it against the narrowed selection. The verdict is a
+    // PARAMETER rather than a closed-over binding: the second pass may recompute
+    // it, and a closure read at call time is a timing detail nobody should have to
+    // hold in their head to know which verdict a judgement used.
+    const judgeFinal = (expectation, hookVerdict) => judgeSteps({
       expected: expectation,
       probe: finalProbe,
       raw: finalRaw,
       pluginSet,
       readers: finalReaders,
-      hookVerdict: finalHookVerdict,
+      hookVerdict,
       previousById: previousForFinalJudge,
       now: ctx.now,
     });
     const fragmentAppliedBefore = permissionFragmentAppliedFrom(steps);
-    steps = judgeFinal(expected);
+    steps = judgeFinal(expected, finalHookVerdict);
 
-    // APPLICABILITY MOVES WITH THE SNAPSHOT — the same second pass
-    // reprobeAgainstRun runs, for the same reason, one snapshot later.
-    // `fragment_applied` is PROMOTED by judgeSteps when a rendered fragment is
-    // first observed applied, and `deriveExpectedSteps` reads it to decide
-    // whether `proof.permission` applies at all. An operator who applies the
-    // permission fragment while a long proof runs is observed for the first time
-    // HERE, so a reconstruction that reused the pre-execution expectation would
-    // rebuild the snapshot around an applicability the snapshot itself
-    // disproves — and, since applicability became a REFUSAL at the answer
-    // boundary, would hand the next resume an exit 40 on an ordinary flow.
+    // THE EXPECTATION'S OWN INPUTS MOVE WITH THE SNAPSHOT — so the second pass
+    // reprobeAgainstRun already runs against the earlier snapshot runs again
+    // here, over BOTH inputs `deriveExpectedSteps` reads. One re-derivation
+    // covering both, because they are the same question asked of two fields.
+    //
+    // (1) `fragment_applied` is PROMOTED by judgeSteps when a rendered fragment is
+    // first observed applied, and the expectation reads it to decide whether
+    // `proof.permission` applies at all. An operator who applies the permission
+    // fragment while a long proof runs is observed for the first time HERE, so a
+    // reconstruction that reused the pre-execution expectation would rebuild the
+    // snapshot around an applicability the snapshot itself disproves — and, since
+    // applicability became a REFUSAL at the answer boundary, would hand the next
+    // resume an exit 40 on an ordinary flow.
+    //
+    // (2) The EFFECTIVE SELECTION is derived from `declined` step rows and nothing
+    // else, and §6.2 lets a satisfying observation clear a decline (judgeSteps'
+    // restore rule is explicitly conditioned on `status !== 'satisfied'`). The
+    // registry keeps a host-scoped decline's row in the expectation on purpose —
+    // `selection.desired` is a flat name list, so the ROW is the only place a
+    // partial refusal lives — which is exactly what makes it re-judgeable here. An
+    // operator who installs, during the proof, a plugin they had refused on that
+    // host therefore erases the evidence `effective` was derived from, and the
+    // run went on to BIND VERSIONS, judge hooks and reduce against the superseded
+    // exclusion: measured, that closed a run as `complete` (exit 0) whose very
+    // next `status` read `incomplete` (exit 20) — and a terminal run is one
+    // `resume` refuses, so the operator was stranded.
+    //
+    // BOUNDED, and the bound is structural rather than a retry cap: the retained
+    // PLUGIN set cannot move here at all. `effectiveSelection` is asked about
+    // `effective.plugins`, so its answer is a subset of that; removing a plugin
+    // needs a fully-refused one; and judgeSteps only ever RESTORES declines from
+    // `previous`, never invents them — so the decline set can only shrink and
+    // `fullyRefused` can only go false. Only `byHost` moves, only wider, and the
+    // re-judged rows that widened it are `satisfied` (that is why their decline
+    // vanished), so a third derivation would return the second one's answer.
+    // Nothing plugin-level changes, which is why the persisted
+    // `{bundle, desired, excluded}` selection is deliberately NOT rewritten and no
+    // narrowing history row is pushed: §7 states narrowing is not reversible
+    // in-run, and this reverses none — a host-scoped exclusion is re-derived by
+    // EVERY verb from the rows (§6.2), so this only computes here what `status`
+    // and the next `resume` would compute anyway.
     const fragmentAppliedAfter = permissionFragmentAppliedFrom(steps);
-    if (['claude', 'codex'].some((h) => fragmentAppliedAfter[h] !== fragmentAppliedBefore[h])) {
+    const convergedEffective = effectiveSelection({ pluginSet, selection: { desired: effective.plugins }, steps });
+    const fragmentMoved = ['claude', 'codex'].some((h) => fragmentAppliedAfter[h] !== fragmentAppliedBefore[h]);
+    const selectionMoved = !sameEffectiveSelection(effective, convergedEffective);
+    if (fragmentMoved || selectionMoved) {
+      if (selectionMoved) {
+        for (const host of ['claude', 'codex']) {
+          const restored = (convergedEffective.byHost[host] ?? []).filter((name) => !(effective.byHost[host] ?? []).includes(name));
+          if (restored.length > 0) {
+            warnings.push(`${restored.join(', ')} was refused on ${host} but observed installed there while this resume's proof ran; the refusal no longer follows from the run's own rows, so the selection was re-derived and the affected steps re-judged (§6.2 — an observation clears a decline; re-plan if the refusal was the intent)`);
+          }
+        }
+        effective = convergedEffective;
+        finalHookVerdict = hookVerdictFor({ recordedAttestation: hookAttestation, pluginSet, effective, probe: finalProbe });
+      }
       expected = deriveExpectedSteps({
         pluginSet,
         selection: effective,
@@ -2904,7 +2966,7 @@ async function runResume(ctx, opts) {
       });
       const graph = validateStepGraph(expected);
       if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
-      steps = judgeFinal(expected);
+      steps = judgeFinal(expected, finalHookVerdict);
     }
 
     // An imported claim that does not stand for THIS selection leaves the step

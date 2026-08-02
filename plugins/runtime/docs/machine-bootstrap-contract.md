@@ -1606,20 +1606,52 @@ converse also holds: a later resume may refresh `probe` while a recorded proof
 stays stale. So a Stage-8 control row is never the place a proof's staleness is
 recorded, and this reset never makes a stale proof current.
 
-**One snapshot per verb.** A resume that runs a Stage-8 executor re-probes
-afterwards — an executor takes minutes, and judging its own freshness against the
-snapshot it started from would compare a machine against itself. That second
+**One snapshot per verb.** A resume that spawns a `runtime:doctor` child re-probes
+afterwards — that child takes minutes, and judging its own freshness against the
+snapshot it started from would compare a machine against itself. The trigger is
+the **spawn**, not the child's outcome: a doctor run that ends in a crash,
+unparseable output or an internally inconsistent section imports nothing while
+having had exactly as long to let the machine move, so gating the re-probe on the
+import would make the failure path the one that reports stale facts. That second
 snapshot then becomes the verb's ONLY account of the machine: `probe`, the raw
 host facts behind it, and the user-global readers are gathered once, and
 everything the verb emits is rebuilt from that one gathering — the judged
 `steps[]`, the completion reduction, the persisted manifest, the rendered
 fragments, the Stage-0 presentation, and the returned report. A run MUST NOT
 store a `probe` its own `steps[]` were judged against a different snapshot of, or
-return one to a caller that disagrees with what it persisted. **Applicability
-moves with the snapshot too**: a judgement input the later snapshot changes — the
-permission fragment observed applied for the first time, promoting
-`fragment_applied` — re-derives the expected-step set before the rebuild, so the
-run is never reconstructed around an applicability its own snapshot disproves.
+return one to a caller that disagrees with what it persisted.
+
+**The expectation's own inputs move with the snapshot**, so they are re-derived
+before the rebuild and the rows re-judged. Two of them:
+
+- `fragment_applied` — the permission fragment observed applied for the first
+  time promotes it, and §6.1 reads it to decide whether `proof.permission`
+  applies at all;
+- the **effective selection** — it is derived from `declined` step rows and
+  nothing else, and §6.2 lets a satisfying observation clear a decline. A
+  host-scoped refusal lives ONLY in that row (`selection.desired` is a flat name
+  list and cannot express it), so an operator who installs, during the proof, a
+  plugin they had refused on that host erases the evidence the exclusion rests
+  on. Left un-derived, the run binds versions, judges hooks and reduces against a
+  refusal its own rows no longer support, and closes `complete` over it.
+
+This is a **re-derivation, not a reversal**: only the per-host retained set can
+move here, and only wider. The retained PLUGIN set is fixed — the derivation is
+asked about the already-retained set, and a judgement only ever restores declines
+from prior state, never invents them — so `{bundle, desired, excluded}` is not
+rewritten and no narrowing history row is written. Narrowing stays irreversible
+in-run per the rules above; a host-scoped exclusion is re-derived by *every* verb
+from the rows, so this only computes at the end of the verb what `status` and the
+next `resume` would compute anyway. The operator is warned by name when it moves,
+and pointed at re-planning if the refusal was the intent.
+
+**Stated limit.** §7 version invalidation still runs against the snapshot the
+verb *started* from, not this one. A host CLI or plugin version that moves during
+the proof is re-judged from the final snapshot but is not `invalidated`-stamped,
+and its frozen fragment pointer and `desired` are not cleared — and because the
+final probe is what gets persisted, no later verb compares across that window
+either. Tracked as a follow-up with the persistence-boundary question it shares
+with the fragment-freeze rule, rather than claimed here.
 
 **Schema-minor migration (1.2, ADR-0048 §1).** `resume` is the one M1 verb, so it
 is where the minor moves:
