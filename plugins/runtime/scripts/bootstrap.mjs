@@ -2043,7 +2043,9 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // are R0 — they cannot persist a correction, but they must not report a completion
   // computed against plugins the operator refused either. Deriving here means every
   // verb agrees, and the next `resume` writes the narrowed selection through.
-  const effective = effectiveSelection({ pluginSet, selection, steps: manifest.steps ?? [] });
+  // REBINDABLE: the judge below re-observes the very rows this derives from, so
+  // a decline a satisfying observation clears converges into it further down.
+  let effective = effectiveSelection({ pluginSet, selection, steps: manifest.steps ?? [] });
   // The egress proof opt-in (D0.2) persists once made: a recorded decline, an
   // answer in the run's ledger, or recorded delivery evidence keeps it expected
   // across every later verb — the caller ORs in this verb's fresh answers. The
@@ -2061,7 +2063,8 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
     permissionFragmentApplied: storedFragmentApplied,
     egressProofRequested: egressOptIn,
   });
-  const hookVerdict = hookVerdictFor({ recordedAttestation: recordedHookAttestation, pluginSet, effective, probe });
+  // Rebindable for the same reason: it is scoped to `effective`.
+  let hookVerdict = hookVerdictFor({ recordedAttestation: recordedHookAttestation, pluginSet, effective, probe });
 
   // §7 — recorded step state is invalidated (reset to pending, stamped) when
   // runtime / either host CLI / any selected plugin version moved since the
@@ -2096,14 +2099,43 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // answer boundary it turned an ordinary flow — plan, apply the fragments,
   // resume with `execute proof.permission` — into exit 40 (cross-host
   // Refine-verify, High; reproduced). Re-derive from what was observed.
+  //
+  // The SELECTION is the second such input, and it is stale for exactly the same
+  // reason: `effective` above was derived from the STORED rows, and this judge
+  // re-observes them. §6.2 lets a satisfying observation clear a `declined` row,
+  // a host-scoped refusal lives only in that row, and the effective selection
+  // reads nothing else — so a plugin refused on a host and later installed there
+  // makes every verb report rows that say `satisfied` beside a selection that
+  // still excludes it. Measured on `status`/`verify`, which are the worse half
+  // because they cannot persist a correction and a terminal run cannot be
+  // resumed: a completed run whose Codex-refused, Codex-hook-bearing plugin was
+  // afterwards installed reports both its rows `satisfied`, leaves
+  // `hooks.codex.attested` `not-applicable`, and returns `complete` at exit 0 —
+  // for good (cross-host Refine-verify round 2, MAJOR; reproduced). Converging
+  // here is what makes §7's "a host-scoped exclusion is re-derived by every
+  // verb" true rather than an aspiration, and resume then converges a SECOND
+  // time after its executor, because the machine can move again in between.
+  //
+  // Same bound as that later pass, for the same reason: judgeSteps only restores
+  // declines from `previous` and never invents one, and the derivation is asked
+  // about the already-retained set, so the plugin set cannot move and `byHost`
+  // only widens. Two derivations reach the fixpoint.
   const judgedFragmentApplied = permissionFragmentAppliedFrom(steps);
-  if (['claude', 'codex'].some((h) => judgedFragmentApplied[h] !== storedFragmentApplied[h])) {
+  const convergedEffective = effectiveSelection({ pluginSet, selection: { desired: effective.plugins }, steps });
+  const selectionMoved = !sameEffectiveSelection(effective, convergedEffective);
+  if (selectionMoved || ['claude', 'codex'].some((h) => judgedFragmentApplied[h] !== storedFragmentApplied[h])) {
+    if (selectionMoved) {
+      effective = convergedEffective;
+      hookVerdict = hookVerdictFor({ recordedAttestation: recordedHookAttestation, pluginSet, effective, probe });
+    }
     expected = deriveExpectedSteps({
       pluginSet,
       selection: effective,
       permissionFragmentApplied: judgedFragmentApplied,
       egressProofRequested: egressOptIn,
     });
+    const graph = validateStepGraph(expected);
+    if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
     steps = judgeSteps({ expected, probe, raw, pluginSet, readers, hookVerdict, previousById: priorForJudge, now: ctx.now });
   }
   const receiptRow = proofRead.records.find((r) => r.kind === 'egress-receipt-attestation') ?? null;

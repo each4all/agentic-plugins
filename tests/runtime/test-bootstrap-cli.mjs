@@ -2100,6 +2100,86 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
     strictEqual(persisted?.status, 'pending', 'and the run persists that, rather than a satisfied step nothing attested');
   });
 
+  it('the READ-ONLY verbs converge the selection too — a completed run whose refused plugin appears later stops reading complete', async () => {
+    // The worse half of the same defect, and the reason §7 can say "every verb".
+    // status/verify derive `effective` from the STORED rows and then re-judge
+    // them, so a host-scoped decline a later observation clears leaves the rows
+    // saying `satisfied` beside a selection that still excludes the plugin. They
+    // write nothing and a terminal run cannot be resumed, so before the
+    // convergence this false pass repeated for good.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = {
+      hosts: ['claude', 'codex'],
+      claude: [...ALL_PLUGINS],
+      codex: ALL_PLUGINS.filter((p) => p !== 'designer'),
+    };
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+    // engineer stays selected and is Codex hook-bearing, so the closed run holds
+    // a REAL attestation — which is what makes the verdict, not just the
+    // selection, something the read-only verbs have to re-derive.
+    await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,engineer,designer', '--format', 'json'], spySubprocess().runner);
+
+    const attestationForEngineerOnly = {
+      run_id: 'settings-20260718T030000Z-aa11bb',
+      mode: 'attest-codex-hook-review',
+      requested: true,
+      attested: true,
+      status: 'attested',
+      host: 'codex',
+      attested_at: '2026-07-18T03:00:00Z',
+      bundled_plugins: ['engineer'],
+      attested_plugins: ['engineer'],
+      plugin_versions: { engineer: '9.9.9' },
+      bound_versions: { codex: '0.140.0', plugins: { codex: { engineer: '9.9.9' } } },
+      artifact_pointer: '~/.agentic-plugins/runs/settings/settings-20260718T030000Z-aa11bb/settings.json',
+      artifact_hash: 'b'.repeat(64),
+    };
+    const executorStdout = JSON.stringify({
+      schema_version: 'runtime-doctor-1.0',
+      settings_runs: {
+        status: 'ok',
+        count: 1,
+        malformed: 0,
+        codex_hook_review: { status: 'attested', current: true, currency_reason: null, latest: attestationForEngineerOnly },
+      },
+      ...SMOKE_SECTION,
+    });
+
+    const answersPath = join(home, 'decline-then-install-later.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
+      { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
+      { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+    ]));
+    // Nothing moves during the proof here — this is the OTHER window.
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath],
+      smokeDoctorStub(async () => {}, { stdout: executorStdout }));
+    // CONTROL: the run really did close on the narrowed selection with the
+    // attestation satisfied, so what the read-only verbs say below is about the
+    // later install and nothing else.
+    strictEqual(resume.report.steps.find((s) => s.id === 'plugin.designer.codex.installed')?.status, 'declined',
+      'precondition: the refusal stands while the machine agrees with it');
+    strictEqual(resume.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'satisfied',
+      'precondition: the claim covers the narrowed Codex hook set, so the step is genuinely satisfied');
+
+    // The operator installs it on Codex AFTER the run closed.
+    state.codex = [...state.codex, 'designer'];
+    for (const verb of ['status', 'verify']) {
+      const r0 = await run([verb, '--format', 'json'], spySubprocess().runner);
+      strictEqual(r0.report.steps.find((s) => s.id === 'plugin.designer.codex.installed')?.status, 'satisfied',
+        `${verb}: the observation clears the decline (§6.2) — this half always worked`);
+      // Both halves of the convergence are load-bearing here: without the
+      // re-derived selection designer never rejoins the Codex hook set, and
+      // without the re-derived VERDICT the claim that covered only the narrow
+      // set keeps satisfying a step it no longer covers.
+      strictEqual(r0.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'pending',
+        `${verb}: designer rejoins the Codex hook set and the recorded claim does not cover it`);
+      notStrictEqual(r0.report.completion?.state, 'complete',
+        `${verb}: so a hook-bearing plugin nobody attested cannot leave the run reading complete`);
+    }
+  });
+
   it('a doctor child that ran and then FAILED to produce importable evidence still triggers the final snapshot', async () => {
     // The trigger is the SPAWN, not the import. A doctor invocation that returns
     // unparseable output imports nothing while the machine had the whole run of

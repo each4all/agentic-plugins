@@ -1615,11 +1615,17 @@ having had exactly as long to let the machine move, so gating the re-probe on th
 import would make the failure path the one that reports stale facts. That second
 snapshot then becomes the verb's ONLY account of the machine: `probe`, the raw
 host facts behind it, and the user-global readers are gathered once, and
-everything the verb emits is rebuilt from that one gathering — the judged
-`steps[]`, the completion reduction, the persisted manifest, the rendered
-fragments, the Stage-0 presentation, and the returned report. A run MUST NOT
-store a `probe` its own `steps[]` were judged against a different snapshot of, or
-return one to a caller that disagrees with what it persisted.
+everything the verb JUDGES and REPORTS is rebuilt from that one gathering — the
+judged `steps[]`, the completion reduction, the persisted manifest, the Stage-0
+presentation, and the returned report. A run MUST NOT store a `probe` its own
+`steps[]` were judged against a different snapshot of, or return one to a caller
+that disagrees with what it persisted.
+
+*Fragment composition is handed that same reader snapshot, but is not fully bound
+by it*: the fragment builders re-read notification, egress and permission config
+themselves. A config change between the snapshot and the render therefore still
+produces a fragment built from later bytes than the rows beside it. Named here
+rather than implied away; folding those reads into the snapshot is a follow-up.
 
 **The expectation's own inputs move with the snapshot**, so they are re-derived
 before the rebuild and the rows re-judged. Two of them:
@@ -1640,10 +1646,20 @@ move here, and only wider. The retained PLUGIN set is fixed — the derivation i
 asked about the already-retained set, and a judgement only ever restores declines
 from prior state, never invents them — so `{bundle, desired, excluded}` is not
 rewritten and no narrowing history row is written. Narrowing stays irreversible
-in-run per the rules above; a host-scoped exclusion is re-derived by *every* verb
-from the rows, so this only computes at the end of the verb what `status` and the
-next `resume` would compute anyway. The operator is warned by name when it moves,
-and pointed at re-planning if the refusal was the intent.
+in-run per the rules above. The operator is warned by name when it moves, and
+pointed at re-planning if the refusal was the intent.
+
+**Every verb converges it, not only `resume`.** The derivation reads the STORED
+rows and the judge then re-observes them, so the convergence belongs to the
+shared re-judgement every verb runs — otherwise `status` and `verify` are the
+worse half: they cannot persist a correction and a terminal run cannot be
+resumed, so a completed run whose Codex-refused, Codex-hook-bearing plugin was
+afterwards installed would report both its rows `satisfied`, leave
+`hooks.codex.attested` `not-applicable`, and return `complete` at exit 0 for
+good. `resume` converges a SECOND time after its executor, because the machine
+can move again in between. The selection-scoped hook verdict is re-derived with
+the selection at both points: a claim that covered the narrow set must not go on
+satisfying a non-declinable step it no longer covers.
 
 **Stated limit.** §7 version invalidation still runs against the snapshot the
 verb *started* from, not this one. A host CLI or plugin version that moves during
