@@ -69,19 +69,36 @@ updateBootstrapRun(...)  // writes the manifest carrying steps[]  — LOCKED, at
   two.
 
 That ordering is **write-ahead**: content is durable before anything references
-it, and the manifest write is the **sole commit point**. A crash between the two
-therefore leaves an unreferenced fragment file and an unchanged manifest — the
-safe direction.
+it, and the manifest write is the **sole commit point** *for the single-writer,
+process-death case*.
 
-**Reproduced.** A `plan` in a sandboxed home wrote 6 fragment files and recorded
-5 pointers. Clearing every `fragment_pointer` and `desired` from the manifest
-while leaving the files on disk — exactly the state a crash before the manifest
-write produces — and then running `resume` restored all 5 pointers. The run
-self-heals: the freeze predicate reads `step.fragment_pointer` from the
-*manifest-restored* step, finds none, re-renders, and re-freezes.
+**Reproduced, and the reproduction's limits matter.** A `plan` in a sandboxed
+home wrote 6 fragment files and recorded 5 pointers. Clearing every
+`fragment_pointer` and `desired` from the manifest while leaving the files on
+disk, then running `resume`, restored all 5 pointers: the freeze predicate reads
+`step.fragment_pointer` from the *manifest-restored* step, finds none,
+re-renders, and re-freezes.
 
-So **creation is already crash-safe, and the transaction the follow-up asks for
-already exists for it.**
+That experiment models **process death between the fragment rename and the
+manifest rename, and nothing else.** Cross-host Plan-verify identified two ways
+it is narrower than "crash-safe", and both were confirmed in the code:
+
+- **No `fsync`, so the two renames are not ordered under power loss**
+  (`bootstrap-artifacts.mjs` `writeFileAtomic`: `writeFile(tmp)` then
+  `rename(tmp, path)`, with neither the file nor the directory synced). The
+  existing comment claims a crash "never leaves a torn `run.json`", which is
+  true of a *single* file and says nothing about ordering *between* two. A
+  manifest can therefore reach durable storage while the fragment it points at
+  does not — and the freeze predicate tests `fragment_pointer` and `desired`
+  only, never existence, so the dangling pointer is **permanent**.
+- **The hand edit is not the general crash state.** `persist()` also sets
+  `apply_command` and `recovery`, which clearing two fields leaves behind; a
+  kill can leave `.fragment.tmp-*` or `run.json.tmp-*` siblings and a held
+  `bootstrap.lock`.
+
+So the honest premise is narrower than the one this ADR was first written on:
+**creation is crash-safe against process death, not against power failure**, and
+the commit-point property is a single-writer property.
 
 ### The actual defect
 
@@ -110,14 +127,16 @@ expressed as a mutation instead of as a creation.
 only mutable thing; the manifest write remains the sole commit point.**
 
 1. **Content-addressed filenames.** A fragment is written to
-   `<name>-<sha256[:12]>.fragment`. `writeBootstrapFragment` **already computes
-   and returns `sha256`** of the exact bytes — the content address exists today
-   and is simply not used in the path.
+   `<name>-<sha256>.fragment` — the **full** digest (see 5).
+   `writeBootstrapFragment` **already computes and returns `sha256`** of the
+   exact bytes, so the content address exists today and is simply not used in
+   the path.
 2. **A re-render is a create-and-repoint, never an overwrite.** New content
    means a new file; the manifest write swaps `fragment_pointer` (and, in the
    same atomic write, `desired` and `apply_command`). This reuses the ordering
-   that create already proved safe, so **no CAS and no new transaction
-   primitive is introduced**.
+   create already uses, so **no new transaction primitive is introduced for the
+   single-writer case** — but it does not remove the manifest-level CAS gap the
+   contract already declares (see "What this does NOT buy").
 3. **The freeze becomes a pointer policy, not a file policy.** "Frozen" now
    means *this run does not move the pointer*. That decision is recorded in the
    manifest, under the family lock, where it is already atomic. The freeze keeps
@@ -127,36 +146,57 @@ only mutable thing; the manifest write remains the sole commit point.**
    replaced.
 4. **Superseded fragments are retained, not deleted.** An operator holding a
    path from an earlier `status` can still read the bytes they were told to
-   merge. Cleanup belongs to the existing artifact-retention family
-   (`runtime:retention`), not to the render path.
+   merge. **Cleanup has no owner today and this ADR does not invent one**: the
+   first draft handed it to `runtime:retention`, and the audit below shows that
+   family covers `doctor|compat|settings` only, is repository-local, prunes
+   whole runs rather than files inside one, and treats bootstrap as report-only.
+   Bounding this is a named precondition of implementation, not a deferral.
 
-### Why this resolves the three entangled rows
+5. **Publication is create-only, and the address is the full digest.** The
+   first draft proposed a 12-hex (48-bit) prefix published through the same
+   replacing `rename(2)`. Plan-verify showed that recreates the very hazard:
+   generate two bodies sharing the prefix, commit A, publish B, and B lands on
+   A's path under a live pointer. The address is the full `sha256`, and
+   publication refuses an existing target unless its bytes are identical.
+6. **`fsync` the fragment and its directory before the manifest write.**
+   Immutability is a naming property; durability ordering is a separate one, and
+   without it the power-failure window above survives the rename.
 
-- **§7 invalidation outside the fixpoint.** The row's blocker is "what does
-  clearing a frozen fragment mid-verb do to an operator part-way through
-  applying it". Under immutability, invalidation never clears bytes — it moves a
-  pointer, and the old file remains readable. The scary half of running §7
-  against the final snapshot disappears, so that row can be scheduled on its own
-  merits.
-- **Unpinned readers / "what is a render bound to".** A content address *is* the
-  identity of the rendered bytes. "Which readers produced this fragment" becomes
-  a checkable property of a specific hash rather than an assertion about a
-  mutable file.
-- **`apply_command` points at a stripped artifact.** The row offers two ways
-  out: order the fragment decision ahead of judgement, or rewrite the apply
-  command after persist. The second becomes safe, because the pointer and the
-  apply command move together in the one atomic manifest write.
+### What this does NOT buy — corrected after Plan-verify
 
-### The rollback edge the subtask named
+The first draft of this ADR claimed content addressing makes CAS unnecessary and
+unblocks three follow-up rows. Both claims were too strong, and the review was
+right on each:
 
-> a rollback that must not leave a new manifest pointing at an older frozen
-> fragment
+- **A manifest CAS is still needed, and the contract already says so.** §2105 of
+  the machine-bootstrap contract states plainly that "there is NO cross-process
+  CAS over the evidence set" and that "one resume at a time per machine is the
+  operating assumption". Immutability removes *byte mutation under a live
+  pointer*; it does nothing about a **stale writer committing an old pointer**.
+  `resume` renders from an unlocked snapshot and its locked mutator then writes
+  the captured `steps` array over the manifest it just read — so two concurrent
+  invocations can still produce a newer manifest carrying an older pointer,
+  which this ADR's first draft called unrepresentable. **It is representable,
+  under exactly the concurrency the contract already declares out of scope.**
+  This ADR therefore inherits that standing limitation rather than removing it,
+  and an expected-version check on the manifest update is recorded as the
+  follow-on that would close it.
+- **The manifest is not the sole *operator-visible* commit point.** When
+  `updateBootstrapRun` fails, `plan` pushes a warning and still returns and
+  prints its locally mutated `steps` — pointers and apply commands the
+  authoritative manifest never committed. Rendering must be gated on the commit
+  for the "sole commit point" framing to be true of what the operator sees.
+- **The three entangled rows are not resolved — one storage hazard is removed
+  from under them.** Precisely: G7 keeps its trigger, sibling-ownership and
+  expectation-rebind questions; §7 keeps final-snapshot invalidation *and* the
+  restored-plugin exclusion, which content addressing cannot touch because a
+  version that was never sampled cannot be compared; the notify `apply_command`
+  row still has to *select* the real carrier. And the unpinned-readers row is
+  **not** addressed at all — a content hash identifies the **output bytes**, not
+  which input snapshot produced them, so "what was this render bound to" remains
+  open. The first draft's claim there was simply wrong.
 
-Under this model that state is **unrepresentable rather than guarded against**.
-A rollback is "do not move the pointer" (or "move it back to a hash that is
-still on disk"), and the pointer only ever changes inside the atomic manifest
-write. There is no ordering in which a new manifest and an old fragment can be
-paired, because the manifest is the only place the pairing is expressed.
+### Why this still helps the entangled rows
 
 ## Alternatives considered
 
@@ -175,12 +215,20 @@ Compared on the nine-axis matrix resolved from `decide-registry --size=major`
 | **고도화 Maturation** | ✗ | ~ | **✓ enables diffing renders and pinning readers to a hash** | ~ | ✗ |
 | **실용성 Practical fit** | ✓ costs nothing | ✗ the round-6 withdrawal is evidence this is the expensive path | **✓ `sha256` is already computed and returned; path + pointer only** | ✓ small | ✓ small |
 
-**B is the option the follow-up row assumed was required, and it is the one this
-ADR rejects.** The row concluded a CAS boundary was missing; measurement shows a
-correct commit protocol is already present for creation, and CAS would exist
-only to protect an in-place mutation that need not happen. Building it would add
-a second commit protocol beside the manifest — and two commit protocols can
-disagree, which is the class of defect this whole area keeps producing.
+**B is not rejected outright — it is re-scoped, and the first draft was unfair
+to it.** The draft rejected CAS on the grounds that "two commit protocols can
+disagree". Plan-verify pushed back and is right: the real relationship is that C
+and B answer **different** questions. C removes byte mutation under a live
+pointer, which is a *storage* hazard and the one the round-6 withdrawal actually
+tripped on. B answers *concurrency* — a stale writer committing an old pointer —
+which C does not touch and which the contract already documents as an accepted
+limit (§2105: no cross-process CAS; one resume at a time is the operating
+assumption).
+
+So the shipped shape is **C now, with an expected-version check on the manifest
+update recorded as the follow-on that would close B's half.** Adopting C does
+not make the run more concurrency-safe than it is today, and this ADR no longer
+claims it does.
 
 **D remains available on top of C** as operator ergonomics (an explicit
 "re-render now"), and is not exclusive with it. **E is a trigger, not a model**;
@@ -205,12 +253,24 @@ it is subsumed once moving a pointer is safe.
   manifest pointer. That is the intended direction — the manifest becomes the
   only authority — but it is a real migration surface and must be audited, not
   assumed.
-- **Superseded fragments accumulate.** Bounded by retention, not by the render
-  path, which means retention must actually be taught about them.
-- **Existing runs carry `<name>.fragment` pointers.** The pointer is stored, so
-  old runs keep working by construction; but the *migration* must not rewrite
-  those pointers, and a mixed-shape home must be readable. This wants an
-  explicit compatibility test rather than an argument.
+- **Superseded fragments accumulate, and nothing currently bounds them.**
+  `RETENTION_FAMILIES` is `doctor|compat|settings`; bootstrap retention is
+  machine-global and **report-only**, and the cap counts whole RUNS, so a
+  superseded fragment inside one still-open run is unreachable by it. Repeated
+  re-renders in a long-lived open run grow without limit while the run cap stays
+  at one. This is the single largest implementation precondition.
+- **"Old runs keep working by construction" was wrong, and the audit says so.**
+  The claim holds only for consumers that read the stored pointer. Two
+  PRODUCTION readers reconstruct the path from a hardcoded leaf name
+  (`bootstrap.mjs:1357` and `:1382`, both opening `notification-plan.fragment`),
+  so a hash-named run makes them read a stale file or none. `statusline-shim`
+  discards the writer's returned pointer entirely, so under content addressing
+  that artifact becomes undiscoverable through the manifest-only authority this
+  ADR asserts — it needs a pointer before the addressing changes. `status` /
+  `verify` carry the pointer opaquely and are compatible but never verify its
+  target; doctor's inventory is filename-agnostic; the settings executor renders
+  its own text and does not read these paths. Roughly fifteen test sites open
+  fragments by leaf name. Every one is a migration item, not a footnote.
 - **The orphan-file window widens slightly**: a crash between the new-file write
   and the manifest write now leaves a hash-named file that no pointer will ever
   reference. Harmless, unbounded only in pathological retry loops, and cleaned
