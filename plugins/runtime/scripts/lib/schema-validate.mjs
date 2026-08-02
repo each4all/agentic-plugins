@@ -67,6 +67,106 @@ const SCALAR_TYPES = new Set(['string', 'number', 'boolean']);
 export const SCHEMA_MAX_BYTES = 64 * 1024;
 export const SCHEMA_MAX_ARRAY_ENTRIES = 256;
 
+// ---------------------------------------------------------------------------
+// THE DISCLOSURE INVARIANT (D1, ratified 2026-08-02)
+// ---------------------------------------------------------------------------
+//
+// A value crosses the artifact → report boundary IFF the packaged schema
+// GRAMMAR-CLAMPS it — an anchored `pattern`, an `enum`, a `const`, a boolean, or
+// a number. Everything else leaves as its TYPE, its LENGTH, or its ORDINAL,
+// never as its content.
+//
+// A validation finding is the hardest case for that rule, because a finding
+// exists precisely BECAUSE the observed value escaped its clamp: the slot said
+// `enum`, the document supplied something else, so the observed value is by
+// definition unclamped. That is why a finding carries the EXPECTED constraint
+// (read from the trusted packaged schema) and only the observed TYPE plus
+// numeric metadata — never the observed scalar itself, at any type.
+//
+// So a finding MAY carry:
+//   * a runtime-authored code and severity (this file writes both);
+//   * the expected constraint from the packaged schema — type, enum members,
+//     const, pattern source, bounds;
+//   * the observed type name and numeric metadata — string length, member
+//     count, entry count, byte size;
+//   * a locator built ONLY from the root `$`, schema-DECLARED property names,
+//     zero-based array indices, and a zero-based `member[n]` ordinal standing
+//     in for any document-supplied key.
+//
+// And it MAY NOT carry: any observed scalar value or serialized fragment; any
+// document-supplied key name; the document's own `schema` string; raw
+// JSON.parse/exception text that can quote input; or a hash of a withheld value
+// (equality-and-guessing leakage that does not help repair).
+//
+// Why HERE and not at the sinks: sink redaction was tried at this boundary and
+// withdrawn on measurement — a generic 32+-hex rule ate a legitimate 64-hex plan
+// hash, and `--format json` stayed exposed anyway. The root is a CLASSIFICATION
+// question, not a redaction one. Binding the answer to the schema's own grammar
+// clamping makes the rule mechanical, auditable against the schema file, and
+// self-maintaining: a new clamped field becomes disclosable automatically and a
+// new maxLength-only field is withheld automatically, with no category list for
+// anyone to keep current.
+//
+// The threat model is moderate ACCIDENTAL disclosure: the operator (or a process
+// running as them) writes a secret into a private 0600 artifact, and the report
+// then travels to terminal capture, CI logs, clipboards, machine consumers, or
+// an agent's context. This boundary protects that artifact → stdout transition.
+// It does not defend against an adversary who already owns the account — reading
+// the private artifact directly is the escape hatch, and it is deliberately not
+// a flag.
+
+// Display bounds. Findings are capped so a hostile or merely large document
+// cannot flood a report: measurement on a 62,969-byte future-minor document with
+// 4,000 unknown scalar keys produced 4,001 warnings / 643,305 characters (~10x
+// amplification) before these caps existed.
+export const FINDING_MAX_BYTES = 512;
+export const FINDINGS_MAX_PER_ARTIFACT = 16;
+
+// Bound ONE finding at 512 UTF-8 bytes. Truncation walks code POINTS, so a
+// surrogate pair is never split into a lone half that renders as U+FFFD —
+// sanitizing text into mojibake is its own small dishonesty.
+function capFinding(text) {
+  if (Buffer.byteLength(text, 'utf8') <= FINDING_MAX_BYTES) return text;
+  const budget = FINDING_MAX_BYTES - Buffer.byteLength('…', 'utf8');
+  let bytes = 0;
+  let out = '';
+  for (const point of text) {
+    const size = Buffer.byteLength(point, 'utf8');
+    if (bytes + size > budget) break;
+    bytes += size;
+    out += point;
+  }
+  return `${out}…`;
+}
+
+// Every finding is `<locator>: [<severity>/<code>] <content-free detail>`. The
+// severity rides INSIDE the string rather than being left implicit in which
+// array the finding landed in, because consumers merge errors and warnings into
+// one `diagnostics` list and the distinction would not survive the merge.
+function finding(severity, code, locator, detail) {
+  return capFinding(`${locator}: [${severity}/${code}] ${detail}`);
+}
+
+// The observed side of every finding: a type name plus numeric metadata, and
+// never a value. `null` and `boolean` carry no metadata because their type name
+// already says everything a repair needs — and a boolean's two states are not
+// disclosed, because a value that reached a finding is by definition one the
+// schema did not clamp.
+function observe(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return `array (${value.length} entries)`;
+  if (isPlainObject(value)) return `object (${Object.keys(value).length} members)`;
+  if (typeof value === 'string') return `string (length ${value.length})`;
+  return typeof value;
+}
+
+// Apply the per-artifact display cap. Validation itself already ran to
+// completion, so the ok/not-ok verdict is computed from the FULL count and a
+// suppressed finding can never flip it.
+function capFindings(findings) {
+  return findings.length <= FINDINGS_MAX_PER_ARTIFACT ? findings : findings.slice(0, FINDINGS_MAX_PER_ARTIFACT);
+}
+
 function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -102,23 +202,44 @@ export function compareSchemaVersion(documentVersion, readerVersion) {
   const doc = parseSchemaVersion(documentVersion);
   const reader = parseSchemaVersion(readerVersion);
   if (reader === null) throw new Error(`reader schema version '${readerVersion}' is not a valid schema version`);
+  // The document's own `schema` string is UNCLAMPED free content the moment it
+  // fails to parse or names a foreign family — `[a-z0-9-]+` accepts a
+  // lowercase credential just as happily as a family name. So neither branch
+  // echoes it: the finding reports that it did not parse (or did not match),
+  // plus the EXPECTED shape, which is the reader's own trusted string.
   if (doc === null) {
-    return { ok: false, reason: 'unparseable', allowUnknownScalars: false, message: `schema '${documentVersion}' is not a recognized schema version (expected <family>-<major>.<minor>)` };
+    return { ok: false, reason: 'unparseable', code: 'schema-version-unparseable', allowUnknownScalars: false, message: 'the document declares no recognizable schema version (expected <family>-<major>.<minor>); the declared value is withheld because an unparseable version string is unclamped free content' };
   }
   if (doc.family !== reader.family) {
-    return { ok: false, reason: 'wrong-family', allowUnknownScalars: false, message: `schema family '${doc.family}' does not match the expected '${reader.family}'` };
+    return { ok: false, reason: 'wrong-family', code: 'schema-family-mismatch', allowUnknownScalars: false, message: `the document's schema family does not match the expected '${reader.family}'; the declared family is withheld because a family that did not match is not clamped by anything this runtime trusts` };
   }
   if (doc.major !== reader.major) {
+    // The major NUMBER crosses: it parsed out of `(\d+)` and the family already
+    // matched the reader's, so what is disclosed is a digit sequence in a slot
+    // this runtime itself defined — and the operator cannot act on "a major you
+    // may not see".
     return {
       ok: false,
       reason: 'unknown-major',
+      code: 'schema-major-unreadable',
       allowUnknownScalars: false,
       message: `schema major ${doc.major} is not readable by this runtime (expects major ${reader.major}). A major means the shape changed; upgrade the runtime plugin rather than reading it as if it had not.`,
     };
   }
   // A GREATER minor is the only case that earns the benefit of the doubt, and only
   // for additive scalars (§4.1).
-  return { ok: true, reason: doc.minor > reader.minor ? 'newer-minor' : 'compatible', allowUnknownScalars: doc.minor > reader.minor, message: null };
+  return {
+    ok: true,
+    reason: doc.minor > reader.minor ? 'newer-minor' : 'compatible',
+    code: null,
+    allowUnknownScalars: doc.minor > reader.minor,
+    message: null,
+    // The parsed MINORS, not the version strings. Past this point family and
+    // major are pinned to the reader's own values, so the minor is the only
+    // document-supplied part left — and it is a number, which crosses.
+    documentMinor: doc.minor,
+    readerMinor: reader.minor,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -200,15 +321,17 @@ export function assertSupportedSchema(schema, path = '#') {
 // Validation
 // ---------------------------------------------------------------------------
 
+// `ref` is read from the packaged schema, not from the document, so naming it
+// discloses only what the schema file already publishes.
 function resolveRef(ref, root, path, errors) {
   const m = /^#\/\$defs\/([A-Za-z0-9_-]+)$/.exec(ref);
   if (!m) {
-    errors.push(`${path}: only internal '#/$defs/<name>' refs are supported, got '${ref}'`);
+    errors.push(finding('error', 'ref-unsupported', path, `only internal '#/$defs/<name>' refs are supported, got '${ref}'`));
     return null;
   }
   const target = Object.hasOwn(root.$defs ?? {}, m[1]) ? root.$defs[m[1]] : undefined;
   if (!target) {
-    errors.push(`${path}: $ref '${ref}' does not resolve`);
+    errors.push(finding('error', 'ref-unresolved', path, `$ref '${ref}' does not resolve`));
     return null;
   }
   return target;
@@ -245,31 +368,35 @@ function validateNode({ value, schema, root, path, ctx }) {
   if (schema.type !== undefined) {
     const types = Array.isArray(schema.type) ? schema.type : [schema.type];
     if (!types.some((t) => typeMatches(value, t))) {
-      errors.push(`${path}: expected ${types.join(' | ')}, got ${describe(value)}`);
+      errors.push(finding('error', 'type-mismatch', path, `expected ${types.join(' | ')}, got ${describe(value)}`));
       return; // Every other check below assumes the type held.
     }
   }
+  // const / enum / pattern are the three ordinary constraint branches, and all
+  // three used to echo the OBSERVED value. The expected side stays — it is read
+  // from the trusted packaged schema and is the whole of what a repair needs —
+  // while the observed side collapses to a type name plus numeric metadata.
   if (schema.const !== undefined && value !== schema.const) {
-    errors.push(`${path}: must equal ${JSON.stringify(schema.const)}, got ${JSON.stringify(value)}`);
+    errors.push(finding('error', 'const-mismatch', path, `must equal ${JSON.stringify(schema.const)}; observed ${observe(value)}`));
   }
   if (schema.enum !== undefined && !schema.enum.some((allowed) => allowed === value)) {
-    errors.push(`${path}: ${JSON.stringify(value)} is not one of ${schema.enum.map((v) => JSON.stringify(v)).join(', ')}`);
+    errors.push(finding('error', 'enum-mismatch', path, `must be one of ${schema.enum.map((v) => JSON.stringify(v)).join(', ')}; observed ${observe(value)}`));
   }
   if (schema.pattern !== undefined && typeof value === 'string' && !new RegExp(schema.pattern).test(value)) {
-    errors.push(`${path}: ${JSON.stringify(value)} does not match ${schema.pattern}`);
+    errors.push(finding('error', 'pattern-mismatch', path, `must match ${schema.pattern}; observed ${observe(value)}`));
   }
   if (schema.maxLength !== undefined && typeof value === 'string' && value.length > schema.maxLength) {
-    errors.push(`${path}: string length ${value.length} exceeds maxLength ${schema.maxLength}`);
+    errors.push(finding('error', 'max-length-exceeded', path, `string length ${value.length} exceeds maxLength ${schema.maxLength}`));
   }
 
   if (Array.isArray(value)) {
     if (schema.maxItems !== undefined && value.length > schema.maxItems) {
       // Refused, never truncated (§4.1): a silently truncated permission list is a
       // security artifact, not a convenience.
-      errors.push(`${path}: ${value.length} entries exceeds maxItems ${schema.maxItems} — the artifact is refused, not truncated`);
+      errors.push(finding('error', 'max-items-exceeded', path, `${value.length} entries exceeds maxItems ${schema.maxItems} — the artifact is refused, not truncated`));
     }
     if (schema.minItems !== undefined && value.length < schema.minItems) {
-      errors.push(`${path}: ${value.length} entries is below minItems ${schema.minItems}`);
+      errors.push(finding('error', 'min-items-unmet', path, `${value.length} entries is below minItems ${schema.minItems}`));
     }
     if (schema.items) {
       value.forEach((item, i) => validateNode({ value: item, schema: schema.items, root, path: `${path}[${i}]`, ctx }));
@@ -281,12 +408,25 @@ function validateNode({ value, schema, root, path, ctx }) {
   // required:['a']}` enforce nothing at all: a required list that requires nothing.
   if (isPlainObject(value)) {
     for (const name of schema.required ?? []) {
-      if (!Object.hasOwn(value, name)) errors.push(`${path}: missing required key '${name}'`);
+      // `name` is read from the SCHEMA's own required list, never from the
+      // document — a required key that is missing has no document-supplied
+      // spelling to leak.
+      if (!Object.hasOwn(value, name)) errors.push(finding('error', 'missing-required-key', path, `missing required key '${name}'`));
     }
   }
 
   if (isPlainObject(value) && (schema.properties || schema.patternProperties || schema.additionalProperties === false)) {
+    let ordinal = -1;
     for (const [key, child] of Object.entries(value)) {
+      ordinal += 1;
+      // The locator for a DOCUMENT-SUPPLIED key. A key that resolves through
+      // `properties` is schema-declared and may be named; every other key —
+      // a patternProperties match, an unknown key — is free content, and
+      // `${path}.${key}` was itself a leak: a document whose key is
+      // `Bearer sk-…` published that key into the finding while the finding was
+      // busy not publishing the value. The zero-based ordinal locates the member
+      // just as well without naming it.
+      const memberPath = `${path}.member[${ordinal}]`;
       // 2020-12 applies `properties` AND every matching `patternProperties` — not the
       // first match and not one or the other. Stopping at the first would let a second,
       // stricter pattern silently not apply.
@@ -298,24 +438,39 @@ function validateNode({ value, schema, root, path, ctx }) {
       // closed-schema rule (S2 plan-verify finding, live-reproduced).
       const propSchema = Object.hasOwn(schema.properties ?? {}, key) ? schema.properties[key] : undefined;
       if (propSchema) {
+        // Schema-declared: the name came from the packaged schema's own
+        // `properties`, so naming it discloses nothing the schema file does not
+        // already publish.
         validateNode({ value: child, schema: propSchema, root, path: `${path}.${key}`, ctx });
         matched = true;
       }
       for (const [re, sub] of Object.entries(schema.patternProperties ?? {})) {
         if (!new RegExp(re).test(key)) continue;
-        validateNode({ value: child, schema: sub, root, path: `${path}.${key}`, ctx });
+        // Matching a PATTERN is not the same as being declared: the key is still
+        // whatever the document wrote, so it descends under the ordinal.
+        validateNode({ value: child, schema: sub, root, path: memberPath, ctx });
         matched = true;
       }
       if (matched) continue;
       if (schema.additionalProperties === false) {
         // THE §4.1 RULE, at every depth. A structural key is never forgiven; a
         // scalar is forgiven only by a genuinely newer minor.
+        //
+        // These three findings are the ones a flood arrives through — 4,000
+        // unknown keys produce 4,000 of them — and each one used to carry the
+        // document's key AND, in the two minor-related branches, the document's
+        // own schema string. Both are gone: the ordinal locates the member, and
+        // the minor is reported as the NUMBER it parsed to.
         if (!isScalar(child)) {
-          ctx.errors.push(`${path}.${key}: unknown key carrying ${describe(child)} — unknown structural keys are refused at any schema minor, because their meaning would be silently dropped`);
+          ctx.errors.push(finding('error', 'unknown-structural-key', memberPath, `unknown key carrying ${describe(child)} — unknown structural keys are refused at any schema minor, because their meaning would be silently dropped`));
         } else if (ctx.allowUnknownScalars) {
-          ctx.warnings.push(`${path}.${key}: unknown scalar key ignored — the document declares a newer schema minor (${ctx.documentVersion}) than this runtime reads (${ctx.readerVersion})`);
+          ctx.warnings.push(finding('warn', 'unknown-scalar-key-ignored', memberPath, `unknown scalar key ignored — the document declares a newer schema minor (${ctx.documentMinor}) than this runtime reads (${ctx.readerMinor})`));
+        } else if (ctx.documentMinor === null) {
+          // The `$defs` fragment path: a standalone record carries no schema
+          // string, so there is no minor that could forgive anything.
+          ctx.errors.push(finding('error', 'unknown-key', memberPath, 'unknown key — a standalone schema fragment carries no schema minor that could forgive it, so an unexplained key is refused outright'));
         } else {
-          ctx.errors.push(`${path}.${key}: unknown key — the document's schema minor (${ctx.documentVersion}) is not newer than this runtime's (${ctx.readerVersion}), so it has no excuse for a key this runtime does not know`);
+          ctx.errors.push(finding('error', 'unknown-key', memberPath, `unknown key — the document's schema minor (${ctx.documentMinor}) is not newer than this runtime's (${ctx.readerMinor}), so it has no excuse for a key this runtime does not know`));
         }
       }
     }
@@ -339,15 +494,27 @@ export function validateAgainstSchema(document, schema, { readerVersion, maxByte
   const documentVersion = isPlainObject(document) ? document.schema : undefined;
   const version = compareSchemaVersion(documentVersion, readerVersion);
   if (!version.ok) {
-    return { ok: false, errors: [`schema: ${version.message}`], warnings: [], version };
+    return {
+      ok: false,
+      errors: [finding('error', version.code, '$.schema', version.message)],
+      warnings: [],
+      error_count: 1,
+      warning_count: 0,
+      omitted: false,
+      version,
+    };
   }
 
   const ctx = {
     errors: [],
     warnings: [],
     allowUnknownScalars: version.allowUnknownScalars,
-    documentVersion,
-    readerVersion,
+    // MINORS, not version strings. Family and major are pinned to the reader's
+    // own values by the gate above, so the minor is all that is left of the
+    // document's declaration — and a number crosses the boundary where the
+    // string it was cut from does not.
+    documentMinor: version.documentMinor,
+    readerMinor: version.readerMinor,
   };
 
   // The byte cap is a property of the ARTIFACT, not of any node, so it is checked
@@ -358,14 +525,34 @@ export function validateAgainstSchema(document, schema, { readerVersion, maxByte
   try {
     bytes = Buffer.byteLength(`${JSON.stringify(document, null, 2)}\n`, 'utf8');
   } catch {
-    ctx.errors.push('schema: document is not serializable as JSON');
+    // The caught error is NOT interpolated: a JSON.stringify failure message can
+    // quote the offending input (a circular reference names its own path, a
+    // BigInt error is generic but a thrown `toJSON` is not bounded at all).
+    ctx.errors.push(finding('error', 'artifact-unserializable', '$', 'the document is not serializable as JSON; the underlying error text is withheld because it can quote the input'));
   }
   if (bytes !== null && maxBytes !== null && bytes > maxBytes) {
-    ctx.errors.push(`schema: serialized artifact is ${bytes} bytes, over the ${maxBytes}-byte cap — refused, not truncated`);
+    ctx.errors.push(finding('error', 'artifact-too-large', '$', `serialized artifact is ${bytes} bytes, over the ${maxBytes}-byte cap — refused, not truncated`));
   }
 
+  // Traversal runs to COMPLETION even past the byte cap and past the display
+  // bound, and the verdict below is computed from the full counts. That ordering
+  // is the point: a finding suppressed for display must never be a finding that
+  // changed the answer.
   validateNode({ value: document, schema, root: schema, path: '$', ctx });
-  return { ok: ctx.errors.length === 0, errors: ctx.errors, warnings: ctx.warnings, version, bytes };
+  const errorCount = ctx.errors.length;
+  const warningCount = ctx.warnings.length;
+  const errors = capFindings(ctx.errors);
+  const warnings = capFindings(ctx.warnings);
+  return {
+    ok: errorCount === 0,
+    errors,
+    warnings,
+    error_count: errorCount,
+    warning_count: warningCount,
+    omitted: errors.length < errorCount || warnings.length < warningCount,
+    version,
+    bytes,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -517,7 +704,18 @@ export async function makeValidator(family, { pluginRoot, readerVersion } = {}) 
   const version = readerVersion ?? schema.$id;
   return (document) => {
     const result = validateAgainstSchema(document, schema, { readerVersion: version });
-    return { ok: result.ok, errors: result.errors, warnings: result.warnings };
+    // The COUNTS ride out alongside the (display-capped) finding arrays. A
+    // consumer that only reads `errors` would otherwise report "16 problems" for
+    // an artifact with four thousand, which is the flood hidden rather than
+    // bounded.
+    return {
+      ok: result.ok,
+      errors: result.errors,
+      warnings: result.warnings,
+      error_count: result.error_count,
+      warning_count: result.warning_count,
+      omitted: result.omitted,
+    };
   };
 }
 
@@ -541,8 +739,22 @@ export async function makeDefValidator(family, defName, { pluginRoot } = {}) {
   if (schemaErrors.length > 0) throw new Error(`schema is not supported by this validator:\n  ${schemaErrors.join('\n  ')}`);
 
   return (document) => {
-    const ctx = { errors: [], warnings: [], allowUnknownScalars: false, documentVersion: `${family}/$defs/${defName}`, readerVersion: schema.$id };
+    // `documentMinor: null` is the fragment marker: a standalone record has no
+    // schema string, so the unknown-key branch reports "no minor could forgive
+    // it" rather than interpolating a version that does not exist.
+    const ctx = { errors: [], warnings: [], allowUnknownScalars: false, documentMinor: null, readerMinor: null };
     validateNode({ value: document, schema: def, root: schema, path: `$(${defName})`, ctx });
-    return { ok: ctx.errors.length === 0, errors: ctx.errors, warnings: ctx.warnings };
+    const errorCount = ctx.errors.length;
+    const warningCount = ctx.warnings.length;
+    const errors = capFindings(ctx.errors);
+    const warnings = capFindings(ctx.warnings);
+    return {
+      ok: errorCount === 0,
+      errors,
+      warnings,
+      error_count: errorCount,
+      warning_count: warningCount,
+      omitted: errors.length < errorCount || warnings.length < warningCount,
+    };
   };
 }

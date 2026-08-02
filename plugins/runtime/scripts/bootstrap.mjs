@@ -84,6 +84,7 @@ import {
   importHookAttestation,
   importProofMetadata,
   invalidateStaleSteps,
+  projectLegacyCompletion,
   recomputeHookAttestation,
   reduceCompletion,
 } from './lib/completion-reducer.mjs';
@@ -108,7 +109,7 @@ import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
 // §6.1 Stage 4 — the declarable model/effort postures. Imported (not restated)
 // so the judge, the settings validator and the contract cannot drift apart.
 import { MODEL_EFFORT_FALLBACK_POSTURES } from './lib/runtime-config.mjs';
-import { loadSchema, makeValidator } from './lib/schema-validate.mjs';
+import { FINDINGS_MAX_PER_ARTIFACT, loadSchema, makeValidator } from './lib/schema-validate.mjs';
 import { TUI_NOTIFICATIONS_VALUES, expectedCodexNotifyArgv, gatherCodexNotificationInputs, buildCodexNotificationPlanSection, makeNotificationRunId, parseCodexNotifyConfigToml } from './lib/notification-plan.mjs';
 import { renderCodexTuiTableToml } from './lib/toml.mjs';
 import { gatherEgressLauncherInputs, buildEgressLauncherPlanSection, egressFragmentApplyGuidance, makeEgressLauncherRunId } from './lib/egress-launcher-plan.mjs';
@@ -123,10 +124,10 @@ const RUN_SCHEMA_VERSION = BOOTSTRAP_RUN_SCHEMA_VERSION;
 // §3.1 — the exit-code contract. These are the ONLY codes this command exits
 // with; a verb maps its completion state through EXIT_BY_STATE below.
 // LEGACY_HISTORICAL (ADR-0048 §1): a TERMINAL run recorded under an older
-// schema minor is immutable historical evidence — status/verify present its
-// stored completion verbatim and re-certify nothing, so exit 0 (which implies
-// a CURRENT completion) would overclaim. The distinct code says exactly
-// "historical record shown, nothing re-proven".
+// schema minor is immutable historical evidence — status/verify summarize its
+// stored completion under the §3.2 disclosure invariant and re-certify nothing,
+// so exit 0 (which implies a CURRENT completion) would overclaim. The distinct
+// code says exactly "historical record shown, nothing re-proven".
 export const EXIT = Object.freeze({
   COMPLETE: 0,
   OK: 0,
@@ -902,7 +903,11 @@ async function readAnswersFile(path) {
   try {
     parsed = JSON.parse(text);
   } catch (err) {
-    throw new UsageError(`--answers file is not valid JSON: ${err.message}`);
+    // D1 §3.2 — `err.message` from JSON.parse QUOTES THE INPUT
+    // (`Unexpected token 'B', "Bearer sk-"... is not valid JSON`), so the
+    // answers file would echo its own first bytes into the usage error. The
+    // position is runtime-derived and locates the fault without reprinting it.
+    throw new UsageError(`--answers file is not valid JSON${jsonParsePosition(err)}; the parser's message is withheld because it quotes the file's own bytes (§3.2)`);
   }
   const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.answers) ? parsed.answers : null;
   if (!list) throw new UsageError('--answers must be a JSON array of { step_id, answer } (the run\'s choices[] in serialized form, §3)');
@@ -1041,13 +1046,21 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
   // ALL of them — the run is replayable from its own manifest), collapsing to
   // one EFFECTIVE action per step, last-wins in file order. Pass 2 applies
   // state transitions from the effective map ONLY.
+  // D1 §3.2 — the answers file is operator-authored untrusted input, so a value
+  // that FAILED its check is unclamped by definition and is located by its
+  // position in the array rather than quoted back. A step id that MATCHED is a
+  // registry id this runtime declared, so it keeps being named: withholding it
+  // would cost the operator the one thing that makes the error actionable while
+  // buying no secrecy at all.
+  let answerOrdinal = -1;
   for (const { step_id: stepId, answer } of answers) {
+    answerOrdinal += 1;
     const step = byId.get(stepId);
     if (!step) {
-      throw new UsageError(`answers file names step '${stepId}', which is not an expected step of this run (§6.1); refusing to record it`);
+      throw new UsageError(`answers[${answerOrdinal}] names a step this run does not expect (§6.1); refusing to record it. The id is withheld because an unmatched step id is free text — expected ids: ${[...byId.keys()].sort().join(', ')}`);
     }
     if (!ANSWER_VALUES.includes(answer)) {
-      throw new UsageError(`answer '${answer}' for ${stepId} is not one of ${ANSWER_VALUES.join('|')}`);
+      throw new UsageError(`answers[${answerOrdinal}] carries an answer for ${stepId} that is not one of ${ANSWER_VALUES.join('|')}; the value is withheld because it did not match the closed set`);
     }
     const refusal = answerRefusal({ step, answer, verb, applicable: applicableById.get(stepId) });
     if (refusal) throw new UsageError(refusal);
@@ -1473,7 +1486,12 @@ async function selectRun({ homeDir, opts, defaultSelector, validateRun }) {
   try {
     manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   } catch (err) {
-    return { error: `Run ${run.run_id} has an unreadable manifest (${err?.code ?? err?.message}); close it with \`abandon ${run.run_id}\`.`, exitCode: EXIT.UNEXPECTED };
+    // A read failure carries an fs `code`; a PARSE failure does not, and its
+    // message quotes the manifest's own bytes (§3.2). The two are separated
+    // rather than collapsed through `??`, which fell through to the quoting
+    // message exactly when the document was the untrusted thing.
+    const cause = err?.code ? `${err.code}` : `not valid JSON${jsonParsePosition(err)}`;
+    return { error: `Run ${run.run_id} has an unreadable manifest (${cause}); close it with \`abandon ${run.run_id}\`.`, exitCode: EXIT.UNEXPECTED };
   }
   // ADR-0048 §3 — the selected manifest feeds every downstream reduction, so it
   // must be schema-valid BEFORE anything reads a field from it. Fail-closed with
@@ -1505,7 +1523,16 @@ async function selectRun({ homeDir, opts, defaultSelector, validateRun }) {
   // §4.1 validator warnings SURFACE (Codex review MAJOR): a future-minor
   // document's ignored scalars must be visible to the operator, not silently
   // dropped at the one boundary every verb reads through.
-  return { run, manifest, warnings: verdict.warnings ?? [] };
+  //
+  // D1 §3.2 — the validator now DISPLAYS at most 16 of them, which would make
+  // "16 ignored keys" indistinguishable from "16 ignored keys out of four
+  // thousand". A bounded list that does not admit it was bounded reads as the
+  // whole story, so the omission is stated with the totals the validator kept.
+  const warnings = [...(verdict.warnings ?? [])];
+  if (verdict.omitted) {
+    warnings.push(`this manifest produced ${verdict.warning_count} validation warning(s) and ${verdict.error_count} error(s); only the first ${FINDINGS_MAX_PER_ARTIFACT} of each are shown (§3.2 display bound). The findings are content-free by design — read the run artifact directly to inspect the document itself.`);
+  }
+  return { run, manifest, warnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -2092,31 +2119,46 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
 
 /**
  * ADR-0048 §1 — a TERMINAL run under an older schema minor is immutable
- * historical evidence: status/verify present the STORED completion verbatim,
- * re-probe nothing, re-certify nothing (its proof files are not even read —
- * a legacy complete with a corrupt proof file is still the historical record
- * it was). The report carries machine-readable `historical` +
- * `not_recertified` markers and exits LEGACY_HISTORICAL, because exit 0 would
- * claim a current completion nobody re-proved. Returns null when the run is
- * not a legacy terminal one.
+ * historical evidence: status/verify re-probe nothing and re-certify nothing
+ * (its proof files are not even read — a legacy complete with a corrupt proof
+ * file is still the historical record it was). The report carries
+ * machine-readable `historical` + `not_recertified` markers and exits
+ * LEGACY_HISTORICAL, because exit 0 would claim a current completion nobody
+ * re-proved. Returns null when the run is not a legacy terminal one.
+ *
+ * D1 (ratified 2026-08-02) — what it PRESENTS is a projection, not a replay.
+ * The record on disk is still immutable and still byte-identical after this
+ * call; what changed is that its two maxLength-only strings (`reasons[]` and
+ * `artifact_pointer`) no longer travel to stdout. `legacy_completion_summary`
+ * is deliberately not named `completion`: a consumer must not be able to mistake
+ * a disclosable summary for the stored object.
  */
 function legacyTerminalReport(verb, picked) {
   const doc = parseRunSchemaMinor(picked.manifest.schema);
   if (!doc || doc.minor >= READER_RUN_SCHEMA.minor) return null;
   if (!BOOTSTRAP_TERMINAL_RUN_STATUSES.includes(picked.manifest.status)) return null;
+  // The pointer is DERIVED from the run id (which `validateBootstrapRunId`
+  // clamps) and the fixed family path — never the stored `artifact_pointer`
+  // string, which is free content in the same record this projection exists to
+  // bound.
+  const artifactPointer = `~/.agentic-plugins/runs/bootstrap/${picked.run.run_id}/run.json`;
   return {
     exitCode: EXIT.LEGACY_HISTORICAL,
     report: {
       verb,
       run_id: picked.run.run_id,
       run_status: picked.manifest.status,
+      // `legacy_schema` is the document's own schema string, and it reached
+      // here only because parseRunSchemaMinor matched it against this family's
+      // grammar — same clamp the version gate applies.
       legacy_schema: picked.manifest.schema,
       historical: true,
       not_recertified: true,
       selection: picked.manifest.selection,
-      completion: picked.manifest.completion ?? null,
+      legacy_completion_summary: projectLegacyCompletion(picked.manifest.completion ?? null, { artifactPointer }),
       diagnostics: [
         `Run ${picked.run.run_id} is terminal under legacy schema ${picked.manifest.schema} — presented as immutable historical evidence; nothing was re-probed or re-certified against the ${RUN_SCHEMA_VERSION} registry (ADR-0048 §1). Start a fresh \`runtime:bootstrap plan\` for current evidence.`,
+        `The stored completion is summarized, not replayed: free-text fields (proof reasons, the stored artifact pointer) are withheld and reported as counts, because a historical record is operator-editable and this report travels further than the 0600 artifact does. Read ${artifactPointer} directly for the full record.`,
       ],
     },
   };
@@ -3020,7 +3062,11 @@ async function readProfileFile(ctx, path) {
   try {
     profile = JSON.parse(text);
   } catch (err) {
-    throw new UsageError(`--profile-file is not valid JSON: ${err.message}`);
+    // D1 §3.2 — the mirror of the `--answers` guard above. Both read an
+    // untrusted operator-authored file through JSON.parse, whose message
+    // quotes the input; fixing one and not the other left the identical leak
+    // one flag away.
+    throw new UsageError(`--profile-file is not valid JSON${jsonParsePosition(err)}; the parser's message is withheld because it quotes the file's own bytes (§3.2)`);
   }
   const { validateProfile, profileSchema } = await loadContext(ctx);
   const verdict = validateProfile(profile);
@@ -3199,21 +3245,66 @@ async function runProfileSeed(ctx, opts) {
 // Rendering
 // ---------------------------------------------------------------------------
 
+// D1 — the report-level display bound. The per-artifact cap in
+// lib/schema-validate.mjs bounds ONE validation; a single report can still
+// aggregate findings from several sources (the manifest's validator warnings,
+// the selection divergence, every soft warning a verb accumulated), so the
+// budget is spent once more here.
+//
+// `diagnostics` are spent first because an error the operator must act on
+// outranks a warning they may not have to. The marker text is FIXED — it says
+// that something was dropped without becoming a second place where a count
+// could disagree with `finding_counts`, which is the authority.
+export const BOOTSTRAP_REPORT_SCHEMA_VERSION = 'runtime-bootstrap-report-2.0';
+export const REPORT_FINDINGS_MAX = 32;
+const REPORT_OVERFLOW_MARKER = 'Further findings were omitted from this report; see finding_counts for the totals, and read the run artifact directly for the full set.';
+
+// A report UNDER the cap is returned untouched — not decorated with a
+// `findings_omitted: false`. The ordinary report shape is unchanged by this
+// bound existing; the extra fields appear only when something was actually
+// dropped, which is the only case where a consumer needs them.
+export function boundReportFindings(report) {
+  const diagnostics = Array.isArray(report?.diagnostics) ? report.diagnostics : null;
+  const warnings = Array.isArray(report?.warnings) ? report.warnings : null;
+  if (diagnostics === null && warnings === null) return report;
+  const counts = { diagnostics: diagnostics?.length ?? 0, warnings: warnings?.length ?? 0 };
+  if (counts.diagnostics + counts.warnings <= REPORT_FINDINGS_MAX) return report;
+
+  const keptDiagnostics = diagnostics ? diagnostics.slice(0, REPORT_FINDINGS_MAX) : null;
+  const keptWarnings = warnings ? warnings.slice(0, Math.max(0, REPORT_FINDINGS_MAX - (keptDiagnostics?.length ?? 0))) : null;
+  // The marker lands on whichever list survives, so a report that carries only
+  // warnings still says out loud that it is incomplete. Silent truncation is the
+  // failure this whole bound exists to avoid — a capped list that does not admit
+  // it reads as "that was everything".
+  const marked = keptDiagnostics ?? keptWarnings;
+  marked.push(REPORT_OVERFLOW_MARKER);
+  return {
+    ...report,
+    ...(keptDiagnostics ? { diagnostics: keptDiagnostics } : {}),
+    ...(keptWarnings ? { warnings: keptWarnings } : {}),
+    finding_counts: counts,
+    findings_omitted: true,
+  };
+}
+
 // Free text reaching a rendered line is single-lined, redacted, and bounded.
 // `completion.proofs[].reasons` is schema-bounded by LENGTH ONLY (maxLength
 // 512) — a newline or an ESC is schema-valid — and its inputs are not all
 // grammar-clamped: a Codex plugin-list version is carried through as whatever
-// string the host printed (lib/machine-probe.mjs), and a historical report
-// replays a STORED, operator-editable completion verbatim. Interpolating that
-// raw would let a reason fabricate a line that looks like this renderer's own
-// output. Same rule the completion-output contract applies to free text.
+// string the host printed (lib/machine-probe.mjs). Interpolating that raw would
+// let a reason fabricate a line that looks like this renderer's own output.
+// Same rule the completion-output contract applies to free text.
 // The render boundary neutralizes every character that could END A LINE, move a
 // terminal cursor, or REORDER the display — and nothing else. Row forgery is the
-// threat: `completion.proofs[].reasons` is schema-bounded by LENGTH only (a
-// newline or an ESC is schema-valid), a CONFIG step's `observed` / `recovery`
-// interpolate the probe's plugin version, which lib/machine-probe.mjs carries
-// through as whatever string the host printed, and a historical report replays a
-// stored, operator-editable completion verbatim.
+// threat.
+//
+// The HISTORICAL path used to be the other half of this justification — it
+// replayed a stored, operator-editable completion verbatim — and it no longer
+// is. Under the D1 disclosure invariant (§3.2) that path renders from a
+// projection whose every field was reconstructed against an enum, an anchored
+// pattern, or a count, so it reaches the renderer with no free text at all.
+// Neutralizing a clamped value would be theatre; the guarantee there comes from
+// the projection, not from this sanitizer.
 //
 // Deliberately NOT lib/permission-sanitize's `singleLine` + `redactSecrets`
 // (both were tried at this boundary and withdrawn):
@@ -3250,12 +3341,37 @@ function renderLine(value) {
   return `${/[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut}…`;
 }
 
+// D1 §3.2 — a JSON.parse SyntaxError message embeds a snippet of the INPUT, and
+// carries no `code` to short-circuit on. Only the numeric position is
+// extracted: it is a number, it locates the fault for an operator opening the
+// file, and it cannot carry the bytes it points at.
+//
+// The pattern is ANCHORED to the parser's own trailing phrase, not matched
+// loosely. V8 emits two message families and only one carries a position:
+//
+//   `Expected ',' or '}' after property value in JSON at position 7 (line 1 column 8)`
+//   `Unexpected token 'p', "position 9"... is not valid JSON`
+//
+// A loose /position (\d+)/ matched the SECOND family too — inside the quoted
+// snippet of the input — so a file whose own text began `position 987654321`
+// reported a position it forged for itself. Requiring the ` in JSON at
+// position N` phrasing at END OF MESSAGE cannot be reached from a quoted
+// snippet, because that family always ends `is not valid JSON`.
+//
+// And it is NOT a byte offset: the parser counts UTF-16 code units, so a
+// document containing `é` reports a position one short of its byte offset.
+// Naming the coordinate system is cheaper than converting, and honest.
+function jsonParsePosition(err) {
+  const at = / in JSON at position (\d+)(?: \(line \d+ column \d+\))?$/.exec(err?.message ?? '');
+  return at ? ` (at input position ${at[1]}, in JSON-parser coordinates)` : '';
+}
+
 export function renderText(report) {
   const lines = [];
   lines.push(`runtime:bootstrap ${report.verb}`);
   if (report.run_id) lines.push(`- run: ${report.run_id}${report.run_status ? ` (${report.run_status})` : ''}`);
   if (report.historical) {
-    lines.push(`- HISTORICAL: legacy schema ${report.legacy_schema} — stored record shown verbatim; nothing re-probed or re-certified (ADR-0048 §1)`);
+    lines.push(`- HISTORICAL: legacy schema ${report.legacy_schema} — stored record summarized, free text withheld; nothing re-probed or re-certified (ADR-0048 §1)`);
   }
   if (report.status && !report.completion) lines.push(`- status: ${report.status}`);
   if (report.selection) lines.push(`- selection: bundle=${report.selection.bundle}; desired=${report.selection.desired.join(',')}`);
@@ -3278,11 +3394,12 @@ export function renderText(report) {
       .filter((step) => typeof step?.id === 'string')
       .map((step) => [step.id, step]));
     // Exactly one row per proof KIND. The reducer already rejects duplicate
-    // evidence rather than choosing between records (§8), but a HISTORICAL
-    // completion is replayed verbatim without re-reduction, and the schema does
+    // evidence rather than choosing between records (§8), but the schema does
     // not make `proofs[]` unique by kind — so a stored duplicate would print two
     // identical-looking rows here and invite the operator to believe whichever
     // they read first. Report the conflict instead of silently picking one.
+    // (The historical path applies the same rule inside projectLegacyCompletion,
+    // so its de-duplication holds in `--format json` too, not only on this line.)
     const kindCounts = new Map();
     for (const proof of report.completion.proofs ?? []) {
       kindCounts.set(proof.kind, (kindCounts.get(proof.kind) ?? 0) + 1);
@@ -3321,6 +3438,38 @@ export function renderText(report) {
     if (report.completion.egress_receipt_attestation) {
       const receipt = report.completion.egress_receipt_attestation;
       lines.push(`  - receipt attestation: ${receipt.status}${receipt.reasons.length ? ` (${renderLine(receipt.reasons[0])})` : ''}`);
+    }
+  }
+  // D1 — the historical path renders from the SAME projected object the JSON
+  // format serializes, so the two cannot diverge in the field set. Nothing below
+  // passes through renderSafe/renderLine, and that is deliberate rather than an
+  // omission: every value here was reconstructed against an enum, an anchored
+  // pattern, or is a count, so there is no free text left for a control
+  // character to arrive in. The sanitizer guards free strings; this path no
+  // longer has any.
+  if (report.legacy_completion_summary) {
+    const summary = report.legacy_completion_summary;
+    const counts = [
+      summary.unsatisfied_count ? `unsatisfied=${summary.unsatisfied_count}` : '',
+      summary.missing_steps_count ? `missing=${summary.missing_steps_count}` : '',
+    ].filter(Boolean).join('; ');
+    lines.push(`- stored completion (summary; free text withheld): ${summary.state ?? 'unreadable'}${counts ? `; ${counts}` : ''}`);
+    for (const proof of summary.proofs ?? []) {
+      if (proof.conflicting_records) {
+        lines.push(`  - [stage 8] proof.${proof.kind}: ${proof.conflicting_records} conflicting evidence records — none shown; duplicate evidence is rejected, not chosen between (§8)`);
+        continue;
+      }
+      lines.push(`  - [stage 8] proof.${proof.kind}: ${proof.status ?? 'unreadable'}${proof.declined ? ' (declined)' : ''}${proof.reason_count ? `; ${proof.reason_count} reason(s) withheld` : ''}`);
+    }
+    if (summary.unreadable_proof_records > 0) {
+      lines.push(`  - ${summary.unreadable_proof_records} proof record(s) carried no recognizable kind and are not shown`);
+    }
+    for (const [label, verdict] of [['hook attestation', summary.hook_attestation], ['receipt attestation', summary.egress_receipt_attestation]]) {
+      if (!verdict) continue;
+      lines.push(`  - ${label}: ${verdict.status ?? 'unreadable'}${verdict.reason_count ? `; ${verdict.reason_count} reason(s) withheld` : ''}`);
+    }
+    if (summary.source?.artifact_pointer) {
+      lines.push(`  - full record: ${summary.source.artifact_pointer} (json pointer ${summary.source.json_pointer})`);
     }
   }
   if (report.stage0 && Object.keys(report.stage0).length > 0) {
@@ -3427,9 +3576,13 @@ export async function runBootstrap({
 
   const ctx = { env, homeDir, cwd, hostname, now, runner, subprocessRunner, pluginRoot };
   try {
-    const { exitCode, report } = await VERB_RUNNERS[opts.verb](ctx, opts);
+    const { exitCode, report: raw } = await VERB_RUNNERS[opts.verb](ctx, opts);
+    // ONE projection, built BEFORE the format branch. Both renderings consume
+    // the same object, so text and `--format json` cannot disagree about which
+    // findings a report carries (D1).
+    const report = boundReportFindings(raw);
     const rendered = opts.format === 'json'
-      ? `${JSON.stringify({ schema: 'runtime-bootstrap-report-1.0', verb: opts.verb, runtime_version: RUNTIME_VERSION, ...report }, null, 2)}\n`
+      ? `${JSON.stringify({ schema: BOOTSTRAP_REPORT_SCHEMA_VERSION, verb: opts.verb, runtime_version: RUNTIME_VERSION, ...report }, null, 2)}\n`
       : renderText(report);
     return { exitCode, report, rendered };
   } catch (err) {

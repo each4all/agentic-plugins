@@ -529,10 +529,11 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
 
   **Exactly one row per proof KIND.** The reducer already rejects duplicate
   evidence rather than choosing between records (§8), but a historical
-  completion is replayed verbatim without re-reduction and `proofs[]` is not
-  unique-by-kind in the schema. A duplicated kind therefore renders ONE row
-  naming the conflict and showing no verdict — never two rows the operator must
-  choose between.
+  completion is never re-reduced and `proofs[]` is not unique-by-kind in the
+  schema. A duplicated kind therefore renders ONE row naming the conflict and
+  showing no verdict — never two rows the operator must choose between. The
+  historical projection (§3.2) applies the same rule at projection time, so the
+  de-duplication holds in `--format json` and not only on the rendered line.
 - `profile export` exports the **live probe** unless `--from-run` names a run. With
   no run, `selection.bundle` is `custom` and `selection.desired` is **the observed
   installed set** — which is, empirically, exactly what this machine chose;
@@ -627,8 +628,121 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
 | 20 | `incomplete` (steps remain) |
 | 30 | `no-active-run` (for `status` / `resume` / `verify`) |
 | 40 | invalid input (bad bundle, broken closure, schema rejection, path violation) |
-| 50 | `legacy-historical` — a TERMINAL run under an older schema minor: the stored record was shown verbatim and **nothing was re-probed or re-certified** (ADR-0048 §1). Exit 0 would claim a current completion nobody re-proved, which is exactly the overclaim this code exists to prevent |
+| 50 | `legacy-historical` — a TERMINAL run under an older schema minor: the stored record was **summarized** under the §3.2 disclosure invariant and **nothing was re-probed or re-certified** (ADR-0048 §1). Exit 0 would claim a current completion nobody re-proved, which is exactly the overclaim this code exists to prevent |
 | 1 | unexpected error |
+
+### 3.2 The report disclosure boundary (D1, ratified 2026-08-02)
+
+**The invariant.** A value crosses the **artifact → report** boundary *iff* the
+packaged schema **grammar-clamps** it — an anchored `pattern`, an `enum`, a
+`const`, a boolean, or a number. Everything else leaves as its **TYPE**, its
+**LENGTH**, or its **ORDINAL**, never as its content.
+
+The report schema id is `runtime-bootstrap-report-2.0`. The major moved because
+the historical path's `completion` key was **removed**, not renamed.
+
+*Why a classification rule and not a redaction one.* A sink sanitizer was built
+for this boundary and withdrawn on measurement: a generic 32+-hex rule destroyed
+a legitimate 64-hex plan hash, and `--format json` stayed exposed regardless.
+The root is which values are *sayable*, not which substrings look dangerous.
+Binding the answer to the schema's own grammar clamping makes the test
+mechanical and auditable against the schema file, and self-maintaining — a new
+clamped field becomes disclosable automatically, a new `maxLength`-only field is
+withheld automatically, and neither needs anyone to remember a category list.
+Grammar-clamped fields such as `sha256`, `stepId`, `timestamp`, `semver` and
+`pluginName` therefore keep crossing; `reasons[]`, `artifact_pointer`,
+`answer`, `reason` and `limits[]` are `maxLength`-only and do not.
+
+*Threat model.* Moderate **accidental** disclosure. The operator (or a process
+running as them) writes a secret into a private `0600` artifact; the report then
+travels to terminal capture, CI logs, clipboards, machine consumers, or an
+agent's context. This boundary protects that artifact → stdout transition. It
+does **not** defend against an adversary who already owns the account — reading
+the private artifact directly is the escape hatch, and it is deliberately a file
+read rather than a `--verbatim` flag, which would be pasted into automation and
+put the boundary back where it started.
+
+**(a) A validation finding** MAY carry a runtime-authored code and severity; the
+EXPECTED constraint read from the trusted packaged schema (type, enum members,
+const, pattern source, bounds); the OBSERVED type name and numeric metadata
+(string length, member count, byte size); and a locator built **only** from the
+root `$`, schema-DECLARED property names, zero-based array indices, and a
+zero-based `member[n]` ordinal standing in for any document-supplied key.
+
+It MAY NOT carry any observed scalar value or serialized fragment; any
+document-supplied key name; the document's own `schema` string (report that it
+did not parse, plus the expected shape); raw `JSON.parse`/exception text that can
+quote input; or a hash of a withheld value — that adds equality-and-guessing
+leakage without helping repair.
+
+A finding exists *because* the observed value escaped its clamp, which is why
+the observed side is a type and never a value: the slot said `enum`, the document
+supplied something else, so what arrived is by definition unclamped.
+
+**Bounds.** At most 16 errors and 16 warnings per artifact; at most 32 findings
+per command report, errors first, plus one fixed overflow marker; each finding
+capped at 512 UTF-8 bytes; total counts and an `omitted` boolean carried
+alongside. Validation continues **internally** past the display cap, so the
+ok/not-ok verdict is computed from the full counts and a suppressed finding can
+never change an answer. The flood this bounds is measured: a 62,969-byte
+future-minor document with 4,000 unknown scalar keys produced 4,001 warnings /
+643,305 characters (~10x amplification) before the caps existed. Input is itself
+bounded at 128 KiB because an over-cap proof file is skipped rather than parsed,
+so the flood was amplification, not unbounded input.
+
+**(b) A legacy terminal run** emits `legacy_completion_summary` — a freshly
+**built** object, never a spread of the stored one — carrying per proof `kind`,
+`status`, `required`, `declined`, `step_id`, `artifact_hash`, `ran_at` and
+`reason_count`; the completion `state` enum; unsatisfied and missing counts;
+hook and receipt attestation `status` + `reason_count`; plus
+`source.artifact_pointer` (runtime-**derived**, home-relative — not the stored
+string) and `source.json_pointer: /completion`. The raw `completion` property is
+not emitted, and the name differs so a consumer cannot mistake the summary for
+the record. Text and `--format json` consume this same projected object, built
+upstream of the format branch, so the two cannot diverge in the field set.
+
+`{...completion, reasons: []}` is specifically wrong: `artifact_pointer` is a
+second `maxLength`-only string in the same reduced proof, and a spread forwards
+whatever else the stored object happens to carry.
+
+**(c) Two sibling paths carry the same free content and follow the same rule.**
+They are named because the invariant is about the boundary, not about the
+validator that happens to sit on it:
+
+- **Proof-directory entry names.** Whoever can write into `proof/` chooses the
+  filename. `<kind>.json` for a known evidence kind is a name this runtime
+  defined and may be quoted; every other entry is located by a zero-based
+  `entry[n]` ordinal and described by the rule it broke, with the expected
+  vocabulary named so the operator can rename the file.
+- **Parser and serializer messages.** A `JSON.parse` `SyntaxError` embeds a
+  snippet of its input *and carries no `code`*, so an `err?.code ?? err?.message`
+  fallback resolves to the quoting message exactly when the document is the
+  untrusted thing. Only the numeric **position** crosses. This applies to every
+  untrusted-file flag — `--answers` and `--profile-file` alike — and to the run
+  manifest read. A `JSON.stringify` failure likewise names the document-supplied
+  property that closes a circular structure, so its message is withheld entirely.
+
+  The position must be read from the parser's **own trailing phrase**, anchored:
+  V8 emits two message families and only one carries a position, so a loose
+  `/position (\d+)/` also matches inside the *quoted snippet of the input*, and a
+  file whose text begins `position 987654321` reports a position it forged for
+  itself. It is also **not a byte offset** — the parser counts UTF-16 code units,
+  so a document containing `é` puts the byte offset one ahead of the reported
+  position. Name the coordinate system rather than converting.
+
+  A test asserting "the secret is absent" from a parser message is a trap worth
+  stating: V8 truncates its quotation at ten characters, so a fixture whose
+  marker sits further in passes against the unfixed code. The regression fixtures
+  put the marker in the first bytes for that reason.
+
+- **Operator answers.** `--answers` is untrusted operator-authored input on the
+  same boundary. A `step_id` that MATCHED an expected step is a registry id this
+  runtime declared and keeps being named; a step id that did not match, and an
+  `answer` outside the closed vocabulary, are unclamped by definition and are
+  located by `answers[n]` instead. Both refusals still name what was expected —
+  the ids this run does have, and the four legal answers — because withholding
+  those would cost the operator the only actionable part of the message while
+  buying no secrecy at all.
 
 ---
 
@@ -1501,10 +1615,12 @@ is where the minor moves:
   fragments render, and the persist stamps the current schema string with a
   history row naming the migration — never a silent rewrite;
 - a TERMINAL run under an older minor is **immutable historical evidence**:
-  `status`/`verify` present the stored completion verbatim with
+  `status`/`verify` present a §3.2 **summary** of the stored completion with
   `historical`/`not_recertified` markers and exit `50` (§3.1), re-probe nothing,
   re-read no proof file, and re-certify nothing against the current registry —
-  the operator starts a fresh `plan` for current evidence;
+  the operator starts a fresh `plan` for current evidence. Immutability is a
+  property of the RECORD, which stays byte-identical; it was never a promise to
+  reprint the record's free text on stdout;
 - a run under a **newer** minor refuses `resume` outright: this runtime would
   persist a document it only half-understands, silently shedding additions a
   newer runtime recorded (§4.6: downgrade is never attempted). R0 verbs may
@@ -2002,21 +2118,28 @@ following obligations join the pins below, spread across
   to evidence-only rather than throwing. Reason text is structurally
   neutralized and bounded at the render boundary, so a `reasons` entry carrying a newline or
   a control character cannot fabricate a row (`reasons` is schema-bounded by
-  LENGTH only, and its inputs — a Codex plugin-list version, a stored historical
-  completion — are not all grammar-clamped; note that neutralization is NOT
-  redaction, which was tried at this boundary and withdrawn for eating the
-  64-hex plan hash). The **CONFIG** rows are pinned the
+  LENGTH only, and its input — a Codex plugin-list version carried through as
+  whatever string the host printed — is not grammar-clamped; note that
+  neutralization is NOT redaction, which was tried at this boundary and withdrawn
+  for eating the 64-hex plan hash). The historical path no longer contributes to
+  this obligation: under §3.2 it renders from a projection whose every field was
+  reconstructed against an enum, an anchored pattern, or a count, so it carries
+  no free text for a control character to arrive in — and a test asserts that
+  the projection withholds both free fields rather than that a sanitizer cleaned
+  them. The **CONFIG** rows are pinned the
   same way, because they interpolate the same unclamped probe version one loop
   below — neutralized but NOT truncated — and so are the receipt-attestation
   reason, the C1 range (U+009B is CSI, which a C0-only helper misses), and the
   BiDi overrides/isolates. The inverse is pinned too: a 64-hex plan hash, an
   email-shaped path component, a double space, and a long-hex path component all
   survive verbatim, because a redacting or whitespace-squeezing sanitizer at
-  this boundary breaks the operator's copy-paste. A record whose `step_id`
+  this boundary breaks the operator's copy-paste — and §3.2 keeps that inverse
+  true by construction, since a grammar-clamped `sha256` is exactly the kind of
+  value the disclosure invariant admits. A record whose `step_id`
   disagrees with its `kind` is labelled from the KIND and joins no control
   context — the schema validates the two independently and a historical run is
-  replayed without re-reduction, so the disagreement is not resolved in the
-  edited record's favour. Every rendering rule stated here is mutation-verified:
+  never re-reduced, so the disagreement is not resolved in the edited record's
+  favour. Every rendering rule stated here is mutation-verified:
   reverting any one piece — the loop skip, the verdict source, the filter, the
   execution join, either sanitizer, the length bound, the surrogate guard, the
   kind labelling, or the join guard — turns a named assertion red.

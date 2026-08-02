@@ -23,6 +23,7 @@ import {
   requiredBoundPlugins,
   importProofMetadata,
   importHookAttestation,
+  projectLegacyCompletion,
   recomputeProofStatus,
   recomputeReceiptAttestation,
   reduceCompletion,
@@ -1261,5 +1262,158 @@ describe('runtime completion reducer — receipt attestation verdict (ADR-0048 �
       receiptEvidence: { record: receipt(), providerAckSha256: ACK_SHA },
     });
     strictEqual(withReceipt.egress_receipt_attestation.status, 'stale', 'testimony with no passing ack behind it is stale, not silently dropped');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D1 — the legacy completion projection (machine-bootstrap-contract.md §3.2)
+// ---------------------------------------------------------------------------
+//
+// A terminal legacy run is never re-reduced, so its completion is exactly what
+// an operator last wrote — including the two `maxLength`-only strings the schema
+// never constrains further. The projection is what stands between that record
+// and stdout, so these cases feed it a HOSTILE object directly rather than
+// relying on the selection path having validated one first: the guarantee has to
+// be a property of this function, not of its caller.
+
+describe('legacy completion projection — the disclosure invariant (§3.2)', () => {
+  const SECRET = 'Bearer sk-SECRET-abc123';
+  const POINTER = '~/.agentic-plugins/runs/bootstrap/bootstrap-20260716T000000Z-0aa002/run.json';
+
+  const storedProof = (over = {}) => ({
+    kind: 'deep-peer-smoke',
+    step_id: 'proof.deep-peer-smoke',
+    declined: false,
+    status: 'passed',
+    reasons: [`peer said: ${SECRET}`, 'second reason'],
+    required: true,
+    artifact_pointer: `~/${SECRET}`,
+    artifact_hash: 'a'.repeat(64),
+    bound_versions: null,
+    ran_at: '2026-07-16T00:00:00Z',
+    ...over,
+  });
+
+  const storedCompletion = (over = {}) => ({
+    state: 'complete',
+    unsatisfied: ['host.claude.present', 'host.codex.present'],
+    missing_steps: ['notify.codex.configured'],
+    proofs: [storedProof()],
+    hook_attestation: { status: 'attested', reasons: [SECRET], attested_plugins: [], bound_versions: null, artifact_pointer: `~/${SECRET}`, artifact_hash: null, attested_at: null },
+    ...over,
+  });
+
+  it('carries grammar-clamped fields, converts free text to counts, and derives its own pointer', () => {
+    const summary = projectLegacyCompletion(storedCompletion(), { artifactPointer: POINTER });
+
+    deepStrictEqual(summary.proofs, [{
+      kind: 'deep-peer-smoke',
+      status: 'passed',
+      required: true,
+      declined: false,
+      step_id: 'proof.deep-peer-smoke',
+      // CONTROL — a 64-hex hash is grammar-clamped (`^[0-9a-f]{64}$`) and MUST
+      // cross. This is the anti-regression for the sink sanitizer that was
+      // withdrawn from this codebase for destroying exactly such a hash.
+      artifact_hash: 'a'.repeat(64),
+      ran_at: '2026-07-16T00:00:00Z',
+      reason_count: 2,
+    }]);
+    strictEqual(summary.state, 'complete');
+    strictEqual(summary.unsatisfied_count, 2, 'the remaining work is a count, not a stale list to repair against');
+    strictEqual(summary.missing_steps_count, 1);
+    strictEqual(summary.hook_attestation.status, 'attested', 'the clamped verdict crosses');
+    strictEqual(summary.hook_attestation.reason_count, 1, 'its free reason does not');
+    strictEqual(summary.source.artifact_pointer, POINTER, 'the pointer is the caller-derived one');
+    strictEqual(summary.source.json_pointer, '/completion');
+
+    const serialized = JSON.stringify(summary);
+    ok(!serialized.includes('SECRET'), `nothing free survives:\n${serialized}`);
+    // Specifically NOT the reasons-only fix: `artifact_pointer` is a second
+    // maxLength-only string in the same reduced proof, which is why
+    // `{...completion, reasons: []}` was the wrong shape.
+    ok(!Object.hasOwn(summary.proofs[0], 'artifact_pointer'), 'the STORED pointer is not forwarded under any key');
+  });
+
+  it('is a fresh BUILD, so an unenumerated stored key cannot ride along', () => {
+    const summary = projectLegacyCompletion(
+      storedCompletion({
+        proofs: [storedProof({ raw_output: SECRET })],
+        smuggled: SECRET,
+      }),
+      { artifactPointer: POINTER },
+    );
+    ok(!JSON.stringify(summary).includes('SECRET'), 'a spread would have carried both of these through');
+    ok(!Object.hasOwn(summary, 'smuggled'));
+  });
+
+  it('reconstructs each scalar against its own grammar — an off-grammar field is withheld, not copied', () => {
+    // The selection path validates the manifest before this runs, so in
+    // production these branches do not fire. They are exercised directly
+    // because the projection's output must be disclosable on its own terms,
+    // without a reader having to trace back to find out whether it is.
+    const summary = projectLegacyCompletion(storedCompletion({
+      state: SECRET,
+      proofs: [storedProof({ status: SECRET, step_id: SECRET, artifact_hash: SECRET, ran_at: SECRET, required: SECRET, declined: SECRET })],
+      hook_attestation: { status: SECRET, reasons: [] },
+    }), { artifactPointer: POINTER });
+
+    strictEqual(summary.state, null, 'an off-enum state is withheld, not echoed');
+    deepStrictEqual(summary.proofs[0], {
+      kind: 'deep-peer-smoke',
+      status: null,
+      required: null,
+      declined: null,
+      step_id: null,
+      artifact_hash: null,
+      ran_at: null,
+      reason_count: 2,
+    });
+    strictEqual(summary.hook_attestation.status, null);
+    ok(!JSON.stringify(summary).includes('SECRET'));
+  });
+
+  it('a pointer that is not a pointer is withheld — the escape hatch may not become the leak', () => {
+    strictEqual(projectLegacyCompletion(storedCompletion(), { artifactPointer: SECRET }).source.artifact_pointer, null);
+    strictEqual(projectLegacyCompletion(storedCompletion(), {}).source.artifact_pointer, null);
+  });
+
+  it('a duplicated proof kind is reported as the conflict it is, in JSON as well as on the rendered line', () => {
+    const summary = projectLegacyCompletion(storedCompletion({
+      proofs: [storedProof({ status: 'passed' }), storedProof({ status: 'failed' })],
+    }), { artifactPointer: POINTER });
+    deepStrictEqual(summary.proofs, [{ kind: 'deep-peer-smoke', conflicting_records: 2 }]);
+  });
+
+  it('a record whose kind is not a kind is counted, never shown under a guessed label', () => {
+    const summary = projectLegacyCompletion(storedCompletion({
+      proofs: [storedProof(), storedProof({ kind: SECRET })],
+    }), { artifactPointer: POINTER });
+    strictEqual(summary.proofs.length, 1);
+    strictEqual(summary.unreadable_proof_records, 1);
+    ok(!JSON.stringify(summary).includes('SECRET'));
+  });
+
+  it('a non-object completion projects to null rather than throwing', () => {
+    for (const bad of [null, undefined, 'string', 42, []]) strictEqual(projectLegacyCompletion(bad, { artifactPointer: POINTER }), null);
+  });
+
+  it('the projection\'s step-id grammar is the PACKAGED schema\'s, not a copy that drifted', async () => {
+    const schema = JSON.parse(await readFile(resolve('plugins/runtime/data/schemas/runtime-bootstrap-run-1.2.json'), 'utf8'));
+    // The projection clamps step_id against a regex written in the reducer. If
+    // the schema's pattern ever moves, that copy must move with it — so the two
+    // are compared here rather than trusted to stay aligned.
+    const packaged = schema.$defs.stepId.pattern;
+    const accepted = projectLegacyCompletion({ state: 'complete', proofs: [{ kind: 'permission', step_id: 'proof.permission', reasons: [] }] }, {}).proofs[0].step_id;
+    strictEqual(accepted, 'proof.permission');
+    ok(new RegExp(packaged).test('proof.permission'), 'the packaged pattern accepts what the projection accepted');
+    for (const off of ['Proof.permission', 'proof', 'proof.', '-proof.x']) {
+      strictEqual(new RegExp(packaged).test(off), false, `${off} is off-grammar for the schema`);
+      strictEqual(
+        projectLegacyCompletion({ state: 'complete', proofs: [{ kind: 'permission', step_id: off, reasons: [] }] }, {}).proofs[0].step_id,
+        null,
+        `${off} is off-grammar for the projection too — the two agree`,
+      );
+    }
   });
 });

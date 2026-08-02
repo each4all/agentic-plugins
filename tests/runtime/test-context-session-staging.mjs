@@ -372,7 +372,14 @@ describe('status --slot (contract §7/§10)', () => {
     await writeFile(join(dir, 'entry.json'), `${JSON.stringify(smuggled, null, 2)}\n`);
     const report = await readSlotStatus({ repoRoot });
     strictEqual(report.files.entry.state, 'invalid');
-    match(report.files.entry.reason, /next_action/);
+    // D1 §3.2 — the refusal locates the offending member by ORDINAL and does
+    // not name it. An unknown key is document-supplied by definition, and
+    // `next_action: {command: 'rm -rf /'}` is exactly the shape that makes
+    // quoting it back a bad idea: the key would ride into an operator's
+    // terminal, and so would the value, if either were named.
+    match(report.files.entry.reason, /schema validation failed at \$\.member\[\d+\]/);
+    ok(!report.files.entry.reason.includes('next_action'), 'the smuggled key is not named');
+    ok(!report.files.entry.reason.includes('rm -rf'), 'and neither is its payload');
     strictEqual(report.files.entry.summary, null);
   });
 
