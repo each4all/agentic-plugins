@@ -428,8 +428,8 @@ runtime:bootstrap resume   [--run-id <id> | --latest-open] [--answers <path>]
 runtime:bootstrap verify   [--run-id <id> | --latest] [--format text|json]
 runtime:bootstrap attest   [--run-id <id> | --latest] [--format text|json]
 runtime:bootstrap abandon  (--run-id <id> | --latest-open) [--reason <text>]
-runtime:bootstrap profile export [--name <id>] [--from-run <id>] [--overwrite]
-runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest-open]
+runtime:bootstrap profile export [--name <id>] [--from-run <id>] [--overwrite] [--format text|json]
+runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest-open] [--format text|json]
 ```
 
 - **Run selection** follows the semantics [`footer-contract.md`](footer-contract.md)
@@ -512,10 +512,23 @@ runtime:bootstrap profile seed   --profile-file <path> [--run-id <id> | --latest
   transforms provably destroy real payloads — the plugin-management handoff
   carries a **64-hex plan hash** the executor matches exactly, an operator path
   may contain an email-shaped component or two consecutive spaces, and a SemVer
-  build identifier may be long hex. Three lines are additionally
-  **length-bounded** — the Stage-8 evidence line, the Stage-8 `execution:` line,
-  and the receipt-attestation reason — because `reasons` is schema-bounded by
-  LENGTH only (64 entries × 512 chars). The CONFIG rows are NOT bounded:
+  build identifier may be long hex. Reason-bearing rows are additionally
+  **length-bounded and fairly apportioned**, because `reasons` is schema-bounded
+  by LENGTH only (64 entries × 512 chars) and by nothing else. The rule is one
+  reason PER LINE under a renderer-authored label, each line independently
+  bounded, the block bounded as a whole, and any remainder declared on its own
+  `<label>-omitted:` line with a count — so no reason can spend another's budget
+  and no omission is silent. It applies to all three reason arrays on
+  `completion` (the Stage-8 proofs, the Codex `/hooks` attestation, and the
+  egress receipt attestation) and to the `profile seed` proposal and note rows.
+  The omission marker carries a DIFFERENT label from the reasons themselves;
+  sharing one let a reason forge a count the renderer never made. Truncation
+  cuts on a **grapheme cluster** boundary (UAX #29 via `Intl.Segmenter`), not a
+  code-unit or combining-mark one: a split cluster corrupts nothing visibly and
+  instead presents a different character as the recorded one. A cluster wider
+  than the whole budget yields the ellipsis alone rather than a prefix of
+  itself. The Stage-8 `execution:` line remains length-bounded on the old terms.
+  The CONFIG rows are NOT bounded:
   operator guidance there is judge-authored, finite, and rendered whole, since
   cutting a runbook mid-sentence trades one dishonesty for another. The bounded
   `execution:` line is the one place a judge-authored recovery is capped, and it

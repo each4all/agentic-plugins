@@ -25,8 +25,8 @@ node "<runtime-plugin-root>/scripts/bootstrap.mjs" resume   [--run-id <id> | --l
 node "<runtime-plugin-root>/scripts/bootstrap.mjs" verify   [--run-id <id> | --latest] [--format text|json]
 node "<runtime-plugin-root>/scripts/bootstrap.mjs" attest   [--run-id <id> | --latest] [--format text|json]
 node "<runtime-plugin-root>/scripts/bootstrap.mjs" abandon  (--run-id <id> | --latest-open) [--reason <text>]
-node "<runtime-plugin-root>/scripts/bootstrap.mjs" profile export [--name <id>] [--from-run <id>] [--overwrite]
-node "<runtime-plugin-root>/scripts/bootstrap.mjs" profile seed   --profile-file <path> [--run-id <id> | --latest-open]
+node "<runtime-plugin-root>/scripts/bootstrap.mjs" profile export [--name <id>] [--from-run <id>] [--overwrite] [--format text|json]
+node "<runtime-plugin-root>/scripts/bootstrap.mjs" profile seed   --profile-file <path> [--run-id <id> | --latest-open] [--format text|json]
 ```
 
 3. Pace the interview as **diagnose → profile-seeded-default → ask → render →
