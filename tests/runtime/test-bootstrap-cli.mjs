@@ -238,7 +238,12 @@ describe('runtime bootstrap CLI — §3 grammar', () => {
     await writeFile(stale, JSON.stringify([{ step_id: 'plugin.designer.claude.installed', answer: 'decline' }]));
     const two = await boot({ argv: ['plan', '--bundle', 'base', '--answers', stale], home, cwd, runner: bareRunner(), subprocess: spySubprocess().runner });
     strictEqual(two.exitCode, EXIT.INVALID, 'a step outside the base selection is not an expected step');
-    ok(/not an expected step/.test(two.report.error));
+    // D1 §3.2 — the refusal locates the row by its position in the answers file
+    // and withholds the unmatched id (it is operator-authored free text), while
+    // still naming the ids this run DOES expect.
+    ok(/answers\[0\] names a step this run does not expect/.test(two.report.error), two.report.error);
+    ok(!two.report.error.includes('plugin.designer.claude.installed'), 'the unmatched id is not quoted back');
+    ok(/expected ids: .*host\.claude\.present/.test(two.report.error), 'the expected ids are still named');
     void ANSWER_VALUES;
   });
 
@@ -3248,6 +3253,69 @@ describe('runtime bootstrap CLI — proof-directory entry names (§3.2)', () => 
     const usage = await boot({ argv: ['plan', '--bundle', 'base', '--answers', answers], home: fresh.home, cwd: fresh.cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
     ok(!JSON.stringify(usage.report).includes('SECRET'), 'nor out of the usage path');
     match(JSON.stringify(usage.report), /--answers file is not valid JSON/);
+  });
+
+  it('an operator-supplied answer that FAILED its check is located by ordinal, never quoted back', async () => {
+    // Surfaced by the cross-host Refine-verify peer: the answers file is
+    // operator-authored untrusted input on the same boundary, and both its
+    // failure paths echoed the offending value.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    for (const [label, body, marker] of [
+      ['answer value', '[{"step_id":"host.claude.present","answer":"PRIVATE_CANARY_ANSWER_42"}]', 'PRIVATE_CANARY_ANSWER_42'],
+      ['step id', '[{"step_id":"PRIVATE_CANARY_STEP_42","answer":"accept"}]', 'PRIVATE_CANARY_STEP_42'],
+    ]) {
+      const answers = join(cwd, `bad-${label.replace(/ /g, '-')}.json`);
+      await writeFile(answers, body);
+      const result = await boot({ argv: ['plan', '--bundle', 'base', '--answers', answers], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+      const serialized = JSON.stringify(result.report);
+      ok(!serialized.includes(marker), `${label} must not ride out: ${serialized}`);
+      match(serialized, /answers\[0\]/, `${label} is located by its position in the array`);
+    }
+    // CONTROLS — a MATCHED step id is a registry id this runtime declared, so
+    // it stays named; and the closed answer vocabulary stays named. Withholding
+    // either would cost the operator the only actionable part of the error.
+    const answers = join(cwd, 'bad-answer.json');
+    await writeFile(answers, '[{"step_id":"host.claude.present","answer":"PRIVATE_CANARY_ANSWER_42"}]');
+    const result = await boot({ argv: ['plan', '--bundle', 'base', '--answers', answers], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    match(JSON.stringify(result.report), /for host\.claude\.present/, 'the matched registry step id is still named');
+    match(JSON.stringify(result.report), /decline\|accept\|execute\|attest-receipt/, 'the expected vocabulary is still named');
+  });
+
+  it('--profile-file withholds the parser message too — the mirror of the --answers guard', async () => {
+    // The peer found this by symmetry: both flags read an untrusted
+    // operator-authored file through JSON.parse, and fixing one left the
+    // identical leak one flag away.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const profile = join(cwd, 'bad-profile.json');
+    await writeFile(profile, 'SECRET-sk-live-abc123 not json');
+    const result = await boot({ argv: ['plan', '--bundle', 'base', '--profile-file', profile], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    const serialized = JSON.stringify(result.report);
+    ok(!serialized.includes('SECRET'), `the parser message must not ride out: ${serialized}`);
+    match(serialized, /--profile-file is not valid JSON/, 'the failure is still named');
+  });
+
+  it('the reported parse position comes from the PARSER, and cannot be forged by the input', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    // V8 emits two message families and only one carries a position:
+    //   `… in JSON at position 7 (line 1 column 8)`
+    //   `Unexpected token 'p', "position 9"... is not valid JSON`
+    // A loose /position (\d+)/ matched the second family INSIDE the quoted
+    // snippet, so a file whose own text began `position 987654321` reported a
+    // position it forged for itself.
+    const forged = join(cwd, 'forged.json');
+    await writeFile(forged, 'position 987654321 PRIVATE_CANARY_42');
+    const a = await boot({ argv: ['plan', '--bundle', 'base', '--answers', forged], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    ok(!/position 9/.test(JSON.stringify(a.report).replace('is not valid JSON', '')),
+      `no position may be reported for a message family that carries none: ${JSON.stringify(a.report)}`);
+
+    // The real position is reported, and labelled in the parser's own
+    // coordinates — it counts UTF-16 code units, so `é` puts the byte offset
+    // one ahead of it. Claiming "byte position" here was simply wrong.
+    const utf8 = join(cwd, 'utf8.json');
+    await writeFile(utf8, '{"é":1 nope}');
+    const b = await boot({ argv: ['plan', '--bundle', 'base', '--answers', utf8], home, cwd, runner: hostedRunner(), subprocess: spySubprocess().runner });
+    match(JSON.stringify(b.report), /at input position 7, in JSON-parser coordinates/);
+    strictEqual(Buffer.byteLength('{"é":1 ', 'utf8'), 8, 'the byte offset really is 8 — the position is not bytes');
   });
 
   it('a capped validator warning list SAYS it was capped — a bounded list must not read as the whole story', async () => {

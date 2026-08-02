@@ -717,14 +717,32 @@ validator that happens to sit on it:
 - **Parser and serializer messages.** A `JSON.parse` `SyntaxError` embeds a
   snippet of its input *and carries no `code`*, so an `err?.code ?? err?.message`
   fallback resolves to the quoting message exactly when the document is the
-  untrusted thing. Only the numeric **position** crosses. A `JSON.stringify`
-  failure likewise names the document-supplied property that closes a circular
-  structure, so its message is withheld entirely.
+  untrusted thing. Only the numeric **position** crosses. This applies to every
+  untrusted-file flag — `--answers` and `--profile-file` alike — and to the run
+  manifest read. A `JSON.stringify` failure likewise names the document-supplied
+  property that closes a circular structure, so its message is withheld entirely.
+
+  The position must be read from the parser's **own trailing phrase**, anchored:
+  V8 emits two message families and only one carries a position, so a loose
+  `/position (\d+)/` also matches inside the *quoted snippet of the input*, and a
+  file whose text begins `position 987654321` reports a position it forged for
+  itself. It is also **not a byte offset** — the parser counts UTF-16 code units,
+  so a document containing `é` puts the byte offset one ahead of the reported
+  position. Name the coordinate system rather than converting.
 
   A test asserting "the secret is absent" from a parser message is a trap worth
   stating: V8 truncates its quotation at ten characters, so a fixture whose
   marker sits further in passes against the unfixed code. The regression fixtures
   put the marker in the first bytes for that reason.
+
+- **Operator answers.** `--answers` is untrusted operator-authored input on the
+  same boundary. A `step_id` that MATCHED an expected step is a registry id this
+  runtime declared and keeps being named; a step id that did not match, and an
+  `answer` outside the closed vocabulary, are unclamped by definition and are
+  located by `answers[n]` instead. Both refusals still name what was expected —
+  the ids this run does have, and the four legal answers — because withholding
+  those would cost the operator the only actionable part of the message while
+  buying no secrecy at all.
 
 ---
 

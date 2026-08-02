@@ -1046,13 +1046,21 @@ export function applyAnswers({ steps, answers, now, selection = null, pluginSet 
   // ALL of them — the run is replayable from its own manifest), collapsing to
   // one EFFECTIVE action per step, last-wins in file order. Pass 2 applies
   // state transitions from the effective map ONLY.
+  // D1 §3.2 — the answers file is operator-authored untrusted input, so a value
+  // that FAILED its check is unclamped by definition and is located by its
+  // position in the array rather than quoted back. A step id that MATCHED is a
+  // registry id this runtime declared, so it keeps being named: withholding it
+  // would cost the operator the one thing that makes the error actionable while
+  // buying no secrecy at all.
+  let answerOrdinal = -1;
   for (const { step_id: stepId, answer } of answers) {
+    answerOrdinal += 1;
     const step = byId.get(stepId);
     if (!step) {
-      throw new UsageError(`answers file names step '${stepId}', which is not an expected step of this run (§6.1); refusing to record it`);
+      throw new UsageError(`answers[${answerOrdinal}] names a step this run does not expect (§6.1); refusing to record it. The id is withheld because an unmatched step id is free text — expected ids: ${[...byId.keys()].sort().join(', ')}`);
     }
     if (!ANSWER_VALUES.includes(answer)) {
-      throw new UsageError(`answer '${answer}' for ${stepId} is not one of ${ANSWER_VALUES.join('|')}`);
+      throw new UsageError(`answers[${answerOrdinal}] carries an answer for ${stepId} that is not one of ${ANSWER_VALUES.join('|')}; the value is withheld because it did not match the closed set`);
     }
     const refusal = answerRefusal({ step, answer, verb, applicable: applicableById.get(stepId) });
     if (refusal) throw new UsageError(refusal);
@@ -3054,7 +3062,11 @@ async function readProfileFile(ctx, path) {
   try {
     profile = JSON.parse(text);
   } catch (err) {
-    throw new UsageError(`--profile-file is not valid JSON: ${err.message}`);
+    // D1 §3.2 — the mirror of the `--answers` guard above. Both read an
+    // untrusted operator-authored file through JSON.parse, whose message
+    // quotes the input; fixing one and not the other left the identical leak
+    // one flag away.
+    throw new UsageError(`--profile-file is not valid JSON${jsonParsePosition(err)}; the parser's message is withheld because it quotes the file's own bytes (§3.2)`);
   }
   const { validateProfile, profileSchema } = await loadContext(ctx);
   const verdict = validateProfile(profile);
@@ -3333,9 +3345,25 @@ function renderLine(value) {
 // carries no `code` to short-circuit on. Only the numeric position is
 // extracted: it is a number, it locates the fault for an operator opening the
 // file, and it cannot carry the bytes it points at.
+//
+// The pattern is ANCHORED to the parser's own trailing phrase, not matched
+// loosely. V8 emits two message families and only one carries a position:
+//
+//   `Expected ',' or '}' after property value in JSON at position 7 (line 1 column 8)`
+//   `Unexpected token 'p', "position 9"... is not valid JSON`
+//
+// A loose /position (\d+)/ matched the SECOND family too — inside the quoted
+// snippet of the input — so a file whose own text began `position 987654321`
+// reported a position it forged for itself. Requiring the ` in JSON at
+// position N` phrasing at END OF MESSAGE cannot be reached from a quoted
+// snippet, because that family always ends `is not valid JSON`.
+//
+// And it is NOT a byte offset: the parser counts UTF-16 code units, so a
+// document containing `é` reports a position one short of its byte offset.
+// Naming the coordinate system is cheaper than converting, and honest.
 function jsonParsePosition(err) {
-  const at = /position (\d+)/.exec(err?.message ?? '');
-  return at ? ` (at byte position ${at[1]})` : '';
+  const at = / in JSON at position (\d+)(?: \(line \d+ column \d+\))?$/.exec(err?.message ?? '');
+  return at ? ` (at input position ${at[1]}, in JSON-parser coordinates)` : '';
 }
 
 export function renderText(report) {
