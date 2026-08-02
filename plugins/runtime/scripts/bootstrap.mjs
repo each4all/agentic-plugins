@@ -3628,23 +3628,30 @@ const RENDER_LINE_MAX = 400;
 // The lookahead slices TWO code units so an astral combining mark (a surrogate
 // pair) is matched as the single code point it is; `\p{M}` under /u would
 // otherwise see a lone high surrogate and decline.
+// The retreat walks an INDEX rather than re-spreading the kept prefix each
+// time. `[...cut]` inside the loop made the backoff quadratic in the retreat
+// distance — measured at 74ms for a schema-max 64 × 512 reason set of pure
+// combining marks, and 886ms once the input is not schema-bounded (renderText
+// is reachable from a stored run.json). Index arithmetic is linear and renders
+// the same string.
 const COMBINING_MARK_RE = /^\p{M}/u;
+const isHighSurrogateAt = (s, i) => i >= 0 && s.charCodeAt(i) >= 0xd800 && s.charCodeAt(i) <= 0xdbff;
+const isLowSurrogateAt = (s, i) => i >= 0 && s.charCodeAt(i) >= 0xdc00 && s.charCodeAt(i) <= 0xdfff;
 function boundedCut(clean, budget) {
   if (clean.length <= budget) return clean;
-  let cut = clean.slice(0, budget - 1);
-  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
-  // While the FIRST DROPPED character is a combining mark, the cut is inside a
+  let end = budget - 1;
+  // Never end on the high half of a surrogate pair.
+  if (isHighSurrogateAt(clean, end - 1)) end -= 1;
+  // While the FIRST DROPPED code point is a combining mark, the cut is inside a
   // cluster — retreat one code point and look again.
-  while (cut.length > 0 && COMBINING_MARK_RE.test(clean.slice(cut.length, cut.length + 2))) {
-    const chars = [...cut];
-    chars.pop();
-    const shorter = chars.join('');
+  while (end > 0 && COMBINING_MARK_RE.test(clean.slice(end, end + 2))) {
+    const step = isHighSurrogateAt(clean, end - 2) && isLowSurrogateAt(clean, end - 1) ? 2 : 1;
     // A run of marks long enough to consume the whole budget would otherwise
     // retreat to an empty line, which says less than a split cluster does.
-    if (shorter.length === 0) break;
-    cut = shorter;
+    if (end - step <= 0) break;
+    end -= step;
   }
-  return `${cut}…`;
+  return `${clean.slice(0, end)}…`;
 }
 
 function renderLine(value) {

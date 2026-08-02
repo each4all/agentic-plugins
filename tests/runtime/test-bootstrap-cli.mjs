@@ -2757,19 +2757,48 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
   });
 
   it('truncation never strips a combining mark off its base character', () => {
-    // The quieter half of the surrogate case below. Cutting `é` (e + U+0301)
-    // after the `e` corrupts nothing visibly — it renders a confident `e`, and
-    // the operator cannot tell the source said `é`. 398 filler puts the mark
-    // exactly on the cut boundary.
+    // The quieter half of the surrogate case below. Cutting `e` + U+0301 after
+    // the `e` corrupts nothing visibly — it renders a confident `e`, and the
+    // operator cannot tell the source ever said an accented character. 398
+    // filler puts the mark exactly on the cut boundary (RENDER_LINE_MAX 400 ->
+    // the cut lands at index 399).
+    //
+    // The mark is written as an ESCAPE, never as a literal. A literal is one
+    // editor normalization away from being the precomposed U+00E9, which has no
+    // combining mark at all — the backoff would never fire and this test would
+    // keep passing while testing nothing. The assert pins that precondition so
+    // the fixture cannot rot into a vacuous pass.
+    const reason = `${'x'.repeat(398)}e\u0301TAIL${'y'.repeat(100)}`;
+    strictEqual(reason.codePointAt(399), 0x0301, 'the fixture must be DECOMPOSED for this test to exercise anything');
     const text = renderText({
       verb: 'status',
-      completion: completionOf([evaluatedProof({ reasons: [`${'x'.repeat(398)}éTAIL${'y'.repeat(100)}`] })]),
+      completion: completionOf([evaluatedProof({ reasons: [reason] })]),
       steps: [],
     });
     const line = text.split('\n').find((l) => /^ {6}evidence: /.test(l));
-    const payload = line.replace(/^ {6}evidence: /, '').replace(/…$/, '');
+    const payload = line.replace(/^ {6}evidence: /, '').replace(/\u2026$/, '');
     ok(!/e$/.test(payload), `the base was dropped with its mark, not kept without it: ${JSON.stringify(payload.slice(-6))}`);
-    ok(!/́/.test(payload), 'and no orphaned mark survives either');
+    ok(!/\u0301/.test(payload), 'and no orphaned mark survives either');
+  });
+
+  it('the grapheme backoff is linear, not quadratic, in the retreat distance', () => {
+    // The first implementation re-spread the kept prefix (`[...cut]`) on every
+    // retreat step, which is quadratic in the run of marks. Measured at 74ms for
+    // a schema-max reason set of pure combining marks and 886ms once the input
+    // is not schema-bounded — and `renderText` is reachable from a stored
+    // run.json, so the schema bound is not a guarantee at this boundary.
+    const marks = '\u0301'.repeat(512);
+    const started = process.hrtime.bigint();
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ reasons: Array.from({ length: 64 }, () => marks) })]),
+      steps: [],
+    });
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    ok(text.includes('evidence:'), 'it still renders');
+    // Generous against CI jitter: the quadratic version took ~74ms here, the
+    // linear one ~2ms. Anything under 40ms cannot be the quadratic shape.
+    ok(elapsedMs < 40, `expected linear-time backoff, took ${elapsedMs.toFixed(1)}ms`);
   });
 
   // The two crossed states the CLI fixtures cannot reach cheaply, and the exact
