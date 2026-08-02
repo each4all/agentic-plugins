@@ -1765,6 +1765,184 @@ describe('bootstrap egress-provider-ack executor — consistency matrix + reader
 });
 
 // ---------------------------------------------------------------------------
+// resume's ONE final snapshot
+//
+// The defect these pin: resume re-probed after an executor and then reduced +
+// persisted against that fresh probe while the STEPS inside the same manifest,
+// Stage 0, and the returned report all still derived from the pre-execution
+// one. The run therefore stored a probe its own steps had never been judged
+// against, and handed the caller a third, older view of the machine.
+//
+// Every test here changes the machine DURING the executor — the only window in
+// which the two snapshots can differ — and then asserts the run speaks about
+// one machine. Each was mutation-verified: reverting the reconstruction fails
+// it, and the pre-execution control assertion proves the fixture is not
+// vacuously in the post-execution state to begin with.
+// ---------------------------------------------------------------------------
+describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => {
+  const SMOKE_SECTION = {
+    deep_peer_smoke: {
+      directions: {
+        claude_to_codex: { execution: 'executed', status: 'passed' },
+        codex_to_claude: { execution: 'executed', status: 'passed' },
+      },
+    },
+    doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json' },
+  };
+
+  // A host runner whose answers can be rewritten between calls, so the machine
+  // can move WHILE the executor runs. `installed` and `hosts` are read on every
+  // call, not captured once.
+  function mutableRunner(state) {
+    return async (name, args) => {
+      const key = `${name} ${args.join(' ')}`;
+      if (!state.hosts.includes(name)) return missing();
+      if (key === 'claude --version') return okOut('2.1.0 (Claude Code)');
+      if (key === 'claude auth status') return okOut(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }));
+      if (key === 'claude plugin list') return okOut(claudePluginList(state.installed));
+      if (key === 'claude plugin marketplace list --json') return okOut(MARKETPLACE_JSON);
+      if (name === 'claude') return okOut('usage');
+      if (key === 'codex --version') return okOut('codex-cli 0.140.0');
+      if (key === 'codex login status') return okOut('Logged in using ChatGPT');
+      if (key === 'codex plugin list --json') return okOut(codexPluginList(state.installed));
+      if (key === 'codex plugin marketplace list --json') return okOut(MARKETPLACE_JSON);
+      if (name === 'codex') return okOut('usage');
+      return missing();
+    };
+  }
+
+  // Executes deep-peer-smoke; `duringProof` is the machine moving underneath.
+  function smokeDoctorStub(duringProof) {
+    return async (scriptPath, args) => {
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        if (args.includes('--execute-deep-peer-smoke')) {
+          await duringProof();
+          return okOut(JSON.stringify(SMOKE_SECTION));
+        }
+        return okOut(JSON.stringify({}));
+      }
+      return missing();
+    };
+  }
+
+  async function writeSmokeAnswers(home) {
+    const path = join(home, 'execute-smoke-and-decline-egress.json');
+    await writeFile(path, JSON.stringify([
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+      { step_id: 'egress.configured', answer: 'decline' },
+    ]));
+    return path;
+  }
+
+  const manifestOf = async (home, runId) =>
+    JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'bootstrap', runId, 'run.json'), 'utf8'));
+
+  it('a plugin that disappears DURING the proof is re-judged: the manifest never stores a probe its own steps contradict', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = { installed: [...ALL_PLUGINS], hosts: ['claude', 'codex'] };
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json'], spySubprocess().runner);
+    const runId = plan.report.run_id;
+    // CONTROL: the fixture starts in the state the assertion must NOT trivially
+    // hold in — attention is installed and judged satisfied before the proof.
+    strictEqual(plan.report.steps.find((s) => s.id === 'plugin.attention.claude.installed')?.status, 'satisfied',
+      'precondition: attention is installed and satisfied at plan time');
+
+    // The operator uninstalls a selected plugin while the smoke proof runs.
+    const resume = await run(
+      ['resume', '--latest-open', '--answers', await writeSmokeAnswers(home)],
+      smokeDoctorStub(async () => { state.installed = ALL_PLUGINS.filter((p) => p !== 'attention'); }),
+    );
+
+    const manifest = await manifestOf(home, runId);
+    strictEqual(manifest.probe.hosts.claude.plugins.attention.state, 'missing',
+      'the persisted probe is the POST-execution one (this is the half that already worked)');
+    const persistedRow = manifest.steps.find((s) => s.id === 'plugin.attention.claude.installed');
+    strictEqual(persistedRow?.status, 'pending',
+      `the step PERSISTED beside that probe was judged from it, not from the pre-execution one (got ${persistedRow?.status}: ${JSON.stringify(persistedRow)})`);
+    const reportedRow = resume.report.steps.find((s) => s.id === 'plugin.attention.claude.installed');
+    strictEqual(reportedRow?.status, 'pending', 'and the caller is told the same thing the manifest records');
+  });
+
+  it('the returned report carries the probe it was judged and reduced against — and a Stage 0 built from the same raw facts', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = { installed: [...ALL_PLUGINS], hosts: ['claude', 'codex'] };
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json'], spySubprocess().runner);
+    const runId = plan.report.run_id;
+    // CONTROL: Stage 0 is quiet while both CLIs answer — so a raised codex row
+    // below can only come from the mid-proof disappearance.
+    deepStrictEqual(plan.report.stage0, {}, 'precondition: Stage 0 raises nothing on a fully hosted machine');
+
+    // The codex CLI goes away mid-proof: `raw.codex.status` is the ONLY source
+    // for the Stage-0 verdict, so a Stage 0 built from the stale `raw` stays
+    // silent about a host that is no longer there.
+    const resume = await run(
+      ['resume', '--latest-open', '--answers', await writeSmokeAnswers(home)],
+      smokeDoctorStub(async () => { state.hosts = ['claude']; }),
+    );
+
+    const manifest = await manifestOf(home, runId);
+    deepStrictEqual(resume.report.probe, manifest.probe,
+      'the reported probe IS the persisted one — the recorded symptom was these two disagreeing');
+    strictEqual(resume.report.stage0.codex?.needed, true,
+      `Stage 0 is built from the final raw facts, so the vanished host is surfaced (got ${JSON.stringify(resume.report.stage0)})`);
+    // `raw` is a judgement input in its own right — host presence reads it and
+    // nothing else — so the reconstruction has to carry the final RAW, not just
+    // re-serialize the final probe.
+    strictEqual(resume.report.steps.find((s) => s.id === 'host.codex.present')?.status, 'pending',
+      'the step that reads raw host status is judged from the final raw too');
+  });
+
+  it('applicability moves with the snapshot: a permission fragment applied DURING the proof makes proof.permission applicable in the same resume', async () => {
+    // The executor-induced applicability edge: `fragment_applied` is promoted
+    // the first time a rendered fragment is observed applied, and
+    // deriveExpectedSteps reads it to decide whether proof.permission exists at
+    // all. Observed for the first time in the FINAL snapshot, it must reach the
+    // expectation the reconstruction is built from — a reconstruction that
+    // reused the pre-execution expectation would rebuild the run around an
+    // applicability its own snapshot disproves.
+    const { home, cwd } = await makeHome();
+    const state = { installed: [...ALL_PLUGINS], hosts: ['claude', 'codex'] };
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json'], spySubprocess().runner);
+    const runId = plan.report.run_id;
+    // CONTROL, both halves: the fragment must be RENDERED (promotion requires a
+    // prior pointer) and the proof must start non-applicable, or the assertion
+    // below would hold with or without the reconstruction.
+    const plannedPermission = plan.report.steps.find((s) => s.id === 'permission.claude.applied');
+    strictEqual(plannedPermission?.status, 'pending', 'precondition: the permission step is unresolved at plan time');
+    ok(plannedPermission?.fragment_pointer, 'precondition: a permission fragment was rendered, so fragment_applied can be promoted later');
+    strictEqual(plan.report.steps.find((s) => s.id === 'proof.permission')?.status, 'not-applicable',
+      'precondition: with no fragment applied, the permission proof does not apply');
+
+    // The operator applies the Claude permission fragment while the smoke runs.
+    const resume = await run(
+      ['resume', '--latest-open', '--answers', await writeSmokeAnswers(home)],
+      smokeDoctorStub(async () => {
+        await writeFile(join(home, '.claude', 'settings.json'),
+          `${JSON.stringify({ permissions: { defaultMode: 'acceptEdits', allow: ['Read'] } }, null, 2)}\n`);
+      }),
+    );
+
+    const permissionRow = resume.report.steps.find((s) => s.id === 'permission.claude.applied');
+    strictEqual(permissionRow?.status, 'satisfied',
+      `the mid-proof application is observed by the final readers (got ${permissionRow?.status})`);
+    strictEqual(permissionRow?.fragment_applied, true, 'and promoted, which is what the expectation reads');
+    const proofRow = resume.report.steps.find((s) => s.id === 'proof.permission');
+    ok(proofRow && proofRow.status !== 'not-applicable',
+      `the expectation is re-derived from the final snapshot, so the proof applies in THIS resume (got ${proofRow?.status})`);
+    const persisted = (await manifestOf(home, runId)).steps.find((s) => s.id === 'proof.permission');
+    ok(persisted && persisted.status !== 'not-applicable',
+      `and the run persists that applicability rather than making the operator resume twice (got ${persisted?.status})`);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Stage-8 presentation — control disposition vs evidence verdict
 //
 // The defect this pins: `renderText` printed a Stage-8 proof TWICE — once from

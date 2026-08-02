@@ -1606,6 +1606,21 @@ converse also holds: a later resume may refresh `probe` while a recorded proof
 stays stale. So a Stage-8 control row is never the place a proof's staleness is
 recorded, and this reset never makes a stale proof current.
 
+**One snapshot per verb.** A resume that runs a Stage-8 executor re-probes
+afterwards — an executor takes minutes, and judging its own freshness against the
+snapshot it started from would compare a machine against itself. That second
+snapshot then becomes the verb's ONLY account of the machine: `probe`, the raw
+host facts behind it, and the user-global readers are gathered once, and
+everything the verb emits is rebuilt from that one gathering — the judged
+`steps[]`, the completion reduction, the persisted manifest, the rendered
+fragments, the Stage-0 presentation, and the returned report. A run MUST NOT
+store a `probe` its own `steps[]` were judged against a different snapshot of, or
+return one to a caller that disagrees with what it persisted. **Applicability
+moves with the snapshot too**: a judgement input the later snapshot changes — the
+permission fragment observed applied for the first time, promoting
+`fragment_applied` — re-derives the expected-step set before the rebuild, so the
+run is never reconstructed around an applicability its own snapshot disproves.
+
 **Schema-minor migration (1.2, ADR-0048 §1).** `resume` is the one M1 verb, so it
 is where the minor moves:
 

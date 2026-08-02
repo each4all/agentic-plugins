@@ -1791,6 +1791,21 @@ function priorJudgeMapOf(stepList) {
   }));
 }
 
+/**
+ * The Stage-6 permission fragment's APPLIED state, per host, read off step rows.
+ * ONE implementation for the same reason as `priorJudgeMapOf` above: it is a
+ * judgement INPUT — `deriveExpectedSteps` reads it to decide whether
+ * `proof.permission` applies at all — and both derivation sites (the reprobe's
+ * second pass, and resume's final-snapshot reconstruction) must read it
+ * identically or the two expectations drift over the same rows.
+ */
+function permissionFragmentAppliedFrom(rows) {
+  return Object.fromEntries(['claude', 'codex'].map((h) => [
+    h,
+    (rows ?? []).find((s) => s.id === stepIds.permissionApplied(h))?.fragment_applied === true,
+  ]));
+}
+
 // A parsed JSON value is only usable as a report/record when it is a plain
 // object: `null`, `false`, `0`, `""` and arrays all survive JSON.parse and would
 // otherwise slip through truthiness checks unremarked.
@@ -2039,11 +2054,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // One predicate, so the two readers cannot drift.
   const egressOptIn = egressProofRequested
     || egressProofOptedIn({ steps: manifest.steps, choices: manifest.choices, proofs: recordedProofs });
-  const fragmentAppliedFrom = (rows) => Object.fromEntries(['claude', 'codex'].map((h) => [
-    h,
-    (rows ?? []).find((s) => s.id === stepIds.permissionApplied(h))?.fragment_applied === true,
-  ]));
-  const storedFragmentApplied = fragmentAppliedFrom(manifest.steps);
+  const storedFragmentApplied = permissionFragmentAppliedFrom(manifest.steps);
   let expected = deriveExpectedSteps({
     pluginSet,
     selection: effective,
@@ -2085,7 +2096,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // answer boundary it turned an ordinary flow — plan, apply the fragments,
   // resume with `execute proof.permission` — into exit 40 (cross-host
   // Refine-verify, High; reproduced). Re-derive from what was observed.
-  const judgedFragmentApplied = fragmentAppliedFrom(steps);
+  const judgedFragmentApplied = permissionFragmentAppliedFrom(steps);
   if (['claude', 'codex'].some((h) => judgedFragmentApplied[h] !== storedFragmentApplied[h])) {
     expected = deriveExpectedSteps({
       pluginSet,
@@ -2538,10 +2549,7 @@ async function runResume(ctx, opts) {
     expected = deriveExpectedSteps({
       pluginSet,
       selection: effective,
-      permissionFragmentApplied: Object.fromEntries(['claude', 'codex'].map((h) => [
-        h,
-        steps.find((s) => s.id === stepIds.permissionApplied(h))?.fragment_applied === true,
-      ])),
+      permissionFragmentApplied: permissionFragmentAppliedFrom(steps),
       egressProofRequested: reprobe.egressOptIn,
     });
     const graph = validateStepGraph(expected);
@@ -2758,76 +2766,43 @@ async function runResume(ctx, opts) {
     if (!attest.ok) warnings.push(`attest-receipt was not recorded: ${attest.diagnostic}`);
   }
 
+  // ── THE FINAL SNAPSHOT ─────────────────────────────────────────────────────
+  //
   // A proof executor can run for minutes; judging its freshness against the
   // PRE-execution probe would compare a snapshot against itself and could mark
   // drifted evidence current (Codex review MAJOR). When anything executed,
   // re-probe: the final reduction — and the persisted probe — reflect the
   // post-execution machine, so a CLI/plugin that moved mid-proof re-judges the
   // evidence stale instead of complete.
-  const finalProbe = executedAnything ? (await probeNow(ctx)).probe : probe;
+  //
+  // RAW rides along, not just the serialized probe. `judgeSteps` reads both —
+  // host presence and marketplace registration come from `raw`, versions and
+  // auth from `probe` — and `buildStage0` reads both too, so re-probing while
+  // keeping the old `raw` would just move the mismatch one field over.
+  //
   // The READERS re-read is the same rule for the ACTIVATION half (Plan-verify
   // peer): the egress ack's freshness equality compares its recorded
   // activation_fingerprint against the CURRENT activation — judged from the
   // pre-execution readers, a just-recorded ack could be marked stale (or a
   // stale one current) when the operator changed channel/recipient mid-proof.
-  const finalReaders = executedAnything ? await readUserGlobalReaders(ctx) : reprobe.readers;
-
-  // A hook attestation imported ABOVE was judged into `steps` before it existed
-  // (reprobeAgainstRun reads proof/ and judges in one pass, and the import comes
-  // after), so the reduction below would pair a fresh `attested` verdict with a
-  // still-`pending` step and report the run incomplete — completion needs both.
-  // The operator's symptom was that the resume which finally imported the claim
-  // still showed the step pending, and only a SECOND resume satisfied it: the
-  // same "do the thing you already did" loop #645 is about, one step further on.
-  // Re-judge against THIS RESUME'S CURRENT steps, not the pre-answer snapshot.
-  // applyAnswers mutates step rows in place — a decline sets `declined` and
-  // withdraws the fragment pointer, apply command and desired state — and it has
-  // already run by the time the import happens. Re-judging from the pre-answer
-  // map (the first cut of this fix) silently discarded those mutations: the
-  // operator's decline stayed in `choices` and `history` while the step itself
-  // reverted to `pending` with its refused hand-off restored, and because the
-  // reducer reads `declined` off the step row rather than the choice ledger, a
-  // declined proof could even lose its completion cap. Feeding the post-answer
-  // rows through the same normalization is exactly how declines already survive
-  // from one resume to the next: judgeSteps re-asserts `declined` from
-  // `previous` for a declinable step whose fresh observation is not satisfied.
-  // Only the hook verdict is new; it is computed against `finalProbe` — the same
-  // probe the reduction uses — so step and completion cannot disagree about it.
   //
-  // The hook row is not necessarily the ONLY row that moves, and claiming so
-  // would be wrong (peer, round 3): the graph pass runs again over the ANSWERED
-  // rows, so a dependent the first pass demoted to `blocked` behind a
-  // now-declined predecessor correctly converges to `pending` here — declines
-  // count as resolved. That is earlier convergence to the same answer, not a new
-  // verdict: both `blocked` and `pending` are unresolved to the reducer, so no
-  // run completes on it.
-  // (The broader "resume reports a probe it did not reduce against" mismatch for
-  // non-hook steps is a separate, pre-existing defect and is deliberately not
-  // touched here.)
-  if (importedHookAttestation) {
-    const refreshedVerdict = hookVerdictFor({ recordedAttestation: importedHookAttestation, pluginSet, effective, probe: finalProbe });
-    steps = judgeSteps({
-      // `expected` — not `reprobe.expected` — because a decline in THIS resume may
-      // already have re-derived it against the narrowed selection.
-      expected,
-      probe: reprobe.probe,
-      raw: reprobe.raw,
-      pluginSet,
-      readers: reprobe.readers,
-      hookVerdict: refreshedVerdict,
-      previousById: priorJudgeMapOf(steps),
-      now: ctx.now,
-    });
-    // An imported claim that does not stand for THIS selection leaves the step
-    // open on purpose — say why, with the selection-scoped reasons, rather than
-    // letting the operator re-attest into the same outcome.
-    if (refreshedVerdict.status !== 'attested') {
-      warnings.push(`the imported Codex /hooks attestation does not hold for this selection (${refreshedVerdict.status}): ${refreshedVerdict.reasons.join('; ')}`);
-    }
-  }
+  // ONE `probeNow`, not one per consumer: two probes taken seconds apart under a
+  // single run_id would let this verb report two different machines and call
+  // both "the state at completion".
+  const executedSnapshot = executedAnything ? await probeNow(ctx) : null;
+  const finalProbe = executedSnapshot ? executedSnapshot.probe : probe;
+  const finalRaw = executedSnapshot ? executedSnapshot.raw : reprobe.raw;
+  const finalReaders = executedAnything ? await readUserGlobalReaders(ctx) : reprobe.readers;
 
   // Reduce from the authoritative bytes: everything the executors persisted is
   // read back — validated, hashed — and ONLY that evidence reaches the reducer.
+  // It reaches the JUDGEMENT below too. The step judge used to read the hook
+  // attestation from the in-memory import while the reducer read it from disk;
+  // the two agree in every state reachable today (a failed persist leaves the
+  // import null, so neither sees it), which makes this coherence rather than a
+  // behaviour change — but "judged from one copy, reduced from another" is the
+  // same shape as the probe mismatch the reconstruction below exists to remove,
+  // and one source settles it instead of resting on that reachability argument.
   const finalRead = await readBootstrapProofRecords({ homeDir: ctx.homeDir, runId: picked.run.run_id });
   if (!finalRead.ok) {
     return { exitCode: EXIT.UNEXPECTED, report: { verb: 'resume', status: 'evidence-unreadable', diagnostics: finalRead.errors } };
@@ -2836,6 +2811,111 @@ async function runResume(ctx, opts) {
   const hookAttestation = finalRead.records.find((r) => r.kind === 'hook-attestation')?.record ?? null;
   const finalReceiptRow = finalRead.records.find((r) => r.kind === 'egress-receipt-attestation') ?? null;
   const finalAckRow = finalRead.records.find((r) => r.kind === 'egress-provider-ack') ?? null;
+
+  // ── ONE RECONSTRUCTION FROM THE FINAL SNAPSHOT ─────────────────────────────
+  //
+  // Two things move the machine out from under the judgement this verb already
+  // made, and BOTH land here:
+  //
+  //   1. an executor — or the read-only doctor fetch above it — runs for
+  //      minutes, so `finalProbe` / `finalRaw` / `finalReaders` describe a
+  //      machine the steps were never judged against;
+  //   2. a Codex /hooks attestation imported ABOVE was judged into `steps`
+  //      before it existed (reprobeAgainstRun reads proof/ and judges in one
+  //      pass, and the import comes after), so the reduction would pair a fresh
+  //      `attested` verdict with a still-`pending` step and report the run
+  //      incomplete — completion needs both. The operator's symptom was that the
+  //      resume which finally imported the claim still showed the step pending,
+  //      and only a SECOND resume satisfied it: the same "do the thing you
+  //      already did" loop #645 is about, one step further on.
+  //
+  // Case 2 used to be handled here alone, and it re-judged against the
+  // PRE-execution probe/raw/readers while computing the hook verdict against
+  // `finalProbe` — one judge call reading two different machines. Case 1 was
+  // recorded as a known defect and left standing: the run persisted `finalProbe`
+  // beside steps judged from the older one, Stage 0 was built from the older one
+  // too, and the report returned that older probe to the caller — so the
+  // manifest and the JSON disagreed about the machine state the completion was
+  // judged from. Returning `finalProbe` from the report would have made those
+  // two agree while leaving both disagreeing with the steps inside them; the
+  // repair is one reconstruction that every consumer below (reduction, persist,
+  // fragments, Stage 0, report) reads.
+  //
+  // Re-judge against THIS RESUME'S CURRENT steps, not the pre-answer snapshot.
+  // applyAnswers mutates step rows in place — a decline sets `declined` and
+  // withdraws the fragment pointer, apply command and desired state — and it has
+  // already run by the time execution or the import happens. Re-judging from the
+  // pre-answer map (the first cut of the case-2 fix) silently discarded those
+  // mutations: the operator's decline stayed in `choices` and `history` while the
+  // step itself reverted to `pending` with its refused hand-off restored, and
+  // because the reducer reads `declined` off the step row rather than the choice
+  // ledger, a declined proof could even lose its completion cap. Feeding the
+  // post-answer rows through the same normalization is exactly how declines
+  // already survive from one resume to the next: judgeSteps re-asserts `declined`
+  // from `previous` for a declinable step whose fresh observation is not
+  // satisfied.
+  //
+  // The hook row is not the only row that may move, and claiming so would be
+  // wrong (peer, round 3): the graph pass runs again over the ANSWERED rows, so a
+  // dependent the first pass demoted to `blocked` behind a now-declined
+  // predecessor correctly converges to `pending` here — declines count as
+  // resolved. That is earlier convergence to the same answer, not a new verdict:
+  // both `blocked` and `pending` are unresolved to the reducer, so no run
+  // completes on it.
+  //
+  // Skipped entirely when nothing moved: with no execution and no import the
+  // final snapshot IS the reprobe's, and re-judging identical inputs would only
+  // give a second pass a chance to differ from the first.
+  if (executedAnything || importedHookAttestation) {
+    const previousForFinalJudge = priorJudgeMapOf(steps);
+    const finalHookVerdict = hookVerdictFor({ recordedAttestation: hookAttestation, pluginSet, effective, probe: finalProbe });
+    // `expected` — not `reprobe.expected` — because a decline in THIS resume may
+    // already have re-derived it against the narrowed selection.
+    const judgeFinal = (expectation) => judgeSteps({
+      expected: expectation,
+      probe: finalProbe,
+      raw: finalRaw,
+      pluginSet,
+      readers: finalReaders,
+      hookVerdict: finalHookVerdict,
+      previousById: previousForFinalJudge,
+      now: ctx.now,
+    });
+    const fragmentAppliedBefore = permissionFragmentAppliedFrom(steps);
+    steps = judgeFinal(expected);
+
+    // APPLICABILITY MOVES WITH THE SNAPSHOT — the same second pass
+    // reprobeAgainstRun runs, for the same reason, one snapshot later.
+    // `fragment_applied` is PROMOTED by judgeSteps when a rendered fragment is
+    // first observed applied, and `deriveExpectedSteps` reads it to decide
+    // whether `proof.permission` applies at all. An operator who applies the
+    // permission fragment while a long proof runs is observed for the first time
+    // HERE, so a reconstruction that reused the pre-execution expectation would
+    // rebuild the snapshot around an applicability the snapshot itself
+    // disproves — and, since applicability became a REFUSAL at the answer
+    // boundary, would hand the next resume an exit 40 on an ordinary flow.
+    const fragmentAppliedAfter = permissionFragmentAppliedFrom(steps);
+    if (['claude', 'codex'].some((h) => fragmentAppliedAfter[h] !== fragmentAppliedBefore[h])) {
+      expected = deriveExpectedSteps({
+        pluginSet,
+        selection: effective,
+        permissionFragmentApplied: fragmentAppliedAfter,
+        egressProofRequested: reprobe.egressOptIn,
+      });
+      const graph = validateStepGraph(expected);
+      if (!graph.ok) throw new Error(`step registry produced an invalid graph (runtime bug): ${graph.errors.join('; ')}`);
+      steps = judgeFinal(expected);
+    }
+
+    // An imported claim that does not stand for THIS selection leaves the step
+    // open on purpose — say why, with the selection-scoped reasons, rather than
+    // letting the operator re-attest into the same outcome. Gated on the IMPORT:
+    // a run that merely executed a proof under an already-stale stored
+    // attestation has nothing new to say about it.
+    if (importedHookAttestation && finalHookVerdict.status !== 'attested') {
+      warnings.push(`the imported Codex /hooks attestation does not hold for this selection (${finalHookVerdict.status}): ${finalHookVerdict.reasons.join('; ')}`);
+    }
+  }
 
   const completion = reduceCompletion({
     pluginSet,
@@ -2876,7 +2956,11 @@ async function runResume(ctx, opts) {
   // and a registry-new step within the same schema gets its fragment too.
   // persist's skip rules (satisfied/declined/not-applicable) already prevent
   // re-rendering what the operator has resolved.
-  await composeFragments({ homeDir: ctx.homeDir, cwd: ctx.cwd, env: ctx.env, runId: picked.run.run_id, now: ctx.now, steps, warnings, readersForFragments: reprobe.readers });
+  // FINAL readers, like everything else this verb emits: a fragment renders the
+  // configuration the operator is about to apply, so composing it from the
+  // pre-execution snapshot would hand them a command built around reader state
+  // the same resume has already superseded.
+  await composeFragments({ homeDir: ctx.homeDir, cwd: ctx.cwd, env: ctx.env, runId: picked.run.run_id, now: ctx.now, steps, warnings, readersForFragments: finalReaders });
 
   // The migration row derives from the LOCKED read inside mutate (Codex review
   // MAJOR): deciding it from the pre-lock snapshot let two concurrent resumes
@@ -2924,7 +3008,7 @@ async function runResume(ctx, opts) {
     return { exitCode: EXIT.UNEXPECTED, report: { verb: 'resume', status: 'persist-failed', reason: updated.reason, diagnostics: updated.diagnostics } };
   }
 
-  const stage0 = buildStage0(probe, reprobe.raw);
+  const stage0 = buildStage0(finalProbe, finalRaw);
   const report = {
     verb: 'resume',
     run_id: picked.run.run_id,
@@ -2933,7 +3017,10 @@ async function runResume(ctx, opts) {
     completion,
     steps,
     stage0,
-    probe,
+    // The SAME probe the steps above were judged against, the reduction was
+    // computed from, and the manifest now stores — one machine state per
+    // resume, reported once.
+    probe: finalProbe,
     warnings,
     diagnostics: updated.diagnostics,
   };
