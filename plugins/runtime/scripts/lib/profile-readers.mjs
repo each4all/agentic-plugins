@@ -176,7 +176,7 @@ export async function readUserGlobalClaudePermission({ homeDir, env = {} }) {
  * the caller resolved `$CODEX_HOME` with, or the reported provenance would
  * describe a different file than the bytes.
  */
-export function projectCodexPermission(read, { usingOverride = false } = {}) {
+export function projectCodexPermission(read, { usingOverride = false, codexHomeSource = null } = {}) {
   const parsed = read?.ok
     ? parseCodexPermissionConfigToml(read.text)
     : { approvalPolicy: null, sandboxMode: null };
@@ -187,7 +187,12 @@ export function projectCodexPermission(read, { usingOverride = false } = {}) {
     source: {
       scope: 'user',
       status: textSourceStatus(read),
-      codex_home_source: usingOverride ? 'CODEX_HOME env override' : 'default ~/.codex',
+      // Provenance follows the resolution that produced these BYTES: callers
+      // that share a gather's read pass its `codexHomeSource`, and only the
+      // standalone wrapper below — which resolves the path itself — falls back
+      // to `usingOverride`. Re-deriving it from a caller-supplied `env` could
+      // label an override-path read as the default one (Refine-verify peer).
+      codex_home_source: codexHomeSource ?? (usingOverride ? 'CODEX_HOME env override' : 'default ~/.codex'),
     },
   };
 }

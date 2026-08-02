@@ -1621,12 +1621,20 @@ presentation, and the returned report. A run MUST NOT store a `probe` its own
 `steps[]` were judged against a different snapshot of, or return one to a caller
 that disagrees with what it persisted.
 
-**One read per FILE, projected per consumer.** Two judges reading the same file
-separately can observe an atomic replacement between them and then agree about a
-file that no single version of satisfies. Claude's `settings.json` (permission +
-statusline), `~/.agentic-plugins/config.toml` (model/effort + notify) and
+**One read per file WITHIN the reader snapshot, projected per consumer.** Two
+judges reading the same file separately can observe an atomic replacement between
+them and then agree about a file that no single version of satisfies. Inside the
+reader gathering, Claude's `settings.json` (permission + statusline),
+`~/.agentic-plugins/config.toml` (model/effort + notify) and
 `$CODEX_HOME/config.toml` (Codex permission + notify/statusline) are each read
 ONCE and projected.
+
+*Scoped to the gathering on purpose, because a broader claim would be false*: the
+machine PROBE reads `$CODEX_HOME/config.toml` again for Codex hook state, so that
+file is still sampled twice per verb across the two phases, and a replacement
+between them can pair hook facts from one version with permission/notify/
+statusline facts from another. Recorded as a follow-up; the claim above is
+deliberately the narrow one the code actually keeps.
 
 *Fragment composition is handed that same reader snapshot, but is not fully bound
 by it*: the fragment builders re-read notification, egress and permission config
@@ -1669,10 +1677,14 @@ hook verdict is re-derived with the selection at every point it moves: a claim
 that covered the narrow set must not go on satisfying a non-declinable step it
 no longer covers.
 
-**`attest` is the one exception, deliberately.** Its subject is a send that
-already HAPPENED, and the gate it protects asks whether a recorded ack may be
-testified about — so it judges the run as the run was REDUCED, with no
-convergence. The drift this clause names for a proof is *bound versions*;
+**`attest` is the one exception, deliberately — and only for the SELECTION.** Its
+subject is a send that already HAPPENED, and the gate it protects asks whether a
+recorded ack may be testified about, so the selection it judges against is the
+one the run was REDUCED with, not a re-derived one. Everything else about attest
+is current: the rows are freshly judged, the completion is recomputed, and its
+verdict can therefore read `incomplete` on a machine that has since drifted for
+reasons having nothing to do with the selection. It is a historical scope for one
+input, not a historical report. The drift this clause names for a proof is *bound versions*;
 refusing an owner's receipt because they installed an unrelated plugin after the
 run closed is a selection-drift refusal, and an unrecoverable one — `resume`
 refuses a terminal run, so the door would simply shut. The cost is that attest's

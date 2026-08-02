@@ -1638,8 +1638,12 @@ async function readUserGlobalReaders(ctx) {
   const notify = projectNotify(runtimeConfigSnapshot);
   // The override flag is derived from the SAME env the gather resolved
   // $CODEX_HOME with, so the reported provenance describes the bytes read.
+  // Provenance comes from the GATHER that produced the bytes, not from a second
+  // look at `ctx.env`: the env object is caller-supplied on the programmatic
+  // surface, and re-deriving it could label an override-path read as the default
+  // one (Refine-verify peer).
   const codexPermission = projectCodexPermission(codexNotifyGathered.read, {
-    usingOverride: Boolean(ctx.env && ctx.env.CODEX_HOME),
+    codexHomeSource: codexNotifyGathered.codexHomeSource,
   });
   const claudePermission = projectClaudePermission(claudeSettingsSnapshot);
   const egress = readUserGlobalEgress({ repoRoot: ctx.cwd, homeDir: ctx.homeDir, env: ctx.env });
@@ -3060,7 +3064,7 @@ async function runResume(ctx, opts) {
           ['claude', 'codex']
             .map((host) => ({ host, plugins: (convergedEffective.byHost[host] ?? []).filter((name) => !(effective.byHost[host] ?? []).includes(name)) }))
             .filter((row) => row.plugins.length > 0),
-          { window: "while this resume's proof ran", consequence: 'The selection was re-derived and the affected steps re-judged.' },
+          { window: "during this resume's doctor child", consequence: 'The selection was re-derived and the affected steps re-judged.' },
         ));
         effective = convergedEffective;
         finalHookVerdict = hookVerdictFor({ recordedAttestation: hookAttestation, pluginSet, effective, probe: finalProbe });
