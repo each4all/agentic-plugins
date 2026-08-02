@@ -1621,6 +1621,13 @@ presentation, and the returned report. A run MUST NOT store a `probe` its own
 `steps[]` were judged against a different snapshot of, or return one to a caller
 that disagrees with what it persisted.
 
+**One read per FILE, projected per consumer.** Two judges reading the same file
+separately can observe an atomic replacement between them and then agree about a
+file that no single version of satisfies. Claude's `settings.json` (permission +
+statusline), `~/.agentic-plugins/config.toml` (model/effort + notify) and
+`$CODEX_HOME/config.toml` (Codex permission + notify/statusline) are each read
+ONCE and projected.
+
 *Fragment composition is handed that same reader snapshot, but is not fully bound
 by it*: the fragment builders re-read notification, egress and permission config
 themselves. A config change between the snapshot and the render therefore still
@@ -1661,13 +1668,19 @@ can move again in between. The selection-scoped hook verdict is re-derived with
 the selection at both points: a claim that covered the narrow set must not go on
 satisfying a non-declinable step it no longer covers.
 
-**Stated limit.** §7 version invalidation still runs against the snapshot the
-verb *started* from, not this one. A host CLI or plugin version that moves during
-the proof is re-judged from the final snapshot but is not `invalidated`-stamped,
-and its frozen fragment pointer and `desired` are not cleared — and because the
-final probe is what gets persisted, no later verb compares across that window
-either. Tracked as a follow-up with the persistence-boundary question it shares
-with the fragment-freeze rule, rather than claimed here.
+**Stated limit.** §7 version invalidation sits OUTSIDE both convergences: it runs
+once, early, against the selection as it stood before either. Two windows escape
+it, and the second was found only when the first was written too narrowly here.
+(i) A host CLI or plugin version that moves during a Stage-8 proof is re-judged
+from the final snapshot but is not `invalidated`-stamped. (ii) A plugin that the
+convergence *restores* to the selection was filtered out of the invalidation
+comparison entirely — that comparison is scoped per host — so a version
+transition it went through is never compared at all, and this needs no executor
+to happen. In both, the frozen fragment pointer and `desired` survive
+uncleared, and because the final probe becomes the stored baseline no later verb
+compares across the window either. Tracked as a follow-up together with the
+persistence-boundary question it shares with the fragment-freeze rule, rather
+than claimed here.
 
 **Schema-minor migration (1.2, ADR-0048 §1).** `resume` is the one M1 verb, so it
 is where the minor moves:

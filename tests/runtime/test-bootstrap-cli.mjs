@@ -27,6 +27,16 @@ import {
   runBootstrap,
 } from '../../plugins/runtime/scripts/bootstrap.mjs';
 import { makeValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
+import {
+  projectCodexPermission,
+  projectModelEffort,
+  projectNotify,
+  readUserGlobalCodexPermission,
+  readUserGlobalModelEffort,
+  readUserGlobalNotify,
+  readUserGlobalRuntimeConfig,
+} from '../../plugins/runtime/scripts/lib/profile-readers.mjs';
+import { gatherCodexNotificationInputs } from '../../plugins/runtime/scripts/lib/notification-plan.mjs';
 import { deriveActivationFingerprint } from '../../plugins/runtime/scripts/lib/evidence-contract.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..');
@@ -2180,6 +2190,67 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
     }
   });
 
+  it('the convergence is REPORTED by the read-only verbs, not applied silently', async () => {
+    // A refusal that stopped following from the run's own rows is an operator
+    // decision that has lapsed; without the warning the only visible effect is a
+    // completion that quietly stopped being complete.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = {
+      hosts: ['claude', 'codex'],
+      claude: [...ALL_PLUGINS],
+      codex: ALL_PLUGINS.filter((p) => p !== 'designer'),
+    };
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+    await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,designer', '--format', 'json'], spySubprocess().runner);
+    const answersPath = join(home, 'decline-designer-codex-quiet.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
+      { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
+      { step_id: 'egress.configured', answer: 'decline' },
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+    ]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath], smokeDoctorStub(async () => {}));
+    ok(!(resume.report.warnings ?? []).some((w) => /refused on codex/.test(w)),
+      `precondition: nothing has lapsed while the machine agrees with the refusal: ${JSON.stringify(resume.report.warnings)}`);
+
+    state.codex = [...state.codex, 'designer'];
+    for (const verb of ['status', 'verify']) {
+      const r0 = await run([verb, '--format', 'json'], spySubprocess().runner);
+      ok((r0.report.warnings ?? []).some((w) => /designer/.test(w) && /refused on codex/.test(w) && /re-plan/.test(w)),
+        `${verb} names the lapsed refusal and the route back: ${JSON.stringify(r0.report.warnings)}`);
+    }
+  });
+
+  it('the answered rows are re-judged even when NOTHING ran — resume and status agree about the dependency graph', async () => {
+    // The skip this replaces was justified by "identical inputs"; applyAnswers
+    // mutates rows in place, so they are not identical. Without the pass resume
+    // reports a proof `blocked` behind a predecessor the same report shows
+    // `declined`, and an immediate status reports it `pending`.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = { hosts: ['claude', 'codex'], installed: [...ALL_PLUGINS] };
+    const run = (argv) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess: spySubprocess().runner });
+    await run(['plan', '--bundle', 'base', '--format', 'json']);
+
+    const answersPath = join(home, 'accept-proof-decline-predecessor.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'proof.egress-provider-ack', answer: 'accept' },
+      { step_id: 'egress.configured', answer: 'decline' },
+    ]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+    // CONTROL: no child ran, so this is the no-snapshot-movement path — the one
+    // the old gate skipped.
+    strictEqual(resume.report.steps.find((s) => s.id === 'egress.configured')?.status, 'declined',
+      'precondition: the predecessor is resolved by this resume\'s own answer');
+
+    const status = await run(['status', '--format', 'json']);
+    const resumeRow = resume.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
+    const statusRow = status.report.steps.find((s) => s.id === 'proof.egress-provider-ack');
+    strictEqual(resumeRow?.status, statusRow?.status,
+      `resume and status must agree about the row (resume=${resumeRow?.status}, status=${statusRow?.status})`);
+    ok(!/resolve the predecessor first/.test(resumeRow?.recovery ?? ''),
+      `and the recovery must not send the operator after a predecessor already declined: ${resumeRow?.recovery}`);
+  });
+
   it('a doctor child that ran and then FAILED to produce importable evidence still triggers the final snapshot', async () => {
     // The trigger is the SPAWN, not the import. A doctor invocation that returns
     // unparseable output imports nothing while the machine had the whole run of
@@ -2209,6 +2280,78 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       'the machine is re-probed after the child, however that child ended');
     strictEqual(manifest.steps.find((s) => s.id === 'plugin.attention.claude.installed')?.status, 'pending',
       'and the persisted rows are judged from that probe, not from the pre-execution one');
+  });
+
+  it('the READ-ONLY hook-attestation doctor is a child too — a machine that moves during it is re-probed', async () => {
+    // The second spawn site. Every other case here runs an EXECUTOR, so a
+    // mutation removing the flag at this site would evade all of them: the
+    // attestation fetch is read-only but still a subprocess with a two-minute
+    // ceiling, and the machine has exactly as long to move.
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const state = { hosts: ['claude', 'codex'], installed: [...ALL_PLUGINS] };
+    // engineer is Codex hook-bearing, so `hooks.codex.attested` applies and the
+    // read-only doctor fetch runs; no answer executes anything.
+    const run = (argv, subprocess) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess });
+    const plan = await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,engineer', '--format', 'json'], spySubprocess().runner);
+    const runId = plan.report.run_id;
+    strictEqual(plan.report.steps.find((s) => s.id === 'plugin.engineer.claude.installed')?.status, 'satisfied',
+      'precondition: engineer is installed and satisfied at plan time');
+    strictEqual(plan.report.steps.find((s) => s.id === 'hooks.codex.attested')?.status, 'pending',
+      'precondition: the attestation step is open, which is what makes the read-only fetch run');
+
+    const calls = [];
+    const readOnlyDoctorStub = async (scriptPath, args) => {
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        calls.push([...args]);
+        // The operator uninstalls a SELECTED plugin while the fetch runs.
+        // `engineer`, not `attention`: this run's selection is
+        // runtime,companions,engineer, and a plugin outside the selection has no
+        // step row to observe (the first draft asserted on one and failed).
+        state.installed = ALL_PLUGINS.filter((p) => p !== 'engineer');
+        return okOut(JSON.stringify({
+          schema_version: 'runtime-doctor-1.0',
+          settings_runs: { status: 'ok', count: 1, malformed: 0, codex_hook_review: { status: 'absent', current: false, currency_reason: null, latest: null } },
+        }));
+      }
+      return missing();
+    };
+    const answersPath = join(home, 'no-executor.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'egress.configured', answer: 'decline' }]));
+    await run(['resume', '--latest-open', '--answers', answersPath], readOnlyDoctorStub);
+
+    // CONTROL: the only child really was the read-only fetch.
+    strictEqual(calls.length, 1, `exactly one doctor call: ${JSON.stringify(calls)}`);
+    ok(!calls[0].some((a) => a.startsWith('--execute-')), `and it is not an executor: ${JSON.stringify(calls[0])}`);
+
+    const manifest = await manifestOf(home, runId);
+    strictEqual(manifest.probe.hosts.claude.plugins.engineer.state, 'missing',
+      'the re-probe happens for the read-only child as well');
+    strictEqual(manifest.steps.find((s) => s.id === 'plugin.engineer.claude.installed')?.status, 'pending',
+      'and the persisted rows are judged from it');
+  });
+});
+
+// The refactor that made the reader snapshot ONE read per file: these pin the
+// projections against the per-family readers they replaced, so a future edit
+// cannot quietly change what a family resolves to while collapsing the reads.
+describe('bootstrap user-global readers — one read per file (projection equivalence)', () => {
+  it('the runtime-config projections equal the per-family readers they replaced', async () => {
+    const { home } = await makeHome({ satisfied: true });
+    const snapshot = await readUserGlobalRuntimeConfig({ homeDir: home });
+    deepStrictEqual(projectModelEffort(snapshot), await readUserGlobalModelEffort({ homeDir: home }));
+    deepStrictEqual(projectNotify(snapshot), await readUserGlobalNotify({ homeDir: home }));
+    // Not vacuous: the fixture really carries both families.
+    strictEqual(projectModelEffort(snapshot).keys.model.value, 'gpt-5.2-codex');
+    strictEqual(projectNotify(snapshot).keys.notify_channel.value, 'file-log');
+  });
+
+  it('the Codex permission projection equals the reader it replaced, over the notify gather\'s bytes', async () => {
+    const { home } = await makeHome({ satisfied: true });
+    const gathered = await gatherCodexNotificationInputs({ homeDir: home, env: {} });
+    const projected = projectCodexPermission(gathered.read, { usingOverride: false });
+    deepStrictEqual(projected, await readUserGlobalCodexPermission({ homeDir: home, env: {} }));
+    strictEqual(projected.approval_policy, 'on-request', 'not vacuous: the fixture carries a permission policy');
   });
 });
 

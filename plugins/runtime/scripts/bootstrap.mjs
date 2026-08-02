@@ -94,10 +94,11 @@ import {
   projectClaudeStatusline,
   readUserGlobalClaudeSettings,
   resolveClaudeConfigDir,
-  readUserGlobalCodexPermission,
+  projectCodexPermission,
+  projectModelEffort,
+  projectNotify,
   readUserGlobalEgress,
-  readUserGlobalModelEffort,
-  readUserGlobalNotify,
+  readUserGlobalRuntimeConfig,
 } from './lib/profile-readers.mjs';
 // The named E1 activation checker (ADR-0048 §4): egress.configured is judged
 // from ACTIVATION semantics — channel + recipient + credential PRESENCE — not
@@ -1609,12 +1610,37 @@ async function readUserGlobalReaders(ctx) {
   // ONE Claude settings read for BOTH projections (Review peer MAJOR: two
   // reads could observe an atomic replacement in between and report mutually
   // inconsistent permission/statusline facts under one probe timestamp).
-  const claudeSettingsSnapshot = await readUserGlobalClaudeSettings({ homeDir: ctx.homeDir, env: ctx.env });
-  const [modelEffort, notify, codexPermission] = await Promise.all([
-    readUserGlobalModelEffort({ homeDir: ctx.homeDir }),
-    readUserGlobalNotify({ homeDir: ctx.homeDir }),
-    readUserGlobalCodexPermission({ homeDir: ctx.homeDir, env: ctx.env }),
+  // ONE read per FILE, projected per consumer — the rule the Claude settings
+  // snapshot already followed, now applied to the two files that still broke it
+  // (cross-host Review peer, MAJOR). `model_effort` and `notify` are two families
+  // of ~/.agentic-plugins/config.toml; Codex permission and the Codex
+  // notify/statusline judges are two readers of $CODEX_HOME/config.toml. Read
+  // twice, an atomic replacement between the reads let config rows be satisfied
+  // by two different versions of one file — and a run could terminalize
+  // `complete` on a combination neither version supports.
+  //
+  // COVERAGE, stated rather than claimed: splitting these back into separate
+  // reads is a mutant NO test kills. Observing it needs a replacement landing
+  // BETWEEN two reads, and `readTextIfExists` is not injectable through
+  // `runBootstrap`, so the property is structural — the tests pin that the
+  // projections equal the readers they replaced, not that only one read happens.
+  // A future reader-injection seam would make it testable; until then the guard
+  // is this comment and the shape of the code.
+  const [claudeSettingsSnapshot, runtimeConfigSnapshot, codexNotifyGathered] = await Promise.all([
+    readUserGlobalClaudeSettings({ homeDir: ctx.homeDir, env: ctx.env }),
+    readUserGlobalRuntimeConfig({ homeDir: ctx.homeDir }),
+    // ADR-0048 §1 — the Codex-side notify WIRING for notify.codex.configured,
+    // gathered here (rather than below) because its read is now ALSO the
+    // permission judge's bytes.
+    gatherCodexNotificationInputs({ homeDir: ctx.homeDir, env: ctx.env }),
   ]);
+  const modelEffort = projectModelEffort(runtimeConfigSnapshot);
+  const notify = projectNotify(runtimeConfigSnapshot);
+  // The override flag is derived from the SAME env the gather resolved
+  // $CODEX_HOME with, so the reported provenance describes the bytes read.
+  const codexPermission = projectCodexPermission(codexNotifyGathered.read, {
+    usingOverride: Boolean(ctx.env && ctx.env.CODEX_HOME),
+  });
   const claudePermission = projectClaudePermission(claudeSettingsSnapshot);
   const egress = readUserGlobalEgress({ repoRoot: ctx.cwd, homeDir: ctx.homeDir, env: ctx.env });
   // Step judgement needs ACTIVATION semantics (the named E1 checker) alongside
@@ -1623,18 +1649,17 @@ async function readUserGlobalReaders(ctx) {
   // while `egressActivation` feeds egress.configured (channel alone must NOT
   // satisfy — the false-pass this split repairs). Two readers, two questions.
   const egressActivation = loadEgressActivation({ repoRoot: ctx.cwd, homeDir: ctx.homeDir, env: ctx.env });
-  // ADR-0048 §1 — the Codex-side notify WIRING for notify.codex.configured.
-  // Gathered here because judgeSteps is synchronous: the config is read once
-  // per probe alongside every other user-global reader, through the same
-  // notification-plan gather the Stage-5 fragment builder uses (§1.1 keeps
-  // bootstrap off the repo-scoped state-readers seam — test #1). Shape:
+  // The gather above (hoisted so the permission judge shares its bytes) is the
+  // same notification-plan gather the Stage-5 fragment builder uses — §1.1 keeps
+  // bootstrap off the repo-scoped state-readers seam (test #1) — and it is read
+  // once per probe alongside every other user-global reader because judgeSteps
+  // is synchronous. Shape:
   //   readable  — the config file could be read (missing file reads as an
   //               empty config: readable, nothing present);
   //   present   — a top-level `notify =` key exists;
   //   argv      — the parsed string elements, or null when the value is
   //               present but not a parseable string array (fail-safe null
   //               from the TOML scanner — never a guess).
-  const codexNotifyGathered = await gatherCodexNotificationInputs({ homeDir: ctx.homeDir, env: ctx.env });
   const codexNotifyRead = codexNotifyGathered.read;
   // ADR-0048 statusline slice — both statusline probes, gathered here because
   // judgeSteps is synchronous. Claude projects the ONE shared settings
@@ -1789,6 +1814,16 @@ function priorJudgeMapOf(stepList) {
     }
     return [s.id, s];
   }));
+}
+
+/**
+ * The operator-facing sentence for a lapsed refusal. ONE wording, because four
+ * verbs surface it and a second copy is how they would drift; the resume-side
+ * post-executor convergence says the same thing about a later window.
+ */
+function selectionRestoredWarnings(selectionRestored, { window }) {
+  return (selectionRestored ?? []).map(({ host, plugins }) =>
+    `${plugins.join(', ')} was refused on ${host} but is observed installed there ${window}; the refusal no longer follows from the run's own rows, so the selection was re-derived and the affected steps re-judged (§6.2 — an observation clears a decline; re-plan if the refusal was the intent)`);
 }
 
 /**
@@ -2123,6 +2158,19 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   const judgedFragmentApplied = permissionFragmentAppliedFrom(steps);
   const convergedEffective = effectiveSelection({ pluginSet, selection: { desired: effective.plugins }, steps });
   const selectionMoved = !sameEffectiveSelection(effective, convergedEffective);
+  // The convergence is REPORTED, not silent (cross-host Review peer, MINOR): a
+  // refusal that stopped following from the run's own rows is something the
+  // operator decided and must be told has lapsed — otherwise the only visible
+  // effect is a completion that quietly stopped being `complete`. The rows are
+  // returned rather than pushed, because this helper has no warnings channel of
+  // its own and each verb owns its own list.
+  const selectionRestored = [];
+  if (selectionMoved) {
+    for (const host of ['claude', 'codex']) {
+      const restored = (convergedEffective.byHost[host] ?? []).filter((name) => !(effective.byHost[host] ?? []).includes(name));
+      if (restored.length > 0) selectionRestored.push({ host, plugins: restored });
+    }
+  }
   if (selectionMoved || ['claude', 'codex'].some((h) => judgedFragmentApplied[h] !== storedFragmentApplied[h])) {
     if (selectionMoved) {
       effective = convergedEffective;
@@ -2157,7 +2205,7 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
   // leaving the step judged against evidence the same verb has since superseded.
   // The previous-state map is deliberately NOT exported: that caller must build
   // it from ITS OWN current steps, since applyAnswers has mutated them since.
-  return { raw, probe, readers, steps, completion, selection, effective, invalidation, proofRecords: proofRead.records, recordedHookAttestation, expected, egressOptIn };
+  return { raw, probe, readers, steps, completion, selection, effective, invalidation, proofRecords: proofRead.records, recordedHookAttestation, expected, egressOptIn, selectionRestored };
 }
 
 /**
@@ -2272,7 +2320,7 @@ async function runStatus(ctx, opts) {
     completion,
     steps,
     probe,
-    warnings: [...(picked.warnings ?? []), ...(divergence ? [divergence.warning] : [])],
+    warnings: [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this re-probe' }), ...(divergence ? [divergence.warning] : [])],
     diagnostics: [],
   };
   return { exitCode: EXIT_BY_STATE[completion.state] ?? EXIT.UNEXPECTED, report };
@@ -2307,7 +2355,7 @@ async function runVerify(ctx, opts) {
     hook_attestation: completion.hook_attestation,
     steps,
     probe,
-    warnings: [...(picked.warnings ?? []), ...(divergence ? [divergence.warning] : [])],
+    warnings: [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this re-probe' }), ...(divergence ? [divergence.warning] : [])],
     diagnostics: [],
   };
   return { exitCode: EXIT_BY_STATE[completion.state] ?? EXIT.UNEXPECTED, report };
@@ -2528,7 +2576,7 @@ async function runResume(ctx, opts) {
   let selection = reprobe.selection;
   let effective = reprobe.effective;
   let expected = reprobe.expected;
-  const warnings = [...(picked.warnings ?? [])];
+  const warnings = [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this run\'s re-probe' })];
 
   // `answeredEffective` is the per-step last-wins ANSWER map — a different thing from
   // the effective SELECTION above, and named apart so the two can never be confused
@@ -2910,10 +2958,19 @@ async function runResume(ctx, opts) {
   // both `blocked` and `pending` are unresolved to the reducer, so no run
   // completes on it.
   //
-  // Skipped entirely when nothing moved: with no doctor child spawned and no
-  // import, the final snapshot IS the reprobe's, and re-judging identical inputs
-  // would only give a second pass a chance to differ from the first.
-  if (doctorInvoked || importedHookAttestation) {
+  // UNCONDITIONAL. The gate this replaces skipped the pass when no doctor child
+  // ran and nothing was imported, on the grounds that the inputs would be
+  // identical — and they are not: `applyAnswers` mutates step rows in place
+  // between the reprobe's judge and here. Measured on `base` with `accept
+  // proof.egress-provider-ack` + `decline egress.configured` and no executor,
+  // the skip left resume reporting that proof `blocked` with "resolve
+  // egress.configured first" while the SAME report showed that predecessor
+  // `declined`, and an immediate `status` reported it `pending` (cross-host
+  // Review peer, MINOR; reproduced). The graph pass has to run over the answered
+  // rows for the two to agree. When the snapshot genuinely did not move this is
+  // one extra pure judgement over the same probe — the cost of the verb agreeing
+  // with the next one about its own rows.
+  {
     const previousForFinalJudge = priorJudgeMapOf(steps);
     let finalHookVerdict = hookVerdictFor({ recordedAttestation: hookAttestation, pluginSet, effective, probe: finalProbe });
     // `expected` — not `reprobe.expected` — because a decline in THIS resume may
@@ -2981,12 +3038,12 @@ async function runResume(ctx, opts) {
     const selectionMoved = !sameEffectiveSelection(effective, convergedEffective);
     if (fragmentMoved || selectionMoved) {
       if (selectionMoved) {
-        for (const host of ['claude', 'codex']) {
-          const restored = (convergedEffective.byHost[host] ?? []).filter((name) => !(effective.byHost[host] ?? []).includes(name));
-          if (restored.length > 0) {
-            warnings.push(`${restored.join(', ')} was refused on ${host} but observed installed there while this resume's proof ran; the refusal no longer follows from the run's own rows, so the selection was re-derived and the affected steps re-judged (§6.2 — an observation clears a decline; re-plan if the refusal was the intent)`);
-          }
-        }
+        warnings.push(...selectionRestoredWarnings(
+          ['claude', 'codex']
+            .map((host) => ({ host, plugins: (convergedEffective.byHost[host] ?? []).filter((name) => !(effective.byHost[host] ?? []).includes(name)) }))
+            .filter((row) => row.plugins.length > 0),
+          { window: "while this resume's proof ran" },
+        ));
         effective = convergedEffective;
         finalHookVerdict = hookVerdictFor({ recordedAttestation: hookAttestation, pluginSet, effective, probe: finalProbe });
       }

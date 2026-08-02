@@ -40,31 +40,53 @@ function userRuntimeConfigPath(homeDir) {
   return join(homeDir, '.agentic-plugins', 'config.toml');
 }
 
-async function readUserRuntimeConfigFamily(homeDir, familyKeys) {
+/**
+ * The ONE user-global runtime-config snapshot. `model_effort` and `notify` are
+ * two FAMILIES of the SAME file, and reading it twice let an atomic replacement
+ * land between them — two judges then agree about a file neither version of
+ * which satisfies them together (cross-host Review peer, MAJOR). This is the
+ * same repair the Claude settings snapshot below already carries, applied to the
+ * second file that needed it; the projections are pure so a caller cannot
+ * accidentally re-read.
+ *
+ * The per-family readers are kept as thin read-then-project wrappers, because
+ * profile export legitimately wants ONE family and has no second consumer to
+ * share bytes with.
+ */
+export async function readUserGlobalRuntimeConfig({ homeDir }) {
   const read = await readTextIfExists(userRuntimeConfigPath(homeDir));
-  const parsed = read.ok ? parseRuntimeConfigToml(read.text) : {};
+  return { parsed: read.ok ? parseRuntimeConfigToml(read.text) : {}, source: { scope: 'user', status: textSourceStatus(read) } };
+}
+
+function projectRuntimeConfigFamily(snapshot, family, familyKeys) {
   const keys = {};
   for (const key of familyKeys) {
-    keys[key] = key in parsed
-      ? { value: parsed[key], provenance: USER_GLOBAL }
+    keys[key] = key in snapshot.parsed
+      ? { value: snapshot.parsed[key], provenance: USER_GLOBAL }
       : { value: null, provenance: null };
   }
-  return { keys, source: { scope: 'user', status: textSourceStatus(read) } };
+  return { family, keys, source: snapshot.source };
 }
 
 // model/effort — user-global `~/.agentic-plugins/config.toml` only. The
 // peer-execution-context resolver PREFERS repo config (§4.4 leak); this read never
 // looks at repo, so an exported model/effort is always the operator's own default.
-export async function readUserGlobalModelEffort({ homeDir }) {
-  const { keys, source } = await readUserRuntimeConfigFamily(homeDir, CONFIG_KEY_FAMILIES.model_effort);
-  return { family: 'model_effort', keys, source };
+export function projectModelEffort(snapshot) {
+  return projectRuntimeConfigFamily(snapshot, 'model_effort', CONFIG_KEY_FAMILIES.model_effort);
 }
 
 // notify — the SAME user-global file, notify family only. loadNotifyConfig prefers
 // repo over user (`repoConfig[key] ?? userConfig[key]`); this read is user-only.
+export function projectNotify(snapshot) {
+  return projectRuntimeConfigFamily(snapshot, 'notify', CONFIG_KEY_FAMILIES.notify);
+}
+
+export async function readUserGlobalModelEffort({ homeDir }) {
+  return projectModelEffort(await readUserGlobalRuntimeConfig({ homeDir }));
+}
+
 export async function readUserGlobalNotify({ homeDir }) {
-  const { keys, source } = await readUserRuntimeConfigFamily(homeDir, CONFIG_KEY_FAMILIES.notify);
-  return { family: 'notify', keys, source };
+  return projectNotify(await readUserGlobalRuntimeConfig({ homeDir }));
 }
 
 // The ONE user-global Claude settings snapshot (ADR-0048 statusline slice,
@@ -145,11 +167,17 @@ export async function readUserGlobalClaudePermission({ homeDir, env = {} }) {
 // Codex permission — `~/.codex/config.toml` ($CODEX_HOME honored) ONLY, and NEVER
 // `projectTrusted`: that boolean is keyed on repoRoot, so it is per-repo, not
 // machine-invariant, and must not enter a portable profile (§4.4).
-export async function readUserGlobalCodexPermission({ homeDir, env = {} }) {
-  const usingOverride = Boolean(env && env.CODEX_HOME);
-  const codexHome = usingOverride ? resolve(env.CODEX_HOME) : join(homeDir, '.codex');
-  const read = await readTextIfExists(join(codexHome, 'config.toml'));
-  const parsed = read.ok
+/**
+ * PROJECTION from an already-read `$CODEX_HOME/config.toml`. The notification
+ * gather reads the same file for the Codex notify + statusline judges, and two
+ * independent reads could observe an atomic replacement between them — the same
+ * race the Claude settings snapshot exists to prevent. `read` is a
+ * `readTextIfExists` result; `usingOverride` must be derived from the SAME env
+ * the caller resolved `$CODEX_HOME` with, or the reported provenance would
+ * describe a different file than the bytes.
+ */
+export function projectCodexPermission(read, { usingOverride = false } = {}) {
+  const parsed = read?.ok
     ? parseCodexPermissionConfigToml(read.text)
     : { approvalPolicy: null, sandboxMode: null };
   return {
@@ -162,6 +190,12 @@ export async function readUserGlobalCodexPermission({ homeDir, env = {} }) {
       codex_home_source: usingOverride ? 'CODEX_HOME env override' : 'default ~/.codex',
     },
   };
+}
+
+export async function readUserGlobalCodexPermission({ homeDir, env = {} }) {
+  const usingOverride = Boolean(env && env.CODEX_HOME);
+  const codexHome = usingOverride ? resolve(env.CODEX_HOME) : join(homeDir, '.codex');
+  return projectCodexPermission(await readTextIfExists(join(codexHome, 'config.toml')), { usingOverride });
 }
 
 // Egress — thin alias over the egress-config export reader (the single egress
