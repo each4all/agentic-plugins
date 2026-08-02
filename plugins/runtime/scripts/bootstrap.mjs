@@ -3612,45 +3612,43 @@ function renderSafe(value) {
 // dishonesty for another.
 const RENDER_LINE_MAX = 400;
 
-// The cut itself, on a GRAPHEME boundary. Two ways a UTF-16 slice lies about
-// the text it truncated, and both are reachable from a host-printed version
-// string:
+// The cut itself, on a real GRAPHEME CLUSTER boundary. A UTF-16 slice lies
+// about the text it truncated in two ways, both reachable from a host-printed
+// version string:
 //   * it can land BETWEEN a surrogate pair, emitting a lone high surrogate that
 //     renders as U+FFFD — sanitizing text into mojibake is its own small
 //     dishonesty;
-//   * it can land between a base character and its COMBINING MARK, which does
-//     not corrupt anything visibly — it silently changes which character was
-//     there. Cutting `é` (e + U+0301) after the `e` renders a confident `e`,
-//     and the operator has no way to tell it was ever an `é`.
-// Back off over the marks rather than over the base: dropping a whole cluster
-// is honest, keeping a stripped base is not.
+//   * it can land INSIDE a cluster, which corrupts nothing visibly and instead
+//     silently changes which character was there. Cutting `e` + U+0301 after
+//     the `e` renders a confident `e`; cutting a flag after its first regional
+//     indicator renders a different flag's letter; cutting `👍🏽` after the base
+//     changes its skin tone. The operator cannot tell any of it happened.
 //
-// The lookahead slices TWO code units so an astral combining mark (a surrogate
-// pair) is matched as the single code point it is; `\p{M}` under /u would
-// otherwise see a lone high surrogate and decline.
-// The retreat walks an INDEX rather than re-spreading the kept prefix each
-// time. `[...cut]` inside the loop made the backoff quadratic in the retreat
-// distance — measured at 74ms for a schema-max 64 × 512 reason set of pure
-// combining marks, and 886ms once the input is not schema-bounded (renderText
-// is reachable from a stored run.json). Index arithmetic is linear and renders
-// the same string.
-const COMBINING_MARK_RE = /^\p{M}/u;
-const isHighSurrogateAt = (s, i) => i >= 0 && s.charCodeAt(i) >= 0xd800 && s.charCodeAt(i) <= 0xdbff;
-const isLowSurrogateAt = (s, i) => i >= 0 && s.charCodeAt(i) >= 0xdc00 && s.charCodeAt(i) <= 0xdfff;
+// This delegates to `Intl.Segmenter`, which IS the Unicode text-segmentation
+// standard (UAX #29) rather than an approximation of it. A hand-rolled version
+// shipped first and was WRONG on measurement: it backed off over `\p{M}` only,
+// so ZWJ sequences (`Cf`), regional-indicator pairs (`So`) and emoji modifiers
+// (`Sk`) all still split — none of those are marks — and its "don't retreat to
+// empty" guard reproduced the exact stripped-base corruption the helper claims
+// to prevent, on `e` followed by a budget's worth of combining marks. Four
+// distinct cluster families, one standard segmenter; enumerating categories by
+// hand is how the first three were missed.
+const GRAPHEME_SEGMENTER = new Intl.Segmenter('en', { granularity: 'grapheme' });
 function boundedCut(clean, budget) {
   if (clean.length <= budget) return clean;
-  let end = budget - 1;
-  // Never end on the high half of a surrogate pair.
-  if (isHighSurrogateAt(clean, end - 1)) end -= 1;
-  // While the FIRST DROPPED code point is a combining mark, the cut is inside a
-  // cluster — retreat one code point and look again.
-  while (end > 0 && COMBINING_MARK_RE.test(clean.slice(end, end + 2))) {
-    const step = isHighSurrogateAt(clean, end - 2) && isLowSurrogateAt(clean, end - 1) ? 2 : 1;
-    // A run of marks long enough to consume the whole budget would otherwise
-    // retreat to an empty line, which says less than a split cluster does.
-    if (end - step <= 0) break;
-    end -= step;
+  // Walk clusters and keep whole ones while they fit. `budget - 1` leaves room
+  // for the ellipsis, matching the pre-existing bound.
+  const room = budget - 1;
+  let end = 0;
+  for (const { segment, index } of GRAPHEME_SEGMENTER.segment(clean)) {
+    if (index + segment.length > room) break;
+    end = index + segment.length;
   }
+  // A single cluster wider than the whole budget (a long ZWJ chain, or a base
+  // trailed by hundreds of marks) leaves nothing whole to keep. Emitting the
+  // bare ellipsis is the honest answer: any prefix of that cluster would be a
+  // DIFFERENT character presented as if it were the recorded one, which is the
+  // corruption this function exists to refuse.
   return `${clean.slice(0, end)}…`;
 }
 
@@ -3678,7 +3676,12 @@ function renderLine(value) {
 //   2. A TOTAL budget bounds the block, so the 64 × 512 the schema permits
 //      cannot flood the report. Because each line is bounded independently,
 //      at least ⌊TOTAL/PER_LINE⌋ = 4 reasons are visible WHATEVER their
-//      lengths. The old guarantee was zero.
+//      lengths. The old guarantee was zero. The budget is charged against
+//      reason PAYLOAD only — labels, indents and the marker ride on top, so
+//      the emitted block runs a few hundred chars wider than the constant.
+//      Stated rather than tightened: the constant exists to keep one proof's
+//      evidence from flooding a report, and a fixed per-line overhead does not
+//      threaten that (Refine-verify peer, MINOR).
 //   3. What did not fit is COUNTED OUT LOUD. Silent truncation reads as "that
 //      was everything", which is the failure the whole policy exists to avoid —
 //      the same rule `boundReportFindings` already applies one level up.
@@ -3689,24 +3692,40 @@ function renderLine(value) {
 // still fits, so no marker fires. It scored strictly worse than the defect it
 // was meant to fix.
 const RENDER_REASONS_TOTAL = 1600;
-function renderReasonLines(reasons, prefix) {
-  const cleaned = (Array.isArray(reasons) ? reasons : [])
-    .map((reason) => renderSafe(reason).trim())
-    .filter(Boolean);
-  if (cleaned.length === 0) return [];
+
+// `label` names BOTH lines this emits: reasons render under `<label>: ` and the
+// omission marker under `<label>-omitted: `. The two must not share a label.
+// They did, and a reason reading `(+63 further reasons not shown; read the run
+// artifact for the full set)` then rendered byte-for-byte like a marker the
+// renderer had written, claiming an omission that never happened (Refine-verify
+// peer, MAJOR). A reason can still contain that text — it simply arrives under
+// `<label>: `, where it is visibly the record's own words rather than the
+// renderer's count.
+function renderReasonLines(reasons, indent, label) {
+  const supplied = Array.isArray(reasons) ? reasons : [];
+  // Blank and control-only entries are not rendered — a line reading
+  // `evidence: ` says nothing. They are still COUNTED: `maxLength` with no
+  // `minLength` makes `""` and `"   "` schema-valid (runtime-bootstrap-run-1.2),
+  // so filtering them before the accounting let a record hold two entries, show
+  // one, and claim nothing was omitted (Refine-verify peer, MAJOR). The count
+  // below is taken against everything the record held, not against what
+  // survived the filter.
+  const renderable = supplied.map((reason) => renderSafe(reason).trim()).filter(Boolean);
+  if (supplied.length === 0) return [];
   const shown = [];
   let spent = 0;
-  for (const reason of cleaned) {
+  for (const reason of renderable) {
     const piece = boundedCut(reason, RENDER_LINE_MAX);
     // The first reason is always shown, whatever it costs: a block that
     // rendered only the marker would report a count and no evidence at all.
     if (shown.length > 0 && spent + piece.length > RENDER_REASONS_TOTAL) break;
-    shown.push(`${prefix}${piece}`);
+    shown.push(`${indent}${label}: ${piece}`);
     spent += piece.length;
   }
-  const omitted = cleaned.length - shown.length;
+  const omitted = supplied.length - shown.length;
   if (omitted > 0) {
-    shown.push(`${prefix}(+${omitted} further reason${omitted === 1 ? '' : 's'} not shown; read the run artifact for the full set)`);
+    const blanks = supplied.length - renderable.length;
+    shown.push(`${indent}${label}-omitted: +${omitted} further entr${omitted === 1 ? 'y' : 'ies'} not shown${blanks > 0 ? ` (${blanks} blank)` : ''}; read the run artifact for the full set`);
   }
   return shown;
 }
@@ -3734,6 +3753,20 @@ function renderReasonLines(reasons, prefix) {
 function jsonParsePosition(err) {
   const at = / in JSON at position (\d+)(?: \(line \d+ column \d+\))?$/.exec(err?.message ?? '');
   return at ? ` (at input position ${at[1]}, in JSON-parser coordinates)` : '';
+}
+
+// §3.2's fallback for a value that is not grammar-clamped: its TYPE, its
+// LENGTH, or its ORDINAL — never its content. An array reports its element
+// count AND its total width, because "8 rules" and "8 rules totalling 6 KiB"
+// are different things to confirm.
+function describeWithheld(value) {
+  if (value === null || value === undefined) return '<unset>';
+  if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+  if (Array.isArray(value)) {
+    const width = value.reduce((n, item) => n + String(item ?? '').length, 0);
+    return `<${value.length} entr${value.length === 1 ? 'y' : 'ies'}, ${width} chars — withheld per §3.2>`;
+  }
+  return `<string, ${String(value).length} chars — withheld per §3.2>`;
 }
 
 export function renderText(report) {
@@ -3769,12 +3802,29 @@ export function renderText(report) {
   if (report.proposals) {
     const { proposals = [], notes = [], refused = [] } = report.proposals;
     for (const entry of refused) lines.push(`  ! refused: ${renderLine(entry)}`);
-    // Values arrive from another machine's file. The §4.5.1 validator has
-    // already refused unknown fields by the time anything is presented, so this
-    // is the same defense-in-depth the Stage-8 rows get, not a second gate.
+    // §3.2 governs whether a value's CONTENT may cross artifact → report, and
+    // the profile's own schema answers it: `scalarField.value` is
+    // `maxLength`-only and `ruleArray.items` is `maxLength`-only
+    // (agentic-machine-profile-1.1), so neither is grammar-clamped and neither
+    // is disclosable. An earlier version of this block printed them verbatim in
+    // text AND in `--format json`, which turned a profile the operator may have
+    // written a secret into — §3.2's exact threat model, an artifact reaching
+    // terminal capture, CI logs, and agent context — into report content
+    // (Refine-verify peer, MAJOR).
+    //
+    // What crosses instead is the §3.2 fallback: TYPE and LENGTH. The operator
+    // learns which keys the interview will pre-fill, at what scope, and the
+    // shape of each — and reads the values in the profile file they already
+    // hold, which is deliberately a file read rather than a `--verbatim` flag.
+    //
+    // This leaves a REAL tension the owner should settle rather than the
+    // renderer: §4.5 item 4 says to present every remaining value as a default
+    // requiring confirmation, and a withheld value is not presented in the
+    // fullest sense of that sentence. §3.2 wins here only because it is the
+    // conservative side — echoing content that the disclosure rule forbids is
+    // not reversible once it is in a log.
     for (const proposal of proposals) {
-      const value = Array.isArray(proposal.value) ? proposal.value.join(', ') : String(proposal.value ?? '');
-      lines.push(`  - default (confirm): ${renderSafe(proposal.key)} = ${renderLine(value)}${proposal.scope ? ` [scope ${renderSafe(proposal.scope)}]` : ''}`);
+      lines.push(`  - default (confirm): ${renderSafe(proposal.key)} = ${describeWithheld(proposal.value)}${proposal.scope ? ` [scope ${renderSafe(proposal.scope)}]` : ''}`);
     }
     for (const note of notes) {
       lines.push(`  ! ${renderSafe(note.labelled)}: ${renderSafe(note.key)} — ${renderLine(note.note)}`);
@@ -3834,7 +3884,7 @@ export function renderText(report) {
         continue;
       }
       lines.push(`  - [stage 8] ${canonicalId}: ${proof.status}${proof.declined ? ' (declined)' : ''}`);
-      lines.push(...renderReasonLines(proof.reasons, '      evidence: '));
+      lines.push(...renderReasonLines(proof.reasons, '      ', 'evidence'));
       const control = proof.step_id === canonicalId ? stepById.get(canonicalId) : null;
       // `blocked` is the one control state the evidence row cannot already
       // convey and the operator can act on. `declined` rides the row above,
@@ -3842,6 +3892,21 @@ export function renderText(report) {
       if (control?.status === 'blocked' && control.recovery) {
         lines.push(`      execution: ${renderLine(control.recovery)}`);
       }
+    }
+    // §8.2's Codex /hooks attestation is the THIRD reason array on this object
+    // and had no row at all — not truncated, absent. The live path rendered
+    // only proof and receipt reasons, so a stale attestation reached the
+    // operator as nothing whatsoever while the legacy summary path below has
+    // reported its `reason_count` all along (Refine-verify peer, MAJOR).
+    //
+    // Enumerating the sites that READ `.reasons` is what missed it, and the
+    // reason is structural: a grep for readers finds every place a field is
+    // truncated and no place a field has no reader. The mirror of a
+    // shows-too-little bug is sometimes a shows-nothing one.
+    if (report.completion.hook_attestation) {
+      const attestation = report.completion.hook_attestation;
+      lines.push(`  - hook attestation: ${attestation.status}`);
+      lines.push(...renderReasonLines(attestation.reasons, '      ', 'reason'));
     }
     if (report.completion.egress_receipt_attestation) {
       const receipt = report.completion.egress_receipt_attestation;
@@ -3860,7 +3925,7 @@ export function renderText(report) {
       // rendering exactly that string. Every line this renderer emits begins
       // with a label the renderer wrote.
       lines.push(`  - receipt attestation: ${receipt.status}`);
-      lines.push(...renderReasonLines(receipt.reasons, '      reason: '));
+      lines.push(...renderReasonLines(receipt.reasons, '      ', 'reason'));
     }
   }
   // D1 — the historical path renders from the SAME projected object the JSON

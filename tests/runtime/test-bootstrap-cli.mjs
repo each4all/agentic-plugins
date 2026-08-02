@@ -954,16 +954,52 @@ describe('runtime bootstrap CLI — lifecycle', () => {
 
     const seedText = renderText(seeded.report);
     ok(/^- seeded from: machine-r \(/m.test(seedText), `the seed linkage renders:\n${seedText}`);
-    // Every computed proposal reaches the render — a subset would be the same
-    // silent-omission failure the Stage-8 rows just stopped committing.
+    // Guard the loop below against passing vacuously on an empty list — the
+    // whole assertion is "every proposal is presented", which says nothing if
+    // there are none (Refine-verify peer, MINOR).
+    ok(seeded.report.proposals.proposals.length > 0, 'the fixture must actually produce proposals for this to assert anything');
     for (const proposal of seeded.report.proposals.proposals) {
       ok(seedText.includes(proposal.key), `proposal ${proposal.key} is presented:\n${seedText}`);
     }
-    if (seeded.report.proposals.proposals.length > 0) {
-      ok(/default \(confirm\)/.test(seedText), 'and presented AS a default requiring confirmation (§4.5 item 4)');
-    }
+    ok(/default \(confirm\)/.test(seedText), 'and presented AS a default requiring confirmation (§4.5 item 4)');
 
     strictEqual((await run(['abandon', '--latest-open'])).exitCode, EXIT.OK);
+  });
+
+  it('a proposal VALUE never crosses artifact -> report — §3.2', () => {
+    // The first version of this rendering printed proposal values verbatim in
+    // text and in `--format json`. `scalarField.value` and `ruleArray.items`
+    // are `maxLength`-only in agentic-machine-profile-1.1, so §3.2 does not let
+    // their content cross — and a machine profile is exactly the artifact that
+    // rule's threat model is about (Refine-verify peer, MAJOR).
+    const text = renderText({
+      verb: 'profile seed',
+      run_id: 'run-x',
+      status: 'seeded',
+      seeded_from: { profile_id: 'm', profile_hash: 'a'.repeat(64) },
+      proposals: {
+        ok: true,
+        refused: [],
+        proposals: [
+          { key: 'model_effort.claude', value: 'PRIVATE-MARKER-ALPHA', scope: 'machine' },
+          { key: 'permissions.claude.allow', value: ['PRIVATE-RULE-BRAVO', 'PRIVATE-RULE-CHARLIE'], scope: 'machine' },
+          { key: 'egress.headline_opt_in', value: true, scope: 'machine' },
+        ],
+        notes: [],
+        boundary: {},
+      },
+      warnings: [],
+      diagnostics: [],
+    });
+    for (const secret of ['PRIVATE-MARKER-ALPHA', 'PRIVATE-RULE-BRAVO', 'PRIVATE-RULE-CHARLIE']) {
+      ok(!text.includes(secret), `${secret} must not cross the artifact -> report boundary:\n${text}`);
+    }
+    // The KEY, its scope, and the value's shape still reach the operator —
+    // withholding content is not withholding information.
+    ok(/model_effort\.claude = <string, 20 chars/.test(text), `type and length still cross:\n${text}`);
+    ok(/permissions\.claude\.allow = <2 entries, /.test(text), 'an array reports its count and width');
+    // A grammar-clamped value (a boolean) is disclosable and still shows.
+    ok(/egress\.headline_opt_in = true/.test(text), 'a clamped value is not withheld — §3.2 keys on the schema, not on caution');
   });
 
   it('a safety-graded note is what the operator actually SEES, not just what seed computed', async () => {
@@ -2734,11 +2770,90 @@ describe('bootstrap Stage-8 proof presentation (control vs evidence)', () => {
       completion: completionOf([evaluatedProof({ reasons: Array.from({ length: 64 }, (_, i) => `reason-${i}-${'x'.repeat(500)}`) })]),
       steps: [],
     });
-    const marker = text.split('\n').find((line) => /further reason/.test(line));
+    const marker = text.split('\n').find((line) => /^ {6}evidence-omitted: /.test(line));
     ok(marker, `the block admits it is incomplete:\n${text}`);
-    const shown = text.split('\n').filter((line) => /^ {6}evidence: /.test(line) && !/further reason/.test(line)).length;
+    const shown = text.split('\n').filter((line) => /^ {6}evidence: /.test(line)).length;
     const claimed = Number(/\+(\d+) further/.exec(marker)?.[1]);
     strictEqual(shown + claimed, 64, 'the count reconciles with what was actually shown — a marker that disagrees is a second lie');
+  });
+
+  it('a BLANK reason is counted even though it is not rendered', () => {
+    // `maxLength` with no `minLength` makes "" and "   " schema-valid, so
+    // filtering them before the accounting let a record hold two entries, show
+    // one, and claim nothing was omitted (Refine-verify peer, MAJOR).
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ reasons: ['   ', 'REAL_REASON'] })]),
+      steps: [],
+    });
+    ok(/^ {6}evidence: REAL_REASON$/m.test(text), `the real reason renders:\n${text}`);
+    const marker = text.split('\n').find((line) => /^ {6}evidence-omitted: /.test(line));
+    ok(marker, `the blank entry is declared, not silently filtered:\n${text}`);
+    ok(/\+1 further entry not shown \(1 blank\)/.test(marker), `and named as blank: ${marker}`);
+  });
+
+  it('a reason cannot forge the omission marker', () => {
+    // The marker and the reasons shared one label, so a reason reading like a
+    // marker rendered byte-for-byte as one, claiming an omission that never
+    // happened (Refine-verify peer, MAJOR).
+    const forged = '(+63 further reasons not shown; read the run artifact for the full set)';
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ reasons: [forged] })]),
+      steps: [],
+    });
+    ok(!/^ {6}evidence-omitted: /m.test(text), `no line claims an omission the renderer did not make:\n${text}`);
+    ok(text.includes(`      evidence: ${forged}`), 'the text still renders, as the record\'s own words');
+  });
+
+  it('every grapheme cluster family survives the cut, not only combining marks', () => {
+    // The hand-rolled backoff handled \p{M} only, so ZWJ sequences (Cf),
+    // regional-indicator pairs (So) and emoji modifiers (Sk) all still split —
+    // none of those are marks (Refine-verify peer, MAJOR). Enumerating Unicode
+    // categories by hand is what missed three of four families; the segmenter
+    // is UAX #29 itself.
+    const families = [
+      ['ZWJ sequence', '\u{1F469}\u200D\u{1F4BB}', '\u{1F469}'],
+      ['regional indicators', '\u{1F1F0}\u{1F1F7}', '\u{1F1F0}'],
+      ['emoji modifier', '\u{1F44D}\u{1F3FD}', '\u{1F44D}'],
+      ['combining mark', 'e\u0301', 'e'],
+    ];
+    for (const [name, cluster, leadingPiece] of families) {
+      const text = renderText({
+        verb: 'status',
+        completion: completionOf([evaluatedProof({ reasons: [`${'x'.repeat(397)}${cluster}TAIL${'y'.repeat(100)}`] })]),
+        steps: [],
+      });
+      const line = text.split('\n').find((l) => /^ {6}evidence: /.test(l));
+      const payload = line.replace(/^ {6}evidence: /, '').replace(/\u2026$/, '');
+      ok(!payload.endsWith(leadingPiece), `${name}: the cluster was split, leaving a different character than the record held: ${JSON.stringify(payload.slice(-4))}`);
+    }
+  });
+
+  it('a cluster wider than the whole budget yields no corrupted prefix', () => {
+    // The old "don't retreat to empty" guard reproduced exactly the stripped
+    // base it claimed to prevent: `e` + a budget of combining marks rendered a
+    // confident `e` (Refine-verify peer, MAJOR).
+    const text = renderText({
+      verb: 'status',
+      completion: completionOf([evaluatedProof({ reasons: [`e${'\u0301'.repeat(500)}`] })]),
+      steps: [],
+    });
+    const line = text.split('\n').find((l) => /^ {6}evidence: /.test(l));
+    const payload = line.replace(/^ {6}evidence: /, '');
+    strictEqual(payload, '\u2026', `no prefix of an unsplittable cluster may be presented as the recorded value, got ${JSON.stringify(payload)}`);
+  });
+
+  it('the hook attestation reasons reach the operator at all', () => {
+    // The THIRD reason array on `completion`, which had no row whatsoever —
+    // not truncated, absent (Refine-verify peer, MAJOR).
+    const text = renderText({
+      verb: 'status',
+      completion: { ...completionOf([]), hook_attestation: { status: 'stale', reasons: ['CANARY_A', 'CANARY_B'] } },
+      steps: [],
+    });
+    ok(/^ {2}- hook attestation: stale$/m.test(text), `the verdict renders:\n${text}`);
+    for (const canary of ['CANARY_A', 'CANARY_B']) ok(text.includes(canary), `${canary} reaches the operator:\n${text}`);
   });
 
   it('at least four reasons survive whatever their lengths — the guarantee that replaced zero', () => {
