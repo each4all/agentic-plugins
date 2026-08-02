@@ -1821,9 +1821,9 @@ function priorJudgeMapOf(stepList) {
  * verbs surface it and a second copy is how they would drift; the resume-side
  * post-executor convergence says the same thing about a later window.
  */
-function selectionRestoredWarnings(selectionRestored, { window }) {
+function selectionRestoredWarnings(selectionRestored, { window, consequence }) {
   return (selectionRestored ?? []).map(({ host, plugins }) =>
-    `${plugins.join(', ')} was refused on ${host} but is observed installed there ${window}; the refusal no longer follows from the run's own rows, so the selection was re-derived and the affected steps re-judged (§6.2 — an observation clears a decline; re-plan if the refusal was the intent)`);
+    `${plugins.join(', ')} was refused on ${host} but is observed installed there ${window}; the refusal no longer follows from the run's own rows (§6.2 — an observation clears a decline; re-plan if the refusal was the intent). ${consequence}`);
 }
 
 /**
@@ -2056,7 +2056,24 @@ async function runPlan(ctx, opts) {
   return { exitCode: EXIT_BY_STATE[completion.state] ?? EXIT.UNEXPECTED, report };
 }
 
-async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequested = false } = {}) {
+/**
+ * `converge` — whether the effective selection is re-derived from the FRESH rows
+ * (see the convergence block below). Every verb that speaks about the machine as
+ * it is NOW converges. `attest` alone does not (owner decision, 2026-08-02): it
+ * is the post-terminal receipt door, its subject is a send that already happened,
+ * and the gate it protects asks whether a RECORDED ack may be testified about.
+ * §7's drift clause names *bound versions*; refusing testimony because the
+ * operator installed an unrelated plugin afterwards is a selection-drift refusal
+ * the contract never specified, and it is unrecoverable — resume refuses a
+ * terminal run, so the owner who really received the receipt could never record
+ * it. So attest judges the run as the run was reduced.
+ *
+ * The cost is stated rather than hidden: attest's recomputed verdict can then
+ * differ from `status`'s for the same run. That is why `selectionRestored` is
+ * computed even when `converge` is false — the caller must SAY the selection has
+ * lapsed rather than let two verbs disagree in silence.
+ */
+async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequested = false, converge = true } = {}) {
   // ADR-0048 §3 — re-judgement consumes the RECORDED evidence (proof/ files,
   // which keep their per-direction results / provider_ack), never the
   // manifest's reduced completion.proofs. The reduced shape has no directions
@@ -2171,8 +2188,9 @@ async function reprobeAgainstRun(ctx, manifest, pluginSet, { egressProofRequeste
       if (restored.length > 0) selectionRestored.push({ host, plugins: restored });
     }
   }
-  if (selectionMoved || ['claude', 'codex'].some((h) => judgedFragmentApplied[h] !== storedFragmentApplied[h])) {
-    if (selectionMoved) {
+  const applySelection = converge && selectionMoved;
+  if (applySelection || ['claude', 'codex'].some((h) => judgedFragmentApplied[h] !== storedFragmentApplied[h])) {
+    if (applySelection) {
       effective = convergedEffective;
       hookVerdict = hookVerdictFor({ recordedAttestation: recordedHookAttestation, pluginSet, effective, probe });
     }
@@ -2320,7 +2338,7 @@ async function runStatus(ctx, opts) {
     completion,
     steps,
     probe,
-    warnings: [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this re-probe' }), ...(divergence ? [divergence.warning] : [])],
+    warnings: [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this re-probe', consequence: 'The selection was re-derived and the affected steps re-judged.' }), ...(divergence ? [divergence.warning] : [])],
     diagnostics: [],
   };
   return { exitCode: EXIT_BY_STATE[completion.state] ?? EXIT.UNEXPECTED, report };
@@ -2355,7 +2373,7 @@ async function runVerify(ctx, opts) {
     hook_attestation: completion.hook_attestation,
     steps,
     probe,
-    warnings: [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this re-probe' }), ...(divergence ? [divergence.warning] : [])],
+    warnings: [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this re-probe', consequence: 'The selection was re-derived and the affected steps re-judged.' }), ...(divergence ? [divergence.warning] : [])],
     diagnostics: [],
   };
   return { exitCode: EXIT_BY_STATE[completion.state] ?? EXIT.UNEXPECTED, report };
@@ -2576,7 +2594,7 @@ async function runResume(ctx, opts) {
   let selection = reprobe.selection;
   let effective = reprobe.effective;
   let expected = reprobe.expected;
-  const warnings = [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: 'as of this run\'s re-probe' })];
+  const warnings = [...(picked.warnings ?? []), ...selectionRestoredWarnings(reprobe.selectionRestored, { window: "as of this run's re-probe", consequence: 'The selection was re-derived and the affected steps re-judged.' })];
 
   // `answeredEffective` is the per-step last-wins ANSWER map — a different thing from
   // the effective SELECTION above, and named apart so the two can never be confused
@@ -3042,7 +3060,7 @@ async function runResume(ctx, opts) {
           ['claude', 'codex']
             .map((host) => ({ host, plugins: (convergedEffective.byHost[host] ?? []).filter((name) => !(effective.byHost[host] ?? []).includes(name)) }))
             .filter((row) => row.plugins.length > 0),
-          { window: "while this resume's proof ran" },
+          { window: "while this resume's proof ran", consequence: 'The selection was re-derived and the affected steps re-judged.' },
         ));
         effective = convergedEffective;
         finalHookVerdict = hookVerdictFor({ recordedAttestation: hookAttestation, pluginSet, effective, probe: finalProbe });
@@ -3213,10 +3231,23 @@ async function runAttest(ctx, opts) {
     return { exitCode: EXIT.INVALID, report: { verb: 'attest', status: 'refused', diagnostics: [`Run ${picked.run.run_id} carries schema ${picked.manifest.schema}, not ${RUN_SCHEMA_VERSION} — attest records 1.2 evidence only. Resume an open legacy run to migrate it first; a terminal legacy run stays immutable history.`] } };
   }
 
-  const reprobe = await reprobeAgainstRun(ctx, picked.manifest, pluginSet);
+  // NOT converged (§7, owner decision): the receipt door judges the run as the
+  // run was REDUCED, so a selection that lapsed after the run closed cannot
+  // refuse testimony about a send that already happened. See reprobeAgainstRun's
+  // `converge` parameter for the full reasoning and the cost.
+  const reprobe = await reprobeAgainstRun(ctx, picked.manifest, pluginSet, { converge: false });
   if (reprobe.proofReadFailure) {
     return { exitCode: EXIT.UNEXPECTED, report: { verb: 'attest', status: 'evidence-unreadable', diagnostics: reprobe.proofReadFailure } };
   }
+  // The cost, said out loud on every affected run — the one thing that must not
+  // happen is attest and status disagreeing about a run in silence.
+  const attestWarnings = selectionRestoredWarnings(reprobe.selectionRestored, {
+    window: 'as of this re-probe',
+    // NOT the converged wording: attest deliberately did not re-derive, and a
+    // warning that claimed it had would be one more sentence describing
+    // behaviour the code does not have.
+    consequence: 'attest deliberately does NOT re-derive it — the receipt door judges this run as it was REDUCED (§7: its subject is a send that already happened), so this verdict can differ from what `status` reports for the same run.',
+  });
 
   const attest = await recordReceiptAttestation(ctx, {
     runId: picked.run.run_id,
@@ -3224,14 +3255,14 @@ async function runAttest(ctx, opts) {
     ackEvaluated: reprobe.completion.proofs.find((p) => p.kind === 'egress-provider-ack') ?? null,
   });
   if (!attest.ok) {
-    return { exitCode: EXIT.INVALID, report: { verb: 'attest', status: 'refused', diagnostics: [attest.diagnostic] } };
+    return { exitCode: EXIT.INVALID, report: { verb: 'attest', status: 'refused', diagnostics: [attest.diagnostic], warnings: attestWarnings } };
   }
 
   // Re-read and re-reduce so the reported verdict is computed over the exact
   // bytes just persisted — the same authoritative-bytes rule resume follows.
   const finalRead = await readBootstrapProofRecords({ homeDir: ctx.homeDir, runId: picked.run.run_id });
   if (!finalRead.ok) {
-    return { exitCode: EXIT.UNEXPECTED, report: { verb: 'attest', status: 'evidence-unreadable', diagnostics: finalRead.errors } };
+    return { exitCode: EXIT.UNEXPECTED, report: { verb: 'attest', status: 'evidence-unreadable', diagnostics: finalRead.errors, warnings: attestWarnings } };
   }
   const receiptRow = finalRead.records.find((r) => r.kind === 'egress-receipt-attestation') ?? null;
   const ackRow = finalRead.records.find((r) => r.kind === 'egress-provider-ack') ?? null;
@@ -3255,6 +3286,7 @@ async function runAttest(ctx, opts) {
     receipt: completion.egress_receipt_attestation ?? null,
     receipt_pointer: attest.proof.pointer,
     completion,
+    warnings: attestWarnings,
     diagnostics: [],
   };
   return { exitCode: EXIT.OK, report };

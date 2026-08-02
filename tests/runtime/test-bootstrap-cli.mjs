@@ -151,6 +151,29 @@ function hostedRunner({ installed = ALL_PLUGINS } = {}) {
   };
 }
 
+// A host runner whose answers can be rewritten between calls, so the machine
+// can move WHILE the executor runs. Every field is read on each call, not
+// captured once. Per-host plugin lists (`state.claude` / `state.codex`) fall
+// back to the shared `state.installed`, so a test only names the axis it moves.
+function mutableRunner(state) {
+  const on = (host) => state[host] ?? state.installed;
+  return async (name, args) => {
+    const key = `${name} ${args.join(' ')}`;
+    if (!state.hosts.includes(name)) return missing();
+    if (key === 'claude --version') return okOut('2.1.0 (Claude Code)');
+    if (key === 'claude auth status') return okOut(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }));
+    if (key === 'claude plugin list') return okOut(claudePluginList(on('claude')));
+    if (key === 'claude plugin marketplace list --json') return okOut(MARKETPLACE_JSON);
+    if (name === 'claude') return okOut('usage');
+    if (key === 'codex --version') return okOut('codex-cli 0.140.0');
+    if (key === 'codex login status') return okOut('Logged in using ChatGPT');
+    if (key === 'codex plugin list --json') return okOut(codexPluginList(on('codex')));
+    if (key === 'codex plugin marketplace list --json') return okOut(MARKETPLACE_JSON);
+    if (name === 'codex') return okOut('usage');
+    return missing();
+  };
+}
+
 const satisfiedRunner = () => hostedRunner();
 
 // The one declinable Stage-5 step this fixture never satisfies from config:
@@ -1800,28 +1823,6 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
     doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json' },
   };
 
-  // A host runner whose answers can be rewritten between calls, so the machine
-  // can move WHILE the executor runs. Every field is read on each call, not
-  // captured once. Per-host plugin lists (`state.claude` / `state.codex`) fall
-  // back to the shared `state.installed`, so a test only names the axis it moves.
-  function mutableRunner(state) {
-    const on = (host) => state[host] ?? state.installed;
-    return async (name, args) => {
-      const key = `${name} ${args.join(' ')}`;
-      if (!state.hosts.includes(name)) return missing();
-      if (key === 'claude --version') return okOut('2.1.0 (Claude Code)');
-      if (key === 'claude auth status') return okOut(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }));
-      if (key === 'claude plugin list') return okOut(claudePluginList(on('claude')));
-      if (key === 'claude plugin marketplace list --json') return okOut(MARKETPLACE_JSON);
-      if (name === 'claude') return okOut('usage');
-      if (key === 'codex --version') return okOut('codex-cli 0.140.0');
-      if (key === 'codex login status') return okOut('Logged in using ChatGPT');
-      if (key === 'codex plugin list --json') return okOut(codexPluginList(on('codex')));
-      if (key === 'codex plugin marketplace list --json') return okOut(MARKETPLACE_JSON);
-      if (name === 'codex') return okOut('usage');
-      return missing();
-    };
-  }
 
   // Executes deep-peer-smoke; `duringProof` is the machine moving underneath.
   // `stdout` lets a test make the executor FAIL (invalid JSON) while still
@@ -2329,6 +2330,101 @@ describe('bootstrap resume — one final snapshot (probe, raw, readers)', () => 
       'the re-probe happens for the read-only child as well');
     strictEqual(manifest.steps.find((s) => s.id === 'plugin.engineer.claude.installed')?.status, 'pending',
       'and the persisted rows are judged from it');
+  });
+});
+
+// The one verb that deliberately does NOT converge (§7, owner decision
+// 2026-08-02). Its subject is a send that already happened, so a selection that
+// lapsed after the run closed must not refuse testimony about it — and the
+// resulting divergence from `status` must be stated, not silent.
+describe('bootstrap attest — the receipt door judges the run as it was reduced', () => {
+  const EGRESS_ENV = { AGENTIC_NOTIFY_EGRESS_CHANNEL: 'telegram', TELEGRAM_BOT_TOKEN: '999999:sentinel' };
+  const RECIPIENT = '424242424242';
+
+  async function completedRunWithPassedAck() {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    await writeFile(join(home, '.agentic-plugins', 'config.local.toml'), `egress_chat_id = "${RECIPIENT}"\n`, { mode: 0o600 });
+    const state = {
+      hosts: ['claude', 'codex'],
+      claude: [...ALL_PLUGINS],
+      codex: ALL_PLUGINS.filter((p) => p !== 'designer'),
+    };
+    const fingerprint = deriveActivationFingerprint({ channel: 'telegram', recipient: RECIPIENT, credentialEnvVar: 'TELEGRAM_BOT_TOKEN' });
+    const subprocess = async (scriptPath, args) => {
+      if (scriptPath.endsWith('settings.mjs')) return okOut(JSON.stringify({ plugin_management: { plan_hash: null } }));
+      if (scriptPath.endsWith('doctor.mjs')) {
+        if (args.includes('--execute-egress-ack-proof')) {
+          return okOut(JSON.stringify({
+            egress_ack_proof: {
+              requested: true, executed: true, mode: 'explicit_egress_executor', status: 'passed',
+              provider_ack: { result: 'acked', attempt_hash: 'a'.repeat(64), activation_fingerprint: fingerprint, ran_at: '2026-07-18T04:00:00.000Z' },
+              outcome_reason: 'dispatched', mirror_correlated: true, network_request_performed: true,
+              subject_suffix: 'abcdef012345', blockers: [], limits: [],
+            },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json', artifact_sha256: 'b'.repeat(64) },
+          }));
+        }
+        if (args.includes('--execute-deep-peer-smoke')) {
+          return okOut(JSON.stringify({
+            deep_peer_smoke: { directions: { claude_to_codex: { execution: 'executed', status: 'passed' }, codex_to_claude: { execution: 'executed', status: 'passed' } } },
+            doctor_artifact: { artifact_pointer: '~/.agentic-plugins/runs/doctor/stub/doctor.json' },
+          }));
+        }
+        return okOut(JSON.stringify({}));
+      }
+      return missing();
+    };
+    const run = (argv) => boot({ argv, home, cwd, runner: mutableRunner(state), subprocess, env: EGRESS_ENV });
+    await run(['plan', '--bundle', 'custom', '--plugins', 'runtime,companions,designer', '--format', 'json']);
+    const answersPath = join(home, 'close-with-ack.json');
+    await writeFile(answersPath, JSON.stringify([
+      { step_id: 'plugin.designer.codex.installed', answer: 'decline' },
+      { step_id: 'plugin.designer.codex.enabled', answer: 'decline' },
+      { step_id: 'proof.egress-provider-ack', answer: 'execute' },
+      { step_id: 'proof.deep-peer-smoke', answer: 'execute' },
+    ]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+    strictEqual(resume.report.run_status, 'complete', 'precondition: the run closed');
+    strictEqual(resume.report.completion.proofs.find((p) => p.kind === 'egress-provider-ack')?.status, 'passed',
+      'precondition: with a passed ack, which is what testimony is about');
+    return { run, state, resume };
+  }
+
+  it('a refusal that lapses AFTER the run closed does not refuse the owner\'s receipt', async () => {
+    // Before the convergence reached attest this returned exit 40 ('re-judges
+    // stale'), and a terminal run cannot be resumed — so the owner who really
+    // received the receipt could never record it, because they installed an
+    // unrelated plugin afterwards.
+    const { run, state } = await completedRunWithPassedAck();
+    state.codex = [...state.codex, 'designer'];
+
+    const attest = await run(['attest', '--format', 'json']);
+    strictEqual(attest.exitCode, EXIT.OK, `the door stays open: ${JSON.stringify(attest.report.diagnostics)}`);
+    ok(attest.report.receipt_pointer, 'and the testimony is actually recorded');
+  });
+
+  it('and it SAYS that its verdict can differ from status, rather than diverging in silence', async () => {
+    const { run, state } = await completedRunWithPassedAck();
+    state.codex = [...state.codex, 'designer'];
+
+    const attest = await run(['attest', '--format', 'json']);
+    const warning = (attest.report.warnings ?? []).find((w) => /designer/.test(w));
+    ok(warning, `the lapsed refusal is named: ${JSON.stringify(attest.report.warnings)}`);
+    ok(/does NOT re-derive/.test(warning) && /differ from what `status` reports/.test(warning),
+      `and the divergence is stated, in wording that does not claim a re-derivation attest did not do: ${warning}`);
+
+    // The divergence is real — that is the accepted cost, and why it is stated.
+    const status = await run(['status', '--format', 'json']);
+    strictEqual(attest.report.completion.state, 'complete', 'attest judges the run as it was reduced');
+    notStrictEqual(status.report.completion.state, 'complete', 'status judges the machine as it is now');
+  });
+
+  it('a run whose selection never lapsed gets no such warning', async () => {
+    // Control: the warning must be about the lapse, not about running attest.
+    const { run } = await completedRunWithPassedAck();
+    const attest = await run(['attest', '--format', 'json']);
+    strictEqual(attest.exitCode, EXIT.OK);
+    deepStrictEqual(attest.report.warnings, [], 'nothing lapsed, nothing warned');
   });
 });
 

@@ -1656,17 +1656,32 @@ rewritten and no narrowing history row is written. Narrowing stays irreversible
 in-run per the rules above. The operator is warned by name when it moves, and
 pointed at re-planning if the refusal was the intent.
 
-**Every verb converges it, not only `resume`.** The derivation reads the STORED
-rows and the judge then re-observes them, so the convergence belongs to the
-shared re-judgement every verb runs — otherwise `status` and `verify` are the
-worse half: they cannot persist a correction and a terminal run cannot be
-resumed, so a completed run whose Codex-refused, Codex-hook-bearing plugin was
-afterwards installed would report both its rows `satisfied`, leave
-`hooks.codex.attested` `not-applicable`, and return `complete` at exit 0 for
-good. `resume` converges a SECOND time after its executor, because the machine
-can move again in between. The selection-scoped hook verdict is re-derived with
-the selection at both points: a claim that covered the narrow set must not go on
-satisfying a non-declinable step it no longer covers.
+**Every verb that speaks about the machine as it is NOW converges it, not only
+`resume`.** The derivation reads the STORED rows and the judge then re-observes
+them, so the convergence belongs to the shared re-judgement — otherwise `status`
+and `verify` are the worse half: they cannot persist a correction and a terminal
+run cannot be resumed, so a completed run whose Codex-refused,
+Codex-hook-bearing plugin was afterwards installed would report both its rows
+`satisfied`, leave `hooks.codex.attested` `not-applicable`, and return
+`complete` at exit 0 for good. `resume` converges a SECOND time after its
+executor, because the machine can move again in between. The selection-scoped
+hook verdict is re-derived with the selection at every point it moves: a claim
+that covered the narrow set must not go on satisfying a non-declinable step it
+no longer covers.
+
+**`attest` is the one exception, deliberately.** Its subject is a send that
+already HAPPENED, and the gate it protects asks whether a recorded ack may be
+testified about — so it judges the run as the run was REDUCED, with no
+convergence. The drift this clause names for a proof is *bound versions*;
+refusing an owner's receipt because they installed an unrelated plugin after the
+run closed is a selection-drift refusal, and an unrecoverable one — `resume`
+refuses a terminal run, so the door would simply shut. The cost is that attest's
+recomputed verdict can differ from `status`'s for the same run, and that cost is
+**stated in attest's own output** on every affected run rather than left for the
+operator to discover: the warning names the lapsed refusal, says attest did not
+re-derive it, and says the verdict may differ. Two verbs disagreeing is
+acceptable when each says which question it answers; disagreeing silently is
+not.
 
 **Stated limit.** §7 version invalidation sits OUTSIDE both convergences: it runs
 once, early, against the selection as it stood before either. Two windows escape
