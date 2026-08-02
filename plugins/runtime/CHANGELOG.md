@@ -20,6 +20,20 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.88.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.87.0...plugin-runtime-v0.88.0) (2026-08-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **plugin/runtime:** the JSON report identifier moves to `runtime-bootstrap-report-2.0`. A legacy-historical (exit 50) report no longer carries the `completion` key at all — it was removed, not renamed — and emits `legacy_completion_summary` instead. A consumer reading `completion` from such a report must read the summary and, when it needs the withheld free text, read the run artifact at `source.artifact_pointer` directly.
+
+### Bug Fixes
+
+* **plugin/runtime:** judge tui.notifications as the second half of notify.codex.configured ([#661](https://github.com/each4all/agentic-plugins/issues/661)) ([358a75a](https://github.com/each4all/agentic-plugins/commit/358a75ae860da3a5d32824a8307a844ff3fbec4f))
+* **plugin/runtime:** one disclosure invariant at the artifact → report boundary ([#662](https://github.com/each4all/agentic-plugins/issues/662)) ([5c8cf79](https://github.com/each4all/agentic-plugins/commit/5c8cf79e697065bcadfdf4e5a070a4f2c9328763))
+* **plugin/runtime:** one grammar for answer applicability, asked at both boundaries ([67bbc54](https://github.com/each4all/agentic-plugins/commit/67bbc54f70e65f5b968e3b5c07b424af3934ffaa))
+* **plugin/runtime:** one machine snapshot per verb, judged and reported once ([#663](https://github.com/each4all/agentic-plugins/issues/663)) ([383dc14](https://github.com/each4all/agentic-plugins/commit/383dc140e94756eecc199a4f952104746fb8691b))
+
 ## [0.87.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.86.3...plugin-runtime-v0.87.0) (2026-07-30)
 
 
