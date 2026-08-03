@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.21.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.0...plugin-engineer-v0.21.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** make the peer-run sweep preview state what --apply deletes ([d2ead17](https://github.com/each4all/agentic-plugins/commit/d2ead172e03aac042cb258a8eaa8d01d6ac5614c))
+* **plugin/engineer:** re-verify a peer run immediately before deleting it ([1abcdae](https://github.com/each4all/agentic-plugins/commit/1abcdae013fcbd9db9224e0a1c67d28bac657950))
+
 ## [0.21.0](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.20.1...plugin-engineer-v0.21.0) (2026-07-13)
 
 

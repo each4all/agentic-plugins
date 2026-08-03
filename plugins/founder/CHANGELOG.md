@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.0...plugin-founder-v0.4.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* **plugin/founder:** make the peer-run sweep preview state what --apply deletes ([45b6217](https://github.com/each4all/agentic-plugins/commit/45b62176b84cb9994a9ff4a576f7e4ca495a4b3a))
+* **plugin/founder:** re-verify a peer run immediately before deleting it ([b79954a](https://github.com/each4all/agentic-plugins/commit/b79954a085d01a4151b669ad06161b51b9e1bdb2))
+
 ## [0.4.0](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.3.1...plugin-founder-v0.4.0) (2026-07-13)
 
 

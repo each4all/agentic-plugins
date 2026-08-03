@@ -18,6 +18,14 @@
 - `VALID_HOOK_EVENTS` extended with `archived` for the macro auto-archive host_history event and `checkpointed` for macro checkpoints.
 - `tests/orchestrator/test-stop-archive.mjs`, `test-finalize.mjs`, `test-abort.mjs` new test files; `test-state.mjs`, `test-discover-engineer.mjs`, `test-hooks.mjs`, `tests/plugin-shape/test-orchestrator-plugin.mjs` extended.
 
+## [0.13.1](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.13.0...plugin-orchestrator-v0.13.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* **plugin/orchestrator:** make the peer-run sweep preview state what --apply deletes ([c2b4e35](https://github.com/each4all/agentic-plugins/commit/c2b4e35310ed502166e7dbf86fedd839a493536a))
+* **plugin/orchestrator:** re-verify a peer run immediately before deleting it ([e4ff3df](https://github.com/each4all/agentic-plugins/commit/e4ff3df2760895c69cddc1809dd97b6369f42382))
+
 ## [0.13.0](https://github.com/each4all/agentic-plugins/compare/plugin-orchestrator-v0.12.1...plugin-orchestrator-v0.13.0) (2026-07-13)
 
 
