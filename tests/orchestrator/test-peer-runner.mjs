@@ -985,6 +985,78 @@ describe('peer-runner.mjs — sweep and retention', () => {
     });
   });
 
+  it('a run id recreated as a NEW running run is not deleted under the old run\'s verdict', async () => {
+    // Computing the whole plan first is what makes the preview honest, and it
+    // also widens the window between deciding to delete and deleting. A run id
+    // is reusable once its directory is gone, so without a re-read the
+    // replacement is destroyed under the old run's TTL verdict — live data, on
+    // an operation the operator approved for something else entirely.
+    await withTmpRepo(async (repoRoot) => {
+      const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+      const paths = await writeHandleFixture(repoRoot, 'reused-id', {
+        status: 'completed', completed_at: old, updated_at: old, exit_code: 0,
+      });
+      const opts = { repoRoot, staleGraceMs: 60_000, retentionTtlDays: 1, retentionCap: 0 };
+      const preview = await sweepPeerRuns({ ...opts, applyRetention: false });
+      deepStrictEqual(preview.planned_prunes.map((p) => p.run_id), ['reused-id']);
+
+      // The window: the id is recycled by a new, LIVE run before apply lands.
+      await writeHandleFixture(repoRoot, 'reused-id', {
+        status: 'running', updated_at: new Date().toISOString(), pid: process.pid,
+        process_fingerprint: { kind: 'none' },
+      });
+
+      const applied = await sweepPeerRuns({ ...opts, applyRetention: true });
+      deepStrictEqual(applied.pruned, [], 'the live replacement is NOT deleted');
+      strictEqual(await exists(paths.dir), true, 'the replacement payload survives');
+      // MEASURED, and it corrects what this test first asserted: the protection
+      // here comes from the apply pass RE-SCANNING (the replacement is
+      // `running`, so it never enters `terminal` and is never planned), not
+      // from the pre-delete re-verify — `prune_skipped` is empty. The re-verify
+      // guards the strictly narrower window INSIDE one invocation, between the
+      // scan and the deletion loop, which computing the whole plan up front is
+      // what opened. Reaching that window from a test needs the scan paused
+      // mid-flight (the Refine-verify peer used a FIFO); it is not covered
+      // here, and saying so is better than an assertion that passes for the
+      // wrong reason.
+      deepStrictEqual(applied.prune_skipped, [], 'the re-scan handled it before the re-verify had to');
+    });
+  });
+
+  it('the sweep report pins its full shape, not just the run ids', async () => {
+    // Projecting ids let three mutations through: reporting every prune reason
+    // as `ttl`, nulling every undateable `updated_at`, and printing `{}` from
+    // the CLI. The operator reads the objects, so the test asserts the objects.
+    await withTmpRepo(async (repoRoot) => {
+      const now = new Date();
+      const old = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000).toISOString();
+      const recent = new Date(now.getTime() - 1000).toISOString();
+      await writeHandleFixture(repoRoot, 'by-ttl', {
+        status: 'completed', completed_at: old, updated_at: old, exit_code: 0,
+      });
+      await writeHandleFixture(repoRoot, 'by-cap-a', {
+        status: 'completed', completed_at: recent, updated_at: recent, exit_code: 0,
+      });
+      await writeHandleFixture(repoRoot, 'by-cap-b', {
+        status: 'completed', completed_at: recent, updated_at: recent, exit_code: 0,
+      });
+      await writeHandleFixture(repoRoot, 'undateable-x', {
+        status: 'completed', completed_at: recent, updated_at: 'not-a-timestamp', exit_code: 0,
+      });
+
+      const report = await sweepPeerRuns({
+        repoRoot, applyRetention: false, staleGraceMs: 60_000, retentionTtlDays: 1, retentionCap: 1,
+      });
+      // `ttl` and `cap` must be distinguishable — they are different operator facts.
+      const byId = new Map(report.planned_prunes.map((p) => [p.run_id, p.reason]));
+      strictEqual(byId.get('by-ttl'), 'ttl', 'an expired run is reported as ttl');
+      strictEqual(byId.get('by-cap-b'), 'cap', 'an over-cap run is reported as cap, not ttl');
+      // The undateable entry carries the offending VALUE, not a null placeholder.
+      deepStrictEqual(report.undateable, [{ run_id: 'undateable-x', updated_at: 'not-a-timestamp' }]);
+      deepStrictEqual(report.prune_skipped, []);
+    });
+  });
+
   it('manual managed runs remain excluded from ensemble_results/frontmatter', async () => {
     await withTmpRepo(async (repoRoot) => {
       const companionsRoot = await writeFakeCompanions(repoRoot);
