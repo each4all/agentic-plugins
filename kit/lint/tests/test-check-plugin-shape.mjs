@@ -377,9 +377,12 @@ describe('kit/lint/check-plugin-shape — skill frontmatter', () => {
   const tempDirs = [];
   after(() => Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))));
 
-  // `skills` maps a skills-relative path (e.g. 'demo/SKILL.md') to its
-  // full file content, so each test writes exactly the bytes under test.
-  async function makeSkillPlugin({ skills = {}, declareSkills = false } = {}) {
+  // `skills` maps a path relative to `root` (default 'skills') to its full
+  // file content, so each test writes exactly the bytes under test.
+  // `declaredSkills` sets the Codex manifest's skills path; keep it distinct
+  // from the conventional 'skills' root when testing declared-root discovery,
+  // or conventional discovery alone satisfies the test.
+  async function makeSkillPlugin({ skills = {}, declaredSkills, root = 'skills' } = {}) {
     const dir = await mkdtemp(join(tmpdir(), 'kit-lint-skill-fm-'));
     tempDirs.push(dir);
     await mkdir(join(dir, '.claude-plugin'), { recursive: true });
@@ -388,10 +391,10 @@ describe('kit/lint/check-plugin-shape — skill frontmatter', () => {
     await writeFile(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify(manifest, null, 2));
     await writeFile(
       join(dir, '.codex-plugin', 'plugin.json'),
-      JSON.stringify(declareSkills ? { ...manifest, skills: './skills/' } : manifest, null, 2),
+      JSON.stringify(declaredSkills ? { ...manifest, skills: declaredSkills } : manifest, null, 2),
     );
     for (const [rel, content] of Object.entries(skills)) {
-      const abs = join(dir, 'skills', rel);
+      const abs = join(dir, root, rel);
       await mkdir(resolve(abs, '..'), { recursive: true });
       await writeFile(abs, content);
     }
@@ -423,15 +426,47 @@ describe('kit/lint/check-plugin-shape — skill frontmatter', () => {
   });
 
   it('measures the decoded scalar, not the raw line, for an escaped description', async () => {
-    // 1000 filler + 24 decoded characters == exactly 1024 decoded, while the
-    // raw frontmatter line is longer because each \" occupies two bytes. A
-    // linter measuring raw text would wrongly reject this.
-    const decodedTail = '\\"aaaaaaaaaa\\" bbbbbbbb';
-    const dir = await makeSkillPlugin({
-      skills: { 'demo/SKILL.md': skillFile('demo', 'x'.repeat(1002) + decodedTail) },
-    });
+    // `\"` is two raw characters and one decoded character. Ten of them plus
+    // 1014 filler decode to exactly 1024 while the raw value is 1034, so a
+    // linter measuring raw text rejects what Codex accepts.
+    const decodedTail = '\\"'.repeat(10);
+    const raw = 'x'.repeat(1014) + decodedTail;
+    strictEqual(raw.length, 1034, 'raw value must exceed the cap for this test to mean anything');
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': skillFile('demo', raw) } });
     const result = await runLint(dir);
     strictEqual(result.code, 0, `decoded length is 1024 and must pass; stderr=${result.stderr}`);
+  });
+
+  it('rejects the same escaped description one decoded character over the cap', async () => {
+    const raw = 'x'.repeat(1015) + '\\"'.repeat(10);
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': skillFile('demo', raw) } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(
+      result.stderr.includes('description is too long (1025 characters'),
+      `stderr=${result.stderr}`,
+    );
+  });
+
+  it('counts code points, not UTF-16 units, so an emoji costs one character', async () => {
+    // Python's len() counts 1024 here; JavaScript's .length counts 1025
+    // because the emoji is a surrogate pair. Codex accepts this file.
+    const dir = await makeSkillPlugin({
+      skills: { 'demo/SKILL.md': skillFile('demo', 'x'.repeat(1023) + '\u{1F600}') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `code-point length is 1024 and must pass; stderr=${result.stderr}`);
+  });
+
+  it('strips like Python, leaving a trailing U+FEFF counted', async () => {
+    // JavaScript's trim() removes U+FEFF and would measure 1024; Python's
+    // strip() does not, so quick_validate.py sees 1025 and rejects.
+    const dir = await makeSkillPlugin({
+      skills: { 'demo/SKILL.md': skillFile('demo', 'x'.repeat(1024) + '﻿') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('description is too long (1025 characters'), `stderr=${result.stderr}`);
   });
 
   it('rejects a description containing a less-than sign', async () => {
@@ -498,20 +533,136 @@ describe('kit/lint/check-plugin-shape — skill frontmatter', () => {
     ok(result.stderr.includes('name is too long (65 characters'), `stderr=${result.stderr}`);
   });
 
-  it('rejects CRLF frontmatter with the real reason', async () => {
-    const body = '---\r\nname: demo\r\ndescription: "Fine."\r\n---\r\n';
+  it('accepts CRLF frontmatter, as the bundled validator does', async () => {
+    // quick_validate.py loads through Path.read_text(), whose universal-newline
+    // translation removes CR before its `^---\n` regex runs — verified by
+    // running that validator against a CRLF fixture. Rejecting CRLF here would
+    // fail a file Codex accepts.
+    const body = '---\r\nname: demo\r\ndescription: "Fine."\r\n---\r\n\r\n# demo\r\n';
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': body } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `CRLF is valid for Codex; stderr=${result.stderr}`);
+  });
+
+  it('still measures a CRLF file against the cap', async () => {
+    const body = `---\r\nname: demo\r\ndescription: "${'x'.repeat(1025)}"\r\n---\r\n`;
     const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': body } });
     const result = await runLint(dir);
     strictEqual(result.code, 1);
-    ok(result.stderr.includes('CRLF line endings'), `stderr=${result.stderr}`);
+    ok(result.stderr.includes('description is too long (1025 characters'), `stderr=${result.stderr}`);
+  });
+
+  // PyYAML resolves these plain scalars to non-strings, and quick_validate.py
+  // rejects each with "must be a string". Reading them as strings is the
+  // permissive direction: the gate would pass a skill Codex refuses to load.
+  for (const [label, value, kind] of [
+    ['an empty value', '', 'null'],
+    ['an explicit null', 'null', 'null'],
+    ['a tilde null', '~', 'null'],
+    ['an integer', '123', 'an integer'],
+    ['a boolean', 'true', 'a boolean'],
+    ['a YAML 1.1 boolean', 'no', 'a boolean'],
+    ['a float', '1.5', 'a float'],
+    ['a date', '2026-08-03', 'a timestamp'],
+  ]) {
+    it(`rejects ${label} as a description`, async () => {
+      const dir = await makeSkillPlugin({
+        skills: { 'demo/SKILL.md': `---\nname: demo\ndescription: ${value}\n---\n` },
+      });
+      const result = await runLint(dir);
+      strictEqual(result.code, 1, `stderr=${result.stderr}`);
+      ok(
+        result.stderr.includes(`YAML reads this unquoted value as ${kind}`),
+        `expected ${kind}; stderr=${result.stderr}`,
+      );
+    });
+  }
+
+  it('rejects an alias that hides an over-cap description', async () => {
+    // The alias text is five characters, but PyYAML resolves it to the
+    // anchored 1025-character value and quick_validate.py rejects the file.
+    const body = `---\nname: demo\nlicense: &long "${'x'.repeat(1025)}"\ndescription: *long\n---\n`;
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': body } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1, `stderr=${result.stderr}`);
+    ok(result.stderr.includes('YAML structure indicator'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a plain description that opens a nested mapping', async () => {
+    const dir = await makeSkillPlugin({
+      skills: { 'demo/SKILL.md': '---\nname: demo\ndescription: foo: bar\n---\n' },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('a nested mapping'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects content after a closing quote', async () => {
+    const dir = await makeSkillPlugin({
+      skills: { 'demo/SKILL.md': '---\nname: demo\ndescription: "Fine." trailing\n---\n' },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('after the closing quote'), `stderr=${result.stderr}`);
+  });
+
+  it('accepts a comment after a closing quote', async () => {
+    const dir = await makeSkillPlugin({
+      skills: { 'demo/SKILL.md': '---\nname: demo\ndescription: "Fine." # note\n---\n' },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('accepts an unquoted plain description that YAML reads as a string', async () => {
+    const dir = await makeSkillPlugin({
+      skills: { 'demo/SKILL.md': '---\nname: demo\ndescription: Gathers evidence and reports it.\n---\n' },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `plain strings stay valid; stderr=${result.stderr}`);
+  });
+
+  it('accepts a quoted frontmatter key', async () => {
+    const dir = await makeSkillPlugin({
+      skills: { 'demo/SKILL.md': '---\n"name": demo\ndescription: "Fine."\n---\n' },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `PyYAML reads "name" as name; stderr=${result.stderr}`);
+  });
+
+  it('fails closed when a skills subtree cannot be read', async () => {
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': skillFile('demo', 'Fine.') } });
+    const locked = join(dir, 'skills', 'locked');
+    await mkdir(locked, { recursive: true });
+    await writeFile(join(locked, 'SKILL.md'), skillFile('locked', 'Fine.'));
+    await chmod(locked, 0o000);
+    try {
+      const result = await runLint(dir);
+      strictEqual(result.code, 1, `an unreadable subtree must not lint clean; stderr=${result.stderr}`);
+      ok(result.stderr.includes('skills scan:'), `stderr=${result.stderr}`);
+    } finally {
+      await chmod(locked, 0o755);
+    }
   });
 
   it('fails closed on a block-scalar description rather than guessing', async () => {
+    // No continuation line, so the multi-line guard cannot fire and this
+    // isolates the block-scalar branch. Asserting the generic "not measurable"
+    // text instead would pass on either branch — it did, and the mutation that
+    // deleted this check survived.
+    const body = '---\nname: demo\ndescription: |\n---\n';
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': body } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('block scalar (| or >)'), `stderr=${result.stderr}`);
+  });
+
+  it('fails closed on a description that spans lines', async () => {
     const body = '---\nname: demo\ndescription: |\n  A block scalar description.\n---\n';
     const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': body } });
     const result = await runLint(dir);
     strictEqual(result.code, 1);
-    ok(result.stderr.includes('not measurable by this check'), `stderr=${result.stderr}`);
+    ok(result.stderr.includes('spans multiple lines'), `stderr=${result.stderr}`);
   });
 
   it('ignores a shared directory that carries no SKILL.md', async () => {
@@ -537,14 +688,29 @@ describe('kit/lint/check-plugin-shape — skill frontmatter', () => {
     ok(result.stderr.includes('group/nested/SKILL.md'), `stderr=${result.stderr}`);
   });
 
-  it('scans the manifest-declared skills root too', async () => {
+  it('scans a declared skills root that is not the conventional one', async () => {
+    // The declared root must differ from 'skills/', or conventional discovery
+    // alone satisfies this and the test passes with declared-root scanning
+    // removed entirely — which is exactly how it read before.
     const dir = await makeSkillPlugin({
-      declareSkills: true,
+      declaredSkills: './custom-skills/',
+      root: 'custom-skills',
       skills: { 'demo/SKILL.md': skillFile('demo', 'x'.repeat(2000)) },
     });
     const result = await runLint(dir);
     strictEqual(result.code, 1);
+    ok(result.stderr.includes('custom-skills/demo/SKILL.md'), `stderr=${result.stderr}`);
     ok(result.stderr.includes('description is too long (2000 characters'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a declared skills root that escapes the plugin', async () => {
+    const dir = await makeSkillPlugin({
+      declaredSkills: '../outside-skills/',
+      skills: { 'demo/SKILL.md': skillFile('demo', 'Fine.') },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('escapes the plugin directory'), `stderr=${result.stderr}`);
   });
 
   it('labels the offending skill by its plugin-relative path', async () => {

@@ -11,13 +11,26 @@
 //
 // Skill frontmatter: every SKILL.md under the declared (and conventional)
 // skills root is validated against the full rule set enforced by Codex's
-// bundled skills/.system/skill-creator/scripts/quick_validate.py —
-// LF frontmatter delimiters, allowed keys only, required name and
-// description, hyphen-case name within 64 chars, and a description that
-// carries no angle brackets and stays within 1024 chars. Checking these
-// here means a skill Codex would reject fails CI instead of being found by
-// hand. The parser reads single-line YAML scalars and reports an error
-// rather than a guess for any form it cannot measure exactly.
+// bundled skills/.system/skill-creator/scripts/quick_validate.py — allowed
+// keys only, required name and description, hyphen-case name within 64
+// chars, and a description that carries no angle brackets and stays within
+// 1024 chars. Checking these here means a skill Codex would reject fails CI
+// instead of being found by hand.
+//
+// Parity is measured against that validator's actual behaviour, not its
+// source read literally: it loads through Path.read_text() (so CRLF is
+// normalized and valid) and resolves plain scalars through PyYAML (so an
+// unquoted `123`, `true`, `2026-08-03` or `*alias` is not a string and is
+// rejected). Lengths are counted in code points and stripped with Python's
+// whitespace set, because JavaScript's .length and trim() disagree with
+// Python on emoji and on U+FEFF respectively.
+//
+// Two rules are deliberately STRICTER than that validator, both fail-closed:
+// a duplicate frontmatter key is an error (PyYAML silently keeps the last),
+// and a block scalar or multi-line value is rejected rather than measured,
+// because this linter carries no YAML dependency and a parser that guessed
+// at a value it cannot read exactly would make the whole check vacuous.
+// Single-line quoted scalars are the repository convention; see kit/README.md.
 //
 // Script-bearing directories scanned for executable bit:
 //   <plugin-dir>/scripts/                            (script-only library plugins)
@@ -446,20 +459,103 @@ if (codexManifest && typeof codexManifest.skills === 'string' && codexManifest.s
 const SKILL_ALLOWED_KEYS = ['allowed-tools', 'description', 'license', 'metadata', 'name'];
 const MAX_SKILL_NAME_LENGTH = 64;
 const MAX_SKILL_DESCRIPTION_LENGTH = 1024;
+// Traversal bounds mirroring Codex's own skill discovery, so a pathological
+// tree cannot turn a lint run into an unbounded filesystem walk.
+const MAX_SKILL_SCAN_DEPTH = 6;
+const MAX_SKILL_SCAN_DIRS = 2000;
+const MAX_SKILL_SCAN_ENTRIES = 20000;
 
-async function collectSkillFiles(dir) {
+// Python's str.strip() removes exactly the characters str.isspace() accepts.
+// That set is NOT JavaScript's trim(): Python also strips U+001C..U+001F and
+// U+0085, and — the case that matters — does NOT strip U+FEFF, which trim()
+// does. Measuring with trim() therefore under-counts a description ending in
+// a BOM and lets an over-cap value through.
+const PY_SPACE = '\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000';
+const PY_STRIP_RE = new RegExp(`^[${PY_SPACE}]+|[${PY_SPACE}]+$`, 'g');
+const pythonStrip = (s) => s.replace(PY_STRIP_RE, '');
+
+// Python's len() counts code points; JavaScript's .length counts UTF-16 code
+// units, so a description containing an emoji measures two units per code
+// point and would be rejected at a length Codex accepts.
+const codePointLength = (s) => [...s].length;
+
+// Implicit-resolver patterns transliterated from PyYAML's
+// Resolver.yaml_implicit_resolvers (re.X whitespace removed) — the resolver
+// quick_validate.py runs through. A plain scalar matching any of these is
+// NOT a string there, and quick_validate rejects it for that reason. Reading
+// every plain scalar as a string is the permissive direction, so this
+// classifies instead.
+const YAML_NULL = /^(?:~|null|Null|NULL|)$/;
+const YAML_BOOL = /^(?:yes|Yes|YES|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF)$/;
+const YAML_INT = /^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+|[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)$/;
+const YAML_FLOAT = /^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$/;
+const YAML_TIMESTAMP = /^(?:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]|[0-9][0-9][0-9][0-9]-[0-9][0-9]?-[0-9][0-9]?(?:[Tt]|[ \t]+)[0-9][0-9]?:[0-9][0-9]:[0-9][0-9](?:\.[0-9]*)?(?:[ \t]*(?:Z|[-+][0-9][0-9]?(?::[0-9][0-9])?))?)$/;
+// `&anchor`, `*alias`, flow collections and comments are structure, not text.
+// The alias case is load-bearing: `description: *long` measures five
+// characters here but resolves to the anchored value in PyYAML, which is how
+// an over-cap description could otherwise pass this gate.
+const YAML_INDICATOR_START = /^[,[\]{}#&*!%@`]/;
+// `-`, `?` and `:` open structure only when alone or followed by a space;
+// `-foo` and `:x` are ordinary plain strings.
+const YAML_SPACED_INDICATOR = /^[-?:]([ \t]|$)/;
+
+function plainScalarKind(text) {
+  if (YAML_NULL.test(text)) return 'null';
+  if (YAML_BOOL.test(text)) return 'a boolean';
+  if (YAML_INT.test(text)) return 'an integer';
+  if (YAML_FLOAT.test(text)) return 'a float';
+  if (YAML_TIMESTAMP.test(text)) return 'a timestamp';
+  if (text === '=' || text === '<<') return 'a YAML directive';
+  if (YAML_INDICATOR_START.test(text) || YAML_SPACED_INDICATOR.test(text)) return 'a YAML structure indicator';
+  if (/:([ \t]|$)/.test(text)) return 'a nested mapping';
+  return null;
+}
+
+class SkillScanError extends Error {}
+
+// Collect every SKILL.md at or below `dir`. Symlinks are resolved (a
+// symlinked skill directory or SKILL.md is real content and must be
+// checked), with physical containment enforced so a link cannot walk the
+// scan out of the plugin. A missing directory is not an error — the
+// manifest check owns that — but any other readdir failure is fatal rather
+// than a silently empty subtree, which would lint an unreadable tree clean.
+async function collectSkillFiles(dir, budget, depth = 0) {
   const found = [];
+  if (depth > MAX_SKILL_SCAN_DEPTH) return found;
+  if (++budget.dirs > MAX_SKILL_SCAN_DIRS) {
+    throw new SkillScanError(`skill scan exceeded ${MAX_SKILL_SCAN_DIRS} directories`);
+  }
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return found; // absent skills dir is not an error here — the manifest check owns that
+  } catch (err) {
+    if (err.code === 'ENOENT') return found;
+    throw new SkillScanError(`cannot read "${relative(PLUGIN_DIR, dir).split(sep).join('/')}": ${err.message}`);
   }
   for (const entry of entries) {
+    if (++budget.entries > MAX_SKILL_SCAN_ENTRIES) {
+      throw new SkillScanError(`skill scan exceeded ${MAX_SKILL_SCAN_ENTRIES} entries`);
+    }
+    // Codex's discovery skips hidden directories; matching that keeps .git
+    // and friends out of the walk.
+    if (entry.name.startsWith('.')) continue;
     const abs = resolve(dir, entry.name);
-    if (entry.isDirectory()) {
-      found.push(...(await collectSkillFiles(abs)));
-    } else if (entry.isFile() && entry.name === 'SKILL.md') {
+    let isDir = entry.isDirectory();
+    let isFile = entry.isFile();
+    if (entry.isSymbolicLink()) {
+      const real = await containedRealPath(abs);
+      if (real === null) continue; // dangling, or escapes the plugin
+      try {
+        const st = await stat(abs);
+        isDir = st.isDirectory();
+        isFile = st.isFile();
+      } catch {
+        continue;
+      }
+    }
+    if (isDir) {
+      found.push(...(await collectSkillFiles(abs, budget, depth + 1)));
+    } else if (isFile && entry.name === 'SKILL.md') {
       found.push(abs);
     }
   }
@@ -471,14 +567,21 @@ async function collectSkillFiles(dir) {
 // it cannot measure: a parser that silently yielded a truncated value would
 // make this whole check vacuously green, which is the precise failure it
 // exists to prevent.
+const DQ_ESCAPES = {
+  0: '\0', a: '\x07', b: '\b', t: '\t', n: '\n', v: '\v', f: '\f', r: '\r',
+  e: '\x1b', ' ': ' ', '"': '"', '/': '/', '\\': '\\',
+  N: '\x85', _: '\xa0', L: ' ', P: ' ',
+};
+
 function parseSingleLineScalar(raw) {
-  const text = raw.trim();
-  if (text === '') return { value: '' };
+  const text = pythonStrip(raw);
+  // No early return for the empty value: PyYAML resolves it to None, which
+  // quick_validate.py rejects, so it must reach the plain-scalar classifier
+  // below rather than be handed back as an empty string.
   if (text.startsWith('|') || text.startsWith('>')) {
     return { error: 'block scalar (| or >) is not measurable by this check — use a single-line quoted scalar' };
   }
   if (text.startsWith('"')) {
-    const escapes = { n: '\n', t: '\t', r: '\r', '"': '"', '\\': '\\', '/': '/', '0': '\0' };
     let out = '';
     let i = 1;
     for (; i < text.length && text[i] !== '"'; i++) {
@@ -487,18 +590,23 @@ function parseSingleLineScalar(raw) {
         continue;
       }
       const next = text[i + 1];
-      if (next !== undefined && next in escapes) {
-        out += escapes[next];
+      const hex = { x: 2, u: 4, U: 8 }[next];
+      if (next !== undefined && next in DQ_ESCAPES) {
+        out += DQ_ESCAPES[next];
         i += 1;
-      } else if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(text.slice(i + 2, i + 6))) {
-        out += String.fromCharCode(parseInt(text.slice(i + 2, i + 6), 16));
-        i += 5;
+      } else if (hex && new RegExp(`^[0-9a-fA-F]{${hex}}$`).test(text.slice(i + 2, i + 2 + hex))) {
+        out += String.fromCodePoint(parseInt(text.slice(i + 2, i + 2 + hex), 16));
+        i += 1 + hex;
       } else {
         return { error: `unsupported escape "\\${next ?? ''}" in double-quoted scalar` };
       }
     }
     if (text[i] !== '"') {
       return { error: 'unterminated double-quoted scalar — a multi-line scalar is not measurable by this check' };
+    }
+    const trailing = pythonStrip(text.slice(i + 1));
+    if (trailing !== '' && !trailing.startsWith('#')) {
+      return { error: 'unexpected content after the closing quote — PyYAML rejects this as invalid YAML' };
     }
     return { value: out };
   }
@@ -520,10 +628,19 @@ function parseSingleLineScalar(raw) {
     if (text[i] !== "'") {
       return { error: 'unterminated single-quoted scalar — a multi-line scalar is not measurable by this check' };
     }
+    const trailing = pythonStrip(text.slice(i + 1));
+    if (trailing !== '' && !trailing.startsWith('#')) {
+      return { error: 'unexpected content after the closing quote — PyYAML rejects this as invalid YAML' };
+    }
     return { value: out };
   }
   const comment = text.search(/\s#/);
-  return { value: (comment === -1 ? text : text.slice(0, comment)).trim() };
+  const plain = pythonStrip(comment === -1 ? text : text.slice(0, comment));
+  const kind = plainScalarKind(plain);
+  if (kind !== null) {
+    return { error: `must be a quoted string — YAML reads this unquoted value as ${kind}` };
+  }
+  return { value: plain, plain: true };
 }
 
 async function checkSkillFrontmatter(label, path) {
@@ -534,25 +651,26 @@ async function checkSkillFrontmatter(label, path) {
     errors.push(`${label}: read failed: ${err.message}`);
     return;
   }
-  if (!content.startsWith('---')) {
+  // quick_validate.py reads through Path.read_text(), whose universal-newline
+  // translation turns CRLF (and lone CR) into LF before its `^---\n` regex
+  // ever runs — so a CRLF SKILL.md is valid there. Normalizing the same way
+  // keeps this check from rejecting a file Codex accepts.
+  const normalized = content.replace(/\r\n?/g, '\n');
+  if (!normalized.startsWith('---')) {
     errors.push(`${label}: no YAML frontmatter found`);
     return;
   }
-  // LF-only, matching quick_validate.py's `^---\n(.*?)\n---` — a CRLF file
-  // fails Codex's own regex, so it must fail here with the real reason.
-  const match = /^---\n([\s\S]*?)\n---/.exec(content);
+  const match = /^---\n([\s\S]*?)\n---/.exec(normalized);
   if (!match) {
-    errors.push(content.includes('\r')
-      ? `${label}: invalid frontmatter format (CRLF line endings — Codex's validator matches LF only)`
-      : `${label}: invalid frontmatter format`);
+    errors.push(`${label}: invalid frontmatter format`);
     return;
   }
 
   const fields = new Map();
   let lastKey = null;
   for (const line of match[1].split('\n')) {
-    if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
-    if (/^\s/.test(line)) {
+    if (pythonStrip(line) === '' || pythonStrip(line).startsWith('#')) continue;
+    if (/^[ \t]/.test(line)) {
       // Indented continuation. Allowed under a structured key such as
       // `metadata`, which this check does not measure; fatal under a key it
       // must measure, because the value then spans lines.
@@ -564,11 +682,14 @@ async function checkSkillFrontmatter(label, path) {
     }
     const parsed = /^([^:]+):(.*)$/.exec(line);
     if (!parsed) {
-      errors.push(`${label}: unparsable frontmatter line: "${line.trim().slice(0, 48)}"`);
+      errors.push(`${label}: unparsable frontmatter line: "${pythonStrip(line).slice(0, 48)}"`);
       return;
     }
-    lastKey = parsed[1].trim();
+    // A quoted key is the same key to PyYAML, so unwrap before comparing.
+    lastKey = pythonStrip(parsed[1]).replace(/^(["'])(.*)\1$/, '$2');
     if (fields.has(lastKey)) {
+      // Stricter than PyYAML, which silently keeps the last value. A
+      // duplicated key in a shipped skill is a defect either way.
       errors.push(`${label}: duplicate frontmatter key "${lastKey}"`);
       return;
     }
@@ -589,15 +710,15 @@ async function checkSkillFrontmatter(label, path) {
     if (scalar.error) {
       errors.push(`${label}: name ${scalar.error}`);
     } else {
-      const name = scalar.value.trim();
+      const name = pythonStrip(scalar.value);
       if (name !== '') {
         if (!/^[a-z0-9-]+$/.test(name)) {
           errors.push(`${label}: name "${name}" must be hyphen-case (lowercase letters, digits, and hyphens only)`);
         } else if (name.startsWith('-') || name.endsWith('-') || name.includes('--')) {
           errors.push(`${label}: name "${name}" cannot start/end with a hyphen or contain consecutive hyphens`);
         }
-        if (name.length > MAX_SKILL_NAME_LENGTH) {
-          errors.push(`${label}: name is too long (${name.length} characters, maximum is ${MAX_SKILL_NAME_LENGTH})`);
+        if (codePointLength(name) > MAX_SKILL_NAME_LENGTH) {
+          errors.push(`${label}: name is too long (${codePointLength(name)} characters, maximum is ${MAX_SKILL_NAME_LENGTH})`);
         }
       }
     }
@@ -608,34 +729,54 @@ async function checkSkillFrontmatter(label, path) {
     if (scalar.error) {
       errors.push(`${label}: description ${scalar.error}`);
     } else {
-      const description = scalar.value.trim();
+      const description = pythonStrip(scalar.value);
       if (description !== '') {
         if (description.includes('<') || description.includes('>')) {
           errors.push(`${label}: description cannot contain angle brackets (< or >)`);
         }
-        if (description.length > MAX_SKILL_DESCRIPTION_LENGTH) {
-          errors.push(`${label}: description is too long (${description.length} characters, maximum is ${MAX_SKILL_DESCRIPTION_LENGTH})`);
+        if (codePointLength(description) > MAX_SKILL_DESCRIPTION_LENGTH) {
+          errors.push(`${label}: description is too long (${codePointLength(description)} characters, maximum is ${MAX_SKILL_DESCRIPTION_LENGTH})`);
         }
       }
     }
   }
 }
 
-// Scan the manifest-declared skills root and the conventional one. A
-// directory without a SKILL.md (e.g. skills/_shared/) is not a skill and is
-// simply not collected.
+// Scan the manifest-declared skills root and the conventional one. Codex
+// itself uses the declared root and falls back to the conventional one;
+// checking both is deliberately broader, so a skill directory that is
+// packaged but not declared still gets linted. A directory without a
+// SKILL.md (e.g. skills/_shared/) is not a skill and is simply not
+// collected.
 const skillsRoots = [];
 if (codexManifest && typeof codexManifest.skills === 'string' && codexManifest.skills.length > 0) {
-  skillsRoots.push(resolve(PLUGIN_DIR, codexManifest.skills));
+  const declared = resolve(PLUGIN_DIR, codexManifest.skills);
+  if (escapesPluginDir(declared)) {
+    errors.push(`.codex-plugin/plugin.json: skills path "${codexManifest.skills}" escapes the plugin directory`);
+  } else {
+    skillsRoots.push(declared);
+  }
 }
 const conventionalSkillsRoot = resolve(PLUGIN_DIR, 'skills');
 if (!skillsRoots.includes(conventionalSkillsRoot)) skillsRoots.push(conventionalSkillsRoot);
 
 const seenSkillFiles = new Set();
+const scanBudget = { dirs: 0, entries: 0 };
 for (const root of skillsRoots) {
-  for (const file of await collectSkillFiles(root)) {
-    if (seenSkillFiles.has(file)) continue;
-    seenSkillFiles.add(file);
+  let files;
+  try {
+    files = await collectSkillFiles(root, scanBudget);
+  } catch (err) {
+    if (!(err instanceof SkillScanError)) throw err;
+    errors.push(`skills scan: ${err.message}`);
+    continue;
+  }
+  for (const file of files) {
+    // Deduplicate by real path so two roots aliased by a symlink do not
+    // report the same file twice.
+    const key = (await containedRealPath(file)) ?? file;
+    if (seenSkillFiles.has(key)) continue;
+    seenSkillFiles.add(key);
     await checkSkillFrontmatter(relative(PLUGIN_DIR, file).split(sep).join('/'), file);
   }
 }
