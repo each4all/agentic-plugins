@@ -1068,7 +1068,24 @@ export async function sweepPeerRuns({
     root,
     scanned: 0,
     reconciled: [],
+    // The retention PLAN, computed on every sweep. `pruned` used to be the only
+    // retention field and it is written solely under `--apply`, so a preview
+    // reported `pruned: []` and read as "nothing would be deleted" while the
+    // very next `--apply` deleted runs. A preview that understates a
+    // destructive action is worse than no preview.
+    planned_prunes: [],
+    // What this invocation actually DELETED. Empty on a preview because nothing
+    // was deleted, not because nothing was eligible.
     pruned: [],
+    // Whether the retention half ran at all. The two lists above are only
+    // interpretable against it, and `sweep` is NOT a dry run in any case:
+    // reconciliation runs unconditionally and rewrites handles.
+    retention_applied: false,
+    // Terminal runs whose `updated_at` does not parse. They are ranked by
+    // nothing and deleted by nothing — a destructive default must not act on
+    // data it cannot evaluate — but they are NAMED, because silently carrying
+    // unmanaged runs is how a cap stops meaning anything.
+    undateable: [],
     missing: false,
   };
   let entries;
@@ -1101,26 +1118,43 @@ export async function sweepPeerRuns({
     }
   }
 
+  // The plan is computed UNCONDITIONALLY; only the deletion below is gated.
+  // Splitting it this way is the whole fix: preview and apply now evaluate the
+  // same predicate over the same set, so they cannot disagree about what is
+  // eligible.
+  const cutoff = now.getTime() - retentionTtlDays * 24 * 60 * 60 * 1000;
+  const dateable = [];
+  for (const item of terminal) {
+    const updatedMs = Date.parse(item.handle.updated_at);
+    if (Number.isFinite(updatedMs)) dateable.push({ item, updatedMs });
+    else report.undateable.push({ run_id: item.run_id, updated_at: item.handle.updated_at ?? null });
+  }
+  // Deterministic ordering. Sorting on `updated_at` alone leaves ties to the
+  // engine's sort stability over readdir order, so two runs sharing a timestamp
+  // could land on opposite sides of the cap between a preview and its apply —
+  // exactly the drift this row is about. `run_id` breaks the tie and is unique
+  // by construction.
+  const byUpdatedDesc = [...dateable].sort((a, b) =>
+    (b.updatedMs - a.updatedMs) || (a.item.run_id < b.item.run_id ? -1 : a.item.run_id > b.item.run_id ? 1 : 0)
+  );
+  const keep = new Set(byUpdatedDesc.slice(0, retentionCap).map((r) => r.item.run_id));
+  for (const { item, updatedMs } of dateable) {
+    const expired = updatedMs < cutoff;
+    const overCap = !keep.has(item.run_id);
+    if (expired || overCap) {
+      report.planned_prunes.push({ run_id: item.run_id, reason: expired ? 'ttl' : 'cap' });
+    }
+  }
+
+  report.retention_applied = applyRetention;
   if (applyRetention) {
-    const cutoff = now.getTime() - retentionTtlDays * 24 * 60 * 60 * 1000;
-    const byUpdatedDesc = [...terminal].sort((a, b) =>
-      Date.parse(b.handle.updated_at) - Date.parse(a.handle.updated_at)
-    );
-    const keep = new Set(byUpdatedDesc.slice(0, retentionCap).map((r) => r.run_id));
-    for (const item of terminal) {
-      const updatedMs = Date.parse(item.handle.updated_at);
-      const expired = Number.isFinite(updatedMs) && updatedMs < cutoff;
-      const overCap = !keep.has(item.run_id);
-      if (expired || overCap) {
-        // ADR-0040 §5: pruned transitions are SKIPPED as emit points —
-        // retention cleanup of runs whose terminal state was already
-        // notified; the payload is being deleted.
-        await rm(item.paths.dir, { recursive: true, force: true });
-        report.pruned.push({
-          run_id: item.run_id,
-          reason: expired ? 'ttl' : 'cap',
-        });
-      }
+    const dirByRunId = new Map(terminal.map((item) => [item.run_id, item.paths.dir]));
+    for (const planned of report.planned_prunes) {
+      // ADR-0040 §5: pruned transitions are SKIPPED as emit points —
+      // retention cleanup of runs whose terminal state was already
+      // notified; the payload is being deleted.
+      await rm(dirByRunId.get(planned.run_id), { recursive: true, force: true });
+      report.pruned.push(planned);
     }
   }
 

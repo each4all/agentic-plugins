@@ -895,6 +895,96 @@ describe('peer-runner.mjs — sweep and retention', () => {
     });
   });
 
+  it('a sweep PREVIEW states what --apply would delete, and deletes nothing', async () => {
+    // The defect: the whole retention block sat inside `if (applyRetention)`,
+    // so a preview reported `pruned: []` and read as "nothing would be
+    // deleted" while the very next `--apply` deleted runs. A preview that
+    // understates a destructive action is worse than no preview.
+    await withTmpRepo(async (repoRoot) => {
+      const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+      const newest = new Date().toISOString();
+      const oldPaths = await writeHandleFixture(repoRoot, 'preview-old', {
+        status: 'completed', completed_at: old, updated_at: old, exit_code: 0,
+      });
+      await writeHandleFixture(repoRoot, 'preview-newest', {
+        status: 'completed', completed_at: newest, updated_at: newest, exit_code: 0,
+      });
+
+      const opts = { repoRoot, staleGraceMs: 60_000, retentionTtlDays: 1, retentionCap: 1 };
+      const preview = await sweepPeerRuns({ ...opts, applyRetention: false });
+
+      deepStrictEqual(preview.planned_prunes.map((p) => p.run_id), ['preview-old'],
+        'the preview NAMES what apply would delete');
+      deepStrictEqual(preview.pruned, [], 'and deletes nothing itself');
+      strictEqual(preview.retention_applied, false, 'and says the retention half did not run');
+      strictEqual(await exists(oldPaths.dir), true, 'the run is still on disk after a preview');
+
+      // The two halves must agree: same predicate, same set.
+      const applied = await sweepPeerRuns({ ...opts, applyRetention: true });
+      strictEqual(applied.retention_applied, true);
+      deepStrictEqual(
+        applied.pruned.map((p) => p.run_id).sort(),
+        preview.planned_prunes.map((p) => p.run_id).sort(),
+        'apply deletes exactly what the preview planned — drift between them is the bug',
+      );
+      strictEqual(await exists(oldPaths.dir), false);
+    });
+  });
+
+  it('a run whose updated_at does not parse is neither ranked nor deleted, and is NAMED', async () => {
+    // A destructive default must not act on data it cannot evaluate. Silently
+    // carrying undateable runs would also make the cap stop meaning anything,
+    // so they are reported rather than merely skipped.
+    await withTmpRepo(async (repoRoot) => {
+      const newest = new Date().toISOString();
+      const badPaths = await writeHandleFixture(repoRoot, 'undateable-run', {
+        status: 'completed', completed_at: newest, updated_at: 'not-a-timestamp', exit_code: 0,
+      });
+      await writeHandleFixture(repoRoot, 'dateable-run', {
+        status: 'completed', completed_at: newest, updated_at: newest, exit_code: 0,
+      });
+
+      const report = await sweepPeerRuns({
+        repoRoot, applyRetention: true, staleGraceMs: 60_000, retentionTtlDays: 1, retentionCap: 0,
+      });
+
+      deepStrictEqual(report.undateable.map((u) => u.run_id), ['undateable-run']);
+      ok(!report.pruned.some((p) => p.run_id === 'undateable-run'), 'it is never deleted');
+      ok(!report.planned_prunes.some((p) => p.run_id === 'undateable-run'), 'and never planned for deletion');
+      strictEqual(await exists(badPaths.dir), true, 'the payload survives');
+    });
+  });
+
+  it('a cap tie keeps the lexicographically smallest run id', async () => {
+    // Sorting on updated_at alone leaves ties to sort stability over readdir
+    // order, so two runs sharing a timestamp can land on opposite sides of the
+    // cap once that order changes — which it does on any directory that has
+    // seen deletions, and on filesystems that return hash order rather than
+    // alphabetical.
+    //
+    // HONEST LIMIT, measured rather than assumed: a mutation removing the
+    // `run_id` tiebreaker SURVIVES this test on macOS/APFS, because readdir
+    // there returns entries alphabetically and V8's sort is stable, so the
+    // tiebreaker's answer and the incidental one coincide. It is kept because
+    // it is correct and free, and this case pins the CONTRACT (which run
+    // survives) rather than the mechanism. On a hash-order filesystem — ext4,
+    // i.e. CI — removing it does change the outcome, and this assertion is
+    // what would catch it there.
+    await withTmpRepo(async (repoRoot) => {
+      const same = new Date().toISOString();
+      for (const id of ['tie-c', 'tie-a', 'tie-b']) {
+        await writeHandleFixture(repoRoot, id, {
+          status: 'completed', completed_at: same, updated_at: same, exit_code: 0,
+        });
+      }
+      const report = await sweepPeerRuns({
+        repoRoot, applyRetention: false, staleGraceMs: 60_000, retentionTtlDays: 365, retentionCap: 1,
+      });
+      deepStrictEqual(report.planned_prunes.map((p) => p.run_id).sort(), ['tie-b', 'tie-c'],
+        'the tie keeps tie-a — the smallest id — and plans the other two');
+    });
+  });
+
   it('manual managed runs remain excluded from ensemble_results/frontmatter', async () => {
     await withTmpRepo(async (repoRoot) => {
       const companionsRoot = await writeFakeCompanions(repoRoot);
