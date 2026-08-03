@@ -1,0 +1,121 @@
+{
+ "schema": "evidence-record-1.0",
+ "record_id": "presentation-and-persistence",
+ "evidence_loop": {
+  "label": "presentation and persistence",
+  "summary": "Three slices of one macro landed in this release. The Stage-8 evidence aggregate was first-come: reasons.join through one tail-truncated line shares a budget, so a long leading reason spent all of it and every later reason disappeared with no marker — measured on an ORDINARY version bump, which emits 19 short reasons of which the old render showed 9. The same shape had two mirrors: the receipt-attestation row reached the operator through reasons[0] alone, and the Codex /hooks attestation reasons had no row at all. profile export and profile seed were the only verbs with neither a --format door nor a text rendering of what they computed, leaving contract 4.5's presentation obligations structurally unmet. ADR-0050 then decided the fragment persistence boundary that four follow-up rows defer to. And the peer-run sweep preview reported pruned: [] however many runs were eligible, because the whole retention block sat inside the apply gate."
+ },
+ "package_releases": [
+  {
+   "package": "plugins/runtime",
+   "version": "0.88.1",
+   "tag": "plugin-runtime-v0.88.1",
+   "release_pr": 666,
+   "squash": "208545cb0a0c6243914748e86f6d3dffe9e87789",
+   "marketplace_sync": "4e6ee69ae0ec69b5e7fde081c9b068d8b28c117e"
+  },
+  {
+   "package": "plugins/engineer",
+   "version": "0.21.1",
+   "tag": "plugin-engineer-v0.21.1",
+   "release_pr": 666,
+   "squash": "208545cb0a0c6243914748e86f6d3dffe9e87789",
+   "marketplace_sync": "4e6ee69ae0ec69b5e7fde081c9b068d8b28c117e"
+  },
+  {
+   "package": "plugins/designer",
+   "version": "0.3.1",
+   "tag": "plugin-designer-v0.3.1",
+   "release_pr": 666,
+   "squash": "208545cb0a0c6243914748e86f6d3dffe9e87789",
+   "marketplace_sync": "4e6ee69ae0ec69b5e7fde081c9b068d8b28c117e"
+  },
+  {
+   "package": "plugins/founder",
+   "version": "0.4.1",
+   "tag": "plugin-founder-v0.4.1",
+   "release_pr": 666,
+   "squash": "208545cb0a0c6243914748e86f6d3dffe9e87789",
+   "marketplace_sync": "4e6ee69ae0ec69b5e7fde081c9b068d8b28c117e"
+  },
+  {
+   "package": "plugins/orchestrator",
+   "version": "0.13.1",
+   "tag": "plugin-orchestrator-v0.13.1",
+   "release_pr": 666,
+   "squash": "208545cb0a0c6243914748e86f6d3dffe9e87789",
+   "marketplace_sync": "4e6ee69ae0ec69b5e7fde081c9b068d8b28c117e"
+  }
+ ],
+ "feature_commits": [
+  {
+   "sha": "0d462234945e9156ee8506bf9f74d8ba2a01c440",
+   "pr": 665,
+   "note": "Spends the Stage-8 evidence budget PER REASON: one bounded line each, a block budget, and an omitted count under its OWN label so a reason cannot forge it. Cuts on grapheme clusters via Intl.Segmenter. Moves the receipt mirror and the rowless hook-attestation reasons with it."
+  },
+  {
+   "sha": "d231aa24964b9b869734db3164b57b4743d83d59",
+   "pr": 667,
+   "note": "Accepts ADR-0050. Measurement reversed the premise that a CAS was missing: creation is already crash-safe against process death, and the defect is name-keyed paths expressing a change as a mutation. Review refuted three supporting claims, corrected in place."
+  },
+  {
+   "sha": "d2ead172e03aac042cb258a8eaa8d01d6ac5614c",
+   "pr_attested": 668,
+   "note": "Makes the sweep preview state what --apply deletes: the plan is computed unconditionally and only deletion is gated. A later commit re-verifies before deleting, because computing the plan first widened the window in which a recycled run id could be destroyed."
+  },
+  {
+   "sha": "b4b91c40936055a27feaa1a652f1a76f4df92189",
+   "pr_attested": 668,
+   "note": "Scopes the sweep agreement claim to a single invocation and records the undateable-versus-cap conflict with ADR-0023 as an owner decision. Part of the rebase-merged #668, which is why these commits carry no PR number and use pr_attested."
+  }
+ ],
+ "hardening_commits": [],
+ "proofs": [
+  {
+   "run_id": "doctor-20260803T033236Z-f56d25",
+   "date": "2026-08-03",
+   "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+   "artifact_sha256": "sha256:343c98984baa9f06a49e690410fc263b6aee02351184298f35e45d3bcb6f5df3",
+   "runtime_version": "0.88.1",
+   "installed": {
+    "claude": "0.88.1",
+    "codex": "0.88.1"
+   },
+   "host_cli": {
+    "claude": "2.1.220 (Claude Code)",
+    "codex": "codex-cli 0.145.0"
+   },
+   "readings": [
+    {
+     "key": "overall",
+     "value": "pass; zero hard failures"
+    },
+    {
+     "key": "permission_proof",
+     "value": "passed; executed"
+    },
+    {
+     "key": "deep_peer_smoke",
+     "value": "passed; executed in both directions"
+    },
+    {
+     "key": "workflow_continuation_proof",
+     "value": "passed; executed"
+    },
+    {
+     "key": "experience_parity",
+     "value": "partial 91% 105/115; satisfied 6, partial 2, not_verified 0, blocked 0, manual follow-ups 1 (codex-hook-review)"
+    }
+   ]
+  }
+ ],
+ "install_method": "Claude host-native `claude plugin marketplace update agentic-plugins` followed by `claude plugin update <name>@agentic-plugins` for each of the five changed packages; Codex `codex plugin marketplace upgrade`, which refreshed all eight to the released versions. The installed state rests on the doctor read alone — no runtime:settings --execute-plugin-management executor artifact was produced.",
+ "narrative": "Authored in the post-release position ADR-0049 requires: the tags, squash, marketplace-sync sha, proof run id and artifact hash exist only after #668 merged, release-please cut #666, the catalog sync landed, both hosts were updated, and the proof was re-recorded.\n\nTwo things distinguish this loop from its predecessors. First, it is the first FIVE-package release, and it exists in that shape because #668 was rebase-merged rather than squashed. Its ten commits span five release-please package paths; a squash would have collapsed them into one commit routed to all five, which is precisely the mis-routing ADR-0016 exists to prevent. The four persona packages bumping independently is the observable evidence that the split worked. It also means those commits carry no PR number in their subjects, so they are recorded with pr_attested rather than pr — the ADR-0049 rule read in the direction it was written for.\n\nSecond, the recorded parity is partial rather than ready, and that is the honest reading rather than a regression. All four hook-bearing plugins changed version in one release, which stales the Codex /hooks trust attestation by construction; runtime cannot query hook trust non-interactively, so only the owner can clear the codex-hook-review follow-up. A record claiming ready here would be claiming something no component observed.\n\nThe recurring lesson across all three slices was scope, not correctness. Each recorded follow-up row named a smaller problem than the one that existed: the reason-fairness row read as an adversarial-input edge and was reachable from an ordinary version bump; the sweep row named one plugin and the same implementation lived in four; the ADR-0050 row asserted a missing CAS and measurement found a correct commit protocol already present for creation. In every case the row's REPRODUCTION held and its SCOPE did not, which is a different failure from the comment-asserts-what-the-code-lacks pattern the previous loop recorded, and worth separating from it.",
+ "relations": [
+  {
+   "type": "follows",
+   "record_id": "one-snapshot-per-verb",
+   "note": "The immediately preceding release loop, and the one whose proof this record's proof supersedes in the stage docs."
+  }
+ ]
+}
