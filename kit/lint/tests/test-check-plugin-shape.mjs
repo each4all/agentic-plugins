@@ -366,3 +366,191 @@ describe('kit/lint/check-plugin-shape — declared hooks value shapes', () => {
     ok(result.stderr.includes('redeclares the default hooks/hooks.json'), `stderr=${result.stderr}`);
   });
 });
+
+// Skill frontmatter conformance — mirrors Codex's bundled
+// skills/.system/skill-creator/scripts/quick_validate.py. The boundary
+// cases (exactly 1024 vs 1025, and an escaped scalar whose raw text is
+// longer than its decoded value) are what prove the linter measures the
+// same decoded string Codex's yaml.safe_load would, rather than a raw
+// line length that happens to agree on the current files.
+describe('kit/lint/check-plugin-shape — skill frontmatter', () => {
+  const tempDirs = [];
+  after(() => Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true }))));
+
+  // `skills` maps a skills-relative path (e.g. 'demo/SKILL.md') to its
+  // full file content, so each test writes exactly the bytes under test.
+  async function makeSkillPlugin({ skills = {}, declareSkills = false } = {}) {
+    const dir = await mkdtemp(join(tmpdir(), 'kit-lint-skill-fm-'));
+    tempDirs.push(dir);
+    await mkdir(join(dir, '.claude-plugin'), { recursive: true });
+    await mkdir(join(dir, '.codex-plugin'), { recursive: true });
+    const manifest = { name: 'fixture-skill-fm', version: '0.0.1', description: 'skill frontmatter fixture' };
+    await writeFile(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify(manifest, null, 2));
+    await writeFile(
+      join(dir, '.codex-plugin', 'plugin.json'),
+      JSON.stringify(declareSkills ? { ...manifest, skills: './skills/' } : manifest, null, 2),
+    );
+    for (const [rel, content] of Object.entries(skills)) {
+      const abs = join(dir, 'skills', rel);
+      await mkdir(resolve(abs, '..'), { recursive: true });
+      await writeFile(abs, content);
+    }
+    return dir;
+  }
+
+  const skillFile = (name, description) => `---\nname: ${name}\ndescription: "${description}"\n---\n\n# ${name}\n`;
+
+  it('accepts a conformant skill', async () => {
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': skillFile('demo', 'A conformant demo skill.') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `stderr=${result.stderr}`);
+  });
+
+  it('accepts a description of exactly 1024 characters', async () => {
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': skillFile('demo', 'x'.repeat(1024)) } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `1024 must be allowed; stderr=${result.stderr}`);
+  });
+
+  it('rejects a description of exactly 1025 characters and reports the true length', async () => {
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': skillFile('demo', 'x'.repeat(1025)) } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(
+      result.stderr.includes('description is too long (1025 characters, maximum is 1024)'),
+      `stderr=${result.stderr}`,
+    );
+  });
+
+  it('measures the decoded scalar, not the raw line, for an escaped description', async () => {
+    // 1000 filler + 24 decoded characters == exactly 1024 decoded, while the
+    // raw frontmatter line is longer because each \" occupies two bytes. A
+    // linter measuring raw text would wrongly reject this.
+    const decodedTail = '\\"aaaaaaaaaa\\" bbbbbbbb';
+    const dir = await makeSkillPlugin({
+      skills: { 'demo/SKILL.md': skillFile('demo', 'x'.repeat(1002) + decodedTail) },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `decoded length is 1024 and must pass; stderr=${result.stderr}`);
+  });
+
+  it('rejects a description containing a less-than sign', async () => {
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': skillFile('demo', 'Use for investigate <topic> requests.') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('description cannot contain angle brackets'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a description containing a greater-than sign', async () => {
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': skillFile('demo', 'Resolution order is env > user-global.') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('description cannot contain angle brackets'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects an unexpected frontmatter key', async () => {
+    const body = '---\nname: demo\ndescription: "Fine."\nargument-hint: "(topic)"\n---\n';
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': body } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('unexpected frontmatter key(s): argument-hint'), `stderr=${result.stderr}`);
+  });
+
+  it('allows a structured metadata mapping', async () => {
+    const body = '---\nname: demo\ndescription: "Fine."\nmetadata:\n  owner: platform\n  tier: "1"\n---\n';
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': body } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `metadata is an allowed key; stderr=${result.stderr}`);
+  });
+
+  it('rejects a missing description', async () => {
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': '---\nname: demo\n---\n' } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('missing "description" in frontmatter'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a missing name', async () => {
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': '---\ndescription: "Fine."\n---\n' } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('missing "name" in frontmatter'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a name that is not hyphen-case', async () => {
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': skillFile('My_Skill', 'Fine.') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('must be hyphen-case'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a name with consecutive hyphens', async () => {
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': skillFile('demo--skill', 'Fine.') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('consecutive hyphens'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects a name longer than 64 characters', async () => {
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': skillFile('a'.repeat(65), 'Fine.') } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('name is too long (65 characters'), `stderr=${result.stderr}`);
+  });
+
+  it('rejects CRLF frontmatter with the real reason', async () => {
+    const body = '---\r\nname: demo\r\ndescription: "Fine."\r\n---\r\n';
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': body } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('CRLF line endings'), `stderr=${result.stderr}`);
+  });
+
+  it('fails closed on a block-scalar description rather than guessing', async () => {
+    const body = '---\nname: demo\ndescription: |\n  A block scalar description.\n---\n';
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': body } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('not measurable by this check'), `stderr=${result.stderr}`);
+  });
+
+  it('ignores a shared directory that carries no SKILL.md', async () => {
+    const dir = await makeSkillPlugin({
+      skills: {
+        'demo/SKILL.md': skillFile('demo', 'Fine.'),
+        '_shared/references/notes.md': '# not a skill\n',
+      },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 0, `_shared/ is not a skill; stderr=${result.stderr}`);
+  });
+
+  it('finds a defective skill nested below the skills root', async () => {
+    const dir = await makeSkillPlugin({
+      skills: {
+        'demo/SKILL.md': skillFile('demo', 'Fine.'),
+        'group/nested/SKILL.md': skillFile('nested', 'x'.repeat(1100)),
+      },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('group/nested/SKILL.md'), `stderr=${result.stderr}`);
+  });
+
+  it('scans the manifest-declared skills root too', async () => {
+    const dir = await makeSkillPlugin({
+      declareSkills: true,
+      skills: { 'demo/SKILL.md': skillFile('demo', 'x'.repeat(2000)) },
+    });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('description is too long (2000 characters'), `stderr=${result.stderr}`);
+  });
+
+  it('labels the offending skill by its plugin-relative path', async () => {
+    const dir = await makeSkillPlugin({ skills: { 'demo/SKILL.md': skillFile('demo', 'x'.repeat(1100)) } });
+    const result = await runLint(dir);
+    strictEqual(result.code, 1);
+    ok(result.stderr.includes('skills/demo/SKILL.md:'), `stderr=${result.stderr}`);
+  });
+});

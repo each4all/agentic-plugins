@@ -5,8 +5,19 @@
 // shape: a Claude manifest, a Codex manifest, consistent names, any
 // shipped script files have the executable bit set, the Codex
 // manifest's `skills` path (if declared) resolves to a real directory,
-// and a Claude hook registration (if shipped) is structurally valid
-// with every plugin-rooted command target present.
+// every packaged SKILL.md carries conformant frontmatter, and a Claude
+// hook registration (if shipped) is structurally valid with every
+// plugin-rooted command target present.
+//
+// Skill frontmatter: every SKILL.md under the declared (and conventional)
+// skills root is validated against the full rule set enforced by Codex's
+// bundled skills/.system/skill-creator/scripts/quick_validate.py —
+// LF frontmatter delimiters, allowed keys only, required name and
+// description, hyphen-case name within 64 chars, and a description that
+// carries no angle brackets and stays within 1024 chars. Checking these
+// here means a skill Codex would reject fails CI instead of being found by
+// hand. The parser reads single-line YAML scalars and reports an error
+// rather than a guess for any form it cannot measure exactly.
 //
 // Script-bearing directories scanned for executable bit:
 //   <plugin-dir>/scripts/                            (script-only library plugins)
@@ -420,6 +431,212 @@ if (codexManifest && typeof codexManifest.skills === 'string' && codexManifest.s
     } catch (err) {
       errors.push(`.codex-plugin/plugin.json: skills path "${codexManifest.skills}" stat failed: ${err.message}`);
     }
+  }
+}
+
+// --- Skill frontmatter conformance (Codex skill-creator rule set) ---------
+//
+// Mirrors every rule in Codex's bundled
+// skills/.system/skill-creator/scripts/quick_validate.py, so a packaged
+// skill that Codex would reject fails here first. Checking only the
+// description length would leave the sibling rules (angle brackets,
+// allowed keys, name shape) to be found by hand — which is how the
+// over-cap descriptions this check was added for were found.
+
+const SKILL_ALLOWED_KEYS = ['allowed-tools', 'description', 'license', 'metadata', 'name'];
+const MAX_SKILL_NAME_LENGTH = 64;
+const MAX_SKILL_DESCRIPTION_LENGTH = 1024;
+
+async function collectSkillFiles(dir) {
+  const found = [];
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return found; // absent skills dir is not an error here — the manifest check owns that
+  }
+  for (const entry of entries) {
+    const abs = resolve(dir, entry.name);
+    if (entry.isDirectory()) {
+      found.push(...(await collectSkillFiles(abs)));
+    } else if (entry.isFile() && entry.name === 'SKILL.md') {
+      found.push(abs);
+    }
+  }
+  return found;
+}
+
+// Parse one single-line YAML scalar (plain, 'single-quoted', or
+// "double-quoted"). Returns {value} or {error}. It never guesses at a form
+// it cannot measure: a parser that silently yielded a truncated value would
+// make this whole check vacuously green, which is the precise failure it
+// exists to prevent.
+function parseSingleLineScalar(raw) {
+  const text = raw.trim();
+  if (text === '') return { value: '' };
+  if (text.startsWith('|') || text.startsWith('>')) {
+    return { error: 'block scalar (| or >) is not measurable by this check — use a single-line quoted scalar' };
+  }
+  if (text.startsWith('"')) {
+    const escapes = { n: '\n', t: '\t', r: '\r', '"': '"', '\\': '\\', '/': '/', '0': '\0' };
+    let out = '';
+    let i = 1;
+    for (; i < text.length && text[i] !== '"'; i++) {
+      if (text[i] !== '\\') {
+        out += text[i];
+        continue;
+      }
+      const next = text[i + 1];
+      if (next !== undefined && next in escapes) {
+        out += escapes[next];
+        i += 1;
+      } else if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(text.slice(i + 2, i + 6))) {
+        out += String.fromCharCode(parseInt(text.slice(i + 2, i + 6), 16));
+        i += 5;
+      } else {
+        return { error: `unsupported escape "\\${next ?? ''}" in double-quoted scalar` };
+      }
+    }
+    if (text[i] !== '"') {
+      return { error: 'unterminated double-quoted scalar — a multi-line scalar is not measurable by this check' };
+    }
+    return { value: out };
+  }
+  if (text.startsWith("'")) {
+    let out = '';
+    let i = 1;
+    for (; i < text.length; i++) {
+      if (text[i] !== "'") {
+        out += text[i];
+        continue;
+      }
+      if (text[i + 1] === "'") {
+        out += "'";
+        i += 1;
+        continue;
+      }
+      break;
+    }
+    if (text[i] !== "'") {
+      return { error: 'unterminated single-quoted scalar — a multi-line scalar is not measurable by this check' };
+    }
+    return { value: out };
+  }
+  const comment = text.search(/\s#/);
+  return { value: (comment === -1 ? text : text.slice(0, comment)).trim() };
+}
+
+async function checkSkillFrontmatter(label, path) {
+  let content;
+  try {
+    content = await readFile(path, 'utf8');
+  } catch (err) {
+    errors.push(`${label}: read failed: ${err.message}`);
+    return;
+  }
+  if (!content.startsWith('---')) {
+    errors.push(`${label}: no YAML frontmatter found`);
+    return;
+  }
+  // LF-only, matching quick_validate.py's `^---\n(.*?)\n---` — a CRLF file
+  // fails Codex's own regex, so it must fail here with the real reason.
+  const match = /^---\n([\s\S]*?)\n---/.exec(content);
+  if (!match) {
+    errors.push(content.includes('\r')
+      ? `${label}: invalid frontmatter format (CRLF line endings — Codex's validator matches LF only)`
+      : `${label}: invalid frontmatter format`);
+    return;
+  }
+
+  const fields = new Map();
+  let lastKey = null;
+  for (const line of match[1].split('\n')) {
+    if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
+    if (/^\s/.test(line)) {
+      // Indented continuation. Allowed under a structured key such as
+      // `metadata`, which this check does not measure; fatal under a key it
+      // must measure, because the value then spans lines.
+      if (lastKey === 'name' || lastKey === 'description') {
+        errors.push(`${label}: "${lastKey}" spans multiple lines — not measurable by this check, use a single-line quoted scalar`);
+        return;
+      }
+      continue;
+    }
+    const parsed = /^([^:]+):(.*)$/.exec(line);
+    if (!parsed) {
+      errors.push(`${label}: unparsable frontmatter line: "${line.trim().slice(0, 48)}"`);
+      return;
+    }
+    lastKey = parsed[1].trim();
+    if (fields.has(lastKey)) {
+      errors.push(`${label}: duplicate frontmatter key "${lastKey}"`);
+      return;
+    }
+    fields.set(lastKey, parsed[2]);
+  }
+
+  const unexpected = [...fields.keys()].filter((k) => !SKILL_ALLOWED_KEYS.includes(k)).sort();
+  if (unexpected.length > 0) {
+    errors.push(`${label}: unexpected frontmatter key(s): ${unexpected.join(', ')} (allowed: ${SKILL_ALLOWED_KEYS.join(', ')})`);
+  }
+
+  for (const field of ['name', 'description']) {
+    if (!fields.has(field)) errors.push(`${label}: missing "${field}" in frontmatter`);
+  }
+
+  if (fields.has('name')) {
+    const scalar = parseSingleLineScalar(fields.get('name'));
+    if (scalar.error) {
+      errors.push(`${label}: name ${scalar.error}`);
+    } else {
+      const name = scalar.value.trim();
+      if (name !== '') {
+        if (!/^[a-z0-9-]+$/.test(name)) {
+          errors.push(`${label}: name "${name}" must be hyphen-case (lowercase letters, digits, and hyphens only)`);
+        } else if (name.startsWith('-') || name.endsWith('-') || name.includes('--')) {
+          errors.push(`${label}: name "${name}" cannot start/end with a hyphen or contain consecutive hyphens`);
+        }
+        if (name.length > MAX_SKILL_NAME_LENGTH) {
+          errors.push(`${label}: name is too long (${name.length} characters, maximum is ${MAX_SKILL_NAME_LENGTH})`);
+        }
+      }
+    }
+  }
+
+  if (fields.has('description')) {
+    const scalar = parseSingleLineScalar(fields.get('description'));
+    if (scalar.error) {
+      errors.push(`${label}: description ${scalar.error}`);
+    } else {
+      const description = scalar.value.trim();
+      if (description !== '') {
+        if (description.includes('<') || description.includes('>')) {
+          errors.push(`${label}: description cannot contain angle brackets (< or >)`);
+        }
+        if (description.length > MAX_SKILL_DESCRIPTION_LENGTH) {
+          errors.push(`${label}: description is too long (${description.length} characters, maximum is ${MAX_SKILL_DESCRIPTION_LENGTH})`);
+        }
+      }
+    }
+  }
+}
+
+// Scan the manifest-declared skills root and the conventional one. A
+// directory without a SKILL.md (e.g. skills/_shared/) is not a skill and is
+// simply not collected.
+const skillsRoots = [];
+if (codexManifest && typeof codexManifest.skills === 'string' && codexManifest.skills.length > 0) {
+  skillsRoots.push(resolve(PLUGIN_DIR, codexManifest.skills));
+}
+const conventionalSkillsRoot = resolve(PLUGIN_DIR, 'skills');
+if (!skillsRoots.includes(conventionalSkillsRoot)) skillsRoots.push(conventionalSkillsRoot);
+
+const seenSkillFiles = new Set();
+for (const root of skillsRoots) {
+  for (const file of await collectSkillFiles(root)) {
+    if (seenSkillFiles.has(file)) continue;
+    seenSkillFiles.add(file);
+    await checkSkillFrontmatter(relative(PLUGIN_DIR, file).split(sep).join('/'), file);
   }
 }
 
