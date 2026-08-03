@@ -31,6 +31,27 @@ they are trigger-driven futures.
     Each registration file gets structural validation plus existence +
     physical containment of every `${CLAUDE_PLUGIN_ROOT}/…` command
     target inside the plugin.
+  - **Skill frontmatter conformance** — every `SKILL.md` under a
+    plugin's declared and conventional skills roots is validated
+    against the rule set Codex enforces in its bundled
+    `skills/.system/skill-creator/scripts/quick_validate.py`: only the
+    keys `name`, `description`, `license`, `allowed-tools`, `metadata`;
+    `name` and `description` both required; `name` hyphen-case within
+    64 characters; `description` free of angle brackets (`<`, `>`) and
+    within 1024 characters. Parity is measured against that validator's
+    behaviour — CRLF is fine (it loads through `Path.read_text()`), and
+    an unquoted `123`, `true`, `2026-08-03` or `*alias` is rejected
+    because PyYAML does not resolve those to strings. Lengths are
+    counted in code points, so an emoji costs one character.
+  - **Two skill-frontmatter rules are deliberately stricter** than that
+    validator, both fail-closed. A duplicate frontmatter key is an
+    error (PyYAML silently keeps the last value; a duplicate in a
+    shipped skill is a defect either way). A block scalar (`|`, `>`) or
+    any value spanning lines is rejected rather than measured, because
+    this linter carries no YAML dependency and a parser that guessed at
+    a value it cannot read exactly would make the check vacuous.
+    **Write skill descriptions as single-line quoted scalars** — the
+    convention every packaged skill already follows.
   - Run locally via `npm run lint:plugin-shape`.
   - CI-gated on both host workflows in `.github/workflows/`.
 
