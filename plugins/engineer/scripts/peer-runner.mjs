@@ -1072,6 +1072,11 @@ export async function sweepPeerRuns({
     // data it cannot evaluate — but they are NAMED, because silently carrying
     // unmanaged runs is how a cap stops meaning anything.
     undateable: [],
+    // Runs the plan named but the re-verification refused to delete, because
+    // the directory no longer holds the run the plan was made about. Reported
+    // rather than dropped: a plan whose deletions silently do not happen is the
+    // same dishonesty as a preview whose deletions silently do.
+    prune_skipped: [],
     missing: false,
   };
   let entries;
@@ -1134,12 +1139,36 @@ export async function sweepPeerRuns({
 
   report.retention_applied = applyRetention;
   if (applyRetention) {
-    const dirByRunId = new Map(terminal.map((item) => [item.run_id, item.paths.dir]));
+    const plannedByRunId = new Map(terminal.map((item) => [item.run_id, item.paths]));
     for (const planned of report.planned_prunes) {
+      const paths = plannedByRunId.get(planned.run_id);
+      // RE-VERIFY IMMEDIATELY BEFORE DELETING. Computing the whole plan first
+      // is what makes the preview honest, and it also widens the window between
+      // deciding to delete a run and deleting it. A run id is reusable once its
+      // directory is gone (`runPeer` only checks current existence), so without
+      // this re-read a directory recreated as a NEW RUNNING run in that window
+      // is deleted under the old run's TTL verdict — reproduced by the
+      // Refine-verify peer, and the one failure here that destroys live data.
+      //
+      // The re-read is the claim: delete only if the handle still says what the
+      // plan was made about. Anything else — unreadable, non-terminal, a
+      // different run id, a timestamp that moved — means this is no longer the
+      // run that was planned, and it is skipped rather than guessed at.
+      let current = null;
+      try {
+        current = await readHandle(paths.handle);
+      } catch {
+        report.prune_skipped.push({ run_id: planned.run_id, reason: 'handle-unreadable' });
+        continue;
+      }
+      if (current.run_id !== planned.run_id || !isTerminalStatus(current.status)) {
+        report.prune_skipped.push({ run_id: planned.run_id, reason: 'no-longer-terminal' });
+        continue;
+      }
       // ADR-0040 §5: pruned transitions are SKIPPED as emit points —
       // retention cleanup of runs whose terminal state was already
       // notified; the payload is being deleted.
-      await rm(dirByRunId.get(planned.run_id), { recursive: true, force: true });
+      await rm(paths.dir, { recursive: true, force: true });
       report.pruned.push(planned);
     }
   }
