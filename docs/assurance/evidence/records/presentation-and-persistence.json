@@ -107,10 +107,51 @@
      "value": "partial 91% 105/115; satisfied 6, partial 2, not_verified 0, blocked 0, manual follow-ups 1 (codex-hook-review)"
     }
    ]
+  },
+  {
+   "run_id": "doctor-20260803T091403Z-7f2850",
+   "date": "2026-08-03",
+   "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+   "artifact_sha256": "sha256:a81761475cafd0672eedee6dbe26436d6ba73f8e28a3901dcae22ea9fe482857",
+   "runtime_version": "0.88.1",
+   "installed": {
+    "claude": "0.88.1",
+    "codex": "0.88.1"
+   },
+   "host_cli": {
+    "claude": "2.1.220 (Claude Code)",
+    "codex": "codex-cli 0.145.0"
+   },
+   "readings": [
+    {
+     "key": "overall",
+     "value": "pass; zero hard failures"
+    },
+    {
+     "key": "permission_proof",
+     "value": "passed; executed"
+    },
+    {
+     "key": "deep_peer_smoke",
+     "value": "passed; executed in both directions"
+    },
+    {
+     "key": "workflow_continuation_proof",
+     "value": "passed; executed"
+    },
+    {
+     "key": "experience_parity",
+     "value": "ready 100% 8/8 (115/115); satisfied 8, partial 0, not_verified 0, blocked 0, manual follow-ups 0"
+    },
+    {
+     "key": "post_attestation",
+     "value": "taken after settings-20260803T091332Z-ec30fe attested designer 0.3.1, engineer 0.21.1, founder 0.4.1, orchestrator 0.13.1 against codex 0.145.0"
+    }
+   ]
   }
  ],
  "install_method": "Claude host-native `claude plugin marketplace update agentic-plugins` followed by `claude plugin update <name>@agentic-plugins` for each of the five changed packages; Codex `codex plugin marketplace upgrade`, which refreshed all eight to the released versions. The installed state rests on the doctor read alone — no runtime:settings --execute-plugin-management executor artifact was produced.",
- "narrative": "Authored in the post-release position ADR-0049 requires: the tags, squash, marketplace-sync sha, proof run id and artifact hash exist only after #668 merged, release-please cut #666, the catalog sync landed, both hosts were updated, and the proof was re-recorded.\n\nTwo things distinguish this loop from its predecessors. First, it is the first FIVE-package release, and it exists in that shape because #668 was rebase-merged rather than squashed. Its ten commits span five release-please package paths; a squash would have collapsed them into one commit routed to all five, which is precisely the mis-routing ADR-0016 exists to prevent. The four persona packages bumping independently is the observable evidence that the split worked. It also means those commits carry no PR number in their subjects, so they are recorded with pr_attested rather than pr — the ADR-0049 rule read in the direction it was written for.\n\nSecond, the recorded parity is partial rather than ready, and that is the honest reading rather than a regression. All four hook-bearing plugins changed version in one release, which stales the Codex /hooks trust attestation by construction; runtime cannot query hook trust non-interactively, so only the owner can clear the codex-hook-review follow-up. A record claiming ready here would be claiming something no component observed.\n\nThe recurring lesson across all three slices was scope, not correctness. Each recorded follow-up row named a smaller problem than the one that existed: the reason-fairness row read as an adversarial-input edge and was reachable from an ordinary version bump; the sweep row named one plugin and the same implementation lived in four; the ADR-0050 row asserted a missing CAS and measurement found a correct commit protocol already present for creation. In every case the row's REPRODUCTION held and its SCOPE did not, which is a different failure from the comment-asserts-what-the-code-lacks pattern the previous loop recorded, and worth separating from it.",
+ "narrative": "Authored in the post-release position ADR-0049 requires: the tags, squash, marketplace-sync sha, proof run id and artifact hash exist only after #668 merged, release-please cut #666, the catalog sync landed, both hosts were updated, and the proof was re-recorded.\n\nTwo things distinguish this loop from its predecessors. First, it is the first FIVE-package release, and it exists in that shape because #668 was rebase-merged rather than squashed. Its ten commits span five release-please package paths; a squash would have collapsed them into one commit routed to all five, which is precisely the mis-routing ADR-0016 exists to prevent. The four persona packages bumping independently is the observable evidence that the split worked. It also means those commits carry no PR number in their subjects, so they are recorded with pr_attested rather than pr — the ADR-0049 rule read in the direction it was written for.\n\nSecond, the recorded parity is partial rather than ready, and that is the honest reading rather than a regression. All four hook-bearing plugins changed version in one release, which stales the Codex /hooks trust attestation by construction; runtime cannot query hook trust non-interactively, so only the owner can clear the codex-hook-review follow-up. A record claiming ready here would be claiming something no component observed.\n\nThe follow-up was cleared the same day, and what it revealed is worth separating from what the first proof implied. The owner confirmed all twelve Codex hook entries trusted, and they had been throughout: what the version bump staled was runtime's own ATTESTATION ARTIFACT (the previous one dated 2026-07-22), not the host's trust. Because runtime cannot query hook trust non-interactively, invalidating its claim on a version change is the correct conservative behaviour — but the partial reading describes runtime's evidence, not the machine. Recording settings-20260803T091332Z-ec30fe and re-running the proof restored ready 100% 8/8 with zero manual follow-ups. Both proofs are kept: the pair is the evidence that the gap was bookkeeping rather than posture.\n\nThe recurring lesson across all three slices was scope, not correctness. Each recorded follow-up row named a smaller problem than the one that existed: the reason-fairness row read as an adversarial-input edge and was reachable from an ordinary version bump; the sweep row named one plugin and the same implementation lived in four; the ADR-0050 row asserted a missing CAS and measurement found a correct commit protocol already present for creation. In every case the row's REPRODUCTION held and its SCOPE did not, which is a different failure from the comment-asserts-what-the-code-lacks pattern the previous loop recorded, and worth separating from it.",
  "relations": [
   {
    "type": "follows",
