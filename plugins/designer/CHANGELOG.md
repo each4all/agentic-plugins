@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.0...plugin-designer-v0.3.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* **plugin/designer:** make the peer-run sweep preview state what --apply deletes ([b5766d7](https://github.com/each4all/agentic-plugins/commit/b5766d7f52fef2b68b39e1b23a885a9335f19318))
+* **plugin/designer:** re-verify a peer run immediately before deleting it ([f2448e4](https://github.com/each4all/agentic-plugins/commit/f2448e4204ffae64f3338eed761cbb854f5be863))
+
 ## [0.3.0](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.2.1...plugin-designer-v0.3.0) (2026-07-13)
 
 
