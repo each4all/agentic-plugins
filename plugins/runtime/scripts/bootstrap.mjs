@@ -2049,6 +2049,12 @@ async function runPlan(ctx, opts) {
     mutate: (m) => ({ ...m, steps }),
   });
   if (!updated.updated) warnings.push(`fragment pointers could not be persisted into the manifest: ${updated.diagnostics.join('; ')}`);
+  // A SUCCESSFUL update can still carry diagnostics — the family lock merges its
+  // own into the result, and a release that could not put back a lock it
+  // displaced reports there. Reading them only on the failure branch made that
+  // reporting inert (peer round-3 MAJOR): the write landed, so nobody saw that a
+  // lock name may have been left free.
+  else if (updated.diagnostics?.length) warnings.push(...updated.diagnostics);
 
   const report = {
     verb: 'plan',
@@ -2756,6 +2762,16 @@ async function runResume(ctx, opts) {
       continue;
     }
     doctorReport = result.doctorReport ?? doctorReport;
+    // A PASSED proof can still carry a WAL warning: the provider acked and the
+    // mirror correlated (which is what `passed` means), while the intent record
+    // that fences the NEXT attempt was not written durably. Doctor raises that
+    // as an overall warning; the import only forwarded diagnostics when it
+    // FAILED, so on the success path the warning died here and the operator was
+    // never told the fence may not survive a reboot (peer round-3 MAJOR). It is
+    // forwarded, not re-derived, so the two surfaces cannot drift.
+    for (const warning of result.doctorReport?.overall?.warnings ?? []) {
+      if (/intent WAL/i.test(warning)) warnings.push(`${kind}: ${warning}`);
+    }
     const persisted = await writeBootstrapProof({ homeDir: ctx.homeDir, repoRoot: ctx.cwd, runId: picked.run.run_id, kind, record: result.record });
     if (!persisted?.ok) {
       // Egress is the ONE side-effecting proof: when its send already completed
@@ -2764,7 +2780,7 @@ async function runResume(ctx, opts) {
       // then-clear rather than a blind retry — otherwise the proof-persist failure
       // recovery compounds into a duplicate send (follow-ups.md L35 gap 1).
       const retryAdvice = kind === 'egress-provider-ack'
-        ? 'the egress send may already have reached the phone; reconcile the phone and delete the recorded egress intent (the WAL fences an automatic re-send) before resuming'
+        ? 'the egress send may already have reached the phone; reconcile the phone, then re-run the egress proof once to get the blocker that NAMES which WAL records to remove (an attempt leaves a claim and a terminal record, and only the scan knows which are present and whether removing them is safe) before resuming'
         : 're-run resume to retry';
       warnings.push(`proof metadata for ${kind} could not be persisted (the run reduces without it; ${retryAdvice}): ${(persisted?.diagnostics ?? ['unknown write failure']).join('; ')}`);
     }
@@ -3465,7 +3481,20 @@ async function runProfileExport(ctx, opts) {
       hash: profileHash(profile, profileSchema),
       selection,
       status: 'written',
-      diagnostics: [],
+      // Forwarded, not hardcoded empty: writeMachineProfile already merges the
+      // family lock's diagnostics into its success result, and a release that
+      // could not put back a displaced lock reports through exactly that channel.
+      // Dropping it here made that reporting inert — the write succeeded, so the
+      // operator saw a clean `written` while a lock name may have been left free
+      // (peer round-3 MAJOR).
+      //
+      // Coverage, stated because it is absent: mutation-measured, re-hardcoding
+      // `[]` here fails no test. Producing a failed release through the CLI needs
+      // the lock file to change identity DURING the critical section, and `boot()`
+      // exposes no seam that reaches inside it. The rule itself is covered where
+      // it lives (bootstrap-artifacts' release + wrapper regressions); this one
+      // line of wiring is not.
+      diagnostics: written.diagnostics ?? [],
     },
   };
 }

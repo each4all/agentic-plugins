@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
-import { strictEqual, ok, rejects, deepStrictEqual } from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, symlink, readdir, readFile, rm, utimes } from 'node:fs/promises';
+import { strictEqual, notStrictEqual, ok, rejects, deepStrictEqual } from 'node:assert/strict';
+import { chmod, mkdtemp, mkdir, writeFile, symlink, readdir, readFile, rm, utimes } from 'node:fs/promises';
+import * as realFs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -8,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { evaluateCodexHookStateGate, formatText, parseArgs, projectCodexHookStateForProbe, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES, resolveInstalledEngineerRoot, classifyWireDisposition, EGRESS_ACK_OUTCOME_REASONS } from '../../plugins/runtime/scripts/doctor.mjs';
+import { evaluateCodexHookStateGate, formatText, parseArgs, projectCodexHookStateForProbe, runDoctor, RUNTIME_VERSION, PLUGIN_NAMES, resolveInstalledEngineerRoot, classifyWireDisposition, EGRESS_ACK_OUTCOME_REASONS, publishJsonExclusive, scanEgressIntents, composeEgressFenceBlocker, aggregateWalDurability } from '../../plugins/runtime/scripts/doctor.mjs';
 import { recomputeHookAttestation } from '../../plugins/runtime/scripts/lib/completion-reducer.mjs';
 import { makeDefValidator } from '../../plugins/runtime/scripts/lib/schema-validate.mjs';
 
@@ -4168,6 +4169,32 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     });
   }
 
+  // The WAL's two record roles, and the seam every liveness test needs.
+  //
+  // A COMPLETED attempt leaves two records: the claim `<fp>.json` and the
+  // terminal `<fp>.<owner_token>.terminal.json`. A PENDING state is the claim
+  // alone — so seeding one means rewriting the claim AND removing the terminal
+  // record, otherwise the scan pairs them and reports a resolved attempt instead
+  // of the live/dead holder these tests are about.
+  //
+  // Selecting the claim by name rather than by `readdir()[0]` is not tidiness:
+  // directory order is not specified, so picking the first entry would seed the
+  // TERMINAL record on some runs and the claim on others — a test that passes
+  // for the wrong reason half the time, on a property about safety advice.
+  const isTerminalRecord = (name) => name.endsWith('.terminal.json');
+  const walNames = async (intentDir) => (await readdir(intentDir)).sort();
+  async function seedPendingClaim(intentDir, patch = {}) {
+    const names = await walNames(intentDir);
+    const claimName = names.find((n) => n.endsWith('.json') && !isTerminalRecord(n));
+    ok(claimName, `expected a claim record to seed from, saw: ${names.join(',')}`);
+    for (const name of names) {
+      if (name !== claimName) await rm(join(intentDir, name));
+    }
+    const seeded = JSON.parse(await readFile(join(intentDir, claimName), 'utf8'));
+    await writeFile(join(intentDir, claimName), JSON.stringify({ ...seeded, status: 'pending', ...patch }), 'utf8');
+    return claimName;
+  }
+
   it('parseArgs wires the flag pair, enforces the double guard, and refuses a timeout flag (peer decision)', () => {
     const opts = parseArgs(['--egress-ack-proof', '--execute-egress-ack-proof']);
     strictEqual(opts.egressAckProof, true);
@@ -4242,10 +4269,22 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     strictEqual(report.read_only, true, 'read_only keeps its host-state meaning');
     ok(!report.overall.hard_failures.some((f) => /egress ack proof/.test(f)), 'a passed proof registers no hard failure');
 
-    // TOCTOU closed by sharing: the emitter received the SAME env snapshot the
-    // preflight judged, against an ephemeral temp repo that is not the consumer repo.
+    // TOCTOU closed by PINNING, not by object identity (G1-T1). This used to
+    // assert `calls[0].env === env` — the emitter receiving the very object the
+    // preflight judged. That identity was a proxy for "the emitter resolves the
+    // activation the preflight resolved", and measurement showed the proxy does
+    // not hold: `runEmit` re-resolves independently, and the resolver falls back
+    // to a mutable verified-local file that object identity has no bearing on.
+    // The overlay carries the preflight's activation explicitly, which covers
+    // the env-sourced case this identity check covered AND the file-sourced case
+    // it never did (G1-T1 asserts the latter end to end). Identity is therefore
+    // no longer the property; equality of what the preflight judged is.
     strictEqual(calls.length, 1);
-    strictEqual(calls[0].env, env, 'the emitter must receive the preflight env object itself');
+    strictEqual(calls[0].env.AGENTIC_NOTIFY_EGRESS_CHANNEL, env.AGENTIC_NOTIFY_EGRESS_CHANNEL, 'the emitter resolves the preflight channel');
+    strictEqual(calls[0].env.TELEGRAM_CHAT_ID, env.TELEGRAM_CHAT_ID, 'the emitter resolves the preflight recipient');
+    strictEqual(calls[0].env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_BOT_TOKEN, 'the credential is carried through untouched');
+    strictEqual(calls[0].env.AGENTIC_EGRESS_REAL_SMOKE, '1', 'the third consent survives the overlay');
+    notStrictEqual(calls[0].env, env, 'the overlay must be a COPY — mutating the shared env would leak the pin into the control-plane probe environment');
     ok(calls[0].repoRoot !== repo, 'the emit runs against an ephemeral temp repo, never the consumer repo');
     strictEqual(calls[0].event.kind, 'response-needed');
     strictEqual(calls[0].event.urgency, 'normal');
@@ -4257,11 +4296,20 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     ok(!text.includes(SENTINEL_CHAT), 'the recipient must never appear in the report');
     ok(!text.includes(calls[0].event.event_id), 'the raw event id stays in ephemeral/local state');
 
-    // Intent WAL resolved to acked (same attempt hash the ack carries).
+    // Intent WAL resolved to acked (same attempt hash the ack carries). Under
+    // the append-only protocol a completed attempt leaves TWO records — the
+    // claim it never took back, and its own terminal record — and the terminal
+    // record's NAME is what binds the outcome to the attempt that produced it.
     const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
-    const intents = (await readdir(intentDir)).filter((n) => n.endsWith('.json'));
-    strictEqual(intents.length, 1);
-    const intent = JSON.parse(await readFile(join(intentDir, intents[0]), 'utf8'));
+    const walEntries = (await readdir(intentDir)).sort();
+    const claimEntry = walEntries.find((n) => !n.endsWith('.terminal.json'));
+    const terminalEntry = walEntries.find((n) => n.endsWith('.terminal.json'));
+    ok(claimEntry && terminalEntry, `expected a claim and a terminal record, saw: ${walEntries.join(',')}`);
+    strictEqual(walEntries.length, 2, `and nothing else left behind: ${walEntries.join(',')}`);
+    const claimRecord = JSON.parse(await readFile(join(intentDir, claimEntry), 'utf8'));
+    strictEqual(claimRecord.status, 'pending', 'the claim is never rewritten — the terminal record carries the outcome');
+    strictEqual(terminalEntry, `${claimEntry.replace(/\.json$/, '')}.${claimRecord.owner_token}.terminal.json`, 'the terminal name encodes the attempt that wrote it');
+    const intent = JSON.parse(await readFile(join(intentDir, terminalEntry), 'utf8'));
     strictEqual(intent.status, 'acked');
     strictEqual(intent.attempt_hash, section.provider_ack.attempt_hash);
     strictEqual(intent.wire_disposition, 'wire', 'a delivered attempt touched the wire');
@@ -4293,8 +4341,9 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     ok(report.overall.hard_failures.some((f) => /egress ack proof failed \(mirror-missing\)/.test(f)), JSON.stringify(report.overall.hard_failures));
     // …and the intent stays FAILED (not acked), naming the unverifiable outcome.
     const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
-    const intents = (await readdir(intentDir)).filter((n) => n.endsWith('.json'));
-    const intent = JSON.parse(await readFile(join(intentDir, intents[0]), 'utf8'));
+    // By ROLE, not by directory order: `[0]` reads the claim on some runs and
+    // the terminal record on others, and only one of them carries an outcome.
+    const intent = JSON.parse(await readFile(join(intentDir, (await walNames(intentDir)).find(isTerminalRecord)), 'utf8'));
     strictEqual(intent.status, 'failed');
     // A dispatched-but-mirror-lost attempt touched the wire, so the WAL records
     // 'wire' and the re-send gate fences a second execute (gap 1 round-3).
@@ -4329,7 +4378,13 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     const report = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
     strictEqual(report.egress_ack_proof.status, 'blocked');
     strictEqual(calls.length, 0, 'an ambiguous prior attempt must never auto-resend');
-    ok(report.egress_ack_proof.blockers.some((b) => /deadbeef0001\.json/.test(b) && /may already be on the phone/.test(b)), JSON.stringify(report.egress_ack_proof.blockers));
+    // This record carries no `pid` — the shape the PREVIOUS release wrote. It is
+    // therefore an UNKNOWN holder, not a proven-dead one, and must not get the
+    // flat crash instruction: an older sender may still be running. (G1-C covers
+    // the genuinely-dead holder, which does get it, so the two paths stay
+    // distinguishable rather than collapsing into one message.)
+    ok(report.egress_ack_proof.blockers.some((b) => /deadbeef0001\.json/.test(b) && /carries no process identity/.test(b)), JSON.stringify(report.egress_ack_proof.blockers));
+    ok(report.egress_ack_proof.blockers.every((b) => !/^a previous egress attempt for this activation is unresolved/.test(b.trim())), 'never the proven-crash wording for an unknown holder');
     strictEqual(report.effects.network_request_performed, false);
   });
 
@@ -4390,7 +4445,7 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     strictEqual(r1.egress_ack_proof.network_request_performed, false);
     strictEqual(r1.effects.network_request_performed, false);
     const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
-    const iname = (await readdir(intentDir)).filter((n) => n.endsWith('.json'))[0];
+    const iname = (await walNames(intentDir)).find(isTerminalRecord);
     const intent = JSON.parse(await readFile(join(intentDir, iname), 'utf8'));
     strictEqual(intent.wire_disposition, 'unknown', 'an unexpected throw could be post-wire');
     strictEqual(intent.network_request_performed, false);
@@ -4402,21 +4457,405 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     ok(r2.egress_ack_proof.blockers.some((b) => /unknown/.test(b)), JSON.stringify(r2.egress_ack_proof.blockers));
   });
 
-  it('R5 no-wire clears: an attempt that stopped before the wire never fences a fresh send (strict is not over-strict)', async () => {
+  // This test's property is DELIBERATELY REVERSED (owner decision, round 4).
+  //
+  // It used to assert that a pre-wire attempt never fences a fresh send —
+  // "strict is not over-strict". Keeping that required the code to FREE the
+  // canonical name, and three review rounds established that freeing a name the
+  // code cannot atomically prove is still its own is what let two attempts both
+  // reach the wire. The two properties were measured to be mutually exclusive,
+  // and the owner chose the fence. What survives unchanged is the part that
+  // actually protects the phone: a pre-wire attempt still performs no network
+  // I/O, and no second message is ever sent. What changes is who clears the
+  // record — the operator, told plainly that it is safe.
+  it('R5 no-wire fences, names BOTH records, and says on the FIRST attempt why deleting them is safe', async () => {
     const { repo, home } = await freshDirs();
     const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
     // A pre-wire failure outcome (no network I/O) => wire_disposition 'no-wire'.
     const r1 = await runEgressDoctor({ repo, home, env, emitImpl: async () => ({ status: 'failed', stage: 'egress', reason: 'egress-missing-token', channel: 'telegram' }) });
     strictEqual(r1.egress_ack_proof.network_request_performed, false);
     const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
-    const iname = (await readdir(intentDir)).filter((n) => n.endsWith('.json'))[0];
-    const intent = JSON.parse(await readFile(join(intentDir, iname), 'utf8'));
-    strictEqual(intent.wire_disposition, 'no-wire');
-    // A subsequent execute proceeds: nothing reached the phone to fence.
+    // The COMPLETE listing, not just *.json: a leaked `.tmp-*` sidecar is exactly
+    // the debris a filtered assertion would wave through (peer SUGGESTION).
+    const entries = await walNames(intentDir);
+    const claimEntry = entries.find((n) => !isTerminalRecord(n));
+    const claimRecord = JSON.parse(await readFile(join(intentDir, claimEntry), 'utf8'));
+    deepStrictEqual(entries, [`${claimRecord.activation_fingerprint}.json`, `${claimRecord.activation_fingerprint}.${claimRecord.owner_token}.terminal.json`].sort(), 'the claim and its terminal record, and nothing else left behind');
+    strictEqual(JSON.parse(await readFile(join(intentDir, entries.find(isTerminalRecord)), 'utf8')).wire_disposition, 'no-wire');
+
+    // The cleanup instruction must arrive on THIS attempt's own result, not one
+    // run later. Nothing was sent, so the operator can act immediately — and
+    // under append-only nothing else will ever clear these two records.
+    const firstLimits = r1.egress_ack_proof.limits.join(' ');
+    ok(/stopped BEFORE any message was sent/.test(firstLimits), `the first result must say nothing was sent: ${firstLimits}`);
+    ok(/deleting BOTH is safe/.test(firstLimits), `and that clearing both records is the safe retry: ${firstLimits}`);
+    for (const entry of entries) {
+      ok(firstLimits.includes(entry), `the instruction must name ${entry}: ${firstLimits}`);
+    }
+
     const calls2 = [];
     const r2 = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls2) });
-    strictEqual(r2.egress_ack_proof.status, 'passed', 'a no-wire attempt does not fence a fresh send');
-    strictEqual(calls2.length, 1);
+    strictEqual(r2.egress_ack_proof.status, 'blocked', 'the occupied name fences the next attempt');
+    strictEqual(calls2.length, 0, 'and no second message is sent');
+    const blocker = r2.egress_ack_proof.blockers.join(' ');
+    // The wording is the whole point of this branch: this is the ONE delete
+    // instruction in the file that is provably safe, and it must say so rather
+    // than reusing the check-the-phone wording that exists for the opposite case.
+    ok(/BEFORE any message was sent/.test(blocker), `the operator must be told nothing was sent: ${blocker}`);
+    ok(/is safe and is all that is needed to retry/.test(blocker), `and that deleting is safe: ${blocker}`);
+    ok(!/check the phone/i.test(blocker), `never the dangerous-case wording: ${blocker}`);
+    // BOTH names, because clearing only the terminal record leaves the claim
+    // fencing the activation and the next run reporting a pending attempt.
+    for (const entry of entries) {
+      ok(blocker.includes(entry), `the blocker must name ${entry}: ${blocker}`);
+    }
+  });
+
+  // G1 (ADR-0048 residual (a)) — the concurrent-send property at the SCAN
+  // fence. Mutation-checked scope note: turning the claim's link(2) into a
+  // rename does NOT fail this test, because the loser is stopped by the live
+  // claim it scans, before it ever attempts a claim of its own. The link's own
+  // exclusion is covered where it is actually exercised — C2 at the unit level
+  // (a claim onto an occupied name must fail) and G1-I at the integration level
+  // (the scan finds nothing to fence, yet the name is taken). Naming this test
+  // after the link would have been a coverage claim the test does not back.
+  it('G1-A: a live claim fences a concurrent execute at the scan — exactly one send', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const calls = [];
+    let releaseBarrier;
+    let signalAReachedEmitter;
+    const barrier = new Promise((r) => { releaseBarrier = r; });
+    // Signalled the moment A enters the emitter, which is AFTER it published its
+    // claim. A fixed sleep here would let a slow CI reverse the intended
+    // ordering and quietly invert what the test proves (peer SUGGESTION).
+    const aReachedEmitter = new Promise((r) => { signalAReachedEmitter = r; });
+    // A parks INSIDE the send, holding its claim, until B has finished its fence.
+    const parkingEmit = async (args) => { calls.push(args); signalAReachedEmitter(); await barrier; return deliveredEmit([])(args); };
+    const aPromise = runEgressDoctor({ repo, home, env, emitImpl: parkingEmit });
+    await aReachedEmitter;
+    const b = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
+    releaseBarrier();
+    const a = await aPromise;
+
+    strictEqual(calls.length, 1, 'exactly one send across both executes');
+    strictEqual(a.egress_ack_proof.executed, true);
+    strictEqual(b.egress_ack_proof.executed, false, 'the loser never reaches the emitter');
+    strictEqual(b.egress_ack_proof.status, 'blocked');
+    strictEqual(b.egress_ack_proof.network_request_performed, false);
+  });
+
+  // The blocker an operator sees while an attempt is LIVE must not tell them to
+  // delete the record — deleting a live claim frees the fence for a second send
+  // to their phone. This asserts the ABSENCE of that instruction, which is the
+  // whole reason the liveness probe exists.
+  it('G1-B: a live claim blocks with a wait message that never mentions deletion', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    // Seed a pending claim held by THIS (live) process.
+    await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit([]) });
+    await seedPendingClaim(intentDir, { pid: process.pid, acquired_at: new Date().toISOString() });
+
+    const calls = [];
+    const r = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
+    strictEqual(r.egress_ack_proof.status, 'blocked');
+    strictEqual(calls.length, 0);
+    const blocker = r.egress_ack_proof.blockers.join(' ');
+    ok(/in flight/i.test(blocker), `expected the in-flight wording: ${blocker}`);
+    ok(!/check the phone, then delete/i.test(blocker), `a LIVE claim must not be advertised as deletable: ${blocker}`);
+  });
+
+  // Self-review finding: the age authority must be the FILE MTIME, not the
+  // body's `acquired_at`. bootstrap-artifacts.mjs:735 records the same rule for
+  // the family lock — a forged/future timestamp and a caller's INJECTED clock
+  // both make the body disagree with what the kernel observed. Here the failure
+  // direction is WORSE than bootstrap's: a body-derived age reading "old" would
+  // advertise a LIVE claim as deletable, which is exactly what the wording split
+  // exists to prevent.
+  it('G1-G: a forged acquired_at cannot make a live claim look deletable — mtime is the authority', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit([]) });
+    // Live holder, but the BODY claims the claim was taken in 2020. The file
+    // itself is being written right now, so its mtime says otherwise.
+    await seedPendingClaim(intentDir, { pid: process.pid, acquired_at: '2020-01-01T00:00:00.000Z' });
+
+    const calls = [];
+    const r = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
+    strictEqual(r.egress_ack_proof.status, 'blocked');
+    strictEqual(calls.length, 0);
+    const blocker = r.egress_ack_proof.blockers.join(' ');
+    ok(/in flight/i.test(blocker), `a live holder stays in-flight regardless of the body timestamp: ${blocker}`);
+    ok(!/check the phone, then delete/i.test(blocker), `a forged timestamp must not make a live claim deletable: ${blocker}`);
+  });
+
+  // Peer MAJOR (CONFLICT, resolved): age must never override CONFIRMED liveness.
+  // The earlier predicate returned before probing the pid once the claim aged
+  // out, so a paused, suspended or debugged holder was advertised as deletable —
+  // the direction the whole wording split exists to prevent. But dropping the
+  // age bound reinstates what it was added for: a REUSED pid would block the
+  // activation forever. Resolution: age qualifies a THIRD wording rather than
+  // flipping live to deletable, so safety wins and the operator keeps an out.
+  it('G1-H: a LIVE but unusually old holder gets its own wording — neither plain in-flight nor plain delete', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit([]) });
+    const name = await seedPendingClaim(intentDir, { pid: process.pid });
+    // Age the FILE (the authority), not the body. This pid is definitely alive.
+    const ancient = new Date(Date.now() - 60 * 60 * 1000);
+    await utimes(join(intentDir, name), ancient, ancient);
+
+    const calls = [];
+    const r = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
+    strictEqual(r.egress_ack_proof.status, 'blocked');
+    strictEqual(calls.length, 0);
+    const blocker = r.egress_ack_proof.blockers.join(' ');
+    ok(/still running/i.test(blocker), `the live pid must be reported, not silently dropped: ${blocker}`);
+    ok(/unusually old|no longer|certain/i.test(blocker), `the age must be surfaced as uncertainty: ${blocker}`);
+    // It must NOT read like a plain crash: the operator has to be told the
+    // holder is alive before being offered the deletion at all.
+    ok(!/^a previous egress attempt for this activation is unresolved/.test(blocker.trim()), `not the plain crash wording: ${blocker}`);
+  });
+
+  it('G1-C: a dead holder reverts to the check-the-phone-then-delete wording', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit([]) });
+    // A pid that is not running: the probe answers ESRCH ⇒ gone.
+    await seedPendingClaim(intentDir, { pid: 999_999, acquired_at: new Date().toISOString() });
+
+    const calls = [];
+    const r = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
+    strictEqual(r.egress_ack_proof.status, 'blocked');
+    strictEqual(calls.length, 0);
+    const blocker = r.egress_ack_proof.blockers.join(' ');
+    ok(/check the phone, then delete/i.test(blocker), `expected the crash wording: ${blocker}`);
+    ok(!/in flight/i.test(blocker), `a dead holder is not in flight: ${blocker}`);
+  });
+
+  // Rollback, in the direction no test can run: an OLDER runtime reading a WAL
+  // this version wrote. It ignores every field added since, so the terminal
+  // record must stay a strict SUPERSET of the pre-G1 shape — and both records
+  // end with `.json`, so the old scan reads both.
+  //
+  // The safety argument does not rest on that superset alone, and it was checked
+  // against the shipped scan rather than assumed: the old code classifies a
+  // `pending` record as unresolved and blocks, and under append-only the claim
+  // is NEVER cleared — so an old runtime always sees a pending claim and always
+  // refuses. Over-strict, never permissive, whatever it makes of the terminal
+  // record beside it. The superset is what keeps its message accurate.
+  it('G1-D: both records keep every pre-G1 field name and meaning, and the claim stays pending', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const r = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit([]) });
+    strictEqual(r.egress_ack_proof.status, 'passed');
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    const entries = await walNames(intentDir);
+    // Selected by ROLE, not by directory order: picking `[0]` would read the
+    // claim on some runs and the terminal record on others, and the assertions
+    // below differ between them.
+    const rec = JSON.parse(await readFile(join(intentDir, entries.find(isTerminalRecord)), 'utf8'));
+    for (const field of ['status', 'subject', 'attempt_hash', 'ran_at', 'outcome_reason', 'wire_disposition', 'network_request_performed', 'activation_fingerprint']) {
+      ok(Object.hasOwn(rec, field), `pre-G1 field '${field}' must survive for an older reader's fence`);
+    }
+    strictEqual(rec.status, 'acked');
+    strictEqual(rec.wire_disposition, 'wire');
+    // The half the rollback argument actually rests on.
+    const claimRec = JSON.parse(await readFile(join(intentDir, entries.find((n) => !isTerminalRecord(n))), 'utf8'));
+    strictEqual(claimRec.status, 'pending', 'an older runtime fences on this and nothing else');
+    ok(/^[0-9a-f]{64}$/.test(claimRec.activation_fingerprint), 'and it must be scopable by the old code too');
+  });
+
+  // G1-I restores the branch the deleted G1-E CLAIMED to cover, against the
+  // state that can actually produce it.
+  //
+  // G1-E forged a "leftover cleared record" at the claim name, which no version
+  // of this code can leave there. Under the append-only protocol that is now
+  // structural rather than argued: an attempt writes its outcome at its OWN
+  // name, so the claim name only ever holds a pending claim — which fences —
+  // until an operator removes it. (Measured, not assumed: the previous release
+  // also names its intent file by the attempt suffix rather than the activation
+  // fingerprint, so not even an upgrade from it can leave a skippable record at
+  // this name.) A pending claim is covered by G1-C for a dead holder, G1-H for a
+  // live one, and P2 at the scan level. But the doctor branch behind G1-E is
+  // real: the scan can find nothing to fence and the claim still collide,
+  // reachable only by a true race.
+  //
+  // Both runs start in the same tick, so both scan the empty WAL before either
+  // claims. The ordering is not left to luck: the loser's scan is ONE readdir,
+  // while the winner must finish that scan, the legacy scan, a temp repo, the
+  // directory chain sync and a staged fsync+close before it links. Measured
+  // 160/160 across a saturated CPU and both threadpool extremes
+  // (UV_THREADPOOL_SIZE=1, which serializes fs ops into submission order, and
+  // 64). The exactly-one-send assertion holds under EITHER interleaving; only
+  // the blocker wording separates them, so a flip fails loudly here instead of
+  // passing as coverage of something else.
+  it('G1-I: a claim that collides after a clean scan blocks the loser — the link is the exclusion', async () => {
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    // Bounded retry, not a bare hope. The peer's round-2 MINOR is right that
+    // Promise.all does not STRUCTURALLY guarantee both scans precede either
+    // link, so a run that interleaves the other way lands on the scan fence
+    // (G1-A's property) instead of the claim collision. Both routes are safe,
+    // and the invariant below is asserted on EVERY attempt; only the branch
+    // this test exists to cover needs the collision route, so it retries for it
+    // and fails loudly with what it saw if the route never appears. Measured
+    // 160/160 on the first attempt across a saturated CPU and both
+    // UV_THREADPOOL_SIZE extremes (1 and 64) on darwin.
+    const seen = [];
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const { repo, home } = await freshDirs();
+      const calls = [];
+      const run = () => runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
+      const [a, b] = await Promise.all([run(), run()]);
+
+      // The safety invariant, independent of which route the loser took.
+      strictEqual(calls.length, 1, 'exactly one send across two concurrent executes');
+      const loser = [a, b].find((r) => r.egress_ack_proof.status === 'blocked');
+      const winner = [a, b].find((r) => r.egress_ack_proof.status !== 'blocked');
+      ok(loser && winner, `expected one blocked and one not: ${a.egress_ack_proof.status}/${b.egress_ack_proof.status}`);
+      strictEqual(winner.egress_ack_proof.status, 'passed', JSON.stringify(winner.egress_ack_proof.blockers));
+      strictEqual(loser.egress_ack_proof.executed, false, 'the loser never reaches the emitter');
+      strictEqual(loser.egress_ack_proof.network_request_performed, false);
+
+      const blocker = loser.egress_ack_proof.blockers.join(' ');
+      seen.push(blocker.slice(0, 60));
+      if (!/claimed this activation concurrently/.test(blocker)) continue;   // scan-fence route; retry for the collision
+
+      // The winner's two records are the only things left — its claim and its
+      // own terminal record. The loser discards its staged temp rather than
+      // publish under any name, and it never had a terminal name to write to
+      // because it never claimed.
+      const names = (await readdir(join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents'))).sort();
+      strictEqual(names.length, 2, `the winner's claim + terminal only, no sidecars: ${names.join(',')}`);
+      const [claimName] = names.filter((n) => !n.endsWith('.terminal.json'));
+      const [terminalName] = names.filter((n) => n.endsWith('.terminal.json'));
+      const winnerToken = JSON.parse(await readFile(join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents', claimName), 'utf8')).owner_token;
+      strictEqual(terminalName, `${claimName.replace(/\.json$/, '')}.${winnerToken}.terminal.json`, 'the terminal record belongs to the attempt that won the claim');
+      return;
+    }
+    ok(false, `never observed the claim-collision route in 5 attempts; saw: ${JSON.stringify(seen)}`);
+  });
+
+  // Peer round-2 MAJOR. Claim age was measured as (injected report clock) minus
+  // (kernel mtime) — two different worlds — under a comment that cited the
+  // injected clock as the very reason to trust the mtime. A report timestamp
+  // must never decide safety advice about somebody else's running send.
+  it('G1-J: a report clock an hour ahead cannot turn a live claim into a deletable one', async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit([]) });
+    // A claim held by THIS (live) process, with a genuinely fresh mtime.
+    await seedPendingClaim(intentDir, { pid: process.pid });
+
+    const wall = await runDoctor({
+      repoRoot: repo, homeDir: home, format: 'json', runner: bareRunner, env,
+      egressAckProof: true, executeEgressAckProof: true, egressEmitImpl: deliveredEmit([]), recordArtifact: false,
+    });
+    const ahead = await runDoctor({
+      repoRoot: repo, homeDir: home, format: 'json', runner: bareRunner, env,
+      now: new Date(Date.now() + 60 * 60 * 1000),
+      egressAckProof: true, executeEgressAckProof: true, egressEmitImpl: deliveredEmit([]), recordArtifact: false,
+    });
+    const say = (r) => r.egress_ack_proof.blockers.join(' ');
+    ok(/in flight/i.test(say(wall)), `control — a fresh live claim is in flight: ${say(wall)}`);
+    strictEqual(say(ahead), say(wall), 'the report clock must not change the advice at all');
+    // Specifically: not into either wording that OFFERS the deletion. Both of
+    // those say "check the phone, then delete"; the in-flight wording contains
+    // "delete" too, in "Do not delete the intent record while it is running", so
+    // matching the bare word here would assert nothing.
+    ok(!/then delete/i.test(say(ahead)), `a live holder must never be offered for deletion: ${say(ahead)}`);
+  });
+
+  // Peer round-2 MAJOR, second half. The section used to summarize every
+  // non-mismatch WAL failure as "the pending claim still stands as the fence"
+  // and drop `terminal.diagnostic` — the only value that knows where the record
+  // actually is. Root can write through a mode-0500 directory, so the forced
+  // errno this needs is unavailable there.
+  it('G1-K: a failed terminal WAL write reaches the operator with the primitive\'s own diagnostic', { skip: process.getuid?.() === 0 }, async () => {
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const intentDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    // Making the directory read-only from inside the emitter — after the claim,
+    // before the terminal write — is the only seam that reaches that failure
+    // without an injectable filesystem. Root can write through mode 0500, hence
+    // the skip.
+    const emitImpl = async () => {
+      await chmod(intentDir, 0o500);
+      return { status: 'failed', stage: 'egress', reason: 'egress-missing-token', channel: 'telegram' };
+    };
+    const r = await runEgressDoctor({ repo, home, env, emitImpl });
+    await chmod(intentDir, 0o700);
+    const limits = r.egress_ack_proof.limits.join(' ');
+    // The section must not summarize this into its own wording: only the
+    // primitive knows what it could not do and what state that leaves behind.
+    ok(/could not stage a durable record for \S+\.terminal\.json \(EACCES\)/i.test(limits), `the primitive's own diagnostic must reach the operator: ${limits}`);
+    // And the claim the SECTION made about the WAL must still be true. Under
+    // append-only that sentence is unconditional, so assert the state it names:
+    // the claim survives and no terminal record was published.
+    ok(/the pending claim still fences this activation/.test(limits), limits);
+    const left = (await readdir(intentDir)).sort();
+    deepStrictEqual(left.filter((n) => n.endsWith('.terminal.json')), [], `no terminal record may exist after a failed terminal write: ${left.join(',')}`);
+    strictEqual(left.length, 1, `exactly the pending claim is left: ${left.join(',')}`);
+    strictEqual(JSON.parse(await readFile(join(intentDir, left[0]), 'utf8')).status, 'pending', 'the pending claim is still there to fence the next attempt');
+  });
+
+  it('G1-T1: a verified-local activation is pinned — a file edit mid-attempt cannot redirect the send', async () => {
+    const { repo, home } = await freshDirs();
+    const localPath = join(home, '.agentic-plugins', 'config.local.toml');
+    await mkdir(dirname(localPath), { recursive: true });
+    await writeFile(localPath, 'egress_channel = "telegram"\negress_chat_id = "111111111111"\n', { mode: 0o600 });
+    // Env carries ONLY the credential: channel + recipient come from the file,
+    // which is the drifting source.
+    const env = { PATH: process.env.PATH, TELEGRAM_BOT_TOKEN: SENTINEL_TOKEN, AGENTIC_EGRESS_REAL_SMOKE: '1' };
+
+    const observed = [];
+    const emitImpl = async (args) => {
+      // Rewrite the file to a DIFFERENT recipient, exactly as an operator edit
+      // between doctor's preflight and the emitter's own resolve would, then
+      // resolve through the REAL loader with the env the emitter was handed.
+      await writeFile(localPath, 'egress_channel = "telegram"\negress_chat_id = "999999999999"\n', { mode: 0o600 });
+      const { loadEgressActivation } = await import('../../plugins/runtime/scripts/lib/egress-config.mjs');
+      observed.push(loadEgressActivation({ repoRoot: args.repoRoot, homeDir: args.homeDir, env: args.env }));
+      return deliveredEmit([])(args);
+    };
+
+    const r = await runEgressDoctor({ repo, home, env, emitImpl });
+    strictEqual(r.egress_ack_proof.status, 'passed', JSON.stringify(r.egress_ack_proof.blockers));
+    strictEqual(observed.length, 1);
+    strictEqual(observed[0].active, true, 'the pinned activation still resolves active');
+    strictEqual(observed[0].recipient, '111111111111', 'the emitter must see the PINNED recipient, not the edited file');
+    // And the report never carries the recipient (ADR-0041 §2b is unaffected).
+    ok(!JSON.stringify(r).includes('111111111111'), 'the recipient never enters the report');
+  });
+
+  // Self-review finding (local, this slice): the durable-publish rewiring closed
+  // the writeJson throw path, but `mkdtemp` for the ephemeral proof repo still
+  // sat OUTSIDE any try — so an unwritable temp dir escaped as an exception and
+  // crashed runDoctor instead of reporting `blocked`, which is the exact defect
+  // class this slice claimed to fix. os.tmpdir() reads process.env.TMPDIR fresh
+  // on POSIX, which is the only seam available here.
+  it('G1-F: an unusable temp dir blocks the proof instead of throwing out of runDoctor', async function () {
+    if (process.platform === 'win32') return; // TMPDIR is the POSIX seam
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const calls = [];
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = join(home, 'no', 'such', 'tmp', 'dir');
+    try {
+      const r = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
+      strictEqual(r.egress_ack_proof.status, 'blocked', 'a temp-dir failure must report, not throw');
+      strictEqual(r.egress_ack_proof.executed, false);
+      strictEqual(r.egress_ack_proof.network_request_performed, false);
+      strictEqual(calls.length, 0, 'no send may be attempted');
+      ok(r.egress_ack_proof.blockers.some((b) => /temp repo/i.test(b)), JSON.stringify(r.egress_ack_proof.blockers));
+    } finally {
+      if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved;
+    }
   });
 
   it('R6 fail-closed: an unscannable intent WAL (non-ENOENT readdir error) blocks instead of failing open', async () => {
@@ -4563,5 +5002,709 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     ok(text.includes('status=passed'), 'status line');
     ok(text.includes(`correlation-token: ${report.egress_ack_proof.subject_suffix}`), 'phone-correlation token rendered');
     ok(!text.includes(SENTINEL_TOKEN) && !text.includes(SENTINEL_CHAT), 'text output is sanitized');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Durable WAL publication (G1 / ADR-0048 residual (b)) — one append-only publish
+// ---------------------------------------------------------------------------
+//
+// ONE primitive, two callers. `publishJsonExclusive` fails when the target name
+// exists (that failure IS the per-activation exclusion, residual (a)) and never
+// mutates a published record. The C-series pins the durable ordering; the
+// R-series pins what the claim and the terminal record may do to each other,
+// which after four review rounds is: nothing.
+//
+// The op-sequence assertions are the point: a test that only checks final file
+// contents passes even if the fsync is deleted or moved after the publish, which
+// is exactly the durability this slice exists to add.
+describe('runtime doctor — durable WAL publication (G1)', () => {
+  async function freshDir(prefix = 'durable-publish-') {
+    const root = await mkdtemp(join(tmpdir(), prefix));
+    const dir = join(root, 'egress-intents');
+    return { root, dir };
+  }
+
+  // Wrap the real ops so the ORDER of filesystem operations is observable.
+  // `fail` injects a code for a named op; `syncFail` targets fsync by whether
+  // the handle is a directory handle.
+  // `dirSyncFailPath` narrows a dir-sync injection to ONE directory. Without it
+  // an injected failure hits the ancestor chain first and the publication never
+  // reaches the link, which cannot exercise a POST-publish durability failure at
+  // all — the chain sync and the leaf sync are different syscalls on different
+  // directories and the tests need to target them separately.
+  function recordingOps({ fail = {}, dirSyncFail = null, dirSyncFailPath = null, fileSyncFail = null } = {}) {
+    const seq = [];
+    const raise = (code, op) => { const e = new Error(`${code}: injected on ${op}`); e.code = code; throw e; };
+    const wrapHandle = (h, isDir, label = '') => ({
+      async writeFile(...a) { seq.push('write'); return h.writeFile(...a); },
+      async sync() {
+        // The PATH, not just the op: counting `fsync-dir` alone let a mutant that
+        // fsynced the anchor N times pass C10/C11, because the count matched
+        // while the set of directories persisted did not (peer round-3 test gap).
+        seq.push(isDir ? `fsync-dir:${label}` : 'fsync-file');
+        if (isDir && dirSyncFail && (dirSyncFailPath === null || label === dirSyncFailPath)) raise(dirSyncFail, 'fsync-dir');
+        if (!isDir && fileSyncFail) raise(fileSyncFail, 'fsync-file');
+        return h.sync();
+      },
+      async close() { seq.push(isDir ? 'close-dir' : 'close-tmp'); if (!isDir && fail.close) { await h.close().catch(() => {}); raise(fail.close, 'close-tmp'); } return h.close(); },
+    });
+    return {
+      seq,
+      ops: {
+        async mkdir(p, o) { seq.push('mkdir'); if (fail.mkdir) raise(fail.mkdir, 'mkdir'); return realFs.mkdir(p, o); },
+        async openDirForSync(p) {
+          seq.push('open-dir');
+          if (fail.openDir) raise(fail.openDir, 'open-dir');
+          return wrapHandle(await realFs.open(p, 'r'), true, p);
+        },
+        async createExclusive(p, mode) {
+          seq.push('open-tmp');
+          if (fail.openTmp) raise(fail.openTmp, 'open-tmp');
+          return wrapHandle(await realFs.open(p, 'wx', mode), false);
+        },
+        async link(a, b) { seq.push('link'); if (fail.link) raise(fail.link, 'link'); return realFs.link(a, b); },
+        async unlink(p) { seq.push('unlink'); if (fail.unlink) raise(fail.unlink, 'unlink'); return realFs.unlink(p); },
+        // `rename` and `readFile` are deliberately ABSENT. The ops bag is a
+        // capability grant, and the append-only primitive holds neither: a
+        // future edit that reintroduces a replace-shaped write (`ops.rename`) or
+        // a pre-read ownership check (`ops.readFile`) fails here with "not a
+        // function" instead of quietly passing an injected-ops test. Keeping the
+        // harness narrower than the real fs is what makes that a gate.
+      },
+    };
+  }
+
+  it('C3: claim publishes in the exact durable order — temp, fsync, close, link, cleanup, dir fsync', async () => {
+    const { root, dir } = await freshDir();
+    const { seq, ops } = recordingOps();
+    const res = await publishJsonExclusive(join(dir, 'fp.json'), { status: 'pending' }, { ops, ancestorAnchor: root });
+    strictEqual(res.ok, true, JSON.stringify(res));
+    // Peer MINOR: the earlier version never asserted that the WRITE precedes the
+    // file fsync, so a sync→write→close→link mutation would have passed it while
+    // violating the ordering the whole primitive exists to provide.
+    const iWrite = seq.indexOf('write');
+    const iFsync = seq.indexOf('fsync-file');
+    const iClose = seq.indexOf('close-tmp');
+    const iLink = seq.indexOf('link');
+    // Ancestor-chain syncs come BEFORE the link (they persist the directories);
+    // the LAST directory fsync is the leaf one that persists the claim's entry.
+    const iLeafDirSync = seq.findLastIndex((op) => op.startsWith('fsync-dir:'));
+    ok(iWrite >= 0 && iFsync > iWrite, `file fsync after the write: ${seq.join(',')}`);
+    ok(iClose > iFsync, `close after file fsync: ${seq.join(',')}`);
+    ok(iLink > iClose, `link after close: ${seq.join(',')}`);
+    ok(iLeafDirSync > iLink, `leaf dir fsync after link: ${seq.join(',')}`);
+  });
+
+  // Peer MAJOR: recursive mkdir creates the WHOLE parent chain on a cold home,
+  // but fsyncing only the leaf leaves every newly created ancestor's directory
+  // entry unpersisted — a power loss can then lose the directory the claim was
+  // reported durable in. Each newly created directory needs its own PARENT
+  // fsynced. Asserted by op count because power loss cannot be simulated.
+  it('C10: a cold home fsyncs every newly created ancestor, not just the leaf', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'durable-cold-home-'));
+    // root exists; a/, b/, c/ and egress-intents/ are all created by the claim.
+    const dir = join(root, 'a', 'b', 'c', 'egress-intents');
+    const { seq, ops } = recordingOps();
+    const res = await publishJsonExclusive(join(dir, 'fp.json'), { status: 'pending' }, { ops, ancestorAnchor: root });
+    strictEqual(res.ok, true, JSON.stringify(res));
+    const synced = seq.filter((op) => op.startsWith('fsync-dir:')).map((op) => op.slice('fsync-dir:'.length));
+    // 4 created directories → 4 parent fsyncs (root, a, b, c), plus the leaf
+    // fsync that persists the claim's own entry. Asserted as the SET, not the
+    // count: a mutant that fsynced the anchor five times matched the count while
+    // persisting none of the other entries (peer round-3 test gap).
+    deepStrictEqual(synced, [root, join(root, 'a'), join(root, 'a', 'b'), join(root, 'a', 'b', 'c'), dir],
+      `each created directory's parent, shallowest first, then the leaf: ${synced.join(' ')}`);
+  });
+
+  // What this test used to assert — "an already-existing chain costs exactly one
+  // fsync" — WAS the defect, so the rewrite is a reversal, not a tightening.
+  // `mkdir(recursive)` reports nothing created when the directories are already
+  // there, and the run that created them may be precisely the run whose chain
+  // sync FAILED. Keying the sync off that report therefore skips it on the retry
+  // that exists to close the gap. Existence is not proof of durability.
+  it('C11: an existing directory chain is still synced — the retry after a failed sync must not skip it', async () => {
+    const { root, dir } = await freshDir();
+    // First attempt: the directories are created, then the chain sync fails.
+    // They now exist, and nothing about them is proven durable.
+    const failing = recordingOps({ dirSyncFail: 'EIO' });
+    const first = await publishJsonExclusive(join(dir, 'fp.json'), { status: 'pending' }, { ops: failing.ops, ancestorAnchor: root });
+    strictEqual(first.ok, false, JSON.stringify(first));
+    strictEqual(first.reason, 'dir-fsync-failed');
+    strictEqual(existsSync(dir), true, 'the retry inherits directories that exist but were never synced');
+
+    const { seq, ops } = recordingOps();
+    const res = await publishJsonExclusive(join(dir, 'fp.json'), { status: 'pending' }, { ops, ancestorAnchor: root });
+    strictEqual(res.ok, true, JSON.stringify(res));
+    // The anchor (which holds the created directory's entry) and then the leaf
+    // (which holds the record's). Keying off mkdir's created-path report would
+    // drop the anchor, which is the regression; asserting the paths rather than
+    // the count also rejects a mutant that syncs one of them twice.
+    deepStrictEqual(seq.filter((op) => op.startsWith('fsync-dir:')).map((op) => op.slice('fsync-dir:'.length)), [root, dir],
+      `the ancestor sync must not be skipped just because the directory already exists: ${seq.join(',')}`);
+  });
+
+  it('C14: a claim without an ancestor anchor is refused, not quietly narrowed to the leaf', async () => {
+    const { dir } = await freshDir();
+    const target = join(dir, 'fp.json');
+    const res = await publishJsonExclusive(target, { status: 'pending' });
+    strictEqual(res.ok, false, `an unstated durability bound must fail closed: ${JSON.stringify(res)}`);
+    strictEqual(res.reason, 'anchor-missing');
+    strictEqual(existsSync(target), false, 'nothing may be published under an unstated durability claim');
+  });
+
+  it('C15: an anchor that is not an ancestor is refused rather than walked to the root', async () => {
+    const { root, dir } = await freshDir();
+    const elsewhere = await mkdtemp(join(tmpdir(), 'durable-publish-other-'));
+    strictEqual((await publishJsonExclusive(join(dir, 'fp.json'), { status: 'pending' }, { ancestorAnchor: elsewhere })).reason, 'dir-fsync-failed');
+    // Control: the same call with the real anchor succeeds, so the refusal above
+    // is about the anchor and not about anything else in the path.
+    strictEqual((await publishJsonExclusive(join(dir, 'fp.json'), { status: 'pending' }, { ancestorAnchor: root })).ok, true);
+  });
+
+  it('C1/C5: a fresh claim publishes complete content and leaves no temp sidecar', async () => {
+    const { root, dir } = await freshDir();
+    const target = join(dir, 'fp.json');
+    const res = await publishJsonExclusive(target, { status: 'pending', subject: 's' }, { ancestorAnchor: root });
+    strictEqual(res.ok, true, JSON.stringify(res));
+    deepStrictEqual(JSON.parse(await readFile(target, 'utf8')), { status: 'pending', subject: 's' });
+    const left = (await readdir(dir)).filter((n) => n !== 'fp.json');
+    deepStrictEqual(left, [], `no sidecar expected, found ${left.join(',')}`);
+  });
+
+  it('C2: a claim on an already-claimed target fails and leaves the incumbent untouched', async () => {
+    const { root, dir } = await freshDir();
+    const target = join(dir, 'fp.json');
+    await publishJsonExclusive(target, { status: 'pending', owner: 'first' }, { ancestorAnchor: root });
+    const res = await publishJsonExclusive(target, { status: 'pending', owner: 'second' }, { ancestorAnchor: root });
+    strictEqual(res.ok, false);
+    strictEqual(res.reason, 'name-taken', JSON.stringify(res));
+    // Control: the incumbent's content must survive — this is the whole
+    // exclusion property. A rename-based publish would silently pass here.
+    strictEqual(JSON.parse(await readFile(target, 'utf8')).owner, 'first');
+    const left = (await readdir(dir)).filter((n) => n !== 'fp.json');
+    deepStrictEqual(left, [], `loser must clean its temp, found ${left.join(',')}`);
+  });
+
+  it('C6: EACCES from the directory fsync FAILS CLOSED — it is a permission fault, not a platform limit', async () => {
+    const { root, dir } = await freshDir();
+    const { ops } = recordingOps({ dirSyncFail: 'EACCES' });
+    const res = await publishJsonExclusive(join(dir, 'fp.json'), { status: 'pending' }, { ops, ancestorAnchor: root });
+    strictEqual(res.ok, false, `EACCES must not be swallowed: ${JSON.stringify(res)}`);
+    strictEqual(res.reason, 'dir-fsync-failed');
+  });
+
+  it('C5b: a genuine platform limit degrades and REPORTS, never silently', async () => {
+    const { root, dir } = await freshDir();
+    const { ops } = recordingOps({ dirSyncFail: 'EISDIR' });
+    const res = await publishJsonExclusive(join(dir, 'fp.json'), { status: 'pending' }, { ops, ancestorAnchor: root });
+    strictEqual(res.ok, true, JSON.stringify(res));
+    strictEqual(res.durable, false, 'a degraded dir fsync must not claim full durability');
+    ok(/director/i.test(res.limit ?? ''), `limit must name the degradation: ${res.limit}`);
+  });
+
+  it('C4: a write failure blocks the claim and reports rather than throwing', async () => {
+    const { root, dir } = await freshDir();
+    const { ops } = recordingOps({ fail: { openTmp: 'EROFS' } });
+    const res = await publishJsonExclusive(join(dir, 'fp.json'), { status: 'pending' }, { ops, ancestorAnchor: root });
+    strictEqual(res.ok, false);
+    strictEqual(res.reason, 'write-failed', JSON.stringify(res));
+    ok(typeof res.diagnostic === 'string' && res.diagnostic.length > 0);
+  });
+
+  it('C9: an unsupported link is reported, never downgraded to a weaker primitive', async () => {
+    const { root, dir } = await freshDir();
+    const { seq, ops } = recordingOps({ fail: { link: 'ENOSYS' } });
+    const res = await publishJsonExclusive(join(dir, 'fp.json'), { status: 'pending' }, { ops, ancestorAnchor: root });
+    strictEqual(res.ok, false);
+    strictEqual(res.reason, 'link-unsupported', JSON.stringify(res));
+    ok(!seq.includes('rename'), `must NOT fall back to rename: ${seq.join(',')}`);
+  });
+
+  it('C12: a failed close() aborts the publication — close is ordering, not cleanup', async () => {
+    const { root, dir } = await freshDir();
+    const target = join(dir, 'fp.json');
+    const { seq, ops } = recordingOps({ fail: { close: 'EIO' } });
+    const res = await publishJsonExclusive(target, { status: 'pending' }, { ops, ancestorAnchor: root });
+    strictEqual(res.ok, false, `a delayed writeback error must not be swallowed: ${JSON.stringify(res)}`);
+    strictEqual(res.reason, 'write-failed');
+    ok(!seq.includes('link'), `nothing may be published after a failed close: ${seq.join(',')}`);
+    strictEqual(existsSync(target), false);
+    deepStrictEqual(await readdir(dir), [], 'the staged temp is cleaned up');
+  });
+
+  it('C13: wal durability is the WORST of both publication phases, not just the terminal one', async () => {
+    // A degraded claim with a clean terminal used to report `durable`, which
+    // also suppressed the overall warning that exists to surface it.
+    strictEqual(aggregateWalDurability({ durable: false }, { ok: true, durable: true }), 'degraded');
+    strictEqual(aggregateWalDurability({ durable: true }, { ok: true, durable: false }), 'degraded');
+    strictEqual(aggregateWalDurability({ durable: true }, { ok: true, durable: true }), 'durable');
+    strictEqual(aggregateWalDurability({ durable: true }, { ok: false }), 'failed');
+    strictEqual(aggregateWalDurability({ durable: false }, { ok: false }), 'failed');
+  });
+
+
+
+
+
+
+
+  const TOK_A = 'a'.repeat(24);
+  const TOK_C = 'c'.repeat(24);
+  const FP = 'f'.repeat(64);
+  const terminalOf = (token) => `fp.${token}.terminal.json`;
+
+  it('R1: the terminal publish lands at its OWN name and leaves the claim byte-identical', async () => {
+    const { root, dir } = await freshDir();
+    const claimPath = join(dir, 'fp.json');
+    await publishJsonExclusive(claimPath, { status: 'pending', owner_token: TOK_A }, { ancestorAnchor: root });
+    const claimBefore = await readFile(claimPath, 'utf8');
+    const res = await publishJsonExclusive(join(dir, terminalOf(TOK_A)), { status: 'acked', owner_token: TOK_A }, { ancestorAnchor: root });
+    strictEqual(res.ok, true, JSON.stringify(res));
+    strictEqual(res.published, true);
+    strictEqual(JSON.parse(await readFile(join(dir, terminalOf(TOK_A)), 'utf8')).status, 'acked');
+    strictEqual(await readFile(claimPath, 'utf8'), claimBefore, 'the claim is never mutated — that is the whole protocol');
+    deepStrictEqual((await readdir(dir)).sort(), ['fp.json', terminalOf(TOK_A)].sort(), 'exactly two records, no temp sidecar');
+  });
+
+  // The round-4 CRITICAL, as a regression. The replace-shaped terminal write was
+  // check-then-act: it read ownership and then renamed unconditionally, so after
+  // an operator deleted a live claim and a successor claimed the freed name, the
+  // FIRST attempt's stale `no-wire` terminal overwrote the successor's claim —
+  // and the next scan then told the operator that deleting it was safe while the
+  // successor's message was already on the phone. Reproduced as probe-r4-critical
+  // before this rewrite; it cannot be constructed now because the two writes do
+  // not share a name.
+  it('R2: a stale terminal write cannot touch a successor claim — it has nowhere to land but its own name', async () => {
+    const { root, dir } = await freshDir();
+    const claimPath = join(dir, `${FP}.json`);
+    const base = { activation_fingerprint: FP };
+    // A claims, the operator deletes it mid-flight, C claims the freed name and sends.
+    await publishJsonExclusive(claimPath, { ...base, status: 'pending', owner_token: TOK_A, pid: 999_999 }, { ancestorAnchor: root });
+    await rm(claimPath);
+    await publishJsonExclusive(claimPath, { ...base, status: 'pending', owner_token: TOK_C, pid: process.pid }, { ancestorAnchor: root });
+    const successor = await readFile(claimPath, 'utf8');
+    // A now writes its terminal record, late and stale.
+    const res = await publishJsonExclusive(join(dir, `${FP}.${TOK_A}.terminal.json`), { ...base, status: 'failed', owner_token: TOK_A, wire_disposition: 'no-wire' }, { ancestorAnchor: root });
+    strictEqual(res.ok, true, 'A still records its own outcome truthfully — it just cannot record it over someone else');
+    strictEqual(await readFile(claimPath, 'utf8'), successor, "the successor's live claim is untouched");
+    strictEqual(JSON.parse(await readFile(claimPath, 'utf8')).owner_token, TOK_C);
+    // The other half, and the one the round-4 defect actually lived in: the
+    // FILE surviving is not the property — the ADVICE is. C's send is
+    // unaccounted for, so the scan must not reach the safe-to-delete sentence.
+    const blocker = composeEgressFenceBlocker(
+      await scanEgressIntents({ intentEntries: await readdir(dir), intentDir: dir, activationFingerprint: FP }),
+      '~/wal',
+    );
+    ok(blocker, 'the WAL is not clear');
+    ok(!/is safe and is all that is needed/.test(blocker), `a live successor must never be reported as safe to delete: ${blocker}`);
+    ok(/an attempt is running/.test(blocker), `the live successor is what governs the message: ${blocker}`);
+    ok(/stopped before sending/.test(blocker), `and A's orphaned record is still NAMED, not dropped: ${blocker}`);
+  });
+
+  it('R3: a deleted claim is never resurrected — the terminal write does not recreate the name it was not given', async () => {
+    const { root, dir } = await freshDir();
+    const claimPath = join(dir, 'fp.json');
+    await publishJsonExclusive(claimPath, { status: 'pending', owner_token: TOK_A }, { ancestorAnchor: root });
+    await rm(claimPath);
+    const res = await publishJsonExclusive(join(dir, terminalOf(TOK_A)), { status: 'acked', owner_token: TOK_A }, { ancestorAnchor: root });
+    strictEqual(res.ok, true, 'the outcome is still recorded — losing it would lose the only evidence a message was sent');
+    strictEqual(existsSync(claimPath), false, 'a deleted fence must not be resurrected by the terminal write');
+  });
+
+  it('R4: a post-publish durability failure reports published=true, so the caller cannot claim the record is missing', async () => {
+    const { root, dir } = await freshDir();
+    // Target the LEAF only: the ancestor chain must complete so the link lands,
+    // and it is the post-publish fsync whose failure this pins.
+    const { ops } = recordingOps({ dirSyncFail: 'EIO', dirSyncFailPath: dir });
+    const res = await publishJsonExclusive(join(dir, terminalOf(TOK_A)), { status: 'acked' }, { ancestorAnchor: root, ops });
+    strictEqual(res.ok, false, 'EIO on the directory fsync is a fault, never a platform limit');
+    strictEqual(res.published, true, 'the link already landed');
+    strictEqual(res.durable, false);
+    ok(/is not proven durable/.test(res.diagnostic), res.diagnostic);
+  });
+
+  // Rounds 1-3 each shipped a terminal write that left the CLAIM name absent for
+  // some interval — removed, taken aside, or in transit — and a concurrent
+  // executor scanning inside that interval finds nothing to fence, claims, and
+  // sends a second message. No assertion on final state can see an interval, so
+  // the fence is sampled around every filesystem op the publication performs.
+  // Under append-only the property is structural (the write never names the
+  // claim), and the sampling is what proves the structure was not quietly
+  // reverted.
+  it('R6: the claim name is never absent for one instant while the terminal record is published', async () => {
+    const { root, dir } = await freshDir();
+    const claimPath = join(dir, 'fp.json');
+    await publishJsonExclusive(claimPath, { status: 'pending', owner_token: TOK_A }, { ancestorAnchor: root });
+    const samples = [];
+    const base = recordingOps();
+    const ops = Object.fromEntries(Object.entries(base.ops).map(([opName, fn]) => [opName, async (...args) => {
+      samples.push([`before-${opName}`, existsSync(claimPath)]);
+      try {
+        return await fn(...args);
+      } finally {
+        samples.push([`after-${opName}`, existsSync(claimPath)]);
+      }
+    }]));
+    const res = await publishJsonExclusive(join(dir, terminalOf(TOK_A)), { status: 'acked', owner_token: TOK_A }, { ancestorAnchor: root, ops });
+    strictEqual(res.ok, true, JSON.stringify(res));
+    strictEqual(JSON.parse(await readFile(join(dir, terminalOf(TOK_A)), 'utf8')).status, 'acked', 'and the terminal record actually landed');
+    ok(samples.length > 0, 'the sampling must actually have run — an empty sample set would pass vacuously');
+    const absent = samples.filter(([, present]) => !present).map(([label]) => label);
+    deepStrictEqual(absent, [], `the fence must never be absent — a concurrent executor scanning here would send a second message. Samples: ${JSON.stringify(samples)}`);
+  });
+
+  // Peer round-5 MINOR. The staged temp is dropped with the SAME swallowed
+  // `.catch(() => {})` the family lock's restore carried — and a leftover
+  // `.tmp-*` is invisible to the scan (it does not end in `.json`) in a
+  // directory retention is forbidden to sweep, so silence turns it into debris
+  // nobody is told about. Fixing one copy of a shape and leaving the other is
+  // how the original bug survived three rounds.
+  it('R8: a staged temp that cannot be dropped is REPORTED, not swallowed under a clean result', async () => {
+    const { root, dir } = await freshDir();
+    const { ops } = recordingOps({ fail: { unlink: 'EACCES' } });
+    const res = await publishJsonExclusive(join(dir, terminalOf(TOK_A)), { status: 'acked' }, { ancestorAnchor: root, ops });
+    strictEqual(res.ok, true, 'the record itself published fine — this is not a publication failure');
+    strictEqual(res.published, true);
+    ok(/staged temp file .*could not be removed \(EACCES\)/.test(res.limit ?? ''), `the leftover must be named: ${res.limit}`);
+    const left = (await readdir(dir)).filter((n) => n.startsWith('.tmp-'));
+    strictEqual(left.length, 1, `precondition: the sidecar really is there, found ${JSON.stringify(await readdir(dir))}`);
+    // CONTROL: a successful drop reports no limit and leaves no sidecar.
+    const clean = await publishJsonExclusive(join(dir, terminalOf(TOK_C)), { status: 'acked' }, { ancestorAnchor: root });
+    strictEqual(clean.limit, null, `a clean publish must not report debris: ${clean.limit}`);
+    deepStrictEqual((await readdir(dir)).filter((n) => n.startsWith('.tmp-')), left, 'and it adds no sidecar of its own');
+  });
+
+  it('R7: an occupied terminal name fails closed as name-taken and leaves the incumbent bytes alone', async () => {
+    const { root, dir } = await freshDir();
+    const target = join(dir, terminalOf(TOK_A));
+    await publishJsonExclusive(target, { status: 'acked', owner_token: TOK_A }, { ancestorAnchor: root });
+    const incumbent = await readFile(target, 'utf8');
+    const res = await publishJsonExclusive(target, { status: 'failed', owner_token: TOK_A }, { ancestorAnchor: root });
+    strictEqual(res.ok, false);
+    strictEqual(res.reason, 'name-taken', JSON.stringify(res));
+    strictEqual(res.published, false);
+    strictEqual(await readFile(target, 'utf8'), incumbent, 'exclusive means exclusive in BOTH roles, not only for the claim');
+    deepStrictEqual((await readdir(dir)).sort(), [terminalOf(TOK_A)], 'the losing temp is discarded');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WAL scan: claim↔terminal pairing and the precedence rule (G1 round 5)
+// ---------------------------------------------------------------------------
+//
+// Split from the durable-publication suite because these are the two properties
+// that a green suite has now failed to protect twice, in the same place, for
+// the same reason: a WAL holding SEVERAL records was judged by ONE of them.
+//
+// Round 4's guard read `clearable && unresolved.length === 0`. It named one of
+// four dangerous states, so a directory holding a provably-pre-wire record AND a
+// pid-less possibly-live pending record reported only "nothing reached the
+// phone" — advice that is true about one file and fatal about the directory. The
+// tests below are therefore TABLE-DRIVEN over the whole severity set rather than
+// case-by-case: an exhaustive table is what makes "the fifth state was
+// forgotten" a failure instead of a gap.
+describe('runtime doctor — egress WAL pairing and precedence (G1)', () => {
+  const FP = 'a'.repeat(64);
+  const OTHER_FP = 'b'.repeat(64);
+  const TOK = (c) => c.repeat(24);
+
+  async function walDir(records) {
+    const dir = await mkdtemp(join(tmpdir(), 'wal-scan-'));
+    for (const [name, body] of Object.entries(records)) {
+      await writeFile(join(dir, name), typeof body === 'string' ? body : JSON.stringify(body), 'utf8');
+    }
+    return dir;
+  }
+  const scan = async (dir, fingerprint = FP) => scanEgressIntents({
+    intentEntries: await readdir(dir), intentDir: dir, activationFingerprint: fingerprint,
+  });
+  const severities = (findings) => findings.map((f) => f.severity).sort();
+
+  const claim = (token, extra = {}) => ({ activation_fingerprint: FP, owner_token: token, status: 'pending', ...extra });
+  const terminal = (token, disposition, extra = {}) => ({
+    activation_fingerprint: FP, owner_token: token, status: disposition === 'no-wire' ? 'failed' : 'acked',
+    wire_disposition: disposition, outcome_reason: disposition === 'no-wire' ? 'missing-token' : 'dispatched', ...extra,
+  });
+
+  it('P1: a claim paired with its terminal is judged by the TERMINAL, and both files are the unit of work', async () => {
+    const dir = await walDir({
+      [`${FP}.json`]: claim(TOK('a'), { pid: 999_999 }),
+      [`${FP}.${TOK('a')}.terminal.json`]: terminal(TOK('a'), 'no-wire'),
+    });
+    const findings = await scan(dir);
+    deepStrictEqual(severities(findings), ['clearable'], JSON.stringify(findings));
+    // The pid in the claim is DEAD, which alone would read as `unresolved`
+    // ("crashed before resolve"). Pairing is what makes it a resolved attempt —
+    // so this also proves the pairing happened rather than the claim being
+    // silently skipped.
+    deepStrictEqual(findings[0].files.sort(), [`${FP}.json`, `${FP}.${TOK('a')}.terminal.json`].sort());
+  });
+
+  it('P2: a claim with NO terminal is pending — its holder decides, not its disposition', async () => {
+    const gone = await walDir({ [`${FP}.json`]: claim(TOK('a'), { pid: 999_999 }) });
+    deepStrictEqual(severities(await scan(gone)), ['unresolved']);
+    const live = await walDir({ [`${FP}.json`]: claim(TOK('b'), { pid: process.pid }) });
+    deepStrictEqual(severities(await scan(live)), ['in-flight']);
+    const nameless = await walDir({ [`${FP}.json`]: claim(TOK('c')) });
+    deepStrictEqual(severities(await scan(nameless)), ['unidentified'], 'no pid is unknown, never proof of death');
+  });
+
+  it('P3: an orphaned terminal is judged on its OWN disposition and reported separately from the live claim', async () => {
+    // The exact round-4 CRITICAL shape: A's pre-wire terminal orphaned beside a
+    // successor's live claim. Two findings, not one.
+    const dir = await walDir({
+      [`${FP}.json`]: claim(TOK('c'), { pid: process.pid }),
+      [`${FP}.${TOK('a')}.terminal.json`]: terminal(TOK('a'), 'no-wire'),
+    });
+    deepStrictEqual(severities(await scan(dir)), ['clearable', 'in-flight']);
+  });
+
+  it('P4: a terminal record whose NAME and BODY disagree is fenced, never paired or dismissed', async () => {
+    const forged = await walDir({
+      [`${FP}.json`]: claim(TOK('a'), { pid: 999_999 }),
+      // Name says token a, body says token d. Pairing on either half alone would
+      // give a different — and in one direction dangerously permissive — answer.
+      [`${FP}.${TOK('a')}.terminal.json`]: terminal(TOK('d'), 'no-wire'),
+    });
+    const findings = await scan(forged);
+    deepStrictEqual(severities(findings), ['unresolved', 'unresolved'], JSON.stringify(findings));
+    ok(findings.some((f) => /name does not match/.test(f.label)), JSON.stringify(findings));
+    // And the claim is NOT treated as resolved by it.
+    ok(findings.some((f) => /crashed before resolve/.test(f.label)), JSON.stringify(findings));
+  });
+
+  // Peer round-5 MAJOR, as a regression. Scope was decided from the BODY alone,
+  // and P4 only ever tested the token half of the disagreement — so a record
+  // whose NAME scoped it to this activation and whose BODY named another VALID
+  // one was dropped by the scope filter BEFORE the disagreement check could see
+  // it. Measured: no findings at all for a `wire` terminal sitting at this
+  // activation's own name, and with a `no-wire` record beside it the operator
+  // was told deletion was safe while the wire record went unmentioned.
+  it('P4b: a record whose NAME scopes it here and whose BODY names another activation is fenced, not dropped', async () => {
+    const terminalName = `${FP}.${TOK('a')}.terminal.json`;
+    const dir = await walDir({
+      [terminalName]: { activation_fingerprint: OTHER_FP, owner_token: TOK('a'), status: 'acked', wire_disposition: 'wire', outcome_reason: 'dispatched' },
+    });
+    const findings = await scan(dir);
+    deepStrictEqual(severities(findings), ['unresolved'], JSON.stringify(findings));
+
+    // The composition that made it dangerous rather than merely wrong.
+    const both = await walDir({
+      [terminalName]: { activation_fingerprint: OTHER_FP, owner_token: TOK('a'), status: 'acked', wire_disposition: 'wire', outcome_reason: 'dispatched' },
+      [`${FP}.${TOK('b')}.terminal.json`]: terminal(TOK('b'), 'no-wire'),
+    });
+    const blocker = composeEgressFenceBlocker(await scan(both), '~/wal');
+    ok(!SAFE_SENTENCE.test(blocker), `a record that may be on the phone must not be outranked by a pre-wire one: ${blocker}`);
+    ok(blocker.includes(terminalName), `and it must be NAMED: ${blocker}`);
+
+    // The same disagreement for a CLAIM, which matters more: it occupies the
+    // exact name the next attempt links. And here the mismatch must ANNOTATE,
+    // never replace, the liveness judgement — the first cut of this fix answered
+    // a flat `unresolved`, which carries "check the phone, then delete", and a
+    // peer measured it advertising a claim with a LIVE pid as deletable. That
+    // frees the exclusive name for a successor to claim and send: the exact
+    // duplicate-delivery path this slice exists to close, reintroduced by the
+    // fix for a different fail-open. Both holder states are pinned, because only
+    // the pair shows the mismatch is not deciding the severity.
+    const mismatchedClaim = (pid) => walDir({ [`${FP}.json`]: { activation_fingerprint: OTHER_FP, owner_token: TOK('a'), status: 'pending', pid } });
+
+    const dead = await scan(await mismatchedClaim(999_999));
+    deepStrictEqual(severities(dead), ['unresolved'], JSON.stringify(dead));
+    ok(/name and body name different activations/.test(dead[0].label), dead[0].label);
+
+    const live = await scan(await mismatchedClaim(process.pid));
+    deepStrictEqual(severities(live), ['in-flight'], `a LIVE holder must stay in-flight whatever its body says: ${JSON.stringify(live)}`);
+    const liveBlocker = composeEgressFenceBlocker(live, '~/wal');
+    ok(/Do NOT delete/.test(liveBlocker), `a live claim must never be offered for deletion: ${liveBlocker}`);
+    ok(!/then delete/.test(liveBlocker), liveBlocker);
+    ok(/name and body name different activations/.test(liveBlocker), `and the mismatch is still reported: ${liveBlocker}`);
+
+    // A record that says it FINISHED has no liveness question, so there the
+    // mismatch is fail-closed on its own.
+    const finished = await scan(await walDir({ [`${FP}.json`]: { activation_fingerprint: OTHER_FP, owner_token: TOK('a'), status: 'acked', wire_disposition: 'no-wire' } }));
+    deepStrictEqual(severities(finished), ['unresolved'], `a finished mismatched record must not be clearable: ${JSON.stringify(finished)}`);
+
+    // And a mismatched claim must never PAIR. Pairing hands the verdict to a
+    // terminal record matched on a token the claim may not own — so a record we
+    // cannot attribute would be RESOLVED by one we can, and a `no-wire` terminal
+    // would then carry the whole set to "deleting these is safe".
+    const paired = await scan(await walDir({
+      [`${FP}.json`]: { activation_fingerprint: OTHER_FP, owner_token: TOK('a'), status: 'pending', pid: 999_999 },
+      [`${FP}.${TOK('a')}.terminal.json`]: terminal(TOK('a'), 'no-wire'),
+    }));
+    deepStrictEqual(severities(paired).sort(), ['clearable', 'unresolved'], `the mismatched claim must be judged on its OWN, not resolved by a terminal it may not own: ${JSON.stringify(paired)}`);
+    ok(!SAFE_SENTENCE.test(composeEgressFenceBlocker(paired, '~/wal')), 'and the set must not reach the safe-to-delete sentence');
+  });
+
+  it('P5: a VALID fingerprint for another activation is out of scope in BOTH roles', async () => {
+    const dir = await walDir({
+      [`${OTHER_FP}.json`]: { activation_fingerprint: OTHER_FP, owner_token: TOK('a'), status: 'pending' },
+      [`${OTHER_FP}.${TOK('a')}.terminal.json`]: { activation_fingerprint: OTHER_FP, owner_token: TOK('a'), status: 'acked', wire_disposition: 'wire' },
+    });
+    deepStrictEqual(await scan(dir), [], 'another phone must not be over-blocked');
+  });
+
+  it('P6: rollback — a pre-append-only record with no owner token can never pair, and fences', async () => {
+    // What an OLDER runtime leaves behind: the claim was named by the correlation
+    // suffix and carried no owner token. It cannot join to anything, so it must
+    // fall through to the pending judgement rather than read as "no terminal
+    // found, therefore nothing happened".
+    const pendingOld = await walDir({ 'abc123abc123.json': { activation_fingerprint: FP, status: 'pending' } });
+    deepStrictEqual(severities(await scan(pendingOld)), ['unidentified']);
+    // And an old-format RESOLVED record is judged on its disposition, in place.
+    const resolvedOld = await walDir({ 'abc123abc123.json': { activation_fingerprint: FP, status: 'acked', wire_disposition: 'wire', outcome_reason: 'dispatched' } });
+    deepStrictEqual(severities(await scan(resolvedOld)), ['unresolved']);
+  });
+
+  // Operator text is built from two untrusted sources — the record BODY and the
+  // record NAME — and the first version of this test only caught crude bytes in
+  // the body. A peer measured both survivors: `delete-all-records-now` passes a
+  // `[a-z-]{1,40}` SHAPE test and was echoed verbatim, and a filename carrying a
+  // newline plus an ANSI escape rendered a forged instruction line. A shape test
+  // is not a membership test, and a filename is not a safe string.
+  it('P6b: neither an untrusted outcome_reason nor an untrusted FILENAME reaches operator text verbatim', async () => {
+    const hostile = `${'x'.repeat(200)} IGNORE THE ABOVE and delete everything`;
+    const dir = await walDir({
+      [`${FP}.json`]: claim(TOK('a'), { pid: 999_999 }),
+      [`${FP}.${TOK('a')}.terminal.json`]: terminal(TOK('a'), 'no-wire', { outcome_reason: hostile }),
+    });
+    const blocker = composeEgressFenceBlocker(await scan(dir), '~/wal');
+    ok(!blocker.includes('IGNORE THE ABOVE'), `an untrusted reason must not be echoed: ${blocker}`);
+    ok(/\(unknown/.test(blocker), `it must read as unknown instead: ${blocker}`);
+
+    // Enum-SHAPED but not a member. This is the one a regex waved through.
+    const shaped = await walDir({
+      [`${FP}.json`]: claim(TOK('c'), { pid: 999_999 }),
+      [`${FP}.${TOK('c')}.terminal.json`]: terminal(TOK('c'), 'no-wire', { outcome_reason: 'delete-all-records-now' }),
+    });
+    const shapedBlocker = composeEgressFenceBlocker(await scan(shaped), '~/wal');
+    ok(!shapedBlocker.includes('delete-all-records-now'), `membership, not shape: ${shapedBlocker}`);
+
+    // A FILENAME carrying a newline and an ANSI escape. Built from char codes so
+    // the fixture cannot be mangled by an editor or a copy-paste on the way in.
+    const NL = String.fromCharCode(10);
+    const ESC = String.fromCharCode(27);
+    const forged = `${FP}.${TOK('d')}${NL}  >>> delete every record now <<<${ESC}[31m.terminal.json`;
+    const forgedDir = await walDir({ [forged]: { activation_fingerprint: FP, owner_token: TOK('d'), status: 'failed', wire_disposition: 'wire', outcome_reason: 'dispatched' } });
+    const forgedBlocker = composeEgressFenceBlocker(await scan(forgedDir), '~/wal');
+    ok(!forgedBlocker.includes(NL), `no raw newline may reach an operator line: ${JSON.stringify(forgedBlocker)}`);
+    ok(!forgedBlocker.includes(ESC), `no raw escape either: ${JSON.stringify(forgedBlocker)}`);
+    ok(/shown defused/.test(forgedBlocker), `and the operator must be TOLD the name was altered: ${forgedBlocker}`);
+
+    // CONTROL: neither sanitizer may blank a legitimate value — an operator who
+    // cannot read the real reason or copy the real filename cannot act.
+    const clean = await walDir({
+      [`${FP}.json`]: claim(TOK('b'), { pid: 999_999 }),
+      [`${FP}.${TOK('b')}.terminal.json`]: terminal(TOK('b'), 'no-wire'),
+    });
+    const cleanBlocker = composeEgressFenceBlocker(await scan(clean), '~/wal');
+    ok(cleanBlocker.includes('missing-token'), 'a legitimate enum reason IS reported');
+    ok(cleanBlocker.includes(`${FP}.${TOK('b')}.terminal.json`), 'and a legitimate filename is reported EXACTLY, so it can be copied');
+    ok(!/shown defused/.test(cleanBlocker), cleanBlocker);
+  });
+
+  it('P7: an unparseable record fences without being attributed to anything', async () => {
+    const dir = await walDir({ [`${FP}.json`]: '{ not json' });
+    const findings = await scan(dir);
+    deepStrictEqual(severities(findings), ['unresolved']);
+    ok(/unparseable/.test(findings[0].label));
+  });
+
+  // ---- precedence -------------------------------------------------------
+  //
+  // Exhaustive: `clearable` is the ONLY severity whose message calls a deletion
+  // safe, so it is paired against EVERY other severity. A future fifth state
+  // added to the enum without a precedence answer fails the last case here.
+  const DANGEROUS = ['in-flight', 'live-stale', 'unidentified', 'unresolved'];
+  const finding = (severity, name) => ({ severity, label: `${name}: ${severity}`, files: [name] });
+  const SAFE_SENTENCE = /is safe and is all that is needed to retry/;
+
+  it('P8: clearable NEVER wins the wording while any dangerous record is present', () => {
+    for (const severity of DANGEROUS) {
+      const blocker = composeEgressFenceBlocker([finding('clearable', 'c.json'), finding(severity, 'd.json')], '~/wal');
+      ok(!SAFE_SENTENCE.test(blocker), `${severity} must outrank clearable: ${blocker}`);
+      ok(blocker.includes('d.json'), `${severity} must be named: ${blocker}`);
+      ok(blocker.includes('c.json'), `and the clearable record must STILL be named — reporting only the winner is the round-4 defect: ${blocker}`);
+    }
+  });
+
+  it('P9: clearable alone DOES reach the safe wording — the guard must not be over-strict either', () => {
+    const blocker = composeEgressFenceBlocker([finding('clearable', 'c.json'), finding('clearable', 'c2.json')], '~/wal');
+    ok(SAFE_SENTENCE.test(blocker), blocker);
+    ok(blocker.includes('c.json') && blocker.includes('c2.json'), blocker);
+    ok(!/check the phone/i.test(blocker), blocker);
+  });
+
+  it('P10: the severity order is total and strict — every pair resolves to the more cautious one', () => {
+    const ORDER = ['in-flight', 'live-stale', 'unidentified', 'unresolved', 'clearable'];
+    // The wording each severity owns, keyed so a swap in the composer is a
+    // failure rather than a rename nobody notices.
+    const OWNS = {
+      'in-flight': /is in flight/,
+      'live-stale': /is still running \(its process is alive\)/,
+      unidentified: /carries no process identity/,
+      unresolved: /unresolved and may already be on the phone/,
+      clearable: SAFE_SENTENCE,
+    };
+    for (let i = 0; i < ORDER.length; i += 1) {
+      for (let j = 0; j < ORDER.length; j += 1) {
+        const blocker = composeEgressFenceBlocker([finding(ORDER[i], 'x.json'), finding(ORDER[j], 'y.json')], '~/wal');
+        const expected = ORDER[Math.min(i, j)];
+        ok(OWNS[expected].test(blocker), `${ORDER[i]} + ${ORDER[j]} must be worded as ${expected}: ${blocker}`);
+      }
+    }
+  });
+
+  it('P11: a live attempt suppresses every deletion instruction, including for the other records', () => {
+    const blocker = composeEgressFenceBlocker(
+      [finding('in-flight', 'live.json'), finding('clearable', 'c.json'), finding('unresolved', 'u.json')],
+      '~/wal',
+    );
+    ok(!/delete /i.test(blocker.replace(/Do NOT delete[^.]*\./, '')), `no deletion may be advised while an attempt runs: ${blocker}`);
+    ok(blocker.includes('c.json') && blocker.includes('u.json'), `the others are still named: ${blocker}`);
+  });
+
+  it('P12: an empty WAL produces no blocker at all', () => {
+    strictEqual(composeEgressFenceBlocker([], '~/wal'), null);
+    strictEqual(composeEgressFenceBlocker(null, '~/wal'), null);
+  });
+
+  // The precedence defect, asked as a mirror question — and the first answer was
+  // wrong, which is why this test now runs the whole table.
+  //
+  // An UNRECOGNIZED severity used to `return null` only when NO listed severity
+  // was present. `null` means "the WAL is clear" and the caller answers that by
+  // SENDING, so the intent was fail-closed; but `find()` over the table answers
+  // "is any listed severity present", not "is every finding classified". Peer
+  // round 5 measured the consequence: an unlisted finding beside a `clearable`
+  // one produced the safe-to-delete sentence AND dropped the unclassifiable
+  // record from the message. Same defect class as the four-states guard, one
+  // level up — so this pairs the unknown against EVERY listed severity rather
+  // than against one representative.
+  it('P13: an unlisted severity outranks EVERY listed one and is always named', () => {
+    const unknown = (n) => ({ severity: 'invented-later', label: `${n}: a shape this runtime has no rank for`, files: [n] });
+    const alone = composeEgressFenceBlocker([unknown('x.json')], '~/wal');
+    ok(alone, 'null here would permit the send');
+    ok(/cannot classify/.test(alone), alone);
+    ok(alone.includes('x.json'), alone);
+    ok(!/Do NOT remove anything[\s\S]*then delete/.test(alone), `an unclassifiable record must not carry a removal instruction: ${alone}`);
+    for (const listed of ['in-flight', 'live-stale', 'unidentified', 'unresolved', 'clearable']) {
+      const mixed = composeEgressFenceBlocker(
+        [unknown('future.json'), finding(listed, 'y.json')],
+        '~/wal',
+      );
+      ok(/cannot classify/.test(mixed), `unknown + ${listed} must be governed by the unknown: ${mixed}`);
+      ok(mixed.includes('future.json'), `unknown + ${listed} must NAME the unclassifiable record: ${mixed}`);
+      ok(mixed.includes('y.json'), `unknown + ${listed} must still name the other record: ${mixed}`);
+      ok(!SAFE_SENTENCE.test(mixed), `unknown + ${listed} must never reach the safe-to-delete sentence: ${mixed}`);
+      // The peer's measured survivor: dropping `unclassified` from the
+      // no-removal-advice list left every assertion above passing while the
+      // TAIL told the operator every record had to go. The wording rule is a
+      // second list, so it needs its own assertion.
+      ok(!/needs every one of these records gone/.test(mixed),
+        `unknown + ${listed} must not instruct removal in its tail either: ${mixed}`);
+      ok(/leave them alone/.test(mixed), `and it must say to leave them alone: ${mixed}`);
+    }
   });
 });

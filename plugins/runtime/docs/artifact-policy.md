@@ -147,6 +147,18 @@ the other's root.
 | repo | `<repo>/.agentic-plugins/runs/` | `compat`, `consensus`, `context`, `settings`, `doctor`, `permission`, `notification`, `egress-launcher` | 20 runs |
 | machine | `~/.agentic-plugins/` | `bootstrap` (under `runs/`), `profiles` | 10 runs; profiles exempt |
 
+The machine scope also holds ONE non-family path that is deliberately not a run
+family and deliberately not inventoried: `~/.agentic-plugins/runs/doctor/egress-intents/`,
+the ADR-0048 §3 egress intent WAL. It is **side-effect state, not an artifact** —
+each record exists to fence a future send against a message that may already be
+on the operator's phone, and it is named by activation fingerprint rather than by
+run id, so it has neither a run's identity nor a run's lifecycle. It must never
+be swept by retention: deleting a fencing record is exactly the act that permits
+a duplicate message, and the ADR-0048 contract makes that an OPERATOR decision
+taken after checking the phone. It predates this note — the taxonomy above simply
+never named it — and naming it here is what keeps a future inventory or retention
+pass from adopting it by default.
+
 Machine-scope inventory is metadata-only on the same terms as the repo scope: it
 counts, sizes, and ages entries, and never reads an artifact body. It reports;
 it does not delete.

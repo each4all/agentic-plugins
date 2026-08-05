@@ -12,8 +12,8 @@
 
 import { describe, it } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual } from 'node:assert';
-import { chmod, link, mkdtemp, mkdir, readFile, writeFile, symlink, stat, rm, readdir, utimes } from 'node:fs/promises';
-import { unlinkSync, writeFileSync } from 'node:fs';
+import { chmod, link, mkdtemp, mkdir, readFile, rename, writeFile, symlink, stat, rm, readdir, utimes } from 'node:fs/promises';
+import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -40,6 +40,7 @@ import {
   selectBlockingRuns,
   validateBootstrapRunId,
   validateProfileName,
+  withBootstrapFamilyLock,
   writeBootstrapFragment,
   writeBootstrapProof,
   writeMachineProfile,
@@ -378,6 +379,142 @@ describe('runtime bootstrap artifacts — family lock (#28)', () => {
     await rm(homeDir, { recursive: true, force: true });
   });
 
+  // The acquisition half of the exclusion, and the gap it closes.
+  //
+  // Both displacement paths in bootstrap-artifacts move the lock RECORD off its
+  // canonical name before deciding what to do with it, and put it back when it
+  // turns out not to be theirs. A failed restore leaves it parked with the
+  // canonical name FREE — and acquisition used to look only at the canonical
+  // name, so it would link it while the displaced holder still believed it held
+  // the family. Two holders, from a state whose own diagnostic already said the
+  // lock name was free.
+  describe('a parked lock record blocks acquisition (the exclusion is the record, not the name)', () => {
+    const parkedName = (homeDir, suffix) => `${bootstrapLockFile(homeDir)}.${suffix}`;
+
+    it('refuses while a release-parked record exists, and names it with the remedy', async () => {
+      const homeDir = await tempHome();
+      await mkdir(join(homeDir, '.agentic-plugins', '.locks'), { recursive: true, mode: 0o700 });
+      // Exactly the failed-restore state: the record is parked, the lock name is free.
+      await writeFile(parkedName(homeDir, 'release-abcdef0123456789abcdef01'), `${JSON.stringify({ owner_token: 'abcdef0123456789abcdef01', pid: process.pid })}\n`, { mode: 0o600 });
+      strictEqual(existsSync(bootstrapLockFile(homeDir)), false, 'precondition: the canonical name is free — which is exactly why this used to succeed');
+
+      const lock = await acquireBootstrapFamilyLock({ homeDir, repoRoot: null, now: NOW, attempts: 2, retryDelayMs: 1 });
+      strictEqual(lock.ok, false, 'a free lock NAME is not proof that nobody holds the family');
+      strictEqual(lock.reason, 'lock-displaced');
+      strictEqual(lock.handle, null);
+      match(lock.diagnostics[0], /parked at bootstrap\.lock\.release-abcdef0123456789abcdef01/);
+      match(lock.diagnostics[0], /Move the parked file back/, 'the remedy must be actionable');
+      strictEqual(existsSync(bootstrapLockFile(homeDir)), false, 'and it must not have claimed the name on the way out');
+
+      // CONTROL: the refusal is caused by the parked record and nothing else.
+      await rm(parkedName(homeDir, 'release-abcdef0123456789abcdef01'));
+      const after = await acquireBootstrapFamilyLock({ homeDir, repoRoot: null, now: NOW, attempts: 2, retryDelayMs: 1 });
+      strictEqual(after.ok, true, `the same call must succeed once the park is gone: ${JSON.stringify(after.diagnostics)}`);
+      await after.handle.release();
+      await rm(homeDir, { recursive: true, force: true });
+    });
+
+    it('refuses for a break-parked record too — both displacement paths, one rule', async () => {
+      const homeDir = await tempHome();
+      await mkdir(join(homeDir, '.agentic-plugins', '.locks'), { recursive: true, mode: 0o700 });
+      await writeFile(parkedName(homeDir, 'breaking-0123456789abcdef'), '{}\n', { mode: 0o600 });
+      const lock = await acquireBootstrapFamilyLock({ homeDir, repoRoot: null, now: NOW, attempts: 2, retryDelayMs: 1 });
+      strictEqual(lock.ok, false);
+      strictEqual(lock.reason, 'lock-displaced');
+      await rm(homeDir, { recursive: true, force: true });
+    });
+
+    it('ignores siblings this module never creates — the check must not become an operator trap', async () => {
+      const homeDir = await tempHome();
+      await mkdir(join(homeDir, '.agentic-plugins', '.locks'), { recursive: true, mode: 0o700 });
+      // A hand-made backup, and a suffix with the right verb but no token. Neither
+      // is a state this code produces, so neither has a remedy — blocking on them
+      // would lock the family out forever for something nobody can act on.
+      await writeFile(parkedName(homeDir, 'bak'), '{}\n', { mode: 0o600 });
+      await writeFile(parkedName(homeDir, 'release-'), '{}\n', { mode: 0o600 });
+      const lock = await acquireBootstrapFamilyLock({ homeDir, repoRoot: null, now: NOW, attempts: 2, retryDelayMs: 1 });
+      strictEqual(lock.ok, true, `only the two shapes this module parks may block: ${JSON.stringify(lock.diagnostics)}`);
+      await lock.handle.release();
+      await rm(homeDir, { recursive: true, force: true });
+    });
+
+    // The window the PRE-scan structurally cannot cover, and the peer round-5
+    // CRITICAL that lived in it: a stale break renames a LIVE holder's record
+    // aside AFTER a contender's parked-scan and BEFORE its link, so the
+    // contender links a name the pre-scan proved free and both processes end up
+    // believing they hold the family.
+    //
+    // Deterministic barriers are not available here — the two operations are
+    // inside one call and this module offers no ordering seam, which is the same
+    // position it takes on its clock. So this is a bounded race whose rate was
+    // MEASURED rather than hoped for: with the park deferred one macrotask, the
+    // post-link path fired in 20/40 iterations under UV_THREADPOOL_SIZE=1 and
+    // 12/40 under the default pool. Alternating two delays over 40 attempts puts
+    // the never-observed probability around 1e-5, and the test fails LOUDLY with
+    // what it saw rather than passing as coverage of the other route.
+    //
+    // The SAFETY invariant is asserted on every iteration whichever route runs;
+    // only the marker assertion needs the window.
+    it('a break that parks a LIVE holder mid-acquire never yields two holders — the post-link re-check', async () => {
+      const marker = /while this invocation was acquiring/;
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const seen = [];
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const homeDir = await tempHome();
+        const lockPath = bootstrapLockFile(homeDir);
+        await mkdir(join(homeDir, '.agentic-plugins', '.locks'), { recursive: true, mode: 0o700 });
+        // C: a fresh, LIVE holder that never leaves its critical section.
+        const c = await acquireBootstrapFamilyLock({ homeDir, repoRoot: null, now: NOW });
+        strictEqual(c.ok, true);
+
+        const parked = `${lockPath}.breaking-0123456789abcdef`;
+        const dPromise = acquireBootstrapFamilyLock({ homeDir, repoRoot: null, now: NOW, attempts: 1 });
+        const breakPromise = (async () => { await sleep(attempt % 2); return rename(lockPath, parked).catch(() => {}); })();
+        const [d] = await Promise.all([dPromise, breakPromise]);
+
+        // THE INVARIANT, on every route: D must never hold the canonical name
+        // while C's record sits parked. This is the assertion that would have
+        // caught the defect; the marker below only proves the window was reached.
+        if (d.ok) {
+          const canonical = JSON.parse(await readFile(lockPath, 'utf8')).owner_token;
+          // `null` here means the park is GONE, which on this fixture can only
+          // mean the rename never happened — so the iteration proved nothing and
+          // must not read as a pass. Distinguishing "no park" from "a park that
+          // is not C's" is what stops a vanished-park iteration from passing
+          // vacuously (peer round-6).
+          const parkedRaw = await readFile(parked, 'utf8').catch(() => null);
+          ok(parkedRaw !== null, 'the park must exist whenever the contender acquired — otherwise this iteration asserts nothing');
+          ok(JSON.parse(parkedRaw).owner_token !== c.handle.token,
+            `two holders: D holds ${canonical.slice(0, 8)} while the LIVE holder is parked`);
+        }
+        const hitWindow = (d.diagnostics ?? []).some((line) => marker.test(line));
+        seen.push(d.ok ? 'acquired' : `${d.reason}${hitWindow ? '+post-link' : ''}`);
+        await rm(homeDir, { recursive: true, force: true });
+        if (hitWindow) {
+          strictEqual(d.ok, false, 'reaching the window must never end in an acquisition');
+          strictEqual(d.reason, 'lock-displaced');
+          return;
+        }
+      }
+      ok(false, `never observed the post-link re-check route in 40 attempts; saw: ${JSON.stringify(seen.slice(0, 12))}…`);
+    });
+
+    it('a NORMAL release leaves nothing parked, so the next acquire is not delayed by the new check', async () => {
+      const homeDir = await tempHome();
+      const first = await acquireBootstrapFamilyLock({ homeDir, repoRoot: null, now: NOW });
+      strictEqual(first.ok, true);
+      const released = await first.handle.release();
+      strictEqual(released.released, true);
+      const lockDir = join(homeDir, '.agentic-plugins', '.locks');
+      deepStrictEqual((await readdir(lockDir)).sort(), [], 'a clean release leaves neither the lock nor a parked copy');
+      // attempts: 1 — no retry budget at all, so a transient park would fail here.
+      const second = await acquireBootstrapFamilyLock({ homeDir, repoRoot: null, now: NOW, attempts: 1 });
+      strictEqual(second.ok, true, `the check must not over-block the normal path: ${JSON.stringify(second.diagnostics)}`);
+      await second.handle.release();
+      await rm(homeDir, { recursive: true, force: true });
+    });
+  });
+
   // The tokenless-break race, in the small. A breaker that judged a CORRUPT lock has
   // no token to recheck; if the recheck is skipped on that ground, the breaker
   // deletes whatever it grabbed. Here the corrupt lock is replaced by a live one
@@ -521,6 +658,58 @@ describe('runtime bootstrap artifacts — family lock (#28)', () => {
     strictEqual(released.reason, 'not-owner');
     const survivor = JSON.parse(await readFile(bootstrapLockFile(homeDir), 'utf8'));
     strictEqual(survivor.owner_token, 'someone-else', "the new holder's lock survived");
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  // The release takes the lock aside before verifying what it took, and links it
+  // back when it turns out not to be ours. If that link-back FAILS, the parked
+  // name holds the only link to another holder's lock — unlinking it there frees
+  // the lock name while its holder still believes it holds the family.
+  //
+  // Forcing the failure needs a real errno, and the injectable seam does not
+  // exist here: link(2) on a DIRECTORY is EPERM, so a lock path replaced by a
+  // directory reaches the restore branch through the unreadable-body path the
+  // pre-check deliberately does not short-circuit. Note what is asserted and
+  // what is not: with a directory the unlink would fail anyway, so the surviving
+  // record cannot be the discriminator. The RETURN is — the fixed code reports
+  // release-failed and names the parked path, where the unconditional-unlink
+  // version reported not-owner and moved on.
+  it('release reports rather than deletes when it cannot put back a lock it does not own', async () => {
+    const homeDir = await tempHome();
+    const first = await acquireBootstrapFamilyLock({ homeDir, repoRoot: null, now: NOW });
+    strictEqual(first.ok, true);
+    const lockPath = bootstrapLockFile(homeDir);
+    await rm(lockPath, { force: true });
+    await mkdir(lockPath, { recursive: true });
+
+    const released = await first.handle.release();
+    strictEqual(released.released, false);
+    strictEqual(released.reason, 'release-failed', JSON.stringify(released));
+    strictEqual(released.error, 'EPERM', JSON.stringify(released));
+    ok(String(released.parked ?? '').endsWith(`.release-${first.handle.token}`), `the operator is told where it went: ${released.parked}`);
+    strictEqual(existsSync(released.parked), true, 'and it is still there to be moved back');
+    await rm(homeDir, { recursive: true, force: true });
+  });
+
+  // The reporting above is only worth having if something reads it, and the
+  // wrapper discarded release() entirely — so the parked path an operator needs
+  // never reached anyone. `finally` runs before the value leaves the function,
+  // and diagnostics is the same array the return already carries, so the failure
+  // can be appended without masking the critical section's own outcome.
+  it('withBootstrapFamilyLock surfaces a failed release instead of discarding it', async () => {
+    const homeDir = await tempHome();
+    const lockPath = bootstrapLockFile(homeDir);
+    const result = await withBootstrapFamilyLock({ homeDir, repoRoot: null, now: NOW }, async () => {
+      // Same forced errno as the release test: link(2) onto a directory is EPERM.
+      await rm(lockPath, { force: true });
+      await mkdir(lockPath, { recursive: true });
+      return 'critical-section-value';
+    });
+    strictEqual(result.ok, true, 'the critical section outcome is never masked by the release');
+    strictEqual(result.value, 'critical-section-value');
+    const said = result.diagnostics.join(' ');
+    ok(/did not complete/i.test(said), `the release failure must be surfaced: ${said}`);
+    ok(/parked at/i.test(said), `and it must name where the displaced lock went: ${said}`);
     await rm(homeDir, { recursive: true, force: true });
   });
 });

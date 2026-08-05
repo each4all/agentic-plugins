@@ -583,8 +583,51 @@ export async function acquireBootstrapFamilyLock({
 
   const diagnostics = [];
   const staleClock = () => (typeof staleNowMs === 'number' ? staleNowMs : Date.now());
+  const lockName = basename(lockPath);
+
+  const displacedRefusal = (names) =>
+    `A bootstrap family lock record is parked at ${names.join(', ')} under ${homeRel(root, lockDir)} instead of at ${lockName}. `
+      + 'A previous run moved it aside and could not put it back, so the lock NAME is free while its holder may still believe it holds the family — running now would let two invocations proceed at once. '
+      + `Move the parked file back to ${lockName} if no bootstrap is running, or delete it if the run that owned it is long gone; then re-run. This one is not reclaimed automatically, because only an operator can tell those two cases apart.`;
 
   for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
+    // AN EMPTY LOCK NAME IS NOT PROOF THAT NOBODY HOLDS THE FAMILY.
+    //
+    // Both displacement paths in this file move the lock RECORD off its
+    // canonical name before deciding what to do with it — the release parks it
+    // at `.release-<token>`, the stale break at `.breaking-<token>` — and both
+    // put it back when the record turns out not to be theirs. When that restore
+    // FAILS, the record stays parked and the canonical name stays free while its
+    // holder still believes it holds the family. Acquisition used to look only
+    // at the canonical name, so it would link it and hand two processes the
+    // family: the same shape as the egress WAL race, one subsystem over.
+    //
+    // This PRE-scan catches the persistent state. It cannot catch the transient
+    // one, and an earlier version of this comment claimed it did not need to —
+    // on the grounds that a displacing process has already left its critical
+    // section. That is true of the RELEASE path and FALSE of the stale BREAK,
+    // where the displaced holder is the live one. Peer-measured: with the
+    // pre-scan alone, a break landing between this readdir and the link below
+    // produced two holders in 3 of 60 races (60 of 60 with no scan at all). The
+    // post-link re-check after a successful acquire is what closes that.
+    const parked = await listParkedLocks(lockDir, lockName);
+    if (parked.error) {
+      return {
+        ok: false,
+        reason: 'lock-unavailable',
+        diagnostics: [...diagnostics, `Could not list ${homeRel(root, lockDir)} to check for a displaced bootstrap family lock (${parked.error}). Refusing to acquire a lock whose exclusion cannot be proven.`],
+        holder: null,
+        handle: null,
+      };
+    }
+    if (parked.names.length > 0) {
+      if (attempt < Math.max(1, attempts) - 1) {
+        await sleep(retryDelayMs);
+        continue;
+      }
+      return { ok: false, reason: 'lock-displaced', diagnostics: [...diagnostics, displacedRefusal(parked.names)], holder: null, handle: null };
+    }
+
     const token = randomBytes(12).toString('hex');
     const owner = { owner_token: token, pid, acquired_at: new Date(staleClock()).toISOString() };
     const tmp = join(lockDir, `.acquire-${token}.tmp`);
@@ -613,6 +656,59 @@ export async function acquireBootstrapFamilyLock({
     }
 
     if (acquired) {
+      // POST-LINK RE-CHECK. Not belt-and-braces — it closes the window the
+      // pre-scan structurally cannot, and it does so DETERMINISTICALLY rather
+      // than by narrowing odds.
+      //
+      // The argument is an ordering one, and it is bounded — an earlier draft
+      // claimed "every dangerous ordering", which a peer disproved (see below).
+      //
+      // The case it covers: a breaker that MISMATCHES, i.e. renames aside a
+      // record that is not the one it judged. That rename has to land after this
+      // attempt's pre-scan and before its link — otherwise the pre-scan sees the
+      // park, or the link fails EEXIST — so the park already exists when the
+      // link returns. And it is still there, because the breaker's restore can
+      // only succeed if the canonical name is free, and it is not: this attempt
+      // is in it. Re-reading the directory here therefore sees that park every
+      // time.
+      //
+      // The case it does NOT cover, stated because the proof must not be read as
+      // broader than it is: a holder whose pid is live but whose claim has aged
+      // past the stale bound is DELIBERATELY reclaimable (that policy is pinned
+      // by its own regression), and a successful break unlinks its park before
+      // this scan runs. That is the stale-reclaim policy working as designed,
+      // not a race this check is failing to catch — but it is why the sentence
+      // above says "a breaker that mismatches" and not "any breaker".
+      //
+      // What follows is a give-back, not a takeover: this attempt drops the lock
+      // it just took rather than run beside a holder that may still believe it
+      // holds the family. Its own release is safe for the usual reason — it is
+      // dropping a record it published microseconds ago and has not acted on.
+      //
+      // MEASURED with a 60-race harness: 60/60 two-holder outcomes with no scan
+      // at all, 3/60 with the pre-scan alone, 0/60 with this.
+      const after = await listParkedLocks(lockDir, lockName);
+      if (after.error || after.names.length > 0) {
+        const dropped = await makeLockHandle({ lockPath, token, root }).release();
+        const note = dropped.released
+          ? ''
+          : ` The lock this invocation had just taken could not be dropped again (${dropped.reason}${dropped.error ? `: ${dropped.error}` : ''}); it may need clearing by hand.`;
+        if (after.error) {
+          return {
+            ok: false,
+            reason: 'lock-unavailable',
+            diagnostics: [...diagnostics, `Could not re-check ${homeRel(root, lockDir)} for a displaced bootstrap family lock after acquiring (${after.error}). Refusing to run on a lock whose exclusion cannot be proven.${note}`],
+            holder: null,
+            handle: null,
+          };
+        }
+        diagnostics.push(`A bootstrap family lock record was displaced to ${after.names.join(', ')} while this invocation was acquiring; the lock it had just taken was given back rather than run alongside a holder that may still believe it holds the family.${note}`);
+        if (attempt < Math.max(1, attempts) - 1) {
+          await sleep(retryDelayMs);
+          continue;
+        }
+        return { ok: false, reason: 'lock-displaced', diagnostics: [...diagnostics, displacedRefusal(after.names)], holder: null, handle: null };
+      }
       return {
         ok: true,
         reason: 'ok',
@@ -644,6 +740,33 @@ export async function acquireBootstrapFamilyLock({
   }
   /* c8 ignore next */
   return { ok: false, reason: 'lock-held', diagnostics, holder: null, handle: null };
+}
+
+// The two parked shapes this module can produce, and ONLY those.
+//
+// Matching every `bootstrap.lock.*` sibling instead would be fail-closed in the
+// wrong direction: an operator's own `bootstrap.lock.bak` would then block the
+// family forever, for a state this code never creates and has no remedy for.
+// The suffixes are the two verbs, each followed by the hex token that makes a
+// park unique to its displacer.
+const PARKED_LOCK_SUFFIX_RE = /^(release|breaking)-[0-9a-f]{8,}$/;
+
+async function listParkedLocks(lockDir, lockName) {
+  let entries;
+  try {
+    entries = await readdir(lockDir);
+  } catch (err) {
+    // ENOENT means the lock directory does not exist yet, so nothing can be
+    // parked in it. Every other failure leaves the question unanswered, and an
+    // unanswerable exclusion question is answered `no`.
+    if (err?.code === 'ENOENT') return { names: [], error: null };
+    return { names: [], error: err?.code ?? String(err) };
+  }
+  const prefix = `${lockName}.`;
+  return {
+    names: entries.filter((name) => name.startsWith(prefix) && PARKED_LOCK_SUFFIX_RE.test(name.slice(prefix.length))).sort(),
+    error: null,
+  };
 }
 
 // A lock body is UNTRUSTED input: it is whatever bytes are at that path, which on a
@@ -712,11 +835,26 @@ function makeLockHandle({ lockPath, token, root }) {
       // unparseable body is not proof of ownership — deleting it because we could not
       // read it would destroy a lock we may never have held.
       if (!(read.status === 'ok' && read.value?.owner_token === token)) {
-        await link(parked, lockPath).catch(() => {});
-        await unlink(parked).catch(() => {});
-        return { released: false, reason: 'not-owner' };
+        // We took a lock that is not ours. Put it back — see restoreDisplacedLock
+        // for why a failed restore must never be followed by an unlink — and
+        // report where it went, because only an operator can move it back.
+        const restore = await restoreDisplacedLock(parked, lockPath);
+        if (!restore.restored) return { released: false, reason: 'release-failed', error: restore.code, parked };
+        // Restored, but possibly with its duplicate still on disk. That is not a
+        // release failure — the lock is back where it belongs — yet it must not
+        // be silent either, because a parked name blocks the next acquisition.
+        return restore.parkedRemoved
+          ? { released: false, reason: 'not-owner' }
+          : { released: false, reason: 'not-owner', parked, debris: parkedDebrisNote(parked, lockPath, restore).trim() };
       }
-      await unlink(parked).catch(() => {});
+      try {
+        await unlink(parked);
+      } catch (err) {
+        // Our OWN parked copy survived. The lock is genuinely released (the
+        // canonical name is free), but the leftover would block every later
+        // acquisition, so it is reported instead of dropped.
+        return { released: true, reason: 'ok', parked, debris: `The released bootstrap family lock left a parked copy at ${basename(parked)} that could not be removed (${err?.code ?? String(err)}). Delete it: nothing holds the lock now, and a parked file blocks the next acquisition by design.` };
+      }
       return { released: true, reason: 'ok' };
     },
   };
@@ -802,10 +940,23 @@ async function tryBreakStaleLock({ lockPath, nowMs, staleMs, isPidAlive, diagnos
     ? true
     : moved.value?.owner_token === holder.owner_token;
   if (!sameFile || !sameToken) {
-    // We displaced a lock we never judged. Put it back and concede; never delete it.
-    await link(parked, lockPath).catch(() => {});
-    await unlink(parked).catch(() => {});
-    diagnostics.push('A bootstrap family lock was re-acquired while a stale break was in flight; the fresh lock was restored and the break abandoned.');
+    // We displaced a lock we never judged. Put it back and concede; never delete
+    // it — and "never delete it" has to hold when the RESTORE fails too, which is
+    // what the unconditional unlink under this comment used to break. Same rule,
+    // same helper as the release path: see restoreDisplacedLock.
+    //
+    // Coverage, stated because it is partial: the RULE is pinned by the release
+    // regressions, which exercise the same helper. This CALL SITE's wiring is
+    // not — reaching it needs a lock that changes identity between the judge and
+    // the rename, which is a race, not a fixture, and no seam here can force it.
+    // Mutation-measured: replacing the helper body fails two tests; inlining the
+    // old shape HERE fails none. Calling the helper is what keeps that gap one
+    // line wide.
+    const restore = await restoreDisplacedLock(parked, lockPath);
+    diagnostics.push(restore.restored
+      ? `A bootstrap family lock was re-acquired while a stale break was in flight; the fresh lock was restored and the break abandoned.${parkedDebrisNote(parked, lockPath, restore)}`
+      : `A bootstrap family lock was re-acquired while a stale break was in flight, and the displaced lock could NOT be restored (${restore.code}). `
+        + `It is parked at ${basename(parked)} and was deliberately not deleted. Move it back to ${basename(lockPath)} before the next run: until then the lock name is free while its holder still believes it holds the family, which is why the next acquisition refuses outright rather than proceeding.`);
     return { broke: false, vanished: false, holder: moved.value ?? holder };
   }
 
@@ -815,6 +966,73 @@ async function tryBreakStaleLock({ lockPath, nowMs, staleMs, isPidAlive, diagnos
       'The previous invocation did not release it — usually a crash or a kill. The lock was broken automatically after an owner-token recheck; no operator action is needed.',
   );
   return { broke: true, vanished: false, holder };
+}
+
+// Put back a lock this process displaced but does not own, and drop the parked
+// copy ONLY if that succeeded.
+//
+// One helper for both displacement sites (the release and the stale-break
+// recheck) because they had the same bug, in the same shape, in the same file:
+// `link(...).catch(() => {})` followed by an unconditional `unlink`. When the
+// link-back fails, the parked name holds the ONLY link to a live holder's lock,
+// so deleting it frees the lock NAME while that holder still believes it holds
+// the family — two holders, the one outcome this lock exists to prevent. Merging
+// them is the fix rather than patching each: a second copy is how the first
+// survived a review, and the egress WAL take in doctor.mjs was written from this
+// code and inherited it a third time.
+//
+// `link(2)`, never `rename(2)`: if the lock name has been claimed again while we
+// held the record aside, link fails EEXIST and the newcomer keeps it, where a
+// rename would silently destroy that lock too.
+//
+// The parked copy's removal is REPORTED rather than swallowed. It used to be a
+// bare `.catch(() => {})` under a `restored: true`, which was already dishonest
+// (silent debris) and became load-bearing the moment acquisition started
+// refusing while a parked lock exists: a leftover copy would then block every
+// future run, with nothing in the output saying where it came from. After a
+// successful link-back both names point at the SAME inode, so deleting the
+// parked one is provably safe — and that is exactly the sentence the caller
+// needs to be able to give the operator.
+//
+// COVERAGE, STATED BECAUSE IT IS ABSENT — not partial, absent. Nothing pins the
+// failure branch below, and that was MEASURED rather than assumed: reverting
+// this function to the swallowing form fails ZERO tests in the whole suite,
+// while the acquisition refusal it feeds fails two.
+//
+// An earlier version of this note argued the branch was UNREACHABLE, on the
+// grounds that `link` needs write permission on the destination directory and
+// `unlink` on the source, and here they are the same directory — so an unlink
+// failure implies the link already failed. Peer round 5 disproved it: that holds
+// only if the directory is unchanging. A concurrent `chmod`, or an I/O fault,
+// between the two syscalls reaches this branch, and the peer built exactly that
+// (link, chmod 0500, unlink → EACCES; chmod 0700 → control succeeds). So the
+// branch is reachable, just not constructible as a FIXTURE without an ordering
+// seam this module does not offer — the same position it takes on its clock.
+// Recorded as an open coverage item rather than argued away a second time.
+// What IS pinned is the success side: the release regression asserts the lock
+// directory ends EMPTY, so a mutant that always reports debris fails (measured:
+// 17 failures).
+async function restoreDisplacedLock(parked, lockPath) {
+  try {
+    await link(parked, lockPath);
+  } catch (err) {
+    return { restored: false, code: err?.code ?? String(err), parkedRemoved: false, parkedCode: null };
+  }
+  try {
+    await unlink(parked);
+  } catch (err) {
+    return { restored: true, code: null, parkedRemoved: false, parkedCode: err?.code ?? String(err) };
+  }
+  return { restored: true, code: null, parkedRemoved: true, parkedCode: null };
+}
+
+// The operator-facing tail for a restore that put the lock back but could not
+// drop its parked duplicate. Shared by both displacement sites so the two cannot
+// drift into describing the same state differently.
+function parkedDebrisNote(parked, lockPath, restore) {
+  if (restore.parkedRemoved) return '';
+  return ` The lock was restored, but its parked duplicate at ${basename(parked)} could not be removed (${restore.parkedCode}). `
+    + `That copy is the SAME file as ${basename(lockPath)}, so deleting it is safe — and it must be deleted, because a parked lock blocks every later acquisition by design.`;
 }
 
 // Read a lock's body AND its identity from one fd, so both describe the same inode.
@@ -865,7 +1083,27 @@ export async function withBootstrapFamilyLock(options, fn) {
     // release() inside `finally` REPLACES whatever fn returned or threw, so a
     // successful create could surface as an unlink error. release() reports rather
     // than throws, and this catch is the belt to that braces.
-    await lock.handle.release().catch(() => {});
+    //
+    // But "must not mask" is not "must not report": discarding the result made
+    // release()'s failure reporting inert, including the parked path an operator
+    // needs to put a displaced lock back. Pushing into `lock.diagnostics` here is
+    // visible to the caller because it is the same array the returns above hand
+    // out and `finally` runs before the value leaves this function. Only genuine
+    // failures are reported — not-held / not-owner / already-released are normal
+    // outcomes of a handle that was superseded or released twice.
+    const released = await lock.handle.release().catch((err) => ({ released: false, reason: `release-threw:${err?.code ?? err?.message ?? 'error'}` }));
+    if (released?.released === false && !['not-held', 'not-owner', 'already-released'].includes(released.reason)) {
+      lock.diagnostics.push(
+        `Releasing the bootstrap family lock did not complete (${released.reason}${released.error ? `: ${released.error}` : ''})` +
+          `${released.parked ? `; the displaced lock is parked at ${basename(released.parked)} and was not deleted` : ''}.`,
+      );
+    }
+    // Debris is reported INDEPENDENTLY of the released/reason verdict. A release
+    // that succeeded and a not-owner restore that succeeded are both normal
+    // outcomes filtered out above, and both can still leave a parked file behind
+    // — which now blocks every later acquisition, so it cannot ride on a branch
+    // that exists to stay quiet about normal outcomes.
+    if (released?.debris) lock.diagnostics.push(released.debris);
   }
 }
 

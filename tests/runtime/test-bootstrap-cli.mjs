@@ -1684,6 +1684,41 @@ describe('bootstrap egress-provider-ack executor E2E (ADR-0048 §3)', () => {
     return { calls, runner };
   }
 
+  // A PASSED proof can still carry a WAL warning: the provider acked and the
+  // mirror correlated — which is exactly what `passed` asserts — while the intent
+  // record that fences the NEXT attempt was not written durably. The import only
+  // forwarded diagnostics when it FAILED, so on the success path the warning died
+  // inside bootstrap and the operator was never told the fence may not survive a
+  // reboot (peer round-3 MAJOR: reporting nobody reads is not reporting).
+  it('resume surfaces a PASSED proof\'s intent-WAL warning instead of swallowing it', async () => {
+    const { home, cwd } = await makeHome({ satisfied: true });
+    const base = egressDoctorStub();
+    const runner = async (scriptPath, args) => {
+      const out = await base.runner(scriptPath, args);
+      if (scriptPath.endsWith('doctor.mjs') && args.includes('--execute-egress-ack-proof')) {
+        const report = JSON.parse(out.stdout);
+        report.egress_ack_proof.wal_durability = 'failed';
+        report.egress_ack_proof.limits = ['the intent WAL could not be updated durably (write-failed, phase=pre-publish, published=false). The provider outcome above stands; could not stage the terminal record for fp.json (EACCES).'];
+        report.overall = { warnings: ['egress intent WAL failed — the provider outcome stands, but the fence for a future attempt may not (see egress_ack_proof.limits)'] };
+        return okOut(JSON.stringify(report));
+      }
+      return out;
+    };
+    const run = (argv) => boot({ argv, home, cwd, runner: hostedRunner(), subprocess: runner, env: EGRESS_ENV });
+    const plan = await run(['plan', '--bundle', 'base', '--format', 'json']);
+    const answersPath = join(home, 'execute-egress-wal.json');
+    await writeFile(answersPath, JSON.stringify([{ step_id: 'proof.egress-provider-ack', answer: 'execute' }]));
+    const resume = await run(['resume', '--latest-open', '--answers', answersPath]);
+
+    const warnings = (resume.report.warnings ?? []).join(' ');
+    ok(/intent WAL/i.test(warnings), `the WAL warning must survive a PASSED proof: ${JSON.stringify(resume.report.warnings)}`);
+    ok(/egress-provider-ack/.test(warnings), `and name the proof it belongs to: ${warnings}`);
+    // Control: the proof itself still imported — the warning is additional
+    // information, never a downgrade of an independently true provider fact.
+    const proofPath = join(home, '.agentic-plugins', 'runs', 'bootstrap', plan.report.run_id, 'proof', 'egress-provider-ack.json');
+    strictEqual(JSON.parse(await readFile(proofPath, 'utf8')).provider_ack.result, 'acked');
+  });
+
   it('resume executes the opted-in egress proof through doctor, persists provider_ack evidence with the artifact hash, then attest-receipt completes delivery attestation', async () => {
     const { home, cwd } = await makeHome({ satisfied: true });
     const stub = egressDoctorStub();
