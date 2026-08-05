@@ -513,6 +513,12 @@ export const ALLOWED_PID_LIVENESS_SITES = [
     justification:
       'stale family-lock reclaim needs to know whether the owning pid is gone; machine-bootstrap-contract.md §13 fixes this exact probe (ESRCH ⇒ gone, EPERM ⇒ exists) as the staleness rule, alongside the 10-minute age bound (ADR-0035 §4 — a liveness read, not a mutation)',
   },
+  {
+    file: 'doctor.mjs',
+    form: 'process.kill(pid, 0)',
+    justification:
+      'egress intent-WAL blocker WORDING ONLY, never takeover (ADR-0048 residual (a) — classifyClaimHolder). This entry is deliberately NOT a second staleness authority: unlike the bootstrap family lock above, nothing in doctor.mjs ever breaks, reclaims, or overwrites a claim on the strength of this answer. It chooses between two operator messages — "another attempt is in flight, wait" versus "check the phone, then delete" — because those have opposite remedies and telling an operator to delete a LIVE claim would free the fence for a second send to their phone. The operator remains the only reclaim authority (ADR-0035 §4 — a liveness read, not a mutation)',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -589,9 +595,9 @@ export const FS_MUTATION_USERS = {
   // doctor run artifacts + ephemeral temp-repo probes (mkdtemp under the OS
   // tmpdir, recursively removed — the pinned recursive-removal site below).
   'doctor.mjs': {
-    primitives: ['mkdir', 'mkdtemp', 'rename', 'rm', 'writeFile'],
+    primitives: ['link', 'mkdir', 'mkdtemp', 'open', 'rename', 'rm', 'unlink', 'writeFile'],
     stateRoots: ['.agentic-plugins/runs/doctor', 'os-tmpdir'],
-    justification: 'doctor run artifacts (temp+rename atomic writeDoctorArtifact — the artifact bytes are hash-linked evidence, ADR-0048 §3) + self-created mkdtemp temp-repo teardown (workflow-continuation AND egress-ack-proof temp repos)',
+    justification: 'doctor run artifacts (temp+rename atomic writeDoctorArtifact — the artifact bytes are hash-linked evidence, ADR-0048 §3) + self-created mkdtemp temp-repo teardown (workflow-continuation AND egress-ack-proof temp repos) + the ADR-0048 residual (a)/(b) egress intent WAL, which is APPEND-ONLY: `open` in exactly two literal-flag shapes (exclusive-create for the durable temp, read-only for the directory fsync), `link` to publish BOTH WAL records exclusively — the per-activation claim `<fp>.json` and the per-attempt terminal record `<fp>.<owner_token>.terminal.json` — because link fails EEXIST where rename would silently replace and hand two processes one activation, and `unlink` ONLY to drop this process’s own staged temp file. `rename` is listed for the doctor ARTIFACT writer alone; the WAL no longer renames anything. Four review rounds established why: remove, take-aside-then-verify, and replace-in-place each need to decide that the record at a pathname is still yours, which cannot be atomic on a pathname — so no code path here mutates or removes a published record, and every destructive step touches only a temp name this attempt invented',
   },
   // ADR-0045 S7a entry-brief read layer: `open` is imported ONLY for
   // read-only TOCTOU-safe handle reads (O_RDONLY|O_NOFOLLOW|O_NONBLOCK +

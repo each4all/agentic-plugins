@@ -171,11 +171,16 @@ describe('ADR-0035 §4 guard — gates catch real violations', () => {
   // The signal-0 liveness exemption (ALLOWED_PID_LIVENESS_SITES). Signal 0 sends
   // nothing; every neighbouring shape that COULD signal still fails, in the very
   // same file — the exemption is a form, not a licence for the file.
-  it('process.kill(pid, 0) in the registered liveness site → NO finding', () => {
+  it('process.kill(pid, 0) in the registered liveness sites → NO finding', () => {
     deepStrictEqual(scan('bootstrap-artifacts.mjs', `process.kill(pid, 0);`), []);
+    // doctor.mjs joined the list for the egress intent-WAL blocker wording
+    // (G1 / ADR-0048 residual (a)) — a liveness READ that never takes over.
+    deepStrictEqual(scan('doctor.mjs', `process.kill(pid, 0);`), []);
   });
   it('that same signal-0 probe in an UNREGISTERED file → kill-gate', () => {
-    ok(rules(scan('doctor.mjs', `process.kill(pid, 0);`)).includes('kill-gate'));
+    // Two unregistered files, so this keeps proving the exemption is per-file
+    // rather than global even as the registered set grows.
+    ok(rules(scan('settings.mjs', `process.kill(pid, 0);`)).includes('kill-gate'));
     ok(rules(scan('consensus.mjs', `process.kill(pid, 0);`)).includes('kill-gate'));
   });
   it('a real signal in the liveness site → kill-gate (the exemption is signal-0 only)', () => {

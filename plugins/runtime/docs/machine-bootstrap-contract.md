@@ -2006,6 +2006,162 @@ decisions that differ from the directional kinds and are normative here:
   12-hex token in its enumerated `topic` field; the raw event id never enters
   durable artifacts.
 
+- **The intent record is a CLAIM, and its durability guarantee is conditional.**
+  The pending record is named by activation fingerprint and published with
+  `link(2)`, so creating the fence is the same act that excludes a concurrent
+  execute: a second attempt for the same activation fails `EEXIST` and never
+  reaches the emitter. There is deliberately no separate lock and therefore no
+  automatic reclaim — **the operator is the only reclaim authority**. The claim
+  carries `pid`/`acquired_at`, used ONLY to choose which blocker an operator
+  sees, never to take a claim over. The holder is classified three ways, because
+  two inputs answer different questions and a boolean loses the one that matters:
+  a live pid with a recent claim says **wait** and never mentions deletion (that
+  advice would free the fence for a second message to the phone); a live pid with
+  an unusually old claim says the process is **still running** and offers the
+  deletion only behind the operator's own certainty; a gone pid gets the
+  check-the-phone-then-delete instruction; and a record carrying NO usable
+  identity is an **unknown**, never a corpse — the previous release wrote no
+  `pid` at all, so reading absence as death advertised a still-running older
+  sender as crashed and handed the operator the flat delete instruction, which is
+  the rollback path arrived at from the other direction. Age deliberately does
+  not resolve that one: an old record with no identity is still unknown. **Age never downgrades a confirmed
+  live pid** — it only selects wording — and age is judged from the FILE MTIME
+  against a REAL WALL CLOCK (both halves of that subtraction must come from the
+  same world; an earlier cut compared the kernel's mtime against the caller's
+  injected report clock, so a report timestamp an hour ahead turned a live
+  holder's fresh claim into a deletable one),
+  not from the body, since an injected clock or a forged `acquired_at` must not
+  decide it.
+
+- **The WAL is APPEND-ONLY: two names per attempt, and nothing is ever mutated.**
+
+  ```
+  claim     <activation-fingerprint>.json                      link(2) — the fence + the exclusion
+  terminal  <activation-fingerprint>.<owner-token>.terminal.json   link(2) — that attempt's outcome
+  ```
+
+  The claim's name is the ACTIVATION, so creating it is the exclusion. The
+  terminal record's name additionally carries the attempt's own `owner_token`,
+  so no attempt can ever write at another's name. No record is renamed over,
+  replaced, or unlinked by any code path here.
+
+  That shape is the conclusion of four review rounds, and the rounds are worth
+  more than the conclusion. Each kept the goal and changed only HOW the record at
+  the canonical name was updated, and each was refuted by the same impossibility
+  from a new angle: **deciding that the record at a pathname is still yours
+  cannot be made atomic on a pathname.**
+
+  1. *Remove it* (recheck, then unlink) — check-then-act; a contender already
+     past its own scan claimed the freed name and sent a second message.
+  2. *Take it aside, then verify* (`rename` to a token-unique name) — the fence
+     is absent for the width of the verify. Parked where the scan could not see
+     it, the fence vanished on the normal path after the wire; parked where the
+     scan could, the canonical name was still free long enough for a contender to
+     claim it. The exclusion is the `link` on the canonical name and the scan is
+     only advisory, so a vacated name defeats it whatever the vacated record is
+     called.
+  3. *Replace it in place* (read ownership, then `rename` over it) — this one
+     looked airtight, because `rename(2)` never leaves the name absent, so the
+     fence was continuously OCCUPIED. It was still wrong: occupancy was never the
+     guarantee, CONTENT is. After an operator deleted a live claim and a
+     successor claimed the freed name, a stale terminal record overwrote that
+     successor's live claim with a `no-wire` outcome — and the next scan then
+     read `no-wire` and told the operator that deleting it was safe while the
+     successor's message was already on the phone.
+
+  Serializing the mutation behind a short-lived lock was prototyped and measured
+  as an alternative to (2): it does not remove the vacate, only hides it, it
+  makes the claim-collision branch dead code, and it pre-empts this section's
+  fail-closed diagnostics with a lock message. Writing to a name only one attempt
+  can produce removes the question instead of answering it faster.
+
+  **Reading the WAL is therefore a JOIN.** The scan pairs each claim to its
+  terminal record by `owner_token`: a claim WITH its terminal is a resolved
+  attempt and its disposition decides fencing; a claim WITHOUT one is pending and
+  its holder's liveness decides the wording; a terminal record with no claim is
+  an ORPHAN and is judged on its own disposition. A terminal record whose name
+  and body disagree cannot be attributed to an attempt and fences, fail-closed.
+  An orphaned terminal is not a curiosity — it is exactly the state that used to
+  be defect (3), reported now as its own finding beside the successor's claim
+  rather than written over it.
+
+  **The most cautious finding decides the wording, and every other finding is
+  still named.** A WAL holding several records was twice judged by one of them:
+  the guard read `clearable && unresolved.length === 0`, which named one of four
+  dangerous states and let the safe-to-delete sentence win over the other three —
+  including a pid-less, possibly-live pending record. The replacement table then
+  repeated the shape one level up: it ranked the severities it KNEW and let an
+  unrecognized one fall through to whatever listed severity happened to be
+  present.
+
+  The order is therefore total over its INPUT, not merely over its own list:
+  `unclassified` > `in-flight` > `live-stale` > `unidentified` > `unresolved` >
+  `clearable`. `clearable` is last precisely because its message is the only one
+  in the WAL that calls a deletion safe; `unclassified` is first for the mirror
+  reason, and an unrecognized severity is normalized into it rather than skipped
+  over. The two ends share a rule: a message that must not advise removal must
+  not advise it for the other records in its tail either.
+
+  **Liveness decides severity; everything else annotates.** A body that
+  contradicts its own name, or an unscopable fingerprint, makes a record less
+  trustworthy — it never turns a running attempt into one an operator is told to
+  delete. That is not a stylistic preference: the first cut of the name/body
+  agreement check answered a mismatched claim with a flat `unresolved`, which
+  carries "check the phone, then delete", and a measurement found it advertising
+  a claim with a LIVE pid as deletable — reopening the duplicate-send path this
+  whole section exists to close, from inside the fix for a different defect.
+
+  The consequence is deliberate and is the cost of the guarantee: **a provably
+  pre-wire attempt now fences the next one**, where an earlier design freed the
+  name so it would not. Those two properties were measured to be mutually
+  exclusive. Both records are cleared by the OPERATOR — and because nothing was
+  sent, that is the one delete instruction in the WAL which is provably safe, so
+  it is worded as such, names BOTH files, and is issued on the attempt's own
+  result rather than one run later.
+
+  **Rollback is fail-closed in both directions**, which was checked against the
+  shipped scan rather than assumed. An OLDER runtime reads the append-only WAL
+  and sees a `pending` claim that is never cleared, so it refuses — over-strict,
+  never permissive. This runtime reads an older WAL and finds a record with no
+  `owner_token`, which can pair with nothing and therefore falls through to the
+  pending judgement; with no `pid` either, that is `unidentified`, which also
+  refuses.
+
+  Writes follow temp → write → `fsync` → close → atomic publish → directory
+  `fsync`. `close()` is part of that ordering, not cleanup — some filesystems
+  surface a delayed writeback error only there, so a failed close aborts the
+  publication instead of being swallowed. On a first-use home the recursive
+  `mkdir` creates the whole parent chain, and **every directory from the machine
+  home down to the intent directory's parent is fsynced on every claim** —
+  unconditionally, not only when this run is the one that created it. Syncing
+  only the leaf would leave the directory the claim lives in unpersisted, which
+  loses the claim itself on a power loss; and keying the sync off what `mkdir`
+  reports creating would skip it precisely on the retry after a failed sync,
+  when the directories exist but nothing about them is durable. Existence is not
+  proof of durability. The caller names the anchor that bounds the chain, and a
+  claim that names none is refused rather than published under an unstated
+  durability claim. Three limits are stated rather than implied. **(i)** On macOS,
+  `fsync(2)` does not flush the drive's write cache — that needs `F_FULLFSYNC`,
+  which Node does not expose — so the durability claim is "reached the OS", not
+  "reached the platter". **(ii)** Where the platform cannot open a directory
+  handle at all, the directory `fsync` degrades; the run then reports
+  `wal_durability` other than `durable` plus a `limits[]` entry, and the
+  survives-a-power-loss property is **not** established on that platform.
+  Permission faults (`EACCES`/`EPERM`) are never treated as platform limits and
+  fail closed. **(iii)** A WAL write that fails after a real send does not
+  change the proof verdict: `passed` means the provider acked and the mirror
+  correlated (§3), both still true, and folding storage bookkeeping into that
+  verb would trip the acked-consistency matrix and refuse the import — forcing a
+  second message to the phone to record a proof for one that already arrived.
+  It surfaces as a limit and an `overall` warning instead.
+
+- **Downgrade is quiescent-only.** An older runtime does not understand the
+  claim, but it still scans the WAL and blocks on a `pending` record, so a claim
+  this version published does fence it — unlike a lock file, which an older
+  runtime would not look at at all. That protection is partial: if the old
+  process completes its scan before the new one publishes, both proceed. Roll
+  back only with no executor in flight.
+
 ### 8.3 One-host operators — a documented limitation, stated exactly
 
 The reducer requires **both** hosts, because the framework's value is the cross-host
@@ -2131,6 +2287,38 @@ security, pointer, inventory, and retention.
 - **Stale locks are recoverable.** A lock whose owning pid is gone, or whose age
   exceeds a bound, is broken with a reported diagnostic — never silently, and never by
   the operator hand-deleting files.
+- **A free lock NAME is not proof that nobody holds the family.** Both
+  displacement paths — the token-keyed release and the stale break — move the
+  lock RECORD aside before deciding what to do with it, and put it back when it
+  turns out not to be theirs. A restore that FAILS leaves the record parked while
+  the canonical name is free, and its holder still believes it holds the family.
+  Acquisition therefore refuses (`lock-displaced`) rather than acquiring beside a
+  parked sibling (`<lock>.release-<token>`, `<lock>.breaking-<token>`). It checks
+  **twice**, and the second check is the load-bearing one:
+
+  - **before the link**, which catches the PERSISTENT state — a failed restore,
+    visible to every scan;
+  - **after a successful link**, which catches the TRANSIENT one. For two
+    processes to hold the family, a stale break must rename a LIVE holder's
+    record aside after a contender's pre-scan and before its link — so in every
+    dangerous ordering the park already exists when the link returns, and it is
+    still there, because the breaker's restore can only succeed if the canonical
+    name is free and the contender is now in it. An attempt that finds a park
+    here gives back the lock it just took rather than run beside a holder that
+    may still believe it holds the family.
+
+  An earlier version of this rule had only the pre-scan, on the argument that a
+  displacing process has already left its critical section so an acquirer
+  slipping past is legitimate. That is true of the RELEASE path and **false of
+  the stale break**, where the displaced holder is the live one. Measured over 60
+  races: 60/60 two-holder outcomes with no check, 3/60 with the pre-scan alone,
+  0/60 with both.
+
+  A parked record is never reclaimed automatically — only an operator can tell
+  "the holder is gone" from "the holder is still running" — so the refusal names
+  the file and both remedies. A restore that puts the lock back but cannot drop
+  its parked duplicate reports that too, because that duplicate would otherwise
+  block every later run silently.
 - `latest.json` is written atomically; a corrupted or orphaned pointer is recovered by
   scanning run directories, and the recovery is reported.
 - **Retention**: the last N runs (default 10) are kept; older run directories are
