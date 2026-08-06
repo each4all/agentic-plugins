@@ -275,14 +275,29 @@ describe('runtime:migrate dispatcher — legacy-egress-intents is read-only', ()
     match(res.stderr, /--root \/ is refused/);
   });
 
-  it('numeric flags reject non-integers instead of silently becoming NaN', () => {
-    for (const argv of [['--max-depth', 'deep'], ['--time-budget-ms', '-5'], ['--time-budget-ms', '1.5']]) {
+  it('numeric flags reject non-integers, unsafe integers, and out-of-range values', () => {
+    const rejected = [
+      [['--max-depth', 'deep'], /must be a non-negative integer/],
+      [['--time-budget-ms', '-5'], /must be a non-negative integer/],
+      [['--time-budget-ms', '1.5'], /must be a non-negative integer/],
+      // A 20-digit run of ASCII digits passes `/^\d+$/` and lands outside the
+      // safe-integer range, where comparisons stop meaning what they read as.
+      [['--time-budget-ms', '99999999999999999999'], /too large to be represented exactly/],
+      [['--max-depth', '99999999999999999999'], /too large to be represented exactly/],
+      // …and inside the safe range there is still an upper bound.
+      [['--max-depth', '9007199254740991'], /must be at most/],
+      [['--time-budget-ms', '9007199254740991'], /must be at most/],
+      [['--time-budget-ms', '0'], /must be at least 1/],
+    ];
+    for (const [argv, expected] of rejected) {
       let threw = null;
       try { parseDiscoveryArgs(argv); } catch (err) { threw = err; }
       ok(threw, `${argv.join(' ')} was accepted`);
-      match(threw.message, /must be a non-negative integer|must be at least/);
+      match(threw.message, expected, `${argv.join(' ')} produced: ${threw.message}`);
     }
-    deepStrictEqual(parseDiscoveryArgs(['--max-depth', '3']).maxDepth, 3);
+    // CONTROL — ordinary values still pass.
+    strictEqual(parseDiscoveryArgs(['--max-depth', '3']).maxDepth, 3);
+    strictEqual(parseDiscoveryArgs(['--time-budget-ms', '5000']).timeBudgetMs, 5000);
   });
 
   it('the subcommand list is closed', () => {

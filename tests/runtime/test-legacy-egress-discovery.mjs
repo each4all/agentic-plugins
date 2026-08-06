@@ -328,6 +328,41 @@ describe('legacy-egress discovery — root semantics and identity (T2)', () => {
     match(report.scan.blocked[0].reason, /not a directory/);
   });
 
+  it('the live WAL is observed ONCE per scan, not once per candidate', async () => {
+    // The narrower the window between observing the live WAL and comparing a
+    // candidate against it, the less room a path has to stop and start resolving
+    // to it. Re-observing per candidate re-opens exactly that. The property is
+    // countable, so it is counted rather than asserted in a comment.
+    const names = ['a', 'b', 'c'];
+    const fs = new FakeFs().dir(HOME, names.map((n) => ({ name: n, kind: 'dir' })));
+    for (const n of names) {
+      fs.dir(`${HOME}/${n}`, [{ name: '.agentic-plugins', kind: 'dir' }]).wal(`${HOME}/${n}`, []);
+    }
+    fs.dir(LIVE_WAL);
+    const base = trappedOps(fs);
+    let liveWalStats = 0;
+    const counting = { ...base, async stat(p) { if (p === LIVE_WAL) liveWalStats += 1; return base.stat(p); } };
+    const report = await discoverLegacyEgressIntents({
+      homeDir: HOME, host: 'test-host', now: new Date('2026-08-06T00:00:00Z'),
+      runtimeVersion: '9.9.9', ops: counting, clock: () => 0,
+    });
+    strictEqual(report.findings_total, 3, 'all three candidates were examined');
+    strictEqual(liveWalStats, 1, `the live WAL was observed ${liveWalStats} times for 3 candidates`);
+  });
+
+  it('a root that CANONICALIZES to / is refused, even when it was named as a symlink', async () => {
+    // The refusal used to run on the spelling the operator typed, so `--root
+    // <symlink to />` passed it and then walked the whole filesystem — an
+    // explicit non-goal reached through a one-line symlink.
+    const fs = new FakeFs().dir(HOME, []).dir('/', []);
+    fs.realpaths.set('/looks/harmless', '/');
+    fs.ids.set('/looks/harmless', fs.ids.get('/'));
+    const report = await run(fs, { requestedRoots: ['/looks/harmless'] });
+    deepStrictEqual(report.roots, [], 'nothing was scanned');
+    strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
+    match(report.scan.blocked.map((b) => b.reason).join(' '), /resolves to the filesystem root/);
+  });
+
   it('an UNKNOWN live-WAL identity blocks instead of guessing either way', async () => {
     const fs = new FakeFs()
       .dir(HOME, [{ name: 'work', kind: 'dir' }])
@@ -508,6 +543,38 @@ describe('legacy-egress discovery — streaming walker (T3)', () => {
       .wal(`${HOME}/mnt`, [{ name: 'r.json', kind: 'file' }]);
     const report = await run(fs);
     strictEqual(report.findings.length, 1);
+  });
+
+  it('a --skip naming a ROOT itself is honored, not only its children', async () => {
+    // The skip check ran inside the entry loop only, so `--root X --skip X`
+    // walked X in full (reproduced before the fix).
+    const fs = new FakeFs()
+      .dir(HOME, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(HOME, [{ name: 'r.json', kind: 'file' }])
+      .dir('/mnt', [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal('/mnt', [{ name: 'r.json', kind: 'file' }]);
+    const report = await run(fs, { requestedRoots: ['/mnt'], skipPaths: ['/mnt'] });
+    strictEqual(report.findings_total, 0);
+    strictEqual(report.scan.pruned_by_reason['operator-skip'], 1);
+    strictEqual(report.scan.stats.dirs_scanned, 0, 'the root was never opened');
+  });
+
+  it('roots left unwalked when the budget expires are counted, not silently dropped', async () => {
+    // The loop broke out on exhaustion without recording the roots it had not
+    // reached, so the report read as if those roots had simply held nothing.
+    const fs = new FakeFs()
+      .dir('/r1', [{ name: 'a', kind: 'dir' }])
+      .dir('/r1/a', [])
+      .dir('/r2', [])
+      .dir('/r3', []);
+    // started, walk-top(/r1), entry a, walk-top(/r1/a) ← expires here.
+    const clock = scriptedClock([0, 0, 0, 999]);
+    const report = await run(fs, { requestedRoots: ['/r1', '/r2', '/r3'], clock, caps: { timeBudgetMs: 15 } });
+    strictEqual(report.scan.complete, false);
+    const prunedPaths = report.scan.pruned.map((p) => p.path);
+    ok(prunedPaths.includes('/r2'), `/r2 was never walked and must be counted: ${JSON.stringify(prunedPaths)}`);
+    ok(prunedPaths.includes('/r3'), `/r3 was never walked and must be counted: ${JSON.stringify(prunedPaths)}`);
+    strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
   });
 
   it('an unresolvable --skip is BLOCKED — the scan would have walked it', async () => {
@@ -812,13 +879,33 @@ describe('legacy-egress discovery — operator-facing text is defused (T7)', () 
     strictEqual(safeOperatorText(a), safeOperatorText(a), 'stable across calls');
   });
 
-  it('bidi and zero-width characters are hazards, not just C0 controls', () => {
-    for (const cp of [0x202e, 0x200b, 0x2066, 0xfeff, 0x0a, 0x1b, 0x7f, 0x9b]) {
-      ok(isDisplayHazard(cp), `U+${cp.toString(16)} must be treated as a display hazard`);
+  it('bidi, zero-width AND Unicode line separators are hazards, not just C0 controls', () => {
+    // U+2028/U+2029 are LINE and PARAGRAPH SEPARATOR: not C0, but terminals and
+    // log viewers break lines on them, which is the forged-instruction hazard
+    // the C0 newline entry exists to stop. They were missing (cross-host review).
+    for (const cp of [0x202e, 0x200b, 0x2066, 0xfeff, 0x0a, 0x1b, 0x7f, 0x9b, 0x2028, 0x2029]) {
+      ok(isDisplayHazard(cp), `U+${cp.toString(16).toUpperCase()} must be treated as a display hazard`);
     }
     ok(!isDisplayHazard('a'.codePointAt(0)));
     ok(!isDisplayHazard('작'.codePointAt(0)));
     match(safeOperatorText('a‮b'), /a\?b/);
+    for (const sep of [' ', ' ']) {
+      strictEqual(safeOperatorText(`a${sep}b`).includes(sep), false, `U+${sep.codePointAt(0).toString(16)} survived safeOperatorText`);
+    }
+  });
+
+  it('safeRecordName TRUNCATION carries the same discriminating hash its sibling does', () => {
+    // The record-name defuser cut at 96 characters with no discriminator, so two
+    // different long invalid names sharing a prefix rendered identically — and
+    // the operator is being asked to act on ONE named record.
+    const prefix = `${'x'.repeat(120)}\n`;
+    const a = safeRecordName(`${prefix}alpha.json`);
+    const b = safeRecordName(`${prefix}beta.json`);
+    notStrictEqual(a, b, 'two distinct long names must not render identically');
+    match(a, /truncated, sha256:[0-9a-f]{12}/);
+    strictEqual(a, safeRecordName(`${prefix}alpha.json`), 'stable across calls');
+    // A short invalid name is defused WITHOUT a spurious truncation note.
+    strictEqual(/truncated/.test(safeRecordName('bad\nname.json')), false);
   });
 
   it('safeRecordName is a strict SUPERSET of the shared hazard set', () => {
