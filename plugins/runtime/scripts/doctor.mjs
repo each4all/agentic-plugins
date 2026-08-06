@@ -20,6 +20,7 @@ import { getPromptCause } from './lib/permission-advisor-core.mjs';
 import { runEmit } from './notify.mjs';
 import { buildEventId, deriveRepoIdent } from './lib/notify-schema.mjs';
 import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
+import { sameDirectory } from './lib/path-containment.mjs';
 import { EGRESS_ATTEMPT_HASH_DOMAIN, deriveActivationFingerprint } from './lib/evidence-contract.mjs';
 import { EGRESS_CREDENTIAL_ENV_VAR } from './lib/machine-profile.mjs';
 import { makePermissionAdvisoryArtifact, makePermissionRunId } from './lib/permission-artifacts.mjs';
@@ -3916,7 +3917,22 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
   // format carries no wire_disposition to classify, so every legacy record is
   // treated fail-closed.
   const legacyIntentDir = join(repoRoot, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
-  if (resolve(legacyIntentDir) !== resolve(intentDir)) {
+  // IDENTITY, not spelling. This was `resolve(a) !== resolve(b)`, and the two
+  // paths are derived from different roots (repoRoot vs homeDir), so nothing
+  // guarantees they spell a shared directory the same way — a symlinked checkout
+  // or a case-variant on a case-folding volume reaches one directory by two
+  // names. The string compare then said "different", the LIVE WAL was re-read as
+  // clearable legacy state, and the message below told the operator to remove it.
+  // Freeing that fence is the duplicate send this whole WAL exists to prevent.
+  //
+  // `unknown` is neither branch: a filesystem that will not answer must not be
+  // resolved by guessing. Guessing "different" re-opens the resend path;
+  // guessing "same" silently drops a legitimate legacy fence.
+  const legacyIsLive = await sameDirectory(legacyIntentDir, intentDir);
+  if (legacyIsLive.unknown) {
+    return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} cannot be told apart from the machine-global one at ${machinePointer(homeDir, intentDir)} (${legacyIsLive.reason}); refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
+  }
+  if (!legacyIsLive.same) {
     let legacyNames = [];
     try {
       legacyNames = (await readdir(legacyIntentDir)).filter((n) => n.endsWith('.json'));
@@ -3926,7 +3942,20 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
       }
     }
     if (legacyNames.length > 0) {
-      return blockedSection([`legacy egress intents predating the machine-global WAL move are present at ${pointer(repoRoot, legacyIntentDir)} (${legacyNames.join(', ')}); a prior proof may already be on the phone. Check it, then delete that directory (the WAL now lives at ${machinePointer(homeDir, intentDir)}) to consent to a fresh send. This scan only sees the CURRENT checkout: if the old version also ran the proof from other checkouts, clear their egress-intents dirs too (follow-ups.md L35 records the machine-scoped discovery follow-up).`]);
+      // Names go through the same defusing rule the modern scan uses. They were
+      // interpolated raw here, which is the injection the WAL scan already
+      // fences: a filename carrying a newline and an ANSI escape forges an
+      // instruction line in an operator-facing message.
+      const shown = legacyNames.map(safeRecordName).join(', ');
+      // The advice is NOT "delete that directory", and the difference is a
+      // safety property rather than wording. The legacy format carries no
+      // wire_disposition and a pre-upgrade pending record may carry no pid — and
+      // this runtime deliberately reads a missing process identity as UNKNOWN
+      // rather than dead (see classifyClaimHolder). So an old sender may still be
+      // running, and a flat delete instruction can free the name for a second
+      // delivery to the same phone. Directory-level removal is worse again: it
+      // takes records this runtime never examined.
+      return blockedSection([`legacy egress intents predating the machine-global WAL move are present at ${pointer(repoRoot, legacyIntentDir)} (${shown}); an attempt recorded by the older runtime may already have reached the phone, and — because that format records no process identity — one may still be in flight. Make sure no older proof is running, check the phone, then remove the specific records you reviewed; the WAL now lives at ${machinePointer(homeDir, intentDir)}. This scan only sees the CURRENT checkout: if the old version also ran the proof from other checkouts, their egress-intents directories need the same review.`]);
     }
   }
 
