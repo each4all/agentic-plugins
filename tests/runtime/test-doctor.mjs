@@ -5060,6 +5060,16 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
       /still running|in flight|quiesce/i.test(blocker),
       `the message must account for an old sender still running: ${blocker}`,
     );
+    // The EMITTED blocker must name the machine-scoped inventory, not merely
+    // observe that other checkouts exist. Asserted on the produced string rather
+    // than on the source file, so a mention that survives only in a comment does
+    // not satisfy it (cross-host review). Saying "other checkouts need the same
+    // review" without saying HOW invites the operator to invent a `find` plus a
+    // bulk delete — the exact shape the rest of this wording avoids.
+    ok(
+      blocker.includes('runtime:migrate legacy-egress-intents'),
+      `the blocker must name the cross-checkout discovery command: ${blocker}`,
+    );
   });
 
   it('kinds-filtered trace: the REAL emitter suppresses before dispatch and the executor records the honest failure', async () => {

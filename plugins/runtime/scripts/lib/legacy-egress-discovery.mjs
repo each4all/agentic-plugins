@@ -47,10 +47,15 @@
 
 import { opendir as defaultOpendir, realpath as defaultRealpath, stat as defaultStat } from 'node:fs/promises';
 import { homedir as defaultHomedir, hostname as defaultHostname } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 import { EGRESS_INTENT_DIR_SUFFIX, egressIntentDir, safeOperatorText, safeRecordName } from './egress-intent-wal.mjs';
-import { isUnder, sameDirectory } from './path-containment.mjs';
+// `sameDirectory` is deliberately NOT used here. It re-stats both paths, and
+// this scanner already holds the candidate's identity from the `stat` that
+// established it was a directory — asking twice opens a window in which a path
+// can stop and start resolving to the live WAL. `directoryIdentity` below
+// resolves each fixed reference point once instead.
+import { isUnder } from './path-containment.mjs';
 import { RUNTIME_VERSION } from '../version.mjs';
 
 export const LEGACY_EGRESS_DISCOVERY_SCHEMA = 'legacy-egress-discovery-1.0';
@@ -98,12 +103,20 @@ export const DEFAULT_DISCOVERY_CAPS = Object.freeze({
   maxEntriesPerDir: 4096,
   maxDirs: 200000,
   timeBudgetMs: 120000,
+  maxReportedPerBucket: 50,
 });
 
 // How many entries of each completeness bucket are LISTED. The totals are always
 // reported alongside, so this bounds the output without hiding a cap — a
 // depth-capped `$HOME` walk produced 60,405 entries in one measurement, and a
 // report nobody can read is not a report.
+//
+// Overridable through `caps.maxReportedPerBucket`. That is not a feature anyone
+// asked for; it exists so the separation between the DISPLAYED list and the
+// count the status is decided from is a tested property rather than a defensive
+// comment. At 50 the two can never disagree in the dangerous direction (bounding
+// a non-empty list leaves it non-empty), so the first attempt at that guard was
+// both wrong and untested — see `resolveDiscoveryStatus` below.
 export const MAX_REPORTED_PER_BUCKET = 50;
 
 // The three statuses. `no_findings_in_scanned_scope` is deliberately NOT called
@@ -139,10 +152,22 @@ export const DISCOVERY_EXIT_CODES = Object.freeze({
 //
 // The asymmetry is the point. Only ONE combination yields the reassuring
 // answer; anything unrecognized yields `incomplete`.
-export function resolveDiscoveryStatus({ scanComplete, blocked, findings } = {}) {
+export function resolveDiscoveryStatus({ scanComplete, blocked, blockedTotal, findings } = {}) {
   if (scanComplete !== true) return DISCOVERY_STATUS.incomplete;
-  if (!Array.isArray(blocked) || blocked.length > 0) return DISCOVERY_STATUS.incomplete;
+  if (!Array.isArray(blocked)) return DISCOVERY_STATUS.incomplete;
   if (!Array.isArray(findings)) return DISCOVERY_STATUS.incomplete;
+  // `blocked` is the BOUNDED display list; `blockedTotal` is the unbounded
+  // count. They are separate arguments because they can disagree, and the first
+  // attempt at this got it wrong: it guarded only `total === 0` and otherwise
+  // handed the status function the bounded array, so a bound of 0 produced an
+  // empty list beside a count of 1 and the report read CLEAN while a directory
+  // had failed to open. A test that set the bound to 0 is what surfaced it.
+  //
+  // Omitting `blockedTotal` means the array IS the count — the only case where
+  // the two agree by construction, and the shape the unit tests use.
+  const total = blockedTotal === undefined ? blocked.length : blockedTotal;
+  if (!Number.isInteger(total) || total < 0) return DISCOVERY_STATUS.incomplete;
+  if (total > 0 || blocked.length > 0) return DISCOVERY_STATUS.incomplete;
   return findings.length === 0 ? DISCOVERY_STATUS.none : DISCOVERY_STATUS.findings;
 }
 
@@ -218,6 +243,18 @@ async function resolveRoots({ requestedRoots, homeDir, ops }) {
     }
     if (!st.isDirectory()) {
       blocked.push({ path: safeOperatorText(entry.requested), reason: 'root is not a directory' });
+      continue;
+    }
+    // The `/` refusal lives HERE, on the CANONICAL path, and the CLI's
+    // pre-realpath check is only an early, friendlier message. `--root <symlink
+    // to />` passed the lexical check and then canonicalized to `/`, so a
+    // whole-filesystem walk — an explicit non-goal — was reachable through a
+    // one-line symlink (cross-host review, reproduced).
+    if (canonical === '/' || canonical === sep) {
+      blocked.push({
+        path: safeOperatorText(entry.requested),
+        reason: 'root resolves to the filesystem root; a whole-filesystem scan is a non-goal',
+      });
       continue;
     }
     roots.push({ ...entry, canonical, dev: st.dev, ino: st.ino });
@@ -305,31 +342,42 @@ async function walkRoot(root, ctx) {
           capped = true;
           break;
         }
+        // The budget is checked HERE as well as between directories. Checking it
+        // only at the top of the walk loop meant one directory with a very large
+        // listing on a slow mount could run far past the deadline while the
+        // report still said the walk completed (cross-host review).
+        if (ctx.clock() >= ctx.deadline) {
+          recordPruned(ctx, dir, 'time-budget');
+          ctx.exhausted = true;
+          ctx.exhaustedReason = 'time-budget';
+          capped = true;
+          break;
+        }
         const name = entry.name;
-        if (name === CHECKOUT_MARKER) {
-          // A marker hit — by NAME, whether the entry is a real directory or a
-          // symlink standing in for one. The candidate below is a single `stat`
-          // of a fixed path, not a traversal, so resolving through a symlinked
-          // marker costs nothing and missing it would be a silent gap.
-          await inspectCandidate(dir, ctx);
+        // A DESCENDANT SYMLINK IS NEVER DEREFERENCED.
+        //
+        // An earlier cut `stat`ed it to learn whether it was a directory, so the
+        // boundary list would name real checkout candidates instead of every
+        // `*.dylib` symlink. Cross-host review showed that trade was wrong in
+        // three ways: `stat` follows the link, so it can block on the very
+        // remote mount the budget exists to survive; it can reach outside the
+        // scanned root; and when it FAILED the code fell through to `continue`
+        // and the boundary vanished from the report entirely — a silent omission
+        // in exactly the bucket that exists to prevent silent omissions.
+        //
+        // So every descendant symlink is recorded as a boundary, unexamined. The
+        // list is noisier (measured: 4,526 entries under `$HOME` at depth 4), and
+        // that is affordable now that buckets carry an exact total and a bounded
+        // sample. This also settles the marker case below: a marker that is a
+        // symlink is a boundary too, not a hit.
+        if (entry.isSymbolicLink()) {
+          recordBucket(ctx.notFollowed, ctx.notFollowedTotals, 'descendant-symlink', { path: safeOperatorText(join(dir, name)) });
           continue;
         }
-        if (entry.isSymbolicLink()) {
-          // Learn whether it is a directory (so the boundary list is about real
-          // checkout candidates and not every `*.dylib` symlink) WITHOUT
-          // descending. `stat` follows the link; the walk still does not.
-          let target;
-          try {
-            target = await ctx.ops.stat(join(dir, name));
-          } catch {
-            // A dangling or unreachable symlink is definitively not a directory
-            // we can enumerate. It is not `blocked`: we were never going to walk
-            // it, so nothing was lost.
-            continue;
-          }
-          if (target.isDirectory()) {
-            recordBucket(ctx.notFollowed, ctx.notFollowedTotals, 'descendant-symlink', { path: safeOperatorText(join(dir, name)) });
-          }
+        if (name === CHECKOUT_MARKER) {
+          // A real marker directory. The candidate is a fixed four-component
+          // suffix under it — `stat`ed and listed, never walked into.
+          await inspectCandidate(dir, ctx);
           continue;
         }
         if (!entry.isDirectory()) continue;
@@ -404,6 +452,61 @@ async function isSkipped(path, ctx) {
   }
 }
 
+// The live machine-global WAL's physical identity, resolved once per scan.
+//
+//   { key: 'dev:ino' }            it exists; compare candidates against this
+//   { key: null }                 it does not exist, so nothing can BE it
+//   { unknown: true, reason }     the filesystem would not say — every caller blocks
+//
+// Cached because it is compared against every candidate and re-observing it per
+// candidate would multiply the window this function exists to close.
+async function liveWalIdentity(ctx) {
+  if (ctx.liveWalIdentityCache === null) {
+    ctx.liveWalIdentityCache = await directoryIdentity(ctx.liveWalDir, ctx);
+  }
+  return ctx.liveWalIdentityCache;
+}
+
+// The current checkout's legacy WAL identity, same shape. `key: null` when no
+// repo root was supplied or the directory does not exist — the annotation is
+// advisory, so an unknown here is FALSE (an extra review) rather than a block.
+async function repoLegacyIdentity(ctx) {
+  if (!ctx.repoLegacyDir) return { key: null };
+  if (ctx.repoLegacyIdentityCache === null) {
+    const result = await directoryIdentity(ctx.repoLegacyDir, ctx);
+    ctx.repoLegacyIdentityCache = result.unknown ? { key: null } : result;
+  }
+  return ctx.repoLegacyIdentityCache;
+}
+
+// A candidate whose contents could not be fully listed. It stays a FINDING (the
+// location is what the operator needs) but it also enters `blocked`, because a
+// location whose records were never enumerated cannot be the subject of "remove
+// the specific records you reviewed" — and `blocked` is what withdraws that
+// instruction, for the whole report.
+function markUnreadable(finding, candidate, reason, ctx) {
+  finding.unreadable = true;
+  finding.unreadable_reason = reason;
+  recordBucket(ctx.blocked, ctx.blockedTotals, 'candidate-listing', {
+    path: safeOperatorText(candidate),
+    reason: `legacy egress records could not be fully listed (${reason})`,
+  });
+}
+
+async function directoryIdentity(path, ctx) {
+  try {
+    const st = await ctx.ops.stat(path);
+    if (!st.isDirectory()) return { key: null };
+    return { key: `${st.dev}:${st.ino}` };
+  } catch (err) {
+    // ENOENT is a definite answer: a directory that is not there is not the
+    // directory anything can be identical to. Anything else means we could not
+    // look, and the caller decides what that costs.
+    if (err?.code === 'ENOENT') return { key: null };
+    return { unknown: true, reason: `${path} could not be inspected (${err?.code ?? 'error'})` };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // T5 — the findings model
 // ---------------------------------------------------------------------------
@@ -439,19 +542,32 @@ async function inspectCandidate(checkoutRoot, ctx) {
   if (ctx.seenCandidates.has(identityKey)) return;
   ctx.seenCandidates.add(identityKey);
 
-  // THE exclusion — and by dev/ino, never by string. A symlinked checkout or a
-  // case-variant spelling reaches the live WAL by a second name; comparing the
-  // strings said "different", and the operator was handed the live fence as
-  // clearable legacy state.
-  const isLive = await sameDirectory(candidate, ctx.liveWalDir, { stat: ctx.ops.stat });
-  if (isLive.unknown) {
+  // THE exclusion — decided from the identity ALREADY CAPTURED above, not from a
+  // second `stat` of the same path.
+  //
+  // The first cut called `sameDirectory(candidate, liveWalDir)`, which re-stats
+  // the candidate. That is two observations of one path with a window between
+  // them, and `sameDirectory` reads a transient `ENOENT` as a definite "these
+  // are different directories" — correct for its own callers, wrong here. A path
+  // that resolved to the live WAL, vanished for the re-stat, and resolved to it
+  // again before the listing would have been reported as a removable legacy
+  // location: the live fence, offered for removal. That is the duplicate-send
+  // this whole WAL exists to prevent, reached by a different route than the
+  // string-comparison defect that shipped before it (cross-host review).
+  //
+  // The candidate's identity is decided ONCE, at the same moment the directory
+  // check was made, and only the live WAL's identity is resolved separately —
+  // and that one is cached, so it is one observation per scan rather than one
+  // per candidate.
+  const live = await liveWalIdentity(ctx);
+  if (live.unknown) {
     // A filesystem that will not say must not be resolved by guessing. Guessing
     // "different" reports the live fence for removal; guessing "same" drops a
     // real legacy location. Neither — the operator is told the question is open.
-    recordBucket(ctx.blocked, ctx.blockedTotals, 'live-wal-identity', { path: safeOperatorText(candidate), reason: `could not be told apart from the live machine-global WAL (${isLive.reason})` });
+    recordBucket(ctx.blocked, ctx.blockedTotals, 'live-wal-identity', { path: safeOperatorText(candidate), reason: `could not be told apart from the live machine-global WAL (${safeOperatorText(live.reason)})` });
     return;
   }
-  if (isLive.same) {
+  if (live.key === identityKey) {
     ctx.exclusions.push({ path: safeOperatorText(candidate), reason: 'current-machine-global-wal' });
     return;
   }
@@ -460,17 +576,15 @@ async function inspectCandidate(checkoutRoot, ctx) {
   // which costs the operator a review they may not have needed — the safe
   // direction. Claiming "already fenced" about a directory that is not would be
   // the harmful one.
-  let alreadyFenced = false;
-  if (ctx.repoLegacyDir) {
-    const sameAsRepo = await sameDirectory(candidate, ctx.repoLegacyDir, { stat: ctx.ops.stat });
-    alreadyFenced = sameAsRepo.same === true;
-  }
+  const repoLegacy = await repoLegacyIdentity(ctx);
+  const alreadyFenced = repoLegacy.key !== null && repoLegacy.key === identityKey;
 
   const finding = {
     dir: safeOperatorText(candidate),
     checkout_root: safeOperatorText(checkoutRoot),
     record_count: null,
     records: [],
+    records_listed: 0,
     already_fenced_by_current_doctor: alreadyFenced,
     unreadable: false,
   };
@@ -479,21 +593,37 @@ async function inspectCandidate(checkoutRoot, ctx) {
   try {
     handle = await ctx.ops.opendir(candidate);
   } catch (err) {
-    // An UNREADABLE candidate is an incomplete candidate: it is reported, with
-    // an unknown record count and no per-record detail. It is not `blocked` —
-    // the location itself was found, which is what the operator needs; only its
-    // contents are unknown, and the guidance is uniform anyway.
-    finding.unreadable = true;
-    finding.unreadable_reason = `contents could not be listed (${err?.code ?? 'error'})`;
+    // An UNREADABLE candidate is an INCOMPLETE candidate, and the plan is
+    // explicit that it gets "no removal advice".
+    //
+    // The first cut recorded `unreadable` on the finding and stopped there. That
+    // left the report at `findings_present`, which selects the guidance whose
+    // instruction is "manually remove the specific records you reviewed" — for a
+    // directory whose records were never listed, so there is nothing the
+    // operator could have reviewed. `markUnreadable` also records the candidate
+    // in `blocked`, which demotes the whole report to `incomplete` and withdraws
+    // every removal instruction (cross-host review CRITICAL).
+    markUnreadable(finding, candidate, `contents could not be listed (${err?.code ?? 'error'})`, ctx);
     ctx.findings.push(finding);
     return;
   }
   const records = [];
+  let recordEntries = 0;
   try {
     for await (const entry of handle) {
-      if (records.length >= ctx.caps.maxEntriesPerDir) {
-        finding.unreadable = true;
-        finding.unreadable_reason = 'record listing exceeded the entry cap';
+      recordEntries += 1;
+      // Counts ENTRIES SEEN, not records kept. The first cut capped
+      // `records.length`, so a candidate holding millions of non-`.json` entries
+      // was enumerated in full with no cap and no deadline ever acting — the cap
+      // measured the wrong quantity (cross-host review).
+      if (recordEntries > ctx.caps.maxEntriesPerDir) {
+        markUnreadable(finding, candidate, `record listing exceeded the entry cap (${ctx.caps.maxEntriesPerDir} entries)`, ctx);
+        break;
+      }
+      if (ctx.clock() >= ctx.deadline) {
+        markUnreadable(finding, candidate, 'record listing hit the time budget', ctx);
+        ctx.exhausted = true;
+        ctx.exhaustedReason = ctx.exhaustedReason ?? 'time-budget';
         break;
       }
       if (!entry.name.endsWith('.json')) continue;
@@ -504,17 +634,21 @@ async function inspectCandidate(checkoutRoot, ctx) {
       records.push({ name: safeRecordName(entry.name), kind: entryKind(entry) });
     }
   } catch (err) {
-    finding.unreadable = true;
-    finding.unreadable_reason = `record listing failed mid-scan (${err?.code ?? 'error'})`;
+    markUnreadable(finding, candidate, `record listing failed mid-scan (${err?.code ?? 'error'})`, ctx);
   } finally {
     if (typeof handle?.close === 'function') await handle.close().catch(() => {});
   }
   records.sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind));
-  finding.records = records;
   // An unreadable listing has an UNKNOWN count, not a partial one presented as
   // whole. An empty but readable directory has a known count of 0 — a real
   // answer, and a different one.
   finding.record_count = finding.unreadable ? null : records.length;
+  // The LISTING is bounded like every other list in this report; `record_count`
+  // above is the exact number. Unbounded, a scan could hold 200,000 candidates
+  // times 4,096 records in memory and produce an output nobody can read — or
+  // none at all (cross-host review).
+  finding.records = records.slice(0, ctx.caps.maxReportedPerBucket);
+  finding.records_listed = finding.records.length;
   ctx.findings.push(finding);
 }
 
@@ -562,6 +696,8 @@ export async function discoverLegacyEgressIntents({
     deadline: started + caps.timeBudgetMs,
     liveWalDir: egressIntentDir(homeDir),
     repoLegacyDir: repoRoot ? egressIntentDir(repoRoot) : null,
+    liveWalIdentityCache: null,
+    repoLegacyIdentityCache: null,
     skipIdentities,
     blocked: [],
     blockedTotals: new Map(),
@@ -583,38 +719,52 @@ export async function discoverLegacyEgressIntents({
   // directory) can consume the whole budget.
   for (const entry of skipUnresolved) recordBucket(ctx.blocked, ctx.blockedTotals, 'skip', entry);
 
-  for (const root of roots) {
+  for (const [index, root] of roots.entries()) {
+    // A root the operator ALSO named in `--skip` is skipped, not walked. The
+    // skip check used to run only on children, so `--root X --skip X` walked X
+    // in full (cross-host review, reproduced).
+    if (ctx.skipIdentities.has(`${root.dev}:${root.ino}`)) {
+      recordPruned(ctx, root.canonical, 'operator-skip');
+      continue;
+    }
     await walkRoot(root, ctx);
-    if (ctx.exhausted) break;
+    if (ctx.exhausted) {
+      // Every root after this one is unexamined. Leaving them out of the totals
+      // reported the scan as if those roots had simply held nothing.
+      for (const remaining of roots.slice(index + 1)) {
+        recordPruned(ctx, remaining.canonical, ctx.exhaustedReason ?? 'budget-exhausted');
+      }
+      break;
+    }
   }
 
   const byPath = (a, b) => a.path.localeCompare(b.path);
   const totals = (map) => Object.fromEntries([...map.entries()].sort(([a], [b]) => a.localeCompare(b)));
   const sum = (map) => [...map.values()].reduce((s, n) => s + n, 0);
   // Sort BEFORE bounding so the listed sample is deterministic, then bound.
-  const bound = (list) => list.slice().sort(byPath).slice(0, MAX_REPORTED_PER_BUCKET);
+  const bound = (list) => list.slice().sort(byPath).slice(0, caps.maxReportedPerBucket);
 
   const blockedTotal = sum(ctx.blockedTotals);
   const blocked = bound(ctx.blocked);
   const notFollowed = bound(ctx.notFollowed);
   const pruned = bound(ctx.pruned);
   const exclusions = [...ctx.exclusions].sort(byPath);
-  const findings = [...ctx.findings].sort((a, b) => a.dir.localeCompare(b.dir));
+  const allFindings = [...ctx.findings].sort((a, b) => a.dir.localeCompare(b.dir));
+  // Findings are bounded too. They were the one list left unbounded, and a
+  // hostile or merely enormous tree could put 200,000 of them in one report
+  // (cross-host review). Bounding cannot change the STATUS — `findings_present`
+  // keys on the total below, and a truncated non-empty list is still non-empty.
+  const findingsTotal = allFindings.length;
+  const findings = allFindings.slice(0, caps.maxReportedPerBucket);
 
   // `scan_complete` describes the TRAVERSAL: every root was walked to its end
   // without a cap or the budget cutting it short. It is deliberately separate
   // from `blocked` — a scan can run to completion and still have failed to open
   // three directories, and the status function requires BOTH.
   const scanComplete = ctx.exhausted === false;
-  // Status is decided from the TOTAL, not from the bounded sample: bounding must
-  // never be able to turn a blocked scan into a clean one. (It cannot today —
-  // bounding a non-empty list leaves it non-empty — but deriving the decision
-  // from the display would make that an accident rather than a property.)
-  const status = resolveDiscoveryStatus({
-    scanComplete,
-    blocked: blockedTotal === 0 ? [] : blocked,
-    findings,
-  });
+  // The count and the display list are passed separately, because bounding must
+  // never be able to turn a blocked scan into a clean one.
+  const status = resolveDiscoveryStatus({ scanComplete, blocked, blockedTotal, findings: allFindings });
 
   return {
     schema_version: LEGACY_EGRESS_DISCOVERY_SCHEMA,
@@ -644,18 +794,30 @@ export async function discoverLegacyEgressIntents({
         max_entries_per_dir: caps.maxEntriesPerDir,
         max_dirs: caps.maxDirs,
         time_budget_ms: caps.timeBudgetMs,
-        max_reported_per_bucket: MAX_REPORTED_PER_BUCKET,
+        max_reported_per_bucket: caps.maxReportedPerBucket,
       },
     },
     exclusions,
     findings,
+    findings_total: findingsTotal,
     overall: { status, guidance: guidanceFor(status) },
     residual: buildResidual({ roots, ctx, prunedTotal: sum(ctx.prunedTotals), notFollowedTotal: sum(ctx.notFollowedTotals) }),
     mutation_boundary: {
       writes_allowed: 'none',
       forbidden: [
-        'no file is created, moved, or removed by this command',
-        'no subprocess is spawned',
+        // Phrased WITHOUT a removal verb on purpose. The obvious wording ("no
+        // file is created, moved, or removed") put `removed` into every report,
+        // including incomplete ones where the contract is that no removal verb
+        // appears at all. The alternative was to carve the mutation-boundary
+        // block out of that check — and a carve-out is exactly where a real leak
+        // would later hide. Rewording keeps the property literally true.
+        'this command makes no change to any file or directory',
+        // Scoped honestly rather than claimed absolutely. The SCAN spawns no
+        // subprocess — that is the ADR-0035 R0 condition. The `/runtime:migrate`
+        // wrapper does run `git rev-parse` to resolve the repo root, as every
+        // runtime command does, and a flat "spawns nothing" was false at the
+        // surface the operator actually invokes (cross-host review).
+        'the scan spawns no subprocess (the /runtime:migrate wrapper resolves the repo root with git rev-parse, like every runtime command)',
         'no record body is read',
         'no shell command is generated for the operator to run',
       ],
@@ -774,14 +936,20 @@ export function renderDiscoveryText(report) {
   if (report.exclusions.length === 0) lines.push('- (none)');
   for (const entry of report.exclusions) lines.push(`- ${entry.path} — ${entry.reason}`);
   lines.push('');
-  lines.push(`Findings (${report.findings.length})`);
-  if (report.findings.length === 0) lines.push('- (none in the scanned scope)');
+  lines.push(`Findings (${report.findings_total})`);
+  if (report.findings_total === 0) lines.push('- (none in the scanned scope)');
   for (const finding of report.findings) {
     const count = finding.record_count === null ? 'unknown' : String(finding.record_count);
     lines.push(`- ${finding.dir}`);
     lines.push(`  checkout: ${finding.checkout_root}`);
-    lines.push(`  records: ${count}${finding.unreadable ? ` (unreadable — ${finding.unreadable_reason})` : ''}${finding.already_fenced_by_current_doctor ? '; already fenced by the current checkout’s doctor' : ''}`);
+    lines.push(`  records: ${count}${finding.unreadable ? ` (INCOMPLETE — ${finding.unreadable_reason})` : ''}${finding.already_fenced_by_current_doctor ? '; already fenced by the current checkout’s doctor' : ''}`);
     for (const record of finding.records) lines.push(`    ${record.name} [${record.kind}]`);
+    if (finding.record_count !== null && finding.record_count > finding.records_listed) {
+      lines.push(`    … and ${finding.record_count - finding.records_listed} more (listing bounded; the count above is exact)`);
+    }
+  }
+  if (report.findings_total > report.findings.length) {
+    lines.push(`- … and ${report.findings_total - report.findings.length} more location(s) (listing bounded; the count above is exact)`);
   }
   lines.push('');
   lines.push('Guidance');

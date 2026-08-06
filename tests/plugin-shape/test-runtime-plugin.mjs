@@ -592,11 +592,45 @@ describe('plugins/runtime migrate surface', () => {
     ok(!legacyEntry.includes('legacy-egress-intents'));
   });
 
-  it('the doctor legacy blocker points at the discovery command instead of leaving the operator to invent a search', async () => {
+  it('the doctor legacy blocker still carries the quiesce wording', async () => {
+    // The BEHAVIOURAL assertion — that the emitted blocker names
+    // `runtime:migrate legacy-egress-intents` — lives in tests/runtime/
+    // test-doctor.mjs, against the produced string. This one only pins the
+    // wording, and deliberately does not re-assert the command name: a
+    // whole-source scan is satisfied by a mention in a comment.
     const doctor = await readFile(resolve(PLUGIN_ROOT, 'scripts/doctor.mjs'), 'utf-8');
-    ok(doctor.includes('runtime:migrate legacy-egress-intents'), 'the same-checkout blocker names the machine-scoped inventory');
-    // …and it still carries the quiesce wording rather than a flat delete.
     ok(doctor.includes('Make sure no older proof is running, check the phone, then remove the specific records you reviewed'));
+  });
+
+  it('the shared egress WAL primitives have exactly ONE definition each', async () => {
+    // T1's guard. The extraction exists because `doctor.mjs` had grown a second
+    // inline copy of the four-component WAL path; without this, nothing stops a
+    // third from appearing in the next file that needs one, and a safety fix
+    // landing on one copy while the other keeps shipping is the failure this
+    // repository has hit repeatedly.
+    const dirs = ['scripts', 'scripts/lib'];
+    const definitions = { egressIntentDir: [], safeRecordName: [], safeOperatorText: [] };
+    const inlinePathShape = [];
+    for (const dir of dirs) {
+      const abs = resolve(PLUGIN_ROOT, dir);
+      for (const name of await readdir(abs)) {
+        if (!name.endsWith('.mjs')) continue;
+        const source = await readFile(resolve(abs, name), 'utf-8');
+        for (const symbol of Object.keys(definitions)) {
+          const defined = new RegExp(`(?:^|\\n)\\s*(?:export\\s+)?(?:async\\s+)?function\\s+${symbol}\\s*\\(|(?:^|\\n)\\s*(?:export\\s+)?const\\s+${symbol}\\s*=`);
+          if (defined.test(source)) definitions[symbol].push(`${dir}/${name}`);
+        }
+        // The path SHAPE spelled inline, which is the copy that actually
+        // appeared. `egress-intent-wal.mjs` is where it legitimately lives.
+        if (name !== 'egress-intent-wal.mjs' && /'runs'\s*,\s*'doctor'\s*,\s*'egress-intents'/.test(source)) {
+          inlinePathShape.push(`${dir}/${name}`);
+        }
+      }
+    }
+    for (const [symbol, files] of Object.entries(definitions)) {
+      deepStrictEqual(files, ['scripts/lib/egress-intent-wal.mjs'], `${symbol} must be defined once, in the shared lib (found in: ${files.join(', ') || 'nowhere'})`);
+    }
+    deepStrictEqual(inlinePathShape, [], 'the egress-intent directory shape is spelled inline outside the shared lib');
   });
 });
 

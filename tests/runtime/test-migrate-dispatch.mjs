@@ -130,11 +130,47 @@ describe('runtime:migrate dispatcher — workflow-storage compatibility', () => 
     deepStrictEqual(rest, ['--repo-root=/r']);
   });
 
-  it('--help prints one usage surface and exits zero', async () => {
+  it('bare --help describes BOTH subcommands, not just the default one', async () => {
+    // The first cut routed a subcommand-less `--help` to workflow-storage, so an
+    // operator asking what this command does was never told the read-only
+    // discovery subcommand exists.
     const res = await cli(DISPATCHER, ['--help']);
     strictEqual(res.code, 0, res.stderr);
-    match(res.stdout, /workflow-storage/);
-    match(res.stdout.replace(/\s+/g, ' '), /--apply moves legacy \.claude\/agentic-\* workflow state into/);
+    const flat = res.stdout.replace(/\s+/g, ' ');
+    match(flat, /workflow-storage/);
+    match(flat, /legacy-egress-intents/);
+    match(flat, /--apply moves legacy \.claude\/agentic-\* workflow state/);
+  });
+
+  it('an explicit subcommand --help still routes to that subcommand', async () => {
+    const res = await cli(DISPATCHER, ['workflow-storage', '--help']);
+    strictEqual(res.code, 0, res.stderr);
+    match(res.stdout.replace(/\s+/g, ' '), /Usage: migrate\.mjs \[workflow-storage\]/);
+  });
+
+  it('the direct entry point prints ITS OWN name in usage, not the dispatcher’s', async () => {
+    // A compatibility regression the refactor introduced: `--help` on the direct
+    // script told the operator to run a different file.
+    const res = await cli(LEGACY_ENTRY, ['--help']);
+    strictEqual(res.code, 0, res.stderr);
+    match(res.stdout, /Usage: migrate-workflow-storage\.mjs/);
+  });
+
+  it('a subcommand name eaten as a flag value is REFUSED, not silently defaulted', async () => {
+    // `--repo-root legacy-egress-intents --apply` is indistinguishable from a
+    // dropped flag value, and guessing costs a workflow-storage APPLY against a
+    // repo root that does not exist.
+    const res = await cli(DISPATCHER, ['--repo-root', 'legacy-egress-intents', '--apply']);
+    strictEqual(res.code, 1);
+    match(res.stderr, /ambiguous: 'legacy-egress-intents' is a subcommand name but was read as the value of --repo-root/);
+    match(res.stderr, /write --repo-root=legacy-egress-intents/);
+  });
+
+  it('the inline form disambiguates it without ceremony', () => {
+    const { subcommand, explicit, consumedAsValue } = splitSubcommand(['--repo-root=legacy-egress-intents', '--apply']);
+    strictEqual(subcommand, 'workflow-storage');
+    strictEqual(explicit, false);
+    deepStrictEqual(consumedAsValue, [], 'the inline form consumes no following element');
   });
 
   it('a blocked --apply exits 1 through the dispatcher', async () => {
@@ -176,9 +212,15 @@ describe('runtime:migrate dispatcher — legacy-egress-intents is read-only', ()
     it(`${flag} exits nonzero BEFORE any workflow migration code runs`, async () => {
       const root = await seedLegacyOnlyRepo();
       const before = await treeDigest(root);
+      // `--root root` and a tiny budget are scoping, not part of the property:
+      // the refusal must happen during PARSING, so no scan should start at all.
+      // They exist so that when this refusal is mutated away the fallback run is
+      // a millisecond scan of an empty temp dir rather than a 120s walk of the
+      // real `$HOME` — measured at 121s before they were added.
+      const scoping = ['--root', root, '--time-budget-ms', '50'];
       const args = flag === '--plugin'
-        ? ['--repo-root', root, 'legacy-egress-intents', '--plugin', 'engineer']
-        : ['--repo-root', root, 'legacy-egress-intents', '--apply'];
+        ? ['--repo-root', root, 'legacy-egress-intents', ...scoping, '--plugin', 'engineer']
+        : ['--repo-root', root, 'legacy-egress-intents', ...scoping, '--apply'];
       const res = await cli(DISPATCHER, args);
       strictEqual(res.code, 1);
       match(res.stderr, new RegExp(`${flag} is not accepted by legacy-egress-intents`));

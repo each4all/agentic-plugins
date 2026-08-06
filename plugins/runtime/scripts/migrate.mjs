@@ -60,6 +60,12 @@ export function splitSubcommand(argv) {
   const known = new Set(MIGRATE_SUBCOMMANDS);
   const rest = [];
   let subcommand = null;
+  // A subcommand NAME that was eaten as a flag's value. Legitimate when a
+  // directory is really called that; a typo when the operator dropped the flag's
+  // value (`--repo-root legacy-egress-intents --apply` silently becomes a
+  // workflow-storage APPLY against a repo root that does not exist). The two are
+  // indistinguishable from argv, so the caller refuses and asks — see below.
+  const consumedAsValue = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (subcommand === null && known.has(arg)) {
@@ -69,11 +75,18 @@ export function splitSubcommand(argv) {
     rest.push(arg);
     // `--flag value` consumes the next element; `--flag=value` does not.
     if (VALUE_FLAGS.has(arg) && i + 1 < argv.length) {
-      rest.push(argv[i + 1]);
+      const value = argv[i + 1];
+      if (known.has(value)) consumedAsValue.push({ flag: arg, value });
+      rest.push(value);
       i += 1;
     }
   }
-  return { subcommand: subcommand ?? DEFAULT_SUBCOMMAND, explicit: subcommand !== null, rest };
+  return {
+    subcommand: subcommand ?? DEFAULT_SUBCOMMAND,
+    explicit: subcommand !== null,
+    consumedAsValue,
+    rest,
+  };
 }
 
 export function migrateUsage() {
@@ -89,7 +102,9 @@ export function migrateUsage() {
     '  [--repo-root <path>] [--format text|json] [--root <path>]... [--skip <path>]...',
     `  [--max-depth <n>] [--time-budget-ms <n>]`,
     '  READ-ONLY machine-scoped discovery of pre-upgrade egress intent WALs.',
-    '  Writes nothing, spawns nothing, and never generates a shell command.',
+    '  Writes nothing, reads no record body, and never generates a shell command.',
+    '  The scan spawns no subprocess (the /runtime:migrate wrapper resolves the',
+    '  repo root with git rev-parse, like every runtime command).',
     '  --root REPLACES the default $HOME root; --skip excludes a subtree by identity.',
     `  Defaults: max-depth=${DEFAULT_DISCOVERY_CAPS.maxDepth}, time-budget-ms=${DEFAULT_DISCOVERY_CAPS.timeBudgetMs}.`,
     '  Exit: 0 = nothing found in scope, 2 = locations found, 1 = scan incomplete.',
@@ -123,10 +138,15 @@ export function parseDiscoveryArgs(argv) {
     if (value === undefined || value.startsWith('--')) throw new Error(`${flag} requires a value`);
     return value;
   };
-  const readInt = (raw, flag, min) => {
+  const readInt = (raw, flag, min, max) => {
     if (!/^\d+$/.test(raw)) throw new Error(`${flag} must be a non-negative integer (got ${raw})`);
     const n = Number(raw);
+    // A 20-digit run of ASCII digits passes the regex and lands outside the safe
+    // integer range, where comparisons stop meaning what they read as. Bound it
+    // at both ends (cross-host review).
+    if (!Number.isSafeInteger(n)) throw new Error(`${flag} is too large to be represented exactly (got ${raw})`);
     if (n < min) throw new Error(`${flag} must be at least ${min}`);
+    if (n > max) throw new Error(`${flag} must be at most ${max}`);
     return n;
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -157,10 +177,10 @@ export function parseDiscoveryArgs(argv) {
         opts.skips.push(value());
         break;
       case '--max-depth':
-        opts.maxDepth = readInt(value(), '--max-depth', 0);
+        opts.maxDepth = readInt(value(), '--max-depth', 0, 256);
         break;
       case '--time-budget-ms':
-        opts.timeBudgetMs = readInt(value(), '--time-budget-ms', 1);
+        opts.timeBudgetMs = readInt(value(), '--time-budget-ms', 1, 24 * 60 * 60 * 1000);
         break;
       default:
         throw new Error(`unknown argument: ${arg}`);
@@ -190,7 +210,12 @@ async function runDiscoveryCli(argv) {
   const report = await discoverLegacyEgressIntents({
     requestedRoots: opts.roots,
     skipPaths: opts.skips,
-    repoRoot: opts.repoRoot,
+    // Defaults to the working directory, matching what `migrate-workflow-storage`
+    // does with the same flag. Without it, a direct run left `repoRoot` null and
+    // the current checkout could never be annotated `already_fenced_by_current_
+    // doctor` — the one annotation that tells the operator "doctor already
+    // fences this one" (cross-host review).
+    repoRoot: opts.repoRoot ?? process.cwd(),
     caps: { maxDepth: opts.maxDepth, timeBudgetMs: opts.timeBudgetMs },
   });
   const output = opts.format === 'json' ? renderDiscoveryJson(report) : renderDiscoveryText(report).replace(/\n$/, '');
@@ -200,7 +225,25 @@ async function runDiscoveryCli(argv) {
 // --- dispatch ---------------------------------------------------------------
 
 export async function runMigrateCli(argv) {
-  const { subcommand, rest } = splitSubcommand(argv);
+  const { subcommand, explicit, consumedAsValue, rest } = splitSubcommand(argv);
+  // `--help` with no subcommand belongs to the DISPATCHER, not to whichever
+  // subcommand happens to be the default — an operator asking what this command
+  // can do was previously shown workflow-storage's help with no mention that a
+  // second subcommand exists (cross-host review).
+  if (!explicit && (argv.includes('--help') || argv.includes('-h'))) {
+    return { ok: true, output: migrateUsage(), exitCode: 0 };
+  }
+  // Refuse the ambiguous shape rather than guessing. Guessing costs a
+  // workflow-storage `--apply` against the wrong root; refusing costs one
+  // retype, and the inline form disambiguates it without ceremony.
+  if (!explicit && consumedAsValue.length > 0) {
+    const { flag, value } = consumedAsValue[0];
+    return {
+      ok: false,
+      reason: `ambiguous: '${value}' is a subcommand name but was read as the value of ${flag}, so no subcommand was given and '${DEFAULT_SUBCOMMAND}' would run instead. If '${value}' is really the ${flag} value, write ${flag}=${value}; if you meant the subcommand, give ${flag} its own value first.`,
+      usage: migrateUsage(),
+    };
+  }
   if (subcommand === 'legacy-egress-intents') return runDiscoveryCli(rest);
   const res = await runWorkflowStorageCli(rest);
   // The workflow-storage runner owns its own usage text; surface that one rather

@@ -786,9 +786,13 @@ function readFlagValue(argv, index, flag) {
   return value;
 }
 
-export function workflowStorageUsage() {
+// `invokedAs` keeps the direct entry point printing its OWN name. The first cut
+// hardcoded `migrate.mjs`, so `node migrate-workflow-storage.mjs --help` told
+// the operator to run a different file — a compatibility regression on the very
+// surface this refactor promised to preserve (cross-host review).
+export function workflowStorageUsage(invokedAs = 'migrate.mjs') {
   return [
-    'Usage: migrate.mjs [workflow-storage] [--repo-root <path>]',
+    `Usage: ${invokedAs} [workflow-storage] [--repo-root <path>]`,
     '  [--format text|json] [--plugin all|engineer|orchestrator] [--apply]',
     '',
     'Dry-run is the default. --apply moves legacy .claude/agentic-* workflow',
@@ -804,14 +808,14 @@ export function workflowStorageUsage() {
 // Deliberately NOT re-implemented in the dispatcher: two copies of an
 // exit-code rule diverge, and one of them decides whether an APPLY that hit a
 // blocker looks like success to a script.
-export async function runWorkflowStorageCli(argv) {
+export async function runWorkflowStorageCli(argv, { invokedAs } = {}) {
   let opts;
   try {
     opts = parseArgs(argv);
   } catch (err) {
-    return { ok: false, reason: err.message, usage: workflowStorageUsage() };
+    return { ok: false, reason: err.message, usage: workflowStorageUsage(invokedAs) };
   }
-  if (opts.help) return { ok: true, output: workflowStorageUsage(), exitCode: 0 };
+  if (opts.help) return { ok: true, output: workflowStorageUsage(invokedAs), exitCode: 0 };
   const report = await runWorkflowStorageMigration(opts);
   const output = opts.format === 'json' ? `${JSON.stringify(report, null, 2)}` : formatText(report).replace(/\n$/, '');
   const blockedApply = opts.apply && report.overall.status === 'blocked';
@@ -819,7 +823,7 @@ export async function runWorkflowStorageCli(argv) {
 }
 
 async function main() {
-  const res = await runWorkflowStorageCli(process.argv.slice(2));
+  const res = await runWorkflowStorageCli(process.argv.slice(2), { invokedAs: 'migrate-workflow-storage.mjs' });
   if (!res.ok) {
     process.stderr.write(`runtime:migrate workflow-storage: ${res.reason}\n`);
     process.stderr.write(`${res.usage}\n`);

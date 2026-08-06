@@ -72,8 +72,9 @@ node "$RUNTIME_ROOT/scripts/migrate.mjs" --repo-root "$REPO_ROOT" legacy-egress-
   directories the budget left unwalked.
 - Exit codes: `0` nothing found in the scanned scope, `2` locations found,
   `1` the scan did not complete.
-- Writes nothing, spawns no subprocess, reads no record body, and never emits
-  a shell command for the operator to run.
+- Writes nothing, reads no record body, and never emits a shell command for the
+  operator to run. The scan itself spawns no subprocess; the wrapper above runs
+  `git rev-parse` to resolve the repo root, as every runtime command does.
 
 **How to act on a finding.** The guidance is uniform for every location and
 its unit is the individual record, not the directory. A pre-upgrade record may

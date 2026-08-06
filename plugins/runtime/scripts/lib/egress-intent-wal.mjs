@@ -70,7 +70,12 @@ export function isDisplayHazard(codePoint) {
     || codePoint === 0x200d || codePoint === 0xfeff  // ZWJ / BOM
     || (codePoint >= 0x200e && codePoint <= 0x200f)  // LRM / RLM
     || (codePoint >= 0x202a && codePoint <= 0x202e)  // bidi embedding/override
-    || (codePoint >= 0x2066 && codePoint <= 0x2069); // bidi isolates
+    || (codePoint >= 0x2066 && codePoint <= 0x2069)  // bidi isolates
+    // U+2028/U+2029 are LINE and PARAGRAPH SEPARATOR. They are not C0, so the
+    // list above missed them (cross-host review), and terminals and log viewers
+    // break lines on them — which is the whole forged-instruction hazard the C0
+    // newline entry exists to stop.
+    || codePoint === 0x2028 || codePoint === 0x2029;
 }
 
 // The alphabet this WAL actually writes: hex fingerprints, hex owner tokens,
@@ -94,8 +99,17 @@ const EGRESS_SAFE_NAME_RE = /^[0-9A-Za-z._-]{1,128}$/;
 export function safeRecordName(name) {
   const text = String(name);
   if (EGRESS_SAFE_NAME_RE.test(text)) return text;
-  const defused = [...text.slice(0, 96)].map((ch) => (ch >= ' ' && ch <= '~' ? ch : '?')).join('');
-  return `${defused} [name shown defused — it carries characters this WAL never writes]`;
+  const head = [...text].slice(0, 96);
+  const defused = head.map((ch) => (ch >= ' ' && ch <= '~' ? ch : '?')).join('');
+  // TRUNCATION NEEDS THE HASH TOO. This branch cut at 96 characters with no
+  // discriminator, so two different long names sharing a 96-character prefix
+  // rendered identically — and the operator is being asked to act on ONE named
+  // record. `safeOperatorText` already carried the hash; this copy did not,
+  // which is the same one-of-two-copies-learned-it shape that made merging the
+  // hazard predicate worthwhile in the first place.
+  const truncated = head.length < [...text].length;
+  const digest = truncated ? `; truncated, sha256:${createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12)}` : '';
+  return `${defused} [name shown defused — it carries characters this WAL never writes${digest}]`;
 }
 
 // How much of a path is shown before it is truncated.

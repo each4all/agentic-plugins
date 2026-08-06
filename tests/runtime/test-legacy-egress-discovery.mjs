@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  CHECKOUT_MARKER,
   DISCOVERY_EXIT_CODES,
   DISCOVERY_STATUS,
   GUIDANCE,
@@ -134,15 +135,48 @@ class FakeFs {
   }
 }
 
-// A fixed clock so the time budget is exercised deterministically instead of by
-// racing a real one.
-function steppingClock(stepMs) {
-  let t = 0;
-  return () => { const now = t; t += stepMs; return now; };
+// A scripted clock, so the budget can be tripped at an EXACT point in the call
+// sequence rather than by racing a real one. The deadline is now checked both
+// between directories and inside the entry loop, and those are different
+// properties that need to be provoked separately.
+function scriptedClock(values) {
+  let i = 0;
+  return () => values[Math.min(i++, values.length - 1)];
 }
 
 const HOME = '/home/op';
 const LIVE_WAL = egressIntentDir(HOME);
+
+// Every word that could be read as "act on this by taking it away".
+//
+// Deliberately over-broad, and WIDER than the first cut: that one listed
+// `remove` but not `removed`, so the report's own `no file is … removed by this
+// command` slipped past a check that claimed no removal verb appeared at all,
+// and `clear` — the verb `doctor.mjs` uses for exactly this domain — was absent.
+// A cross-host review found both. If a future edit puts any of these into an
+// incomplete report, the test fails and the author must justify it.
+const REMOVAL_VERBS = /\b(remove[ds]?|removing|removal|delete[ds]?|deleting|deletion|unlink(ed|s)?|eras(e|ed|ing)|purg(e|ed|ing)|discard(ed|s)?|clear(ed|s|ing)?|rm|rmdir)\b/i;
+// A generated shell command in ANY form. The first cut required `rm` to be
+// followed by `-`, so a bare `rm /path` was invisible to it.
+const SHELL_SHAPE = /(^|\s)(rm|rmdir|find|xargs|unlink)\s+\S|\$\(|`[^`]*`|\|\s*(sh|bash|zsh)\b/;
+
+// Every run goes through a seam that TRAPS a body read. The scanner is supposed
+// to touch directory metadata and Dirents only; without a trap, an
+// implementation that opened and discarded every record would pass every
+// assertion in this file (cross-host review). `open`/`readFile`/`readdir` are
+// not part of the injected contract, so reaching for one is an escape from the
+// seam, and that is what these throw on.
+function trappedOps(fs) {
+  const base = fs.ops;
+  const trap = (name) => () => { throw new Error(`the scanner reached for ${name} — it must read no record body`); };
+  return {
+    ...base,
+    open: trap('open'),
+    readFile: trap('readFile'),
+    readdir: trap('readdir'),
+    createReadStream: trap('createReadStream'),
+  };
+}
 
 async function run(fs, overrides = {}) {
   return discoverLegacyEgressIntents({
@@ -150,7 +184,7 @@ async function run(fs, overrides = {}) {
     host: 'test-host',
     now: new Date('2026-08-06T00:00:00Z'),
     runtimeVersion: '9.9.9',
-    ops: fs.ops,
+    ops: trappedOps(fs),
     clock: () => 0,
     ...overrides,
   });
@@ -189,6 +223,19 @@ describe('legacy-egress discovery — status is total over its input (T4)', () =
     ['findings undefined', { scanComplete: true, blocked: [], findings: undefined }],
     ['complete=true beside a non-empty blocked', { scanComplete: true, blocked: [{ path: 'p' }], findings: [] }],
     ['no arguments at all', undefined],
+    // The COUNT is a separate argument from the display list, so it gets the
+    // same total-over-input treatment.
+    ['blockedTotal is a string', { scanComplete: true, blocked: [], blockedTotal: '0', findings: [] }],
+    ['blockedTotal is negative', { scanComplete: true, blocked: [], blockedTotal: -1, findings: [] }],
+    ['blockedTotal is null', { scanComplete: true, blocked: [], blockedTotal: null, findings: [] }],
+    ['blockedTotal is NaN', { scanComplete: true, blocked: [], blockedTotal: NaN, findings: [] }],
+    ['blockedTotal is fractional', { scanComplete: true, blocked: [], blockedTotal: 0.5, findings: [] }],
+    ['an EMPTY display list beside a non-zero count', { scanComplete: true, blocked: [], blockedTotal: 1, findings: [] }],
+    // The row the first matrix was missing: an INCOMPLETE scan that also found
+    // things. A rule that returned `findings_present` before testing
+    // `scanComplete` would satisfy every other row here (cross-host review).
+    ['incomplete scan WITH findings', { scanComplete: false, blocked: [], findings: [{ dir: 'x' }] }],
+    ['blocked scan WITH findings', { scanComplete: true, blocked: [{ path: 'p' }], findings: [{ dir: 'x' }] }],
   ];
   for (const [label, input] of malformed) {
     it(`fails closed to incomplete: ${label}`, () => {
@@ -352,39 +399,84 @@ describe('legacy-egress discovery — streaming walker (T3)', () => {
     strictEqual(report.overall.status, DISCOVERY_STATUS.none, 'a prune is a printed boundary, not a demotion');
   });
 
-  it('the time budget reports the WHOLE unwalked remainder, not just one path', async () => {
+  it('a budget that expires BETWEEN directories reports the whole queued remainder', async () => {
     const children = Array.from({ length: 6 }, (_, i) => ({ name: `d${i}`, kind: 'dir' }));
     const fs = new FakeFs().dir(HOME, children);
     for (const e of children) fs.dir(`${HOME}/${e.name}`, []);
-    // 10ms per clock read; a 15ms budget expires after the root is walked.
-    const report = await run(fs, { clock: steppingClock(10), caps: { timeBudgetMs: 15 } });
+    // Call order: started, walk-top, then one per entry (6). The 9th read — the
+    // walk-top check for the first child — is the first past the deadline, so
+    // the root is listed in full and all six children are still queued.
+    const clock = scriptedClock([0, 0, 0, 0, 0, 0, 0, 0, 999]);
+    const report = await run(fs, { clock, caps: { timeBudgetMs: 15 } });
     strictEqual(report.scan.complete, false);
     strictEqual(report.scan.ended_early_because, 'time-budget');
     strictEqual(report.scan.pruned_by_reason['time-budget'], 6, 'all six queued directories are counted');
     strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
   });
 
-  it('a descendant directory symlink is a reported boundary, not followed and not blocked', async () => {
+  it('a budget that expires INSIDE a listing names that directory as unfinished', async () => {
+    // The between-directories check alone let one directory with an enormous
+    // listing on a slow mount run far past the deadline while the report still
+    // said the walk completed.
+    const children = Array.from({ length: 6 }, (_, i) => ({ name: `d${i}`, kind: 'dir' }));
+    const fs = new FakeFs().dir(HOME, children);
+    for (const e of children) fs.dir(`${HOME}/${e.name}`, []);
+    // The 4th read is the second entry of the root listing.
+    const clock = scriptedClock([0, 0, 0, 999]);
+    const report = await run(fs, { clock, caps: { timeBudgetMs: 15 } });
+    strictEqual(report.scan.complete, false);
+    strictEqual(report.scan.ended_early_because, 'time-budget');
+    ok(report.scan.pruned.some((p) => p.path === HOME && p.reason === 'time-budget'),
+      'the directory whose listing was cut short is named');
+    strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
+  });
+
+  it('EVERY descendant symlink is a reported boundary, and none is dereferenced', async () => {
+    // An earlier cut `stat`ed each symlink to report only the directory ones.
+    // That dereferences the link — it can block on the very remote mount the
+    // budget exists to survive, can reach outside the scanned root, and on stat
+    // FAILURE dropped the boundary from the report entirely. So no descendant
+    // symlink is dereferenced and all of them are boundaries, dangling ones
+    // included.
     const fs = new FakeFs()
-      .dir(HOME, [{ name: 'linked', kind: 'symlink-dir' }])
+      .dir(HOME, [
+        { name: 'linked', kind: 'symlink-dir' },
+        { name: 'lib.so', kind: 'symlink-file' },
+        { name: 'dangling', kind: 'symlink-dir' },
+      ])
       .dir('/target', [{ name: '.agentic-plugins', kind: 'dir' }])
       .wal('/target', [{ name: 'r.json', kind: 'file' }])
       .link(`${HOME}/linked`, '/target');
-    const report = await run(fs);
-    strictEqual(report.scan.not_followed_total, 1);
-    strictEqual(report.scan.not_followed[0].path, `${HOME}/linked`);
-    strictEqual(report.scan.blocked_total, 0);
-    strictEqual(report.findings.length, 0, 'the symlinked subtree was not enumerated');
+    // A `stat` on any of the three would be a dereference; make it observable.
+    let statted = [];
+    const ops = fs.ops;
+    const watched = { ...ops, async stat(p) { statted.push(p); return ops.stat(p); } };
+
+    const report = await run(fs, { ops: watched });
+    strictEqual(report.scan.not_followed_total, 3, 'file and dangling symlinks are boundaries too');
+    strictEqual(report.scan.blocked_total, 0, 'a boundary is not a failure');
+    strictEqual(report.findings_total, 0, 'the symlinked subtree was not enumerated');
     strictEqual(report.overall.status, DISCOVERY_STATUS.none);
+    for (const name of ['linked', 'lib.so', 'dangling']) {
+      strictEqual(statted.includes(`${HOME}/${name}`), false, `${name} was dereferenced`);
+    }
   });
 
-  it('a symlink that is NOT a directory is not listed as a boundary at all', async () => {
+  it('a MARKER that is a symlink is a boundary, not a hit — its suffix is never resolved', async () => {
+    // `stat`ing the fixed suffix under a symlinked marker resolves through it and
+    // then `opendir`s outside the scanned root, while `not_followed` stayed 0.
     const fs = new FakeFs()
-      .dir(HOME, [{ name: 'lib.so', kind: 'symlink-file' }]);
-    fs.ids.set('/somefile', [1, 999]);
-    fs.link(`${HOME}/lib.so`, '/somefile');
+      .dir(HOME, [{ name: CHECKOUT_MARKER, kind: 'symlink-dir' }])
+      .dir('/elsewhere', [])
+      .wal('/elsewhere', [{ name: 'r.json', kind: 'file' }]);
+    fs.link(`${HOME}/${CHECKOUT_MARKER}`, '/elsewhere/.agentic-plugins');
+    fs.ids.set(`${HOME}/${CHECKOUT_MARKER}/runs/doctor/egress-intents`, fs.ids.get(`/elsewhere/${WAL_REL}`));
+    fs.dirs.set(`${HOME}/${CHECKOUT_MARKER}/runs/doctor/egress-intents`, [{ name: 'r.json', kind: 'file' }]);
+
     const report = await run(fs);
-    strictEqual(report.scan.not_followed_total, 0);
+    strictEqual(report.findings_total, 0, 'a symlinked marker must not reach outside the root');
+    strictEqual(report.scan.not_followed_total, 1);
+    strictEqual(report.overall.status, DISCOVERY_STATUS.none);
   });
 
   it('node_modules and .git are pruned by name', async () => {
@@ -460,17 +552,50 @@ describe('legacy-egress discovery — findings model (T5)', () => {
     strictEqual(report.findings[0].already_fenced_by_current_doctor, false);
   });
 
-  it('an UNREADABLE candidate is reported with an unknown count and no record detail', async () => {
+  // The three ways a candidate's contents can be incomplete. All of them must
+  // reach the SAME place: reported as a location, and no removal instruction
+  // anywhere in the output — the operator cannot have reviewed records that were
+  // never listed.
+  const incompleteCandidates = [
+    ['unlistable (EACCES)', (fs) => fs.failOpendir(`${HOME}/x/${WAL_REL}`, 'EACCES')],
+    ['vanished between discovery and listing', (fs) => fs.failOpendir(`${HOME}/x/${WAL_REL}`, 'ENOENT')],
+    ['listing failed mid-scan', (fs) => fs.failMidScan(`${HOME}/x/${WAL_REL}`, 1, 'EIO')],
+  ];
+  for (const [label, injure] of incompleteCandidates) {
+    it(`an INCOMPLETE candidate (${label}) is reported but receives NO removal instruction`, async () => {
+      const fs = new FakeFs()
+        .dir(HOME, [{ name: 'x', kind: 'dir' }])
+        .dir(`${HOME}/x`, [{ name: '.agentic-plugins', kind: 'dir' }])
+        .wal(`${HOME}/x`, [{ name: 'a.json', kind: 'file' }, { name: 'b.json', kind: 'file' }]);
+      injure(fs);
+      const report = await run(fs);
+      strictEqual(report.findings_total, 1, 'the LOCATION is still reported — that is what the operator needs');
+      strictEqual(report.findings[0].unreadable, true);
+      strictEqual(report.findings[0].record_count, null, 'unknown, never a partial count presented as whole');
+      // The decisive assertions. The first cut recorded `unreadable` and stopped,
+      // leaving the report at findings_present — whose guidance says "manually
+      // remove the specific records you reviewed" for a directory that was never
+      // listed.
+      strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
+      ok(report.scan.blocked_total >= 1, 'an unlistable candidate demotes the scan');
+      for (const rendered of [renderDiscoveryText(report), renderDiscoveryJson(report)]) {
+        strictEqual(rendered.match(REMOVAL_VERBS), null, 'a removal instruction survived an incomplete candidate');
+      }
+    });
+  }
+
+  it('a candidate holding a huge listing is capped on ENTRIES SEEN, not on records kept', async () => {
+    // The cap measured `records.length`, so a candidate full of non-`.json`
+    // entries was enumerated without bound and without a deadline ever acting.
+    const junk = Array.from({ length: 500 }, (_, i) => ({ name: `junk${i}.txt`, kind: 'file' }));
     const fs = new FakeFs()
       .dir(HOME, [{ name: 'x', kind: 'dir' }])
       .dir(`${HOME}/x`, [{ name: '.agentic-plugins', kind: 'dir' }])
-      .wal(`${HOME}/x`, [{ name: 'a.json', kind: 'file' }])
-      .failOpendir(`${HOME}/x/${WAL_REL}`, 'EACCES');
-    const report = await run(fs);
-    strictEqual(report.findings.length, 1, 'the LOCATION is still reported — that is what the operator needs');
+      .wal(`${HOME}/x`, junk);
+    const report = await run(fs, { caps: { maxEntriesPerDir: 10 } });
+    strictEqual(fs.yielded.get(`${HOME}/x/${WAL_REL}`), 11, 'iteration stopped one entry past the cap');
     strictEqual(report.findings[0].unreadable, true);
-    strictEqual(report.findings[0].record_count, null, 'unknown, never a partial count presented as whole');
-    deepStrictEqual(report.findings[0].records, []);
+    strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
   });
 
   it('an EMPTY matching directory has a known count of zero — a different answer from unknown', async () => {
@@ -543,13 +668,6 @@ describe('legacy-egress discovery — findings model (T5)', () => {
 
 // --- T6: the guidance contract ---------------------------------------------
 
-// Every word that could be read as "act on this by taking it away". The check is
-// deliberately over-broad: if a future edit introduces any of these into an
-// incomplete report, the test fails and the author must justify it.
-const REMOVAL_VERBS = /\b(remove|removing|removal|delete|deleting|deletion|unlink|erase|purge|discard|rm)\b/i;
-// A generated shell command in ANY form.
-const SHELL_SHAPE = /(^|\s)(rm|rmdir|find|xargs)\s+-|\$\(|`[^`]*`|\|\s*sh\b/;
-
 describe('legacy-egress discovery — guidance contract (T6)', () => {
   async function blockedReport() {
     const fs = new FakeFs()
@@ -600,9 +718,15 @@ describe('legacy-egress discovery — guidance contract (T6)', () => {
     }
   });
 
-  it('CONTROL — the shell-shape detector actually fires on a generated command', () => {
+  it('CONTROL — both detectors actually fire on the shapes they forbid', () => {
+    // Without this the "no removal verb / no shell command" assertions could be
+    // green because the patterns match nothing at all.
     ok(SHELL_SHAPE.test('run: rm -rf /home/op/x/.agentic-plugins'));
+    ok(SHELL_SHAPE.test('run: rm /home/op/x/a.json'), 'a bare rm without a flag must be caught');
     ok(SHELL_SHAPE.test('run: $(find ~ -name "*.json")'));
+    for (const phrase of ['files were removed', 'Clear the directory now', 'safe to delete', 'this deletes them', 'unlinked the record']) {
+      ok(REMOVAL_VERBS.test(phrase), `the removal-verb pattern missed: ${phrase}`);
+    }
   });
 
   it('the guidance is uniform: every finding gets the same possibly-in-flight wording', async () => {
@@ -638,11 +762,41 @@ describe('legacy-egress discovery — operator-facing text is defused (T7)', () 
     strictEqual(text.split('\n').some((l) => l.startsWith('>>> instruction')), false, 'a forged line reached the rendered output');
   });
 
-  it('a hostile ROOT and BLOCKED path are defused too, not only record names', async () => {
-    const fs = new FakeFs().dir(HOME, [{ name: EVIL, kind: 'dir' }]).dir(`${HOME}/${EVIL}`, []).failOpendir(`${HOME}/${EVIL}`, 'EACCES');
-    const report = await run(fs, { skipPaths: [EVIL] });
-    const joined = JSON.stringify([report.roots, report.scan.blocked]);
-    strictEqual(/\\u001b|\\n>>>/.test(joined), false, 'raw escape/newline survived into a blocked or root field');
+  it('EVERY operator-facing field is defused through the scanner, not just record names', async () => {
+    // The first version of this test named roots in its title but only inspected
+    // finding paths, and checked `safeRecordName` directly rather than through
+    // the scanner's wiring — so returning raw roots, raw exclusions, or a raw
+    // `entry.name` would all have survived it (cross-host review).
+    const fs = new FakeFs()
+      .dir(`/root${EVIL}`, [{ name: EVIL, kind: 'dir' }, { name: 'live', kind: 'dir' }, { name: 'bad', kind: 'dir' }])
+      .dir(`/root${EVIL}/${EVIL}`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`/root${EVIL}/${EVIL}`, [{ name: `rec${EVIL}.json`, kind: 'file' }])
+      .dir(`/root${EVIL}/live`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`/root${EVIL}/live`, [])
+      .dir(`/root${EVIL}/bad`, [])
+      .failOpendir(`/root${EVIL}/bad`, 'EACCES');
+    // Make the `live` candidate the machine-global WAL, so an EXCLUSION path is
+    // also produced from attacker-chosen text.
+    fs.dir(LIVE_WAL).alias(`/root${EVIL}/live/${WAL_REL}`, LIVE_WAL);
+
+    const report = await run(fs, { requestedRoots: [`/root${EVIL}`], skipPaths: [EVIL] });
+    const surfaces = {
+      roots: report.roots,
+      skips: report.skips,
+      blocked: report.scan.blocked,
+      not_followed: report.scan.not_followed,
+      pruned: report.scan.pruned,
+      exclusions: report.exclusions,
+      findings: report.findings,
+      guidance: report.overall.guidance,
+    };
+    // Nothing anywhere in the report may carry a raw control character.
+    const raw = JSON.stringify(surfaces);
+    strictEqual(/\\u001[bB]|\\n/.test(raw), false, `a raw escape or newline survived: ${raw.slice(0, 200)}`);
+    ok(report.exclusions.length > 0, 'the exclusion path was actually produced from hostile text');
+    ok(report.findings_total > 0, 'the finding path was actually produced from hostile text');
+    // …and the rendered text must not gain a forged line.
+    strictEqual(renderDiscoveryText(report).split('\n').some((l) => l.startsWith('>>> instruction')), false);
   });
 
   it('CONTROL — an ordinary path renders EXACTLY, including non-ASCII', () => {
@@ -697,7 +851,8 @@ describe('legacy-egress discovery — renderers and exit codes (T8)', () => {
     const report = await incompleteWithFindings();
     deepStrictEqual(Object.keys(report), [
       'schema_version', 'runtime_version', 'scanned_at', 'host', 'roots', 'skips',
-      'scan', 'exclusions', 'findings', 'overall', 'residual', 'mutation_boundary',
+      'scan', 'exclusions', 'findings', 'findings_total', 'overall', 'residual',
+      'mutation_boundary',
     ]);
     strictEqual(report.schema_version, LEGACY_EGRESS_DISCOVERY_SCHEMA);
     strictEqual(report.runtime_version, '9.9.9');
@@ -736,6 +891,43 @@ describe('legacy-egress discovery — renderers and exit codes (T8)', () => {
     strictEqual(report.scan.blocked_total, MAX_REPORTED_PER_BUCKET + 25);
     strictEqual(report.scan.blocked.length, MAX_REPORTED_PER_BUCKET);
     match(renderDiscoveryText(report), /… and 25 more \(listing bounded at 50; the count above is exact\)/);
+    // Bounding the DISPLAY must not change the verdict.
+    strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
+  });
+
+  it('findings and per-candidate record listings are bounded too, with exact counts', async () => {
+    const many = Array.from({ length: MAX_REPORTED_PER_BUCKET + 5 }, (_, i) => ({ name: `c${String(i).padStart(3, '0')}`, kind: 'dir' }));
+    const records = Array.from({ length: MAX_REPORTED_PER_BUCKET + 12 }, (_, i) => ({ name: `${String(i).padStart(3, '0')}.json`, kind: 'file' }));
+    const fs = new FakeFs().dir(HOME, many);
+    for (const e of many) {
+      fs.dir(`${HOME}/${e.name}`, [{ name: '.agentic-plugins', kind: 'dir' }]).wal(`${HOME}/${e.name}`, records);
+    }
+    const report = await run(fs);
+    strictEqual(report.findings_total, MAX_REPORTED_PER_BUCKET + 5);
+    strictEqual(report.findings.length, MAX_REPORTED_PER_BUCKET);
+    strictEqual(report.findings[0].record_count, MAX_REPORTED_PER_BUCKET + 12, 'the count is exact');
+    strictEqual(report.findings[0].records.length, MAX_REPORTED_PER_BUCKET, 'the listing is bounded');
+    const text = renderDiscoveryText(report);
+    match(text, /Findings \(55\)/);
+    match(text, /… and 12 more \(listing bounded; the count above is exact\)/);
+    match(text, /… and 5 more location\(s\)/);
+  });
+
+  it('the status is decided from the blocked TOTAL, never from the bounded display list', async () => {
+    // With the shipped bound of 50 the two can never disagree in the dangerous
+    // direction, so this property was untestable and the first guard written for
+    // it was wrong without any test noticing. Setting the bound to 0 produces
+    // exactly that disagreement — an empty listing beside a non-zero count — and
+    // a report that called it clean would be telling the operator nothing was
+    // wrong while it had failed to open a directory.
+    const fs = new FakeFs()
+      .dir(HOME, [{ name: 'x', kind: 'dir' }])
+      .dir(`${HOME}/x`, [])
+      .failOpendir(`${HOME}/x`, 'EACCES');
+    const report = await run(fs, { caps: { maxReportedPerBucket: 0 } });
+    deepStrictEqual(report.scan.blocked, [], 'the display list is empty at this bound');
+    strictEqual(report.scan.blocked_total, 1, 'the count is exact regardless of the bound');
+    strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
   });
 
   it('output ordering is deterministic across runs', async () => {
@@ -755,11 +947,32 @@ describe('legacy-egress discovery — renderers and exit codes (T8)', () => {
     deepStrictEqual(dirs, [...dirs].sort());
   });
 
-  it('the residual is stated in every format and every status', async () => {
-    for (const report of [await incompleteWithFindings(), await run(new FakeFs().dir(HOME, []))]) {
-      ok(report.residual.length >= 3);
-      match(renderDiscoveryText(report), /checkouts outside the scanned roots are not covered/);
-      match(renderDiscoveryJson(report), /checkouts outside the scanned roots are not covered/);
+  it('the residual is stated in every format and ALL THREE statuses', async () => {
+    // "Every status" previously meant two of the three, and checked one phrase.
+    const findingsOnly = new FakeFs()
+      .dir(HOME, [{ name: 'y', kind: 'dir' }])
+      .dir(`${HOME}/y`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`${HOME}/y`, [{ name: 'a.json', kind: 'file' }]);
+    const byStatus = {
+      [DISCOVERY_STATUS.incomplete]: await incompleteWithFindings(),
+      [DISCOVERY_STATUS.none]: await run(new FakeFs().dir(HOME, [])),
+      [DISCOVERY_STATUS.findings]: await run(findingsOnly),
+    };
+    deepStrictEqual(
+      Object.keys(byStatus).sort(),
+      Object.values(DISCOVERY_STATUS).sort(),
+      'the fixture set must cover the whole status enum',
+    );
+    for (const [expected, report] of Object.entries(byStatus)) {
+      strictEqual(report.overall.status, expected);
+      for (const phrase of [
+        /checkouts outside the scanned roots are not covered/,
+        /time budget is cooperative/,
+        /TOCTOU/,
+      ]) {
+        match(renderDiscoveryText(report), phrase);
+        match(renderDiscoveryJson(report), phrase);
+      }
     }
   });
 });
