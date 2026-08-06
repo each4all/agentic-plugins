@@ -4954,6 +4954,111 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     ok(report.egress_ack_proof.blockers.some((b) => /legacy egress intents/.test(b) && /cafe1234\.json/.test(b)), JSON.stringify(report.egress_ack_proof.blockers));
   });
 
+  it('R8a alias: the LIVE machine-global WAL reached through a second spelling is never reported as legacy', async () => {
+    // The legacy/live distinction was drawn by comparing resolved path STRINGS.
+    // When the repo root reaches the same directory as the home root by another
+    // spelling — a symlinked checkout, a case-variant on a case-folding volume —
+    // the two strings differ, so the live WAL was re-read as legacy and the
+    // operator was told to clear it. Freeing that fence is the duplicate send the
+    // WAL exists to prevent.
+    const { root, home } = await freshDirs();
+    const repoAlias = join(root, 'repo-alias');
+    await symlink(home, repoAlias);
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+
+    // A record in the LIVE WAL belonging to a DIFFERENT activation. The
+    // machine-global scan scopes it away by fingerprint; only the unscoped
+    // legacy branch could pick it up.
+    const liveDir = join(home, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    await mkdir(liveDir, { recursive: true });
+    await writeFile(
+      join(liveDir, `${'b'.repeat(64)}.json`),
+      JSON.stringify({ status: 'pending', activation_fingerprint: 'b'.repeat(64) }),
+    );
+
+    const calls = [];
+    const report = await runEgressDoctor({ repo: repoAlias, home, env, emitImpl: deliveredEmit(calls) });
+    const blockers = report.egress_ack_proof.blockers ?? [];
+    ok(
+      !blockers.some((b) => /legacy egress intents/.test(b)),
+      `the live WAL must not be reported as legacy: ${JSON.stringify(blockers)}`,
+    );
+    strictEqual(report.egress_ack_proof.status, 'passed', 'another activation\'s live record does not fence this one');
+
+    // CONTROL: a physically DISTINCT repo-scoped legacy dir still fences. Without
+    // this, "never reports legacy" would also be satisfied by deleting the check.
+    const { repo: otherRepo, home: otherHome } = await freshDirs();
+    const legacyDir = join(otherRepo, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    await mkdir(legacyDir, { recursive: true });
+    await writeFile(join(legacyDir, 'cafe1234.json'), JSON.stringify({ status: 'failed' }));
+    const control = await runEgressDoctor({ repo: otherRepo, home: otherHome, env, emitImpl: deliveredEmit([]) });
+    strictEqual(control.egress_ack_proof.status, 'blocked', 'a genuinely distinct legacy dir still fences');
+    ok(control.egress_ack_proof.blockers.some((b) => /legacy egress intents/.test(b)));
+  });
+
+  it('R8c: when the two WAL paths cannot be told apart, the send is refused rather than guessed', async () => {
+    // The third state. A filesystem that will not answer must resolve to neither
+    // branch: guessing "different" re-reads the live WAL as clearable legacy
+    // state, and guessing "same" silently drops a real legacy fence.
+    //
+    // The failure is injected with ENOTDIR, not chmod: a mode-000 fixture is
+    // readable as root, so on privileged CI it would skip and a mutant that
+    // dropped this branch would survive. Making a path COMPONENT a regular file
+    // fails the stat identically for every uid on every platform.
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    await mkdir(join(repo, '.agentic-plugins', 'runs'), { recursive: true });
+    await writeFile(join(repo, '.agentic-plugins', 'runs', 'doctor'), 'not a directory');
+
+    const calls = [];
+    const report = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit(calls) });
+    strictEqual(report.egress_ack_proof.status, 'blocked');
+    strictEqual(calls.length, 0, 'nothing is sent while the fence cannot be located');
+    // The SPECIFIC message matters, not merely that something blocked: without
+    // this branch the same fixture still blocks, via the unscannable-directory
+    // path, and an assertion on the status alone would not notice its removal.
+    ok(
+      report.egress_ack_proof.blockers.some((b) => /cannot be told apart/.test(b) && /ENOTDIR/.test(b)),
+      JSON.stringify(report.egress_ack_proof.blockers),
+    );
+  });
+
+  it('R8b: legacy record names are defused, and the blocker never advises deleting the directory', async () => {
+    // Two defects in one message. (1) The modern WAL scan defuses record names
+    // because a filename carrying a newline and an ANSI escape forged an
+    // instruction line; this branch still interpolated them raw. (2) A
+    // pre-upgrade pending record can carry no pid, and doctor deliberately reads
+    // missing process identity as UNKNOWN rather than dead — so "delete that
+    // directory" can be issued while an old sender is still running, which is
+    // the second delivery this fence exists to stop.
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const legacyDir = join(repo, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    await mkdir(legacyDir, { recursive: true });
+    // Built from char codes, following the modern WAL injection fixture below, so
+    // the fixture cannot be mangled by an editor or a copy-paste on the way in.
+    const NL = String.fromCharCode(10);
+    const ESC = String.fromCharCode(27);
+    const hostileName = `evil${NL}  >>> delete everything <<<${ESC}[31m.json`;
+    await writeFile(join(legacyDir, hostileName), JSON.stringify({ status: 'pending' }));
+
+    const report = await runEgressDoctor({ repo, home, env, emitImpl: deliveredEmit([]) });
+    strictEqual(report.egress_ack_proof.status, 'blocked');
+    const blocker = report.egress_ack_proof.blockers.find((b) => /legacy egress intents/.test(b));
+    ok(blocker, JSON.stringify(report.egress_ack_proof.blockers));
+
+    ok(!blocker.includes(NL), 'no raw newline may reach an operator line');
+    ok(!blocker.includes(ESC), 'no raw escape either');
+    ok(/defused/.test(blocker), 'and the operator is told the name was defused rather than silently mangled');
+
+    ok(!/delete that directory/i.test(blocker), 'whole-directory deletion is never advised');
+    ok(!/\brm\b/.test(blocker), 'no removal command is handed to the operator');
+    ok(
+      /still running|in flight|quiesce/i.test(blocker),
+      `the message must account for an old sender still running: ${blocker}`,
+    );
+  });
+
   it('kinds-filtered trace: the REAL emitter suppresses before dispatch and the executor records the honest failure', async () => {
     // No emitImpl — the real runEmit runs against the ephemeral temp repo.
     // The user-global notify config filters response-needed out, so the
