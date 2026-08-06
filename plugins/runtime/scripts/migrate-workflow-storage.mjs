@@ -786,9 +786,9 @@ function readFlagValue(argv, index, flag) {
   return value;
 }
 
-function usage() {
+export function workflowStorageUsage() {
   return [
-    'Usage: migrate-workflow-storage.mjs [workflow-storage] [--repo-root <path>]',
+    'Usage: migrate.mjs [workflow-storage] [--repo-root <path>]',
     '  [--format text|json] [--plugin all|engineer|orchestrator] [--apply]',
     '',
     'Dry-run is the default. --apply moves legacy .claude/agentic-* workflow',
@@ -796,21 +796,38 @@ function usage() {
   ].join('\n');
 }
 
+// The ONE implementation of this subcommand's argv → report → text → exit-code
+// contract. `migrate.mjs` dispatches to it and this file keeps its own entry
+// point below, so the direct path (`node migrate-workflow-storage.mjs …`) that
+// shipped in earlier versions keeps working with identical behavior.
+//
+// Deliberately NOT re-implemented in the dispatcher: two copies of an
+// exit-code rule diverge, and one of them decides whether an APPLY that hit a
+// blocker looks like success to a script.
+export async function runWorkflowStorageCli(argv) {
+  let opts;
+  try {
+    opts = parseArgs(argv);
+  } catch (err) {
+    return { ok: false, reason: err.message, usage: workflowStorageUsage() };
+  }
+  if (opts.help) return { ok: true, output: workflowStorageUsage(), exitCode: 0 };
+  const report = await runWorkflowStorageMigration(opts);
+  const output = opts.format === 'json' ? `${JSON.stringify(report, null, 2)}` : formatText(report).replace(/\n$/, '');
+  const blockedApply = opts.apply && report.overall.status === 'blocked';
+  return { ok: true, output, report, exitCode: blockedApply ? 1 : 0 };
+}
+
 async function main() {
-  const opts = parseArgs(process.argv.slice(2));
-  if (opts.help) {
-    process.stdout.write(`${usage()}\n`);
+  const res = await runWorkflowStorageCli(process.argv.slice(2));
+  if (!res.ok) {
+    process.stderr.write(`runtime:migrate workflow-storage: ${res.reason}\n`);
+    process.stderr.write(`${res.usage}\n`);
+    process.exitCode = 1;
     return;
   }
-  const report = await runWorkflowStorageMigration(opts);
-  if (opts.format === 'json') {
-    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  } else {
-    process.stdout.write(formatText(report));
-  }
-  if (opts.apply && report.overall.status === 'blocked') {
-    process.exitCode = 1;
-  }
+  if (res.output) process.stdout.write(`${res.output}\n`);
+  if (res.exitCode) process.exitCode = res.exitCode;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

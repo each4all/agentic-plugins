@@ -21,6 +21,7 @@ import { runEmit } from './notify.mjs';
 import { buildEventId, deriveRepoIdent } from './lib/notify-schema.mjs';
 import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
 import { sameDirectory } from './lib/path-containment.mjs';
+import { egressIntentDir, safeRecordName } from './lib/egress-intent-wal.mjs';
 import { EGRESS_ATTEMPT_HASH_DOMAIN, deriveActivationFingerprint } from './lib/evidence-contract.mjs';
 import { EGRESS_CREDENTIAL_ENV_VAR } from './lib/machine-profile.mjs';
 import { makePermissionAdvisoryArtifact, makePermissionRunId } from './lib/permission-artifacts.mjs';
@@ -3416,12 +3417,14 @@ export function classifyWireDisposition(dispatched, outcomeReason) {
   return 'unknown';
 }
 
-// Machine-global (NOT repo-scoped) so a bootstrap run resumed from a different
-// repo checkout still sees a prior attempt's fence (gap ②). The doctor --record
+// `egressIntentDir` is imported from ./lib/egress-intent-wal.mjs. Passed
+// homedir() it is the machine-global WAL (NOT repo-scoped, so a bootstrap run
+// resumed from a different repo checkout still sees a prior attempt's fence,
+// gap ②); passed repoRoot it is the pre-upgrade legacy one. The doctor --record
 // artifact stays repo-scoped; only this side-effect WAL is machine-global.
-function egressIntentDir(homeDir) {
-  return join(homeDir, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
-}
+// It moved out of this file because `runtime:migrate legacy-egress-intents`
+// needs the same path shape, and this file had already grown a second inline
+// copy of it for the legacy directory.
 
 // The two names one attempt publishes, and the ONLY two the WAL protocol knows.
 //
@@ -3594,12 +3597,9 @@ const EGRESS_NO_REMOVAL_ADVICE = Object.freeze(['unclassified', 'in-flight']);
 // rendered defused AND SAID to be: silently mangling it would leave an operator
 // unable to copy the name they need to remove, which is worse than telling them
 // the name is not one of ours.
-const EGRESS_SAFE_NAME_RE = /^[0-9A-Za-z._-]{1,128}$/;
-function safeRecordName(name) {
-  if (EGRESS_SAFE_NAME_RE.test(name)) return name;
-  const defused = [...name.slice(0, 96)].map((ch) => (ch >= ' ' && ch <= '~' ? ch : '?')).join('');
-  return `${defused} [name shown defused — it carries characters this WAL never writes]`;
-}
+// `safeRecordName` is imported from ./lib/egress-intent-wal.mjs — the same
+// defusing the discovery scanner applies, so a hazard class learned by either
+// reader is known to both.
 const safeOutcomeReason = (reason) => (EGRESS_ACK_OUTCOME_REASONS.includes(reason) ? reason : 'unknown');
 
 function judgeEgressOutcomeRecord(add, record, files, validFp) {
@@ -3916,7 +3916,7 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
   // resend. Scan the legacy dir too and refuse until it is cleared; the old
   // format carries no wire_disposition to classify, so every legacy record is
   // treated fail-closed.
-  const legacyIntentDir = join(repoRoot, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+  const legacyIntentDir = egressIntentDir(repoRoot);
   // IDENTITY, not spelling. This was `resolve(a) !== resolve(b)`, and the two
   // paths are derived from different roots (repoRoot vs homeDir), so nothing
   // guarantees they spell a shared directory the same way — a symlinked checkout
@@ -3955,7 +3955,12 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
       // running, and a flat delete instruction can free the name for a second
       // delivery to the same phone. Directory-level removal is worse again: it
       // takes records this runtime never examined.
-      return blockedSection([`legacy egress intents predating the machine-global WAL move are present at ${pointer(repoRoot, legacyIntentDir)} (${shown}); an attempt recorded by the older runtime may already have reached the phone, and — because that format records no process identity — one may still be in flight. Make sure no older proof is running, check the phone, then remove the specific records you reviewed; the WAL now lives at ${machinePointer(homeDir, intentDir)}. This scan only sees the CURRENT checkout: if the old version also ran the proof from other checkouts, their egress-intents directories need the same review.`]);
+      // The last sentence names the command that closes this scan's own blind
+      // spot. Saying "other checkouts need the same review" without saying HOW
+      // left the operator to invent a search — and the obvious invention is a
+      // `find` plus a bulk delete, which is precisely the unsafe shape the
+      // wording above exists to avoid.
+      return blockedSection([`legacy egress intents predating the machine-global WAL move are present at ${pointer(repoRoot, legacyIntentDir)} (${shown}); an attempt recorded by the older runtime may already have reached the phone, and — because that format records no process identity — one may still be in flight. Make sure no older proof is running, check the phone, then remove the specific records you reviewed; the WAL now lives at ${machinePointer(homeDir, intentDir)}. This scan only sees the CURRENT checkout: run \`runtime:migrate legacy-egress-intents\` for the read-only machine-scoped inventory of the other checkouts, and apply the same review to whatever it reports.`]);
     }
   }
 

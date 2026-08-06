@@ -2778,7 +2778,10 @@ async function runResume(ctx, opts) {
       // and only the metadata write failed, the machine-global WAL now fences an
       // automatic re-send, so a bare resume would be BLOCKED. Advise reconcile-
       // then-clear rather than a blind retry — otherwise the proof-persist failure
-      // recovery compounds into a duplicate send (follow-ups.md L35 gap 1).
+      // recovery compounds into a duplicate send (follow-ups.md § "Egress-ack
+      // intent WAL", gap 1 — cited by SECTION rather than by line, because the
+      // line number this used to carry had already drifted onto an unrelated
+      // Codex `plugin_hooks` row).
       const retryAdvice = kind === 'egress-provider-ack'
         ? 'the egress send may already have reached the phone; reconcile the phone, then re-run the egress proof once to get the blocker that NAMES which WAL records to remove (an attempt leaves a claim and a terminal record, and only the scan knows which are present and whether removing them is safe) before resuming'
         : 're-run resume to retry';

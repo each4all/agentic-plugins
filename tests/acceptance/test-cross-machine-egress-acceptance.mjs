@@ -1585,7 +1585,8 @@ describe('ADR-0041 acceptance (K) -- opt-in real-network smoke (skipped unless A
     // NO egressEmitImpl -> doctor delegates to the REAL runEmit (in-process),
     // whose node:https transport opens a real socket against an EPHEMERAL temp
     // repo; the machine-global intent WAL now lands under `home`, not `root`
-    // (follow-ups.md L35 gap 2).
+    // (follow-ups.md § "Egress-ack intent WAL", gap 2 — cited by section, not
+    // by line: the old L35 pointer now lands on the Codex `plugin_hooks` row).
     const report = await runDoctor({
       repoRoot: root,
       homeDir: home,

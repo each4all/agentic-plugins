@@ -4388,7 +4388,10 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     strictEqual(report.effects.network_request_performed, false);
   });
 
-  // --- follow-ups.md L35 WAL redesign regressions (gaps 1 + 2) ----------------
+  // --- follow-ups.md § "Egress-ack intent WAL" regressions (gaps 1 + 2) -------
+  // Cited by section heading rather than by line number: the L35 this used to
+  // name is now the Codex `plugin_hooks` row, and a pointer that silently
+  // relocates is worse than no pointer.
 
   it('R1 gap-1 round-3: a wire-touching (dispatched, mirror-lost) attempt fences a SECOND execute instead of re-sending', async () => {
     const { repo, home } = await freshDirs();
