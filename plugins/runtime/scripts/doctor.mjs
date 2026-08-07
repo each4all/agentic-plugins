@@ -3962,12 +3962,16 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
     // STATED LIMIT, because the discovery scanner's residual list says the same
     // thing about its own copy and this one is weaker. The question asked here is
     // RELATIONAL — "is the legacy directory still a different directory from the
-    // live one?" — not "is it still the SAME directory I classified?". So a
-    // replacement of legacy with some THIRD directory is invisible: it answers
-    // `same: false` before and after, and the names below then belong to the
-    // replacement. The harmful direction is a replacement that is EMPTY, which
-    // drops the block entirely while the real pre-upgrade records live on
-    // wherever the original was moved to.
+    // live one?" — not "is it still the SAME directory I classified?". Every
+    // distinct→distinct and absent→distinct transition therefore answers
+    // `same: false` at both observations and is invisible, and the names below
+    // belong to whatever the pathname resolved to at listing time.
+    //
+    // An EMPTY listing is the unsafe outcome in both directions, and the first
+    // wording of this note named only one of them (cross-host review). Records
+    // may have been moved away before the listing, or may arrive after it; in
+    // either case the block does not fire, and the proof proceeds to the emit
+    // path while real pre-upgrade records exist somewhere.
     //
     // Not closed here on purpose (owner decision, option (a) on this slice): it
     // needs write access inside the operator's own checkout to provoke, and an

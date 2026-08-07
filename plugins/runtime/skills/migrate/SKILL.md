@@ -62,8 +62,10 @@ Report it as an inventory, never as an action list:
   stated in every output.
 - `residual[]` is the authority on what the answer does not cover, and it is
   longer than that one line. Relay it; do not compress it to "only unscanned
-  checkouts". In particular the identity check that ties a listing to the
-  directory it classified is **detection, not a binding** — stated, not closed.
+  checkouts". Two classes it names that a reader will otherwise assume away: the
+  identity check is **detection, not a binding** (stated, not closed), and every
+  listing and every cached reference identity is a **point-in-time observation** —
+  `record_count` is "this many when it was read".
 - The live machine-global WAL is excluded by device/inode identity. The
   current checkout's own legacy directory **is** a finding, annotated
   `already_fenced_by_current_doctor` — excluding it would be a false clean.

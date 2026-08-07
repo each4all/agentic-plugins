@@ -382,6 +382,26 @@ async function walkRoot(root, ctx) {
           break;
         }
         const name = entry.name;
+        // A DESCENDANT SYMLINK IS NEVER DEREFERENCED — and that decision has to
+        // come before the skip question, not after it.
+        //
+        // `skipDecision` stats, and a stat FOLLOWS the link. With the skip check
+        // first, any `--skip` anywhere on the command line turned a symlinked
+        // marker into a dereference: reproduced with a marker pointing at an
+        // unreadable path, which reported `blocked … could not be told apart from
+        // an excluded directory` instead of `not_followed`, proving the stat
+        // happened. A link to a remote mount stalls inside the syscall the
+        // cooperative budget cannot preempt (cross-host review MAJOR).
+        //
+        // This is the same ordering `inspectCandidate` states for the fixed
+        // suffix, and it survived here — one of two copies again. It does NOT
+        // re-open the fix below it: a symlinked marker is a boundary either way,
+        // so nothing that was excluded becomes readable. Only the bucket changes,
+        // from `blocked` to the accurate `not_followed`.
+        if (entry.isSymbolicLink()) {
+          recordBucket(ctx.notFollowed, ctx.notFollowedTotals, 'descendant-symlink', { path: safeOperatorText(join(dir, name)) });
+          continue;
+        }
         // The skip decision runs BEFORE the marker branch. It used to run after
         // it, so `--skip <path>/.agentic-plugins` still inspected the candidate
         // the operator had excluded (cross-host review).
@@ -396,7 +416,8 @@ async function walkRoot(root, ctx) {
             continue;
           }
         }
-        // A DESCENDANT SYMLINK IS NEVER DEREFERENCED.
+        // The symlink boundary itself is recorded ABOVE, before the skip check.
+        // Why it is a boundary at all, rather than a `stat` away from an answer:
         //
         // An earlier cut `stat`ed it to learn whether it was a directory, so the
         // boundary list would name real checkout candidates instead of every
@@ -412,10 +433,6 @@ async function walkRoot(root, ctx) {
         // that is affordable now that buckets carry an exact total and a bounded
         // sample. This also settles the marker case below: a marker that is a
         // symlink is a boundary too, not a hit.
-        if (entry.isSymbolicLink()) {
-          recordBucket(ctx.notFollowed, ctx.notFollowedTotals, 'descendant-symlink', { path: safeOperatorText(join(dir, name)) });
-          continue;
-        }
         if (name === CHECKOUT_MARKER) {
           // A real marker directory. The candidate is a fixed four-component
           // suffix under it — `stat`ed and listed, never walked into.
@@ -512,6 +529,52 @@ async function skipDecision(path, ctx) {
     if (err?.code === 'ENOENT') return 'walk';
     return 'unknown';
   }
+}
+
+// Is an ANCESTOR of this root an excluded directory? By identity, walking up —
+// not by string containment.
+//
+// The first cut compared `isUnder(root.canonical, skip.canonical)`, and lexical
+// containment is the one rule this file rejects everywhere else. Two cases it
+// missed, both measured on the machine this runs on:
+//
+//   A macOS firmlink alias. `/Users/x/W` and `/System/Volumes/Data/Users/x/W`
+//   are ONE directory — both report dev 16777231, ino 217309582 — and `realpath`
+//   does not fold them, so neither spelling contains the other. An ancestor skip
+//   named by the second spelling was ignored while the report still rendered
+//   "skipped by operator" (cross-host review MAJOR).
+//
+//   `--skip /`. `isUnder(child, '/')` tests a `'//'` prefix and is therefore
+//   always false, so the broadest exclusion an operator can name excluded
+//   nothing. (`--root /` is refused; `--skip /` is legitimate — it means "scan
+//   nothing", and answering that with a full walk plus removal guidance is the
+//   worst possible reading of it.)
+//
+// Identity has neither hole: it is spelling-independent by construction. The
+// cost is one `stat` per path component, once per root, and only when a skip
+// exists at all. Those stats read directory metadata on the path the operator
+// already named — nothing outside it is opened.
+//
+// Three answers, like every other skip decision here. An ancestor the filesystem
+// will not describe means the tree below it must not be read.
+async function rootAncestorSkipDecision(root, ctx) {
+  if (ctx.skipIdentities.size === 0) return { decision: 'walk' };
+  // Starts at the PARENT: the root itself is decided from the identity
+  // `resolveRoots` already captured, so re-statting it here would be a second
+  // observation of a path this scan has already bound.
+  let current = parsePath(root.canonical).dir;
+  while (current && current !== parsePath(current).dir) {
+    const decision = await skipDecision(current, ctx);
+    if (decision !== 'walk') return { decision, path: current };
+    current = parsePath(current).dir;
+  }
+  // The filesystem root is a legitimate `--skip` target and terminates the walk,
+  // so it is decided here rather than being dropped by the loop condition.
+  if (current) {
+    const decision = await skipDecision(current, ctx);
+    if (decision !== 'walk') return { decision, path: current };
+  }
+  return { decision: 'walk' };
 }
 
 // A directory's physical identity as a comparable string, or null when it is
@@ -825,9 +888,12 @@ async function inspectCandidate(checkoutRoot, ctx) {
   // closed the comparison window and left this one open, which is the same
   // defect one step later (cross-host review CRITICAL).
   //
-  // Node has no readdir-from-descriptor, so the binding is by DETECTION: observe
-  // the identity again after the listing and refuse to report anything if it
-  // moved. A swap is then a blocked entry, never a finding.
+  // Node has no readdir-from-descriptor, so what happens instead is DETECTION:
+  // re-ask whether the pathname still reports the identity that was classified,
+  // and refuse to report anything if it does not. A swap is then a blocked
+  // entry, never a finding. Note the literal phrasing — this does not tie the
+  // listing to an object, and saying that it does is the claim each earlier
+  // round made while only narrowing the window.
   //
   // WHAT DETECTION IS NOT. This is not a binding, and describing it as one is
   // what made each earlier round read as closed while the window merely narrowed.
@@ -973,16 +1039,22 @@ export async function discoverLegacyEgressIntents({
     // in this scan, and `--root ~/w/checkout --skip ~/w` starts the walk BELOW
     // the excluded directory — no entry is ever listed that could match it by
     // identity, so the checkout was walked in full while the report rendered
-    // "skipped by operator: ~/w".
-    //
-    // Both sides were realpath'd, so this lexical containment is already
-    // symlink-resolved. What it inherits from `isUnder` is case SENSITIVITY,
-    // which is why the identity test stays beside it rather than being replaced
-    // by it: the identity test is what still answers when one directory is
-    // reached by two spellings.
-    const skipAncestor = skips.find((s) => isUnder(root.canonical, s.canonical));
-    if (ctx.skipIdentities.has(root.identity) || skipAncestor !== undefined) {
+    // "skipped by operator: ~/w". Ancestry is decided by identity; see
+    // `rootAncestorSkipDecision` for the two cases spelling got wrong.
+    if (ctx.skipIdentities.has(root.identity)) {
       recordPruned(ctx, root.canonical, 'operator-skip');
+      continue;
+    }
+    const ancestor = await rootAncestorSkipDecision(root, ctx);
+    if (ancestor.decision === 'skip') {
+      recordPruned(ctx, root.canonical, 'operator-skip');
+      continue;
+    }
+    if (ancestor.decision === 'unknown') {
+      recordBucket(ctx.blocked, ctx.blockedTotals, 'skip-undecidable', {
+        path: safeOperatorText(root.canonical),
+        reason: `an ancestor (${safeOperatorText(ancestor.path)}) could not be told apart from an excluded directory; this root was not read`,
+      });
       continue;
     }
     await walkRoot(root, ctx);
@@ -1186,13 +1258,23 @@ function buildResidual({ roots, ctx, prunedTotal, notFollowedTotal, operatorSkip
     `checkouts outside the scanned roots are not covered (scanned: ${roots.length} root(s))`,
     'the time budget is cooperative — it is checked between directory reads and cannot preempt one stuck syscall; a single remote mount was measured at ~286ms per directory, so --skip is the lever for that case',
     'a directory component can be replaced between the listing that named it and the read that opens it (TOCTOU); the scan is read-only, so the worst outcome is listing a directory that was not intended',
-    'the post-listing identity re-check is DETECTION, not binding: it catches a replacement that PERSISTS, and misses one that is undone before the re-check (A→B→A), because Node exposes no readdir-from-descriptor to tie the listing to the object that was classified',
+    // Phrased as what the code literally does — "re-asks whether the pathname
+    // still reports the identity that was classified" — rather than "ties the
+    // listing to the object". The second phrasing describes an intent the code
+    // cannot carry out, and describing intent as mechanism is how three rounds
+    // of narrowing this window each read as closure (cross-host review).
+    'the post-listing check re-asks whether the pathname still reports the identity that was classified; it is DETECTION, not binding — it catches a replacement that PERSISTS and misses one that is undone before the check (A→B→A), because Node exposes no readdir-from-descriptor',
     // NO REMOVAL VERB, like every other line that can appear in an incomplete
     // report. The first wording said "a removed directory can have its number
     // reused" and put `removed` into every report this command emits — the exact
     // shape the mutation_boundary phrasing above was already rewritten to avoid,
     // caught here by the same test (which is why that test exists).
     'directory identity is dev/ino, and those numbers can be reused: if the classified directory goes away mid-scan and the filesystem hands its number to a new one at the same path, the re-check reads "unchanged" while the records listed came from a different object',
+    // Both reproduced by the cross-host review, and both are ORDINARY rather than
+    // adversarial in the first case: the pre-upgrade sender is exactly the
+    // process that writes a record while a scan is running.
+    'every record listing is a point-in-time snapshot and no quiescence is required or assumed — a record written after a location was listed is absent from these counts, and an empty count means "empty when it was read", not "empty now"',
+    'the live-fence identity is resolved once per scan (deliberately, so each candidate is compared against one observation rather than a fresh one) and the root and skip identities once at startup; a directory that takes one of those places afterwards is compared against the earlier observation, not the current one',
     'the annotation already_fenced_by_current_doctor is FALSE when identity could not be decided — it costs a review, never skips one',
   ];
   if (ctx.exhaustedReason) {

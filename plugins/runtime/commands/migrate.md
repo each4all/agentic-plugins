@@ -108,8 +108,11 @@ as already fenced by this checkout's doctor — reporting every location is the
 point, and excluding the familiar one would be a false clean.
 
 Residuals are stated in every output, and `residual[]` is the authority — not
-this paragraph. Two are worth knowing before reading a finding. Checkouts
-outside the scanned roots are not covered at all. And the identity check that
-ties a listing to the directory that was classified is **detection, not a
-binding**: it catches a replacement that persists past the check, and cannot see
-one that is undone before it, or one that arrives at the same dev/ino.
+this paragraph. Three are worth knowing before reading a finding. Checkouts
+outside the scanned roots are not covered at all. The identity check that
+re-asks whether a pathname still reports the classified identity is **detection,
+not a binding**: it catches a replacement that persists past the check, and
+cannot see one that is undone before it, or one that arrives at the same
+dev/ino. And every record listing is a **point-in-time snapshot** — `record_count`
+means "this many when it was read", so a location reported as holding nothing is
+not a promise that nothing has been written there since.
