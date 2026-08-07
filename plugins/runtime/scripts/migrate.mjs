@@ -142,16 +142,16 @@ export function parseDiscoveryArgs(argv) {
   };
   const take = (i, flag) => {
     const value = argv[i];
-    if (value === undefined || value.startsWith('--')) throw new Error(`${flag} requires a value`);
+    if (value === undefined || value.startsWith('--')) throw new Error(`${safeOperatorText(flag)} requires a value`);
     return value;
   };
   const readInt = (raw, flag, min, max) => {
-    if (!/^\d+$/.test(raw)) throw new Error(`${flag} must be a non-negative integer (got ${raw})`);
+    if (!/^\d+$/.test(raw)) throw new Error(`${flag} must be a non-negative integer (got ${safeOperatorText(raw)})`);
     const n = Number(raw);
     // A 20-digit run of ASCII digits passes the regex and lands outside the safe
     // integer range, where comparisons stop meaning what they read as. Bound it
     // at both ends (cross-host review).
-    if (!Number.isSafeInteger(n)) throw new Error(`${flag} is too large to be represented exactly (got ${raw})`);
+    if (!Number.isSafeInteger(n)) throw new Error(`${flag} is too large to be represented exactly (got ${safeOperatorText(raw)})`);
     if (n < min) throw new Error(`${flag} must be at least ${min}`);
     if (n > max) throw new Error(`${flag} must be at most ${max}`);
     return n;

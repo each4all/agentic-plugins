@@ -62,6 +62,8 @@ export function egressIntentDir(root) {
 //   bidi overrides  U+202E and friends reorder a rendered path, so a name can be
 //                   displayed as something the operator did not agree to remove.
 //   zero-width      invisible characters make two distinct paths render alike.
+const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
+
 export function isDisplayHazard(codePoint) {
   return (codePoint <= 0x1f)                        // C0 controls (incl. \n, \r, ESC)
     || codePoint === 0x7f                            // DEL
@@ -76,12 +78,18 @@ export function isDisplayHazard(codePoint) {
     // break lines on them — which is the whole forged-instruction hazard the C0
     // newline entry exists to stop.
     || codePoint === 0x2028 || codePoint === 0x2029  // LINE / PARAGRAPH SEPARATOR
-    // Invisible formatting characters that are neither bidi controls nor
-    // zero-width joiners but render as nothing: ARABIC LETTER MARK, WORD JOINER,
-    // MONGOLIAN VOWEL SEPARATOR, and the INTERLINEAR ANNOTATION set. Each lets
-    // two distinct names look identical to the operator being asked to act on
-    // one of them (cross-host review).
-    || codePoint === 0x061c || codePoint === 0x2060 || codePoint === 0x180e
+    // …every character Unicode itself calls DEFAULT-IGNORABLE: it renders as
+    // nothing, so two distinct names look identical to the operator being asked
+    // to act on one of them. This replaces a hand-written list that review had
+    // already grown twice and a third round still found holes in — a list a
+    // reviewer must extend is not a predicate; the property is, and Unicode
+    // maintains it.
+    || DEFAULT_IGNORABLE.test(String.fromCodePoint(codePoint))
+    // …AND the interlinear-annotation set, which the property does NOT contain
+    // (measured: `\p{Default_Ignorable_Code_Point}` is false for U+FFF9-FFFB).
+    // Swapping the list for the property alone would have SHRUNK coverage — the
+    // general rule did not subsume the specific one, so both stay and the
+    // exception says why.
     || (codePoint >= 0xfff9 && codePoint <= 0xfffb);
 }
 
@@ -92,17 +100,6 @@ export function isDisplayHazard(codePoint) {
 // an allowlist and not as a "looks reasonable" regex.
 const EGRESS_SAFE_NAME_RE = /^[0-9A-Za-z._-]{1,128}$/;
 
-// Render a WAL record name safely.
-//
-// STRICTER than `safeOperatorText` on purpose, and the strictness is sound
-// rather than duplicated: a name that fails the allowlist above is already
-// known not to be one of ours, so nothing is lost by collapsing it to printable
-// ASCII, and the ASCII-only mapping is a strict SUPERSET of `isDisplayHazard`
-// (pinned by test, so this policy can never drift below the shared hazard set).
-//
-// The defusing is SAID, not silent: silently mangling the name would leave an
-// operator unable to copy the record they need to remove, which is worse than
-// telling them the name is not one this WAL writes.
 // A short, stable discriminator for the ORIGINAL text.
 //
 // This is the whole reason defusing can be safe. The moment a character is
@@ -116,6 +113,17 @@ function discriminator(text) {
   return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
 }
 
+// Render a WAL record name safely.
+//
+// STRICTER than `safeOperatorText` on purpose, and the strictness is sound
+// rather than duplicated: a name that fails the allowlist above is already
+// known not to be one of ours, so nothing is lost by collapsing it to printable
+// ASCII, and the ASCII-only mapping is a strict SUPERSET of `isDisplayHazard`
+// (pinned by test, so this policy can never drift below the shared hazard set).
+//
+// The defusing is SAID, not silent: silently mangling the name would leave an
+// operator unable to copy the record they need to remove, which is worse than
+// telling them the name is not one this WAL writes.
 export function safeRecordName(name) {
   const text = String(name);
   if (EGRESS_SAFE_NAME_RE.test(text)) return text;

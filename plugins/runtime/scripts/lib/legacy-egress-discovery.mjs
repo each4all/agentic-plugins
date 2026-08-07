@@ -361,6 +361,12 @@ async function walkRoot(root, ctx) {
         // materialized. That is the whole reason this is `opendir`.
         if (entryCount > ctx.caps.maxEntriesPerDir) {
           recordPruned(ctx, dir, 'entry-cap');
+          // A capped listing means entries were never seen — including, possibly,
+          // a `.agentic-plugins` marker sitting after the cap. Recording the
+          // prune without marking the scan incomplete let a run report
+          // complete + no findings + exit 0 over a directory it had not read.
+          ctx.exhausted = true;
+          ctx.exhaustedReason = ctx.exhaustedReason ?? 'entry-cap';
           capped = true;
           break;
         }
@@ -557,7 +563,11 @@ async function liveWalIdentity(ctx) {
     if (resolved.key) keys.add(resolved.key);
   }
   const answer = { keys, probed: seen };
-  if (keys.size) ctx.liveWalIdentityCache = answer;
+  // Cache only when EVERY reference resolved to something. Caching a partial
+  // answer froze a sibling's absence: with home A present and passwd B
+  // absent at probe time, a B created later in a 120-second scan was never
+  // compared against and could be handed to the operator for removal.
+  if (keys.size === ctx.liveWalDirs.length) ctx.liveWalIdentityCache = answer;
   return answer;
 }
 
@@ -872,7 +882,10 @@ export async function discoverLegacyEgressIntents({
     // report to notice it by. `os.userInfo().homedir` reads the passwd entry
     // and ignores `$HOME`, so the two disagree exactly in the case that harms,
     // and a candidate matching EITHER is excluded.
-    liveWalDirs: [...new Set([egressIntentDir(homeDir), egressIntentDir(passwdHome)].filter(Boolean))],
+    // `.filter(Boolean)` on the RESULTS was too late: `egressIntentDir(null)`
+    // throws before the filter ever runs, so a uid with no passwd entry
+    // crashed the scan outright. The inputs are filtered.
+    liveWalDirs: [...new Set([homeDir, passwdHome].filter(Boolean).map((h) => egressIntentDir(h)))],
     repoLegacyDir: repoRoot ? egressIntentDir(repoRoot) : null,
     liveWalIdentityCache: null,
     repoLegacyIdentityCache: null,
@@ -947,18 +960,26 @@ export async function discoverLegacyEgressIntents({
   // from `blocked` — a scan can run to completion and still have failed to open
   // three directories, and the status function requires BOTH.
   const scanComplete = ctx.exhausted === false;
+  const operatorSkipped = ctx.prunedTotals.get('operator-skip') ?? 0;
+  const liveProbe = await liveWalIdentity(ctx);
+  const liveWalState = liveProbe.unknown ? 'unknown' : (liveProbe.keys.size > 0 ? 'present' : 'absent');
   // The count and the display list are passed separately, because bounding must
   // never be able to turn a blocked scan into a clean one.
   const status = resolveDiscoveryStatus({
-    scanComplete,
+    // An UNIDENTIFIABLE live fence means nothing below has been proven not to be
+    // it, so no finding is safely actionable and the report must withhold every
+    // removal instruction. A definitively ABSENT fence is a different answer —
+    // a machine that never ran the proof has none, and every legacy directory
+    // there really is legacy — so that state keeps its guidance and carries a
+    // caveat instead. The review proposed treating both alike; conflating "I
+    // could not tell" with "there is none" would make the common case unusable.
+    scanComplete: scanComplete && liveWalState !== 'unknown',
     blocked,
     blockedTotal,
     findings: actionable,
     directoriesExamined: ctx.stats.dirs_scanned,
   });
-  const operatorSkipped = ctx.prunedTotals.get('operator-skip') ?? 0;
-  const liveProbe = await liveWalIdentity(ctx);
-  const liveWalState = liveProbe.unknown ? 'unknown' : (liveProbe.keys.size > 0 ? 'present' : 'absent');
+
 
   return {
     schema_version: LEGACY_EGRESS_DISCOVERY_SCHEMA,

@@ -132,3 +132,28 @@ describe('runtime path identity (sameDirectory)', () => {
     ok(!/await|statImpl|stat\(/.test(body.slice(0, body.indexOf('\n}') + 2)), 'isUnder performs no filesystem call');
   });
 });
+
+describe('sameDirectory — identity precision', () => {
+  it('refuses an identity it cannot compare exactly rather than guessing', async () => {
+    // dev/ino above 2^53 collapse as JavaScript Numbers, and the direction that
+    // harms is two DISTINCT directories comparing EQUAL — doctor then skips a
+    // real legacy fence and sends. Reproduced with 2^53 and 2^53+1 before the
+    // BigInt switch: `same: true`.
+    const big = 2 ** 53;
+    const lossy = async (path) => ({
+      dev: 1, ino: path === '/a' ? big : big + 1, isDirectory: () => true,
+    });
+    const result = await sameDirectory('/a', '/b', { stat: lossy });
+    strictEqual(result.same, undefined, 'a lossy identity must not produce a boolean answer');
+    strictEqual(result.unknown, true);
+    strictEqual(result.code, 'unrepresentable-identity');
+  });
+
+  it('CONTROL — exact BigInt identities still compare normally', async () => {
+    const exact = (dev, ino) => async () => ({ dev, ino, isDirectory: () => true });
+    strictEqual((await sameDirectory('/a', '/b', { stat: exact(1n, 7n) })).same, true);
+    let n = 0;
+    const differing = async () => { n += 1; return { dev: 1n, ino: BigInt(n), isDirectory: () => true }; };
+    strictEqual((await sameDirectory('/a', '/b', { stat: differing })).same, false);
+  });
+});

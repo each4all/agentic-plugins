@@ -384,11 +384,33 @@ describe('legacy-egress discovery — root semantics and identity (T2)', () => {
     let liveWalStats = 0;
     const counting = { ...base, async stat(p) { if (p === LIVE_WAL) liveWalStats += 1; return base.stat(p); } };
     const report = await discoverLegacyEgressIntents({
-      homeDir: HOME, host: 'test-host', now: new Date('2026-08-06T00:00:00Z'),
+      homeDir: HOME, passwdHome: HOME, host: 'test-host', now: new Date('2026-08-06T00:00:00Z'),
       runtimeVersion: '9.9.9', ops: counting, clock: () => 0,
     });
     strictEqual(report.findings_total, 3, 'all three candidates were examined');
     strictEqual(liveWalStats, 1, `the live WAL was observed ${liveWalStats} times for 3 candidates`);
+  });
+
+  it('…but an ABSENT reference is re-probed, because absence is the state that can change mid-scan', async () => {
+    // The complement of the test above, and they pull in opposite directions:
+    // caching a POSITIVE answer narrows the identity window, while caching an
+    // ABSENT one froze a sibling's absence — a fence created during a
+    // 120-second scan would never be compared against and could be handed to
+    // the operator for removal.
+    const names = ['a', 'b', 'c'];
+    const fs = new FakeFs().dir(HOME, names.map((n) => ({ name: n, kind: 'dir' })));
+    for (const n of names) {
+      fs.dir(`${HOME}/${n}`, [{ name: '.agentic-plugins', kind: 'dir' }]).wal(`${HOME}/${n}`, []);
+    }
+    // The live WAL does NOT exist.
+    const base = trappedOps(fs);
+    let probes = 0;
+    const counting = { ...base, async stat(p) { if (p === LIVE_WAL) probes += 1; return base.stat(p); } };
+    await discoverLegacyEgressIntents({
+      homeDir: HOME, passwdHome: HOME, host: 'test-host', now: new Date('2026-08-06T00:00:00Z'),
+      runtimeVersion: '9.9.9', ops: counting, clock: () => 0,
+    });
+    ok(probes > 1, `an absent reference must be re-probed, saw ${probes} probe(s)`);
   });
 
   it('a root that CANONICALIZES to / is refused, even when it was named as a symlink', async () => {
@@ -420,6 +442,56 @@ describe('legacy-egress discovery — root semantics and identity (T2)', () => {
     strictEqual(report.findings_total, 0, 'the live fence must never be offered for review');
     strictEqual(report.exclusions.length, 1);
     strictEqual(report.live_wal.compared_against.length, 2, 'both reference points are reported');
+  });
+
+  it('a uid with no passwd entry does not crash the scan', async () => {
+    // `safePasswdHome()` returns null for a uid with no passwd entry (some
+    // containers), and the first cut filtered the RESULTS rather than the
+    // inputs — so `egressIntentDir(null)` threw before the filter ran and the
+    // whole scan died with ERR_INVALID_ARG_TYPE (reproduced).
+    const fs = new FakeFs().dir(HOME, []);
+    const report = await run(fs, { passwdHome: null });
+    strictEqual(report.live_wal.compared_against.length, 1);
+    strictEqual(report.overall.status, DISCOVERY_STATUS.none);
+  });
+
+  it('an UNIDENTIFIABLE live fence withholds every removal instruction; a definitively ABSENT one does not', async () => {
+    // These are DIFFERENT answers and the review proposed treating them alike.
+    // "I could not tell" means nothing below has been proven not to be the
+    // fence, so nothing is safely actionable. "There is none" is a real answer —
+    // a machine that never ran the proof has no fence, and every legacy
+    // directory it holds really is legacy. Conflating them makes the common
+    // case unusable.
+    const build = () => new FakeFs()
+      .dir(HOME, [{ name: 'x', kind: 'dir' }])
+      .dir(`${HOME}/x`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`${HOME}/x`, [{ name: 'a.json', kind: 'file' }]);
+
+    const absent = await run(build());
+    strictEqual(absent.live_wal.state, 'absent');
+    strictEqual(absent.overall.status, DISCOVERY_STATUS.findings);
+    match(renderDiscoveryText(absent), REMOVAL_VERBS, 'an absent fence keeps the guidance actionable');
+
+    const unknownFs = build().dir(LIVE_WAL).failStat(LIVE_WAL, 'EIO');
+    const unknown = await run(unknownFs);
+    strictEqual(unknown.live_wal.state, 'unknown');
+    strictEqual(unknown.overall.status, DISCOVERY_STATUS.incomplete);
+    strictEqual(renderDiscoveryText(unknown).match(REMOVAL_VERBS), null,
+      'an unidentifiable fence must withhold every removal instruction');
+  });
+
+  it('an entry cap means the directory was not fully listed, so the scan is not complete', async () => {
+    // A `.agentic-plugins` marker can sit AFTER the cap. Recording the prune
+    // without marking the scan incomplete let a run report complete + no
+    // findings + exit 0 over a directory it had not read.
+    const many = Array.from({ length: 40 }, (_, i) => ({ name: `d${String(i).padStart(3, '0')}`, kind: 'dir' }));
+    const fs = new FakeFs().dir(HOME, many);
+    for (const e of many) fs.dir(`${HOME}/${e.name}`, []);
+    const report = await run(fs, { caps: { maxEntriesPerDir: 5 } });
+    strictEqual(report.scan.complete, false);
+    strictEqual(report.scan.ended_early_because, 'entry-cap');
+    strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
+    strictEqual(DISCOVERY_EXIT_CODES[report.overall.status], 1);
   });
 
   it('an UNKNOWN live-WAL identity blocks instead of guessing either way', async () => {

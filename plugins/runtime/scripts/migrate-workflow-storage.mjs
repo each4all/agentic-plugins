@@ -11,6 +11,10 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { RUNTIME_VERSION } from './version.mjs';
+// Rejected argv reaches stderr, which is outside every report defuser and
+// just as forgeable. The dispatcher learned this; this entry point is its
+// sibling.
+import { safeOperatorText } from './lib/egress-intent-wal.mjs';
 
 export const MIGRATION_SCHEMA_VERSION = 'workflow-storage-migration-1.0';
 export const MIGRATION_ID = 'workflow-storage-v1';
@@ -772,7 +776,7 @@ export function parseArgs(argv) {
         opts.help = true;
         break;
       default:
-        throw new Error(`unknown argument: ${arg}`);
+        throw new Error(`unknown argument: ${safeOperatorText(arg)}`);
     }
   }
   if (!['text', 'json'].includes(opts.format)) throw new Error('--format must be text or json');
