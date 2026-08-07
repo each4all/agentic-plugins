@@ -60,6 +60,10 @@ Report it as an inventory, never as an action list:
 - Status `no_findings_in_scanned_scope` is deliberately not called "clean" —
   checkouts outside the scanned roots are an irreducible residual, and it is
   stated in every output.
+- `residual[]` is the authority on what the answer does not cover, and it is
+  longer than that one line. Relay it; do not compress it to "only unscanned
+  checkouts". In particular the identity check that ties a listing to the
+  directory it classified is **detection, not a binding** — stated, not closed.
 - The live machine-global WAL is excluded by device/inode identity. The
   current checkout's own legacy directory **is** a finding, annotated
   `already_fenced_by_current_doctor` — excluding it would be a false clean.

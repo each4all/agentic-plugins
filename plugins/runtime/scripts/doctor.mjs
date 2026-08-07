@@ -3958,6 +3958,24 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
     //
     // The binding is by DETECTION: re-check identity after the listing and
     // refuse to report anything if it moved.
+    //
+    // STATED LIMIT, because the discovery scanner's residual list says the same
+    // thing about its own copy and this one is weaker. The question asked here is
+    // RELATIONAL — "is the legacy directory still a different directory from the
+    // live one?" — not "is it still the SAME directory I classified?". So a
+    // replacement of legacy with some THIRD directory is invisible: it answers
+    // `same: false` before and after, and the names below then belong to the
+    // replacement. The harmful direction is a replacement that is EMPTY, which
+    // drops the block entirely while the real pre-upgrade records live on
+    // wherever the original was moved to.
+    //
+    // Not closed here on purpose (owner decision, option (a) on this slice): it
+    // needs write access inside the operator's own checkout to provoke, and an
+    // adversary with that could delete the legacy records outright for the same
+    // effect. Closing it means capturing the legacy directory's OWN identity
+    // before the listing and comparing that identity afterwards — what
+    // `legacy-egress-discovery.mjs` does — which is a different seam than
+    // `sameDirectoryImpl` and is deferred rather than done silently.
     let legacyNames = [];
     try {
       legacyNames = (await readdir(legacyIntentDir)).filter((n) => n.endsWith('.json'));

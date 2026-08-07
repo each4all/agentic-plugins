@@ -657,6 +657,37 @@ async function inspectCandidate(checkoutRoot, ctx) {
       return;
     }
     if (!lst.isDirectory()) return;
+    // A `--skip` IS A SUBTREE BOUNDARY HERE TOO.
+    //
+    // The walker consults `ctx.skipIdentities` for every directory entry it
+    // lists, including the marker. The fixed components BELOW the marker are
+    // never listed — they are `stat`ed straight through — so
+    // `--skip <checkout>/.agentic-plugins/runs` (or `/doctor`, or the WAL
+    // directory itself) was accepted, reported as "skipped by operator", and then
+    // read anyway. An exclusion the report claims to have honored and did not is
+    // worse than one it refuses outright.
+    //
+    // Checked AFTER the lstat, never before it: `skipDecision` stats, and a stat
+    // follows a symlink — asking the skip question first would dereference the
+    // very component the lstat walk exists to refuse.
+    //
+    // The first component re-asks what the walker already asked. That redundancy
+    // is deliberate: one check in one place is exactly how the marker came to be
+    // covered while its three siblings were not.
+    if (ctx.skipIdentities.size > 0) {
+      const decision = await skipDecision(walked, ctx);
+      if (decision === 'skip') {
+        recordPruned(ctx, walked, 'operator-skip');
+        return;
+      }
+      if (decision === 'unknown') {
+        recordBucket(ctx.blocked, ctx.blockedTotals, 'skip-undecidable', {
+          path: safeOperatorText(walked),
+          reason: 'could not be told apart from an excluded directory; it was not read',
+        });
+        return;
+      }
+    }
   }
 
   // `lstat` on the final component already proved it is a real directory that
@@ -797,6 +828,29 @@ async function inspectCandidate(checkoutRoot, ctx) {
   // Node has no readdir-from-descriptor, so the binding is by DETECTION: observe
   // the identity again after the listing and refuse to report anything if it
   // moved. A swap is then a blocked entry, never a finding.
+  //
+  // WHAT DETECTION IS NOT. This is not a binding, and describing it as one is
+  // what made each earlier round read as closed while the window merely narrowed.
+  // Two interleavings pass it, and both are stated in `residual[]` rather than
+  // implied away here:
+  //
+  //   A→B→A. A swap that is UNDONE before this second observation reports the
+  //   original identity, so the listing that came from B is attributed to A.
+  //   Only a swap that PERSISTS past this line is caught.
+  //
+  //   Number reuse. Identity is dev/ino. Remove the classified directory and the
+  //   filesystem may hand its inode number to the next one created at that path;
+  //   both observations then read equal while naming different objects. This is
+  //   the shape `path-containment.mjs` marks as the dangerous one — a REMEMBERED
+  //   identity compared against a later observation — and unlike `sameDirectory`,
+  //   which sees both directories inside one call, this code has a window.
+  //   Directories cannot be hardlinked, so unlike the file case there is no way
+  //   to force it deterministically on a real filesystem; the seam test named
+  //   "the residual, executable" pins the behavior instead.
+  //
+  // Both need write access INSIDE the scanned root — the operator's own `$HOME`
+  // — to provoke. That is the reason they are residual rather than blocking, and
+  // it is a threat-model judgement, not a claim that the window is shut.
   let after = null;
   try {
     after = identityOf(await ctx.ops.statIdentity(candidate));
@@ -914,7 +968,20 @@ export async function discoverLegacyEgressIntents({
     // A root the operator ALSO named in `--skip` is skipped, not walked. The
     // skip check used to run only on children, so `--root X --skip X` walked X
     // in full (cross-host review, reproduced).
-    if (ctx.skipIdentities.has(root.identity)) {
+    //
+    // ANCESTRY, not only equality. A skip is a subtree boundary everywhere else
+    // in this scan, and `--root ~/w/checkout --skip ~/w` starts the walk BELOW
+    // the excluded directory — no entry is ever listed that could match it by
+    // identity, so the checkout was walked in full while the report rendered
+    // "skipped by operator: ~/w".
+    //
+    // Both sides were realpath'd, so this lexical containment is already
+    // symlink-resolved. What it inherits from `isUnder` is case SENSITIVITY,
+    // which is why the identity test stays beside it rather than being replaced
+    // by it: the identity test is what still answers when one directory is
+    // reached by two spellings.
+    const skipAncestor = skips.find((s) => isUnder(root.canonical, s.canonical));
+    if (ctx.skipIdentities.has(root.identity) || skipAncestor !== undefined) {
       recordPruned(ctx, root.canonical, 'operator-skip');
       continue;
     }
@@ -1119,6 +1186,13 @@ function buildResidual({ roots, ctx, prunedTotal, notFollowedTotal, operatorSkip
     `checkouts outside the scanned roots are not covered (scanned: ${roots.length} root(s))`,
     'the time budget is cooperative — it is checked between directory reads and cannot preempt one stuck syscall; a single remote mount was measured at ~286ms per directory, so --skip is the lever for that case',
     'a directory component can be replaced between the listing that named it and the read that opens it (TOCTOU); the scan is read-only, so the worst outcome is listing a directory that was not intended',
+    'the post-listing identity re-check is DETECTION, not binding: it catches a replacement that PERSISTS, and misses one that is undone before the re-check (A→B→A), because Node exposes no readdir-from-descriptor to tie the listing to the object that was classified',
+    // NO REMOVAL VERB, like every other line that can appear in an incomplete
+    // report. The first wording said "a removed directory can have its number
+    // reused" and put `removed` into every report this command emits — the exact
+    // shape the mutation_boundary phrasing above was already rewritten to avoid,
+    // caught here by the same test (which is why that test exists).
+    'directory identity is dev/ino, and those numbers can be reused: if the classified directory goes away mid-scan and the filesystem hands its number to a new one at the same path, the re-check reads "unchanged" while the records listed came from a different object',
     'the annotation already_fenced_by_current_doctor is FALSE when identity could not be decided — it costs a review, never skips one',
   ];
   if (ctx.exhaustedReason) {
