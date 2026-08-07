@@ -5075,6 +5075,45 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     );
   });
 
+  it('R8d-limit: a legacy WAL replaced by a THIRD directory answers same:false twice and is NOT detected', async () => {
+    // The re-check above asks a RELATION — "is the legacy directory still a
+    // different directory from the live one?" — not "is it still the directory I
+    // classified?". A replacement with some third directory answers `false` at
+    // both observations, so the names reported belong to the replacement and
+    // nothing is refused. The harmful direction is a replacement that is EMPTY:
+    // the block disappears while the real pre-upgrade records live on wherever
+    // the original was moved to.
+    //
+    // Pinned as a LIMIT, not a guarantee. It is stated in the comment beside the
+    // re-check and in the discovery scanner's residual[]; this test is what keeps
+    // those statements true. If a later round captures the legacy directory's OWN
+    // identity, this expectation must change deliberately rather than quietly.
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const legacyDir = join(repo, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    await mkdir(legacyDir, { recursive: true });
+    await writeFile(join(legacyDir, 'cafe1234.json'), JSON.stringify({ status: 'pending' }));
+
+    let calls = 0;
+    const alwaysDistinct = async () => { calls += 1; return { same: false }; };
+    const report = await runEgressDoctor({
+      repo, home, env, emitImpl: deliveredEmit([]), sameDirectoryImpl: alwaysDistinct,
+    });
+    // The re-check still HAPPENS — removing it would make this 1 — it just cannot
+    // see this replacement.
+    strictEqual(calls, 2, 'the identity must still be observed a second time after the listing');
+    strictEqual(report.egress_ack_proof.status, 'blocked');
+    const blockers = report.egress_ack_proof.blockers;
+    ok(
+      !blockers.some((b) => /changed identity while it was being read/.test(b)),
+      `a relation-only re-check cannot see a legacy→third-directory replacement: ${JSON.stringify(blockers)}`,
+    );
+    ok(
+      blockers.some((b) => /cafe1234/.test(b)),
+      `the records LISTED are what gets reported, whichever directory they came from: ${JSON.stringify(blockers)}`,
+    );
+  });
+
   it('R8b: legacy record names are defused, and the blocker never advises deleting the directory', async () => {
     // Two defects in one message. (1) The modern WAL scan defuses record names
     // because a filename carrying a newline and an ANSI escape forged an

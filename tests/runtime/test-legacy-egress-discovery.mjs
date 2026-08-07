@@ -67,12 +67,36 @@ class FakeFs {
     this.yielded = new Map();    // path -> entries actually produced by the iterator
     this.identityRebind = new Map();
     this.unsafeIdentities = new Set();
+    this.contentSwap = new Map();
+    // An ORDERED log of what the scanner asked the filesystem, in the order it
+    // asked. ORDER is the property the post-listing identity re-check IS: the
+    // second observation has to come after the listing, and `rebindAfter` alone
+    // cannot see that — it rebinds the Nth call whether that call sits before or
+    // after the `opendir`. Moving the re-check back in front of the listing (a
+    // revert of the CRITICAL this round fixed) passed the entire suite before
+    // this log existed.
+    this.events = [];
     this.nextIno = 1000;
+  }
+
+  record(op, path) { this.events.push(`${op}:${path}`); return this; }
+
+  // Indices at which `op:path` was observed, in order.
+  eventIndices(op, path) {
+    const needle = `${op}:${path}`;
+    return this.events.flatMap((e, i) => (e === needle ? [i] : []));
   }
 
   // Make `path` report a DIFFERENT identity from its Nth identity observation
   // onwards — a deterministic stand-in for a component swapped underneath.
   rebindAfter(path, afterCall, to) { this.identityRebind.set(path, { afterCall, calls: 0, to }); return this; }
+
+  // Serve DIFFERENT entries the next time `path` is opened, WITHOUT touching its
+  // dev/ino. That models inode-number reuse: the classified directory is gone and
+  // its number now names a different object, so both identity observations agree
+  // while the listing came from somewhere else. (The same shape models an A→B→A
+  // swap — through the only interface the scanner has, the two are one case.)
+  swapContentsOnOpendir(path, entries) { this.contentSwap.set(path, entries); return this; }
 
   // Make `path` report dev/ino that cannot be compared exactly.
   unsafeIdentity(path) { this.unsafeIdentities.add(path); return this; }
@@ -108,9 +132,15 @@ class FakeFs {
     const self = this;
     return {
       async opendir(path) {
+        self.record('opendir', path);
         const code = self.opendirErrors.get(path);
         if (code) throw Object.assign(new Error(code), { code });
         if (!self.dirs.has(path)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        const swapped = self.contentSwap.get(path);
+        if (swapped) {
+          self.contentSwap.delete(path);
+          self.dirs.set(path, swapped);
+        }
         const entries = self.dirs.get(path);
         const mid = self.midScanAfter.get(path);
         self.yielded.set(path, 0);
@@ -119,6 +149,7 @@ class FakeFs {
             for (let i = 0; i < entries.length; i += 1) {
               if (mid && i === mid.count) throw Object.assign(new Error(mid.code), { code: mid.code });
               self.yielded.set(path, i + 1);
+              self.record('entry', path);
               yield dirent(entries[i].name, entries[i].kind);
             }
           },
@@ -126,6 +157,7 @@ class FakeFs {
         };
       },
       async stat(path) {
+        self.record('stat', path);
         const resolved = self.links.get(path) ?? path;
         const code = self.statErrors.get(path) ?? self.statErrors.get(resolved);
         if (code) throw Object.assign(new Error(code), { code });
@@ -139,6 +171,7 @@ class FakeFs {
       // `identityRebind` lets a test make a path answer differently on the Nth
       // observation — the only way to provoke a TOCTOU swap deterministically.
       async statIdentity(path) {
+        self.record('statIdentity', path);
         const rebind = self.identityRebind.get(path);
         if (rebind) {
           rebind.calls += 1;
@@ -156,6 +189,7 @@ class FakeFs {
       // NEVER resolves the final component — that is the whole point of walking
       // the fixed suffix with it.
       async lstat(path) {
+        self.record('lstat', path);
         const code = self.statErrors.get(path);
         if (code) throw Object.assign(new Error(code), { code });
         const isLink = self.links.has(path);
@@ -731,6 +765,100 @@ describe('legacy-egress discovery — streaming walker (T3)', () => {
     strictEqual(report.scan.pruned_by_reason['operator-skip'], 1);
   });
 
+  it('a --skip naming ANY component of the fixed suffix is honored, not merely rendered', async () => {
+    // The walker consults `--skip` for every entry it LISTS, and the suffix below
+    // the marker is never listed — it is stat'ed straight through. So
+    // `--skip <checkout>/.agentic-plugins/runs` (and `/doctor`, and the WAL
+    // directory itself) was accepted, printed under "skipped by operator", and
+    // then read anyway (refine-verify MAJOR, reachable by an ordinary operator).
+    // The loop is derived from the suffix LENGTH so a future component cannot be
+    // added without being covered.
+    const tree = () => new FakeFs()
+      .dir(HOME, [{ name: 'repo', kind: 'dir' }])
+      .dir(`${HOME}/repo`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`${HOME}/repo`, [{ name: 'r.json', kind: 'file' }]);
+
+    // CONTROL first: without a skip this tree IS a finding, so every assertion
+    // below is about the skip and not about a fixture that finds nothing.
+    strictEqual((await run(tree())).findings_total, 1);
+
+    let exercised = 0;
+    for (let depth = 1; depth <= EGRESS_INTENT_DIR_SUFFIX.length; depth += 1) {
+      const skipped = `${HOME}/repo/${EGRESS_INTENT_DIR_SUFFIX.slice(0, depth).join('/')}`;
+      const report = await run(tree(), { skipPaths: [skipped] });
+      strictEqual(report.findings_total, 0, `--skip at suffix component ${depth} (${skipped}) was ignored`);
+      strictEqual(report.scan.pruned_by_reason['operator-skip'], 1, `component ${depth} was not reported as an operator skip`);
+      ok(report.scan.pruned.some((p) => p.path === skipped), `component ${depth} missing from scan.pruned`);
+      match(report.overall.guidance, /You excluded 1 location\(s\) with --skip/);
+      exercised += 1;
+    }
+    strictEqual(exercised, EGRESS_INTENT_DIR_SUFFIX.length, 'every component of the fixed suffix must be exercised');
+  });
+
+  it('a --skip inside the suffix that the filesystem will not answer BLOCKS rather than reading it', async () => {
+    // Same three-answer rule the walker uses: "I could not tell whether this is
+    // the excluded directory" must not resolve to "read it".
+    //
+    // The undecidable answer is injected through IDENTITY, not through an lstat
+    // failure: an lstat that throws is already blocked one line earlier, so a
+    // fixture built that way passes whether or not the skip is consulted at all.
+    // `runs` is stat'ed for its identity by nothing except this skip check, so
+    // the fixture reaches exactly the branch it names.
+    const fs = new FakeFs()
+      .dir(HOME, [{ name: 'repo', kind: 'dir' }])
+      .dir(`${HOME}/repo`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`${HOME}/repo`, [{ name: 'r.json', kind: 'file' }])
+      .dir('/some/skip', [])
+      .unsafeIdentity(`${HOME}/repo/${EGRESS_INTENT_DIR_SUFFIX.slice(0, 2).join('/')}`);
+    const report = await run(fs, { skipPaths: ['/some/skip'] });
+    strictEqual(report.findings_total, 0, 'the undecidable component was not read');
+    strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
+    match(report.scan.blocked.map((b) => b.reason).join(' '), /could not be told apart from an excluded directory/);
+  });
+
+  it('a --skip that is an ANCESTOR of a --root excludes that root', async () => {
+    // The walk starts BELOW the excluded directory, so no entry is ever listed
+    // that could match it by identity: `--root ~/w/checkout --skip ~/w` walked the
+    // checkout in full while the report rendered "skipped by operator: ~/w"
+    // (refine-verify MAJOR).
+    const fs = new FakeFs()
+      .dir(`${HOME}/w`, [{ name: 'checkout', kind: 'dir' }])
+      .dir(`${HOME}/w/checkout`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`${HOME}/w/checkout`, [{ name: 'r.json', kind: 'file' }]);
+    const report = await run(fs, { requestedRoots: [`${HOME}/w/checkout`], skipPaths: [`${HOME}/w`] });
+    strictEqual(report.findings_total, 0);
+    strictEqual(report.scan.stats.dirs_scanned, 0, 'a root under an excluded ancestor must never be opened');
+    strictEqual(report.scan.pruned_by_reason['operator-skip'], 1);
+    // Nothing was examined, so this is not a clean answer either.
+    strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
+  });
+
+  it('CONTROL — the same root WITHOUT the ancestor skip is walked and found', async () => {
+    const fs = new FakeFs()
+      .dir(`${HOME}/w`, [{ name: 'checkout', kind: 'dir' }])
+      .dir(`${HOME}/w/checkout`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`${HOME}/w/checkout`, [{ name: 'r.json', kind: 'file' }]);
+    const report = await run(fs, { requestedRoots: [`${HOME}/w/checkout`] });
+    strictEqual(report.findings_total, 1);
+    ok(report.scan.stats.dirs_scanned > 0);
+  });
+
+  it('a --skip that is a DESCENDANT of a root still only excludes its own subtree', async () => {
+    // The containment test runs in one direction on purpose. Excluding a root
+    // because a skip sits somewhere UNDER it would silently drop the whole tree
+    // the operator asked to scan — the opposite failure, and the more expensive
+    // one.
+    const fs = new FakeFs()
+      .dir(HOME, [{ name: 'keep', kind: 'dir' }, { name: 'drop', kind: 'dir' }])
+      .dir(`${HOME}/keep`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`${HOME}/keep`, [{ name: 'r.json', kind: 'file' }])
+      .dir(`${HOME}/drop`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`${HOME}/drop`, [{ name: 'r.json', kind: 'file' }]);
+    const report = await run(fs, { requestedRoots: [HOME], skipPaths: [`${HOME}/drop`] });
+    strictEqual(report.findings_total, 1, 'only the skipped subtree may disappear');
+    strictEqual(report.findings[0].checkout_root, `${HOME}/keep`);
+  });
+
   it('a skip decision the filesystem will not answer BLOCKS rather than reading the subtree', async () => {
     // A skip is a read boundary the operator drew. Resolving "I could not tell"
     // to "read it" walks the subtree they excluded — which may be the sensitive
@@ -944,12 +1072,80 @@ describe('legacy-egress discovery — findings model (T5)', () => {
     strictEqual(report.scan.blocked_total, 0);
   });
 
+  it('the LISTING happens BETWEEN the two identity observations, in that order', async () => {
+    // The property is ORDER, and until this assertion existed nothing measured
+    // it: `rebindAfter` changes the Nth observation whether that observation sits
+    // before or after the `opendir`, so moving the re-check back in front of the
+    // listing — a revert of the CRITICAL fixed in 6ef6906 — passed the whole
+    // suite silently (refine-verify MAJOR). The seam records an ordered event log
+    // and the order is asserted directly.
+    const WAL = `${HOME}/x/${WAL_REL}`;
+    const fs = new FakeFs()
+      .dir(HOME, [{ name: 'x', kind: 'dir' }])
+      .dir(`${HOME}/x`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`${HOME}/x`, [{ name: 'a.json', kind: 'file' }]);
+    const report = await run(fs);
+    strictEqual(report.findings_total, 1, 'the fixture must reach the listing at all');
+
+    const observed = fs.eventIndices('statIdentity', WAL);
+    const opened = fs.eventIndices('opendir', WAL);
+    const listed = fs.eventIndices('entry', WAL);
+    const trace = () => JSON.stringify(fs.events.filter((e) => e.endsWith(WAL) || e.startsWith('entry:')));
+    strictEqual(observed.length, 2, `the candidate's identity must be observed exactly twice: ${trace()}`);
+    strictEqual(opened.length, 1, `the candidate must be opened exactly once: ${trace()}`);
+    // Without this the ordering assertions below are vacuous: a listing that
+    // yielded nothing satisfies "after the last entry" trivially.
+    ok(listed.length >= 1, `the fixture must actually yield a record: ${trace()}`);
+    ok(observed[0] < opened[0], `classification must precede the listing: ${trace()}`);
+    ok(opened[0] < listed[0], `entries must be yielded after the open: ${trace()}`);
+    ok(listed[listed.length - 1] < observed[1], `the re-check must come AFTER the last entry was listed: ${trace()}`);
+  });
+
+  it('the residual, executable — an inode NUMBER reused at the candidate path is NOT detected', async () => {
+    // Pinning a LIMIT, deliberately, not a guarantee. The re-check compares
+    // dev/ino, and equal numbers do not prove one object: a removed directory can
+    // have its number handed to the next one created at that path, and the check
+    // then reads "unchanged" while the records listed came from somewhere else.
+    // `residual[]` says exactly this; this test is what keeps that sentence true,
+    // and what fails loudly if a later round strengthens the binding without
+    // updating the claim.
+    //
+    // Forced through the seam because it cannot be forced on a real filesystem:
+    // the recorded way to provoke inode reuse deterministically re-records the
+    // same inode through a HARDLINK, and directories cannot be hardlinked. The
+    // same fixture also models an A→B→A swap — through the only interface the
+    // scanner has, the two are one case.
+    const WAL = `${HOME}/x/${WAL_REL}`;
+    const fs = new FakeFs()
+      .dir(HOME, [{ name: 'x', kind: 'dir' }])
+      .dir(`${HOME}/x`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`${HOME}/x`, [{ name: 'classified.json', kind: 'file' }])
+      .swapContentsOnOpendir(WAL, [{ name: 'other-object.json', kind: 'file' }]);
+    const report = await run(fs);
+    strictEqual(report.scan.blocked_total, 0, 'both observations agree, so nothing is detected — that is the limit');
+    strictEqual(report.findings_total, 1);
+    deepStrictEqual(
+      report.findings[0].records.map((r) => r.name),
+      ['other-object.json'],
+      'the records reported are the ones LISTED, which is why the binding claim would be false',
+    );
+    // The limit is not only tolerated, it is stated where the operator reads it.
+    match(renderDiscoveryJson(report), /those numbers can be reused/);
+    match(renderDiscoveryText(report), /DETECTION, not binding/);
+  });
+
   it('a symlink at ANY component of the fixed suffix is a boundary, not a dereference', async () => {
     // The previous round made a symlinked MARKER a boundary and stopped there;
     // `runs`, `doctor` and `egress-intents` were still dereferenced. Reproduced
     // on disk: `.agentic-plugins/runs -> /outside` produced an actionable
     // finding outside the requested root with not_followed_total = 0.
-    for (const depth of [1, 2, 3]) {
+    //
+    // The bound is derived from the suffix LENGTH, and the iteration count is
+    // asserted. A hand-written `[1, 2, 3]` covered three of the four components
+    // and left `egress-intents` — the one whose dereference lands directly on
+    // another checkout's WAL — untested (refine-verify MAJOR).
+    let exercised = 0;
+    for (let depth = 1; depth <= EGRESS_INTENT_DIR_SUFFIX.length; depth += 1) {
       const prefix = EGRESS_INTENT_DIR_SUFFIX.slice(0, depth).join('/');
       const linkPath = `${HOME}/x/${prefix}`;
       const fs = new FakeFs()
@@ -962,7 +1158,9 @@ describe('legacy-egress discovery — findings model (T5)', () => {
       const report = await run(fs);
       strictEqual(report.findings_total, 0, `a symlink at component ${depth} was dereferenced`);
       ok(report.scan.not_followed.some((n) => n.path === linkPath), `component ${depth} was not reported as a boundary`);
+      exercised += 1;
     }
+    strictEqual(exercised, EGRESS_INTENT_DIR_SUFFIX.length, 'every component of the fixed suffix must be exercised');
   });
 
   it('an identity the filesystem cannot report exactly is refused, never approximated', async () => {
@@ -1413,6 +1611,11 @@ describe('legacy-egress discovery — renderers and exit codes (T8)', () => {
         /checkouts outside the scanned roots are not covered/,
         /time budget is cooperative/,
         /TOCTOU/,
+        // The identity-binding limits are residual in EVERY status, not a caveat
+        // that appears only when something was found. Three rounds of narrowing
+        // this window each shipped documentation claiming it was closed.
+        /DETECTION, not binding/,
+        /those numbers can be reused/,
       ]) {
         match(renderDiscoveryText(report), phrase);
         match(renderDiscoveryJson(report), phrase);
