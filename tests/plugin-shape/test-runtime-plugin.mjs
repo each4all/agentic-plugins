@@ -578,9 +578,17 @@ describe('plugins/runtime migrate surface', () => {
     ok(skill.includes('ADR-0048'));
     ok(/no `--apply`/.test(skill));
     // The quiesce contract, not "verify the phone then delete".
-    ok(skill.includes('make sure no older proof is running'));
+    ok(skill.includes('no older proof running'));
+    ok(skill.includes('check the phone'));
     ok(skill.includes('never generate a shell command'));
     ok(skill.includes('already_fenced_by_current_doctor'), 'the current checkout is a finding, not an exclusion');
+    // The relay must be STATE-DEPENDENT. An earlier version stated the
+    // no-removal rule and then told the model to relay removal guidance "for
+    // every location" unconditionally, which recreates in the model-facing
+    // surface exactly the instruction the renderer withholds.
+    ok(skill.includes('Relay `overall.guidance` verbatim. Do not compose your own.'));
+    ok(!/for every location/.test(skill), 'the unconditional relay instruction must be gone');
+    ok(skill.includes('coverage decision, not a performance tweak'), '--skip must state what it costs');
 
     const agent = flat(await readFile(resolve(PLUGIN_ROOT, 'skills/migrate/agents/openai.yaml'), 'utf-8'));
     ok(agent.includes('$runtime:migrate legacy-egress-intents'));

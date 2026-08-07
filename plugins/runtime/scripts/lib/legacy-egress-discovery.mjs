@@ -45,9 +45,9 @@
 //     send. That defect shipped once already, by string comparison, and is why
 //     `sameDirectory` exists.
 
-import { opendir as defaultOpendir, realpath as defaultRealpath, stat as defaultStat } from 'node:fs/promises';
-import { homedir as defaultHomedir, hostname as defaultHostname } from 'node:os';
-import { join, sep } from 'node:path';
+import { lstat as defaultLstat, opendir as defaultOpendir, realpath as defaultRealpath, stat as defaultStat } from 'node:fs/promises';
+import { homedir as defaultHomedir, hostname as defaultHostname, userInfo } from 'node:os';
+import { join, parse as parsePath } from 'node:path';
 
 import { EGRESS_INTENT_DIR_SUFFIX, egressIntentDir, safeOperatorText, safeRecordName } from './egress-intent-wal.mjs';
 // `sameDirectory` is deliberately NOT used here. It re-stats both paths, and
@@ -152,10 +152,19 @@ export const DISCOVERY_EXIT_CODES = Object.freeze({
 //
 // The asymmetry is the point. Only ONE combination yields the reassuring
 // answer; anything unrecognized yields `incomplete`.
-export function resolveDiscoveryStatus({ scanComplete, blocked, blockedTotal, findings } = {}) {
+export function resolveDiscoveryStatus({ scanComplete, blocked, blockedTotal, findings, directoriesExamined } = {}) {
   if (scanComplete !== true) return DISCOVERY_STATUS.incomplete;
   if (!Array.isArray(blocked)) return DISCOVERY_STATUS.incomplete;
   if (!Array.isArray(findings)) return DISCOVERY_STATUS.incomplete;
+  // "No findings" is only an answer if something was LOOKED AT. Reproduced:
+  // `--root X --skip X` reported no_findings_in_scanned_scope with
+  // scan.complete=true, zero directories examined and exit 0 — reassurance over
+  // an empty scope (cross-host review). Omitting the count keeps the older
+  // two-argument callers working; supplying zero is what fails closed.
+  if (directoriesExamined !== undefined) {
+    if (!Number.isSafeInteger(directoriesExamined) || directoriesExamined < 0) return DISCOVERY_STATUS.incomplete;
+    if (directoriesExamined === 0) return DISCOVERY_STATUS.incomplete;
+  }
   // `blocked` is the BOUNDED display list; `blockedTotal` is the unbounded
   // count. They are separate arguments because they can disagree, and the first
   // attempt at this got it wrong: it guarded only `total === 0` and otherwise
@@ -233,7 +242,7 @@ async function resolveRoots({ requestedRoots, homeDir, ops }) {
     }
     let st;
     try {
-      st = await ops.stat(canonical);
+      st = await ops.statIdentity(canonical);
     } catch (err) {
       blocked.push({
         path: safeOperatorText(entry.requested),
@@ -245,19 +254,28 @@ async function resolveRoots({ requestedRoots, homeDir, ops }) {
       blocked.push({ path: safeOperatorText(entry.requested), reason: 'root is not a directory' });
       continue;
     }
+    const identity = identityOf(st);
+    if (identity === null) {
+      blocked.push({ path: safeOperatorText(entry.requested), reason: 'root reported an identity this runtime cannot compare exactly' });
+      continue;
+    }
     // The `/` refusal lives HERE, on the CANONICAL path, and the CLI's
     // pre-realpath check is only an early, friendlier message. `--root <symlink
     // to />` passed the lexical check and then canonicalized to `/`, so a
     // whole-filesystem walk — an explicit non-goal — was reachable through a
     // one-line symlink (cross-host review, reproduced).
-    if (canonical === '/' || canonical === sep) {
+    // `parse().root` rather than a literal `'/'`: on Windows the forbidden
+    // whole-drive and UNC roots are `C:\` and `\\server\share\`, which a
+    // POSIX-only comparison does not recognise (cross-host review, conditional
+    // on Windows support — cheap enough to close regardless).
+    if (canonical === parsePath(canonical).root) {
       blocked.push({
         path: safeOperatorText(entry.requested),
-        reason: 'root resolves to the filesystem root; a whole-filesystem scan is a non-goal',
+        reason: 'root resolves to a filesystem root; a whole-filesystem scan is a non-goal',
       });
       continue;
     }
-    roots.push({ ...entry, canonical, dev: st.dev, ino: st.ino });
+    roots.push({ ...entry, canonical, identity });
   }
 
   // Dedupe by physical identity FIRST (two spellings of one directory — a
@@ -266,8 +284,7 @@ async function resolveRoots({ requestedRoots, homeDir, ops }) {
   // retained one so a tree is not walked twice.
   const byIdentity = new Map();
   for (const root of roots) {
-    const key = `${root.dev}:${root.ino}`;
-    if (!byIdentity.has(key)) byIdentity.set(key, root);
+    if (!byIdentity.has(root.identity)) byIdentity.set(root.identity, root);
   }
   const unique = [...byIdentity.values()].sort((a, b) => a.canonical.length - b.canonical.length || a.canonical.localeCompare(b.canonical));
   const retained = [];
@@ -309,13 +326,18 @@ async function walkRoot(root, ctx) {
       abandonRemainder(stack, 'time-budget', ctx);
       return;
     }
-    if (ctx.stats.dirs_scanned >= ctx.caps.maxDirs) {
+    // ATTEMPTS, not successes. `dirs_scanned` counts directories that opened, so
+    // a tree of fast EACCES failures was unbounded by this cap — the cap measured
+    // the wrong quantity, which is the same class as the candidate cap that
+    // counted records kept instead of entries seen (cross-host review).
+    if (ctx.stats.dirs_attempted >= ctx.caps.maxDirs) {
       abandonRemainder(stack, 'dir-cap', ctx);
       return;
     }
     const { path: dir, depth } = stack.pop();
 
     let handle;
+    ctx.stats.dirs_attempted += 1;
     try {
       handle = await ctx.ops.opendir(dir);
     } catch (err) {
@@ -354,6 +376,20 @@ async function walkRoot(root, ctx) {
           break;
         }
         const name = entry.name;
+        // The skip decision runs BEFORE the marker branch. It used to run after
+        // it, so `--skip <path>/.agentic-plugins` still inspected the candidate
+        // the operator had excluded (cross-host review).
+        if (ctx.skipIdentities.size > 0 && (entry.isDirectory() || name === CHECKOUT_MARKER)) {
+          const decision = await skipDecision(join(dir, name), ctx);
+          if (decision === 'skip') { recordPruned(ctx, join(dir, name), 'operator-skip'); continue; }
+          if (decision === 'unknown') {
+            recordBucket(ctx.blocked, ctx.blockedTotals, 'skip-undecidable', {
+              path: safeOperatorText(join(dir, name)),
+              reason: 'could not be told apart from an excluded directory; it was not read',
+            });
+            continue;
+          }
+        }
         // A DESCENDANT SYMLINK IS NEVER DEREFERENCED.
         //
         // An earlier cut `stat`ed it to learn whether it was a directory, so the
@@ -386,13 +422,6 @@ async function walkRoot(root, ctx) {
           recordPruned(ctx, childPath, `name-prune (${name})`);
           continue;
         }
-        // An operator-named skip. Matched by dev/ino rather than by spelling,
-        // for the same reason the live-WAL exclusion is: `--skip ~/mnt` must
-        // still hold when the walk reaches that directory by another name.
-        if (ctx.skipIdentities.size > 0 && await isSkipped(childPath, ctx)) {
-          recordPruned(ctx, childPath, 'operator-skip');
-          continue;
-        }
         if (depth + 1 > ctx.caps.maxDepth) {
           recordPruned(ctx, childPath, 'depth-cap');
           continue;
@@ -405,11 +434,29 @@ async function walkRoot(root, ctx) {
       // reported blocked. Reporting only the completed part as if it were whole
       // is the fail-open direction.
       recordBucket(ctx.blocked, ctx.blockedTotals, 'mid-scan', { path: safeOperatorText(dir), reason: `directory listing failed mid-scan (${err?.code ?? 'error'})` });
+      // A listing that threw did NOT complete. Leaving `capped` false made
+      // `dirs_completed` contradict the blocked entry that sits beside it.
+      capped = true;
     } finally {
       if (typeof handle?.close === 'function') await handle.close().catch(() => {});
     }
     if (!capped) ctx.stats.dirs_completed += 1;
-    for (const child of children) stack.push(child);
+    // The QUEUE is bounded too. `maxDirs` bounds what is scanned; without this a
+    // wide tree could park millions of paths in memory before that cap ever
+    // fired. The excess is reported, not dropped.
+    for (const child of children) {
+      if (stack.length >= ctx.caps.maxDirs) {
+        recordPruned(ctx, child.path, 'queue-cap');
+        continue;
+      }
+      stack.push(child);
+    }
+    // An EMPTY directory never enters the entry loop, so a slow `opendir` of one
+    // was the one path that could overrun the budget without any check seeing it.
+    if (ctx.clock() >= ctx.deadline && stack.length > 0) {
+      abandonRemainder(stack, 'time-budget', ctx);
+      return;
+    }
   }
 }
 
@@ -440,31 +487,78 @@ function abandonRemainder(stack, reason, ctx) {
 // Is this directory one the operator asked to skip? By dev/ino, for the same
 // reason the live-WAL exclusion is: a skip named as `~/mnt` must still hold when
 // the walk arrives by a different spelling.
-async function isSkipped(path, ctx) {
+// Three answers, not two. A skip is a READ BOUNDARY the operator drew, so
+// "I could not tell whether this is the excluded directory" must not resolve to
+// "read it" — that walks a subtree they explicitly excluded, which may be the
+// sensitive or the slow one the flag existed for (cross-host review).
+//   'skip'    identity matches an exclusion
+//   'walk'    identity is known and matches nothing
+//   'unknown' the filesystem would not say — the caller blocks rather than reads
+async function skipDecision(path, ctx) {
+  if (ctx.skipIdentities.size === 0) return 'walk';
   try {
-    const st = await ctx.ops.stat(path);
-    return ctx.skipIdentities.has(`${st.dev}:${st.ino}`);
-  } catch {
-    // Unstattable is not skipped — it will fail at `opendir` and be reported as
-    // blocked, which is the honest outcome. Treating it as skipped here would
-    // convert an error into a silent omission.
-    return false;
+    const key = identityOf(await ctx.ops.statIdentity(path));
+    if (key === null) return 'unknown';
+    return ctx.skipIdentities.has(key) ? 'skip' : 'walk';
+  } catch (err) {
+    // ENOENT is a definite answer: a directory that is not there is not the one
+    // the operator excluded, and the walk will report its own failure.
+    if (err?.code === 'ENOENT') return 'walk';
+    return 'unknown';
   }
 }
 
-// The live machine-global WAL's physical identity, resolved once per scan.
+// A directory's physical identity as a comparable string, or null when it is
+// not exactly comparable.
+//
+// dev/ino above 2^53 collapse when they arrive as JavaScript Numbers — two
+// distinct directories then compare EQUAL, and the direction that harms is a
+// real legacy directory classified as the live WAL and dropped from the report
+// (cross-host review). The identity stat therefore asks for BigInt, and a
+// non-BigInt result is accepted only while it is exactly representable.
+// The home from the passwd entry, which `$HOME` cannot override. `userInfo()`
+// throws when the uid has no passwd entry (some containers), and that is not a
+// reason to fail the scan — the `$HOME` reference point still stands.
+function safePasswdHome() {
+  try {
+    return userInfo().homedir || null;
+  } catch {
+    return null;
+  }
+}
+
+export function identityOf(st) {
+  if (!st) return null;
+  const { dev, ino } = st;
+  if (typeof dev === 'bigint' && typeof ino === 'bigint') return `${dev}:${ino}`;
+  if (Number.isSafeInteger(dev) && Number.isSafeInteger(ino)) return `${dev}:${ino}`;
+  return null;
+}
+
+// The live machine-global WAL's physical identity.
 //
 //   { key: 'dev:ino' }            it exists; compare candidates against this
 //   { key: null }                 it does not exist, so nothing can BE it
 //   { unknown: true, reason }     the filesystem would not say — every caller blocks
 //
-// Cached because it is compared against every candidate and re-observing it per
-// candidate would multiply the window this function exists to close.
+// A POSITIVE answer is cached: it is compared against every candidate, and
+// re-observing it per candidate multiplies the window this exists to close. A
+// `null` answer is NOT cached — "the fence does not exist yet" is exactly the
+// state that can change during a 120-second scan, and caching it would let a
+// WAL created mid-scan be reported as a removable legacy location.
 async function liveWalIdentity(ctx) {
-  if (ctx.liveWalIdentityCache === null) {
-    ctx.liveWalIdentityCache = await directoryIdentity(ctx.liveWalDir, ctx);
+  if (ctx.liveWalIdentityCache?.keys?.size) return ctx.liveWalIdentityCache;
+  const keys = new Set();
+  const seen = [];
+  for (const dir of ctx.liveWalDirs) {
+    const resolved = await directoryIdentity(dir, ctx);
+    if (resolved.unknown) return { unknown: true, reason: resolved.reason };
+    seen.push({ dir, present: resolved.key !== null });
+    if (resolved.key) keys.add(resolved.key);
   }
-  return ctx.liveWalIdentityCache;
+  const answer = { keys, probed: seen };
+  if (keys.size) ctx.liveWalIdentityCache = answer;
+  return answer;
 }
 
 // The current checkout's legacy WAL identity, same shape. `key: null` when no
@@ -495,9 +589,11 @@ function markUnreadable(finding, candidate, reason, ctx) {
 
 async function directoryIdentity(path, ctx) {
   try {
-    const st = await ctx.ops.stat(path);
+    const st = await ctx.ops.statIdentity(path);
     if (!st.isDirectory()) return { key: null };
-    return { key: `${st.dev}:${st.ino}` };
+    const key = identityOf(st);
+    if (key === null) return { unknown: true, reason: `${path} reported an identity this runtime cannot compare exactly` };
+    return { key };
   } catch (err) {
     // ENOENT is a definite answer: a directory that is not there is not the
     // directory anything can be identical to. Anything else means we could not
@@ -523,9 +619,41 @@ async function directoryIdentity(path, ctx) {
 // The ONE exclusion is the live machine-global WAL — the fence itself.
 async function inspectCandidate(checkoutRoot, ctx) {
   const candidate = join(checkoutRoot, CHECKOUT_MARKER, ...MARKER_REMAINDER);
+
+  // EVERY component of the fixed suffix is checked, not just the marker.
+  //
+  // The previous round made a symlinked MARKER a boundary and stopped there.
+  // The suffix has four components, and a symlink at `runs`, `doctor` or
+  // `egress-intents` was still dereferenced by the `stat`/`opendir` below —
+  // reproduced: `.agentic-plugins/runs -> /outside` produced an actionable
+  // finding outside the requested root with `not_followed_total = 0`. Fixing
+  // one of four components is the same one-of-two-copies shape as everything
+  // else this contract has been bitten by, so the check is over the whole path.
+  const suffix = [CHECKOUT_MARKER, ...MARKER_REMAINDER];
+  let walked = checkoutRoot;
+  for (const component of suffix) {
+    walked = join(walked, component);
+    let lst;
+    try {
+      lst = await ctx.ops.lstat(walked);
+    } catch (err) {
+      const code = err?.code ?? 'error';
+      if (code === 'ENOENT' || code === 'ENOTDIR') return;
+      recordBucket(ctx.blocked, ctx.blockedTotals, 'candidate-stat', { path: safeOperatorText(walked), reason: `candidate path component could not be inspected (${code})` });
+      return;
+    }
+    if (lst.isSymbolicLink()) {
+      recordBucket(ctx.notFollowed, ctx.notFollowedTotals, 'candidate-suffix-symlink', { path: safeOperatorText(walked) });
+      return;
+    }
+    if (!lst.isDirectory()) return;
+  }
+
+  // `lstat` on the final component already proved it is a real directory that
+  // no symlink was crossed to reach. This `stat` is for its IDENTITY.
   let st;
   try {
-    st = await ctx.ops.stat(candidate);
+    st = await ctx.ops.statIdentity(candidate);
   } catch (err) {
     const code = err?.code ?? 'error';
     // ENOENT/ENOTDIR are definite answers: there is no WAL directory here. A
@@ -537,7 +665,15 @@ async function inspectCandidate(checkoutRoot, ctx) {
   }
   if (!st.isDirectory()) return;
 
-  const identityKey = `${st.dev}:${st.ino}`;
+  const identityKey = identityOf(st);
+  if (identityKey === null) {
+    // dev/ino that cannot be represented exactly is not an identity. Comparing
+    // lossy numbers is how a real legacy directory gets classified as the live
+    // WAL and silently dropped (cross-host review) — so it is refused, not
+    // approximated.
+    recordBucket(ctx.blocked, ctx.blockedTotals, 'candidate-identity', { path: safeOperatorText(candidate), reason: 'filesystem reported an identity this runtime cannot compare exactly' });
+    return;
+  }
   // One physical directory reported once, however many spellings reached it.
   if (ctx.seenCandidates.has(identityKey)) return;
   ctx.seenCandidates.add(identityKey);
@@ -567,7 +703,7 @@ async function inspectCandidate(checkoutRoot, ctx) {
     recordBucket(ctx.blocked, ctx.blockedTotals, 'live-wal-identity', { path: safeOperatorText(candidate), reason: `could not be told apart from the live machine-global WAL (${safeOperatorText(live.reason)})` });
     return;
   }
-  if (live.key === identityKey) {
+  if (live.keys.has(identityKey)) {
     ctx.exclusions.push({ path: safeOperatorText(candidate), reason: 'current-machine-global-wal' });
     return;
   }
@@ -638,6 +774,34 @@ async function inspectCandidate(checkoutRoot, ctx) {
   } finally {
     if (typeof handle?.close === 'function') await handle.close().catch(() => {});
   }
+  // BIND THE CLASSIFICATION TO WHAT WAS ACTUALLY LISTED.
+  //
+  // The identity above decided that this candidate is NOT the live WAL. The
+  // listing then re-opened the PATHNAME, and a pathname is not an object: a
+  // component swapped in between means the records just enumerated belong to a
+  // different directory than the one that was classified — possibly the live
+  // fence, which would then be printed with removal wording. The previous round
+  // closed the comparison window and left this one open, which is the same
+  // defect one step later (cross-host review CRITICAL).
+  //
+  // Node has no readdir-from-descriptor, so the binding is by DETECTION: observe
+  // the identity again after the listing and refuse to report anything if it
+  // moved. A swap is then a blocked entry, never a finding.
+  let after = null;
+  try {
+    after = identityOf(await ctx.ops.statIdentity(candidate));
+  } catch {
+    after = null;
+  }
+  if (after !== identityKey) {
+    ctx.seenCandidates.delete(identityKey);
+    recordBucket(ctx.blocked, ctx.blockedTotals, 'candidate-moved', {
+      path: safeOperatorText(candidate),
+      reason: 'the directory changed identity between classification and listing; nothing about it is reported',
+    });
+    return;
+  }
+
   records.sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind));
   // An unreadable listing has an UNKNOWN count, not a partial one presented as
   // whole. An empty but readable directory has a known count of 0 — a real
@@ -670,6 +834,7 @@ export async function discoverLegacyEgressIntents({
   skipPaths = [],
   repoRoot = null,
   homeDir = defaultHomedir(),
+  passwdHome = safePasswdHome(),
   now = new Date(),
   host = defaultHostname(),
   runtimeVersion = RUNTIME_VERSION,
@@ -680,6 +845,11 @@ export async function discoverLegacyEgressIntents({
   const ops = {
     opendir: defaultOpendir,
     stat: defaultStat,
+    // `lstat` never follows the final component — it is how the fixed suffix is
+    // walked without crossing a symlink at any of its four parts.
+    lstat: defaultLstat,
+    // Identity is asked for in BigInt so dev/ino above 2^53 stay exact.
+    statIdentity: (path) => defaultStat(path, { bigint: true }),
     realpath: defaultRealpath,
     ...opOverrides,
   };
@@ -694,7 +864,15 @@ export async function discoverLegacyEgressIntents({
     caps,
     clock,
     deadline: started + caps.timeBudgetMs,
-    liveWalDir: egressIntentDir(homeDir),
+    // TWO reference points, not one.
+    //
+    // `os.homedir()` follows `$HOME`. Reproduced: running under an overridden
+    // HOME made the REAL machine-global WAL a finding with removal wording —
+    // the live fence, offered for removal, with no race and nothing in the
+    // report to notice it by. `os.userInfo().homedir` reads the passwd entry
+    // and ignores `$HOME`, so the two disagree exactly in the case that harms,
+    // and a candidate matching EITHER is excluded.
+    liveWalDirs: [...new Set([egressIntentDir(homeDir), egressIntentDir(passwdHome)].filter(Boolean))],
     repoLegacyDir: repoRoot ? egressIntentDir(repoRoot) : null,
     liveWalIdentityCache: null,
     repoLegacyIdentityCache: null,
@@ -708,7 +886,7 @@ export async function discoverLegacyEgressIntents({
     exclusions: [],
     findings: [],
     seenCandidates: new Set(),
-    stats: { dirs_scanned: 0, dirs_completed: 0, entries_seen: 0 },
+    stats: { dirs_attempted: 0, dirs_scanned: 0, dirs_completed: 0, entries_seen: 0 },
     exhausted: false,
     exhaustedReason: null,
   };
@@ -723,7 +901,7 @@ export async function discoverLegacyEgressIntents({
     // A root the operator ALSO named in `--skip` is skipped, not walked. The
     // skip check used to run only on children, so `--root X --skip X` walked X
     // in full (cross-host review, reproduced).
-    if (ctx.skipIdentities.has(`${root.dev}:${root.ino}`)) {
+    if (ctx.skipIdentities.has(root.identity)) {
       recordPruned(ctx, root.canonical, 'operator-skip');
       continue;
     }
@@ -756,6 +934,13 @@ export async function discoverLegacyEgressIntents({
   // keys on the total below, and a truncated non-empty list is still non-empty.
   const findingsTotal = allFindings.length;
   const findings = allFindings.slice(0, caps.maxReportedPerBucket);
+  // An EMPTY, readable legacy directory holds nothing that can be in flight, so
+  // there is nothing for the operator to act on and directory-level action is
+  // forbidden. Counting it as an actionable finding meant the workflow could not
+  // converge: the operator removes the last record, reruns, and is told
+  // `findings_present` about a location with no records (cross-host review).
+  // It is still REPORTED — the location is real — it just does not drive status.
+  const actionable = allFindings.filter((f) => f.unreadable === true || (f.record_count ?? 0) > 0);
 
   // `scan_complete` describes the TRAVERSAL: every root was walked to its end
   // without a cap or the budget cutting it short. It is deliberately separate
@@ -764,7 +949,16 @@ export async function discoverLegacyEgressIntents({
   const scanComplete = ctx.exhausted === false;
   // The count and the display list are passed separately, because bounding must
   // never be able to turn a blocked scan into a clean one.
-  const status = resolveDiscoveryStatus({ scanComplete, blocked, blockedTotal, findings: allFindings });
+  const status = resolveDiscoveryStatus({
+    scanComplete,
+    blocked,
+    blockedTotal,
+    findings: actionable,
+    directoriesExamined: ctx.stats.dirs_scanned,
+  });
+  const operatorSkipped = ctx.prunedTotals.get('operator-skip') ?? 0;
+  const liveProbe = await liveWalIdentity(ctx);
+  const liveWalState = liveProbe.unknown ? 'unknown' : (liveProbe.keys.size > 0 ? 'present' : 'absent');
 
   return {
     schema_version: LEGACY_EGRESS_DISCOVERY_SCHEMA,
@@ -797,11 +991,20 @@ export async function discoverLegacyEgressIntents({
         max_reported_per_bucket: caps.maxReportedPerBucket,
       },
     },
+    // The reference point the exclusion was decided against, ALWAYS reported —
+    // present or not, reached or not. An overridden `$HOME` used to make the
+    // real fence a finding with nothing in the report to notice it by; naming
+    // what the scan treated as the fence is what makes that visible.
+    live_wal: {
+      compared_against: ctx.liveWalDirs.map((d) => safeOperatorText(d)),
+      state: liveWalState,
+    },
     exclusions,
     findings,
     findings_total: findingsTotal,
-    overall: { status, guidance: guidanceFor(status) },
-    residual: buildResidual({ roots, ctx, prunedTotal: sum(ctx.prunedTotals), notFollowedTotal: sum(ctx.notFollowedTotals) }),
+    actionable_total: actionable.length,
+    overall: { status, guidance: guidanceFor(status, { operatorSkipped, liveWalState }) },
+    residual: buildResidual({ roots, ctx, prunedTotal: sum(ctx.prunedTotals), notFollowedTotal: sum(ctx.notFollowedTotals), operatorSkipped, liveWalState }),
     mutation_boundary: {
       writes_allowed: 'none',
       forbidden: [
@@ -847,8 +1050,9 @@ async function resolveSkips({ skipPaths, ops }) {
     let canonical;
     try {
       canonical = await ops.realpath(requested);
-      const st = await ops.stat(canonical);
-      identities.add(`${st.dev}:${st.ino}`);
+      const key = identityOf(await ops.statIdentity(canonical));
+      if (key === null) throw Object.assign(new Error('EIDENTITY'), { code: 'unrepresentable-identity' });
+      identities.add(key);
       resolved.push({ requested, canonical });
     } catch (err) {
       unresolved.push({
@@ -860,16 +1064,36 @@ async function resolveSkips({ skipPaths, ops }) {
   return { identities, resolved, unresolved };
 }
 
-function guidanceFor(status) {
-  if (status === DISCOVERY_STATUS.incomplete) return GUIDANCE.incomplete;
-  if (status === DISCOVERY_STATUS.findings) return GUIDANCE.findings;
-  return GUIDANCE.none;
+function guidanceFor(status, { operatorSkipped = 0, liveWalState = 'present' } = {}) {
+  const base = status === DISCOVERY_STATUS.incomplete
+    ? GUIDANCE.incomplete
+    : (status === DISCOVERY_STATUS.findings ? GUIDANCE.findings : GUIDANCE.none);
+  const caveats = [];
+  // A deliberate exclusion is not the same class as a depth cap, and burying it
+  // in a combined prune total is how the DOCUMENTED invocation came to return a
+  // reassuring status over a real pre-upgrade record sitting in the skipped
+  // mount (reproduced on the dogfood machine). It is named in the guidance the
+  // operator reads, not only in a count further down.
+  if (operatorSkipped > 0) {
+    caveats.push(`You excluded ${operatorSkipped} location(s) with --skip; nothing under them was examined, and a separate checkout commonly lives on exactly the mount an operator is tempted to exclude.`);
+  }
+  if (liveWalState === 'absent') {
+    // Worded without a removal verb: this sentence must be able to appear in an
+    // INCOMPLETE report, where the contract is that no removal verb appears at
+    // all. Saying "acting on it" carries the same warning and keeps the
+    // whole-document assertion literally true.
+    caveats.push('No machine-global WAL was found at the locations this scan treated as the live fence (see live_wal.compared_against). If your runtime keeps it elsewhere — a different $HOME, another user — then a location listed below may BE that fence, and acting on it would defeat the protection this scan exists to preserve.');
+  }
+  if (liveWalState === 'unknown') {
+    caveats.push('The live fence could not be identified (see live_wal.compared_against); nothing below has been proven not to be it.');
+  }
+  return caveats.length > 0 ? `${base} ${caveats.join(' ')}` : base;
 }
 
 // The limits of this answer, in every output format. The first one is
 // irreducible: closing it would need a full-filesystem scan (disproportionate)
 // or a checkout registry (which does not exist).
-function buildResidual({ roots, ctx, prunedTotal, notFollowedTotal }) {
+function buildResidual({ roots, ctx, prunedTotal, notFollowedTotal, operatorSkipped = 0, liveWalState = 'present' }) {
   const residual = [
     `checkouts outside the scanned roots are not covered (scanned: ${roots.length} root(s))`,
     'the time budget is cooperative — it is checked between directory reads and cannot preempt one stuck syscall; a single remote mount was measured at ~286ms per directory, so --skip is the lever for that case',
@@ -879,7 +1103,11 @@ function buildResidual({ roots, ctx, prunedTotal, notFollowedTotal }) {
   if (ctx.exhaustedReason) {
     residual.push(`the walk ended early (${ctx.exhaustedReason}); every directory still queued is counted under scan.pruned and was never examined`);
   }
-  if (prunedTotal > 0) residual.push(`${prunedTotal} location(s) were not descended into — see scan.pruned_by_reason`);
+  // Operator exclusions get their OWN line. Folded into the combined prune
+  // total they were indistinguishable from 41,833 routine depth caps.
+  if (operatorSkipped > 0) residual.push(`${operatorSkipped} location(s) were excluded by --skip and were NOT examined — this result says nothing about them`);
+  if (liveWalState !== 'present') residual.push(`the live machine-global WAL was ${liveWalState} at the locations compared against — see live_wal`);
+  if (prunedTotal > 0) residual.push(`${prunedTotal} location(s) were not descended into in total (including any --skip above) — see scan.pruned_by_reason`);
   if (notFollowedTotal > 0) residual.push(`${notFollowedTotal} descendant directory symlink(s) were not followed — see scan.not_followed`);
   return residual;
 }
@@ -921,7 +1149,7 @@ export function renderDiscoveryText(report) {
   lines.push('');
   lines.push('Scan');
   lines.push(`- complete: ${report.scan.complete}${report.scan.ended_early_because ? ` (ended early: ${report.scan.ended_early_because})` : ''}`);
-  lines.push(`- dirs: scanned=${report.scan.stats.dirs_scanned}; completed=${report.scan.stats.dirs_completed}; entries=${report.scan.stats.entries_seen}; elapsed_ms=${report.scan.stats.elapsed_ms}`);
+  lines.push(`- dirs: attempted=${report.scan.stats.dirs_attempted}; opened=${report.scan.stats.dirs_scanned}; completed=${report.scan.stats.dirs_completed}; entries=${report.scan.stats.entries_seen}; elapsed_ms=${report.scan.stats.elapsed_ms}`);
   lines.push(`- caps: depth=${report.scan.caps.max_depth}; entries-per-dir=${report.scan.caps.max_entries_per_dir}; dirs=${report.scan.caps.max_dirs}; time-budget-ms=${report.scan.caps.time_budget_ms}`);
   // Totals FIRST, then a bounded sample. The count is the honest part: a list
   // truncated without its total reads as "that was all of them".
@@ -932,11 +1160,15 @@ export function renderDiscoveryText(report) {
   lines.push(`- pruned: ${report.scan.pruned_total}${report.scan.pruned_total > 0 ? ` by reason ${JSON.stringify(report.scan.pruned_by_reason)}` : ''}`);
   for (const entry of sampleLines(report.scan.pruned, report.scan.pruned_total)) lines.push(`    pruned: ${entry}`);
   lines.push('');
+  lines.push('Live fence (the reference point every exclusion was decided against)');
+  lines.push(`- state: ${report.live_wal.state}`);
+  for (const path of report.live_wal.compared_against) lines.push(`- compared against: ${path}`);
+  lines.push('');
   lines.push('Exclusions');
   if (report.exclusions.length === 0) lines.push('- (none)');
   for (const entry of report.exclusions) lines.push(`- ${entry.path} — ${entry.reason}`);
   lines.push('');
-  lines.push(`Findings (${report.findings_total})`);
+  lines.push(`Findings (${report.findings_total}; ${report.actionable_total} hold records or could not be listed)`);
   if (report.findings_total === 0) lines.push('- (none in the scanned scope)');
   for (const finding of report.findings) {
     const count = finding.record_count === null ? 'unknown' : String(finding.record_count);

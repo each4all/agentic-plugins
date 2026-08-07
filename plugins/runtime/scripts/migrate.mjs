@@ -32,10 +32,17 @@
 // point so the direct path that shipped in earlier versions still works. One
 // help surface, one exit-code rule, one argv contract.
 
-import { resolve } from 'node:path';
+import { parse as parsePath, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runWorkflowStorageCli, workflowStorageUsage } from './migrate-workflow-storage.mjs';
+import { safeOperatorText } from './lib/egress-intent-wal.mjs';
+
+// The workflow-storage half — the M1 MUTATOR, which imports node:child_process
+// at module scope — is loaded DYNAMICALLY, inside the branch that routes to it.
+// A static import made every discovery run (and every refusal of `--apply`)
+// evaluate the mutating module; it has no top-level side effect today, so the
+// read-only property held by accident rather than by construction. A literal
+// dynamic specifier keeps the executor-guard's import analysis intact.
 import {
   DISCOVERY_EXIT_CODES,
   DEFAULT_DISCOVERY_CAPS,
@@ -183,16 +190,23 @@ export function parseDiscoveryArgs(argv) {
         opts.timeBudgetMs = readInt(value(), '--time-budget-ms', 1, 24 * 60 * 60 * 1000);
         break;
       default:
-        throw new Error(`unknown argument: ${arg}`);
+        // Defused: rejected argv is printed to stderr, which is outside the
+        // report's defuser and just as forgeable.
+        throw new Error(`unknown argument: ${safeOperatorText(arg)}`);
     }
   }
   if (!['text', 'json'].includes(opts.format)) throw new Error('--format must be text or json');
   // `/` is refused rather than accepted-and-capped. A whole-filesystem walk is
   // an explicit non-goal, and the caps would turn it into a scan that reports
   // `incomplete` forever while costing minutes — the worst of both.
+  // An EARLY, friendlier rejection only. The authoritative refusal runs on the
+  // CANONICAL path inside the scanner, because a symlink to `/` passes this one.
+  // `parse().root` rather than a literal `'/'` so `C:\` and `\\server\share\`
+  // are recognised too.
   for (const root of opts.roots) {
-    if (resolve(root) === '/') {
-      throw new Error('--root / is refused — a whole-filesystem scan is a non-goal; name the directories that hold your checkouts');
+    const resolved = resolve(root);
+    if (resolved === parsePath(resolved).root) {
+      throw new Error(`--root ${safeOperatorText(root)} is refused — it names a filesystem root, and a whole-filesystem scan is a non-goal; name the directories that hold your checkouts`);
     }
   }
   return opts;
@@ -240,11 +254,16 @@ export async function runMigrateCli(argv) {
     const { flag, value } = consumedAsValue[0];
     return {
       ok: false,
-      reason: `ambiguous: '${value}' is a subcommand name but was read as the value of ${flag}, so no subcommand was given and '${DEFAULT_SUBCOMMAND}' would run instead. If '${value}' is really the ${flag} value, write ${flag}=${value}; if you meant the subcommand, give ${flag} its own value first.`,
+      // `value` is argv the operator controls, and this string reaches stderr
+      // outside the report's defuser — a newline plus an escape forges an
+      // operator line there just as it would inside the report (cross-host
+      // review). `flag` and `value` are both defused.
+      reason: `ambiguous: '${safeOperatorText(value)}' is a subcommand name but was read as the value of ${safeOperatorText(flag)}, so no subcommand was given and '${DEFAULT_SUBCOMMAND}' would run instead. If it is really the ${safeOperatorText(flag)} value, write ${safeOperatorText(flag)}=${safeOperatorText(value)}; if you meant the subcommand, give ${safeOperatorText(flag)} its own value first.`,
       usage: migrateUsage(),
     };
   }
   if (subcommand === 'legacy-egress-intents') return runDiscoveryCli(rest);
+  const { runWorkflowStorageCli, workflowStorageUsage } = await import('./migrate-workflow-storage.mjs');
   const res = await runWorkflowStorageCli(rest);
   // The workflow-storage runner owns its own usage text; surface that one rather
   // than the dispatcher's, so a mistyped flag is answered by the surface that

@@ -49,6 +49,12 @@ Report it as an inventory, never as an action list:
 
 - `--root` **replaces** the default `$HOME` root; `--skip` excludes a subtree
   by device/inode identity. Both are repeatable and both are reported.
+- `--skip` is a **coverage decision, not a performance tweak**. Nothing under a
+  skipped path is examined, and a separate checkout very commonly lives on
+  exactly the mount an operator is tempted to exclude for being slow — that case
+  was observed on the first machine this ran on. Do not suggest `--skip` as a
+  default; suggest it only after a run has actually exhausted its budget, and
+  when you do, say what coverage it costs.
 - Exit codes: `0` nothing found in the scanned scope, `2` locations found,
   `1` the scan did not complete.
 - Status `no_findings_in_scanned_scope` is deliberately not called "clean" —
@@ -60,13 +66,34 @@ Report it as an inventory, never as an action list:
 - A scan that could not complete demotes the status to `incomplete`, and in
   that state the output carries **no removal instruction at all**.
 
-**Guidance to relay, unchanged, for every location** — a pre-upgrade record
-may carry no process identity, and this runtime reads a missing identity as
-*unknown*, not dead, so an older sender may still be in flight: make sure no
-older proof is running, check the phone, then manually remove the specific
-records the operator reviewed. Never present the directory as the unit to act
-on, never suggest removing records the scan did not list, and never generate a
-shell command.
+**Relay `overall.guidance` verbatim. Do not compose your own.**
+
+The program decides what guidance the operator may act on, and it deliberately
+WITHHOLDS removal guidance in states where acting would be unsafe — an
+incomplete scan, a candidate whose records were never listed, an absent or
+unidentifiable live fence. An earlier version of this file stated that rule and
+then, further down, told you to relay removal guidance unconditionally. A model
+following the second half would restore precisely what the renderer withheld,
+which is why the unconditional wording is not reproduced here even as an
+example: a forbidden instruction quoted in a file a model reads is still an
+instruction a model can follow.
+
+So:
+
+- `overall.status == "incomplete"` → relay the guidance as given. It contains no
+  removal instruction, and you must not add one. Say what is under
+  `scan.blocked` and that the report is not an inventory.
+- `overall.status == "findings_present"` → the guidance already carries the
+  quiesce wording: no older proof running → check the phone → manually remove
+  only the specific records the operator reviewed. Relay it as-is.
+- `overall.status == "no_findings_in_scanned_scope"` → relay it, including any
+  caveat sentence about `--skip` exclusions or an absent live fence.
+
+In every state: never present the directory as the unit to act on, never suggest
+acting on records the scan did not list, and never generate a shell command.
+Surface `live_wal.compared_against` whenever `live_wal.state` is not `present` —
+that is what tells the operator the exclusion may have been decided against the
+wrong reference point.
 
 ## Scope
 

@@ -75,7 +75,14 @@ export function isDisplayHazard(codePoint) {
     // list above missed them (cross-host review), and terminals and log viewers
     // break lines on them — which is the whole forged-instruction hazard the C0
     // newline entry exists to stop.
-    || codePoint === 0x2028 || codePoint === 0x2029;
+    || codePoint === 0x2028 || codePoint === 0x2029  // LINE / PARAGRAPH SEPARATOR
+    // Invisible formatting characters that are neither bidi controls nor
+    // zero-width joiners but render as nothing: ARABIC LETTER MARK, WORD JOINER,
+    // MONGOLIAN VOWEL SEPARATOR, and the INTERLINEAR ANNOTATION set. Each lets
+    // two distinct names look identical to the operator being asked to act on
+    // one of them (cross-host review).
+    || codePoint === 0x061c || codePoint === 0x2060 || codePoint === 0x180e
+    || (codePoint >= 0xfff9 && codePoint <= 0xfffb);
 }
 
 // The alphabet this WAL actually writes: hex fingerprints, hex owner tokens,
@@ -96,20 +103,30 @@ const EGRESS_SAFE_NAME_RE = /^[0-9A-Za-z._-]{1,128}$/;
 // The defusing is SAID, not silent: silently mangling the name would leave an
 // operator unable to copy the record they need to remove, which is worse than
 // telling them the name is not one this WAL writes.
+// A short, stable discriminator for the ORIGINAL text.
+//
+// This is the whole reason defusing can be safe. The moment a character is
+// replaced or a tail is cut, the rendered string no longer identifies one
+// object: `é.json` and `è.json` both rendered `?.json`, and two paths differing
+// only in a control byte both rendered the same — while the guidance asks the
+// operator to act on ONE named record (reproduced, cross-host review). Attaching
+// the hash whenever ANYTHING was altered restores the property the alteration
+// destroyed.
+function discriminator(text) {
+  return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
+}
+
 export function safeRecordName(name) {
   const text = String(name);
   if (EGRESS_SAFE_NAME_RE.test(text)) return text;
-  const head = [...text].slice(0, 96);
+  const all = [...text];
+  const head = all.slice(0, 96);
   const defused = head.map((ch) => (ch >= ' ' && ch <= '~' ? ch : '?')).join('');
-  // TRUNCATION NEEDS THE HASH TOO. This branch cut at 96 characters with no
-  // discriminator, so two different long names sharing a 96-character prefix
-  // rendered identically — and the operator is being asked to act on ONE named
-  // record. `safeOperatorText` already carried the hash; this copy did not,
-  // which is the same one-of-two-copies-learned-it shape that made merging the
-  // hazard predicate worthwhile in the first place.
-  const truncated = head.length < [...text].length;
-  const digest = truncated ? `; truncated, sha256:${createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12)}` : '';
-  return `${defused} [name shown defused — it carries characters this WAL never writes${digest}]`;
+  const notes = ['name shown defused — it carries characters this WAL never writes'];
+  if (head.length < all.length) notes.push('truncated');
+  // Unconditional: reaching this branch AT ALL means the rendering is lossy.
+  notes.push(`sha256:${discriminator(text)}`);
+  return `${defused} [${notes.join('; ')}]`;
 }
 
 // How much of a path is shown before it is truncated.
@@ -153,8 +170,11 @@ export function safeOperatorText(text, { maxLength = OPERATOR_TEXT_MAX } = {}) {
   let shown = defused;
   if ([...defused].length > maxLength) {
     shown = [...defused].slice(0, maxLength).join('');
-    const digest = createHash('sha256').update(raw, 'utf8').digest('hex').slice(0, 12);
-    notes.push(`truncated, sha256:${digest}`);
+    notes.push('truncated');
   }
+  // The hash rides on ANY alteration, not only truncation — see `discriminator`.
+  // Without it, two locations differing only in a replaced byte render alike and
+  // the operator cannot tell which one the guidance is about.
+  if (notes.length > 0) notes.push(`sha256:${discriminator(raw)}`);
   return notes.length > 0 ? `${shown} [${notes.join('; ')}]` : shown;
 }

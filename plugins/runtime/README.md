@@ -94,7 +94,6 @@ $runtime:settings --attest-codex-hook-review
 $runtime:migrate workflow-storage
 $runtime:migrate workflow-storage --plugin engineer --apply
 $runtime:migrate legacy-egress-intents
-$runtime:migrate legacy-egress-intents --skip "$HOME/mnt"
 $runtime:consensus plan --task "Review this risky change" --max-rounds 2
 $runtime:consensus execute --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --execute
 $runtime:consensus decide --run-id consensus-YYYYMMDDTHHMMSSZ-abcdef --decision-file owner-decision.md
@@ -255,7 +254,13 @@ reads a missing identity as *unknown* rather than dead, so an older sender may
 still be in flight. Defaults (`--max-depth 6`, `--time-budget-ms 120000`) were
 chosen against a measured `$HOME` walk; a slow network mount can dominate the
 budget, which is what `--skip` is for, and the report names the directories the
-budget left unwalked.
+budget left unwalked. **`--skip` costs coverage** — on the first machine this ran
+on, the only real pre-upgrade record sat inside the mount a `--skip` example had
+recommended excluding, and the run reported no findings; the report now names
+operator exclusions separately and adds a caveat to its guidance. Every
+exclusion is decided against `live_wal.compared_against`, which is reported
+whether or not the scan reached it, so an overridden `$HOME` is visible rather
+than silently reclassifying the live fence as a removable finding.
 
 Dry-run reports namespace presence in legacy `.claude/agentic-*` and canonical
 `.agentic-plugins/state/<plugin>` homes, active workflow counts by branch,

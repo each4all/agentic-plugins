@@ -3930,9 +3930,25 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
   // guessing "same" silently drops a legitimate legacy fence.
   const legacyIsLive = await sameDirectory(legacyIntentDir, intentDir);
   if (legacyIsLive.unknown) {
-    return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} cannot be told apart from the machine-global one at ${machinePointer(homeDir, intentDir)} (${legacyIsLive.reason}); refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
+    // The reason embeds a raw path (path-containment.mjs builds it that way).
+    // `safeRecordName` is the wrong tool for a path, so the message carries the
+    // pointer it already renders safely and the CODE only — the scanner defuses
+    // this same reason and this branch did not (cross-host review).
+    return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} cannot be told apart from the machine-global one at ${machinePointer(homeDir, intentDir)} (${safeRecordName(String(legacyIsLive.code ?? 'error'))}); refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
   }
   if (!legacyIsLive.same) {
+    // BIND THE LISTING TO THE DIRECTORY THAT WAS JUDGED.
+    //
+    // `sameDirectory` decided "not the live WAL" by observing the path; the
+    // `readdir` below re-opens the same PATHNAME. A component swapped in between
+    // means the names listed belong to a different directory than the one that
+    // was cleared — possibly the live fence, whose records would then be printed
+    // with review-and-remove wording. This is the identity-window defect that
+    // was fixed in the discovery scanner and left standing here; a second copy
+    // is how the first survives (cross-host review CRITICAL).
+    //
+    // The binding is by DETECTION: re-check identity after the listing and
+    // refuse to report anything if it moved.
     let legacyNames = [];
     try {
       legacyNames = (await readdir(legacyIntentDir)).filter((n) => n.endsWith('.json'));
@@ -3940,6 +3956,10 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
       if (err?.code !== 'ENOENT') {
         return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} is unscannable (${err?.code ?? 'error'}); refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
       }
+    }
+    const stillDistinct = await sameDirectory(legacyIntentDir, intentDir);
+    if (stillDistinct.unknown || stillDistinct.same) {
+      return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} changed identity while it was being read; refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
     }
     if (legacyNames.length > 0) {
       // Names go through the same defusing rule the modern scan uses. They were

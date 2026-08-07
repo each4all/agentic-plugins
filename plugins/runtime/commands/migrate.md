@@ -61,28 +61,46 @@ to it and could still permit a re-send.
 
 ```bash
 node "$RUNTIME_ROOT/scripts/migrate.mjs" --repo-root "$REPO_ROOT" legacy-egress-intents
-node "$RUNTIME_ROOT/scripts/migrate.mjs" --repo-root "$REPO_ROOT" legacy-egress-intents --skip "$HOME/mnt"
 ```
 
 - Scans `$HOME` by default. `--root <path>` **replaces** that root (repeatable);
   `--skip <path>` excludes a subtree by device/inode identity (repeatable).
 - `--max-depth` and `--time-budget-ms` bound the walk. Defaults are 6 and
   120000ms, chosen against a measured `$HOME` walk. A slow network mount can
-  dominate the budget — that is what `--skip` is for, and the report names the
+  dominate the budget; `--skip` is the lever for that, and the report names the
   directories the budget left unwalked.
+
+> **`--skip` costs coverage, and this is not hypothetical.** Nothing under a
+> skipped path is examined. On the first machine this command ran on, the ONLY
+> real pre-upgrade record was inside the very mount that a `--skip` example in
+> this file had recommended excluding, and the run reported
+> `no_findings_in_scanned_scope`. A separate checkout is exactly the sort of
+> thing that lives on a slow mount. Reach for `--skip` only after a run has
+> actually exhausted its budget, and read the caveat the report then adds to its
+> guidance.
 - Exit codes: `0` nothing found in the scanned scope, `2` locations found,
   `1` the scan did not complete.
 - Writes nothing, reads no record body, and never emits a shell command for the
   operator to run. The scan itself spawns no subprocess; the wrapper above runs
   `git rev-parse` to resolve the repo root, as every runtime command does.
 
-**How to act on a finding.** The guidance is uniform for every location and
-its unit is the individual record, not the directory. A pre-upgrade record may
-carry no process identity, and this runtime reads a missing identity as
-*unknown*, not dead — so an older sender may still be in flight. For each
-reported location: make sure no older proof is running, check the phone, then
-manually remove the specific records you reviewed. Never act on the directory
-as a whole, and never on records the scan did not list.
+**How to act on a finding — read `overall.guidance`; it is state-dependent.**
+The program withholds removal guidance in the states where acting would be
+unsafe (an incomplete scan, a location whose records were never listed, an
+absent or unidentifiable live fence), so the report's own guidance is the
+authority rather than this paragraph.
+
+When it does offer removal, the unit is the individual record, never the
+directory: a pre-upgrade record may carry no process identity, and this runtime
+reads a missing identity as *unknown*, not dead, so an older sender may still be
+in flight. Make sure no older proof is running, check the phone, then manually
+remove only the specific records you reviewed — never the directory as a whole,
+and never records the scan did not list.
+
+Check `live_wal.state` before acting on anything. It names what the scan treated
+as the live fence; if it is not `present`, a location listed as a finding may BE
+that fence — most often because `$HOME` differed from the one the proof ran
+under.
 
 The live machine-global WAL is excluded by device/inode identity and is never
 reported. The current checkout's own legacy directory **is** reported, annotated

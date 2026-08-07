@@ -98,7 +98,16 @@ export async function sameDirectory(a, b, { stat = defaultStat } = {}) {
       // ENOENT is a definite answer: a directory that is not there is not the
       // directory we are asking about. Anything else means we could not look.
       if (err?.code === 'ENOENT') return { same: false };
-      return { unknown: true, reason: `${path} could not be inspected (${err?.code ?? 'error'})` };
+      // `reason` embeds the RAW path, which is attacker-controlled wherever the
+      // caller renders it to an operator. `code` is the same evidence without
+      // that hazard, so callers that print can use it and callers that log can
+      // still have the path. `doctor.mjs` printed `reason` verbatim and forged
+      // operator lines were reachable through it (cross-host review).
+      return {
+        unknown: true,
+        code: err?.code ?? 'error',
+        reason: `${path} could not be inspected (${err?.code ?? 'error'})`,
+      };
     }
   }
   const [sa, sb] = seen;

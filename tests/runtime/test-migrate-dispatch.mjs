@@ -262,9 +262,18 @@ describe('runtime:migrate dispatcher — legacy-egress-intents is read-only', ()
     const empty = await mkdtemp(join(tmpdir(), 'migrate-exit-empty-'));
     strictEqual((await cli(DISPATCHER, ['legacy-egress-intents', '--root', empty])).code, 0);
 
+    // The directory must hold a RECORD. An empty legacy directory is reported
+    // but is not actionable — there is nothing in flight and directory-level
+    // action is forbidden — so it no longer drives exit 2.
     const withFinding = await mkdtemp(join(tmpdir(), 'migrate-exit-find-'));
     await mkdir(join(withFinding, 'c', ...EGRESS_INTENT_DIR_SUFFIX), { recursive: true });
+    await writeFile(join(withFinding, 'c', ...EGRESS_INTENT_DIR_SUFFIX, 'a.json'), '{}');
     strictEqual((await cli(DISPATCHER, ['legacy-egress-intents', '--root', withFinding])).code, 2);
+
+    const emptyLegacyDir = await mkdtemp(join(tmpdir(), 'migrate-exit-empty-wal-'));
+    await mkdir(join(emptyLegacyDir, 'c', ...EGRESS_INTENT_DIR_SUFFIX), { recursive: true });
+    strictEqual((await cli(DISPATCHER, ['legacy-egress-intents', '--root', emptyLegacyDir])).code, 0,
+      'an emptied legacy directory converges rather than being reported as actionable forever');
 
     strictEqual((await cli(DISPATCHER, ['legacy-egress-intents', '--root', '/definitely/not/here'])).code, 1);
   });
