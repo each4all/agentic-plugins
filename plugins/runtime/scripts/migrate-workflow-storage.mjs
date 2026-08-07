@@ -11,6 +11,10 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { RUNTIME_VERSION } from './version.mjs';
+// Rejected argv reaches stderr, which is outside every report defuser and
+// just as forgeable. The dispatcher learned this; this entry point is its
+// sibling.
+import { safeOperatorText } from './lib/egress-intent-wal.mjs';
 
 export const MIGRATION_SCHEMA_VERSION = 'workflow-storage-migration-1.0';
 export const MIGRATION_ID = 'workflow-storage-v1';
@@ -772,7 +776,7 @@ export function parseArgs(argv) {
         opts.help = true;
         break;
       default:
-        throw new Error(`unknown argument: ${arg}`);
+        throw new Error(`unknown argument: ${safeOperatorText(arg)}`);
     }
   }
   if (!['text', 'json'].includes(opts.format)) throw new Error('--format must be text or json');
@@ -786,9 +790,13 @@ function readFlagValue(argv, index, flag) {
   return value;
 }
 
-function usage() {
+// `invokedAs` keeps the direct entry point printing its OWN name. The first cut
+// hardcoded `migrate.mjs`, so `node migrate-workflow-storage.mjs --help` told
+// the operator to run a different file — a compatibility regression on the very
+// surface this refactor promised to preserve (cross-host review).
+export function workflowStorageUsage(invokedAs = 'migrate.mjs') {
   return [
-    'Usage: migrate-workflow-storage.mjs [workflow-storage] [--repo-root <path>]',
+    `Usage: ${invokedAs} [workflow-storage] [--repo-root <path>]`,
     '  [--format text|json] [--plugin all|engineer|orchestrator] [--apply]',
     '',
     'Dry-run is the default. --apply moves legacy .claude/agentic-* workflow',
@@ -796,21 +804,38 @@ function usage() {
   ].join('\n');
 }
 
+// The ONE implementation of this subcommand's argv → report → text → exit-code
+// contract. `migrate.mjs` dispatches to it and this file keeps its own entry
+// point below, so the direct path (`node migrate-workflow-storage.mjs …`) that
+// shipped in earlier versions keeps working with identical behavior.
+//
+// Deliberately NOT re-implemented in the dispatcher: two copies of an
+// exit-code rule diverge, and one of them decides whether an APPLY that hit a
+// blocker looks like success to a script.
+export async function runWorkflowStorageCli(argv, { invokedAs } = {}) {
+  let opts;
+  try {
+    opts = parseArgs(argv);
+  } catch (err) {
+    return { ok: false, reason: err.message, usage: workflowStorageUsage(invokedAs) };
+  }
+  if (opts.help) return { ok: true, output: workflowStorageUsage(invokedAs), exitCode: 0 };
+  const report = await runWorkflowStorageMigration(opts);
+  const output = opts.format === 'json' ? `${JSON.stringify(report, null, 2)}` : formatText(report).replace(/\n$/, '');
+  const blockedApply = opts.apply && report.overall.status === 'blocked';
+  return { ok: true, output, report, exitCode: blockedApply ? 1 : 0 };
+}
+
 async function main() {
-  const opts = parseArgs(process.argv.slice(2));
-  if (opts.help) {
-    process.stdout.write(`${usage()}\n`);
+  const res = await runWorkflowStorageCli(process.argv.slice(2), { invokedAs: 'migrate-workflow-storage.mjs' });
+  if (!res.ok) {
+    process.stderr.write(`runtime:migrate workflow-storage: ${res.reason}\n`);
+    process.stderr.write(`${res.usage}\n`);
+    process.exitCode = 1;
     return;
   }
-  const report = await runWorkflowStorageMigration(opts);
-  if (opts.format === 'json') {
-    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  } else {
-    process.stdout.write(formatText(report));
-  }
-  if (opts.apply && report.overall.status === 'blocked') {
-    process.exitCode = 1;
-  }
+  if (res.output) process.stdout.write(`${res.output}\n`);
+  if (res.exitCode) process.exitCode = res.exitCode;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

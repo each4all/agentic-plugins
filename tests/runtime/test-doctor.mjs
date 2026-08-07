@@ -4155,7 +4155,7 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     };
   }
 
-  async function runEgressDoctor({ repo, home, env, emitImpl, execute = true, requested = true, record = false }) {
+  async function runEgressDoctor({ repo, home, env, emitImpl, execute = true, requested = true, record = false, sameDirectoryImpl }) {
     return runDoctor({
       repoRoot: repo,
       homeDir: home,
@@ -4166,6 +4166,7 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
       executeEgressAckProof: execute,
       egressEmitImpl: emitImpl,
       recordArtifact: record,
+      ...(sameDirectoryImpl ? { egressSameDirectoryImpl: sameDirectoryImpl } : {}),
     });
   }
 
@@ -4388,7 +4389,10 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     strictEqual(report.effects.network_request_performed, false);
   });
 
-  // --- follow-ups.md L35 WAL redesign regressions (gaps 1 + 2) ----------------
+  // --- follow-ups.md § "Egress-ack intent WAL" regressions (gaps 1 + 2) -------
+  // Cited by section heading rather than by line number: the L35 this used to
+  // name is now the Codex `plugin_hooks` row, and a pointer that silently
+  // relocates is worse than no pointer.
 
   it('R1 gap-1 round-3: a wire-touching (dispatched, mirror-lost) attempt fences a SECOND execute instead of re-sending', async () => {
     const { repo, home } = await freshDirs();
@@ -5021,6 +5025,110 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
       report.egress_ack_proof.blockers.some((b) => /cannot be told apart/.test(b) && /ENOTDIR/.test(b)),
       JSON.stringify(report.egress_ack_proof.blockers),
     );
+    // The errno is the evidence; the RAW PATH that `sameDirectory` bundles into
+    // its `reason` is not, and printing that reason verbatim put an
+    // attacker-controlled checkout path into a fail-closed operator line
+    // (cross-host review). The blocker renders the code and the two safe
+    // pointers, never the reason string.
+    const blocker = report.egress_ack_proof.blockers.find((b) => /cannot be told apart/.test(b));
+    ok(!/could not be inspected/.test(blocker), `sameDirectory's raw-path reason reached the operator line: ${blocker}`);
+  });
+
+  it('R8d: a legacy WAL that changes identity while it is being read is refused, not described', async () => {
+    // The discovery scanner binds its classification to what it actually listed;
+    // this branch decided "not the live WAL" by observing the path and then
+    // re-opened the same PATHNAME to read it. A component swapped in between
+    // means the names listed belong to a different directory than the one that
+    // was cleared — possibly the live fence, whose records would then be printed
+    // with review-and-remove wording. A second copy of a defect is how the first
+    // survives (cross-host review CRITICAL).
+    //
+    // The swap is INJECTED. A race only a real filesystem can produce is a
+    // property no test can pin, so the identity predicate is the seam: it
+    // answers "different" for the classification and "same" for the re-check,
+    // which is exactly the interleaving that harms.
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const legacyDir = join(repo, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    await mkdir(legacyDir, { recursive: true });
+    await writeFile(join(legacyDir, 'cafe1234.json'), JSON.stringify({ status: 'pending' }));
+
+    let calls = 0;
+    const swapAfterFirst = async () => {
+      calls += 1;
+      return calls === 1 ? { same: false } : { same: true };
+    };
+
+    const report = await runEgressDoctor({
+      repo, home, env, emitImpl: deliveredEmit([]), sameDirectoryImpl: swapAfterFirst,
+    });
+    strictEqual(report.egress_ack_proof.status, 'blocked');
+    const blockers = report.egress_ack_proof.blockers;
+    strictEqual(calls, 2, 'the identity must be observed again AFTER the listing');
+    ok(
+      blockers.some((b) => /changed identity while it was being read/.test(b)),
+      `the swap must be refused rather than reported: ${JSON.stringify(blockers)}`,
+    );
+    ok(
+      !blockers.some((b) => /cafe1234/.test(b)),
+      `nothing about the moved directory may be described: ${JSON.stringify(blockers)}`,
+    );
+  });
+
+  it('R8d-limit: a legacy WAL replaced by a THIRD directory answers same:false twice and is NOT detected', async () => {
+    // The re-check above asks a RELATION — "is the legacy directory still a
+    // different directory from the live one?" — not "is it still the directory I
+    // classified?". A replacement with some third directory answers `false` at
+    // both observations, so the names reported belong to the replacement and
+    // nothing is refused. The harmful direction is a replacement that is EMPTY:
+    // the block disappears while the real pre-upgrade records live on wherever
+    // the original was moved to.
+    //
+    // Pinned as a LIMIT, not a guarantee. It is stated in the comment beside the
+    // re-check and in the discovery scanner's residual[]; this test is what keeps
+    // those statements true. If a later round captures the legacy directory's OWN
+    // identity, this expectation must change deliberately rather than quietly.
+    const { repo, home } = await freshDirs();
+    const env = activationEnv({ AGENTIC_EGRESS_REAL_SMOKE: '1' });
+    const legacyDir = join(repo, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+    await mkdir(legacyDir, { recursive: true });
+    await writeFile(join(legacyDir, 'cafe1234.json'), JSON.stringify({ status: 'pending' }));
+
+    // ORDER, not just count. `calls === 2` alone proves nothing about WHEN the
+    // second observation happens: moving it in front of the `readdir` left all
+    // 172 doctor tests green, so neither this test nor R8d pinned the property
+    // they were written for (cross-host review MAJOR — and the same defect class
+    // this slice closed in the discovery scanner, surviving in its mirror).
+    //
+    // The second call writes a record. If it runs AFTER the listing, as it must,
+    // that record cannot appear in the blocker; if it is moved before the
+    // listing, the `readdir` picks it up and the assertion below fails.
+    let calls = 0;
+    const alwaysDistinct = async () => {
+      calls += 1;
+      if (calls === 2) await writeFile(join(legacyDir, 'after0000.json'), JSON.stringify({ status: 'pending' }));
+      return { same: false };
+    };
+    const report = await runEgressDoctor({
+      repo, home, env, emitImpl: deliveredEmit([]), sameDirectoryImpl: alwaysDistinct,
+    });
+    // The re-check still HAPPENS — removing it would make this 1 — it just cannot
+    // see this replacement.
+    strictEqual(calls, 2, 'the identity must still be observed a second time after the listing');
+    strictEqual(report.egress_ack_proof.status, 'blocked');
+    const blockers = report.egress_ack_proof.blockers;
+    ok(
+      !blockers.some((b) => /changed identity while it was being read/.test(b)),
+      `a relation-only re-check cannot see a legacy→third-directory replacement: ${JSON.stringify(blockers)}`,
+    );
+    ok(
+      blockers.some((b) => /cafe1234/.test(b)),
+      `the records LISTED are what gets reported, whichever directory they came from: ${JSON.stringify(blockers)}`,
+    );
+    ok(
+      !blockers.some((b) => /after0000/.test(b)),
+      `a record written by the SECOND observation cannot have been listed unless the re-check ran before the listing: ${JSON.stringify(blockers)}`,
+    );
   });
 
   it('R8b: legacy record names are defused, and the blocker never advises deleting the directory', async () => {
@@ -5056,6 +5164,16 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     ok(
       /still running|in flight|quiesce/i.test(blocker),
       `the message must account for an old sender still running: ${blocker}`,
+    );
+    // The EMITTED blocker must name the machine-scoped inventory, not merely
+    // observe that other checkouts exist. Asserted on the produced string rather
+    // than on the source file, so a mention that survives only in a comment does
+    // not satisfy it (cross-host review). Saying "other checkouts need the same
+    // review" without saying HOW invites the operator to invent a `find` plus a
+    // bulk delete — the exact shape the rest of this wording avoids.
+    ok(
+      blocker.includes('runtime:migrate legacy-egress-intents'),
+      `the blocker must name the cross-checkout discovery command: ${blocker}`,
     );
   });
 

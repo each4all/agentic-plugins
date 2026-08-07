@@ -21,6 +21,7 @@ import { runEmit } from './notify.mjs';
 import { buildEventId, deriveRepoIdent } from './lib/notify-schema.mjs';
 import { EGRESS_ENV_KEYS, loadEgressActivation } from './lib/egress-config.mjs';
 import { sameDirectory } from './lib/path-containment.mjs';
+import { egressIntentDir, safeRecordName } from './lib/egress-intent-wal.mjs';
 import { EGRESS_ATTEMPT_HASH_DOMAIN, deriveActivationFingerprint } from './lib/evidence-contract.mjs';
 import { EGRESS_CREDENTIAL_ENV_VAR } from './lib/machine-profile.mjs';
 import { makePermissionAdvisoryArtifact, makePermissionRunId } from './lib/permission-artifacts.mjs';
@@ -125,6 +126,9 @@ export async function runDoctor({
   // Test seam ONLY: production always uses the real in-process runEmit (no
   // fetch double — real transport is the point, acceptance-(K) precedent).
   egressEmitImpl = null,
+  // Test-only seam for the legacy-WAL identity re-check (see
+  // buildEgressAckProofSection). Defaults to the real predicate.
+  egressSameDirectoryImpl = sameDirectory,
   workflowContinuationProof = false,
   executeWorkflowContinuationProof = false,
   workflowContinuationProofTimeoutMs = DEFAULT_WORKFLOW_CONTINUATION_PROOF_TIMEOUT_MS,
@@ -330,6 +334,7 @@ export async function runDoctor({
     env,
     now,
     emitImpl: egressEmitImpl,
+    sameDirectoryImpl: egressSameDirectoryImpl,
   });
   const deepPeerSmokeSection = await buildDeepPeerSmokeSection({
     requested: deepPeerSmoke,
@@ -3416,12 +3421,14 @@ export function classifyWireDisposition(dispatched, outcomeReason) {
   return 'unknown';
 }
 
-// Machine-global (NOT repo-scoped) so a bootstrap run resumed from a different
-// repo checkout still sees a prior attempt's fence (gap ②). The doctor --record
+// `egressIntentDir` is imported from ./lib/egress-intent-wal.mjs. Passed
+// homedir() it is the machine-global WAL (NOT repo-scoped, so a bootstrap run
+// resumed from a different repo checkout still sees a prior attempt's fence,
+// gap ②); passed repoRoot it is the pre-upgrade legacy one. The doctor --record
 // artifact stays repo-scoped; only this side-effect WAL is machine-global.
-function egressIntentDir(homeDir) {
-  return join(homeDir, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
-}
+// It moved out of this file because `runtime:migrate legacy-egress-intents`
+// needs the same path shape, and this file had already grown a second inline
+// copy of it for the legacy directory.
 
 // The two names one attempt publishes, and the ONLY two the WAL protocol knows.
 //
@@ -3594,12 +3601,9 @@ const EGRESS_NO_REMOVAL_ADVICE = Object.freeze(['unclassified', 'in-flight']);
 // rendered defused AND SAID to be: silently mangling it would leave an operator
 // unable to copy the name they need to remove, which is worse than telling them
 // the name is not one of ours.
-const EGRESS_SAFE_NAME_RE = /^[0-9A-Za-z._-]{1,128}$/;
-function safeRecordName(name) {
-  if (EGRESS_SAFE_NAME_RE.test(name)) return name;
-  const defused = [...name.slice(0, 96)].map((ch) => (ch >= ' ' && ch <= '~' ? ch : '?')).join('');
-  return `${defused} [name shown defused — it carries characters this WAL never writes]`;
-}
+// `safeRecordName` is imported from ./lib/egress-intent-wal.mjs — the same
+// defusing the discovery scanner applies, so a hazard class learned by either
+// reader is known to both.
 const safeOutcomeReason = (reason) => (EGRESS_ACK_OUTCOME_REASONS.includes(reason) ? reason : 'unknown');
 
 function judgeEgressOutcomeRecord(add, record, files, validFp) {
@@ -3830,7 +3834,12 @@ export function composeEgressFenceBlocker(findings, dirPointer) {
   return `a previous egress attempt for this activation stopped BEFORE any message was sent (${labels}) under ${dirPointer}. Nothing reached the phone, so deleting ${files} is safe and is all that is needed to retry. Nothing is removed automatically: this code never mutates or removes a published record — each one is written once, at a name only its own attempt can produce — which is what keeps a concurrent attempt's fence intact.`;
 }
 
-async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDir, env, now, emitImpl }) {
+// `sameDirectoryImpl` is an INJECTED SEAM, not a convenience. The property it
+// exists for — that a legacy WAL which changes identity while it is being read
+// is refused rather than described — is a race, and a race that only a real
+// filesystem can produce is a property no test can pin. The seam is how the
+// swap becomes deterministic.
+async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDir, env, now, emitImpl, sameDirectoryImpl = sameDirectory }) {
   if (!requested) {
     return { requested: false, executed: false, mode: 'not_requested', status: 'not_requested', provider_ack: null, outcome_reason: null, mirror_correlated: false, network_request_performed: false, blockers: [], limits: [] };
   }
@@ -3916,7 +3925,7 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
   // resend. Scan the legacy dir too and refuse until it is cleared; the old
   // format carries no wire_disposition to classify, so every legacy record is
   // treated fail-closed.
-  const legacyIntentDir = join(repoRoot, '.agentic-plugins', 'runs', 'doctor', 'egress-intents');
+  const legacyIntentDir = egressIntentDir(repoRoot);
   // IDENTITY, not spelling. This was `resolve(a) !== resolve(b)`, and the two
   // paths are derived from different roots (repoRoot vs homeDir), so nothing
   // guarantees they spell a shared directory the same way — a symlinked checkout
@@ -3928,11 +3937,49 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
   // `unknown` is neither branch: a filesystem that will not answer must not be
   // resolved by guessing. Guessing "different" re-opens the resend path;
   // guessing "same" silently drops a legitimate legacy fence.
-  const legacyIsLive = await sameDirectory(legacyIntentDir, intentDir);
+  const legacyIsLive = await sameDirectoryImpl(legacyIntentDir, intentDir);
   if (legacyIsLive.unknown) {
-    return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} cannot be told apart from the machine-global one at ${machinePointer(homeDir, intentDir)} (${legacyIsLive.reason}); refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
+    // The reason embeds a raw path (path-containment.mjs builds it that way).
+    // `safeRecordName` is the wrong tool for a path, so the message carries the
+    // pointer it already renders safely and the CODE only — the scanner defuses
+    // this same reason and this branch did not (cross-host review).
+    return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} cannot be told apart from the machine-global one at ${machinePointer(homeDir, intentDir)} (${safeRecordName(String(legacyIsLive.code ?? 'error'))}); refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
   }
   if (!legacyIsLive.same) {
+    // BIND THE LISTING TO THE DIRECTORY THAT WAS JUDGED.
+    //
+    // `sameDirectory` decided "not the live WAL" by observing the path; the
+    // `readdir` below re-opens the same PATHNAME. A component swapped in between
+    // means the names listed belong to a different directory than the one that
+    // was cleared — possibly the live fence, whose records would then be printed
+    // with review-and-remove wording. This is the identity-window defect that
+    // was fixed in the discovery scanner and left standing here; a second copy
+    // is how the first survives (cross-host review CRITICAL).
+    //
+    // The binding is by DETECTION: re-check identity after the listing and
+    // refuse to report anything if it moved.
+    //
+    // STATED LIMIT, because the discovery scanner's residual list says the same
+    // thing about its own copy and this one is weaker. The question asked here is
+    // RELATIONAL — "is the legacy directory still a different directory from the
+    // live one?" — not "is it still the SAME directory I classified?". Every
+    // distinct→distinct and absent→distinct transition therefore answers
+    // `same: false` at both observations and is invisible, and the names below
+    // belong to whatever the pathname resolved to at listing time.
+    //
+    // An EMPTY listing is the unsafe outcome in both directions, and the first
+    // wording of this note named only one of them (cross-host review). Records
+    // may have been moved away before the listing, or may arrive after it; in
+    // either case the block does not fire, and the proof proceeds to the emit
+    // path while real pre-upgrade records exist somewhere.
+    //
+    // Not closed here on purpose (owner decision, option (a) on this slice): it
+    // needs write access inside the operator's own checkout to provoke, and an
+    // adversary with that could delete the legacy records outright for the same
+    // effect. Closing it means capturing the legacy directory's OWN identity
+    // before the listing and comparing that identity afterwards — what
+    // `legacy-egress-discovery.mjs` does — which is a different seam than
+    // `sameDirectoryImpl` and is deferred rather than done silently.
     let legacyNames = [];
     try {
       legacyNames = (await readdir(legacyIntentDir)).filter((n) => n.endsWith('.json'));
@@ -3940,6 +3987,10 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
       if (err?.code !== 'ENOENT') {
         return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} is unscannable (${err?.code ?? 'error'}); refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
       }
+    }
+    const stillDistinct = await sameDirectoryImpl(legacyIntentDir, intentDir);
+    if (stillDistinct.unknown || stillDistinct.same) {
+      return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} changed identity while it was being read; refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
     }
     if (legacyNames.length > 0) {
       // Names go through the same defusing rule the modern scan uses. They were
@@ -3955,7 +4006,12 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
       // running, and a flat delete instruction can free the name for a second
       // delivery to the same phone. Directory-level removal is worse again: it
       // takes records this runtime never examined.
-      return blockedSection([`legacy egress intents predating the machine-global WAL move are present at ${pointer(repoRoot, legacyIntentDir)} (${shown}); an attempt recorded by the older runtime may already have reached the phone, and — because that format records no process identity — one may still be in flight. Make sure no older proof is running, check the phone, then remove the specific records you reviewed; the WAL now lives at ${machinePointer(homeDir, intentDir)}. This scan only sees the CURRENT checkout: if the old version also ran the proof from other checkouts, their egress-intents directories need the same review.`]);
+      // The last sentence names the command that closes this scan's own blind
+      // spot. Saying "other checkouts need the same review" without saying HOW
+      // left the operator to invent a search — and the obvious invention is a
+      // `find` plus a bulk delete, which is precisely the unsafe shape the
+      // wording above exists to avoid.
+      return blockedSection([`legacy egress intents predating the machine-global WAL move are present at ${pointer(repoRoot, legacyIntentDir)} (${shown}); an attempt recorded by the older runtime may already have reached the phone, and — because that format records no process identity — one may still be in flight. Make sure no older proof is running, check the phone, then remove the specific records you reviewed; the WAL now lives at ${machinePointer(homeDir, intentDir)}. This scan only sees the CURRENT checkout: run \`runtime:migrate legacy-egress-intents\` for the read-only machine-scoped inventory of the other checkouts, and apply the same review to whatever it reports.`]);
     }
   }
 

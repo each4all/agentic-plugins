@@ -17,7 +17,7 @@ const RUNTIME_COMMAND_SURFACES = [
   { name: 'cutover', script: 'cutover-audit.mjs' },
   { name: 'dashboard', script: 'dashboard.mjs' },
   { name: 'doctor', script: 'doctor.mjs' },
-  { name: 'migrate', script: 'migrate-workflow-storage.mjs' },
+  { name: 'migrate', script: 'migrate.mjs' },
   { name: 'retention', script: 'retention.mjs' },
   { name: 'settings', script: 'settings.mjs' },
   { name: 'worktree', script: 'worktree.mjs' },
@@ -541,7 +541,7 @@ describe('plugins/runtime migrate surface', () => {
   it('ships migrate command, skill wrapper, agent yaml, and executable script', async () => {
     const command = await readFile(resolve(PLUGIN_ROOT, 'commands/migrate.md'), 'utf-8');
     ok(command.startsWith('---\n'));
-    ok(command.includes('scripts/migrate-workflow-storage.mjs'));
+    ok(command.includes('scripts/migrate.mjs'));
     ok(/dry-run/i.test(command));
     ok(command.includes('--apply'));
     const skill = await readFile(resolve(PLUGIN_ROOT, 'skills/migrate/SKILL.md'), 'utf-8');
@@ -551,8 +551,94 @@ describe('plugins/runtime migrate surface', () => {
     const agent = await readFile(resolve(PLUGIN_ROOT, 'skills/migrate/agents/openai.yaml'), 'utf-8');
     ok(agent.includes('$runtime:migrate workflow-storage'));
     ok(/allow_implicit_invocation:\s*false/.test(agent));
-    const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts/migrate-workflow-storage.mjs'));
-    ok((scriptStat.mode & 0o111) !== 0, 'migrate-workflow-storage.mjs has executable bit');
+    for (const script of ['migrate.mjs', 'migrate-workflow-storage.mjs']) {
+      const scriptStat = await stat(resolve(PLUGIN_ROOT, 'scripts', script));
+      ok((scriptStat.mode & 0o111) !== 0, `${script} has executable bit`);
+    }
+  });
+
+  it('the legacy-egress-intents subcommand is surfaced as READ-ONLY on every surface', async () => {
+    // The mutation boundary is the safety property, so it is pinned at the
+    // surface an operator (or a model reading the skill) actually sees — not
+    // only in the implementation.
+    //
+    // Prose is compared with whitespace COLLAPSED. These are wrapped markdown
+    // paragraphs, and pinning where a sentence happens to break would make an
+    // editorial reflow look like a contract change while a real deletion of the
+    // sentence would still be caught.
+    const flat = (text) => text.replace(/\s+/g, ' ');
+
+    const command = flat(await readFile(resolve(PLUGIN_ROOT, 'commands/migrate.md'), 'utf-8'));
+    ok(command.includes('legacy-egress-intents'));
+    ok(/read-only/i.test(command));
+    ok(command.includes('there is no `--apply`'), 'the command states the absence of an apply mode');
+
+    const skill = flat(await readFile(resolve(PLUGIN_ROOT, 'skills/migrate/SKILL.md'), 'utf-8'));
+    ok(skill.includes('legacy-egress-intents'));
+    ok(skill.includes('ADR-0048'));
+    ok(/no `--apply`/.test(skill));
+    // The quiesce contract, not "verify the phone then delete".
+    ok(skill.includes('no older proof running'));
+    ok(skill.includes('check the phone'));
+    ok(skill.includes('never generate a shell command'));
+    ok(skill.includes('already_fenced_by_current_doctor'), 'the current checkout is a finding, not an exclusion');
+    // The relay must be STATE-DEPENDENT. An earlier version stated the
+    // no-removal rule and then told the model to relay removal guidance "for
+    // every location" unconditionally, which recreates in the model-facing
+    // surface exactly the instruction the renderer withholds.
+    ok(skill.includes('Relay `overall.guidance` verbatim. Do not compose your own.'));
+    ok(!/for every location/.test(skill), 'the unconditional relay instruction must be gone');
+    ok(skill.includes('coverage decision, not a performance tweak'), '--skip must state what it costs');
+
+    const agent = flat(await readFile(resolve(PLUGIN_ROOT, 'skills/migrate/agents/openai.yaml'), 'utf-8'));
+    ok(agent.includes('$runtime:migrate legacy-egress-intents'));
+    ok(/read-only/i.test(agent));
+
+    // The direct workflow-storage entry point must NOT claim the new
+    // subcommand — it does not dispatch it.
+    const legacyEntry = await readFile(resolve(PLUGIN_ROOT, 'scripts/migrate-workflow-storage.mjs'), 'utf-8');
+    ok(!legacyEntry.includes('legacy-egress-intents'));
+  });
+
+  it('the doctor legacy blocker still carries the quiesce wording', async () => {
+    // The BEHAVIOURAL assertion — that the emitted blocker names
+    // `runtime:migrate legacy-egress-intents` — lives in tests/runtime/
+    // test-doctor.mjs, against the produced string. This one only pins the
+    // wording, and deliberately does not re-assert the command name: a
+    // whole-source scan is satisfied by a mention in a comment.
+    const doctor = await readFile(resolve(PLUGIN_ROOT, 'scripts/doctor.mjs'), 'utf-8');
+    ok(doctor.includes('Make sure no older proof is running, check the phone, then remove the specific records you reviewed'));
+  });
+
+  it('the shared egress WAL primitives have exactly ONE definition each', async () => {
+    // T1's guard. The extraction exists because `doctor.mjs` had grown a second
+    // inline copy of the four-component WAL path; without this, nothing stops a
+    // third from appearing in the next file that needs one, and a safety fix
+    // landing on one copy while the other keeps shipping is the failure this
+    // repository has hit repeatedly.
+    const dirs = ['scripts', 'scripts/lib'];
+    const definitions = { egressIntentDir: [], safeRecordName: [], safeOperatorText: [] };
+    const inlinePathShape = [];
+    for (const dir of dirs) {
+      const abs = resolve(PLUGIN_ROOT, dir);
+      for (const name of await readdir(abs)) {
+        if (!name.endsWith('.mjs')) continue;
+        const source = await readFile(resolve(abs, name), 'utf-8');
+        for (const symbol of Object.keys(definitions)) {
+          const defined = new RegExp(`(?:^|\\n)\\s*(?:export\\s+)?(?:async\\s+)?function\\s+${symbol}\\s*\\(|(?:^|\\n)\\s*(?:export\\s+)?const\\s+${symbol}\\s*=`);
+          if (defined.test(source)) definitions[symbol].push(`${dir}/${name}`);
+        }
+        // The path SHAPE spelled inline, which is the copy that actually
+        // appeared. `egress-intent-wal.mjs` is where it legitimately lives.
+        if (name !== 'egress-intent-wal.mjs' && /'runs'\s*,\s*'doctor'\s*,\s*'egress-intents'/.test(source)) {
+          inlinePathShape.push(`${dir}/${name}`);
+        }
+      }
+    }
+    for (const [symbol, files] of Object.entries(definitions)) {
+      deepStrictEqual(files, ['scripts/lib/egress-intent-wal.mjs'], `${symbol} must be defined once, in the shared lib (found in: ${files.join(', ') || 'nowhere'})`);
+    }
+    deepStrictEqual(inlinePathShape, [], 'the egress-intent directory shape is spelled inline outside the shared lib');
   });
 });
 

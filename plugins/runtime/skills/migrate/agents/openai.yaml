@@ -1,7 +1,7 @@
 interface:
   display_name: "Runtime - Migrate"
-  short_description: "Dry-run or apply explicit workflow state migration to .agentic-plugins/state"
-  default_prompt: "Use $runtime:migrate workflow-storage to inspect legacy workflow state migration readiness. Add --apply only after blockers are clear."
+  short_description: "Dry-run or apply workflow state migration, or read-only discovery of legacy egress intents"
+  default_prompt: "Use $runtime:migrate workflow-storage to inspect legacy workflow state migration readiness; add --apply only after blockers are clear. Use $runtime:migrate legacy-egress-intents for the read-only cross-checkout inventory of pre-upgrade egress intent WALs; it has no --apply."
 
 policy:
   allow_implicit_invocation: false
