@@ -404,6 +404,24 @@ describe('legacy-egress discovery — root semantics and identity (T2)', () => {
     match(report.scan.blocked.map((b) => b.reason).join(' '), /resolves to a filesystem root/);
   });
 
+  it('the PASSWD-derived home is a second reference point, so an overridden $HOME cannot unmask the fence', async () => {
+    // Reproduced before the fix: `HOME=/tmp/x` made the real machine-global WAL
+    // a finding with removal wording. `os.homedir()` follows $HOME;
+    // `os.userInfo().homedir` does not, so the two disagree exactly in the case
+    // that harms — and a candidate matching EITHER must be excluded.
+    const REAL = '/real/home';
+    const fs = new FakeFs()
+      .dir(HOME, [{ name: 'real', kind: 'dir' }])
+      .dir(`${HOME}/real`, [])
+      .dir(REAL, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(REAL, [{ name: 'live.json', kind: 'file' }]);
+    // The scan is rooted at the REAL home, but $HOME points somewhere else.
+    const report = await run(fs, { requestedRoots: [REAL], homeDir: '/overridden', passwdHome: REAL });
+    strictEqual(report.findings_total, 0, 'the live fence must never be offered for review');
+    strictEqual(report.exclusions.length, 1);
+    strictEqual(report.live_wal.compared_against.length, 2, 'both reference points are reported');
+  });
+
   it('an UNKNOWN live-WAL identity blocks instead of guessing either way', async () => {
     const fs = new FakeFs()
       .dir(HOME, [{ name: 'work', kind: 'dir' }])
@@ -505,6 +523,19 @@ describe('legacy-egress discovery — streaming walker (T3)', () => {
     ok(report.scan.pruned.some((p) => p.path === HOME && p.reason === 'time-budget'),
       'the directory whose listing was cut short is named');
     strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
+  });
+
+  it('a directory whose listing THREW is not counted as completed', async () => {
+    // `dirs_completed` sitting beside a blocked entry for the same directory is
+    // a statistic that contradicts the report it appears in.
+    const fs = new FakeFs()
+      .dir(HOME, [{ name: 'a', kind: 'dir' }, { name: 'b', kind: 'dir' }])
+      .dir(`${HOME}/a`, []).dir(`${HOME}/b`, [])
+      .failMidScan(HOME, 1, 'EIO');
+    const report = await run(fs);
+    strictEqual(report.scan.blocked_total, 1);
+    strictEqual(report.scan.stats.dirs_completed, 1, 'only the child that listed cleanly counts');
+    strictEqual(report.scan.stats.dirs_scanned, 2);
   });
 
   it('EVERY descendant symlink is a reported boundary, and none is dereferenced', async () => {
@@ -1087,7 +1118,11 @@ describe('legacy-egress discovery — operator-facing text is defused (T7)', () 
     // U+2028/U+2029 are LINE and PARAGRAPH SEPARATOR: not C0, but terminals and
     // log viewers break lines on them, which is the forged-instruction hazard
     // the C0 newline entry exists to stop. They were missing (cross-host review).
-    for (const cp of [0x202e, 0x200b, 0x2066, 0xfeff, 0x0a, 0x1b, 0x7f, 0x9b, 0x2028, 0x2029]) {
+    // U+061C, U+2060, U+180E and the interlinear-annotation set render as
+    // nothing without being bidi controls or zero-width joiners, so two distinct
+    // names look identical to the operator being asked to act on one of them.
+    for (const cp of [0x202e, 0x200b, 0x2066, 0xfeff, 0x0a, 0x1b, 0x7f, 0x9b, 0x2028, 0x2029,
+      0x061c, 0x2060, 0x180e, 0xfff9, 0xfffa, 0xfffb]) {
       ok(isDisplayHazard(cp), `U+${cp.toString(16).toUpperCase()} must be treated as a display hazard`);
     }
     ok(!isDisplayHazard('a'.codePointAt(0)));
@@ -1096,6 +1131,26 @@ describe('legacy-egress discovery — operator-facing text is defused (T7)', () 
     for (const sep of [' ', ' ']) {
       strictEqual(safeOperatorText(`a${sep}b`).includes(sep), false, `U+${sep.codePointAt(0).toString(16)} survived safeOperatorText`);
     }
+  });
+
+  it('defusing NEVER collapses two distinct inputs, truncated or not', () => {
+    // Reproduced: `é.json` and `è.json` both rendered `?.json`, and two paths
+    // differing only in a control byte both rendered `/x/a?b`. Neither was
+    // truncated, so a hash attached only on truncation did not help — and the
+    // guidance asks the operator to act on ONE named record.
+    const shortNames = ['é.json', 'è.json'];
+    const [ra, rb] = shortNames.map(safeRecordName);
+    notStrictEqual(ra, rb, 'two short invalid names must not render identically');
+    match(ra, /sha256:[0-9a-f]{12}/, 'a replaced character alone must attach the discriminator');
+
+    const shortPaths = ['/x/ab', '/x/ab'];
+    const [pa, pb] = shortPaths.map((p) => safeOperatorText(p));
+    notStrictEqual(pa, pb, 'two short paths differing only in a control byte must not render identically');
+    match(pa, /sha256:[0-9a-f]{12}/);
+
+    // CONTROL — nothing altered means nothing appended.
+    strictEqual(safeOperatorText('/plain/path'), '/plain/path');
+    strictEqual(safeRecordName('abc.terminal.json'), 'abc.terminal.json');
   });
 
   it('safeRecordName TRUNCATION carries the same discriminating hash its sibling does', () => {

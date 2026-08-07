@@ -309,6 +309,21 @@ describe('runtime:migrate dispatcher — legacy-egress-intents is read-only', ()
     strictEqual(parseDiscoveryArgs(['--time-budget-ms', '5000']).timeBudgetMs, 5000);
   });
 
+  it('rejected argv is defused before it reaches stderr', async () => {
+    // stderr is outside the report's defuser and just as forgeable: a flag
+    // carrying a newline and an escape forges an operator line there.
+    const hostile = `--evil${String.fromCharCode(27)}[31m\n>>> forged instruction`;
+    const res = await cli(DISPATCHER, ['legacy-egress-intents', hostile]);
+    strictEqual(res.code, 1);
+    strictEqual(res.stderr.includes(String.fromCharCode(27)), false, 'a raw escape reached stderr');
+    strictEqual(
+      res.stderr.split('\n').some((l) => l.startsWith('>>> forged instruction')),
+      false,
+      'a forged line reached stderr',
+    );
+    match(res.stderr, /unknown argument/);
+  });
+
   it('the subcommand list is closed', () => {
     deepStrictEqual([...MIGRATE_SUBCOMMANDS], ['workflow-storage', 'legacy-egress-intents']);
     const { subcommand, explicit } = splitSubcommand(['not-a-subcommand']);

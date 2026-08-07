@@ -126,6 +126,9 @@ export async function runDoctor({
   // Test seam ONLY: production always uses the real in-process runEmit (no
   // fetch double — real transport is the point, acceptance-(K) precedent).
   egressEmitImpl = null,
+  // Test-only seam for the legacy-WAL identity re-check (see
+  // buildEgressAckProofSection). Defaults to the real predicate.
+  egressSameDirectoryImpl = sameDirectory,
   workflowContinuationProof = false,
   executeWorkflowContinuationProof = false,
   workflowContinuationProofTimeoutMs = DEFAULT_WORKFLOW_CONTINUATION_PROOF_TIMEOUT_MS,
@@ -331,6 +334,7 @@ export async function runDoctor({
     env,
     now,
     emitImpl: egressEmitImpl,
+    sameDirectoryImpl: egressSameDirectoryImpl,
   });
   const deepPeerSmokeSection = await buildDeepPeerSmokeSection({
     requested: deepPeerSmoke,
@@ -3830,7 +3834,12 @@ export function composeEgressFenceBlocker(findings, dirPointer) {
   return `a previous egress attempt for this activation stopped BEFORE any message was sent (${labels}) under ${dirPointer}. Nothing reached the phone, so deleting ${files} is safe and is all that is needed to retry. Nothing is removed automatically: this code never mutates or removes a published record — each one is written once, at a name only its own attempt can produce — which is what keeps a concurrent attempt's fence intact.`;
 }
 
-async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDir, env, now, emitImpl }) {
+// `sameDirectoryImpl` is an INJECTED SEAM, not a convenience. The property it
+// exists for — that a legacy WAL which changes identity while it is being read
+// is refused rather than described — is a race, and a race that only a real
+// filesystem can produce is a property no test can pin. The seam is how the
+// swap becomes deterministic.
+async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDir, env, now, emitImpl, sameDirectoryImpl = sameDirectory }) {
   if (!requested) {
     return { requested: false, executed: false, mode: 'not_requested', status: 'not_requested', provider_ack: null, outcome_reason: null, mirror_correlated: false, network_request_performed: false, blockers: [], limits: [] };
   }
@@ -3928,7 +3937,7 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
   // `unknown` is neither branch: a filesystem that will not answer must not be
   // resolved by guessing. Guessing "different" re-opens the resend path;
   // guessing "same" silently drops a legitimate legacy fence.
-  const legacyIsLive = await sameDirectory(legacyIntentDir, intentDir);
+  const legacyIsLive = await sameDirectoryImpl(legacyIntentDir, intentDir);
   if (legacyIsLive.unknown) {
     // The reason embeds a raw path (path-containment.mjs builds it that way).
     // `safeRecordName` is the wrong tool for a path, so the message carries the
@@ -3957,7 +3966,7 @@ async function buildEgressAckProofSection({ requested, execute, repoRoot, homeDi
         return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} is unscannable (${err?.code ?? 'error'}); refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
       }
     }
-    const stillDistinct = await sameDirectory(legacyIntentDir, intentDir);
+    const stillDistinct = await sameDirectoryImpl(legacyIntentDir, intentDir);
     if (stillDistinct.unknown || stillDistinct.same) {
       return blockedSection([`the legacy egress intent WAL at ${pointer(repoRoot, legacyIntentDir)} changed identity while it was being read; refusing a send that cannot be fenced against a pre-upgrade attempt.`]);
     }
