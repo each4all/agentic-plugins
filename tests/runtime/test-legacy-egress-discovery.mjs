@@ -267,6 +267,17 @@ async function run(fs, overrides = {}) {
 
 // --- T4: the status function, total over its INPUT --------------------------
 
+// The fixed suffix is a CONTRACT, not a variable, and two tests below derive
+// their loop bound from it. Deriving the bound keeps a new component from being
+// added uncovered; asserting the shape here keeps that derivation from becoming
+// self-referential, which is what "exercised === SUFFIX.length" alone was —
+// shortening the exported constant satisfied it (cross-host review MINOR).
+describe('legacy-egress discovery — the fixed suffix is the contract', () => {
+  it('is exactly the four components the WAL path has always had', () => {
+    deepStrictEqual([...EGRESS_INTENT_DIR_SUFFIX], ['.agentic-plugins', 'runs', 'doctor', 'egress-intents']);
+  });
+});
+
 describe('legacy-egress discovery — status is total over its input (T4)', () => {
   it('yields the reassuring status for exactly ONE input combination', () => {
     strictEqual(
@@ -833,6 +844,62 @@ describe('legacy-egress discovery — streaming walker (T3)', () => {
     strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
   });
 
+  it('an ancestor --skip reached by a DIFFERENT spelling still excludes the root', async () => {
+    // Ancestry is decided by identity, not by string containment, and this is the
+    // case that forced it. Measured on the dogfood machine: a macOS firmlink
+    // makes `/Users/x/W` and `/System/Volumes/Data/Users/x/W` one directory —
+    // both dev 16777231, ino 217309582 — which `realpath` does NOT fold, so
+    // neither canonical spelling contains the other. `isUnder` therefore said
+    // "not an ancestor" about the operator's own exclusion while the report
+    // rendered it as honored (cross-host review MAJOR).
+    const fs = new FakeFs()
+      .dir(`${HOME}/w`, [{ name: 'checkout', kind: 'dir' }])
+      .dir(`${HOME}/w/checkout`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`${HOME}/w/checkout`, [{ name: 'r.json', kind: 'file' }])
+      // The alias resolves to itself — like a firmlink, and unlike a symlink —
+      // so realpath cannot bring the two spellings together.
+      .dir('/data-alias/w', []);
+    fs.alias(`${HOME}/w`, '/data-alias/w');
+    fs.realpaths.set('/data-alias/w', '/data-alias/w');
+    const report = await run(fs, { requestedRoots: [`${HOME}/w/checkout`], skipPaths: ['/data-alias/w'] });
+    strictEqual(report.findings_total, 0, 'the excluded ancestor was reached by a second spelling and ignored');
+    strictEqual(report.scan.stats.dirs_scanned, 0);
+    strictEqual(report.scan.pruned_by_reason['operator-skip'], 1);
+  });
+
+  it('--skip / excludes everything rather than nothing', async () => {
+    // `--root /` is refused, but `--skip /` is legitimate — it means "scan
+    // nothing". Lexical containment answered it with a `'//'` prefix test, which
+    // is never true, so the broadest exclusion an operator can name excluded
+    // nothing and the scan returned findings with removal guidance (cross-host
+    // review MAJOR).
+    const fs = new FakeFs()
+      .dir('/', [])
+      .dir('/home', [])
+      .dir(HOME, [{ name: 'x', kind: 'dir' }])
+      .dir(`${HOME}/x`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`${HOME}/x`, [{ name: 'r.json', kind: 'file' }]);
+    const report = await run(fs, { skipPaths: ['/'] });
+    strictEqual(report.findings_total, 0);
+    strictEqual(report.scan.stats.dirs_scanned, 0, 'nothing may be opened under a skipped filesystem root');
+    strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
+    strictEqual(renderDiscoveryText(report).match(REMOVAL_VERBS), null);
+  });
+
+  it('an ancestor the filesystem will not describe BLOCKS the root rather than walking it', async () => {
+    const fs = new FakeFs()
+      .dir(`${HOME}/w`, [{ name: 'checkout', kind: 'dir' }])
+      .dir(`${HOME}/w/checkout`, [{ name: '.agentic-plugins', kind: 'dir' }])
+      .wal(`${HOME}/w/checkout`, [{ name: 'r.json', kind: 'file' }])
+      .dir('/some/skip', [])
+      .unsafeIdentity(`${HOME}/w`);
+    const report = await run(fs, { requestedRoots: [`${HOME}/w/checkout`], skipPaths: ['/some/skip'] });
+    strictEqual(report.findings_total, 0);
+    strictEqual(report.scan.stats.dirs_scanned, 0);
+    strictEqual(report.overall.status, DISCOVERY_STATUS.incomplete);
+    match(report.scan.blocked.map((b) => b.reason).join(' '), /an ancestor \(.*\) could not be told apart from an excluded directory/);
+  });
+
   it('CONTROL — the same root WITHOUT the ancestor skip is walked and found', async () => {
     const fs = new FakeFs()
       .dir(`${HOME}/w`, [{ name: 'checkout', kind: 'dir' }])
@@ -857,6 +924,40 @@ describe('legacy-egress discovery — streaming walker (T3)', () => {
     const report = await run(fs, { requestedRoots: [HOME], skipPaths: [`${HOME}/drop`] });
     strictEqual(report.findings_total, 1, 'only the skipped subtree may disappear');
     strictEqual(report.findings[0].checkout_root, `${HOME}/keep`);
+  });
+
+  it('a symlinked MARKER is never stat-ed, even when a --skip exists', async () => {
+    // The composed case neither fixture covered on its own. `skipDecision` stats,
+    // and a stat follows the link, so with the skip check ahead of the symlink
+    // check ANY `--skip` on the command line turned a symlinked marker into a
+    // dereference — of a path that can be an unreadable target or a stalled
+    // remote mount (cross-host review MAJOR). Neither the skip tests nor the
+    // symlink tests could see it, because none of them set both.
+    const marker = `${HOME}/repo/${CHECKOUT_MARKER}`;
+    const build = () => {
+      const fs = new FakeFs()
+        .dir(HOME, [{ name: 'repo', kind: 'dir' }])
+        .dir(`${HOME}/repo`, [{ name: '.agentic-plugins', kind: 'symlink-dir' }])
+        .dir('/outside', [])
+        .wal('/outside', [{ name: 'leak.json', kind: 'file' }])
+        .dir('/some/skip', [])
+        .link(marker, '/outside/.agentic-plugins');
+      return fs;
+    };
+    for (const [label, skipPaths] of [['without a skip', []], ['with an unrelated skip', ['/some/skip']]]) {
+      const fs = build();
+      const report = await run(fs, { skipPaths });
+      strictEqual(report.findings_total, 0, `${label}: a symlinked marker must never become a finding`);
+      ok(
+        report.scan.not_followed.some((n) => n.path === marker),
+        `${label}: the symlinked marker must be a reported boundary, not a blocked entry: ${JSON.stringify(report.scan)}`,
+      );
+      strictEqual(report.scan.blocked_total, 0, `${label}: nothing about it is undecidable — it was simply not followed`);
+      // The decisive assertion: the identity was never asked for, so the link was
+      // never crossed. `blocked_total` alone would pass on a stat that happened
+      // to succeed.
+      deepStrictEqual(fs.eventIndices('statIdentity', marker), [], `${label}: the symlinked marker was dereferenced`);
+    }
   });
 
   it('a skip decision the filesystem will not answer BLOCKS rather than reading the subtree', async () => {
@@ -1101,20 +1202,22 @@ describe('legacy-egress discovery — findings model (T5)', () => {
     ok(listed[listed.length - 1] < observed[1], `the re-check must come AFTER the last entry was listed: ${trace()}`);
   });
 
-  it('the residual, executable — an inode NUMBER reused at the candidate path is NOT detected', async () => {
-    // Pinning a LIMIT, deliberately, not a guarantee. The re-check compares
-    // dev/ino, and equal numbers do not prove one object: a removed directory can
-    // have its number handed to the next one created at that path, and the check
-    // then reads "unchanged" while the records listed came from somewhere else.
-    // `residual[]` says exactly this; this test is what keeps that sentence true,
-    // and what fails loudly if a later round strengthens the binding without
-    // updating the claim.
+  it('the residual, executable — an unchanged dev/ino beside a different listing is NOT detected', async () => {
+    // Named for what it actually pins, after a review pointed out the first name
+    // over-claimed: the seam changes the LISTING while dev/ino stays equal, which
+    // is the observable both inode-number reuse and an A→B→A swap produce.
+    // Through the only interface the scanner has, those are one case, and neither
+    // is what the fixture literally performs.
     //
-    // Forced through the seam because it cannot be forced on a real filesystem:
-    // the recorded way to provoke inode reuse deterministically re-records the
-    // same inode through a HARDLINK, and directories cannot be hardlinked. The
-    // same fixture also models an A→B→A swap — through the only interface the
-    // scanner has, the two are one case.
+    // Pinning a LIMIT, deliberately, not a guarantee. The check compares dev/ino,
+    // and equal numbers do not prove one object. `residual[]` says exactly this;
+    // this test is what keeps that sentence true, and what fails loudly if a
+    // later round strengthens the check without updating the claim.
+    //
+    // It goes through the seam because the real mechanism cannot be forced on a
+    // real filesystem: the recorded way to provoke inode reuse deterministically
+    // re-records the same inode through a HARDLINK, and directories cannot be
+    // hardlinked.
     const WAL = `${HOME}/x/${WAL_REL}`;
     const fs = new FakeFs()
       .dir(HOME, [{ name: 'x', kind: 'dir' }])
@@ -1616,6 +1719,10 @@ describe('legacy-egress discovery — renderers and exit codes (T8)', () => {
         // this window each shipped documentation claiming it was closed.
         /DETECTION, not binding/,
         /those numbers can be reused/,
+        // The point-in-time limits a review reproduced after the first cut
+        // called residual[] authoritative while naming only the swap cases.
+        /point-in-time snapshot/,
+        /resolved once per scan/,
       ]) {
         match(renderDiscoveryText(report), phrase);
         match(renderDiscoveryJson(report), phrase);

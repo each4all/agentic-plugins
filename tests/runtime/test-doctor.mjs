@@ -5094,8 +5094,21 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     await mkdir(legacyDir, { recursive: true });
     await writeFile(join(legacyDir, 'cafe1234.json'), JSON.stringify({ status: 'pending' }));
 
+    // ORDER, not just count. `calls === 2` alone proves nothing about WHEN the
+    // second observation happens: moving it in front of the `readdir` left all
+    // 172 doctor tests green, so neither this test nor R8d pinned the property
+    // they were written for (cross-host review MAJOR — and the same defect class
+    // this slice closed in the discovery scanner, surviving in its mirror).
+    //
+    // The second call writes a record. If it runs AFTER the listing, as it must,
+    // that record cannot appear in the blocker; if it is moved before the
+    // listing, the `readdir` picks it up and the assertion below fails.
     let calls = 0;
-    const alwaysDistinct = async () => { calls += 1; return { same: false }; };
+    const alwaysDistinct = async () => {
+      calls += 1;
+      if (calls === 2) await writeFile(join(legacyDir, 'after0000.json'), JSON.stringify({ status: 'pending' }));
+      return { same: false };
+    };
     const report = await runEgressDoctor({
       repo, home, env, emitImpl: deliveredEmit([]), sameDirectoryImpl: alwaysDistinct,
     });
@@ -5111,6 +5124,10 @@ describe('runtime doctor — egress ack proof executor (ADR-0048 §3)', () => {
     ok(
       blockers.some((b) => /cafe1234/.test(b)),
       `the records LISTED are what gets reported, whichever directory they came from: ${JSON.stringify(blockers)}`,
+    );
+    ok(
+      !blockers.some((b) => /after0000/.test(b)),
+      `a record written by the SECOND observation cannot have been listed unless the re-check ran before the listing: ${JSON.stringify(blockers)}`,
     );
   });
 
