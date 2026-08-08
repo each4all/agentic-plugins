@@ -324,6 +324,84 @@ compat plan but never wires a mapping: resolving a row requires a
 source-verified payload shape recorded here plus a dedicated follow-up
 decision (ADR-0030 discipline) before any shuttle or sensor change.
 
+### ADR-0013 Trigger Watch (Codex plugin-command registration)
+
+ADR-0013 is held `Reserved` pending a stable Codex mechanism for a **plugin to
+register a command surface**. That is the half of issue #89 left open by its
+2026-06-23 comment: the hook half resolved without ADR-0013 (plugin enablement
+plus generic `[features].hooks`, gated by `/hooks` review/trust — wired in
+ADR-0030, host-config write removed under ADR-0035 §6), and the trigger was
+narrowed to command registration alone.
+
+**Assessment 2026-08-08 — NOT FIRED**, observed live on Codex CLI `0.145.0`,
+corroborated by an independent cross-host peer pass over the same surfaces.
+This is a targeted single-surface re-observation, not a baseline refresh: the
+`Observed on` header above is deliberately unchanged and no Version History row
+is appended. Evidence, each re-run against the installed host rather than read
+back from this file:
+
+- `codex plugin --help` -> `add`, `list`, `marketplace`, `remove`. Those are
+  install/catalog management verbs — the per-plugin surface ADR-0032 already
+  recognizes — not a registration point for plugin-authored commands.
+- The manifest field guide Codex itself ships,
+  `plugin-creator/references/plugin-json-spec.md` embedded in the `0.145.0`
+  binary, enumerates the complete top-level `.codex-plugin/plugin.json` field
+  set: `name`, `version`, `description`, `author`, `homepage`, `repository`,
+  `license`, `keywords`, `skills`, `hooks`, `mcpServers`, `apps`, `interface`.
+  There is no `commands` field, and its path-conventions section names the
+  component set outright — "`skills`, `hooks`, and string-valued `mcpServers`
+  are supplemented on top of default component discovery; they do not replace
+  defaults."
+- The same bundled `plugin-creator` skill offers `--with-skills --with-hooks
+  --with-scripts --with-assets --with-mcp --with-apps --with-marketplace`, and
+  its "Supports optional creation of" list is `skills/`, `hooks/`, `scripts/`,
+  `assets/`, `.mcp.json`, `.app.json`. No commands component in either.
+- <https://developers.openai.com/codex/plugins/build> describes `skills`,
+  `mcpServers`, `apps`, `hooks`, and the `interface` asset block, and no
+  plugin-registered command component.
+- `codex features list` on `0.145.0`: `plugins`, `plugin_sharing`, and
+  `remote_plugin` stable/true, generic `hooks` stable/true, `plugin_hooks`
+  still `removed` — the hook half of the trigger remains resolved. There is no
+  `plugin_commands` row at any stage, so this is not a flag waiting to be
+  enabled.
+
+Three things look like they flip the verdict and do not. They are recorded so a
+later reader does not have to re-litigate them:
+
+- The `0.145.0` binary also ships `plugin-creator/scripts/validate_plugin.py`,
+  whose `allowed_keys` set omits `commands`. That set is the narrower plugin
+  *ingestion* contract, and it also omits `hooks` — which demonstrably works at
+  runtime and is this project's own packaging path. Its silence about
+  `commands` therefore carries little weight on its own; the manifest field
+  guide above, not this validator, is the load-bearing evidence.
+- Codex does have a slash-command surface: built-in `/` commands with tab
+  completion, a `custom_prompt_view` TUI component, and "Slash commands" as an
+  importable category in the `0.145.0` `/import` flow that migrates setup from
+  another coding agent. Those are Codex-shipped commands plus per-user setup the
+  operator authors or imports — not a component a marketplace-installed plugin
+  declares, and not something a plugin manifest can target. Do not read "Codex
+  has slash commands" as "Codex has plugin commands".
+- Hook entries use `"type": "command"`, including this project's own
+  `adapters/codex/hooks/hooks.json`. That names a lifecycle subprocess handler,
+  not a user-invokable command registration.
+
+What would flip this: a `commands`-shaped component in the plugin manifest
+spec, or an equivalent documented plugin-local command/prompt registration
+path, observable through `codex plugin --help`, the shipped manifest field
+guide, or the official plugin docs. Until then the ADR-0021 skill-wrapper
+parity (`$engineer:start` and its siblings) stays the honest Codex-side command
+surface, and the ADR-0013 deferrals recorded across `plugins/engineer`,
+`plugins/founder`, `plugins/designer`, and `docs/adr/` stay justified for
+native command registration specifically.
+
+One adjacent record was checked and needs no correction: the `plugin_hooks`
+removal is recorded here and in `codex-capability-baseline.md` as ~`0.134.0`
+(PR #22552), and no repository document assigns a different version to that
+event. ADR-0030 separately cites `0.136.0` as the *installed* host when it was
+written, and the Version History row of 2026-06-03 records `0.136.0` as the
+first local removed-stage observation — both are observation versions, not
+competing removal versions.
+
 ## Version History
 
 This trail records each human-reviewed baseline observation so a drift alert
