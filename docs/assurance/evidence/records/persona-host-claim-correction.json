@@ -1,0 +1,122 @@
+{
+ "schema": "evidence-record-1.0",
+ "record_id": "persona-host-claim-correction",
+ "evidence_loop": {
+  "label": "correcting a host claim that was wrong in three plugins",
+  "summary": "One measurement invalidated two documented claims, and both turned out to be the same defect: a fact written in several places and updated in some of them. The entry-routing contract blamed the decide-registry resolver being unreachable on Codex on an auto-activated skill mode that does not exist for these skills; the measured cause is that a Codex skill mention has no plugin-root variable in its shell. Separately, three personas claimed Codex could not re-inject a checkpoint, while their own manifests register SessionStart with matcher compact on both hosts — so the claim was wrong in one direction and the reference table it contradicted was overstating in the other. The lasting output is not the prose but the guard: one cross-persona contract test replaces what would have been three copies of the same check."
+ },
+ "package_releases": [
+  {
+   "package": "plugins/engineer",
+   "version": "0.21.3",
+   "tag": "plugin-engineer-v0.21.3",
+   "release_pr": 679,
+   "squash": "55ce753358b911d5cf8c94f3c92ea5a5afc2f69e",
+   "marketplace_sync": "705b65cc348044859263d3d8b3adea57d9fdc0e6"
+  },
+  {
+   "package": "plugins/founder",
+   "version": "0.4.2",
+   "tag": "plugin-founder-v0.4.2",
+   "release_pr": 679,
+   "squash": "55ce753358b911d5cf8c94f3c92ea5a5afc2f69e",
+   "marketplace_sync": "705b65cc348044859263d3d8b3adea57d9fdc0e6"
+  },
+  {
+   "package": "plugins/designer",
+   "version": "0.3.2",
+   "tag": "plugin-designer-v0.3.2",
+   "release_pr": 679,
+   "squash": "55ce753358b911d5cf8c94f3c92ea5a5afc2f69e",
+   "marketplace_sync": "705b65cc348044859263d3d8b3adea57d9fdc0e6"
+  }
+ ],
+ "feature_commits": [
+  {
+   "sha": "595cba621c1b1534853137c13806066e1ebbd4af",
+   "pr": 678,
+   "note": "Replaces the resolver-unreachable reason with the measured one and scopes checkpoint re-injection to post-compact. The wording is bound to the skill-mention shell on purpose: hook commands DO receive the substituted plugin-root names, so an unscoped claim would trade one falsehood for another."
+  },
+  {
+   "sha": "49a88d7b5cf471fb576e7f079e254dacf4afba7d",
+   "pr_attested": 680,
+   "note": "Founder carried the same claim at nine sites, not the five files a first scan suggested. Rebase-merged so each package keeps its own changelog entry, which is why the subject carries no PR number and this is attested rather than derived."
+  },
+  {
+   "sha": "b4208c6c56307f1bf01b0ecad9c8c018da74c83d",
+   "pr_attested": 680,
+   "note": "Designer carried the identical nine sites, including both fields of the packaged interface metadata that Codex renders to users directly."
+  }
+ ],
+ "hardening_commits": [
+  {
+   "sha": "16dcaa83402808df1f6af9c1cec8ec567733c482",
+   "pr_attested": 680,
+   "note": "Moves the checkpoint guard out of the engineer shape test into one cross-persona contract that iterates the personas. Three copies of a claim guarded by three copies of a check is the same one-of-N defect relocated into the tests."
+  }
+ ],
+ "proofs": [
+  {
+   "run_id": "doctor-20260808T105445Z-91074e",
+   "date": "2026-08-08",
+   "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+   "artifact_sha256": "sha256:7947a35fa7e7009a394f727d8df657c99fbe48f6581a6164559cc94ef206f70a",
+   "runtime_version": "0.89.0",
+   "installed": {
+    "claude": "0.89.0",
+    "codex": "0.89.0"
+   },
+   "host_cli": {
+    "claude": "2.1.226 (Claude Code)",
+    "codex": "codex-cli 0.147.0"
+   },
+   "readings": [
+    {
+     "key": "overall",
+     "value": "warning; zero hard failures; latest compatibility check needs follow-up"
+    },
+    {
+     "key": "permission_proof",
+     "value": "passed; executed in both directions"
+    },
+    {
+     "key": "deep_peer_smoke",
+     "value": "passed; executed in both directions"
+    },
+    {
+     "key": "workflow_continuation_proof",
+     "value": "passed; executed in both directions"
+    },
+    {
+     "key": "host_parity",
+     "value": "pass; zero issues"
+    },
+    {
+     "key": "host_parity_baseline",
+     "value": "current"
+    },
+    {
+     "key": "experience_parity",
+     "value": "partial 95%; satisfied 7, partial 1, not_verified 0, blocked 0"
+    },
+    {
+     "key": "post_attestation",
+     "value": "taken after settings-20260808T105350Z-5524ba attested designer 0.3.2, engineer 0.21.3, founder 0.4.2, orchestrator 0.13.1 against codex 0.147.0"
+    },
+    {
+     "key": "why_not_100",
+     "value": "runtime_handoff_artifacts stays partial because runtime:compat resolves the host baseline from the installed plugin root while runtime:doctor resolves it from the repo. Structural, unchanged from the preceding record."
+    }
+   ]
+  }
+ ],
+ "install_method": "Owner-driven host-native update of the three bumped packages on both hosts, verified against the manifest before anything was recorded: engineer 0.21.3, founder 0.4.2, designer 0.3.2 on the Claude cache and codex plugin list alike. The Codex /hooks review was an operator action; twelve [hooks.state] entries across four plugins were observed trusted before the attestation was written.",
+ "narrative": "The loop began as two documentation defects and ended as one lesson repeated three times. Each correction, once measured, revealed another copy the plan had not counted: the engineer fix shipped with commands/checkpoint.md still holding its own copy of the paragraph the SKILL had just corrected, and the founder/designer pass found nine sites per persona where the plan named five files. A line-based scan found different halves on different passes, because the same sentence wraps at a different word in each file; only whitespace-normalized scanning found all of them. Cross-host review caught two defects in the fix itself, both of the class being fixed: the missed command-file copy, and a global negative about Codex substitution that had never been measured and was narrowed to the observation actually taken. Mutation verification earned its place three separate times rather than confirming a foregone conclusion. It found a positive assertion scoped per file where the packaged metadata carries the claim in two fields, the same gap again at row level where a frontmatter line satisfied a file-level check, and literal backslashes this change had introduced into four markdown files, which surfaced only because a mutation that should have failed did not. The release itself corrected an expectation carried into this session: post-release doc-freshness recovery is coupled to the runtime version, so a release that bumps only personas needs the catalog sync and nothing more. That was measured, not assumed, after the earlier release in the same session had needed the full recovery.",
+ "relations": [
+  {
+   "type": "follows",
+   "record_id": "egress-durability-and-adr0013-verdict",
+   "note": "The preceding loop in the same session; its ADR-0013 assessment is what surfaced the resolver-reason defect corrected here."
+  }
+ ]
+}
