@@ -43,7 +43,7 @@ even after the workflow `.md` is archived.)
 | Drift report (clean/dirty + ADR-0018 §sub-3 git-probe enrichment) | Yes | Yes — `git` probes are host-agnostic |
 | `state.mjs append --event resumed` (host_history append) | `--host claude` | `--host codex` — distinguishes Claude vs Codex re-entry in `host_history` for post-mortem audit |
 | `state.mjs archive` (move file to `archive/`) | `--host claude` | `--host codex` — host-agnostic filesystem op |
-| SessionStart re-injection of the `[designer-active-metadata]` marker | Yes (next Claude session) | Yes when the designer plugin's hooks are enabled (`[features].hooks`, default on) and `/hooks`-reviewed/trusted; otherwise resume reads the same durable workflow file |
+| SessionStart re-injection of the `[designer-active-metadata]` marker — both hosts register the hook with `matcher: "compact"`, so this is post-compact only | Yes — after compact | Yes when the designer plugin's hooks are enabled (`[features].hooks`, default on) and `/hooks`-reviewed/trusted; otherwise resume reads the same durable workflow file |
 
 Cross-host inspection is a canonical Codex use case: a user who started a
 workflow on Claude can `$designer:resume` on Codex to see the current drift

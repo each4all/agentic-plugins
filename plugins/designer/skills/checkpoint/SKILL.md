@@ -6,9 +6,9 @@ description: "Records a one-line progress checkpoint on the active designer work
 # Checkpoint (designer persona, meta skill)
 
 The `checkpoint` meta skill writes a one-line progress summary into the
-active designer workflow's `latest_checkpoint` frontmatter field. The next
-session's SessionStart hook re-injects that summary so a resumed
-conversation knows where the previous session stopped — useful for the
+active designer workflow's `latest_checkpoint` frontmatter field. The SessionStart hook re-injects that summary
+after compact — both hosts register it with `matcher: "compact"` —
+so a resumed conversation knows where the previous session stopped — useful for the
 multi-session arc of a design deliverable (a flow spec, a wireframe set, a
 post-code critique loop) where `current_phase` and `next_action` alone
 undersell the context ("left off after the a11y lens found a contrast
@@ -33,11 +33,12 @@ verbs (`/designer:investigate / :frame / :decide / :compose / :critique /
 |-----------|--------|-------|
 | `state.mjs checkpoint-set` (write `latest_checkpoint`) | `--host claude` | `--host codex` — same on-disk schema; the host flag distinguishes write provenance in `host_history` |
 | Schema preservation (schema 1 keeps 1; '1.1' keeps '1.1') | Yes | Yes — `state.mjs` is host-agnostic |
-| SessionStart re-injection of the summary into a new session | Yes (next Claude session, via the SessionStart hook surfacing `[designer-active-metadata]` with the checkpoint summary + timestamp) | Yes when the designer plugin's hooks are enabled (`[features].hooks`, default on) and `/hooks`-reviewed/trusted; otherwise manual `$designer:resume` reads the same durable checkpoint |
+| SessionStart re-injection of the summary — both hosts register the hook with `matcher: "compact"`, so this is **post-compact only**, never an arbitrary new session | Yes — the hook surfaces `[designer-active-metadata]` with the checkpoint summary + timestamp after compact | Yes when the designer plugin's hooks are enabled (`[features].hooks`, default on) and `/hooks`-reviewed/trusted; otherwise manual `$designer:resume` reads the same durable checkpoint |
 
-The Codex use case is **cross-host handoff**: a user on Codex who leaves a
-checkpoint will see it re-injected on the next Claude Code session, and on
-Codex sessions where the plugin's hooks are enabled and trusted. Without
+The Codex use case is **cross-host handoff**: a checkpoint written on Codex is
+re-injected on either host's next post-compact session, given that host's
+hook is live — on Codex that means the plugin's hooks enabled and
+`/hooks`-trusted. Without
 that active-session trust, Codex can still durably *write* the checkpoint
 and `$designer:resume` reads it manually. (Per ADR-0030/0035 the Codex hook
 model is generic `[features].hooks` + `/hooks` review/trust — there is no
@@ -141,10 +142,11 @@ combine them in a single Bash call.
 
 On Claude, the next SessionStart re-injects the summary into the
 post-compact session as part of the `[designer-active-metadata]` marker — no
-need to re-issue `resume`. On Codex, the next Claude session re-injects (the
-on-disk `latest_checkpoint` is host-agnostic); a Codex session re-injects
-only when the plugin's hooks are enabled and trusted, per the Host
-availability table.
+need to re-issue `resume` inside that window. The on-disk
+`latest_checkpoint` is host-agnostic, so a checkpoint written on either host
+is read by either host; Codex re-injects it the same way once the plugin's
+hooks are enabled and `/hooks`-trusted, per the Host availability table.
+Outside the post-compact window, `resume` reads it manually.
 
 ---
 

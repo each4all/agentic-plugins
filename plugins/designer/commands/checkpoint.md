@@ -10,9 +10,9 @@ $ARGUMENTS
 `/designer:checkpoint` is a meta command per ADR-0022 (meta-skill category,
 adopted for designer per ADR-0042 SD7): a thin shim over `state.mjs
 checkpoint-set` that records a one-line progress summary into the active
-workflow's `latest_checkpoint` frontmatter field. The next session's
-SessionStart hook re-injects that summary so a resumed conversation knows
-where the previous session stopped — useful for the multi-session arc of a
+workflow's `latest_checkpoint` frontmatter field. The SessionStart hook re-injects that summary
+after compact — both hosts register it with `matcher: "compact"` —
+so a resumed conversation knows where the previous session stopped — useful for the multi-session arc of a
 design deliverable where `current_phase` / `next_action` alone undersell
 context.
 
@@ -111,8 +111,10 @@ Emit one of:
 - `✗ Empty summary; required form: /designer:checkpoint <summary>.` — Phase 0
   rejected.
 
-The next SessionStart (after `/compact` or `claude --continue`) re-injects
-the summary into the post-compact session context as part of the
-`[designer-active-metadata]` marker. The user does not need to re-issue
-`/designer:resume` to see the checkpoint — it surfaces automatically in the
-next session header.
+Both hosts register the SessionStart hook with `matcher: "compact"`, so
+the summary re-injects into the **post-compact** session context as part of
+the `[designer-active-metadata]` marker — not into an arbitrary new session, and not
+on `claude --continue`, which carries a SessionStart source the matcher
+does not select. Inside that window the user does not need to re-issue
+`/designer:resume`. Outside it — or on Codex before the bundled hooks are
+`/hooks`-trusted — resume reads the same durable checkpoint manually.

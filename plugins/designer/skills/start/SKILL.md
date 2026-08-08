@@ -61,7 +61,7 @@ verbs in-place and never reads parent-linkage env.
 | **Host-direct vision** on a rendered screen (Phases 3–4) | Yes — native image input | Yes — `codex exec --image <file>` on the **active** host. The companion **peer** path has no `--image` flag on either side, so peer verification stays code/text (ADR-0042 SD4 item 3) |
 | Per-phase `state.mjs append --verb …` (phase-boundary state writes) | `--host claude` | `--host codex` — same on-disk schema; on Codex the writes happen via the host-agnostic CLI when invoked |
 | `AGENTIC_DESIGNER_PROFILE` export (L4 archetype → decide preset) | Yes | Yes — read by `decide-registry.mjs`, host-agnostic |
-| SessionStart re-injection of `[designer-active-metadata]` between sessions | Yes (next Claude session) | Yes when the designer plugin's hooks are enabled (`[features].hooks`, default on) and `/hooks`-reviewed/trusted; otherwise `$designer:resume` reads the durable workflow |
+| SessionStart re-injection of `[designer-active-metadata]` between sessions — both hosts register the hook with `matcher: "compact"`, so this is post-compact only | Yes — after compact | Yes when the designer plugin's hooks are enabled (`[features].hooks`, default on) and `/hooks`-reviewed/trusted; otherwise `$designer:resume` reads the durable workflow |
 
 The Codex parity is at the **cognitive-runbook** level (ADR-0021): a Codex
 user running `$designer:start` follows this runbook's phase sequence and
