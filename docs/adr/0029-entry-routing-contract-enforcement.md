@@ -4,6 +4,13 @@
 
 Accepted
 
+> Amended 2026-08-08 — see [Amendment 2026-08-08](#amendment-2026-08-08).
+> The registry-resolution host asymmetry this ADR scopes out is real, but
+> the reason recorded for it in three places below is not: it names a Codex
+> auto-activated skill mode that does not exist for these skills. The
+> measured cause is that a Codex skill mention has no plugin-root variable
+> in its environment. The scope-out itself stands.
+
 ## Context
 
 The engineer plugin's six-verb decomposition (ADR-0010 §2) gave each
@@ -317,6 +324,45 @@ already LF (CR=0). The diagnosis was corrected to "enforcement reaches
 was removed, and the host-asymmetry claim was downgraded out of scope.
 This note is retained so a future reader sees the decision rests on the
 verified state, not the first pass.
+
+### Amendment 2026-08-08
+
+Three passages in this ADR attribute the `decide-registry` host asymmetry
+to a **Codex auto-activated skill mode**: the §Context parenthetical
+("Codex's auto-activated `decide` falls back to the in-code default"), the
+§3 boundary ("the command-mode vs auto-activated `decide-registry` reach
+difference is ADR-0013 territory"), and the References entry for ADR-0013.
+Their original text is preserved above; this amendment qualifies all three
+rather than rewriting them.
+
+**What was measured (2026-08-08, Codex CLI `0.147.0`):**
+
+- Every one of the ten `plugins/engineer/skills/*/agents/openai.yaml`
+  files sets `policy.allow_implicit_invocation: false` — zero absent, zero
+  non-`false`. The Codex binary parses `allow_implicit_invocation`,
+  `policy.allow_implicit_invocation`, and `agents/openai.yaml`, so the key
+  is honored rather than decorative. **There is no auto-activated mode for
+  these skills to fall back from.**
+- A Codex agent shell exposes no plugin-root variable:
+  `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA`, `PLUGIN_ROOT` and
+  `PLUGIN_DATA` all read empty. `${PLUGIN_ROOT}` substitution exists only
+  for hook commands, which do receive it. So the documented
+  `$CLAUDE_PLUGIN_ROOT/scripts/decide-registry.mjs` invocation resolves to
+  an empty path on a Codex skill mention.
+- `decide-registry.mjs` and `skills/decide/references/decision-axes.yml`
+  are both present and runnable inside the Codex install. The script is
+  reachable; what fails is building its path from an unset variable.
+
+**What changes and what does not.** The conditional rule — when the
+resolver is not reachable, keep the decisive axes and read the YAML — is
+sound and stays. Its stated reason is replaced across the contract and the
+five verb SKILLs with the measured one, plus a pointer to the Codex
+install root already documented in `skills/checkpoint/SKILL.md`, which
+narrows the fallback from "always on Codex" to "only when the path cannot
+be built". The scope-out stands: ADR-0013 still owns the absent Codex
+command file that would run this resolution automatically. It does not own
+filesystem or CLI reachability, and the three passages above should be read
+with that distinction.
 
 ## References
 

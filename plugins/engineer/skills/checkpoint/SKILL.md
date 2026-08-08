@@ -7,8 +7,9 @@ description: "Records a one-line progress checkpoint summary on the active engin
 
 The `checkpoint` meta skill writes a one-line progress summary into
 the active workflow's `latest_checkpoint` frontmatter field. The
-next session's SessionStart hook re-injects that summary so a
-resumed conversation knows where the previous session stopped —
+SessionStart hook re-injects that summary after compact — both hosts
+register it with `matcher: "compact"` — so a resumed conversation
+knows where the previous session stopped —
 useful for multi-day deliverables where `current_phase` and
 `next_action` alone undersell the context.
 
@@ -31,13 +32,13 @@ verb skills (`/engineer:investigate / :frame / :decide / :compose /
 |-----------|--------|-------|
 | `state.mjs checkpoint-set` (write `latest_checkpoint`) | `--host claude` | `--host codex` — same on-disk schema; the host flag distinguishes write provenance in `host_history` |
 | Schema preservation (schema 1 keeps 1; '1.1' keeps '1.1' per ADR-0017 schema versioning policy) | Yes | Yes — `state.mjs` is host-agnostic |
-| SessionStart re-injection of the summary into a new session | Yes (next Claude session, via the SessionStart hook surfacing `[engineer-active-metadata]` with `checkpoint_summary` + `checkpoint_at`) | Yes once the bundled hooks load (generic `[features].hooks`) and pass `/hooks` trust; otherwise manual resume reads the same durable checkpoint |
+| SessionStart re-injection of the summary — both hosts register the hook with `matcher: "compact"`, so this is **post-compact only**, never an arbitrary new session | Yes — the SessionStart hook surfaces `[engineer-active-metadata]` with `checkpoint_summary` + `checkpoint_at` after compact | Yes once the bundled hooks load (generic `[features].hooks`) and pass `/hooks` trust; otherwise manual resume reads the same durable checkpoint |
 
-The Codex use case is **cross-host handoff**: a user on Codex who
-leaves a checkpoint summary will see it re-injected on the next
-Claude Code session, and on Codex sessions where plugin hooks are
-enabled and trusted. Without that active-session trust, Codex can still
-durably *write* the checkpoint and `$engineer:resume` reads it manually.
+The Codex use case is **cross-host handoff**: a checkpoint written on
+Codex is re-injected on either host's next post-compact session, given
+that host's hook is live — on Codex that means plugin hooks enabled and
+`/hooks`-trusted. Without that trust, Codex can still durably *write* the
+checkpoint and `$engineer:resume` reads it manually.
 
 ---
 
@@ -143,16 +144,19 @@ combined Bash call to avoid the re-read.
 - `✗ Empty summary; <command-or-skill-name> <summary> required.` —
   Phase 0 rejected.
 
-On Claude, the next SessionStart (after `/compact` or
-`claude --continue`) re-injects the summary into the post-compact
-session context as part of the `[engineer-active-metadata]` marker.
-The user does not need to re-issue `resume` to see the checkpoint —
-it surfaces automatically in the next session header.
+Both hosts re-inject through a SessionStart hook registered with
+`matcher: "compact"`, so the summary surfaces in the **post-compact**
+session context as part of the `[engineer-active-metadata]` marker. It is
+not re-injected into an arbitrary new session, and not on
+`claude --continue` — those carry a different SessionStart source that the
+matcher does not select. Inside that window the user does not need to
+re-issue `resume` to see the checkpoint.
 
-On Codex, the next Claude session re-injects (the on-disk
-`latest_checkpoint` is host-agnostic); the Codex session itself
-does not re-inject. This is documented in the Host availability
-table above.
+Codex re-injects the same way once the bundled hooks load (generic
+`[features].hooks`) and pass `/hooks` review/trust (ADR-0030). The on-disk
+`latest_checkpoint` is host-agnostic, so a checkpoint written on either
+host is read by either host. Outside the post-compact window — or on Codex
+before hook trust — `resume` reads the same durable checkpoint manually.
 
 ---
 
