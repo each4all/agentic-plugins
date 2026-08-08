@@ -71,7 +71,12 @@ The CLI writes atomically under the per-file lock, preserves schema
 `host_history`.
 
 Claude SessionStart re-injects `checkpoint_summary` and
-`checkpoint_at` in the `[orchestrator-active-metadata]` marker. Codex
+`checkpoint_at` in the `[orchestrator-active-metadata]` marker. Both
+hosts register that hook with `matcher: "compact"`, so re-injection is
+**post-compact only** — not an arbitrary new session, and not on
+`claude --continue`, whose SessionStart source the matcher does not
+select. Outside that window `/orchestrator:resume` reads the same
+durable checkpoint. Codex
 can write the same field via `$orchestrator:checkpoint`; automatic Codex
 SessionStart behavior requires the bundled plugin hooks to be loaded
 (plugin enabled, generic `[features].hooks` default on) and trusted in

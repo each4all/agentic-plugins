@@ -169,8 +169,9 @@ host-symmetric: a Codex `$orchestrator:{next,plan,finalize,abort}` skill
 computes and passes the macro projection exactly as the Claude command does.
 
 What is **not** non-interactively provable on Codex is the *re-surfacing* of the
-emitted next-session prompt in a later session: that re-injection rides the
-SessionStart hook, which on Codex additionally requires the stage-appropriate
+emitted next-session prompt in the next post-compact session: that re-injection
+rides the SessionStart hook — registered `matcher: "compact"` on both hosts —
+which on Codex additionally requires the stage-appropriate
 hook gate (generic `[features].hooks`, default on, on current Codex;
 `[features].plugin_hooks = true` enabled manually on legacy Codex < ~0.134)
 plus a `/hooks` review/trust of the packaged hook. agentic-plugins

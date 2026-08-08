@@ -1,6 +1,6 @@
 ---
 name: checkpoint
-description: "Records a one-line progress checkpoint on the active orchestrator macro workflow. A workflow-continuity meta operation, not a planning verb. Use when the user wants durable macro-plan context re-surfaced in a later Claude session or cross-host handoff."
+description: "Records a one-line progress checkpoint on the active orchestrator macro workflow. A workflow-continuity meta operation, not a planning verb. Use when the user wants durable macro-plan context re-surfaced in the next post-compact session — both hosts register SessionStart with matcher \"compact\" — or carried across a cross-host handoff."
 ---
 
 # Checkpoint (orchestrator meta skill)
@@ -17,7 +17,7 @@ description: "Records a one-line progress checkpoint on the active orchestrator 
 |-----------|--------|-------|
 | `state.mjs checkpoint-set` | `--host claude` | `--host codex` |
 | Schema preservation | Yes | Yes |
-| SessionStart re-injection | Yes, emits `checkpoint_summary` and `checkpoint_at` | Yes once the bundled hooks load (generic `[features].hooks`) and pass `/hooks` trust; otherwise manual resume reads the same durable checkpoint |
+| SessionStart re-injection — both hosts register the hook with `matcher: "compact"`, so this is **post-compact only**, never an arbitrary new session and not `claude --continue` | Yes, emits `checkpoint_summary` and `checkpoint_at` after compact | Yes once the bundled hooks load (generic `[features].hooks`) and pass `/hooks` trust; otherwise manual resume reads the same durable checkpoint |
 
 Codex can write the checkpoint for a future Claude handoff. The
 checkpoint is durable; the automatic re-injection surface is
