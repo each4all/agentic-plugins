@@ -20,6 +20,20 @@
 - The `designer` inventory addition affects `runtime:doctor` proof reuse. The reuse gate does not compare plugin-set membership; it compares a per-plugin `{source, claude_cache, codex_installed}` version triple for every name in `PLUGIN_NAMES`. A proof recorded before designer joined has no designer entry, so its triple reads all-null: reuse is invalidated exactly when designer is observable (its source manifest is present in the repo, or it is installed/cached on the host) and remains valid when designer is absent everywhere. In the normal dogfood case — running doctor inside this repo — the source manifest is present, so re-record the proof.
 - `cutover-audit.mjs`'s package map also omits `plugins/designer` (same reason as founder: the omcc cutover predates both personas). Unchanged here.
 
+## [0.89.0](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.88.1...plugin-runtime-v0.89.0) (2026-08-08)
+
+
+### Features
+
+* **plugin/runtime:** read-only cross-checkout legacy egress-intent discovery ([#675](https://github.com/each4all/agentic-plugins/issues/675)) ([c32d76b](https://github.com/each4all/agentic-plugins/commit/c32d76b3c8ed8aefaecd0a625863c18c38729491))
+
+
+### Bug Fixes
+
+* **plugin/runtime:** append-only egress WAL and displaced-lock exclusion ([3694a9f](https://github.com/each4all/agentic-plugins/commit/3694a9f9a6125dfd0f748dcbe5e57fee2455a9c0))
+* **plugin/runtime:** bring packaged skill descriptions under the Codex cap and gate the rule set ([#671](https://github.com/each4all/agentic-plugins/issues/671)) ([106a7bf](https://github.com/each4all/agentic-plugins/commit/106a7bf88a584d00ce9e7fcbbba267de74e951da))
+* **plugin/runtime:** compare egress WAL paths by identity, not spelling ([#674](https://github.com/each4all/agentic-plugins/issues/674)) ([7fae56f](https://github.com/each4all/agentic-plugins/commit/7fae56fc22687bb8a94cdc4021f2956f2b776e56))
+
 ## [0.88.1](https://github.com/each4all/agentic-plugins/compare/plugin-runtime-v0.88.0...plugin-runtime-v0.88.1) (2026-08-03)
 
 
