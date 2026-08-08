@@ -1,7 +1,7 @@
 # Host Parity Baseline
 
-Observed on 2026-07-25 with Claude Code `2.1.220`, Codex CLI
-`0.145.0`, official OpenAI Codex developer docs, and official Claude Code docs.
+Observed on 2026-08-08 with Claude Code `2.1.226`, Codex CLI
+`0.147.0`, official OpenAI Codex developer docs, and official Claude Code docs.
 This file is a runtime-owned host-truth checkpoint for Claude-vs-Codex
 differences. It is not a promise that either host will keep this behavior.
 
@@ -54,39 +54,59 @@ patch (notable entries are host UX work: `/code-review` runs as a background
 subagent, screen-reader deletion announcements, a Windows `\u`-prefixed-path
 corruption fix, MCP failure diagnostics — none touching the
 plugin/hook/permission contract); verb set unchanged; Codex unchanged at
-`0.145.0`; all other listed surfaces stand from the 2026-07-20 full re-run):
+`0.145.0`; all other listed surfaces stand from the 2026-07-20 full re-run.
+2026-08-08: dual drift Claude `2.1.220`→`2.1.226` / Codex
+`0.145.0`→`0.147.0` — `claude --version`, `claude plugin --help`,
+`claude agents --help`, `claude mcp --help`, `codex --version`,
+`codex --help`, `codex plugin --help`, every `codex plugin <sub> -h`,
+`codex plugin marketplace --help`, `codex plugin list --json`, and
+`codex features list` re-run live. **Every verb set on both hosts is
+unchanged**, and the `codex plugin list --json` root/entry field sets are
+unchanged. Two flag-inventory additions on Codex are additive
+(`recommended_plugins` `stable`/`false` is new; `plugin_hooks` stays
+`removed` and generic `hooks` stays `stable`). Unlike the four preceding
+rows, this Codex minor is **not** "additive with no adoption work" — see the
+Version History row of 2026-08-08 for the Agent Plugins manifest ingestion
+it introduces):
 
-- `claude --version` -> `2.1.220 (Claude Code)`
+- `claude --version` -> `2.1.226 (Claude Code)`
 - `claude --help` (the global `--safe-mode` flag / `CLAUDE_CODE_SAFE_MODE`
   added in 2.1.169 — starts a session with CLAUDE.md, plugins, skills, hooks,
-  and MCP servers disabled for troubleshooting — is still present on 2.1.215)
-- `claude plugin --help` (re-checked on 2.1.218, verb set unchanged from
+  and MCP servers disabled for troubleshooting — is still present on 2.1.226)
+- `claude plugin --help` (re-checked live on 2.1.226, verb set unchanged from
   the 2.1.215 full re-run: `details`, `disable`,
   `enable`, `eval`, `init`/`new`, `install`, `list`, `marketplace`,
   `prune`/`autoremove`, `tag`, `uninstall`/`remove`, `update`, `validate` —
   verb set unchanged from the 2.1.206 observations; `eval`, `init`/`new`, and
   `tag` remain additive relative to the 2.1.14x observations; runtime's
   allowlisted `install`/`update`/`uninstall`/`list` set is unaffected)
-- `claude agents --help` (`--json` with `--all` plus `id`/`state` fields,
-  added in 2.1.169, still present on 2.1.215 alongside `--model`/`--effort`)
-- `claude mcp --help` (re-checked on 2.1.215: `add`,
+- `claude agents --help` (re-checked live on 2.1.226: `--json` with `--all`
+  plus `id`/`state` fields, added in 2.1.169, still present alongside
+  `--model`/`--effort`; `--add-dir`, `--agent`, `--cwd`, `--mcp-config`, and
+  `--allow-dangerously-skip-permissions` are additive dispatch knobs runtime
+  does not use)
+- `claude mcp --help` (re-checked live on 2.1.226: `add`,
   `add-from-claude-desktop`, `add-json`, `get`, `list`, `login`, `logout`,
   `remove`, `reset-project-choices`, `serve` — verb set unchanged from the
   2.1.206 observations; `login`/`logout` cover MCP OAuth flows)
-- `codex --version` -> `codex-cli 0.145.0`
-- `codex --help` (re-checked on 0.144.6: top-level surface `exec`, `review`,
+- `codex --version` -> `codex-cli 0.147.0`
+- `codex --help` (re-checked live on 0.147.0: top-level surface `exec`, `review`,
   `login`/`logout`, `mcp`, `plugin`, `mcp-server`, `app-server`,
   `remote-control`, `app`, `completion`, `update`, `doctor`, `sandbox`,
   `debug`, `apply`, `resume`, `archive`/`delete`/`unarchive`, `fork`,
   `cloud`, `exec-server`, `features` — unchanged from 0.144.1; `delete` is
   additive since 0.139.0; the `doctor`/`update`/`login`/`logout`/`archive`
-  additions date to 0.137.0)
-- `codex plugin --help` (re-checked on 0.145.0: `add`, `list`, `marketplace`,
+  additions date to 0.137.0. 0.147.0 removed the deprecated
+  `codex exec --full-auto` flag in favor of `--sandbox workspace-write`;
+  no agentic-plugins caller used it — `codex-companion.mjs` builds
+  `exec --skip-git-repo-check --ephemeral`, and the live deep-peer smoke on
+  0.147.0 passed in both directions)
+- `codex plugin --help` (re-checked live on 0.147.0: `add`, `list`, `marketplace`,
   `remove` — command set unchanged from 0.137.0, whose per-plugin
   `add`/`list`/`remove` went beyond the prior marketplace-only surface;
   0.138.0 added `--json` to `add`/`remove`, and `list` supports `--json` plus
   a `-m`/`--marketplace` filter)
-- `codex plugin list --json` (re-checked on 0.144.6: root object is
+- `codex plugin list --json` (re-checked live on 0.147.0: root object is
   `{installed, available}`; installed entries carry
   `pluginId`/`name`/`marketplaceName`/`version`/`installed`/`enabled`/
   `installPolicy`/`authPolicy`, the 0.138.0 `marketplaceSource`
@@ -94,17 +114,29 @@ plugin/hook/permission contract); verb set unchanged; Codex unchanged at
   `source` `{source, path}` object; with `remote_plugin` stable,
   remotely-sourced plugins appear alongside marketplace-sourced ones — all
   additive relative to the field-selective ADR-0034 resolver)
-- `codex plugin marketplace --help` (re-checked on 0.144.6: `add`, `list`,
+- `codex plugin marketplace --help` (re-checked live on 0.147.0: `add`, `list`,
   `upgrade`, `remove` — unchanged from 0.137.0; `marketplace list --json`
   includes the marketplace source for source-backed marketplaces as of
   0.139.0, not every entry)
-- `codex features list` (re-checked on 0.145.0: `plugin_hooks` still
+- `codex features list` (re-checked live on 0.147.0: `plugin_hooks` still
   reported `removed`, generic `hooks` stable/true,
   `plugins`/`plugin_sharing`/`multi_agent`/`remote_plugin` stable/true,
-  `collaboration_modes` and `multi_agent_mode` `removed` — the 0.145.0 minor
-  bump stabilized `multi_agent_v2` (under-development→stable, opt-in
-  enabled=false) and retired `enable_fanout` (under-development→removed),
-  both flag-inventory/stage changes with no plugin/hook surface impact)
+  `collaboration_modes` and `multi_agent_mode` `removed`; `multi_agent_v2`
+  stabilized at 0.145.0 (opt-in, enabled=false) and `enable_fanout` retired
+  there. New at 0.146.0–0.147.0: a `recommended_plugins` row, `stable`/false.
+  There is **no** `plugin_commands` row at any stage — the command-migration
+  path described in the ADR-0013 Trigger Watch is not a flag awaiting
+  enablement)
+- `~/.codex/config.toml` `[hooks.state]` (read live on 0.147.0: all four
+  hook-bearing plugins — designer, engineer, founder, orchestrator — carry
+  `enabled = true` plus a `trusted_hash` for each of `session_start`,
+  `pre_compact`, and `stop`. The per-event hash is identical across the four
+  because every hook command is the same `${PLUGIN_ROOT}`-relative text, which
+  is why a plugin version bump that does not edit `hooks.json` carries its
+  trust forward: the 0.21.1→0.21.2 engineer bump did not invalidate trust.
+  What goes stale on such a bump is runtime's own attestation *record*, not
+  Codex's trust state — re-record with `runtime:settings
+  --attest-codex-hook-review`)
 
 ## Parity Matrix
 
@@ -402,6 +434,52 @@ written, and the Version History row of 2026-06-03 records `0.136.0` as the
 first local removed-stage observation — both are observation versions, not
 competing removal versions.
 
+**Amendment 2026-08-08 (re-verified on Codex `0.147.0`) — verdict unchanged,
+evidence widened.** The assessment above was written against `0.145.0` and
+reasoned from Codex's own *authoring* spec. `0.146.0`–`0.147.0` added an
+**ingestion** path that the authoring spec does not describe, and a reader who
+checked only the paragraphs above would miss the strongest near-miss to date:
+
+- The `0.147.0` binary carries `core-plugins/src/command_migration.rs` and
+  `core-plugins/src/command_migration/render.rs`, a `RawPluginCommandManifest`
+  serde struct, a `migrated-command-skills` namespace, a `commands/` path
+  segment, and the Claude command-template markers `$ARGUMENTS` and the
+  `` ! ``-prefixed backtick bash block, alongside the error string
+  `No command template body was found.` Codex can therefore *read* a
+  Claude-shaped `commands/` directory and render it into skills.
+- The manifest candidate list is now a triple — `.codex-plugin/plugin.json`,
+  `.claude-plugin/plugin.json`, `.cursor-plugin/plugin.json` — and the
+  marketplace candidate list likewise includes `.claude-plugin/marketplace.json`
+  and `.cursor-plugin/marketplace.json` next to `.agents/plugins/marketplace.json`.
+  `0.146.0` announced "Support Agent Plugins manifests"; `0.147.0` announced
+  "Install portable Agent Plugins and search across local, personal, workspace,
+  and remote plugin catalogs."
+
+It still does not fire the trigger, for two measured reasons rather than one
+absence:
+
+1. **Undocumented.** The Agent Plugins standard (<https://agent-plugins.org>)
+   defines `plugin.json`, `skills/`, `mcp.json`, and reverse-domain extension
+   namespaces — no commands component. The official
+   <https://developers.openai.com/codex/plugins/build> documents skills,
+   `mcpServers`, `apps`, `hooks`, and interface assets — no commands component,
+   and no command migration. Issue #89's trigger requires a mechanism this
+   project can target *without host-specific guesswork*; an undocumented
+   internal migration path is exactly that guesswork.
+2. **It does not fire for our plugins.** Every agentic-plugins plugin ships a
+   `.codex-plugin/plugin.json`, which wins the candidate list, and no
+   `migrated-command-skills` artifact exists anywhere under `~/.codex` on a
+   host running `0.147.0` with all eight plugins installed and enabled. The
+   `commands/` directories are copied into the marketplace snapshot and ignored.
+
+The same triple-manifest change was checked against the ADR-0040 §3 invariant
+that `plugins/attention` presents **zero** Codex hook surface by declaring its
+Claude hooks at `adapters/claude/hooks/` and no hooks in its Codex manifest. If
+Codex now read `.claude-plugin/plugin.json` for a plugin that also ships a Codex
+manifest, that invariant would break. It does not: the `0.147.0` doctor proof
+reports `bundled=designer,engineer,founder,orchestrator` with attention absent.
+The Codex manifest takes precedence; the invariant holds.
+
 ## Version History
 
 This trail records each human-reviewed baseline observation so a drift alert
@@ -430,3 +508,4 @@ line, not this table.
 | 2026-07-22 | `2.1.217` | `0.145.0` | Re-observed during the ADR-0047 Release B (`plugin-runtime` `0.85.0` / `plugin-attention` `0.9.0`) post-release freshness recovery (compat run `compat-20260722T011840Z-a3fb14`, content-backed ingest of the Claude Code `CHANGELOG.md` and the Codex GitHub releases atom feed via explicit `--fetch-release-notes-url`, both host gaps covered). Both drifts carry no plugin-CLI or hook-contract surface change. Claude `2.1.216`→`2.1.217` is additive/fix-only: the notable entries are host subagent-orchestration knobs — a cap on concurrently-running subagents (default 20, `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`), subagents no longer spawning nested subagents by default (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`), and `--max-budget-usd` now halting background subagents — which do not touch the companion-based peer invocation runtime/engineer/orchestrator use (a separate `codex`/`claude` process, not a host subagent); no `Notification` hook type changed (the ADR-0040 §3 attention sensor still matches `permission_prompt`/`idle_prompt`), the SessionStart/Stop/SubagentStop reinjection contract is intact, and `claude plugin --help` re-checked live with the verb set unchanged. Codex `0.144.6`→`0.145.0` is a minor bump with no plugin-CLI or hook-contract break: `codex plugin`/`codex plugin marketplace` verb sets unchanged, `codex features list` keeps `plugin_hooks` `removed` and generic `hooks` `stable`, and the two stage changes are flag-inventory/internal — `multi_agent_v2` under-development→stable (the changelog's opt-in multi-agent V2 stabilization, `enabled=false`) and `enable_fanout` under-development→removed. The remaining 0.145.0 surface (paginated thread history, `/import` migration of Cursor/Claude Code settings/plugins/sessions, experimental Amazon Bedrock login + GPT-5.6 Sol default, audio inputs + realtime V3, GPT-5.4→GPT-5.6 Terra/Luna migration, and a Windows "correctly quoted hook commands" fix) is host-native feature work that does not change the companion/hook/plugin contract runtime depends on. Baseline refresh only; no adoption work required. |
 | 2026-07-23 | `2.1.218` | `0.145.0` | Re-observed during the ADR-0048 (`plugin-runtime` `0.86.0` bootstrap-observability) post-release freshness recovery (compat run `compat-20260723T124245Z-8aabdc`, content-backed ingest of the Claude Code `CHANGELOG.md` via explicit `--fetch-release-notes-url`). Claude `2.1.217`→`2.1.218` is additive/fix-only with no plugin-CLI or hook-contract surface change: `/code-review` now runs as a background subagent, screen-reader announcements for word/line deletions in `--ax-screen-reader` mode, a fix for Windows `\u`-prefixed path segments being corrupted into CJK characters, a left-arrow conversation-discard confirmation, HTTP status/error detail in `claude mcp list` + `/mcp` connection failures plus an MCP config whitespace warning, multi-line paste and `/context` post-compact fixes, and `/ultrareview` / `/code-review ultra` argument/non-interactive fixes — host UX work; no `Notification` hook type changed, the SessionStart/Stop/SubagentStop reinjection contract is intact, and `claude plugin --help` re-checked live with the verb set unchanged. Codex `0.145.0` unchanged (version match, no release-note requirement). Baseline refresh only; no adoption work required. |
 | 2026-07-25 | `2.1.220` | `0.145.0` | Re-observed during the `plugin-runtime` `0.86.1` (egress-ack intent WAL) post-release freshness recovery (compat run `compat-20260725T015749Z-387259`, content-backed ingest of the Claude Code changelog via explicit `--fetch-release-notes-url`). Claude `2.1.218`→`2.1.220` spans one substantial and one trivial release. `2.1.219` is the substantial one and it **does touch the hook surface**: it adds a `DirectoryAdded` event fired after `/add-dir` or the SDK `register_repo_root` control request registers a working directory mid-session — recorded in the Hooks row above as additive, since no existing event's payload or decision contract changed and runtime registers no handler for it. Its other entries are host-native feature work that does not reach the companion/hook/plugin contract: Claude Opus 5 (`claude-opus-5`) becomes the default Opus model (1M context; runtime keeps host-default model/effort resolution, so no runtime change), a `sandbox.network.strictAllowlist` setting, `mcp_server_errors` in the headless stream-json init event, a `workflowSizeGuideline` settings key, nested subagent forwarding in stream-json, and — relevant to read but not to adopt — default nested subagent spawn depth raised from 1 to 3 (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` disables), which concerns host subagents and not the separate `codex`/`claude` process the companion contract spawns. `2.1.220` is "bug fixes and reliability improvements" only. `claude plugin --help` re-checked live on `2.1.220`: the verb set (`details disable enable eval help init|new install|i list marketplace prune|autoremove tag uninstall|remove update validate`) is unchanged from the `2.1.206` observation this file already records. Codex `0.145.0` unchanged (version match, no release-note requirement). Baseline refresh only; no adoption work required. |
+| 2026-08-08 | `2.1.226` | `0.147.0` | Re-observed during the `plugin-runtime` `0.89.0` post-release freshness recovery (compat run `compat-20260808T064210Z-a414ba`, content-backed ingest of the Claude Code `CHANGELOG.md` and the Codex GitHub releases atom feed via explicit `--fetch-release-notes-url`, with `gh release view` closing the `0.146.0`/`0.146.1` gap the alpha-heavy feed window dropped). The full Local CLI evidence block was re-run live on this pair and **every verb set on both hosts is unchanged**. Claude `2.1.220`→`2.1.226` is additive/fix-only for the contracts runtime depends on: the SessionStart/Stop/SubagentStop/PreCompact reinjection contract is intact and the only hook-touching entry is a security fix (`2.1.222` stops PreToolUse auto-allow hooks bypassing tool restrictions in background agent tasks); `2.1.223` is a permission-hardening release (a Bash permission bypass, tab/invisible-Unicode padding hiding part of a command from the approval dialog, workflow scripts escaping their sandbox via dynamic `import()`, and an agent definition's `bypassPermissions` ignoring org policy) plus `owner/*` wildcards in the `strictKnownMarketplaces`/`blockedMarketplaces` managed settings; `2.1.224` adds an `archive` plugin source (install from a zip over HTTPS with optional SHA-256 pinning) and fixes plugin install records corrupting when one plugin is installed in multiple projects; `2.1.221` changes `/plugin install` to refresh a stale catalog and retry, activates plugins immediately when safe, and accepts `"."` as a `skills` path. **Codex `0.145.0`→`0.147.0` is the exception to the four preceding rows: it is not additive-with-no-adoption-work.** `0.146.0` added Agent Plugins manifest support, workspace plugin publishing, and additional plugin marketplaces; `0.147.0` added portable Agent Plugin install with search across local/personal/workspace/remote catalogs, and removed the deprecated `codex exec --full-auto` (no agentic-plugins caller used it — `codex-companion.mjs` builds `exec --skip-git-repo-check --ephemeral`, and the live deep-peer smoke passed both directions on `0.147.0`). Concretely, the binary's manifest candidate list is now the triple `.codex-plugin/plugin.json` / `.claude-plugin/plugin.json` / `.cursor-plugin/plugin.json`, the marketplace candidate list likewise spans `.agents/plugins/marketplace.json`, `.claude-plugin/marketplace.json`, and `.cursor-plugin/marketplace.json`, and a `core-plugins/src/command_migration.rs` path can render a Claude-shaped `commands/` directory into skills. Two consequences were measured, not assumed, and both are recorded in the ADR-0013 Trigger Watch amendment above: the trigger still does **not** fire (the migration path is absent from both the Agent Plugins standard and the official plugin docs, and no `migrated-command-skills` artifact materializes for our plugins because their `.codex-plugin` manifest wins the candidate list), and the ADR-0040 §3 zero-Codex-hook-surface invariant for `plugins/attention` survives the `.claude-plugin` ingestion (the `0.147.0` doctor proof reports `bundled=designer,engineer,founder,orchestrator`, attention absent). Flag inventory adds a `recommended_plugins` `stable`/false row; `plugin_hooks` stays `removed` and generic `hooks` stays `stable`. Adoption work required: none yet — the Agent Plugins standard is a watch item, not a migration this release forces. |
