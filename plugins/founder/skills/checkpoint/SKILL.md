@@ -1,6 +1,6 @@
 ---
 name: checkpoint
-description: "Records a one-line progress checkpoint on the active founder workflow for SessionStart re-injection — the founder plugin's checkpoint meta skill (ADR-0022 meta-skill category, ADR-0036 SD2). A workflow-continuity meta operation, not a cognitive verb and not a lifecycle macro. Use to leave a short, durable progress note on a business deliverable that a future session re-surfaces. Trigger phrases include 'checkpoint', 'mark progress', 'save where I am', 'note for next session', '체크포인트', '진행 메모', '다음 세션에 남길 메모'. Cross-host handoff works through durable state; Codex re-injection additionally requires the plugin enabled with generic `[features].hooks` (default on) and `/hooks` review/trust."
+description: "Records a one-line progress checkpoint on the active founder workflow for SessionStart re-injection — the founder plugin's checkpoint meta skill (ADR-0022 meta-skill category, ADR-0036 SD2). A workflow-continuity meta operation, not a cognitive verb and not a lifecycle macro. Use to leave a short, durable progress note on a business deliverable that the next post-compact session re-surfaces. Trigger phrases include 'checkpoint', 'mark progress', 'save where I am', 'note for next session', '체크포인트', '진행 메모', '다음 세션에 남길 메모'. Cross-host handoff works through durable state; Codex re-injection additionally requires the plugin enabled with generic `[features].hooks` (default on) and `/hooks` review/trust."
 ---
 
 # Checkpoint (founder persona, meta skill)
