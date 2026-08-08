@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.2...plugin-designer-v0.3.3) (2026-08-08)
+
+
+### Bug Fixes
+
+* **plugin/designer:** drop the future-session promise from the checkpoint description ([9799039](https://github.com/each4all/agentic-plugins/commit/97990393217474d2ccb0e42013b051529a59639b))
+
 ## [0.3.2](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.1...plugin-designer-v0.3.2) (2026-08-08)
 
 

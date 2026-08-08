@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.2...plugin-founder-v0.4.3) (2026-08-08)
+
+
+### Bug Fixes
+
+* **plugin/founder:** drop the future-session promise from the checkpoint description ([5755e97](https://github.com/each4all/agentic-plugins/commit/5755e97097c1b5963982802e0da02b150740d8ea))
+
 ## [0.4.2](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.1...plugin-founder-v0.4.2) (2026-08-08)
 
 
