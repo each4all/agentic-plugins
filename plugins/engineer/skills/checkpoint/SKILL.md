@@ -1,6 +1,6 @@
 ---
 name: checkpoint
-description: "Records a one-line progress checkpoint summary on the active engineer workflow for SessionStart re-injection — the engineer plugin's checkpoint meta skill (ADR-0017 §sub-decision-2). A workflow-continuity meta operation, not a cognitive verb and not a lifecycle macro. Use when the user wants to leave a short, durable progress note that a future session will re-surface. Trigger phrases include 'checkpoint', 'mark progress', 'save where I am', 'note for next session', '체크포인트', '진행 메모', '다음 세션에 남길 메모'. Cross-host handoff works through durable state; Codex re-injection additionally requires the plugin enabled with generic `[features].hooks` (default on) and `/hooks` review/trust."
+description: "Records a one-line progress checkpoint summary on the active engineer workflow for SessionStart re-injection — the engineer plugin's checkpoint meta skill (ADR-0017 §sub-decision-2). A workflow-continuity meta operation, not a cognitive verb and not a lifecycle macro. Use when the user wants to leave a short, durable progress note that the next post-compact session re-surfaces. Trigger phrases include 'checkpoint', 'mark progress', 'save where I am', 'note for next session', '체크포인트', '진행 메모', '다음 세션에 남길 메모'. Cross-host handoff works through durable state; Codex re-injection additionally requires the plugin enabled with generic `[features].hooks` (default on) and `/hooks` review/trust."
 ---
 
 # Checkpoint (engineer persona, meta skill)

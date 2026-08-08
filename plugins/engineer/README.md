@@ -192,9 +192,12 @@ Each slash command runs:
    workflow body recording ensemble launch, synthesis verdict, and
    recommended next verb.
 
-Hooks (PreCompact / Stop / SessionStart on Claude Code) snapshot
-the workflow's `last_snapshot` field automatically without user
-action.
+`PreCompact` and `Stop` snapshot the workflow's `last_snapshot` field
+automatically without user action. `SessionStart` does not snapshot —
+it reads the active workflow and re-injects a summary, and it is
+registered `matcher: "compact"`, so it runs post-compact only. All
+three are registered on **both** hosts; on Codex they additionally
+require the stage-appropriate hook gate (ADR-0030).
 
 ### Claude Code — skill auto-activation (lightweight)
 
