@@ -257,10 +257,13 @@ default `--size=minor` (compact 4-axis), never the full 9-axis matrix
 for a trivial reversible step.
 
 On Codex the resolver takes one extra step: a skill mention runs with no
-plugin-root variable in its environment (`${PLUGIN_ROOT}` substitution is
-hook-command-only), so build the path from the Codex install root
-documented in `../checkpoint/SKILL.md` § Claude/Codex command resolution
-rather than from `$CLAUDE_PLUGIN_ROOT`. When the resolver CLI still does
+plugin-root variable in its environment — the names Codex substitutes into
+hook commands are not exported to a skill mention's shell, where
+`CLAUDE_PLUGIN_ROOT` and `PLUGIN_ROOT` both read empty — so resolve the
+path from the installed plugin root rather than from
+`$CLAUDE_PLUGIN_ROOT`. `../checkpoint/SKILL.md` § Claude/Codex command
+resolution records the default Codex layout; a non-default install root
+means resolving from the running install rather than assuming it. When the resolver CLI still does
 not run, keep the decisive axes 본질/근본 (essence/foundation, universal to
 every preset) and read the size-appropriate supporting axes for the
 `compact` preset directly from `../decide/references/decision-axes.yml`

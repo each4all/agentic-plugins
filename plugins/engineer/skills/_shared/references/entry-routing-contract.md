@@ -360,12 +360,17 @@ invocation:
 - **The registry is the single axis source.** Read the axes from
   `decide-registry.mjs`; do not duplicate an axis list in the verb or
   this contract. Resolving it on Codex takes one extra step: a Codex
-  skill mention runs with no plugin-root variable in its environment —
-  `${PLUGIN_ROOT}` substitution is hook-command-only, and an agent shell
-  reports `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA`, `PLUGIN_ROOT` and
-  `PLUGIN_DATA` all empty — so build the path from the Codex install root
-  documented in `../../checkpoint/SKILL.md` § Claude/Codex command
-  resolution rather than from `$CLAUDE_PLUGIN_ROOT`. Three rungs, in
+  skill mention runs with no plugin-root variable in its environment. The
+  names Codex substitutes into hook commands (`${PLUGIN_ROOT}`,
+  `${PLUGIN_DATA}`) are not exported to a skill mention's shell: an agent
+  shell reports `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA`, `PLUGIN_ROOT`
+  and `PLUGIN_DATA` all empty. That is an observation about the shell, not
+  a claim about every place Codex may substitute them. So resolve the path
+  from the installed plugin root
+  rather than from `$CLAUDE_PLUGIN_ROOT` — `../../checkpoint/SKILL.md`
+  § Claude/Codex command resolution records the default Codex layout, but
+  a non-default install root or marketplace name means the path must be
+  resolved from the running install rather than assumed. Three rungs, in
   order: the root resolves and the CLI runs (full fidelity); the root
   resolves but the CLI does not run (read `decision-axes.yml` under that
   same root); the root cannot be built at all (keep the decisive axes

@@ -236,7 +236,7 @@ per `skills/_shared/references/entry-routing-contract.md`
 Bounded: only at a genuine 2+-branch point (not every invocation),
 default `--size=minor` (compact 4-axis), escalating only for weightier
 branches — never the full 9-axis matrix for a trivial reversible step.
-The full mechanism + the Codex path-resolution fallback (ADR-0013) live in
+The full mechanism + the Codex path-resolution fallback live in
 the contract subsection cited above.
 
 ---

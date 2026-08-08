@@ -7,8 +7,9 @@ description: "Records a one-line progress checkpoint summary on the active engin
 
 The `checkpoint` meta skill writes a one-line progress summary into
 the active workflow's `latest_checkpoint` frontmatter field. The
-next session's SessionStart hook re-injects that summary so a
-resumed conversation knows where the previous session stopped —
+SessionStart hook re-injects that summary after compact — both hosts
+register it with `matcher: "compact"` — so a resumed conversation
+knows where the previous session stopped —
 useful for multi-day deliverables where `current_phase` and
 `next_action` alone undersell the context.
 

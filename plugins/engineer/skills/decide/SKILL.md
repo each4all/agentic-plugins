@@ -463,8 +463,10 @@ string and reading the resulting `ResolvedDecisionContext` before
 emitting the Brainstorm prompt — best-effort cross-host equivalence
 per ADR-0001 §5. Build that script path from the Codex install root
 documented in `../checkpoint/SKILL.md` § Claude/Codex command
-resolution: a Codex skill mention has no plugin-root variable in its
-environment, so `$CLAUDE_PLUGIN_ROOT` resolves empty there. What
+resolution, which records the default layout: a Codex skill mention has
+no plugin-root variable in its shell, so `$CLAUDE_PLUGIN_ROOT` resolves
+empty there and a non-default install root must be resolved from the
+running install. What
 ADR-0013 defers is the command file that would run this automatically,
 not the script's reachability. Absent that step, Codex falls back to free-form
 2-3 approaches (axis-awareness omitted), matching the §4.3

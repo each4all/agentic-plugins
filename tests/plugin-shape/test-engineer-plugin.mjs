@@ -1114,7 +1114,13 @@ describe('plugins/engineer — ADR-0029 §2 cross-verb multi-axis lens (PR-C)', 
       // Semantic predicates applied PER MIRROR, not only to the contract:
       // five copies drifting together must not pass on equality alone.
       ok(/plugin-root variable/.test(paragraph), `skills/${verb}/SKILL.md fallback must state the measured cause (no plugin-root variable in a Codex skill mention), not a mode that does not exist`);
-      ok(/hook-command-only/.test(paragraph), `skills/${verb}/SKILL.md fallback must scope the absence to the skill-mention shell — hook commands DO receive \${PLUGIN_ROOT}, so an unscoped claim would be a new falsehood`);
+      ok(/skill mention's shell/.test(paragraph), `skills/${verb}/SKILL.md fallback must scope the absence to the skill-mention SHELL — hook commands do receive the substituted names, so an unscoped claim would be a new falsehood`);
+      ok(!/hook-command-only/.test(paragraph), `skills/${verb}/SKILL.md fallback must not reassert "hook-command-only" — that is a global negative about Codex substitution that was never measured`);
+      strictEqual(
+        flat.split(START).length - 1,
+        1,
+        `skills/${verb}/SKILL.md must state the fallback exactly once — a second copy would sit outside the compared extraction and drift unnoticed`,
+      );
       ok(/checkpoint\/SKILL\.md/.test(paragraph), `skills/${verb}/SKILL.md fallback must point at the documented Codex install root so the fallback narrows to "path cannot be built"`);
       paragraphs.push(paragraph);
     }
@@ -1162,10 +1168,18 @@ describe('plugins/engineer — ADR-0029 §2 cross-verb multi-axis lens (PR-C)', 
     const start = text.indexOf(BULLET);
     ok(start !== -1, `entry-routing-contract.md must keep the "${BULLET}" bullet`);
     const rest = text.slice(start + BULLET.length);
-    const next = rest.search(/\n- \*\*/);
+    // Stop at ANY sibling list item, not only a bold one: if the next bullet
+    // stops being bold, a region-bleeding extraction could satisfy these
+    // assertions from unrelated later content (peer review SUGGESTION).
+    const next = rest.search(/\n- /);
     const bullet = squash(next === -1 ? rest : rest.slice(0, next));
     ok(/Codex\s+skill mention/.test(bullet), 'the bullet must scope the absence to a Codex SKILL MENTION (hook commands do receive ${PLUGIN_ROOT})');
-    ok(/hook-command-only/.test(bullet), 'the bullet must say ${PLUGIN_ROOT} substitution is hook-command-only, so the claim cannot be read as "Codex has no plugin root"');
+    ok(/skill mention's shell/.test(bullet), "the bullet must scope the absence to a skill mention's SHELL, so it cannot be read as \"Codex has no plugin root\" — hook commands do receive the substituted names");
+    ok(
+      /not\s+a claim about every place/.test(bullet),
+      'the bullet must state the limit of its own evidence — the shell observation is not a global claim about Codex substitution',
+    );
+    ok(!/hook-command-only/.test(bullet), 'the bullet must not reassert the unmeasured global negative');
     ok(/all empty/.test(bullet), 'the bullet must state the measured observation (the plugin-root variables read empty), not a vague unreachability');
     ok(/checkpoint\/SKILL\.md/.test(bullet), 'the bullet must point at the documented Codex install root as the recovery path');
     ok(/ADR-0013/.test(bullet), 'the bullet must keep ADR-0013 scoped to the missing command file rather than to script reachability');
@@ -1188,13 +1202,26 @@ describe('plugins/engineer — ADR-0029 §2 cross-verb multi-axis lens (PR-C)', 
         `${label} SessionStart must stay matcher:"compact" — the prose guards below describe post-compact re-injection, and a matcher change would make that prose wrong`,
       );
     }
-    for (const rel of [
+    // commands/checkpoint.md was MISSED by the first pass of this change and
+    // kept its own copy of the corrected paragraph, including the
+    // `claude --continue` claim. A negative-only guard over a hand-listed
+    // subset is how that survived; the positive assertion below is what makes
+    // deleting the corrected wording fail too.
+    const CHECKPOINT_SURFACES = [
       'skills/checkpoint/SKILL.md',
+      'commands/checkpoint.md',
       'skills/resume/SKILL.md',
       'README.md',
       'skills/checkpoint/agents/openai.yaml',
-    ]) {
+    ];
+    let compactStatements = 0;
+    for (const rel of CHECKPOINT_SURFACES) {
       const text = squash(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      if (/post-compact|matcher: "compact"|after compact/.test(text)) compactStatements += 1;
+      ok(
+        !/claude --continue\)? re-inject|after `\/compact` or `claude --continue`/i.test(text),
+        `${rel} must not promise re-injection on claude --continue — that SessionStart source is not selected by the compact matcher`,
+      );
       ok(
         !/the Codex session itself does not re-inject/i.test(text),
         `${rel} must not claim the Codex session cannot re-inject — bundled hooks re-inject post-compact once /hooks-trusted (ADR-0030)`,
@@ -1208,6 +1235,27 @@ describe('plugins/engineer — ADR-0029 §2 cross-verb multi-axis lens (PR-C)', 
         `${rel} must not promise re-injection in "the next Claude session" — the hook is post-compact-scoped on both hosts`,
       );
     }
+    // The packaged interface metadata carries the claim TWICE and Codex shows
+    // both fields to users, so a per-file "at least one" check passes when one
+    // of the two is reverted (observed: mutation M7 survived that shape).
+    // Assert per FIELD here rather than per file.
+    const yamlText = await readFile(resolve(PLUGIN_ROOT, 'skills/checkpoint/agents/openai.yaml'), 'utf8');
+    for (const field of ['short_description', 'default_prompt']) {
+      const line = yamlText.split('\n').find((l) => l.trimStart().startsWith(`${field}:`));
+      ok(line, `checkpoint agents/openai.yaml must define ${field}`);
+      ok(
+        /post-compact|after compact/.test(line),
+        `checkpoint agents/openai.yaml ${field} must carry the post-compact scope — Codex renders this metadata directly, and a per-file check would let one of the two fields revert unnoticed`,
+      );
+    }
+
+    // Positive counterpart: a guard that only forbids phrases would also pass
+    // if every corrected statement were deleted outright.
+    strictEqual(
+      compactStatements,
+      CHECKPOINT_SURFACES.length,
+      `every checkpoint surface must positively state the post-compact scope (${compactStatements}/${CHECKPOINT_SURFACES.length} do) — deleting the corrected wording must fail, not pass`,
+    );
   });
 
   it('decide is exempt from §2 wiring because it already resolves the registry natively (Phase 0.5)', async () => {
