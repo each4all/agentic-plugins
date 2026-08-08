@@ -1,0 +1,201 @@
+{
+ "schema": "evidence-record-1.0",
+ "record_id": "egress-durability-and-adr0013-verdict",
+ "evidence_loop": {
+  "label": "egress durability and the ADR-0013 verdict",
+  "summary": "The tail of the egress-intent work plus the question that closed the macro carrying it. Durability first: the egress intent WAL was rewritten append-only with displaced-lock exclusion, path comparison was moved from spelling to dev/ino identity after a Linux CI failure showed inode reuse defeating the previous check on a filesystem macOS never exercised, and a read-only cross-checkout discovery command was added because a same-checkout scan cannot see legacy intents in other checkouts, so an upgrade resuming the machine-global run from elsewhere could still resend. Then the verdict: GitHub issue #89 holds ADR-0013 Reserved pending a Codex plugin-command registration surface, and a live re-observation found none. The assessment's value is not the verdict, which was expected, but the three near-misses it records as refuted so the next re-evaluation does not re-derive them."
+ },
+ "package_releases": [
+  {
+   "package": "plugins/runtime",
+   "version": "0.89.0",
+   "tag": "plugin-runtime-v0.89.0",
+   "release_pr": 672,
+   "squash": "0d27a80e9cb930a9d365dfffd2aefc985499d618",
+   "marketplace_sync": "2f9b65d0f50933a2d90a09bfc1c979c95312b748"
+  },
+  {
+   "package": "plugins/engineer",
+   "version": "0.21.2",
+   "tag": "plugin-engineer-v0.21.2",
+   "release_pr": 672,
+   "squash": "0d27a80e9cb930a9d365dfffd2aefc985499d618",
+   "marketplace_sync": "2f9b65d0f50933a2d90a09bfc1c979c95312b748"
+  }
+ ],
+ "feature_commits": [
+  {
+   "sha": "c32d76b3c8ed8aefaecd0a625863c18c38729491",
+   "pr": 675,
+   "note": "Read-only machine-scoped discovery of legacy egress-intent locations. The contract is quiesce, check the phone, then remove only the reviewed records: a pre-upgrade pending record may carry no pid, and missing identity reads as unknown-not-dead. A full-depth HOME walk was measured and rejected."
+  },
+  {
+   "sha": "3694a9f9a6125dfd0f748dcbe5e57fee2455a9c0",
+   "pr_attested": 673,
+   "note": "Append-only egress WAL with displaced-lock exclusion. The squash subject carries no PR number, so this attributes it by attestation rather than derivation."
+  }
+ ],
+ "hardening_commits": [
+  {
+   "sha": "7fae56fc22687bb8a94cdc4021f2956f2b776e56",
+   "pr": 674,
+   "note": "Compares WAL paths by dev/ino identity instead of spelling. Local macOS stayed green because inode reuse is slow there; Linux CI reused an inode and let a live lock be deleted, producing two holders. The regression test forces the condition with a hardlink so it is deterministic on every filesystem."
+  },
+  {
+   "sha": "106a7bf88a584d00ce9e7fcbbba267de74e951da",
+   "pr": 671,
+   "note": "Brings packaged skill descriptions under the Codex cap and gates the rule set so the truncation cannot silently return."
+  },
+  {
+   "sha": "7ca095187f891e5a1a8430caff0c7a3f9fc48132",
+   "pr": 676,
+   "note": "Records the dated ADR-0013 assessment in the host baseline, not just the issue thread. NOT FIRED on Codex 0.145.0, carried by the manifest field guide the binary ships rather than by absence from codex plugin --help. Three near-misses are written down as refuted."
+  }
+ ],
+ "proofs": [
+  {
+   "run_id": "doctor-20260808T063339Z-74647d",
+   "date": "2026-08-08",
+   "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+   "artifact_sha256": "sha256:5e748ce8def6426d0b0003b1ad50f98076baacaafd56025dde2d137864765e47",
+   "runtime_version": "0.89.0",
+   "installed": {
+    "claude": "0.89.0",
+    "codex": "0.89.0"
+   },
+   "host_cli": {
+    "claude": "2.1.226 (Claude Code)",
+    "codex": "codex-cli 0.147.0"
+   },
+   "readings": [
+    {
+     "key": "overall",
+     "value": "warning; zero hard failures; engineer peer-run ledger needs attention"
+    },
+    {
+     "key": "permission_proof",
+     "value": "passed; executed in both directions"
+    },
+    {
+     "key": "deep_peer_smoke",
+     "value": "passed; executed in both directions"
+    },
+    {
+     "key": "workflow_continuation_proof",
+     "value": "passed; executed in both directions"
+    },
+    {
+     "key": "experience_parity",
+     "value": "blocked 78%; satisfied 5, partial 2, not_verified 0, blocked 1 (workflow_continuity_storage)"
+    },
+    {
+     "key": "host_parity_baseline",
+     "value": "stale; both hosts had moved past the 2026-07-25 baseline"
+    },
+    {
+     "key": "blockers_found",
+     "value": "engineer peer-run ledger blocked by a five-day-old non-terminal plan-verify handle; Codex hook attestation version-stale after codex 0.145.0 to 0.147.0 and engineer 0.21.1 to 0.21.2"
+    }
+   ]
+  },
+  {
+   "run_id": "doctor-20260808T065825Z-2dfe23",
+   "date": "2026-08-08",
+   "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+   "artifact_sha256": "sha256:5c85111dfffcd92d63e195833272821e53d6e8abf06e68b493d54d7589af6d34",
+   "runtime_version": "0.89.0",
+   "installed": {
+    "claude": "0.89.0",
+    "codex": "0.89.0"
+   },
+   "host_cli": {
+    "claude": "2.1.226 (Claude Code)",
+    "codex": "codex-cli 0.147.0"
+   },
+   "readings": [
+    {
+     "key": "overall",
+     "value": "warning; latest compatibility check requires release notes"
+    },
+    {
+     "key": "experience_parity",
+     "value": "blocked 87%; satisfied 7, partial 0, not_verified 0, blocked 1 (runtime_handoff_artifacts)"
+    },
+    {
+     "key": "host_parity_baseline",
+     "value": "current; the in-repo baseline refresh landed before this run"
+    },
+    {
+     "key": "ledgers",
+     "value": "engineer peer-runs available, storage canonical; the stale handle was reconciled to orphaned with all 106 run artifacts retained"
+    },
+    {
+     "key": "post_attestation",
+     "value": "taken after settings-20260808T065145Z-c8409f attested designer 0.3.1, engineer 0.21.2, founder 0.4.1, orchestrator 0.13.1 against codex 0.147.0"
+    },
+    {
+     "key": "self_inflicted_block",
+     "value": "the one remaining block came from an extra verification-only compat snapshot that became the latest run without ingested release notes; not a product defect"
+    }
+   ]
+  },
+  {
+   "run_id": "doctor-20260808T070055Z-fa01c6",
+   "date": "2026-08-08",
+   "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+   "artifact_sha256": "sha256:2f3ff4c1e84ffca2a7197ec9204d6989fc134b13eac07acd9fbdf506edabef18",
+   "runtime_version": "0.89.0",
+   "installed": {
+    "claude": "0.89.0",
+    "codex": "0.89.0"
+   },
+   "host_cli": {
+    "claude": "2.1.226 (Claude Code)",
+    "codex": "codex-cli 0.147.0"
+   },
+   "readings": [
+    {
+     "key": "overall",
+     "value": "warning; zero hard failures; latest compatibility check needs follow-up"
+    },
+    {
+     "key": "permission_proof",
+     "value": "passed; executed in both directions"
+    },
+    {
+     "key": "deep_peer_smoke",
+     "value": "passed; executed in both directions"
+    },
+    {
+     "key": "workflow_continuation_proof",
+     "value": "passed; executed in both directions"
+    },
+    {
+     "key": "host_parity",
+     "value": "pass; zero issues"
+    },
+    {
+     "key": "host_parity_baseline",
+     "value": "current"
+    },
+    {
+     "key": "experience_parity",
+     "value": "partial 95%; satisfied 7, partial 1, not_verified 0, blocked 0"
+    },
+    {
+     "key": "why_not_100",
+     "value": "runtime_handoff_artifacts stays partial because runtime:compat resolves the host baseline from the installed plugin root while runtime:doctor resolves it from the repo, so an in-repo refresh cannot clear compat drift until the next release. Structural, not a regression."
+    }
+   ]
+  }
+ ],
+ "install_method": "Owner-driven host-native update of both CLIs and the plugin bundle before any proof ran: Claude Code 2.1.226, Codex CLI 0.147.0, all eight packages on both hosts. Installed state rests on the doctor read and codex plugin list --json alone -- no --execute-plugin-management artifact. The Codex /hooks review was an operator action recorded as settings-20260808T065145Z-c8409f.",
+ "narrative": "Three doctor runs, not one, and the record keeps all three because the middle two say something the last one cannot. The first found two things a version bump had quietly staled: a five-day-old non-terminal peer-run handle blocking the engineer ledger, and a hook attestation invalidated by both the host and a hook-bearing plugin moving. Neither was a defect in the release; both were freshness debt that only a real proof surfaces. Reconciling the handle deliberately used a retention-disabled sweep so the 63 TTL-eligible prunes the default sweep planned did not execute -- artifact deletion is citation-sensitive and was not what this loop asked for. The second run then blocked on something self-inflicted: an extra compat snapshot taken to verify the baseline refresh became the latest run without release notes. Recording that rather than quietly re-running is the point of the store. The final run reads partial 95% and is written down as partial. Rounding it to the preceding 100% would have been the easy lie: the gap is that runtime:compat reads the host baseline from the installed plugin root while runtime:doctor reads it from the repo, so no in-repo edit can close compat's drift before the next release. That asymmetry is now a named observation rather than a number nobody could explain. The ADR-0013 verdict survived a same-day re-check on Codex 0.147.0, but the re-check widened its evidence: 0.146.0 and 0.147.0 added Agent Plugins manifest ingestion, a triple manifest candidate list spanning .codex-plugin, .claude-plugin and .cursor-plugin, and an undocumented command_migration path that can render a Claude-shaped commands directory into skills. The verdict holds for two measured reasons rather than one absence -- the path appears in neither the Agent Plugins standard nor the official plugin docs, so targeting it is the host-specific guesswork issue #89 excludes, and no migrated artifact materializes for our plugins because their .codex-plugin manifest wins the candidate list. The same change threatened the ADR-0040 section 3 invariant that attention presents zero Codex hook surface; the proof shows attention absent from the bundled set, so the invariant holds.",
+ "relations": [
+  {
+   "type": "follows",
+   "record_id": "presentation-and-persistence",
+   "note": "The immediately preceding release loop, and the one whose proof this record's proof supersedes in the stage docs."
+  }
+ ]
+}

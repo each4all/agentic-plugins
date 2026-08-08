@@ -1,6 +1,6 @@
 # Codex Capability Baseline
 
-Observed on 2026-07-22 with Codex CLI `0.145.0` plus official OpenAI
+Observed on 2026-08-08 with Codex CLI `0.147.0` plus official OpenAI
 developer docs. This file is a runtime-owned host-truth checkpoint, not a
 replacement for the upstream docs.
 
@@ -29,18 +29,33 @@ Official OpenAI developer docs:
 functional. A coordinated URL migration across both baseline docs and their
 test tokens is deliberately deferred to a follow-up.)
 
-Local CLI evidence (re-observed 2026-07-22 on `0.145.0`): the
-`0.144.6`→`0.145.0` bump is a minor release — multi-agent V2 stabilized,
-`/import` expanded to migrate Cursor/Claude Code settings/plugins/sessions,
-experimental Amazon Bedrock login with a GPT-5.6 Sol default, audio inputs
-and realtime V3, and a GPT-5.4→GPT-5.6 Terra/Luna migration, plus a Windows
-"correctly quoted hook commands" fix — but the plugin and hook surfaces are
-unchanged: every listed surface was re-run live with verb sets unchanged,
-and the only `codex features list` stage changes are `multi_agent_v2`
-under-development→stable (opt-in, `enabled=false`) and `enable_fanout`
-under-development→removed, neither touching the plugin/hook contract.
+Local CLI evidence (re-observed 2026-08-08 on `0.147.0`): the
+`0.145.0`→`0.147.0` span is the first Codex interval since this file began
+that touches the plugin surface substantively. Every listed surface was
+re-run live and **every verb set is unchanged**, including
+`codex plugin`/`codex plugin marketplace` and the `codex plugin list --json`
+root/entry fields; `codex features list` keeps `plugin_hooks` `removed` and
+generic `hooks` `stable`, adding one `recommended_plugins` `stable`/false row.
+What did change sits below the CLI surface. `0.146.0` added Agent Plugins
+manifest support, workspace plugin publishing, and additional plugin
+marketplaces; `0.147.0` added portable Agent Plugin install with catalog
+search across local/personal/workspace/remote sources, hardened plugin
+isolation, and **removed the deprecated `codex exec --full-auto`** in favor
+of `--sandbox workspace-write`. That removal is the one item with breakage
+potential for this project and it does not apply: no agentic-plugins caller
+used the flag (`codex-companion.mjs` builds
+`exec --skip-git-repo-check --ephemeral`), and the live deep-peer smoke on
+`0.147.0` passed in both directions. The manifest candidate list is now the
+triple `.codex-plugin/plugin.json` / `.claude-plugin/plugin.json` /
+`.cursor-plugin/plugin.json`, with `.claude-plugin/marketplace.json` and
+`.cursor-plugin/marketplace.json` joining `.agents/plugins/marketplace.json`
+as catalog candidates; the `.codex-plugin` manifest still wins for plugins
+that ship one, which is why our plugins load exactly as before. See the
+ADR-0013 Trigger Watch amendment in `host-parity-baseline.md` for the
+measured consequences, including the undocumented `command_migration` path
+this interval introduces.
 
-- `codex --version` -> `codex-cli 0.145.0`
+- `codex --version` -> `codex-cli 0.147.0`
 - `codex --help` (0.144.1 top-level surface: `exec`, `review`, `login`/`logout`,
   `mcp`, `plugin`, `mcp-server`, `app-server`, `remote-control`, `app`,
   `completion`, `update`, `doctor`, `sandbox`, `debug`, `apply`, `resume`,
