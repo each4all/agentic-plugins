@@ -4,6 +4,10 @@
 
 Accepted (shipped 2026-05-12 — [#77](https://github.com/each4all/agentic-plugins/pull/77) `c4dd712`)
 
+> Amended 2026-08-08 — see [Amendments](#amendments). The host-availability
+> statements about SessionStart re-injection no longer describe either host.
+> Body text is preserved; each affected sentence carries an inline pointer.
+
 ## Context
 
 [ADR-0021](0021-codex-command-surface-parity-via-skill-wrappers.md)
@@ -78,6 +82,8 @@ explicitly carries this deferral:
    does not exist; `state.mjs` writes hardcode `--host claude` in
    current command bash. A skill mirror that pretends Codex has full
    parity is worse than no mirror — it would surface false promises.
+   *(amended 2026-08-08 — see [Amendments](#amendments); Codex gained
+   its own SessionStart hooks three days after this was written.)*
 
 ## Decision
 
@@ -138,7 +144,7 @@ The Stage 2.5+ host-availability shape:
 | Meta operation | Claude | Codex |
 |----------------|--------|-------|
 | `resume` | Full drift report + `host_history` append (`--host claude`) + `archive` | Full drift report + `host_history` append (`--host codex`) + `archive`. Filesystem state is host-shared; cross-host inspection is the canonical Codex use case |
-| `checkpoint` | Full write + SessionStart re-injection in next Claude session | Write only (`--host codex`). Codex does not have a SessionStart hook today; the next *Claude* session re-injects the summary (cross-host Codex→Claude handoff) |
+| `checkpoint` *(amended 2026-08-08 — this row describes neither host today; see [Amendments](#amendments))* | Full write + SessionStart re-injection in next Claude session | Write only (`--host codex`). Codex does not have a SessionStart hook today; the next *Claude* session re-injects the summary (cross-host Codex→Claude handoff) |
 | `peer-now` | `--peer codex` invokes `codex-companion.mjs` | `--peer claude` invokes `claude-companion.mjs`. Symmetric per `companions/contract.md` bidirectional design |
 
 Each SKILL.md SHOULD also include an explicit **Claude/Codex
@@ -268,6 +274,8 @@ or a clearer need.
     drift report is filesystem + git state, both host-agnostic.
   - `checkpoint`: Codex→Claude handoff path works today (Codex writes
     `latest_checkpoint`; next Claude SessionStart re-injects).
+    *(amended 2026-08-08 — the re-injection was already post-compact
+    when this was written; see [Amendments](#amendments))*
 - ADR-0013 has no trigger; waiting is indefinite.
 - Future meta-style commands would have no positive policy slot —
   every new one would re-trigger the same taxonomy debate.
@@ -319,3 +327,112 @@ checkpoint), judge each command on its own merits.
   the canonical meta-skill runbooks (this PR ships them).
 - `tests/plugin-shape/test-engineer-plugin.mjs` §`META_SKILLS`
   constant — test-side promotion of the meta-skill category.
+
+## Amendments
+
+### 2026-08-08 — SessionStart re-injection: what this ADR says about both hosts
+
+**Trigger**: three personas shipped the same false promise about when a
+checkpoint summary comes back, corrected in `595cba6` (engineer),
+`49a88d7` (founder) and `b4208c6` (designer) and guarded once in
+`16dcaa8`.
+
+This ADR is the **designated owner of the correction, not its origin** —
+a distinction worth stating because the first draft of this entry
+asserted the latter and was wrong. Engineer's "next session" wording
+arrived with `dabd898` (2026-05-07), five days *before* this ADR;
+founder and designer later copied engineer. What makes this the right
+owner is forward-looking rather than historical: §Decision 3's
+host-availability mandate is the rule a new persona cites, and the
+matrix below it is the reference a new persona reads. The fourth
+persona's author lands here, so this is where the correction has to be
+legible.
+
+**Finding — two claims, and they failed differently.** Collapsing them
+into one correction would hide the part that matters.
+
+*Claim A — "Codex SessionStart re-injection does not exist"* (§Decision
+3, and the `checkpoint` row's Codex cell). **True when written.** This
+ADR shipped 2026-05-12 (`c4dd712`); Codex-native lifecycle hooks landed
+three days later in `a881eb7` (engineer) and `53de0f1` (orchestrator),
+followed by `614bf15` (founder, 2026-06-13) and `1d38cbe` (designer,
+2026-07-08). Each registers SessionStart in
+`adapters/codex/hooks/hooks.json` — declared in the Codex manifest,
+where the Claude side instead relies on default `hooks/hooks.json`
+discovery, so "the manifest registers it" is true of only one host.
+Codex re-injection is **conditional, not absent**, and the condition is
+stage-dependent per
+[ADR-0030](0030-codex-plugin-hooks-removal-stage-aware-migration.md):
+on Codex ≳ 0.134 it needs generic `[features].hooks` (default on) **plus**
+the plugin bundled and enabled, **plus** manifest exposure, **plus**
+operator `/hooks` review/trust; on 0.130–0.133 it additionally needs
+`[features].plugin_hooks`. Summarizing that as "hooks on and trusted"
+understates it.
+
+*Claim B — "re-injection in next Claude session"* (the `checkpoint`
+row's Claude cell, and the §Alternatives Considered bullet). **Never
+true of checkpoint re-injection.** Two commits prove that jointly and
+neither proves it alone — citing only the first was an error in this
+entry's first draft. `af12326` (2026-05-06) registered the Claude
+SessionStart hook with `matcher: "compact"`, the matcher it has carried
+ever since; `dabd898` (2026-05-07) was the first to emit
+`latest_checkpoint` from that hook. The checkpoint summary therefore
+came back post-compact from the day it came back at all — five days
+before this ADR described it otherwise. Re-injection is **post-compact
+only**: not an arbitrary new session, and not `claude --continue`, whose
+SessionStart source the matcher does not select.
+
+The distinction is the finding. Claim A went stale and wants a refresh
+cadence; claim B was wrong on the day it was typed, against code that
+was already in the tree, and wants an authoring check. A single
+"outdated, now corrected" note would have asserted the gentler of the
+two about both.
+
+**Scope — this does not say "Codex has SessionStart" as a blanket.** The
+correction covers the persona and orchestrator *checkpoint* hooks only.
+`plugins/attention`'s SessionStart entry sensor (matcher `"startup"`,
+[ADR-0045](0045-entry-time-proposal-surfaces.md)) is Claude-only by
+design: its Codex manifest declares no hooks at all
+([ADR-0040](0040-operator-observability.md) §3 as amended).
+An amendment that over-corrected into a repo-wide claim would install
+the mirror-image error.
+
+**What is unchanged**: the meta-skill category itself (§Decision 1–2),
+the `META_SKILLS` constant, and — importantly — the §Decision 3
+**mandate** that each meta `SKILL.md` carry a Host availability matrix.
+The mandate was right; its example was what rotted. That is the
+mandate's own argument working as intended, one layer up.
+
+**Body text is preserved** per the ADR-as-record rule. Each affected
+sentence carries an inline `*(amended 2026-08-08 …)*` pointer to this
+entry rather than being rewritten, so the decision history stays
+readable as what was known on 2026-05-12.
+
+**Cascade**: [ADR-0010](0010-plugin-boundary-policy.md) §Amendments
+(2026-08-08) for the §3 cascade text that quotes this ADR's example;
+[ADR-0011](0011-workflow-continuity-storage.md) §Status for **both** its
+§4 hook-contract table and its §5 sentence;
+[`docs/DEVELOPMENT.md`](../DEVELOPMENT.md) §Stage 2 for the four-hook
+continuity bullet, which restates that §4 table (same commit,
+`a3afba3` — neither is the other's source);
+[ADR-0012](0012-omcc-removal-preconditions.md) §60 and
+[ADR-0017](0017-stage25-continuity-and-schema-roadmap.md) §119, both
+found only after the peer review below.
+
+**One of the two claim shapes cannot be pattern-matched, and the guard
+says so rather than implying coverage it does not have.** ADR-0011 §4
+asserts the Codex gap by *omission* — its Codex column holds a single
+`Stop` row — so every word in that table is true and the table as a
+whole is not. A phrase scan cannot see a missing row. This site was
+found by reading the section whose title made it the likeliest home for
+a host-asymmetry claim, after a whitespace-normalized scan over the
+whole repo had already reported itself complete. Treat the guard as
+catching restatements, not as proof that none remain.
+
+**Guard**: `tests/plugin-shape/test-checkpoint-reinjection-contract.mjs`
+extends to `docs/`. It does **not** forbid these phrases there — the
+persona-side guard forbids them, but forbidding them in an ADR would
+require deleting the record this entry exists to preserve. The docs-side
+check is a *pairing* check: an occurrence is allowed only when its own
+block carries the amendment pointer, so a new unmarked occurrence fails
+while the marked history passes.

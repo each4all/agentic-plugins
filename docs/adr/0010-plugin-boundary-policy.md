@@ -4,7 +4,7 @@
 
 Accepted
 
-> Last amended 2026-07-09 — see [Amendments](#amendments). 2026-05-06
+> Last amended 2026-08-08 — see [Amendments](#amendments). 2026-05-06
 > recorded the ADR-0015 cascade (`plugins/research` retirement);
 > 2026-05-11 recorded the ADR-0020 cascade (lifecycle macro command
 > boundary versus verb-level alias); 2026-05-12 first records the
@@ -13,8 +13,10 @@ Accepted
 > as the third sibling of verb and macro skills, closing ADR-0021 §6
 > and formalizing the `skills/<plugin>/` three-category split);
 > 2026-06-15 recorded the ADR-0036 cascade (`founder`, the second L3
-> persona); 2026-07-09 records the ADR-0042 cascade (`designer`, the
-> third L3 persona, and the deferred §1 L4 profile-list correction).
+> persona); 2026-07-09 recorded the ADR-0042 cascade (`designer`, the
+> third L3 persona, and the deferred §1 L4 profile-list correction);
+> 2026-08-08 records the correction of the ADR-0022 cascade's
+> host-availability *example* (the mandate is unchanged).
 
 ## Context
 
@@ -686,7 +688,9 @@ into `macro` erodes that definition. ADR-0022 ratifies a third
   (e.g., Codex has no SessionStart re-injection; `peer-now` is
   symmetric via bidirectional `companions/`). This honesty
   requirement is what distinguishes ADR-0022's `meta` from a
-  placeholder mirror.
+  placeholder mirror. *(The parenthetical example was amended
+  2026-08-08 — see [Amendments](#amendments); the mandate itself
+  stands.)*
 
 **Unchanged**: 4-layer composition (§1), 6 cognitive verbs (§2),
 verb-level sugar alias rules (§3), plugin-name level alias non-goal
@@ -787,3 +791,32 @@ plugin separation triggers (§6), plugin name policy (§7).
 
 **Verified-against**: ADR-0042 §Sub-decision 1/3/5/6/7 + §Non-Goals + the
 PR7 Accepted-flip evidence note.
+
+### 2026-08-08 — host-availability *example* correction (per ADR-0022 §Amendments)
+
+**Trigger**: the 2026-05-12 ADR-0022 cascade entry above illustrates the
+Host availability mandate with "Codex has no SessionStart re-injection".
+That example is amended here because it no longer describes either host.
+The full correction, its evidence, and the distinction between the two
+claims it collapses are recorded once in
+[ADR-0022 §Amendments](0022-engineer-meta-skill-category.md#amendments);
+this entry is a pointer, not a second copy.
+
+**In one line**: Codex-native SessionStart hooks landed on 2026-05-15
+(`a881eb7`, `53de0f1`), so Codex re-injection is conditional rather than
+absent; and the Claude hook has carried `matcher: "compact"` since it
+first shipped in `af12326` (2026-05-06), so once the checkpoint payload
+existed (`dabd898`, 2026-05-07) its re-injection was post-compact from
+the start — never "the next session".
+
+**What is unchanged — deliberately**: §3's requirement that every meta
+`SKILL.md` carry a Host availability matrix. The example rotted; the
+mandate is what caught it. Nothing in the ADR-0021 or ADR-0022 cascade
+tables above is rewritten, and the cascade entry's body text stands as
+the record of what was known on 2026-05-12.
+
+**Verified-against**: `plugins/{engineer,founder,designer,orchestrator}`
+Claude and Codex `hooks.json` (`matcher: "compact"` on both hosts);
+`plugins/attention/adapters/claude/hooks/hooks.json` (matcher
+`"startup"`, Claude-only by design — excluded from the correction's
+scope).

@@ -38,6 +38,30 @@ Accepted
 > coordinated commit (closed-schema constraint, same as ADR-0019
 > PR-A). §2 "File format" below is the storage shape this cascade
 > extends.
+>
+> **Amendment 2026-08-08 (SessionStart re-injection correction)**: two
+> places, not one. §4's hook-contract table and §5's sentence describing
+> the `SessionStart` hook are both wrong, and they are wrong in
+> different shapes: §5 states the claims, while §4 encodes one of them
+> as a **table omission** — its Codex column carries a single `Stop`
+> row, so no wording is false and the asymmetry is still asserted. The
+> four-hook list in [`docs/DEVELOPMENT.md`](../DEVELOPMENT.md) §Stage 2
+> restates that table; both landed in the same commit (`a3afba3`), so
+> neither is the other's source.
+> The hook is not Claude-only — Codex-native lifecycle hooks
+> landed 2026-05-15 (`a881eb7`, `53de0f1`), conditional on the plugin's
+> bundled hooks being enabled and `/hooks`-trusted per
+> [ADR-0030](0030-codex-plugin-hooks-removal-stage-aware-migration.md) — and it
+> does not read "at session start": every persona and orchestrator hook
+> configuration registers it with `matcher: "compact"` — the Codex
+> manifest declares the path, the Claude side is found by default
+> `hooks/hooks.json` discovery — so it fires **post-compact only**, on
+> both hosts. The full correction, including
+> why one claim went stale while the other was wrong when written, is
+> recorded once in
+> [ADR-0022 §Amendments](0022-engineer-meta-skill-category.md#amendments).
+> Body text below remains as written for historical record and carries
+> an inline pointer.
 
 ## Context
 
@@ -57,6 +81,10 @@ Code (PreCompact mid-session, Stop at session end) and Codex CLI
 [ADR-0001](0001-hexagonal-architecture.md) §"What is host-neutral
 vs host-specific" — the table row "Continuity mechanism | ADAPTER |
 PreCompact (Claude) vs Stop-based (Codex)").
+*(amended 2026-08-08 — the Codex half of this sentence, and the ADR-0001
+table row it cites, stopped being true at `a881eb7`: Codex registers
+`PreCompact`, `Stop` and `SessionStart`, the same three as Claude. See
+[Amendments](0022-engineer-meta-skill-category.md#amendments))*
 
 Phase 1 brainstorm exposed a tension. The user's stated value is
 "editing-tool-level ease of use" (omcc-dev's automatic continuity
@@ -322,13 +350,16 @@ ADR-0019 §6 for the concrete `runStopArchive` post-archive sequence.
 
 Both adapters install a single small hook that triggers automatic
 snapshot:
+*(amended 2026-08-08 — "a single small hook" describes neither adapter
+now; each installs `PreCompact`, `Stop` and `SessionStart`. See
+[Amendments](0022-engineer-meta-skill-category.md#amendments))*
 
 | Host | Hook event | What the hook writes |
 |------|-----------|------------------------|
 | Claude Code | `PreCompact` (mid-session, before context auto-compaction) | Update `last_snapshot` + `updated_at` + append `host_history` entry with `event: snapshot` |
 | Claude Code | `Stop` (session end) | Same as above with `event: snapshot` |
-| Claude Code | `SessionStart` (new session begins) | Read active workflow file, inject one-line summary into the session header (does not modify file) |
-| Codex CLI | `Stop` (session end) | Same shape: update `last_snapshot` + `updated_at` + append `host_history` entry |
+| Claude Code | `SessionStart` (new session begins) *(amended 2026-08-08 — the hook is registered `matcher: "compact"` and fires post-compact, never on an arbitrary new session; see [Amendments](0022-engineer-meta-skill-category.md#amendments))* | Read active workflow file, inject one-line summary into the session header (does not modify file) |
+| Codex CLI | `Stop` (session end) *(amended 2026-08-08 — this table's Codex column is no longer one row: Codex registers `PreCompact`, `Stop` and `SessionStart` too, from `a881eb7`; see [Amendments](0022-engineer-meta-skill-category.md#amendments))* | Same shape: update `last_snapshot` + `updated_at` + append `host_history` entry |
 
 Hook implementations live in
 `plugins/engineer/adapters/{claude,codex}/hooks/` and use the
@@ -373,6 +404,9 @@ The `SessionStart` hook (Claude only) reads the file at session
 start and surfaces a one-line summary in the session header so the
 user sees the active workflow immediately — Claude's primary
 "editing-tool-level ease" affordance.
+*(amended 2026-08-08 — both the "Claude only" and the "at session
+start" halves; see §Status and
+[ADR-0022 §Amendments](0022-engineer-meta-skill-category.md#amendments))*
 
 ### 6. Workflow archival — manual
 

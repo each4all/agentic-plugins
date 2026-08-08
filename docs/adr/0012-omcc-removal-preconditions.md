@@ -57,7 +57,10 @@ after a deliberate evaluation of all four conditions.
    creation/append/snapshot/read, lock ownership protocol (atomic
    rename-based stale reclaim, ownership-token verify on atomic write),
    secret scrubbing, frontmatter validation (schema closed), continuity
-   hooks (Claude PreCompact + Stop + SessionStart, Codex Stop helper),
+   hooks (Claude PreCompact + Stop + SessionStart, Codex Stop helper)
+   *(amended 2026-08-08 — the Codex side is no longer a lone Stop
+   helper; it registers the same three hooks since `a881eb7`. See
+   [ADR-0022 §Amendments](0022-engineer-meta-skill-category.md#amendments))*,
    ensemble dispatch (always-max bidirectional). Stage 2 exit
    establishes this *partially*; sustained dogfood across Stage 3 work
    completes it.

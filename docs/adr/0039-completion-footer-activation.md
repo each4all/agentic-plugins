@@ -214,7 +214,16 @@ of an already-code-spoken path, but founder has **no**
 no Stop-hook emit, no SessionStart re-injection, no shared runbook; the
 runtime seam does not model it (`VALID_WORKFLOW_KINDS = {engineer,
 orchestrator}`, `context.mjs:19`); and `footer-contract.md:3` scopes the
-footer to engineer + orchestrator. Founder would be a *greenfield
+footer to engineer + orchestrator.
+*(amended 2026-08-08, see
+[ADR-0022 §Amendments](0022-engineer-meta-skill-category.md#amendments)
+— read "no SessionStart re-injection **of the handoff**". Founder's
+SessionStart hook already re-injected `latest_checkpoint` when this was
+written; what it lacked was the pending-handoff backstop, added during
+the [ADR-0043](0043-founder-designer-footer-enablement.md) work, which
+also resolved the deferral this list justifies. Every other item here is
+about the footer/handoff wiring too, but unqualified the phrase reads as
+a claim about SessionStart itself.)* Founder would be a *greenfield
 persona-onboarding* effort of a different essence and a different
 root problem, not a dead-code revival. **Founder onboarding recipe (for a
 future ADR/PR):** build `emitTerminalHandoffSidecar` + the projection
