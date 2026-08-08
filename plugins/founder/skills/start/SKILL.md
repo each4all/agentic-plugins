@@ -51,7 +51,7 @@ sequences founder's own verbs in-place and never reads parent-linkage env.
 | Phase 0 bootstrap (find-active, clean-baseline gate, `state.mjs create`) | Native — `commands/start.md` carries the canonical bash | Equivalent inline sequence using the same host-agnostic `state.mjs` CLI; the Codex side runs this SKILL.md as a cognitive runbook (ADR-0021 boundary) |
 | Phase 1–4 verb sequencing + per-phase peer ensemble (always-max) | Yes | Yes — the verb skills' own ensemble protocol handles launch/collect; cognitive-runbook parity, not host-bootstrap parity |
 | Per-phase `state.mjs append --verb …` (phase-boundary state writes) | `--host claude` | `--host codex` — same on-disk schema; on Codex the writes happen via the host-agnostic CLI when invoked |
-| SessionStart re-injection of `[founder-active-metadata]` between sessions | Yes (next Claude session) | Yes when the founder plugin's hooks are enabled (`[features].hooks`, default on) and `/hooks`-reviewed/trusted; otherwise `$founder:resume` reads the durable workflow |
+| SessionStart re-injection of `[founder-active-metadata]` between sessions — both hosts register the hook with `matcher: "compact"`, so this is post-compact only | Yes — after compact | Yes when the founder plugin's hooks are enabled (`[features].hooks`, default on) and `/hooks`-reviewed/trusted; otherwise `$founder:resume` reads the durable workflow |
 
 The Codex parity is at the **cognitive-runbook** level (ADR-0021): a Codex
 user running `$founder:start` follows this runbook's phase sequence and
