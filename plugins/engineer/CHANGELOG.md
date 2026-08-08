@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.1...plugin-engineer-v0.21.2) (2026-08-08)
+
+
+### Bug Fixes
+
+* **plugin/runtime:** bring packaged skill descriptions under the Codex cap and gate the rule set ([#671](https://github.com/each4all/agentic-plugins/issues/671)) ([106a7bf](https://github.com/each4all/agentic-plugins/commit/106a7bf88a584d00ce9e7fcbbba267de74e951da))
+
 ## [0.21.1](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.0...plugin-engineer-v0.21.1) (2026-08-03)
 
 
