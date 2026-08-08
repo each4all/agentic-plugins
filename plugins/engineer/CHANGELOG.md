@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.3](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.2...plugin-engineer-v0.21.3) (2026-08-08)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** correct the Codex resolver reason and the checkpoint re-injection scope ([#678](https://github.com/each4all/agentic-plugins/issues/678)) ([595cba6](https://github.com/each4all/agentic-plugins/commit/595cba621c1b1534853137c13806066e1ebbd4af))
+
 ## [0.21.2](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.1...plugin-engineer-v0.21.2) (2026-08-08)
 
 

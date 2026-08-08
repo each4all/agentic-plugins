@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.1...plugin-designer-v0.3.2) (2026-08-08)
+
+
+### Bug Fixes
+
+* **plugin/designer:** scope checkpoint re-injection to post-compact on both hosts ([b4208c6](https://github.com/each4all/agentic-plugins/commit/b4208c6c56307f1bf01b0ecad9c8c018da74c83d))
+
 ## [0.3.1](https://github.com/each4all/agentic-plugins/compare/plugin-designer-v0.3.0...plugin-designer-v0.3.1) (2026-08-03)
 
 

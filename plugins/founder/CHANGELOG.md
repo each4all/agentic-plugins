@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.1...plugin-founder-v0.4.2) (2026-08-08)
+
+
+### Bug Fixes
+
+* **plugin/founder:** scope checkpoint re-injection to post-compact on both hosts ([49a88d7](https://github.com/each4all/agentic-plugins/commit/49a88d7b5cf471fb576e7f079e254dacf4afba7d))
+
 ## [0.4.1](https://github.com/each4all/agentic-plugins/compare/plugin-founder-v0.4.0...plugin-founder-v0.4.1) (2026-08-03)
 
 

@@ -1,6 +1,6 @@
 {
   "name": "designer",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Designer workbench for code-first design/UX decision & quality assurance across Claude Code & Codex CLI (ADR-0042). The third L3 persona after engineer and founder: the six universal cognitive verbs (investigate / frame / decide / compose / critique / refine) re-anchored to UX/UI/CTA/flow — pre-code design thinking (user flows, wireframe specs, CTA copy, information architecture) plus a post-code quality-critique loop that evaluates rendered screenshots + frontend code under usability / accessibility / conversion / consistency lenses, with accessibility a candidate-only veto gate. Workflow machinery, hooks, all six verb surfaces, the 7-axis design decision registry, the design-anchored ensemble protocol, the designer:start lifecycle macro, the resume / checkpoint / peer-now meta skills, and the L4 design profiles (general / flow / ui / cta / content) — all shipped (ADR-0042 Accepted). Composes the image L2 capability for generated imagery rather than re-implementing it (designer never calls an image generation API); Figma and external design tools are excluded in v1 (code-first scope).",
   "author": {
     "name": "each4all"
