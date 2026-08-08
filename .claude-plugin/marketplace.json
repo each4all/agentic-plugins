@@ -24,21 +24,21 @@
     {
       "name": "designer",
       "source": "./plugins/designer",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "description": "Designer workbench for code-first design/UX decision & quality assurance across Claude Code & Codex CLI (ADR-0042). The third L3 persona after engineer and founder — the six cognitive verbs re-anchored to UX/UI/CTA/flow, with pre-code design thinking (flows, wireframe specs, CTA copy, IA) and a post-code quality-critique loop over rendered screenshots + frontend code, accessibility the veto gate. All six verbs, the designer:start lifecycle macro, and the resume / checkpoint / peer-now meta skills ship (ADR-0042 Accepted). Composes the image L2 capability rather than re-implementing imagery; Figma excluded in v1.",
       "category": "Development"
     },
     {
       "name": "engineer",
       "source": "./plugins/engineer",
-      "version": "0.21.2",
+      "version": "0.21.3",
       "description": "Engineer workbench for AI-assisted engineering across Claude Code & Codex CLI — 6 cognitive verbs (investigate / frame / decide / compose / critique / refine), /engineer:start lifecycle macro, 3 workflow-continuity meta skills (resume / checkpoint / peer-now), and cited-brief research profile.",
       "category": "Development"
     },
     {
       "name": "founder",
       "source": "./plugins/founder",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "description": "Founder workbench for AI-assisted new-business planning across Claude Code & Codex CLI — business-item discovery, ideation, concretization, and planning composition through the six cognitive verbs (ADR-0036). The second L3 persona after engineer: workflow machinery, hooks, all six verb surfaces (investigate / frame / decide / compose / critique / refine), the business ensemble protocol, the founder:start lifecycle macro, and the resume / checkpoint / peer-now meta skills — all shipped (ADR-0036 Accepted).",
       "category": "Productivity"
     },
