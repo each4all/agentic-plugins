@@ -118,6 +118,10 @@ fires. This separation prevents Proposed-ADR drift.
   optional field in workflow frontmatter. Schema-1.0 readers tolerantly
   ignore the field (additive, non-breaking). SessionStart hook
   re-injects the summary on resume.
+  *(amended 2026-08-08 — not on resume: the hook is registered
+  `matcher: "compact"`, which does not select the `resume` SessionStart
+  source, so re-injection is post-compact only. See
+  [ADR-0022 §Amendments](0022-engineer-meta-skill-category.md#amendments))*
 - **Validation command**: `tests/engineer/test-checkpoint.mjs` covering
   set, read, and SessionStart re-injection of summary.
 - **Status**: **Implemented** (2026-05-07) — `commands/checkpoint.md`
