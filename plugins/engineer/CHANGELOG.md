@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.4](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.3...plugin-engineer-v0.21.4) (2026-08-08)
+
+
+### Bug Fixes
+
+* **plugin/engineer:** drop the future-session promise from the checkpoint description and correct the hook README ([a7ef410](https://github.com/each4all/agentic-plugins/commit/a7ef410016aab277bd70f1d8907fae3fb7d26a32))
+
 ## [0.21.3](https://github.com/each4all/agentic-plugins/compare/plugin-engineer-v0.21.2...plugin-engineer-v0.21.3) (2026-08-08)
 
 
