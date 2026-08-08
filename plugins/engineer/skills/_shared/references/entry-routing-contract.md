@@ -359,12 +359,21 @@ invocation:
   9-axis matrix to a trivial reversible step.
 - **The registry is the single axis source.** Read the axes from
   `decide-registry.mjs`; do not duplicate an axis list in the verb or
-  this contract. When the resolver CLI is not reachable — e.g. Codex
-  auto-activated skill mode, the registry-resolution asymmetry deferred
-  under ADR-0013 — keep the decisive axes 본질/근본 (essence/foundation,
-  universal to every preset) and read the `compact` preset's supporting
-  axes from the decision-sizing subsection above or `decision-axes.yml`
-  directly; the YAML stays the single source.
+  this contract. Resolving it on Codex takes one extra step: a Codex
+  skill mention runs with no plugin-root variable in its environment —
+  `${PLUGIN_ROOT}` substitution is hook-command-only, and an agent shell
+  reports `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA`, `PLUGIN_ROOT` and
+  `PLUGIN_DATA` all empty — so build the path from the Codex install root
+  documented in `../../checkpoint/SKILL.md` § Claude/Codex command
+  resolution rather than from `$CLAUDE_PLUGIN_ROOT`. Three rungs, in
+  order: the root resolves and the CLI runs (full fidelity); the root
+  resolves but the CLI does not run (read `decision-axes.yml` under that
+  same root); the root cannot be built at all (keep the decisive axes
+  본질/근본 — essence/foundation, universal to every preset — and take the
+  `compact` preset's supporting axes from the decision-sizing subsection
+  above, which is already loaded). The YAML stays the single source. What
+  ADR-0013 still owns is the missing Codex command file that would run
+  this resolution automatically — not the reachability of the script.
 - **Pointer-only in state.** Record the lens outcome as a compact
   decisive-axis verdict + pointers, never the full comparison dump
   (ADR-0024 boundary).

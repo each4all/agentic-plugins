@@ -242,14 +242,18 @@ is bounded: only at a genuine 2+-branch point (not every invocation),
 default `--size=minor` (compact 4-axis), never the full 9-axis matrix
 for a trivial reversible step.
 
-When the resolver CLI is not reachable — e.g. Codex auto-activated
-skill mode, the registry-resolution asymmetry deferred under ADR-0013 —
-keep the decisive axes 본질/근본 (essence/foundation, universal to every
-preset) and read the size-appropriate supporting axes for the `compact`
-preset directly from `../decide/references/decision-axes.yml` (the
-registry file is readable even when the resolver CLI is not). Do not
+On Codex the resolver takes one extra step: a skill mention runs with no
+plugin-root variable in its environment (`${PLUGIN_ROOT}` substitution is
+hook-command-only), so build the path from the Codex install root
+documented in `../checkpoint/SKILL.md` § Claude/Codex command resolution
+rather than from `$CLAUDE_PLUGIN_ROOT`. When the resolver CLI still does
+not run, keep the decisive axes 본질/근본 (essence/foundation, universal to
+every preset) and read the size-appropriate supporting axes for the
+`compact` preset directly from `../decide/references/decision-axes.yml`
+(the registry file is readable even when the resolver CLI is not). Do not
 hand-author a supporting-axis list here — the YAML stays the single
-source.
+source. ADR-0013 owns the missing Codex command file that would run this
+resolution automatically, not the reachability of the script.
 
 ---
 

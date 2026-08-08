@@ -34,7 +34,7 @@ workflow file from `workflows/` to `archive/` via
 | Drift report (clean/dirty classification + ADR-0018 §sub-3 four-probe enrichment) | Yes | Yes — `git` probes are host-agnostic |
 | `state.mjs append --event resumed` (host_history append) | `--host claude` | `--host codex` — distinguishes Claude vs Codex re-entry in `host_history` for post-mortem audit |
 | `state.mjs archive` (move file to `archive/`) | `--host claude` | `--host codex` — host-agnostic filesystem op |
-| SessionStart re-injection of `[engineer-active-metadata]` marker | Yes (next Claude session) | Yes once the bundled hooks load (generic `[features].hooks`) and pass `/hooks` trust; otherwise resume reads the same durable workflow file |
+| SessionStart re-injection of `[engineer-active-metadata]` marker — both hosts register the hook with `matcher: "compact"`, so this is post-compact only | Yes — after compact | Yes once the bundled hooks load (generic `[features].hooks`) and pass `/hooks` trust; otherwise resume reads the same durable workflow file |
 
 Cross-host inspection is the canonical Codex use case: a user who
 started a workflow on Claude can `$engineer:resume` on Codex to see

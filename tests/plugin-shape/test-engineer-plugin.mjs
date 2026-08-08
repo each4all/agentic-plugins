@@ -1062,6 +1062,154 @@ describe('plugins/engineer — ADR-0029 §2 cross-verb multi-axis lens (PR-C)', 
     }
   });
 
+  // ---------------------------------------------------------------------
+  // Codex path-resolution fallback — the reason, and the one-of-N guard.
+  //
+  // The §2 fallback used to blame "Codex auto-activated skill mode". That
+  // mode does not exist for these skills: all ten agents/openai.yaml files
+  // set policy.allow_implicit_invocation: false and the Codex binary parses
+  // the key. The measured cause is that a Codex skill mention has no
+  // plugin-root variable in its environment, so a $CLAUDE_PLUGIN_ROOT-based
+  // path resolves empty. Hook COMMANDS do receive ${PLUGIN_ROOT}, so the
+  // corrected wording is scoped to the skill-mention shell — an unscoped
+  // "Codex has no PLUGIN_ROOT" would be a fresh falsehood.
+  //
+  // Three ways the obvious guards pass vacuously, each closed below:
+  //   1. a raw substring scan misses copies that wrap mid-phrase (the five
+  //      SKILLs break between "auto-activated" and "skill mode"; the old
+  //      contract broke between "Codex" and "auto-activated"), so every
+  //      scan here normalizes whitespace first;
+  //   2. new Set(x).size === 1 is also true when every extraction is the
+  //      empty string, so extraction count and per-item content are
+  //      asserted BEFORE the equality;
+  //   3. a region-level PLUGIN_ROOT token proves nothing — the §2 region
+  //      already contains $CLAUDE_PLUGIN_ROOT in its resolver example — so
+  //      the positive assertion is bound to the single-axis-source bullet.
+  const squash = (s) => s.replace(/\s+/g, ' ');
+  const DEAD_REASON = /auto-activated\s+skill\s+mode/i;
+
+  it('the Codex fallback reason is stated once and identically across all five SKILL mirrors', async () => {
+    const START = 'On Codex the resolver takes one extra step';
+    const END = 'not the reachability of the script.';
+    const paragraphs = [];
+    for (const verb of NON_DECIDE) {
+      const raw = await readFile(resolve(PLUGIN_ROOT, 'skills', verb, 'SKILL.md'), 'utf8');
+      const flat = squash(raw);
+      const from = flat.indexOf(START);
+      ok(
+        from !== -1,
+        `skills/${verb}/SKILL.md must carry the Codex path-resolution fallback paragraph (starts "${START}") — a mirror that lost it would otherwise pass the equality check below by being excluded`,
+      );
+      const to = flat.indexOf(END, from);
+      ok(
+        to !== -1,
+        `skills/${verb}/SKILL.md fallback paragraph must run through "${END}" — a truncated copy must fail rather than compare equal on a shared prefix`,
+      );
+      const paragraph = flat.slice(from, to + END.length);
+      // Non-vacuity: an empty or content-free extraction must not be able to
+      // satisfy the size-1 equality below.
+      ok(paragraph.length > 200, `skills/${verb}/SKILL.md fallback paragraph is implausibly short (${paragraph.length} chars) — extraction likely broke`);
+      ok(/ADR-0013/.test(paragraph), `skills/${verb}/SKILL.md fallback paragraph must keep the ADR-0013 attribution (the absent Codex command file, not script reachability)`);
+      ok(/decision-axes\.yml/.test(paragraph), `skills/${verb}/SKILL.md fallback paragraph must keep decision-axes.yml as the axis source`);
+      // Semantic predicates applied PER MIRROR, not only to the contract:
+      // five copies drifting together must not pass on equality alone.
+      ok(/plugin-root variable/.test(paragraph), `skills/${verb}/SKILL.md fallback must state the measured cause (no plugin-root variable in a Codex skill mention), not a mode that does not exist`);
+      ok(/hook-command-only/.test(paragraph), `skills/${verb}/SKILL.md fallback must scope the absence to the skill-mention shell — hook commands DO receive \${PLUGIN_ROOT}, so an unscoped claim would be a new falsehood`);
+      ok(/checkpoint\/SKILL\.md/.test(paragraph), `skills/${verb}/SKILL.md fallback must point at the documented Codex install root so the fallback narrows to "path cannot be built"`);
+      paragraphs.push(paragraph);
+    }
+    strictEqual(
+      paragraphs.length,
+      NON_DECIDE.length,
+      'every non-decide verb SKILL must contribute exactly one fallback paragraph before the copies are compared',
+    );
+    strictEqual(
+      new Set(paragraphs).size,
+      1,
+      `the five SKILL fallback paragraphs must stay identical — updating one copy and not the others is the exact defect this guard exists to catch. Distinct values: ${new Set(paragraphs).size}`,
+    );
+  });
+
+  it('the retired auto-activated-mode reason survives nowhere in the engineer plugin', async () => {
+    const entries = await readdir(PLUGIN_ROOT, { recursive: true, withFileTypes: true });
+    const scanned = [];
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      if (!/\.(md|yaml|yml|json)$/.test(entry.name)) continue;
+      // CHANGELOG is release history — a past entry may legitimately quote
+      // the retired wording, and rewriting history is not this guard's job.
+      if (entry.name === 'CHANGELOG.md') continue;
+      const path = resolve(entry.parentPath ?? entry.path, entry.name);
+      const text = squash(await readFile(path, 'utf8'));
+      scanned.push(path);
+      ok(
+        !DEAD_REASON.test(text),
+        `${path} still blames the retired "auto-activated skill mode" for Codex registry-resolution. The measured cause is an unset plugin-root variable (ADR-0029 Amendment 2026-08-08).`,
+      );
+    }
+    ok(scanned.length > 20, `the stale-reason scan must actually reach the plugin's documents (scanned ${scanned.length})`);
+  });
+
+  it('the contract bullet — not merely the §2 region — carries the measured reason and the recovery path', async () => {
+    const text = await readFile(
+      resolve(PLUGIN_ROOT, 'skills/_shared/references/entry-routing-contract.md'),
+      'utf8',
+    );
+    // Bound to the single-axis-source BULLET. A region-scoped assertion would
+    // pass on the $CLAUDE_PLUGIN_ROOT already present in §2's resolver
+    // example, proving nothing about the corrected reason.
+    const BULLET = '- **The registry is the single axis source.**';
+    const start = text.indexOf(BULLET);
+    ok(start !== -1, `entry-routing-contract.md must keep the "${BULLET}" bullet`);
+    const rest = text.slice(start + BULLET.length);
+    const next = rest.search(/\n- \*\*/);
+    const bullet = squash(next === -1 ? rest : rest.slice(0, next));
+    ok(/Codex\s+skill mention/.test(bullet), 'the bullet must scope the absence to a Codex SKILL MENTION (hook commands do receive ${PLUGIN_ROOT})');
+    ok(/hook-command-only/.test(bullet), 'the bullet must say ${PLUGIN_ROOT} substitution is hook-command-only, so the claim cannot be read as "Codex has no plugin root"');
+    ok(/all empty/.test(bullet), 'the bullet must state the measured observation (the plugin-root variables read empty), not a vague unreachability');
+    ok(/checkpoint\/SKILL\.md/.test(bullet), 'the bullet must point at the documented Codex install root as the recovery path');
+    ok(/ADR-0013/.test(bullet), 'the bullet must keep ADR-0013 scoped to the missing command file rather than to script reachability');
+    ok(!DEAD_REASON.test(bullet), 'the bullet must not reintroduce the retired auto-activated-mode reason');
+  });
+
+  it('checkpoint re-injection is documented as post-compact on BOTH hosts, never as Claude-only', async () => {
+    // Both hosts register SessionStart with matcher "compact", so a claim that
+    // Codex cannot re-inject is false AND a claim that either host re-injects
+    // into an arbitrary new session is an overstatement. Read the matcher from
+    // the manifests so this guard tracks the hooks rather than restating them.
+    for (const [label, rel] of [
+      ['claude', 'hooks/hooks.json'],
+      ['codex', 'adapters/codex/hooks/hooks.json'],
+    ]) {
+      const hooks = JSON.parse(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      const sessionStart = hooks.hooks?.SessionStart ?? [];
+      ok(
+        sessionStart.length > 0 && sessionStart.every((row) => row.matcher === 'compact'),
+        `${label} SessionStart must stay matcher:"compact" — the prose guards below describe post-compact re-injection, and a matcher change would make that prose wrong`,
+      );
+    }
+    for (const rel of [
+      'skills/checkpoint/SKILL.md',
+      'skills/resume/SKILL.md',
+      'README.md',
+      'skills/checkpoint/agents/openai.yaml',
+    ]) {
+      const text = squash(await readFile(resolve(PLUGIN_ROOT, rel), 'utf8'));
+      ok(
+        !/the Codex session itself does not re-inject/i.test(text),
+        `${rel} must not claim the Codex session cannot re-inject — bundled hooks re-inject post-compact once /hooks-trusted (ADR-0030)`,
+      );
+      ok(
+        !/re-injection[^.]{0,80}is \*\*Claude-only\*\*/i.test(text),
+        `${rel} must not call SessionStart re-injection Claude-only — it runs on both hosts, post-compact`,
+      );
+      ok(
+        !/the next Claude session(?:'s)? .{0,40}re-inject/i.test(text) && !/Yes \(next Claude session\)/.test(text),
+        `${rel} must not promise re-injection in "the next Claude session" — the hook is post-compact-scoped on both hosts`,
+      );
+    }
+  });
+
   it('decide is exempt from §2 wiring because it already resolves the registry natively (Phase 0.5)', async () => {
     // The exemption must be a REAL native resolution, not a missing wire — so
     // assert decide still resolves the registry. If a future change drops

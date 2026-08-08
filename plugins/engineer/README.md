@@ -249,9 +249,10 @@ canonical Codex entry point.
 skills carry an explicit Host availability matrix in their
 SKILL.md describing which parts work on Claude vs Codex. The
 prominent asymmetry: SessionStart re-injection (which surfaces the
-`latest_checkpoint.summary` written by `$engineer:checkpoint`) is
-**Claude-only** today — a Codex session writes the checkpoint, but
-only the next Claude session re-injects it. peer-now is symmetric
+`latest_checkpoint.summary` written by `$engineer:checkpoint`) runs on
+both hosts but is **post-compact only** — both register the hook with
+`matcher: "compact"` — and on Codex it additionally requires the bundled
+hooks to be enabled and `/hooks`-trusted (ADR-0030). peer-now is symmetric
 (`companions/` ships bidirectional bridges). resume's drift report
 and archive subcommand are host-agnostic.
 
