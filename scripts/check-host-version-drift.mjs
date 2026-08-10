@@ -26,7 +26,7 @@ import https from 'node:https';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { extractBaselineVersions } from '../plugins/runtime/scripts/compat.mjs';
+import { extractBaselineVersions } from '../plugins/runtime/scripts/lib/host-parity-baseline.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');

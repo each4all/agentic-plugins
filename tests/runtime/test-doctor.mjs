@@ -3348,11 +3348,23 @@ describe('runtime doctor', () => {
     const runWith = async (baselineLine, probes = defaultProbes) => {
       const root = await mkdtemp(join(tmpdir(), 'runtime-doctor-baseline-'));
       await seedRepo(root);
+      // ADR-0051 — the fixture PACKAGE lives OUTSIDE the fixture repo, on
+      // purpose. A package root nested at `<repoRoot>/plugins/runtime` makes
+      // the packaged read and the retired repository read indistinguishable:
+      // cross-host review reverted doctor to `join(repoRoot, 'plugins',
+      // 'runtime')` and all 172 doctor tests still passed. Separating the two
+      // roots is what gives this suite the power to reject that revert.
+      const pkg = await mkdtemp(join(tmpdir(), 'runtime-doctor-baseline-pkg-'));
       if (baselineLine !== null) {
-        await mkdir(join(root, 'plugins', 'runtime', 'docs'), { recursive: true });
-        await writeFile(join(root, 'plugins', 'runtime', 'docs', 'host-parity-baseline.md'), baselineLine);
+        await mkdir(join(pkg, 'docs'), { recursive: true });
+        await writeFile(join(pkg, 'docs', 'host-parity-baseline.md'), baselineLine);
       }
-      return runDoctor({ repoRoot: root, homeDir: home, runner: fakeRunner(probes) });
+      return runDoctor({
+        repoRoot: root,
+        pluginRoot: pkg,
+        homeDir: home,
+        runner: fakeRunner(probes),
+      });
     };
     // current: baseline Observed versions match installed
     const current = await runWith('Observed on 2026-06-03 with Claude Code `2.1.161`, Codex CLI\n`0.136.0`, docs.\n');
@@ -3365,10 +3377,28 @@ describe('runtime doctor', () => {
     const stale = await runWith('Observed on 2026-05-16 with Claude Code `2.1.143`, Codex CLI\n`0.130.0`, docs.\n');
     strictEqual(stale.host_parity_baseline.status, 'stale');
     ok(stale.host_parity_baseline.next_action.includes('runtime:compat'));
+    // ADR-0051 — the remediation must address the operator running runtime in
+    // their OWN project too. Naming only this repository's path repeats, for
+    // `stale`, the defect that was fixed for `missing`.
+    ok(
+      stale.host_parity_baseline.next_action.includes('Update the runtime plugin'),
+      'the stale remediation must lead with the action a consumer can actually take',
+    );
     ok(formatText(stale).includes('baseline-freshness: stale'));
     // missing: no baseline.md (seedRepo does not create it)
     const missing = await runWith(null);
     strictEqual(missing.host_parity_baseline.status, 'missing');
+    ok(missing.host_parity_baseline.next_action.includes('Reinstall or repair'));
+    // unparseable: present but no canonical header. ADR-0051 §Decision 4 —
+    // with no fallback source this must be a VISIBLE failure, distinct from
+    // `missing` and never quietly resolved to `current`. A mutation flipping
+    // this branch to `current` survived the first version of this suite.
+    const malformed = await runWith('a baseline file with no canonical header\n');
+    strictEqual(malformed.host_parity_baseline.status, 'unparseable');
+    strictEqual(malformed.host_parity_baseline.evidence.baseline, null);
+    ok(malformed.host_parity_baseline.next_action.includes('Observed on'));
+    ok(malformed.host_parity_baseline.evidence.provenance.content_sha256, 'malformed bytes are still identified');
+    ok(formatText(malformed).includes('baseline-freshness: unparseable'));
     // unknown: version probe failed (claude --version omitted → ENOENT). A
     // matching baseline must NOT be misreported current when the probe failed
     // (version.text would otherwise carry stderr/error text).

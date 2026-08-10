@@ -442,6 +442,12 @@ readers.
   arbitrary working directory. `compat.mjs` reading
   `PLUGIN_ROOT/docs/host-parity-baseline.md` is the precedent;
   `cutover-audit.mjs` reading `repoRoot/docs/...` is the anti-pattern.
+  *(Amended 2026-08-10 by
+  [ADR-0051](0051-host-parity-baseline-source.md): for baseline-class
+  packaged assets this stops being an illustration and becomes the rule —
+  the packaged copy is the sole authority, changing it obliges a release,
+  and a reader records content-identifying provenance. CI scripts that are
+  not runtime commands keep reading the repository.)*
 
 This mirrors ADR-0039 + `footer-contract.md` and ADR-0035 +
 `settings-report-contract.md`. Field-level schema inside an immutable record

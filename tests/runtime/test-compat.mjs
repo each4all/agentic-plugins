@@ -305,9 +305,49 @@ describe('runtime compat', () => {
   });
 
   it('extracts baseline versions from host parity docs', () => {
-    const parsed = extractBaselineVersions('Observed with Claude Code `2.1.141`, Codex CLI\n`0.130.0`.');
+    const parsed = extractBaselineVersions('Observed on 2026-06-03 with Claude Code `2.1.141`, Codex CLI\n`0.130.0`.');
     strictEqual(parsed.claude.version, '2.1.141');
     strictEqual(parsed.codex.version, '0.130.0');
+  });
+
+  it('treats an unusable packaged baseline as terminal, not as a release-note gap', async () => {
+    // ADR-0051 §Decision 4 + review F3: folding a missing/malformed baseline
+    // into `no_baseline` produced `release_notes_required`, which told the
+    // operator to go fetch release notes — an action that cannot repair a
+    // broken package. Nothing was compared, so no drift verdict is honest.
+    const root = await mkdtemp(join(tmpdir(), 'runtime-compat-baseline-unusable-'));
+    await runCompat({
+      command: 'snapshot',
+      repoRoot: root,
+      runId: RUN_ID,
+      baseline: baseline(),
+      runner: fakeRunner({ claude: '2.1.141 (Claude Code)', codex: 'codex-cli 0.130.0' }),
+    });
+    for (const status of ['missing', 'unparseable']) {
+      const out = await runCompat({
+        command: 'check',
+        repoRoot: root,
+        runId: RUN_ID,
+        baseline: {
+          claude: { version: null },
+          codex: { version: null },
+          provenance: { source: 'package', path: '/nowhere/docs/host-parity-baseline.md', status },
+        },
+      });
+      strictEqual(out.status, 'baseline_unusable', `${status} must be terminal`);
+      strictEqual(out.release_notes_required, false, `${status} must not demand release notes`);
+      ok(out.drift_class.startsWith('baseline-'), `${status} must not be described as host drift`);
+      for (const gap of out.host_gaps) strictEqual(gap.status, `baseline_${status}`);
+    }
+  });
+
+  it('rejects a dateless version pair — a baseline that cannot be aged is not a baseline', () => {
+    // ADR-0051 §Decision 4: one canonical grammar. compat used to accept this
+    // form while doctor and dashboard required the dated header, so the same
+    // file could parse for one reader and not another.
+    const parsed = extractBaselineVersions('Observed with Claude Code `2.1.141`, Codex CLI\n`0.130.0`.');
+    strictEqual(parsed.claude.version, null);
+    strictEqual(parsed.codex.version, null);
   });
 
   it('emits the ADR-0047 standing notification watch on a no-drift plan run', async () => {

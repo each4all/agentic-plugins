@@ -14,6 +14,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_VERSION } from './version.mjs';
+import { resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { learnFromSources } from './lib/permission-usage-learner.mjs';
 import { getPromptCause } from './lib/permission-advisor-core.mjs';
@@ -106,6 +107,10 @@ const DOCTOR_LATEST_SCHEMA_VERSION = 'runtime-doctor-latest-1.0';
 
 export async function runDoctor({
   repoRoot = process.cwd(),
+  // ADR-0051 — the baseline comes from the packaged copy. Injectable only
+  // so tests can point at a fixture package; it is not a repository override.
+  pluginRoot,
+
   homeDir = homedir(),
   env = process.env,
   now = new Date(),
@@ -193,7 +198,7 @@ export async function runDoctor({
     observedCodexHookConfig: machine.codexHookConfig,
   });
   const hostParity = buildHostParity({ claude, codex, plugins, claudePluginList, codexPluginList, codexPluginHooks });
-  const hostParityBaseline = await buildHostParityBaseline({ repoRoot, claude, codex });
+  const hostParityBaseline = await buildHostParityBaseline({ claude, codex, pluginRoot });
   const settingsRuns = await inspectSettingsRuns({
     repoRoot: resolvedRepoRoot,
     // The currency mirror needs the SAME inputs the producer bound against: the strictly
@@ -1155,15 +1160,12 @@ function normalizeHostVersion(value) {
 // Baseline freshness lives in doctor (frequently run) so host-version drift
 // surfaces without a manual runtime:compat run. cutover-audit reuses this
 // result rather than re-parsing the baseline (single source of truth).
-async function buildHostParityBaseline({ repoRoot, claude, codex }) {
-  const path = join(repoRoot, 'plugins', 'runtime', 'docs', 'host-parity-baseline.md');
-  let text = '';
-  try {
-    text = await readFile(path, 'utf8');
-  } catch {
-    text = '';
-  }
-  const match = text.match(/Observed on ([0-9-]+) with Claude Code `([^`]+)`, Codex CLI\s*`([^`]+)`/m);
+async function buildHostParityBaseline({ claude, codex, pluginRoot }) {
+  // ADR-0051 §Decision 1 — the packaged copy, not repoRoot. Reading the
+  // repository made this check work only inside the agentic-plugins source
+  // tree: from any consumer repository it reported `missing` and told the
+  // operator to restore a file their project never contained.
+  const resolved = await resolveHostParityBaseline(pluginRoot ? { pluginRoot } : {});
   // Gate freshness on a successful version probe. version.text carries
   // stderr/error_message when the probe failed (inspectCli), so a failed
   // claude/codex --version must not be normalized into a false current/stale
@@ -1178,7 +1180,7 @@ async function buildHostParityBaseline({ repoRoot, claude, codex }) {
     claude: normalizeHostVersion(observedClaude),
     codex: normalizeHostVersion(observedCodex),
   };
-  const baseline = match ? { date: match[1], claude: match[2], codex: match[3] } : null;
+  const baseline = resolved.baseline;
   const current = Boolean(probesOk && baseline
     && normalizedObserved.claude === normalizeHostVersion(baseline.claude)
     && normalizedObserved.codex === normalizeHostVersion(baseline.codex));
@@ -1187,15 +1189,27 @@ async function buildHostParityBaseline({ repoRoot, claude, codex }) {
   if (!probesOk) {
     status = 'unknown';
     nextAction = 'Probe host CLIs first — claude/codex --version did not return a usable version (one or both unavailable); cannot assess baseline freshness.';
-  } else if (!baseline) {
+  } else if (resolved.status === 'missing') {
     status = 'missing';
-    nextAction = 'Restore plugins/runtime/docs/host-parity-baseline.md.';
+    nextAction = `Reinstall or repair the runtime plugin — ${resolved.provenance.path} is not readable (${resolved.provenance.reason ?? 'unreadable'}).`;
+  } else if (resolved.status === 'unparseable') {
+    // ADR-0051 §Decision 4 — visible failure. With no fallback source there is
+    // nothing to silently degrade through, so a malformed baseline is reported
+    // as malformed rather than collapsed into `missing`.
+    status = 'unparseable';
+    nextAction = `Repair ${resolved.provenance.path} — it is present but carries no canonical "Observed on <date> with Claude Code \`x\`, Codex CLI \`y\`" header.`;
   } else if (current) {
     status = 'current';
     nextAction = null;
   } else {
     status = 'stale';
-    nextAction = 'Refresh plugins/runtime/docs/host-parity-baseline.md via runtime:compat snapshot→check→ingest-release-notes→plan for the current host versions.';
+    // Two audiences, and the check cannot tell them apart from here, so it
+    // must not address only one. Naming a repository path alone repeats the
+    // defect ADR-0051 fixed for `missing`: an operator running the runtime in
+    // their own project cannot edit this project's source.
+    nextAction = 'Update the runtime plugin to a release whose packaged baseline covers these host versions. '
+      + 'If you maintain agentic-plugins: refresh plugins/runtime/docs/host-parity-baseline.md via '
+      + 'runtime:compat snapshot→check→ingest-release-notes→plan, then release runtime so the packaged copy carries it (ADR-0051 §Decision 2).';
   }
   return {
     id: 'host_parity_baseline',
@@ -1206,6 +1220,7 @@ async function buildHostParityBaseline({ repoRoot, claude, codex }) {
       observed: { claude: observedClaude, codex: observedCodex },
       normalized_observed: normalizedObserved,
       probes: { claude: claudeProbe, codex: codexProbe },
+      provenance: { ...resolved.provenance, status: resolved.status },
     },
     next_action: nextAction,
   };

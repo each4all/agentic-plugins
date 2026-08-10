@@ -179,7 +179,7 @@ describe('runtime dashboard macro subtask parsing', () => {
 describe('runtime dashboard report — empty repository', () => {
   it('degrades every section to missing/empty/off and keeps the three-persona contract', async () => {
     const root = makeRepo();
-    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
 
     assert.equal(report.schema_version, DASHBOARD_SCHEMA_VERSION);
     assert.equal(report.runtime_version, RUNTIME_VERSION);
@@ -316,7 +316,7 @@ describe('runtime dashboard report — populated repository', () => {
   it('aggregates tier1 rows and tier2 recency with stale/attention emphasis', async () => {
     const root = makeRepo();
     populateRepo(root);
-    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
 
     const engineer = report.tier1.personas.engineer;
     assert.equal(engineer.workflows.active.length, 1);
@@ -470,7 +470,7 @@ describe('runtime dashboard notify sections', () => {
       path.join(notifyDir, 'log.ndjson'),
       '{"ts":"2026-07-04T11:00:00Z","kind":"workflow-terminal","urgency":"normal","title":"done","event_id":"w1"}\n',
     );
-    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
     assert.equal(report.tier2.notify.config.channel, 'file-log');
     assert.equal(report.tier2.notify.recent.status, 'available');
     assert.equal(report.tier2.notify.recent.entries.length, 1);
@@ -495,7 +495,7 @@ describe('runtime dashboard retention projection (ADR-0047 §7)', () => {
     fs.writeFileSync(path.join(root, 'CITES.md'), `pinned: ${compatA}\n`);
     gitAdv(root, ['add', 'CITES.md']);
 
-    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome(), entryAdvisory: { host: 'claude' } });
+    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome(), entryAdvisory: { host: 'claude' } });
     assert.ok(report.tier2.retention, 'snapshot must carry tier2.retention');
     assert.equal(report.tier2.retention.scan_complete, true);
     assert.ok(report.tier2.retention.projection.compat, 'compat projected');
@@ -507,7 +507,7 @@ describe('runtime dashboard retention projection (ADR-0047 §7)', () => {
   it('omits the retention section entirely in a watch iteration (no git spawn, §17)', async () => {
     const root = makeAdvisoryRepo();
     // entryAdvisory omitted ⇒ watch-shaped build ⇒ no retention, no git.
-    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
     assert.ok(!('retention' in report.tier2), 'watch report must not carry tier2.retention');
   });
 });
@@ -542,7 +542,7 @@ describe('runtime dashboard egress attempt visibility (ADR-0041 §6)', () => {
       path.join(notifyDir, 'log.ndjson'),
       '{"ts":"2026-07-04T11:01:00Z","kind":"approval","urgency":"urgent","title":"egressed","event_id":"b","egress_channel":"telegram","egress_status":"failed","egress_outcome":"timeout"}\n',
     );
-    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
     assert.match(renderDashboardText(report), /egress:telegram=failed\(timeout\)/);
   });
 
@@ -565,7 +565,7 @@ describe('runtime dashboard egress attempt visibility (ADR-0041 §6)', () => {
     const throttleDir = egressThrottleDir(root);
     const key = egressThrottleKey({ eventId: 'e', service: 'telegram', fingerprint: 'fp' });
     recordEgressFailure({ throttleDir, key, now: NOW.getTime(), baseMs: 3_600_000 });
-    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
     assert.match(renderDashboardText(report), /egress: 1 throttled/);
   });
 
@@ -580,7 +580,7 @@ describe('runtime dashboard egress attempt visibility (ADR-0041 §6)', () => {
       path.join(notifyDir, 'log.ndjson'),
       '{"ts":"2026-07-04T11:00:00Z","kind":"approval","urgency":"urgent","event_id":"b","egress_channel":"telegram","egress_status":"failed","egress_outcome":"timeout"}\n',
     );
-    const report = await buildDashboardReport({ repoRoot: root, now: NOW, homeDir: makeHome() });
+    const report = await buildDashboardReport({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime'), now: NOW, homeDir: makeHome() });
     assert.notEqual(report.tier2.notify.config.channel, 'file-log');
     assert.equal(report.tier2.notify.recent.status, 'available', 'egress mirror visible despite channel != file-log');
     assert.match(renderDashboardText(report), /egress:telegram=failed\(timeout\)/);
@@ -633,8 +633,9 @@ describe('runtime dashboard tier2 readers — degraded shapes', () => {
   it('reports an unparsed baseline file distinctly from a missing one', async () => {
     const root = makeRepo();
     writeFileDeep(path.join(root, 'plugins', 'runtime', 'docs', 'host-parity-baseline.md'), 'no header here\n');
-    const baseline = await readHostParityBaseline({ repoRoot: root });
-    assert.equal(baseline.status, 'unparsed');
+    const baseline = await readHostParityBaseline({ repoRoot: root, pluginRoot: path.join(root, 'plugins', 'runtime') });
+    // ADR-0051 §Decision 4 — one failure vocabulary across readers.
+    assert.equal(baseline.status, 'unparseable');
     assert.equal(baseline.baseline, null);
   });
 });

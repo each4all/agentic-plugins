@@ -28,6 +28,24 @@ a runtime command invoked from an arbitrary consumer repository can read
 `scripts/cutover-audit.mjs`). The ADR is for humans in the source tree; this
 contract is for the tool on the operator's machine.
 
+> **Amended 2026-08-10 by [ADR-0051](../../../docs/adr/0051-host-parity-baseline-source.md)**:
+> the paragraph above was an *illustration* of why this contract ships inside
+> the package. For **baseline-class assets** — packaged documents a runtime
+> command reads to reach a verdict — it is now **normative**: the packaged copy
+> is the sole authority, and the repository copy is what gets reviewed and
+> released, never a runtime read. Two corollaries follow. A change to such an
+> asset obliges a runtime release, because a version-keyed updater cannot see
+> content that moved under an unchanged version — measured 2026-08-09, two
+> installs of runtime `0.89.0` carried different host-parity baselines for
+> exactly that reason. And a reader must record content-identifying provenance,
+> because `PLUGIN_ROOT` can itself be a development checkout, so the label
+> "packaged" does not by itself say which bytes were read.
+>
+> Repository-reading scripts that are **not** runtime commands are unaffected:
+> `scripts/check-host-version-drift.mjs` is CI operating on the source tree and
+> keeps reading `repoRoot`, while importing the shared parser so the grammar
+> stays single-sourced.
+
 Line references to other files are anchors observed at decision time and may
 drift; **the contract text governs**.
 

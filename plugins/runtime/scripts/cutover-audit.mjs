@@ -545,7 +545,12 @@ function buildCompletionAudit({ repoRoot, checks, cutoverGate }) {
       id: 'host-parity-baseline',
       kind: 'file',
       status: byId.get('host_parity_baseline')?.status,
-      source: 'plugins/runtime/docs/host-parity-baseline.md',
+      // ADR-0051 §Decision 8 — the status is doctor's, and doctor reads the
+      // PACKAGED copy. Naming the repository path here would attribute the
+      // verdict to a file doctor no longer opens. Report the path doctor
+      // actually resolved, falling back to the packaged-relative form.
+      source: byId.get('host_parity_baseline')?.evidence?.provenance?.path
+        ?? '<runtime package>/docs/host-parity-baseline.md',
       covers: 'Remembered Claude Code and Codex CLI behavior/version baseline',
     }),
     checklistItem({

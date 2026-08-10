@@ -2,7 +2,15 @@
 
 ## Status
 
-Proposed
+Accepted (implemented 2026-08-10)
+
+> **Corrected 2026-08-10, before acceptance.** §Decision 3 originally required
+> pinning the Codex catalog entry, on the theory that an unpinned
+> `{source: local}` entry was why the two hosts' packages diverged. Implementation
+> measurement refuted both halves and the section is rewritten below; the
+> original claim is preserved in §Alternatives so the reasoning stays auditable.
+> The decision itself — packaged copy as sole authority, changing it obliges a
+> release — is unchanged and, as it turns out, is the whole fix.
 
 ## Context
 
@@ -32,11 +40,10 @@ Both host caches report runtime `0.89.0`, and their baselines differ:
 | Codex cache `runtime/0.89.0` | `2026-08-08` · `2.1.226` · `0.147.0` |
 | Claude cache `runtime/0.89.0` | `2026-07-25` · `2.1.220` · `0.145.0` |
 
-The cause is in the two catalogs. `.claude-plugin/marketplace.json`
-pins `runtime` with `"version": "0.89.0"`; `.agents/plugins/marketplace.json`
-declares `{"source": "local", "path": "./plugins/runtime"}` with no
-version, so a Codex install tracks the working tree while a Claude
-install is frozen at the released package.
+The catalogs look like the cause and are not: both entries point at the
+same local path. What actually produced the split is recorded in
+§Decision 3 — packaged content changed under an unchanged version, and
+the two hosts resolve updates differently.
 
 `compat` reads `PLUGIN_ROOT`. Which `PLUGIN_ROOT` depends on which host
 invoked it — so today the same command answers differently on the two
@@ -122,12 +129,48 @@ the source that is reviewed and released — never a runtime read.**
    this makes the coupling explicit rather than incidental, and it is
    the price paid for removing the dual authority.
 
-3. **Pinning the Codex catalog is a precondition, not a follow-up.**
-   While `.agents/plugins/marketplace.json` declares an unpinned local
-   source, "the packaged copy" is not a single artifact and this
-   decision does not hold. The Codex catalog entry gains the same
-   version pin the Claude catalog carries. Until it does, the two hosts
-   can disagree and any provenance recorded is a per-host fact.
+3. **Content may not change under an unchanged version.** This replaces
+   a catalog-pinning precondition that measurement refuted during
+   implementation.
+
+   The cross-host divergence is not caused by catalog pinning. **Both**
+   catalogs point at the same local path — the Claude entry is
+   `{"source": "./plugins/runtime", "version": "0.89.0"}` and the Codex
+   entry is `{"source": {"source": "local", "path": "./plugins/runtime"}}` —
+   and a **local-source** Codex entry carries no top-level version —
+   which `sync-marketplace-versions.mjs`, `scripts/validate-versions.mjs`
+   and `scripts/validate-marketplace.mjs` each record as by-design.
+   (Narrower than the first draft's "no per-entry version field at all":
+   Codex npm sources carry `source.version` and git sources carry
+   `ref`/`sha`. Every entry in this catalog is `local`, so the pin was
+   unavailable *here* — not unavailable in principle.) The proposed pin
+   was therefore both unimplementable for this catalog and beside the
+   point.
+
+   The measured cause is timing under a fixed version:
+
+   | | |
+   |---|---|
+   | Claude cache `runtime/0.89.0` installed | 2026-08-08 15:30:03 |
+   | repository baseline last changed (`16b1833`) | 2026-08-08 16:33:48 |
+   | Codex cache `runtime/0.89.0` installed | 2026-08-09 21:18:40 |
+
+   `16b1833` changed packaged content **without a version bump**. That
+   is necessary but **not sufficient** on its own, and cross-host review
+   was right to press on it: the two hosts also resolve updates
+   differently. Claude skips an update when the resolved manifest
+   version is unchanged, while Codex `0.147.0` has both a
+   version-conditional refresh and a force-reinstall path, and a
+   marketplace upgrade selects the latter. So the split needs both
+   factors — content moving under a fixed version, **and** one host
+   whose update path re-copies regardless. Either alone leaves the two
+   caches agreeing.
+
+   So the rule is the one §Decision 2 already states, and this item
+   names its converse: a change to `docs/host-parity-baseline.md` — or
+   to any packaged asset a runtime command reads to reach a verdict —
+   **must ship as a version change**. §Decision 5's content hash is what
+   makes a violation observable rather than silent.
 
 4. **One grammar, one failure vocabulary.** The three readers parse
    differently today — `compat.mjs:797` accepts loose version text with
@@ -171,9 +214,12 @@ the source that is reviewed and released — never a runtime read.**
    source while reusing doctor's result. Under item 1 that label
    becomes wrong and must be reconciled in the implementation PR.
 
-**Out of scope.** This ADR decides the source rule. The code change,
-its regression tests, the catalog pin, and the contract amendment land
-in a separate PR under ADR-0016 routing.
+**Out of scope.** Enforcement of §Decision 2 is **prose only** and is
+recorded as an explicit follow-up: nothing in CI, release-please, or the
+validators fails when a packaged asset changes without a version change,
+and `16b1833` is the counterexample that motivated this ADR. Until a
+diff-aware gate exists, §Decision 5's content hash is the detector, not
+the preventer.
 
 ## Consequences
 
@@ -203,9 +249,10 @@ in a separate PR under ADR-0016 routing.
 - Release cadence becomes coupled to host-version observation cadence.
   A host that ships often forces runtime patch releases that carry no
   code change.
-- The Codex catalog pin (item 3) changes how Codex installs resolve
-  runtime, which is a behavior change for anyone relying on the
-  unpinned local source during development.
+- The release obligation is not mechanically enforced (see §Decision
+  §Out of scope). A contributor can still change the packaged baseline
+  without a version change; what differs from before is that provenance
+  makes the result observable rather than invisible.
 
 **Neutral**
 
@@ -238,6 +285,18 @@ that the same draft claimed to leave intact. Provenance records such a
 choice; it does not authorize it. The draft also rested on a risk model
 ("over-reporting, never silence") that `compat.mjs:397` refutes, and on
 a measurement that had examined only one host's package.
+
+**E — pin the Codex catalog entry** (the original §Decision 3).
+Withdrawn during implementation, and recorded because the reasoning was
+wrong in an instructive way. It inferred a cause from a correlation —
+the Codex entry lacked a `version` field and the Codex package happened
+to be fresh — without checking whether the field exists in that schema
+(it does not; three repository tools say so) or whether the Claude entry
+was pinned in any load-bearing sense (it is not; both entries resolve
+the same local path). Install timestamps then showed the two packages
+differ only in when they were last copied. The lesson generalizes: a
+version number is not an identity for content unless something forbids
+content from moving under it, which is what §Decision 2 now supplies.
 
 **D — relocate the baseline to a runtime-owned artifact.** Content-
 addressed storage outside `docs/`, written by an explicit command.
