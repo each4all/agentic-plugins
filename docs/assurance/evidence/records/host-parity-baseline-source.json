@@ -1,0 +1,99 @@
+{
+  "schema": "evidence-record-1.0",
+  "record_id": "host-parity-baseline-source",
+  "evidence_loop": {
+    "label": "one authority for the host-parity baseline",
+    "summary": "Four readers disagreed on where the host-parity baseline lives, and the disagreement was assumed latent because inside the source tree the paths look identical. Measured, they were not: two installs of runtime 0.89.0 carried different baselines, so runtime:compat answered differently depending on which host invoked it. ADR-0051 makes the packaged copy the sole authority and obliges a release when it changes; the implementation adds one resolver, one grammar, one failure vocabulary, and content-identifying provenance. The loop is also the one where a review refuted the fix's own verification claim: a mutant that reintroduced the retired repository read passed the whole doctor suite, because the fixture package sat inside the fixture repo."
+  },
+  "package_releases": [
+    {
+      "package": "plugins/runtime",
+      "version": "0.90.0",
+      "tag": "plugin-runtime-v0.90.0",
+      "release_pr": 686,
+      "squash": "4a23a5bed6c91062c5c7fb421f5534dfdb528810",
+      "marketplace_sync": "926ec0186ae5d7e4e5d40b6e24316343bda5db0d"
+    }
+  ],
+  "feature_commits": [
+    {
+      "sha": "4bb25a5aa9c86278fb28c967145e22b28b802794",
+      "pr": 684,
+      "note": "The decision. A repository-override draft was withdrawn: compat compares with exact inequality, so a host pinned back makes a stale package report matches — silence, not the over-reporting the draft assumed."
+    },
+    {
+      "sha": "20ebed7421408a16ddb7387aed7829ffbb9f8c39",
+      "pr": 685,
+      "note": "One shared resolver; doctor and dashboard leave repoRoot; the CI drift script keeps its repository read as the stated carve-out but imports the shared parser. Carries the guard repairs too: the doctor fixture package moved outside the fixture repo, where nesting hid the retired read."
+    }
+  ],
+  "hardening_commits": [],
+  "proofs": [
+    {
+      "run_id": "doctor-20260810T135637Z-d49983",
+      "date": "2026-08-10",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:778d98a4b10476a3087fb46aa693b5509473ea19a0bd5c3bc5d141b904bb4cbc",
+      "runtime_version": "0.90.0",
+      "installed": {
+        "claude": "0.90.0",
+        "codex": "0.90.0"
+      },
+      "host_cli": {
+        "claude": "2.1.226 (Claude Code)",
+        "codex": "codex-cli 0.147.0"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "pass; zero hard failures, zero warnings"
+        },
+        {
+          "key": "permission_proof",
+          "value": "passed; executed in both directions"
+        },
+        {
+          "key": "deep_peer_smoke",
+          "value": "passed; executed in both directions"
+        },
+        {
+          "key": "workflow_continuation_proof",
+          "value": "passed; executed in both directions"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass; zero issues"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "current; provenance source=package, runtime_version=0.90.0, with a content hash"
+        },
+        {
+          "key": "experience_parity",
+          "value": "ready 100%; satisfied 8, partial 0, not_verified 0, blocked 0"
+        },
+        {
+          "key": "ceiling_removed",
+          "value": "runtime_handoff_artifacts reached satisfied 15/15 for the first time. The preceding record recorded it as partial 9/15 and named the cause correctly — compat reading the installed plugin root while doctor read the repo — which is exactly what this release removed."
+        },
+        {
+          "key": "convergence_measured",
+          "value": "A fresh compat snapshot from the installed 0.90.0 read drift: none / current. The day before, the same command re-raised the same drift on every run and re-demanded release notes already ingested."
+        },
+        {
+          "key": "attestation_not_restaled",
+          "value": "No /hooks re-attestation was required and none was written. plugins/runtime ships no hooks, and the four attested plugins did not move, so settings-20260809T122130Z-c26a0c stayed current — the rule is a hook-bearing plugin bump, not a runtime bump."
+        }
+      ]
+    }
+  ],
+  "install_method": "Owner-driven host-native update on both hosts, verified against the manifest first: runtime 0.90.0 on both caches, the other five packages unchanged. The shipped resolver was then observed in the installed package rather than assumed — doctor read its baseline from the 0.90.0 package, reporting source=package with a content hash.",
+  "narrative": "This loop is mostly a record of measurements overturning stated positions, including three of its own. The handoff carried the gap as latent, on the reasoning that inside the source tree both paths resolve to one file; they did not, and the first measurement of that split examined only one host's package, which hid that the Codex cache already matched the repository. The ADR's first draft then blamed catalog pinning, and implementation refuted it: both catalogs resolve the same local path, a local-source Codex entry carries no top-level version by design, and the split needed two factors together — content moving under a fixed version, and one host whose update path re-copies regardless. Cross-host review supplied the sharpest correction: the claim that a stale baseline can only over-report is false, because compat compares with exact inequality, so a host pinned or rolled back makes a stale package report matches. That single fact retired the repository-override design, which would additionally have made any fork, stale branch, or dirty worktree an authority. The verification claims fared no better than the design claims. Ten mutants were reported caught; the reviewer then found one that survived — reverting doctor to the repository read — because the fixture package was nested inside the fixture repo, making the two reads indistinguishable to every test. The single-source test was vacuous for a related reason: it asserted an import string existed, which an unused import satisfies. Both are fixed and re-measured. Two process errors are recorded rather than smoothed over: a verification run was pointed at a real compat run and overwrote its gap analysis, restored by re-running the real check; and npm test piped through tail reported success while a test was failing, because a pipeline exits with the status of its last command. The loop ends with the ceiling it set out to explain actually gone — experience parity ready 100% — but the release obligation that makes the decision hold is prose only, enforced by nobody, and that is written into the ADR rather than left to be discovered again.",
+  "relations": [
+    {
+      "type": "follows",
+      "record_id": "persona-host-claim-correction",
+      "note": "The preceding loop in the same session. Its post-release recovery is where the baseline divergence was first noticed, as a runtime_handoff_artifacts partial that no ingest could clear."
+    }
+  ]
+}
