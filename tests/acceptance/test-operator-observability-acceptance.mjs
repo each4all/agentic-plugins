@@ -810,7 +810,17 @@ describe('ADR-0040 acceptance (c) -- dashboard aggregate over fixture state', ()
     // undefined status and fail.
     strictEqual(report.tier2.doctor.status, 'missing', 'the doctor-freshness reader ran and classified absence');
     strictEqual(report.tier2.compat.status, 'missing', 'the compat-freshness reader ran and classified absence');
-    strictEqual(report.tier2.baseline.status, 'missing', 'the baseline-freshness reader ran and classified absence');
+    // The baseline is NOT in that group any more. ADR-0051 makes it a packaged
+    // asset rather than a repo-local artifact, so an unseeded fixture repo does
+    // not make it absent — the running runtime always carries one. The reader
+    // is proven to have RUN by its parsed content and content hash, which is a
+    // stronger witness than `missing` ever was.
+    strictEqual(report.tier2.baseline.status, 'available', 'the baseline reader resolved the packaged copy');
+    ok(/^\d{4}-\d{2}-\d{2}$/.test(report.tier2.baseline.baseline.date), 'it parsed a dated header');
+    ok(report.tier2.baseline.baseline.claude, 'it parsed the Claude version');
+    ok(report.tier2.baseline.baseline.codex, 'it parsed the Codex version');
+    strictEqual(report.tier2.baseline.provenance.source, 'package');
+    ok(/^[0-9a-f]{64}$/.test(report.tier2.baseline.provenance.content_sha256), 'provenance identifies the bytes read');
     // Notify Tier 2: channel + the SEEDED history record surfaced by content
     // (proving the reader parsed the seeded log, not just that a key exists).
     strictEqual(report.tier2.notify.config.channel, 'file-log');

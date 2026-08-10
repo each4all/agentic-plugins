@@ -42,6 +42,7 @@ import { RUNTIME_VERSION } from './version.mjs';
 // section can never disagree with `runtime:context entry-brief` (§7 "the
 // same arbiter output"). Sibling-script import, same shape as notify.mjs.
 import { entryBriefContext } from './context.mjs';
+import { resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
 import { sanitizeValue } from './lib/permission-sanitize.mjs';
 import { isClaimExpired, isLockStale, notifyDedupeDir, notifyStateDir } from './lib/notify-schema.mjs';
 import { egressThrottleDir, inspectEgressThrottles } from './lib/egress-semantics.mjs';
@@ -395,24 +396,41 @@ export async function inspectSettingsRecency({ repoRoot }) {
   };
 }
 
-// Baseline header parse only — the same regex doctor's
-// buildHostParityBaseline uses, minus its live host-version probes (the
-// drift verdict against OBSERVED versions is compat's recorded job; the
-// dashboard shows the recorded baseline next to the latest compat drift).
-export async function readHostParityBaseline({ repoRoot }) {
-  const baselinePath = path.join(repoRoot, 'plugins', 'runtime', 'docs', 'host-parity-baseline.md');
-  const text = await readTextIfExists(baselinePath);
-  if (!text.ok) {
-    return { status: 'missing', pointer: pointer(repoRoot, baselinePath), baseline: null, reason: text.reason };
+// ADR-0051 — the shared resolver reads the PACKAGED copy, like every other
+// runtime consumer. No live host-version probes here: the drift verdict against
+// OBSERVED versions is compat's recorded job; the dashboard shows the recorded
+// baseline next to the latest compat drift.
+//
+// `repoRoot` is still accepted so the pointer stays repo-relative when the
+// packaged path happens to sit inside the checkout; it is no longer the source.
+export async function readHostParityBaseline({ repoRoot, pluginRoot } = {}) {
+  const resolved = await resolveHostParityBaseline(pluginRoot ? { pluginRoot } : {});
+  const baselinePath = resolved.provenance.path;
+  const provenance = { ...resolved.provenance, status: resolved.status };
+  if (resolved.status === 'missing') {
+    return {
+      status: 'missing',
+      pointer: pointer(repoRoot ?? path.dirname(baselinePath), baselinePath),
+      baseline: null,
+      reason: resolved.provenance.reason,
+      provenance,
+    };
   }
-  const match = text.text.match(/Observed on ([0-9-]+) with Claude Code `([^`]+)`, Codex CLI\s*`([^`]+)`/m);
-  if (!match) {
-    return { status: 'unparsed', pointer: pointer(repoRoot, baselinePath), baseline: null };
+  if (resolved.status === 'unparseable') {
+    // Named `unparsed` here historically; ADR-0051 §Decision 4 makes the
+    // vocabulary uniform across readers.
+    return {
+      status: 'unparseable',
+      pointer: pointer(repoRoot ?? path.dirname(baselinePath), baselinePath),
+      baseline: null,
+      provenance,
+    };
   }
   return {
     status: 'available',
-    pointer: pointer(repoRoot, baselinePath),
-    baseline: { date: match[1], claude: match[2], codex: match[3] },
+    pointer: pointer(repoRoot ?? path.dirname(baselinePath), baselinePath),
+    baseline: resolved.baseline,
+    provenance,
   };
 }
 
@@ -656,6 +674,8 @@ export async function buildEntryAdvisory({ repoRoot, host = null, now = new Date
 
 export async function buildDashboardReport({
   repoRoot,
+  // ADR-0051 — packaged baseline source; injectable for fixture packages only.
+  pluginRoot,
   now = new Date(),
   homeDir = os.homedir(),
   staleGraceMs = DEFAULT_STALE_GRACE_MS,
@@ -692,7 +712,7 @@ export async function buildDashboardReport({
 
   const doctor = await inspectLatestDoctorRun({ repoRoot });
   const compat = await inspectCompatRuns({ repoRoot });
-  const baseline = await readHostParityBaseline({ repoRoot });
+  const baseline = await readHostParityBaseline({ repoRoot, pluginRoot });
   const settings = await inspectSettingsRecency({ repoRoot });
   const artifacts = await inspectRuntimeArtifactInventory({
     repoRoot,

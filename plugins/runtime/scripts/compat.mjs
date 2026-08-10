@@ -8,6 +8,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runCommand } from './doctor.mjs';
+import { extractBaselineVersions, resolveHostParityBaseline } from './lib/host-parity-baseline.mjs';
 import { RUNTIME_VERSION } from './version.mjs';
 
 const VERSION = RUNTIME_VERSION;
@@ -386,12 +387,19 @@ async function observeHost(host, { repoRoot, runner, timeoutMs }) {
 }
 
 function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
+  // ADR-0051 §Decision 4 — a baseline that could not be read or parsed is a
+  // hard stop, not an input to release-note planning. Folding it into
+  // `no_baseline` produced `release_notes_required` and told the operator to
+  // go fetch release notes, which cannot repair a broken package.
+  const baselineStatus = baseline?.provenance?.status ?? null;
+  const baselineUnusable = baselineStatus === 'missing' || baselineStatus === 'unparseable';
   const hostGaps = ['claude', 'codex'].map((host) => {
     const observed = snapshot.hosts?.[host] ?? {};
     const baselineVersion = baseline?.[host]?.version ?? null;
     const observedVersion = observed.version ?? null;
     let status = 'matches';
-    if (!observed.available) status = 'host_unavailable';
+    if (baselineUnusable) status = `baseline_${baselineStatus}`;
+    else if (!observed.available) status = 'host_unavailable';
     else if (!baselineVersion) status = 'no_baseline';
     else if (!observedVersion) status = 'version_unknown';
     else if (observedVersion !== baselineVersion) status = 'version_changed';
@@ -405,13 +413,19 @@ function buildGapAnalysis({ snapshot, baseline, releaseNotes, now }) {
   });
   const driftClass = classifyDrift(hostGaps);
   const releaseNoteCoverage = buildReleaseNoteCoverage({ hostGaps, releaseNotes });
-  const releaseNotesRequired = driftClass !== 'none'
+  const baselineBroken = driftClass === 'baseline-unreadable' || driftClass === 'baseline-malformed';
+  const releaseNotesRequired = !baselineBroken
+    && driftClass !== 'none'
     && (releaseNotes.content_backed_count === 0 || releaseNoteCoverage.missing_required_hosts.length > 0);
-  const overallStatus = releaseNotesRequired
-    ? 'release_notes_required'
-    : driftClass === 'none'
-      ? 'current'
-      : 'gap_analysis_ready';
+  const overallStatus = baselineBroken
+    // Terminal and distinct: nothing was compared, so neither `current` nor a
+    // gap-analysis verdict is honest here.
+    ? 'baseline_unusable'
+    : releaseNotesRequired
+      ? 'release_notes_required'
+      : driftClass === 'none'
+        ? 'current'
+        : 'gap_analysis_ready';
   return {
     schema_version: GAP_SCHEMA,
     runtime_version: VERSION,
@@ -482,6 +496,10 @@ function buildReleaseNoteCoverage({ hostGaps, releaseNotes }) {
 }
 
 function classifyDrift(hostGaps) {
+  // Ordered first: an unreadable or malformed baseline is not a drift verdict
+  // at all — nothing was compared — and it must not be describable as one.
+  if (hostGaps.some((gap) => gap.status === 'baseline_missing')) return 'baseline-unreadable';
+  if (hostGaps.some((gap) => gap.status === 'baseline_unparseable')) return 'baseline-malformed';
   if (hostGaps.some((gap) => gap.status === 'version_changed')) return 'host-version-changed';
   if (hostGaps.some((gap) => gap.status === 'host_unavailable')) return 'host-unavailable';
   if (hostGaps.some((gap) => gap.status === 'version_unknown' || gap.status === 'no_baseline')) return 'baseline-incomplete';
@@ -785,26 +803,26 @@ async function readPluginVersions(repoRoot) {
   }
 }
 
+// ADR-0051 — the packaged copy is the sole authority and the resolver owns the
+// grammar. `baselineProvenance` travels with the value so a recorded snapshot
+// says WHICH bytes produced it, not merely which path: two installs of the same
+// runtime version carried different baselines in the incident behind ADR-0051.
 async function loadBaselineVersions() {
-  try {
-    const text = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf8');
-    return extractBaselineVersions(text);
-  } catch {
-    return { claude: { version: null }, codex: { version: null } };
+  const resolved = await resolveHostParityBaseline({ pluginRoot: PLUGIN_ROOT });
+  if (resolved.status !== 'resolved') {
+    return {
+      claude: { version: null },
+      codex: { version: null },
+      provenance: { ...resolved.provenance, status: resolved.status },
+    };
   }
-}
-
-export function extractBaselineVersions(text) {
-  const body = String(text ?? '');
-  const claude = body.match(/Claude Code [`\s]*([0-9]+(?:\.[0-9]+)+)/i)
-    ?? body.match(/claude --version` -> `([^`]+)`/i);
-  const codex = body.match(/Codex CLI\s*`?([0-9]+(?:\.[0-9]+)+)/i)
-    ?? body.match(/codex --version` -> `([^`]+)`/i);
   return {
-    claude: { version: extractSemver(claude?.[1] ?? null) },
-    codex: { version: extractSemver(codex?.[1] ?? null) },
+    ...resolved.versions,
+    provenance: { ...resolved.provenance, status: resolved.status },
   };
 }
+
+export { extractBaselineVersions };
 
 function summarizeCommand(result) {
   const stdout = String(result.stdout ?? '');
