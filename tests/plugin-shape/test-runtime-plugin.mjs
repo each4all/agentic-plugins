@@ -455,7 +455,7 @@ describe('plugins/runtime settings surface', () => {
   it('documents the Claude-vs-Codex host parity baseline with source-backed non-parity boundaries', async () => {
     const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
     for (const token of [
-      'Claude Code `2.1.226`',
+      'Claude Code `2.1.227`',
       'Codex CLI\n`0.147.0`',
       'https://developers.openai.com/codex/subagents',
       'https://developers.openai.com/codex/hooks',
@@ -485,7 +485,7 @@ describe('plugins/runtime settings surface', () => {
     const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
     const header = baseline.match(/Observed on ([0-9-]+) with Claude Code `([^`]+)`, Codex CLI\s*`([^`]+)`/);
     ok(header, 'baseline header parseable by the doctor/compat regex shape');
-    const [, , headerClaude, headerCodex] = header;
+    const [, headerDate, headerClaude, headerCodex] = header;
     ok(
       baseline.includes(`\`claude --version\` -> \`${headerClaude} (Claude Code)\``),
       `Local CLI evidence records claude --version ${headerClaude}`,
@@ -497,10 +497,17 @@ describe('plugins/runtime settings surface', () => {
     const historyRows = baseline.split('\n').filter((line) => /^\| \d{4}-\d{2}-\d{2} \|/.test(line));
     ok(historyRows.length > 0, 'version history has dated rows');
     const newestRow = historyRows[historyRows.length - 1];
-    ok(
-      newestRow.includes(`\`${headerClaude}\``) && newestRow.includes(`\`${headerCodex}\``),
-      'newest version-history row records the header versions',
-    );
+    // Compare the row's Observed/Claude/Codex *columns*, not a substring of the
+    // whole row. `newestRow.includes('`2.1.227`')` was vacuous in practice: every
+    // row's Note prose spells out the drift it records ("Claude `2.1.226`→`2.1.227`
+    // is fix/perf-only"), so the header version is always somewhere in the row and
+    // the assertion passed with the version column left at the previous release.
+    // Measured 2026-08-11 by mutating the column alone — the old form stayed green.
+    const cells = newestRow.split('|').map((cell) => cell.trim());
+    const [, newestDate, newestClaude, newestCodex] = cells;
+    strictEqual(newestDate, headerDate, 'newest version-history row is dated for the header observation');
+    strictEqual(newestClaude, `\`${headerClaude}\``, 'newest version-history row Claude column records the header version');
+    strictEqual(newestCodex, `\`${headerCodex}\``, 'newest version-history row Codex column records the header version');
     const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
     ok(
       followUps.includes(`local Claude Code \`${headerClaude}\` and Codex CLI \`${headerCodex}\` observations`),
