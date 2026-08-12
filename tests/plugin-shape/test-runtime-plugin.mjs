@@ -455,8 +455,14 @@ describe('plugins/runtime settings surface', () => {
   it('documents the Claude-vs-Codex host parity baseline with source-backed non-parity boundaries', async () => {
     const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
     for (const token of [
-      'Claude Code `2.1.226`',
-      'Codex CLI\n`0.147.0`',
+      // Hand-bumped every baseline refresh — this is the manual pin that forces
+      // a human to notice the version moved. Anchored to the whole header line,
+      // not a bare `Claude Code \`x.y.z\``: the bare form is satisfiable by any
+      // Version-History Note that names the version in prose, so it passed on a
+      // document whose header still read the previous release. A markdown table
+      // cell cannot contain the raw newline this literal spans, so only the
+      // header can satisfy it.
+      'Observed on 2026-08-11 with Claude Code `2.1.227`, Codex CLI\n`0.147.0`',
       'https://developers.openai.com/codex/subagents',
       'https://developers.openai.com/codex/hooks',
       'https://code.claude.com/docs/en/plugins',
@@ -485,7 +491,7 @@ describe('plugins/runtime settings surface', () => {
     const baseline = await readFile(resolve(PLUGIN_ROOT, 'docs/host-parity-baseline.md'), 'utf-8');
     const header = baseline.match(/Observed on ([0-9-]+) with Claude Code `([^`]+)`, Codex CLI\s*`([^`]+)`/);
     ok(header, 'baseline header parseable by the doctor/compat regex shape');
-    const [, , headerClaude, headerCodex] = header;
+    const [, headerDate, headerClaude, headerCodex] = header;
     ok(
       baseline.includes(`\`claude --version\` -> \`${headerClaude} (Claude Code)\``),
       `Local CLI evidence records claude --version ${headerClaude}`,
@@ -494,13 +500,34 @@ describe('plugins/runtime settings surface', () => {
       baseline.includes(`\`codex --version\` -> \`codex-cli ${headerCodex}\``),
       `Local CLI evidence records codex --version ${headerCodex}`,
     );
-    const historyRows = baseline.split('\n').filter((line) => /^\| \d{4}-\d{2}-\d{2} \|/.test(line));
-    ok(historyRows.length > 0, 'version history has dated rows');
+    // Scope to the Version History section. The dated-pipe-row shape is not
+    // unique to it — the SessionStart and Stop-payload matrices above use the
+    // same `| <date> | <version> |` shape — so a document-wide filter both
+    // admits foreign rows into `historyRows` (making the non-empty assertion
+    // satisfiable with no Version History at all) and defines "newest" as the
+    // last dated row anywhere, which any table appended below would silently
+    // take over.
+    // Bound the slice at the next heading, not at end-of-document: splitting on
+    // the heading alone still swallows every later section, so a dated table
+    // appended below Version History would take over "newest" exactly as the
+    // document-wide filter did. Measured — the first attempt at this fix picked
+    // up an appended row.
+    const versionHistory = baseline.split(/^## Version History$/m)[1]?.split(/^## /m)[0];
+    ok(versionHistory, 'baseline has a Version History section');
+    const historyRows = versionHistory.split('\n').filter((line) => /^\| \d{4}-\d{2}-\d{2} \|/.test(line));
+    ok(historyRows.length > 0, 'version history section has dated rows');
     const newestRow = historyRows[historyRows.length - 1];
-    ok(
-      newestRow.includes(`\`${headerClaude}\``) && newestRow.includes(`\`${headerCodex}\``),
-      'newest version-history row records the header versions',
-    );
+    // Compare the row's Observed/Claude/Codex *columns*, not a substring of the
+    // whole row. `newestRow.includes('`2.1.227`')` was vacuous in practice: every
+    // row's Note prose spells out the drift it records ("Claude `2.1.226`→`2.1.227`
+    // is ..."), so the header version is always somewhere in the row and the
+    // assertion passed with the version column left at the previous release.
+    // Measured 2026-08-11 by mutating the column alone — the old form stayed green.
+    const cells = newestRow.split('|').map((cell) => cell.trim());
+    const [, newestDate, newestClaude, newestCodex] = cells;
+    strictEqual(newestDate, headerDate, 'newest version-history row is dated for the header observation');
+    strictEqual(newestClaude, `\`${headerClaude}\``, 'newest version-history row Claude column records the header version');
+    strictEqual(newestCodex, `\`${headerCodex}\``, 'newest version-history row Codex column records the header version');
     const followUps = await readFile(resolve(PLUGIN_ROOT, 'docs/follow-ups.md'), 'utf-8');
     ok(
       followUps.includes(`local Claude Code \`${headerClaude}\` and Codex CLI \`${headerCodex}\` observations`),
