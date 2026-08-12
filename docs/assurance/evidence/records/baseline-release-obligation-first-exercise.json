@@ -25,6 +25,51 @@
   "hardening_commits": [],
   "proofs": [
     {
+      "run_id": "doctor-20260812T021550Z-927dfc",
+      "date": "2026-08-12",
+      "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
+      "artifact_sha256": "sha256:fce2b0c562a7afe180971f94500949d97482c1823ecb3bebd3dbcbfb5cc940c8",
+      "runtime_version": "0.90.1",
+      "installed": {
+        "claude": "0.90.1",
+        "codex": "0.90.1"
+      },
+      "host_cli": {
+        "claude": "2.1.228 (Claude Code)",
+        "codex": "codex-cli 0.147.0"
+      },
+      "readings": [
+        {
+          "key": "overall",
+          "value": "warning"
+        },
+        {
+          "key": "permission_proof",
+          "value": "passed; executed in both directions"
+        },
+        {
+          "key": "deep_peer_smoke",
+          "value": "passed; executed in both directions"
+        },
+        {
+          "key": "workflow_continuation_proof",
+          "value": "passed; executed in both directions"
+        },
+        {
+          "key": "host_parity",
+          "value": "pass"
+        },
+        {
+          "key": "host_parity_baseline",
+          "value": "stale"
+        },
+        {
+          "key": "experience_parity",
+          "value": "blocked 87%; the block is runtime_handoff_artifacts on a compat run left at release_notes_required, not a defect. Superseded by the re-record on the completed cycle."
+        }
+      ]
+    },
+    {
       "run_id": "doctor-20260812T022356Z-252fb9",
       "date": "2026-08-12",
       "command": "runtime:doctor --permission-proof --execute-permission-proof --deep-peer-smoke --execute-deep-peer-smoke --workflow-continuation-proof --execute-workflow-continuation-proof",
@@ -68,26 +113,14 @@
           "value": "partial 95%; satisfied 7, partial 1, not_verified 0, blocked 0. The one partial is runtime_handoff_artifacts 9/15, next-step refresh-baseline"
         },
         {
-          "key": "ceiling_returned",
-          "value": "This is the same 95% ceiling the preceding record removed on 2026-08-10. It came back in two days with no code change, because the host moved. The 100% state is not an achievement but a transient whose lifetime is one host-patch interval."
-        },
-        {
-          "key": "bytes_converged",
-          "value": "The baseline is byte-identical across four places: repository main, the plugin-runtime-v0.90.1 tag, the Claude cache, and the Codex cache. The ADR-0051 originating incident — same version, different bytes — did not recur."
-        },
-        {
-          "key": "non_convergence_measured",
-          "value": "Claude's median inter-patch gap is 24.0h over 11 intervals from npm publish times. 2.1.228 published 20.8h after 2.1.227: 13.8h after this loop observed 2.1.227, and 7.8h before its PR merged. The observe-to-install loop took 22.2h."
-        },
-        {
           "key": "attestation_not_restaled",
-          "value": "No /hooks re-attestation was required and none was written. plugins/runtime ships no hooks and the four attested plugins did not move, so settings-20260808T065145Z-c8409f stayed current."
+          "value": "No /hooks re-attestation was required and none was written. runtime ships no hooks and the four attested plugins did not move, so settings-20260809T122130Z-c26a0c stayed current."
         }
       ]
     }
   ],
   "install_method": "Owner-driven host-native update on both hosts, verified by bytes rather than by version label. The baseline hashes identical in the Claude cache, the Codex cache, the tagged asset, and the repository; Codex was confirmed unmoved at 0.147.0. A fresh post-install compat snapshot was taken rather than reusing the pre-release run, which permanently records 0.90.0 and baseline 2.1.226.",
-  "narrative": "The obligation half of this loop worked exactly as ADR-0051 specified, and the observation half is the reason the ADR's own alternative needs re-judging.\n\nOn the obligation: the counterexample the ADR names, 16b1833, moved the baseline under a docs: type and produced no release, which is how a released runtime came to disagree with the repository. Here the PR title was deliberately typed fix(plugin/runtime) — squash routing reads the PR title, not the branch name — and release-please cut plugin-runtime 0.90.1 with a single changelog entry and a single package bump. Merge to tag took 6m10s, tag to catalog and stage-doc sync another 1m55s.\n\nThe gate that was supposed to hold the refresh together turned out to be three-quarters of a gate, and both a local mutation battery and the cross-host peer were needed to see all of it. A mutation found that the newest-Version-History assertion compared a substring against the whole row, and since every row's Note prose spells out the drift it records, the header version was always somewhere in the row — the version column could be left at the previous release and stay green. The peer then showed the first fix was partial: the hardcoded version pin was a whole-document includes that any Note satisfies, so a fully consistent rollback of every coupled statement passed; and the row filter ran over the whole document, where the dated-pipe-row shape is shared by two unrelated matrices, so newest meant last-dated-row-anywhere and the non-empty assertion was satisfiable with no Version History at all. The fix for that last one was itself wrong on the first attempt — splitting on the heading runs to end-of-document, so a table appended below still took over — and only measurement caught it. Eight mutations now bite where three did not.\n\nThe observation is the part that matters going forward. Claude published 2.1.228 while this refresh was still in review: 13.8h after the baseline was observed, and 7.8h before the PR merged. The released baseline was therefore stale before it shipped, not after. 2.1.228 is again fix/UX/perf-only for every contract runtime depends on, so the entire release-and-install cycle bought the sentence nothing changed. Recorded experience parity fell to partial 95%, the same ceiling ADR-0051 removed two days earlier, with the single partial's whole remedy reading refresh-baseline — doctor now prescribes the loop that just failed to converge. Against a 24.0h median host cadence, a 22.2h loop whose slow segments are human-gated review, merge, install, and restart cannot reliably close.\n\nTwo corrections are recorded rather than smoothed over. The first recorded proof of this loop read experience_parity blocked, which was not a defect but an unfinished compat cycle — release notes were ingested without a following check, leaving the run at release_notes_required — and it was re-recorded on the completed cycle. And two pre-existing errors in the scorecard's proof prose, surfaced by the peer and confirmed against the artifacts, are fixed here: the 0.90.0 loop's proof was described as 0.89.0-native when the artifact reads runtime_version 0.90.0, and that loop was attributed to the ADR-0013 trigger re-evaluation slice, which is the preceding 0.89.0 release with its own three proofs.",
+  "narrative": "The obligation half of this loop worked exactly as ADR-0051 specified, and the observation half is the reason the ADR's own alternative needs re-judging.\n\nOn the obligation: the counterexample the ADR names, 16b1833, moved the baseline under a docs: type and produced no release, which is how a released runtime came to disagree with the repository. Here the PR title was deliberately typed fix(plugin/runtime) — squash routing reads the PR title, not the branch name — and release-please cut plugin-runtime 0.90.1 with a single changelog entry and a single package bump. Merge to tag took 6m10s, tag to catalog and stage-doc sync another 1m55s.\n\nThe gate that was supposed to hold the refresh together turned out to be three-quarters of a gate, and both a local mutation battery and the cross-host peer were needed to see all of it. A mutation found that the newest-Version-History assertion compared a substring against the whole row, and since every row's Note prose spells out the drift it records, the header version was always somewhere in the row — the version column could be left at the previous release and stay green. The peer then showed the first fix was partial: the hardcoded version pin was a whole-document includes that any Note satisfies, so a fully consistent rollback of every coupled statement passed; and the row filter ran over the whole document, where the dated-pipe-row shape is shared by two unrelated matrices, so newest meant last-dated-row-anywhere and the non-empty assertion was satisfiable with no Version History at all. The fix for that last one was itself wrong on the first attempt — splitting on the heading runs to end-of-document, so a table appended below still took over — and only measurement caught it. Eight mutations now bite where three did not.\n\nThe observation is what matters going forward. Claude published 2.1.228 while this refresh was still in review: 13.8h after the baseline was observed, 7.8h before the PR merged. The released baseline was stale before it shipped, not after. The 2.1.228 changelog shows no plugin-CLI, hook, subagent or notification-contract change and the three proof families passed both directions, but that drift's compat plan is still open, so what is recorded is no regression observed, not none exists. Parity nevertheless fell to partial 95%, the ceiling ADR-0051 removed two days earlier, and the single partial's whole remedy reads refresh-baseline: doctor now prescribes the loop that just failed to converge. The loop took 22.1h between two durable artifacts — the observation snapshot compat-20260811T035848Z-d6c3df at 03:58:48Z and the post-install verification snapshot compat-20260812T020732Z-295af8 at 02:07:32Z. Claude's median inter-patch gap over the eleven intervals from 2.1.217 to 2.1.228 is 24.0h by npm publish time — registry facts a clean checkout must re-query, named rather than stored. A loop whose slow segments are human-gated cannot reliably close inside that. The bytes did converge — the baseline hashes identical across repository main, the plugin-runtime-v0.90.1 tag and both host caches — so the originating incident, same version with different bytes, did not recur. What failed was timeliness, not integrity.\n\nFour corrections are recorded rather than smoothed over. The first recorded proof of this loop, doctor-20260812T021550Z-927dfc, read experience_parity blocked 87%, which was not a defect but an unfinished compat cycle — release notes were ingested without a following check, leaving the run at release_notes_required — and it was re-recorded on the completed cycle. And two pre-existing errors in the scorecard's proof prose, surfaced by the peer and confirmed against the artifacts, are fixed here: the 0.90.0 loop's proof was described as 0.89.0-native when the artifact reads runtime_version 0.90.0, and that loop was attributed to the ADR-0013 trigger re-evaluation slice, which is the preceding 0.89.0 release with its own three proofs.",
   "relations": [
     {
       "type": "follows",

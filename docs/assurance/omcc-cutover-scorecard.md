@@ -94,11 +94,14 @@ For each runtime/engineer/orchestrator slice, use this continuity loop:
 8. Start the next development slice from the updated main branch and installed
    plugin state, not from the pre-release checkout.
 
-Current local dry-run evidence: a fresh 2026-08-08Z `runtime:settings` run
-(`settings-20260808T065145Z-c8409f`) reports all agentic-plugins surfaces
-available with source/cache versions matching the current repo manifest, and
-zero plugin-management config writes planned
-against the state installed at that time. The current installed
+Local dry-run evidence: the 2026-08-08Z `runtime:settings` run
+(`settings-20260808T065145Z-c8409f`) reported all agentic-plugins surfaces
+available with source/cache versions matching the manifest **as it then stood**
+(`plugin-runtime` 0.89.0), and zero plugin-management config writes planned
+against the state installed at that time. It has not been re-run since, so it is
+historical rather than current evidence; the current manifest is 0.90.1. The
+newest hook-review attestation, which the 0.90.1 proof selects and reports
+current, is `settings-20260809T122130Z-c26a0c`. The current installed
 `plugin-runtime` `0.90.1` state is claude=installed/0.90.1,
 codex=installed/0.90.1, per the 2026-08-12Z
 `doctor-20260812T022356Z-252fb9` read; the superseded 0.90.0 state was read by
@@ -113,7 +116,7 @@ native, `claude plugin update` on Claude and `codex plugin marketplace
 upgrade` + `codex plugin add` on Codex, with the installed state doctor-
 observed, so this upgrade too left no `runtime:settings --execute-plugin-
 management` executor artifact of its own, the newest being the 2026-07-14
-`settings-20260714T021101Z-94f0f6`). Current runtime execution evidence is
+`settings-20260714T021101Z-94f0f6`. Current runtime execution evidence is
 native to the installed `plugin-runtime` `0.90.1`: permission proof, deep peer
 smoke, and workflow continuation proof executed and passed in both directions,
 recorded on 2026-08-12Z as `doctor-20260812T022356Z-252fb9` — the post-release
@@ -129,8 +132,10 @@ regression. Claude published `2.1.228` 20.8h after `2.1.227`: 13.8h after this
 loop observed `2.1.227`, and 7.8h **before** its PR merged, so the baseline was
 stale before it shipped. The one partial is `runtime_handoff_artifacts` 9/15
 whose entire remedy is `refresh-baseline`. Measured against Claude's median
-24.0h inter-patch interval (11 intervals, npm publish times), the 22.2h
-observe→release→install loop cannot reliably close, which makes `ready` `100%`
+24.0h inter-patch interval (11 intervals from `2.1.217` to `2.1.228`, npm
+publish times), the 22.1h loop — measured between the observation snapshot
+`compat-20260811T035848Z-d6c3df` and the post-install verification snapshot
+`compat-20260812T020732Z-295af8` — cannot reliably close, which makes `ready` `100%`
 a transient with a one-patch-interval lifetime rather than a steady state; the
 datum is the input to the ADR-0051 §Alternatives D re-evaluation. It supersedes
 the 0.90.0 record recorded on 2026-08-10Z as doctor-20260810T135637Z-d49983 —
