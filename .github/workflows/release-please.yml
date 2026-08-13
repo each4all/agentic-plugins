@@ -121,3 +121,21 @@ jobs:
           else
             echo "No stage-doc drift; nothing to commit."
           fi
+
+      # ADR-0052 §Decision 5 — the post-tag assertion. Same reason the evidence
+      # check above runs inline: a push authenticated with GITHUB_TOKEN does not
+      # trigger workflows, so full-tests.yml never sees the release commit, and
+      # the release commit is precisely where a protected asset's obligation is
+      # either discharged or left outstanding.
+      #
+      # Deliberately LAST, and in its own step. An outstanding obligation is a
+      # statement about bytes that were already released; neither sync above can
+      # fix it, so failing before them would strand a catalog or stage-doc sync
+      # on a problem it cannot repair — the same failure-domain separation the
+      # two-commit split above exists for. Red here is the intended signal.
+      #
+      # It reads git objects rather than the working tree, so the uncommitted
+      # sync edits above cannot affect its verdict.
+      - name: Verify the release discharged its protected-asset obligations
+        if: ${{ steps.release.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch' }}
+        run: node scripts/check-release-obligation.mjs

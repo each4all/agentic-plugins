@@ -36,10 +36,12 @@ jobs:
         with:
           # tests/scripts/test-doc-evidence-consistency.mjs verifies the
           # release triples cited in the stage docs against real tags and
-          # release commits. Those checks fail closed rather than skipping,
-          # so the default depth-1 checkout would turn this workflow red —
-          # which is the intended trade: a git-backed gate that silently
-          # no-ops in CI reads as coverage it does not have.
+          # release commits, and tests/scripts/test-release-obligation.mjs
+          # reconciles the protected packaged assets against the newest
+          # reachable plugin-runtime-v* tag (ADR-0052). Both fail closed
+          # rather than skipping, so the default depth-1 checkout would turn
+          # this workflow red — which is the intended trade: a git-backed gate
+          # that silently no-ops in CI reads as coverage it does not have.
           fetch-depth: 0
 
       - name: Setup Node ${{ matrix.node-version }}

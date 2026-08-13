@@ -234,6 +234,17 @@ the preventer.
 > change did ship — 54.0h later, on an unrelated `feat`. The
 > counterexample is a divergence *window* closed by luck, not an asset
 > that never shipped.
+>
+> **Shipped** as `scripts/check-release-obligation.mjs`
+> (`npm run validate:release-obligation`), gated by
+> `tests/scripts/test-release-obligation.mjs` under `full-tests.yml`'s
+> `fetch-depth: 0` checkout and re-run inline in `release-please.yml` after
+> the tag is cut, because a `GITHUB_TOKEN` push triggers no workflow. The
+> phrase "diff-aware gate" above is superseded rather than satisfied: the
+> adopted check compares two full protected file *sets* across the
+> merge→release boundary and never diffs against a PR base, which is why
+> deletion, rename and an absent base are structural non-issues instead of
+> cases to enumerate.
 
 ## Consequences
 
@@ -263,10 +274,16 @@ the preventer.
 - Release cadence becomes coupled to host-version observation cadence.
   A host that ships often forces runtime patch releases that carry no
   code change.
-- The release obligation is not mechanically enforced (see §Decision
-  §Out of scope). A contributor can still change the packaged baseline
+- ~~The release obligation is not mechanically enforced (see §Decision
+  §Out of scope).~~ A contributor can still change the packaged baseline
   without a version change; what differs from before is that provenance
   makes the result observable rather than invisible.
+  **Superseded 2026-08-13 by [ADR-0052](0052-release-obligation-enforcement.md):**
+  the obligation is now mechanically detected. A contributor can still
+  *merge* such a change — `main` has no branch protection, so nothing can
+  block the merge — but `main` then stays red until a release ships the
+  bytes. The redness is the intended signal, and its expected duration is
+  the measured 5.3h median refresh window.
 
 **Neutral**
 

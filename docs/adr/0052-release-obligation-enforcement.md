@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed
+Accepted (2026-08-13). Implemented by `scripts/check-release-obligation.mjs`
+and gated by `tests/scripts/test-release-obligation.mjs`.
 
 ## Context
 
@@ -248,6 +249,51 @@ assumed.**
      (`receivers/codex-notify-shuttle.mjs`, `codex-notify-chain.mjs`,
      `agentic-statusline.mjs`), which commands read to render operator-
      installable artifacts but which are not verdict inputs under §Decision 3.
+
+7. **The risk window is merge→tag, and rollback out of it is a forward
+   patch.** Between a protected change merging and the tag being cut, the
+   bytes have moved and the version has not — the exact state `16b1833`
+   produced. Normally the window is minutes, but nothing bounds it: if the
+   release workflow fails, `releases_created` is reported only once, so a
+   plain re-run repairs nothing and the window stays open until someone
+   dispatches the manual repair path `release-please.yml` already documents.
+
+   Rolling a protected asset back inside that window is legitimate. Doing it
+   by **reusing or lowering a version is not**, because the released identity
+   would then name two different trees — the same "same version, different
+   bytes" failure ADR-0051 exists to eliminate, reintroduced from the other
+   side. The rollback is a *forward* patch carrying the restored bytes and
+   taking the next version. The check fails closed on a version regression
+   rather than classifying it, since it is a state the three-state model has
+   no honest reading for.
+
+### What implementation settled that the plan had assumed
+
+Three items scoped into this work assumed a diff-shaped gate and dissolve
+under the adopted design, which is worth recording so they are not
+re-litigated as gaps:
+
+- **PR base absence, and base/head union evaluation.** There is no diff base.
+  The check compares two complete protected file *sets* — the set at the
+  evaluated ref against the set at the newest reachable tag — so a missing
+  base is not a case, and deleting a protected entry moves the digest by
+  removing it from the set rather than by being absent from one side of a
+  diff. Union evaluation was a workaround for a problem set comparison does
+  not have.
+- **Rename detection.** Not a heuristic here. Path is a component of the
+  digest, so a rename registers whether it moves a file out of the protected
+  set or renames it in place with byte-identical contents — the harder case,
+  and the one that matters, since schemas are resolved by filename.
+- **Multi-package PRs and package creation.** Neither needs a rule. A commit
+  is judged only on the protected paths it touches, and the directory pattern
+  covers assets added later without an edit to the checker.
+
+One limit is real rather than dissolved, and is stated instead of hidden: a
+protected change that lands *after* a release commit but *before* its tag is
+cut reads as `release_in_flight` and passes, because at that moment it is
+indistinguishable from a normal in-flight release. It re-classifies as debt on
+the next run once the tag exists, since the tag is cut at the release commit
+and does not carry the later bytes.
 
 ## Consequences
 
