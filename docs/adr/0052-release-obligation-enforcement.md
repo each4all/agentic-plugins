@@ -1,4 +1,4 @@
-# ADR-0052: Enforcing the baseline release obligation — a scheduled promotion detector, and why Alternatives D stays deferred
+# ADR-0052: Enforcing the baseline release obligation — history/tag reconciliation, and why Alternatives D stays deferred
 
 ## Status
 
